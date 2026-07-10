@@ -46,6 +46,10 @@ Status: in progress
 - payload layout planning applies entry, metadata, per-file, and aggregate-size
   limits; preserves opaque source tokens; rejects duplicate, case-only, and
   file/directory conflicts; and produces deterministic extraction order
+- a platform-independent payload streaming boundary exposes only opaque source
+  tokens to readers, rejects writes beyond each declared size before forwarding
+  them, requires exact final byte counts, and distinguishes source, destination,
+  overflow, and underflow failures without mutating the filesystem
 - a default-off experimental adapter proves the InstallShield 5+ cabinet can
   be parsed directly over VFS callbacks; its adapter output is entry-count
   bounded, invalid descriptors are reported rather than silently omitted, and
@@ -53,9 +57,9 @@ Status: in progress
   valid entries whose paths pass the portability policy; a manual owned-media
   observation found duplicate destinations, showing that installer component
   selection is required before extraction
-- safe payload extraction, destination filesystem enforcement, Windows
-  reparse-point checks, race-proof OS-level no-follow operations, streaming
-  enforcement of declared sizes, cache locking/recovery, component selection,
+- production payload extraction, atomic destination publication, destination
+  filesystem enforcement, Windows reparse-point checks, race-proof OS-level
+  no-follow/create-new operations, cache locking/recovery, component selection,
   and parser hardening or isolation remain
 
 ## Later milestones

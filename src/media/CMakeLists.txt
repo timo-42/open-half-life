@@ -3,6 +3,7 @@ add_library(ohl_media STATIC
   src/iso_inspector.cpp
   src/payload_layout.cpp
   src/payload_path.cpp
+  src/payload_stream.cpp
 )
 
 add_library(OpenHalfLife::media ALIAS ohl_media)

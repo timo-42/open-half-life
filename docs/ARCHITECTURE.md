@@ -57,8 +57,14 @@ The always-built `media` path and layout policy is independent of Unshield. It
 normalizes archive-controlled names to a strict printable-ASCII subset,
 creates deterministic case-folded keys, rejects portable path conflicts, and
 applies metadata and declared-size quotas before any destination is opened.
-These are lexical and planning checks only: future extraction must enforce
-actual streamed byte counts and use native no-follow/create-new operations.
+Those path and layout checks are lexical and planning checks only. A
+platform-independent streaming boundary now gives a source only a planned
+entry's opaque token, wraps the caller's byte sink, rejects chunks that exceed
+the declared size before they reach that sink, and requires an exact final byte
+count. It reports source, destination, overflow, and underflow failures
+separately and performs no filesystem mutation. Production extraction remains
+absent: it still needs atomic destination publication, native
+no-follow/create-new operations, and Windows reparse-point enforcement.
 Because Unshield is not hardened for malicious cabinet metadata, the adapter
 is excluded from default builds and normal startup. The app is the only
 composition root.
