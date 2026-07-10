@@ -72,14 +72,10 @@ Status: in progress
 - a default-off experimental adapter proves the InstallShield 5+ cabinet can
   be parsed directly over VFS callbacks; its adapter output is entry-count
   bounded, invalid descriptors are reported rather than silently omitted, and
-  a shared VFS handle prevents source lifetime bugs. The owned cabinet has 302
-  valid entries whose paths pass the portability policy; a manual owned-media
-  observation found duplicate destinations, showing that installer component
-  selection is required before extraction
+  a shared VFS handle prevents source lifetime bugs
 - macOS and Windows atomic-directory stores and native adversarial gates,
   complete Linux qualification, production payload extraction, cache
-  locking/recovery, component selection, and parser hardening or isolation
-  remain
+  locking/recovery, and parser hardening or isolation remain
 
 ## Later milestones
 

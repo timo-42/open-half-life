@@ -17,7 +17,6 @@ code pins Unshield 1.6.2 and parses the same cabinet through VFS callbacks.
 - SHA-256: `eb8331a333b33c43165705d387f2331d9eb941f808cd305541ec825b767dcab7`
 - Filesystem: read-only UDF 1.02
 - Logical block size: 2,048 bytes
-- Volume label: `HALF_LIFE`
 - Source-control status: ignored; no media content is tracked
 - Outer-image integrity: archive reader reported no structural errors
 
@@ -42,13 +41,10 @@ content, CD key, or proprietary asset is included in this report.
 
 The engine now performs a bounded ECMA-167 preflight, mounts the UDF tree
 read-only through libudfread, and creates a content-addressed, metadata-only
-provenance cache entry. The main InstallShield cabinet can also be parsed
-in place through Unshield, yielding 302 valid entries without exposing their
-names or contents. Their individual names pass the strict portable path policy,
-while a manual owned-media observation found duplicate destination keys,
-confirming that installer component selection must precede extraction. Invalid
-cabinet descriptors are now counted and make entry-count-bounded adapter output
-unsuitable for import instead of being silently skipped.
+provenance cache entry. The default-off experimental InstallShield adapter can
+parse cabinet metadata in place through Unshield. Invalid cabinet descriptors
+are counted and make entry-count-bounded adapter output unsuitable for import
+instead of being silently skipped.
 That adapter is disabled by default because Unshield has not been audited for
 adversarial cabinets. M2 still needs parser isolation and safe, atomic payload
 extraction. The current standard-library link checks reduce accidental
