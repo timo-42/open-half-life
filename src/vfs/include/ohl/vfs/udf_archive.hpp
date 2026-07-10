@@ -40,6 +40,7 @@ struct DirectoryListing {
 
 [[nodiscard]] std::optional<std::string> normalize_path(
     std::string_view path);
+[[nodiscard]] bool is_single_path_component(std::string_view name) noexcept;
 
 class UdfFile final {
  public:

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <filesystem>
+#include <optional>
 #include <string_view>
 
 namespace ohl::platform {
@@ -53,5 +55,9 @@ struct PlatformInfo {
 }
 
 [[nodiscard]] PlatformInfo current_platform() noexcept;
+
+// Returns an absolute, user-writable cache location without creating it.
+// OHL_CACHE_DIR can override the platform default when it is absolute.
+[[nodiscard]] std::optional<std::filesystem::path> default_cache_directory();
 
 }  // namespace ohl::platform

@@ -14,6 +14,7 @@ code pins Unshield 1.6.2 and parses the same cabinet through VFS callbacks.
 
 - Edition: Half-Life Game of the Year Edition, user-identified build 929
 - Container size: 389,873,664 bytes
+- SHA-256: `eb8331a333b33c43165705d387f2331d9eb941f808cd305541ec825b767dcab7`
 - Filesystem: read-only UDF 1.02
 - Logical block size: 2,048 bytes
 - Volume label: `HALF_LIFE`
@@ -39,10 +40,13 @@ content, CD key, or proprietary asset is included in this report.
 
 ## Engineering implications
 
-The engine now performs a bounded ECMA-167 preflight and mounts the UDF tree
-read-only through libudfread. The main InstallShield cabinet can also be parsed
+The engine now performs a bounded ECMA-167 preflight, mounts the UDF tree
+read-only through libudfread, and creates a content-addressed, metadata-only
+provenance cache entry. The main InstallShield cabinet can also be parsed
 in place through Unshield, yielding 302 valid entries without exposing their
 names or contents. That adapter is disabled by default because Unshield has not
-been audited for adversarial cabinets. M2 still needs parser isolation and a
-safe, atomic extraction cache with a provenance manifest. Imported data must
-live outside the source tree and never be treated as redistributable output.
+been audited for adversarial cabinets. M2 still needs parser isolation and
+safe, atomic payload extraction. The current standard-library link checks
+reduce accidental traversal but do not yet provide race-proof OS-level
+no-follow operations for hostile cache directories. Imported data must live
+outside the source tree and never be treated as redistributable output.

@@ -96,6 +96,13 @@ std::optional<std::string> normalize_path(const std::string_view path) {
   return normalized;
 }
 
+bool is_single_path_component(const std::string_view name) noexcept {
+  return !name.empty() && name.size() <= 4'096 && name != "." &&
+         name != ".." && name.find('\0') == std::string_view::npos &&
+         name.find('/') == std::string_view::npos &&
+         name.find('\\') == std::string_view::npos;
+}
+
 struct UdfFile::Impl {
   std::shared_ptr<ArchiveState> owner;
   UDFFILE* file{nullptr};
@@ -278,9 +285,7 @@ std::unique_ptr<UdfFile> UdfArchive::open_file(
 std::unique_ptr<UdfFile> UdfArchive::open_file_at(
     const std::string_view directory_path,
     const std::string_view entry_name) const {
-  if (!is_open() || entry_name.empty() || entry_name == "." ||
-      entry_name == ".." ||
-      entry_name.find('\0') != std::string_view::npos) {
+  if (!is_open() || !is_single_path_component(entry_name)) {
     return nullptr;
   }
   const auto directory_name = normalize_path(directory_path);

@@ -34,7 +34,13 @@ int main(const int argument_count, const char* const arguments[]) {
       expect_rejected("../data1.cab") != 0 ||
       expect_rejected("Media/./preview.mpg") != 0 ||
       expect_rejected("Media/../data1.cab") != 0 ||
-      expect_rejected(std::string{"safe\0hidden", 11}) != 0) {
+      expect_rejected(std::string{"safe\0hidden", 11}) != 0 ||
+      !ohl::vfs::is_single_path_component("data1.cab") ||
+      ohl::vfs::is_single_path_component("../data1.cab") ||
+      ohl::vfs::is_single_path_component("Media/data1.cab") ||
+      ohl::vfs::is_single_path_component("Media\\data1.cab") ||
+      ohl::vfs::is_single_path_component(std::string{"safe\0hidden", 11})) {
+    std::cerr << "single-component path validation failed\n";
     return 1;
   }
 

@@ -30,3 +30,9 @@ uses the open-source libudfread dependency and is isolated behind the VFS API.
 Experimental InstallShield cabinet interpretation uses the MIT-licensed
 Unshield library; the installer itself is never run. This adapter is disabled
 by default pending malformed-input hardening or process isolation.
+
+Validated source media is fingerprinted with SHA-256 and identified in the
+local cache only by its digest, size, sanitized filesystem description, and
+sanitized volume label. The provenance manifest deliberately omits the source
+path and contains no game bytes. Cache contents remain local and ignored by
+the repository policy.

@@ -1,4 +1,5 @@
 #include "ohl/core/log.hpp"
+#include "ohl/media/import_cache.hpp"
 #include "ohl/media/iso_inspector.hpp"
 #include "ohl/platform/platform.hpp"
 #include "ohl/vfs/udf_archive.hpp"
@@ -28,11 +29,12 @@ constexpr std::string_view kApplicationName{"Open Half-Life"};
 }
 
 void print_usage() {
-  std::cout << "Usage: open-half-life [--iso PATH] [--] [PATH]\n";
+  std::cout << "Usage: open-half-life [--iso PATH] [--cache PATH] [--] [PATH]\n";
 }
 
 struct ParseResult {
   std::optional<std::filesystem::path> iso_path;
+  std::optional<std::filesystem::path> cache_path;
   int exit_code{-1};
 };
 
@@ -58,7 +60,9 @@ struct ParseResult {
       continue;
     }
 
-    std::filesystem::path iso_path;
+    std::filesystem::path value_path;
+    enum class PathKind { iso, cache };
+    auto path_kind = PathKind::iso;
     if (options_enabled && argument == "--iso") {
       ++index;
       if (index >= arguments.size()) {
@@ -66,25 +70,44 @@ struct ParseResult {
         result.exit_code = 2;
         return result;
       }
-      iso_path = arguments[index];
+      value_path = arguments[index];
     } else if (options_enabled && argument.starts_with("--iso=")) {
-      iso_path = path_from_utf8(std::string_view{argument}.substr(6));
+      value_path = path_from_utf8(std::string_view{argument}.substr(6));
+    } else if (options_enabled && argument == "--cache") {
+      ++index;
+      if (index >= arguments.size()) {
+        std::cerr << "--cache requires a path\n";
+        result.exit_code = 2;
+        return result;
+      }
+      value_path = arguments[index];
+      path_kind = PathKind::cache;
+    } else if (options_enabled && argument.starts_with("--cache=")) {
+      value_path = path_from_utf8(std::string_view{argument}.substr(8));
+      path_kind = PathKind::cache;
     } else if (options_enabled && argument.starts_with('-')) {
       std::cerr << "Unknown option: " << argument << '\n';
       print_usage();
       result.exit_code = 2;
       return result;
     } else {
-      iso_path = argument_path;
+      value_path = argument_path;
     }
 
-    if (iso_path.empty() || result.iso_path.has_value()) {
-      std::cerr << (iso_path.empty() ? "ISO path must not be empty\n"
-                                     : "Only one ISO path may be supplied\n");
+    auto& destination = path_kind == PathKind::iso ? result.iso_path
+                                                    : result.cache_path;
+    if (value_path.empty() || destination.has_value()) {
+      std::cerr << (value_path.empty()
+                        ? (path_kind == PathKind::iso
+                               ? "ISO path must not be empty\n"
+                               : "Cache path must not be empty\n")
+                        : (path_kind == PathKind::iso
+                               ? "Only one ISO path may be supplied\n"
+                               : "Only one cache path may be supplied\n"));
       result.exit_code = 2;
       return result;
     }
-    result.iso_path = std::move(iso_path);
+    destination = std::move(value_path);
   }
   return result;
 }
@@ -162,8 +185,31 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                  std::string{"Root entries: "} +
                      std::to_string(root.entries.size()));
 
+  if (!parse_result.cache_path.has_value()) {
+    parse_result.cache_path = ohl::platform::default_cache_directory();
+  }
+  if (!parse_result.cache_path.has_value()) {
+    ohl::core::log(
+        ohl::core::LogLevel::error,
+        "No user cache directory is available. Supply --cache PATH.");
+    return 1;
+  }
+  const auto cache = ohl::media::prepare_import_cache(
+      *parse_result.iso_path, inspection, *parse_result.cache_path);
+  if (!cache.valid()) {
+    ohl::core::log(ohl::core::LogLevel::error,
+                   std::string{"Media cache preparation failed: "} +
+                       std::string{ohl::media::to_string(cache.error)});
+    return 1;
+  }
+  const auto source_id = cache.source_sha256.substr(0, 12);
+  ohl::core::log(
+      ohl::core::LogLevel::info,
+      std::string{cache.cache_hit ? "Reused" : "Prepared"} +
+          " metadata-only media cache (source " + source_id + ")");
   ohl::core::log(ohl::core::LogLevel::info,
-                 "Media import is not implemented yet; nothing was executed.");
+                 "Payload import is not implemented yet; no media executable "
+                 "was run.");
   return 0;
 }
 

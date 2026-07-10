@@ -6,6 +6,14 @@ target_link_libraries(ohl_core_tests PRIVATE OpenHalfLife::core)
 ohl_enable_warnings(ohl_core_tests)
 add_test(NAME core.logging COMMAND ohl_core_tests)
 
+add_executable(ohl_sha256_tests
+  core/sha256_test.cpp
+)
+target_compile_features(ohl_sha256_tests PRIVATE cxx_std_20)
+target_link_libraries(ohl_sha256_tests PRIVATE OpenHalfLife::core)
+ohl_enable_warnings(ohl_sha256_tests)
+add_test(NAME core.sha256 COMMAND ohl_sha256_tests)
+
 add_executable(ohl_platform_tests
   platform/platform_test.cpp
 )
@@ -29,6 +37,14 @@ target_compile_features(ohl_media_tests PRIVATE cxx_std_20)
 target_link_libraries(ohl_media_tests PRIVATE OpenHalfLife::media)
 ohl_enable_warnings(ohl_media_tests)
 add_test(NAME media.iso_inspector COMMAND ohl_media_tests)
+
+add_executable(ohl_import_cache_tests
+  media/import_cache_test.cpp
+)
+target_compile_features(ohl_import_cache_tests PRIVATE cxx_std_20)
+target_link_libraries(ohl_import_cache_tests PRIVATE OpenHalfLife::media)
+ohl_enable_warnings(ohl_import_cache_tests)
+add_test(NAME media.import_cache COMMAND ohl_import_cache_tests)
 
 if(OHL_ENABLE_EXPERIMENTAL_INSTALLSHIELD)
   add_executable(ohl_cabinet_tests
@@ -75,6 +91,18 @@ add_test(
   COMMAND
     ${CMAKE_COMMAND}
     -DPROGRAM=$<TARGET_FILE:open-half-life>
+    -DEXPECTED_RESULT=1
     "-DEXPECTED=Media preflight failed: file not found"
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/ExpectFailure.cmake
+)
+
+add_test(
+  NAME app.missing_cache_option
+  COMMAND
+    ${CMAKE_COMMAND}
+    -DPROGRAM=$<TARGET_FILE:open-half-life>
+    "-DARGUMENTS=--cache"
+    -DEXPECTED_RESULT=2
+    "-DEXPECTED=--cache requires a path"
     -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/ExpectFailure.cmake
 )

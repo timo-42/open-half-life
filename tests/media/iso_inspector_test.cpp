@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -141,7 +142,10 @@ int expect_error(const ohl::media::MediaError actual,
 
 int main() {
   const auto directory = std::filesystem::temp_directory_path() /
-                         "open-half-life-media-tests";
+                         ("open-half-life-media-tests-" +
+                          std::to_string(std::chrono::steady_clock::now()
+                                             .time_since_epoch()
+                                             .count()));
   std::error_code error_code;
   std::filesystem::remove_all(directory, error_code);
   std::filesystem::create_directories(directory, error_code);
@@ -181,7 +185,8 @@ int main() {
     return 1;
   }
   const auto valid = ohl::media::inspect_iso(valid_path);
-  if (!valid.valid() || valid.filesystem != "ECMA-167 NSR02 candidate" ||
+  if (!valid.valid() || valid.source_sha256.size() != 64 ||
+      valid.filesystem != "ECMA-167 NSR02 candidate" ||
       valid.volume_label != "SYNTHETIC") {
     std::cerr << "valid synthetic ECMA-167 candidate was rejected: "
               << ohl::media::to_string(valid.error) << '\n';

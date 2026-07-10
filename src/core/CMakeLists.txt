@@ -1,5 +1,6 @@
 add_library(ohl_core STATIC
   src/log.cpp
+  src/sha256.cpp
 )
 
 add_library(OpenHalfLife::core ALIAS ohl_core)

@@ -42,6 +42,8 @@ enum class MediaError {
 struct IsoInspection {
   MediaError error{MediaError::none};
   std::uint64_t size_bytes{0};
+  std::filesystem::file_time_type last_write_time{};
+  std::string source_sha256;
   std::string filesystem;
   std::string volume_label;
 

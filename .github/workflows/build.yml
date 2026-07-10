@@ -28,6 +28,11 @@ jobs:
             expected_os: macOS
             expected_arch: arm64
             cmake_args: -DCMAKE_OSX_ARCHITECTURES=arm64
+          - os: ubuntu-latest
+            name: Linux x64 experimental cabinet adapter
+            expected_os: Linux
+            expected_arch: x86_64
+            cmake_args: -DOHL_ENABLE_EXPERIMENTAL_INSTALLSHIELD=ON
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     steps:
@@ -57,3 +62,26 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+  sanitizers:
+    name: Linux x64 sanitizers
+    runs-on: ubuntu-latest
+    env:
+      CFLAGS: -fsanitize=address,undefined -fno-omit-frame-pointer
+      CXXFLAGS: -fsanitize=address,undefined -fno-omit-frame-pointer
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: >-
+          cmake -S . -B build-sanitize -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DOHL_ENABLE_EXPERIMENTAL_INSTALLSHIELD=ON
+          -DOHL_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build-sanitize --parallel
+
+      - name: Test
+        run: ctest --test-dir build-sanitize --output-on-failure

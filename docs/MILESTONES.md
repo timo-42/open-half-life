@@ -31,13 +31,21 @@ Status: in progress
 
 - read-only UDF VFS mount, path normalization, directory listing, streaming
   reads, and seek are implemented
+- VFS entry-at access now accepts exactly one separator-free path component
+- validated media is streamed through a project-owned, known-answer-tested
+  SHA-256 implementation; source paths and media bytes are not persisted
+- platform user-cache discovery and an explicit `--cache` override are wired
+  into startup
+- content-addressed source directories apply standard-library symbolic-link
+  and type checks, and publish a metadata-only manifest by same-directory rename
 - the owned image mounts; an integration check reads one byte without logging,
   persisting, or committing its content
 - a default-off experimental adapter proves the InstallShield 5+ cabinet can
   be parsed directly over VFS callbacks; the owned cabinet has 302 valid
   entries, but the unaudited parser is not reachable during normal startup
-- cache layout, destination containment, symlink defenses, atomic extraction,
-  a provenance manifest, and parser hardening or isolation remain
+- safe payload extraction, destination filename portability, Windows
+  reparse-point checks, race-proof OS-level no-follow operations, cache
+  locking/recovery, and parser hardening or isolation remain
 
 ## Later milestones
 

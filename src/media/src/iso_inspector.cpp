@@ -1,5 +1,7 @@
 #include "ohl/media/iso_inspector.hpp"
 
+#include "ohl/core/sha256.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -79,6 +81,37 @@ using Sector = std::array<std::byte, kSectorSize>;
   input.read(reinterpret_cast<char*>(destination.data()),
              static_cast<std::streamsize>(destination.size()));
   return input.gcount() == static_cast<std::streamsize>(destination.size());
+}
+
+[[nodiscard]] bool fingerprint_stream(std::ifstream& input,
+                                      const std::uint64_t expected_size,
+                                      std::string& digest) {
+  input.clear();
+  input.seekg(0, std::ios::beg);
+  if (!input) {
+    return false;
+  }
+
+  ohl::core::Sha256 sha256;
+  std::array<std::byte, 64 * 1'024> buffer{};
+  std::uint64_t bytes_read = 0;
+  while (input) {
+    input.read(reinterpret_cast<char*>(buffer.data()),
+               static_cast<std::streamsize>(buffer.size()));
+    const auto count = input.gcount();
+    if (count < 0) {
+      return false;
+    }
+    if (count != 0) {
+      sha256.update(std::span{buffer}.first(static_cast<std::size_t>(count)));
+      bytes_read += static_cast<std::uint64_t>(count);
+    }
+  }
+  if (!input.eof() || bytes_read != expected_size) {
+    return false;
+  }
+  digest = ohl::core::hex_encode(sha256.finish());
+  return true;
 }
 
 [[nodiscard]] bool identifier_is(const Sector& sector,
@@ -289,6 +322,11 @@ IsoInspection inspect_iso(const std::filesystem::path& path) {
     return result;
   }
   result.size_bytes = static_cast<std::uint64_t>(size);
+  result.last_write_time = std::filesystem::last_write_time(path, error_code);
+  if (error_code) {
+    result.error = MediaError::io_error;
+    return result;
+  }
   const auto sector_count = result.size_bytes / kSectorSize;
   if (result.size_bytes % kSectorSize != 0 ||
       sector_count <= kAnchorSector) {
@@ -330,6 +368,17 @@ IsoInspection inspect_iso(const std::filesystem::path& path) {
   }
 
   result.filesystem = "ECMA-167 NSR02 candidate";
+  if (!fingerprint_stream(input, result.size_bytes, result.source_sha256)) {
+    result.error = MediaError::io_error;
+    return result;
+  }
+  const auto final_size = std::filesystem::file_size(path, error_code);
+  if (error_code || final_size != size ||
+      std::filesystem::last_write_time(path, error_code) !=
+          result.last_write_time ||
+      error_code) {
+    result.error = MediaError::io_error;
+  }
   return result;
 }
 

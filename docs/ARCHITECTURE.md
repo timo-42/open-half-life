@@ -28,15 +28,21 @@ The current dependency direction is:
 
 ```text
 app -> core + platform + media + vfs
-media -> standard library
+media -> core + standard library
 vfs -> libudfread + standard library
 core/platform -> standard library
 
 experimental media cabinet adapter -> vfs + Unshield + zlib
 ```
 
-The `media` target performs a bounded, project-owned ECMA-167 NSR02 preflight
-and contains a default-off experimental Unshield adapter for read-only
+The `media` target performs a bounded, project-owned ECMA-167 NSR02 preflight,
+streams the validated source through the project-owned SHA-256 implementation,
+and publishes a metadata-only provenance manifest under a content-addressed
+user cache. Source paths are not persisted. Standard-library checks require an
+absolute cache path and reject observed symbolic links or non-directories; the
+manifest is committed with a same-directory rename. Race-proof no-follow and
+Windows reparse-point handling remain importer hardening work. The target also
+contains a default-off experimental Unshield adapter for read-only
 InstallShield cabinet metadata.
 The `vfs` target wraps libudfread behind C++ pImpl types, so third-party API
 types do not leak into the engine. It exposes normalized read-only paths,

@@ -12,3 +12,13 @@ The project-owned parser is deliberately only a bounded NSR02 structural
 preflight; it does not claim full UDF conformance. Full read-only filesystem
 interpretation is delegated to the independently maintained `libudfread`
 dependency described in `THIRD_PARTY_NOTICES.md`.
+
+## Media provenance digest
+
+- [NIST FIPS PUB 180-4, Secure Hash Standard](https://doi.org/10.6028/NIST.FIPS.180-4):
+  SHA-256 message padding, schedule, compression function, and digest encoding.
+
+The project-owned SHA-256 implementation is used only to assign a stable
+content identity to user-provided media. Known-answer tests use the published
+empty-string and `abc` vectors plus a multi-block vector; no proprietary data
+is used in tests.

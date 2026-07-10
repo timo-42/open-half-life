@@ -41,13 +41,16 @@ Run it with:
 ```
 
 The path ends in `.exe` on Windows.
+Supply `--cache /absolute/path` to override the platform user-cache location.
+The current M2 implementation fingerprints the validated ISO and publishes a
+metadata-only provenance record there; it does not extract game data yet.
 
 ## Status
 
 The current implementation provides the M0 build and logging foundation, M1
-media preflight, and the read-only UDF portion of M2. Run with
-`open-half-life --iso /path/to/owned-media.iso`; no installer or media binary
-is executed. See [docs/MILESTONES.md](docs/MILESTONES.md)
+media preflight, and the read-only UDF and provenance-cache portions of M2.
+Run with `open-half-life --iso /path/to/owned-media.iso`; no installer or media
+binary is executed. See [docs/MILESTONES.md](docs/MILESTONES.md)
 for current progress and [docs/CLEAN_ROOM.md](docs/CLEAN_ROOM.md) before
 contributing compatibility work.
 
