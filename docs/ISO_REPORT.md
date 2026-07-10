@@ -44,9 +44,14 @@ The engine now performs a bounded ECMA-167 preflight, mounts the UDF tree
 read-only through libudfread, and creates a content-addressed, metadata-only
 provenance cache entry. The main InstallShield cabinet can also be parsed
 in place through Unshield, yielding 302 valid entries without exposing their
-names or contents. That adapter is disabled by default because Unshield has not
-been audited for adversarial cabinets. M2 still needs parser isolation and
-safe, atomic payload extraction. The current standard-library link checks
-reduce accidental traversal but do not yet provide race-proof OS-level
-no-follow operations for hostile cache directories. Imported data must live
-outside the source tree and never be treated as redistributable output.
+names or contents. Their individual names pass the strict portable path policy,
+while a manual owned-media observation found duplicate destination keys,
+confirming that installer component selection must precede extraction. Invalid
+cabinet descriptors are now counted and make entry-count-bounded adapter output
+unsuitable for import instead of being silently skipped.
+That adapter is disabled by default because Unshield has not been audited for
+adversarial cabinets. M2 still needs parser isolation and safe, atomic payload
+extraction. The current standard-library link checks reduce accidental
+traversal but do not yet provide race-proof OS-level no-follow operations for
+hostile cache directories. Imported data must live outside the source tree and
+never be treated as redistributable output.

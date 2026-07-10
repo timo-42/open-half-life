@@ -44,6 +44,9 @@ The path ends in `.exe` on Windows.
 Supply `--cache /absolute/path` to override the platform user-cache location.
 The current M2 implementation fingerprints the validated ISO and publishes a
 metadata-only provenance record there; it does not extract game data yet.
+Payload metadata can be checked against bounded, cross-platform path and
+layout policies, but those checks are not yet connected to a production
+extractor.
 
 ## Status
 

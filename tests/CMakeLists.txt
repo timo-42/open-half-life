@@ -46,6 +46,22 @@ target_link_libraries(ohl_import_cache_tests PRIVATE OpenHalfLife::media)
 ohl_enable_warnings(ohl_import_cache_tests)
 add_test(NAME media.import_cache COMMAND ohl_import_cache_tests)
 
+add_executable(ohl_payload_path_tests
+  media/payload_path_test.cpp
+)
+target_compile_features(ohl_payload_path_tests PRIVATE cxx_std_20)
+target_link_libraries(ohl_payload_path_tests PRIVATE OpenHalfLife::media)
+ohl_enable_warnings(ohl_payload_path_tests)
+add_test(NAME media.payload_path COMMAND ohl_payload_path_tests)
+
+add_executable(ohl_payload_layout_tests
+  media/payload_layout_test.cpp
+)
+target_compile_features(ohl_payload_layout_tests PRIVATE cxx_std_20)
+target_link_libraries(ohl_payload_layout_tests PRIVATE OpenHalfLife::media)
+ohl_enable_warnings(ohl_payload_layout_tests)
+add_test(NAME media.payload_layout COMMAND ohl_payload_layout_tests)
+
 if(OHL_ENABLE_EXPERIMENTAL_INSTALLSHIELD)
   add_executable(ohl_cabinet_tests
     media/installshield_cabinet_test.cpp

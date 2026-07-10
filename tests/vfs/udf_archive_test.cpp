@@ -49,6 +49,10 @@ int main(const int argument_count, const char* const arguments[]) {
     std::cerr << "new archive unexpectedly reports open\n";
     return 1;
   }
+  if (archive.share().is_open()) {
+    std::cerr << "shared closed archive unexpectedly reports open\n";
+    return 1;
+  }
   if (archive.list("/").error != ohl::vfs::VfsError::not_open) {
     std::cerr << "closed archive listing returned the wrong error\n";
     return 1;

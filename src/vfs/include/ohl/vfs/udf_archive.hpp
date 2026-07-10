@@ -75,6 +75,8 @@ class UdfArchive final {
   UdfArchive& operator=(const UdfArchive&) = delete;
 
   [[nodiscard]] VfsError open(const std::filesystem::path& image_path);
+  // Returns another read-only handle that keeps the mounted archive alive.
+  [[nodiscard]] UdfArchive share() const;
   void close() noexcept;
   [[nodiscard]] bool is_open() const noexcept;
   [[nodiscard]] std::string volume_label() const;

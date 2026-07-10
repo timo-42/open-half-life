@@ -1,13 +1,12 @@
 #include "ohl/media/installshield_cabinet.hpp"
 
+#include "ohl/media/payload_path.hpp"
 #include "ohl/vfs/udf_archive.hpp"
 
 #include <dirent.h>
 #include <libunshield.h>
 
-#include <algorithm>
 #include <cerrno>
-#include <cctype>
 #include <climits>
 #include <cstdio>
 #include <cstring>
@@ -22,7 +21,7 @@ namespace ohl::media {
 namespace {
 
 struct CabinetContext {
-  const ohl::vfs::UdfArchive* source{nullptr};
+  ohl::vfs::UdfArchive source;
 };
 
 struct DirectoryCursor {
@@ -38,11 +37,11 @@ void* open_file(const char* filename, const char* modes,
     return nullptr;
   }
   const auto* const context = static_cast<CabinetContext*>(user_data);
-  if (context == nullptr || context->source == nullptr) {
+  if (context == nullptr || !context->source.is_open()) {
     return nullptr;
   }
   try {
-    return context->source->open_file(filename).release();
+    return context->source.open_file(filename).release();
   } catch (...) {
     return nullptr;
   }
@@ -123,11 +122,11 @@ int close_file(void* file, void*) {
 
 void* open_directory(const char* name, void* user_data) noexcept {
   const auto* const context = static_cast<CabinetContext*>(user_data);
-  if (context == nullptr || context->source == nullptr || name == nullptr) {
+  if (context == nullptr || !context->source.is_open() || name == nullptr) {
     return nullptr;
   }
   try {
-    auto listing = context->source->list(name);
+    auto listing = context->source.list(name);
     if (listing.error != ohl::vfs::VfsError::none) {
       return nullptr;
     }
@@ -177,44 +176,15 @@ const UnshieldIoCallbacks kReadOnlyCallbacks{
     .readdir = read_directory,
 };
 
-[[nodiscard]] bool has_unsafe_path_character(
-    const std::string_view value, const bool allow_separator) noexcept {
-  for (const auto character : value) {
-    const auto byte = static_cast<unsigned char>(character);
-    if (byte < 0x20U || byte == 0x7fU ||
-        std::string_view{"<>:\"|?*"}.find(character) !=
-            std::string_view::npos ||
-        (!allow_separator && (character == '/' || character == '\\'))) {
-      return true;
-    }
-  }
-  return false;
+[[nodiscard]] constexpr bool is_valid_directory_index(
+    const int index, const int count) noexcept {
+  return index == -1 || (index >= 0 && index < count);
 }
 
-[[nodiscard]] bool is_safe_component(const std::string_view component) {
-  if (component.empty() || component == "." || component == ".." ||
-      component.ends_with('.') || component.ends_with(' ') ||
-      has_unsafe_path_character(component, false)) {
-    return false;
-  }
-
-  const auto extension = component.find('.');
-  auto device_name = std::string{component.substr(0, extension)};
-  std::transform(device_name.begin(), device_name.end(), device_name.begin(),
-                 [](const unsigned char character) {
-                   return static_cast<char>(std::toupper(character));
-                 });
-  if (device_name == "CON" || device_name == "PRN" ||
-      device_name == "AUX" || device_name == "NUL") {
-    return false;
-  }
-  if (device_name.size() == 4 &&
-      (device_name.starts_with("COM") || device_name.starts_with("LPT")) &&
-      device_name[3] >= '1' && device_name[3] <= '9') {
-    return false;
-  }
-  return true;
-}
+static_assert(is_valid_directory_index(-1, 0));
+static_assert(!is_valid_directory_index(-2, 1));
+static_assert(is_valid_directory_index(0, 1));
+static_assert(!is_valid_directory_index(1, 1));
 
 [[nodiscard]] std::string safe_relative_path(const char* const directory,
                                              const char* const name) {
@@ -222,33 +192,17 @@ const UnshieldIoCallbacks kReadOnlyCallbacks{
     return {};
   }
   const std::string_view file_name{name};
-  if (!is_safe_component(file_name)) {
+  if (file_name.find_first_of("/\\") != std::string_view::npos) {
     return {};
   }
 
-  const auto normalized_directory =
-      ohl::vfs::normalize_path(directory == nullptr ? "" : directory);
-  if (!normalized_directory.has_value() ||
-      has_unsafe_path_character(*normalized_directory, true)) {
-    return {};
+  std::string combined;
+  if (directory != nullptr && *directory != '\0') {
+    combined = directory;
+    combined.push_back('/');
   }
-  std::size_t start = 1;
-  while (start < normalized_directory->size()) {
-    const auto end = normalized_directory->find('/', start);
-    const auto component = normalized_directory->substr(
-        start, end == std::string::npos ? std::string::npos : end - start);
-    if (!is_safe_component(component)) {
-      return {};
-    }
-    if (end == std::string::npos) {
-      break;
-    }
-    start = end + 1;
-  }
-  if (*normalized_directory == "/") {
-    return std::string{file_name};
-  }
-  return normalized_directory->substr(1) + "/" + std::string{file_name};
+  combined.append(file_name);
+  return validate_payload_path(combined).relative_path;
 }
 
 }  // namespace
@@ -285,7 +239,7 @@ CabinetError InstallShieldCabinet::open(const ohl::vfs::UdfArchive& source,
   if (implementation_ == nullptr) {
     implementation_ = std::make_unique<Impl>();
   }
-  implementation_->context.source = &source;
+  implementation_->context.source = source.share();
   unshield_set_log_level(UNSHIELD_LOG_LEVEL_ERROR);
   implementation_->cabinet = unshield_open2(normalized->c_str(),
                                              &kReadOnlyCallbacks,
@@ -296,43 +250,76 @@ CabinetError InstallShieldCabinet::open(const ohl::vfs::UdfArchive& source,
 }
 
 void InstallShieldCabinet::close() noexcept {
-  if (implementation_ != nullptr && implementation_->cabinet != nullptr) {
+  if (implementation_ == nullptr) {
+    return;
+  }
+  if (implementation_->cabinet != nullptr) {
     unshield_close(implementation_->cabinet);
     implementation_->cabinet = nullptr;
-    implementation_->context.source = nullptr;
   }
+  implementation_->context.source.close();
 }
 
 bool InstallShieldCabinet::is_open() const noexcept {
   return implementation_ != nullptr && implementation_->cabinet != nullptr;
 }
 
-std::vector<CabinetEntry> InstallShieldCabinet::entries() const {
-  std::vector<CabinetEntry> result;
+CabinetListing InstallShieldCabinet::entries(
+    const std::size_t maximum_entries) const {
+  CabinetListing result;
   if (!is_open()) {
+    result.error = CabinetError::source_not_open;
     return result;
   }
   const auto count = unshield_file_count(implementation_->cabinet);
-  if (count <= 0) {
+  if (count < 0) {
+    result.error = CabinetError::unsupported_or_corrupt;
     return result;
   }
-  result.reserve(static_cast<std::size_t>(count));
+  if (static_cast<std::size_t>(count) > maximum_entries) {
+    result.error = CabinetError::too_many_entries;
+    return result;
+  }
+  result.total_entries = static_cast<std::size_t>(count);
+  result.entries.reserve(static_cast<std::size_t>(count));
+  const auto directory_count =
+      unshield_directory_count(implementation_->cabinet);
+  const auto reject_entry = [&result](const CabinetError error) {
+    if (result.error == CabinetError::none) {
+      result.error = error;
+    }
+    ++result.rejected_entries;
+  };
   for (int index = 0; index < count; ++index) {
     if (!unshield_file_is_valid(implementation_->cabinet, index)) {
+      reject_entry(CabinetError::unsupported_or_corrupt);
       continue;
     }
     const auto* const name =
         unshield_file_name(implementation_->cabinet, index);
     const auto directory_index =
         unshield_file_directory(implementation_->cabinet, index);
-    const auto* const directory = directory_index < 0
-                                      ? nullptr
-                                      : unshield_directory_name(
-                                            implementation_->cabinet,
-                                            directory_index);
-    result.push_back(CabinetEntry{
+    const char* directory = nullptr;
+    if (!is_valid_directory_index(directory_index, directory_count)) {
+      reject_entry(CabinetError::unsupported_or_corrupt);
+      continue;
+    }
+    if (directory_index != -1) {
+      directory = unshield_directory_name(implementation_->cabinet,
+                                           directory_index);
+      if (directory == nullptr) {
+        reject_entry(CabinetError::unsupported_or_corrupt);
+        continue;
+      }
+    }
+    auto path = safe_relative_path(directory, name);
+    if (path.empty()) {
+      reject_entry(CabinetError::invalid_entry_path);
+      continue;
+    }
+    result.entries.push_back(CabinetEntry{
         .index = index,
-        .safe_relative_path = safe_relative_path(directory, name),
+        .safe_relative_path = std::move(path),
         .size_bytes = static_cast<std::uint64_t>(
             unshield_file_size(implementation_->cabinet, index)),
     });

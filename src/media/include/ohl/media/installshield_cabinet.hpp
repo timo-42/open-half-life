@@ -17,14 +17,29 @@ enum class CabinetError {
   none,
   source_not_open,
   invalid_path,
+  invalid_entry_path,
+  too_many_entries,
   unsupported_or_corrupt,
 };
 
 struct CabinetEntry {
   int index{-1};
-  // Empty when the archive-provided path is unsafe for extraction.
+  // Validated lexical path; extraction still requires native no-follow writes.
   std::string safe_relative_path;
   std::uint64_t size_bytes{0};
+};
+
+struct CabinetListing {
+  // WARNING: entries may contain partial diagnostic output when error is not
+  // none. Importers must require valid(); rejected entries never expose names.
+  CabinetError error{CabinetError::none};
+  std::size_t total_entries{0};
+  std::size_t rejected_entries{0};
+  std::vector<CabinetEntry> entries;
+
+  [[nodiscard]] bool valid() const noexcept {
+    return error == CabinetError::none;
+  }
 };
 
 class InstallShieldCabinet final {
@@ -41,7 +56,8 @@ class InstallShieldCabinet final {
                                   std::string_view cabinet_path);
   void close() noexcept;
   [[nodiscard]] bool is_open() const noexcept;
-  [[nodiscard]] std::vector<CabinetEntry> entries() const;
+  [[nodiscard]] CabinetListing entries(
+      std::size_t maximum_entries = 50'000) const;
 
  private:
   struct Impl;

@@ -183,6 +183,14 @@ VfsError UdfArchive::open(const std::filesystem::path& image_path) {
   return VfsError::none;
 }
 
+UdfArchive UdfArchive::share() const {
+  UdfArchive result;
+  if (implementation_ != nullptr) {
+    result.implementation_->state = implementation_->state;
+  }
+  return result;
+}
+
 void UdfArchive::close() noexcept {
   if (implementation_ != nullptr) {
     implementation_->state.reset();
