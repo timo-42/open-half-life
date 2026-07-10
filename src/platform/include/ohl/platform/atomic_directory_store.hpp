@@ -2,14 +2,17 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <span>
 #include <string_view>
 
 namespace ohl::platform {
 
-// This interface describes the operations a native, race-resistant directory
-// store must eventually provide. It does not provide a filesystem backend.
+inline constexpr std::size_t kMaximumAtomicDirectoryStoreIdentityBytes = 96;
+
+// This interface describes the operations of a native, race-resistant
+// directory store. Backend availability is platform and capability dependent.
 // All calls are synchronous, must not throw, and receive validated individual
 // path components rather than joined native paths. A store must copy any view
 // it needs beyond the call; a transaction may retain begin() plan views only
@@ -55,8 +58,10 @@ struct AtomicDirectoryProbeResult {
 
 // A write returns none only after the entire chunk has been accepted. Native
 // implementations must handle partial OS writes internally. An error may leave
-// partial data in private staging, which abort() must discard. The returned
-// error must remain valid after this sink is destroyed.
+// partial data in private staging, which a successful abort() discards. The
+// returned error must remain valid after this sink is destroyed. A sink may be
+// destroyed after its transaction; writes after transaction destruction return
+// invalid_state.
 class AtomicDirectoryByteSink {
  public:
   virtual ~AtomicDirectoryByteSink() = default;
@@ -112,8 +117,9 @@ class AtomicDirectoryTransaction {
   [[nodiscard]] virtual AtomicDirectoryStoreError sync_published_parent()
       noexcept = 0;
 
-  // abort() is explicit, idempotent, and removes only staging owned by this
-  // transaction. It must never remove a successfully published destination.
+  // abort() is explicit and idempotent. Success removes only staging owned by
+  // this transaction; failure may retain it for diagnosis or later recovery.
+  // It must never remove a successfully published destination.
   [[nodiscard]] virtual AtomicDirectoryStoreError abort() noexcept = 0;
 };
 
@@ -133,5 +139,18 @@ class AtomicDirectoryStore {
   [[nodiscard]] virtual AtomicDirectoryTransactionResult create_transaction()
       noexcept = 0;
 };
+
+struct AtomicDirectoryStoreOpenResult {
+  std::unique_ptr<AtomicDirectoryStore> store;
+  AtomicDirectoryStoreError error{AtomicDirectoryStoreError::none};
+};
+
+// Opens and pins an existing trusted root. The native implementation validates
+// the absolute normalized path component by component without following links.
+// On Linux, callers must keep the root namespace trusted against mutation by
+// untrusted processes running as the same effective user for the store's
+// lifetime; Linux has no conditional unlink-by-inode operation.
+[[nodiscard]] AtomicDirectoryStoreOpenResult open_atomic_directory_store(
+    const std::filesystem::path& root) noexcept;
 
 }  // namespace ohl::platform

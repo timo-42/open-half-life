@@ -54,8 +54,21 @@ Status: in progress
   atomic-directory-store contract enforce planned order, exact-file sealing,
   completion metadata last, explicit pre-publication cleanup, no-replace race
   revalidation, and precise published/parent-sync-complete versus
-  published/parent-sync-uncertain reporting in synthetic fake-store tests only;
+  published/parent-sync-uncertain reporting in synthetic fake-store and Linux
+  native tests; cleanup failures are reported and may retain owned staging;
   sync completion does not claim universal filesystem durability
+- a gated Linux atomic-directory store pins a validated existing root, uses
+  private descriptor-relative staging, attempts descriptor-relative abort
+  cleanup, structurally probes exact trees with same-device directories, and
+  publishes once with `renameat2(RENAME_NOREPLACE)` on an explicit
+  ext-family/XFS/Btrfs/tmpfs allowlist; failed cleanup may retain owned staging,
+  same-size content tampering is outside the current structural probe guarantee,
+  and the backend is not connected to startup; the shared `0xEF53` statfs value
+  does not distinguish ext2/ext3/ext4, and qualification evidence currently
+  covers ext4 and tmpfs while ext2, ext3, XFS, and Btrfs remain unqualified
+- the Linux backend currently requires a trusted root namespace with no
+  untrusted same-euid mutator; inode revalidation detects observed replacement
+  but cannot make named cleanup conditional on inode identity
 - a default-off experimental adapter proves the InstallShield 5+ cabinet can
   be parsed directly over VFS callbacks; its adapter output is entry-count
   bounded, invalid descriptors are reported rather than silently omitted, and
@@ -63,11 +76,10 @@ Status: in progress
   valid entries whose paths pass the portability policy; a manual owned-media
   observation found duplicate destinations, showing that installer component
   selection is required before extraction
-- native atomic-directory stores and their adversarial platform gates,
-  production payload extraction, destination filesystem enforcement, Windows
-  reparse-point checks, race-proof OS-level no-follow/create-new operations,
-  cache locking/recovery, component selection, and parser hardening or
-  isolation remain
+- macOS and Windows atomic-directory stores and native adversarial gates,
+  complete Linux qualification, production payload extraction, cache
+  locking/recovery, component selection, and parser hardening or isolation
+  remain
 
 ## Later milestones
 
