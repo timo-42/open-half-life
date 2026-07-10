@@ -14,11 +14,22 @@ class TemporaryDirectory final {
  public:
   TemporaryDirectory() {
     const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
-    path_ = std::filesystem::temp_directory_path() /
-            ("open-half-life-import-cache-" + std::to_string(nonce));
+    const auto created_path =
+        std::filesystem::temp_directory_path() /
+        ("open-half-life-import-cache-" + std::to_string(nonce));
     std::error_code error_code;
-    std::filesystem::create_directory(path_, error_code);
-    valid_ = !error_code;
+    if (!std::filesystem::create_directory(created_path, error_code) ||
+        error_code) {
+      return;
+    }
+    path_ = std::filesystem::canonical(created_path, error_code);
+    if (error_code) {
+      std::error_code cleanup_error;
+      std::filesystem::remove_all(created_path, cleanup_error);
+      path_.clear();
+      return;
+    }
+    valid_ = true;
   }
 
   ~TemporaryDirectory() {
@@ -150,6 +161,12 @@ int main() {
   const auto link = temporary.path() / "linked-cache";
   std::error_code error_code;
   std::filesystem::create_directory_symlink(cache_root, link, error_code);
+#if !defined(_WIN32)
+  if (error_code) {
+    std::cerr << "failed to create linked-cache rejection fixture\n";
+    return 1;
+  }
+#endif
   if (!error_code) {
     const auto linked =
         ohl::media::prepare_import_cache(source, inspection, link);
