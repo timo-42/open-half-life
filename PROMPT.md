@@ -53,6 +53,37 @@ expected deliverable, constraints, and validation command for every agent.
 Do not name or require a model version that is unavailable in the execution
 environment.
 
+## Issue Triage
+
+Every 10 minutes, an available worker must check open issues and address any
+that are relevant and actionable.
+
+## Coordination Log and Plan Snapshots
+
+Keep all coordination work in the dedicated `.plan` folder. This folder must
+be ignored by Git. Create `.plan/plan00000001.html` with the initial plan,
+dependency graph, assigned work packages, progress, review status, and
+important decisions.
+
+Whenever the plan, dependency graph, state, assignments, review status, or
+important decisions change, create the next sequential plan file in the same
+folder (for example, `.plan/plan00000002.html` and
+`.plan/plan00000003.html`). Each snapshot must capture the updated state at
+that point in time.
+
+## Planning and Parallel Execution
+
+Create a plan and dependency graph for the work to be done. Spawn as many
+threads or subagents as practical so independent work can proceed in parallel.
+Assign each worker an appropriate available model and reasoning level based on
+the difficulty, risk, and scope of its task.
+
+## Continuous Improvement
+
+Consider refactoring and workflow improvements when they would improve code
+reuse, clarity, maintainability, abstraction quality, developer productivity,
+review quality, testing reliability, or coordination efficiency.
+
 ## Subagent strategy
 
 Maximize safe parallelism. Start independent agents concurrently for work that
@@ -77,6 +108,7 @@ The coordinator owns:
 -   assignment of model/reasoning level
 -   review of agent reports and acceptance criteria
 -   integration sequencing and conflict resolution
+-   coordination-log and plan-snapshot maintenance
 
 Delegated integration agents own:
 
@@ -84,6 +116,20 @@ Delegated integration agents own:
 -   running the required build and tests
 -   creating focused commits
 -   pushing verified commits when the configured remote and credentials permit
+
+Dedicated PR-review agents own:
+
+-   inspecting the pull-request diff and required build/test evidence
+-   posting an explicit approval comment when the change is ready
+-   posting a concrete requested-changes comment when work remains
+-   merging only after posting their own approval and only when repository
+    protections and permissions permit
+
+The PR-review agent must use the same configured, authenticated GitHub identity
+for its review comment and merge. The coordinator assigns the PR-review agent
+and decides when a change is ready for review, but does not comment on or merge
+pull requests itself. If branch protection or permissions prevent the merge,
+the PR-review agent reports the exact blocker and does not bypass it.
 
 Commit and push regularly: after each coherent, validated unit of work, use an
 agent to commit only the intended files with a descriptive message, then push
