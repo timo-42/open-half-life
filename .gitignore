@@ -15,6 +15,7 @@ assets/*
 /build/
 /build-*/
 /out/
+/.plan/
 CMakeUserPresets.json
 compile_commands.json
 .cache/
