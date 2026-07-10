@@ -73,6 +73,11 @@ Status: in progress
   be parsed directly over VFS callbacks; its adapter output is entry-count
   bounded, invalid descriptors are reported rather than silently omitted, and
   a shared VFS handle prevents source lifetime bugs
+- deterministic payload selection remains an M2 predecessor and must occur
+  before final layout planning; edition-specific selection data may be supplied
+  only through a runtime-only local recipe and must remain local; any
+  project-owned component-selection parsing requires recorded public format
+  provenance
 - macOS and Windows atomic-directory stores and native adversarial gates,
   complete Linux qualification, production payload extraction, cache
   locking/recovery, and parser hardening or isolation remain
