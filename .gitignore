@@ -1,0 +1,27 @@
+# User-provided game media must never enter source control.
+assets/*
+!assets/README.md
+*.[iI][sS][oO]
+*.[bB][iI][nN]
+*.[cC][uU][eE]
+*.[iI][mM][gG]
+*.[mM][dD][fF]
+*.[mM][dD][sS]
+*.[nN][rR][gG]
+/cache/
+/imported/
+
+# Build and tool output.
+/build/
+/build-*/
+/out/
+CMakeUserPresets.json
+compile_commands.json
+.cache/
+.clangd/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log
+*.swp
