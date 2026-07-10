@@ -12,11 +12,18 @@ Contributors must follow these rules:
 3. Do not commit game media, extracted assets, installer files, CD keys, or
    detailed dumps containing proprietary content.
 4. Record the public sources used when implementing a file format or behavior.
-5. Keep compatibility observations factual and minimal. Sanitized reports may
-   contain filesystem type, volume label, aggregate sizes, and high-level file
-   categories, but not file contents.
+5. Keep compatibility observations factual and minimal. A reviewed sanitized
+   report may contain carefully bounded aggregates or complete-source digests,
+   project-defined error codes, and documented container or filesystem
+   type/version facts. It must not contain internal names, paths, or file
+   contents.
 6. Treat all user-provided media as read-only data. Never execute installers,
    drivers, scripts, or binaries found on it.
+7. Require a clean-room provenance review before adding any name or path literal
+   derived from user media. The review must identify an independently authored
+   synthetic origin or a lawfully public source with compatible use terms. A
+   literal observed only in private media must not enter source, tests,
+   documentation, fixtures, snapshots, comments, or issue reports.
 
 Compatibility code should be reviewable without access to copyrighted source
 or assets. New third-party dependencies must have licenses compatible with
@@ -30,6 +37,15 @@ uses the open-source libudfread dependency and is isolated behind the VFS API.
 Experimental InstallShield cabinet interpretation uses the MIT-licensed
 Unshield library; the installer itself is never run. This adapter is disabled
 by default pending malformed-input hardening or process isolation.
+
+`MEDIA_IMPORT.md` defines the local proprietary-data boundary for ISO bytes,
+internal identifiers, extracted output, parser communication, diagnostics,
+sanitizer artifacts, and fuzzing material. Those rules also prohibit logs,
+telemetry, automatic uploads, committed proprietary fixtures, and redistribution.
+Only a reviewed sanitized report may leave the local boundary. Its allowed
+fields are limited to carefully bounded aggregates or complete-source digests,
+project-defined error codes, and documented container or filesystem
+type/version facts.
 
 Validated source media is fingerprinted with SHA-256 and identified in the
 local cache only by its digest, size, sanitized filesystem description, and
