@@ -50,6 +50,12 @@ Status: in progress
   tokens to readers, rejects writes beyond each declared size before forwarding
   them, requires exact final byte counts, and distinguishes source, destination,
   overflow, and underflow failures without mutating the filesystem
+- a platform-independent staging orchestrator and injectable component-based
+  atomic-directory-store contract enforce planned order, exact-file sealing,
+  completion metadata last, explicit pre-publication cleanup, no-replace race
+  revalidation, and precise published/parent-sync-complete versus
+  published/parent-sync-uncertain reporting in synthetic fake-store tests only;
+  sync completion does not claim universal filesystem durability
 - a default-off experimental adapter proves the InstallShield 5+ cabinet can
   be parsed directly over VFS callbacks; its adapter output is entry-count
   bounded, invalid descriptors are reported rather than silently omitted, and
@@ -57,10 +63,11 @@ Status: in progress
   valid entries whose paths pass the portability policy; a manual owned-media
   observation found duplicate destinations, showing that installer component
   selection is required before extraction
-- production payload extraction, atomic destination publication, destination
-  filesystem enforcement, Windows reparse-point checks, race-proof OS-level
-  no-follow/create-new operations, cache locking/recovery, component selection,
-  and parser hardening or isolation remain
+- native atomic-directory stores and their adversarial platform gates,
+  production payload extraction, destination filesystem enforcement, Windows
+  reparse-point checks, race-proof OS-level no-follow/create-new operations,
+  cache locking/recovery, component selection, and parser hardening or
+  isolation remain
 
 ## Later milestones
 

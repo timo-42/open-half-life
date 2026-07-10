@@ -3,6 +3,7 @@ add_library(ohl_media STATIC
   src/iso_inspector.cpp
   src/payload_layout.cpp
   src/payload_path.cpp
+  src/payload_stage.cpp
   src/payload_stream.cpp
 )
 
@@ -14,7 +15,11 @@ target_include_directories(
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
-target_link_libraries(ohl_media PRIVATE OpenHalfLife::core)
+target_link_libraries(
+  ohl_media
+  PUBLIC OpenHalfLife::platform
+  PRIVATE OpenHalfLife::core
+)
 if(OHL_ENABLE_EXPERIMENTAL_INSTALLSHIELD)
   target_sources(ohl_media PRIVATE src/installshield_cabinet.cpp)
   target_link_libraries(

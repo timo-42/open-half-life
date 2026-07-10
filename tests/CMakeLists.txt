@@ -70,6 +70,14 @@ target_link_libraries(ohl_payload_stream_tests PRIVATE OpenHalfLife::media)
 ohl_enable_warnings(ohl_payload_stream_tests)
 add_test(NAME media.payload_stream COMMAND ohl_payload_stream_tests)
 
+add_executable(ohl_payload_stage_tests
+  media/payload_stage_test.cpp
+)
+target_compile_features(ohl_payload_stage_tests PRIVATE cxx_std_20)
+target_link_libraries(ohl_payload_stage_tests PRIVATE OpenHalfLife::media)
+ohl_enable_warnings(ohl_payload_stage_tests)
+add_test(NAME media.payload_stage COMMAND ohl_payload_stage_tests)
+
 if(OHL_ENABLE_EXPERIMENTAL_INSTALLSHIELD)
   add_executable(ohl_cabinet_tests
     media/installshield_cabinet_test.cpp

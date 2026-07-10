@@ -28,7 +28,7 @@ The current dependency direction is:
 
 ```text
 app -> core + platform + media + vfs
-media -> core + standard library
+media -> core + platform + standard library
 vfs -> libudfread + standard library
 core/platform -> standard library
 
@@ -65,6 +65,15 @@ count. It reports source, destination, overflow, and underflow failures
 separately and performs no filesystem mutation. Production extraction remains
 absent: it still needs atomic destination publication, native
 no-follow/create-new operations, and Windows reparse-point enforcement.
+The media module now also has a platform-independent staging orchestrator. It
+validates a complete deterministic plan before touching an injected store,
+streams and seals one file at a time, seals completion metadata last, and
+models cache hits, conflicts, no-replace publication races, explicit cleanup,
+and whether the backend's post-publication parent-sync operation completed or
+failed. A completed sync is not presented as a universal durability guarantee.
+The component-based store is only an interface, and its behavior is tested with
+a deterministic in-memory fake; there is no native filesystem implementation
+or production-safety claim yet.
 Because Unshield is not hardened for malicious cabinet metadata, the adapter
 is excluded from default builds and normal startup. The app is the only
 composition root.
