@@ -91,6 +91,42 @@ does not touch the same files or require the same uncommitted state. Keep one
 agent responsible for each write area at a time; use read-only review agents
 freely. Prefer small, bounded assignments with an explicit handoff report.
 
+## Agent prompt library
+
+Use `prompts/00-shared-agent.md` as the contract inherited by every worker,
+then compose it with exactly one role prompt:
+
+-   `prompts/01-repository-scout.md`
+-   `prompts/02-architecture-reviewer.md`
+-   `prompts/03-implementation-agent.md`
+-   `prompts/04-test-agent.md`
+-   `prompts/05-media-iso-agent.md`
+-   `prompts/06-documentation-agent.md`
+-   `prompts/07-clean-room-reviewer.md`
+-   `prompts/08-integration-agent.md`
+-   `prompts/09-pr-review-agent.md`
+-   `prompts/10-issue-triage-agent.md`
+
+Every dispatch must state the role, bounded assignment, files in scope,
+dependencies, deliverable, constraints, and exact validation command. Select
+the available model and reasoning level at dispatch time; do not hardcode an
+unavailable model in a role prompt. The coordinator owns dependency graphs,
+`.plan` snapshots, and acceptance decisions unless those responsibilities are
+explicitly delegated.
+
+Use this dispatch shape:
+
+``` text
+Shared contract: prompts/00-shared-agent.md
+Role: <role prompt>
+Assignment: <bounded objective>
+Files in scope: <explicit paths or subsystem>
+Dependencies: <predecessors and required artifacts>
+Deliverable: <expected handoff>
+Validation: <exact commands>
+Constraints: <role-specific restrictions>
+```
+
 Examples:
 
 -   repository inspection
