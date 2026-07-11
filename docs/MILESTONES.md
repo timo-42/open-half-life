@@ -179,35 +179,63 @@ exact four-byte canonical little-endian payload is `u16 ProtocolStatus` then
 other known or unknown pairs are rejected; failure-result representation and
 worker failure/publication authority remain deferred. A receiver must decode
 the payload before state observation and separately establish every read,
-result, remainder, and downstream-write prerequisite. The accepted result
-includes canonical framing, generic bounded payload primitives and budgets,
-fail-closed session ordering, and complete-payload typed validation for eleven
-message types. The typed decoders enforce the applicable source/read bounds,
-request sequencing, permitted reply status/data shapes, exact-empty,
-exact-token, bounded opaque-chunk, or success-only completion payload shapes,
-and exact payload consumption. Only the `entry_batch` typed schema remains
-absent.
+result, remainder, and downstream-write prerequisite. Commit `ba84cfc` adds the
+final typed `entry_batch` schema and fuzz dispatch. Its canonical
+little-endian wire layout is:
+
+```text
+u16 entry_count (1..256)
+repeat entry_count:
+  u64 source_token
+  u64 size_bytes
+  u16 archive_path_length (1..4096)
+  printable ASCII archive_path bytes
+```
+
+The generic 1 MiB frame ceiling applies. The trusted cumulative policy caps
+remaining entries at 50,000, remaining path bytes at 64 MiB, an entry at 8 GiB,
+and remaining declared bytes at 32 GiB; callers may tighten those bounds.
+Tokens increase strictly within and across batches, with zero valid as the
+first candidate. The allocation-free two-pass decoder validates the whole
+payload and policy before populating caller storage. Its entry span aliases
+that storage and its path views alias the frame, so both must stay alive and
+unchanged while in use. Printable archive spellings are not normalized paths,
+and an empty batch is rejected; an empty enumeration completes without a
+batch.
+
+The accepted result includes canonical framing, generic bounded payload
+primitives and budgets, fail-closed session ordering, and complete-payload
+typed validation for all twelve message families. The typed decoders enforce
+the applicable source/read bounds, request sequencing, entry-batch count, path,
+size, cumulative-policy and token-ordering bounds, permitted reply status/data
+shapes, exact-empty, exact-token, bounded opaque-chunk, or success-only
+completion payload shapes, and exact payload consumption. No untyped message
+family remains.
 
 The ordering contract permits exactly one same-request late reply to drain
 after `cancel_ack` only when a read was already outstanding before cancellation.
 The deterministic fuzz target exercises frame decoding, generic payload
-reading, session ordering, and all eleven accepted typed decoders, including
-typed `stream_entry`, `data_chunk`, and `complete` dispatch. Read-message
-dispatch uses bounded matching and deliberately mismatching contexts.
-Data-chunk dispatch uses bounded, independently reachable exact, smaller, and
-zero remainder contexts without allocating or copying the frame payload.
-Complete dispatch reaches both valid operation contexts, disallowed pairs, and
-an invalid context. Its deterministic self-check proves those completion
-branches plus the prior canonical read and data-chunk branches. The exhaustive
-unit matrix covers every known status and phase in both valid completion
-contexts and proves invalid typed payloads are rejected before state
-observation. The fixed corpus remains project-authored and synthetic. This
-accepted protocol layer supports active M2 work but is not a production import
-path: no runtime target depends on it, it has no source, destination,
-extraction, completion-failure-reporting, or cache authority, and the typed
-decoders are not wired to production state transitions. The protocol work
-authorizes no proprietary extraction, and no worker implementation, transport,
-or native sandbox backend has been accepted or integrated.
+reading, session ordering, and all twelve accepted typed decoders. Entry-batch
+dispatch uses fixed 256-entry storage plus bounded broad, matching-token,
+replay-token, and reduced-budget contexts. Its deterministic self-check covers
+canonical and matching-token acceptance plus replay, non-printable, and budget
+rejection. Exhaustive unit validation covers wire order; count, path, ASCII,
+token, size, cumulative and frame ceilings; truncation; storage capacity and
+alias lifetimes; cross-batch ordering; multi-batch completion; and
+decode-before-observe atomicity. The prior bounded read, data-chunk, and
+completion contexts remain covered. The fixed corpus remains project-authored
+and synthetic.
+
+This accepted protocol layer supports active M2 work but is not a production
+import path. A future trusted session catalog must own token generation,
+promotion, membership, source mapping, lifetime and retirement; validate
+aggregate counts, sizes, normalized paths and conflicts across batches; and
+advance cumulative policy only after acceptance. No runtime target depends on
+the parser, it has no source, destination, extraction,
+completion-failure-reporting, or cache authority, and its typed decoders are
+not wired to production state transitions. The protocol work authorizes no
+proprietary extraction, and no trusted catalog, worker implementation,
+transport, or native sandbox backend has been accepted or integrated.
 
 ## Later milestones
 

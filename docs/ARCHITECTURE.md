@@ -43,13 +43,36 @@ accepted OWP/1 protocol layer provides canonical bounded framing and headers,
 generic bounded primitive payload readers and writers, per-frame and cumulative
 message/payload budgets, and fail-closed session ordering. Accepted typed
 schemas now cover `hello`, exact-empty `ready`, `enumerate`, `stream_entry`,
-`read_request`, `read_reply`, `data_chunk`, `complete`, `cancel`, `cancel_ack`,
-and `shutdown`. The `stream_entry` payload is exactly one canonical 8-byte
+`read_request`, `read_reply`, `entry_batch`, `data_chunk`, `complete`, `cancel`,
+`cancel_ack`, and `shutdown`: all twelve OWP/1 message families. The
+`stream_entry` payload is exactly one canonical 8-byte
 little-endian `source_token`. It is an opaque project-owned identifier; zero
 and every other `uint64_t` value, including the all-ones value, are valid at
 this codec boundary. Token membership and lifetime validation are deferred to
-a future trusted owner and are not authorization to access a source. A
-`data_chunk` is the opaque whole payload with no prefix, offset, token, or
+a future trusted owner and are not authorization to access a source.
+
+The `entry_batch` wire payload begins with a canonical little-endian `u16`
+entry count from 1 through 256. Each record then contains, in order, a
+little-endian `u64 source_token`, `u64 size_bytes`, `u16 archive_path_length`
+from 1 through 4,096, and exactly that many printable ASCII bytes (`0x20`
+through `0x7e`). The generic 1 MiB frame ceiling still applies. Its trusted
+cumulative policy permits at most 50,000 remaining entries, 64 MiB of remaining
+path bytes, 8 GiB for any entry, and 32 GiB of remaining declared data; callers
+may tighten but not raise those ceilings. Tokens must increase strictly within
+and across batches relative to the caller's previous-token context. Zero is a
+valid first candidate, but ordering alone grants no membership or authority.
+
+The entry-batch decoder performs an allocation-free validation pass over the
+entire payload and policy before checking capacity and populating caller-owned
+entry storage in a second pass. The decoded entry span aliases that storage,
+while each path view aliases the frame payload; both backing stores must remain
+alive and unchanged while those views are used. Printable archive spellings,
+including traversal-like or absolute-looking text, remain untrusted spellings,
+not normalized destination paths. An empty batch is noncanonical; an empty
+enumeration is represented by a valid success-only `complete` with no preceding
+batch.
+
+A `data_chunk` is the opaque whole payload with no prefix, offset, token, or
 status field; its accepted size is 1 byte through 256 KiB, so a zero-byte chunk
 is noncanonical. Its typed codec also takes a trusted nonzero
 `remaining_entry_bytes` context and rejects a chunk larger than that bound.
@@ -66,10 +89,10 @@ expected-operation context must be `enumerate` or `stream`, and the only
 accepted wire pair in either context is `(ok, complete)`. Every other known
 pair and every pair containing an unknown value is rejected. Failure-result
 representation remains deferred, and the message grants no worker failure,
-destination, or publication authority. The only absent typed schema is
-`entry_batch`. The target does not implement or authorize worker creation,
-process isolation, source access, component selection, payload extraction,
-destination mutation, or cache publication.
+destination, or publication authority. Typed coverage does not implement or
+authorize worker creation, process isolation, source access, component
+selection, trusted catalog membership, payload extraction, destination
+mutation, or cache publication.
 
 The accepted session-ordering contract handles duplex cancellation races
 without granting message content any trust. Completion wins when `complete` and
@@ -87,26 +110,35 @@ Header validity and session ordering are not sufficient to trust a message.
 Before any production state transition or use of message content, a
 message-specific typed decoder must apply explicit bounds to every payload
 field, count, and length, reject noncanonical values, and require complete
-payload consumption. The eleven accepted decoders provide that validation for
+payload consumption. The twelve accepted decoders provide that validation for
 `hello`, `ready`, `enumerate`, `stream_entry`, `read_request`, `read_reply`,
-`data_chunk`, `complete`, `cancel`, `cancel_ack`, and `shutdown`; they are not
-wired to production state transitions. In particular, decoding a
+`entry_batch`, `data_chunk`, `complete`, `cancel`, `cancel_ack`, and `shutdown`;
+they are not wired to production state transitions. In particular, decoding a
 `stream_entry` token does not establish its membership, lifetime, or authority,
-and accepting a `data_chunk` does not identify an entry or update its trusted
-remainder. A future receiver must validate `complete` before offering its
-header to the state validator; it must also establish every operation-specific
-read, result, remainder, and downstream-write prerequisite before treating the
-message as success. The remaining typed schema, generic codec, and header/state
-infrastructure must remain disconnected from runtime import until the full
-message set and worker-isolation requirements in `MEDIA_IMPORT.md` are
-implemented and accepted.
+and decoded entry-batch records are candidates until a future trusted session
+catalog validates aggregate counts and sizes, normalizes paths, resolves
+conflicts, promotes token membership, and owns generation and retirement.
+Callers must advance cumulative policy and previous-token context only after
+acceptance. Accepting a `data_chunk` does not identify an entry or update its
+trusted remainder. A future receiver must validate `complete` before offering
+its header to the state validator; it must also establish every
+operation-specific read, catalog, result, remainder, and downstream-write
+prerequisite before treating the message as success. The complete typed codec,
+generic codec, and header/state infrastructure must remain disconnected from
+runtime import until the trusted catalog and worker-isolation requirements in
+`MEDIA_IMPORT.md` are implemented and accepted.
 
 Deterministic parser fuzz validation was accepted at `81a7ee9`; its typed
-dispatch was extended at `d59b6c5`, for `stream_entry` at `f4d908a`, and for
-`data_chunk` at `c28ea9f`, then for `complete` at `2d71079`. The opt-in
+dispatch was extended at `d59b6c5`, for `stream_entry` at `f4d908a`, for
+`data_chunk` at `c28ea9f`, for `complete` at `2d71079`, and for `entry_batch`
+at `ba84cfc`. The opt-in
 libFuzzer target exercises bounded frame decoding, generic payload reading,
-session ordering, and all eleven accepted typed decoders. Read-message dispatch
-uses bounded matching and deliberately mismatching contexts. Data-chunk
+session ordering, and all twelve accepted typed decoders. Read-message dispatch
+uses bounded matching and deliberately mismatching contexts. Entry-batch
+dispatch uses fixed storage for 256 entries and bounded broad, matching-token,
+replay-token, and reduced-budget policies. Its deterministic self-check covers
+canonical and matching-token batches plus replay, non-printable, and budget
+rejection. Data-chunk
 dispatch selects bounded, independently reachable contexts for the exact
 payload remainder, a smaller remainder, and zero remainder without allocating
 or copying the frame payload. Complete dispatch selects both valid operation
@@ -117,8 +149,8 @@ ten known statuses by all five known phases in both valid contexts and checks
 that typed rejection occurs before state observation. The hosted smoke job
 replays the fixed project-authored synthetic corpus twice and verifies that the
 seeds are not mutated. This is validation of the protocol infrastructure, not
-evidence of a worker transport, native isolation, runtime wiring, or coverage
-for the sole schema that remains absent.
+evidence of a trusted catalog, worker transport, native isolation, or runtime
+wiring.
 
 There is intentionally no `vfs -> media` edge. Both modules consume the same
 low-level `platform::MediaSource` capability, while `app` is the composition
