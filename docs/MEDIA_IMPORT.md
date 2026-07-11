@@ -147,7 +147,7 @@ mode above but is not wired to runtime extraction. `stage_payload` requires a
 whole-source size and SHA-256, and no longer accepts caller-supplied source
 identity. Every `PayloadSource` invocation receives the exact pinned
 `MediaSource` from that proof, the planned opaque source token, and the same
-staging stop token. The local version-2 stage identity also binds a non-empty
+staging `CancellationToken`. The local version-2 stage identity also binds a non-empty
 trusted recipe identity bounded to 4,096 bytes and the normalized layout's
 entry count, declared total, paths, and declared sizes; transport-local source
 tokens are excluded.
@@ -161,6 +161,22 @@ transaction exists or aborts the owned transaction; none publishes a staged
 directory. These guarantees cover only the accepted staging candidate and do
 not authorize or establish parser-driven extraction, runtime integration, or
 playability.
+
+Media cancellation uses project-owned `CancellationToken` and
+`CancellationSource` value types with standard-like cooperative polling
+semantics. Copies share identity and one atomic requested state;
+`request_stop()` is non-throwing and succeeds only for the first request, while
+consumers poll `stop_requested()` at explicit boundaries. A default token can
+never be stopped. After the last source disappears, an unstopped token reports
+that stopping is no longer possible, whereas an already requested token keeps
+reporting the request. This preserves the existing stream, stage, and complete
+source-verification cancellation checks without callbacks or asynchronous
+interruption. Commit `0f2c78d` removes media's dependency on the AppleClang 17
+libc++ experimental `std::stop_token` surface without enabling an experimental
+ABI. Hosted build run `29147060407` at `ca576e9` confirms the replacement on
+AppleClang 17: macOS passed all 22 tests, including `media.cancellation` and the
+parser-result bridge. This is common portability evidence, not acceptance of a
+macOS native-store implementation.
 
 ## Parser worker isolation
 
@@ -178,8 +194,9 @@ including the cancellation and one-shot late-reply drain rules documented in
 message families now have typed codecs. The `stream_entry` payload is exactly
 one canonical 8-byte little-endian opaque `source_token`; zero and every other
 `uint64_t` value, including the all-ones value, are valid at the codec boundary.
-Membership and lifetime checks remain the responsibility of a future trusted
-token owner, and decoding the token grants no source authority.
+Decoding alone grants no membership or source authority. The accepted
+disconnected result bridge below establishes membership only after complete
+catalog validation.
 
 An `entry_batch` begins with a canonical little-endian `u16` count from 1
 through 256. Every record contains, in order, a little-endian `u64` source
@@ -220,10 +237,50 @@ shape, require full payload consumption, and enforce the applicable
 source/read bounds, sequence matching, allowed reply statuses, reply-data
 shape, entry-count/path/size/cumulative policy, token ordering, chunk-size,
 remaining-entry, and completion-context bounds. The library is not a trusted
-catalog, worker, sandbox, transport, payload extractor, or runtime import path.
-No runtime target depends on it, and this protocol work authorizes no
+worker, sandbox, transport, payload extractor, or runtime import path. No
+runtime target depends on it, and this protocol work authorizes no
 proprietary extraction, completion-failure reporting, destination mutation, or
 cache publication.
+
+Commit `909edcc` adds the separate
+`OpenHalfLife::media_parser_results` target as the trusted owner of candidate
+and promoted result metadata. Its caller supplies a nonzero epoch unique to a
+worker lifetime; the bridge combines that epoch with a monotonically increasing
+enumeration sequence so a restart cannot revive an old catalog by reusing a
+token and enumeration number. It copies every accepted archive path out of the
+frame, advances cumulative quotas and token ordering only after typed and state
+validation, and retains batches as candidates. On successful enumeration
+completion it runs the existing payload-layout planner over the aggregate,
+rejects invalid or conflicting normalized paths and count/size inconsistencies,
+then atomically promotes the layout and a sorted source-token membership index.
+Empty catalogs are valid promotions.
+
+A stream request must present the exact promoted epoch/sequence generation and
+a member token. The bridge derives the byte remainder from that catalog entry,
+passes only bounded chunks to a supplied sink, decrements the remainder only
+after a successful whole-chunk write, and accepts stream completion only at
+zero. Cancellation retires catalog authority immediately and makes an active
+candidate non-promotable while keeping only bounded crossing-frame validation
+state. A read first observed after cancellation is validated and ordered but
+returned ignored with zero actionable metadata and must not be serviced; a
+reply remains legitimate only for a read that preceded cancellation. New
+enumeration, cancellation acknowledgement, shutdown, any terminal protocol,
+layout, sink, or allocation failure, trusted source invalidation, and worker
+failure retire the relevant catalog, candidate, and stream bindings.
+
+The bridge is disconnected: neither the app, `ohl_media`, nor staging links it.
+It creates no worker or transport, reads no source, detects no native source
+change by itself, selects no component, opens no destination, and owns no
+staging or publication operation. Native worker isolation and transport,
+bounded source-read brokerage and invalidation detection, deterministic
+component selection, and explicit composition with staging are still required.
+
+The same exact-SHA hosted run passed all 32 GNU 13 Linux tests, including the
+bridge, plus the experimental, sanitizer, and Windows jobs. It validates this
+disconnected result boundary across the required hosted platforms, not the
+absent worker, source, staging, or runtime edges. The tests-only `ca576e9`
+change did not trigger parser fuzzing; accepted typed-protocol fuzz evidence
+remains the separate earlier `ba84cfc` run.
 
 Deterministic parser fuzz validation accepted at `81a7ee9` and extended at
 `d59b6c5`, `f4d908a`, `c28ea9f`, `2d71079`, and `ba84cfc` exercises frame
@@ -259,21 +316,16 @@ Framing and header/state checks must never be treated as payload acceptance. A
 production receiver must decode each message through its specific typed schema,
 bound every field, count, length, and cumulative resource use, reject malformed
 or noncanonical values, and prove that the decoder consumed the entire payload.
-Only after that complete validation may the receiver use message content or
-transition production session state. The twelve accepted typed decoders satisfy
-that payload rule only for their own message types; they are not connected to
-runtime state transitions. In particular, a decoded `stream_entry` token has
-not been checked for membership or lifetime and conveys no authority. Decoded
-entry-batch records remain candidates until a trusted session catalog owns
-generation, validates aggregate counts/sizes and normalized layouts, promotes
-membership, maps source tokens, and retires them safely. An accepted
-`data_chunk` neither identifies an entry nor updates the trusted remaining-entry
-context. Before observing a decoded `complete`, a future receiver must also
-establish every operation-specific catalog, read, result, remainder, and
-downstream-write prerequisite; the success-only pair does not itself prove or
-publish those outcomes. The typed payload helpers and header/state validator
-must remain outside runtime import until the trusted catalog and
-process-isolation requirements above are implemented and accepted.
+Only after that complete validation may a receiver use message content or
+transition state. The twelve accepted typed decoders satisfy that payload rule
+only for their own message types. The disconnected result bridge now supplies
+the catalog generation, aggregate layout, membership, stream-remainder, and
+downstream-write prerequisites described above, and it performs typed decoding
+before protocol observation. The success-only `complete` pair still does not
+prove source reads, worker health, component selection, staging, or
+publication. The bridge and typed protocol must remain outside runtime import
+until the native process-isolation, transport, source-brokerage, selection, and
+staging-composition requirements above are implemented and accepted.
 
 Isolation limits parser authority; it does not make parser output safe to log,
 commit, or trust without validation.

@@ -30,6 +30,7 @@ The current dependency direction is:
 ```text
 app -> core + platform + media + vfs
 media -> platform + standard library; core is a private implementation edge
+media_parser_results -> media + parser; disconnected from runtime targets
 vfs -> platform + standard library; libudfread is a private implementation edge
 parser -> standard library
 core/platform -> standard library
@@ -48,8 +49,9 @@ schemas now cover `hello`, exact-empty `ready`, `enumerate`, `stream_entry`,
 `stream_entry` payload is exactly one canonical 8-byte
 little-endian `source_token`. It is an opaque project-owned identifier; zero
 and every other `uint64_t` value, including the all-ones value, are valid at
-this codec boundary. Token membership and lifetime validation are deferred to
-a future trusted owner and are not authorization to access a source.
+this codec boundary. The codec alone establishes neither token membership nor
+source authority. The disconnected trusted result bridge described below owns
+membership only after complete catalog validation.
 
 The `entry_batch` wire payload begins with a canonical little-endian `u16`
 entry count from 1 through 256. Each record then contains, in order, a
@@ -107,26 +109,46 @@ the transport. A wrong identifier or direction, a duplicate, shutdown, or any
 terminal failure rejects or closes that one-shot allowance.
 
 Header validity and session ordering are not sufficient to trust a message.
-Before any production state transition or use of message content, a
-message-specific typed decoder must apply explicit bounds to every payload
-field, count, and length, reject noncanonical values, and require complete
-payload consumption. The twelve accepted decoders provide that validation for
-`hello`, `ready`, `enumerate`, `stream_entry`, `read_request`, `read_reply`,
-`entry_batch`, `data_chunk`, `complete`, `cancel`, `cancel_ack`, and `shutdown`;
-they are not wired to production state transitions. In particular, decoding a
-`stream_entry` token does not establish its membership, lifetime, or authority,
-and decoded entry-batch records are candidates until a future trusted session
-catalog validates aggregate counts and sizes, normalizes paths, resolves
-conflicts, promotes token membership, and owns generation and retirement.
-Callers must advance cumulative policy and previous-token context only after
-acceptance. Accepting a `data_chunk` does not identify an entry or update its
-trusted remainder. A future receiver must validate `complete` before offering
-its header to the state validator; it must also establish every
-operation-specific read, catalog, result, remainder, and downstream-write
-prerequisite before treating the message as success. The complete typed codec,
-generic codec, and header/state infrastructure must remain disconnected from
-runtime import until the trusted catalog and worker-isolation requirements in
-`MEDIA_IMPORT.md` are implemented and accepted.
+Before any state transition or use of message content, a message-specific typed
+decoder must apply explicit bounds to every payload field, count, and length,
+reject noncanonical values, and require complete payload consumption. The
+twelve accepted decoders provide that validation for `hello`, `ready`,
+`enumerate`, `stream_entry`, `read_request`, `read_reply`, `entry_batch`,
+`data_chunk`, `complete`, `cancel`, `cancel_ack`, and `shutdown`.
+
+Commit `909edcc` adds `OpenHalfLife::media_parser_results`, a trusted but
+deliberately disconnected receiver for those validated results. A caller gives
+each session a nonzero worker epoch that must be unique while an old catalog
+handle could remain reachable. Each enumeration adds a session-local sequence
+to that epoch. Entry batches remain candidates while their cumulative quotas
+and strictly increasing tokens are checked; archive-path views are copied into
+owned strings before frame storage can disappear. A successful `complete`
+runs the existing payload-layout planner over the whole candidate, thereby
+normalizing paths, applying aggregate counts and sizes, and rejecting unsafe or
+conflicting layouts before atomically promoting a catalog. Promotion builds a
+sorted token index, and a later stream must present both the exact
+epoch/sequence generation and a token in that index. A restarted worker cannot
+reuse an old generation merely by reusing its enumeration number and token.
+
+For an authorized stream, the bridge initializes a trusted remainder from the
+catalog entry, rejects chunks larger than that remainder, writes through the
+provided sink, and decrements only after the sink accepts the whole chunk.
+Stream completion requires a zero remainder. Cancellation immediately removes
+catalog authority and prevents a candidate from being promoted while retaining
+only the bounded state needed to validate already-crossing same-request frames.
+A post-cancel read request is validated and ordered but returned as ignored
+with no actionable read metadata; only a read already outstanding before
+cancellation may receive its crossing reply. A new enumeration, cancellation
+acknowledgement, shutdown, protocol or layout failure, downstream failure,
+source invalidation, worker failure, or destruction retires the applicable
+catalog, candidate, and stream bindings.
+
+This bridge owns no transport, worker process, source-read broker, native
+sandbox, component-selection recipe, staging transaction, or publication
+authority. Neither `app`, `ohl_media`, nor `stage_payload` links it. Source
+invalidation and worker failure enter only as trusted out-of-band lifecycle
+events; native detection and orchestration remain prerequisites. It therefore
+does not make the parser protocol a runtime import path.
 
 Deterministic parser fuzz validation was accepted at `81a7ee9`; its typed
 dispatch was extended at `d59b6c5`, for `stream_entry` at `f4d908a`, for
@@ -148,8 +170,9 @@ status and phase pairs, and the invalid context. Unit validation exhausts all
 ten known statuses by all five known phases in both valid contexts and checks
 that typed rejection occurs before state observation. The hosted smoke job
 replays the fixed project-authored synthetic corpus twice and verifies that the
-seeds are not mutated. This is validation of the protocol infrastructure, not
-evidence of a trusted catalog, worker transport, native isolation, or runtime
+seeds are not mutated. This fuzz evidence validates the protocol
+infrastructure; the trusted bridge has separate synthetic unit coverage, and
+neither result is evidence of worker transport, native isolation, or runtime
 wiring.
 
 There is intentionally no `vfs -> media` edge. Both modules consume the same
@@ -237,11 +260,25 @@ applies metadata and declared-size quotas before any destination is opened.
 Those path and layout checks are lexical and planning checks only. The
 platform-independent streaming boundary gives every `PayloadSource` the exact
 pinned `MediaSource` from the accepted `ValidatedMedia`, the planned entry's
-opaque token, and the staging stop token. It wraps the caller's byte sink,
+opaque token, and the staging `CancellationToken`. It wraps the caller's byte sink,
 checks cancellation before source dispatch, before each sink write, and after
 source return, rejects chunks that exceed the declared size before they reach
 that sink, requires an exact final byte count, and reports source, destination,
 overflow, underflow, and cancellation failures separately.
+
+Commit `0f2c78d` replaces media's standard-library stop types with media-owned
+`CancellationToken` and `CancellationSource` value types. Their API follows
+standard-like cooperative polling semantics: sources share one atomic state;
+tokens and sources are copyable and equality compares shared identity;
+`request_stop()` is non-throwing and returns true only for the first request;
+and consumers poll `stop_requested()` at the existing boundaries. A default
+token has no state. An unstopped token reports that stopping is no longer
+possible after its final source is destroyed, while a requested token retains
+its requested state. This removes the AppleClang 17 libc++ dependency on
+experimental `std::stop_token` support without adding an experimental ABI flag
+or changing the media dependency graph. It is a common portability correction,
+not a native macOS backend. Hosted AppleClang 17 coverage for the replacement
+is recorded below.
 
 The platform-independent `stage_payload` orchestrator now requires
 `ValidatedMedia`; its request no longer accepts a caller-supplied source
@@ -304,6 +341,18 @@ sanitizers, Linux x64 with the experimental adapter enabled, Windows x64, and
 macOS Apple Silicon. This evidence qualifies the implemented capability,
 validation, cache, VFS, and application-composition behavior described above;
 it does not qualify the absent production extraction path.
+
+The later trusted-result bridge at `909edcc` and media cancellation migration
+at `0f2c78d` are covered by exact-SHA hosted build run `29147060407` at
+`ca576e9`. GNU 13 Linux passed all 32 tests, including the bridge; the
+experimental and sanitizer jobs passed; and Windows passed. AppleClang 17 on
+macOS passed all 22 tests, including `media.cancellation` and the bridge. This
+confirms the common cancellation portability correction and disconnected
+result-validation target on the required hosted platforms; it does not qualify
+a native worker, source broker, staging composition, macOS atomic store, or
+runtime import path. Because the tests-only `ca576e9` change did not trigger
+the parser-fuzz workflow, the accepted hosted fuzz evidence for the typed
+protocol remains the earlier `ba84cfc` run and is a separate result.
 
 The intended gameplay/rendering graph remains under design. Each new edge must
 be expressed explicitly with `target_link_libraries` so CMake remains the

@@ -47,9 +47,11 @@ accepted M1 path as part of the same commit.
 
 ## M2: media import and virtual filesystem
 
-Status: in progress; accepted packages 2–4 establish the current capability,
-cache, planning/staging, VFS, and application-composition baseline at
-`df5ea6d51037671ef0165dacac9fe26df1bf4d2b`
+Status: in progress; packages 2–4 establish the capability, cache,
+planning/staging, VFS, and application-composition feature baseline at
+`df5ea6d51037671ef0165dacac9fe26df1bf4d2b`. Disconnected parser-result
+validation was accepted at `909edcc`, followed by portable media cancellation
+accepted at `0f2c78d`.
 
 Current functionality:
 
@@ -98,7 +100,7 @@ Current functionality:
   case-only, and file/directory conflicts; and produces deterministic order
 - the platform-independent payload streaming boundary gives every
   `PayloadSource` the exact pinned `MediaSource` from `ValidatedMedia`, the
-  planned opaque source token, and the same staging stop token; it observes
+  planned opaque source token, and the same staging `CancellationToken`; it observes
   cancellation around source dispatch and sink writes, rejects writes beyond
   the declared size before forwarding, requires exact final byte counts, and
   distinguishes source, destination, overflow, underflow, and cancellation
@@ -128,6 +130,20 @@ Current functionality:
 - the default-off experimental parser adapter can read bounded metadata through
   shared VFS callbacks without copying the source or borrowing the caller's
   lifetime; invalid descriptors are reported rather than silently omitted
+- media-owned `CancellationToken` and `CancellationSource` provide copyable
+  shared-identity, atomic, standard-like polling semantics across streaming,
+  staging, and full-source verification. A default token cannot be stopped;
+  `request_stop()` succeeds once; requested state survives source destruction;
+  and an unstopped token becomes impossible after its final source disappears.
+  This removes media's dependency on AppleClang 17 libc++ experimental
+  `std::stop_token` support without enabling an experimental ABI
+- the disconnected `OpenHalfLife::media_parser_results` target owns a
+  caller-supplied worker epoch plus enumeration sequence, copies accepted paths,
+  validates aggregate layout before catalog promotion, indexes token
+  membership, requires the exact generation for streams, decrements trusted
+  remainders only after accepted sink writes, and retires authority on
+  replacement, cancellation, shutdown, failure, source invalidation, or worker
+  failure. It has no runtime dependency edge
 
 Remaining M2 work:
 
@@ -135,10 +151,12 @@ Remaining M2 work:
   edition-specific selection data may be supplied only through a runtime-only
   local recipe, and any project-owned selection parser requires recorded public
   format provenance
-- the constrained parser worker protocol in `MEDIA_IMPORT.md` remains
-  mandatory before any third-party parser may feed production extraction; the
-  worker must have bounded read-only input authority, bounded IPC, sanitized
-  errors, and no destination/cache authority
+- the constrained parser worker boundary in `MEDIA_IMPORT.md` remains
+  mandatory before any third-party parser may feed production extraction. The
+  accepted result bridge still needs a native isolated worker and transport,
+  bounded read-only source brokerage and invalidation detection, deterministic
+  component selection, and explicit staging composition; the worker must have
+  no destination or cache authority
 - production payload extraction remains absent and must not execute installer
   binaries or media-provided code
 - macOS and Windows atomic-directory stores and native adversarial gates,
@@ -153,6 +171,14 @@ x64, Linux sanitizers, the Linux experimental configuration, Windows x64, and
 macOS Apple Silicon. This evidence validates implemented M2 functionality only;
 it is not evidence for the remaining production extraction path.
 
+The later `909edcc` bridge and `0f2c78d` cancellation migration have exact-SHA
+hosted evidence from build run `29147060407` at `ca576e9`. GNU 13 Linux passed
+32/32 tests including the bridge; the experimental, sanitizer, and Windows jobs
+passed; and AppleClang 17 macOS passed 22/22 tests including
+`media.cancellation` and the bridge. This confirms the common macOS portability
+fix and disconnected result validation, not any remaining native worker,
+source, staging, atomic-store, or runtime-import prerequisite.
+
 The accepted isolated parser protocol sequence starts with the bounded OWP/1
 codec at `3bc135c`, adds completion/cancellation race handling at `f17a40a`,
 closes its late-reply drain gap at `3fd0375`, adds typed `hello`, `ready`,
@@ -163,8 +189,9 @@ extends typed fuzz dispatch. Commit `f4d908a` adds the typed `stream_entry`
 schema and its fuzz dispatch. Its payload is exactly one canonical 8-byte
 little-endian opaque `source_token`; zero and every other `uint64_t` value,
 including the all-ones value, are valid at this codec boundary. Token
-membership and lifetime validation remain deferred to a future trusted owner,
-and the token conveys no source authority. Commit `c28ea9f` adds the typed
+membership is not established by this codec and the token conveys no source
+authority; the later disconnected bridge establishes membership only after
+catalog promotion. Commit `c28ea9f` adds the typed
 `data_chunk` schema and fuzz dispatch. A data chunk is its opaque whole payload
 with no prefix, offset, token, or status field; zero bytes are forbidden and
 the accepted range is 1 byte through 256 KiB. The codec requires a trusted
@@ -212,6 +239,30 @@ shapes, exact-empty, exact-token, bounded opaque-chunk, or success-only
 completion payload shapes, and exact payload consumption. No untyped message
 family remains.
 
+Commit `909edcc` adds the disconnected trusted parser-result bridge. The caller
+assigns a nonzero epoch unique to the worker lifetime, and each enumeration
+adds a local sequence so matching token values cannot revive a catalog across
+worker restarts. Candidate batches advance quotas and token ordering only after
+typed and protocol acceptance, and their path views are copied into owned
+strings. Successful enumeration completion validates the complete candidate
+through deterministic payload-layout planning, rejects aggregate or normalized
+path conflicts, and atomically promotes an empty or populated catalog with a
+sorted token membership index. Streaming requires the exact catalog generation
+and a member token, derives its remainder from the promoted size, and decrements
+only after the sink accepts each complete chunk; completion requires zero.
+Cancellation removes catalog authority and prevents candidate promotion while
+preserving only bounded crossing-frame validation. Other replacements,
+terminal failures, shutdown, trusted source invalidation, and worker failure
+retire the relevant state.
+
+Commit `0f2c78d` then replaces media's standard stop types with project-owned
+`CancellationToken` and `CancellationSource`. They retain standard-like
+copyable shared-state identity, polling, first-request idempotence, and
+cross-thread observation without callbacks or experimental libc++ ABI flags.
+The change preserves existing cancellation points and removes the known
+AppleClang 17 libc++ compile dependency; the exact hosted result above confirms
+that correction.
+
 The ordering contract permits exactly one same-request late reply to drain
 after `cancel_ack` only when a read was already outstanding before cancellation.
 The deterministic fuzz target exercises frame decoding, generic payload
@@ -226,16 +277,18 @@ decode-before-observe atomicity. The prior bounded read, data-chunk, and
 completion contexts remain covered. The fixed corpus remains project-authored
 and synthetic.
 
-This accepted protocol layer supports active M2 work but is not a production
-import path. A future trusted session catalog must own token generation,
-promotion, membership, source mapping, lifetime and retirement; validate
-aggregate counts, sizes, normalized paths and conflicts across batches; and
-advance cumulative policy only after acceptance. No runtime target depends on
-the parser, it has no source, destination, extraction,
-completion-failure-reporting, or cache authority, and its typed decoders are
-not wired to production state transitions. The protocol work authorizes no
-proprietary extraction, and no trusted catalog, worker implementation,
-transport, or native sandbox backend has been accepted or integrated.
+The tests-only `ca576e9` change did not trigger the parser-fuzz workflow.
+Accepted hosted fuzz evidence therefore remains the earlier `ba84cfc` result
+and is separate from run `29147060407`; no new fuzz execution is claimed.
+
+This accepted protocol and result-validation layer supports active M2 work but
+is not a production import path. The bridge now owns catalog generation,
+promotion, membership, normalized aggregate layout, stream remainder, and
+retirement within its disconnected session. No runtime target links it; it
+does not create a worker or transport, broker or revalidate source reads,
+select components, own staging, mutate a destination, or publish a cache.
+Those native isolation, source, selection, and composition prerequisites remain
+unaccepted and unintegrated. The work authorizes no proprietary extraction.
 
 ## Later milestones
 
