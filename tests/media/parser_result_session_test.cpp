@@ -15,6 +15,16 @@
 
 namespace allocation_injection {
 
+#if defined(__GNUC__) && !defined(__clang__)
+#define OHL_TEST_NO_IPA __attribute__((noinline, noipa))
+#elif defined(__clang__)
+#define OHL_TEST_NO_IPA __attribute__((noinline))
+#elif defined(_MSC_VER)
+#define OHL_TEST_NO_IPA __declspec(noinline)
+#else
+#define OHL_TEST_NO_IPA
+#endif
+
 enum class Mode { disabled, bad_alloc, other_exception };
 
 struct SyntheticException {};
@@ -33,31 +43,45 @@ void maybe_fail() {
   }
 }
 
+// Keep the raw C allocation family behind a non-IPA boundary. GCC otherwise
+// attributes the inlined free() to a sized replacement delete and diagnoses a
+// mismatched allocation family even though every replacement new below uses
+// the matching raw allocator.
+OHL_TEST_NO_IPA void* allocate(const std::size_t size) {
+  maybe_fail();
+  if (auto* allocation = std::malloc(size == 0 ? 1 : size)) {
+    return allocation;
+  }
+  throw std::bad_alloc{};
+}
+
+OHL_TEST_NO_IPA void deallocate(void* const allocation) noexcept {
+  std::free(allocation);
+}
+
+#undef OHL_TEST_NO_IPA
+
 }  // namespace allocation_injection
 
 void* operator new(const std::size_t size) {
-  allocation_injection::maybe_fail();
-  if (auto* allocation = std::malloc(size == 0 ? 1 : size)) {
-    return allocation;
-  }
-  throw std::bad_alloc{};
+  return allocation_injection::allocate(size);
 }
 
 void* operator new[](const std::size_t size) {
-  allocation_injection::maybe_fail();
-  if (auto* allocation = std::malloc(size == 0 ? 1 : size)) {
-    return allocation;
-  }
-  throw std::bad_alloc{};
+  return allocation_injection::allocate(size);
 }
 
-void operator delete(void* allocation) noexcept { std::free(allocation); }
-void operator delete[](void* allocation) noexcept { std::free(allocation); }
+void operator delete(void* allocation) noexcept {
+  allocation_injection::deallocate(allocation);
+}
+void operator delete[](void* allocation) noexcept {
+  allocation_injection::deallocate(allocation);
+}
 void operator delete(void* allocation, std::size_t) noexcept {
-  std::free(allocation);
+  allocation_injection::deallocate(allocation);
 }
 void operator delete[](void* allocation, std::size_t) noexcept {
-  std::free(allocation);
+  allocation_injection::deallocate(allocation);
 }
 
 namespace {
