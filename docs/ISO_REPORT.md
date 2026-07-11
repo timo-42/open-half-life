@@ -8,7 +8,11 @@ Inspection date: 2026-07-10. The outer image was inspected read-only with
 that the root filesystem can be mounted and enumerated. Commands emitted no
 file contents and their raw listings are not retained in the repository.
 Unshield 1.5.1 was used locally to test the visible cabinet set; the integrated
-code pins Unshield 1.6.2 and parses the same cabinet through VFS callbacks.
+code pins Unshield 1.6.2 and parses the same cabinet through VFS callbacks. A
+separate read-only check on 2026-07-11 reconfirmed the complete-source size and
+SHA-256, UDF classification, 2,048-byte cluster size, and outer-image
+integrity. It did not rerun the project detector, libudfread enumeration, or
+Unshield checks.
 
 ## Medium
 
