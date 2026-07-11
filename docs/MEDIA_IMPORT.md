@@ -8,6 +8,9 @@ operates across a strict local proprietary-data boundary.
 This policy applies to runtime import, developer investigation, tests, fuzzing,
 diagnostics, and support workflows. It supplements `CLEAN_ROOM.md`; it does not
 authorize extraction or other behavior that the runtime has not implemented.
+Production payload import is not available on any platform; see
+[IMPORT_READINESS.md](IMPORT_READINESS.md) for the readiness matrix and unmet
+release-evidence gates.
 
 ## Data classification
 
@@ -502,20 +505,22 @@ or source replacement, worker launch/ownership/termination/reap, component
 selection, destination, staging, cache publication, application, or runtime
 import authority. The abstract `platform::IsolatedWorker` facade already
 defines launch, I/O, abort/close, wait, and terminate-and-wait operations, but
-committed HEAD wires only the backend that returns `unsupported`; no successful
-native backend is present. Production composition also lacks the media-parser
-worker executable, bootstrap and service loop, and a higher process-session
-owner. That owner must allocate unique nonzero session IDs and worker epochs,
-preserve the exact channel through proof and session lifetimes, perform orderly
-protocol shutdown followed by channel close and `wait()`/reap, and reserve
-`terminate_and_wait()` for failure or orderly-close timeout. ParentSession owns
-none of these actions.
+committed HEAD source-selects a native containment backend only for Linux
+x86-64; other platforms and Linux architectures select the unsupported backend.
+Production composition still lacks the media-parser worker executable, bootstrap
+and service loop, install rule, runtime selection, staging/publication
+integration, and a higher process-session owner. That owner must allocate unique
+nonzero session IDs and worker epochs, preserve the exact channel through proof
+and session lifetimes, perform orderly protocol shutdown followed by channel
+close and `wait()`/reap, and reserve `terminate_and_wait()` for failure or
+orderly-close timeout. ParentSession owns none of these actions.
 
-The resume order is therefore: native backend plus worker/bootstrap/service
-loop; process-session owner plus session-ID/epoch policy; handshake and parent
-session composition; deterministic component selection; then staging and
-publication. Production extraction remains absent, and all current
-parent-session test inputs are synthetic.
+The resume order is therefore: qualify the Linux x86-64 native backend or add
+another tuple's native backend together with worker/bootstrap/service loop;
+process-session owner plus session-ID/epoch policy; handshake and parent session
+composition; deterministic component selection; then staging and publication.
+Production extraction remains absent, and all current parent-session test inputs
+are synthetic.
 
 The exact accepted commit is
 `7bd9d38213c7df160e0e84fcb50a9cacb0095558`; its exact tree is

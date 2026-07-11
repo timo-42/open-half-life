@@ -56,6 +56,10 @@ disconnected frame channel at `e4b819a`. The trusted parent handshake was
 accepted at `13f0fb0`, and the disconnected trusted parent session was accepted
 at `7bd9d38`.
 
+Production payload import remains unavailable on every platform. The current
+readiness matrix and release-evidence gates are tracked in
+[IMPORT_READINESS.md](IMPORT_READINESS.md).
+
 Current functionality:
 
 - `MediaSource` pins native identity and supports positional reads plus
@@ -217,10 +221,12 @@ Remaining M2 work:
   termination, and reap plus explicit runtime composition, deterministic
   component selection, and staging integration; the worker must have no
   raw-path, destination, or cache authority. Although the abstract
-  `IsolatedWorker` lifecycle facade exists, committed HEAD selects only the
-  backend returning `unsupported`. The gate is blocked on a successful native
-  backend, media-parser worker executable/bootstrap/service loop, and a higher
-  process-session owner. That owner must allocate unique session IDs and worker
+  `IsolatedWorker` lifecycle facade exists, committed HEAD source-selects a
+  native containment backend only for Linux x86-64; other platforms and Linux
+  architectures select the unsupported backend. The production gate is blocked
+  on parser worker executable/bootstrap/service loop, install rule, runtime
+  selection, lifecycle ownership, and staging/publication integration. The
+  higher process-session owner must allocate unique session IDs and worker
   epochs, keep the channel alive, close plus `wait()`/reap after orderly
   shutdown, and use `terminate_and_wait()` for failure or orderly-close timeout
 - after those lifecycle pieces, resume with handshake/parent-session
@@ -520,10 +526,12 @@ or runtime-import authority. It does accept `ValidatedMedia`, and its broker
 retains that proof's pinned source capability; the exclusion is raw-path and
 replacement-source authority, not all source capability.
 
-The abstract `IsolatedWorker` facade already supplies lifecycle operations, but
-the committed backend returns `unsupported`. Remaining gates are a successful
-native backend; the media-parser worker executable, bootstrap, and service loop;
-a higher owner for session-ID and worker-epoch uniqueness, channel/session
+The abstract `IsolatedWorker` facade already supplies lifecycle operations, and
+committed HEAD source-selects a native containment backend for Linux x86-64;
+other platforms and Linux architectures select the unsupported backend.
+Remaining gates are qualification of a native backend for each supported tuple;
+the media-parser worker executable, bootstrap, service loop, and install rule; a
+higher owner for session-ID and worker-epoch uniqueness, channel/session
 lifetime, orderly close plus `wait()`/reap, and failure/timeout
 `terminate_and_wait()`; then handshake/session composition, deterministic
 selection, staging, and publication, in that order.
@@ -567,9 +575,10 @@ process termination or reap authority. The frame channel also accepts no
 executable, path, source, component selection, catalog, staging, destination,
 publication, cache, or application authority; the result and read bridges also
 create no worker or runtime import path and own no staging or publication.
-Native isolated-worker process
-management and runtime composition remain a later dependency. This work
-authorizes no proprietary extraction.
+Linux x86-64 native isolated-worker containment exists as a source-selected
+backend, but process management around the parser worker and runtime
+composition remain later dependencies. This work authorizes no proprietary
+extraction.
 
 ## Later milestones
 
