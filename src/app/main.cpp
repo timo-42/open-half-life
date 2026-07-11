@@ -1,6 +1,7 @@
 #include "ohl/core/log.hpp"
 #include "ohl/media/import_cache.hpp"
 #include "ohl/media/iso_inspector.hpp"
+#include "ohl/platform/media_source.hpp"
 #include "ohl/platform/platform.hpp"
 #include "ohl/vfs/udf_archive.hpp"
 
@@ -151,17 +152,32 @@ int run(const std::vector<std::filesystem::path>& arguments) {
           std::string{ohl::platform::to_string(platform.operating_system)} +
           " " + std::string{ohl::platform::to_string(platform.architecture)});
 
-  const auto inspection =
-      ohl::media::inspect_iso(*parse_result.iso_path);
-  if (!inspection.valid()) {
+  auto opened_source =
+      ohl::platform::open_media_source(*parse_result.iso_path);
+  parse_result.iso_path.reset();
+  if (!opened_source.valid()) {
+    const std::string_view error =
+        opened_source.error == ohl::platform::MediaSourceError::not_found
+            ? "file not found"
+            : "media could not be opened";
     ohl::core::log(ohl::core::LogLevel::error,
                    std::string{"Media preflight failed: "} +
-                       std::string{ohl::media::to_string(inspection.error)});
+                       std::string{error});
     return 1;
   }
 
+  auto validation =
+      ohl::media::validate_iso(std::move(opened_source.source));
+  if (!validation.valid()) {
+    ohl::core::log(ohl::core::LogLevel::error,
+                   std::string{"Media preflight failed: "} +
+                       std::string{ohl::media::to_string(validation.error)});
+    return 1;
+  }
+  auto validated = std::move(*validation.media);
+
   ohl::vfs::UdfArchive archive;
-  if (archive.open(*parse_result.iso_path) != ohl::vfs::VfsError::none) {
+  if (archive.open(validated.source()) != ohl::vfs::VfsError::none) {
     ohl::core::log(ohl::core::LogLevel::error,
                    "Media is not a readable UDF filesystem.");
     return 1;
@@ -174,16 +190,7 @@ int run(const std::vector<std::filesystem::path>& arguments) {
   }
 
   ohl::core::log(ohl::core::LogLevel::info,
-                 std::string{"Mounted read-only UDF image ("} +
-                     std::to_string(inspection.size_bytes) + " bytes)");
-  const auto label = archive.volume_label();
-  if (!label.empty()) {
-    ohl::core::log(ohl::core::LogLevel::info,
-                   std::string{"Volume label: "} + label);
-  }
-  ohl::core::log(ohl::core::LogLevel::info,
-                 std::string{"Root entries: "} +
-                     std::to_string(root.entries.size()));
+                 "Mounted read-only UDF image.");
 
   if (!parse_result.cache_path.has_value()) {
     parse_result.cache_path = ohl::platform::default_cache_directory();
@@ -195,18 +202,17 @@ int run(const std::vector<std::filesystem::path>& arguments) {
     return 1;
   }
   const auto cache = ohl::media::prepare_import_cache(
-      *parse_result.iso_path, inspection, *parse_result.cache_path);
+      validated, *parse_result.cache_path);
   if (!cache.valid()) {
     ohl::core::log(ohl::core::LogLevel::error,
                    std::string{"Media cache preparation failed: "} +
                        std::string{ohl::media::to_string(cache.error)});
     return 1;
   }
-  const auto source_id = cache.source_sha256.substr(0, 12);
   ohl::core::log(
       ohl::core::LogLevel::info,
       std::string{cache.cache_hit ? "Reused" : "Prepared"} +
-          " metadata-only media cache (source " + source_id + ")");
+          " metadata-only media cache.");
   ohl::core::log(ohl::core::LogLevel::info,
                  "Payload import is not implemented yet; no media executable "
                  "was run.");

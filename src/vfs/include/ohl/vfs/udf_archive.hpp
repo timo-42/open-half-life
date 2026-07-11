@@ -2,7 +2,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <filesystem>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -100,9 +99,6 @@ class UdfArchive final {
   // stored or reopened.
   [[nodiscard]] VfsError open(
       SharedMediaSource source, UdfArchiveLimits limits = {});
-  // Transitional compatibility wrapper. Acquires image_path exactly once and
-  // delegates immediately to the capability overload.
-  [[nodiscard]] VfsError open(const std::filesystem::path& image_path);
   // Returns another read-only handle that keeps the mounted archive alive.
   [[nodiscard]] UdfArchive share() const;
   void close() noexcept;

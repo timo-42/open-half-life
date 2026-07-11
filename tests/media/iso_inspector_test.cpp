@@ -129,6 +129,15 @@ void set_identifier(const Sector sector, const std::string& identifier) {
   return output.good();
 }
 
+[[nodiscard]] ohl::media::IsoValidationResult validate_path(
+    const std::filesystem::path& path) {
+  auto opened = ohl::platform::open_media_source(path);
+  if (!opened.valid()) {
+    return {};
+  }
+  return ohl::media::validate_iso(std::move(opened.source));
+}
+
 int expect_error(const ohl::media::MediaError actual,
                  const ohl::media::MediaError expected,
                  const std::string& context) {
@@ -161,16 +170,17 @@ int main() {
     return 1;
   }
 
-  const auto missing = ohl::media::inspect_iso(directory / "missing.iso");
-  if (expect_error(missing.error, ohl::media::MediaError::not_found,
-                   "missing file") != 0) {
+  const auto missing =
+      ohl::platform::open_media_source(directory / "missing.iso");
+  if (missing.error != ohl::platform::MediaSourceError::not_found) {
+    std::cerr << "missing file did not report not-found acquisition error\n";
     return 1;
   }
 
-  const auto directory_result = ohl::media::inspect_iso(directory);
-  if (expect_error(directory_result.error,
-                   ohl::media::MediaError::not_regular_file,
-                   "directory") != 0) {
+  const auto directory_result = ohl::platform::open_media_source(directory);
+  if (directory_result.error !=
+      ohl::platform::MediaSourceError::not_regular_file) {
+    std::cerr << "directory did not report non-regular acquisition error\n";
     return 1;
   }
 
@@ -179,7 +189,7 @@ int main() {
     std::cerr << "failed to write too-small synthetic image\n";
     return 1;
   }
-  const auto too_small = ohl::media::inspect_iso(too_small_path);
+  const auto too_small = validate_path(too_small_path);
   if (expect_error(too_small.error, ohl::media::MediaError::too_small,
                    "too-small image") != 0) {
     return 1;
@@ -191,10 +201,16 @@ int main() {
     std::cerr << "failed to write synthetic image\n";
     return 1;
   }
-  const auto valid = ohl::media::inspect_iso(valid_path);
-  if (!valid.valid() || valid.source_sha256.size() != 64 ||
-      valid.filesystem != "ECMA-167 NSR02 candidate" ||
-      valid.volume_label != "SYNTHETIC") {
+  const auto valid = validate_path(valid_path);
+  if (!valid.valid()) {
+    std::cerr << "valid synthetic ECMA-167 candidate was rejected: "
+              << ohl::media::to_string(valid.error) << '\n';
+    return 1;
+  }
+  const auto& valid_inspection = valid.media->inspection();
+  if (valid_inspection.source_sha256.size() != 64 ||
+      valid_inspection.filesystem != "ECMA-167 NSR02 candidate" ||
+      valid_inspection.volume_label != "SYNTHETIC") {
     std::cerr << "valid synthetic ECMA-167 candidate was rejected: "
               << ohl::media::to_string(valid.error) << '\n';
     return 1;
@@ -220,7 +236,8 @@ int main() {
   }
   auto pinned_validation = ohl::media::validate_iso(pinned.source);
   if (!pinned_validation.valid() ||
-      pinned_validation.media->fingerprint().sha256 != valid.source_sha256) {
+      pinned_validation.media->fingerprint().sha256 !=
+          valid_inspection.source_sha256) {
     std::cerr << "pathname replacement retargeted pinned validation\n";
     return 1;
   }
@@ -274,7 +291,7 @@ int main() {
     std::cerr << "failed to write corrupt synthetic image\n";
     return 1;
   }
-  const auto corrupt = ohl::media::inspect_iso(corrupt_path);
+  const auto corrupt = validate_path(corrupt_path);
   if (expect_error(corrupt.error, ohl::media::MediaError::invalid_structure,
                    "corrupt anchor") != 0) {
     return 1;
@@ -287,7 +304,7 @@ int main() {
     std::cerr << "failed to write zero-CRC synthetic image\n";
     return 1;
   }
-  const auto zero_crc = ohl::media::inspect_iso(zero_crc_path);
+  const auto zero_crc = validate_path(zero_crc_path);
   if (expect_error(zero_crc.error,
                    ohl::media::MediaError::invalid_structure,
                    "zero-length descriptor CRC") != 0) {
@@ -304,7 +321,7 @@ int main() {
     std::cerr << "failed to write out-of-bounds synthetic image\n";
     return 1;
   }
-  const auto out_of_bounds = ohl::media::inspect_iso(out_of_bounds_path);
+  const auto out_of_bounds = validate_path(out_of_bounds_path);
   if (expect_error(out_of_bounds.error,
                    ohl::media::MediaError::invalid_structure,
                    "out-of-bounds extent") != 0) {
@@ -319,8 +336,7 @@ int main() {
     std::cerr << "failed to write missing-descriptor synthetic image\n";
     return 1;
   }
-  const auto missing_descriptor =
-      ohl::media::inspect_iso(missing_descriptor_path);
+  const auto missing_descriptor = validate_path(missing_descriptor_path);
   if (expect_error(missing_descriptor.error,
                    ohl::media::MediaError::invalid_structure,
                    "missing required descriptor") != 0) {
@@ -334,7 +350,7 @@ int main() {
     std::cerr << "failed to write truncated synthetic image\n";
     return 1;
   }
-  const auto truncated = ohl::media::inspect_iso(truncated_path);
+  const auto truncated = validate_path(truncated_path);
   if (expect_error(truncated.error, ohl::media::MediaError::too_small,
                    "non-sector-aligned image") != 0) {
     return 1;
@@ -346,7 +362,7 @@ int main() {
     std::cerr << "failed to write random synthetic image\n";
     return 1;
   }
-  const auto random = ohl::media::inspect_iso(random_path);
+  const auto random = validate_path(random_path);
   if (expect_error(random.error,
                    ohl::media::MediaError::unsupported_filesystem,
                    "random data") != 0) {

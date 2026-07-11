@@ -3,7 +3,6 @@
 #include "ohl/platform/media_source.hpp"
 
 #include <cstdint>
-#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -16,8 +15,6 @@ using SharedMediaSource =
 
 enum class MediaError {
   none,
-  not_found,
-  not_regular_file,
   too_small,
   source_too_large,
   source_changed,
@@ -31,10 +28,6 @@ enum class MediaError {
   switch (error) {
     case MediaError::none:
       return "none";
-    case MediaError::not_found:
-      return "file not found";
-    case MediaError::not_regular_file:
-      return "path is not a regular file";
     case MediaError::too_small:
       return "file is too small to contain a supported UDF image";
     case MediaError::source_too_large:
@@ -66,12 +59,6 @@ struct SourceFingerprint {
 struct IsoInspection {
   MediaError error{MediaError::none};
   std::uint64_t size_bytes{0};
-
-  // Transitional path callers retain this field for source compatibility.
-  // Capability validation never relies on pathname metadata and leaves it at
-  // its default value.
-  std::filesystem::file_time_type last_write_time{};
-
   std::string source_sha256;
   std::string filesystem;
   std::string volume_label;
@@ -147,10 +134,5 @@ inline bool IsoValidationResult::valid() const noexcept {
 // and limits.maximum_source_bytes. The original pathname is never consulted.
 [[nodiscard]] IsoValidationResult validate_iso(
     SharedMediaSource source, IsoValidationLimits limits = {});
-
-// Transitional app compatibility wrapper. It opens the path exactly once,
-// delegates to validate_iso(), then discards the capability. New code must
-// acquire a SharedMediaSource and retain the returned ValidatedMedia instead.
-[[nodiscard]] IsoInspection inspect_iso(const std::filesystem::path& path);
 
 }  // namespace ohl::media

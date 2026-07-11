@@ -1,13 +1,15 @@
 #include "ohl/media/import_cache.hpp"
 
+#include "import_cache_internal.hpp"
 #include "ohl/core/sha256.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
-#include <iterator>
 #include <random>
+#include <span>
 #include <sstream>
 #include <system_error>
 
@@ -135,15 +137,81 @@ namespace {
              : ImportCacheError::source_read_failed;
 }
 
-[[nodiscard]] bool read_text_file(const std::filesystem::path& path,
-                                  std::string& contents) {
-  std::ifstream input{path, std::ios::binary};
-  if (!input) {
-    return false;
+[[nodiscard]] ImportCacheError rehash_validated_source(
+    const SharedMediaSource& source, const std::uint64_t expected_size,
+    std::string& digest) {
+  if (source == nullptr || expected_size != source->size()) {
+    return ImportCacheError::invalid_request;
   }
-  contents.assign(std::istreambuf_iterator<char>{input},
-                  std::istreambuf_iterator<char>{});
-  return !input.bad();
+  auto error = verify_validated_source(source);
+  if (error != ImportCacheError::none) {
+    return error;
+  }
+
+  ohl::core::Sha256 sha256;
+  std::array<std::byte, 64 * 1'024> buffer{};
+  std::uint64_t offset = 0;
+  while (offset < expected_size) {
+    const auto remaining = expected_size - offset;
+    const auto count = static_cast<std::size_t>(
+        std::min<std::uint64_t>(remaining, buffer.size()));
+    auto destination = std::span{buffer}.first(count);
+    const auto read_error = source->read_exact_at(offset, destination);
+    if (read_error != ohl::platform::MediaSourceError::none) {
+      error = verify_validated_source(source);
+      if (error != ImportCacheError::none) {
+        return error;
+      }
+      return read_error == ohl::platform::MediaSourceError::unexpected_eof ||
+                     read_error == ohl::platform::MediaSourceError::out_of_range
+                 ? ImportCacheError::source_changed
+                 : ImportCacheError::source_read_failed;
+    }
+    sha256.update(destination);
+    offset += static_cast<std::uint64_t>(count);
+  }
+
+  error = verify_validated_source(source);
+  if (error != ImportCacheError::none) {
+    return error;
+  }
+  digest = ohl::core::hex_encode(sha256.finish());
+  return ImportCacheError::none;
+}
+
+[[nodiscard]] ImportCacheError inspect_existing_manifest(
+    const std::filesystem::path& path, const std::string_view expected,
+    bool& exists) {
+  exists = false;
+  const auto opened = ohl::platform::open_media_source(path);
+  if (!opened.valid()) {
+    if (opened.error == ohl::platform::MediaSourceError::not_found) {
+      return ImportCacheError::none;
+    }
+    return opened.error == ohl::platform::MediaSourceError::not_regular_file
+               ? ImportCacheError::unsafe_cache_path
+               : ImportCacheError::manifest_write_failed;
+  }
+  exists = true;
+  if (opened.source->size() != expected.size()) {
+    return ImportCacheError::manifest_conflict;
+  }
+  if (opened.source->verify_unchanged() !=
+      ohl::platform::MediaSourceError::none) {
+    return ImportCacheError::manifest_write_failed;
+  }
+
+  std::string existing(expected.size(), '\0');
+  auto bytes = std::span<std::byte>{
+      reinterpret_cast<std::byte*>(existing.data()), existing.size()};
+  if (opened.source->read_exact_at(0, bytes) !=
+          ohl::platform::MediaSourceError::none ||
+      opened.source->verify_unchanged() !=
+          ohl::platform::MediaSourceError::none) {
+    return ImportCacheError::manifest_write_failed;
+  }
+  return existing == expected ? ImportCacheError::none
+                              : ImportCacheError::manifest_conflict;
 }
 
 [[nodiscard]] std::string temporary_suffix() {
@@ -158,32 +226,20 @@ namespace {
 [[nodiscard]] ImportCacheError publish_manifest(
     const std::filesystem::path& directory,
     const std::string_view manifest,
-    bool& cache_hit) {
+    bool& cache_hit, const detail::ImportCachePublishHook hook) {
   const auto destination = directory / "provenance.json";
-  std::error_code error_code;
-  const auto destination_status =
-      std::filesystem::symlink_status(destination, error_code);
-  if (error_code == std::errc::no_such_file_or_directory) {
-    error_code.clear();
-  } else if (error_code) {
-    return ImportCacheError::manifest_write_failed;
+  bool destination_exists = false;
+  auto result = inspect_existing_manifest(destination, manifest,
+                                          destination_exists);
+  if (result != ImportCacheError::none) {
+    return result;
   }
-  if (std::filesystem::exists(destination_status)) {
-    if (!std::filesystem::is_regular_file(destination_status) ||
-        std::filesystem::is_symlink(destination_status)) {
-      return ImportCacheError::unsafe_cache_path;
-    }
-    std::string existing;
-    if (!read_text_file(destination, existing)) {
-      return ImportCacheError::manifest_write_failed;
-    }
-    if (existing != manifest) {
-      return ImportCacheError::manifest_conflict;
-    }
+  if (destination_exists) {
     cache_hit = true;
     return ImportCacheError::none;
   }
 
+  std::error_code error_code;
   std::filesystem::path temporary;
   try {
     temporary = directory / (".provenance-" + temporary_suffix() + ".tmp");
@@ -208,27 +264,37 @@ namespace {
       return ImportCacheError::manifest_write_failed;
     }
   }
-  std::filesystem::rename(temporary, destination, error_code);
-  if (error_code) {
-    std::filesystem::remove(temporary, error_code);
-    std::string existing;
-    const auto status = std::filesystem::symlink_status(destination, error_code);
-    if (!error_code && std::filesystem::is_regular_file(status) &&
-        !std::filesystem::is_symlink(status) &&
-        read_text_file(destination, existing) && existing == manifest) {
-      cache_hit = true;
-      return ImportCacheError::none;
-    }
-    return ImportCacheError::manifest_write_failed;
+  // A hard-link insertion is atomic and fails if destination already exists;
+  // unlike rename on POSIX, it never replaces a concurrent manifest.
+  if (hook.before_publish != nullptr) {
+    hook.before_publish(hook.context);
   }
-  return ImportCacheError::none;
+  std::filesystem::create_hard_link(temporary, destination, error_code);
+  if (!error_code) {
+    std::filesystem::remove(temporary, error_code);
+    return ImportCacheError::none;
+  }
+  std::filesystem::remove(temporary, error_code);
+
+  destination_exists = false;
+  result = inspect_existing_manifest(destination, manifest,
+                                     destination_exists);
+  if (result != ImportCacheError::none) {
+    return result;
+  }
+  if (destination_exists) {
+    cache_hit = true;
+    return ImportCacheError::none;
+  }
+  return ImportCacheError::manifest_write_failed;
 }
 
 }  // namespace
 
-ImportCacheResult prepare_import_cache(
+ImportCacheResult detail::prepare_import_cache_with_hook(
     const ValidatedMedia& media,
-    const std::filesystem::path& cache_root) {
+    const std::filesystem::path& cache_root,
+    const ImportCachePublishHook hook) {
   ImportCacheResult result;
   if (!media.valid() || !cache_root.is_absolute()) {
     result.error = ImportCacheError::invalid_request;
@@ -254,51 +320,26 @@ ImportCacheResult prepare_import_cache(
   if (result.error != ImportCacheError::none) {
     return result;
   }
-  result.error = verify_validated_source(source);
+  std::string revalidated_digest;
+  result.error = rehash_validated_source(source, fingerprint.size_bytes,
+                                         revalidated_digest);
   if (result.error != ImportCacheError::none) {
+    return result;
+  }
+  if (revalidated_digest != fingerprint.sha256) {
+    result.error = ImportCacheError::source_changed;
     return result;
   }
   const auto manifest = make_manifest(inspection, fingerprint);
   result.error = publish_manifest(result.source_directory, manifest,
-                                  result.cache_hit);
-  if (result.error == ImportCacheError::none) {
-    result.error = verify_validated_source(source);
-  }
+                                  result.cache_hit, hook);
   return result;
 }
 
 ImportCacheResult prepare_import_cache(
-    const std::filesystem::path& source_path,
-    const IsoInspection& inspection,
+    const ValidatedMedia& media,
     const std::filesystem::path& cache_root) {
-  ImportCacheResult result;
-  if (!inspection.valid() || inspection.size_bytes == 0 ||
-      inspection.source_sha256.size() != 64 || !cache_root.is_absolute()) {
-    result.error = ImportCacheError::invalid_request;
-    return result;
-  }
-
-  const auto opened = ohl::platform::open_media_source(source_path);
-  if (!opened.valid()) {
-    result.error = ImportCacheError::source_changed;
-    return result;
-  }
-  auto validation = validate_iso(opened.source);
-  if (!validation.valid()) {
-    result.error = validation.error == MediaError::source_changed
-                       ? ImportCacheError::source_changed
-                       : ImportCacheError::source_read_failed;
-    return result;
-  }
-  const auto& actual = validation.media->inspection();
-  if (actual.size_bytes != inspection.size_bytes ||
-      actual.source_sha256 != inspection.source_sha256 ||
-      actual.filesystem != inspection.filesystem ||
-      actual.volume_label != inspection.volume_label) {
-    result.error = ImportCacheError::source_changed;
-    return result;
-  }
-  return prepare_import_cache(*validation.media, cache_root);
+  return detail::prepare_import_cache_with_hook(media, cache_root, {});
 }
 
 }  // namespace ohl::media

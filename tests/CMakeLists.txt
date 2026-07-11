@@ -184,6 +184,10 @@ add_executable(ohl_import_cache_tests
   media/import_cache_test.cpp
 )
 target_compile_features(ohl_import_cache_tests PRIVATE cxx_std_20)
+target_include_directories(
+  ohl_import_cache_tests
+  PRIVATE ${PROJECT_SOURCE_DIR}/src/media/src
+)
 target_link_libraries(ohl_import_cache_tests PRIVATE OpenHalfLife::media)
 ohl_enable_warnings(ohl_import_cache_tests)
 add_test(NAME media.import_cache COMMAND ohl_import_cache_tests)

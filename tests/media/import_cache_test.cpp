@@ -1,5 +1,7 @@
 #include "ohl/media/import_cache.hpp"
 
+#include "import_cache_internal.hpp"
+
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -168,6 +170,33 @@ void set_identifier(const Sector sector, const std::string& identifier) {
   return output.good();
 }
 
+[[nodiscard]] bool read_text(const std::filesystem::path& path,
+                             std::string& text) {
+  std::ifstream input{path, std::ios::binary};
+  std::ostringstream stream;
+  stream << input.rdbuf();
+  text = stream.str();
+  return input.good() || input.eof();
+}
+
+struct PublishRaceContext {
+  std::filesystem::path destination;
+  std::string conflicting_contents;
+  bool invoked{false};
+  bool conflict_created{false};
+};
+
+void create_publish_conflict(void* const context) noexcept {
+  auto& race = *static_cast<PublishRaceContext*>(context);
+  race.invoked = true;
+  try {
+    race.conflict_created =
+        write_text(race.destination, race.conflicting_contents);
+  } catch (...) {
+    race.conflict_created = false;
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -190,8 +219,8 @@ int main() {
   }
   const auto fingerprint = validation.media->fingerprint();
 
-  // Replacing the pathname after validation must not affect capability cache
-  // preparation, which neither reopens nor rehashes that path.
+  // Replacing the pathname after validation must not retarget capability cache
+  // preparation or its digest revalidation of the pinned source.
   const auto displaced = temporary.path() / "displaced-source.iso";
   std::error_code error_code;
   std::filesystem::rename(source, displaced, error_code);
@@ -228,12 +257,41 @@ int main() {
     std::cerr << "provenance manifest was inconsistent or exposed the path\n";
     return 1;
   }
+  manifest_input.close();
+
+  const auto manifest_path = first.source_directory / "provenance.json";
+  const auto initial_manifest_write_time =
+      std::filesystem::last_write_time(manifest_path, error_code);
+  if (error_code) {
+    std::cerr << "failed to inspect regular provenance manifest\n";
+    return 1;
+  }
+  std::filesystem::last_write_time(
+      manifest_path, initial_manifest_write_time - std::chrono::hours{24},
+      error_code);
+  const auto cache_hit_write_time =
+      std::filesystem::last_write_time(manifest_path, error_code);
+  if (error_code) {
+    std::cerr << "failed to mark regular provenance manifest\n";
+    return 1;
+  }
 
   const auto second =
       ohl::media::prepare_import_cache(*validation.media, cache_root);
-  if (!second.valid() || !second.cache_hit ||
-      second.source_sha256 != fingerprint.sha256) {
-    std::cerr << "matching provenance cache was not reused\n";
+  const auto cache_hit_result_write_time =
+      std::filesystem::last_write_time(manifest_path, error_code);
+  if (error_code) {
+    std::cerr << "cache hit removed the regular provenance manifest\n";
+    return 1;
+  }
+  const auto manifest_status =
+      std::filesystem::symlink_status(manifest_path, error_code);
+  if (error_code || !std::filesystem::is_regular_file(manifest_status) ||
+      std::filesystem::is_symlink(manifest_status) || !second.valid() ||
+      !second.cache_hit ||
+      second.source_sha256 != fingerprint.sha256 ||
+      cache_hit_result_write_time != cache_hit_write_time) {
+    std::cerr << "matching regular no-follow provenance cache was not reused\n";
     return 1;
   }
 
@@ -243,9 +301,65 @@ int main() {
   }
   const auto conflict =
       ohl::media::prepare_import_cache(*validation.media, cache_root);
-  if (conflict.error != ohl::media::ImportCacheError::manifest_conflict) {
-    std::cerr << "conflicting provenance manifest was not rejected\n";
+  std::string conflicting_manifest;
+  if (conflict.error != ohl::media::ImportCacheError::manifest_conflict ||
+      !read_text(first.source_directory / "provenance.json",
+                 conflicting_manifest) ||
+      conflicting_manifest != "tampered\n") {
+    std::cerr << "conflicting provenance manifest was overwritten\n";
     return 1;
+  }
+
+  const auto publication_race_root = temporary.path() / "publication-race";
+  PublishRaceContext publication_race{
+      .destination = publication_race_root / "sources" / fingerprint.sha256 /
+                     "provenance.json",
+      .conflicting_contents = "late publication conflict\n",
+  };
+  const auto raced = ohl::media::detail::prepare_import_cache_with_hook(
+      *validation.media, publication_race_root,
+      {.before_publish = create_publish_conflict,
+       .context = &publication_race});
+  std::string raced_manifest;
+  if (!publication_race.invoked || !publication_race.conflict_created ||
+      raced.error != ohl::media::ImportCacheError::manifest_conflict ||
+      !read_text(publication_race.destination, raced_manifest) ||
+      raced_manifest != publication_race.conflicting_contents) {
+    std::cerr << "publication race replaced the conflicting manifest\n";
+    return 1;
+  }
+
+  const auto linked_manifest_root = temporary.path() / "linked-manifest-cache";
+  const auto linked_manifest_directory =
+      linked_manifest_root / "sources" / fingerprint.sha256;
+  const auto linked_manifest_target =
+      temporary.path() / "linked-manifest-target.json";
+  std::filesystem::create_directories(linked_manifest_directory, error_code);
+  if (error_code || !write_text(linked_manifest_target, manifest)) {
+    std::cerr << "failed to create linked-manifest rejection fixture\n";
+    return 1;
+  }
+  const auto linked_manifest =
+      linked_manifest_directory / "provenance.json";
+  std::filesystem::create_symlink(linked_manifest_target, linked_manifest,
+                                  error_code);
+#if !defined(_WIN32)
+  if (error_code) {
+    std::cerr << "failed to create linked-manifest rejection fixture\n";
+    return 1;
+  }
+#endif
+  if (!error_code) {
+    const auto linked_destination = ohl::media::prepare_import_cache(
+        *validation.media, linked_manifest_root);
+    std::string linked_target_contents;
+    if (linked_destination.error !=
+            ohl::media::ImportCacheError::unsafe_cache_path ||
+        !read_text(linked_manifest_target, linked_target_contents) ||
+        linked_target_contents != manifest) {
+      std::cerr << "linked provenance destination was followed or overwritten\n";
+      return 1;
+    }
   }
 
   const auto relative = ohl::media::prepare_import_cache(
@@ -299,24 +413,51 @@ int main() {
   }
   const auto changed = ohl::media::prepare_import_cache(
       *mutable_validation.media, temporary.path() / "changed-cache");
-  if (changed.error != ohl::media::ImportCacheError::source_changed) {
-    std::cerr << "same-object mutation after validation was not rejected\n";
+  const auto changed_manifest =
+      temporary.path() / "changed-cache" / "sources" /
+      mutable_validation.media->fingerprint().sha256 / "provenance.json";
+  error_code.clear();
+  if (changed.error != ohl::media::ImportCacheError::source_changed ||
+      std::filesystem::exists(changed_manifest, error_code) || error_code) {
+    std::cerr << "metadata revalidation failure published a manifest\n";
     return 1;
   }
 
-  // Keep the path overload compiling until the app cutover and verify that it
-  // delegates successfully for an unchanged synthetic source.
-  const auto legacy_source = temporary.path() / "legacy-source.iso";
-  if (!write_image(legacy_source, make_valid_image())) {
-    std::cerr << "failed to create transitional wrapper fixture\n";
+  const auto digest_source = temporary.path() / "digest-mutated-source.iso";
+  if (!write_image(digest_source, make_valid_image())) {
+    std::cerr << "failed to create digest-mutation fixture\n";
     return 1;
   }
-  const auto legacy_inspection = ohl::media::inspect_iso(legacy_source);
-  const auto legacy = ohl::media::prepare_import_cache(
-      legacy_source, legacy_inspection, temporary.path() / "legacy-cache");
-  if (!legacy.valid() ||
-      legacy.source_sha256 != legacy_inspection.source_sha256) {
-    std::cerr << "transitional cache wrapper failed\n";
+  const auto digest_opened = ohl::platform::open_media_source(digest_source);
+  auto digest_validation = ohl::media::validate_iso(digest_opened.source);
+  const auto digest_write_time =
+      std::filesystem::last_write_time(digest_source, error_code);
+  auto digest_changed_image = make_valid_image();
+  digest_changed_image[0] ^= std::byte{1};
+  if (!digest_opened.valid() || !digest_validation.valid() || error_code ||
+      !write_image(digest_source, digest_changed_image)) {
+    std::cerr << "failed to mutate digest fixture without changing size\n";
+    return 1;
+  }
+  std::filesystem::last_write_time(digest_source, digest_write_time,
+                                   error_code);
+  if (error_code ||
+      digest_opened.source->verify_unchanged() !=
+          ohl::platform::MediaSourceError::none) {
+    std::cerr << "failed to restore observable digest fixture metadata\n";
+    return 1;
+  }
+
+  const auto digest_cache_root = temporary.path() / "digest-changed-cache";
+  const auto digest_changed = ohl::media::prepare_import_cache(
+      *digest_validation.media, digest_cache_root);
+  const auto digest_manifest =
+      digest_cache_root / "sources" /
+      digest_validation.media->fingerprint().sha256 / "provenance.json";
+  error_code.clear();
+  if (digest_changed.error != ohl::media::ImportCacheError::source_changed ||
+      std::filesystem::exists(digest_manifest, error_code) || error_code) {
+    std::cerr << "digest mismatch was accepted or published a manifest\n";
     return 1;
   }
 

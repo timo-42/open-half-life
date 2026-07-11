@@ -1,11 +1,13 @@
 #include "ohl/media/installshield_cabinet.hpp"
 #include "ohl/media/payload_layout.hpp"
 #include "ohl/media/payload_path.hpp"
+#include "ohl/platform/media_source.hpp"
 #include "ohl/vfs/udf_archive.hpp"
 
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -38,8 +40,10 @@ int main(const int argument_count, const char* const arguments[]) {
     return 0;
   }
 
-  if (source.open(std::filesystem::path{arguments[1]}) !=
-      ohl::vfs::VfsError::none) {
+  auto opened = ohl::platform::open_media_source(
+      std::filesystem::path{arguments[1]});
+  if (!opened.valid() ||
+      source.open(std::move(opened.source)) != ohl::vfs::VfsError::none) {
     std::cerr << "runtime media could not be opened\n";
     return 1;
   }

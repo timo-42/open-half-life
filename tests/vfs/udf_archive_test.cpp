@@ -413,10 +413,12 @@ int main(const int argument_count, const char* const arguments[]) {
   }
 
   ohl::vfs::UdfArchive archive;
+  const auto missing = open_source(
+      std::filesystem::path{"ohl-synthetic-missing-image.fixture"});
   if (archive.is_open() || archive.share().is_open() ||
       archive.list("/").error != VfsError::not_open ||
-      archive.open(std::filesystem::path{
-          "ohl-synthetic-missing-image.fixture"}) != VfsError::open_failed ||
+      missing.valid() ||
+      archive.open(missing.source) != VfsError::invalid_source ||
       archive.open_file(kSyntheticFile) != nullptr) {
     std::cerr << "closed archive contract failed\n";
     return 1;
@@ -435,7 +437,9 @@ int main(const int argument_count, const char* const arguments[]) {
 #endif
 
   if (argument_count == 2) {
-    if (archive.open(std::filesystem::path{arguments[1]}) != VfsError::none) {
+    auto opened = open_source(std::filesystem::path{arguments[1]});
+    if (!opened.valid() ||
+        archive.open(std::move(opened.source)) != VfsError::none) {
       std::cerr << "runtime integration image did not mount\n";
       return 1;
     }

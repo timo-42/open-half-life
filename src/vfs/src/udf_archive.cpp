@@ -217,16 +217,6 @@ VfsError UdfArchive::open(SharedMediaSource source,
   return VfsError::none;
 }
 
-VfsError UdfArchive::open(const std::filesystem::path& image_path) {
-  auto opened = platform::open_media_source(image_path);
-  if (!opened.valid()) {
-    return opened.error == platform::MediaSourceError::changed
-               ? VfsError::source_changed
-               : VfsError::open_failed;
-  }
-  return open(std::move(opened.source));
-}
-
 UdfArchive UdfArchive::share() const {
   UdfArchive result;
   if (implementation_ != nullptr) {

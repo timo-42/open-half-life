@@ -299,18 +299,6 @@ ValidatedMedia::ValidatedMedia(SharedMediaSource source,
 
 namespace {
 
-[[nodiscard]] MediaError map_open_error(
-    const ohl::platform::MediaSourceError error) noexcept {
-  switch (error) {
-    case ohl::platform::MediaSourceError::not_found:
-      return MediaError::not_found;
-    case ohl::platform::MediaSourceError::not_regular_file:
-      return MediaError::not_regular_file;
-    default:
-      return MediaError::io_error;
-  }
-}
-
 [[nodiscard]] MediaError verify_source(
     const SharedMediaSource& source) noexcept {
   if (source == nullptr) {
@@ -420,23 +408,6 @@ IsoValidationResult validate_iso(SharedMediaSource source,
   result.media = ValidatedMedia{std::move(source), std::move(inspection),
                                 std::move(fingerprint)};
   return result;
-}
-
-IsoInspection inspect_iso(const std::filesystem::path& path) {
-  const auto opened = ohl::platform::open_media_source(path);
-  if (!opened.valid()) {
-    IsoInspection inspection;
-    inspection.error = map_open_error(opened.error);
-    return inspection;
-  }
-
-  auto validation = validate_iso(opened.source);
-  if (!validation.valid()) {
-    IsoInspection inspection;
-    inspection.error = validation.error;
-    return inspection;
-  }
-  return validation.media->inspection();
 }
 
 }  // namespace ohl::media
