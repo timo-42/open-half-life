@@ -36,6 +36,22 @@ add_test(
   COMMAND ohl_media_parser_result_tests
 )
 
+add_executable(ohl_media_parser_source_read_broker_tests
+  media/parser_source_read_broker_test.cpp
+)
+target_compile_features(
+  ohl_media_parser_source_read_broker_tests PRIVATE cxx_std_20
+)
+target_link_libraries(
+  ohl_media_parser_source_read_broker_tests
+  PRIVATE OpenHalfLife::media_parser_reads
+)
+ohl_enable_warnings(ohl_media_parser_source_read_broker_tests)
+add_test(
+  NAME media.parser_source_read_broker
+  COMMAND ohl_media_parser_source_read_broker_tests
+)
+
 add_library(ohl_parser_fuzz_entry OBJECT
   parser/protocol_fuzz.cpp
 )

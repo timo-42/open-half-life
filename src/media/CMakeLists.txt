@@ -54,3 +54,21 @@ target_link_libraries(
     OpenHalfLife::parser
 )
 ohl_enable_warnings(ohl_media_parser_results)
+
+add_library(ohl_media_parser_reads STATIC
+  src/parser_source_read_broker.cpp
+)
+
+add_library(OpenHalfLife::media_parser_reads ALIAS ohl_media_parser_reads)
+
+target_compile_features(ohl_media_parser_reads PUBLIC cxx_std_20)
+target_include_directories(
+  ohl_media_parser_reads
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+target_link_libraries(
+  ohl_media_parser_reads
+  PUBLIC OpenHalfLife::media_parser_results
+)
+ohl_enable_warnings(ohl_media_parser_reads)
