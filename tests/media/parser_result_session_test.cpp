@@ -44,7 +44,11 @@ void* operator new(const std::size_t size) {
 }
 
 void* operator new[](const std::size_t size) {
-  return ::operator new(size);
+  allocation_injection::maybe_fail();
+  if (auto* allocation = std::malloc(size == 0 ? 1 : size)) {
+    return allocation;
+  }
+  throw std::bad_alloc{};
 }
 
 void operator delete(void* allocation) noexcept { std::free(allocation); }
