@@ -19,15 +19,18 @@ namespace {
 
 int main() {
   const std::vector entries{
-      ohl::media::PayloadEntryMetadata{2, "valve/maps/c0a0.bsp", 2'048},
-      ohl::media::PayloadEntryMetadata{3, "valve\\config.cfg", 512},
-      ohl::media::PayloadEntryMetadata{1, "readme.txt", 0},
+      ohl::media::PayloadEntryMetadata{
+          2, "ProjectFixture/Tiles/AmberBlob.dat", 2'048},
+      ohl::media::PayloadEntryMetadata{
+          3, "ProjectFixture\\Settings.note", 512},
+      ohl::media::PayloadEntryMetadata{1, "AuthoredManifest.note", 0},
   };
   const auto planned = ohl::media::plan_payload_layout(entries);
   if (!planned.valid() || planned.entries.size() != entries.size() ||
       planned.total_bytes != 2'560 ||
       planned.entries[0].source_token != 1 ||
-      planned.entries[1].relative_path != "valve/config.cfg" ||
+      planned.entries[1].relative_path !=
+          "ProjectFixture/Settings.note" ||
       planned.rejected_entry.has_value()) {
     std::cerr << "valid payload layout was not planned\n";
     return 1;
@@ -35,13 +38,15 @@ int main() {
 
   if (!rejects({{1, "../escape", 1}},
                ohl::media::PayloadLayoutError::invalid_path) ||
-      !rejects({{1, "maps/a.bsp", 1}, {2, "MAPS/A.BSP", 1}},
+      !rejects({{1, "SyntheticBranch/Alpha.item", 1},
+                {2, "SYNTHETICBRANCH/ALPHA.ITEM", 1}},
                ohl::media::PayloadLayoutError::path_conflict) ||
-      !rejects({{1, "Foo/a", 1}, {2, "foo/b", 1}},
+      !rejects({{1, "FixtureRoot/alpha", 1},
+                {2, "fixtureroot/beta", 1}},
                ohl::media::PayloadLayoutError::path_conflict) ||
-      !rejects({{1, "file", 1}, {2, "file/child", 1}},
+      !rejects({{1, "FixtureLeaf", 1}, {2, "FixtureLeaf/child", 1}},
                ohl::media::PayloadLayoutError::path_conflict) ||
-      !rejects({{1, "directory/child", 1}, {2, "DIRECTORY", 1}},
+      !rejects({{1, "FixtureTree/child", 1}, {2, "FIXTURETREE", 1}},
                ohl::media::PayloadLayoutError::path_conflict)) {
     std::cerr << "unsafe or ambiguous payload layout was accepted\n";
     return 1;

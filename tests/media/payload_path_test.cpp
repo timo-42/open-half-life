@@ -15,10 +15,11 @@ struct InvalidCase {
 
 int main() {
   const auto normalized =
-      ohl::media::validate_payload_path("Valve\\maps/c0a0.bsp");
+      ohl::media::validate_payload_path(
+          "ProjectFixture\\Nested/AmberToken.dat");
   if (!normalized.valid() ||
-      normalized.relative_path != "Valve/maps/c0a0.bsp" ||
-      normalized.portability_key != "valve/maps/c0a0.bsp") {
+      normalized.relative_path != "ProjectFixture/Nested/AmberToken.dat" ||
+      normalized.portability_key != "projectfixture/nested/ambertoken.dat") {
     std::cerr << "valid payload path was not normalized portably\n";
     return 1;
   }
@@ -67,8 +68,10 @@ int main() {
     }
   }
 
-  const auto first = ohl::media::validate_payload_path("Maps/C0A0.BSP");
-  const auto second = ohl::media::validate_payload_path("maps/c0a0.bsp");
+  const auto first =
+      ohl::media::validate_payload_path("SyntheticBranch/CaseToken.DAT");
+  const auto second =
+      ohl::media::validate_payload_path("syntheticbranch/casetoken.dat");
   if (!first.valid() || !second.valid() ||
       first.portability_key != second.portability_key) {
     std::cerr << "case-insensitive collision key was not stable\n";

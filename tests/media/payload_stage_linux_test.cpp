@@ -268,7 +268,8 @@ int main() {
     return 1;
   }
   const std::vector entries{
-      ohl::media::PlannedPayloadEntry{42, "valve/file.bin", 3}};
+      ohl::media::PlannedPayloadEntry{
+          42, "ProjectFixture/AmberPayload.dat", 3}};
   const ohl::media::PayloadStageRequest request{
       "source", "recipe", entries, 3, {}};
   Source first_source;
