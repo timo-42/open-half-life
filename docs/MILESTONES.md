@@ -171,28 +171,40 @@ the accepted range is 1 byte through 256 KiB. The codec requires a trusted
 nonzero remaining-entry context and rejects a chunk larger than that bound.
 Its decoded span aliases the frame payload, so that storage must stay alive and
 unchanged while the span is used. The caller owns remainder accounting and may
-decrement it only after the accepted bytes are written downstream. The
-accepted result includes canonical framing, generic bounded payload primitives
-and budgets, fail-closed session ordering, and complete-payload typed
-validation for ten message types. The typed decoders enforce the applicable
-source/read bounds, request sequencing, permitted reply status/data shapes,
-exact-empty, exact-token, or bounded opaque-chunk payload shapes, and exact
-payload consumption. Typed schemas remain absent for `entry_batch` and
-`complete`.
+decrement it only after the accepted bytes are written downstream. Commit
+`2d71079` adds the success-only typed `complete` schema and fuzz dispatch. Its
+exact four-byte canonical little-endian payload is `u16 ProtocolStatus` then
+`u16 ProtocolPhase`. The trusted expected-operation context must be
+`enumerate` or `stream`, and only `(ok, complete)` is accepted in either. All
+other known or unknown pairs are rejected; failure-result representation and
+worker failure/publication authority remain deferred. A receiver must decode
+the payload before state observation and separately establish every read,
+result, remainder, and downstream-write prerequisite. The accepted result
+includes canonical framing, generic bounded payload primitives and budgets,
+fail-closed session ordering, and complete-payload typed validation for eleven
+message types. The typed decoders enforce the applicable source/read bounds,
+request sequencing, permitted reply status/data shapes, exact-empty,
+exact-token, bounded opaque-chunk, or success-only completion payload shapes,
+and exact payload consumption. Only the `entry_batch` typed schema remains
+absent.
 
 The ordering contract permits exactly one same-request late reply to drain
 after `cancel_ack` only when a read was already outstanding before cancellation.
 The deterministic fuzz target exercises frame decoding, generic payload
-reading, session ordering, and all ten accepted typed decoders, including typed
-`stream_entry` and `data_chunk` dispatch. Read-message dispatch uses bounded
-matching and deliberately mismatching contexts. Data-chunk dispatch uses
-bounded, independently reachable exact, smaller, and zero remainder contexts
-without allocating or copying the frame payload. Its deterministic self-check
-establishes those branches plus canonical read-request/read-reply decode
-reachability and both read-context branches. The fixed corpus remains
-project-authored and synthetic. This accepted protocol layer supports active
-M2 work but is not a production import path: no runtime target depends on it,
-it has no source, destination, extraction, or cache authority, and the typed
+reading, session ordering, and all eleven accepted typed decoders, including
+typed `stream_entry`, `data_chunk`, and `complete` dispatch. Read-message
+dispatch uses bounded matching and deliberately mismatching contexts.
+Data-chunk dispatch uses bounded, independently reachable exact, smaller, and
+zero remainder contexts without allocating or copying the frame payload.
+Complete dispatch reaches both valid operation contexts, disallowed pairs, and
+an invalid context. Its deterministic self-check proves those completion
+branches plus the prior canonical read and data-chunk branches. The exhaustive
+unit matrix covers every known status and phase in both valid completion
+contexts and proves invalid typed payloads are rejected before state
+observation. The fixed corpus remains project-authored and synthetic. This
+accepted protocol layer supports active M2 work but is not a production import
+path: no runtime target depends on it, it has no source, destination,
+extraction, completion-failure-reporting, or cache authority, and the typed
 decoders are not wired to production state transitions. The protocol work
 authorizes no proprietary extraction, and no worker implementation, transport,
 or native sandbox backend has been accepted or integrated.

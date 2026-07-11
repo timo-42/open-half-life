@@ -173,9 +173,9 @@ only. It provides canonical OWP/1 framing, generic bounded primitive payload
 helpers, frame and cumulative budgets, and fail-closed session ordering,
 including the cancellation and one-shot late-reply drain rules documented in
 `ARCHITECTURE.md`. Accepted typed schemas cover `hello`, exact-empty `ready`,
-`enumerate`, `cancel`, `cancel_ack`, and `shutdown`, plus `stream_entry`,
-`read_request`, `read_reply`, and `data_chunk`. The `stream_entry` payload is
-exactly one canonical 8-byte little-endian opaque `source_token`; zero and
+`enumerate`, `stream_entry`, `read_request`, `read_reply`, `data_chunk`,
+`complete`, `cancel`, `cancel_ack`, and `shutdown`. The `stream_entry` payload
+is exactly one canonical 8-byte little-endian opaque `source_token`; zero and
 every other `uint64_t` value, including the all-ones value, are valid at the
 codec boundary. Membership and lifetime checks remain the responsibility of a
 future trusted token owner, and decoding the token grants no source authority.
@@ -185,27 +185,37 @@ trusted nonzero remaining-entry context supplied to its codec. The decoded
 span aliases the frame payload and remains usable only while that storage stays
 alive and unchanged. The caller owns the trusted remainder and decrements it
 only after an accepted downstream write; the codec does not mutate or confer
-that authority. The typed schemas validate complete frame and payload shape,
-require full payload consumption, and enforce the applicable source/read
-bounds, sequence matching, allowed reply statuses, reply-data shape,
-chunk-size, and remaining-entry bounds. Typed schemas for `entry_batch` and
-`complete` remain absent. The library is not a worker, sandbox, transport,
-payload extractor, or runtime import path. No runtime target depends on it, and
-this protocol work authorizes no proprietary extraction.
+that authority. The success-only `complete` payload is exactly four canonical
+little-endian bytes: `u16 ProtocolStatus` followed by `u16 ProtocolPhase`. Its
+trusted expected-operation context must be `enumerate` or `stream`; only `(ok,
+complete)` is accepted in either context. Every other known pair and every pair
+containing an unknown value is rejected, leaving failure-result representation
+and authority deferred. The typed schemas validate complete frame and payload
+shape, require full payload consumption, and enforce the applicable
+source/read bounds, sequence matching, allowed reply statuses, reply-data
+shape, chunk-size, remaining-entry, and completion-context bounds. Only the
+`entry_batch` typed schema remains absent. The library is not a worker,
+sandbox, transport, payload extractor, or runtime import path. No runtime
+target depends on it, and this protocol work authorizes no proprietary
+extraction, completion-failure reporting, destination mutation, or cache
+publication.
 
 Deterministic parser fuzz validation accepted at `81a7ee9` and extended at
-`d59b6c5`, `f4d908a`, and `c28ea9f` exercises frame decoding, generic payload
-reading, session ordering, and all ten accepted typed decoders, including typed
-`stream_entry` and `data_chunk` dispatch. Read-message contexts remain bounded
-and deliberately match or mismatch. Data-chunk dispatch independently reaches
-an exact payload remainder, a smaller remainder, and zero remainder without
-allocating or copying the frame payload; the deterministic self-check proves
-those branches alongside canonical read-request/read-reply reachability. The
-opt-in libFuzzer target is exercised by a hosted smoke job that replays the
-fixed project-authored synthetic corpus twice and checks that the seeds remain
-unchanged. The fuzz target does not establish worker transport, native
-isolation, extraction, runtime integration, or coverage for the two schemas
-that remain absent.
+`d59b6c5`, `f4d908a`, `c28ea9f`, and `2d71079` exercises frame decoding,
+generic payload reading, session ordering, and all eleven accepted typed
+decoders, including typed `stream_entry`, `data_chunk`, and `complete`
+dispatch. Read-message contexts remain bounded and deliberately match or
+mismatch. Data-chunk dispatch independently reaches an exact payload remainder,
+a smaller remainder, and zero remainder without allocating or copying the frame
+payload. Complete dispatch reaches both valid operation contexts, disallowed
+pairs, and an invalid context; its deterministic self-check proves those
+branches. Unit validation exhausts all ten known statuses against all five
+known phases in both valid contexts and verifies decode-before-observe state
+preservation. The opt-in libFuzzer target is exercised by a hosted smoke job
+that replays the fixed project-authored synthetic corpus twice and checks that
+the seeds remain unchanged. The fuzz target does not establish worker
+transport, native isolation, extraction, runtime integration, or coverage for
+the sole schema that remains absent.
 
 - Give the worker read-only access only to the pinned source or bounded byte
   ranges; do not give it a destination path, cache authority, network access,
@@ -226,12 +236,15 @@ production receiver must decode each message through its specific typed schema,
 bound every field, count, length, and cumulative resource use, reject malformed
 or noncanonical values, and prove that the decoder consumed the entire payload.
 Only after that complete validation may the receiver use message content or
-transition production session state. The ten accepted typed decoders satisfy
+transition production session state. The eleven accepted typed decoders satisfy
 that payload rule only for their own message types; they are not connected to
 runtime state transitions. In particular, a decoded `stream_entry` token has
 not been checked for membership or lifetime and conveys no authority. An
 accepted `data_chunk` neither identifies an entry nor updates the trusted
-remaining-entry context. The remaining message families, generic payload
+remaining-entry context. Before observing a decoded `complete`, a future
+receiver must also establish every operation-specific read, result, remainder,
+and downstream-write prerequisite; the success-only pair does not itself prove
+or publish those outcomes. The remaining message family, generic payload
 helpers, and header/state validator must remain outside runtime import until
 the complete typed boundary and process-isolation requirements above are
 implemented and accepted.

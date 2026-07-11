@@ -42,14 +42,13 @@ on it, and its only allowed dependency edge is toward the standard library. Its
 accepted OWP/1 protocol layer provides canonical bounded framing and headers,
 generic bounded primitive payload readers and writers, per-frame and cumulative
 message/payload budgets, and fail-closed session ordering. Accepted typed
-schemas now cover `hello`, exact-empty `ready`, `enumerate`, `cancel`,
-`cancel_ack`, and `shutdown`, plus `stream_entry`, `read_request`, and
-`read_reply`, and `data_chunk`. The `stream_entry` payload is exactly one
-canonical 8-byte little-endian `source_token`. It is an opaque project-owned
-identifier; zero and every other `uint64_t` value, including the all-ones
-value, are valid at this codec boundary. Token membership and lifetime
-validation are deferred to a future trusted owner and are not authorization to
-access a source. A
+schemas now cover `hello`, exact-empty `ready`, `enumerate`, `stream_entry`,
+`read_request`, `read_reply`, `data_chunk`, `complete`, `cancel`, `cancel_ack`,
+and `shutdown`. The `stream_entry` payload is exactly one canonical 8-byte
+little-endian `source_token`. It is an opaque project-owned identifier; zero
+and every other `uint64_t` value, including the all-ones value, are valid at
+this codec boundary. Token membership and lifetime validation are deferred to
+a future trusted owner and are not authorization to access a source. A
 `data_chunk` is the opaque whole payload with no prefix, offset, token, or
 status field; its accepted size is 1 byte through 256 KiB, so a zero-byte chunk
 is noncanonical. Its typed codec also takes a trusted nonzero
@@ -60,10 +59,17 @@ not the codec, owns remainder accounting and may decrement it only after the
 accepted bytes have been written downstream. The decoders validate the
 complete frame and payload shape, require full payload consumption, and enforce
 the applicable source-size, read-size, range, sequence, status, reply-data,
-chunk-size, and remaining-entry bounds. Typed schemas remain absent for
-`entry_batch` and `complete`. The target does not implement or authorize worker
-creation, process isolation, source access, component selection, payload
-extraction, destination mutation, or cache publication.
+chunk-size, and remaining-entry bounds. The success-only `complete` payload is
+exactly four canonical little-endian bytes: a `u16 ProtocolStatus` followed by
+a `u16 ProtocolPhase` (`00 00 04 00` for the sole accepted pair). Its trusted
+expected-operation context must be `enumerate` or `stream`, and the only
+accepted wire pair in either context is `(ok, complete)`. Every other known
+pair and every pair containing an unknown value is rejected. Failure-result
+representation remains deferred, and the message grants no worker failure,
+destination, or publication authority. The only absent typed schema is
+`entry_batch`. The target does not implement or authorize worker creation,
+process isolation, source access, component selection, payload extraction,
+destination mutation, or cache publication.
 
 The accepted session-ordering contract handles duplex cancellation races
 without granting message content any trust. Completion wins when `complete` and
@@ -81,31 +87,38 @@ Header validity and session ordering are not sufficient to trust a message.
 Before any production state transition or use of message content, a
 message-specific typed decoder must apply explicit bounds to every payload
 field, count, and length, reject noncanonical values, and require complete
-payload consumption. The ten accepted decoders provide that validation for
+payload consumption. The eleven accepted decoders provide that validation for
 `hello`, `ready`, `enumerate`, `stream_entry`, `read_request`, `read_reply`,
-`data_chunk`, `cancel`, `cancel_ack`, and `shutdown`; they are not wired to
-production state transitions. In particular, decoding a `stream_entry` token
-does not establish its membership, lifetime, or authority, and accepting a
-`data_chunk` does not identify an entry or update its trusted remainder. The
-remaining typed schemas, generic codec, and header/state infrastructure must
-remain disconnected from runtime import until the full message set and
-worker-isolation requirements in `MEDIA_IMPORT.md` are implemented and
-accepted.
+`data_chunk`, `complete`, `cancel`, `cancel_ack`, and `shutdown`; they are not
+wired to production state transitions. In particular, decoding a
+`stream_entry` token does not establish its membership, lifetime, or authority,
+and accepting a `data_chunk` does not identify an entry or update its trusted
+remainder. A future receiver must validate `complete` before offering its
+header to the state validator; it must also establish every operation-specific
+read, result, remainder, and downstream-write prerequisite before treating the
+message as success. The remaining typed schema, generic codec, and header/state
+infrastructure must remain disconnected from runtime import until the full
+message set and worker-isolation requirements in `MEDIA_IMPORT.md` are
+implemented and accepted.
 
 Deterministic parser fuzz validation was accepted at `81a7ee9`; its typed
 dispatch was extended at `d59b6c5`, for `stream_entry` at `f4d908a`, and for
-`data_chunk` at `c28ea9f`. The opt-in libFuzzer target exercises bounded frame
-decoding, generic payload reading, session ordering, and all ten accepted typed
-decoders. Read-message dispatch uses bounded matching and deliberately
-mismatching contexts. Data-chunk dispatch selects bounded, independently
-reachable contexts for the exact payload remainder, a smaller remainder, and
-zero remainder without allocating or copying the frame payload. A
-deterministic self-check establishes those three data-chunk branches plus
-canonical read-request/read-reply decode reachability and both read-context
-branches. The hosted smoke job replays the fixed project-authored synthetic
-corpus twice and verifies that the seeds are not mutated. This is validation of
-the protocol infrastructure, not evidence of a worker transport, native
-isolation, runtime wiring, or coverage for the two schemas that remain absent.
+`data_chunk` at `c28ea9f`, then for `complete` at `2d71079`. The opt-in
+libFuzzer target exercises bounded frame decoding, generic payload reading,
+session ordering, and all eleven accepted typed decoders. Read-message dispatch
+uses bounded matching and deliberately mismatching contexts. Data-chunk
+dispatch selects bounded, independently reachable contexts for the exact
+payload remainder, a smaller remainder, and zero remainder without allocating
+or copying the frame payload. Complete dispatch selects both valid operation
+contexts and an invalid context while arbitrary payloads reach disallowed
+pairs. Its deterministic self-check proves both valid contexts, disallowed
+status and phase pairs, and the invalid context. Unit validation exhausts all
+ten known statuses by all five known phases in both valid contexts and checks
+that typed rejection occurs before state observation. The hosted smoke job
+replays the fixed project-authored synthetic corpus twice and verifies that the
+seeds are not mutated. This is validation of the protocol infrastructure, not
+evidence of a worker transport, native isolation, runtime wiring, or coverage
+for the sole schema that remains absent.
 
 There is intentionally no `vfs -> media` edge. Both modules consume the same
 low-level `platform::MediaSource` capability, while `app` is the composition
