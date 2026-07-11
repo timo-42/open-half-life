@@ -5,6 +5,7 @@ add_library(ohl_media STATIC
   src/payload_path.cpp
   src/payload_stage.cpp
   src/payload_stream.cpp
+  src/source_stability.cpp
 )
 
 add_library(OpenHalfLife::media ALIAS ohl_media)

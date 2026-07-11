@@ -2,11 +2,10 @@
 
 #include "import_cache_internal.hpp"
 #include "ohl/core/sha256.hpp"
+#include "source_stability_internal.hpp"
 
-#include <algorithm>
 #include <array>
 #include <cstddef>
-#include <cstdint>
 #include <fstream>
 #include <random>
 #include <span>
@@ -137,46 +136,21 @@ namespace {
              : ImportCacheError::source_read_failed;
 }
 
-[[nodiscard]] ImportCacheError rehash_validated_source(
-    const SharedMediaSource& source, const std::uint64_t expected_size,
-    std::string& digest) {
-  if (source == nullptr || expected_size != source->size()) {
-    return ImportCacheError::invalid_request;
+[[nodiscard]] ImportCacheError map_source_stability_error(
+    const detail::SourceStabilityError error) noexcept {
+  switch (error) {
+    case detail::SourceStabilityError::none:
+      return ImportCacheError::none;
+    case detail::SourceStabilityError::invalid_capability:
+      return ImportCacheError::invalid_request;
+    case detail::SourceStabilityError::source_changed:
+    case detail::SourceStabilityError::digest_mismatch:
+      return ImportCacheError::source_changed;
+    case detail::SourceStabilityError::read_failure:
+    case detail::SourceStabilityError::cancelled:
+      return ImportCacheError::source_read_failed;
   }
-  auto error = verify_validated_source(source);
-  if (error != ImportCacheError::none) {
-    return error;
-  }
-
-  ohl::core::Sha256 sha256;
-  std::array<std::byte, 64 * 1'024> buffer{};
-  std::uint64_t offset = 0;
-  while (offset < expected_size) {
-    const auto remaining = expected_size - offset;
-    const auto count = static_cast<std::size_t>(
-        std::min<std::uint64_t>(remaining, buffer.size()));
-    auto destination = std::span{buffer}.first(count);
-    const auto read_error = source->read_exact_at(offset, destination);
-    if (read_error != ohl::platform::MediaSourceError::none) {
-      error = verify_validated_source(source);
-      if (error != ImportCacheError::none) {
-        return error;
-      }
-      return read_error == ohl::platform::MediaSourceError::unexpected_eof ||
-                     read_error == ohl::platform::MediaSourceError::out_of_range
-                 ? ImportCacheError::source_changed
-                 : ImportCacheError::source_read_failed;
-    }
-    sha256.update(destination);
-    offset += static_cast<std::uint64_t>(count);
-  }
-
-  error = verify_validated_source(source);
-  if (error != ImportCacheError::none) {
-    return error;
-  }
-  digest = ohl::core::hex_encode(sha256.finish());
-  return ImportCacheError::none;
+  return ImportCacheError::source_read_failed;
 }
 
 [[nodiscard]] ImportCacheError inspect_existing_manifest(
@@ -320,14 +294,9 @@ ImportCacheResult detail::prepare_import_cache_with_hook(
   if (result.error != ImportCacheError::none) {
     return result;
   }
-  std::string revalidated_digest;
-  result.error = rehash_validated_source(source, fingerprint.size_bytes,
-                                         revalidated_digest);
+  result.error = map_source_stability_error(
+      detail::verify_complete_source_stability(media));
   if (result.error != ImportCacheError::none) {
-    return result;
-  }
-  if (revalidated_digest != fingerprint.sha256) {
-    result.error = ImportCacheError::source_changed;
     return result;
   }
   const auto manifest = make_manifest(inspection, fingerprint);

@@ -1,6 +1,7 @@
 #include "ohl/media/import_cache.hpp"
 
 #include "import_cache_internal.hpp"
+#include "source_stability_internal.hpp"
 
 #include <array>
 #include <chrono>
@@ -11,8 +12,10 @@
 #include <iostream>
 #include <span>
 #include <sstream>
+#include <stop_token>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -219,6 +222,50 @@ int main() {
   }
   const auto fingerprint = validation.media->fingerprint();
 
+  if (ohl::media::detail::verify_complete_source_stability(
+          *validation.media) != ohl::media::detail::SourceStabilityError::none) {
+    std::cerr << "stable validated source failed complete verification\n";
+    return 1;
+  }
+
+  std::stop_source cancelled_source;
+  cancelled_source.request_stop();
+  const auto cancelled_cache_root = temporary.path() / "cancelled-cache";
+  if (ohl::media::detail::verify_complete_source_stability(
+          *validation.media, cancelled_source.get_token()) !=
+          ohl::media::detail::SourceStabilityError::cancelled ||
+      std::filesystem::exists(cancelled_cache_root)) {
+    std::cerr << "pre-requested complete verification was not cancelled\n";
+    return 1;
+  }
+
+  const auto moved_source = temporary.path() / "moved-capability.iso";
+  if (!write_image(moved_source, make_valid_image())) {
+    std::cerr << "failed to create moved-capability fixture\n";
+    return 1;
+  }
+  const auto moved_opened = ohl::platform::open_media_source(moved_source);
+  auto moved_validation = ohl::media::validate_iso(moved_opened.source);
+  if (!moved_opened.valid() || !moved_validation.valid()) {
+    std::cerr << "failed to validate moved-capability fixture\n";
+    return 1;
+  }
+  auto retained_media = std::move(*moved_validation.media);
+  const auto moved_cache_root = temporary.path() / "moved-cache";
+  const auto moved_verification =
+      ohl::media::detail::verify_complete_source_stability(
+          *moved_validation.media);
+  const auto moved_import = ohl::media::prepare_import_cache(
+      *moved_validation.media, moved_cache_root);
+  if (!retained_media.valid() ||
+      moved_verification !=
+          ohl::media::detail::SourceStabilityError::invalid_capability ||
+      moved_import.error != ohl::media::ImportCacheError::invalid_request ||
+      std::filesystem::exists(moved_cache_root)) {
+    std::cerr << "moved-from capability was accepted or published a manifest\n";
+    return 1;
+  }
+
   // Replacing the pathname after validation must not retarget capability cache
   // preparation or its digest revalidation of the pinned source.
   const auto displaced = temporary.path() / "displaced-source.iso";
@@ -411,11 +458,21 @@ int main() {
     std::cerr << "failed to make cache mutation metadata observable\n";
     return 1;
   }
-  const auto changed = ohl::media::prepare_import_cache(
-      *mutable_validation.media, temporary.path() / "changed-cache");
+  std::stop_source changed_stop_source;
+  changed_stop_source.request_stop();
+  const auto changed_cache_root = temporary.path() / "changed-cache";
   const auto changed_manifest =
-      temporary.path() / "changed-cache" / "sources" /
+      changed_cache_root / "sources" /
       mutable_validation.media->fingerprint().sha256 / "provenance.json";
+  if (ohl::media::detail::verify_complete_source_stability(
+          *mutable_validation.media, changed_stop_source.get_token()) !=
+          ohl::media::detail::SourceStabilityError::source_changed ||
+      std::filesystem::exists(changed_manifest, error_code) || error_code) {
+    std::cerr << "source change did not take precedence over cancellation\n";
+    return 1;
+  }
+  const auto changed = ohl::media::prepare_import_cache(
+      *mutable_validation.media, changed_cache_root);
   error_code.clear();
   if (changed.error != ohl::media::ImportCacheError::source_changed ||
       std::filesystem::exists(changed_manifest, error_code) || error_code) {
@@ -449,11 +506,19 @@ int main() {
   }
 
   const auto digest_cache_root = temporary.path() / "digest-changed-cache";
-  const auto digest_changed = ohl::media::prepare_import_cache(
-      *digest_validation.media, digest_cache_root);
   const auto digest_manifest =
       digest_cache_root / "sources" /
       digest_validation.media->fingerprint().sha256 / "provenance.json";
+  error_code.clear();
+  if (ohl::media::detail::verify_complete_source_stability(
+          *digest_validation.media) !=
+          ohl::media::detail::SourceStabilityError::digest_mismatch ||
+      std::filesystem::exists(digest_manifest, error_code) || error_code) {
+    std::cerr << "same-size restored-metadata mutation was not a digest mismatch\n";
+    return 1;
+  }
+  const auto digest_changed = ohl::media::prepare_import_cache(
+      *digest_validation.media, digest_cache_root);
   error_code.clear();
   if (digest_changed.error != ohl::media::ImportCacheError::source_changed ||
       std::filesystem::exists(digest_manifest, error_code) || error_code) {
