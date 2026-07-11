@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cwchar>
 #include <limits>
 #include <memory>
 #include <new>
@@ -1031,6 +1032,17 @@ template <typename Policy>
          children.NoChildProcessCreation != 0;
 }
 
+[[nodiscard]] std::wstring parent_environment_value(const wchar_t* const name) {
+  std::wstring value(32'768U, L'\0');
+  const DWORD length = GetEnvironmentVariableW(
+      name, value.data(), static_cast<DWORD>(value.size()));
+  if (length == 0 || static_cast<std::size_t>(length) >= value.size()) {
+    return {};
+  }
+  value.resize(length);
+  return value;
+}
+
 [[nodiscard]] std::vector<wchar_t> minimal_environment() {
   std::wstring windows_directory(32'768U, L'\0');
   const UINT length = GetWindowsDirectoryW(
@@ -1040,9 +1052,34 @@ template <typename Policy>
     return {};
   }
   windows_directory.resize(length);
-  std::wstring variable = L"SystemRoot=" + windows_directory;
-  std::vector<wchar_t> result(variable.begin(), variable.end());
-  result.push_back(L'\0');
+
+  // AppContainer activation resolves the package profile paths through the
+  // supplied environment block; CreateProcessW fails with
+  // ERROR_ENVVAR_NOT_FOUND when the block lacks the profile variables it
+  // expects. Forward only this fixed, non-secret path allowlist. A Unicode
+  // environment block must stay sorted by name, so SystemRoot is emitted in
+  // its alphabetical slot. Absent parent variables are skipped.
+  static constexpr const wchar_t* kEnvironmentAllowlist[] = {
+      L"ALLUSERSPROFILE", L"APPDATA", L"LOCALAPPDATA",
+      L"ProgramData",     L"SystemDrive", L"SystemRoot",
+      L"TEMP",            L"TMP",     L"USERPROFILE",
+  };
+  std::vector<wchar_t> result;
+  for (const wchar_t* const name : kEnvironmentAllowlist) {
+    const bool is_system_root = std::wstring_view{name} == L"SystemRoot";
+    const std::wstring value =
+        is_system_root ? windows_directory : parent_environment_value(name);
+    if (value.empty()) {
+      continue;
+    }
+    result.insert(result.end(), name, name + std::wcslen(name));
+    result.push_back(L'=');
+    result.insert(result.end(), value.begin(), value.end());
+    result.push_back(L'\0');
+  }
+  if (result.empty()) {
+    return {};
+  }
   result.push_back(L'\0');
   return result;
 }
