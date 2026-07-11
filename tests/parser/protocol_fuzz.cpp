@@ -153,6 +153,9 @@ void exercise_typed_decoder(const ohl::parser::FrameView& frame) {
     case MessageType::enumerate:
       (void)decode_enumerate_payload(frame);
       break;
+    case MessageType::stream_entry:
+      (void)decode_stream_entry_payload(frame);
+      break;
     case MessageType::read_request: {
       const auto sequence = sequence_context(frame);
       const auto policy = request_policy(frame, sequence.matches_wire);
@@ -177,7 +180,6 @@ void exercise_typed_decoder(const ohl::parser::FrameView& frame) {
     case MessageType::shutdown:
       (void)decode_shutdown_payload(frame);
       break;
-    case MessageType::stream_entry:
     case MessageType::entry_batch:
     case MessageType::data_chunk:
     case MessageType::complete:

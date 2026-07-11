@@ -30,6 +30,7 @@ using ohl::parser::ReadRequestMessage;
 using ohl::parser::ReadyMessage;
 using ohl::parser::SessionState;
 using ohl::parser::SourceReadPolicy;
+using ohl::parser::StreamEntryMessage;
 
 constexpr std::uint64_t kSession = 0x0102'0304'0506'0708ULL;
 
@@ -1391,6 +1392,121 @@ constexpr std::uint64_t kSession = 0x0102'0304'0506'0708ULL;
   return true;
 }
 
+[[nodiscard]] bool test_typed_stream_entry() {
+  static_assert(ohl::parser::kStreamEntryPayloadBytes == 8);
+
+  constexpr StreamEntryMessage canonical{0x0102'0304'0506'0708ULL};
+  const std::array<std::byte, ohl::parser::kStreamEntryPayloadBytes> expected{
+      std::byte{0x08}, std::byte{0x07}, std::byte{0x06}, std::byte{0x05},
+      std::byte{0x04}, std::byte{0x03}, std::byte{0x02}, std::byte{0x01},
+  };
+  std::array<std::byte, ohl::parser::kStreamEntryPayloadBytes> encoded{};
+  const auto encode =
+      ohl::parser::encode_stream_entry_payload(canonical, encoded);
+  const auto decode = ohl::parser::decode_stream_entry_payload(
+      payload_frame(MessageType::stream_entry, encoded, 1));
+  if (!encode.valid() || encode.bytes_written != encoded.size() ||
+      encoded != expected || !decode.valid() ||
+      decode.message.source_token != canonical.source_token) {
+    return fail("typed stream entry canonical encoding failed");
+  }
+
+  for (const auto token : {
+           std::uint64_t{0}, std::numeric_limits<std::uint64_t>::max(),
+           std::uint64_t{0x89ab'cdef'0123'4567ULL},
+       }) {
+    const auto round_trip_encode = ohl::parser::encode_stream_entry_payload(
+        StreamEntryMessage{token}, encoded);
+    const auto round_trip_decode = ohl::parser::decode_stream_entry_payload(
+        payload_frame(MessageType::stream_entry, encoded, 1));
+    if (!round_trip_encode.valid() ||
+        round_trip_encode.bytes_written != encoded.size() ||
+        !round_trip_decode.valid() ||
+        round_trip_decode.message.source_token != token) {
+      return fail("typed stream entry opaque-token round trip failed");
+    }
+  }
+
+  std::array<std::byte, ohl::parser::kStreamEntryPayloadBytes + 1>
+      malformed{};
+  for (std::size_t size = 0;
+       size < ohl::parser::kStreamEntryPayloadBytes; ++size) {
+    const auto result = ohl::parser::decode_stream_entry_payload(payload_frame(
+        MessageType::stream_entry,
+        std::span<const std::byte>{malformed}.first(size), 1));
+    if (result.error != ProtocolError::payload_underflow ||
+        result.message.source_token != 0) {
+      return fail("short typed stream entry was not rejected atomically");
+    }
+  }
+  const auto long_payload = ohl::parser::decode_stream_entry_payload(
+      payload_frame(MessageType::stream_entry, malformed, 1));
+  const auto wrong_type = ohl::parser::decode_stream_entry_payload(
+      payload_frame(MessageType::read_request, expected, 1));
+  if (long_payload.error != ProtocolError::payload_trailing_bytes ||
+      long_payload.message.source_token != 0 ||
+      wrong_type.error != ProtocolError::unexpected_message ||
+      wrong_type.message.source_token != 0) {
+    return fail("typed stream entry shape or type validation failed");
+  }
+
+  auto declared_longer =
+      payload_frame(MessageType::stream_entry, expected, 1);
+  auto declared_shorter =
+      payload_frame(MessageType::stream_entry, expected, 1);
+  ++declared_longer.header.payload_length;
+  --declared_shorter.header.payload_length;
+  const auto truncated =
+      ohl::parser::decode_stream_entry_payload(declared_longer);
+  const auto trailing =
+      ohl::parser::decode_stream_entry_payload(declared_shorter);
+  if (truncated.error != ProtocolError::truncated_payload ||
+      truncated.message.source_token != 0 ||
+      trailing.error != ProtocolError::trailing_bytes ||
+      trailing.message.source_token != 0) {
+    return fail("typed stream entry accepted declared-length mismatch");
+  }
+
+  auto bad_request_id =
+      payload_frame(MessageType::stream_entry, expected, 0);
+  auto bad_flags = payload_frame(MessageType::stream_entry, expected, 1);
+  bad_flags.header.flags = 1;
+  const auto invalid_request =
+      ohl::parser::decode_stream_entry_payload(bad_request_id);
+  const auto invalid_flags =
+      ohl::parser::decode_stream_entry_payload(bad_flags);
+  const FrameView prior_error{
+      .error = ProtocolError::payload_too_large,
+      .header = {},
+      .payload = {},
+  };
+  const auto inherited_error =
+      ohl::parser::decode_stream_entry_payload(prior_error);
+  if (invalid_request.error != ProtocolError::invalid_request_id ||
+      invalid_request.message.source_token != 0 ||
+      invalid_flags.error != ProtocolError::reserved_flags ||
+      invalid_flags.message.source_token != 0 ||
+      inherited_error.error != ProtocolError::payload_too_large ||
+      inherited_error.message.source_token != 0) {
+    return fail("typed stream entry trust-boundary validation failed");
+  }
+
+  std::array<std::byte, ohl::parser::kStreamEntryPayloadBytes> destination;
+  destination.fill(std::byte{0xa5});
+  const auto undersized = ohl::parser::encode_stream_entry_payload(
+      canonical, std::span<std::byte>{destination}.first(
+                     ohl::parser::kStreamEntryPayloadBytes - 1));
+  const auto unchanged = std::all_of(
+      destination.begin(), destination.end(), [](const std::byte value) {
+        return value == std::byte{0xa5};
+      });
+  if (undersized.error != ProtocolError::output_too_small ||
+      undersized.bytes_written != 0 || !unchanged) {
+    return fail("short stream entry encoding changed destination");
+  }
+  return true;
+}
+
 [[nodiscard]] bool test_typed_read_request() {
   constexpr SourceReadPolicy policy{std::numeric_limits<std::uint64_t>::max(),
                                     ohl::parser::kMaximumReadBytes};
@@ -1936,6 +2052,7 @@ int main() {
                  test_cancellation_and_budgets() &&
                  test_typed_hello_and_ready() &&
                  test_typed_exact_empty_messages() &&
+                 test_typed_stream_entry() &&
                  test_typed_read_request() && test_typed_read_reply() &&
                  test_typed_failure_atomicity_and_ordering()
              ? 0

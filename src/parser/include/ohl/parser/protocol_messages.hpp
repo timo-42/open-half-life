@@ -11,6 +11,7 @@ namespace ohl::parser {
 inline constexpr std::size_t kHelloPayloadBytes = 12;
 inline constexpr std::size_t kReadyPayloadBytes = 0;
 inline constexpr std::size_t kEnumeratePayloadBytes = 0;
+inline constexpr std::size_t kStreamEntryPayloadBytes = 8;
 inline constexpr std::size_t kReadRequestPayloadBytes = 16;
 inline constexpr std::size_t kReadReplyPrefixBytes = 6;
 inline constexpr std::size_t kCancelPayloadBytes = 0;
@@ -37,6 +38,10 @@ struct HelloMessage {
 struct ReadyMessage {};
 
 struct EnumerateMessage {};
+
+struct StreamEntryMessage {
+  std::uint64_t source_token{0};
+};
 
 struct ReadRequestMessage {
   std::uint32_t read_sequence{0};
@@ -71,6 +76,7 @@ struct MessageDecodeResult {
 using HelloDecodeResult = MessageDecodeResult<HelloMessage>;
 using ReadyDecodeResult = MessageDecodeResult<ReadyMessage>;
 using EnumerateDecodeResult = MessageDecodeResult<EnumerateMessage>;
+using StreamEntryDecodeResult = MessageDecodeResult<StreamEntryMessage>;
 using ReadRequestDecodeResult = MessageDecodeResult<ReadRequestMessage>;
 using ReadReplyDecodeResult = MessageDecodeResult<ReadReplyMessage>;
 using CancelDecodeResult = MessageDecodeResult<CancelMessage>;
@@ -91,6 +97,12 @@ using ShutdownDecodeResult = MessageDecodeResult<ShutdownMessage>;
     const EnumerateMessage& message,
     std::span<std::byte> destination) noexcept;
 [[nodiscard]] EnumerateDecodeResult decode_enumerate_payload(
+    const FrameView& frame) noexcept;
+
+[[nodiscard]] EncodeResult encode_stream_entry_payload(
+    const StreamEntryMessage& message,
+    std::span<std::byte> destination) noexcept;
+[[nodiscard]] StreamEntryDecodeResult decode_stream_entry_payload(
     const FrameView& frame) noexcept;
 
 [[nodiscard]] EncodeResult encode_read_request_payload(

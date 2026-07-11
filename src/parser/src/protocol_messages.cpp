@@ -168,6 +168,37 @@ EnumerateDecodeResult decode_enumerate_payload(
   return result;
 }
 
+EncodeResult encode_stream_entry_payload(
+    const StreamEntryMessage& message,
+    const std::span<std::byte> destination) noexcept {
+  EncodeResult result;
+  if (destination.size() < kStreamEntryPayloadBytes) {
+    result.error = ProtocolError::output_too_small;
+    return result;
+  }
+  PayloadWriter writer{destination.first(kStreamEntryPayloadBytes)};
+  (void)writer.write_u64(message.source_token);
+  result.bytes_written = kStreamEntryPayloadBytes;
+  return result;
+}
+
+StreamEntryDecodeResult decode_stream_entry_payload(
+    const FrameView& frame) noexcept {
+  StreamEntryDecodeResult result;
+  result.error = validate_frame(frame, MessageType::stream_entry);
+  if (result.error != ProtocolError::none) {
+    return result;
+  }
+  PayloadReader reader{frame.payload};
+  StreamEntryMessage message;
+  if (!reader.read_u64(message.source_token) || !reader.finish()) {
+    result.error = reader.error();
+    return result;
+  }
+  result.message = message;
+  return result;
+}
+
 EncodeResult encode_read_request_payload(
     const ReadRequestMessage& message, const SourceReadPolicy& policy,
     const std::uint32_t expected_sequence,
