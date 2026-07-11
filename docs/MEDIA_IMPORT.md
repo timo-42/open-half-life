@@ -152,24 +152,30 @@ only. It provides canonical OWP/1 framing, generic bounded primitive payload
 helpers, frame and cumulative budgets, and fail-closed session ordering,
 including the cancellation and one-shot late-reply drain rules documented in
 `ARCHITECTURE.md`. Accepted typed schemas cover `hello`, exact-empty `ready`,
-`enumerate`, `cancel`, `cancel_ack`, and `shutdown`, plus `read_request` and
-`read_reply`. They validate complete frame and payload shape, require full
-payload consumption, and enforce the applicable source/read bounds, sequence
-matching, allowed reply statuses, and reply-data shape. Typed schemas for
-`stream_entry`, `entry_batch`, `data_chunk`, and `complete` remain absent. The
-library is not a worker, sandbox, transport, payload extractor, or runtime
-import path. No runtime target depends on it, and this protocol work authorizes
-no proprietary extraction.
+`enumerate`, `cancel`, `cancel_ack`, and `shutdown`, plus `stream_entry`,
+`read_request`, and `read_reply`. The `stream_entry` payload is exactly one
+canonical 8-byte little-endian opaque `source_token`; zero and every other
+`uint64_t` value, including the all-ones value, are valid at the codec boundary.
+Membership and lifetime checks remain the responsibility of a future trusted
+token owner, and decoding the token grants no source authority. The typed
+schemas validate complete frame and payload shape, require full payload
+consumption, and enforce the applicable source/read bounds, sequence matching,
+allowed reply statuses, and reply-data shape. Typed schemas for `entry_batch`,
+`data_chunk`, and `complete` remain absent. The library is not a worker,
+sandbox, transport, payload extractor, or runtime import path. No runtime
+target depends on it, and this protocol work authorizes no proprietary
+extraction.
 
 Deterministic parser fuzz validation accepted at `81a7ee9` and extended at
-`d59b6c5` exercises frame decoding, generic payload reading, session ordering,
-and all eight accepted typed decoders with bounded matching and deliberately
-mismatching read contexts. A deterministic self-check establishes canonical
+`d59b6c5` and `f4d908a` exercises frame decoding, generic payload reading,
+session ordering, and all nine accepted typed decoders, including typed
+`stream_entry` dispatch, with bounded matching and deliberately mismatching
+read contexts. A deterministic self-check establishes canonical
 read-request/read-reply decode reachability and both context branches. Its
 opt-in libFuzzer target is exercised by a hosted smoke job that replays the
 fixed project-authored synthetic corpus twice and checks that the seeds remain
 unchanged. The fuzz target does not establish worker transport, native
-isolation, extraction, runtime integration, or coverage for the four schemas
+isolation, extraction, runtime integration, or coverage for the three schemas
 that remain absent.
 
 - Give the worker read-only access only to the pinned source or bounded byte
@@ -191,12 +197,13 @@ production receiver must decode each message through its specific typed schema,
 bound every field, count, length, and cumulative resource use, reject malformed
 or noncanonical values, and prove that the decoder consumed the entire payload.
 Only after that complete validation may the receiver use message content or
-transition production session state. The eight accepted typed decoders satisfy
+transition production session state. The nine accepted typed decoders satisfy
 that payload rule only for their own message types; they are not connected to
-runtime state transitions. The remaining message families, generic payload
-helpers, and header/state validator must remain outside runtime import until
-the complete typed boundary and process-isolation requirements above are
-implemented and accepted.
+runtime state transitions. In particular, a decoded `stream_entry` token has
+not been checked for membership or lifetime and conveys no authority. The
+remaining message families, generic payload helpers, and header/state validator
+must remain outside runtime import until the complete typed boundary and
+process-isolation requirements above are implemented and accepted.
 
 Isolation limits parser authority; it does not make parser output safe to log,
 commit, or trust without validation.
