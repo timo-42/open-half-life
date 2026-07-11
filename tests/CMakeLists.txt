@@ -264,6 +264,19 @@ add_test(
 )
 set_tests_properties(platform.isolated_worker.common PROPERTIES TIMEOUT 30)
 
+string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" ohl_test_system_processor)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+   ohl_test_system_processor MATCHES "^(x86_64|amd64)$")
+  include(platform/isolated_worker/linux.cmake)
+  if(NOT TEST platform.isolated_worker.linux)
+    message(
+      FATAL_ERROR
+      "Expected host-native test 'platform.isolated_worker.linux' was not "
+      "registered"
+    )
+  endif()
+endif()
+
 add_executable(ohl_media_source_tests
   platform/media_source_test.cpp
 )
