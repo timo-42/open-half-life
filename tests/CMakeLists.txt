@@ -45,6 +45,27 @@ if(DEFINED OHL_EXPECTED_OS AND NOT OHL_EXPECTED_OS STREQUAL "")
   )
 endif()
 
+add_executable(ohl_isolated_worker_common_tests
+  platform/isolated_worker_common_test.cpp
+  ${PROJECT_SOURCE_DIR}/src/platform/src/isolated_worker.cpp
+)
+target_compile_features(ohl_isolated_worker_common_tests PRIVATE cxx_std_20)
+target_include_directories(
+  ohl_isolated_worker_common_tests
+  PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/platform/include
+    ${PROJECT_SOURCE_DIR}/src/platform/src
+)
+target_link_libraries(
+  ohl_isolated_worker_common_tests PRIVATE Threads::Threads
+)
+ohl_enable_warnings(ohl_isolated_worker_common_tests)
+add_test(
+  NAME platform.isolated_worker.common
+  COMMAND ohl_isolated_worker_common_tests
+)
+set_tests_properties(platform.isolated_worker.common PROPERTIES TIMEOUT 30)
+
 add_executable(ohl_media_source_tests
   platform/media_source_test.cpp
 )
