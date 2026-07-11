@@ -879,6 +879,9 @@ class ScopedInheritableHandleWindow final {
       is_less_privileged_app_container == 0) {
     return false;
   }
+  // TokenIsLessPrivilegedAppContainer is the authoritative LPAC indication.
+  // LPAC causes access checks to disregard ALL_APPLICATION_PACKAGES; it does
+  // not require that SID to be absent from the token's general group list.
 
   std::vector<std::byte> app_sid_storage;
   if (!query_token_information(token.get(), TokenAppContainerSid,
@@ -902,25 +905,6 @@ class ScopedInheritableHandleWindow final {
       reinterpret_cast<const TOKEN_GROUPS*>(capability_storage.data());
   if (capabilities->GroupCount != 0) {
     return false;
-  }
-
-  std::array<std::byte, SECURITY_MAX_SID_SIZE> any_package_storage{};
-  DWORD any_package_bytes = static_cast<DWORD>(any_package_storage.size());
-  PSID any_package = any_package_storage.data();
-  if (!CreateWellKnownSid(WinBuiltinAnyPackageSid, nullptr, any_package,
-                          &any_package_bytes)) {
-    return false;
-  }
-
-  std::vector<std::byte> group_storage;
-  if (!query_token_information(token.get(), TokenGroups, group_storage)) {
-    return false;
-  }
-  const auto* groups = reinterpret_cast<const TOKEN_GROUPS*>(group_storage.data());
-  for (DWORD index = 0; index < groups->GroupCount; ++index) {
-    if (EqualSid(groups->Groups[index].Sid, any_package)) {
-      return false;
-    }
   }
   return true;
 }
