@@ -113,6 +113,9 @@ class ParserFrameChannel final {
   // calls have no additional effect.
   void abort() noexcept;
 
+  [[nodiscard]] std::uint64_t session_id() const noexcept {
+    return session_id_;
+  }
   [[nodiscard]] bool terminal() const noexcept;
   [[nodiscard]] ParserFrameChannelResult result() const noexcept;
 
