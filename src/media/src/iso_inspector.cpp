@@ -6,11 +6,10 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <fstream>
 #include <limits>
 #include <span>
 #include <string_view>
-#include <system_error>
+#include <utility>
 
 namespace ohl::media {
 namespace {
@@ -61,54 +60,39 @@ using Sector = std::array<std::byte, kSectorSize>;
   return crc;
 }
 
-[[nodiscard]] bool read_sector(std::ifstream& input,
+[[nodiscard]] bool read_sector(const SharedMediaSource& source,
                                const std::uint64_t sector_number,
                                Sector& destination) {
-  if (sector_number >
-      static_cast<std::uint64_t>(std::numeric_limits<std::streamoff>::max()) /
-          kSectorSize) {
+  if (source == nullptr ||
+      sector_number >
+          std::numeric_limits<std::uint64_t>::max() / kSectorSize) {
     return false;
   }
-
-  const auto offset =
-      static_cast<std::streamoff>(sector_number * kSectorSize);
-  input.clear();
-  input.seekg(offset, std::ios::beg);
-  if (!input) {
-    return false;
-  }
-
-  input.read(reinterpret_cast<char*>(destination.data()),
-             static_cast<std::streamsize>(destination.size()));
-  return input.gcount() == static_cast<std::streamsize>(destination.size());
+  return source->read_exact_at(sector_number * kSectorSize, destination) ==
+         ohl::platform::MediaSourceError::none;
 }
 
-[[nodiscard]] bool fingerprint_stream(std::ifstream& input,
-                                      const std::uint64_t expected_size,
+[[nodiscard]] bool fingerprint_source(const SharedMediaSource& source,
+                                      const std::uint64_t source_size,
+                                      const std::uint64_t maximum_bytes,
                                       std::string& digest) {
-  input.clear();
-  input.seekg(0, std::ios::beg);
-  if (!input) {
+  if (source == nullptr || source_size > maximum_bytes) {
     return false;
   }
-
   ohl::core::Sha256 sha256;
   std::array<std::byte, 64 * 1'024> buffer{};
-  std::uint64_t bytes_read = 0;
-  while (input) {
-    input.read(reinterpret_cast<char*>(buffer.data()),
-               static_cast<std::streamsize>(buffer.size()));
-    const auto count = input.gcount();
-    if (count < 0) {
+  std::uint64_t offset = 0;
+  while (offset < source_size) {
+    const auto remaining = source_size - offset;
+    const auto count = static_cast<std::size_t>(
+        std::min<std::uint64_t>(remaining, buffer.size()));
+    auto destination = std::span{buffer}.first(count);
+    if (source->read_exact_at(offset, destination) !=
+        ohl::platform::MediaSourceError::none) {
       return false;
     }
-    if (count != 0) {
-      sha256.update(std::span{buffer}.first(static_cast<std::size_t>(count)));
-      bytes_read += static_cast<std::uint64_t>(count);
-    }
-  }
-  if (!input.eof() || bytes_read != expected_size) {
-    return false;
+    sha256.update(destination);
+    offset += static_cast<std::uint64_t>(count);
   }
   digest = ohl::core::hex_encode(sha256.finish());
   return true;
@@ -134,14 +118,15 @@ using Sector = std::array<std::byte, kSectorSize>;
 }
 
 [[nodiscard]] bool has_udf_102_recognition_sequence(
-    std::ifstream& input) {
+    const SharedMediaSource& source, bool& read_failed) {
   bool found_beginning = false;
   bool found_nsr02 = false;
   Sector sector{};
 
   for (std::uint64_t sector_number = kFirstRecognitionSector;
        sector_number < kRecognitionScanLimit; ++sector_number) {
-    if (!read_sector(input, sector_number, sector)) {
+    if (!read_sector(source, sector_number, sector)) {
+      read_failed = true;
       return false;
     }
     if (!found_beginning) {
@@ -246,8 +231,9 @@ using Sector = std::array<std::byte, kSectorSize>;
 }
 
 [[nodiscard]] bool inspect_volume_descriptor_sequence(
-    std::ifstream& input, const std::uint32_t byte_length,
-    const std::uint32_t start_sector, std::string& volume_label) {
+    const SharedMediaSource& source, const std::uint32_t byte_length,
+    const std::uint32_t start_sector, std::string& volume_label,
+    bool& read_failed) {
   const auto extent_sectors =
       (static_cast<std::uint64_t>(byte_length) + kSectorSize - 1U) /
       kSectorSize;
@@ -261,7 +247,8 @@ using Sector = std::array<std::byte, kSectorSize>;
 
   for (std::uint64_t index = 0; index < sectors_to_scan; ++index) {
     const auto location = static_cast<std::uint64_t>(start_sector) + index;
-    if (!read_sector(input, location, sector)) {
+    if (!read_sector(source, location, sector)) {
+      read_failed = true;
       return false;
     }
     const std::span<const std::byte> bytes{sector};
@@ -303,55 +290,91 @@ using Sector = std::array<std::byte, kSectorSize>;
 
 }  // namespace
 
-IsoInspection inspect_iso(const std::filesystem::path& path) {
-  IsoInspection result;
-  std::error_code error_code;
-  const auto status = std::filesystem::status(path, error_code);
-  if (error_code || !std::filesystem::exists(status)) {
-    result.error = MediaError::not_found;
-    return result;
+ValidatedMedia::ValidatedMedia(SharedMediaSource source,
+                               IsoInspection inspection,
+                               SourceFingerprint fingerprint) noexcept
+    : source_(std::move(source)),
+      inspection_(std::move(inspection)),
+      fingerprint_(std::move(fingerprint)) {}
+
+namespace {
+
+[[nodiscard]] MediaError map_open_error(
+    const ohl::platform::MediaSourceError error) noexcept {
+  switch (error) {
+    case ohl::platform::MediaSourceError::not_found:
+      return MediaError::not_found;
+    case ohl::platform::MediaSourceError::not_regular_file:
+      return MediaError::not_regular_file;
+    default:
+      return MediaError::io_error;
   }
-  if (!std::filesystem::is_regular_file(status)) {
-    result.error = MediaError::not_regular_file;
+}
+
+[[nodiscard]] MediaError verify_source(
+    const SharedMediaSource& source) noexcept {
+  if (source == nullptr) {
+    return MediaError::io_error;
+  }
+  const auto error = source->verify_unchanged();
+  if (error == ohl::platform::MediaSourceError::none) {
+    return MediaError::none;
+  }
+  return error == ohl::platform::MediaSourceError::changed
+             ? MediaError::source_changed
+             : MediaError::io_error;
+}
+
+[[nodiscard]] MediaError phase_error(
+    const SharedMediaSource& source, const MediaError fallback) noexcept {
+  const auto verification = verify_source(source);
+  return verification == MediaError::none ? fallback : verification;
+}
+
+}  // namespace
+
+IsoValidationResult validate_iso(SharedMediaSource source,
+                                 const IsoValidationLimits limits) {
+  IsoValidationResult result;
+  result.error = verify_source(source);
+  if (result.error != MediaError::none) {
     return result;
   }
 
-  const auto size = std::filesystem::file_size(path, error_code);
-  if (error_code || size > std::numeric_limits<std::uint64_t>::max()) {
-    result.error = MediaError::io_error;
+  IsoInspection inspection;
+  inspection.size_bytes = source->size();
+  if (inspection.size_bytes > limits.maximum_source_bytes) {
+    result.error = MediaError::source_too_large;
     return result;
   }
-  result.size_bytes = static_cast<std::uint64_t>(size);
-  result.last_write_time = std::filesystem::last_write_time(path, error_code);
-  if (error_code) {
-    result.error = MediaError::io_error;
+  if (limits.maximum_source_bytes == 0) {
+    result.error = MediaError::source_too_large;
     return result;
   }
-  const auto sector_count = result.size_bytes / kSectorSize;
-  if (result.size_bytes % kSectorSize != 0 ||
+
+  const auto sector_count = inspection.size_bytes / kSectorSize;
+  if (inspection.size_bytes % kSectorSize != 0 ||
       sector_count <= kAnchorSector) {
     result.error = MediaError::too_small;
     return result;
   }
 
-  std::ifstream input{path, std::ios::binary};
-  if (!input) {
-    result.error = MediaError::io_error;
-    return result;
-  }
-  if (!has_udf_102_recognition_sequence(input)) {
-    result.error = MediaError::unsupported_filesystem;
+  bool read_failed = false;
+  if (!has_udf_102_recognition_sequence(source, read_failed)) {
+    result.error = phase_error(
+        source, read_failed ? MediaError::io_error
+                            : MediaError::unsupported_filesystem);
     return result;
   }
 
   Sector anchor{};
-  if (!read_sector(input, kAnchorSector, anchor)) {
-    result.error = MediaError::io_error;
+  if (!read_sector(source, kAnchorSector, anchor)) {
+    result.error = phase_error(source, MediaError::io_error);
     return result;
   }
   if (!valid_descriptor_tag(anchor, 2,
                             static_cast<std::uint32_t>(kAnchorSector))) {
-    result.error = MediaError::invalid_structure;
+    result.error = phase_error(source, MediaError::invalid_structure);
     return result;
   }
 
@@ -359,27 +382,61 @@ IsoInspection inspect_iso(const std::filesystem::path& path) {
   const auto descriptor_bytes = read_little_u32(anchor_bytes, 16);
   const auto descriptor_sector = read_little_u32(anchor_bytes, 20);
   if (!extent_is_in_bounds(descriptor_bytes, descriptor_sector,
-                           sector_count) ||
-      !inspect_volume_descriptor_sequence(input, descriptor_bytes,
-                                          descriptor_sector,
-                                          result.volume_label)) {
-    result.error = MediaError::invalid_structure;
+                           sector_count)) {
+    result.error = phase_error(source, MediaError::invalid_structure);
+    return result;
+  }
+  if (!inspect_volume_descriptor_sequence(
+          source, descriptor_bytes, descriptor_sector,
+          inspection.volume_label, read_failed)) {
+    result.error = phase_error(
+        source, read_failed ? MediaError::io_error
+                            : MediaError::invalid_structure);
     return result;
   }
 
-  result.filesystem = "ECMA-167 NSR02 candidate";
-  if (!fingerprint_stream(input, result.size_bytes, result.source_sha256)) {
-    result.error = MediaError::io_error;
+  result.error = verify_source(source);
+  if (result.error != MediaError::none) {
     return result;
   }
-  const auto final_size = std::filesystem::file_size(path, error_code);
-  if (error_code || final_size != size ||
-      std::filesystem::last_write_time(path, error_code) !=
-          result.last_write_time ||
-      error_code) {
-    result.error = MediaError::io_error;
+
+  inspection.filesystem = "ECMA-167 NSR02 candidate";
+  if (!fingerprint_source(source, inspection.size_bytes,
+                          limits.maximum_source_bytes,
+                          inspection.source_sha256)) {
+    result.error = phase_error(source, MediaError::io_error);
+    return result;
   }
+
+  result.error = verify_source(source);
+  if (result.error != MediaError::none) {
+    return result;
+  }
+
+  SourceFingerprint fingerprint{
+      .size_bytes = inspection.size_bytes,
+      .sha256 = inspection.source_sha256,
+  };
+  result.media = ValidatedMedia{std::move(source), std::move(inspection),
+                                std::move(fingerprint)};
   return result;
+}
+
+IsoInspection inspect_iso(const std::filesystem::path& path) {
+  const auto opened = ohl::platform::open_media_source(path);
+  if (!opened.valid()) {
+    IsoInspection inspection;
+    inspection.error = map_open_error(opened.error);
+    return inspection;
+  }
+
+  auto validation = validate_iso(opened.source);
+  if (!validation.valid()) {
+    IsoInspection inspection;
+    inspection.error = validation.error;
+    return inspection;
+  }
+  return validation.media->inspection();
 }
 
 }  // namespace ohl::media

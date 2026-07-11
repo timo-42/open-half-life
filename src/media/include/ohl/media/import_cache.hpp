@@ -27,7 +27,7 @@ enum class ImportCacheError {
     case ImportCacheError::invalid_request:
       return "invalid cache request";
     case ImportCacheError::source_read_failed:
-      return "source media could not be fingerprinted";
+      return "source media could not be validated";
     case ImportCacheError::source_changed:
       return "source media changed after preflight";
     case ImportCacheError::unsafe_cache_path:
@@ -53,8 +53,17 @@ struct ImportCacheResult {
   }
 };
 
-// Fingerprints validated media and publishes metadata with a same-directory
-// rename. No source bytes are copied and no media-provided code is run.
+// Publishes metadata for an already validated pinned source. It neither
+// reopens a pathname nor rehashes source content. No source bytes are copied
+// and no media-provided code is run.
+[[nodiscard]] ImportCacheResult prepare_import_cache(
+    const ValidatedMedia& media,
+    const std::filesystem::path& cache_root);
+
+// Transitional app compatibility wrapper. It opens source_path exactly once,
+// revalidates that pinned source, checks it against inspection, and delegates
+// to the capability overload. New code must retain ValidatedMedia from
+// validate_iso() and call the overload above.
 [[nodiscard]] ImportCacheResult prepare_import_cache(
     const std::filesystem::path& source_path,
     const IsoInspection& inspection,

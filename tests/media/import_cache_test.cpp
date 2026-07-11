@@ -1,19 +1,29 @@
 #include "ohl/media/import_cache.hpp"
 
+#include <array>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <span>
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <vector>
 
 namespace {
+
+constexpr std::size_t kSectorSize = 2'048;
+constexpr std::size_t kSectorCount = 300;
+using Sector = std::span<std::byte, kSectorSize>;
 
 class TemporaryDirectory final {
  public:
   TemporaryDirectory() {
-    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto nonce =
+        std::chrono::steady_clock::now().time_since_epoch().count();
     const auto created_path =
         std::filesystem::temp_directory_path() /
         ("open-half-life-import-cache-" + std::to_string(nonce));
@@ -47,6 +57,110 @@ class TemporaryDirectory final {
   bool valid_{false};
 };
 
+void write_little_u16(const Sector sector, const std::size_t offset,
+                      const std::uint16_t value) {
+  sector[offset] = static_cast<std::byte>(value & 0xffU);
+  sector[offset + 1] = static_cast<std::byte>((value >> 8U) & 0xffU);
+}
+
+void write_little_u32(const Sector sector, const std::size_t offset,
+                      const std::uint32_t value) {
+  sector[offset] = static_cast<std::byte>(value & 0xffU);
+  sector[offset + 1] = static_cast<std::byte>((value >> 8U) & 0xffU);
+  sector[offset + 2] = static_cast<std::byte>((value >> 16U) & 0xffU);
+  sector[offset + 3] = static_cast<std::byte>((value >> 24U) & 0xffU);
+}
+
+[[nodiscard]] std::uint16_t crc_itu_t(
+    const std::span<const std::byte> bytes) {
+  std::uint16_t crc = 0;
+  for (const auto value : bytes) {
+    crc ^= static_cast<std::uint16_t>(
+        static_cast<std::uint16_t>(std::to_integer<std::uint8_t>(value))
+        << 8U);
+    for (int bit = 0; bit < 8; ++bit) {
+      const bool high_bit_set = (crc & 0x8000U) != 0;
+      crc = static_cast<std::uint16_t>(crc << 1U);
+      if (high_bit_set) {
+        crc ^= 0x1021U;
+      }
+    }
+  }
+  return crc;
+}
+
+void finish_tag(const Sector sector, const std::uint16_t identifier,
+                const std::uint32_t location,
+                const std::uint16_t crc_length = 496) {
+  write_little_u16(sector, 0, identifier);
+  write_little_u16(sector, 2, 2);
+  write_little_u16(sector, 6, 1);
+  write_little_u16(sector, 10, crc_length);
+  write_little_u32(sector, 12, location);
+  write_little_u16(
+      sector, 8,
+      crc_itu_t(std::span<const std::byte>{sector}.subspan(16, crc_length)));
+
+  std::uint8_t checksum = 0;
+  for (std::size_t index = 0; index < 16; ++index) {
+    if (index != 4) {
+      checksum = static_cast<std::uint8_t>(
+          checksum + std::to_integer<std::uint8_t>(sector[index]));
+    }
+  }
+  sector[4] = static_cast<std::byte>(checksum);
+}
+
+void set_identifier(const Sector sector, const std::string& identifier) {
+  sector[0] = std::byte{0};
+  for (std::size_t index = 0; index < identifier.size(); ++index) {
+    sector[index + 1] = static_cast<std::byte>(identifier[index]);
+  }
+  sector[6] = std::byte{1};
+}
+
+[[nodiscard]] Sector sector_at(std::vector<std::byte>& image,
+                               const std::size_t index) {
+  return Sector{image.data() + index * kSectorSize, kSectorSize};
+}
+
+[[nodiscard]] std::vector<std::byte> make_valid_image() {
+  std::vector<std::byte> image(kSectorCount * kSectorSize);
+  set_identifier(sector_at(image, 18), "BEA01");
+  set_identifier(sector_at(image, 19), "NSR02");
+  set_identifier(sector_at(image, 20), "TEA01");
+
+  auto primary = sector_at(image, 32);
+  const std::string volume_label{"CACHE\"TEST"};
+  primary[24] = std::byte{8};
+  for (std::size_t index = 0; index < volume_label.size(); ++index) {
+    primary[25 + index] = static_cast<std::byte>(volume_label[index]);
+  }
+  primary[55] = static_cast<std::byte>(volume_label.size() + 1);
+  finish_tag(primary, 1, 32);
+  finish_tag(sector_at(image, 33), 5, 33);
+  auto logical = sector_at(image, 34);
+  write_little_u32(logical, 212, 2'048);
+  finish_tag(logical, 6, 34, 424);
+  finish_tag(sector_at(image, 35), 8, 35);
+
+  auto anchor = sector_at(image, 256);
+  write_little_u32(anchor, 16, 16 * 2'048);
+  write_little_u32(anchor, 20, 32);
+  write_little_u32(anchor, 24, 16 * 2'048);
+  write_little_u32(anchor, 28, 48);
+  finish_tag(anchor, 2, 256);
+  return image;
+}
+
+[[nodiscard]] bool write_image(const std::filesystem::path& path,
+                               const std::vector<std::byte>& image) {
+  std::ofstream output{path, std::ios::binary};
+  output.write(reinterpret_cast<const char*>(image.data()),
+               static_cast<std::streamsize>(image.size()));
+  return output.good();
+}
+
 [[nodiscard]] bool write_text(const std::filesystem::path& path,
                               const std::string& text) {
   std::ofstream output{path, std::ios::binary};
@@ -62,30 +176,40 @@ int main() {
     std::cerr << "failed to create import-cache test directory\n";
     return 1;
   }
+
   const auto source = temporary.path() / "private-source-name.iso";
-  if (!write_text(source, "abc")) {
+  if (!write_image(source, make_valid_image())) {
     std::cerr << "failed to create synthetic import source\n";
     return 1;
   }
-  const ohl::media::IsoInspection inspection{
-      .error = ohl::media::MediaError::none,
-      .size_bytes = 3,
-      .last_write_time = std::filesystem::last_write_time(source),
-      .source_sha256 = "ba7816bf8f01cfea414140de5dae2223"
-                       "b00361a396177a9cb410ff61f20015ad",
-      .filesystem = "synthetic",
-      .volume_label = "TEST\"LABEL",
-  };
+  const auto opened = ohl::platform::open_media_source(source);
+  auto validation = ohl::media::validate_iso(opened.source);
+  if (!opened.valid() || !validation.valid()) {
+    std::cerr << "failed to validate synthetic import source\n";
+    return 1;
+  }
+  const auto fingerprint = validation.media->fingerprint();
+
+  // Replacing the pathname after validation must not affect capability cache
+  // preparation, which neither reopens nor rehashes that path.
+  const auto displaced = temporary.path() / "displaced-source.iso";
+  std::error_code error_code;
+  std::filesystem::rename(source, displaced, error_code);
+  if (error_code ||
+      !write_image(source,
+                   std::vector<std::byte>(kSectorCount * kSectorSize))) {
+    std::cerr << "failed to install pathname replacement fixture\n";
+    return 1;
+  }
+
   const auto cache_root = temporary.path() / "cache";
   const auto first =
-      ohl::media::prepare_import_cache(source, inspection, cache_root);
-  constexpr std::string_view kExpectedDigest =
-      "ba7816bf8f01cfea414140de5dae2223"
-      "b00361a396177a9cb410ff61f20015ad";
+      ohl::media::prepare_import_cache(*validation.media, cache_root);
   if (!first.valid() || first.cache_hit ||
-      first.source_sha256 != kExpectedDigest ||
-      first.source_directory != cache_root / "sources" / kExpectedDigest) {
-    std::cerr << "new cache entry was not prepared: "
+      first.source_sha256 != fingerprint.sha256 ||
+      first.source_directory !=
+          cache_root / "sources" / fingerprint.sha256) {
+    std::cerr << "new cache entry did not preserve validated fingerprint: "
               << ohl::media::to_string(first.error) << '\n';
     return 1;
   }
@@ -94,18 +218,21 @@ int main() {
   std::ostringstream manifest_stream;
   manifest_stream << manifest_input.rdbuf();
   const auto manifest = manifest_stream.str();
-  if (!manifest_input || manifest.find(kExpectedDigest) == std::string::npos ||
-      manifest.find("TEST\\\"LABEL") == std::string::npos ||
+  if (!manifest_input ||
+      manifest.find(fingerprint.sha256) == std::string::npos ||
+      manifest.find(std::to_string(fingerprint.size_bytes)) ==
+          std::string::npos ||
+      manifest.find("CACHE\\\"TEST") == std::string::npos ||
       manifest.find("private-source-name") != std::string::npos ||
       manifest.find("not-imported") == std::string::npos) {
-    std::cerr << "provenance manifest was missing or exposed the source path\n";
+    std::cerr << "provenance manifest was inconsistent or exposed the path\n";
     return 1;
   }
 
   const auto second =
-      ohl::media::prepare_import_cache(source, inspection, cache_root);
+      ohl::media::prepare_import_cache(*validation.media, cache_root);
   if (!second.valid() || !second.cache_hit ||
-      second.source_sha256 != first.source_sha256) {
+      second.source_sha256 != fingerprint.sha256) {
     std::cerr << "matching provenance cache was not reused\n";
     return 1;
   }
@@ -115,51 +242,20 @@ int main() {
     return 1;
   }
   const auto conflict =
-      ohl::media::prepare_import_cache(source, inspection, cache_root);
+      ohl::media::prepare_import_cache(*validation.media, cache_root);
   if (conflict.error != ohl::media::ImportCacheError::manifest_conflict) {
     std::cerr << "conflicting provenance manifest was not rejected\n";
     return 1;
   }
 
-  auto changed_inspection = inspection;
-  changed_inspection.size_bytes = 4;
-  const auto changed =
-      ohl::media::prepare_import_cache(source, changed_inspection, cache_root);
-  if (changed.error != ohl::media::ImportCacheError::source_changed) {
-    std::cerr << "changed source size was not rejected\n";
-    return 1;
-  }
-  auto stale_inspection = inspection;
-  stale_inspection.last_write_time -= std::chrono::seconds{1};
-  const auto stale =
-      ohl::media::prepare_import_cache(source, stale_inspection, cache_root);
-  if (stale.error != ohl::media::ImportCacheError::source_changed) {
-    std::cerr << "changed source timestamp was not rejected\n";
-    return 1;
-  }
-  auto replaced_inspection = inspection;
-  replaced_inspection.source_sha256 = std::string(64, '0');
-  const auto replaced = ohl::media::prepare_import_cache(
-      source, replaced_inspection, cache_root);
-  if (replaced.error != ohl::media::ImportCacheError::source_changed) {
-    std::cerr << "same-size source replacement was not rejected\n";
-    return 1;
-  }
-  const auto missing = ohl::media::prepare_import_cache(
-      temporary.path() / "missing.iso", inspection, cache_root);
-  if (missing.error != ohl::media::ImportCacheError::source_changed) {
-    std::cerr << "missing import source returned the wrong error\n";
-    return 1;
-  }
   const auto relative = ohl::media::prepare_import_cache(
-      source, inspection, std::filesystem::path{"relative-cache"});
+      *validation.media, std::filesystem::path{"relative-cache"});
   if (relative.error != ohl::media::ImportCacheError::invalid_request) {
     std::cerr << "relative cache root was not rejected\n";
     return 1;
   }
 
   const auto link = temporary.path() / "linked-cache";
-  std::error_code error_code;
   std::filesystem::create_directory_symlink(cache_root, link, error_code);
 #if !defined(_WIN32)
   if (error_code) {
@@ -169,35 +265,60 @@ int main() {
 #endif
   if (!error_code) {
     const auto linked =
-        ohl::media::prepare_import_cache(source, inspection, link);
+        ohl::media::prepare_import_cache(*validation.media, link);
     if (linked.error != ohl::media::ImportCacheError::unsafe_cache_path) {
       std::cerr << "linked cache root was not rejected\n";
       return 1;
     }
   }
 
-  const auto replacement = temporary.path() / "replacement.iso";
-  if (!write_text(replacement, "xyz")) {
-    std::cerr << "failed to create same-size replacement source\n";
+  const auto mutable_source = temporary.path() / "mutable-source.iso";
+  if (!write_image(mutable_source, make_valid_image())) {
+    std::cerr << "failed to create mutable source fixture\n";
     return 1;
   }
-  std::filesystem::last_write_time(replacement, inspection.last_write_time,
-                                   error_code);
-  if (error_code || !std::filesystem::remove(source, error_code) || error_code) {
-    std::cerr << "failed to prepare same-time replacement source\n";
+  const auto mutable_opened =
+      ohl::platform::open_media_source(mutable_source);
+  auto mutable_validation =
+      ohl::media::validate_iso(mutable_opened.source);
+  const auto original_write_time =
+      std::filesystem::last_write_time(mutable_source, error_code);
+  auto changed_image = make_valid_image();
+  changed_image[0] ^= std::byte{1};
+  if (!mutable_opened.valid() || !mutable_validation.valid() || error_code ||
+      !write_image(mutable_source, changed_image)) {
+    std::cerr << "failed to prepare same-object cache mutation\n";
     return 1;
   }
-  std::filesystem::rename(replacement, source, error_code);
+  std::filesystem::last_write_time(
+      mutable_source, original_write_time - std::chrono::seconds{1},
+      error_code);
   if (error_code) {
-    std::cerr << "failed to install same-time replacement source\n";
+    std::cerr << "failed to make cache mutation metadata observable\n";
     return 1;
   }
-  const auto physically_replaced =
-      ohl::media::prepare_import_cache(source, inspection, cache_root);
-  if (physically_replaced.error !=
-      ohl::media::ImportCacheError::source_changed) {
-    std::cerr << "same-size, same-time source replacement was not rejected\n";
+  const auto changed = ohl::media::prepare_import_cache(
+      *mutable_validation.media, temporary.path() / "changed-cache");
+  if (changed.error != ohl::media::ImportCacheError::source_changed) {
+    std::cerr << "same-object mutation after validation was not rejected\n";
     return 1;
   }
+
+  // Keep the path overload compiling until the app cutover and verify that it
+  // delegates successfully for an unchanged synthetic source.
+  const auto legacy_source = temporary.path() / "legacy-source.iso";
+  if (!write_image(legacy_source, make_valid_image())) {
+    std::cerr << "failed to create transitional wrapper fixture\n";
+    return 1;
+  }
+  const auto legacy_inspection = ohl::media::inspect_iso(legacy_source);
+  const auto legacy = ohl::media::prepare_import_cache(
+      legacy_source, legacy_inspection, temporary.path() / "legacy-cache");
+  if (!legacy.valid() ||
+      legacy.source_sha256 != legacy_inspection.source_sha256) {
+    std::cerr << "transitional cache wrapper failed\n";
+    return 1;
+  }
+
   return 0;
 }

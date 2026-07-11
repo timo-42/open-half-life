@@ -10,6 +10,8 @@
 #include <iostream>
 #include <span>
 #include <string>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -141,6 +143,11 @@ int expect_error(const ohl::media::MediaError actual,
 }  // namespace
 
 int main() {
+  static_assert(!std::is_default_constructible_v<ohl::media::ValidatedMedia>);
+  static_assert(!std::is_copy_constructible_v<ohl::media::ValidatedMedia>);
+  static_assert(std::is_nothrow_move_constructible_v<
+                ohl::media::ValidatedMedia>);
+
   const auto directory = std::filesystem::temp_directory_path() /
                          ("open-half-life-media-tests-" +
                           std::to_string(std::chrono::steady_clock::now()
@@ -190,6 +197,74 @@ int main() {
       valid.volume_label != "SYNTHETIC") {
     std::cerr << "valid synthetic ECMA-167 candidate was rejected: "
               << ohl::media::to_string(valid.error) << '\n';
+    return 1;
+  }
+
+  const auto pinned_path = directory / "pinned.iso";
+  const auto displaced_path = directory / "pinned-original.iso";
+  if (!write_image(pinned_path, make_valid_image())) {
+    std::cerr << "failed to write pinned-source fixture\n";
+    return 1;
+  }
+  const auto pinned = ohl::platform::open_media_source(pinned_path);
+  if (!pinned.valid()) {
+    std::cerr << "failed to acquire pinned-source fixture\n";
+    return 1;
+  }
+  std::filesystem::rename(pinned_path, displaced_path, error_code);
+  if (error_code ||
+      !write_image(pinned_path,
+                   std::vector<std::byte>(kSectorCount * kSectorSize))) {
+    std::cerr << "failed to replace the pinned source pathname\n";
+    return 1;
+  }
+  auto pinned_validation = ohl::media::validate_iso(pinned.source);
+  if (!pinned_validation.valid() ||
+      pinned_validation.media->fingerprint().sha256 != valid.source_sha256) {
+    std::cerr << "pathname replacement retargeted pinned validation\n";
+    return 1;
+  }
+
+  const auto limited = ohl::media::validate_iso(
+      pinned.source,
+      {.maximum_source_bytes = pinned.source->size() - 1U});
+  if (expect_error(limited.error, ohl::media::MediaError::source_too_large,
+                   "explicit source byte limit") != 0) {
+    return 1;
+  }
+  auto moved_media = std::move(*pinned_validation.media);
+  if (!moved_media.valid() || pinned_validation.media->valid()) {
+    std::cerr << "validated-media move did not transfer the capability\n";
+    return 1;
+  }
+
+  const auto mutated_path = directory / "same-object-mutated.iso";
+  if (!write_image(mutated_path, make_valid_image())) {
+    std::cerr << "failed to write same-object mutation fixture\n";
+    return 1;
+  }
+  const auto mutated = ohl::platform::open_media_source(mutated_path);
+  const auto original_write_time =
+      std::filesystem::last_write_time(mutated_path, error_code);
+  auto mutated_image = make_valid_image();
+  mutated_image[0] ^= std::byte{1};
+  if (!mutated.valid() || error_code ||
+      !write_image(mutated_path, mutated_image)) {
+    std::cerr << "failed to prepare same-object mutation\n";
+    return 1;
+  }
+  std::filesystem::last_write_time(
+      mutated_path, original_write_time - std::chrono::seconds{1},
+      error_code);
+  if (error_code) {
+    std::cerr << "failed to make mutation metadata observable\n";
+    return 1;
+  }
+  const auto mutated_validation =
+      ohl::media::validate_iso(mutated.source);
+  if (expect_error(mutated_validation.error,
+                   ohl::media::MediaError::source_changed,
+                   "same-object mutation") != 0) {
     return 1;
   }
 

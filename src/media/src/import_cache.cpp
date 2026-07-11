@@ -57,13 +57,13 @@ namespace {
 }
 
 [[nodiscard]] std::string make_manifest(const IsoInspection& inspection,
-                                        const std::string_view digest) {
+                                        const SourceFingerprint& fingerprint) {
   std::ostringstream output;
   output << "{\n"
          << "  \"format_version\": 1,\n"
          << "  \"source\": {\n"
-         << "    \"sha256\": \"" << digest << "\",\n"
-         << "    \"size_bytes\": " << inspection.size_bytes << ",\n"
+         << "    \"sha256\": \"" << fingerprint.sha256 << "\",\n"
+         << "    \"size_bytes\": " << fingerprint.size_bytes << ",\n"
          << "    \"filesystem\": \""
          << escape_json(inspection.filesystem) << "\",\n"
          << "    \"volume_label\": \""
@@ -121,54 +121,18 @@ namespace {
   return ImportCacheError::none;
 }
 
-[[nodiscard]] ImportCacheError fingerprint_source(
-    const std::filesystem::path& source_path,
-    const std::uint64_t expected_size,
-    const std::filesystem::file_time_type expected_write_time,
-    std::string& digest) {
-  std::error_code error_code;
-  if (std::filesystem::file_size(source_path, error_code) != expected_size ||
-      error_code ||
-      std::filesystem::last_write_time(source_path, error_code) !=
-          expected_write_time ||
-      error_code) {
-    return ImportCacheError::source_changed;
+[[nodiscard]] ImportCacheError verify_validated_source(
+    const SharedMediaSource& source) noexcept {
+  if (source == nullptr) {
+    return ImportCacheError::invalid_request;
   }
-  std::ifstream input{source_path, std::ios::binary};
-  if (!input) {
-    return ImportCacheError::source_read_failed;
+  const auto error = source->verify_unchanged();
+  if (error == ohl::platform::MediaSourceError::none) {
+    return ImportCacheError::none;
   }
-
-  ohl::core::Sha256 sha256;
-  std::array<std::byte, 64 * 1'024> buffer{};
-  std::uint64_t bytes_read = 0;
-  while (input) {
-    input.read(reinterpret_cast<char*>(buffer.data()),
-               static_cast<std::streamsize>(buffer.size()));
-    const auto count = input.gcount();
-    if (count < 0) {
-      return ImportCacheError::source_read_failed;
-    }
-    if (count != 0) {
-      sha256.update(std::span{buffer}.first(static_cast<std::size_t>(count)));
-      bytes_read += static_cast<std::uint64_t>(count);
-    }
-  }
-  if (!input.eof()) {
-    return ImportCacheError::source_read_failed;
-  }
-  if (bytes_read != expected_size) {
-    return ImportCacheError::source_changed;
-  }
-  if (std::filesystem::file_size(source_path, error_code) != expected_size ||
-      error_code ||
-      std::filesystem::last_write_time(source_path, error_code) !=
-          expected_write_time ||
-      error_code) {
-    return ImportCacheError::source_changed;
-  }
-  digest = ohl::core::hex_encode(sha256.finish());
-  return ImportCacheError::none;
+  return error == ohl::platform::MediaSourceError::changed
+             ? ImportCacheError::source_changed
+             : ImportCacheError::source_read_failed;
 }
 
 [[nodiscard]] bool read_text_file(const std::filesystem::path& path,
@@ -263,37 +227,78 @@ namespace {
 }  // namespace
 
 ImportCacheResult prepare_import_cache(
-    const std::filesystem::path& source_path,
-    const IsoInspection& inspection,
+    const ValidatedMedia& media,
     const std::filesystem::path& cache_root) {
   ImportCacheResult result;
-  if (!inspection.valid() || inspection.size_bytes == 0 ||
-      !cache_root.is_absolute()) {
+  if (!media.valid() || !cache_root.is_absolute()) {
     result.error = ImportCacheError::invalid_request;
     return result;
   }
 
-  result.error = fingerprint_source(source_path, inspection.size_bytes,
-                                    inspection.last_write_time,
-                                    result.source_sha256);
+  const auto& source = media.source();
+  const auto& inspection = media.inspection();
+  const auto& fingerprint = media.fingerprint();
+  if (source == nullptr || inspection.size_bytes != fingerprint.size_bytes ||
+      inspection.source_sha256 != fingerprint.sha256) {
+    result.error = ImportCacheError::invalid_request;
+    return result;
+  }
+  result.error = verify_validated_source(source);
   if (result.error != ImportCacheError::none) {
     return result;
   }
-  if (inspection.source_sha256.size() != 64 ||
-      result.source_sha256 != inspection.source_sha256) {
-    result.error = ImportCacheError::source_changed;
-    return result;
-  }
+  result.source_sha256 = fingerprint.sha256;
   result.source_directory =
       cache_root / "sources" / result.source_sha256;
   result.error = ensure_directory_tree(result.source_directory);
   if (result.error != ImportCacheError::none) {
     return result;
   }
-  const auto manifest = make_manifest(inspection, result.source_sha256);
+  result.error = verify_validated_source(source);
+  if (result.error != ImportCacheError::none) {
+    return result;
+  }
+  const auto manifest = make_manifest(inspection, fingerprint);
   result.error = publish_manifest(result.source_directory, manifest,
                                   result.cache_hit);
+  if (result.error == ImportCacheError::none) {
+    result.error = verify_validated_source(source);
+  }
   return result;
+}
+
+ImportCacheResult prepare_import_cache(
+    const std::filesystem::path& source_path,
+    const IsoInspection& inspection,
+    const std::filesystem::path& cache_root) {
+  ImportCacheResult result;
+  if (!inspection.valid() || inspection.size_bytes == 0 ||
+      inspection.source_sha256.size() != 64 || !cache_root.is_absolute()) {
+    result.error = ImportCacheError::invalid_request;
+    return result;
+  }
+
+  const auto opened = ohl::platform::open_media_source(source_path);
+  if (!opened.valid()) {
+    result.error = ImportCacheError::source_changed;
+    return result;
+  }
+  auto validation = validate_iso(opened.source);
+  if (!validation.valid()) {
+    result.error = validation.error == MediaError::source_changed
+                       ? ImportCacheError::source_changed
+                       : ImportCacheError::source_read_failed;
+    return result;
+  }
+  const auto& actual = validation.media->inspection();
+  if (actual.size_bytes != inspection.size_bytes ||
+      actual.source_sha256 != inspection.source_sha256 ||
+      actual.filesystem != inspection.filesystem ||
+      actual.volume_label != inspection.volume_label) {
+    result.error = ImportCacheError::source_changed;
+    return result;
+  }
+  return prepare_import_cache(*validation.media, cache_root);
 }
 
 }  // namespace ohl::media
