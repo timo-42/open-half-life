@@ -2,8 +2,9 @@
 
 ## M0: bootstrap
 
-Status: accepted; hosted CI current at
-`df5ea6d51037671ef0165dacac9fe26df1bf4d2b`
+Status: accepted; feature baseline at
+`df5ea6d51037671ef0165dacac9fe26df1bf4d2b`; current hosted CI at
+`3fd0375c7a759b0fcd269fa73d6bdc8a36123134`
 
 - C++20 CMake/Ninja build
 - Linux x64, Windows x64, and macOS Apple Silicon CI matrix
@@ -15,12 +16,14 @@ Status: accepted; hosted CI current at
 Hosted evidence includes Linux x64, Linux x64 with
 address/undefined-behavior sanitizers, Windows x64, macOS Apple Silicon, and a
 Linux x64 experimental-adapter build. All five required jobs pass for the
-accepted package-1 through package-4 commit.
+historical package-1 through package-4 feature baseline. The same five jobs
+also pass at the current exact hosted-CI SHA above.
 
 ## M1: ISO detection
 
-Status: accepted; hosted CI current at
-`df5ea6d51037671ef0165dacac9fe26df1bf4d2b`
+Status: accepted; feature baseline at
+`df5ea6d51037671ef0165dacac9fe26df1bf4d2b`; current hosted CI at
+`3fd0375c7a759b0fcd269fa73d6bdc8a36123134`
 
 Implemented acceptance criteria:
 
@@ -130,10 +133,27 @@ Remaining M2 work:
   selection, and the parser worker boundary remain required before M2 can be
   completed
 
-The accepted package-4 hosted evidence is current across Linux x64, Linux
-sanitizers, the Linux experimental configuration, Windows x64, and macOS Apple
-Silicon. It validates current M2 functionality only; it is not evidence for the
-remaining production extraction path.
+The package-4 run at `df5ea6d` remains the historical hosted evidence for that
+feature baseline. Current exact-SHA evidence at
+`3fd0375c7a759b0fcd269fa73d6bdc8a36123134` passes all five required jobs: Linux
+x64, Linux sanitizers, the Linux experimental configuration, Windows x64, and
+macOS Apple Silicon. This evidence validates implemented M2 functionality only;
+it is not evidence for the remaining production extraction path.
+
+The accepted isolated parser protocol sequence starts with the bounded OWP/1
+codec at `3bc135c`, adds completion/cancellation race handling at `f17a40a`,
+and closes its late-reply drain gap at `3fd0375`. The accepted result includes
+canonical framing, generic bounded payload primitives and budgets, and
+fail-closed session ordering. It permits exactly one same-request late reply to
+drain after `cancel_ack` only when a read was already outstanding before
+cancellation. This accepted protocol layer supports active M2 work but is not a
+production import path: no runtime target depends on it, it has no source,
+destination, extraction, or cache authority, and it has no message-specific
+typed payload schemas. Every message type still requires bounded typed decoding
+and complete payload consumption before its content can be used or cause a
+production state transition. The protocol work authorizes no proprietary
+extraction, and no worker implementation, transport, or native sandbox backend
+has been accepted or integrated.
 
 ## Later milestones
 

@@ -147,6 +147,15 @@ Untrusted container and filesystem metadata must be handled by a bounded parser
 boundary. Where a parser is not independently hardened, run it in a constrained
 worker process before allowing it to feed production import.
 
+The current `parser` library is accepted as bounded protocol infrastructure
+only. It provides canonical OWP/1 framing, generic bounded primitive payload
+helpers, frame and cumulative budgets, and fail-closed session ordering,
+including the cancellation and one-shot late-reply drain rules documented in
+`ARCHITECTURE.md`. It provides no message-specific typed payload schemas and is
+not a worker, sandbox, transport, payload extractor, or runtime import path. No
+runtime target depends on it, and this protocol work authorizes no proprietary
+extraction.
+
 - Give the worker read-only access only to the pinned source or bounded byte
   ranges; do not give it a destination path, cache authority, network access,
   credentials, or permission to execute media content.
@@ -160,6 +169,16 @@ worker process before allowing it to feed production import.
   never attach a dump or raw parser transcript automatically.
 - Validate all selected paths, declared sizes, streamed sizes, and conflicts in
   trusted project code before destination mutation.
+
+Framing and header/state checks must never be treated as payload acceptance. A
+production receiver must decode each message through its specific typed schema,
+bound every field, count, length, and cumulative resource use, reject malformed
+or noncanonical values, and prove that the decoder consumed the entire payload.
+Only after that complete validation may the receiver use message content or
+transition production session state. The generic payload helpers and
+header/state validator are not such an authorization gate and must remain
+outside runtime import until this rule and the process-isolation requirements
+above are implemented and accepted.
 
 Isolation limits parser authority; it does not make parser output safe to log,
 commit, or trust without validation.

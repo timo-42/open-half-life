@@ -8,6 +8,7 @@ The intended module set is:
 
 - `core`: logging, diagnostics, common utilities
 - `platform`: operating-system and architecture abstraction
+- `parser`: accepted bounded protocol infrastructure; not a worker runtime
 - `formats`: independent parsers for documented binary formats
 - `vfs`: path normalization, mounts, and read-only virtual files
 - `media`: validation and import of user-provided media
@@ -19,8 +20,8 @@ The intended module set is:
 - `tools`: developer and media-inspection programs
 - `app`: composition root and executable lifecycle
 
-The `core`, `platform`, `media`, `vfs`, and `app` modules now exist. New modules
-must expose public headers beneath `include/ohl/<module>` and keep
+The `core`, `parser`, `platform`, `media`, `vfs`, and `app` modules now exist.
+New modules must expose public headers beneath `include/ohl/<module>` and keep
 implementation details in `src`. Third-party API types should not leak across
 module interfaces.
 
@@ -30,10 +31,42 @@ The current dependency direction is:
 app -> core + platform + media + vfs
 media -> platform + standard library; core is a private implementation edge
 vfs -> platform + standard library; libudfread is a private implementation edge
+parser -> standard library
 core/platform -> standard library
 
 experimental media cabinet adapter -> vfs + Unshield + zlib
 ```
+
+The current `parser` target is deliberately isolated: no runtime target depends
+on it, and its only allowed dependency edge is toward the standard library. Its
+accepted OWP/1 protocol layer provides canonical bounded framing and headers,
+generic bounded primitive payload readers and writers, per-frame and cumulative
+message/payload budgets, and fail-closed session ordering. These generic payload
+helpers can reject invalid primitive values and incomplete consumption, but no
+message-specific typed payload schemas exist. The target does not implement or
+authorize worker creation, process isolation, source access, component
+selection, payload extraction, destination mutation, or cache publication.
+
+The accepted session-ordering contract handles duplex cancellation races
+without granting message content any trust. Completion wins when `complete` and
+`cancel` cross, provided no read remains unresolved; one immediately late
+same-request `cancel` is then consumed as stale without `cancel_ack`. While
+cancellation is pending, only bounded same-request crossing traffic is
+accepted. A read first observed after cancellation cannot be serviced and does
+not open a drain allowance. If `cancel_ack` overtakes the already-enqueued reply
+for a read that was outstanding before cancellation, the cancelled session may
+consume exactly one same-request parent-to-worker `read_reply` solely to drain
+the transport. A wrong identifier or direction, a duplicate, shutdown, or any
+terminal failure rejects or closes that one-shot allowance.
+
+Header validity and session ordering are not sufficient to trust a message.
+Before any production state transition or use of message content, a
+message-specific typed decoder must apply explicit bounds to every payload
+field, count, and length, reject noncanonical values, and require complete
+payload consumption. The accepted generic codec and header/state infrastructure
+are not that validation gate and must remain disconnected from runtime import
+until typed payload validation and the worker-isolation requirements in
+`MEDIA_IMPORT.md` are implemented and accepted.
 
 There is intentionally no `vfs -> media` edge. Both modules consume the same
 low-level `platform::MediaSource` capability, while `app` is the composition
