@@ -277,6 +277,10 @@ struct ProtocolBudgets {
 // may resolve a read that was already outstanding at cancellation, after which
 // result and completion frames may finish normally. A read request first seen
 // after cancellation cannot be serviced and requires cancel_ack termination.
+// If cancel_ack overtakes the already-enqueued reply for a pre-cancel read, the
+// cancelled session accepts that same-request reply exactly once only to drain
+// the transport. A post-cancel read request never opens this drain window, and
+// accepting the reply, shutdown, or any terminal failure closes it.
 class ProtocolStateValidator final {
  public:
   explicit ProtocolStateValidator(
@@ -314,6 +318,7 @@ class ProtocolStateValidator final {
   std::uint64_t active_request_id_{0};
   std::uint64_t last_request_id_{0};
   std::uint64_t completed_request_id_{0};
+  std::uint64_t late_read_reply_request_id_{0};
   std::uint64_t message_count_{0};
   std::uint64_t payload_bytes_{0};
   MessageType active_result_type_{MessageType::complete};

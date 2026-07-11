@@ -690,6 +690,103 @@ constexpr std::uint64_t kSession = 0x0102'0304'0506'0708ULL;
   return true;
 }
 
+[[nodiscard]] bool test_late_read_reply_drain() {
+  for (const auto operation :
+       {MessageType::enumerate, MessageType::stream_entry}) {
+    const auto acknowledged = [operation](const bool pre_cancel_read,
+                                          const bool post_cancel_read) {
+      ProtocolStateValidator validator{kSession};
+      if (!handshake(validator) ||
+          !observe(validator, MessageDirection::parent_to_worker,
+                   operation, 1) ||
+          (pre_cancel_read &&
+           !observe(validator, MessageDirection::worker_to_parent,
+                    MessageType::read_request, 1)) ||
+          !observe(validator, MessageDirection::parent_to_worker,
+                   MessageType::cancel, 1) ||
+          (post_cancel_read &&
+           !observe(validator, MessageDirection::worker_to_parent,
+                    MessageType::read_request, 1)) ||
+          !observe(validator, MessageDirection::worker_to_parent,
+                   MessageType::cancel_ack, 1)) {
+        return validator;
+      }
+      return validator;
+    };
+
+    // cancel_ack may overtake the reply that was already queued in the
+    // opposite direction. The cancelled session drains it once and remains
+    // terminal until shutdown.
+    auto valid = acknowledged(true, false);
+    if (valid.state() != SessionState::cancelled ||
+        valid.active_request_id() != 0 ||
+        !observe(valid, MessageDirection::parent_to_worker,
+                 MessageType::read_reply, 1) ||
+        valid.state() != SessionState::cancelled ||
+        !observe(valid, MessageDirection::parent_to_worker,
+                 MessageType::shutdown) ||
+        valid.state() != SessionState::closed) {
+      return fail("late pre-cancel read reply was not drained once");
+    }
+
+    auto wrong_id = acknowledged(true, false);
+    const auto wrong_id_error = wrong_id.observe(
+        MessageDirection::parent_to_worker,
+        frame(MessageType::read_reply, 2));
+    if (wrong_id_error != ProtocolError::wrong_request_id ||
+        wrong_id.observe(MessageDirection::parent_to_worker,
+                         frame(MessageType::read_reply, 1)) != wrong_id_error ||
+        wrong_id.state() != SessionState::failed) {
+      return fail("wrong-id late read reply did not fail stickily");
+    }
+
+    auto wrong_direction = acknowledged(true, false);
+    const auto wrong_direction_error = wrong_direction.observe(
+        MessageDirection::worker_to_parent,
+        frame(MessageType::read_reply, 1));
+    if (wrong_direction_error != ProtocolError::terminal_state ||
+        wrong_direction.observe(MessageDirection::parent_to_worker,
+                                frame(MessageType::read_reply, 1)) !=
+            wrong_direction_error ||
+        wrong_direction.state() != SessionState::failed) {
+      return fail("wrong-direction late read reply did not fail stickily");
+    }
+
+    auto duplicate = acknowledged(true, false);
+    if (!observe(duplicate, MessageDirection::parent_to_worker,
+                 MessageType::read_reply, 1) ||
+        duplicate.observe(MessageDirection::parent_to_worker,
+                          frame(MessageType::read_reply, 1)) !=
+            ProtocolError::terminal_state) {
+      return fail("duplicate late read reply was accepted");
+    }
+
+    auto no_outstanding = acknowledged(false, false);
+    if (no_outstanding.observe(MessageDirection::parent_to_worker,
+                               frame(MessageType::read_reply, 1)) !=
+        ProtocolError::terminal_state) {
+      return fail("cancel without an outstanding read opened a drain window");
+    }
+
+    auto post_cancel_read = acknowledged(false, true);
+    if (post_cancel_read.observe(MessageDirection::parent_to_worker,
+                                 frame(MessageType::read_reply, 1)) !=
+        ProtocolError::terminal_state) {
+      return fail("post-cancel read request opened a drain window");
+    }
+
+    auto shutdown = acknowledged(true, false);
+    if (!observe(shutdown, MessageDirection::parent_to_worker,
+                 MessageType::shutdown) ||
+        shutdown.observe(MessageDirection::parent_to_worker,
+                         frame(MessageType::read_reply, 1)) !=
+            ProtocolError::terminal_state) {
+      return fail("shutdown did not close the late-reply drain window");
+    }
+  }
+  return true;
+}
+
 [[nodiscard]] bool test_direction_and_active_terminal_rejections() {
   const std::array operations{MessageType::enumerate,
                               MessageType::stream_entry};
@@ -1021,6 +1118,7 @@ int main() {
                  test_valid_state_sequence() && test_state_rejections() &&
                  test_crossed_completion_and_cancellation() &&
                  test_unresolved_reads_block_crossed_completion() &&
+                 test_late_read_reply_drain() &&
                  test_direction_and_active_terminal_rejections() &&
                  test_cancelling_crossed_traffic_rejections() &&
                  test_terminal_and_cancel_rejections() &&

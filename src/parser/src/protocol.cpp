@@ -489,6 +489,7 @@ ProtocolStateValidator::ProtocolStateValidator(
 
 ProtocolError ProtocolStateValidator::fail(
     const ProtocolError error) noexcept {
+  late_read_reply_request_id_ = 0;
   error_ = error;
   state_ = SessionState::failed;
   return error_;
@@ -516,6 +517,7 @@ ProtocolError ProtocolStateValidator::begin_request(
   last_request_id_ = header.request_id;
   active_request_id_ = header.request_id;
   completed_request_id_ = 0;
+  late_read_reply_request_id_ = 0;
   accept_late_cancel_ = false;
   read_in_flight_ = false;
   crossed_read_request_seen_ = false;
@@ -530,6 +532,7 @@ void ProtocolStateValidator::complete_request(
     const bool accept_late_cancel) noexcept {
   completed_request_id_ = active_request_id_;
   active_request_id_ = 0;
+  late_read_reply_request_id_ = 0;
   read_in_flight_ = false;
   crossed_read_request_seen_ = false;
   accept_late_cancel_ = accept_late_cancel;
@@ -660,6 +663,8 @@ ProtocolError ProtocolStateValidator::observe(
       }
       if (direction == MessageDirection::worker_to_parent &&
           header.type == MessageType::cancel_ack) {
+        late_read_reply_request_id_ =
+            read_in_flight_ ? active_request_id_ : 0;
         active_request_id_ = 0;
         read_in_flight_ = false;
         crossed_read_request_seen_ = false;
@@ -707,7 +712,17 @@ ProtocolError ProtocolStateValidator::observe(
     case SessionState::cancelled:
       if (direction == MessageDirection::parent_to_worker &&
           header.type == MessageType::shutdown) {
+        late_read_reply_request_id_ = 0;
         state_ = SessionState::closed;
+        return ProtocolError::none;
+      }
+      if (direction == MessageDirection::parent_to_worker &&
+          header.type == MessageType::read_reply &&
+          late_read_reply_request_id_ != 0) {
+        if (header.request_id != late_read_reply_request_id_) {
+          return fail(ProtocolError::wrong_request_id);
+        }
+        late_read_reply_request_id_ = 0;
         return ProtocolError::none;
       }
       return fail(ProtocolError::terminal_state);
