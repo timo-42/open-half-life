@@ -57,6 +57,14 @@ binary is executed. See [docs/MILESTONES.md](docs/MILESTONES.md)
 for current progress and [docs/CLEAN_ROOM.md](docs/CLEAN_ROOM.md) before
 contributing compatibility work.
 
+Linux x86-64 builds contain an isolated-worker process backend, but that
+containment mechanism is not a production media importer. The repository does
+not yet build or install the media-parser worker service expected by the fixed
+production launch path, nor does it compose worker/session coordination,
+runtime-only recipe selection, payload staging/publication, or end-to-end
+import evidence. Media import is therefore unavailable, including on Windows
+and macOS, whose isolated-worker factories remain unsupported.
+
 Half-Life is a trademark of Valve Corporation. This independent project is
 not affiliated with or endorsed by Valve Corporation.
 

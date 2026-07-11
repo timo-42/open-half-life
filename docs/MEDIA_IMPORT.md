@@ -502,20 +502,25 @@ or source replacement, worker launch/ownership/termination/reap, component
 selection, destination, staging, cache publication, application, or runtime
 import authority. The abstract `platform::IsolatedWorker` facade already
 defines launch, I/O, abort/close, wait, and terminate-and-wait operations, but
-committed HEAD wires only the backend that returns `unsupported`; no successful
-native backend is present. Production composition also lacks the media-parser
-worker executable, bootstrap and service loop, and a higher process-session
-owner. That owner must allocate unique nonzero session IDs and worker epochs,
+Linux x86-64 builds wire the native containment backend. Other targets,
+including Windows and macOS, wire the backend that returns `unsupported`. The
+Linux backend's fixed production path names
+`/usr/libexec/open-half-life/ohl-media-parser-worker`, but the repository has no
+media-parser worker executable, bootstrap/service loop, or corresponding
+install rule. Production composition also lacks a higher process-session owner.
+That owner must allocate unique nonzero session IDs and worker epochs,
 preserve the exact channel through proof and session lifetimes, perform orderly
 protocol shutdown followed by channel close and `wait()`/reap, and reserve
 `terminate_and_wait()` for failure or orderly-close timeout. ParentSession owns
 none of these actions.
 
-The resume order is therefore: native backend plus worker/bootstrap/service
-loop; process-session owner plus session-ID/epoch policy; handshake and parent
-session composition; deterministic component selection; then staging and
-publication. Production extraction remains absent, and all current
-parent-session test inputs are synthetic.
+The Linux resume order is therefore: worker executable, bootstrap/service loop,
+and install rule; process-session owner plus session-ID/epoch policy; handshake
+and parent-session composition; deterministic runtime-only recipe and component
+selection; then staging, publication, and end-to-end evidence. Windows and
+macOS additionally require accepted containment backends. Production import is
+unavailable on every platform, production extraction remains absent, and all
+current parent-session test inputs are project-authored and synthetic.
 
 The exact accepted commit is
 `7bd9d38213c7df160e0e84fcb50a9cacb0095558`; its exact tree is
@@ -600,8 +605,12 @@ prove that a worker or transport exists, that every required source read was
 requested, or that component selection, staging, or publication succeeded. The
 typed protocol, result bridge, source-read broker, and disconnected frame
 channel must remain outside runtime import until native process isolation and
-process launch, ownership, termination, and reap plus transport-to-worker,
-selection, and staging composition are implemented and accepted.
+process launch, ownership, termination, and reap are composed with an installed
+worker service, coordinator, transport-to-worker connection, deterministic
+recipe/component selection, staging, publication, and end-to-end evidence. The
+accepted Linux x86-64 containment backend satisfies only the containment and
+low-level lifecycle part of that list; it does not make production import
+available.
 
 Isolation limits parser authority; it does not make parser output safe to log,
 commit, or trust without validation.

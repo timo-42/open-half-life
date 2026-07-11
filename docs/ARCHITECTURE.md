@@ -407,21 +407,29 @@ authority; no worker/process launch, ownership, termination, or reap
 authority; and no destination, staging, cache-publication, application, or
 runtime-import authority. The abstract `platform::IsolatedWorker` facade
 already defines launch, exact I/O, abort/close, wait, and terminate-and-wait
-lifecycle operations, but committed HEAD still selects only the backend that
-returns `unsupported`; it has no successful native backend. Production
-composition is also missing the media-parser worker executable, bootstrap and
-service loop, and the higher process-session owner. That owner must allocate
+lifecycle operations. On Linux x86-64, CMake selects the native backend in
+`isolated_worker_linux.cpp`; other architectures and platforms select the
+backend that returns `unsupported`. The Linux backend supplies process launch,
+resource limits, Landlock and seccomp containment, exact channel I/O, and
+termination/reap operations, but its fixed production path expects
+`/usr/libexec/open-half-life/ohl-media-parser-worker`, for which the repository
+has no worker executable, service loop, or install rule. Windows and macOS
+therefore have no isolated-worker backend, and Linux cannot launch a production
+media-parser service from a project install. Production composition is also
+missing the higher process-session owner. That owner must allocate
 fresh protocol session IDs and worker epochs under an explicit uniqueness
 policy, keep the exact channel alive through handshake-proof consumption and
 the parent session, close the channel and `wait()`/reap after orderly protocol
 shutdown, and use `terminate_and_wait()` only for failure or orderly-close
 timeout paths. ParentSession owns none of those lifecycle actions.
 
-Work resumes in dependency order: accept a native backend together with the
-worker/bootstrap/service loop; add the process-session owner and session-ID /
-epoch policy; compose handshake and ParentSession; then integrate a
-deterministic component-selection recipe before staging and publication. No
-further coherent disconnected parent-session package removes those blockers.
+Work resumes in dependency order: add and install the worker executable,
+bootstrap, and service loop for the accepted Linux x86-64 containment backend;
+add the process-session owner and session-ID / epoch policy; compose handshake
+and ParentSession; then integrate a deterministic component-selection recipe
+before staging and publication. Windows and macOS require their own accepted
+containment backends before import can be available there. No further coherent
+disconnected parent-session package removes those blockers.
 Its tests are project-authored and synthetic and authorize no proprietary
 extraction.
 
@@ -573,8 +581,8 @@ backend's post-publication parent-sync operation completed or failed. Cleanup
 failures are surfaced and may leave the transaction's owned private staging in
 place. A completed sync is not presented as a universal durability guarantee.
 These accepted boundaries perform no runtime extraction: production extraction
-remains absent and still requires accepted native backends on every supported
-platform.
+remains absent. The Linux staging and containment backends are disconnected
+building blocks, not an importer; Windows and macOS import remains unavailable.
 The component-based store is tested with a deterministic in-memory fake and a
 Linux implementation. On Linux, an existing absolute root is walked from `/`
 through no-follow directory descriptors, ownership and mode are checked, and

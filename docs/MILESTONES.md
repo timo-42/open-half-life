@@ -213,15 +213,17 @@ Remaining M2 work:
 - the constrained parser worker boundary in `MEDIA_IMPORT.md` remains
   mandatory before any third-party parser may feed production extraction. The
   accepted result bridge, source-read broker, frame channel, parent handshake,
-  and parent session still need native isolated-worker launch, ownership,
-  termination, and reap plus explicit runtime composition, deterministic
-  component selection, and staging integration; the worker must have no
-  raw-path, destination, or cache authority. Although the abstract
-  `IsolatedWorker` lifecycle facade exists, committed HEAD selects only the
-  backend returning `unsupported`. The gate is blocked on a successful native
-  backend, media-parser worker executable/bootstrap/service loop, and a higher
-  process-session owner. That owner must allocate unique session IDs and worker
-  epochs, keep the channel alive, close plus `wait()`/reap after orderly
+  and parent session still need explicit runtime composition with the accepted
+  Linux x86-64 isolated-worker backend, deterministic component selection, and
+  staging integration; the worker must have no raw-path, destination, or cache
+  authority. CMake selects `isolated_worker_linux.cpp` only for Linux x86-64
+  and selects the `unsupported` backend elsewhere, including Windows and
+  macOS. The Linux backend provides containment and lifecycle operations, but
+  the gate remains blocked on the missing media-parser worker executable,
+  bootstrap/service loop, install rule for the backend's fixed production
+  worker path, and a higher process-session owner. That owner must allocate
+  unique session IDs and worker epochs, keep the channel alive, close plus
+  `wait()`/reap after orderly
   shutdown, and use `terminate_and_wait()` for failure or orderly-close timeout
 - after those lifecycle pieces, resume with handshake/parent-session
   composition, deterministic component selection, and only then staging and
@@ -520,13 +522,16 @@ or runtime-import authority. It does accept `ValidatedMedia`, and its broker
 retains that proof's pinned source capability; the exclusion is raw-path and
 replacement-source authority, not all source capability.
 
-The abstract `IsolatedWorker` facade already supplies lifecycle operations, but
-the committed backend returns `unsupported`. Remaining gates are a successful
-native backend; the media-parser worker executable, bootstrap, and service loop;
-a higher owner for session-ID and worker-epoch uniqueness, channel/session
-lifetime, orderly close plus `wait()`/reap, and failure/timeout
+The abstract `IsolatedWorker` facade supplies lifecycle operations, and Linux
+x86-64 builds select the native containment backend. Other targets, including
+Windows and macOS, select the backend returning `unsupported`. Remaining Linux
+gates are the media-parser worker executable, bootstrap and service loop; an
+install rule matching the backend's fixed production worker path; a higher
+owner for session-ID and worker-epoch uniqueness, channel/session lifetime,
+orderly close plus `wait()`/reap, and failure/timeout
 `terminate_and_wait()`; then handshake/session composition, deterministic
-selection, staging, and publication, in that order.
+runtime-only recipe selection, staging, publication, and end-to-end evidence,
+in that order. Windows and macOS import remains unavailable.
 
 The ordering contract permits exactly one same-request late reply to drain
 after `cancel_ack` only when a read was already outstanding before cancellation.
