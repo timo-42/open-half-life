@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string_view>
 
 namespace ohl::parser {
 
@@ -14,6 +15,8 @@ inline constexpr std::size_t kEnumeratePayloadBytes = 0;
 inline constexpr std::size_t kStreamEntryPayloadBytes = 8;
 inline constexpr std::size_t kReadRequestPayloadBytes = 16;
 inline constexpr std::size_t kReadReplyPrefixBytes = 6;
+inline constexpr std::size_t kEntryBatchPrefixBytes = 2;
+inline constexpr std::size_t kEntryBatchEntryPrefixBytes = 18;
 inline constexpr std::size_t kCompletePayloadBytes = 4;
 inline constexpr std::size_t kCancelPayloadBytes = 0;
 inline constexpr std::size_t kCancelAckPayloadBytes = 0;
@@ -21,6 +24,15 @@ inline constexpr std::size_t kShutdownPayloadBytes = 0;
 inline constexpr std::uint32_t kMaximumReadBytes =
     kMaximumFramePayloadBytes - kReadReplyPrefixBytes;
 inline constexpr std::size_t kMaximumDataChunkBytes = 256U * 1'024U;
+inline constexpr std::uint16_t kMaximumEntryBatchEntries = 256;
+inline constexpr std::uint32_t kMaximumEnumeratedEntries = 50'000;
+inline constexpr std::uint64_t kMaximumEntryBatchPathBytes = 4'096;
+inline constexpr std::uint64_t kMaximumEnumeratedPathBytes =
+    64ULL * 1'024ULL * 1'024ULL;
+inline constexpr std::uint64_t kMaximumEnumeratedEntryBytes =
+    8ULL * 1'024ULL * 1'024ULL * 1'024ULL;
+inline constexpr std::uint64_t kMaximumEnumeratedTotalBytes =
+    32ULL * 1'024ULL * 1'024ULL * 1'024ULL;
 
 struct SourceReadPolicy {
   std::uint64_t source_size{0};
@@ -29,6 +41,26 @@ struct SourceReadPolicy {
   [[nodiscard]] bool valid() const noexcept {
     return source_size != 0 && maximum_read_bytes != 0 &&
            maximum_read_bytes <= kMaximumReadBytes;
+  }
+};
+
+struct EntryBatchPolicy {
+  std::uint32_t remaining_entries{0};
+  std::uint64_t remaining_path_bytes{0};
+  std::uint64_t maximum_entry_bytes{0};
+  std::uint64_t remaining_total_bytes{0};
+  bool has_previous_source_token{false};
+  std::uint64_t previous_source_token{0};
+
+  [[nodiscard]] bool valid() const noexcept {
+    return remaining_entries != 0 &&
+           remaining_entries <= kMaximumEnumeratedEntries &&
+           remaining_path_bytes != 0 &&
+           remaining_path_bytes <= kMaximumEnumeratedPathBytes &&
+           maximum_entry_bytes != 0 &&
+           maximum_entry_bytes <= kMaximumEnumeratedEntryBytes &&
+           remaining_total_bytes <= kMaximumEnumeratedTotalBytes &&
+           (has_previous_source_token || previous_source_token == 0);
   }
 };
 
@@ -57,6 +89,21 @@ struct ReadReplyMessage {
   // Non-owning view into the payload supplied to decode_read_reply_payload.
   // The payload storage must remain alive and unchanged while data is used.
   std::span<const std::byte> data;
+};
+
+struct EntryBatchEntry {
+  std::uint64_t source_token{0};
+  std::uint64_t size_bytes{0};
+  // Printable-ASCII archive spelling. This is not a validated destination
+  // path and conveys no filesystem authority.
+  std::string_view archive_path;
+};
+
+struct EntryBatchMessage {
+  // For decoded messages this aliases caller-provided entry storage, while
+  // every archive_path aliases the frame payload. Both must remain alive and
+  // unchanged while entries are used.
+  std::span<const EntryBatchEntry> entries;
 };
 
 struct DataChunkMessage {
@@ -92,6 +139,7 @@ using EnumerateDecodeResult = MessageDecodeResult<EnumerateMessage>;
 using StreamEntryDecodeResult = MessageDecodeResult<StreamEntryMessage>;
 using ReadRequestDecodeResult = MessageDecodeResult<ReadRequestMessage>;
 using ReadReplyDecodeResult = MessageDecodeResult<ReadReplyMessage>;
+using EntryBatchDecodeResult = MessageDecodeResult<EntryBatchMessage>;
 using DataChunkDecodeResult = MessageDecodeResult<DataChunkMessage>;
 using CompleteDecodeResult = MessageDecodeResult<CompleteMessage>;
 using CancelDecodeResult = MessageDecodeResult<CancelMessage>;
@@ -135,6 +183,13 @@ using ShutdownDecodeResult = MessageDecodeResult<ShutdownMessage>;
 [[nodiscard]] ReadReplyDecodeResult decode_read_reply_payload(
     const FrameView& frame, std::uint32_t expected_sequence,
     std::uint32_t requested_length) noexcept;
+
+[[nodiscard]] EncodeResult encode_entry_batch_payload(
+    const EntryBatchMessage& message, const EntryBatchPolicy& policy,
+    std::span<std::byte> destination) noexcept;
+[[nodiscard]] EntryBatchDecodeResult decode_entry_batch_payload(
+    const FrameView& frame, const EntryBatchPolicy& policy,
+    std::span<EntryBatchEntry> entry_storage) noexcept;
 
 [[nodiscard]] EncodeResult encode_data_chunk_payload(
     const DataChunkMessage& message, std::uint64_t remaining_entry_bytes,

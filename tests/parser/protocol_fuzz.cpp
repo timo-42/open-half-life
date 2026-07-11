@@ -166,6 +166,38 @@ struct SequenceContext {
   }
 }
 
+[[nodiscard]] ohl::parser::EntryBatchPolicy entry_batch_policy(
+    const ohl::parser::FrameView& frame) noexcept {
+  using namespace ohl::parser;
+  EntryBatchPolicy policy{
+      .remaining_entries = kMaximumEnumeratedEntries,
+      .remaining_path_bytes = kMaximumEnumeratedPathBytes,
+      .maximum_entry_bytes = kMaximumEnumeratedEntryBytes,
+      .remaining_total_bytes = kMaximumEnumeratedTotalBytes,
+  };
+  const auto count = load_u16_context(frame.payload, 0);
+  const auto first_token = load_u64_context(frame.payload, 2);
+  switch (frame.header.request_id % 4U) {
+    case 0:
+      break;
+    case 1:
+      if (count != 0 && frame.payload.size() >= 10 && first_token != 0) {
+        policy.has_previous_source_token = true;
+        policy.previous_source_token = first_token - 1U;
+      }
+      break;
+    case 2:
+      policy.has_previous_source_token = true;
+      policy.previous_source_token = first_token;
+      break;
+    default:
+      policy.remaining_entries =
+          count > 1 && count <= kMaximumEntryBatchEntries ? count - 1U : 1U;
+      break;
+  }
+  return policy;
+}
+
 void exercise_typed_decoder(const ohl::parser::FrameView& frame) {
   using namespace ohl::parser;
   switch (frame.header.type) {
@@ -196,6 +228,12 @@ void exercise_typed_decoder(const ohl::parser::FrameView& frame) {
                                       requested_length);
       break;
     }
+    case MessageType::entry_batch: {
+      std::array<EntryBatchEntry, kMaximumEntryBatchEntries> storage{};
+      (void)decode_entry_batch_payload(frame, entry_batch_policy(frame),
+                                       storage);
+      break;
+    }
     case MessageType::data_chunk:
       (void)decode_data_chunk_payload(frame, data_chunk_remainder(frame));
       break;
@@ -211,7 +249,6 @@ void exercise_typed_decoder(const ohl::parser::FrameView& frame) {
     case MessageType::shutdown:
       (void)decode_shutdown_payload(frame);
       break;
-    case MessageType::entry_batch:
       break;
   }
 }
@@ -384,6 +421,56 @@ void exercise_typed_decoder(const ohl::parser::FrameView& frame) {
       complete_context(disallowed_status_complete));
   const auto disallowed_phase_decode = decode_complete_payload(
       disallowed_phase_complete, complete_context(disallowed_phase_complete));
+
+  std::array<std::byte, 40> entry_batch_payload{};
+  const std::array first_path{std::byte{' '}};
+  const std::array second_path{std::byte{'~'}};
+  PayloadWriter entry_batch_writer{entry_batch_payload};
+  if (!entry_batch_writer.write_u16(2) ||
+      !entry_batch_writer.write_u64(1) ||
+      !entry_batch_writer.write_u64(0) ||
+      !entry_batch_writer.write_u16(1) ||
+      !entry_batch_writer.write_bytes(first_path) ||
+      !entry_batch_writer.write_u64(2) ||
+      !entry_batch_writer.write_u64(1) ||
+      !entry_batch_writer.write_u16(1) ||
+      !entry_batch_writer.write_bytes(second_path)) {
+    return false;
+  }
+  const auto entry_batch_frame = [](const std::uint64_t request_id,
+                                    const std::span<const std::byte> payload) {
+    return FrameView{
+        .header = {.type = MessageType::entry_batch,
+                   .payload_length =
+                       static_cast<std::uint32_t>(payload.size()),
+                   .session_id = kFuzzSession,
+                   .request_id = request_id},
+        .payload = payload,
+    };
+  };
+  const auto canonical_batch = entry_batch_frame(4, entry_batch_payload);
+  const auto matching_token_batch = entry_batch_frame(1, entry_batch_payload);
+  const auto replay_batch = entry_batch_frame(2, entry_batch_payload);
+  const auto budget_batch = entry_batch_frame(3, entry_batch_payload);
+  auto invalid_ascii_payload = entry_batch_payload;
+  invalid_ascii_payload[20] = std::byte{0x1f};
+  const auto invalid_ascii_batch =
+      entry_batch_frame(4, invalid_ascii_payload);
+  std::array<EntryBatchEntry, kMaximumEntryBatchEntries> entry_storage{};
+  const auto canonical_batch_decode = decode_entry_batch_payload(
+      canonical_batch, entry_batch_policy(canonical_batch), entry_storage);
+  const auto matching_token_policy = entry_batch_policy(matching_token_batch);
+  const auto matching_token_decode = decode_entry_batch_payload(
+      matching_token_batch, matching_token_policy, entry_storage);
+  const auto replay_policy = entry_batch_policy(replay_batch);
+  const auto replay_decode = decode_entry_batch_payload(
+      replay_batch, replay_policy, entry_storage);
+  const auto budget_policy = entry_batch_policy(budget_batch);
+  const auto budget_decode = decode_entry_batch_payload(
+      budget_batch, budget_policy, entry_storage);
+  const auto invalid_ascii_decode = decode_entry_batch_payload(
+      invalid_ascii_batch, entry_batch_policy(invalid_ascii_batch),
+      entry_storage);
   return request_sequence.matches_wire &&
          request_sequence.expected_sequence == 7 && request_decode.valid() &&
          reply_sequence.matches_wire && reply_sequence.expected_sequence == 9 &&
@@ -405,7 +492,17 @@ void exercise_typed_decoder(const ohl::parser::FrameView& frame) {
          invalid_context_decode.error == ProtocolError::invalid_budget &&
          disallowed_status_decode.error ==
              ProtocolError::noncanonical_value &&
-         disallowed_phase_decode.error == ProtocolError::noncanonical_value;
+         disallowed_phase_decode.error == ProtocolError::noncanonical_value &&
+         canonical_batch_decode.valid() &&
+         matching_token_policy.has_previous_source_token &&
+         matching_token_policy.previous_source_token == 0 &&
+         matching_token_decode.valid() &&
+         replay_policy.has_previous_source_token &&
+         replay_policy.previous_source_token == 1 &&
+         replay_decode.error == ProtocolError::noncanonical_value &&
+         budget_policy.remaining_entries == 1 &&
+         budget_decode.error == ProtocolError::noncanonical_value &&
+         invalid_ascii_decode.error == ProtocolError::noncanonical_value;
 }
 
 [[nodiscard]] ohl::parser::MessageType message_type(

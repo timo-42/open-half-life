@@ -6,6 +6,18 @@
 namespace ohl::parser {
 namespace {
 
+struct EntryBatchAccumulator {
+  std::uint64_t path_bytes{0};
+  std::uint64_t total_bytes{0};
+  bool has_previous_source_token{false};
+  std::uint64_t previous_source_token{0};
+};
+
+struct EntryBatchValidation {
+  std::uint16_t entry_count{0};
+  std::size_t payload_size{0};
+};
+
 [[nodiscard]] ProtocolError validate_frame(
     const FrameView& frame, const MessageType expected_type) noexcept {
   if (!frame.valid()) {
@@ -81,6 +93,120 @@ namespace {
       (message.status != ProtocolStatus::ok && !message.data.empty())) {
     return ProtocolError::noncanonical_value;
   }
+  return ProtocolError::none;
+}
+
+[[nodiscard]] bool printable_ascii(const std::string_view value) noexcept {
+  return std::ranges::all_of(value, [](const char character) {
+    const auto byte = static_cast<unsigned char>(character);
+    return byte >= 0x20U && byte <= 0x7eU;
+  });
+}
+
+[[nodiscard]] bool printable_ascii(
+    const std::span<const std::byte> value) noexcept {
+  return std::ranges::all_of(value, [](const std::byte character) {
+    const auto byte = std::to_integer<unsigned int>(character);
+    return byte >= 0x20U && byte <= 0x7eU;
+  });
+}
+
+[[nodiscard]] ProtocolError validate_entry_batch_entry(
+    const std::uint64_t source_token, const std::uint64_t size_bytes,
+    const std::uint64_t path_bytes, const bool path_is_printable_ascii,
+    const EntryBatchPolicy& policy,
+    EntryBatchAccumulator& accumulator) noexcept {
+  if (path_bytes == 0 || path_bytes > kMaximumEntryBatchPathBytes ||
+      !path_is_printable_ascii || size_bytes > policy.maximum_entry_bytes ||
+      path_bytes > policy.remaining_path_bytes - accumulator.path_bytes ||
+      size_bytes > policy.remaining_total_bytes - accumulator.total_bytes ||
+      (accumulator.has_previous_source_token &&
+       source_token <= accumulator.previous_source_token)) {
+    return ProtocolError::noncanonical_value;
+  }
+  accumulator.path_bytes += path_bytes;
+  accumulator.total_bytes += size_bytes;
+  accumulator.has_previous_source_token = true;
+  accumulator.previous_source_token = source_token;
+  return ProtocolError::none;
+}
+
+[[nodiscard]] ProtocolError validate_entry_batch(
+    const EntryBatchMessage& message, const EntryBatchPolicy& policy,
+    EntryBatchValidation& validation) noexcept {
+  if (!policy.valid()) {
+    return ProtocolError::invalid_budget;
+  }
+  if (message.entries.empty() ||
+      message.entries.size() > kMaximumEntryBatchEntries ||
+      message.entries.size() > policy.remaining_entries) {
+    return ProtocolError::noncanonical_value;
+  }
+
+  EntryBatchAccumulator accumulator{
+      .has_previous_source_token = policy.has_previous_source_token,
+      .previous_source_token = policy.previous_source_token,
+  };
+  std::size_t payload_size = kEntryBatchPrefixBytes;
+  for (const auto& entry : message.entries) {
+    const auto path_size = static_cast<std::uint64_t>(
+        entry.archive_path.size());
+    const auto entry_error = validate_entry_batch_entry(
+        entry.source_token, entry.size_bytes, path_size,
+        printable_ascii(entry.archive_path), policy, accumulator);
+    if (entry_error != ProtocolError::none) {
+      return entry_error;
+    }
+    payload_size += kEntryBatchEntryPrefixBytes + entry.archive_path.size();
+  }
+  if (payload_size > kMaximumFramePayloadBytes) {
+    return ProtocolError::payload_too_large;
+  }
+  validation.entry_count =
+      static_cast<std::uint16_t>(message.entries.size());
+  validation.payload_size = payload_size;
+  return ProtocolError::none;
+}
+
+[[nodiscard]] ProtocolError validate_entry_batch_payload(
+    const std::span<const std::byte> payload,
+    const EntryBatchPolicy& policy,
+    EntryBatchValidation& validation) noexcept {
+  PayloadReader reader{payload};
+  std::uint16_t entry_count = 0;
+  if (!reader.read_u16(entry_count)) {
+    return reader.error();
+  }
+  if (entry_count == 0 || entry_count > kMaximumEntryBatchEntries ||
+      entry_count > policy.remaining_entries) {
+    return ProtocolError::noncanonical_value;
+  }
+
+  EntryBatchAccumulator accumulator{
+      .has_previous_source_token = policy.has_previous_source_token,
+      .previous_source_token = policy.previous_source_token,
+  };
+  for (std::uint16_t index = 0; index < entry_count; ++index) {
+    std::uint64_t source_token = 0;
+    std::uint64_t size_bytes = 0;
+    std::uint16_t path_size = 0;
+    std::span<const std::byte> path;
+    if (!reader.read_u64(source_token) || !reader.read_u64(size_bytes) ||
+        !reader.read_u16(path_size) || !reader.read_bytes(path_size, path)) {
+      return reader.error();
+    }
+    const auto entry_error = validate_entry_batch_entry(
+        source_token, size_bytes, path_size, printable_ascii(path), policy,
+        accumulator);
+    if (entry_error != ProtocolError::none) {
+      return entry_error;
+    }
+  }
+  if (!reader.finish()) {
+    return reader.error();
+  }
+  validation.entry_count = entry_count;
+  validation.payload_size = payload.size();
   return ProtocolError::none;
 }
 
@@ -346,6 +472,84 @@ ReadReplyDecodeResult decode_read_reply_payload(
   if (result.error == ProtocolError::none) {
     result.message = message;
   }
+  return result;
+}
+
+EncodeResult encode_entry_batch_payload(
+    const EntryBatchMessage& message, const EntryBatchPolicy& policy,
+    const std::span<std::byte> destination) noexcept {
+  EncodeResult result;
+  EntryBatchValidation validation;
+  result.error = validate_entry_batch(message, policy, validation);
+  if (result.error != ProtocolError::none) {
+    return result;
+  }
+  if (destination.size() < validation.payload_size) {
+    result.error = ProtocolError::output_too_small;
+    return result;
+  }
+
+  PayloadWriter writer{destination.first(validation.payload_size)};
+  (void)writer.write_u16(validation.entry_count);
+  for (const auto& entry : message.entries) {
+    (void)writer.write_u64(entry.source_token);
+    (void)writer.write_u64(entry.size_bytes);
+    (void)writer.write_u16(
+        static_cast<std::uint16_t>(entry.archive_path.size()));
+    (void)writer.write_bytes(std::as_bytes(std::span<const char>{
+        entry.archive_path.data(), entry.archive_path.size()}));
+  }
+  result.bytes_written = validation.payload_size;
+  return result;
+}
+
+EntryBatchDecodeResult decode_entry_batch_payload(
+    const FrameView& frame, const EntryBatchPolicy& policy,
+    const std::span<EntryBatchEntry> entry_storage) noexcept {
+  EntryBatchDecodeResult result;
+  result.error = validate_frame(frame, MessageType::entry_batch);
+  if (result.error != ProtocolError::none) {
+    return result;
+  }
+  if (!policy.valid()) {
+    result.error = ProtocolError::invalid_budget;
+    return result;
+  }
+
+  EntryBatchValidation validation;
+  result.error =
+      validate_entry_batch_payload(frame.payload, policy, validation);
+  if (result.error != ProtocolError::none) {
+    return result;
+  }
+  if (entry_storage.size() < validation.entry_count) {
+    result.error = ProtocolError::output_too_small;
+    return result;
+  }
+
+  // The first pass proved that every operation below succeeds. Populate
+  // caller storage only after full validation and the capacity check.
+  PayloadReader reader{frame.payload};
+  std::uint16_t entry_count = 0;
+  (void)reader.read_u16(entry_count);
+  for (std::uint16_t index = 0; index < entry_count; ++index) {
+    std::uint64_t source_token = 0;
+    std::uint64_t size_bytes = 0;
+    std::uint16_t path_size = 0;
+    std::span<const std::byte> path;
+    (void)reader.read_u64(source_token);
+    (void)reader.read_u64(size_bytes);
+    (void)reader.read_u16(path_size);
+    (void)reader.read_bytes(path_size, path);
+    entry_storage[index] = EntryBatchEntry{
+        .source_token = source_token,
+        .size_bytes = size_bytes,
+        .archive_path = std::string_view{
+            reinterpret_cast<const char*>(path.data()), path.size()},
+    };
+  }
+  (void)reader.finish();
+  result.message.entries = entry_storage.first(entry_count);
   return result;
 }
 

@@ -8,6 +8,7 @@
 #include <iostream>
 #include <limits>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -15,6 +16,9 @@ namespace {
 
 using ohl::parser::CompleteMessage;
 using ohl::parser::DataChunkMessage;
+using ohl::parser::EntryBatchEntry;
+using ohl::parser::EntryBatchMessage;
+using ohl::parser::EntryBatchPolicy;
 using ohl::parser::FrameHeader;
 using ohl::parser::FrameView;
 using ohl::parser::HelloMessage;
@@ -35,6 +39,25 @@ using ohl::parser::SourceReadPolicy;
 using ohl::parser::StreamEntryMessage;
 
 constexpr std::uint64_t kSession = 0x0102'0304'0506'0708ULL;
+
+[[nodiscard]] constexpr EntryBatchPolicy maximum_entry_batch_policy() {
+  return {
+      .remaining_entries = ohl::parser::kMaximumEnumeratedEntries,
+      .remaining_path_bytes = ohl::parser::kMaximumEnumeratedPathBytes,
+      .maximum_entry_bytes = ohl::parser::kMaximumEnumeratedEntryBytes,
+      .remaining_total_bytes = ohl::parser::kMaximumEnumeratedTotalBytes,
+  };
+}
+
+[[nodiscard]] constexpr bool equal_entry_batch_policy(
+    const EntryBatchPolicy& left, const EntryBatchPolicy& right) {
+  return left.remaining_entries == right.remaining_entries &&
+         left.remaining_path_bytes == right.remaining_path_bytes &&
+         left.maximum_entry_bytes == right.maximum_entry_bytes &&
+         left.remaining_total_bytes == right.remaining_total_bytes &&
+         left.has_previous_source_token == right.has_previous_source_token &&
+         left.previous_source_token == right.previous_source_token;
+}
 
 [[nodiscard]] bool fail(const std::string_view message) {
   std::cerr << message << '\n';
@@ -100,6 +123,19 @@ constexpr std::uint64_t kSession = 0x0102'0304'0506'0708ULL;
     const ProtocolPhase expected_operation_phase) {
   const auto decoded = ohl::parser::decode_complete_payload(
       candidate, expected_operation_phase);
+  if (!decoded.valid()) {
+    return decoded.error;
+  }
+  return validator.observe(MessageDirection::worker_to_parent,
+                           candidate.header);
+}
+
+[[nodiscard]] ProtocolError decode_entry_batch_then_observe(
+    ProtocolStateValidator& validator, const FrameView& candidate,
+    const EntryBatchPolicy& policy,
+    const std::span<EntryBatchEntry> entry_storage) {
+  const auto decoded = ohl::parser::decode_entry_batch_payload(
+      candidate, policy, entry_storage);
   if (!decoded.valid()) {
     return decoded.error;
   }
@@ -1850,6 +1886,675 @@ constexpr std::uint64_t kSession = 0x0102'0304'0506'0708ULL;
   return true;
 }
 
+[[nodiscard]] bool test_typed_entry_batch_wire_and_bounds() {
+  static_assert(ohl::parser::kEntryBatchPrefixBytes == 2);
+  static_assert(ohl::parser::kEntryBatchEntryPrefixBytes == 18);
+  static_assert(ohl::parser::kMaximumEntryBatchEntries == 256);
+  static_assert(ohl::parser::kMaximumEntryBatchPathBytes == 4'096);
+
+  const auto policy = maximum_entry_batch_policy();
+  const std::array canonical_entries{EntryBatchEntry{
+      0x0102'0304'0506'0708ULL, 0x0000'0001'1516'1718ULL, "A~"}};
+  const std::array<std::byte, 22> canonical_bytes{
+      std::byte{0x01}, std::byte{0x00},
+      std::byte{0x08}, std::byte{0x07}, std::byte{0x06}, std::byte{0x05},
+      std::byte{0x04}, std::byte{0x03}, std::byte{0x02}, std::byte{0x01},
+      std::byte{0x18}, std::byte{0x17}, std::byte{0x16}, std::byte{0x15},
+      std::byte{0x01}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
+      std::byte{0x02}, std::byte{0x00}, std::byte{'A'}, std::byte{'~'},
+  };
+  std::array<std::byte, canonical_bytes.size()> canonical_output{};
+  std::array<EntryBatchEntry, 1> canonical_storage{};
+  const auto canonical_encode = ohl::parser::encode_entry_batch_payload(
+      EntryBatchMessage{canonical_entries}, policy, canonical_output);
+  const auto canonical_frame =
+      payload_frame(MessageType::entry_batch, canonical_output, 1);
+  const auto canonical_decode = ohl::parser::decode_entry_batch_payload(
+      canonical_frame, policy, canonical_storage);
+  // Decoded entries alias canonical_storage and their paths alias the frame.
+  // Keep both backing objects alive and unchanged through every assertion.
+  if (!canonical_encode.valid() ||
+      canonical_encode.bytes_written != canonical_output.size() ||
+      canonical_output != canonical_bytes || !canonical_decode.valid() ||
+      canonical_decode.message.entries.data() != canonical_storage.data() ||
+      canonical_decode.message.entries.size() != canonical_storage.size() ||
+      canonical_storage[0].source_token !=
+          canonical_entries[0].source_token ||
+      canonical_storage[0].size_bytes != canonical_entries[0].size_bytes ||
+      canonical_storage[0].archive_path != canonical_entries[0].archive_path ||
+      canonical_storage[0].archive_path.data() !=
+          reinterpret_cast<const char*>(
+              canonical_frame.payload.data() +
+              ohl::parser::kEntryBatchPrefixBytes +
+              ohl::parser::kEntryBatchEntryPrefixBytes)) {
+    return fail("typed entry batch canonical field order failed");
+  }
+
+  const std::array extreme_entries{
+      EntryBatchEntry{0, 0, " "},
+      EntryBatchEntry{std::numeric_limits<std::uint64_t>::max(),
+                      ohl::parser::kMaximumEnumeratedEntryBytes, "~"},
+  };
+  std::array<std::byte, 40> extreme_output{};
+  std::array<EntryBatchEntry, extreme_entries.size()> extreme_storage{};
+  const auto extreme_encode = ohl::parser::encode_entry_batch_payload(
+      EntryBatchMessage{extreme_entries}, policy, extreme_output);
+  const auto extreme_decode = ohl::parser::decode_entry_batch_payload(
+      payload_frame(MessageType::entry_batch, extreme_output, 1), policy,
+      extreme_storage);
+  if (!extreme_encode.valid() || !extreme_decode.valid() ||
+      extreme_storage[0].source_token != 0 ||
+      extreme_storage[0].size_bytes != 0 ||
+      extreme_storage[0].archive_path != " " ||
+      extreme_storage[1].source_token !=
+          std::numeric_limits<std::uint64_t>::max() ||
+      extreme_storage[1].size_bytes !=
+          ohl::parser::kMaximumEnumeratedEntryBytes ||
+      extreme_storage[1].archive_path != "~") {
+    return fail("typed entry batch token/size/ASCII extrema failed");
+  }
+
+  std::vector<EntryBatchEntry> maximum_count_entries;
+  maximum_count_entries.reserve(ohl::parser::kMaximumEntryBatchEntries);
+  for (std::uint16_t token = 0;
+       token < ohl::parser::kMaximumEntryBatchEntries; ++token) {
+    maximum_count_entries.push_back({token, 0, "a"});
+  }
+  const auto maximum_count_payload_size =
+      ohl::parser::kEntryBatchPrefixBytes +
+      maximum_count_entries.size() *
+          (ohl::parser::kEntryBatchEntryPrefixBytes + 1U);
+  std::vector<std::byte> maximum_count_output(maximum_count_payload_size);
+  std::array<EntryBatchEntry, ohl::parser::kMaximumEntryBatchEntries>
+      maximum_count_storage{};
+  const auto maximum_count_encode = ohl::parser::encode_entry_batch_payload(
+      EntryBatchMessage{maximum_count_entries}, policy, maximum_count_output);
+  const auto maximum_count_decode = ohl::parser::decode_entry_batch_payload(
+      payload_frame(MessageType::entry_batch, maximum_count_output, 1), policy,
+      maximum_count_storage);
+  if (!maximum_count_encode.valid() || !maximum_count_decode.valid() ||
+      maximum_count_decode.message.entries.size() !=
+          ohl::parser::kMaximumEntryBatchEntries ||
+      maximum_count_storage.front().source_token != 0 ||
+      maximum_count_storage.back().source_token !=
+          ohl::parser::kMaximumEntryBatchEntries - 1U) {
+    return fail("typed entry batch maximum count failed");
+  }
+
+  const EntryBatchMessage empty_message{};
+  std::array<std::byte, 2> small_output{};
+  const std::array<std::byte, 2> zero_count{};
+  const std::array<std::byte, 2> over_count{std::byte{0x01}, std::byte{0x01}};
+  std::array<EntryBatchEntry, 1> small_storage{};
+  const auto empty_encode = ohl::parser::encode_entry_batch_payload(
+      empty_message, policy, small_output);
+  const auto empty_decode = ohl::parser::decode_entry_batch_payload(
+      payload_frame(MessageType::entry_batch, zero_count, 1), policy,
+      small_storage);
+  std::vector<EntryBatchEntry> over_count_entries;
+  over_count_entries.reserve(ohl::parser::kMaximumEntryBatchEntries + 1U);
+  for (std::uint16_t token = 0;
+       token <= ohl::parser::kMaximumEntryBatchEntries; ++token) {
+    over_count_entries.push_back({token, 0, "a"});
+  }
+  const auto over_count_encode = ohl::parser::encode_entry_batch_payload(
+      EntryBatchMessage{over_count_entries}, policy, {});
+  const auto over_count_decode = ohl::parser::decode_entry_batch_payload(
+      payload_frame(MessageType::entry_batch, over_count, 1), policy,
+      small_storage);
+  if (empty_encode.error != ProtocolError::noncanonical_value ||
+      empty_decode.error != ProtocolError::noncanonical_value ||
+      over_count_encode.error != ProtocolError::noncanonical_value ||
+      over_count_decode.error != ProtocolError::noncanonical_value) {
+    return fail("typed entry batch count bounds failed");
+  }
+
+  const std::string maximum_path(ohl::parser::kMaximumEntryBatchPathBytes,
+                                 '~');
+  const std::array maximum_path_entries{
+      EntryBatchEntry{1, 0, maximum_path}};
+  std::vector<std::byte> maximum_path_output(
+      ohl::parser::kEntryBatchPrefixBytes +
+      ohl::parser::kEntryBatchEntryPrefixBytes + maximum_path.size());
+  std::array<EntryBatchEntry, 1> maximum_path_storage{};
+  const auto maximum_path_encode = ohl::parser::encode_entry_batch_payload(
+      EntryBatchMessage{maximum_path_entries}, policy, maximum_path_output);
+  const auto maximum_path_frame =
+      payload_frame(MessageType::entry_batch, maximum_path_output, 1);
+  const auto maximum_path_decode = ohl::parser::decode_entry_batch_payload(
+      maximum_path_frame, policy, maximum_path_storage);
+  if (!maximum_path_encode.valid() || !maximum_path_decode.valid() ||
+      maximum_path_storage[0].archive_path.size() != maximum_path.size() ||
+      maximum_path_storage[0].archive_path.data() !=
+          reinterpret_cast<const char*>(
+              maximum_path_frame.payload.data() +
+              ohl::parser::kEntryBatchPrefixBytes +
+              ohl::parser::kEntryBatchEntryPrefixBytes)) {
+    return fail("typed entry batch maximum path failed");
+  }
+
+  const std::string overlong_path(
+      ohl::parser::kMaximumEntryBatchPathBytes + 1U, 'a');
+  const std::array empty_path_entries{EntryBatchEntry{1, 0, {}}};
+  const std::array overlong_path_entries{
+      EntryBatchEntry{1, 0, overlong_path}};
+  if (ohl::parser::encode_entry_batch_payload(
+          EntryBatchMessage{empty_path_entries}, policy, {})
+          .error != ProtocolError::noncanonical_value ||
+      ohl::parser::encode_entry_batch_payload(
+          EntryBatchMessage{overlong_path_entries}, policy, {})
+          .error != ProtocolError::noncanonical_value) {
+    return fail("typed entry batch path length encoding bounds failed");
+  }
+
+  const auto raw_single_entry = [](const std::uint64_t token,
+                                   const std::uint64_t size,
+                                   const std::span<const std::byte> path) {
+    std::vector<std::byte> payload(
+        ohl::parser::kEntryBatchPrefixBytes +
+        ohl::parser::kEntryBatchEntryPrefixBytes + path.size());
+    PayloadWriter writer{payload};
+    if (!writer.write_u16(1) || !writer.write_u64(token) ||
+        !writer.write_u64(size) ||
+        !writer.write_u16(static_cast<std::uint16_t>(path.size())) ||
+        !writer.write_bytes(path)) {
+      payload.clear();
+    }
+    return payload;
+  };
+  const auto empty_path_payload =
+      raw_single_entry(1, 0, std::span<const std::byte>{});
+  const auto overlong_path_payload = raw_single_entry(
+      1, 0, std::as_bytes(std::span<const char>{overlong_path}));
+  if (ohl::parser::decode_entry_batch_payload(
+          payload_frame(MessageType::entry_batch, empty_path_payload, 1),
+          policy, small_storage)
+          .error != ProtocolError::noncanonical_value ||
+      ohl::parser::decode_entry_batch_payload(
+          payload_frame(MessageType::entry_batch, overlong_path_payload, 1),
+          policy, small_storage)
+          .error != ProtocolError::noncanonical_value) {
+    return fail("typed entry batch path length decoding bounds failed");
+  }
+
+  for (const auto invalid_byte : {
+           std::byte{0x1f}, std::byte{0x7f}, std::byte{0x80}}) {
+    const std::array invalid_path{invalid_byte};
+    const std::string invalid_string(
+        1, static_cast<char>(std::to_integer<unsigned char>(invalid_byte)));
+    const std::array invalid_entries{
+        EntryBatchEntry{1, 0, invalid_string}};
+    const auto invalid_payload = raw_single_entry(1, 0, invalid_path);
+    if (ohl::parser::encode_entry_batch_payload(
+            EntryBatchMessage{invalid_entries}, policy, {})
+            .error != ProtocolError::noncanonical_value ||
+        ohl::parser::decode_entry_batch_payload(
+            payload_frame(MessageType::entry_batch, invalid_payload, 1),
+            policy, small_storage)
+            .error != ProtocolError::noncanonical_value) {
+      return fail("typed entry batch accepted non-printable path bytes");
+    }
+  }
+
+  const std::array unsafe_printable_entries{
+      EntryBatchEntry{1, 0, "../x"}, EntryBatchEntry{2, 0, "/abs"},
+      EntryBatchEntry{3, 0, "C:\\x"}, EntryBatchEntry{4, 0, "a//b"},
+  };
+  std::vector<std::byte> unsafe_output(128);
+  std::array<EntryBatchEntry, unsafe_printable_entries.size()> unsafe_storage{};
+  const auto unsafe_encode = ohl::parser::encode_entry_batch_payload(
+      EntryBatchMessage{unsafe_printable_entries}, policy, unsafe_output);
+  if (!unsafe_encode.valid()) {
+    return fail("typed entry batch rejected printable unsafe spellings");
+  }
+  const auto unsafe_decode = ohl::parser::decode_entry_batch_payload(
+      payload_frame(
+          MessageType::entry_batch,
+          std::span<const std::byte>{unsafe_output}.first(
+              unsafe_encode.bytes_written),
+          1),
+      policy, unsafe_storage);
+  if (!unsafe_decode.valid()) {
+    return fail("typed entry batch did not decode unsafe printable spellings");
+  }
+  for (std::size_t index = 0; index < unsafe_printable_entries.size();
+       ++index) {
+    if (unsafe_storage[index].archive_path !=
+        unsafe_printable_entries[index].archive_path) {
+      return fail("typed entry batch changed an unsafe printable spelling");
+    }
+  }
+  return true;
+}
+
+[[nodiscard]] bool test_typed_entry_batch_policy_and_atomicity() {
+  const auto raw_batch = [](const std::span<const EntryBatchEntry> entries) {
+    std::size_t payload_size = ohl::parser::kEntryBatchPrefixBytes;
+    for (const auto& entry : entries) {
+      payload_size += ohl::parser::kEntryBatchEntryPrefixBytes +
+                      entry.archive_path.size();
+    }
+    std::vector<std::byte> payload(payload_size);
+    PayloadWriter writer{payload};
+    if (!writer.write_u16(static_cast<std::uint16_t>(entries.size()))) {
+      payload.clear();
+      return payload;
+    }
+    for (const auto& entry : entries) {
+      if (!writer.write_u64(entry.source_token) ||
+          !writer.write_u64(entry.size_bytes) ||
+          !writer.write_u16(
+              static_cast<std::uint16_t>(entry.archive_path.size())) ||
+          !writer.write_bytes(std::as_bytes(std::span<const char>{
+              entry.archive_path.data(), entry.archive_path.size()}))) {
+        payload.clear();
+        return payload;
+      }
+    }
+    return payload;
+  };
+  const auto is_default = [](const auto& result) {
+    return result.message.entries.data() == nullptr &&
+           result.message.entries.empty();
+  };
+  const EntryBatchEntry sentinel_entry{
+      0xa5a5'a5a5'a5a5'a5a5ULL, 0xa5a5'a5a5'a5a5'a5a5ULL, "sentinel"};
+  const auto all_sentinel = [&sentinel_entry](const auto& storage) {
+    return std::all_of(storage.begin(), storage.end(),
+                       [&sentinel_entry](const EntryBatchEntry& entry) {
+                         return entry.source_token ==
+                                    sentinel_entry.source_token &&
+                                entry.size_bytes == sentinel_entry.size_bytes &&
+                                entry.archive_path ==
+                                    sentinel_entry.archive_path;
+                       });
+  };
+
+  const std::array budget_entries{EntryBatchEntry{5, 2, "ab"},
+                                  EntryBatchEntry{9, 3, "c"}};
+  const auto budget_payload = raw_batch(budget_entries);
+  const EntryBatchPolicy exact_policy{
+      .remaining_entries = 2,
+      .remaining_path_bytes = 3,
+      .maximum_entry_bytes = 3,
+      .remaining_total_bytes = 5,
+  };
+  std::vector<std::byte> budget_output(budget_payload.size());
+  std::array<EntryBatchEntry, budget_entries.size()> budget_storage{};
+  const auto exact_encode = ohl::parser::encode_entry_batch_payload(
+      EntryBatchMessage{budget_entries}, exact_policy, budget_output);
+  const auto exact_decode = ohl::parser::decode_entry_batch_payload(
+      payload_frame(MessageType::entry_batch, budget_payload, 1), exact_policy,
+      budget_storage);
+  if (!exact_encode.valid() || !exact_decode.valid() ||
+      budget_output != budget_payload) {
+    return fail("typed entry batch exact budgets were rejected");
+  }
+
+  const std::array exceeded_policies{
+      EntryBatchPolicy{1, 3, 3, 5, false, 0},
+      EntryBatchPolicy{2, 2, 3, 5, false, 0},
+      EntryBatchPolicy{2, 3, 2, 5, false, 0},
+      EntryBatchPolicy{2, 3, 3, 4, false, 0},
+  };
+  for (const auto& exceeded : exceeded_policies) {
+    if (ohl::parser::encode_entry_batch_payload(
+            EntryBatchMessage{budget_entries}, exceeded, budget_output)
+            .error != ProtocolError::noncanonical_value ||
+        ohl::parser::decode_entry_batch_payload(
+            payload_frame(MessageType::entry_batch, budget_payload, 1),
+            exceeded, budget_storage)
+            .error != ProtocolError::noncanonical_value) {
+      return fail("typed entry batch exceeded a trusted budget");
+    }
+  }
+
+  const auto maximum_policy = maximum_entry_batch_policy();
+  const std::array invalid_policies{
+      EntryBatchPolicy{0, 1, 1, 0, false, 0},
+      EntryBatchPolicy{ohl::parser::kMaximumEnumeratedEntries + 1U, 1, 1, 0,
+                       false, 0},
+      EntryBatchPolicy{1, 0, 1, 0, false, 0},
+      EntryBatchPolicy{1, ohl::parser::kMaximumEnumeratedPathBytes + 1U, 1, 0,
+                       false, 0},
+      EntryBatchPolicy{1, 1, 0, 0, false, 0},
+      EntryBatchPolicy{1, 1,
+                       ohl::parser::kMaximumEnumeratedEntryBytes + 1U, 0,
+                       false, 0},
+      EntryBatchPolicy{1, 1, 1,
+                       ohl::parser::kMaximumEnumeratedTotalBytes + 1U, false,
+                       0},
+      EntryBatchPolicy{1, 1, 1, 0, false, 1},
+  };
+  for (const auto& invalid : invalid_policies) {
+    if (invalid.valid() ||
+        ohl::parser::encode_entry_batch_payload(
+            EntryBatchMessage{budget_entries}, invalid, budget_output)
+            .error != ProtocolError::invalid_budget ||
+        ohl::parser::decode_entry_batch_payload(
+            payload_frame(MessageType::entry_batch, budget_payload, 1),
+            invalid, budget_storage)
+            .error != ProtocolError::invalid_budget) {
+      return fail("typed entry batch accepted an invalid policy");
+    }
+  }
+
+  const std::array increasing_entries{EntryBatchEntry{1, 0, "a"},
+                                      EntryBatchEntry{2, 0, "b"}};
+  const std::array duplicate_entries{EntryBatchEntry{1, 0, "a"},
+                                     EntryBatchEntry{1, 0, "b"}};
+  const std::array reordered_entries{EntryBatchEntry{2, 0, "a"},
+                                     EntryBatchEntry{1, 0, "b"}};
+  const auto duplicate_payload = raw_batch(duplicate_entries);
+  const auto reordered_payload = raw_batch(reordered_entries);
+  std::array<EntryBatchEntry, 2> order_storage{};
+  if (!ohl::parser::encode_entry_batch_payload(
+           EntryBatchMessage{increasing_entries}, maximum_policy, budget_output)
+           .valid() ||
+      ohl::parser::encode_entry_batch_payload(
+          EntryBatchMessage{duplicate_entries}, maximum_policy, budget_output)
+              .error != ProtocolError::noncanonical_value ||
+      ohl::parser::encode_entry_batch_payload(
+          EntryBatchMessage{reordered_entries}, maximum_policy, budget_output)
+              .error != ProtocolError::noncanonical_value ||
+      ohl::parser::decode_entry_batch_payload(
+          payload_frame(MessageType::entry_batch, duplicate_payload, 1),
+          maximum_policy, order_storage)
+              .error != ProtocolError::noncanonical_value ||
+      ohl::parser::decode_entry_batch_payload(
+          payload_frame(MessageType::entry_batch, reordered_payload, 1),
+          maximum_policy, order_storage)
+              .error != ProtocolError::noncanonical_value) {
+    return fail("typed entry batch within-batch ordering failed");
+  }
+
+  EntryBatchPolicy prior_policy = maximum_policy;
+  prior_policy.has_previous_source_token = true;
+  prior_policy.previous_source_token = 5;
+  const std::array next_entry{EntryBatchEntry{6, 0, "n"}};
+  const std::array replay_entry{EntryBatchEntry{5, 0, "r"}};
+  const std::array lower_entry{EntryBatchEntry{4, 0, "l"}};
+  const auto next_payload = raw_batch(next_entry);
+  const auto replay_payload = raw_batch(replay_entry);
+  const auto lower_payload = raw_batch(lower_entry);
+  std::array<EntryBatchEntry, 1> cross_batch_storage{};
+  if (!ohl::parser::encode_entry_batch_payload(
+           EntryBatchMessage{next_entry}, prior_policy, budget_output)
+           .valid() ||
+      !ohl::parser::decode_entry_batch_payload(
+           payload_frame(MessageType::entry_batch, next_payload, 1),
+           prior_policy, cross_batch_storage)
+           .valid() ||
+      ohl::parser::encode_entry_batch_payload(
+          EntryBatchMessage{replay_entry}, prior_policy, budget_output)
+              .error != ProtocolError::noncanonical_value ||
+      ohl::parser::encode_entry_batch_payload(
+          EntryBatchMessage{lower_entry}, prior_policy, budget_output)
+              .error != ProtocolError::noncanonical_value ||
+      ohl::parser::decode_entry_batch_payload(
+          payload_frame(MessageType::entry_batch, replay_payload, 1),
+          prior_policy, cross_batch_storage)
+              .error != ProtocolError::noncanonical_value ||
+      ohl::parser::decode_entry_batch_payload(
+          payload_frame(MessageType::entry_batch, lower_payload, 1),
+          prior_policy, cross_batch_storage)
+              .error != ProtocolError::noncanonical_value) {
+    return fail("typed entry batch cross-batch replay ordering failed");
+  }
+  auto maximum_prior_policy = maximum_policy;
+  maximum_prior_policy.has_previous_source_token = true;
+  maximum_prior_policy.previous_source_token =
+      std::numeric_limits<std::uint64_t>::max();
+  const std::array maximum_token_entry{EntryBatchEntry{
+      std::numeric_limits<std::uint64_t>::max(), 0, "m"}};
+  if (ohl::parser::encode_entry_batch_payload(
+          EntryBatchMessage{maximum_token_entry}, maximum_prior_policy,
+          budget_output)
+          .error != ProtocolError::noncanonical_value) {
+    return fail("typed entry batch accepted replay after maximum token");
+  }
+
+  std::array<std::byte, 21> single_payload{};
+  const std::array single_entry{EntryBatchEntry{0, 0, "a"}};
+  const auto single_encode = ohl::parser::encode_entry_batch_payload(
+      EntryBatchMessage{single_entry}, maximum_policy, single_payload);
+  if (!single_encode.valid()) {
+    return fail("typed entry batch truncation fixture encoding failed");
+  }
+  std::array<EntryBatchEntry, 2> atomic_storage;
+  for (std::size_t size = 0; size < single_payload.size(); ++size) {
+    atomic_storage.fill(sentinel_entry);
+    const auto decode = ohl::parser::decode_entry_batch_payload(
+        payload_frame(MessageType::entry_batch,
+                      std::span<const std::byte>{single_payload}.first(size),
+                      1),
+        maximum_policy, atomic_storage);
+    if (decode.error != ProtocolError::payload_underflow ||
+        !is_default(decode) || !all_sentinel(atomic_storage)) {
+      return fail("typed entry batch truncated field was not atomic");
+    }
+  }
+  std::array<std::byte, single_payload.size() + 1U> trailing_payload{};
+  std::copy(single_payload.begin(), single_payload.end(),
+            trailing_payload.begin());
+  trailing_payload.back() = std::byte{0xa5};
+  atomic_storage.fill(sentinel_entry);
+  const auto trailing_decode = ohl::parser::decode_entry_batch_payload(
+      payload_frame(MessageType::entry_batch, trailing_payload, 1),
+      maximum_policy, atomic_storage);
+  if (trailing_decode.error != ProtocolError::payload_trailing_bytes ||
+      !is_default(trailing_decode) || !all_sentinel(atomic_storage)) {
+    return fail("typed entry batch trailing byte was not rejected atomically");
+  }
+
+  const auto two_entry_payload = raw_batch(increasing_entries);
+  std::array<EntryBatchEntry, 3> capacity_storage;
+  capacity_storage.fill(sentinel_entry);
+  const auto short_storage_decode = ohl::parser::decode_entry_batch_payload(
+      payload_frame(MessageType::entry_batch, two_entry_payload, 1),
+      maximum_policy,
+      std::span<EntryBatchEntry>{capacity_storage}.first(1));
+  if (short_storage_decode.error != ProtocolError::output_too_small ||
+      !is_default(short_storage_decode) || !all_sentinel(capacity_storage)) {
+    return fail("short entry storage was not failure atomic");
+  }
+  capacity_storage.fill(sentinel_entry);
+  const auto exact_storage_decode = ohl::parser::decode_entry_batch_payload(
+      payload_frame(MessageType::entry_batch, two_entry_payload, 1),
+      maximum_policy,
+      std::span<EntryBatchEntry>{capacity_storage}.first(2));
+  if (!exact_storage_decode.valid() ||
+      exact_storage_decode.message.entries.data() != capacity_storage.data() ||
+      exact_storage_decode.message.entries.size() != 2 ||
+      capacity_storage[0].source_token != 1 ||
+      capacity_storage[1].source_token != 2 ||
+      capacity_storage[2].archive_path != sentinel_entry.archive_path) {
+    return fail("exact entry storage capacity failed");
+  }
+  capacity_storage.fill(sentinel_entry);
+  const auto larger_storage_decode = ohl::parser::decode_entry_batch_payload(
+      payload_frame(MessageType::entry_batch, two_entry_payload, 1),
+      maximum_policy, capacity_storage);
+  if (!larger_storage_decode.valid() ||
+      larger_storage_decode.message.entries.data() != capacity_storage.data() ||
+      larger_storage_decode.message.entries.size() != 2 ||
+      capacity_storage[2].source_token != sentinel_entry.source_token ||
+      capacity_storage[2].size_bytes != sentinel_entry.size_bytes ||
+      capacity_storage[2].archive_path != sentinel_entry.archive_path) {
+    return fail("larger entry storage capacity failed");
+  }
+
+  std::vector<std::byte> sentinel_output(two_entry_payload.size(),
+                                         std::byte{0xa5});
+  const auto unchanged_output = [&sentinel_output]() {
+    return std::all_of(sentinel_output.begin(), sentinel_output.end(),
+                       [](const std::byte value) {
+                         return value == std::byte{0xa5};
+                       });
+  };
+  const auto invalid_encode = ohl::parser::encode_entry_batch_payload(
+      EntryBatchMessage{duplicate_entries}, maximum_policy, sentinel_output);
+  if (invalid_encode.error != ProtocolError::noncanonical_value ||
+      invalid_encode.bytes_written != 0 || !unchanged_output()) {
+    return fail("invalid entry batch encoding changed destination");
+  }
+  const auto short_encode = ohl::parser::encode_entry_batch_payload(
+      EntryBatchMessage{increasing_entries}, maximum_policy,
+      std::span<std::byte>{sentinel_output}.first(
+          two_entry_payload.size() - 1U));
+  if (short_encode.error != ProtocolError::output_too_small ||
+      short_encode.bytes_written != 0 || !unchanged_output()) {
+    return fail("short entry batch encoding changed destination");
+  }
+
+  constexpr std::size_t kFrameEntryCount = 255;
+  const auto exact_path_bytes = ohl::parser::kMaximumFramePayloadBytes -
+                                ohl::parser::kEntryBatchPrefixBytes -
+                                kFrameEntryCount *
+                                    ohl::parser::kEntryBatchEntryPrefixBytes;
+  static_assert(exact_path_bytes == 1'043'984);
+  std::vector<std::string> frame_paths;
+  frame_paths.reserve(kFrameEntryCount);
+  for (std::size_t index = 0; index + 1U < kFrameEntryCount; ++index) {
+    frame_paths.emplace_back(ohl::parser::kMaximumEntryBatchPathBytes, 'a');
+  }
+  const auto final_path_bytes =
+      exact_path_bytes -
+      (kFrameEntryCount - 1U) * ohl::parser::kMaximumEntryBatchPathBytes;
+  frame_paths.emplace_back(final_path_bytes, 'b');
+  std::vector<EntryBatchEntry> frame_entries;
+  frame_entries.reserve(kFrameEntryCount);
+  for (std::size_t index = 0; index < frame_paths.size(); ++index) {
+    frame_entries.push_back(
+        {static_cast<std::uint64_t>(index), 0, frame_paths[index]});
+  }
+  std::vector<std::byte> frame_output(
+      ohl::parser::kMaximumFramePayloadBytes);
+  const auto frame_exact_encode = ohl::parser::encode_entry_batch_payload(
+      EntryBatchMessage{frame_entries}, maximum_policy, frame_output);
+  if (!frame_exact_encode.valid() ||
+      frame_exact_encode.bytes_written !=
+          ohl::parser::kMaximumFramePayloadBytes) {
+    return fail("exact frame-sized entry batch was rejected");
+  }
+  frame_paths.back().push_back('c');
+  frame_entries.back().archive_path = frame_paths.back();
+  std::array<std::byte, 8> frame_sentinel;
+  frame_sentinel.fill(std::byte{0xa5});
+  const auto frame_over_encode = ohl::parser::encode_entry_batch_payload(
+      EntryBatchMessage{frame_entries}, maximum_policy, frame_sentinel);
+  if (frame_over_encode.error != ProtocolError::payload_too_large ||
+      frame_over_encode.bytes_written != 0 ||
+      !std::all_of(frame_sentinel.begin(), frame_sentinel.end(),
+                   [](const std::byte value) {
+                     return value == std::byte{0xa5};
+                   })) {
+    return fail("one-over frame entry batch was not rejected atomically");
+  }
+  return true;
+}
+
+[[nodiscard]] bool test_typed_entry_batch_state_and_batches() {
+  const std::array first_entries{EntryBatchEntry{0, 1, "a"},
+                                 EntryBatchEntry{2, 2, "b"}};
+  const std::array second_entries{
+      EntryBatchEntry{3, 3, "c"},
+      EntryBatchEntry{std::numeric_limits<std::uint64_t>::max(), 0, "d"},
+  };
+  EntryBatchPolicy first_policy{
+      .remaining_entries = 4,
+      .remaining_path_bytes = 4,
+      .maximum_entry_bytes = 3,
+      .remaining_total_bytes = 6,
+  };
+  const auto first_policy_before = first_policy;
+  std::array<std::byte, 40> first_payload{};
+  std::array<std::byte, 40> second_payload{};
+  const auto first_encode = ohl::parser::encode_entry_batch_payload(
+      EntryBatchMessage{first_entries}, first_policy, first_payload);
+  if (!first_encode.valid() || first_encode.bytes_written != first_payload.size()) {
+    return fail("first stateful entry batch fixture failed");
+  }
+
+  auto second_policy = first_policy;
+  second_policy.remaining_entries -=
+      static_cast<std::uint32_t>(first_entries.size());
+  second_policy.remaining_path_bytes -= 2;
+  second_policy.remaining_total_bytes -= 3;
+  second_policy.has_previous_source_token = true;
+  second_policy.previous_source_token = first_entries.back().source_token;
+  const auto second_policy_before = second_policy;
+  const auto second_encode = ohl::parser::encode_entry_batch_payload(
+      EntryBatchMessage{second_entries}, second_policy, second_payload);
+  if (!second_encode.valid() ||
+      second_encode.bytes_written != second_payload.size()) {
+    return fail("second stateful entry batch fixture failed");
+  }
+
+  ProtocolStateValidator validator{kSession};
+  std::array<EntryBatchEntry, 2> first_storage{};
+  std::array<EntryBatchEntry, 2> second_storage{};
+  if (!handshake(validator) ||
+      !observe(validator, MessageDirection::parent_to_worker,
+               MessageType::enumerate, 1) ||
+      decode_entry_batch_then_observe(
+          validator, payload_frame(MessageType::entry_batch, first_payload, 1),
+          first_policy, first_storage) != ProtocolError::none ||
+      !equal_entry_batch_policy(first_policy, first_policy_before) ||
+      validator.state() != SessionState::enumerating ||
+      decode_entry_batch_then_observe(
+          validator,
+          payload_frame(MessageType::entry_batch, second_payload, 1),
+          second_policy, second_storage) != ProtocolError::none ||
+      !equal_entry_batch_policy(second_policy, second_policy_before) ||
+      validator.state() != SessionState::enumerating ||
+      validator.message_count() != 5) {
+    return fail("multiple typed entry batches did not preserve caller policy");
+  }
+
+  const std::array<std::byte, ohl::parser::kCompletePayloadBytes>
+      complete_payload{std::byte{0x00}, std::byte{0x00}, std::byte{0x04},
+                       std::byte{0x00}};
+  if (decode_complete_then_observe(
+          validator, payload_frame(MessageType::complete, complete_payload, 1),
+          ProtocolPhase::enumerate) != ProtocolError::none ||
+      validator.state() != SessionState::idle ||
+      validator.message_count() != 6) {
+    return fail("multiple typed entry batches did not complete enumeration");
+  }
+
+  ProtocolStateValidator invalid_validator{kSession};
+  auto replay_policy = maximum_entry_batch_policy();
+  replay_policy.has_previous_source_token = true;
+  replay_policy.previous_source_token = 0;
+  const auto replay_policy_before = replay_policy;
+  const EntryBatchEntry sentinel{
+      0xa5a5'a5a5'a5a5'a5a5ULL, 0xa5a5'a5a5'a5a5'a5a5ULL, "sentinel"};
+  std::array<EntryBatchEntry, 2> invalid_storage;
+  invalid_storage.fill(sentinel);
+  if (!handshake(invalid_validator) ||
+      !observe(invalid_validator, MessageDirection::parent_to_worker,
+               MessageType::enumerate, 1) ||
+      decode_entry_batch_then_observe(
+          invalid_validator,
+          payload_frame(MessageType::entry_batch, first_payload, 1),
+          replay_policy, invalid_storage) !=
+          ProtocolError::noncanonical_value ||
+      invalid_validator.state() != SessionState::enumerating ||
+      invalid_validator.message_count() != 3 ||
+      invalid_validator.error() != ProtocolError::none ||
+      !equal_entry_batch_policy(replay_policy, replay_policy_before) ||
+      !std::all_of(invalid_storage.begin(), invalid_storage.end(),
+                   [&sentinel](const EntryBatchEntry& entry) {
+                     return entry.source_token == sentinel.source_token &&
+                            entry.size_bytes == sentinel.size_bytes &&
+                            entry.archive_path == sentinel.archive_path;
+                   })) {
+    return fail("invalid entry batch changed state, policy, or storage");
+  }
+  return true;
+}
+
 [[nodiscard]] bool test_typed_data_chunk() {
   static_assert(ohl::parser::kMaximumDataChunkBytes == 256U * 1'024U);
 
@@ -2506,6 +3211,9 @@ int main() {
                  test_typed_exact_empty_messages() &&
                  test_typed_stream_entry() &&
                  test_typed_read_request() && test_typed_read_reply() &&
+                 test_typed_entry_batch_wire_and_bounds() &&
+                 test_typed_entry_batch_policy_and_atomicity() &&
+                 test_typed_entry_batch_state_and_batches() &&
                  test_typed_data_chunk() &&
                  test_typed_complete() &&
                  test_typed_failure_atomicity_and_ordering()
