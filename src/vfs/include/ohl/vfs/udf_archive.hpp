@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -10,15 +11,35 @@
 #include <string_view>
 #include <vector>
 
+namespace ohl::platform {
+class MediaSource;
+}
+
 namespace ohl::vfs {
+
+using SharedMediaSource = std::shared_ptr<const platform::MediaSource>;
 
 enum class VfsError {
   none,
   not_open,
   invalid_path,
+  invalid_source,
+  limit_exceeded,
+  source_changed,
   open_failed,
   not_found,
   read_failed,
+};
+
+struct UdfArchiveLimits {
+  static constexpr std::uint64_t logical_block_size = 2'048;
+  static constexpr std::uint64_t max_representable_source_bytes =
+      static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()) *
+      logical_block_size;
+
+  std::uint64_t max_source_bytes{max_representable_source_bytes};
+  std::uint32_t max_blocks_per_read{
+      static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())};
 };
 
 enum class EntryType {
@@ -74,6 +95,13 @@ class UdfArchive final {
   UdfArchive(const UdfArchive&) = delete;
   UdfArchive& operator=(const UdfArchive&) = delete;
 
+  // Mounts a pinned source capability. The source is retained by libudfread's
+  // block adapter for exactly the mounted archive lifetime; no pathname is
+  // stored or reopened.
+  [[nodiscard]] VfsError open(
+      SharedMediaSource source, UdfArchiveLimits limits = {});
+  // Transitional compatibility wrapper. Acquires image_path exactly once and
+  // delegates immediately to the capability overload.
   [[nodiscard]] VfsError open(const std::filesystem::path& image_path);
   // Returns another read-only handle that keeps the mounted archive alive.
   [[nodiscard]] UdfArchive share() const;

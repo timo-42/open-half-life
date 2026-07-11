@@ -1,5 +1,8 @@
 #include "ohl/vfs/udf_archive.hpp"
 
+#include "ohl/platform/media_source.hpp"
+#include "udf_media_input.hpp"
+
 #if defined(_MSC_VER)
 #include <BaseTsd.h>
 typedef SSIZE_T ssize_t;
@@ -12,11 +15,6 @@ typedef SSIZE_T ssize_t;
 
 namespace ohl::vfs {
 namespace {
-
-[[nodiscard]] std::string path_to_utf8(const std::filesystem::path& path) {
-  const auto encoded = path.u8string();
-  return {reinterpret_cast<const char*>(encoded.data()), encoded.size()};
-}
 
 [[nodiscard]] EntryType entry_type(const unsigned int udf_type) noexcept {
   switch (udf_type) {
@@ -46,6 +44,27 @@ struct ArchiveState {
     }
   }
 };
+
+[[nodiscard]] VfsError map_open_input_error(
+    const platform::MediaSourceError error) noexcept {
+  switch (error) {
+    case platform::MediaSourceError::none:
+    case platform::MediaSourceError::out_of_range:
+      return VfsError::open_failed;
+    case platform::MediaSourceError::changed:
+      return VfsError::source_changed;
+    case platform::MediaSourceError::resource_exhausted:
+      return VfsError::limit_exceeded;
+    case platform::MediaSourceError::not_found:
+    case platform::MediaSourceError::not_regular_file:
+    case platform::MediaSourceError::open_failed:
+    case platform::MediaSourceError::read_failed:
+    case platform::MediaSourceError::unexpected_eof:
+    case platform::MediaSourceError::unsupported:
+      return VfsError::read_failed;
+  }
+  return VfsError::read_failed;
+}
 
 [[nodiscard]] std::string sanitized_label(const char* const label) {
   if (label == nullptr) {
@@ -164,23 +183,48 @@ UdfArchive::~UdfArchive() = default;
 UdfArchive::UdfArchive(UdfArchive&&) noexcept = default;
 UdfArchive& UdfArchive::operator=(UdfArchive&&) noexcept = default;
 
-VfsError UdfArchive::open(const std::filesystem::path& image_path) {
+VfsError UdfArchive::open(SharedMediaSource source,
+                          const UdfArchiveLimits limits) {
   if (implementation_ == nullptr) {
     implementation_ = std::make_unique<Impl>();
   }
   close();
+
+  auto input_result = detail::create_udf_media_input(source, limits);
+  if (!input_result.valid()) {
+    return input_result.error;
+  }
+
   auto state = std::make_shared<ArchiveState>();
   state->archive = udfread_init();
   if (state->archive == nullptr) {
     return VfsError::open_failed;
   }
 
-  const auto encoded_path = path_to_utf8(image_path);
-  if (udfread_open(state->archive, encoded_path.c_str()) < 0) {
-    return VfsError::open_failed;
+  if (udfread_open_input(state->archive, input_result.input.get()) < 0) {
+    return map_open_input_error(
+        detail::udf_media_input_source_error(input_result.input.get()));
+  }
+
+  // libudfread owns a successful input and invokes its close callback from
+  // udfread_close(). Failed opens never take ownership.
+  (void)input_result.input.release();
+  const auto stable = source->verify_unchanged();
+  if (stable != platform::MediaSourceError::none) {
+    return map_open_input_error(stable);
   }
   implementation_->state = std::move(state);
   return VfsError::none;
+}
+
+VfsError UdfArchive::open(const std::filesystem::path& image_path) {
+  auto opened = platform::open_media_source(image_path);
+  if (!opened.valid()) {
+    return opened.error == platform::MediaSourceError::changed
+               ? VfsError::source_changed
+               : VfsError::open_failed;
+  }
+  return open(std::move(opened.source));
 }
 
 UdfArchive UdfArchive::share() const {

@@ -1,4 +1,5 @@
 add_library(ohl_vfs STATIC
+  src/udf_media_input.cpp
   src/udf_archive.cpp
 )
 
@@ -10,5 +11,9 @@ target_include_directories(
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
-target_link_libraries(ohl_vfs PRIVATE ThirdParty::udfread)
+target_link_libraries(
+  ohl_vfs
+  PUBLIC OpenHalfLife::platform
+  PRIVATE ThirdParty::udfread
+)
 ohl_enable_warnings(ohl_vfs)
