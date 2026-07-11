@@ -1317,16 +1317,16 @@ class WindowsIsolatedWorkerBackend final : public IsolatedWorkerBackend {
               pending = false;
               continue;
             }
-            const DWORD error = GetLastError();
-            if (error == ERROR_IO_INCOMPLETE) {
+            const DWORD completion_error = GetLastError();
+            if (completion_error == ERROR_IO_INCOMPLETE) {
               continue;
             }
-            if (error == ERROR_OPERATION_ABORTED) {
+            if (completion_error == ERROR_OPERATION_ABORTED) {
               return {.bytes_transferred = total,
                       .error = IsolatedWorkerError::cancelled};
             }
-            if (error == ERROR_BROKEN_PIPE ||
-                error == ERROR_PIPE_NOT_CONNECTED || error == ERROR_NO_DATA) {
+            if (completion_error == ERROR_BROKEN_PIPE ||
+                completion_error == ERROR_PIPE_NOT_CONNECTED || completion_error == ERROR_NO_DATA) {
               return {.bytes_transferred = total,
                       .error = IsolatedWorkerError::peer_closed};
             }
