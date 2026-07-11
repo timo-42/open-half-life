@@ -22,10 +22,12 @@ enum class ParserParentHandshakeError : std::uint8_t {
 
 struct ParserParentHandshakeResult;
 
-// A successful, move-only binding between the typed hello and the protocol
-// validator that observed it. This proof owns no source or process capability.
-// Read the policy/limits before taking the validator, then construct the source
-// broker from the same ValidatedMedia and these exact limits.
+// A successful, move-only binding between the typed hello, the exact borrowed
+// frame-channel object, and the protocol validator that observed it. The
+// channel must outlive this proof through its consumption. This proof owns no
+// source or process capability. Read the policy/limits before taking the
+// validator, then construct the source broker from the same ValidatedMedia and
+// these exact limits.
 class ParserParentHandshakeProof final {
  public:
   ParserParentHandshakeProof(ParserParentHandshakeProof&& other) noexcept;
@@ -37,6 +39,14 @@ class ParserParentHandshakeProof final {
       const ParserParentHandshakeProof&) = delete;
 
   [[nodiscard]] bool valid() const noexcept { return valid_; }
+  [[nodiscard]] bool matches_channel(
+      const ParserFrameChannel& channel) const noexcept {
+    return valid_ && channel_ == &channel &&
+           session_id_ == channel.session_id();
+  }
+  [[nodiscard]] std::uint64_t session_id() const noexcept {
+    return session_id_;
+  }
   [[nodiscard]] ParserSourceReadLimits source_read_limits() const noexcept {
     return source_read_limits_;
   }
@@ -51,10 +61,14 @@ class ParserParentHandshakeProof final {
  private:
   ParserParentHandshakeProof(
       parser::ProtocolStateValidator&& protocol,
+      const ParserFrameChannel& channel,
+      std::uint64_t session_id,
       ParserSourceReadLimits source_read_limits,
       parser::SourceReadPolicy source_read_policy) noexcept;
 
   parser::ProtocolStateValidator protocol_;
+  const ParserFrameChannel* channel_{nullptr};
+  std::uint64_t session_id_{0};
   ParserSourceReadLimits source_read_limits_;
   parser::SourceReadPolicy source_read_policy_;
   bool valid_{true};

@@ -88,6 +88,23 @@ add_test(
 )
 set_tests_properties(media.parser_parent_handshake PROPERTIES TIMEOUT 30)
 
+add_executable(ohl_media_parser_parent_session_tests
+  media/parser_parent_session_test.cpp
+)
+target_compile_features(
+  ohl_media_parser_parent_session_tests PRIVATE cxx_std_20
+)
+target_link_libraries(
+  ohl_media_parser_parent_session_tests
+  PRIVATE OpenHalfLife::media_parser_parent_session Threads::Threads
+)
+ohl_enable_warnings(ohl_media_parser_parent_session_tests)
+add_test(
+  NAME media.parser_parent_session
+  COMMAND ohl_media_parser_parent_session_tests
+)
+set_tests_properties(media.parser_parent_session PROPERTIES TIMEOUT 30)
+
 add_library(ohl_parser_fuzz_entry OBJECT
   parser/protocol_fuzz.cpp
 )

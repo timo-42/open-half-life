@@ -49,15 +49,21 @@ namespace {
 
 ParserParentHandshakeProof::ParserParentHandshakeProof(
     parser::ProtocolStateValidator&& protocol,
+    const ParserFrameChannel& channel,
+    const std::uint64_t session_id,
     const ParserSourceReadLimits source_read_limits,
     const parser::SourceReadPolicy source_read_policy) noexcept
     : protocol_{std::move(protocol)},
+      channel_{&channel},
+      session_id_{session_id},
       source_read_limits_{source_read_limits},
       source_read_policy_{source_read_policy} {}
 
 ParserParentHandshakeProof::ParserParentHandshakeProof(
     ParserParentHandshakeProof&& other) noexcept
     : protocol_{std::move(other.protocol_)},
+      channel_{std::exchange(other.channel_, nullptr)},
+      session_id_{std::exchange(other.session_id_, 0)},
       source_read_limits_{other.source_read_limits_},
       source_read_policy_{other.source_read_policy_},
       valid_{std::exchange(other.valid_, false)} {}
@@ -66,6 +72,8 @@ ParserParentHandshakeProof& ParserParentHandshakeProof::operator=(
     ParserParentHandshakeProof&& other) noexcept {
   if (this != &other) {
     protocol_ = std::move(other.protocol_);
+    channel_ = std::exchange(other.channel_, nullptr);
+    session_id_ = std::exchange(other.session_id_, 0);
     source_read_limits_ = other.source_read_limits_;
     source_read_policy_ = other.source_read_policy_;
     valid_ = std::exchange(other.valid_, false);
@@ -203,7 +211,8 @@ ParserParentHandshakeResult perform_parser_parent_handshake(
 
   ParserParentHandshakeResult result;
   result.proof = ParserParentHandshakeProof{
-      std::move(protocol), source_read_limits, source_read_policy};
+      std::move(protocol), channel, channel.session_id(), source_read_limits,
+      source_read_policy};
   return result;
 }
 
