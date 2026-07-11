@@ -32,6 +32,7 @@ app -> core + platform + media + vfs
 media -> platform + standard library; core is a private implementation edge
 media_parser_results -> media + parser; disconnected from runtime targets
 media_parser_reads -> media_parser_results; disconnected from runtime targets
+media_parser_transport -> parser + platform + Threads; disconnected from runtime targets
 vfs -> platform + standard library; libudfread is a private implementation edge
 parser -> standard library
 core/platform -> standard library
@@ -190,6 +191,60 @@ The broker creates no worker, sandbox, or transport and sends no frame. It has
 no runtime-import, raw-path, component-selection, destination, staging, cache,
 or publication authority. Native worker construction/isolation, IPC delivery,
 and explicit composition with selection and staging remain prerequisites.
+
+Commit `e4b819a` adds the separate, disconnected
+`OpenHalfLife::media_parser_transport` library. Its only dependencies are
+`OpenHalfLife::parser`, `OpenHalfLife::platform`, and `Threads::Threads`; no
+runtime target links it. A caller supplies a nonzero session identifier and a
+complete, trusted, non-owning exact-I/O operation table. The table's context
+and underlying byte channel must outlive the frame channel and every active
+operation. An existing adapter constructs an operation table whose callbacks
+directly forward to an already-created `platform::IsolatedWorker` through
+`read_exact()`, `write_all()`, and `abort_io()`. It grants no process launch,
+ownership, termination, or reap authority.
+
+Each frame is transferred as one exact canonical 32-byte OWP/1 header followed
+by a separate exact payload transfer when the bounded payload is nonempty.
+The channel passes the caller's deadline and cancellation token unchanged to
+each header and payload operation. It allocates and owns neither payload
+buffer: an outgoing payload must remain alive and unchanged until `send()`
+returns, while a successful received frame view aliases caller-owned storage
+that must remain alive and unchanged while the view is used. Receive requires
+capacity for the protocol maximum before consuming a header. Once payload I/O
+has begun, a failed read may leave an untrusted partial prefix followed by
+stale bytes; the entire supplied buffer is invalid as a frame and no portion
+may be parsed until the caller reinitializes it.
+
+Validation precedes the operation that could consume or emit the corresponding
+bytes. Construction rejects a zero session or incomplete operation table.
+Send validates the header, exact session binding, payload ceiling, and declared
+length before header encoding or I/O. Receive checks caller capacity before
+header I/O, then decodes and validates the complete header and exact session
+before selecting the bounded payload span. Invalid configuration is terminal
+without I/O. Protocol and transport failures poison the channel terminally,
+retain the first failure, invoke the operation table's idempotent `abort_io()`
+once, and make later calls return the retained failure without further I/O.
+Impossible exact-I/O reports, including a successful short transfer or a count
+above the requested span, are sanitized to `io_failure`; no partial byte count
+or frame view is returned to the caller.
+
+At most one send and one receive may be active concurrently. A second operation
+in the same direction is rejected without I/O and does not by itself poison the
+channel. The exact-I/O capability must therefore support one active read and
+one active write, and its abort operation must be concurrency-safe, must
+promptly wake either or both directions, and must not re-enter or destroy the
+frame channel. Destruction may not race active operations; orderly worker close
+or terminate-and-reap remains the caller's responsibility.
+
+Terminal `abort_io()` interrupts the trusted byte channel; it is not process
+termination or reap authority. Trusted custom callback code retains its ambient
+process authority, so restricting callback suppliers is composition policy,
+not mechanical confinement. The transport otherwise has no process launch,
+ownership, termination, reap, executable or path selection, source-read,
+component-selection, catalog, destination, staging, publication, cache,
+application, or runtime-import authority. Native isolated-worker process
+management plus composition with the result bridge, source-read broker,
+selection policy, staging, and the application remain a later dependency.
 
 Deterministic parser fuzz validation was accepted at `81a7ee9`; its typed
 dispatch was extended at `d59b6c5`, for `stream_entry` at `f4d908a`, for
@@ -405,6 +460,19 @@ evidence. Fuzz run `29148132997` separately passed Clang 18/libFuzzer for the
 typed protocol only and did not build or fuzz the broker. The build evidence
 qualifies the disconnected broker on the tested hosts, not a worker, transport,
 runtime import path, staging, or publication.
+
+## Local parser transport qualification
+
+The accepted frame-channel commit is
+`e4b819a9efa37d5e401d111c4ac591365ce669ae`. Local validation completed a clean
+warnings-as-errors build with 83/83 steps, the full CTest suite at 34/34, 50
+consecutive passes each of `media.parser_frame_channel` and
+`repository.policy`, and the existing platform common-worker test at 1/1.
+The focused tests cover canonical 32-byte output, payload boundaries, validation
+ordering, caller storage and view lifetimes, malformed exact-I/O reports,
+sticky first-failure poisoning, cancellation and peer closure at header and
+payload stages, same-direction exclusion, duplex progress, and abort wakeup.
+These are local results only; no hosted result is claimed for `e4b819a` here.
 
 The intended gameplay/rendering graph remains under design. Each new edge must
 be expressed explicitly with `target_link_libraries` so CMake remains the

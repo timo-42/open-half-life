@@ -314,12 +314,62 @@ frame, and grants no runtime-import, raw-path, component-selection,
 destination, staging, cache, or publication authority. Native worker isolation
 and IPC plus explicit selection/staging composition are still required.
 
-The same exact-SHA hosted run passed all 32 GNU 13 Linux tests, including the
-bridge, plus the experimental, sanitizer, and Windows jobs. It validates this
-disconnected result boundary across the required hosted platforms, not the
-absent worker, source, staging, or runtime edges. The tests-only `ca576e9`
-change did not trigger parser fuzzing; accepted typed-protocol fuzz evidence
-at that point remained the separate earlier `ba84cfc` run.
+Commit `e4b819a` adds the disconnected
+`OpenHalfLife::media_parser_transport` frame channel. It depends only on the
+accepted parser protocol, platform worker interface, and `Threads::Threads`;
+the app, runtime import, result bridge, source-read broker, staging, and
+publication paths do not link it. Construction binds one nonzero session to a
+complete trusted, non-owning exact-I/O operation table whose context and byte
+channel must outlive the frame channel and all active operations. The supplied
+adapter constructs an operation table whose callbacks directly forward to an
+already-created `IsolatedWorker`; it grants no process launch, ownership,
+termination, or reap authority.
+
+Send and receive use a separate exact canonical 32-byte header transfer and,
+for a nonempty bounded payload, a separate exact payload transfer. The same
+deadline and cancellation token supplied by the caller are forwarded unchanged
+to both stages. Send validates the protocol header, session binding, payload
+ceiling, and declared length before emitting a header. Receive requires a
+caller buffer large enough for the protocol maximum before consuming a header,
+then decodes and validates that header and its exact session before reading the
+declared bounded payload. A successful frame view aliases caller-owned receive
+storage; outgoing and incoming backing storage must remain alive and unchanged
+for their documented operation or view lifetime. If payload reading fails, a
+partial untrusted prefix and stale suffix may remain, and the whole supplied
+buffer is invalid as a frame until reinitialized.
+
+One send may overlap one receive, but a duplicate active operation in either
+direction is rejected without I/O. Any protocol or transport failure retains
+the first terminal cause, invokes the trusted idempotent abort callback once to
+wake active I/O, and prevents later I/O. Explicit abort has the same terminal,
+one-shot behavior. A reported success with a short count, or any count greater
+than the requested span, is sanitized to `io_failure`; no failed receive
+returns a usable frame view. The operation table must support concurrent read
+and write, prompt abort wakeup, and no re-entry or destruction of the channel.
+
+Terminal `abort_io()` interrupts the trusted byte channel; it is not process
+termination or reap authority. Trusted custom callbacks retain their ambient
+process authority, so limiting callback suppliers to trusted project code is a
+composition policy rather than mechanical confinement. The frame channel owns
+no process launch, ownership, termination, reap, executable, pathname, source,
+component-selection, staging, destination, publication, cache, catalog,
+application, or runtime authority. Native worker composition remains a later
+dependency: runtime wiring to the validated result, source-read, selection,
+staging, and publication boundaries is still absent. The accepted local
+evidence at
+`e4b819a9efa37d5e401d111c4ac591365ce669ae` is a clean warnings-as-errors build
+of 83/83 steps, full CTest at 34/34, 50 consecutive frame-channel and repository
+policy passes, and the platform common-worker test at 1/1. No hosted result is
+claimed for this commit.
+
+The earlier exact-SHA hosted build run `29147060407` at `ca576e9`, covering the
+trusted result bridge and media cancellation migration, passed all 32 GNU 13
+Linux tests plus the experimental, sanitizer, and Windows jobs. It validates
+that disconnected result boundary across the required hosted platforms, not
+`e4b819a` or the absent worker, source, staging, or runtime edges. The
+tests-only `ca576e9` change did not trigger parser fuzzing; accepted
+typed-protocol fuzz evidence at that point remained the separate earlier
+`ba84cfc` run.
 
 The source-read broker commit
 `c90f2d1a7cbabdb90b688197d2d34ceb48526aeb` passed the complete local CTest
@@ -373,9 +423,10 @@ downstream-write prerequisites described above, and it performs typed decoding
 before protocol observation. The success-only `complete` pair still does not
 prove that a worker or transport exists, that every required source read was
 requested, or that component selection, staging, or publication succeeded. The
-typed protocol, result bridge, and source-read broker must remain outside
-runtime import until native process isolation, transport, selection, and
-staging composition are implemented and accepted.
+typed protocol, result bridge, source-read broker, and disconnected frame
+channel must remain outside runtime import until native process isolation and
+process launch, ownership, termination, and reap plus transport-to-worker,
+selection, and staging composition are implemented and accepted.
 
 Isolation limits parser authority; it does not make parser output safe to log,
 commit, or trust without validation.

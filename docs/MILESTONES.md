@@ -51,7 +51,8 @@ Status: in progress; packages 2–4 establish the capability, cache,
 planning/staging, VFS, and application-composition feature baseline at
 `df5ea6d51037671ef0165dacac9fe26df1bf4d2b`. Disconnected parser-result
 validation was accepted at `909edcc`, followed by portable media cancellation
-accepted at `0f2c78d` and trusted parser source reads at `c90f2d1`.
+accepted at `0f2c78d`, trusted parser source reads at `c90f2d1`, and the
+disconnected frame channel at `e4b819a`.
 
 Current functionality:
 
@@ -156,6 +157,17 @@ Current functionality:
   after full delivery. Pre-cancel replies may cross; post-cancel reads are
   ignored without source or output access; terminal and destructor paths retire
   the associated session and catalog authority
+- the disconnected `OpenHalfLife::media_parser_transport` target depends only
+  on `OpenHalfLife::parser`, `OpenHalfLife::platform`, and `Threads::Threads`.
+  A nonzero session is bound to a trusted non-owning exact-I/O table, including
+  an adapter that constructs callbacks forwarding directly to an already-created
+  `IsolatedWorker`. Each frame uses a separate exact 32-byte canonical header
+  transfer and bounded payload transfer with the same deadline and cancellation
+  token. Receive views alias caller storage; failed payload reads invalidate the
+  whole supplied buffer as a frame. One send may overlap one receive, while
+  duplicate directions are rejected. Protocol or transport failure terminally
+  retains the first sanitized cause, calls byte-channel `abort_io()` once, and
+  prevents later I/O
 
 Remaining M2 work:
 
@@ -165,9 +177,10 @@ Remaining M2 work:
   format provenance
 - the constrained parser worker boundary in `MEDIA_IMPORT.md` remains
   mandatory before any third-party parser may feed production extraction. The
-  accepted result and source-read bridges still need a native isolated worker
-  and transport, deterministic component selection, and explicit staging
-  composition; the worker must have no raw-path, destination, or cache authority
+  accepted result bridge, source-read broker, and frame channel still need
+  native isolated-worker launch, ownership, termination, and reap plus explicit
+  runtime composition, deterministic component selection, and staging
+  integration; the worker must have no raw-path, destination, or cache authority
 - production payload extraction remains absent and must not execute installer
   binaries or media-provided code
 - macOS and Windows atomic-directory stores and native adversarial gates,
@@ -199,6 +212,16 @@ evidence. Fuzz run `29148132997` separately passed its typed-protocol-only Clang
 18/libFuzzer job and did not build or fuzz the broker. The build evidence
 qualifies the disconnected broker on those hosts, not any absent native worker,
 transport, runtime import, staging, or publication path.
+
+The disconnected frame channel was accepted and pushed at
+`e4b819a9efa37d5e401d111c4ac591365ce669ae`. Local validation completed a clean
+warnings-as-errors build with 83/83 steps, the full CTest suite at 34/34, 50
+consecutive passes each for the frame-channel and repository-policy tests, and
+the platform common-worker test at 1/1. These local results cover the trusted
+operation table, exact header/payload transfers, validation ordering, session
+binding, caller buffer/view lifetimes, concurrency, terminal poisoning,
+sanitized transfer errors, and abort wakeup. No hosted result is claimed for
+this commit.
 
 The accepted isolated parser protocol sequence starts with the bounded OWP/1
 codec at `3bc135c`, adds completion/cancellation race handling at `f17a40a`,
@@ -305,6 +328,25 @@ broker passes the retained capability as the callback source argument but does
 not constrain callback code's ambient authority; only trusted project/test code
 may supply it, and worker/media input cannot configure it.
 
+Commit `e4b819a` adds the disconnected trusted parser frame channel. Its only
+dependencies are the parser protocol, platform worker interface, and Threads.
+A caller supplies a nonzero session plus a complete non-owning exact-I/O table;
+the existing adapter constructs callbacks that directly forward to an
+already-created `IsolatedWorker`.
+After configuration checks, send validates header, session, payload ceiling,
+and exact declared length before I/O. Receive checks maximum caller capacity
+before header consumption, then validates the exact 32-byte header and session
+before a separate bounded payload read. The deadline and cancellation token are
+forwarded unchanged at each stage. Successful views borrow caller storage; a
+failed payload read can leave a partial untrusted prefix and stale suffix, so
+the whole buffer is invalid as a frame. One send and one receive may overlap;
+same-direction overlap is rejected. Protocol or transport failure retains the
+first terminal cause, sanitizes impossible exact-I/O reports, calls idempotent
+`abort_io()` once to wake active byte-channel operations, and suppresses later
+I/O. This abort is not process termination or reap authority. Trusted custom
+callbacks retain ambient process authority; limiting suppliers is composition
+policy, not mechanical confinement.
+
 The ordering contract permits exactly one same-request late reply to drain
 after `cancel_ack` only when a read was already outstanding before cancellation.
 The deterministic fuzz target exercises frame decoding, generic payload
@@ -326,17 +368,20 @@ was separate from run `29147060407`. The later exact `c90f2d1` fuzz run
 the source-read broker. Cross-platform broker evidence comes from build run
 `29148133002` above.
 
-This accepted protocol, result-validation, and source-read stack supports
-active M2 work but is not a production import path. The result bridge owns
+This accepted protocol, result-validation, source-read, and disconnected frame
+transport stack supports active M2 work but is not a production import path.
+The result bridge owns
 catalog generation, promotion, membership, layout, stream remainder, and
 retirement; the read broker owns bounded reads from the retained pinned
-capability and their prepare/commit ordering. No runtime target links either
-library. They do not create a worker, sandbox, or transport; select components;
-own staging; mutate a destination; or publish a cache. Those native isolation,
-IPC, selection, and composition prerequisites remain unaccepted and
-unintegrated. Neither library accepts raw-path authority, staging/publication
-authority, or worker-configured operation callbacks. The work authorizes no
-proprietary extraction.
+capability and their prepare/commit ordering; the frame channel owns only
+bounded framing over a caller-supplied byte capability. No runtime target links
+these libraries. The frame channel does not launch or own a worker, sandbox,
+executable, path, source, component selection, catalog, staging, destination,
+publication, cache, or application, and has no process termination or reap
+authority; the result and read bridges also create no worker or runtime import
+path and own no staging or publication. Native isolated-worker process
+management and runtime composition remain a later dependency. This work
+authorizes no proprietary extraction.
 
 ## Later milestones
 
