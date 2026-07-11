@@ -105,6 +105,10 @@ enum class IsolatedWorkerCreateProcessFailure : std::uint8_t {
     noexcept;
 [[nodiscard]] IsolatedWorkerCreateProcessFailure
 last_isolated_worker_create_process_failure() noexcept;
+// Raw Win32 error from the last failed CreateProcessW, for test diagnostics
+// only; ERROR_SUCCESS when no creation failure has been recorded.
+[[nodiscard]] std::uint32_t last_isolated_worker_create_process_error()
+    noexcept;
 
 [[nodiscard]] constexpr std::string_view isolated_worker_launch_stage_name(
     const IsolatedWorkerLaunchStage stage) noexcept {

@@ -41,6 +41,7 @@ std::atomic<windows::IsolatedWorkerLaunchStage> g_last_launch_stage{
 std::atomic<windows::IsolatedWorkerCreateProcessFailure>
     g_last_create_process_failure{
         windows::IsolatedWorkerCreateProcessFailure::none};
+std::atomic<DWORD> g_last_create_process_error{ERROR_SUCCESS};
 
 void record_launch_stage(
     const windows::IsolatedWorkerLaunchStage stage) noexcept {
@@ -1507,6 +1508,10 @@ IsolatedWorkerCreateProcessFailure
 last_isolated_worker_create_process_failure() noexcept {
   return g_last_create_process_failure.load();
 }
+
+std::uint32_t last_isolated_worker_create_process_error() noexcept {
+  return static_cast<std::uint32_t>(g_last_create_process_error.load());
+}
 }  // namespace windows
 #endif
 IsolatedWorkerBackendLaunchResult launch_isolated_worker_backend(
@@ -1671,8 +1676,10 @@ IsolatedWorkerBackendLaunchResult launch_isolated_worker_backend(
             &startup.StartupInfo, &process_info);
 #ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
         if (!process_created) {
+          const DWORD create_error = GetLastError();
+          g_last_create_process_error.store(create_error);
           g_last_create_process_failure.store(
-              classify_create_process_failure(GetLastError()));
+              classify_create_process_failure(create_error));
         }
 #endif
         // Whether creation succeeds or fails, no inheritable parent copy may

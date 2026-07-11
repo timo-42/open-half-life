@@ -71,7 +71,8 @@ void expect_launch(TestContext& test, const bool condition,
               << " create_process="
               << native::isolated_worker_create_process_failure_name(
                      process_failure)
-              << '\n';
+              << " create_process_error="
+              << native::last_isolated_worker_create_process_error() << '\n';
   }
 }
 
