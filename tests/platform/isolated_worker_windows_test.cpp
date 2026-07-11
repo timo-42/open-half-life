@@ -72,7 +72,10 @@ void expect_launch(TestContext& test, const bool condition,
               << native::isolated_worker_create_process_failure_name(
                      process_failure)
               << " create_process_error="
-              << native::last_isolated_worker_create_process_error() << '\n';
+              << native::last_isolated_worker_create_process_error()
+              << " bootstrap_exit=0x" << std::hex
+              << native::last_isolated_worker_bootstrap_exit_code() << std::dec
+              << '\n';
   }
 }
 

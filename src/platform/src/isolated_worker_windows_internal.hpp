@@ -193,6 +193,12 @@ last_isolated_worker_create_process_failure() noexcept;
 // only; ERROR_SUCCESS when no creation failure has been recorded.
 [[nodiscard]] std::uint32_t last_isolated_worker_create_process_error()
     noexcept;
+// Worker exit code observed when the last bootstrap wait failed, for test
+// diagnostics only; 259 (STILL_ACTIVE) reports a live worker, 0xFFFFFFFF
+// that no bootstrap failure has been recorded, and 0xFFFFFFFE that the
+// query itself failed.
+[[nodiscard]] std::uint32_t last_isolated_worker_bootstrap_exit_code()
+    noexcept;
 
 [[nodiscard]] constexpr std::string_view isolated_worker_launch_stage_name(
     const IsolatedWorkerLaunchStage stage) noexcept {

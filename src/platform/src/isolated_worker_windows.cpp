@@ -43,6 +43,9 @@ std::atomic<windows::IsolatedWorkerCreateProcessFailure>
     g_last_create_process_failure{
         windows::IsolatedWorkerCreateProcessFailure::none};
 std::atomic<DWORD> g_last_create_process_error{ERROR_SUCCESS};
+inline constexpr DWORD kBootstrapExitUnrecorded = 0xFFFFFFFFU;
+inline constexpr DWORD kBootstrapExitQueryFailed = 0xFFFFFFFEU;
+std::atomic<DWORD> g_last_bootstrap_exit_code{kBootstrapExitUnrecorded};
 
 void record_launch_stage(
     const windows::IsolatedWorkerLaunchStage stage) noexcept {
@@ -1554,6 +1557,10 @@ last_isolated_worker_create_process_failure() noexcept {
 std::uint32_t last_isolated_worker_create_process_error() noexcept {
   return static_cast<std::uint32_t>(g_last_create_process_error.load());
 }
+
+std::uint32_t last_isolated_worker_bootstrap_exit_code() noexcept {
+  return static_cast<std::uint32_t>(g_last_bootstrap_exit_code.load());
+}
 }  // namespace windows
 #endif
 IsolatedWorkerBackendLaunchResult launch_isolated_worker_backend(
@@ -1693,7 +1700,11 @@ IsolatedWorkerBackendLaunchResult launch_isolated_worker_backend(
       startup.StartupInfo.wShowWindow = SW_HIDE;
       startup.lpAttributeList = attributes.get();
       PROCESS_INFORMATION process_info{};
-      const DWORD creation_flags = CREATE_SUSPENDED | CREATE_NO_WINDOW |
+      // DETACHED_PROCESS rather than CREATE_NO_WINDOW: the worker only ever
+      // speaks over its inherited pipe, and a detached worker never touches
+      // the console device, which a capability-free LPAC token cannot rely
+      // on reaching.
+      const DWORD creation_flags = CREATE_SUSPENDED | DETACHED_PROCESS |
                                    CREATE_UNICODE_ENVIRONMENT |
                                    EXTENDED_STARTUPINFO_PRESENT;
       BOOL process_created = FALSE;
@@ -1819,6 +1830,9 @@ IsolatedWorkerBackendLaunchResult launch_isolated_worker_backend(
       thread.reset();
 
       auto backend = std::make_unique<WindowsIsolatedWorkerBackend>();
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+      const HANDLE observed_process = process.get();
+#endif
       backend->adopt(std::move(process), std::move(job), std::move(pipe.server),
                      profile_guard.release());
       process_cleanup.dismiss();
@@ -1830,6 +1844,13 @@ IsolatedWorkerBackendLaunchResult launch_isolated_worker_backend(
           backend->read_exact(bootstrap, startup_deadline, {});
       if (bootstrap_result.error != IsolatedWorkerError::none ||
           bootstrap != kBootstrapReady) {
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+        DWORD worker_exit_code = kBootstrapExitQueryFailed;
+        if (GetExitCodeProcess(observed_process, &worker_exit_code) == FALSE) {
+          worker_exit_code = kBootstrapExitQueryFailed;
+        }
+        g_last_bootstrap_exit_code.store(worker_exit_code);
+#endif
         IsolatedWorkerError error =
             bootstrap_result.error == IsolatedWorkerError::timeout
                 ? IsolatedWorkerError::timeout
