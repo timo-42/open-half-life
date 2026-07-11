@@ -22,6 +22,7 @@ function(ohl_add_linux_isolated_worker_helper suffix mode)
       -fno-rtti
       -fno-stack-protector
       -fno-pie
+      -fno-sanitize=all
   )
   target_link_options(
     ${target} PRIVATE -nostdlib -static -no-pie -Wl,-e,_start
@@ -133,4 +134,40 @@ add_test(
 set_tests_properties(
   platform.isolated_worker.linux
   PROPERTIES TIMEOUT 30 LABELS linux-isolated-worker
+)
+
+add_executable(
+  ohl_media_parser_worker_install_smoke_tests
+  ${CMAKE_CURRENT_LIST_DIR}/../media_parser_worker_install_smoke.cpp
+)
+target_compile_features(
+  ohl_media_parser_worker_install_smoke_tests PRIVATE cxx_std_20
+)
+target_include_directories(
+  ohl_media_parser_worker_install_smoke_tests
+  PRIVATE ${PROJECT_SOURCE_DIR}/src/platform/src
+)
+target_compile_definitions(
+  ohl_media_parser_worker_install_smoke_tests
+  PRIVATE OHL_LINUX_ISOLATED_WORKER_FREESTANDING=1
+)
+target_link_libraries(
+  ohl_media_parser_worker_install_smoke_tests PRIVATE Threads::Threads
+)
+add_dependencies(
+  ohl_media_parser_worker_install_smoke_tests ohl_media_parser_worker
+)
+ohl_enable_warnings(ohl_media_parser_worker_install_smoke_tests)
+add_test(
+  NAME platform.media_parser_worker.install_smoke
+  COMMAND
+    "${CMAKE_COMMAND}"
+    -DOHL_INSTALL_SMOKE_PREFIX=${CMAKE_CURRENT_BINARY_DIR}/media-parser-worker-install-prefix
+    -DOHL_INSTALL_SMOKE_BUILD_DIR=${PROJECT_BINARY_DIR}
+    -DOHL_INSTALL_SMOKE_EXECUTABLE=$<TARGET_FILE:ohl_media_parser_worker_install_smoke_tests>
+    -P ${CMAKE_CURRENT_LIST_DIR}/../media_parser_worker_install_smoke.cmake
+)
+set_tests_properties(
+  platform.media_parser_worker.install_smoke
+  PROPERTIES TIMEOUT 30 LABELS "linux-isolated-worker;install"
 )

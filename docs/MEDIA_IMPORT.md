@@ -507,13 +507,18 @@ import authority. The abstract `platform::IsolatedWorker` facade already
 defines launch, I/O, abort/close, wait, and terminate-and-wait operations, but
 committed HEAD source-selects a native containment backend only for Linux
 x86-64; other platforms and Linux architectures select the unsupported backend.
-Production composition still lacks the media-parser worker executable, bootstrap
-and service loop, install rule, runtime selection, staging/publication
-integration, and a higher process-session owner. That owner must allocate unique
-nonzero session IDs and worker epochs, preserve the exact channel through proof
-and session lifetimes, perform orderly protocol shutdown followed by channel
-close and `wait()`/reap, and reserve `terminate_and_wait()` for failure or
-orderly-close timeout. ParentSession owns none of these actions.
+Linux x86-64 now also installs a minimal production media-parser worker artifact
+for the root-owned `/usr/libexec/open-half-life` launcher contract. That
+artifact emits only the bounded readiness attestation, closes its readiness fd,
+and keeps the inherited lifecycle channel alive until close; it performs no
+parser, enumeration, source-read, extraction, staging, publication, or import
+semantics. Production composition still lacks runtime selection,
+staging/publication integration, parser/import service semantics, and a higher
+process-session owner. That owner must allocate unique nonzero session IDs and
+worker epochs, preserve the exact channel through proof and session lifetimes,
+perform orderly protocol shutdown followed by channel close and `wait()`/reap,
+and reserve `terminate_and_wait()` for failure or orderly-close timeout.
+ParentSession owns none of these actions.
 
 The resume order is therefore: qualify the Linux x86-64 native backend or add
 another tuple's native backend together with worker/bootstrap/service loop;

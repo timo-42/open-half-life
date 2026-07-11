@@ -19,10 +19,11 @@ evidence.
   not imply payload extraction.
 - Isolated-worker containment means a native backend can launch a fixed worker
   identity with reduced authority and bounded IPC. Linux x86-64 has a
-  source-selected containment backend with synthetic tests, but it lacks a
-  production parser worker/service, install rule, lifecycle coordinator,
-  deterministic component selection, runtime staging/publication integration,
-  and production qualification.
+  source-selected containment backend with synthetic tests and an installed
+  minimal production worker artifact that attests readiness and services only
+  process/channel lifecycle. It still lacks parser/import semantics, a
+  lifecycle coordinator, deterministic component selection, runtime
+  staging/publication integration, and production qualification.
 - Production end-to-end qualification means a supported platform tuple can
   perform the complete import path from pinned source through contained parser,
   deterministic selection, trusted staging, no-replace publication, runtime
@@ -33,7 +34,7 @@ evidence.
 
 | Platform | Build | App preflight and metadata-only cache | Isolated-worker containment | Production end-to-end qualification |
 | --- | --- | --- | --- | --- |
-| Linux x86-64 | Implemented. Existing Linux build evidence is not a production import tuple. | Implemented; no payload extraction. | Implemented as a source-selected native backend with project-authored synthetic tests. Production use is disconnected: no parser worker/service, install rule, lifecycle coordinator, runtime selection, or staging/publication integration exists. | Absent; import unavailable. |
+| Linux x86-64 | Implemented. Existing Linux build evidence is not a production import tuple. | Implemented; no payload extraction. | Implemented as a source-selected native backend with project-authored synthetic tests. A minimal installed production worker artifact covers packaging and process/channel lifecycle only; orchestration, parser/import service semantics, runtime selection, and staging/publication integration remain absent. | Absent; import unavailable. |
 | Linux other architectures | Unevidenced and unqualified as import tuples. | Code path exists where the build is available; no payload extraction. | Unsupported; CMake selects the unsupported backend. | Absent; import unavailable. |
 | Windows x64 | Exact documented build/preflight tuple. | Implemented in hosted evidence; no payload extraction. | Unsupported; CMake selects the unsupported backend. | Absent; import unavailable. |
 | Windows other architectures | Unevidenced and unqualified. | Unevidenced for release qualification. | Unsupported; CMake selects the unsupported backend. | Absent; import unavailable. |
