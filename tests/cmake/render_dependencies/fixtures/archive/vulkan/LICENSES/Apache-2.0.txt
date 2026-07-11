@@ -1,0 +1,1 @@
+Synthetic Apache-2.0 license payload. Project-authored and test-only.
