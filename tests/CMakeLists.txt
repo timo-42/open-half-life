@@ -14,6 +14,21 @@ target_link_libraries(ohl_sha256_tests PRIVATE OpenHalfLife::core)
 ohl_enable_warnings(ohl_sha256_tests)
 add_test(NAME core.sha256 COMMAND ohl_sha256_tests)
 
+add_executable(ohl_parser_tests
+  parser/protocol_test.cpp
+)
+target_compile_features(ohl_parser_tests PRIVATE cxx_std_20)
+target_link_libraries(ohl_parser_tests PRIVATE OpenHalfLife::parser)
+ohl_enable_warnings(ohl_parser_tests)
+add_test(NAME parser.protocol COMMAND ohl_parser_tests)
+
+add_library(ohl_parser_fuzz_entry OBJECT
+  parser/protocol_fuzz.cpp
+)
+target_compile_features(ohl_parser_fuzz_entry PRIVATE cxx_std_20)
+target_link_libraries(ohl_parser_fuzz_entry PRIVATE OpenHalfLife::parser)
+ohl_enable_warnings(ohl_parser_fuzz_entry)
+
 add_executable(ohl_platform_tests
   platform/platform_test.cpp
 )

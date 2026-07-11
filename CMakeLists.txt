@@ -26,6 +26,7 @@ if(OHL_ENABLE_EXPERIMENTAL_INSTALLSHIELD)
 endif()
 
 add_subdirectory(src/core)
+add_subdirectory(src/parser)
 add_subdirectory(src/platform)
 add_subdirectory(src/vfs)
 add_subdirectory(src/media)
