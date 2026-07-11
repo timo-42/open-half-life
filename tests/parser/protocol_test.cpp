@@ -1374,7 +1374,9 @@ constexpr std::uint64_t kSession = 0x0102'0304'0506'0708ULL;
 }
 
 [[nodiscard]] bool test_typed_read_reply() {
-  const std::array data{std::byte{0xaa}, std::byte{0xbb}, std::byte{0xcc}};
+  constexpr std::uint32_t kCanonicalReplyBytes = 3;
+  const std::array<std::byte, kCanonicalReplyBytes> data{
+      std::byte{0xaa}, std::byte{0xbb}, std::byte{0xcc}};
   const ReadReplyMessage canonical{0x0102'0304U, ProtocolStatus::ok, data};
   const std::array<std::byte, ohl::parser::kReadReplyPrefixBytes + data.size()>
       expected{std::byte{0x04}, std::byte{0x03}, std::byte{0x02},
@@ -1382,10 +1384,10 @@ constexpr std::uint64_t kSession = 0x0102'0304'0506'0708ULL;
                std::byte{0xaa}, std::byte{0xbb}, std::byte{0xcc}};
   std::array<std::byte, expected.size()> encoded{};
   const auto encode = ohl::parser::encode_read_reply_payload(
-      canonical, canonical.read_sequence, data.size(), encoded);
+      canonical, canonical.read_sequence, kCanonicalReplyBytes, encoded);
   const auto decode = ohl::parser::decode_read_reply_payload(
       payload_frame(MessageType::read_reply, encoded, 7),
-      canonical.read_sequence, data.size());
+      canonical.read_sequence, kCanonicalReplyBytes);
   if (!encode.valid() || encoded != expected || !decode.valid() ||
       decode.message.read_sequence != canonical.read_sequence ||
       decode.message.status != ProtocolStatus::ok ||
