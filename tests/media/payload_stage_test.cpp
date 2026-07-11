@@ -11,7 +11,6 @@
 #include <limits>
 #include <memory>
 #include <span>
-#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -43,8 +42,9 @@ struct SourceScript {
 class ScriptedSource final : public ohl::media::PayloadSource {
  public:
   explicit ScriptedSource(std::vector<SourceScript> scripts,
-                          const std::stop_token expected_stop_token = {},
-                          std::stop_source* request_stop = nullptr,
+                          const ohl::media::CancellationToken
+                              expected_stop_token = {},
+                          ohl::media::CancellationSource* request_stop = nullptr,
                           const std::size_t request_after_chunk = 0,
                           const bool request_before_return = false)
       : scripts_(std::move(scripts)),
@@ -55,7 +55,8 @@ class ScriptedSource final : public ohl::media::PayloadSource {
 
   [[nodiscard]] bool stream(
       const ohl::platform::MediaSource& media_source,
-      const std::uint64_t source_token, const std::stop_token stop_token,
+      const std::uint64_t source_token,
+      const ohl::media::CancellationToken stop_token,
       ohl::media::PayloadByteSink& sink) noexcept override {
     media_sources.push_back(&media_source);
     tokens.push_back(source_token);
@@ -89,14 +90,14 @@ class ScriptedSource final : public ohl::media::PayloadSource {
 
   std::vector<std::uint64_t> tokens;
   std::vector<const ohl::platform::MediaSource*> media_sources;
-  std::vector<std::stop_token> stop_tokens;
+  std::vector<ohl::media::CancellationToken> stop_tokens;
   std::vector<const ohl::media::PayloadByteSink*> sinks;
   bool contract_ok{true};
 
  private:
   std::vector<SourceScript> scripts_;
-  std::stop_token expected_stop_token_;
-  std::stop_source* request_stop_{nullptr};
+  ohl::media::CancellationToken expected_stop_token_;
+  ohl::media::CancellationSource* request_stop_{nullptr};
   std::size_t request_after_chunk_{0};
   bool request_before_return_{false};
 };
@@ -425,7 +426,7 @@ AtomicDirectoryStoreError FakeTransaction::abort() noexcept {
     const ohl::media::PayloadStageRequest& request,
     ohl::media::PayloadSource& source,
     ohl::platform::AtomicDirectoryStore& store,
-    const std::stop_token stop_token = {}) {
+    const ohl::media::CancellationToken stop_token = {}) {
   return ohl::media::stage_payload(*default_media, request, source, store,
                                    stop_token);
 }
@@ -519,7 +520,8 @@ int main() {
         result.bytes_streamed != 3 || result.entries_streamed != 3 ||
         result.cleanup_attempted || store.events != expected_events ||
         !source.contract_ok || source.media_sources.size() != 3 ||
-        source.stop_tokens != std::vector<std::stop_token>(3) ||
+        source.stop_tokens !=
+            std::vector<ohl::media::CancellationToken>(3) ||
         source.sinks.size() != 3 ||
         source.tokens != std::vector<std::uint64_t>({1, 2, 3}) ||
         store.publish_calls != 1 || store.completion_entries != 3 ||
@@ -722,7 +724,7 @@ int main() {
   }
 
   {
-    std::stop_source stop;
+    ohl::media::CancellationSource stop;
     (void)stop.request_stop();
     const std::vector entries{PlannedPayloadEntry{1, "cancel-before", 1}};
     ScriptedSource source({{1, {bytes({1})}, true}}, stop.get_token());
@@ -742,7 +744,7 @@ int main() {
   {
     const std::vector entries{PlannedPayloadEntry{1, "cancel-stream", 2}};
     for (const bool after_exact_stream : {false, true}) {
-      std::stop_source stop;
+      ohl::media::CancellationSource stop;
       ScriptedSource source(
           {{1, after_exact_stream
                    ? std::vector<std::vector<std::byte>>{bytes({1, 2})}
@@ -762,7 +764,8 @@ int main() {
           result.cleanup_error != AtomicDirectoryStoreError::none ||
           store.abort_calls != 1 || store.publish_calls != 0 ||
           !source.contract_ok ||
-          source.stop_tokens != std::vector<std::stop_token>{stop.get_token()}) {
+          source.stop_tokens !=
+              std::vector<ohl::media::CancellationToken>{stop.get_token()}) {
         std::cerr << "during/after-stream cancellation was mishandled\n";
         return 1;
       }
@@ -770,7 +773,7 @@ int main() {
   }
 
   {
-    std::stop_source stop;
+    ohl::media::CancellationSource stop;
     const std::vector<PlannedPayloadEntry> entries;
     ScriptedSource source({});
     FakeStore store;

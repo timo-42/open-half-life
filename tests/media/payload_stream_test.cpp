@@ -8,7 +8,6 @@
 #include <iostream>
 #include <limits>
 #include <span>
-#include <stop_token>
 #include <utility>
 #include <vector>
 
@@ -45,8 +44,9 @@ class SyntheticSource final : public ohl::media::PayloadSource {
   SyntheticSource(
       const ohl::platform::MediaSource& expected_media_source,
       std::initializer_list<std::vector<std::byte>> chunks,
-      const bool succeed = true, const std::stop_token expected_stop_token = {},
-      std::stop_source* request_stop = nullptr,
+      const bool succeed = true,
+      const ohl::media::CancellationToken expected_stop_token = {},
+      ohl::media::CancellationSource* request_stop = nullptr,
       const std::size_t request_after_chunk = 0,
       const bool request_before_return = false)
       : expected_media_source_(&expected_media_source),
@@ -59,7 +59,8 @@ class SyntheticSource final : public ohl::media::PayloadSource {
 
   [[nodiscard]] bool stream(
       const ohl::platform::MediaSource& media_source,
-      const std::uint64_t source_token, const std::stop_token stop_token,
+      const std::uint64_t source_token,
+      const ohl::media::CancellationToken stop_token,
       ohl::media::PayloadByteSink& sink) noexcept override {
     ++calls_;
     observed_media_source_ = &media_source;
@@ -94,7 +95,8 @@ class SyntheticSource final : public ohl::media::PayloadSource {
   [[nodiscard]] std::uint64_t observed_token() const noexcept {
     return observed_token_;
   }
-  [[nodiscard]] std::stop_token observed_stop_token() const noexcept {
+  [[nodiscard]] ohl::media::CancellationToken observed_stop_token()
+      const noexcept {
     return observed_stop_token_;
   }
   [[nodiscard]] const ohl::media::PayloadByteSink* observed_sink()
@@ -106,15 +108,15 @@ class SyntheticSource final : public ohl::media::PayloadSource {
   const ohl::platform::MediaSource* expected_media_source_{nullptr};
   std::vector<std::vector<std::byte>> chunks_;
   bool succeed_{true};
-  std::stop_token expected_stop_token_;
-  std::stop_source* request_stop_{nullptr};
+  ohl::media::CancellationToken expected_stop_token_;
+  ohl::media::CancellationSource* request_stop_{nullptr};
   std::size_t request_after_chunk_{0};
   bool request_before_return_{false};
   bool contract_ok_{false};
   std::size_t calls_{0};
   const ohl::platform::MediaSource* observed_media_source_{nullptr};
   std::uint64_t observed_token_{0};
-  std::stop_token observed_stop_token_;
+  ohl::media::CancellationToken observed_stop_token_;
   const ohl::media::PayloadByteSink* observed_sink_{nullptr};
 };
 
@@ -140,13 +142,14 @@ static_assert(noexcept(std::declval<ohl::media::PayloadByteSink&>().write(
     std::declval<std::span<const std::byte>>())));
 static_assert(noexcept(std::declval<ohl::media::PayloadSource&>().stream(
     std::declval<const ohl::platform::MediaSource&>(),
-    std::declval<std::uint64_t>(), std::declval<std::stop_token>(),
+    std::declval<std::uint64_t>(),
+    std::declval<ohl::media::CancellationToken>(),
     std::declval<ohl::media::PayloadByteSink&>())));
 static_assert(noexcept(ohl::media::stream_payload_entry(
     std::declval<const ohl::media::PlannedPayloadEntry&>(),
     std::declval<const ohl::platform::MediaSource&>(),
     std::declval<ohl::media::PayloadSource&>(),
-    std::declval<std::stop_token>(),
+    std::declval<ohl::media::CancellationToken>(),
     std::declval<ohl::media::PayloadByteSink&>())));
 
 int main() {
@@ -165,7 +168,7 @@ int main() {
     if (!result.complete() || result.bytes_written != 3 ||
         !source.contract_ok() || source.observed_media_source() != &media_source ||
         source.observed_token() != 42 || source.observed_stop_token() !=
-                                                   std::stop_token{} ||
+                                      ohl::media::CancellationToken{} ||
         source.observed_sink() == nullptr ||
         source.observed_sink() == &destination ||
         destination.bytes() != bytes({1, 2, 3})) {
@@ -308,7 +311,7 @@ int main() {
   }
 
   {
-    std::stop_source stop;
+    ohl::media::CancellationSource stop;
     (void)stop.request_stop();
     const PlannedPayloadEntry entry{21, "pre-cancel", 1};
     SyntheticSource source{media_source, {bytes({1})}, true, stop.get_token()};
@@ -323,7 +326,7 @@ int main() {
   }
 
   {
-    std::stop_source stop;
+    ohl::media::CancellationSource stop;
     const PlannedPayloadEntry entry{22, "cancel-during", 3};
     SyntheticSource source{media_source,
                            {bytes({1}), bytes({2, 3, 4})}, true,
@@ -339,7 +342,7 @@ int main() {
   }
 
   {
-    std::stop_source stop;
+    ohl::media::CancellationSource stop;
     const PlannedPayloadEntry entry{23, "cancel-after", 2};
     SyntheticSource source{media_source, {bytes({1, 2})}, true,
                            stop.get_token(), &stop, 0, true};

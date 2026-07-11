@@ -1,4 +1,5 @@
 add_library(ohl_media STATIC
+  src/cancellation.cpp
   src/import_cache.cpp
   src/iso_inspector.cpp
   src/payload_layout.cpp

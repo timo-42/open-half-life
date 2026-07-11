@@ -12,7 +12,6 @@
 #include <iostream>
 #include <span>
 #include <sstream>
-#include <stop_token>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -228,8 +227,8 @@ int main() {
     return 1;
   }
 
-  std::stop_source cancelled_source;
-  cancelled_source.request_stop();
+  ohl::media::CancellationSource cancelled_source;
+  (void)cancelled_source.request_stop();
   const auto cancelled_cache_root = temporary.path() / "cancelled-cache";
   if (ohl::media::detail::verify_complete_source_stability(
           *validation.media, cancelled_source.get_token()) !=
@@ -458,8 +457,8 @@ int main() {
     std::cerr << "failed to make cache mutation metadata observable\n";
     return 1;
   }
-  std::stop_source changed_stop_source;
-  changed_stop_source.request_stop();
+  ohl::media::CancellationSource changed_stop_source;
+  (void)changed_stop_source.request_stop();
   const auto changed_cache_root = temporary.path() / "changed-cache";
   const auto changed_manifest =
       changed_cache_root / "sources" /

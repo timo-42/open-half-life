@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ohl/media/cancellation.hpp"
 #include "ohl/media/iso_inspector.hpp"
 #include "ohl/media/payload_layout.hpp"
 #include "ohl/media/payload_stream.hpp"
@@ -9,7 +10,6 @@
 #include <cstdint>
 #include <optional>
 #include <span>
-#include <stop_token>
 #include <string>
 #include <string_view>
 
@@ -137,6 +137,6 @@ struct PayloadStageResult {
 [[nodiscard]] PayloadStageResult stage_payload(
     const ValidatedMedia& media, const PayloadStageRequest& request,
     PayloadSource& source, platform::AtomicDirectoryStore& store,
-    std::stop_token stop_token = {});
+    CancellationToken cancellation = {});
 
 }  // namespace ohl::media

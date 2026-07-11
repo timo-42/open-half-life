@@ -8,10 +8,10 @@ namespace {
 class BoundedPayloadSink final : public PayloadByteSink {
  public:
   BoundedPayloadSink(const std::uint64_t declared_size,
-                     const std::stop_token stop_token,
+                     const CancellationToken cancellation,
                      PayloadByteSink& destination) noexcept
       : declared_size_(declared_size),
-        stop_token_(stop_token),
+        cancellation_(cancellation),
         destination_(destination) {}
 
   [[nodiscard]] bool write(
@@ -19,7 +19,7 @@ class BoundedPayloadSink final : public PayloadByteSink {
     if (error_ != PayloadStreamError::none) {
       return false;
     }
-    if (stop_token_.stop_requested()) {
+    if (cancellation_.stop_requested()) {
       error_ = PayloadStreamError::cancelled;
       return false;
     }
@@ -45,7 +45,7 @@ class BoundedPayloadSink final : public PayloadByteSink {
 
  private:
   std::uint64_t declared_size_{0};
-  std::stop_token stop_token_;
+  CancellationToken cancellation_;
   PayloadByteSink& destination_;
   std::uint64_t bytes_written_{0};
   PayloadStreamError error_{PayloadStreamError::none};
@@ -56,21 +56,21 @@ class BoundedPayloadSink final : public PayloadByteSink {
 PayloadStreamResult stream_payload_entry(
     const PlannedPayloadEntry& entry,
     const platform::MediaSource& media_source, PayloadSource& source,
-    const std::stop_token stop_token,
+    const CancellationToken cancellation,
     PayloadByteSink& destination) noexcept {
-  if (stop_token.stop_requested()) {
+  if (cancellation.stop_requested()) {
     return {.error = PayloadStreamError::cancelled};
   }
 
-  BoundedPayloadSink bounded_sink(entry.size_bytes, stop_token, destination);
+  BoundedPayloadSink bounded_sink(entry.size_bytes, cancellation, destination);
   const auto source_succeeded = source.stream(
-      media_source, entry.source_token, stop_token, bounded_sink);
+      media_source, entry.source_token, cancellation, bounded_sink);
 
   if (bounded_sink.error() != PayloadStreamError::none) {
     return {.error = bounded_sink.error(),
             .bytes_written = bounded_sink.bytes_written()};
   }
-  if (stop_token.stop_requested()) {
+  if (cancellation.stop_requested()) {
     return {.error = PayloadStreamError::cancelled,
             .bytes_written = bounded_sink.bytes_written()};
   }

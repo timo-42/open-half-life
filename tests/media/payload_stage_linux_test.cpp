@@ -72,7 +72,8 @@ class Source final : public ohl::media::PayloadSource {
 
   [[nodiscard]] bool stream(
       const ohl::platform::MediaSource& media_source,
-      const std::uint64_t token, const std::stop_token stop_token,
+      const std::uint64_t token,
+      const ohl::media::CancellationToken stop_token,
       ohl::media::PayloadByteSink& sink) noexcept override {
     ++calls;
     observed_source = &media_source;
@@ -80,7 +81,7 @@ class Source final : public ohl::media::PayloadSource {
     observed_stop_token = stop_token;
     observed_sink = &sink;
     contract_ok = observed_source == expected_source_ &&
-                  observed_stop_token == std::stop_token{} &&
+                  observed_stop_token == ohl::media::CancellationToken{} &&
                   observed_sink != nullptr;
     if (!contract_ok) {
       return false;
@@ -92,7 +93,7 @@ class Source final : public ohl::media::PayloadSource {
   std::size_t calls{0};
   std::uint64_t observed_token{0};
   const ohl::platform::MediaSource* observed_source{nullptr};
-  std::stop_token observed_stop_token;
+  ohl::media::CancellationToken observed_stop_token;
   const ohl::media::PayloadByteSink* observed_sink{nullptr};
   bool contract_ok{true};
 

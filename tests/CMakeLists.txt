@@ -345,6 +345,20 @@ target_link_libraries(ohl_media_tests PRIVATE OpenHalfLife::media)
 ohl_enable_warnings(ohl_media_tests)
 add_test(NAME media.iso_inspector COMMAND ohl_media_tests)
 
+add_executable(ohl_media_cancellation_tests
+  media/cancellation_test.cpp
+)
+target_compile_features(ohl_media_cancellation_tests PRIVATE cxx_std_20)
+target_link_libraries(
+  ohl_media_cancellation_tests
+  PRIVATE
+    OpenHalfLife::media
+    Threads::Threads
+)
+ohl_enable_warnings(ohl_media_cancellation_tests)
+add_test(NAME media.cancellation COMMAND ohl_media_cancellation_tests)
+set_tests_properties(media.cancellation PROPERTIES TIMEOUT 30)
+
 add_executable(ohl_import_cache_tests
   media/import_cache_test.cpp
 )

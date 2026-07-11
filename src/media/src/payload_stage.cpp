@@ -213,7 +213,7 @@ PayloadStageResult stage_payload(const ValidatedMedia& media,
                                  const PayloadStageRequest& request,
                                  PayloadSource& source,
                                  platform::AtomicDirectoryStore& store,
-                                 const std::stop_token stop_token) {
+                                 const CancellationToken cancellation) {
   PayloadStageResult result;
   auto prepared = prepare_plan(media, request, result.failing_entry);
   if (!prepared.has_value()) {
@@ -228,7 +228,7 @@ PayloadStageResult stage_payload(const ValidatedMedia& media,
     return result;
   }
   result.identity = prepared->identity;
-  if (stop_token.stop_requested()) {
+  if (cancellation.stop_requested()) {
     result.phase = PayloadStagePhase::cancellation;
     result.error = PayloadStageError::cancelled;
     return result;
@@ -302,7 +302,7 @@ PayloadStageResult stage_payload(const ValidatedMedia& media,
     {
       PlatformSinkAdapter sink_adapter(*open_result.sink);
       stream_result = stream_payload_entry(
-          entry, *media.source(), source, stop_token, sink_adapter);
+          entry, *media.source(), source, cancellation, sink_adapter);
       write_error = sink_adapter.error();
     }
     result.bytes_streamed += stream_result.bytes_written;
@@ -345,7 +345,7 @@ PayloadStageResult stage_payload(const ValidatedMedia& media,
   }
 
   const auto verification =
-      detail::verify_complete_source_stability(media, stop_token);
+      detail::verify_complete_source_stability(media, cancellation);
   if (verification != detail::SourceStabilityError::none) {
     result.phase = PayloadStagePhase::verify_source;
     result.error = verification == detail::SourceStabilityError::cancelled
@@ -356,7 +356,7 @@ PayloadStageResult stage_payload(const ValidatedMedia& media,
     return result;
   }
 
-  if (stop_token.stop_requested()) {
+  if (cancellation.stop_requested()) {
     result.phase = PayloadStagePhase::cancellation;
     result.error = PayloadStageError::cancelled;
     abort_transaction(result, transaction);

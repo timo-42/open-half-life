@@ -1,12 +1,12 @@
 #pragma once
 
+#include "ohl/media/cancellation.hpp"
 #include "ohl/media/payload_layout.hpp"
 #include "ohl/platform/media_source.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <span>
-#include <stop_token>
 
 namespace ohl::media {
 
@@ -33,7 +33,7 @@ class PayloadSource {
 
   [[nodiscard]] virtual bool stream(
       const platform::MediaSource& media_source, std::uint64_t source_token,
-      std::stop_token stop_token, PayloadByteSink& sink) noexcept = 0;
+      CancellationToken cancellation, PayloadByteSink& sink) noexcept = 0;
 };
 
 enum class PayloadStreamError {
@@ -61,7 +61,7 @@ struct PayloadStreamResult {
 [[nodiscard]] PayloadStreamResult stream_payload_entry(
     const PlannedPayloadEntry& entry,
     const platform::MediaSource& media_source, PayloadSource& source,
-    std::stop_token stop_token,
+    CancellationToken cancellation,
     PayloadByteSink& destination) noexcept;
 
 }  // namespace ohl::media

@@ -24,7 +24,7 @@ namespace {
 }  // namespace
 
 SourceStabilityError verify_complete_source_stability(
-    const ValidatedMedia& media, const std::stop_token stop_token) {
+    const ValidatedMedia& media, const CancellationToken cancellation) {
   if (!media.valid()) {
     return SourceStabilityError::invalid_capability;
   }
@@ -39,7 +39,7 @@ SourceStabilityError verify_complete_source_stability(
   if (result != SourceStabilityError::none) {
     return result;
   }
-  if (stop_token.stop_requested()) {
+  if (cancellation.stop_requested()) {
     return SourceStabilityError::cancelled;
   }
 
@@ -65,7 +65,7 @@ SourceStabilityError verify_complete_source_stability(
     sha256.update(destination);
     offset += static_cast<std::uint64_t>(count);
 
-    if (offset < fingerprint.size_bytes && stop_token.stop_requested()) {
+    if (offset < fingerprint.size_bytes && cancellation.stop_requested()) {
       return SourceStabilityError::cancelled;
     }
   }
