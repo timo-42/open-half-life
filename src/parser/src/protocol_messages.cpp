@@ -99,6 +99,32 @@ namespace {
   return ProtocolError::none;
 }
 
+[[nodiscard]] ProtocolError validate_complete_context(
+    const ProtocolPhase expected_operation_phase) noexcept {
+  if (expected_operation_phase != ProtocolPhase::enumerate &&
+      expected_operation_phase != ProtocolPhase::stream) {
+    return ProtocolError::invalid_budget;
+  }
+  return ProtocolError::none;
+}
+
+[[nodiscard]] ProtocolError validate_complete(
+    const CompleteMessage& message,
+    const ProtocolPhase expected_operation_phase) noexcept {
+  const auto context_error =
+      validate_complete_context(expected_operation_phase);
+  if (context_error != ProtocolError::none) {
+    return context_error;
+  }
+  if (!known_protocol_status(message.status) ||
+      !known_protocol_phase(message.phase) ||
+      message.status != ProtocolStatus::ok ||
+      message.phase != ProtocolPhase::complete) {
+    return ProtocolError::noncanonical_value;
+  }
+  return ProtocolError::none;
+}
+
 }  // namespace
 
 EncodeResult encode_hello_payload(
@@ -358,6 +384,52 @@ DataChunkDecodeResult decode_data_chunk_payload(
     return result;
   }
   result.error = validate_data_chunk(message, remaining_entry_bytes);
+  if (result.error == ProtocolError::none) {
+    result.message = message;
+  }
+  return result;
+}
+
+EncodeResult encode_complete_payload(
+    const CompleteMessage& message,
+    const ProtocolPhase expected_operation_phase,
+    const std::span<std::byte> destination) noexcept {
+  EncodeResult result;
+  result.error = validate_complete(message, expected_operation_phase);
+  if (result.error != ProtocolError::none) {
+    return result;
+  }
+  if (destination.size() < kCompletePayloadBytes) {
+    result.error = ProtocolError::output_too_small;
+    return result;
+  }
+  PayloadWriter writer{destination.first(kCompletePayloadBytes)};
+  (void)writer.write_status(message.status);
+  (void)writer.write_phase(message.phase);
+  result.bytes_written = kCompletePayloadBytes;
+  return result;
+}
+
+CompleteDecodeResult decode_complete_payload(
+    const FrameView& frame,
+    const ProtocolPhase expected_operation_phase) noexcept {
+  CompleteDecodeResult result;
+  result.error = validate_frame(frame, MessageType::complete);
+  if (result.error != ProtocolError::none) {
+    return result;
+  }
+  result.error = validate_complete_context(expected_operation_phase);
+  if (result.error != ProtocolError::none) {
+    return result;
+  }
+  PayloadReader reader{frame.payload};
+  CompleteMessage message;
+  if (!reader.read_status(message.status) ||
+      !reader.read_phase(message.phase) || !reader.finish()) {
+    result.error = reader.error();
+    return result;
+  }
+  result.error = validate_complete(message, expected_operation_phase);
   if (result.error == ProtocolError::none) {
     result.message = message;
   }

@@ -14,6 +14,7 @@ inline constexpr std::size_t kEnumeratePayloadBytes = 0;
 inline constexpr std::size_t kStreamEntryPayloadBytes = 8;
 inline constexpr std::size_t kReadRequestPayloadBytes = 16;
 inline constexpr std::size_t kReadReplyPrefixBytes = 6;
+inline constexpr std::size_t kCompletePayloadBytes = 4;
 inline constexpr std::size_t kCancelPayloadBytes = 0;
 inline constexpr std::size_t kCancelAckPayloadBytes = 0;
 inline constexpr std::size_t kShutdownPayloadBytes = 0;
@@ -64,6 +65,11 @@ struct DataChunkMessage {
   std::span<const std::byte> data;
 };
 
+struct CompleteMessage {
+  ProtocolStatus status{ProtocolStatus::internal_failure};
+  ProtocolPhase phase{ProtocolPhase::handshake};
+};
+
 struct CancelMessage {};
 
 struct CancelAckMessage {};
@@ -87,6 +93,7 @@ using StreamEntryDecodeResult = MessageDecodeResult<StreamEntryMessage>;
 using ReadRequestDecodeResult = MessageDecodeResult<ReadRequestMessage>;
 using ReadReplyDecodeResult = MessageDecodeResult<ReadReplyMessage>;
 using DataChunkDecodeResult = MessageDecodeResult<DataChunkMessage>;
+using CompleteDecodeResult = MessageDecodeResult<CompleteMessage>;
 using CancelDecodeResult = MessageDecodeResult<CancelMessage>;
 using CancelAckDecodeResult = MessageDecodeResult<CancelAckMessage>;
 using ShutdownDecodeResult = MessageDecodeResult<ShutdownMessage>;
@@ -135,6 +142,14 @@ using ShutdownDecodeResult = MessageDecodeResult<ShutdownMessage>;
 [[nodiscard]] DataChunkDecodeResult decode_data_chunk_payload(
     const FrameView& frame,
     std::uint64_t remaining_entry_bytes) noexcept;
+
+[[nodiscard]] EncodeResult encode_complete_payload(
+    const CompleteMessage& message,
+    ProtocolPhase expected_operation_phase,
+    std::span<std::byte> destination) noexcept;
+[[nodiscard]] CompleteDecodeResult decode_complete_payload(
+    const FrameView& frame,
+    ProtocolPhase expected_operation_phase) noexcept;
 
 [[nodiscard]] EncodeResult encode_cancel_payload(
     const CancelMessage& message, std::span<std::byte> destination) noexcept;

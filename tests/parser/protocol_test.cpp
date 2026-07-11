@@ -13,6 +13,7 @@
 
 namespace {
 
+using ohl::parser::CompleteMessage;
 using ohl::parser::DataChunkMessage;
 using ohl::parser::FrameHeader;
 using ohl::parser::FrameView;
@@ -91,6 +92,18 @@ constexpr std::uint64_t kSession = 0x0102'0304'0506'0708ULL;
     return decoded.error;
   }
   return validator.observe(MessageDirection::parent_to_worker,
+                           candidate.header);
+}
+
+[[nodiscard]] ProtocolError decode_complete_then_observe(
+    ProtocolStateValidator& validator, const FrameView& candidate,
+    const ProtocolPhase expected_operation_phase) {
+  const auto decoded = ohl::parser::decode_complete_payload(
+      candidate, expected_operation_phase);
+  if (!decoded.valid()) {
+    return decoded.error;
+  }
+  return validator.observe(MessageDirection::worker_to_parent,
                            candidate.header);
 }
 
@@ -1982,6 +1995,299 @@ constexpr std::uint64_t kSession = 0x0102'0304'0506'0708ULL;
   return true;
 }
 
+[[nodiscard]] bool test_typed_complete() {
+  static_assert(ohl::parser::kCompletePayloadBytes == 4);
+
+  constexpr CompleteMessage canonical{ProtocolStatus::ok,
+                                      ProtocolPhase::complete};
+  const std::array<std::byte, ohl::parser::kCompletePayloadBytes>
+      canonical_bytes{std::byte{0x00}, std::byte{0x00}, std::byte{0x04},
+                      std::byte{0x00}};
+  constexpr std::array valid_contexts{ProtocolPhase::enumerate,
+                                      ProtocolPhase::stream};
+  constexpr std::array statuses{
+      ProtocolStatus::ok,
+      ProtocolStatus::unsupported,
+      ProtocolStatus::invalid_request,
+      ProtocolStatus::parser_rejected,
+      ProtocolStatus::budget_exceeded,
+      ProtocolStatus::cancelled,
+      ProtocolStatus::source_changed,
+      ProtocolStatus::source_read_failed,
+      ProtocolStatus::result_validation_failed,
+      ProtocolStatus::internal_failure,
+  };
+  constexpr std::array phases{
+      ProtocolPhase::handshake, ProtocolPhase::enumerate,
+      ProtocolPhase::stream, ProtocolPhase::source_read,
+      ProtocolPhase::complete,
+  };
+  static_assert(statuses.size() == 10);
+  static_assert(phases.size() == 5);
+  const auto is_default = [](const auto& result) {
+    return result.message.status == ProtocolStatus::internal_failure &&
+           result.message.phase == ProtocolPhase::handshake;
+  };
+  const auto all_sentinel = [](const auto& destination) {
+    return std::all_of(destination.begin(), destination.end(),
+                       [](const std::byte value) {
+                         return value == std::byte{0xa5};
+                       });
+  };
+
+  for (const auto context : valid_contexts) {
+    std::array<std::byte, ohl::parser::kCompletePayloadBytes> encoded{};
+    const auto encode =
+        ohl::parser::encode_complete_payload(canonical, context, encoded);
+    const auto decode = ohl::parser::decode_complete_payload(
+        payload_frame(MessageType::complete, encoded, 1), context);
+    if (!encode.valid() || encode.bytes_written != encoded.size() ||
+        encoded != canonical_bytes || !decode.valid() ||
+        decode.message.status != canonical.status ||
+        decode.message.phase != canonical.phase) {
+      return fail("typed complete canonical encoding failed");
+    }
+
+    for (const auto status : statuses) {
+      for (const auto phase : phases) {
+        std::array<std::byte, ohl::parser::kCompletePayloadBytes> payload{};
+        PayloadWriter writer{payload};
+        if (!writer.write_status(status) || !writer.write_phase(phase)) {
+          return fail("typed complete matrix fixture encoding failed");
+        }
+
+        std::array<std::byte, ohl::parser::kCompletePayloadBytes>
+            destination;
+        destination.fill(std::byte{0xa5});
+        const auto matrix_encode = ohl::parser::encode_complete_payload(
+            CompleteMessage{status, phase}, context, destination);
+        const auto matrix_decode = ohl::parser::decode_complete_payload(
+            payload_frame(MessageType::complete, payload, 1), context);
+        const auto allowed = status == ProtocolStatus::ok &&
+                             phase == ProtocolPhase::complete;
+        if (allowed) {
+          if (!matrix_encode.valid() ||
+              matrix_encode.bytes_written != destination.size() ||
+              destination != canonical_bytes || !matrix_decode.valid() ||
+              matrix_decode.message.status != status ||
+              matrix_decode.message.phase != phase) {
+            return fail("typed complete allowed matrix pair was rejected");
+          }
+        } else if (matrix_encode.error !=
+                       ProtocolError::noncanonical_value ||
+                   matrix_encode.bytes_written != 0 ||
+                   !all_sentinel(destination) ||
+                   matrix_decode.error !=
+                       ProtocolError::noncanonical_value ||
+                   !is_default(matrix_decode)) {
+          return fail("typed complete disallowed matrix pair was accepted");
+        }
+      }
+    }
+  }
+
+  const std::array<std::byte, ohl::parser::kCompletePayloadBytes>
+      unknown_status{std::byte{0xff}, std::byte{0xff}, std::byte{0x04},
+                     std::byte{0x00}};
+  const std::array<std::byte, ohl::parser::kCompletePayloadBytes> unknown_phase{
+      std::byte{0x00}, std::byte{0x00}, std::byte{0xff}, std::byte{0xff}};
+  for (const auto context : valid_contexts) {
+    std::array<std::byte, ohl::parser::kCompletePayloadBytes> destination;
+    destination.fill(std::byte{0xa5});
+    const auto encode_unknown_status = ohl::parser::encode_complete_payload(
+        {static_cast<ProtocolStatus>(0xffffU), ProtocolPhase::complete},
+        context, destination);
+    if (encode_unknown_status.error != ProtocolError::noncanonical_value ||
+        encode_unknown_status.bytes_written != 0 ||
+        !all_sentinel(destination)) {
+      return fail("typed complete unknown status was encoded");
+    }
+    destination.fill(std::byte{0xa5});
+    const auto encode_unknown_phase = ohl::parser::encode_complete_payload(
+        {ProtocolStatus::ok, static_cast<ProtocolPhase>(0xffffU)}, context,
+        destination);
+    const auto decode_unknown_status = ohl::parser::decode_complete_payload(
+        payload_frame(MessageType::complete, unknown_status, 1), context);
+    const auto decode_unknown_phase = ohl::parser::decode_complete_payload(
+        payload_frame(MessageType::complete, unknown_phase, 1), context);
+    if (encode_unknown_phase.error != ProtocolError::noncanonical_value ||
+        encode_unknown_phase.bytes_written != 0 ||
+        !all_sentinel(destination) ||
+        decode_unknown_status.error != ProtocolError::noncanonical_value ||
+        !is_default(decode_unknown_status) ||
+        decode_unknown_phase.error != ProtocolError::noncanonical_value ||
+        !is_default(decode_unknown_phase)) {
+      return fail("typed complete unknown enum value was accepted");
+    }
+  }
+
+  constexpr std::array invalid_contexts{
+      ProtocolPhase::handshake,
+      ProtocolPhase::source_read,
+      ProtocolPhase::complete,
+      static_cast<ProtocolPhase>(0xffffU),
+  };
+  for (const auto context : invalid_contexts) {
+    std::array<std::byte, ohl::parser::kCompletePayloadBytes> destination;
+    destination.fill(std::byte{0xa5});
+    const auto encode =
+        ohl::parser::encode_complete_payload(canonical, context, destination);
+    const auto decode = ohl::parser::decode_complete_payload(
+        payload_frame(MessageType::complete, canonical_bytes, 1), context);
+    if (encode.error != ProtocolError::invalid_budget ||
+        encode.bytes_written != 0 || !all_sentinel(destination) ||
+        decode.error != ProtocolError::invalid_budget ||
+        !is_default(decode)) {
+      return fail("typed complete invalid operation context was accepted");
+    }
+  }
+
+  std::array<std::byte, ohl::parser::kCompletePayloadBytes + 1> shaped_payload{
+      std::byte{0x00}, std::byte{0x00}, std::byte{0x04}, std::byte{0x00},
+      std::byte{0xa5}};
+  for (const auto context : valid_contexts) {
+    for (std::size_t size = 0; size <= shaped_payload.size(); ++size) {
+      const auto decode = ohl::parser::decode_complete_payload(
+          payload_frame(MessageType::complete,
+                        std::span<const std::byte>{shaped_payload}.first(size),
+                        1),
+          context);
+      if (size == ohl::parser::kCompletePayloadBytes) {
+        if (!decode.valid() || decode.message.status != canonical.status ||
+            decode.message.phase != canonical.phase) {
+          return fail("typed complete exact payload size was rejected");
+        }
+      } else {
+        const auto expected =
+            size < ohl::parser::kCompletePayloadBytes
+                ? ProtocolError::payload_underflow
+                : ProtocolError::payload_trailing_bytes;
+        if (decode.error != expected || !is_default(decode)) {
+          return fail("typed complete payload size was accepted");
+        }
+      }
+    }
+  }
+
+  std::array<std::byte, ohl::parser::kCompletePayloadBytes + 1> destination;
+  for (std::size_t size = 0; size <= destination.size(); ++size) {
+    destination.fill(std::byte{0xa5});
+    const auto encode = ohl::parser::encode_complete_payload(
+        canonical, ProtocolPhase::enumerate,
+        std::span<std::byte>{destination}.first(size));
+    if (size < ohl::parser::kCompletePayloadBytes) {
+      if (encode.error != ProtocolError::output_too_small ||
+          encode.bytes_written != 0 || !all_sentinel(destination)) {
+        return fail("short complete output changed its destination");
+      }
+    } else if (!encode.valid() ||
+               encode.bytes_written != ohl::parser::kCompletePayloadBytes ||
+               !std::equal(canonical_bytes.begin(), canonical_bytes.end(),
+                           destination.begin()) ||
+               destination.back() != std::byte{0xa5}) {
+      return fail("typed complete output size handling failed");
+    }
+  }
+
+  auto declared_longer =
+      payload_frame(MessageType::complete, canonical_bytes, 1);
+  auto declared_shorter =
+      payload_frame(MessageType::complete, canonical_bytes, 1);
+  auto invalid_flags =
+      payload_frame(MessageType::complete, canonical_bytes, 1);
+  ++declared_longer.header.payload_length;
+  --declared_shorter.header.payload_length;
+  invalid_flags.header.flags = 1;
+  const FrameView prior_error{
+      .error = ProtocolError::payload_too_large,
+      .header = {},
+      .payload = canonical_bytes,
+  };
+  const auto truncated = ohl::parser::decode_complete_payload(
+      declared_longer, ProtocolPhase::handshake);
+  const auto trailing = ohl::parser::decode_complete_payload(
+      declared_shorter, ProtocolPhase::handshake);
+  const auto bad_flags = ohl::parser::decode_complete_payload(
+      invalid_flags, ProtocolPhase::handshake);
+  const auto wrong_type = ohl::parser::decode_complete_payload(
+      payload_frame(MessageType::data_chunk, canonical_bytes, 1),
+      ProtocolPhase::handshake);
+  const auto inherited_error = ohl::parser::decode_complete_payload(
+      prior_error, ProtocolPhase::handshake);
+  if (truncated.error != ProtocolError::truncated_payload ||
+      !is_default(truncated) ||
+      trailing.error != ProtocolError::trailing_bytes ||
+      !is_default(trailing) ||
+      bad_flags.error != ProtocolError::reserved_flags ||
+      !is_default(bad_flags) ||
+      wrong_type.error != ProtocolError::unexpected_message ||
+      !is_default(wrong_type) ||
+      inherited_error.error != ProtocolError::payload_too_large ||
+      !is_default(inherited_error)) {
+    return fail("typed complete frame validation was not failure atomic");
+  }
+
+  const std::array<std::byte, ohl::parser::kCompletePayloadBytes>
+      invalid_payload{std::byte{0x01}, std::byte{0x00}, std::byte{0x04},
+                      std::byte{0x00}};
+  for (const auto context : valid_contexts) {
+    const auto operation = context == ProtocolPhase::enumerate
+                               ? MessageType::enumerate
+                               : MessageType::stream_entry;
+    const auto state = context == ProtocolPhase::enumerate
+                           ? SessionState::enumerating
+                           : SessionState::streaming;
+    const auto result = context == ProtocolPhase::enumerate
+                            ? MessageType::entry_batch
+                            : MessageType::data_chunk;
+
+    ProtocolStateValidator normal{kSession};
+    if (!handshake(normal) ||
+        !observe(normal, MessageDirection::parent_to_worker, operation, 1) ||
+        decode_complete_then_observe(
+            normal, payload_frame(MessageType::complete, invalid_payload, 1),
+            context) != ProtocolError::noncanonical_value ||
+        normal.state() != state || normal.message_count() != 3 ||
+        normal.error() != ProtocolError::none ||
+        decode_complete_then_observe(
+            normal, payload_frame(MessageType::complete, canonical_bytes, 1),
+            context) != ProtocolError::none ||
+        normal.state() != SessionState::idle || normal.message_count() != 4) {
+      return fail("complete dispatch observed an invalid typed payload");
+    }
+
+    ProtocolStateValidator cancel_first{kSession};
+    if (!handshake(cancel_first) ||
+        !observe(cancel_first, MessageDirection::parent_to_worker, operation,
+                 1) ||
+        !observe(cancel_first, MessageDirection::parent_to_worker,
+                 MessageType::cancel, 1) ||
+        !observe(cancel_first, MessageDirection::worker_to_parent, result, 1) ||
+        decode_complete_then_observe(
+            cancel_first,
+            payload_frame(MessageType::complete, canonical_bytes, 1),
+            context) != ProtocolError::none ||
+        cancel_first.state() != SessionState::idle) {
+      return fail("typed completion did not win cancel-first race");
+    }
+
+    ProtocolStateValidator complete_first{kSession};
+    if (!handshake(complete_first) ||
+        !observe(complete_first, MessageDirection::parent_to_worker, operation,
+                 1) ||
+        decode_complete_then_observe(
+            complete_first,
+            payload_frame(MessageType::complete, canonical_bytes, 1),
+            context) != ProtocolError::none ||
+        !observe(complete_first, MessageDirection::parent_to_worker,
+                 MessageType::cancel, 1) ||
+        complete_first.state() != SessionState::idle) {
+      return fail("typed completion did not win complete-first race");
+    }
+  }
+  return true;
+}
+
 [[nodiscard]] bool test_typed_failure_atomicity_and_ordering() {
   const auto unchanged = [](const auto& bytes) {
     return std::all_of(bytes.begin(), bytes.end(), [](const std::byte value) {
@@ -2201,6 +2507,7 @@ int main() {
                  test_typed_stream_entry() &&
                  test_typed_read_request() && test_typed_read_reply() &&
                  test_typed_data_chunk() &&
+                 test_typed_complete() &&
                  test_typed_failure_atomicity_and_ordering()
              ? 0
              : 1;

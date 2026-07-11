@@ -154,6 +154,18 @@ struct SequenceContext {
   }
 }
 
+[[nodiscard]] ohl::parser::ProtocolPhase complete_context(
+    const ohl::parser::FrameView& frame) noexcept {
+  switch (frame.header.request_id % 3U) {
+    case 0:
+      return ohl::parser::ProtocolPhase::enumerate;
+    case 1:
+      return ohl::parser::ProtocolPhase::stream;
+    default:
+      return ohl::parser::ProtocolPhase::handshake;
+  }
+}
+
 void exercise_typed_decoder(const ohl::parser::FrameView& frame) {
   using namespace ohl::parser;
   switch (frame.header.type) {
@@ -187,6 +199,9 @@ void exercise_typed_decoder(const ohl::parser::FrameView& frame) {
     case MessageType::data_chunk:
       (void)decode_data_chunk_payload(frame, data_chunk_remainder(frame));
       break;
+    case MessageType::complete:
+      (void)decode_complete_payload(frame, complete_context(frame));
+      break;
     case MessageType::cancel:
       (void)decode_cancel_payload(frame);
       break;
@@ -197,7 +212,6 @@ void exercise_typed_decoder(const ohl::parser::FrameView& frame) {
       (void)decode_shutdown_payload(frame);
       break;
     case MessageType::entry_batch:
-    case MessageType::complete:
       break;
   }
 }
@@ -300,6 +314,76 @@ void exercise_typed_decoder(const ohl::parser::FrameView& frame) {
       decode_data_chunk_payload(smaller_data_chunk, smaller_remainder);
   const auto zero_decode =
       decode_data_chunk_payload(zero_data_chunk, zero_remainder);
+
+  std::array<std::byte, kCompletePayloadBytes> complete_payload{};
+  PayloadWriter complete_writer{complete_payload};
+  if (!complete_writer.write_status(ProtocolStatus::ok) ||
+      !complete_writer.write_phase(ProtocolPhase::complete)) {
+    return false;
+  }
+  const FrameView enumerate_complete{
+      .header = {.type = MessageType::complete,
+                 .payload_length =
+                     static_cast<std::uint32_t>(complete_payload.size()),
+                 .session_id = kFuzzSession,
+                 .request_id = 3},
+      .payload = complete_payload,
+  };
+  const FrameView stream_complete{
+      .header = {.type = MessageType::complete,
+                 .payload_length =
+                     static_cast<std::uint32_t>(complete_payload.size()),
+                 .session_id = kFuzzSession,
+                 .request_id = 1},
+      .payload = complete_payload,
+  };
+  const FrameView invalid_context_complete{
+      .header = {.type = MessageType::complete,
+                 .payload_length =
+                     static_cast<std::uint32_t>(complete_payload.size()),
+                 .session_id = kFuzzSession,
+                 .request_id = 2},
+      .payload = complete_payload,
+  };
+  std::array<std::byte, kCompletePayloadBytes> disallowed_status_payload{};
+  PayloadWriter disallowed_status_writer{disallowed_status_payload};
+  if (!disallowed_status_writer.write_status(ProtocolStatus::cancelled) ||
+      !disallowed_status_writer.write_phase(ProtocolPhase::complete)) {
+    return false;
+  }
+  const FrameView disallowed_status_complete{
+      .header = {.type = MessageType::complete,
+                 .payload_length = static_cast<std::uint32_t>(
+                     disallowed_status_payload.size()),
+                 .session_id = kFuzzSession,
+                 .request_id = 3},
+      .payload = disallowed_status_payload,
+  };
+  std::array<std::byte, kCompletePayloadBytes> disallowed_phase_payload{};
+  PayloadWriter disallowed_phase_writer{disallowed_phase_payload};
+  if (!disallowed_phase_writer.write_status(ProtocolStatus::ok) ||
+      !disallowed_phase_writer.write_phase(ProtocolPhase::stream)) {
+    return false;
+  }
+  const FrameView disallowed_phase_complete{
+      .header = {.type = MessageType::complete,
+                 .payload_length = static_cast<std::uint32_t>(
+                     disallowed_phase_payload.size()),
+                 .session_id = kFuzzSession,
+                 .request_id = 1},
+      .payload = disallowed_phase_payload,
+  };
+  const auto enumerate_complete_decode = decode_complete_payload(
+      enumerate_complete, complete_context(enumerate_complete));
+  const auto stream_complete_decode = decode_complete_payload(
+      stream_complete, complete_context(stream_complete));
+  const auto invalid_context_decode = decode_complete_payload(
+      invalid_context_complete, complete_context(invalid_context_complete));
+  const auto disallowed_status_decode = decode_complete_payload(
+      disallowed_status_complete,
+      complete_context(disallowed_status_complete));
+  const auto disallowed_phase_decode = decode_complete_payload(
+      disallowed_phase_complete, complete_context(disallowed_phase_complete));
   return request_sequence.matches_wire &&
          request_sequence.expected_sequence == 7 && request_decode.valid() &&
          reply_sequence.matches_wire && reply_sequence.expected_sequence == 9 &&
@@ -311,7 +395,17 @@ void exercise_typed_decoder(const ohl::parser::FrameView& frame) {
          smaller_remainder == data_chunk_payload.size() - 1U &&
          smaller_decode.error == ProtocolError::noncanonical_value &&
          zero_remainder == 0 &&
-         zero_decode.error == ProtocolError::invalid_budget;
+         zero_decode.error == ProtocolError::invalid_budget &&
+         complete_context(enumerate_complete) == ProtocolPhase::enumerate &&
+         enumerate_complete_decode.valid() &&
+         complete_context(stream_complete) == ProtocolPhase::stream &&
+         stream_complete_decode.valid() &&
+         complete_context(invalid_context_complete) ==
+             ProtocolPhase::handshake &&
+         invalid_context_decode.error == ProtocolError::invalid_budget &&
+         disallowed_status_decode.error ==
+             ProtocolError::noncanonical_value &&
+         disallowed_phase_decode.error == ProtocolError::noncanonical_value;
 }
 
 [[nodiscard]] ohl::parser::MessageType message_type(
