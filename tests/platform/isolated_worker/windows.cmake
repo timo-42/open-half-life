@@ -7,6 +7,10 @@ if(NOT ohl_windows_worker_test_processor MATCHES "^(x86_64|amd64)$")
   return()
 endif()
 
+target_compile_definitions(
+  ohl_platform PRIVATE OHL_WINDOWS_ISOLATED_WORKER_TESTING=1
+)
+
 function(ohl_add_windows_isolated_worker_helper suffix mode)
   set(target "ohl_isolated_worker_windows_worker_${suffix}")
   add_executable(
@@ -53,6 +57,7 @@ target_compile_definitions(
     NOMINMAX
     WIN32_LEAN_AND_MEAN
     _WIN32_WINNT=0x0A00
+    OHL_WINDOWS_ISOLATED_WORKER_TESTING=1
     OHL_WINDOWS_TEST_WORKER_READY_PATH=L"$<TARGET_FILE:ohl_isolated_worker_windows_worker_ready>"
     OHL_WINDOWS_TEST_WORKER_BAD_READY_PATH=L"$<TARGET_FILE:ohl_isolated_worker_windows_worker_bad_ready>"
     OHL_WINDOWS_TEST_WORKER_NO_READY_PATH=L"$<TARGET_FILE:ohl_isolated_worker_windows_worker_no_ready>"

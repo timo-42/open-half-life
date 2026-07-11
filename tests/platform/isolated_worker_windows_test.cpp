@@ -56,6 +56,20 @@ class TestContext final {
   int failures_{0};
 };
 
+void expect_launch(TestContext& test, const bool condition,
+                   const ohl::platform::IsolatedWorkerLaunchResult& launch,
+                   const std::string_view message) {
+  test.expect(condition, message);
+  if (!condition) {
+    namespace native = ohl::platform::detail::windows;
+    const auto stage = native::last_isolated_worker_launch_stage();
+    std::cerr << "isolated worker Windows launch diagnostic: stage="
+              << native::isolated_worker_launch_stage_name(stage)
+              << " public_error=" << static_cast<unsigned int>(launch.error)
+              << '\n';
+  }
+}
+
 [[nodiscard]] std::filesystem::path worker_stage_path() {
   std::wstring module_path(32'768U, L'\0');
   const DWORD length = GetModuleFileNameW(
@@ -152,25 +166,29 @@ int main() {
   WorkerStage stage{stage_path};
 
   const auto missing = launch_worker();
-  test.expect(!missing.valid() && missing.worker == nullptr &&
-                  missing.error == IsolatedWorkerError::service_unavailable,
-              "a missing fixed worker executable must fail closed");
+  expect_launch(test,
+                !missing.valid() && missing.worker == nullptr &&
+                    missing.error == IsolatedWorkerError::service_unavailable,
+                missing,
+                "a missing fixed worker executable must fail closed");
 
   const std::filesystem::path ready_source{
       OHL_WINDOWS_TEST_WORKER_READY_PATH};
   test.expect(stage.hard_link_from(ready_source),
               "the adversarial hard-link worker must stage");
   const auto hard_link = launch_worker();
-  test.expect(!hard_link.valid() && hard_link.worker == nullptr &&
-                  hard_link.error ==
-                      IsolatedWorkerError::service_identity_mismatch,
-              "a multiply-linked executable must fail provenance checks");
+  expect_launch(
+      test,
+      !hard_link.valid() && hard_link.worker == nullptr &&
+          hard_link.error == IsolatedWorkerError::service_identity_mismatch,
+      hard_link, "a multiply-linked executable must fail provenance checks");
 
   test.expect(stage.copy_from(ready_source),
               "the project-authored ready worker must stage");
   auto ready = launch_worker();
-  test.expect(ready.valid(),
-              "the fixed worker must pass LPAC, job, machine, and bootstrap checks");
+  expect_launch(
+      test, ready.valid(), ready,
+      "the fixed worker must pass LPAC, job, machine, and bootstrap checks");
   if (ready.valid()) {
     std::array<std::byte, 4> request{
         std::byte{'O'}, std::byte{'H'}, std::byte{'L'}, std::byte{1}};
@@ -188,8 +206,8 @@ int main() {
   terminate_worker(test, ready);
 
   auto cancellable = launch_worker();
-  test.expect(cancellable.valid(),
-              "a second fixed worker must launch for cancellation coverage");
+  expect_launch(test, cancellable.valid(), cancellable,
+                "a second fixed worker must launch for cancellation coverage");
   if (cancellable.valid()) {
     ohl::platform::IsolatedWorkerCancellationSource cancellation_source;
     std::thread canceller{[&cancellation_source] {
@@ -211,21 +229,26 @@ int main() {
   test.expect(stage.copy_from(OHL_WINDOWS_TEST_WORKER_BAD_READY_PATH),
               "the bad-attestation worker must stage");
   const auto bad_ready = launch_worker();
-  test.expect(!bad_ready.valid() && bad_ready.worker == nullptr &&
-                  bad_ready.error == IsolatedWorkerError::bootstrap_failed,
-              "an adversarial bootstrap attestation must fail closed");
+  expect_launch(test,
+                !bad_ready.valid() && bad_ready.worker == nullptr &&
+                    bad_ready.error == IsolatedWorkerError::bootstrap_failed,
+                bad_ready,
+                "an adversarial bootstrap attestation must fail closed");
 
   test.expect(stage.copy_from(OHL_WINDOWS_TEST_WORKER_NO_READY_PATH),
               "the silent worker must stage");
   const auto no_ready = launch_worker(3s);
-  test.expect(!no_ready.valid() && no_ready.worker == nullptr &&
-                  no_ready.error == IsolatedWorkerError::timeout,
-              "a silent bootstrap must honor the startup deadline");
+  expect_launch(test,
+                !no_ready.valid() && no_ready.worker == nullptr &&
+                    no_ready.error == IsolatedWorkerError::timeout,
+                no_ready,
+                "a silent bootstrap must honor the startup deadline");
 
   test.expect(stage.copy_from(OHL_WINDOWS_TEST_WORKER_EXIT_PATH),
               "the early-exit worker must stage");
   auto exited = launch_worker();
-  test.expect(exited.valid(), "a valid bootstrap may precede a worker failure");
+  expect_launch(test, exited.valid(), exited,
+                "a valid bootstrap may precede a worker failure");
   if (exited.valid()) {
     const auto waited = exited.worker->wait(Clock::now() + 2s);
     test.expect(waited.error == IsolatedWorkerError::none &&

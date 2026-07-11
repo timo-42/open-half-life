@@ -35,6 +35,15 @@ namespace {
 using Clock = std::chrono::steady_clock;
 using windows::kBootstrapReady;
 
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+std::atomic<windows::IsolatedWorkerLaunchStage> g_last_launch_stage{
+    windows::IsolatedWorkerLaunchStage::idle};
+
+void record_launch_stage(
+    const windows::IsolatedWorkerLaunchStage stage) noexcept {
+  g_last_launch_stage.store(stage);
+}
+#endif
 [[nodiscard]] bool delete_profile_once(const std::wstring& name) noexcept {
   const HRESULT result = DeleteAppContainerProfile(name.c_str());
   return SUCCEEDED(result) ||
@@ -716,6 +725,9 @@ class ScopedInheritableHandleWindow final {
   }
   OVERLAPPED connect{};
   connect.hEvent = connect_event.get();
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+  record_launch_stage(windows::IsolatedWorkerLaunchStage::pipe_connect_pending);
+#endif
   const BOOL connected = ConnectNamedPipe(pair.server.get(), &connect);
   const DWORD connect_error = connected ? ERROR_SUCCESS : GetLastError();
   if (!connected && connect_error != ERROR_IO_PENDING &&
@@ -744,6 +756,9 @@ class ScopedInheritableHandleWindow final {
   if (!pending_connect.complete()) {
     return IsolatedWorkerError::channel_creation_failed;
   }
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+  record_launch_stage(windows::IsolatedWorkerLaunchStage::pipe_connected);
+#endif
 
   DWORD flags = 0;
   if (!GetHandleInformation(pair.child.get(), &flags) ||
@@ -855,10 +870,18 @@ class ScopedInheritableHandleWindow final {
 [[nodiscard]] bool verify_lpac_token(const HANDLE process,
                                      const PSID expected_sid) {
   HANDLE raw_token = nullptr;
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+  record_launch_stage(windows::IsolatedWorkerLaunchStage::token_open_pending);
+#endif
   if (!OpenProcessToken(process, TOKEN_QUERY, &raw_token)) {
     return false;
   }
   UniqueHandle token{raw_token};
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+  record_launch_stage(windows::IsolatedWorkerLaunchStage::token_opened);
+  record_launch_stage(
+      windows::IsolatedWorkerLaunchStage::app_container_verification_pending);
+#endif
 
   DWORD is_app_container = 0;
   DWORD returned = 0;
@@ -868,6 +891,12 @@ class ScopedInheritableHandleWindow final {
       is_app_container == 0) {
     return false;
   }
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+  record_launch_stage(
+      windows::IsolatedWorkerLaunchStage::app_container_verified);
+  record_launch_stage(
+      windows::IsolatedWorkerLaunchStage::lpac_verification_pending);
+#endif
 
   DWORD is_less_privileged_app_container = 0;
   returned = 0;
@@ -882,6 +911,11 @@ class ScopedInheritableHandleWindow final {
   // TokenIsLessPrivilegedAppContainer is the authoritative LPAC indication.
   // LPAC causes access checks to disregard ALL_APPLICATION_PACKAGES; it does
   // not require that SID to be absent from the token's general group list.
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+  record_launch_stage(windows::IsolatedWorkerLaunchStage::lpac_verified);
+  record_launch_stage(
+      windows::IsolatedWorkerLaunchStage::app_sid_verification_pending);
+#endif
 
   std::vector<std::byte> app_sid_storage;
   if (!query_token_information(token.get(), TokenAppContainerSid,
@@ -895,6 +929,12 @@ class ScopedInheritableHandleWindow final {
       !EqualSid(app_sid->TokenAppContainer, expected_sid)) {
     return false;
   }
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+  record_launch_stage(
+      windows::IsolatedWorkerLaunchStage::app_sid_verified);
+  record_launch_stage(
+      windows::IsolatedWorkerLaunchStage::capability_verification_pending);
+#endif
 
   std::vector<std::byte> capability_storage;
   if (!query_token_information(token.get(), TokenCapabilities,
@@ -906,6 +946,10 @@ class ScopedInheritableHandleWindow final {
   if (capabilities->GroupCount != 0) {
     return false;
   }
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+  record_launch_stage(
+      windows::IsolatedWorkerLaunchStage::capabilities_verified);
+#endif
   return true;
 }
 
@@ -1419,10 +1463,20 @@ class WindowsIsolatedWorkerBackend final : public IsolatedWorkerBackend {
 
 }  // namespace
 
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+namespace windows {
+IsolatedWorkerLaunchStage last_isolated_worker_launch_stage() noexcept {
+  return g_last_launch_stage.load();
+}
+}  // namespace windows
+#endif
 IsolatedWorkerBackendLaunchResult launch_isolated_worker_backend(
     const IsolatedWorkerService service,
     const Clock::time_point startup_deadline) noexcept {
   try {
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+    record_launch_stage(windows::IsolatedWorkerLaunchStage::launch_started);
+#endif
     if (startup_deadline <= Clock::now()) {
       return {.backend = nullptr, .error = IsolatedWorkerError::timeout};
     }
@@ -1432,11 +1486,19 @@ IsolatedWorkerBackendLaunchResult launch_isolated_worker_backend(
     }
 
     TrustedExecutable executable;
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+    record_launch_stage(
+        windows::IsolatedWorkerLaunchStage::worker_identity_pending);
+#endif
     const IsolatedWorkerError executable_error =
         locate_trusted_executable(service, executable);
     if (executable_error != IsolatedWorkerError::none) {
       return {.backend = nullptr, .error = executable_error};
     }
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+    record_launch_stage(
+        windows::IsolatedWorkerLaunchStage::worker_identity_verified);
+#endif
 
     const std::wstring suffix = random_suffix();
     if (suffix.empty()) {
@@ -1447,6 +1509,10 @@ IsolatedWorkerBackendLaunchResult launch_isolated_worker_backend(
     ProfileGuard profile_guard{
         std::make_unique<ProfileRecord>(profile_name)};
     PSID raw_app_container_sid = nullptr;
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+    record_launch_stage(
+        windows::IsolatedWorkerLaunchStage::profile_creation_pending);
+#endif
     const HRESULT profile_result = CreateAppContainerProfile(
         profile_name.c_str(), L"Open Half-Life isolated worker",
         L"Ephemeral zero-capability worker profile", nullptr, 0,
@@ -1456,21 +1522,38 @@ IsolatedWorkerBackendLaunchResult launch_isolated_worker_backend(
               .error = IsolatedWorkerError::confinement_unavailable};
     }
     profile_guard.arm();
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+    record_launch_stage(windows::IsolatedWorkerLaunchStage::profile_created);
+#endif
     UniqueSid app_container_sid{raw_app_container_sid};
 
     IsolatedWorkerBackendLaunchResult result =
         [&]() -> IsolatedWorkerBackendLaunchResult {
       PipePair pipe;
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+      record_launch_stage(
+          windows::IsolatedWorkerLaunchStage::pipe_creation_pending);
+#endif
       const IsolatedWorkerError pipe_error = create_private_pipe(pipe);
       if (pipe_error != IsolatedWorkerError::none) {
         return {.backend = nullptr, .error = pipe_error};
       }
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+      record_launch_stage(windows::IsolatedWorkerLaunchStage::pipe_created);
+#endif
 
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+      record_launch_stage(
+          windows::IsolatedWorkerLaunchStage::job_configuration_pending);
+#endif
       UniqueHandle job{CreateJobObjectW(nullptr, nullptr)};
       if (!job || !configure_job(job.get())) {
         return {.backend = nullptr,
                 .error = IsolatedWorkerError::confinement_unavailable};
       }
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+      record_launch_stage(windows::IsolatedWorkerLaunchStage::job_configured);
+#endif
 
       std::vector<wchar_t> environment = minimal_environment();
       std::vector<wchar_t> command_line =
@@ -1492,6 +1575,10 @@ IsolatedWorkerBackendLaunchResult launch_isolated_worker_backend(
       std::array<HANDLE, 1> inherited_handles{pipe.child.get()};
       std::array<HANDLE, 1> jobs{job.get()};
 
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+      record_launch_stage(
+          windows::IsolatedWorkerLaunchStage::process_policy_pending);
+#endif
       AttributeList attributes;
       if (!attributes.initialize(6) ||
           !attributes.set(PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
@@ -1507,6 +1594,10 @@ IsolatedWorkerBackendLaunchResult launch_isolated_worker_backend(
         return {.backend = nullptr,
                 .error = IsolatedWorkerError::confinement_unavailable};
       }
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+      record_launch_stage(
+          windows::IsolatedWorkerLaunchStage::process_policy_created);
+#endif
 
       STARTUPINFOEXW startup{};
       startup.StartupInfo.cb = static_cast<DWORD>(sizeof(startup));
@@ -1519,6 +1610,10 @@ IsolatedWorkerBackendLaunchResult launch_isolated_worker_backend(
                                    EXTENDED_STARTUPINFO_PRESENT;
       BOOL process_created = FALSE;
       {
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+        record_launch_stage(
+            windows::IsolatedWorkerLaunchStage::process_creation_pending);
+#endif
         ScopedInheritableHandleWindow inherit_window{pipe.child};
         if (!inherit_window.valid()) {
           return {.backend = nullptr,
@@ -1541,16 +1636,63 @@ IsolatedWorkerBackendLaunchResult launch_isolated_worker_backend(
         return {.backend = nullptr,
                 .error = IsolatedWorkerError::process_creation_failed};
       }
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+      record_launch_stage(windows::IsolatedWorkerLaunchStage::process_created);
+#endif
       UniqueHandle process{process_info.hProcess};
       UniqueHandle thread{process_info.hThread};
       ProcessCleanupGuard process_cleanup{process.get(), job.get()};
 
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+      record_launch_stage(
+          windows::IsolatedWorkerLaunchStage::image_verification_pending);
+#endif
       if (!process_image_matches(process.get(), executable.identity)) {
         static_cast<void>(TerminateJobObject(job.get(),
                                              windows::kTerminationExitCode));
         return {.backend = nullptr,
                 .error = IsolatedWorkerError::service_identity_mismatch};
       }
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+      record_launch_stage(windows::IsolatedWorkerLaunchStage::image_verified);
+      record_launch_stage(
+          windows::IsolatedWorkerLaunchStage::machine_verification_pending);
+      if (!process_machine_is_native_x64(process.get())) {
+        static_cast<void>(TerminateJobObject(job.get(),
+                                             windows::kTerminationExitCode));
+        return {.backend = nullptr,
+                .error = IsolatedWorkerError::confinement_unavailable};
+      }
+      record_launch_stage(windows::IsolatedWorkerLaunchStage::machine_verified);
+      record_launch_stage(
+          windows::IsolatedWorkerLaunchStage::token_verification_pending);
+      if (!verify_lpac_token(process.get(), app_container_sid.get())) {
+        static_cast<void>(TerminateJobObject(job.get(),
+                                             windows::kTerminationExitCode));
+        return {.backend = nullptr,
+                .error = IsolatedWorkerError::confinement_unavailable};
+      }
+      record_launch_stage(windows::IsolatedWorkerLaunchStage::token_verified);
+      record_launch_stage(
+          windows::IsolatedWorkerLaunchStage::mitigation_verification_pending);
+      if (!verify_mitigations(process.get())) {
+        static_cast<void>(TerminateJobObject(job.get(),
+                                             windows::kTerminationExitCode));
+        return {.backend = nullptr,
+                .error = IsolatedWorkerError::confinement_unavailable};
+      }
+      record_launch_stage(
+          windows::IsolatedWorkerLaunchStage::mitigations_verified);
+      record_launch_stage(
+          windows::IsolatedWorkerLaunchStage::job_verification_pending);
+      if (!verify_job(job.get(), process.get())) {
+        static_cast<void>(TerminateJobObject(job.get(),
+                                             windows::kTerminationExitCode));
+        return {.backend = nullptr,
+                .error = IsolatedWorkerError::confinement_unavailable};
+      }
+      record_launch_stage(windows::IsolatedWorkerLaunchStage::job_verified);
+#else
       if (!process_machine_is_native_x64(process.get()) ||
           !verify_lpac_token(process.get(), app_container_sid.get()) ||
           !verify_mitigations(process.get()) ||
@@ -1560,17 +1702,24 @@ IsolatedWorkerBackendLaunchResult launch_isolated_worker_backend(
         return {.backend = nullptr,
                 .error = IsolatedWorkerError::confinement_unavailable};
       }
+#endif
       if (startup_deadline <= Clock::now()) {
         static_cast<void>(TerminateJobObject(job.get(),
                                              windows::kTerminationExitCode));
         return {.backend = nullptr, .error = IsolatedWorkerError::timeout};
       }
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+      record_launch_stage(windows::IsolatedWorkerLaunchStage::resume_pending);
+#endif
       if (ResumeThread(thread.get()) == std::numeric_limits<DWORD>::max()) {
         static_cast<void>(TerminateJobObject(job.get(),
                                              windows::kTerminationExitCode));
         return {.backend = nullptr,
                 .error = IsolatedWorkerError::bootstrap_failed};
       }
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+      record_launch_stage(windows::IsolatedWorkerLaunchStage::resumed);
+#endif
       thread.reset();
 
       auto backend = std::make_unique<WindowsIsolatedWorkerBackend>();
@@ -1578,6 +1727,9 @@ IsolatedWorkerBackendLaunchResult launch_isolated_worker_backend(
                      profile_guard.release());
       process_cleanup.dismiss();
       std::array<std::byte, kBootstrapReady.size()> bootstrap{};
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+      record_launch_stage(windows::IsolatedWorkerLaunchStage::ready_pending);
+#endif
       const IsolatedWorkerIoResult bootstrap_result =
           backend->read_exact(bootstrap, startup_deadline, {});
       if (bootstrap_result.error != IsolatedWorkerError::none ||
@@ -1594,6 +1746,9 @@ IsolatedWorkerBackendLaunchResult launch_isolated_worker_backend(
         backend.reset();
         return {.backend = nullptr, .error = error};
       }
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+      record_launch_stage(windows::IsolatedWorkerLaunchStage::ready);
+#endif
 
       return IsolatedWorkerBackendLaunchResult{
           .backend = std::move(backend),
