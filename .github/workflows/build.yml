@@ -17,22 +17,28 @@ jobs:
             name: Linux x64
             expected_os: Linux
             expected_arch: x86_64
-            cmake_args: ""
+            cmake_args: -DOHL_REQUIRE_LINUX_ISOLATED_WORKER=ON
+            native_label: linux-isolated-worker
           - os: windows-latest
             name: Windows x64
             expected_os: Windows
             expected_arch: x86_64
-            cmake_args: ""
+            cmake_args: -DOHL_REQUIRE_WINDOWS_ISOLATED_WORKER=ON
+            native_label: windows-isolated-worker
           - os: macos-15
             name: macOS Apple Silicon
             expected_os: macOS
             expected_arch: arm64
             cmake_args: -DCMAKE_OSX_ARCHITECTURES=arm64
+            native_label: ""
           - os: ubuntu-latest
             name: Linux x64 experimental cabinet adapter
             expected_os: Linux
             expected_arch: x86_64
-            cmake_args: -DOHL_ENABLE_EXPERIMENTAL_INSTALLSHIELD=ON
+            cmake_args: >-
+              -DOHL_ENABLE_EXPERIMENTAL_INSTALLSHIELD=ON
+              -DOHL_REQUIRE_LINUX_ISOLATED_WORKER=ON
+            native_label: linux-isolated-worker
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     steps:
@@ -63,6 +69,14 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
+      - name: Require native isolated-worker tests
+        if: matrix.native_label != ''
+        run: >-
+          ctest --test-dir build
+          -L ${{ matrix.native_label }}
+          --no-tests=error
+          --output-on-failure
+
   sanitizers:
     name: Linux x64 sanitizers
     runs-on: ubuntu-latest
@@ -78,6 +92,7 @@ jobs:
           cmake -S . -B build-sanitize -G Ninja
           -DCMAKE_BUILD_TYPE=Debug
           -DOHL_ENABLE_EXPERIMENTAL_INSTALLSHIELD=ON
+          -DOHL_REQUIRE_LINUX_ISOLATED_WORKER=ON
           -DOHL_WARNINGS_AS_ERRORS=ON
 
       - name: Build
@@ -85,3 +100,10 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build-sanitize --output-on-failure
+
+      - name: Require native isolated-worker tests
+        run: >-
+          ctest --test-dir build-sanitize
+          -L linux-isolated-worker
+          --no-tests=error
+          --output-on-failure

@@ -66,6 +66,12 @@ add_test(
 )
 set_tests_properties(platform.isolated_worker.common PROPERTIES TIMEOUT 30)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  include(platform/isolated_worker/linux.cmake)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+  include(platform/isolated_worker/windows.cmake)
+endif()
+
 add_executable(ohl_media_source_tests
   platform/media_source_test.cpp
 )

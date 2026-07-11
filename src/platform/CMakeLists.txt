@@ -2,8 +2,15 @@ add_library(ohl_platform STATIC
   src/platform.cpp
   src/atomic_directory_store_unsupported.cpp
   src/isolated_worker.cpp
-  src/isolated_worker_unsupported.cpp
 )
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  include(cmake/IsolatedWorkerLinux.cmake)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+  include(cmake/IsolatedWorkerWindows.cmake)
+else()
+  target_sources(ohl_platform PRIVATE src/isolated_worker_unsupported.cpp)
+endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_sources(
