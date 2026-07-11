@@ -72,3 +72,26 @@ target_link_libraries(
   PUBLIC OpenHalfLife::media_parser_results
 )
 ohl_enable_warnings(ohl_media_parser_reads)
+
+add_library(ohl_media_parser_transport STATIC
+  src/parser_frame_channel.cpp
+)
+
+add_library(
+  OpenHalfLife::media_parser_transport ALIAS ohl_media_parser_transport
+)
+
+target_compile_features(ohl_media_parser_transport PUBLIC cxx_std_20)
+target_include_directories(
+  ohl_media_parser_transport
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+target_link_libraries(
+  ohl_media_parser_transport
+  PUBLIC
+    OpenHalfLife::parser
+    OpenHalfLife::platform
+    Threads::Threads
+)
+ohl_enable_warnings(ohl_media_parser_transport)

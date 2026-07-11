@@ -52,6 +52,25 @@ add_test(
   COMMAND ohl_media_parser_source_read_broker_tests
 )
 
+add_executable(ohl_media_parser_frame_channel_tests
+  media/parser_frame_channel_test.cpp
+)
+target_compile_features(
+  ohl_media_parser_frame_channel_tests PRIVATE cxx_std_20
+)
+target_link_libraries(
+  ohl_media_parser_frame_channel_tests
+  PRIVATE
+    OpenHalfLife::media_parser_transport
+    Threads::Threads
+)
+ohl_enable_warnings(ohl_media_parser_frame_channel_tests)
+add_test(
+  NAME media.parser_frame_channel
+  COMMAND ohl_media_parser_frame_channel_tests
+)
+set_tests_properties(media.parser_frame_channel PROPERTIES TIMEOUT 30)
+
 add_library(ohl_parser_fuzz_entry OBJECT
   parser/protocol_fuzz.cpp
 )
