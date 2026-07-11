@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cwchar>
 #include <string_view>
 
 namespace ohl::platform::detail::windows {
@@ -32,6 +33,89 @@ inline constexpr std::int64_t kProcessCpuTimeLimit100ns =
 inline constexpr std::uint32_t kCpuHardCapHundredthsOfPercent = 2'500U;
 inline constexpr std::uint32_t kTerminationExitCode = 0xE04F484CU;
 inline constexpr std::uint32_t kCancellationObservationMilliseconds = 10U;
+
+// GetTokenInformation(TokenSecurityAttributes) returns the native
+// TOKEN_SECURITY_ATTRIBUTES_INFORMATION layout with counted, not
+// null-terminated, attribute names — not the CLAIM_SECURITY_ATTRIBUTES
+// layout from winnt.h. Declare the documented native layout with
+// fixed-width types so both the launcher and the worker attestation parse
+// it identically.
+struct TokenSecurityAttributeName final {
+  std::uint16_t length_bytes;
+  std::uint16_t maximum_length_bytes;
+  const wchar_t* buffer;
+};
+
+struct TokenSecurityAttributeV1 final {
+  TokenSecurityAttributeName name;
+  std::uint16_t value_type;
+  std::uint16_t reserved;
+  std::uint32_t flags;
+  std::uint32_t value_count;
+  union {
+    const std::int64_t* p_int64;
+    const std::uint64_t* p_uint64;
+  } values;
+};
+
+struct TokenSecurityAttributesInformation final {
+  std::uint16_t version;
+  std::uint16_t reserved;
+  std::uint32_t attribute_count;
+  union {
+    const TokenSecurityAttributeV1* p_attribute_v1;
+  } attribute;
+};
+
+inline constexpr std::uint16_t kTokenSecurityAttributesVersionV1 = 1U;
+inline constexpr std::uint16_t kTokenSecurityAttributeTypeInt64 = 0x0001U;
+inline constexpr std::uint16_t kTokenSecurityAttributeTypeUint64 = 0x0002U;
+// The kernel marks less privileged AppContainer tokens with this security
+// attribute.
+inline constexpr std::wstring_view kLpacSecurityAttributeName =
+    L"WIN://NOALLAPPPKG";
+
+// Walks a TokenSecurityAttributes result buffer and reports whether the
+// kernel's LPAC marker is present with a nonzero integer value. Any absent,
+// malformed, or unexpectedly typed marker reads as not LPAC.
+[[nodiscard]] inline bool token_security_attributes_mark_lpac(
+    const void* const data) noexcept {
+  const auto* information =
+      static_cast<const TokenSecurityAttributesInformation*>(data);
+  if (information->version != kTokenSecurityAttributesVersionV1) {
+    return false;
+  }
+  if (information->attribute_count != 0 &&
+      information->attribute.p_attribute_v1 == nullptr) {
+    return false;
+  }
+  for (std::uint32_t index = 0; index < information->attribute_count;
+       ++index) {
+    const TokenSecurityAttributeV1& attribute =
+        information->attribute.p_attribute_v1[index];
+    const TokenSecurityAttributeName& name = attribute.name;
+    if (name.buffer == nullptr ||
+        name.length_bytes !=
+            kLpacSecurityAttributeName.size() * sizeof(wchar_t) ||
+        std::wmemcmp(name.buffer, kLpacSecurityAttributeName.data(),
+                     kLpacSecurityAttributeName.size()) != 0) {
+      continue;
+    }
+    if (attribute.value_count == 0) {
+      return false;
+    }
+    if (attribute.value_type == kTokenSecurityAttributeTypeUint64) {
+      return attribute.values.p_uint64 != nullptr &&
+             attribute.values.p_uint64[0] != 0U;
+    }
+    if (attribute.value_type == kTokenSecurityAttributeTypeInt64) {
+      return attribute.values.p_int64 != nullptr &&
+             attribute.values.p_int64[0] != 0;
+    }
+    return false;
+  }
+  return false;
+}
 
 [[nodiscard]] constexpr bool policy_contract_is_valid() noexcept {
   return !kMediaParserExecutableName.empty() &&

@@ -912,34 +912,7 @@ class ScopedInheritableHandleWindow final {
   if (!query_token_information(token, TokenSecurityAttributes, storage)) {
     return false;
   }
-  const auto* information =
-      reinterpret_cast<const CLAIM_SECURITY_ATTRIBUTES_INFORMATION*>(
-          storage.data());
-  if (information->Version !=
-      CLAIM_SECURITY_ATTRIBUTES_INFORMATION_VERSION_V1) {
-    return false;
-  }
-  for (DWORD index = 0; index < information->AttributeCount; ++index) {
-    const CLAIM_SECURITY_ATTRIBUTE_V1& attribute =
-        information->Attribute.pAttributeV1[index];
-    if (attribute.Name == nullptr ||
-        std::wstring_view{attribute.Name} != L"WIN://NOALLAPPPKG") {
-      continue;
-    }
-    if (attribute.ValueCount == 0) {
-      return false;
-    }
-    if (attribute.ValueType == CLAIM_SECURITY_ATTRIBUTE_TYPE_UINT64) {
-      return attribute.Values.pUint64 != nullptr &&
-             attribute.Values.pUint64[0] != 0U;
-    }
-    if (attribute.ValueType == CLAIM_SECURITY_ATTRIBUTE_TYPE_INT64) {
-      return attribute.Values.pInt64 != nullptr &&
-             attribute.Values.pInt64[0] != 0;
-    }
-    return false;
-  }
-  return false;
+  return windows::token_security_attributes_mark_lpac(storage.data());
 }
 
 [[nodiscard]] bool verify_lpac_token(const HANDLE process,

@@ -52,40 +52,15 @@ using ohl::platform::detail::windows::kBootstrapReady;
 // mode; the kernel marks LPAC tokens with the WIN://NOALLAPPPKG security
 // attribute instead, so attest LPAC through that attribute.
 [[nodiscard]] bool token_attributes_are_lpac(const HANDLE token) noexcept {
-  alignas(CLAIM_SECURITY_ATTRIBUTES_INFORMATION)
+  alignas(ohl::platform::detail::windows::TokenSecurityAttributesInformation)
       std::byte storage[16U * 1024U];
   DWORD returned = 0;
   if (GetTokenInformation(token, TokenSecurityAttributes, storage,
                           sizeof(storage), &returned) == FALSE) {
     return false;
   }
-  const auto* information =
-      reinterpret_cast<const CLAIM_SECURITY_ATTRIBUTES_INFORMATION*>(storage);
-  if (information->Version !=
-      CLAIM_SECURITY_ATTRIBUTES_INFORMATION_VERSION_V1) {
-    return false;
-  }
-  for (DWORD index = 0; index < information->AttributeCount; ++index) {
-    const CLAIM_SECURITY_ATTRIBUTE_V1& attribute =
-        information->Attribute.pAttributeV1[index];
-    if (attribute.Name == nullptr ||
-        std::wstring_view{attribute.Name} != L"WIN://NOALLAPPPKG") {
-      continue;
-    }
-    if (attribute.ValueCount == 0) {
-      return false;
-    }
-    if (attribute.ValueType == CLAIM_SECURITY_ATTRIBUTE_TYPE_UINT64) {
-      return attribute.Values.pUint64 != nullptr &&
-             attribute.Values.pUint64[0] != 0U;
-    }
-    if (attribute.ValueType == CLAIM_SECURITY_ATTRIBUTE_TYPE_INT64) {
-      return attribute.Values.pInt64 != nullptr &&
-             attribute.Values.pInt64[0] != 0;
-    }
-    return false;
-  }
-  return false;
+  return ohl::platform::detail::windows::token_security_attributes_mark_lpac(
+      storage);
 }
 
 [[nodiscard]] bool token_contract_is_lpac() noexcept {
