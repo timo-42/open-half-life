@@ -51,7 +51,7 @@ Status: in progress; packages 2–4 establish the capability, cache,
 planning/staging, VFS, and application-composition feature baseline at
 `df5ea6d51037671ef0165dacac9fe26df1bf4d2b`. Disconnected parser-result
 validation was accepted at `909edcc`, followed by portable media cancellation
-accepted at `0f2c78d`.
+accepted at `0f2c78d` and trusted parser source reads at `c90f2d1`.
 
 Current functionality:
 
@@ -144,6 +144,18 @@ Current functionality:
   remainders only after accepted sink writes, and retires authority on
   replacement, cancellation, shutdown, failure, source invalidation, or worker
   failure. It has no runtime dependency edge
+- the disconnected `OpenHalfLife::media_parser_reads` target depends only on
+  the trusted result/session stack. It retains the exact pinned source from
+  `ValidatedMedia`; source size comes from the validated fingerprint, while
+  `maximum_read_bytes` is trusted constructor configuration that must exactly
+  match the accepted typed `hello`. The broker cannot verify that binding, so
+  native composition must preserve it. It validates typed read requests, owns
+  sequence and request/reply-byte budgets, verifies stability before and after
+  bounded reads, emits canonical success or prefix-only failure replies, scrubs
+  scratch storage, and advances only when a unique prepared ticket is committed
+  after full delivery. Pre-cancel replies may cross; post-cancel reads are
+  ignored without source or output access; terminal and destructor paths retire
+  the associated session and catalog authority
 
 Remaining M2 work:
 
@@ -153,10 +165,9 @@ Remaining M2 work:
   format provenance
 - the constrained parser worker boundary in `MEDIA_IMPORT.md` remains
   mandatory before any third-party parser may feed production extraction. The
-  accepted result bridge still needs a native isolated worker and transport,
-  bounded read-only source brokerage and invalidation detection, deterministic
-  component selection, and explicit staging composition; the worker must have
-  no destination or cache authority
+  accepted result and source-read bridges still need a native isolated worker
+  and transport, deterministic component selection, and explicit staging
+  composition; the worker must have no raw-path, destination, or cache authority
 - production payload extraction remains absent and must not execute installer
   binaries or media-provided code
 - macOS and Windows atomic-directory stores and native adversarial gates,
@@ -178,6 +189,16 @@ passed; and AppleClang 17 macOS passed 22/22 tests including
 `media.cancellation` and the bridge. This confirms the common macOS portability
 fix and disconnected result validation, not any remaining native worker,
 source, staging, atomic-store, or runtime-import prerequisite.
+
+Trusted parser source reads were accepted and pushed at
+`c90f2d1a7cbabdb90b688197d2d34ceb48526aeb`. The full local CTest suite passed
+33/33, including comprehensive synthetic broker coverage. Exact-commit hosted
+build run `29148133002` passed Linux x64, sanitizers, the experimental cabinet
+adapter, Windows x64, and macOS Apple Silicon; this is the cross-platform broker
+evidence. Fuzz run `29148132997` separately passed its typed-protocol-only Clang
+18/libFuzzer job and did not build or fuzz the broker. The build evidence
+qualifies the disconnected broker on those hosts, not any absent native worker,
+transport, runtime import, staging, or publication path.
 
 The accepted isolated parser protocol sequence starts with the bounded OWP/1
 codec at `3bc135c`, adds completion/cancellation race handling at `f17a40a`,
@@ -263,6 +284,27 @@ The change preserves existing cancellation points and removes the known
 AppleClang 17 libc++ compile dependency; the exact hosted result above confirms
 that correction.
 
+Commit `c90f2d1` adds the disconnected trusted parser source-read broker. It
+depends only through `OpenHalfLife::media_parser_results`, retains the exact
+pinned capability from `ValidatedMedia`, and obtains source size from that
+proof's fingerprint. Its `maximum_read_bytes` is trusted constructor input that
+must exactly match the accepted typed `hello`; the broker cannot verify that
+binding, so native composition must preserve it. It owns canonical request
+sequencing and independent request/reply-byte budgets. For a serviceable request
+it verifies stability, performs one bounded read, verifies again, encodes an
+exact success or prefix-only `source_changed`/`source_read_failed` reply, and
+scrubs all temporary scratch. Reply storage remains caller-owned under a prepare
+ticket; sequence advances only when full delivery is reported through
+`commit_reply_sent()`.
+Abandonment, invalid tickets, committed source failure, terminal errors, and
+active destruction retire the broker and result session. A pre-cancel reply may
+cross, including the one acknowledged drain, while a post-cancel request is
+ignored without reading, charging, or touching output. Its complete optional
+operation table is trusted test injection and partial tables are invalid. The
+broker passes the retained capability as the callback source argument but does
+not constrain callback code's ambient authority; only trusted project/test code
+may supply it, and worker/media input cannot configure it.
+
 The ordering contract permits exactly one same-request late reply to drain
 after `cancel_ack` only when a read was already outstanding before cancellation.
 The deterministic fuzz target exercises frame decoding, generic payload
@@ -278,17 +320,23 @@ completion contexts remain covered. The fixed corpus remains project-authored
 and synthetic.
 
 The tests-only `ca576e9` change did not trigger the parser-fuzz workflow.
-Accepted hosted fuzz evidence therefore remains the earlier `ba84cfc` result
-and is separate from run `29147060407`; no new fuzz execution is claimed.
+Its hosted fuzz evidence therefore remained the earlier `ba84cfc` result and
+was separate from run `29147060407`. The later exact `c90f2d1` fuzz run
+`29148132997` now passes for the typed protocol only; it did not build or fuzz
+the source-read broker. Cross-platform broker evidence comes from build run
+`29148133002` above.
 
-This accepted protocol and result-validation layer supports active M2 work but
-is not a production import path. The bridge now owns catalog generation,
-promotion, membership, normalized aggregate layout, stream remainder, and
-retirement within its disconnected session. No runtime target links it; it
-does not create a worker or transport, broker or revalidate source reads,
-select components, own staging, mutate a destination, or publish a cache.
-Those native isolation, source, selection, and composition prerequisites remain
-unaccepted and unintegrated. The work authorizes no proprietary extraction.
+This accepted protocol, result-validation, and source-read stack supports
+active M2 work but is not a production import path. The result bridge owns
+catalog generation, promotion, membership, layout, stream remainder, and
+retirement; the read broker owns bounded reads from the retained pinned
+capability and their prepare/commit ordering. No runtime target links either
+library. They do not create a worker, sandbox, or transport; select components;
+own staging; mutate a destination; or publish a cache. Those native isolation,
+IPC, selection, and composition prerequisites remain unaccepted and
+unintegrated. Neither library accepts raw-path authority, staging/publication
+authority, or worker-configured operation callbacks. The work authorizes no
+proprietary extraction.
 
 ## Later milestones
 

@@ -268,19 +268,68 @@ enumeration, cancellation acknowledgement, shutdown, any terminal protocol,
 layout, sink, or allocation failure, trusted source invalidation, and worker
 failure retire the relevant catalog, candidate, and stream bindings.
 
-The bridge is disconnected: neither the app, `ohl_media`, nor staging links it.
-It creates no worker or transport, reads no source, detects no native source
-change by itself, selects no component, opens no destination, and owns no
-staging or publication operation. Native worker isolation and transport,
-bounded source-read brokerage and invalidation detection, deterministic
-component selection, and explicit composition with staging are still required.
+The result bridge is disconnected: neither the app, `ohl_media`, nor staging
+links it. It creates no worker or transport, selects no component, opens no
+destination, and owns no staging or publication operation.
+
+Commit `c90f2d1` adds the disconnected
+`OpenHalfLife::media_parser_reads` library above that result/session stack. It
+retains the exact shared, pinned source capability from a valid
+`ValidatedMedia`. Source size comes from its validated fingerprint and is
+checked against the retained capability. `maximum_read_bytes` is trusted
+constructor configuration that must exactly equal the accepted typed `hello`
+value; the broker cannot verify that handshake binding, and native runtime
+composition must preserve it. The broker accepts no raw path or substitute
+source. Typed request decoding occurs before session observation. The broker,
+not the worker, owns per-request read sequencing, resets sequencing for a new
+top-level request, and applies request and cumulative reply-byte budgets before
+touching the source.
+
+Each serviceable read verifies source stability before reading and after the
+read or read failure. Stable generic failures become canonical prefix-only
+`source_read_failed` replies; observed change, lost range, or early EOF becomes
+prefix-only `source_changed`; success contains exactly the bounded requested
+bytes. Temporary scratch is scrubbed after reply encoding, including data left
+by a partial failed read. `prepare()` returns a borrowed, caller-owned reply and
+a unique ticket without observing a parent-to-worker reply. Only after a future
+transport accepts the exact header and payload in full may
+`commit_reply_sent()` consume that ticket, observe the reply, and advance the
+sequence. Abandonment, stale tickets, committed source failure, terminal broker
+failure, or destruction during an active session retires the associated result
+session and its catalog authority.
+
+A read already prepared before cancellation may cross normally, and remains
+the sole drain candidate if `cancel_ack` overtakes it. A read first observed
+after cancellation is validated and ordered but ignored without source access,
+budget charge, output mutation, or reply ticket. The optional source-operation
+table is a trusted deterministic-test seam only: all-null selects the native
+capability operations and a non-null table must be complete. The broker passes
+the same retained capability as each callback's source argument; it does not
+mechanically restrict callback code's ambient process authority. Only trusted
+project/test code may supply callbacks, and no worker or media field may
+configure them.
+
+This source-read broker creates no worker, sandbox, or transport, sends no
+frame, and grants no runtime-import, raw-path, component-selection,
+destination, staging, cache, or publication authority. Native worker isolation
+and IPC plus explicit selection/staging composition are still required.
 
 The same exact-SHA hosted run passed all 32 GNU 13 Linux tests, including the
 bridge, plus the experimental, sanitizer, and Windows jobs. It validates this
 disconnected result boundary across the required hosted platforms, not the
 absent worker, source, staging, or runtime edges. The tests-only `ca576e9`
 change did not trigger parser fuzzing; accepted typed-protocol fuzz evidence
-remains the separate earlier `ba84cfc` run.
+at that point remained the separate earlier `ba84cfc` run.
+
+The source-read broker commit
+`c90f2d1a7cbabdb90b688197d2d34ceb48526aeb` passed the complete local CTest
+suite 33/33 with synthetic broker coverage. Exact-commit hosted build run
+`29148133002` passed Linux x64, sanitizers, the experimental cabinet adapter,
+Windows x64, and macOS Apple Silicon; this is the cross-platform broker
+evidence. Fuzz run `29148132997` separately passed Clang 18/libFuzzer for the
+typed protocol only and did not build or fuzz the broker. These results do not
+establish any absent worker, transport, runtime, staging, or publication
+authority.
 
 Deterministic parser fuzz validation accepted at `81a7ee9` and extended at
 `d59b6c5`, `f4d908a`, `c28ea9f`, `2d71079`, and `ba84cfc` exercises frame
@@ -322,10 +371,11 @@ only for their own message types. The disconnected result bridge now supplies
 the catalog generation, aggregate layout, membership, stream-remainder, and
 downstream-write prerequisites described above, and it performs typed decoding
 before protocol observation. The success-only `complete` pair still does not
-prove source reads, worker health, component selection, staging, or
-publication. The bridge and typed protocol must remain outside runtime import
-until the native process-isolation, transport, source-brokerage, selection, and
-staging-composition requirements above are implemented and accepted.
+prove that a worker or transport exists, that every required source read was
+requested, or that component selection, staging, or publication succeeded. The
+typed protocol, result bridge, and source-read broker must remain outside
+runtime import until native process isolation, transport, selection, and
+staging composition are implemented and accepted.
 
 Isolation limits parser authority; it does not make parser output safe to log,
 commit, or trust without validation.

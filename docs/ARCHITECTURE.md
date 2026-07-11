@@ -31,6 +31,7 @@ The current dependency direction is:
 app -> core + platform + media + vfs
 media -> platform + standard library; core is a private implementation edge
 media_parser_results -> media + parser; disconnected from runtime targets
+media_parser_reads -> media_parser_results; disconnected from runtime targets
 vfs -> platform + standard library; libudfread is a private implementation edge
 parser -> standard library
 core/platform -> standard library
@@ -143,12 +144,52 @@ acknowledgement, shutdown, protocol or layout failure, downstream failure,
 source invalidation, worker failure, or destruction retires the applicable
 catalog, candidate, and stream bindings.
 
-This bridge owns no transport, worker process, source-read broker, native
-sandbox, component-selection recipe, staging transaction, or publication
-authority. Neither `app`, `ohl_media`, nor `stage_payload` links it. Source
-invalidation and worker failure enter only as trusted out-of-band lifecycle
-events; native detection and orchestration remain prerequisites. It therefore
-does not make the parser protocol a runtime import path.
+The result bridge itself owns no transport, worker process, native sandbox,
+component-selection recipe, staging transaction, or publication authority.
+Neither `app`, `ohl_media`, nor `stage_payload` links it.
+
+Commit `c90f2d1` adds the separate, disconnected
+`OpenHalfLife::media_parser_reads` library. Its only project dependency is the
+trusted parser-result/session stack. Construction retains the exact shared,
+pinned `MediaSource` capability carried by a valid `ValidatedMedia`; source
+size comes from that proof's fingerprint and is checked against the retained
+capability. `maximum_read_bytes` is separate trusted constructor configuration
+and must exactly match the value in the accepted typed `hello`. The broker
+cannot verify that handshake binding, so native runtime composition must
+preserve it. The broker accepts no path or replacement source. Each
+`read_request` is decoded through the typed schema before session observation.
+It owns the first/subsequent sequence for each request identifier, resets it for
+a new request, and enforces independent request-count and cumulative
+reply-payload budgets before source access.
+
+For a serviceable request, the source-read broker checks the retained
+capability for change before the read and again after either success or
+failure. It maps stable generic read errors to `source_read_failed` and observed
+mutation, range loss, or early EOF to `source_changed`. Replies are canonical
+and bounded: success carries exactly the requested bytes after the fixed
+prefix, while either source failure carries the prefix only. The temporary
+read scratch is scrubbed after encoding, including bytes written by a partial
+failed read. Prepared reply storage remains caller-owned and borrowed under a
+unique ticket; only `commit_reply_sent()` after full transport acceptance
+observes the reply in the session and advances sequencing. A stale ticket,
+partial/failed delivery through `abandon_reply()`, source failure commit, or
+broker destruction during an active session retires the broker and result
+session terminally, including any catalog authority.
+
+Cancellation preserves the session's duplex ordering: a reply prepared before
+cancel may cross, including the one drain allowed when `cancel_ack` overtakes
+it, while a read first seen after cancel is ignored without source access,
+budget charge, output mutation, or ticket. The optional operation table exists
+only as a trusted deterministic-test seam: the all-null value selects native
+operations and a supplied table must be complete. The broker passes the same
+retained capability as the callback source argument, but cannot constrain a
+callback's ambient process authority; only trusted project/test code may supply
+callbacks, and worker or media input must never configure them.
+
+The broker creates no worker, sandbox, or transport and sends no frame. It has
+no runtime-import, raw-path, component-selection, destination, staging, cache,
+or publication authority. Native worker construction/isolation, IPC delivery,
+and explicit composition with selection and staging remain prerequisites.
 
 Deterministic parser fuzz validation was accepted at `81a7ee9`; its typed
 dispatch was extended at `d59b6c5`, for `stream_entry` at `f4d908a`, for
@@ -352,7 +393,18 @@ result-validation target on the required hosted platforms; it does not qualify
 a native worker, source broker, staging composition, macOS atomic store, or
 runtime import path. Because the tests-only `ca576e9` change did not trigger
 the parser-fuzz workflow, the accepted hosted fuzz evidence for the typed
-protocol remains the earlier `ba84cfc` run and is a separate result.
+protocol at that point remained the earlier `ba84cfc` run.
+
+The trusted source-read broker was accepted and pushed at
+`c90f2d1a7cbabdb90b688197d2d34ceb48526aeb`. The full local CTest suite passed
+33/33, including synthetic sequence, budget, stability, failure, cancellation,
+ticket, buffer, and capability-lifetime coverage. Exact-commit hosted build run
+`29148133002` also passed Linux x64, sanitizers, the experimental cabinet
+adapter, Windows x64, and macOS Apple Silicon; this is the cross-platform broker
+evidence. Fuzz run `29148132997` separately passed Clang 18/libFuzzer for the
+typed protocol only and did not build or fuzz the broker. The build evidence
+qualifies the disconnected broker on the tested hosts, not a worker, transport,
+runtime import path, staging, or publication.
 
 The intended gameplay/rendering graph remains under design. Each new edge must
 be expressed explicitly with `target_link_libraries` so CMake remains the
