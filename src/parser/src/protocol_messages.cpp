@@ -84,6 +84,21 @@ namespace {
   return ProtocolError::none;
 }
 
+[[nodiscard]] ProtocolError validate_data_chunk(
+    const DataChunkMessage& message,
+    const std::uint64_t remaining_entry_bytes) noexcept {
+  if (remaining_entry_bytes == 0) {
+    return ProtocolError::invalid_budget;
+  }
+  if (message.data.empty() ||
+      message.data.size() > kMaximumDataChunkBytes ||
+      static_cast<std::uint64_t>(message.data.size()) >
+          remaining_entry_bytes) {
+    return ProtocolError::noncanonical_value;
+  }
+  return ProtocolError::none;
+}
+
 }  // namespace
 
 EncodeResult encode_hello_payload(
@@ -302,6 +317,47 @@ ReadReplyDecodeResult decode_read_reply_payload(
   }
   result.error =
       validate_read_reply(message, expected_sequence, requested_length);
+  if (result.error == ProtocolError::none) {
+    result.message = message;
+  }
+  return result;
+}
+
+EncodeResult encode_data_chunk_payload(
+    const DataChunkMessage& message,
+    const std::uint64_t remaining_entry_bytes,
+    const std::span<std::byte> destination) noexcept {
+  EncodeResult result;
+  result.error = validate_data_chunk(message, remaining_entry_bytes);
+  if (result.error != ProtocolError::none) {
+    return result;
+  }
+  if (destination.size() < message.data.size()) {
+    result.error = ProtocolError::output_too_small;
+    return result;
+  }
+  PayloadWriter writer{destination.first(message.data.size())};
+  (void)writer.write_bytes(message.data);
+  result.bytes_written = message.data.size();
+  return result;
+}
+
+DataChunkDecodeResult decode_data_chunk_payload(
+    const FrameView& frame,
+    const std::uint64_t remaining_entry_bytes) noexcept {
+  DataChunkDecodeResult result;
+  result.error = validate_frame(frame, MessageType::data_chunk);
+  if (result.error != ProtocolError::none) {
+    return result;
+  }
+  PayloadReader reader{frame.payload};
+  DataChunkMessage message;
+  if (!reader.read_bytes(reader.remaining(), message.data) ||
+      !reader.finish()) {
+    result.error = reader.error();
+    return result;
+  }
+  result.error = validate_data_chunk(message, remaining_entry_bytes);
   if (result.error == ProtocolError::none) {
     result.message = message;
   }

@@ -141,6 +141,19 @@ struct SequenceContext {
                          kMaximumFuzzReadBytes);
 }
 
+[[nodiscard]] std::uint64_t data_chunk_remainder(
+    const ohl::parser::FrameView& frame) noexcept {
+  const auto payload_size = static_cast<std::uint64_t>(frame.payload.size());
+  switch (frame.header.request_id % 3U) {
+    case 0:
+      return payload_size == 0 ? 1 : payload_size;
+    case 1:
+      return payload_size == 0 ? 0 : payload_size - 1U;
+    default:
+      return 0;
+  }
+}
+
 void exercise_typed_decoder(const ohl::parser::FrameView& frame) {
   using namespace ohl::parser;
   switch (frame.header.type) {
@@ -171,6 +184,9 @@ void exercise_typed_decoder(const ohl::parser::FrameView& frame) {
                                       requested_length);
       break;
     }
+    case MessageType::data_chunk:
+      (void)decode_data_chunk_payload(frame, data_chunk_remainder(frame));
+      break;
     case MessageType::cancel:
       (void)decode_cancel_payload(frame);
       break;
@@ -181,7 +197,6 @@ void exercise_typed_decoder(const ohl::parser::FrameView& frame) {
       (void)decode_shutdown_payload(frame);
       break;
     case MessageType::entry_batch:
-    case MessageType::data_chunk:
     case MessageType::complete:
       break;
   }
@@ -249,12 +264,54 @@ void exercise_typed_decoder(const ohl::parser::FrameView& frame) {
                  .request_id = 2},
       .payload = reply_payload,
   });
+
+  const std::array data_chunk_payload{
+      std::byte{0x12}, std::byte{0x34}, std::byte{0x56}};
+  const FrameView matching_data_chunk{
+      .header = {.type = MessageType::data_chunk,
+                 .payload_length =
+                     static_cast<std::uint32_t>(data_chunk_payload.size()),
+                 .session_id = kFuzzSession,
+                 .request_id = 3},
+      .payload = data_chunk_payload,
+  };
+  const auto smaller_data_chunk = FrameView{
+      .header = {.type = MessageType::data_chunk,
+                 .payload_length =
+                     static_cast<std::uint32_t>(data_chunk_payload.size()),
+                 .session_id = kFuzzSession,
+                 .request_id = 1},
+      .payload = data_chunk_payload,
+  };
+  const auto zero_data_chunk = FrameView{
+      .header = {.type = MessageType::data_chunk,
+                 .payload_length =
+                     static_cast<std::uint32_t>(data_chunk_payload.size()),
+                 .session_id = kFuzzSession,
+                 .request_id = 2},
+      .payload = data_chunk_payload,
+  };
+  const auto matching_remainder = data_chunk_remainder(matching_data_chunk);
+  const auto smaller_remainder = data_chunk_remainder(smaller_data_chunk);
+  const auto zero_remainder = data_chunk_remainder(zero_data_chunk);
+  const auto matching_decode =
+      decode_data_chunk_payload(matching_data_chunk, matching_remainder);
+  const auto smaller_decode =
+      decode_data_chunk_payload(smaller_data_chunk, smaller_remainder);
+  const auto zero_decode =
+      decode_data_chunk_payload(zero_data_chunk, zero_remainder);
   return request_sequence.matches_wire &&
          request_sequence.expected_sequence == 7 && request_decode.valid() &&
          reply_sequence.matches_wire && reply_sequence.expected_sequence == 9 &&
          reply_decode.valid() && !request_mismatch.matches_wire &&
          request_mismatch.expected_sequence != 7 &&
-         !reply_mismatch.matches_wire && reply_mismatch.expected_sequence != 9;
+         !reply_mismatch.matches_wire && reply_mismatch.expected_sequence != 9 &&
+         matching_remainder == data_chunk_payload.size() &&
+         matching_decode.valid() &&
+         smaller_remainder == data_chunk_payload.size() - 1U &&
+         smaller_decode.error == ProtocolError::noncanonical_value &&
+         zero_remainder == 0 &&
+         zero_decode.error == ProtocolError::invalid_budget;
 }
 
 [[nodiscard]] ohl::parser::MessageType message_type(

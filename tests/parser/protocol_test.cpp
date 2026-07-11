@@ -13,6 +13,7 @@
 
 namespace {
 
+using ohl::parser::DataChunkMessage;
 using ohl::parser::FrameHeader;
 using ohl::parser::FrameView;
 using ohl::parser::HelloMessage;
@@ -1836,6 +1837,151 @@ constexpr std::uint64_t kSession = 0x0102'0304'0506'0708ULL;
   return true;
 }
 
+[[nodiscard]] bool test_typed_data_chunk() {
+  static_assert(ohl::parser::kMaximumDataChunkBytes == 256U * 1'024U);
+
+  const auto empty_result = [](const auto& result) {
+    return result.message.data.data() == nullptr &&
+           result.message.data.empty();
+  };
+  const std::array one_byte{std::byte{0x5a}};
+  std::array<std::byte, one_byte.size()> minimum_output{};
+  const auto minimum_encode = ohl::parser::encode_data_chunk_payload(
+      DataChunkMessage{one_byte}, one_byte.size(), minimum_output);
+  const auto minimum_frame =
+      payload_frame(MessageType::data_chunk, minimum_output, 1);
+  const auto minimum_decode = ohl::parser::decode_data_chunk_payload(
+      minimum_frame, minimum_output.size());
+  // DataChunkMessage is a non-owning view. Keep minimum_output alive while
+  // checking that the decoded span preserves the frame payload's identity.
+  if (!minimum_encode.valid() ||
+      minimum_encode.bytes_written != minimum_output.size() ||
+      minimum_output != one_byte || !minimum_decode.valid() ||
+      minimum_decode.message.data.data() != minimum_frame.payload.data() ||
+      minimum_decode.message.data.size() != minimum_frame.payload.size()) {
+    return fail("typed data chunk minimum round trip failed");
+  }
+
+  std::vector<std::byte> maximum_data(ohl::parser::kMaximumDataChunkBytes,
+                                      std::byte{0xa6});
+  std::vector<std::byte> maximum_output(ohl::parser::kMaximumDataChunkBytes);
+  const auto maximum_encode = ohl::parser::encode_data_chunk_payload(
+      DataChunkMessage{maximum_data}, maximum_data.size(), maximum_output);
+  const auto maximum_frame =
+      payload_frame(MessageType::data_chunk, maximum_output, 1);
+  const auto maximum_decode = ohl::parser::decode_data_chunk_payload(
+      maximum_frame, maximum_output.size());
+  if (!maximum_encode.valid() ||
+      maximum_encode.bytes_written != maximum_output.size() ||
+      !equal_bytes(maximum_output, maximum_data) || !maximum_decode.valid() ||
+      maximum_decode.message.data.data() != maximum_frame.payload.data() ||
+      maximum_decode.message.data.size() != maximum_frame.payload.size()) {
+    return fail("typed data chunk maximum round trip failed");
+  }
+
+  const std::array two_bytes{std::byte{0x12}, std::byte{0x34}};
+  const auto exact_remainder = ohl::parser::decode_data_chunk_payload(
+      payload_frame(MessageType::data_chunk, two_bytes, 1), two_bytes.size());
+  const auto short_remainder = ohl::parser::decode_data_chunk_payload(
+      payload_frame(MessageType::data_chunk, two_bytes, 1),
+      two_bytes.size() - 1U);
+  const auto zero_remainder = ohl::parser::decode_data_chunk_payload(
+      payload_frame(MessageType::data_chunk, two_bytes, 1), 0);
+  if (!exact_remainder.valid() ||
+      exact_remainder.message.data.data() != two_bytes.data() ||
+      exact_remainder.message.data.size() != two_bytes.size() ||
+      short_remainder.error != ProtocolError::noncanonical_value ||
+      !empty_result(short_remainder) ||
+      zero_remainder.error != ProtocolError::invalid_budget ||
+      !empty_result(zero_remainder)) {
+    return fail("typed data chunk remainder validation failed");
+  }
+
+  const auto empty_decode = ohl::parser::decode_data_chunk_payload(
+      payload_frame(MessageType::data_chunk, {}, 1), 1);
+  std::vector<std::byte> oversized_data(
+      ohl::parser::kMaximumDataChunkBytes + 1U, std::byte{0x5c});
+  const auto oversized_decode = ohl::parser::decode_data_chunk_payload(
+      payload_frame(MessageType::data_chunk, oversized_data, 1),
+      oversized_data.size());
+  if (empty_decode.error != ProtocolError::noncanonical_value ||
+      !empty_result(empty_decode) ||
+      oversized_decode.error != ProtocolError::noncanonical_value ||
+      !empty_result(oversized_decode)) {
+    return fail("typed data chunk size validation failed");
+  }
+
+  auto declared_longer =
+      payload_frame(MessageType::data_chunk, two_bytes, 1);
+  auto declared_shorter =
+      payload_frame(MessageType::data_chunk, two_bytes, 1);
+  ++declared_longer.header.payload_length;
+  --declared_shorter.header.payload_length;
+  const auto truncated =
+      ohl::parser::decode_data_chunk_payload(declared_longer, 0);
+  const auto trailing =
+      ohl::parser::decode_data_chunk_payload(declared_shorter, 0);
+  auto invalid_header =
+      payload_frame(MessageType::data_chunk, two_bytes, 1);
+  invalid_header.header.flags = 1;
+  const auto bad_header =
+      ohl::parser::decode_data_chunk_payload(invalid_header, 0);
+  const auto wrong_type = ohl::parser::decode_data_chunk_payload(
+      payload_frame(MessageType::read_reply, two_bytes, 1), 0);
+  const FrameView prior_error{
+      .error = ProtocolError::payload_too_large,
+      .header = {},
+      .payload = two_bytes,
+  };
+  const auto inherited_error =
+      ohl::parser::decode_data_chunk_payload(prior_error, 0);
+  if (truncated.error != ProtocolError::truncated_payload ||
+      !empty_result(truncated) ||
+      trailing.error != ProtocolError::trailing_bytes ||
+      !empty_result(trailing) ||
+      bad_header.error != ProtocolError::reserved_flags ||
+      !empty_result(bad_header) ||
+      wrong_type.error != ProtocolError::unexpected_message ||
+      !empty_result(wrong_type) ||
+      inherited_error.error != ProtocolError::payload_too_large ||
+      !empty_result(inherited_error)) {
+    return fail("typed data chunk frame validation was not failure atomic");
+  }
+
+  std::array<std::byte, two_bytes.size()> destination;
+  const auto unchanged = [&destination]() {
+    return std::all_of(destination.begin(), destination.end(),
+                       [](const std::byte value) {
+                         return value == std::byte{0xa5};
+                       });
+  };
+  const auto rejects_atomically = [&](const DataChunkMessage message,
+                                      const std::uint64_t remainder,
+                                      const std::span<std::byte> output,
+                                      const ProtocolError expected) {
+    destination.fill(std::byte{0xa5});
+    const auto result = ohl::parser::encode_data_chunk_payload(
+        message, remainder, output);
+    return result.error == expected && result.bytes_written == 0 &&
+           unchanged();
+  };
+  if (!rejects_atomically(DataChunkMessage{}, 1, destination,
+                          ProtocolError::noncanonical_value) ||
+      !rejects_atomically(DataChunkMessage{oversized_data},
+                          oversized_data.size(), destination,
+                          ProtocolError::noncanonical_value) ||
+      !rejects_atomically(DataChunkMessage{two_bytes}, two_bytes.size() - 1U,
+                          destination, ProtocolError::noncanonical_value) ||
+      !rejects_atomically(DataChunkMessage{two_bytes}, 0, destination,
+                          ProtocolError::invalid_budget) ||
+      !rejects_atomically(DataChunkMessage{two_bytes}, two_bytes.size(),
+                          std::span<std::byte>{destination}.first(1),
+                          ProtocolError::output_too_small)) {
+    return fail("typed data chunk encoding was not failure atomic");
+  }
+  return true;
+}
+
 [[nodiscard]] bool test_typed_failure_atomicity_and_ordering() {
   const auto unchanged = [](const auto& bytes) {
     return std::all_of(bytes.begin(), bytes.end(), [](const std::byte value) {
@@ -2054,6 +2200,7 @@ int main() {
                  test_typed_exact_empty_messages() &&
                  test_typed_stream_entry() &&
                  test_typed_read_request() && test_typed_read_reply() &&
+                 test_typed_data_chunk() &&
                  test_typed_failure_atomicity_and_ordering()
              ? 0
              : 1;

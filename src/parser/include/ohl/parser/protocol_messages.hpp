@@ -19,6 +19,7 @@ inline constexpr std::size_t kCancelAckPayloadBytes = 0;
 inline constexpr std::size_t kShutdownPayloadBytes = 0;
 inline constexpr std::uint32_t kMaximumReadBytes =
     kMaximumFramePayloadBytes - kReadReplyPrefixBytes;
+inline constexpr std::size_t kMaximumDataChunkBytes = 256U * 1'024U;
 
 struct SourceReadPolicy {
   std::uint64_t source_size{0};
@@ -57,6 +58,12 @@ struct ReadReplyMessage {
   std::span<const std::byte> data;
 };
 
+struct DataChunkMessage {
+  // Non-owning view into the payload supplied to decode_data_chunk_payload.
+  // The payload storage must remain alive and unchanged while data is used.
+  std::span<const std::byte> data;
+};
+
 struct CancelMessage {};
 
 struct CancelAckMessage {};
@@ -79,6 +86,7 @@ using EnumerateDecodeResult = MessageDecodeResult<EnumerateMessage>;
 using StreamEntryDecodeResult = MessageDecodeResult<StreamEntryMessage>;
 using ReadRequestDecodeResult = MessageDecodeResult<ReadRequestMessage>;
 using ReadReplyDecodeResult = MessageDecodeResult<ReadReplyMessage>;
+using DataChunkDecodeResult = MessageDecodeResult<DataChunkMessage>;
 using CancelDecodeResult = MessageDecodeResult<CancelMessage>;
 using CancelAckDecodeResult = MessageDecodeResult<CancelAckMessage>;
 using ShutdownDecodeResult = MessageDecodeResult<ShutdownMessage>;
@@ -120,6 +128,13 @@ using ShutdownDecodeResult = MessageDecodeResult<ShutdownMessage>;
 [[nodiscard]] ReadReplyDecodeResult decode_read_reply_payload(
     const FrameView& frame, std::uint32_t expected_sequence,
     std::uint32_t requested_length) noexcept;
+
+[[nodiscard]] EncodeResult encode_data_chunk_payload(
+    const DataChunkMessage& message, std::uint64_t remaining_entry_bytes,
+    std::span<std::byte> destination) noexcept;
+[[nodiscard]] DataChunkDecodeResult decode_data_chunk_payload(
+    const FrameView& frame,
+    std::uint64_t remaining_entry_bytes) noexcept;
 
 [[nodiscard]] EncodeResult encode_cancel_payload(
     const CancelMessage& message, std::span<std::byte> destination) noexcept;
