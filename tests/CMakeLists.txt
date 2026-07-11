@@ -68,6 +68,29 @@ set_tests_properties(platform.isolated_worker.common PROPERTIES TIMEOUT 30)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   include(platform/isolated_worker/linux.cmake)
+  # The test helpers are freestanding -nostdlib executables, so they cannot
+  # link sanitizer runtimes inherited from global CI compiler flags.
+  foreach(linux_helper_suffix IN ITEMS
+      ready
+      bad_ready
+      no_ready
+      forbidden_stat
+      forbidden_open
+      forbidden_network
+      forbidden_fork
+      forbidden_reexec
+      ready_timeout
+      ready_held_open
+      ready_trailing
+      ready_truncated
+      execveat_high_dirfd
+      execveat_wrong_flags
+      execveat_high_flags)
+    target_compile_options(
+      "ohl_isolated_worker_linux_helper_${linux_helper_suffix}"
+      PRIVATE -fno-sanitize=all
+    )
+  endforeach()
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
   include(platform/isolated_worker/windows.cmake)
 endif()
