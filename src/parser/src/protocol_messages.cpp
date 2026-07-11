@@ -148,6 +148,26 @@ ReadyDecodeResult decode_ready_payload(const FrameView& frame) noexcept {
   return result;
 }
 
+EncodeResult encode_enumerate_payload(
+    const EnumerateMessage& /*message*/,
+    const std::span<std::byte> /*destination*/) noexcept {
+  return {};
+}
+
+EnumerateDecodeResult decode_enumerate_payload(
+    const FrameView& frame) noexcept {
+  EnumerateDecodeResult result;
+  result.error = validate_frame(frame, MessageType::enumerate);
+  if (result.error != ProtocolError::none) {
+    return result;
+  }
+  PayloadReader reader{frame.payload};
+  if (!reader.finish()) {
+    result.error = reader.error();
+  }
+  return result;
+}
+
 EncodeResult encode_read_request_payload(
     const ReadRequestMessage& message, const SourceReadPolicy& policy,
     const std::uint32_t expected_sequence,
@@ -253,6 +273,65 @@ ReadReplyDecodeResult decode_read_reply_payload(
       validate_read_reply(message, expected_sequence, requested_length);
   if (result.error == ProtocolError::none) {
     result.message = message;
+  }
+  return result;
+}
+
+EncodeResult encode_cancel_payload(
+    const CancelMessage& /*message*/,
+    const std::span<std::byte> /*destination*/) noexcept {
+  return {};
+}
+
+CancelDecodeResult decode_cancel_payload(const FrameView& frame) noexcept {
+  CancelDecodeResult result;
+  result.error = validate_frame(frame, MessageType::cancel);
+  if (result.error != ProtocolError::none) {
+    return result;
+  }
+  PayloadReader reader{frame.payload};
+  if (!reader.finish()) {
+    result.error = reader.error();
+  }
+  return result;
+}
+
+EncodeResult encode_cancel_ack_payload(
+    const CancelAckMessage& /*message*/,
+    const std::span<std::byte> /*destination*/) noexcept {
+  return {};
+}
+
+CancelAckDecodeResult decode_cancel_ack_payload(
+    const FrameView& frame) noexcept {
+  CancelAckDecodeResult result;
+  result.error = validate_frame(frame, MessageType::cancel_ack);
+  if (result.error != ProtocolError::none) {
+    return result;
+  }
+  PayloadReader reader{frame.payload};
+  if (!reader.finish()) {
+    result.error = reader.error();
+  }
+  return result;
+}
+
+EncodeResult encode_shutdown_payload(
+    const ShutdownMessage& /*message*/,
+    const std::span<std::byte> /*destination*/) noexcept {
+  return {};
+}
+
+ShutdownDecodeResult decode_shutdown_payload(
+    const FrameView& frame) noexcept {
+  ShutdownDecodeResult result;
+  result.error = validate_frame(frame, MessageType::shutdown);
+  if (result.error != ProtocolError::none) {
+    return result;
+  }
+  PayloadReader reader{frame.payload};
+  if (!reader.finish()) {
+    result.error = reader.error();
   }
   return result;
 }

@@ -1228,6 +1228,169 @@ constexpr std::uint64_t kSession = 0x0102'0304'0506'0708ULL;
   return true;
 }
 
+[[nodiscard]] bool test_typed_exact_empty_messages() {
+  static_assert(ohl::parser::kReadyPayloadBytes == 0);
+  static_assert(ohl::parser::kEnumeratePayloadBytes == 0);
+  static_assert(ohl::parser::kCancelPayloadBytes == 0);
+  static_assert(ohl::parser::kCancelAckPayloadBytes == 0);
+  static_assert(ohl::parser::kShutdownPayloadBytes == 0);
+
+  std::array<std::byte, 8> destination;
+  destination.fill(std::byte{0xa5});
+  const auto ready_encode =
+      ohl::parser::encode_ready_payload(ReadyMessage{}, destination);
+  const auto enumerate_encode = ohl::parser::encode_enumerate_payload(
+      ohl::parser::EnumerateMessage{}, destination);
+  const auto cancel_encode = ohl::parser::encode_cancel_payload(
+      ohl::parser::CancelMessage{}, destination);
+  const auto cancel_ack_encode = ohl::parser::encode_cancel_ack_payload(
+      ohl::parser::CancelAckMessage{}, destination);
+  const auto shutdown_encode = ohl::parser::encode_shutdown_payload(
+      ohl::parser::ShutdownMessage{}, destination);
+  const auto untouched = std::all_of(
+      destination.begin(), destination.end(), [](const std::byte value) {
+        return value == std::byte{0xa5};
+      });
+  if (!ready_encode.valid() || ready_encode.bytes_written != 0 ||
+      !enumerate_encode.valid() || enumerate_encode.bytes_written != 0 ||
+      !cancel_encode.valid() || cancel_encode.bytes_written != 0 ||
+      !cancel_ack_encode.valid() || cancel_ack_encode.bytes_written != 0 ||
+      !shutdown_encode.valid() || shutdown_encode.bytes_written != 0 ||
+      !untouched) {
+    return fail("empty typed encoder wrote payload bytes");
+  }
+
+  if (!ohl::parser::decode_enumerate_payload(
+           payload_frame(MessageType::enumerate, {}, 1))
+           .valid() ||
+      !ohl::parser::decode_cancel_payload(
+           payload_frame(MessageType::cancel, {}, 1))
+           .valid() ||
+      !ohl::parser::decode_cancel_ack_payload(
+           payload_frame(MessageType::cancel_ack, {}, 1))
+           .valid() ||
+      !ohl::parser::decode_shutdown_payload(
+           payload_frame(MessageType::shutdown, {}))
+           .valid()) {
+    return fail("canonical empty typed payload was rejected");
+  }
+
+  const std::array<std::byte, 1> nonempty{std::byte{0x5a}};
+  if (ohl::parser::decode_enumerate_payload(
+          payload_frame(MessageType::enumerate, nonempty, 1))
+          .error != ProtocolError::payload_trailing_bytes ||
+      ohl::parser::decode_cancel_payload(
+          payload_frame(MessageType::cancel, nonempty, 1))
+          .error != ProtocolError::payload_trailing_bytes ||
+      ohl::parser::decode_cancel_ack_payload(
+          payload_frame(MessageType::cancel_ack, nonempty, 1))
+          .error != ProtocolError::payload_trailing_bytes ||
+      ohl::parser::decode_shutdown_payload(
+          payload_frame(MessageType::shutdown, nonempty))
+          .error != ProtocolError::payload_trailing_bytes) {
+    return fail("nonempty exact-empty typed payload was accepted");
+  }
+
+  if (ohl::parser::decode_enumerate_payload(
+          payload_frame(MessageType::cancel, {}, 1))
+          .error != ProtocolError::unexpected_message ||
+      ohl::parser::decode_cancel_payload(
+          payload_frame(MessageType::cancel_ack, {}, 1))
+          .error != ProtocolError::unexpected_message ||
+      ohl::parser::decode_cancel_ack_payload(
+          payload_frame(MessageType::enumerate, {}, 1))
+          .error != ProtocolError::unexpected_message ||
+      ohl::parser::decode_shutdown_payload(
+          payload_frame(MessageType::ready, {}))
+          .error != ProtocolError::unexpected_message) {
+    return fail("wrong typed empty message was accepted");
+  }
+
+  auto enumerate_truncated =
+      payload_frame(MessageType::enumerate, {}, 1);
+  auto cancel_truncated = payload_frame(MessageType::cancel, {}, 1);
+  auto cancel_ack_truncated =
+      payload_frame(MessageType::cancel_ack, {}, 1);
+  auto shutdown_truncated = payload_frame(MessageType::shutdown, {});
+  auto enumerate_trailing =
+      payload_frame(MessageType::enumerate, nonempty, 1);
+  auto cancel_trailing = payload_frame(MessageType::cancel, nonempty, 1);
+  auto cancel_ack_trailing =
+      payload_frame(MessageType::cancel_ack, nonempty, 1);
+  auto shutdown_trailing =
+      payload_frame(MessageType::shutdown, nonempty);
+  enumerate_truncated.header.payload_length = 1;
+  cancel_truncated.header.payload_length = 1;
+  cancel_ack_truncated.header.payload_length = 1;
+  shutdown_truncated.header.payload_length = 1;
+  enumerate_trailing.header.payload_length = 0;
+  cancel_trailing.header.payload_length = 0;
+  cancel_ack_trailing.header.payload_length = 0;
+  shutdown_trailing.header.payload_length = 0;
+  if (ohl::parser::decode_enumerate_payload(enumerate_truncated).error !=
+          ProtocolError::truncated_payload ||
+      ohl::parser::decode_cancel_payload(cancel_truncated).error !=
+          ProtocolError::truncated_payload ||
+      ohl::parser::decode_cancel_ack_payload(cancel_ack_truncated).error !=
+          ProtocolError::truncated_payload ||
+      ohl::parser::decode_shutdown_payload(shutdown_truncated).error !=
+          ProtocolError::truncated_payload ||
+      ohl::parser::decode_enumerate_payload(enumerate_trailing).error !=
+          ProtocolError::trailing_bytes ||
+      ohl::parser::decode_cancel_payload(cancel_trailing).error !=
+          ProtocolError::trailing_bytes ||
+      ohl::parser::decode_cancel_ack_payload(cancel_ack_trailing).error !=
+          ProtocolError::trailing_bytes ||
+      ohl::parser::decode_shutdown_payload(shutdown_trailing).error !=
+          ProtocolError::trailing_bytes) {
+    return fail("empty typed decoder accepted declared-length mismatch");
+  }
+
+  auto enumerate_bad_id = payload_frame(MessageType::enumerate, {});
+  auto cancel_bad_id = payload_frame(MessageType::cancel, {});
+  auto cancel_ack_bad_id = payload_frame(MessageType::cancel_ack, {});
+  auto shutdown_bad_id = payload_frame(MessageType::shutdown, {}, 1);
+  auto enumerate_bad_flags =
+      payload_frame(MessageType::enumerate, {}, 1);
+  enumerate_bad_flags.header.flags = 1;
+  if (ohl::parser::decode_enumerate_payload(enumerate_bad_id).error !=
+          ProtocolError::invalid_request_id ||
+      ohl::parser::decode_cancel_payload(cancel_bad_id).error !=
+          ProtocolError::invalid_request_id ||
+      ohl::parser::decode_cancel_ack_payload(cancel_ack_bad_id).error !=
+          ProtocolError::invalid_request_id ||
+      ohl::parser::decode_shutdown_payload(shutdown_bad_id).error !=
+          ProtocolError::invalid_request_id ||
+      ohl::parser::decode_enumerate_payload(enumerate_bad_flags).error !=
+          ProtocolError::reserved_flags) {
+    return fail("empty typed decoder accepted invalid frame header");
+  }
+
+  const FrameView prior_error{
+      .error = ProtocolError::trailing_bytes,
+      .header = {},
+      .payload = {},
+  };
+  const auto enumerate_error =
+      ohl::parser::decode_enumerate_payload(prior_error);
+  const auto cancel_error = ohl::parser::decode_cancel_payload(prior_error);
+  const auto cancel_ack_error =
+      ohl::parser::decode_cancel_ack_payload(prior_error);
+  const auto shutdown_error =
+      ohl::parser::decode_shutdown_payload(prior_error);
+  if (enumerate_error.valid() ||
+      enumerate_error.error != ProtocolError::trailing_bytes ||
+      cancel_error.valid() ||
+      cancel_error.error != ProtocolError::trailing_bytes ||
+      cancel_ack_error.valid() ||
+      cancel_ack_error.error != ProtocolError::trailing_bytes ||
+      shutdown_error.valid() ||
+      shutdown_error.error != ProtocolError::trailing_bytes) {
+    return fail("empty typed decoder did not preserve prior frame error");
+  }
+  return true;
+}
+
 [[nodiscard]] bool test_typed_read_request() {
   constexpr SourceReadPolicy policy{std::numeric_limits<std::uint64_t>::max(),
                                     ohl::parser::kMaximumReadBytes};
@@ -1772,6 +1935,7 @@ int main() {
                  test_terminal_and_cancel_rejections() &&
                  test_cancellation_and_budgets() &&
                  test_typed_hello_and_ready() &&
+                 test_typed_exact_empty_messages() &&
                  test_typed_read_request() && test_typed_read_reply() &&
                  test_typed_failure_atomicity_and_ordering()
              ? 0

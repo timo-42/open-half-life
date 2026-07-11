@@ -10,8 +10,12 @@ namespace ohl::parser {
 
 inline constexpr std::size_t kHelloPayloadBytes = 12;
 inline constexpr std::size_t kReadyPayloadBytes = 0;
+inline constexpr std::size_t kEnumeratePayloadBytes = 0;
 inline constexpr std::size_t kReadRequestPayloadBytes = 16;
 inline constexpr std::size_t kReadReplyPrefixBytes = 6;
+inline constexpr std::size_t kCancelPayloadBytes = 0;
+inline constexpr std::size_t kCancelAckPayloadBytes = 0;
+inline constexpr std::size_t kShutdownPayloadBytes = 0;
 inline constexpr std::uint32_t kMaximumReadBytes =
     kMaximumFramePayloadBytes - kReadReplyPrefixBytes;
 
@@ -32,6 +36,8 @@ struct HelloMessage {
 
 struct ReadyMessage {};
 
+struct EnumerateMessage {};
+
 struct ReadRequestMessage {
   std::uint32_t read_sequence{0};
   std::uint64_t offset{0};
@@ -46,6 +52,12 @@ struct ReadReplyMessage {
   std::span<const std::byte> data;
 };
 
+struct CancelMessage {};
+
+struct CancelAckMessage {};
+
+struct ShutdownMessage {};
+
 template <typename Message>
 struct MessageDecodeResult {
   ProtocolError error{ProtocolError::none};
@@ -58,8 +70,12 @@ struct MessageDecodeResult {
 
 using HelloDecodeResult = MessageDecodeResult<HelloMessage>;
 using ReadyDecodeResult = MessageDecodeResult<ReadyMessage>;
+using EnumerateDecodeResult = MessageDecodeResult<EnumerateMessage>;
 using ReadRequestDecodeResult = MessageDecodeResult<ReadRequestMessage>;
 using ReadReplyDecodeResult = MessageDecodeResult<ReadReplyMessage>;
+using CancelDecodeResult = MessageDecodeResult<CancelMessage>;
+using CancelAckDecodeResult = MessageDecodeResult<CancelAckMessage>;
+using ShutdownDecodeResult = MessageDecodeResult<ShutdownMessage>;
 
 [[nodiscard]] EncodeResult encode_hello_payload(
     const HelloMessage& message, std::span<std::byte> destination) noexcept;
@@ -69,6 +85,12 @@ using ReadReplyDecodeResult = MessageDecodeResult<ReadReplyMessage>;
 [[nodiscard]] EncodeResult encode_ready_payload(
     const ReadyMessage& message, std::span<std::byte> destination) noexcept;
 [[nodiscard]] ReadyDecodeResult decode_ready_payload(
+    const FrameView& frame) noexcept;
+
+[[nodiscard]] EncodeResult encode_enumerate_payload(
+    const EnumerateMessage& message,
+    std::span<std::byte> destination) noexcept;
+[[nodiscard]] EnumerateDecodeResult decode_enumerate_payload(
     const FrameView& frame) noexcept;
 
 [[nodiscard]] EncodeResult encode_read_request_payload(
@@ -86,5 +108,22 @@ using ReadReplyDecodeResult = MessageDecodeResult<ReadReplyMessage>;
 [[nodiscard]] ReadReplyDecodeResult decode_read_reply_payload(
     const FrameView& frame, std::uint32_t expected_sequence,
     std::uint32_t requested_length) noexcept;
+
+[[nodiscard]] EncodeResult encode_cancel_payload(
+    const CancelMessage& message, std::span<std::byte> destination) noexcept;
+[[nodiscard]] CancelDecodeResult decode_cancel_payload(
+    const FrameView& frame) noexcept;
+
+[[nodiscard]] EncodeResult encode_cancel_ack_payload(
+    const CancelAckMessage& message,
+    std::span<std::byte> destination) noexcept;
+[[nodiscard]] CancelAckDecodeResult decode_cancel_ack_payload(
+    const FrameView& frame) noexcept;
+
+[[nodiscard]] EncodeResult encode_shutdown_payload(
+    const ShutdownMessage& message,
+    std::span<std::byte> destination) noexcept;
+[[nodiscard]] ShutdownDecodeResult decode_shutdown_payload(
+    const FrameView& frame) noexcept;
 
 }  // namespace ohl::parser
