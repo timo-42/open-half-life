@@ -44,17 +44,26 @@ generic bounded primitive payload readers and writers, per-frame and cumulative
 message/payload budgets, and fail-closed session ordering. Accepted typed
 schemas now cover `hello`, exact-empty `ready`, `enumerate`, `cancel`,
 `cancel_ack`, and `shutdown`, plus `stream_entry`, `read_request`, and
-`read_reply`. The `stream_entry` payload is exactly one canonical 8-byte
-little-endian `source_token`. It is an opaque project-owned identifier; zero
-and every other `uint64_t` value, including the all-ones value, are valid at
-this codec boundary. Token membership and lifetime validation are deferred to
-a future trusted owner and are not authorization to access a source. The
-decoders validate the complete frame and payload shape, require full payload
-consumption, and enforce the applicable source-size, read-size, range,
-sequence, status, and reply-data bounds. Typed schemas remain absent for
-`entry_batch`, `data_chunk`, and `complete`. The target does not implement or
-authorize worker creation, process isolation, source access, component
-selection, payload extraction, destination mutation, or cache publication.
+`read_reply`, and `data_chunk`. The `stream_entry` payload is exactly one
+canonical 8-byte little-endian `source_token`. It is an opaque project-owned
+identifier; zero and every other `uint64_t` value, including the all-ones
+value, are valid at this codec boundary. Token membership and lifetime
+validation are deferred to a future trusted owner and are not authorization to
+access a source. A
+`data_chunk` is the opaque whole payload with no prefix, offset, token, or
+status field; its accepted size is 1 byte through 256 KiB, so a zero-byte chunk
+is noncanonical. Its typed codec also takes a trusted nonzero
+`remaining_entry_bytes` context and rejects a chunk larger than that bound.
+Decoding returns a non-owning span that aliases the frame payload, whose
+storage must remain alive and unchanged while the span is used. The caller,
+not the codec, owns remainder accounting and may decrement it only after the
+accepted bytes have been written downstream. The decoders validate the
+complete frame and payload shape, require full payload consumption, and enforce
+the applicable source-size, read-size, range, sequence, status, reply-data,
+chunk-size, and remaining-entry bounds. Typed schemas remain absent for
+`entry_batch` and `complete`. The target does not implement or authorize worker
+creation, process isolation, source access, component selection, payload
+extraction, destination mutation, or cache publication.
 
 The accepted session-ordering contract handles duplex cancellation races
 without granting message content any trust. Completion wins when `complete` and
@@ -72,26 +81,31 @@ Header validity and session ordering are not sufficient to trust a message.
 Before any production state transition or use of message content, a
 message-specific typed decoder must apply explicit bounds to every payload
 field, count, and length, reject noncanonical values, and require complete
-payload consumption. The nine accepted decoders provide that validation for
+payload consumption. The ten accepted decoders provide that validation for
 `hello`, `ready`, `enumerate`, `stream_entry`, `read_request`, `read_reply`,
-`cancel`, `cancel_ack`, and `shutdown`; they are not wired to production state
-transitions. In particular, decoding a `stream_entry` token does not establish
-its membership, lifetime, or authority. The remaining typed schemas, generic
-codec, and header/state infrastructure must remain disconnected from runtime
-import until the full message set and worker-isolation requirements in
-`MEDIA_IMPORT.md` are implemented and accepted.
+`data_chunk`, `cancel`, `cancel_ack`, and `shutdown`; they are not wired to
+production state transitions. In particular, decoding a `stream_entry` token
+does not establish its membership, lifetime, or authority, and accepting a
+`data_chunk` does not identify an entry or update its trusted remainder. The
+remaining typed schemas, generic codec, and header/state infrastructure must
+remain disconnected from runtime import until the full message set and
+worker-isolation requirements in `MEDIA_IMPORT.md` are implemented and
+accepted.
 
 Deterministic parser fuzz validation was accepted at `81a7ee9`; its typed
-dispatch was extended at `d59b6c5` and again for `stream_entry` at `f4d908a`.
-The opt-in libFuzzer target exercises bounded frame decoding, generic payload
-reading, session ordering, and all nine accepted typed decoders. Read-message
-dispatch uses bounded matching and deliberately mismatching contexts. A
-deterministic self-check establishes canonical read-request/read-reply decode
-reachability and both context branches. The hosted smoke job replays the fixed
-project-authored synthetic corpus twice and verifies that the seeds are not
-mutated. This is validation of the protocol infrastructure, not evidence of a
-worker transport, native isolation, runtime wiring, or coverage for the three
-schemas that remain absent.
+dispatch was extended at `d59b6c5`, for `stream_entry` at `f4d908a`, and for
+`data_chunk` at `c28ea9f`. The opt-in libFuzzer target exercises bounded frame
+decoding, generic payload reading, session ordering, and all ten accepted typed
+decoders. Read-message dispatch uses bounded matching and deliberately
+mismatching contexts. Data-chunk dispatch selects bounded, independently
+reachable contexts for the exact payload remainder, a smaller remainder, and
+zero remainder without allocating or copying the frame payload. A
+deterministic self-check establishes those three data-chunk branches plus
+canonical read-request/read-reply decode reachability and both read-context
+branches. The hosted smoke job replays the fixed project-authored synthetic
+corpus twice and verifies that the seeds are not mutated. This is validation of
+the protocol infrastructure, not evidence of a worker transport, native
+isolation, runtime wiring, or coverage for the two schemas that remain absent.
 
 There is intentionally no `vfs -> media` edge. Both modules consume the same
 low-level `platform::MediaSource` capability, while `app` is the composition

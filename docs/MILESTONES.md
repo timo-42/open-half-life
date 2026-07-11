@@ -164,28 +164,38 @@ schema and its fuzz dispatch. Its payload is exactly one canonical 8-byte
 little-endian opaque `source_token`; zero and every other `uint64_t` value,
 including the all-ones value, are valid at this codec boundary. Token
 membership and lifetime validation remain deferred to a future trusted owner,
-and the token conveys no source authority. The accepted result includes
-canonical framing, generic bounded payload primitives and budgets, fail-closed
-session ordering, and complete-payload typed validation for nine message
-types. The typed decoders enforce the applicable source/read bounds, request
-sequencing, permitted reply status/data shapes, exact-empty or exact-token
-payload shapes, and exact payload consumption. Typed schemas remain absent for
-`entry_batch`, `data_chunk`, and `complete`.
+and the token conveys no source authority. Commit `c28ea9f` adds the typed
+`data_chunk` schema and fuzz dispatch. A data chunk is its opaque whole payload
+with no prefix, offset, token, or status field; zero bytes are forbidden and
+the accepted range is 1 byte through 256 KiB. The codec requires a trusted
+nonzero remaining-entry context and rejects a chunk larger than that bound.
+Its decoded span aliases the frame payload, so that storage must stay alive and
+unchanged while the span is used. The caller owns remainder accounting and may
+decrement it only after the accepted bytes are written downstream. The
+accepted result includes canonical framing, generic bounded payload primitives
+and budgets, fail-closed session ordering, and complete-payload typed
+validation for ten message types. The typed decoders enforce the applicable
+source/read bounds, request sequencing, permitted reply status/data shapes,
+exact-empty, exact-token, or bounded opaque-chunk payload shapes, and exact
+payload consumption. Typed schemas remain absent for `entry_batch` and
+`complete`.
 
 The ordering contract permits exactly one same-request late reply to drain
 after `cancel_ack` only when a read was already outstanding before cancellation.
 The deterministic fuzz target exercises frame decoding, generic payload
-reading, session ordering, and all nine accepted typed decoders, including
-typed `stream_entry` dispatch. Read-message dispatch uses bounded matching and
-deliberately mismatching contexts. Its deterministic self-check establishes
-canonical read-request/read-reply decode reachability and both context
-branches. The fixed corpus remains project-authored and synthetic. This
-accepted protocol layer supports active M2 work but is not a
-production import path: no runtime target depends on it, it has no source,
-destination, extraction, or cache authority, and the typed decoders are not
-wired to production state transitions. The protocol work authorizes no
-proprietary extraction, and no worker implementation, transport, or native
-sandbox backend has been accepted or integrated.
+reading, session ordering, and all ten accepted typed decoders, including typed
+`stream_entry` and `data_chunk` dispatch. Read-message dispatch uses bounded
+matching and deliberately mismatching contexts. Data-chunk dispatch uses
+bounded, independently reachable exact, smaller, and zero remainder contexts
+without allocating or copying the frame payload. Its deterministic self-check
+establishes those branches plus canonical read-request/read-reply decode
+reachability and both read-context branches. The fixed corpus remains
+project-authored and synthetic. This accepted protocol layer supports active
+M2 work but is not a production import path: no runtime target depends on it,
+it has no source, destination, extraction, or cache authority, and the typed
+decoders are not wired to production state transitions. The protocol work
+authorizes no proprietary extraction, and no worker implementation, transport,
+or native sandbox backend has been accepted or integrated.
 
 ## Later milestones
 
