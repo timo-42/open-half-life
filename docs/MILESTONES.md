@@ -144,24 +144,29 @@ The accepted isolated parser protocol sequence starts with the bounded OWP/1
 codec at `3bc135c`, adds completion/cancellation race handling at `f17a40a`,
 closes its late-reply drain gap at `3fd0375`, adds typed `hello`, `ready`,
 `read_request`, and `read_reply` schemas at `16f15cb`, and adds deterministic
-parser fuzz validation at `81a7ee9`. The accepted result includes canonical
-framing, generic bounded payload primitives and budgets, fail-closed session
-ordering, and complete-payload typed validation for those four message types.
-The typed decoders enforce source/read bounds, request sequencing, permitted
-reply status/data shapes, and exact payload consumption. Typed schemas remain
-absent for `enumerate`, `stream_entry`, `entry_batch`, `data_chunk`, `complete`,
-`cancel`, `cancel_ack`, and `shutdown`.
+parser fuzz validation at `81a7ee9`. Commit `d59b6c5` then adds exact-empty
+typed schemas for `enumerate`, `cancel`, `cancel_ack`, and `shutdown` and
+extends typed fuzz dispatch. The accepted result includes canonical framing,
+generic bounded payload primitives and budgets, fail-closed session ordering,
+and complete-payload typed validation for eight message types. The typed
+decoders enforce the applicable source/read bounds, request sequencing,
+permitted reply status/data shapes, exact-empty payload shapes, and exact
+payload consumption. Typed schemas remain absent for `stream_entry`,
+`entry_batch`, `data_chunk`, and `complete`.
 
 The ordering contract permits exactly one same-request late reply to drain
 after `cancel_ack` only when a read was already outstanding before cancellation.
-The deterministic fuzz target exercises frame decoding, generic payload reading,
-and session ordering with fixed project-authored synthetic seeds; it does not
-exercise the typed message decoders. This accepted protocol layer supports
-active M2 work but is not a production import path: no runtime target depends on
-it, it has no source, destination, extraction, or cache authority, and the typed
-decoders are not wired to production state transitions. The protocol work
-authorizes no proprietary extraction, and no worker implementation, transport,
-or native sandbox backend has been accepted or integrated.
+The deterministic fuzz target exercises frame decoding, generic payload
+reading, session ordering, and all eight accepted typed decoders with bounded
+matching and deliberately mismatching read contexts. Its deterministic
+self-check establishes canonical read-request/read-reply decode reachability
+and both context branches. The fixed corpus remains project-authored and
+synthetic. This accepted protocol layer supports active M2 work but is not a
+production import path: no runtime target depends on it, it has no source,
+destination, extraction, or cache authority, and the typed decoders are not
+wired to production state transitions. The protocol work authorizes no
+proprietary extraction, and no worker implementation, transport, or native
+sandbox backend has been accepted or integrated.
 
 ## Later milestones
 

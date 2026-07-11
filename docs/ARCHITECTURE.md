@@ -42,14 +42,15 @@ on it, and its only allowed dependency edge is toward the standard library. Its
 accepted OWP/1 protocol layer provides canonical bounded framing and headers,
 generic bounded primitive payload readers and writers, per-frame and cumulative
 message/payload budgets, and fail-closed session ordering. Accepted typed
-schemas now cover `hello`, empty-payload `ready`, `read_request`, and
-`read_reply`. Their decoders validate the complete frame and payload shape,
-require full payload consumption, and enforce the applicable source-size,
-read-size, range, sequence, status, and reply-data bounds. Typed schemas remain
-absent for `enumerate`, `stream_entry`, `entry_batch`, `data_chunk`, `complete`,
-`cancel`, `cancel_ack`, and `shutdown`. The target does not implement or
-authorize worker creation, process isolation, source access, component
-selection, payload extraction, destination mutation, or cache publication.
+schemas now cover `hello`, exact-empty `ready`, `enumerate`, `cancel`,
+`cancel_ack`, and `shutdown`, plus `read_request` and `read_reply`. Their
+decoders validate the complete frame and payload shape, require full payload
+consumption, and enforce the applicable source-size, read-size, range,
+sequence, status, and reply-data bounds. Typed schemas remain absent for
+`stream_entry`, `entry_batch`, `data_chunk`, and `complete`. The target does
+not implement or authorize worker creation, process isolation, source access,
+component selection, payload extraction, destination mutation, or cache
+publication.
 
 The accepted session-ordering contract handles duplex cancellation races
 without granting message content any trust. Completion wins when `complete` and
@@ -67,20 +68,24 @@ Header validity and session ordering are not sufficient to trust a message.
 Before any production state transition or use of message content, a
 message-specific typed decoder must apply explicit bounds to every payload
 field, count, and length, reject noncanonical values, and require complete
-payload consumption. The accepted `hello`, `ready`, `read_request`, and
-`read_reply` decoders provide that validation for only those four message
-types; they are not wired to production state transitions. The remaining typed
-schemas, generic codec, and header/state infrastructure must remain disconnected
-from runtime import until the full message set and worker-isolation requirements
-in `MEDIA_IMPORT.md` are implemented and accepted.
+payload consumption. The eight accepted decoders provide that validation for
+`hello`, `ready`, `enumerate`, `read_request`, `read_reply`, `cancel`,
+`cancel_ack`, and `shutdown`; they are not wired to production state
+transitions. The remaining typed schemas, generic codec, and header/state
+infrastructure must remain disconnected from runtime import until the full
+message set and worker-isolation requirements in `MEDIA_IMPORT.md` are
+implemented and accepted.
 
-Deterministic parser fuzz validation was accepted at `81a7ee9`. Its opt-in
-libFuzzer target exercises bounded frame decoding, generic payload reading, and
-session ordering with project-authored synthetic transcript seeds; the hosted
-smoke job replays the fixed corpus twice and verifies that the seeds are not
-mutated. This is validation of the protocol infrastructure, not evidence of a
-worker transport, native isolation, runtime wiring, or typed-schema coverage by
-the fuzz target.
+Deterministic parser fuzz validation was accepted at `81a7ee9` and its typed
+dispatch was extended at `d59b6c5`. The opt-in libFuzzer target exercises
+bounded frame decoding, generic payload reading, session ordering, and all
+eight accepted typed decoders with bounded matching and deliberately
+mismatching read contexts. A deterministic self-check establishes canonical
+read-request/read-reply decode reachability and both context branches. The
+hosted smoke job replays the fixed project-authored synthetic corpus twice and
+verifies that the seeds are not mutated. This is validation of the protocol
+infrastructure, not evidence of a worker transport, native isolation, runtime
+wiring, or coverage for the four schemas that remain absent.
 
 There is intentionally no `vfs -> media` edge. Both modules consume the same
 low-level `platform::MediaSource` capability, while `app` is the composition
