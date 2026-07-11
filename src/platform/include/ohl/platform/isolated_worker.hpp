@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <memory>
 #include <span>
-#include <stop_token>
 
 namespace ohl::platform {
 
@@ -79,12 +78,10 @@ class IsolatedWorker final {
   // win.
   [[nodiscard]] IsolatedWorkerIoResult read_exact(
       std::span<std::byte> destination,
-      std::chrono::steady_clock::time_point deadline,
-      std::stop_token stop = {}) noexcept;
+      std::chrono::steady_clock::time_point deadline) noexcept;
   [[nodiscard]] IsolatedWorkerIoResult write_all(
       std::span<const std::byte> source,
-      std::chrono::steady_clock::time_point deadline,
-      std::stop_token stop = {}) noexcept;
+      std::chrono::steady_clock::time_point deadline) noexcept;
 
   // Both operations are idempotent and safe to call while I/O is active.
   // abort_io() permanently poisons the channel. close_channel() performs an

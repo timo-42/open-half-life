@@ -13,7 +13,6 @@
 #include <memory>
 #include <mutex>
 #include <span>
-#include <stop_token>
 #include <string_view>
 #include <thread>
 #include <type_traits>
@@ -40,6 +39,8 @@ using ohl::platform::IsolatedWorkerIoResult;
 using ohl::platform::IsolatedWorkerService;
 using ohl::platform::IsolatedWorkerWaitResult;
 using namespace std::chrono_literals;
+
+enum class BackendEvent : std::uint8_t { abort, close, termination };
 
 struct FakeState final {
   std::atomic<int> read_calls{0};
@@ -75,15 +76,22 @@ struct FakeState final {
 
   std::mutex block_mutex;
   std::condition_variable block_condition;
+  bool block_abort{false};
   bool block_read{false};
   bool block_write{false};
   bool block_wait{false};
+  bool abort_entered{false};
   bool read_entered{false};
   bool write_entered{false};
   bool wait_entered{false};
+  bool release_abort{false};
   bool release_read{false};
   bool release_write{false};
   bool release_wait{false};
+
+  std::mutex event_mutex;
+  std::array<BackendEvent, 8> event_log{};
+  std::size_t event_count{0};
 };
 
 class FakeBackend final
@@ -96,8 +104,7 @@ class FakeBackend final
 
   [[nodiscard]] IsolatedWorkerIoResult read_exact(
       const std::span<std::byte> destination,
-      const Clock::time_point deadline,
-      std::stop_token) noexcept override {
+      const Clock::time_point deadline) noexcept override {
     ++state_->read_calls;
     {
       const std::scoped_lock lock{state_->deadline_mutex};
@@ -105,6 +112,9 @@ class FakeBackend final
     }
     block_direction(state_->block_read, state_->read_entered,
                     state_->release_read);
+    if (state_->aborted.load()) {
+      return {.error = IsolatedWorkerError::cancelled};
+    }
     if (state_->use_fixed_read_result) {
       return state_->read_result;
     }
@@ -113,8 +123,7 @@ class FakeBackend final
 
   [[nodiscard]] IsolatedWorkerIoResult write_all(
       const std::span<const std::byte> source,
-      const Clock::time_point deadline,
-      std::stop_token) noexcept override {
+      const Clock::time_point deadline) noexcept override {
     ++state_->write_calls;
     {
       const std::scoped_lock lock{state_->deadline_mutex};
@@ -122,6 +131,9 @@ class FakeBackend final
     }
     block_direction(state_->block_write, state_->write_entered,
                     state_->release_write);
+    if (state_->aborted.load()) {
+      return {.error = IsolatedWorkerError::cancelled};
+    }
     if (state_->use_fixed_write_result) {
       return state_->write_result;
     }
@@ -130,13 +142,23 @@ class FakeBackend final
 
   void abort_io() noexcept override {
     ++state_->abort_calls;
+    record_event(BackendEvent::abort);
+    block_direction(state_->block_abort, state_->abort_entered,
+                    state_->release_abort);
     if (!state_->aborted.exchange(true)) {
       ++state_->abort_effects;
     }
+    {
+      const std::scoped_lock lock{state_->block_mutex};
+      state_->release_read = true;
+      state_->release_write = true;
+    }
+    state_->block_condition.notify_all();
   }
 
   void close_channel() noexcept override {
     ++state_->close_calls;
+    record_event(BackendEvent::close);
     if (!state_->closed.exchange(true)) {
       ++state_->close_effects;
     }
@@ -144,6 +166,7 @@ class FakeBackend final
 
   void request_termination() noexcept override {
     ++state_->termination_calls;
+    record_event(BackendEvent::termination);
     if (!state_->termination_requested.exchange(true)) {
       ++state_->termination_effects;
     }
@@ -172,6 +195,13 @@ class FakeBackend final
   }
 
  private:
+  void record_event(const BackendEvent event) noexcept {
+    const std::scoped_lock lock{state_->event_mutex};
+    if (state_->event_count < state_->event_log.size()) {
+      state_->event_log[state_->event_count++] = event;
+    }
+  }
+
   void block_direction(const bool blocked, bool& entered,
                        const bool& released) noexcept {
     if (!blocked) {
@@ -240,12 +270,31 @@ template <typename Predicate>
 void release_blocked_operations(const std::shared_ptr<FakeState>& state) {
   {
     const std::scoped_lock lock{state->block_mutex};
+    state->release_abort = true;
     state->release_read = true;
     state->release_write = true;
     state->release_wait = true;
   }
   state->block_condition.notify_all();
 }
+
+class BlockedOperationCleanup final {
+ public:
+  BlockedOperationCleanup(std::shared_ptr<FakeState> state,
+                          std::thread& operation) noexcept
+      : state_(std::move(state)), operation_(operation) {}
+
+  ~BlockedOperationCleanup() {
+    release_blocked_operations(state_);
+    if (operation_.joinable()) {
+      operation_.join();
+    }
+  }
+
+ private:
+  std::shared_ptr<FakeState> state_;
+  std::thread& operation_;
+};
 
 [[nodiscard]] Clock::time_point recorded_deadline(
     const std::shared_ptr<FakeState>& state,
@@ -520,7 +569,7 @@ void test_backend_io_poisoning(TestContext& test) {
   }
 }
 
-void test_caller_timeout_and_cancel_poisoning(TestContext& test) {
+void test_caller_timeout_and_active_abort_poisoning(TestContext& test) {
   std::array<std::byte, 2> bytes{};
   {
     auto state = std::make_shared<FakeState>();
@@ -537,18 +586,34 @@ void test_caller_timeout_and_cancel_poisoning(TestContext& test) {
   }
   {
     auto state = std::make_shared<FakeState>();
+    state->block_read = true;
     auto worker = launch_worker(state);
-    test.expect(worker != nullptr, "worker launches for caller cancellation");
+    test.expect(worker != nullptr, "worker launches for active I/O abort");
     if (worker != nullptr) {
-      std::stop_source stop;
-      stop.request_stop();
-      const auto result =
-          worker->write_all(bytes, Clock::time_point::max(), stop.get_token());
+      IsolatedWorkerIoResult result;
+      std::thread reader{[&] {
+        result = worker->read_exact(bytes, Clock::time_point::max());
+      }};
+      BlockedOperationCleanup cleanup{state, reader};
+
+      const auto entered =
+          wait_for_state(state, [&] { return state->read_entered; });
+      test.expect(entered, "read is active before asynchronous abort");
+      if (entered) {
+        worker->abort_io();
+      } else {
+        release_blocked_operations(state);
+      }
+      reader.join();
+
       test.expect(result.error == IsolatedWorkerError::cancelled &&
-                      state->write_calls.load() == 0 &&
+                      state->read_calls.load() == 1 &&
                       state->abort_effects.load() == 1 &&
                       state->close_effects.load() == 1,
-                  "pre-cancelled caller I/O poisons without backend transfer");
+                  "active abort wakes the read and returns cancellation");
+      test.expect(worker->write_all(bytes, Clock::time_point::max()).error ==
+                      IsolatedWorkerError::invalid_state,
+                  "active abort permanently rejects later I/O");
     }
   }
 }
@@ -668,6 +733,45 @@ void test_expired_termination_requests_kill(TestContext& test) {
               "expired termination still closes IPC and requests kill");
 }
 
+void test_termination_signal_precedes_blocking_abort(TestContext& test) {
+  auto state = std::make_shared<FakeState>();
+  state->block_abort = true;
+  auto worker = launch_worker(state);
+  test.expect(worker != nullptr,
+              "worker launches for termination ordering");
+  if (worker == nullptr) {
+    return;
+  }
+
+  IsolatedWorkerWaitResult result;
+  std::thread terminator{[&] {
+    result = worker->terminate_and_wait(Clock::time_point::max());
+  }};
+  BlockedOperationCleanup cleanup{state, terminator};
+
+  const auto abort_entered =
+      wait_for_state(state, [&] { return state->abort_entered; });
+  test.expect(abort_entered, "termination reaches the blocked abort gate");
+
+  bool termination_preceded_abort = false;
+  {
+    const std::scoped_lock lock{state->event_mutex};
+    termination_preceded_abort =
+        state->event_count >= 2 &&
+        state->event_log[0] == BackendEvent::termination &&
+        state->event_log[1] == BackendEvent::abort;
+  }
+  test.expect(termination_preceded_abort &&
+                  state->termination_requested.load(),
+              "nonblocking termination signal precedes blocking abort");
+
+  release_blocked_operations(state);
+  terminator.join();
+  test.expect(result.exit == IsolatedWorkerExitKind::terminated &&
+                  result.error == IsolatedWorkerError::none,
+              "termination completes after the abort gate is released");
+}
+
 void test_termination_concurrent_with_wait(TestContext& test) {
   auto state = std::make_shared<FakeState>();
   state->block_wait = true;
@@ -757,10 +861,11 @@ int main() {
   test_input_validation(test);
   test_direction_concurrency(test);
   test_backend_io_poisoning(test);
-  test_caller_timeout_and_cancel_poisoning(test);
+  test_caller_timeout_and_active_abort_poisoning(test);
   test_abort_and_close_idempotency(test);
   test_wait_normalization_and_cache(test);
   test_expired_termination_requests_kill(test);
+  test_termination_signal_precedes_blocking_abort(test);
   test_termination_concurrent_with_wait(test);
   test_destructor_cleanup(test);
 

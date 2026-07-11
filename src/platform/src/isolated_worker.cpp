@@ -10,7 +10,6 @@
 #include <mutex>
 #include <new>
 #include <span>
-#include <stop_token>
 #include <utility>
 
 namespace ohl::platform {
@@ -156,8 +155,8 @@ IsolatedWorker::~IsolatedWorker() {
 }
 
 IsolatedWorkerIoResult IsolatedWorker::read_exact(
-    const std::span<std::byte> destination, const Clock::time_point deadline,
-    const std::stop_token stop) noexcept {
+    const std::span<std::byte> destination,
+    const Clock::time_point deadline) noexcept {
   const auto effective_deadline =
       clamp_deadline(deadline, kMaximumIoDuration);
   if (destination.empty() || destination.data() == nullptr) {
@@ -174,13 +173,11 @@ IsolatedWorkerIoResult IsolatedWorker::read_exact(
   }
 
   IsolatedWorkerIoResult result;
-  if (stop.stop_requested()) {
-    result.error = IsolatedWorkerError::cancelled;
-  } else if (effective_deadline <= Clock::now()) {
+  if (effective_deadline <= Clock::now()) {
     result.error = IsolatedWorkerError::timeout;
   } else {
-    result = implementation_->backend->read_exact(destination,
-                                                   effective_deadline, stop);
+    result =
+        implementation_->backend->read_exact(destination, effective_deadline);
   }
 
   if (result.bytes_transferred > destination.size()) {
@@ -199,8 +196,8 @@ IsolatedWorkerIoResult IsolatedWorker::read_exact(
 }
 
 IsolatedWorkerIoResult IsolatedWorker::write_all(
-    const std::span<const std::byte> source, const Clock::time_point deadline,
-    const std::stop_token stop) noexcept {
+    const std::span<const std::byte> source,
+    const Clock::time_point deadline) noexcept {
   const auto effective_deadline =
       clamp_deadline(deadline, kMaximumIoDuration);
   if (source.empty() || source.data() == nullptr) {
@@ -217,13 +214,10 @@ IsolatedWorkerIoResult IsolatedWorker::write_all(
   }
 
   IsolatedWorkerIoResult result;
-  if (stop.stop_requested()) {
-    result.error = IsolatedWorkerError::cancelled;
-  } else if (effective_deadline <= Clock::now()) {
+  if (effective_deadline <= Clock::now()) {
     result.error = IsolatedWorkerError::timeout;
   } else {
-    result =
-        implementation_->backend->write_all(source, effective_deadline, stop);
+    result = implementation_->backend->write_all(source, effective_deadline);
   }
 
   if (result.bytes_transferred > source.size()) {
@@ -287,8 +281,8 @@ IsolatedWorkerWaitResult IsolatedWorker::terminate_and_wait(
     const Clock::time_point deadline) noexcept {
   const auto effective_deadline =
       clamp_deadline(deadline, kMaximumTerminationDuration);
-  abort_io();
   implementation_->backend->request_termination();
+  abort_io();
 
   try {
     const std::unique_lock lifecycle_lock{implementation_->lifecycle_mutex,
