@@ -41,9 +41,13 @@ The current `parser` target is deliberately isolated: no runtime target depends
 on it, and its only allowed dependency edge is toward the standard library. Its
 accepted OWP/1 protocol layer provides canonical bounded framing and headers,
 generic bounded primitive payload readers and writers, per-frame and cumulative
-message/payload budgets, and fail-closed session ordering. These generic payload
-helpers can reject invalid primitive values and incomplete consumption, but no
-message-specific typed payload schemas exist. The target does not implement or
+message/payload budgets, and fail-closed session ordering. Accepted typed
+schemas now cover `hello`, empty-payload `ready`, `read_request`, and
+`read_reply`. Their decoders validate the complete frame and payload shape,
+require full payload consumption, and enforce the applicable source-size,
+read-size, range, sequence, status, and reply-data bounds. Typed schemas remain
+absent for `enumerate`, `stream_entry`, `entry_batch`, `data_chunk`, `complete`,
+`cancel`, `cancel_ack`, and `shutdown`. The target does not implement or
 authorize worker creation, process isolation, source access, component
 selection, payload extraction, destination mutation, or cache publication.
 
@@ -63,10 +67,20 @@ Header validity and session ordering are not sufficient to trust a message.
 Before any production state transition or use of message content, a
 message-specific typed decoder must apply explicit bounds to every payload
 field, count, and length, reject noncanonical values, and require complete
-payload consumption. The accepted generic codec and header/state infrastructure
-are not that validation gate and must remain disconnected from runtime import
-until typed payload validation and the worker-isolation requirements in
-`MEDIA_IMPORT.md` are implemented and accepted.
+payload consumption. The accepted `hello`, `ready`, `read_request`, and
+`read_reply` decoders provide that validation for only those four message
+types; they are not wired to production state transitions. The remaining typed
+schemas, generic codec, and header/state infrastructure must remain disconnected
+from runtime import until the full message set and worker-isolation requirements
+in `MEDIA_IMPORT.md` are implemented and accepted.
+
+Deterministic parser fuzz validation was accepted at `81a7ee9`. Its opt-in
+libFuzzer target exercises bounded frame decoding, generic payload reading, and
+session ordering with project-authored synthetic transcript seeds; the hosted
+smoke job replays the fixed corpus twice and verifies that the seeds are not
+mutated. This is validation of the protocol infrastructure, not evidence of a
+worker transport, native isolation, runtime wiring, or typed-schema coverage by
+the fuzz target.
 
 There is intentionally no `vfs -> media` edge. Both modules consume the same
 low-level `platform::MediaSource` capability, while `app` is the composition

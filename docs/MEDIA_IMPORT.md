@@ -151,10 +151,22 @@ The current `parser` library is accepted as bounded protocol infrastructure
 only. It provides canonical OWP/1 framing, generic bounded primitive payload
 helpers, frame and cumulative budgets, and fail-closed session ordering,
 including the cancellation and one-shot late-reply drain rules documented in
-`ARCHITECTURE.md`. It provides no message-specific typed payload schemas and is
-not a worker, sandbox, transport, payload extractor, or runtime import path. No
+`ARCHITECTURE.md`. Accepted typed schemas cover `hello`, empty-payload `ready`,
+`read_request`, and `read_reply`. They validate complete frame and payload
+shape, require full payload consumption, and enforce source/read bounds,
+sequence matching, allowed reply statuses, and reply-data shape. Typed schemas
+for `enumerate`, `stream_entry`, `entry_batch`, `data_chunk`, `complete`,
+`cancel`, `cancel_ack`, and `shutdown` remain absent. The library is not a
+worker, sandbox, transport, payload extractor, or runtime import path. No
 runtime target depends on it, and this protocol work authorizes no proprietary
 extraction.
+
+Deterministic parser fuzz validation accepted at `81a7ee9` exercises frame
+decoding, generic payload reading, and session ordering with project-authored
+synthetic seeds. Its opt-in libFuzzer target is exercised by a hosted smoke job that replays the fixed corpus twice and
+checks that the seeds remain unchanged. The fuzz target does not exercise the
+typed message decoders and does not establish worker transport, native
+isolation, extraction, or runtime integration.
 
 - Give the worker read-only access only to the pinned source or bounded byte
   ranges; do not give it a destination path, cache authority, network access,
@@ -175,10 +187,12 @@ production receiver must decode each message through its specific typed schema,
 bound every field, count, length, and cumulative resource use, reject malformed
 or noncanonical values, and prove that the decoder consumed the entire payload.
 Only after that complete validation may the receiver use message content or
-transition production session state. The generic payload helpers and
-header/state validator are not such an authorization gate and must remain
-outside runtime import until this rule and the process-isolation requirements
-above are implemented and accepted.
+transition production session state. The four accepted typed decoders satisfy
+that payload rule only for their own message types; they are not connected to
+runtime state transitions. The remaining message families, generic payload
+helpers, and header/state validator must remain outside runtime import until the
+complete typed boundary and process-isolation requirements above are
+implemented and accepted.
 
 Isolation limits parser authority; it does not make parser output safe to log,
 commit, or trust without validation.
