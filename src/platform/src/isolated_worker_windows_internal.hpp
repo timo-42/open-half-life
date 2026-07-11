@@ -91,8 +91,20 @@ enum class IsolatedWorkerLaunchStage : std::uint8_t {
   ready,
 };
 
+enum class IsolatedWorkerCreateProcessFailure : std::uint8_t {
+  none,
+  invalid_parameter,
+  access_denied_or_job_nesting,
+  unsupported_attribute,
+  bad_image,
+  file_or_path,
+  other,
+};
+
 [[nodiscard]] IsolatedWorkerLaunchStage last_isolated_worker_launch_stage()
     noexcept;
+[[nodiscard]] IsolatedWorkerCreateProcessFailure
+last_isolated_worker_create_process_failure() noexcept;
 
 [[nodiscard]] constexpr std::string_view isolated_worker_launch_stage_name(
     const IsolatedWorkerLaunchStage stage) noexcept {
@@ -177,6 +189,28 @@ enum class IsolatedWorkerLaunchStage : std::uint8_t {
       return "ready_pending";
     case IsolatedWorkerLaunchStage::ready:
       return "ready";
+  }
+  return "unknown";
+}
+
+[[nodiscard]] constexpr std::string_view
+isolated_worker_create_process_failure_name(
+    const IsolatedWorkerCreateProcessFailure failure) noexcept {
+  switch (failure) {
+    case IsolatedWorkerCreateProcessFailure::none:
+      return "none";
+    case IsolatedWorkerCreateProcessFailure::invalid_parameter:
+      return "invalid_parameter";
+    case IsolatedWorkerCreateProcessFailure::access_denied_or_job_nesting:
+      return "access_denied_or_job_nesting";
+    case IsolatedWorkerCreateProcessFailure::unsupported_attribute:
+      return "unsupported_attribute";
+    case IsolatedWorkerCreateProcessFailure::bad_image:
+      return "bad_image";
+    case IsolatedWorkerCreateProcessFailure::file_or_path:
+      return "file_or_path";
+    case IsolatedWorkerCreateProcessFailure::other:
+      return "other";
   }
   return "unknown";
 }

@@ -38,10 +38,44 @@ using windows::kBootstrapReady;
 #ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
 std::atomic<windows::IsolatedWorkerLaunchStage> g_last_launch_stage{
     windows::IsolatedWorkerLaunchStage::idle};
+std::atomic<windows::IsolatedWorkerCreateProcessFailure>
+    g_last_create_process_failure{
+        windows::IsolatedWorkerCreateProcessFailure::none};
 
 void record_launch_stage(
     const windows::IsolatedWorkerLaunchStage stage) noexcept {
   g_last_launch_stage.store(stage);
+}
+
+[[nodiscard]] windows::IsolatedWorkerCreateProcessFailure
+classify_create_process_failure(const DWORD error) noexcept {
+  switch (error) {
+    case ERROR_INVALID_PARAMETER:
+    case ERROR_BAD_LENGTH:
+      return windows::IsolatedWorkerCreateProcessFailure::invalid_parameter;
+    case ERROR_ACCESS_DENIED:
+    case ERROR_PRIVILEGE_NOT_HELD:
+      return windows::IsolatedWorkerCreateProcessFailure::
+          access_denied_or_job_nesting;
+    case ERROR_NOT_SUPPORTED:
+    case ERROR_CALL_NOT_IMPLEMENTED:
+    case ERROR_PROC_NOT_FOUND:
+      return windows::IsolatedWorkerCreateProcessFailure::unsupported_attribute;
+    case ERROR_BAD_EXE_FORMAT:
+    case ERROR_BAD_FORMAT:
+    case ERROR_INVALID_EXE_SIGNATURE:
+    case ERROR_EXE_MARKED_INVALID:
+    case ERROR_EXE_MACHINE_TYPE_MISMATCH:
+      return windows::IsolatedWorkerCreateProcessFailure::bad_image;
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:
+    case ERROR_INVALID_NAME:
+    case ERROR_FILENAME_EXCED_RANGE:
+    case ERROR_DIRECTORY:
+      return windows::IsolatedWorkerCreateProcessFailure::file_or_path;
+    default:
+      return windows::IsolatedWorkerCreateProcessFailure::other;
+  }
 }
 #endif
 [[nodiscard]] bool delete_profile_once(const std::wstring& name) noexcept {
@@ -1468,6 +1502,11 @@ namespace windows {
 IsolatedWorkerLaunchStage last_isolated_worker_launch_stage() noexcept {
   return g_last_launch_stage.load();
 }
+
+IsolatedWorkerCreateProcessFailure
+last_isolated_worker_create_process_failure() noexcept {
+  return g_last_create_process_failure.load();
+}
 }  // namespace windows
 #endif
 IsolatedWorkerBackendLaunchResult launch_isolated_worker_backend(
@@ -1476,6 +1515,8 @@ IsolatedWorkerBackendLaunchResult launch_isolated_worker_backend(
   try {
 #ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
     record_launch_stage(windows::IsolatedWorkerLaunchStage::launch_started);
+    g_last_create_process_failure.store(
+        windows::IsolatedWorkerCreateProcessFailure::none);
 #endif
     if (startup_deadline <= Clock::now()) {
       return {.backend = nullptr, .error = IsolatedWorkerError::timeout};
@@ -1628,6 +1669,12 @@ IsolatedWorkerBackendLaunchResult launch_isolated_worker_backend(
             executable.path.c_str(), command_line.data(), nullptr, nullptr, TRUE,
             creation_flags, environment.data(), executable.directory.c_str(),
             &startup.StartupInfo, &process_info);
+#ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
+        if (!process_created) {
+          g_last_create_process_failure.store(
+              classify_create_process_failure(GetLastError()));
+        }
+#endif
         // Whether creation succeeds or fails, no inheritable parent copy may
         // survive the serialized window.
         inherit_window.close_parent_copy();

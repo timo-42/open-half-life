@@ -63,9 +63,14 @@ void expect_launch(TestContext& test, const bool condition,
   if (!condition) {
     namespace native = ohl::platform::detail::windows;
     const auto stage = native::last_isolated_worker_launch_stage();
+    const auto process_failure =
+        native::last_isolated_worker_create_process_failure();
     std::cerr << "isolated worker Windows launch diagnostic: stage="
               << native::isolated_worker_launch_stage_name(stage)
               << " public_error=" << static_cast<unsigned int>(launch.error)
+              << " create_process="
+              << native::isolated_worker_create_process_failure_name(
+                     process_failure)
               << '\n';
   }
 }
