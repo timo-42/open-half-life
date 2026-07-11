@@ -9,6 +9,17 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     PRIVATE
       src/atomic_directory_store_linux.cpp
       src/atomic_directory_store_posix.cpp
+      src/media_source_posix.cpp
+  )
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+  target_sources(ohl_platform PRIVATE src/media_source_posix.cpp)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+  target_sources(ohl_platform PRIVATE src/media_source_windows.cpp)
+else()
+  target_sources(ohl_platform PRIVATE src/media_source_unsupported.cpp)
+  target_compile_definitions(
+    ohl_platform
+    PUBLIC OHL_PLATFORM_MEDIA_SOURCE_UNSUPPORTED=1
   )
 endif()
 

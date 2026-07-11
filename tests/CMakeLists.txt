@@ -30,6 +30,67 @@ if(DEFINED OHL_EXPECTED_OS AND NOT OHL_EXPECTED_OS STREQUAL "")
   )
 endif()
 
+add_executable(ohl_media_source_tests
+  platform/media_source_test.cpp
+)
+target_compile_features(ohl_media_source_tests PRIVATE cxx_std_20)
+target_link_libraries(
+  ohl_media_source_tests
+  PRIVATE
+    OpenHalfLife::platform
+    Threads::Threads
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  find_library(OHL_TEST_UTIL_LIBRARY util REQUIRED)
+  target_link_libraries(ohl_media_source_tests PRIVATE ${OHL_TEST_UTIL_LIBRARY})
+endif()
+ohl_enable_warnings(ohl_media_source_tests)
+add_test(NAME platform.media_source COMMAND ohl_media_source_tests)
+set_tests_properties(platform.media_source PROPERTIES TIMEOUT 30)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR
+   CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR
+   CMAKE_SYSTEM_NAME STREQUAL "Windows")
+  add_executable(ohl_media_source_native_security_tests
+    platform/media_source_native_security_test.cpp
+  )
+  target_compile_features(
+    ohl_media_source_native_security_tests PRIVATE cxx_std_20
+  )
+  target_include_directories(
+    ohl_media_source_native_security_tests
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/platform/include
+  )
+  ohl_enable_warnings(ohl_media_source_native_security_tests)
+  add_test(
+    NAME platform.media_source_native_security
+    COMMAND ohl_media_source_native_security_tests
+  )
+  set_tests_properties(
+    platform.media_source_native_security PROPERTIES TIMEOUT 30
+  )
+endif()
+
+add_executable(ohl_media_source_unsupported_tests
+  platform/media_source_test.cpp
+  ${PROJECT_SOURCE_DIR}/src/platform/src/media_source_unsupported.cpp
+)
+target_compile_features(ohl_media_source_unsupported_tests PRIVATE cxx_std_20)
+target_compile_definitions(
+  ohl_media_source_unsupported_tests
+  PRIVATE OHL_PLATFORM_MEDIA_SOURCE_UNSUPPORTED=1
+)
+target_include_directories(
+  ohl_media_source_unsupported_tests
+  PRIVATE ${PROJECT_SOURCE_DIR}/src/platform/include
+)
+ohl_enable_warnings(ohl_media_source_unsupported_tests)
+add_test(
+  NAME platform.media_source_unsupported
+  COMMAND ohl_media_source_unsupported_tests
+)
+set_tests_properties(platform.media_source_unsupported PROPERTIES TIMEOUT 30)
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   option(
     OHL_REQUIRE_LINUX_ATOMIC_STORE_CAPABILITIES
