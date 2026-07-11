@@ -3,7 +3,7 @@
 ## M0: bootstrap
 
 Status: accepted; feature baseline at
-`df5ea6d51037671ef0165dacac9fe26df1bf4d2b`; current hosted CI at
+`df5ea6d51037671ef0165dacac9fe26df1bf4d2b`; later historical hosted CI at
 `3fd0375c7a759b0fcd269fa73d6bdc8a36123134`
 
 - C++20 CMake/Ninja build
@@ -17,12 +17,13 @@ Hosted evidence includes Linux x64, Linux x64 with
 address/undefined-behavior sanitizers, Windows x64, macOS Apple Silicon, and a
 Linux x64 experimental-adapter build. All five required jobs pass for the
 historical package-1 through package-4 feature baseline. The same five jobs
-also pass at the current exact hosted-CI SHA above.
+also pass at the later exact hosted-CI SHA above. This is historical
+exact-SHA evidence, not evidence for every later local HEAD.
 
 ## M1: ISO detection
 
 Status: accepted; feature baseline at
-`df5ea6d51037671ef0165dacac9fe26df1bf4d2b`; current hosted CI at
+`df5ea6d51037671ef0165dacac9fe26df1bf4d2b`; later historical hosted CI at
 `3fd0375c7a759b0fcd269fa73d6bdc8a36123134`
 
 Implemented acceptance criteria:
@@ -240,11 +241,12 @@ Remaining M2 work:
   completed
 
 The package-4 run at `df5ea6d` remains the historical hosted evidence for that
-feature baseline. Current exact-SHA evidence at
+feature baseline. Later historical exact-SHA evidence at
 `3fd0375c7a759b0fcd269fa73d6bdc8a36123134` passes all five required jobs: Linux
 x64, Linux sanitizers, the Linux experimental configuration, Windows x64, and
 macOS Apple Silicon. This evidence validates implemented M2 functionality only;
-it is not evidence for the remaining production extraction path.
+it is not evidence for the remaining production extraction path or every later
+local HEAD.
 
 The later `909edcc` bridge and `0f2c78d` cancellation migration have exact-SHA
 hosted evidence from build run `29147060407` at `ca576e9`. GNU 13 Linux passed

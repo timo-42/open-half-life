@@ -25,6 +25,99 @@ New modules must expose public headers beneath `include/ohl/<module>` and keep
 implementation details in `src`. Third-party API types should not leak across
 module interfaces.
 
+## Status, policy, and repository evidence
+
+Production payload import is unavailable on every platform. This status is
+defined in [Production import readiness](IMPORT_READINESS.md), the local media
+data boundary is defined in [Media import policy](MEDIA_IMPORT.md), milestone
+scope is summarized in [Milestones](MILESTONES.md), provenance rules are in
+[Clean-room policy](CLEAN_ROOM.md), and public format sources are recorded in
+[Format sources](FORMAT_SOURCES.md).
+
+The active application is only the preflight, read-only VFS, and metadata-cache
+composition in [`src/app/main.cpp`](../src/app/main.cpp). Its executable target
+[`open-half-life`](../src/app/CMakeLists.txt) links only
+`OpenHalfLife::core`, `OpenHalfLife::media`, `OpenHalfLife::platform`, and
+`OpenHalfLife::vfs`; it does not link `OpenHalfLife::parser`,
+`OpenHalfLife::media_parser_results`, `OpenHalfLife::media_parser_reads`,
+`OpenHalfLife::media_parser_transport`,
+`OpenHalfLife::media_parser_handshake`, or
+`OpenHalfLife::media_parser_parent_session`.
+
+The implemented but disconnected parser-session chain is declared in
+[`src/media/CMakeLists.txt`](../src/media/CMakeLists.txt) and exposed through
+[`parser_result_session.hpp`](../src/media/include/ohl/media/parser_result_session.hpp),
+[`parser_source_read_broker.hpp`](../src/media/include/ohl/media/parser_source_read_broker.hpp),
+[`parser_frame_channel.hpp`](../src/media/include/ohl/media/parser_frame_channel.hpp),
+[`parser_parent_handshake.hpp`](../src/media/include/ohl/media/parser_parent_handshake.hpp),
+and
+[`parser_parent_session.hpp`](../src/media/include/ohl/media/parser_parent_session.hpp).
+Its tests are `media.parser_result_session`,
+`media.parser_source_read_broker`, `media.parser_frame_channel`,
+`media.parser_parent_handshake`, and `media.parser_parent_session` in
+[`tests/CMakeLists.txt`](../tests/CMakeLists.txt). These targets establish
+synthetic, project-authored validation of the disconnected libraries, not
+runtime import, worker launch, staging, or publication.
+
+The parser protocol itself is the `OpenHalfLife::parser` target in
+[`src/parser/CMakeLists.txt`](../src/parser/CMakeLists.txt), with public framing
+and typed message interfaces in
+[`protocol.hpp`](../src/parser/include/ohl/parser/protocol.hpp) and
+[`protocol_messages.hpp`](../src/parser/include/ohl/parser/protocol_messages.hpp).
+Protocol unit and opt-in fuzz coverage are registered as `parser.protocol` and
+`parser_protocol_fuzz_smoke` in
+[`tests/CMakeLists.txt`](../tests/CMakeLists.txt).
+
+Pinned source ownership starts at
+[`ohl::platform::open_media_source`](../src/platform/include/ohl/platform/media_source.hpp)
+and
+[`ohl::platform::MediaSource`](../src/platform/include/ohl/platform/media_source.hpp),
+then `ohl::media::validate_iso` returns
+[`ohl::media::ValidatedMedia`](../src/media/include/ohl/media/iso_inspector.hpp).
+The active app passes that same proof to
+[`ohl::vfs::UdfArchive::open`](../src/vfs/include/ohl/vfs/udf_archive.hpp) and
+[`ohl::media::prepare_import_cache`](../src/media/include/ohl/media/import_cache.hpp).
+The relevant tests are `platform.media_source`,
+`platform.media_source_native_security`, `media.iso_inspector`,
+`media.import_cache`, `vfs.udf_archive`, and `app.help`.
+
+Payload planning, streaming, staging, and atomic publication are implemented
+libraries but are not invoked by `src/app/main.cpp`. Their public surfaces are
+[`payload_path.hpp`](../src/media/include/ohl/media/payload_path.hpp),
+[`payload_layout.hpp`](../src/media/include/ohl/media/payload_layout.hpp),
+[`payload_stream.hpp`](../src/media/include/ohl/media/payload_stream.hpp),
+[`payload_stage.hpp`](../src/media/include/ohl/media/payload_stage.hpp), and
+[`atomic_directory_store.hpp`](../src/platform/include/ohl/platform/atomic_directory_store.hpp).
+Their evidence is `media.payload_path`, `media.payload_layout`,
+`media.payload_stream`, `media.payload_stage`,
+`media.payload_stage.linux_native`, and
+`platform.atomic_directory_store.linux.*` in
+[`tests/CMakeLists.txt`](../tests/CMakeLists.txt). These tests qualify the
+specific build, preflight/cache, staging, or native-store surface named by the
+test; they do not form an installed-prefix end-to-end import qualification.
+The only current `media -> vfs` edge is the default-off experimental
+InstallShield adapter: `OHL_ENABLE_EXPERIMENTAL_INSTALLSHIELD` is declared in
+[`CMakeLists.txt`](../CMakeLists.txt), and
+[`src/media/CMakeLists.txt`](../src/media/CMakeLists.txt) adds
+`src/installshield_cabinet.cpp`, `OpenHalfLife::vfs`, and `ThirdParty::unshield`
+only when that option is enabled.
+
+The abstract isolated-worker lifecycle is
+[`ohl::platform::IsolatedWorker`](../src/platform/include/ohl/platform/isolated_worker.hpp)
+and
+[`ohl::platform::launch_isolated_worker`](../src/platform/include/ohl/platform/isolated_worker.hpp).
+[`src/platform/CMakeLists.txt`](../src/platform/CMakeLists.txt) source-selects
+the Linux x86-64 native backend through
+[`src/platform/cmake/IsolatedWorkerLinux.cmake`](../src/platform/cmake/IsolatedWorkerLinux.cmake)
+and selects
+[`isolated_worker_unsupported.cpp`](../src/platform/src/isolated_worker_unsupported.cpp)
+elsewhere. Linux synthetic containment tests are registered from
+[`tests/platform/isolated_worker/linux.cmake`](../tests/platform/isolated_worker/linux.cmake)
+as `platform.isolated_worker.linux`; common facade tests are
+`platform.isolated_worker.common`. No parser-worker executable target, service
+loop, install rule, app selection policy, or end-to-end worker import path is
+declared in CMake.
+
 The current dependency direction is:
 
 ```text
@@ -526,8 +619,9 @@ allowing nested containers to be investigated without copying them out of the
 image or borrowing the caller's lifetime. Its bounded adapter output reports
 invalid descriptors rather than silently omitting them. This integration is
 not production extraction: the parser remains default-off and must run behind
-the constrained worker protocol in `MEDIA_IMPORT.md` before it may supply
-production import data.
+the constrained worker protocol in
+[MEDIA_IMPORT.md](MEDIA_IMPORT.md#parser-worker-isolation) before it may
+supply production import data.
 
 ## Media import planning and staging
 
@@ -613,35 +707,47 @@ composition root.
 ## Hosted qualification
 
 The accepted package-1 through package-4 state at
-`df5ea6d51037671ef0165dacac9fe26df1bf4d2b` is current in hosted CI. The
-required jobs pass on Linux x64, Linux x64 with address/undefined-behavior
-sanitizers, Linux x64 with the experimental adapter enabled, Windows x64, and
-macOS Apple Silicon. This evidence qualifies the implemented capability,
-validation, cache, VFS, and application-composition behavior described above;
-it does not qualify the absent production extraction path.
+[`df5ea6d51037671ef0165dacac9fe26df1bf4d2b`](https://github.com/timo-42/open-half-life/commit/df5ea6d51037671ef0165dacac9fe26df1bf4d2b)
+has historical hosted CI evidence. The required jobs passed on Linux x64,
+Linux x64 with address/undefined-behavior sanitizers, Linux x64 with the
+experimental adapter enabled, Windows x64, and macOS Apple Silicon. This
+evidence qualifies the implemented capability, validation, cache, VFS, and
+application-composition behavior for that exact baseline; it does not qualify
+the absent production extraction path or later disconnected worker/session
+capabilities.
 
-The later trusted-result bridge at `909edcc` and media cancellation migration
-at `0f2c78d` are covered by exact-SHA hosted build run `29147060407` at
-`ca576e9`. GNU 13 Linux passed all 32 tests, including the bridge; the
-experimental and sanitizer jobs passed; and Windows passed. AppleClang 17 on
-macOS passed all 22 tests, including `media.cancellation` and the bridge. This
-confirms the common cancellation portability correction and disconnected
-result-validation target on the required hosted platforms; it does not qualify
-a native worker, source broker, staging composition, macOS atomic store, or
-runtime import path. Because the tests-only `ca576e9` change did not trigger
-the parser-fuzz workflow, the accepted hosted fuzz evidence for the typed
-protocol at that point remained the earlier `ba84cfc` run.
+The later trusted-result bridge at
+[`909edcc`](https://github.com/timo-42/open-half-life/commit/909edcc)
+and media cancellation migration at
+[`0f2c78d`](https://github.com/timo-42/open-half-life/commit/0f2c78d)
+are covered by exact-SHA hosted build run
+[`29147060407`](https://github.com/timo-42/open-half-life/actions/runs/29147060407)
+at
+[`ca576e9`](https://github.com/timo-42/open-half-life/commit/ca576e9).
+GNU 13 Linux passed all 32 tests, including the bridge; the experimental and
+sanitizer jobs passed; and Windows passed. AppleClang 17 on macOS passed all
+22 tests, including `media.cancellation` and the bridge. This confirms the
+common cancellation portability correction and disconnected result-validation
+target on the required hosted platforms; it does not qualify a native worker,
+source broker, staging composition, macOS atomic store, or runtime import path.
+Because the tests-only `ca576e9` change did not trigger the parser-fuzz
+workflow, the accepted hosted fuzz evidence for the typed protocol at that
+point remained the earlier `ba84cfc` run.
 
 The trusted source-read broker was accepted and pushed at
-`c90f2d1a7cbabdb90b688197d2d34ceb48526aeb`. The full local CTest suite passed
-33/33, including synthetic sequence, budget, stability, failure, cancellation,
-ticket, buffer, and capability-lifetime coverage. Exact-commit hosted build run
-`29148133002` also passed Linux x64, sanitizers, the experimental cabinet
-adapter, Windows x64, and macOS Apple Silicon; this is the cross-platform broker
-evidence. Fuzz run `29148132997` separately passed Clang 18/libFuzzer for the
-typed protocol only and did not build or fuzz the broker. The build evidence
-qualifies the disconnected broker on the tested hosts, not a worker, transport,
-runtime import path, staging, or publication.
+[`c90f2d1a7cbabdb90b688197d2d34ceb48526aeb`](https://github.com/timo-42/open-half-life/commit/c90f2d1a7cbabdb90b688197d2d34ceb48526aeb).
+The full local CTest suite passed 33/33, including synthetic sequence, budget,
+stability, failure, cancellation, ticket, buffer, and capability-lifetime
+coverage. Exact-commit hosted build run
+[`29148133002`](https://github.com/timo-42/open-half-life/actions/runs/29148133002)
+also passed Linux x64, sanitizers, the experimental cabinet adapter, Windows
+x64, and macOS Apple Silicon; this is the cross-platform broker evidence. Fuzz
+run
+[`29148132997`](https://github.com/timo-42/open-half-life/actions/runs/29148132997)
+separately passed Clang 18/libFuzzer for the typed protocol only and did not
+build or fuzz the broker. The build evidence qualifies the disconnected broker
+on the tested hosts, not a worker, transport, runtime import path, staging, or
+publication.
 
 ## Local parser transport and parent-session qualification
 
