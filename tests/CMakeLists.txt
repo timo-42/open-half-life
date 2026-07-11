@@ -29,6 +29,121 @@ target_compile_features(ohl_parser_fuzz_entry PRIVATE cxx_std_20)
 target_link_libraries(ohl_parser_fuzz_entry PRIVATE OpenHalfLife::parser)
 ohl_enable_warnings(ohl_parser_fuzz_entry)
 
+if(OHL_BUILD_FUZZERS)
+  include(CheckCXXSourceCompiles)
+
+  function(ohl_find_libfuzzer_flag output_variable)
+    set(ohl_libfuzzer_probe [=[
+      #include <cstddef>
+      #include <cstdint>
+
+      extern "C" int LLVMFuzzerTestOneInput(
+          const std::uint8_t*, std::size_t) {
+        return 0;
+      }
+    ]=])
+    set(CMAKE_TRY_COMPILE_TARGET_TYPE EXECUTABLE)
+
+    set(CMAKE_REQUIRED_FLAGS "-fsanitize=fuzzer")
+    set(CMAKE_REQUIRED_LINK_OPTIONS "-fsanitize=fuzzer")
+    check_cxx_source_compiles(
+      "${ohl_libfuzzer_probe}"
+      OHL_LIBFUZZER_DASH_FLAG_LINKS
+    )
+    if(OHL_LIBFUZZER_DASH_FLAG_LINKS)
+      set(${output_variable} "-fsanitize=fuzzer" PARENT_SCOPE)
+      return()
+    endif()
+
+    set(CMAKE_REQUIRED_FLAGS "/fsanitize=fuzzer")
+    set(CMAKE_REQUIRED_LINK_OPTIONS "/fsanitize=fuzzer")
+    check_cxx_source_compiles(
+      "${ohl_libfuzzer_probe}"
+      OHL_LIBFUZZER_SLASH_FLAG_LINKS
+    )
+    if(OHL_LIBFUZZER_SLASH_FLAG_LINKS)
+      set(${output_variable} "/fsanitize=fuzzer" PARENT_SCOPE)
+      return()
+    endif()
+
+    set(${output_variable} "" PARENT_SCOPE)
+  endfunction()
+
+  ohl_find_libfuzzer_flag(ohl_libfuzzer_flag)
+  if(ohl_libfuzzer_flag STREQUAL "")
+    message(
+      FATAL_ERROR
+      "OHL_BUILD_FUZZERS=ON requires a compiler and runtime that can "
+      "compile and link libFuzzer. Neither -fsanitize=fuzzer nor "
+      "/fsanitize=fuzzer linked an LLVMFuzzerTestOneInput probe."
+    )
+  endif()
+
+  add_library(ohl_parser_fuzzer_parser STATIC
+    ${PROJECT_SOURCE_DIR}/src/parser/src/protocol.cpp
+    ${PROJECT_SOURCE_DIR}/src/parser/src/protocol_messages.cpp
+  )
+  target_compile_features(ohl_parser_fuzzer_parser PUBLIC cxx_std_20)
+  target_include_directories(
+    ohl_parser_fuzzer_parser
+    PUBLIC ${PROJECT_SOURCE_DIR}/src/parser/include
+  )
+  target_compile_options(
+    ohl_parser_fuzzer_parser PRIVATE ${ohl_libfuzzer_flag}
+  )
+  ohl_enable_warnings(ohl_parser_fuzzer_parser)
+
+  add_executable(ohl_parser_protocol_fuzzer
+    parser/protocol_fuzz.cpp
+  )
+  target_compile_features(ohl_parser_protocol_fuzzer PRIVATE cxx_std_20)
+  target_link_libraries(
+    ohl_parser_protocol_fuzzer PRIVATE ohl_parser_fuzzer_parser
+  )
+  target_compile_options(
+    ohl_parser_protocol_fuzzer PRIVATE ${ohl_libfuzzer_flag}
+  )
+  target_link_options(
+    ohl_parser_protocol_fuzzer PRIVATE ${ohl_libfuzzer_flag}
+  )
+  ohl_enable_warnings(ohl_parser_protocol_fuzzer)
+
+  set(
+    ohl_parser_fuzz_corpus
+    enumerate_complete.txt
+    enumerate_crossed_cancel.txt
+    stream_cancel.txt
+    stream_crossed_complete.txt
+  )
+  set(
+    ohl_parser_fuzz_corpus_dir
+    ${CMAKE_CURRENT_BINARY_DIR}/parser_protocol_fuzz_corpus
+  )
+  file(MAKE_DIRECTORY "${ohl_parser_fuzz_corpus_dir}")
+  set(ohl_parser_fuzz_seed_paths)
+  foreach(seed IN LISTS ohl_parser_fuzz_corpus)
+    set(
+      ohl_parser_fuzz_seed_path
+      "${ohl_parser_fuzz_corpus_dir}/${seed}"
+    )
+    configure_file(
+      "${CMAKE_CURRENT_SOURCE_DIR}/parser/corpus/${seed}"
+      "${ohl_parser_fuzz_seed_path}"
+      COPYONLY
+    )
+    list(APPEND ohl_parser_fuzz_seed_paths "${ohl_parser_fuzz_seed_path}")
+  endforeach()
+  add_test(
+    NAME parser_protocol_fuzz_smoke
+    COMMAND
+      ohl_parser_protocol_fuzzer
+      -seed=1
+      -max_len=8192
+      ${ohl_parser_fuzz_seed_paths}
+  )
+  set_tests_properties(parser_protocol_fuzz_smoke PROPERTIES TIMEOUT 30)
+endif()
+
 add_executable(ohl_platform_tests
   platform/platform_test.cpp
 )

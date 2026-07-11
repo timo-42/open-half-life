@@ -1,0 +1,116 @@
+name: Parser fuzz smoke
+
+on:
+  push:
+    paths:
+      - .github/workflows/fuzz.yml
+      - CMakeLists.txt
+      - cmake/**
+      - src/parser/**
+      - tests/CMakeLists.txt
+      - tests/parser/**
+  pull_request:
+    paths:
+      - .github/workflows/fuzz.yml
+      - CMakeLists.txt
+      - cmake/**
+      - src/parser/**
+      - tests/CMakeLists.txt
+      - tests/parser/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parser-fuzz-smoke:
+    name: Linux x64 Clang 18/libFuzzer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check repository policy
+        run: cmake -P cmake/CheckRepository.cmake
+
+      - name: Verify hosted libFuzzer toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang-18 --version
+          clang++-18 --version
+          resource_dir="$(clang++-18 -print-resource-dir)"
+          runtime="$(find "${resource_dir}/lib/linux" -maxdepth 1 \
+            -name 'libclang_rt.fuzzer-*.a' -print -quit)"
+          test -n "${runtime}"
+          printf 'libFuzzer runtime: %s\n' "${runtime}"
+
+      - name: Configure fuzz target
+        run: >-
+          cmake -S . -B build-fuzz -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_C_COMPILER=clang-18
+          -DCMAKE_CXX_COMPILER=clang++-18
+          -DOHL_BUILD_FUZZERS=ON
+          -DOHL_WARNINGS_AS_ERRORS=ON
+
+      - name: Build fuzz target with command evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build-fuzz \
+            --target ohl_parser_protocol_fuzzer --verbose
+          ninja -C build-fuzz -t commands ohl_parser_protocol_fuzzer
+
+      - name: Replay fixed seeds twice without mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          seed_dir="build-fuzz/tests/parser_protocol_fuzz_corpus"
+          seeds=(
+            enumerate_complete.txt
+            enumerate_crossed_cancel.txt
+            stream_cancel.txt
+            stream_crossed_complete.txt
+          )
+          expected_names="${RUNNER_TEMP}/parser-fuzz-expected.names"
+          source_hashes="${RUNNER_TEMP}/parser-fuzz-source.sha256"
+          printf '%s\n' "${seeds[@]}" > "${expected_names}"
+          (
+            cd tests/parser/corpus
+            sha256sum "${seeds[@]}"
+          ) | tee "${source_hashes}"
+
+          capture_seed_state() {
+            local stage="$1"
+            local names="${RUNNER_TEMP}/parser-fuzz-${stage}.names"
+            local hashes="${RUNNER_TEMP}/parser-fuzz-${stage}.sha256"
+            find "${seed_dir}" -mindepth 1 -maxdepth 1 -printf '%f\n' \
+              | sort > "${names}"
+            diff -u "${expected_names}" "${names}"
+            (
+              cd "${seed_dir}"
+              sha256sum "${seeds[@]}"
+            ) | tee "${hashes}"
+          }
+
+          capture_seed_state before
+          diff -u \
+            "${source_hashes}" \
+            "${RUNNER_TEMP}/parser-fuzz-before.sha256"
+          ctest --test-dir build-fuzz \
+            -R '^parser_protocol_fuzz_smoke$' \
+            --no-tests=error --output-on-failure
+          capture_seed_state after-first
+          diff -u \
+            "${RUNNER_TEMP}/parser-fuzz-before.sha256" \
+            "${RUNNER_TEMP}/parser-fuzz-after-first.sha256"
+
+          ctest --test-dir build-fuzz \
+            -R '^parser_protocol_fuzz_smoke$' \
+            --no-tests=error --output-on-failure
+          capture_seed_state after-second
+          diff -u \
+            "${RUNNER_TEMP}/parser-fuzz-before.sha256" \
+            "${RUNNER_TEMP}/parser-fuzz-after-second.sha256"

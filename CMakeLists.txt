@@ -9,6 +9,11 @@ project(
 
 option(OHL_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 option(
+  OHL_BUILD_FUZZERS
+  "Build opt-in libFuzzer targets"
+  OFF
+)
+option(
   OHL_ENABLE_EXPERIMENTAL_INSTALLSHIELD
   "Build the unaudited InstallShield cabinet adapter"
   OFF
