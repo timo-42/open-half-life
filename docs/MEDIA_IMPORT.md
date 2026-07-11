@@ -278,9 +278,11 @@ retains the exact shared, pinned source capability from a valid
 `ValidatedMedia`. Source size comes from its validated fingerprint and is
 checked against the retained capability. `maximum_read_bytes` is trusted
 constructor configuration that must exactly equal the accepted typed `hello`
-value; the broker cannot verify that handshake binding, and native runtime
-composition must preserve it. The broker accepts no raw path or substitute
-source. Typed request decoding occurs before session observation. The broker,
+value; the broker alone cannot verify that binding. The accepted parent
+handshake below records the source-size and maximum-read values, not media
+identity. Trusted later composition must use its exact limits and the same
+`ValidatedMedia`. The broker accepts no raw path or substitute source. Typed
+request decoding occurs before session observation. The broker,
 not the worker, owns per-request read sequencing, resets sequencing for a new
 top-level request, and applies request and cumulative reply-byte budgets before
 touching the source.
@@ -361,6 +363,61 @@ evidence at
 of 83/83 steps, full CTest at 34/34, 50 consecutive frame-channel and repository
 policy passes, and the platform common-worker test at 1/1. No hosted result is
 claimed for this commit.
+
+Commit `13f0fb0` adds the disconnected
+`OpenHalfLife::media_parser_handshake` library above the source-read broker and
+frame transport, its only direct dependencies. It borrows exclusive access to
+a fresh channel plus the `ValidatedMedia` and receive storage for one
+synchronous parent handshake.
+Source-read limits, protocol budgets, and deadline are copied values; the
+copied cancellation token shares its source's state. No runtime target links
+the library. Before I/O it rejects a terminal channel, invalid
+or moved-from `ValidatedMedia`, a missing source, mismatch between the pinned
+captured size and fingerprint, invalid source-read limits or protocol budgets,
+budgets below two messages or 12 payload bytes, insufficient receive storage,
+and an invalid derived policy or validator. A rejected nonterminal
+configuration performs no channel I/O or abort and returns no proof.
+
+The borrowed `ValidatedMedia` temporarily gives the handshake its pinned source
+capability only so it can query the captured size. The handshake reads no source
+bytes, and neither it nor the returned proof retains or grants that capability.
+
+The canonical parent `hello` uses the channel's nonzero session and request
+zero. Its exact 12-byte payload contains the fingerprint source size as a
+little-endian `u64` and the trusted `maximum_read_bytes` as a little-endian
+`u32`. The sent header is observed only after the exact header and payload have
+been accepted by the channel. The worker response must decode as an exact-empty
+typed `ready`; its header is observed only after that typed validation. Both
+channel calls receive the same deadline and cancellation token unchanged.
+
+Success returns a move-only, single-consumption proof holding an exactly idle
+validator charged for two messages and 12 payload bytes, the exact source-read
+limits, and the derived source policy. Taking the validator invalidates both
+the proof and its containing result. Later trusted composition must move it into
+a `ParserResultSession` and construct the `ParserSourceReadBroker` from the same
+`ValidatedMedia` and exact limits, preserving the source-size and maximum-read
+binding. The proof retains copies of the limits and derived policy, not media
+identity, so it does not mechanically prove same-media use; that remains a
+trusted composition requirement.
+
+The caller's maximum-sized receive storage is not scrubbed, and no frame or
+payload view escapes the result. Payload I/O or typed-ready failure may leave
+an attacker-controlled partial or full prefix followed by stale prior bytes;
+the whole buffer is invalid as a frame until reinitialized. A protocol or
+channel failure after interaction returns no proof and terminally aborts the
+channel. The frame channel preserves the first failure, sanitizes impossible
+exact-I/O reports, and performs no later I/O.
+
+This handshake accepts no source path, reads no source bytes, and neither it nor
+the proof retains or grants the temporarily borrowed pinned-source capability
+after the call; it has no worker or process launch, process ownership,
+termination, reap, component-selection, staging, destination, publication,
+cache, runtime-import, or application authority. It
+does not create or own a worker and does not perform downstream session/broker,
+selection, staging, publication, or app composition. The accepted commit is
+`13f0fb08e7d00159000f3721ebe0b0e1b1481188`; local validation passed a clean
+warnings-as-errors build at 87/87 and the full CTest suite at 35/35. No hosted
+result is claimed for `13f0fb0`.
 
 The earlier exact-SHA hosted build run `29147060407` at `ca576e9`, covering the
 trusted result bridge and media cancellation migration, passed all 32 GNU 13

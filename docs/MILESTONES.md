@@ -52,7 +52,8 @@ planning/staging, VFS, and application-composition feature baseline at
 `df5ea6d51037671ef0165dacac9fe26df1bf4d2b`. Disconnected parser-result
 validation was accepted at `909edcc`, followed by portable media cancellation
 accepted at `0f2c78d`, trusted parser source reads at `c90f2d1`, and the
-disconnected frame channel at `e4b819a`.
+disconnected frame channel at `e4b819a`. The trusted parent handshake was
+accepted at `13f0fb0`.
 
 Current functionality:
 
@@ -149,8 +150,10 @@ Current functionality:
   the trusted result/session stack. It retains the exact pinned source from
   `ValidatedMedia`; source size comes from the validated fingerprint, while
   `maximum_read_bytes` is trusted constructor configuration that must exactly
-  match the accepted typed `hello`. The broker cannot verify that binding, so
-  native composition must preserve it. It validates typed read requests, owns
+  match the accepted typed `hello`. The broker alone cannot verify that binding;
+  the accepted handshake proof records the values, not media identity, for
+  trusted same-media, exact-limit composition. It validates typed read requests,
+  owns
   sequence and request/reply-byte budgets, verifies stability before and after
   bounded reads, emits canonical success or prefix-only failure replies, scrubs
   scratch storage, and advances only when a unique prepared ticket is committed
@@ -168,6 +171,18 @@ Current functionality:
   duplicate directions are rejected. Protocol or transport failure terminally
   retains the first sanitized cause, calls byte-channel `abort_io()` once, and
   prevents later I/O
+- the disconnected `OpenHalfLife::media_parser_handshake` target depends only
+  on the source-read broker and frame transport. It validates the media proof,
+  exact source-read limits, minimum protocol budgets, maximum receive storage,
+  and channel state before I/O; sends the canonical 12-byte `hello` before
+  observing it; then decodes an exact-empty `ready` before observing that
+  header. The same deadline and cancellation token reach both channel calls.
+  Success returns a move-only, single-consumption proof containing an idle
+  validator charged for exactly two messages and 12 payload bytes plus the
+  exact limits and derived source policy. Failed receive storage is unsanitized
+  and wholly invalid as a frame; failures after interaction return no proof,
+  terminally abort and permit no later I/O; impossible exact-I/O reports are
+  sanitized and the first channel cause is retained
 
 Remaining M2 work:
 
@@ -177,10 +192,11 @@ Remaining M2 work:
   format provenance
 - the constrained parser worker boundary in `MEDIA_IMPORT.md` remains
   mandatory before any third-party parser may feed production extraction. The
-  accepted result bridge, source-read broker, and frame channel still need
-  native isolated-worker launch, ownership, termination, and reap plus explicit
-  runtime composition, deterministic component selection, and staging
-  integration; the worker must have no raw-path, destination, or cache authority
+  accepted result bridge, source-read broker, frame channel, and parent
+  handshake still need native isolated-worker launch, ownership, termination,
+  and reap plus explicit runtime composition, deterministic component
+  selection, and staging integration; the worker must have no raw-path,
+  destination, or cache authority
 - production payload extraction remains absent and must not execute installer
   binaries or media-provided code
 - macOS and Windows atomic-directory stores and native adversarial gates,
@@ -222,6 +238,16 @@ operation table, exact header/payload transfers, validation ordering, session
 binding, caller buffer/view lifetimes, concurrency, terminal poisoning,
 sanitized transfer errors, and abort wakeup. No hosted result is claimed for
 this commit.
+
+The trusted parent handshake was accepted and pushed at
+`13f0fb08e7d00159000f3721ebe0b0e1b1481188`. Its local clean
+warnings-as-errors build passed 87/87 steps and the full local CTest suite
+passed 35/35. Synthetic evidence covers independent hello/header bytes,
+exact-empty ready, observation order, deadline/token identity, exact policy and
+limits, proof moves and single extraction, downstream session/broker
+construction, every public pre-I/O rejection class, caller-buffer invalidation,
+sanitized terminal failure, one abort, and no escaped proof or view. No hosted
+result is claimed for `13f0fb0`.
 
 The accepted isolated parser protocol sequence starts with the bounded OWP/1
 codec at `3bc135c`, adds completion/cancellation race handling at `f17a40a`,
@@ -311,8 +337,10 @@ Commit `c90f2d1` adds the disconnected trusted parser source-read broker. It
 depends only through `OpenHalfLife::media_parser_results`, retains the exact
 pinned capability from `ValidatedMedia`, and obtains source size from that
 proof's fingerprint. Its `maximum_read_bytes` is trusted constructor input that
-must exactly match the accepted typed `hello`; the broker cannot verify that
-binding, so native composition must preserve it. It owns canonical request
+must exactly match the accepted typed `hello`; the broker alone cannot verify
+that binding. The accepted parent-handshake proof records the values, not media
+identity; trusted later composition must use the same media and exact limits.
+It owns canonical request
 sequencing and independent request/reply-byte budgets. For a serviceable request
 it verifies stability, performs one bounded read, verifies again, encodes an
 exact success or prefix-only `source_changed`/`source_read_failed` reply, and
@@ -347,6 +375,40 @@ I/O. This abort is not process termination or reap authority. Trusted custom
 callbacks retain ambient process authority; limiting suppliers is composition
 policy, not mechanical confinement.
 
+Commit `13f0fb0` adds the disconnected trusted parent handshake, depending
+directly only on the source-read broker and frame channel. It first validates
+the borrowed fresh channel and `ValidatedMedia`, captured source-size
+agreement, exact copied source-read limits, copied protocol budgets of at least
+two messages and 12 payload bytes, protocol-maximum capacity of the borrowed
+receive storage, derived source policy, and validator configuration. The
+deadline is copied, and the copied cancellation token shares its source's
+state. Nonterminal pre-I/O rejection performs no channel I/O or abort and
+returns no proof. Through the borrowed media, the handshake temporarily
+receives the pinned source capability only to query captured size; it reads no
+source bytes, and neither the handshake nor proof retains or grants that
+capability.
+
+The parent then sends one canonical `hello` for the channel session and request
+zero. Its exact 12-byte payload binds the validated fingerprint size and trusted
+maximum read. Only after complete transport acceptance does the validator
+observe the outgoing header. The received frame must decode as exact-empty
+typed `ready` before its header is observed. Both operations receive the same
+deadline and cancellation token. Success proves an idle validator with exactly
+two messages and 12 payload bytes charged, alongside the exact limits and
+derived source policy. The proof is move-only and transfers its validator once;
+taking it invalidates the proof and result.
+
+Later trusted composition must move that validator into the result session and
+construct the source-read broker from the same media proof and limits. The
+proof retains copies of the limits and policy but no media identity, so it does
+not mechanically prove same-media use; that is a trusted composition
+requirement. The handshake's receive buffer is not scrubbed: after payload I/O
+or typed-ready
+failure it may hold an attacker-controlled prefix and stale suffix, and the
+whole buffer remains invalid as a frame until reinitialized. Interaction
+failures return no proof, terminally abort the channel, retain a sanitized first
+cause, and allow no later I/O or escaped frame/payload view.
+
 The ordering contract permits exactly one same-request late reply to drain
 after `cancel_ack` only when a read was already outstanding before cancellation.
 The deterministic fuzz target exercises frame decoding, generic payload
@@ -368,18 +430,23 @@ was separate from run `29147060407`. The later exact `c90f2d1` fuzz run
 the source-read broker. Cross-platform broker evidence comes from build run
 `29148133002` above.
 
-This accepted protocol, result-validation, source-read, and disconnected frame
-transport stack supports active M2 work but is not a production import path.
+This accepted protocol, result-validation, source-read, disconnected frame
+transport, and parent-handshake stack supports active M2 work but is not a
+production import path.
 The result bridge owns
 catalog generation, promotion, membership, layout, stream remainder, and
 retirement; the read broker owns bounded reads from the retained pinned
 capability and their prepare/commit ordering; the frame channel owns only
-bounded framing over a caller-supplied byte capability. No runtime target links
-these libraries. The frame channel does not launch or own a worker, sandbox,
+bounded framing over a caller-supplied byte capability; the handshake proves
+only the typed transition and exact broker policy binding. No runtime target
+links these libraries. The frame channel and handshake do not launch or own a
+worker or sandbox, accept a source path, read source bytes, select a component,
+stage or publish data, or grant runtime/application authority. They have no
+process termination or reap authority. The frame channel also accepts no
 executable, path, source, component selection, catalog, staging, destination,
-publication, cache, or application, and has no process termination or reap
-authority; the result and read bridges also create no worker or runtime import
-path and own no staging or publication. Native isolated-worker process
+publication, cache, or application authority; the result and read bridges also
+create no worker or runtime import path and own no staging or publication.
+Native isolated-worker process
 management and runtime composition remain a later dependency. This work
 authorizes no proprietary extraction.
 

@@ -33,6 +33,7 @@ media -> platform + standard library; core is a private implementation edge
 media_parser_results -> media + parser; disconnected from runtime targets
 media_parser_reads -> media_parser_results; disconnected from runtime targets
 media_parser_transport -> parser + platform + Threads; disconnected from runtime targets
+media_parser_handshake -> media_parser_reads + media_parser_transport; disconnected from runtime targets
 vfs -> platform + standard library; libudfread is a private implementation edge
 parser -> standard library
 core/platform -> standard library
@@ -156,8 +157,10 @@ pinned `MediaSource` capability carried by a valid `ValidatedMedia`; source
 size comes from that proof's fingerprint and is checked against the retained
 capability. `maximum_read_bytes` is separate trusted constructor configuration
 and must exactly match the value in the accepted typed `hello`. The broker
-cannot verify that handshake binding, so native runtime composition must
-preserve it. The broker accepts no path or replacement source. Each
+alone cannot verify that handshake binding. The accepted parent-handshake proof
+below records the source-size and maximum-read values, not media identity.
+Trusted later composition must use that proof's exact limits and the same
+`ValidatedMedia`. The broker accepts no path or replacement source. Each
 `read_request` is decoded through the typed schema before session observation.
 It owns the first/subsequent sequence for each request identifier, resets it for
 a new request, and enforces independent request-count and cumulative
@@ -245,6 +248,65 @@ component-selection, catalog, destination, staging, publication, cache,
 application, or runtime-import authority. Native isolated-worker process
 management plus composition with the result bridge, source-read broker,
 selection policy, staging, and the application remain a later dependency.
+
+Commit `13f0fb0` adds the disconnected
+`OpenHalfLife::media_parser_handshake` library. Its direct dependencies are
+`OpenHalfLife::media_parser_reads` and
+`OpenHalfLife::media_parser_transport`; no runtime target links it. The caller
+gives it exclusive access to a fresh frame channel for one synchronous parent
+`hello` / worker `ready` exchange. The channel, `ValidatedMedia`, and receive
+storage are borrowed for the call. Source-read limits, protocol budgets, and
+deadline are copied values; the copied cancellation token shares its source's
+state.
+
+Through the borrowed `ValidatedMedia`, the handshake temporarily receives its
+pinned source capability only to query the source's captured size. It does not
+read source bytes, and neither the handshake nor its proof retains or grants
+that capability.
+
+Before any handshake I/O, the function rejects a terminal channel, invalid or
+moved-from media, a missing pinned source, disagreement between the pinned
+source's captured size and the validated fingerprint, invalid source-read
+limits or protocol budgets, budgets below two messages or 12 payload bytes,
+receive storage smaller than the protocol maximum, and invalid derived source
+policy or validator configuration. These pre-I/O failures return no proof and
+do not abort or otherwise use a nonterminal channel.
+
+The parent sends a canonical `hello` with request zero and the frame channel's
+nonzero session. Its exact 12-byte payload binds the validated fingerprint's
+source size as a little-endian `u64` and the trusted
+`maximum_read_bytes` limit as a little-endian `u32`. Only after the complete
+frame send succeeds does the handshake observe that parent-to-worker header in
+its validator. It then receives a frame, decodes an exact-empty typed `ready`,
+and only after typed acceptance observes the worker-to-parent header. The same
+caller deadline and cancellation token are passed unchanged to both channel
+calls.
+
+Success requires the validator to be exactly idle with two messages and 12
+payload bytes charged. The returned proof is move-only and single-consumption:
+it retains that validator plus the exact source-read limits and derived source
+policy, and `take_protocol()` invalidates the proof and its containing result.
+Later trusted composition must move that validator into a
+`ParserResultSession`, then create the `ParserSourceReadBroker` from the same
+`ValidatedMedia` and exact limits. The proof retains copies of the limits and
+derived policy, but no media identity: it does not mechanically prove that the
+later broker receives the same media. That is a trusted composition
+requirement. The proof itself owns no source or process capability.
+
+Receive storage is never scrubbed and no frame or payload view escapes. Once
+payload I/O begins, or if typed-ready validation fails, an attacker-controlled
+partial or full prefix may be followed by stale prior bytes. The entire buffer
+is untrusted and invalid as a frame until the caller reinitializes it. A
+protocol or channel failure after interaction returns no proof and terminally
+aborts the channel; the channel retains its first cause, sanitizes impossible
+exact-I/O reports, and permits no later I/O.
+
+The handshake accepts no source path and grants no source-byte, process launch,
+process ownership, termination, reap, component-selection, staging,
+publication, cache, runtime-import, or application authority. It neither
+creates a worker nor composes the downstream session, broker, selection,
+staging, or application. Those remain explicit responsibilities of later
+trusted native composition.
 
 Deterministic parser fuzz validation was accepted at `81a7ee9`; its typed
 dispatch was extended at `d59b6c5`, for `stream_entry` at `f4d908a`, for
@@ -461,7 +523,7 @@ typed protocol only and did not build or fuzz the broker. The build evidence
 qualifies the disconnected broker on the tested hosts, not a worker, transport,
 runtime import path, staging, or publication.
 
-## Local parser transport qualification
+## Local parser transport and parent-handshake qualification
 
 The accepted frame-channel commit is
 `e4b819a9efa37d5e401d111c4ac591365ce669ae`. Local validation completed a clean
@@ -473,6 +535,16 @@ ordering, caller storage and view lifetimes, malformed exact-I/O reports,
 sticky first-failure poisoning, cancellation and peer closure at header and
 payload stages, same-direction exclusion, duplex progress, and abort wakeup.
 These are local results only; no hosted result is claimed for `e4b819a` here.
+
+The trusted parent handshake was accepted at
+`13f0fb08e7d00159000f3721ebe0b0e1b1481188`. Local validation completed a clean
+warnings-as-errors build with 87/87 steps and the full CTest suite at 35/35.
+Synthetic tests independently verify canonical hello/header bytes, exact-empty
+ready, ordering, exact limits and policy, proof movement and consumption,
+downstream session/broker construction, pre-I/O rejection, unsanitized buffer
+invalidation, sanitized terminal transport failures, and absence of escaped
+views or proofs on failure. These are local results only; no hosted result is
+claimed for `13f0fb0`.
 
 The intended gameplay/rendering graph remains under design. Each new edge must
 be expressed explicitly with `target_link_libraries` so CMake remains the
