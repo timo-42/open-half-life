@@ -268,6 +268,15 @@ struct ProtocolBudgets {
   }
 };
 
+// Completion has deterministic priority when complete and cancel cross in the
+// duplex transport. A complete observed while cancelling finishes normally;
+// one same-request cancel observed immediately after complete is stale and is
+// consumed without cancel_ack. Starting another request closes that race
+// window. cancel_ack remains terminal only when it arrives before complete.
+// While cancellation is pending, only same-request traffic can cross. A reply
+// may resolve a read that was already outstanding at cancellation, after which
+// result and completion frames may finish normally. A read request first seen
+// after cancellation cannot be serviced and requires cancel_ack termination.
 class ProtocolStateValidator final {
  public:
   explicit ProtocolStateValidator(
@@ -296,6 +305,7 @@ class ProtocolStateValidator final {
   [[nodiscard]] ProtocolError observe_active(
       MessageDirection direction, const FrameHeader& header,
       MessageType result_type) noexcept;
+  void complete_request(bool accept_late_cancel) noexcept;
 
   std::uint64_t session_id_{0};
   ProtocolBudgets budgets_;
@@ -303,9 +313,13 @@ class ProtocolStateValidator final {
   ProtocolError error_{ProtocolError::none};
   std::uint64_t active_request_id_{0};
   std::uint64_t last_request_id_{0};
+  std::uint64_t completed_request_id_{0};
   std::uint64_t message_count_{0};
   std::uint64_t payload_bytes_{0};
+  MessageType active_result_type_{MessageType::complete};
   bool read_in_flight_{false};
+  bool accept_late_cancel_{false};
+  bool crossed_read_request_seen_{false};
 };
 
 }  // namespace ohl::parser

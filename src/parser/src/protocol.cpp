@@ -515,9 +515,25 @@ ProtocolError ProtocolStateValidator::begin_request(
   }
   last_request_id_ = header.request_id;
   active_request_id_ = header.request_id;
+  completed_request_id_ = 0;
+  accept_late_cancel_ = false;
   read_in_flight_ = false;
+  crossed_read_request_seen_ = false;
+  active_result_type_ = state == SessionState::enumerating
+                            ? MessageType::entry_batch
+                            : MessageType::data_chunk;
   state_ = state;
   return ProtocolError::none;
+}
+
+void ProtocolStateValidator::complete_request(
+    const bool accept_late_cancel) noexcept {
+  completed_request_id_ = active_request_id_;
+  active_request_id_ = 0;
+  read_in_flight_ = false;
+  crossed_read_request_seen_ = false;
+  accept_late_cancel_ = accept_late_cancel;
+  state_ = SessionState::idle;
 }
 
 ProtocolError ProtocolStateValidator::observe_active(
@@ -526,6 +542,9 @@ ProtocolError ProtocolStateValidator::observe_active(
   if (header.type == MessageType::enumerate ||
       header.type == MessageType::stream_entry) {
     return fail(ProtocolError::request_already_active);
+  }
+  if (header.request_id == 0) {
+    return fail(ProtocolError::unexpected_message);
   }
   if (header.request_id != active_request_id_) {
     return fail(ProtocolError::wrong_request_id);
@@ -558,14 +577,15 @@ ProtocolError ProtocolStateValidator::observe_active(
     if (read_in_flight_) {
       return fail(ProtocolError::unexpected_message);
     }
-    active_request_id_ = 0;
-    read_in_flight_ = false;
-    state_ = SessionState::idle;
+    // Completion wins a legitimate duplex race with cancellation. Until a
+    // new top-level request starts, one same-request cancel may therefore be
+    // observed after this completion and is consumed as stale without an ack.
+    complete_request(true);
     return ProtocolError::none;
   }
   if (header.type == MessageType::cancel &&
       direction == MessageDirection::parent_to_worker) {
-    read_in_flight_ = false;
+    crossed_read_request_seen_ = false;
     state_ = SessionState::cancelling;
     return ProtocolError::none;
   }
@@ -621,22 +641,69 @@ ProtocolError ProtocolStateValidator::observe(
         state_ = SessionState::closed;
         return ProtocolError::none;
       }
+      if (direction == MessageDirection::parent_to_worker &&
+          header.type == MessageType::cancel && accept_late_cancel_) {
+        if (header.request_id != completed_request_id_) {
+          return fail(ProtocolError::wrong_request_id);
+        }
+        accept_late_cancel_ = false;
+        return ProtocolError::none;
+      }
       return fail(ProtocolError::unexpected_message);
     case SessionState::enumerating:
       return observe_active(direction, header, MessageType::entry_batch);
     case SessionState::streaming:
       return observe_active(direction, header, MessageType::data_chunk);
     case SessionState::cancelling:
-      if (direction != MessageDirection::worker_to_parent ||
-          header.type != MessageType::cancel_ack ||
-          header.request_id != active_request_id_) {
-        return fail(header.request_id != active_request_id_
-                        ? ProtocolError::wrong_request_id
-                        : ProtocolError::unexpected_message);
+      if (header.request_id != active_request_id_) {
+        return fail(ProtocolError::wrong_request_id);
       }
-      active_request_id_ = 0;
-      state_ = SessionState::cancelled;
-      return ProtocolError::none;
+      if (direction == MessageDirection::worker_to_parent &&
+          header.type == MessageType::cancel_ack) {
+        active_request_id_ = 0;
+        read_in_flight_ = false;
+        crossed_read_request_seen_ = false;
+        state_ = SessionState::cancelled;
+        return ProtocolError::none;
+      }
+      if (direction == MessageDirection::worker_to_parent &&
+          header.type == MessageType::complete) {
+        if (read_in_flight_ || crossed_read_request_seen_) {
+          return fail(ProtocolError::unexpected_message);
+        }
+        // The worker committed completion before observing the cancel. The
+        // complete frame is the terminal response; no cancel_ack follows.
+        complete_request(false);
+        return ProtocolError::none;
+      }
+      if (direction == MessageDirection::worker_to_parent &&
+          header.type == MessageType::read_request) {
+        if (read_in_flight_ || crossed_read_request_seen_) {
+          return fail(ProtocolError::read_already_active);
+        }
+        crossed_read_request_seen_ = true;
+        return ProtocolError::none;
+      }
+      if (direction == MessageDirection::parent_to_worker &&
+          header.type == MessageType::read_reply) {
+        // Only a reply already crossing for the read that preceded
+        // cancellation can resolve that read and permit normal completion.
+        if (!read_in_flight_) {
+          return fail(ProtocolError::no_read_in_flight);
+        }
+        read_in_flight_ = false;
+        return ProtocolError::none;
+      }
+      if (direction == MessageDirection::worker_to_parent &&
+          header.type == active_result_type_) {
+        if (read_in_flight_ || crossed_read_request_seen_) {
+          return fail(ProtocolError::unexpected_message);
+        }
+        // Bounded result frames already in flight may precede the completion
+        // that wins a race with cancellation.
+        return ProtocolError::none;
+      }
+      return fail(ProtocolError::unexpected_message);
     case SessionState::cancelled:
       if (direction == MessageDirection::parent_to_worker &&
           header.type == MessageType::shutdown) {

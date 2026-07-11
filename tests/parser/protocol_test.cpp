@@ -121,6 +121,30 @@ constexpr std::uint64_t kSession = 0x0102'0304'0506'0708ULL;
              : fail("frame round trip failed");
 }
 
+[[nodiscard]] bool test_frame_encode_rejections() {
+  const std::array payload{std::byte{0x01}, std::byte{0x02}};
+  std::array<std::byte, ohl::parser::kFrameHeaderBytes + payload.size()>
+      encoded{};
+  auto header = frame(MessageType::data_chunk, 1, 1);
+  if (ohl::parser::encode_frame(header, payload, encoded).error !=
+      ProtocolError::noncanonical_value) {
+    return fail("frame payload-length mismatch was encoded");
+  }
+  header.payload_length = static_cast<std::uint32_t>(payload.size());
+  if (ohl::parser::encode_frame(
+          header, payload,
+          std::span<std::byte>{encoded}.first(encoded.size() - 1))
+          .error != ProtocolError::output_too_small) {
+    return fail("frame was encoded into undersized output");
+  }
+  header.flags = 1;
+  if (ohl::parser::encode_frame(header, payload, encoded).error !=
+      ProtocolError::reserved_flags) {
+    return fail("frame with reserved flags was encoded");
+  }
+  return true;
+}
+
 [[nodiscard]] bool test_frame_rejections() {
   std::array<std::byte, ohl::parser::kFrameHeaderBytes> encoded{};
   if (ohl::parser::encode_frame_header(frame(MessageType::hello), encoded) !=
@@ -289,6 +313,24 @@ constexpr std::uint64_t kSession = 0x0102'0304'0506'0708ULL;
 [[nodiscard]] bool test_terminal_and_cancel_rejections() {
   {
     ProtocolStateValidator validator{kSession};
+    if (validator.observe(MessageDirection::worker_to_parent,
+                          frame(MessageType::hello)) !=
+        ProtocolError::unexpected_message) {
+      return fail("hello from worker direction was accepted");
+    }
+  }
+  {
+    ProtocolStateValidator validator{kSession};
+    if (!observe(validator, MessageDirection::parent_to_worker,
+                 MessageType::hello) ||
+        validator.observe(MessageDirection::parent_to_worker,
+                          frame(MessageType::ready)) !=
+            ProtocolError::unexpected_message) {
+      return fail("ready from parent direction was accepted");
+    }
+  }
+  {
+    ProtocolStateValidator validator{kSession};
     const auto first = validator.observe(MessageDirection::worker_to_parent,
                                           frame(MessageType::ready));
     const auto repeated = validator.observe(
@@ -305,9 +347,13 @@ constexpr std::uint64_t kSession = 0x0102'0304'0506'0708ULL;
         !observe(validator, MessageDirection::parent_to_worker,
                  MessageType::shutdown) ||
         validator.observe(MessageDirection::parent_to_worker,
+                          frame(MessageType::shutdown)) !=
+            ProtocolError::terminal_state ||
+        validator.observe(MessageDirection::parent_to_worker,
                           frame(MessageType::hello)) !=
-            ProtocolError::terminal_state) {
-      return fail("closed state accepted another message");
+            ProtocolError::terminal_state ||
+        validator.state() != SessionState::failed) {
+      return fail("closed terminal rejection was not sticky");
     }
   }
   {
@@ -394,15 +440,86 @@ constexpr std::uint64_t kSession = 0x0102'0304'0506'0708ULL;
       return fail("cancel acknowledgement with wrong id was accepted");
     }
   }
+  {
+    ProtocolStateValidator validator{kSession};
+    if (!handshake(validator) ||
+        !observe(validator, MessageDirection::parent_to_worker,
+                 MessageType::enumerate, 1) ||
+        !observe(validator, MessageDirection::worker_to_parent,
+                 MessageType::complete, 1) ||
+        !observe(validator, MessageDirection::parent_to_worker,
+                 MessageType::cancel, 1) ||
+        validator.observe(MessageDirection::parent_to_worker,
+                          frame(MessageType::cancel, 1)) !=
+            ProtocolError::unexpected_message) {
+      return fail("repeated stale cancel was accepted");
+    }
+  }
+  {
+    ProtocolStateValidator validator{kSession};
+    if (!handshake(validator) ||
+        !observe(validator, MessageDirection::parent_to_worker,
+                 MessageType::enumerate, 1) ||
+        !observe(validator, MessageDirection::worker_to_parent,
+                 MessageType::complete, 1) ||
+        validator.observe(MessageDirection::parent_to_worker,
+                          frame(MessageType::cancel, 2)) !=
+            ProtocolError::wrong_request_id) {
+      return fail("wrong request cancelled a completed race window");
+    }
+  }
+  {
+    ProtocolStateValidator validator{kSession};
+    if (!handshake(validator) ||
+        !observe(validator, MessageDirection::parent_to_worker,
+                 MessageType::stream_entry, 1) ||
+        !observe(validator, MessageDirection::worker_to_parent,
+                 MessageType::complete, 1) ||
+        validator.observe(MessageDirection::worker_to_parent,
+                          frame(MessageType::cancel_ack, 1)) !=
+            ProtocolError::unexpected_message) {
+      return fail("cancel acknowledgement after completion was accepted");
+    }
+  }
+  {
+    ProtocolStateValidator validator{kSession};
+    if (!handshake(validator) ||
+        !observe(validator, MessageDirection::parent_to_worker,
+                 MessageType::stream_entry, 1) ||
+        !observe(validator, MessageDirection::parent_to_worker,
+                 MessageType::cancel, 1) ||
+        !observe(validator, MessageDirection::worker_to_parent,
+                 MessageType::cancel_ack, 1) ||
+        validator.observe(MessageDirection::worker_to_parent,
+                          frame(MessageType::cancel_ack, 1)) !=
+            ProtocolError::terminal_state) {
+      return fail("cancelled terminal state accepted repeated ack");
+    }
+  }
   return true;
 }
 
 [[nodiscard]] bool test_payload_rejections() {
   std::array<std::byte, 1> small{};
   PayloadWriter writer{small};
-  if (writer.write_u16(1) ||
+  if (writer.write_u16(1) || writer.write_u8(1) || writer.size() != 0 ||
       writer.error() != ProtocolError::output_too_small) {
     return fail("payload writer one-over was accepted");
+  }
+
+  std::array<std::byte, 4> invalid_storage{};
+  PayloadWriter invalid_writer{invalid_storage};
+  if (invalid_writer.write_status(static_cast<ProtocolStatus>(0xffffU)) ||
+      invalid_writer.write_phase(ProtocolPhase::handshake) ||
+      invalid_writer.size() != 0 ||
+      invalid_writer.error() != ProtocolError::noncanonical_value) {
+    return fail("payload writer error was not sticky");
+  }
+  PayloadWriter invalid_phase_writer{invalid_storage};
+  if (invalid_phase_writer.write_phase(
+          static_cast<ProtocolPhase>(0xffffU)) ||
+      invalid_phase_writer.error() != ProtocolError::noncanonical_value) {
+    return fail("unknown phase was written");
   }
 
   const std::array invalid_bool{std::byte{2}};
@@ -412,12 +529,23 @@ constexpr std::uint64_t kSession = 0x0102'0304'0506'0708ULL;
       bool_reader.error() != ProtocolError::noncanonical_value) {
     return fail("noncanonical boolean was accepted");
   }
+  std::uint8_t sticky_byte = 0;
+  if (bool_reader.read_u8(sticky_byte) || bool_reader.remaining() != 0 ||
+      bool_reader.error() != ProtocolError::noncanonical_value) {
+    return fail("payload reader error was not sticky");
+  }
   const std::array invalid_status{std::byte{0xff}, std::byte{0xff}};
   PayloadReader status_reader{invalid_status};
   ProtocolStatus status = ProtocolStatus::ok;
   if (status_reader.read_status(status) ||
       status_reader.error() != ProtocolError::noncanonical_value) {
     return fail("unknown status was accepted");
+  }
+  PayloadReader phase_reader{invalid_status};
+  ProtocolPhase phase = ProtocolPhase::handshake;
+  if (phase_reader.read_phase(phase) ||
+      phase_reader.error() != ProtocolError::noncanonical_value) {
+    return fail("unknown phase was accepted");
   }
   PayloadReader underflow{small};
   std::uint16_t value = 0;
@@ -438,6 +566,231 @@ constexpr std::uint64_t kSession = 0x0102'0304'0506'0708ULL;
   return oversized_reader.error() == ProtocolError::payload_too_large
              ? true
              : fail("one-over payload reader was accepted");
+}
+
+[[nodiscard]] bool test_crossed_completion_and_cancellation() {
+  const std::array operations{MessageType::enumerate,
+                              MessageType::stream_entry};
+  for (const auto operation : operations) {
+    const auto result = operation == MessageType::enumerate
+                            ? MessageType::entry_batch
+                            : MessageType::data_chunk;
+
+    // Parent-side ordering: cancellation is committed while a read is
+    // outstanding. Its already-crossing reply resolves the read before
+    // bounded worker traffic and completion arrive.
+    ProtocolStateValidator cancel_first{kSession};
+    if (!handshake(cancel_first) ||
+        !observe(cancel_first, MessageDirection::parent_to_worker,
+                 operation, 1) ||
+        !observe(cancel_first, MessageDirection::worker_to_parent,
+                 MessageType::read_request, 1) ||
+        !observe(cancel_first, MessageDirection::parent_to_worker,
+                 MessageType::cancel, 1) ||
+        !observe(cancel_first, MessageDirection::parent_to_worker,
+                 MessageType::read_reply, 1) ||
+        !observe(cancel_first, MessageDirection::worker_to_parent,
+                 result, 1) ||
+        !observe(cancel_first, MessageDirection::worker_to_parent,
+                 MessageType::complete, 1) ||
+        cancel_first.state() != SessionState::idle) {
+      return fail("completion did not win cancel-first duplex race");
+    }
+
+    // Worker-side ordering of the same race: completion is committed before
+    // the already-sent cancel arrives. The stale cancel is consumed once.
+    ProtocolStateValidator complete_first{kSession};
+    if (!handshake(complete_first) ||
+        !observe(complete_first, MessageDirection::parent_to_worker,
+                 operation, 1) ||
+        !observe(complete_first, MessageDirection::worker_to_parent,
+                 MessageType::read_request, 1) ||
+        !observe(complete_first, MessageDirection::parent_to_worker,
+                 MessageType::read_reply, 1) ||
+        !observe(complete_first, MessageDirection::worker_to_parent,
+                 result, 1) ||
+        !observe(complete_first, MessageDirection::worker_to_parent,
+                 MessageType::complete, 1) ||
+        !observe(complete_first, MessageDirection::parent_to_worker,
+                 MessageType::cancel, 1) ||
+        complete_first.state() != SessionState::idle ||
+        !observe(complete_first, MessageDirection::parent_to_worker,
+                 operation, 2)) {
+      return fail("completion did not win complete-first duplex race");
+    }
+
+    // A read request may itself cross cancellation. It is bounded and
+    // ignored; cancel_ack remains the cancellation terminal response.
+    ProtocolStateValidator crossed_read{kSession};
+    if (!handshake(crossed_read) ||
+        !observe(crossed_read, MessageDirection::parent_to_worker,
+                 operation, 1) ||
+        !observe(crossed_read, MessageDirection::parent_to_worker,
+                 MessageType::cancel, 1) ||
+        !observe(crossed_read, MessageDirection::worker_to_parent,
+                 MessageType::read_request, 1) ||
+        !observe(crossed_read, MessageDirection::worker_to_parent,
+                 MessageType::cancel_ack, 1) ||
+        crossed_read.state() != SessionState::cancelled) {
+      return fail("crossed read/cancel sequence failed");
+    }
+  }
+  return true;
+}
+
+[[nodiscard]] bool test_unresolved_reads_block_crossed_completion() {
+  for (const auto operation :
+       {MessageType::enumerate, MessageType::stream_entry}) {
+    const auto result = operation == MessageType::enumerate
+                            ? MessageType::entry_batch
+                            : MessageType::data_chunk;
+
+    ProtocolStateValidator pre_cancel_read{kSession};
+    if (!handshake(pre_cancel_read) ||
+        !observe(pre_cancel_read, MessageDirection::parent_to_worker,
+                 operation, 1) ||
+        !observe(pre_cancel_read, MessageDirection::worker_to_parent,
+                 MessageType::read_request, 1) ||
+        !observe(pre_cancel_read, MessageDirection::parent_to_worker,
+                 MessageType::cancel, 1) ||
+        pre_cancel_read.observe(MessageDirection::worker_to_parent,
+                                frame(MessageType::complete, 1)) !=
+            ProtocolError::unexpected_message) {
+      return fail("completion bypassed a pre-cancel unresolved read");
+    }
+
+    ProtocolStateValidator post_cancel_read{kSession};
+    if (!handshake(post_cancel_read) ||
+        !observe(post_cancel_read, MessageDirection::parent_to_worker,
+                 operation, 1) ||
+        !observe(post_cancel_read, MessageDirection::parent_to_worker,
+                 MessageType::cancel, 1) ||
+        !observe(post_cancel_read, MessageDirection::worker_to_parent,
+                 MessageType::read_request, 1) ||
+        post_cancel_read.observe(MessageDirection::worker_to_parent,
+                                 frame(MessageType::complete, 1)) !=
+            ProtocolError::unexpected_message) {
+      return fail("completion bypassed a post-cancel crossed read");
+    }
+
+    ProtocolStateValidator result_before_reply{kSession};
+    if (!handshake(result_before_reply) ||
+        !observe(result_before_reply, MessageDirection::parent_to_worker,
+                 operation, 1) ||
+        !observe(result_before_reply, MessageDirection::worker_to_parent,
+                 MessageType::read_request, 1) ||
+        !observe(result_before_reply, MessageDirection::parent_to_worker,
+                 MessageType::cancel, 1) ||
+        result_before_reply.observe(MessageDirection::worker_to_parent,
+                                    frame(result, 1)) !=
+            ProtocolError::unexpected_message) {
+      return fail("result bypassed a pre-cancel unresolved read");
+    }
+  }
+  return true;
+}
+
+[[nodiscard]] bool test_direction_and_active_terminal_rejections() {
+  const std::array operations{MessageType::enumerate,
+                              MessageType::stream_entry};
+  for (const auto operation : operations) {
+    const auto result = operation == MessageType::enumerate
+                            ? MessageType::entry_batch
+                            : MessageType::data_chunk;
+    const auto rejects = [operation](const MessageDirection direction,
+                                     const MessageType type,
+                                     const bool outstanding_read = false) {
+      ProtocolStateValidator validator{kSession};
+      if (!handshake(validator) ||
+          !observe(validator, MessageDirection::parent_to_worker,
+                   operation, 1) ||
+          (outstanding_read &&
+           !observe(validator, MessageDirection::worker_to_parent,
+                    MessageType::read_request, 1))) {
+        return false;
+      }
+      const auto request_id = type == MessageType::shutdown ? 0U : 1U;
+      return validator.observe(direction, frame(type, request_id)) ==
+             ProtocolError::unexpected_message;
+    };
+    if (!rejects(MessageDirection::parent_to_worker,
+                 MessageType::read_request) ||
+        !rejects(MessageDirection::worker_to_parent,
+                 MessageType::read_reply) ||
+        !rejects(MessageDirection::parent_to_worker, result) ||
+        !rejects(MessageDirection::parent_to_worker,
+                 MessageType::complete) ||
+        !rejects(MessageDirection::parent_to_worker,
+                 MessageType::shutdown) ||
+        !rejects(MessageDirection::worker_to_parent,
+                 MessageType::complete, true)) {
+      return fail("wrong-direction or active terminal message was accepted");
+    }
+  }
+  return true;
+}
+
+[[nodiscard]] bool test_cancelling_crossed_traffic_rejections() {
+  const auto cancelling = [](const MessageType operation,
+                             const bool outstanding_read = false) {
+    ProtocolStateValidator validator{kSession};
+    if (!handshake(validator) ||
+        !observe(validator, MessageDirection::parent_to_worker,
+                 operation, 1) ||
+        (outstanding_read &&
+         !observe(validator, MessageDirection::worker_to_parent,
+                  MessageType::read_request, 1)) ||
+        !observe(validator, MessageDirection::parent_to_worker,
+                 MessageType::cancel, 1)) {
+      return validator;
+    }
+    return validator;
+  };
+
+  for (const auto operation :
+       {MessageType::enumerate, MessageType::stream_entry}) {
+    const auto result = operation == MessageType::enumerate
+                            ? MessageType::entry_batch
+                            : MessageType::data_chunk;
+    const auto other_result = operation == MessageType::enumerate
+                                  ? MessageType::data_chunk
+                                  : MessageType::entry_batch;
+    auto wrong_result_direction = cancelling(operation);
+    auto wrong_result_type = cancelling(operation);
+    auto wrong_complete_direction = cancelling(operation);
+    auto wrong_read_request_direction = cancelling(operation);
+    auto wrong_read_reply_direction = cancelling(operation, true);
+    auto unsolicited_read_reply = cancelling(operation);
+    auto repeated_read_request = cancelling(operation, true);
+    if (wrong_result_direction.observe(MessageDirection::parent_to_worker,
+                                       frame(result, 1)) !=
+            ProtocolError::unexpected_message ||
+        wrong_result_type.observe(MessageDirection::worker_to_parent,
+                                  frame(other_result, 1)) !=
+            ProtocolError::unexpected_message ||
+        wrong_complete_direction.observe(MessageDirection::parent_to_worker,
+                                         frame(MessageType::complete, 1)) !=
+            ProtocolError::unexpected_message ||
+        wrong_read_request_direction.observe(
+            MessageDirection::parent_to_worker,
+            frame(MessageType::read_request, 1)) !=
+            ProtocolError::unexpected_message ||
+        wrong_read_reply_direction.observe(
+            MessageDirection::worker_to_parent,
+            frame(MessageType::read_reply, 1)) !=
+            ProtocolError::unexpected_message ||
+        unsolicited_read_reply.observe(
+            MessageDirection::parent_to_worker,
+            frame(MessageType::read_reply, 1)) !=
+            ProtocolError::no_read_in_flight ||
+        repeated_read_request.observe(
+            MessageDirection::worker_to_parent,
+            frame(MessageType::read_request, 1)) !=
+            ProtocolError::read_already_active) {
+      return fail("invalid crossed traffic was accepted while cancelling");
+    }
+  }
+  return true;
 }
 
 [[nodiscard]] bool test_valid_state_sequence() {
@@ -662,9 +1015,14 @@ int main() {
                 64ULL * 1'024ULL * 1'024ULL * 1'024ULL);
 
   return test_header_encoding() && test_frame_round_trip() &&
+                 test_frame_encode_rejections() &&
                  test_frame_rejections() && test_maximum_frame() &&
                  test_payload_codec() && test_payload_rejections() &&
                  test_valid_state_sequence() && test_state_rejections() &&
+                 test_crossed_completion_and_cancellation() &&
+                 test_unresolved_reads_block_crossed_completion() &&
+                 test_direction_and_active_terminal_rejections() &&
+                 test_cancelling_crossed_traffic_rejections() &&
                  test_terminal_and_cancel_rejections() &&
                  test_cancellation_and_budgets()
              ? 0
