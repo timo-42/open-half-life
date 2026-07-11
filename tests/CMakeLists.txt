@@ -22,6 +22,20 @@ target_link_libraries(ohl_parser_tests PRIVATE OpenHalfLife::parser)
 ohl_enable_warnings(ohl_parser_tests)
 add_test(NAME parser.protocol COMMAND ohl_parser_tests)
 
+add_executable(ohl_media_parser_result_tests
+  media/parser_result_session_test.cpp
+)
+target_compile_features(ohl_media_parser_result_tests PRIVATE cxx_std_20)
+target_link_libraries(
+  ohl_media_parser_result_tests
+  PRIVATE OpenHalfLife::media_parser_results
+)
+ohl_enable_warnings(ohl_media_parser_result_tests)
+add_test(
+  NAME media.parser_result_session
+  COMMAND ohl_media_parser_result_tests
+)
+
 add_library(ohl_parser_fuzz_entry OBJECT
   parser/protocol_fuzz.cpp
 )

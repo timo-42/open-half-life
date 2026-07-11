@@ -31,3 +31,25 @@ if(OHL_ENABLE_EXPERIMENTAL_INSTALLSHIELD)
   )
 endif()
 ohl_enable_warnings(ohl_media)
+
+add_library(ohl_media_parser_results STATIC
+  src/parser_result_session.cpp
+)
+
+add_library(
+  OpenHalfLife::media_parser_results ALIAS ohl_media_parser_results
+)
+
+target_compile_features(ohl_media_parser_results PUBLIC cxx_std_20)
+target_include_directories(
+  ohl_media_parser_results
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+target_link_libraries(
+  ohl_media_parser_results
+  PUBLIC
+    OpenHalfLife::media
+    OpenHalfLife::parser
+)
+ohl_enable_warnings(ohl_media_parser_results)
