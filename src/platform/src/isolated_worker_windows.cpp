@@ -903,6 +903,45 @@ class ScopedInheritableHandleWindow final {
   return GetTokenInformation(token, kind, storage.data(), bytes, &bytes) != FALSE;
 }
 
+// TokenIsLessPrivilegedAppContainer is not reliably queryable from user
+// mode; hosted Windows Server runners reject it for genuine LPAC children.
+// The kernel marks LPAC tokens with the WIN://NOALLAPPPKG security
+// attribute, so require that attribute with a nonzero integer value.
+[[nodiscard]] bool token_has_lpac_attribute(const HANDLE token) {
+  std::vector<std::byte> storage;
+  if (!query_token_information(token, TokenSecurityAttributes, storage)) {
+    return false;
+  }
+  const auto* information =
+      reinterpret_cast<const CLAIM_SECURITY_ATTRIBUTES_INFORMATION*>(
+          storage.data());
+  if (information->Version !=
+      CLAIM_SECURITY_ATTRIBUTES_INFORMATION_VERSION_V1) {
+    return false;
+  }
+  for (DWORD index = 0; index < information->AttributeCount; ++index) {
+    const CLAIM_SECURITY_ATTRIBUTE_V1& attribute =
+        information->Attribute.pAttributeV1[index];
+    if (attribute.Name == nullptr ||
+        std::wstring_view{attribute.Name} != L"WIN://NOALLAPPPKG") {
+      continue;
+    }
+    if (attribute.ValueCount == 0) {
+      return false;
+    }
+    if (attribute.ValueType == CLAIM_SECURITY_ATTRIBUTE_TYPE_UINT64) {
+      return attribute.Values.pUint64 != nullptr &&
+             attribute.Values.pUint64[0] != 0U;
+    }
+    if (attribute.ValueType == CLAIM_SECURITY_ATTRIBUTE_TYPE_INT64) {
+      return attribute.Values.pInt64 != nullptr &&
+             attribute.Values.pInt64[0] != 0;
+    }
+    return false;
+  }
+  return false;
+}
+
 [[nodiscard]] bool verify_lpac_token(const HANDLE process,
                                      const PSID expected_sid) {
   HANDLE raw_token = nullptr;
@@ -934,19 +973,12 @@ class ScopedInheritableHandleWindow final {
       windows::IsolatedWorkerLaunchStage::lpac_verification_pending);
 #endif
 
-  DWORD is_less_privileged_app_container = 0;
-  returned = 0;
-  if (!GetTokenInformation(token.get(), TokenIsLessPrivilegedAppContainer,
-                           &is_less_privileged_app_container,
-                           sizeof(is_less_privileged_app_container),
-                           &returned) ||
-      returned != sizeof(is_less_privileged_app_container) ||
-      is_less_privileged_app_container == 0) {
+  if (!token_has_lpac_attribute(token.get())) {
     return false;
   }
-  // TokenIsLessPrivilegedAppContainer is the authoritative LPAC indication.
-  // LPAC causes access checks to disregard ALL_APPLICATION_PACKAGES; it does
-  // not require that SID to be absent from the token's general group list.
+  // WIN://NOALLAPPPKG is the kernel's LPAC marker. LPAC causes access checks
+  // to disregard ALL_APPLICATION_PACKAGES; it does not require that SID to be
+  // absent from the token's general group list.
 #ifdef OHL_WINDOWS_ISOLATED_WORKER_TESTING
   record_launch_stage(windows::IsolatedWorkerLaunchStage::lpac_verified);
   record_launch_stage(

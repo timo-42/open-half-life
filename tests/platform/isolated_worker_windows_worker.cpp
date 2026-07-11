@@ -48,24 +48,58 @@ using ohl::platform::detail::windows::kBootstrapReady;
   return handle != INVALID_HANDLE_VALUE;
 }
 
+// TokenIsLessPrivilegedAppContainer is not reliably queryable from user
+// mode; the kernel marks LPAC tokens with the WIN://NOALLAPPPKG security
+// attribute instead, so attest LPAC through that attribute.
+[[nodiscard]] bool token_attributes_are_lpac(const HANDLE token) noexcept {
+  alignas(CLAIM_SECURITY_ATTRIBUTES_INFORMATION)
+      std::byte storage[16U * 1024U];
+  DWORD returned = 0;
+  if (GetTokenInformation(token, TokenSecurityAttributes, storage,
+                          sizeof(storage), &returned) == FALSE) {
+    return false;
+  }
+  const auto* information =
+      reinterpret_cast<const CLAIM_SECURITY_ATTRIBUTES_INFORMATION*>(storage);
+  if (information->Version !=
+      CLAIM_SECURITY_ATTRIBUTES_INFORMATION_VERSION_V1) {
+    return false;
+  }
+  for (DWORD index = 0; index < information->AttributeCount; ++index) {
+    const CLAIM_SECURITY_ATTRIBUTE_V1& attribute =
+        information->Attribute.pAttributeV1[index];
+    if (attribute.Name == nullptr ||
+        std::wstring_view{attribute.Name} != L"WIN://NOALLAPPPKG") {
+      continue;
+    }
+    if (attribute.ValueCount == 0) {
+      return false;
+    }
+    if (attribute.ValueType == CLAIM_SECURITY_ATTRIBUTE_TYPE_UINT64) {
+      return attribute.Values.pUint64 != nullptr &&
+             attribute.Values.pUint64[0] != 0U;
+    }
+    if (attribute.ValueType == CLAIM_SECURITY_ATTRIBUTE_TYPE_INT64) {
+      return attribute.Values.pInt64 != nullptr &&
+             attribute.Values.pInt64[0] != 0;
+    }
+    return false;
+  }
+  return false;
+}
+
 [[nodiscard]] bool token_contract_is_lpac() noexcept {
   HANDLE token = nullptr;
   if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
     return false;
   }
   DWORD app_container = 0;
-  DWORD less_privileged = 0;
   DWORD returned = 0;
   const bool app_container_ok =
       GetTokenInformation(token, TokenIsAppContainer, &app_container,
                           sizeof(app_container), &returned) != FALSE &&
       app_container != 0;
-  returned = 0;
-  const bool lpac_ok =
-      GetTokenInformation(token, TokenIsLessPrivilegedAppContainer,
-                          &less_privileged, sizeof(less_privileged),
-                          &returned) != FALSE &&
-      less_privileged != 0;
+  const bool lpac_ok = token_attributes_are_lpac(token);
   CloseHandle(token);
   return app_container_ok && lpac_ok;
 }
