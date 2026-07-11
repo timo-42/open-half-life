@@ -1,14 +1,17 @@
 #include "ohl/media/payload_stage.hpp"
 
 #include "ohl/platform/atomic_directory_store.hpp"
+#include "synthetic_media_test_support.hpp"
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <initializer_list>
 #include <iostream>
 #include <limits>
 #include <memory>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -18,6 +21,8 @@ namespace {
 
 using ohl::platform::AtomicDirectoryProbeState;
 using ohl::platform::AtomicDirectoryStoreError;
+
+const ohl::media::ValidatedMedia* default_media = nullptr;
 
 [[nodiscard]] std::vector<std::byte> bytes(
     std::initializer_list<unsigned int> values) {
@@ -37,21 +42,45 @@ struct SourceScript {
 
 class ScriptedSource final : public ohl::media::PayloadSource {
  public:
-  explicit ScriptedSource(std::vector<SourceScript> scripts)
-      : scripts_(std::move(scripts)) {}
+  explicit ScriptedSource(std::vector<SourceScript> scripts,
+                          const std::stop_token expected_stop_token = {},
+                          std::stop_source* request_stop = nullptr,
+                          const std::size_t request_after_chunk = 0,
+                          const bool request_before_return = false)
+      : scripts_(std::move(scripts)),
+        expected_stop_token_(expected_stop_token),
+        request_stop_(request_stop),
+        request_after_chunk_(request_after_chunk),
+        request_before_return_(request_before_return) {}
 
   [[nodiscard]] bool stream(
-      const std::uint64_t source_token,
+      const ohl::platform::MediaSource& media_source,
+      const std::uint64_t source_token, const std::stop_token stop_token,
       ohl::media::PayloadByteSink& sink) noexcept override {
+    media_sources.push_back(&media_source);
     tokens.push_back(source_token);
+    stop_tokens.push_back(stop_token);
+    sinks.push_back(&sink);
+    contract_ok = default_media != nullptr && default_media->source() != nullptr &&
+                  &media_source == default_media->source().get() &&
+                  stop_token == expected_stop_token_ && sinks.back() != nullptr;
+    if (!contract_ok) {
+      return false;
+    }
     for (const auto& script : scripts_) {
       if (script.token != source_token) {
         continue;
       }
-      for (const auto& chunk : script.chunks) {
-        if (!sink.write(chunk)) {
+      for (std::size_t index = 0; index < script.chunks.size(); ++index) {
+        if (!sink.write(script.chunks[index])) {
           return false;
         }
+        if (request_stop_ != nullptr && request_after_chunk_ == index + 1) {
+          (void)request_stop_->request_stop();
+        }
+      }
+      if (request_stop_ != nullptr && request_before_return_) {
+        (void)request_stop_->request_stop();
       }
       return script.succeed;
     }
@@ -59,9 +88,17 @@ class ScriptedSource final : public ohl::media::PayloadSource {
   }
 
   std::vector<std::uint64_t> tokens;
+  std::vector<const ohl::platform::MediaSource*> media_sources;
+  std::vector<std::stop_token> stop_tokens;
+  std::vector<const ohl::media::PayloadByteSink*> sinks;
+  bool contract_ok{true};
 
  private:
   std::vector<SourceScript> scripts_;
+  std::stop_token expected_stop_token_;
+  std::stop_source* request_stop_{nullptr};
+  std::size_t request_after_chunk_{0};
+  bool request_before_return_{false};
 };
 
 struct FailureScript {
@@ -75,6 +112,7 @@ struct FailureScript {
   std::size_t abort_call{0};
   bool publish_lost_race{false};
   bool create_failure{false};
+  std::function<void()> after_completion;
 };
 
 struct OpenObservation {
@@ -323,6 +361,9 @@ AtomicDirectoryStoreError FakeTransaction::seal_completion(
     return AtomicDirectoryStoreError::io_failure;
   }
   completion_sealed_ = true;
+  if (store_.failures.after_completion) {
+    store_.failures.after_completion();
+  }
   return AtomicDirectoryStoreError::none;
 }
 
@@ -375,10 +416,18 @@ AtomicDirectoryStoreError FakeTransaction::abort() noexcept {
 
 [[nodiscard]] ohl::media::PayloadStageRequest request_for(
     const std::vector<ohl::media::PlannedPayloadEntry>& entries,
-    const std::uint64_t total, const std::string_view source = "source-v1",
-    const std::string_view recipe = "recipe-v1",
+    const std::uint64_t total, const std::string_view recipe = "recipe-v1",
     const ohl::media::PayloadImportLimits& limits = {}) {
-  return {source, recipe, entries, total, limits};
+  return {recipe, entries, total, limits};
+}
+
+[[nodiscard]] ohl::media::PayloadStageResult stage_payload(
+    const ohl::media::PayloadStageRequest& request,
+    ohl::media::PayloadSource& source,
+    ohl::platform::AtomicDirectoryStore& store,
+    const std::stop_token stop_token = {}) {
+  return ohl::media::stage_payload(*default_media, request, source, store,
+                                   stop_token);
 }
 
 [[nodiscard]] bool failed_at(const ohl::media::PayloadStageResult& result,
@@ -390,30 +439,27 @@ AtomicDirectoryStoreError FakeTransaction::abort() noexcept {
 
 [[nodiscard]] bool rejected_before_calls(
     const std::vector<ohl::media::PlannedPayloadEntry>& entries,
-    const std::uint64_t total, const std::string_view source,
-    const std::string_view recipe,
+    const std::uint64_t total, const std::string_view recipe,
     const ohl::media::PayloadImportLimits& limits = {}) {
   ScriptedSource payload_source({});
   FakeStore store;
-  const auto result = ohl::media::stage_payload(
-      request_for(entries, total, source, recipe, limits), payload_source,
-      store);
+  const auto result = stage_payload(
+      request_for(entries, total, recipe, limits), payload_source, store);
   return failed_at(result, ohl::media::PayloadStagePhase::validation,
                    ohl::media::PayloadStageError::invalid_request) &&
          store.events.empty() && payload_source.tokens.empty();
 }
 
 [[nodiscard]] std::string identity_for(
+    const ohl::media::ValidatedMedia& media,
     const std::vector<ohl::media::PlannedPayloadEntry>& entries,
-    const std::uint64_t total, const std::string_view source,
-    const std::string_view recipe) {
+    const std::uint64_t total, const std::string_view recipe) {
   ScriptedSource payload_source({});
   FakeStore store;
   store.probes.push_back({AtomicDirectoryProbeState::matching,
                           AtomicDirectoryStoreError::none});
   return ohl::media::stage_payload(
-             request_for(entries, total, source, recipe), payload_source,
-             store)
+             media, request_for(entries, total, recipe), payload_source, store)
       .identity;
 }
 
@@ -441,6 +487,9 @@ int main() {
   using ohl::media::PayloadStreamError;
   using ohl::media::PlannedPayloadEntry;
 
+  ohl::media::test::SyntheticValidatedMedia media_fixture;
+  default_media = &media_fixture.media();
+
   {
     const std::vector entries{
         PlannedPayloadEntry{1, "a/first", 2},
@@ -451,7 +500,7 @@ int main() {
                            {2, {}, true},
                            {3, {bytes({3})}, true}});
     FakeStore store;
-    const auto result = ohl::media::stage_payload(
+    const auto result = stage_payload(
         request_for(entries, 3), source, store);
     const std::vector<std::string> expected_events{
         "probe",          "create",  "begin", "open:a/first:2",
@@ -469,6 +518,9 @@ int main() {
             PayloadPublicationState::published_sync_complete ||
         result.bytes_streamed != 3 || result.entries_streamed != 3 ||
         result.cleanup_attempted || store.events != expected_events ||
+        !source.contract_ok || source.media_sources.size() != 3 ||
+        source.stop_tokens != std::vector<std::stop_token>(3) ||
+        source.sinks.size() != 3 ||
         source.tokens != std::vector<std::uint64_t>({1, 2, 3}) ||
         store.publish_calls != 1 || store.completion_entries != 3 ||
         store.completion_bytes != 3 ||
@@ -487,7 +539,7 @@ int main() {
 
   {
     const std::string oversized_identity(
-        ohl::media::kMaximumPayloadStageInputIdentityBytes + 1, 'x');
+        ohl::media::kMaximumPayloadStageRecipeIdentityBytes + 1, 'x');
     const std::vector invalid_order{
         PlannedPayloadEntry{2, "b", 0}, PlannedPayloadEntry{1, "a", 0}};
     const std::vector one{PlannedPayloadEntry{1, "a", 1}};
@@ -543,28 +595,21 @@ int main() {
     };
 
     const bool rejected =
-        rejected_before_calls(one, 1, "", "recipe") &&
-        rejected_before_calls(one, 1, oversized_identity, "recipe") &&
-        rejected_before_calls(one, 1, "source", "") &&
-        rejected_before_calls(one, 1, "source", oversized_identity) &&
-        rejected_before_calls(unsafe, 0, "source", "recipe") &&
-        rejected_before_calls(noncanonical, 0, "source", "recipe") &&
-        rejected_before_calls(duplicate_token, 0, "source", "recipe") &&
-        rejected_before_calls(duplicate_path, 0, "source", "recipe") &&
-        rejected_before_calls(case_conflict, 0, "source", "recipe") &&
-        rejected_before_calls(prefix_conflict, 0, "source", "recipe") &&
-        rejected_before_calls(invalid_order, 0, "source", "recipe") &&
-        rejected_before_calls(one, 2, "source", "recipe") &&
-        rejected_before_calls(duplicate_path, 0, "source", "recipe",
-                              count_limits) &&
-        rejected_before_calls(two_paths, 0, "source", "recipe",
-                              path_limits) &&
-        rejected_before_calls(too_large, 2, "source", "recipe",
-                              entry_limits) &&
-        rejected_before_calls(too_much, 3, "source", "recipe",
-                              aggregate_limits) &&
-        rejected_before_calls(overflowing, 0, "source", "recipe",
-                              overflow_limits);
+        rejected_before_calls(one, 1, "") &&
+        rejected_before_calls(one, 1, oversized_identity) &&
+        rejected_before_calls(unsafe, 0, "recipe") &&
+        rejected_before_calls(noncanonical, 0, "recipe") &&
+        rejected_before_calls(duplicate_token, 0, "recipe") &&
+        rejected_before_calls(duplicate_path, 0, "recipe") &&
+        rejected_before_calls(case_conflict, 0, "recipe") &&
+        rejected_before_calls(prefix_conflict, 0, "recipe") &&
+        rejected_before_calls(invalid_order, 0, "recipe") &&
+        rejected_before_calls(one, 2, "recipe") &&
+        rejected_before_calls(duplicate_path, 0, "recipe", count_limits) &&
+        rejected_before_calls(two_paths, 0, "recipe", path_limits) &&
+        rejected_before_calls(too_large, 2, "recipe", entry_limits) &&
+        rejected_before_calls(too_much, 3, "recipe", aggregate_limits) &&
+        rejected_before_calls(overflowing, 0, "recipe", overflow_limits);
     if (!rejected) {
       std::cerr << "invalid request table reached the store or source\n";
       return 1;
@@ -575,7 +620,7 @@ int main() {
     const std::vector<PlannedPayloadEntry> entries;
     ScriptedSource source({});
     FakeStore store;
-    const auto result = ohl::media::stage_payload(
+    const auto result = stage_payload(
         request_for(entries, 0), source, store);
     const std::vector<std::string> expected{
         "probe", "create", "begin", "completion", "publish", "sync"};
@@ -598,7 +643,7 @@ int main() {
         store.probes.push_back({AtomicDirectoryProbeState::absent,
                                 AtomicDirectoryStoreError::unsafe_destination});
       }
-      const auto result = ohl::media::stage_payload(
+      const auto result = stage_payload(
           request_for(entries, 1), source, store);
       const auto expected_phase = create_failure
                                       ? PayloadStagePhase::create_transaction
@@ -623,7 +668,7 @@ int main() {
     unsupported_store.probes.push_back({
         AtomicDirectoryProbeState::absent,
         AtomicDirectoryStoreError::unsupported});
-    const auto unsupported = ohl::media::stage_payload(
+    const auto unsupported = stage_payload(
         request_for(entries, 1), unsupported_source, unsupported_store);
     if (!failed_at(unsupported, PayloadStagePhase::probe,
                    PayloadStageError::store_failure) ||
@@ -640,7 +685,7 @@ int main() {
     ScriptedSource source({});
     FakeStore store;
     store.failures.open_call = 1;
-    const auto result = ohl::media::stage_payload(
+    const auto result = stage_payload(
         request_for(entries, large_size), source, store);
     if (!failed_at(result, PayloadStagePhase::open_file,
                    PayloadStageError::store_failure) ||
@@ -658,12 +703,140 @@ int main() {
   }
 
   {
+    ohl::media::test::SyntheticValidatedMedia moved_fixture;
+    auto valid_media = std::move(moved_fixture.media());
+    ScriptedSource source({});
+    FakeStore store;
+    const std::vector<PlannedPayloadEntry> entries;
+    const auto result = ohl::media::stage_payload(
+        moved_fixture.media(), request_for(entries, 0), source, store);
+    if (!failed_at(result, PayloadStagePhase::validation,
+                   PayloadStageError::source_verification_failure) ||
+        result.verification_error !=
+            ohl::media::PayloadStageVerificationError::invalid_capability ||
+        result.publication != PayloadPublicationState::not_published ||
+        !store.events.empty() || !source.tokens.empty() || !valid_media.valid()) {
+      std::cerr << "moved validated capability was not rejected early\n";
+      return 1;
+    }
+  }
+
+  {
+    std::stop_source stop;
+    (void)stop.request_stop();
+    const std::vector entries{PlannedPayloadEntry{1, "cancel-before", 1}};
+    ScriptedSource source({{1, {bytes({1})}, true}}, stop.get_token());
+    FakeStore store;
+    const auto result =
+        stage_payload(request_for(entries, 1), source, store, stop.get_token());
+    if (!failed_at(result, PayloadStagePhase::cancellation,
+                   PayloadStageError::cancelled) ||
+        result.identity.empty() || !store.events.empty() ||
+        !source.tokens.empty() || result.cleanup_attempted ||
+        result.publication != PayloadPublicationState::not_published) {
+      std::cerr << "pre-cancellation reached store mutation\n";
+      return 1;
+    }
+  }
+
+  {
+    const std::vector entries{PlannedPayloadEntry{1, "cancel-stream", 2}};
+    for (const bool after_exact_stream : {false, true}) {
+      std::stop_source stop;
+      ScriptedSource source(
+          {{1, after_exact_stream
+                   ? std::vector<std::vector<std::byte>>{bytes({1, 2})}
+                   : std::vector<std::vector<std::byte>>{bytes({1}), bytes({2})},
+            true}},
+          stop.get_token(), &stop, after_exact_stream ? 0U : 1U,
+          after_exact_stream);
+      FakeStore store;
+      const auto result = stage_payload(request_for(entries, 2), source, store,
+                                        stop.get_token());
+      const auto expected_bytes = after_exact_stream ? 2U : 1U;
+      if (!failed_at(result, PayloadStagePhase::stream_file,
+                     PayloadStageError::cancelled) ||
+          result.stream_error != PayloadStreamError::cancelled ||
+          result.bytes_streamed != expected_bytes ||
+          result.entries_streamed != 0 || !result.cleanup_attempted ||
+          result.cleanup_error != AtomicDirectoryStoreError::none ||
+          store.abort_calls != 1 || store.publish_calls != 0 ||
+          !source.contract_ok ||
+          source.stop_tokens != std::vector<std::stop_token>{stop.get_token()}) {
+        std::cerr << "during/after-stream cancellation was mishandled\n";
+        return 1;
+      }
+    }
+  }
+
+  {
+    std::stop_source stop;
+    const std::vector<PlannedPayloadEntry> entries;
+    ScriptedSource source({});
+    FakeStore store;
+    store.failures.after_completion = [&stop]() {
+      (void)stop.request_stop();
+    };
+    const auto result = stage_payload(request_for(entries, 0), source, store,
+                                      stop.get_token());
+    if (!failed_at(result, PayloadStagePhase::verify_source,
+                   PayloadStageError::cancelled) ||
+        result.verification_error !=
+            ohl::media::PayloadStageVerificationError::cancelled ||
+        result.entries_streamed != 0 || result.bytes_streamed != 0 ||
+        !result.cleanup_attempted || store.abort_calls != 1 ||
+        store.publish_calls != 0 ||
+        !ends_with(store.events, {"completion", "abort"})) {
+      std::cerr << "final pre-publication cancellation check failed\n";
+      return 1;
+    }
+  }
+
+  {
+    for (const bool restore_write_time : {false, true}) {
+      ohl::media::test::SyntheticValidatedMedia changed_fixture;
+      default_media = &changed_fixture.media();
+      const std::vector entries{PlannedPayloadEntry{1, "verified", 1}};
+      ScriptedSource source({{1, {bytes({1})}, true}});
+      FakeStore store;
+      store.failures.abort_call = restore_write_time ? 1U : 0U;
+      bool mutation_succeeded = false;
+      store.failures.after_completion = [&]() {
+        mutation_succeeded = changed_fixture.overwrite_byte(
+            100U * ohl::media::test::kSyntheticSectorSize, std::byte{9},
+            restore_write_time);
+      };
+      const auto result = stage_payload(request_for(entries, 1), source, store);
+      const auto expected_verification =
+          restore_write_time
+              ? ohl::media::PayloadStageVerificationError::digest_mismatch
+              : ohl::media::PayloadStageVerificationError::source_changed;
+      const auto expected_cleanup =
+          restore_write_time ? AtomicDirectoryStoreError::io_failure
+                             : AtomicDirectoryStoreError::none;
+      if (!mutation_succeeded ||
+          !failed_at(result, PayloadStagePhase::verify_source,
+                     PayloadStageError::source_verification_failure) ||
+          result.verification_error != expected_verification ||
+          result.publication != PayloadPublicationState::not_published ||
+          result.entries_streamed != 1 || result.bytes_streamed != 1 ||
+          !result.cleanup_attempted || result.cleanup_error != expected_cleanup ||
+          store.abort_calls != 1 || store.publish_calls != 0 || store.visible ||
+          !ends_with(store.events, {"completion", "abort"})) {
+        std::cerr << "sealed source verification failure was mishandled\n";
+        return 1;
+      }
+    }
+    default_media = &media_fixture.media();
+  }
+
+  {
     const std::vector entries{PlannedPayloadEntry{1, "a", 1}};
     ScriptedSource source({{1, {bytes({1})}, true}});
     FakeStore store;
     store.failures.open_call = 1;
     store.failures.abort_call = 1;
-    const auto result = ohl::media::stage_payload(
+    const auto result = stage_payload(
         request_for(entries, 1), source, store);
     if (!failed_at(result, PayloadStagePhase::open_file,
                    PayloadStageError::store_failure) ||
@@ -683,7 +856,7 @@ int main() {
       ScriptedSource source({{1, {bytes({1})}, true}});
       FakeStore store;
       store.probes.push_back({state, AtomicDirectoryStoreError::none});
-      const auto result = ohl::media::stage_payload(
+      const auto result = stage_payload(
           request_for(entries, 1), source, store);
       const auto expected = state == AtomicDirectoryProbeState::matching
                                 ? PayloadStageStatus::cache_hit
@@ -725,7 +898,7 @@ int main() {
       ScriptedSource source({test.source});
       FakeStore store;
       store.failures.write_call = test.fail_write;
-      const auto result = ohl::media::stage_payload(
+      const auto result = stage_payload(
           request_for(entries, 2), source, store);
       const auto expected_store_error =
           test.error == PayloadStreamError::destination_failure
@@ -776,7 +949,7 @@ int main() {
       ScriptedSource source({{1, {bytes({1})}, true}});
       FakeStore store;
       store.failures = test.failures;
-      const auto result = ohl::media::stage_payload(
+      const auto result = stage_payload(
           request_for(entries, 1), source, store);
       const auto expected_error = test.phase == PayloadStagePhase::publish
                                       ? PayloadStageError::publish_failure
@@ -802,7 +975,7 @@ int main() {
     ScriptedSource source({{1, {}, true}});
     FakeStore store;
     store.failures.abort_call = 1;
-    const auto result = ohl::media::stage_payload(
+    const auto result = stage_payload(
         request_for(entries, 1), source, store);
     if (!failed_at(result, PayloadStagePhase::stream_file,
                    PayloadStageError::stream_failure) ||
@@ -822,7 +995,7 @@ int main() {
     ScriptedSource source({{1, {bytes({1})}, true}});
     FakeStore store;
     store.failures.sync_call = 1;
-    const auto result = ohl::media::stage_payload(
+    const auto result = stage_payload(
         request_for(entries, 1), source, store);
     if (result.status != PayloadStageStatus::published_sync_uncertain ||
         result.error != PayloadStageError::published_sync_failure ||
@@ -847,7 +1020,7 @@ int main() {
       store.probes = {{AtomicDirectoryProbeState::absent,
                        AtomicDirectoryStoreError::none},
                       {winner, AtomicDirectoryStoreError::none}};
-      const auto result = ohl::media::stage_payload(
+      const auto result = stage_payload(
           request_for(entries, 1), source, store);
       const auto expected = winner == AtomicDirectoryProbeState::matching
                                 ? PayloadStageStatus::cache_hit
@@ -886,7 +1059,7 @@ int main() {
       store.probes = {{AtomicDirectoryProbeState::absent,
                        AtomicDirectoryStoreError::none},
                       winner};
-      const auto result = ohl::media::stage_payload(
+      const auto result = stage_payload(
           request_for(entries, 1), source, store);
       const auto expected_observation =
           winner.error == AtomicDirectoryStoreError::none
@@ -917,7 +1090,7 @@ int main() {
       store.probes = {{AtomicDirectoryProbeState::absent,
                        AtomicDirectoryStoreError::none},
                       {winner, AtomicDirectoryStoreError::none}};
-      const auto result = ohl::media::stage_payload(
+      const auto result = stage_payload(
           request_for(entries, 1), source, store);
       const auto observation = winner == AtomicDirectoryProbeState::matching
                                    ? ohl::media::PayloadWinnerObservation::matching
@@ -969,7 +1142,7 @@ int main() {
                              {3, {bytes({3})}, true}});
       FakeStore store;
       store.failures = test.failures;
-      const auto result = ohl::media::stage_payload(
+      const auto result = stage_payload(
           request_for(entries, 3), source, store);
       if (!failed_at(result, test.phase, test.error) ||
           result.store_error != AtomicDirectoryStoreError::io_failure ||
@@ -994,32 +1167,39 @@ int main() {
         PlannedPayloadEntry{1, "a", 0}, PlannedPayloadEntry{2, "b", 0}};
     const std::vector different_path{PlannedPayloadEntry{1, "b", 0}};
     const std::vector different_size{PlannedPayloadEntry{1, "a", 1}};
-    const auto identity = identity_for(base, 0, "source", "recipe");
+    ohl::media::test::SyntheticValidatedMedia different_digest{
+        ohl::media::test::kSyntheticMinimumSectorCount, std::byte{1}};
+    ohl::media::test::SyntheticValidatedMedia different_size_media{
+        ohl::media::test::kSyntheticMinimumSectorCount + 1};
+    const auto identity = identity_for(media_fixture.media(), base, 0, "recipe");
     constexpr std::string_view known_identity =
-        "ohl-payload-v1-sha256:"
-        "1f3b8f15d095e5e3af51742358e8eef4ef7485089d7ec0a2762485a0db00adf1";
-    const auto token_identity =
-        identity_for(different_token, 0, "source", "recipe");
+        "ohl-payload-v2-sha256:"
+        "4f24ebbb85eaa4d83cae493d862a9f497354e13189e7ec2f78c53e470e996841";
+    const auto token_identity = identity_for(media_fixture.media(),
+                                             different_token, 0, "recipe");
     const std::vector independently_varied{
-        identity_for(base, 0, "source-2", "recipe"),
-        identity_for(base, 0, "source", "recipe-2"),
-        identity_for(different_count, 0, "source", "recipe"),
-        identity_for(different_path, 0, "source", "recipe"),
-        identity_for(different_size, 1, "source", "recipe"),
-        identity_for(base, 0, "a", "bc"),
+        identity_for(different_digest.media(), base, 0, "recipe"),
+        identity_for(different_size_media.media(), base, 0, "recipe"),
+        identity_for(media_fixture.media(), base, 0, "recipe-2"),
+        identity_for(media_fixture.media(), different_count, 0, "recipe"),
+        identity_for(media_fixture.media(), different_path, 0, "recipe"),
+        identity_for(media_fixture.media(), different_size, 1, "recipe"),
     };
     bool all_distinct = true;
     for (const auto& varied : independently_varied) {
       all_distinct = all_distinct && varied != identity;
     }
-    const auto ambiguous_one = identity_for(base, 0, "ab", "c");
-    const auto ambiguous_two = identity_for(base, 0, "a", "bc");
+    const auto ambiguous_one =
+        identity_for(media_fixture.media(), base, 0, "ab");
+    const auto ambiguous_two =
+        identity_for(media_fixture.media(), base, 0, "a");
     if (identity != known_identity || identity != token_identity ||
         !all_distinct ||
         ambiguous_one == ambiguous_two ||
-        !identity.starts_with("ohl-payload-v1-sha256:") ||
+        !identity.starts_with("ohl-payload-v2-sha256:") ||
         identity.size() != 86) {
-      std::cerr << "canonical identity field separation failed\n";
+      std::cerr << "canonical v2 identity field separation failed: "
+                << identity << '\n';
       return 1;
     }
   }

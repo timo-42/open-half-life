@@ -1,10 +1,12 @@
 #pragma once
 
 #include "ohl/media/payload_layout.hpp"
+#include "ohl/platform/media_source.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <stop_token>
 
 namespace ohl::media {
 
@@ -20,16 +22,18 @@ class PayloadByteSink {
       std::span<const std::byte> bytes) noexcept = 0;
 };
 
-// Streaming is synchronous and must not throw. Sources receive only the opaque
-// token produced during layout planning, must stop and return false when the
-// supplied sink rejects a chunk, and must neither retain nor use the sink after
-// stream() returns.
+// Streaming is synchronous and must not throw. Sources receive the exact pinned
+// media capability supplied to staging plus only the opaque token produced
+// during layout planning. They must cooperate with cancellation, stop and
+// return false when the supplied sink rejects a chunk, and must neither retain
+// nor use the source or sink after stream() returns.
 class PayloadSource {
  public:
   virtual ~PayloadSource() = default;
 
   [[nodiscard]] virtual bool stream(
-      std::uint64_t source_token, PayloadByteSink& sink) noexcept = 0;
+      const platform::MediaSource& media_source, std::uint64_t source_token,
+      std::stop_token stop_token, PayloadByteSink& sink) noexcept = 0;
 };
 
 enum class PayloadStreamError {
@@ -38,6 +42,7 @@ enum class PayloadStreamError {
   destination_failure,
   overflow,
   underflow,
+  cancelled,
 };
 
 struct PayloadStreamResult {
@@ -54,7 +59,9 @@ struct PayloadStreamResult {
 // source. The destination is never called with a chunk that would exceed the
 // entry's declared size, and success requires an exact final byte count.
 [[nodiscard]] PayloadStreamResult stream_payload_entry(
-    const PlannedPayloadEntry& entry, PayloadSource& source,
+    const PlannedPayloadEntry& entry,
+    const platform::MediaSource& media_source, PayloadSource& source,
+    std::stop_token stop_token,
     PayloadByteSink& destination) noexcept;
 
 }  // namespace ohl::media

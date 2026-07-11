@@ -1,5 +1,7 @@
 #include "ohl/media/payload_stage.hpp"
 
+#include "source_stability_internal.hpp"
+
 #include "ohl/core/sha256.hpp"
 #include "ohl/media/payload_layout.hpp"
 #include "ohl/media/payload_path.hpp"
@@ -20,7 +22,7 @@ namespace {
 
 constexpr std::string_view kIdentityDomain =
     "open-half-life-payload-stage";
-constexpr std::uint64_t kIdentityVersion = 1;
+constexpr std::uint64_t kIdentityVersion = 2;
 
 struct PreparedPlan {
   std::string identity;
@@ -68,13 +70,13 @@ void append_string(ohl::core::Sha256& hash,
 }
 
 [[nodiscard]] std::optional<PreparedPlan> prepare_plan(
-    const PayloadStageRequest& request,
+    const ValidatedMedia& media, const PayloadStageRequest& request,
     std::optional<std::size_t>& failing_entry) {
-  if (request.source_identity.empty() || request.recipe_identity.empty() ||
-      request.source_identity.size() >
-          kMaximumPayloadStageInputIdentityBytes ||
+  if (!media.valid() || media.source() == nullptr ||
+      media.source()->size() != media.fingerprint().size_bytes ||
+      request.recipe_identity.empty() ||
       request.recipe_identity.size() >
-          kMaximumPayloadStageInputIdentityBytes) {
+          kMaximumPayloadStageRecipeIdentityBytes) {
     return std::nullopt;
   }
 
@@ -139,14 +141,16 @@ void append_string(ohl::core::Sha256& hash,
   ohl::core::Sha256 hash;
   append_string(hash, kIdentityDomain);
   append_u64(hash, kIdentityVersion);
-  append_string(hash, request.source_identity);
+  append_u64(hash, media.fingerprint().size_bytes);
+  append_string(hash, media.fingerprint().sha256);
   append_string(hash, request.recipe_identity);
   append_u64(hash, static_cast<std::uint64_t>(request.entries.size()));
+  append_u64(hash, request.declared_total_bytes);
   for (const auto& entry : request.entries) {
     append_string(hash, entry.relative_path);
     append_u64(hash, entry.size_bytes);
   }
-  prepared.identity = "ohl-payload-v1-sha256:";
+  prepared.identity = "ohl-payload-v2-sha256:";
   prepared.identity += ohl::core::hex_encode(hash.finish());
   return prepared;
 }
@@ -184,18 +188,51 @@ void abort_transaction(PayloadStageResult& result,
   result.cleanup_error = transaction.abort();
 }
 
+[[nodiscard]] PayloadStageVerificationError map_verification_error(
+    const detail::SourceStabilityError error) noexcept {
+  switch (error) {
+    case detail::SourceStabilityError::none:
+      return PayloadStageVerificationError::none;
+    case detail::SourceStabilityError::invalid_capability:
+      return PayloadStageVerificationError::invalid_capability;
+    case detail::SourceStabilityError::source_changed:
+      return PayloadStageVerificationError::source_changed;
+    case detail::SourceStabilityError::read_failure:
+      return PayloadStageVerificationError::read_failure;
+    case detail::SourceStabilityError::digest_mismatch:
+      return PayloadStageVerificationError::digest_mismatch;
+    case detail::SourceStabilityError::cancelled:
+      return PayloadStageVerificationError::cancelled;
+  }
+  return PayloadStageVerificationError::read_failure;
+}
+
 }  // namespace
 
-PayloadStageResult stage_payload(const PayloadStageRequest& request,
+PayloadStageResult stage_payload(const ValidatedMedia& media,
+                                 const PayloadStageRequest& request,
                                  PayloadSource& source,
-                                 platform::AtomicDirectoryStore& store) {
+                                 platform::AtomicDirectoryStore& store,
+                                 const std::stop_token stop_token) {
   PayloadStageResult result;
-  auto prepared = prepare_plan(request, result.failing_entry);
+  auto prepared = prepare_plan(media, request, result.failing_entry);
   if (!prepared.has_value()) {
-    result.error = PayloadStageError::invalid_request;
+    if (!media.valid() || media.source() == nullptr ||
+        media.source()->size() != media.fingerprint().size_bytes) {
+      result.error = PayloadStageError::source_verification_failure;
+      result.verification_error =
+          PayloadStageVerificationError::invalid_capability;
+    } else {
+      result.error = PayloadStageError::invalid_request;
+    }
     return result;
   }
   result.identity = prepared->identity;
+  if (stop_token.stop_requested()) {
+    result.phase = PayloadStagePhase::cancellation;
+    result.error = PayloadStageError::cancelled;
+    return result;
+  }
   const platform::AtomicDirectoryPlan store_plan{
       result.identity, prepared->store_entries};
 
@@ -264,13 +301,16 @@ PayloadStageResult stage_payload(const PayloadStageRequest& request,
         platform::AtomicDirectoryStoreError::none};
     {
       PlatformSinkAdapter sink_adapter(*open_result.sink);
-      stream_result = stream_payload_entry(entry, source, sink_adapter);
+      stream_result = stream_payload_entry(
+          entry, *media.source(), source, stop_token, sink_adapter);
       write_error = sink_adapter.error();
     }
     result.bytes_streamed += stream_result.bytes_written;
     if (!stream_result.complete()) {
       result.phase = PayloadStagePhase::stream_file;
-      result.error = PayloadStageError::stream_failure;
+      result.error = stream_result.error == PayloadStreamError::cancelled
+                         ? PayloadStageError::cancelled
+                         : PayloadStageError::stream_failure;
       result.stream_error = stream_result.error;
       result.store_error = write_error;
       result.failing_entry = index;
@@ -300,6 +340,25 @@ PayloadStageResult stage_payload(const PayloadStageRequest& request,
     result.phase = PayloadStagePhase::seal_completion;
     result.error = PayloadStageError::store_failure;
     result.store_error = completion_error;
+    abort_transaction(result, transaction);
+    return result;
+  }
+
+  const auto verification =
+      detail::verify_complete_source_stability(media, stop_token);
+  if (verification != detail::SourceStabilityError::none) {
+    result.phase = PayloadStagePhase::verify_source;
+    result.error = verification == detail::SourceStabilityError::cancelled
+                       ? PayloadStageError::cancelled
+                       : PayloadStageError::source_verification_failure;
+    result.verification_error = map_verification_error(verification);
+    abort_transaction(result, transaction);
+    return result;
+  }
+
+  if (stop_token.stop_requested()) {
+    result.phase = PayloadStagePhase::cancellation;
+    result.error = PayloadStageError::cancelled;
     abort_transaction(result, transaction);
     return result;
   }

@@ -175,21 +175,35 @@ The always-built `media` path and layout policy is independent of Unshield. It
 normalizes archive-controlled names to a strict printable-ASCII subset,
 creates deterministic case-folded keys, rejects portable path conflicts, and
 applies metadata and declared-size quotas before any destination is opened.
-Those path and layout checks are lexical and planning checks only. A
-platform-independent streaming boundary now gives a source only a planned
-entry's opaque token, wraps the caller's byte sink, rejects chunks that exceed
-the declared size before they reach that sink, and requires an exact final byte
-count. It reports source, destination, overflow, and underflow failures
-separately and performs no filesystem mutation. Production extraction remains
-absent and still requires accepted native backends on every supported platform.
-The media module now also has a platform-independent staging orchestrator. It
-validates a complete deterministic plan before touching an injected store,
-streams and seals one file at a time, seals completion metadata last, and
-models cache hits, conflicts, no-replace publication races, explicit cleanup,
-and whether the backend's post-publication parent-sync operation completed or
-failed. Cleanup failures are surfaced and may leave the transaction's owned
-private staging in place. A completed sync is not presented as a universal
-durability guarantee.
+Those path and layout checks are lexical and planning checks only. The
+platform-independent streaming boundary gives every `PayloadSource` the exact
+pinned `MediaSource` from the accepted `ValidatedMedia`, the planned entry's
+opaque token, and the staging stop token. It wraps the caller's byte sink,
+checks cancellation before source dispatch, before each sink write, and after
+source return, rejects chunks that exceed the declared size before they reach
+that sink, requires an exact final byte count, and reports source, destination,
+overflow, underflow, and cancellation failures separately.
+
+The platform-independent `stage_payload` orchestrator now requires
+`ValidatedMedia`; its request no longer accepts a caller-supplied source
+identity. Its local `ohl-payload-v2-sha256` stage identity binds the accepted
+whole-source size and SHA-256, a non-empty trusted recipe identity bounded to
+4,096 bytes, and the normalized layout's entry count, declared total, paths,
+and declared sizes. Transport-local source tokens are deliberately excluded.
+The complete plan is validated before the first injected-store call. Staging
+then streams and seals each payload file, seals completion metadata, reverifies
+the complete pinned source against the accepted size and SHA-256, and performs
+a final cancellation check. After that final check, `publish_no_replace()` is
+the next store operation. A verification or cancellation failure before
+publication either occurs before a transaction exists or aborts the owned
+transaction, and publishes nothing. The orchestrator also models cache hits,
+conflicts, no-replace publication races, explicit cleanup, and whether the
+backend's post-publication parent-sync operation completed or failed. Cleanup
+failures are surfaced and may leave the transaction's owned private staging in
+place. A completed sync is not presented as a universal durability guarantee.
+These accepted boundaries perform no runtime extraction: production extraction
+remains absent and still requires accepted native backends on every supported
+platform.
 The component-based store is tested with a deterministic in-memory fake and a
 Linux implementation. On Linux, an existing absolute root is walked from `/`
 through no-follow directory descriptors, ownership and mode are checked, and

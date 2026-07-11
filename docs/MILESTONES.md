@@ -96,14 +96,27 @@ Current functionality:
 - deterministic payload layout applies entry, metadata, per-file, and
   aggregate-size limits; preserves opaque source tokens; rejects duplicate,
   case-only, and file/directory conflicts; and produces deterministic order
-- the platform-independent payload streaming boundary exposes only opaque
-  source tokens, rejects writes beyond the declared size before forwarding,
-  requires exact final byte counts, and distinguishes source, destination,
-  overflow, and underflow failures without filesystem mutation
+- the platform-independent payload streaming boundary gives every
+  `PayloadSource` the exact pinned `MediaSource` from `ValidatedMedia`, the
+  planned opaque source token, and the same staging stop token; it observes
+  cancellation around source dispatch and sink writes, rejects writes beyond
+  the declared size before forwarding, requires exact final byte counts, and
+  distinguishes source, destination, overflow, underflow, and cancellation
+  failures
+- `stage_payload` requires `ValidatedMedia` and no longer accepts caller source
+  identity; its local `ohl-payload-v2-sha256` identity binds the accepted
+  source size and SHA-256, a non-empty trusted recipe identity bounded to 4,096
+  bytes, and normalized paths and declared sizes plus entry count and declared
+  total, while excluding transport-local source tokens
 - the platform-independent staging orchestrator validates a complete plan
-  before touching an injected store, streams and seals one file at a time,
-  seals completion metadata last, and models cache hits, conflicts, no-replace
-  publication races, cleanup, and parent-sync completion versus uncertainty
+  before touching an injected store, streams and seals each payload file, seals
+  completion metadata, reverifies the complete pinned source, and performs a
+  final cancellation check whose next store operation is
+  `publish_no_replace()`; every verification or cancellation failure before
+  publication either precedes transaction creation or aborts the owned
+  transaction and publishes nothing
+- the orchestrator also models cache hits, conflicts, no-replace publication
+  races, cleanup, and parent-sync completion versus uncertainty
 - the component-based store is covered by a deterministic in-memory fake and a
   gated Linux backend that uses a validated existing root, descriptor-relative
   private staging and cleanup, exact-tree structural probes with same-device

@@ -141,6 +141,27 @@ or import different files and prevent publication based on an unverified mix of
 source states. They do not make mutable media trustworthy; observed mutation or
 failed end-to-end verification fails the import.
 
+The accepted platform-independent staging boundary applies the complete-source
+mode above but is not wired to runtime extraction. `stage_payload` requires a
+`ValidatedMedia` proof, derives source identity only from its accepted
+whole-source size and SHA-256, and no longer accepts caller-supplied source
+identity. Every `PayloadSource` invocation receives the exact pinned
+`MediaSource` from that proof, the planned opaque source token, and the same
+staging stop token. The local version-2 stage identity also binds a non-empty
+trusted recipe identity bounded to 4,096 bytes and the normalized layout's
+entry count, declared total, paths, and declared sizes; transport-local source
+tokens are excluded.
+
+After plan validation, each payload file and then the completion metadata are
+sealed before the complete pinned source is reverified against the accepted
+size and SHA-256. A final cancellation check follows verification, and
+`publish_no_replace()` is the next store operation after that check. Any
+verification or cancellation failure before publication either occurs before a
+transaction exists or aborts the owned transaction; none publishes a staged
+directory. These guarantees cover only the accepted staging candidate and do
+not authorize or establish parser-driven extraction, runtime integration, or
+playability.
+
 ## Parser worker isolation
 
 Untrusted container and filesystem metadata must be handled by a bounded parser

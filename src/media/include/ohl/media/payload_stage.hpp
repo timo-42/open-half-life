@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ohl/media/iso_inspector.hpp"
 #include "ohl/media/payload_layout.hpp"
 #include "ohl/media/payload_stream.hpp"
 #include "ohl/platform/atomic_directory_store.hpp"
@@ -8,18 +9,19 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 
 namespace ohl::media {
 
-inline constexpr std::size_t kMaximumPayloadStageInputIdentityBytes = 4'096;
+inline constexpr std::size_t kMaximumPayloadStageRecipeIdentityBytes = 4'096;
 
 struct PayloadStageRequest {
-  // Stable caller-defined identities for the validated media and selection
-  // recipe. Each is bounded by kMaximumPayloadStageInputIdentityBytes and is
-  // length-prefixed by the canonical stage identity encoder.
-  std::string_view source_identity;
+  // Stable identity for the trusted selection recipe. It is bounded by
+  // kMaximumPayloadStageRecipeIdentityBytes and length-prefixed by the
+  // canonical stage identity encoder. Source identity is derived exclusively
+  // from ValidatedMedia.
   std::string_view recipe_identity;
   std::span<const PlannedPayloadEntry> entries;
   std::uint64_t declared_total_bytes{0};
@@ -41,6 +43,7 @@ enum class PayloadStageStatus {
 
 enum class PayloadStagePhase {
   validation,
+  cancellation,
   probe,
   create_transaction,
   begin,
@@ -48,6 +51,7 @@ enum class PayloadStagePhase {
   stream_file,
   seal_file,
   seal_completion,
+  verify_source,
   publish,
   revalidate,
   sync_published_parent,
@@ -59,10 +63,23 @@ enum class PayloadStageError {
   invalid_request,
   store_failure,
   stream_failure,
+  source_verification_failure,
+  cancelled,
   publish_failure,
   revalidation_failure,
   cleanup_failure,
   published_sync_failure,
+};
+
+// Sanitized result of the complete pinned-source verification. It intentionally
+// contains no source identity, path, bytes, or digest material.
+enum class PayloadStageVerificationError {
+  none,
+  invalid_capability,
+  source_changed,
+  read_failure,
+  digest_mismatch,
+  cancelled,
 };
 
 enum class PayloadPublicationState {
@@ -90,6 +107,8 @@ struct PayloadStageResult {
   platform::AtomicDirectoryStoreError store_error{
       platform::AtomicDirectoryStoreError::none};
   PayloadStreamError stream_error{PayloadStreamError::none};
+  PayloadStageVerificationError verification_error{
+      PayloadStageVerificationError::none};
   std::optional<std::size_t> failing_entry;
   // Counts fully accepted chunks and exact successful source streams. An entry
   // remains counted if a later seal, completion, or publication step fails.
@@ -107,13 +126,17 @@ struct PayloadStageResult {
   }
 };
 
-// Validates and prepares the complete request before the first store call.
-// Identity is a versioned SHA-256 digest over length-prefixed source/recipe
-// identities plus normalized paths and declared sizes; source tokens are not
-// included. The injected store remains responsible for all native safety and
-// atomicity guarantees.
+// Validates the media capability and prepares the complete request before the
+// first store call. Identity is a versioned SHA-256 digest over the validated
+// source size and SHA-256, the length-prefixed recipe identity, normalized
+// paths and declared sizes, entry count, and total size; transport-local source
+// tokens are not included. After staging is sealed, the complete pinned source
+// is reverified and cancellation is checked immediately before publication.
+// The injected store remains responsible for all native safety and atomicity
+// guarantees.
 [[nodiscard]] PayloadStageResult stage_payload(
-    const PayloadStageRequest& request, PayloadSource& source,
-    platform::AtomicDirectoryStore& store);
+    const ValidatedMedia& media, const PayloadStageRequest& request,
+    PayloadSource& source, platform::AtomicDirectoryStore& store,
+    std::stop_token stop_token = {});
 
 }  // namespace ohl::media

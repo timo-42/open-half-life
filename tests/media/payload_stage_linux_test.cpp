@@ -1,6 +1,8 @@
 #include "ohl/media/payload_stage.hpp"
 #include "ohl/platform/atomic_directory_store.hpp"
 
+#include "synthetic_media_test_support.hpp"
+
 #include <fcntl.h>
 #include <ftw.h>
 #include <dirent.h>
@@ -65,16 +67,37 @@ enum class RenameCapability { supported, unsupported, failed };
 
 class Source final : public ohl::media::PayloadSource {
  public:
-  [[nodiscard]] bool stream(const std::uint64_t token,
-                            ohl::media::PayloadByteSink& sink) noexcept override {
+  explicit Source(const ohl::platform::MediaSource& expected_source) noexcept
+      : expected_source_(&expected_source) {}
+
+  [[nodiscard]] bool stream(
+      const ohl::platform::MediaSource& media_source,
+      const std::uint64_t token, const std::stop_token stop_token,
+      ohl::media::PayloadByteSink& sink) noexcept override {
     ++calls;
+    observed_source = &media_source;
     observed_token = token;
+    observed_stop_token = stop_token;
+    observed_sink = &sink;
+    contract_ok = observed_source == expected_source_ &&
+                  observed_stop_token == std::stop_token{} &&
+                  observed_sink != nullptr;
+    if (!contract_ok) {
+      return false;
+    }
     const std::array data{std::byte{'o'}, std::byte{'h'}, std::byte{'l'}};
     return sink.write(data);
   }
 
   std::size_t calls{0};
   std::uint64_t observed_token{0};
+  const ohl::platform::MediaSource* observed_source{nullptr};
+  std::stop_token observed_stop_token;
+  const ohl::media::PayloadByteSink* observed_sink{nullptr};
+  bool contract_ok{true};
+
+ private:
+  const ohl::platform::MediaSource* expected_source_{nullptr};
 };
 
 struct TransactionObservation {
@@ -270,20 +293,26 @@ int main() {
   const std::vector entries{
       ohl::media::PlannedPayloadEntry{
           42, "ProjectFixture/AmberPayload.dat", 3}};
+  ohl::media::test::SyntheticValidatedMedia media_fixture;
+  const auto& media = media_fixture.media();
+  const auto& media_source = *media.source();
   const ohl::media::PayloadStageRequest request{
-      "source", "recipe", entries, 3, {}};
-  Source first_source;
+      "recipe", entries, 3, {}};
+  Source first_source{media_source};
   const auto first =
-      ohl::media::stage_payload(request, first_source, *opened.store);
+      ohl::media::stage_payload(media, request, first_source, *opened.store);
   if (first.status != ohl::media::PayloadStageStatus::published_sync_complete ||
-      first_source.calls != 1 || first_source.observed_token != 42) {
+      first_source.calls != 1 || first_source.observed_token != 42 ||
+      !first_source.contract_ok ||
+      first_source.observed_source != &media_source ||
+      first_source.observed_sink == nullptr) {
     cleanup();
     return 1;
   }
   WrappedStore lost_race_store{*opened.store, true, false};
-  Source lost_source;
+  Source lost_source{media_source};
   const auto lost =
-      ohl::media::stage_payload(request, lost_source, lost_race_store);
+      ohl::media::stage_payload(media, request, lost_source, lost_race_store);
   if (lost.status != ohl::media::PayloadStageStatus::cache_hit ||
       lost.winner_observation !=
           ohl::media::PayloadWinnerObservation::matching ||
@@ -291,20 +320,20 @@ int main() {
     cleanup();
     return 1;
   }
-  Source hit_source;
+  Source hit_source{media_source};
   const auto hit =
-      ohl::media::stage_payload(request, hit_source, *opened.store);
+      ohl::media::stage_payload(media, request, hit_source, *opened.store);
   if (hit.status != ohl::media::PayloadStageStatus::cache_hit ||
       hit_source.calls != 0) {
     cleanup();
     return 1;
   }
   const ohl::media::PayloadStageRequest sync_request{
-      "source", "sync-recipe", entries, 3, {}};
+      "sync-recipe", entries, 3, {}};
   WrappedStore sync_store{*opened.store, false, true};
-  Source sync_source;
+  Source sync_source{media_source};
   const auto uncertain =
-      ohl::media::stage_payload(sync_request, sync_source, sync_store);
+      ohl::media::stage_payload(media, sync_request, sync_source, sync_store);
   if (uncertain.status !=
           ohl::media::PayloadStageStatus::published_sync_uncertain ||
       uncertain.publication !=
@@ -314,13 +343,13 @@ int main() {
     return 1;
   }
   const ohl::media::PayloadStageRequest reconciled_request{
-      "source", "committed-error-reconciled", entries, 3, {}};
+      "committed-error-reconciled", entries, 3, {}};
   TransactionObservation reconciled_observation;
   WrappedStore reconciled_store{*opened.store, false, false, true,
                                 &reconciled_observation};
-  Source reconciled_source;
+  Source reconciled_source{media_source};
   const auto reconciled = ohl::media::stage_payload(
-      reconciled_request, reconciled_source, reconciled_store);
+      media, reconciled_request, reconciled_source, reconciled_store);
   if (reconciled.status !=
           ohl::media::PayloadStageStatus::published_sync_complete ||
       reconciled.publication !=
@@ -341,9 +370,9 @@ int main() {
     cleanup();
     return 1;
   }
-  Source conflict_source;
+  Source conflict_source{media_source};
   const auto conflict =
-      ohl::media::stage_payload(request, conflict_source, *opened.store);
+      ohl::media::stage_payload(media, request, conflict_source, *opened.store);
   const auto result = conflict.status == ohl::media::PayloadStageStatus::conflict &&
                               conflict_source.calls == 0
                           ? 0
