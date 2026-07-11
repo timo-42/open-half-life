@@ -7,9 +7,16 @@
 // This target compiles one native backend directly so it can verify the
 // implementation-private descriptor/handle inheritance state without adding a
 // native-handle accessor to the public MediaSource API.
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wkeyword-macro"
+#endif
 #define private public
 #include "ohl/platform/media_source.hpp"
 #undef private
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 
 #if defined(_WIN32)
 #include "../../src/platform/src/media_source_windows.cpp"
