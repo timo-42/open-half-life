@@ -34,6 +34,7 @@ media_parser_results -> media + parser; disconnected from runtime targets
 media_parser_reads -> media_parser_results; disconnected from runtime targets
 media_parser_transport -> parser + platform + Threads; disconnected from runtime targets
 media_parser_handshake -> media_parser_reads + media_parser_transport; disconnected from runtime targets
+media_parser_parent_session -> media_parser_handshake; disconnected from runtime targets
 vfs -> platform + standard library; libudfread is a private implementation edge
 parser -> standard library
 core/platform -> standard library
@@ -236,8 +237,9 @@ in the same direction is rejected without I/O and does not by itself poison the
 channel. The exact-I/O capability must therefore support one active read and
 one active write, and its abort operation must be concurrency-safe, must
 promptly wake either or both directions, and must not re-enter or destroy the
-frame channel. Destruction may not race active operations; orderly worker close
-or terminate-and-reap remains the caller's responsibility.
+frame channel. Destruction may not race active operations. The future owner is
+responsible for orderly channel close followed by `wait()`/reap; only failure
+or orderly-close timeout uses `terminate_and_wait()` to terminate and reap.
 
 Terminal `abort_io()` interrupts the trusted byte channel; it is not process
 termination or reap authority. Trusted custom callback code retains its ambient
@@ -292,6 +294,10 @@ Later trusted composition must move that validator into a
 derived policy, but no media identity: it does not mechanically prove that the
 later broker receives the same media. That is a trusted composition
 requirement. The proof itself owns no source or process capability.
+It does borrow the exact channel identity: that channel must outlive the proof
+until the proof is consumed or discarded. After successful factory
+consumption, the same channel must instead outlive the created parent session
+and all of its active calls.
 
 Receive storage is never scrubbed and no frame or payload view escapes. Once
 payload I/O begins, or if typed-ready validation fails, an attacker-controlled
@@ -307,6 +313,117 @@ publication, cache, runtime-import, or application authority. It neither
 creates a worker nor composes the downstream session, broker, selection,
 staging, or application. Those remain explicit responsibilities of later
 trusted native composition.
+
+Commit `7bd9d38` adds the disconnected
+`OpenHalfLife::media_parser_parent_session` library. Its only direct project
+dependency is `OpenHalfLife::media_parser_handshake`; no application or runtime
+target links it. The factory consumes a valid move-only handshake proof only
+after validating the exact borrowed frame-channel object, a nonterminal
+channel, the supplied `ValidatedMedia`, the media fingerprint's captured size,
+the proof's exact source-read policy and limits, a nonzero worker epoch, and
+bounded import limits. A distinct channel with the same session identifier is
+rejected because the proof binds object identity as well as the identifier.
+Rejected configuration leaves the proof unconsumed. The proof records source
+size and maximum-read policy, not media identity, so the factory's requirement
+that trusted composition supply the same `ValidatedMedia` used for the
+handshake remains a caller obligation rather than a mechanical proof.
+
+The parent session owns the result session, source-read broker, monotonic
+nonzero request identifiers, active operation, reply-ticket sequencing,
+outbound transaction arbitration, cancellation state, and first terminal
+result. It borrows the exact frame channel for its complete lifetime; the
+channel and its exact-I/O context must outlive the session and all calls, and
+the caller must not perform direct protocol I/O through that channel while the
+session exists. A stream sink is retained from a successfully sent stream
+request through stream completion, cancellation acknowledgement, or terminal
+failure. The sink must outlive that interval, remain synchronous and
+nonthrowing, and neither re-enter nor destroy the session. Destruction may not
+race any active call. Destroying an open nonterminal session retires result
+authority and aborts the channel; destruction after an orderly `shutdown`
+does not abort it.
+
+Enumeration and streaming stage the result-session transition, then send with
+the parent-session mutex released. The session maintains an explicit in-flight
+transaction for enumerate, stream, read reply, cancel, or shutdown so external
+write and abort callbacks never run under that mutex. Competing mutations are
+rejected with `concurrent_operation` and perform no I/O. During any staged
+outbound transaction, the read-only `state()` and `result()` surface the last
+committed wrapper state and `catalog()` is deliberately hidden. Frame-channel
+callbacks may re-enter only `terminal()`, `state()`, `result()`, and
+`catalog()`; mutating calls, lifecycle notifications, and destruction are
+prohibited. Sink callbacks may not re-enter at all.
+
+`receive_one()` is available only while enumerating, streaming, or cancelling,
+which prevents an idle worker from pre-sending a guessed next-request result.
+The channel receive occurs outside the transaction mutex, allowing cancel to
+cross a blocked receive. After receive returns, consumption waits for any
+outbound transaction to commit, so completion may win a completion/cancel
+crossing under the established protocol ordering. Entry batches advance
+enumeration, completion atomically promotes a catalog and returns to idle,
+data chunks are synchronously forwarded to the retained sink, and stream
+completion requires an exact zero remainder. A rejecting sink may have made
+caller-owned partial effects before the session becomes terminal.
+
+A typed read request is passed to the owned broker. A serviceable request
+prepares a canonical reply in caller storage under a unique ticket; the parent
+commits that ticket only after the exact frame send succeeds, and abandons it
+after partial or failed delivery. A read first seen after cancellation is
+ignored without source or reply-buffer access. Parent-level arbitration does
+not allow a staged read reply and cancel to overtake one another: once the
+read-reply transaction is staged, `request_cancel()` returns
+`concurrent_operation` without I/O; if cancel stages first, the returning
+receive waits for it to commit and the broker ignores the newly observed read.
+The lower result/broker one-shot drain remains part of their independent
+contract, but this parent-session arbitration cannot produce a `cancel_ack`
+overtaking its already-staged read reply. The factory accepts `ValidatedMedia`
+and the owned broker retains its pinned source capability, with reads bounded
+by the exact policy accepted in the handshake. After construction, the parent
+accepts no raw path or replacement source capability.
+
+Before any receive I/O, the parent requires caller-owned receive storage for
+the protocol maximum, scratch storage for `maximum_read_bytes`, and reply
+storage for the fixed read-reply prefix plus that maximum. All three must be
+nonnull and pairwise disjoint. No frame, payload, or scratch view escapes.
+Failed receive I/O may leave attacker-controlled bytes followed by a stale
+suffix, so the whole receive buffer is invalid as a frame until reinitialized.
+The broker scrubs the scratch prefix actually used for a read; an unused suffix
+may remain stale. Reply storage is not scrubbed and may retain private source
+bytes after either success or failure, so its owner must sanitize it before
+logging or unrelated reuse.
+
+`notify_worker_failed()` and `invalidate_source()` claim the first terminal
+cause while holding the mutex, clear catalog and stream authority, then abort
+the channel after unlocking. This promptly wakes blocked reads or writes and
+prevents a returning operation from replacing the retained cause. Protocol,
+channel, result, source, worker, source-invalidation, allocation, internal,
+request-ID exhaustion, invalid-state/configuration, small-output, overlap, and
+concurrent-operation outcomes remain sanitized project errors. `shutdown` is
+accepted only from idle or cancelled state with no active receive or outbound
+transaction; it closes protocol state but does not close, terminate, wait for,
+or reap the borrowed worker or channel.
+
+This composition has no executable, service, path, or component-selection
+authority; no worker/process launch, ownership, termination, or reap
+authority; and no destination, staging, cache-publication, application, or
+runtime-import authority. The abstract `platform::IsolatedWorker` facade
+already defines launch, exact I/O, abort/close, wait, and terminate-and-wait
+lifecycle operations, but committed HEAD still selects only the backend that
+returns `unsupported`; it has no successful native backend. Production
+composition is also missing the media-parser worker executable, bootstrap and
+service loop, and the higher process-session owner. That owner must allocate
+fresh protocol session IDs and worker epochs under an explicit uniqueness
+policy, keep the exact channel alive through handshake-proof consumption and
+the parent session, close the channel and `wait()`/reap after orderly protocol
+shutdown, and use `terminate_and_wait()` only for failure or orderly-close
+timeout paths. ParentSession owns none of those lifecycle actions.
+
+Work resumes in dependency order: accept a native backend together with the
+worker/bootstrap/service loop; add the process-session owner and session-ID /
+epoch policy; compose handshake and ParentSession; then integrate a
+deterministic component-selection recipe before staging and publication. No
+further coherent disconnected parent-session package removes those blockers.
+Its tests are project-authored and synthetic and authorize no proprietary
+extraction.
 
 Deterministic parser fuzz validation was accepted at `81a7ee9`; its typed
 dispatch was extended at `d59b6c5`, for `stream_entry` at `f4d908a`, for
@@ -523,7 +640,7 @@ typed protocol only and did not build or fuzz the broker. The build evidence
 qualifies the disconnected broker on the tested hosts, not a worker, transport,
 runtime import path, staging, or publication.
 
-## Local parser transport and parent-handshake qualification
+## Local parser transport and parent-session qualification
 
 The accepted frame-channel commit is
 `e4b819a9efa37d5e401d111c4ac591365ce669ae`. Local validation completed a clean
@@ -545,6 +662,30 @@ downstream session/broker construction, pre-I/O rejection, unsanitized buffer
 invalidation, sanitized terminal transport failures, and absence of escaped
 views or proofs on failure. These are local results only; no hosted result is
 claimed for `13f0fb0`.
+
+The trusted parent session was accepted at
+`7bd9d38213c7df160e0e84fcb50a9cacb0095558`. Hash, index, manifest, and diff
+guards showed that the seven-file parent-session package matched the commit.
+Independent pristine local verification used `git archive` of exact tree
+`f28715ef827044928a0c9cc1ce45464d5c8d9519`; the archive SHA-256 was
+`6361378e63c5de330784836106851fd4b0afb4d4b239d10b495912fe585a8123`.
+It compiled committed `isolated_worker_unsupported.cpp` and excluded all dirty
+native-backend files from the shared worktree. A clean Linux GCC 14 Debug
+warnings-as-errors build passed 91/91 steps, the full CTest suite passed 36/36,
+and the explicit repository-policy test passed 1/1. Synthetic behavioral
+coverage includes exact-channel factory binding, proof preservation on
+rejection, request and operation transitions, atomic outbound callback
+crossings, receive/cancel races, prompt first-cause notifications, ticket
+commit/abandon behavior, sink and buffer lifetime rules, privacy-sensitive
+scratch/reply handling, terminal destruction, and no escaped frame or payload
+result. Separate API, source, and CMake review establishes the disconnected
+dependency edge and absence of launch, path, staging, publication, and runtime
+authority. The practically unreachable `uint64_t` request-ID exhaustion path
+has no counter-injection seam, and stable injected source-read failure remains
+covered at the broker layer because the parent factory exposes no source-read
+operation-table seam. These are accepted test limitations. These results are
+from a pristine exact tree but remain local only; no hosted result is claimed
+for `7bd9d38`.
 
 The intended gameplay/rendering graph remains under design. Each new edge must
 be expressed explicitly with `target_link_libraries` so CMake remains the
