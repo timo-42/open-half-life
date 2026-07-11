@@ -1,5 +1,6 @@
 add_library(ohl_parser STATIC
   src/protocol.cpp
+  src/protocol_messages.cpp
 )
 
 add_library(OpenHalfLife::parser ALIAS ohl_parser)

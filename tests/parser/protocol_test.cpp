@@ -1,4 +1,5 @@
 #include "ohl/parser/protocol.hpp"
+#include "ohl/parser/protocol_messages.hpp"
 
 #include <algorithm>
 #include <array>
@@ -13,6 +14,8 @@
 namespace {
 
 using ohl::parser::FrameHeader;
+using ohl::parser::FrameView;
+using ohl::parser::HelloMessage;
 using ohl::parser::MessageDirection;
 using ohl::parser::MessageType;
 using ohl::parser::PayloadReader;
@@ -22,7 +25,11 @@ using ohl::parser::ProtocolError;
 using ohl::parser::ProtocolPhase;
 using ohl::parser::ProtocolStateValidator;
 using ohl::parser::ProtocolStatus;
+using ohl::parser::ReadReplyMessage;
+using ohl::parser::ReadRequestMessage;
+using ohl::parser::ReadyMessage;
 using ohl::parser::SessionState;
+using ohl::parser::SourceReadPolicy;
 
 constexpr std::uint64_t kSession = 0x0102'0304'0506'0708ULL;
 
@@ -73,6 +80,27 @@ constexpr std::uint64_t kSession = 0x0102'0304'0506'0708ULL;
          observe(validator, MessageDirection::worker_to_parent,
                  MessageType::ready) &&
          validator.state() == SessionState::idle;
+}
+
+[[nodiscard]] ProtocolError decode_hello_then_observe(
+    ProtocolStateValidator& validator, const FrameView& candidate) {
+  const auto decoded = ohl::parser::decode_hello_payload(candidate);
+  if (!decoded.valid()) {
+    return decoded.error;
+  }
+  return validator.observe(MessageDirection::parent_to_worker,
+                           candidate.header);
+}
+
+[[nodiscard]] FrameView payload_frame(
+    const MessageType type, const std::span<const std::byte> payload,
+    const std::uint64_t request_id = 0) {
+  return {
+      .error = ProtocolError::none,
+      .header = frame(type, request_id,
+                      static_cast<std::uint32_t>(payload.size())),
+      .payload = payload,
+  };
 }
 
 [[nodiscard]] bool test_header_encoding() {
@@ -1102,6 +1130,624 @@ constexpr std::uint64_t kSession = 0x0102'0304'0506'0708ULL;
              : fail("invalid budgets or session were accepted");
 }
 
+[[nodiscard]] bool test_typed_hello_and_ready() {
+  const HelloMessage canonical{0x0102'0304'0506'0708ULL, 0x0001'0203U};
+  const std::array<std::byte, ohl::parser::kHelloPayloadBytes> expected{
+      std::byte{0x08}, std::byte{0x07}, std::byte{0x06}, std::byte{0x05},
+      std::byte{0x04}, std::byte{0x03}, std::byte{0x02}, std::byte{0x01},
+      std::byte{0x03}, std::byte{0x02}, std::byte{0x01}, std::byte{0x00},
+  };
+  std::array<std::byte, ohl::parser::kHelloPayloadBytes> encoded{};
+  const auto encode = ohl::parser::encode_hello_payload(canonical, encoded);
+  const auto decode = ohl::parser::decode_hello_payload(
+      payload_frame(MessageType::hello, encoded));
+  if (!encode.valid() || encode.bytes_written != encoded.size() ||
+      encoded != expected || !decode.valid() ||
+      decode.message.source_size != canonical.source_size ||
+      decode.message.maximum_read_bytes != canonical.maximum_read_bytes) {
+    return fail("typed hello canonical encoding failed");
+  }
+
+  for (const auto message : {
+           HelloMessage{1, 1},
+           HelloMessage{std::numeric_limits<std::uint64_t>::max(),
+                        ohl::parser::kMaximumReadBytes},
+       }) {
+    if (!ohl::parser::encode_hello_payload(message, encoded).valid() ||
+        !ohl::parser::decode_hello_payload(
+             payload_frame(MessageType::hello, encoded))
+             .valid()) {
+      return fail("typed hello min/max round trip failed");
+    }
+  }
+
+  std::array<std::byte, ohl::parser::kHelloPayloadBytes + 1> malformed{};
+  for (std::size_t size = 0; size < ohl::parser::kHelloPayloadBytes; ++size) {
+    const auto result = ohl::parser::decode_hello_payload(payload_frame(
+        MessageType::hello,
+        std::span<const std::byte>{malformed}.first(size)));
+    if (result.error != ProtocolError::payload_underflow ||
+        result.message.source_size != 0 ||
+        result.message.maximum_read_bytes != 0) {
+      return fail("short typed hello was not rejected atomically");
+    }
+  }
+  if (ohl::parser::decode_hello_payload(payload_frame(
+          MessageType::hello, malformed))
+          .error != ProtocolError::payload_trailing_bytes) {
+    return fail("long typed hello was accepted");
+  }
+
+  const auto hello_error = [&](const HelloMessage message) {
+    if (!ohl::parser::encode_hello_payload(message, encoded).valid()) {
+      return true;
+    }
+    return !ohl::parser::decode_hello_payload(
+                payload_frame(MessageType::hello, encoded))
+                .valid();
+  };
+  if (!hello_error({0, 1}) || !hello_error({1, 0}) ||
+      hello_error({1, ohl::parser::kMaximumReadBytes}) ||
+      !hello_error({1, ohl::parser::kMaximumReadBytes + 1U})) {
+    return fail("typed hello value bounds changed");
+  }
+  const auto decode_hello_values = [&](const HelloMessage message) {
+    PayloadWriter writer{encoded};
+    return writer.write_u64(message.source_size) &&
+           writer.write_u32(message.maximum_read_bytes)
+               ? ohl::parser::decode_hello_payload(
+                     payload_frame(MessageType::hello, encoded))
+                     .error
+               : ProtocolError::output_too_small;
+  };
+  if (decode_hello_values({0, 1}) != ProtocolError::noncanonical_value ||
+      decode_hello_values({1, 0}) != ProtocolError::noncanonical_value ||
+      decode_hello_values({1, ohl::parser::kMaximumReadBytes}) !=
+          ProtocolError::none ||
+      decode_hello_values({1, ohl::parser::kMaximumReadBytes + 1U}) !=
+          ProtocolError::noncanonical_value) {
+    return fail("typed hello decoder value bounds changed");
+  }
+
+  const std::array<std::byte, 1> nonempty_ready{std::byte{0}};
+  if (!ohl::parser::encode_ready_payload(ReadyMessage{}, {}).valid() ||
+      !ohl::parser::decode_ready_payload(
+           payload_frame(MessageType::ready, {}))
+           .valid() ||
+      ohl::parser::decode_ready_payload(
+          payload_frame(MessageType::ready, nonempty_ready))
+              .error != ProtocolError::payload_trailing_bytes ||
+      ohl::parser::decode_hello_payload(
+          payload_frame(MessageType::ready, expected))
+              .error != ProtocolError::unexpected_message ||
+      ohl::parser::decode_ready_payload(
+          payload_frame(MessageType::hello, {}))
+              .error != ProtocolError::unexpected_message) {
+    return fail("typed hello/ready type or empty-payload validation failed");
+  }
+  return true;
+}
+
+[[nodiscard]] bool test_typed_read_request() {
+  constexpr SourceReadPolicy policy{std::numeric_limits<std::uint64_t>::max(),
+                                    ohl::parser::kMaximumReadBytes};
+  constexpr ReadRequestMessage canonical{0x0102'0304U,
+                                         0x1112'1314'1516'1718ULL,
+                                         0x0001'0203U};
+  const std::array<std::byte, ohl::parser::kReadRequestPayloadBytes> expected{
+      std::byte{0x04}, std::byte{0x03}, std::byte{0x02}, std::byte{0x01},
+      std::byte{0x18}, std::byte{0x17}, std::byte{0x16}, std::byte{0x15},
+      std::byte{0x14}, std::byte{0x13}, std::byte{0x12}, std::byte{0x11},
+      std::byte{0x03}, std::byte{0x02}, std::byte{0x01}, std::byte{0x00},
+  };
+  std::array<std::byte, ohl::parser::kReadRequestPayloadBytes> encoded{};
+  const auto encode = ohl::parser::encode_read_request_payload(
+      canonical, policy, canonical.read_sequence, encoded);
+  const auto decode = ohl::parser::decode_read_request_payload(
+      payload_frame(MessageType::read_request, encoded, 7), policy,
+      canonical.read_sequence);
+  if (!encode.valid() || encoded != expected || !decode.valid() ||
+      decode.message.read_sequence != canonical.read_sequence ||
+      decode.message.offset != canonical.offset ||
+      decode.message.length != canonical.length) {
+    return fail("typed read request canonical encoding failed");
+  }
+
+  for (const auto item : {
+           ReadRequestMessage{1, 0, 1},
+           ReadRequestMessage{std::numeric_limits<std::uint32_t>::max(),
+                              std::numeric_limits<std::uint64_t>::max() -
+                                  ohl::parser::kMaximumReadBytes,
+                              ohl::parser::kMaximumReadBytes},
+       }) {
+    const SourceReadPolicy bounds{
+        item.length == 1 ? 1 : std::numeric_limits<std::uint64_t>::max(),
+        item.length};
+    if (!ohl::parser::encode_read_request_payload(
+             item, bounds, item.read_sequence, encoded)
+             .valid() ||
+        !ohl::parser::decode_read_request_payload(
+             payload_frame(MessageType::read_request, encoded, 1), bounds,
+             item.read_sequence)
+             .valid()) {
+      return fail("typed read request min/max round trip failed");
+    }
+  }
+
+  std::array<std::byte, ohl::parser::kReadRequestPayloadBytes + 1> malformed{};
+  for (std::size_t size = 0; size < ohl::parser::kReadRequestPayloadBytes;
+       ++size) {
+    if (ohl::parser::decode_read_request_payload(
+            payload_frame(MessageType::read_request,
+                          std::span<const std::byte>{malformed}.first(size), 1),
+            {1, 1}, 1)
+            .error != ProtocolError::payload_underflow) {
+      return fail("short typed read request was accepted");
+    }
+  }
+  if (ohl::parser::decode_read_request_payload(
+          payload_frame(MessageType::read_request, malformed, 1), {1, 1}, 1)
+          .error != ProtocolError::payload_trailing_bytes) {
+    return fail("long typed read request was accepted");
+  }
+
+  const auto rejects = [&](const ReadRequestMessage message,
+                           const SourceReadPolicy bounds,
+                           const std::uint32_t expected_sequence) {
+    return ohl::parser::encode_read_request_payload(
+               message, bounds, expected_sequence, encoded)
+               .error != ProtocolError::none;
+  };
+  if (!rejects({0, 0, 1}, {1, 1}, 1) ||
+      !rejects({2, 0, 1}, {1, 1}, 1) ||
+      !rejects({1, 0, 0}, {1, 1}, 1) ||
+      !rejects({1, 0, 1}, {0, 1}, 1) ||
+      !rejects({1, 0, 1}, {1, 0}, 1) ||
+      !rejects({1, 0, 1},
+               {1, ohl::parser::kMaximumReadBytes + 1U}, 1) ||
+      !rejects({1, 0, 1}, {1, 1}, 0) ||
+      !rejects({1, 0, ohl::parser::kMaximumReadBytes + 1U},
+               {std::numeric_limits<std::uint64_t>::max(),
+                ohl::parser::kMaximumReadBytes},
+               1) ||
+      rejects({1, 4, 4}, {8, 4}, 1) ||
+      !rejects({1, 4, 5}, {8, 5}, 1) ||
+      !rejects({1, std::numeric_limits<std::uint64_t>::max() - 1, 2},
+               {std::numeric_limits<std::uint64_t>::max(), 2}, 1)) {
+    return fail("typed read request value/range bounds changed");
+  }
+
+  const auto decode_request_values = [&](const ReadRequestMessage message,
+                                         const SourceReadPolicy bounds,
+                                         const std::uint32_t sequence) {
+    PayloadWriter writer{encoded};
+    if (!writer.write_u32(message.read_sequence) ||
+        !writer.write_u64(message.offset) ||
+        !writer.write_u32(message.length)) {
+      return ProtocolError::output_too_small;
+    }
+    return ohl::parser::decode_read_request_payload(
+               payload_frame(MessageType::read_request, encoded, 1), bounds,
+               sequence)
+        .error;
+  };
+  if (decode_request_values({0, 0, 1}, {1, 1}, 1) !=
+          ProtocolError::noncanonical_value ||
+      decode_request_values({2, 0, 1}, {1, 1}, 1) !=
+          ProtocolError::noncanonical_value ||
+      decode_request_values({1, 0, 0}, {1, 1}, 1) !=
+          ProtocolError::noncanonical_value ||
+      decode_request_values({1, 0, ohl::parser::kMaximumReadBytes + 1U},
+                            {std::numeric_limits<std::uint64_t>::max(),
+                             ohl::parser::kMaximumReadBytes},
+                            1) != ProtocolError::noncanonical_value ||
+      decode_request_values({1, 4, 4}, {8, 4}, 1) != ProtocolError::none ||
+      decode_request_values({1, 4, 5}, {8, 5}, 1) !=
+          ProtocolError::noncanonical_value ||
+      decode_request_values(
+          {1, std::numeric_limits<std::uint64_t>::max() - 1, 2},
+          {std::numeric_limits<std::uint64_t>::max(), 2}, 1) !=
+          ProtocolError::noncanonical_value) {
+    return fail("typed read request decoder value/range bounds changed");
+  }
+
+  if (ohl::parser::decode_read_request_payload(
+          payload_frame(MessageType::read_request, encoded, 1), {0, 1}, 1)
+          .error != ProtocolError::invalid_budget ||
+      ohl::parser::decode_read_request_payload(
+          payload_frame(MessageType::read_request, encoded, 1), {1, 0}, 1)
+          .error != ProtocolError::invalid_budget ||
+      ohl::parser::decode_read_request_payload(
+          payload_frame(MessageType::read_request, encoded, 1),
+          {1, ohl::parser::kMaximumReadBytes + 1U}, 1)
+          .error != ProtocolError::invalid_budget ||
+      ohl::parser::decode_read_request_payload(
+          payload_frame(MessageType::read_request, encoded, 1), {1, 1}, 0)
+          .error != ProtocolError::invalid_budget ||
+      ohl::parser::decode_read_request_payload(
+          payload_frame(MessageType::read_reply, encoded, 1), policy,
+          canonical.read_sequence)
+          .error != ProtocolError::unexpected_message) {
+    return fail("typed read request context/type validation failed");
+  }
+  return true;
+}
+
+[[nodiscard]] bool test_typed_read_reply() {
+  const std::array data{std::byte{0xaa}, std::byte{0xbb}, std::byte{0xcc}};
+  const ReadReplyMessage canonical{0x0102'0304U, ProtocolStatus::ok, data};
+  const std::array<std::byte, ohl::parser::kReadReplyPrefixBytes + data.size()>
+      expected{std::byte{0x04}, std::byte{0x03}, std::byte{0x02},
+               std::byte{0x01}, std::byte{0x00}, std::byte{0x00},
+               std::byte{0xaa}, std::byte{0xbb}, std::byte{0xcc}};
+  std::array<std::byte, expected.size()> encoded{};
+  const auto encode = ohl::parser::encode_read_reply_payload(
+      canonical, canonical.read_sequence, data.size(), encoded);
+  const auto decode = ohl::parser::decode_read_reply_payload(
+      payload_frame(MessageType::read_reply, encoded, 7),
+      canonical.read_sequence, data.size());
+  if (!encode.valid() || encoded != expected || !decode.valid() ||
+      decode.message.read_sequence != canonical.read_sequence ||
+      decode.message.status != ProtocolStatus::ok ||
+      !equal_bytes(decode.message.data, data) ||
+      decode.message.data.data() !=
+          encoded.data() + ohl::parser::kReadReplyPrefixBytes) {
+    return fail("typed read reply canonical encoding failed");
+  }
+
+  const std::array<std::byte, 1> one_byte{std::byte{0x5a}};
+  std::array<std::byte, ohl::parser::kReadReplyPrefixBytes + 1> minimum{};
+  if (!ohl::parser::encode_read_reply_payload(
+           {1, ProtocolStatus::ok, one_byte}, 1, 1, minimum)
+           .valid() ||
+      !ohl::parser::decode_read_reply_payload(
+           payload_frame(MessageType::read_reply, minimum, 1), 1, 1)
+           .valid()) {
+    return fail("typed read reply minimum round trip failed");
+  }
+  std::vector<std::byte> maximum_data(ohl::parser::kMaximumReadBytes,
+                                      std::byte{0x5a});
+  std::vector<std::byte> maximum_payload(ohl::parser::kMaximumFramePayloadBytes);
+  const auto maximum_encode = ohl::parser::encode_read_reply_payload(
+      {std::numeric_limits<std::uint32_t>::max(), ProtocolStatus::ok,
+       maximum_data},
+      std::numeric_limits<std::uint32_t>::max(),
+      ohl::parser::kMaximumReadBytes, maximum_payload);
+  const auto maximum_decode = ohl::parser::decode_read_reply_payload(
+      payload_frame(MessageType::read_reply, maximum_payload, 1),
+      std::numeric_limits<std::uint32_t>::max(),
+      ohl::parser::kMaximumReadBytes);
+  if (!maximum_encode.valid() || !maximum_decode.valid() ||
+      maximum_decode.message.data.size() != maximum_data.size()) {
+    return fail("typed read reply maximum round trip failed");
+  }
+
+  std::array<std::byte, ohl::parser::kReadReplyPrefixBytes> prefix{};
+  for (std::size_t size = 0; size < ohl::parser::kReadReplyPrefixBytes;
+       ++size) {
+    if (ohl::parser::decode_read_reply_payload(
+            payload_frame(MessageType::read_reply,
+                          std::span<const std::byte>{prefix}.first(size), 1),
+            1, 1)
+            .error != ProtocolError::payload_underflow) {
+      return fail("short typed read reply was accepted");
+    }
+  }
+
+  const auto reply_rejects = [&](const ReadReplyMessage& message,
+                                 const std::uint32_t sequence,
+                                 const std::uint32_t length) {
+    std::array<std::byte, 32> output{};
+    return ohl::parser::encode_read_reply_payload(message, sequence, length,
+                                                   output)
+               .error != ProtocolError::none;
+  };
+  if (!reply_rejects({0, ProtocolStatus::ok, one_byte}, 1, 1) ||
+      !reply_rejects({2, ProtocolStatus::ok, one_byte}, 1, 1) ||
+      !reply_rejects({1, ProtocolStatus::ok, one_byte}, 0, 1) ||
+      !reply_rejects({1, ProtocolStatus::ok, one_byte}, 1, 0) ||
+      !reply_rejects({1, ProtocolStatus::ok, one_byte}, 1,
+                     ohl::parser::kMaximumReadBytes + 1U) ||
+      !reply_rejects({1, ProtocolStatus::ok, {}}, 1, 1) ||
+      !reply_rejects({1, ProtocolStatus::ok, data}, 1, 2) ||
+      !reply_rejects({1, ProtocolStatus::ok, one_byte}, 1, 2) ||
+      !reply_rejects({1, ProtocolStatus::source_changed, one_byte}, 1, 1) ||
+      !reply_rejects({1, ProtocolStatus::source_read_failed, one_byte}, 1, 1) ||
+      reply_rejects({1, ProtocolStatus::source_changed, {}}, 1, 1) ||
+      reply_rejects({1, ProtocolStatus::source_read_failed, {}}, 1, 1)) {
+    return fail("typed read reply shape validation changed");
+  }
+
+  for (const auto status : {
+           ProtocolStatus::unsupported,
+           ProtocolStatus::invalid_request,
+           ProtocolStatus::parser_rejected,
+           ProtocolStatus::budget_exceeded,
+           ProtocolStatus::cancelled,
+           ProtocolStatus::result_validation_failed,
+           ProtocolStatus::internal_failure,
+       }) {
+    if (!reply_rejects({1, status, {}}, 1, 1)) {
+      return fail("disallowed typed read reply status was accepted");
+    }
+  }
+  if (!reply_rejects(
+          {1, static_cast<ProtocolStatus>(0xffffU), {}}, 1, 1)) {
+    return fail("unknown typed read reply status was accepted");
+  }
+
+  const auto decode_reply_values = [&](const std::uint32_t message_sequence,
+                                       const ProtocolStatus status,
+                                       const std::span<const std::byte> bytes,
+                                       const std::uint32_t expected_sequence,
+                                       const std::uint32_t requested_length) {
+    std::vector<std::byte> payload(ohl::parser::kReadReplyPrefixBytes +
+                                   bytes.size());
+    PayloadWriter writer{payload};
+    if (!writer.write_u32(message_sequence) || !writer.write_status(status) ||
+        !writer.write_bytes(bytes)) {
+      return ProtocolError::noncanonical_value;
+    }
+    return ohl::parser::decode_read_reply_payload(
+               payload_frame(MessageType::read_reply, payload, 1),
+               expected_sequence, requested_length)
+        .error;
+  };
+  if (decode_reply_values(0, ProtocolStatus::ok, one_byte, 1, 1) !=
+          ProtocolError::noncanonical_value ||
+      decode_reply_values(2, ProtocolStatus::ok, one_byte, 1, 1) !=
+          ProtocolError::noncanonical_value ||
+      decode_reply_values(1, ProtocolStatus::ok, {}, 1, 1) !=
+          ProtocolError::noncanonical_value ||
+      decode_reply_values(1, ProtocolStatus::ok, one_byte, 1, 2) !=
+          ProtocolError::noncanonical_value ||
+      decode_reply_values(1, ProtocolStatus::ok, data, 1, 2) !=
+          ProtocolError::noncanonical_value ||
+      decode_reply_values(1, ProtocolStatus::source_changed, one_byte, 1, 1) !=
+          ProtocolError::noncanonical_value ||
+      decode_reply_values(1, ProtocolStatus::source_read_failed, one_byte, 1,
+                          1) != ProtocolError::noncanonical_value ||
+      decode_reply_values(1, ProtocolStatus::source_changed, {}, 1, 1) !=
+          ProtocolError::none ||
+      decode_reply_values(1, ProtocolStatus::source_read_failed, {}, 1, 1) !=
+          ProtocolError::none) {
+    return fail("typed read reply decoder shape validation changed");
+  }
+  for (const auto status : {
+           ProtocolStatus::unsupported,
+           ProtocolStatus::invalid_request,
+           ProtocolStatus::parser_rejected,
+           ProtocolStatus::budget_exceeded,
+           ProtocolStatus::cancelled,
+           ProtocolStatus::result_validation_failed,
+           ProtocolStatus::internal_failure,
+       }) {
+    if (decode_reply_values(1, status, {}, 1, 1) !=
+        ProtocolError::noncanonical_value) {
+      return fail("disallowed typed read reply status decoded");
+    }
+  }
+  auto unknown_status = prefix;
+  unknown_status[0] = std::byte{1};
+  unknown_status[4] = std::byte{0xff};
+  unknown_status[5] = std::byte{0xff};
+  if (ohl::parser::decode_read_reply_payload(
+          payload_frame(MessageType::read_reply, unknown_status, 1), 1, 1)
+          .error != ProtocolError::noncanonical_value) {
+    return fail("unknown typed read reply status decoded");
+  }
+
+  if (ohl::parser::decode_read_reply_payload(
+          payload_frame(MessageType::read_reply, minimum, 1), 0, 1)
+          .error != ProtocolError::invalid_budget ||
+      ohl::parser::decode_read_reply_payload(
+          payload_frame(MessageType::read_reply, minimum, 1), 1, 0)
+          .error != ProtocolError::invalid_budget ||
+      ohl::parser::decode_read_reply_payload(
+          payload_frame(MessageType::read_reply, minimum, 1), 1,
+          ohl::parser::kMaximumReadBytes + 1U)
+          .error != ProtocolError::invalid_budget ||
+      ohl::parser::decode_read_reply_payload(
+          payload_frame(MessageType::read_request, minimum, 1), 1, 1)
+          .error != ProtocolError::unexpected_message) {
+    return fail("typed read reply context/type validation failed");
+  }
+  return true;
+}
+
+[[nodiscard]] bool test_typed_failure_atomicity_and_ordering() {
+  const auto unchanged = [](const auto& bytes) {
+    return std::all_of(bytes.begin(), bytes.end(), [](const std::byte value) {
+      return value == std::byte{0xa5};
+    });
+  };
+  std::array<std::byte, 32> output;
+  output.fill(std::byte{0xa5});
+  if (ohl::parser::encode_hello_payload({0, 1}, output).bytes_written != 0 ||
+      !unchanged(output)) {
+    return fail("invalid hello encoding changed destination");
+  }
+  if (ohl::parser::encode_hello_payload(
+          {1, 1}, std::span<std::byte>{output}.first(
+                      ohl::parser::kHelloPayloadBytes - 1))
+          .error != ProtocolError::output_too_small ||
+      !unchanged(output)) {
+    return fail("short hello encoding changed destination");
+  }
+  if (ohl::parser::encode_read_request_payload(
+          {1, 0, 0}, {1, 1}, 1, output)
+          .bytes_written != 0 ||
+      !unchanged(output) ||
+      ohl::parser::encode_read_request_payload(
+          {1, 0, 1}, {1, 1}, 1,
+          std::span<std::byte>{output}.first(
+              ohl::parser::kReadRequestPayloadBytes - 1))
+              .error != ProtocolError::output_too_small ||
+      !unchanged(output)) {
+    return fail("read request encoding was not failure atomic");
+  }
+  const std::array data{std::byte{1}};
+  if (ohl::parser::encode_read_reply_payload(
+          {1, ProtocolStatus::cancelled, {}}, 1, 1, output)
+          .bytes_written != 0 ||
+      !unchanged(output) ||
+      ohl::parser::encode_read_reply_payload(
+          {1, ProtocolStatus::ok, data}, 1, 1,
+          std::span<std::byte>{output}.first(
+              ohl::parser::kReadReplyPrefixBytes))
+              .error != ProtocolError::output_too_small ||
+      !unchanged(output)) {
+    return fail("read reply encoding was not failure atomic");
+  }
+  std::vector<std::byte> oversized_reply_data(
+      ohl::parser::kMaximumReadBytes + 1U, std::byte{1});
+  if (ohl::parser::encode_read_reply_payload(
+          {1, ProtocolStatus::source_changed, oversized_reply_data}, 1, 1,
+          output)
+          .error != ProtocolError::payload_too_large ||
+      !unchanged(output)) {
+    return fail("oversized read reply did not fail atomically");
+  }
+
+  const FrameView prior_error{
+      .error = ProtocolError::truncated_payload,
+      .header = {},
+      .payload = {},
+  };
+  if (ohl::parser::decode_hello_payload(prior_error).error !=
+          ProtocolError::truncated_payload ||
+      ohl::parser::decode_ready_payload(prior_error).error !=
+          ProtocolError::truncated_payload ||
+      ohl::parser::decode_read_request_payload(prior_error, {1, 1}, 1).error !=
+          ProtocolError::truncated_payload ||
+      ohl::parser::decode_read_reply_payload(prior_error, 1, 1).error !=
+          ProtocolError::truncated_payload) {
+    return fail("typed decoder did not preserve frame error");
+  }
+  std::vector<std::byte> oversized(ohl::parser::kMaximumFramePayloadBytes + 1);
+  if (ohl::parser::decode_ready_payload(
+          payload_frame(MessageType::ready, oversized))
+          .error != ProtocolError::payload_too_large) {
+    return fail("typed decoder did not preserve global payload ceiling");
+  }
+
+  std::array<std::byte, ohl::parser::kHelloPayloadBytes> valid_hello{};
+  PayloadWriter writer{valid_hello};
+  (void)writer.write_u64(1);
+  (void)writer.write_u32(1);
+
+  auto invalid_header = payload_frame(MessageType::hello, valid_hello);
+  invalid_header.header.major_version =
+      ohl::parser::kProtocolMajorVersion + 1U;
+  if (ohl::parser::decode_hello_payload(invalid_header).error !=
+      ProtocolError::unsupported_version) {
+    return fail("typed decoder accepted invalid header version");
+  }
+  invalid_header = payload_frame(MessageType::hello, valid_hello);
+  invalid_header.header.flags = 1;
+  if (ohl::parser::decode_hello_payload(invalid_header).error !=
+      ProtocolError::reserved_flags) {
+    return fail("typed decoder accepted reserved header flags");
+  }
+  invalid_header = payload_frame(MessageType::hello, valid_hello);
+  invalid_header.header.session_id = 0;
+  if (ohl::parser::decode_hello_payload(invalid_header).error !=
+      ProtocolError::invalid_session_id) {
+    return fail("typed decoder accepted zero header session");
+  }
+  invalid_header = payload_frame(MessageType::hello, valid_hello);
+  invalid_header.header.request_id = 1;
+  if (ohl::parser::decode_hello_payload(invalid_header).error !=
+      ProtocolError::invalid_request_id) {
+    return fail("typed decoder accepted invalid header request id");
+  }
+  invalid_header = payload_frame(MessageType::hello, valid_hello);
+  invalid_header.header.type = static_cast<MessageType>(0xffffU);
+  if (ohl::parser::decode_hello_payload(invalid_header).error !=
+      ProtocolError::unknown_message_type) {
+    return fail("typed decoder accepted unknown header message type");
+  }
+  invalid_header = payload_frame(MessageType::hello, valid_hello);
+  invalid_header.header.payload_length =
+      ohl::parser::kMaximumFramePayloadBytes + 1U;
+  if (ohl::parser::decode_hello_payload(invalid_header).error !=
+      ProtocolError::payload_too_large) {
+    return fail("typed decoder accepted oversized declared payload");
+  }
+
+  auto truncated = payload_frame(MessageType::hello, valid_hello);
+  ++truncated.header.payload_length;
+  auto trailing = payload_frame(MessageType::hello, valid_hello);
+  --trailing.header.payload_length;
+  if (ohl::parser::decode_hello_payload(truncated).error !=
+          ProtocolError::truncated_payload ||
+      ohl::parser::decode_hello_payload(trailing).error !=
+          ProtocolError::trailing_bytes) {
+    return fail("typed hello accepted header/payload length mismatch");
+  }
+  const std::array<std::byte, ohl::parser::kReadRequestPayloadBytes>
+      request_payload{};
+  auto invalid_request_header =
+      payload_frame(MessageType::read_request, request_payload, 1);
+  invalid_request_header.header.request_id = 0;
+  if (ohl::parser::decode_read_request_payload(
+          invalid_request_header, {1, 1}, 1)
+          .error != ProtocolError::invalid_request_id) {
+    return fail("typed request decoder accepted invalid header request id");
+  }
+  ++invalid_request_header.header.payload_length;
+  invalid_request_header.header.flags = 1;
+  if (ohl::parser::decode_read_request_payload(
+          invalid_request_header, {1, 1}, 1)
+          .error != ProtocolError::reserved_flags) {
+    return fail("invalid header did not precede payload mismatch");
+  }
+  invalid_request_header =
+      payload_frame(MessageType::read_request, request_payload, 1);
+  ++invalid_request_header.header.payload_length;
+  if (ohl::parser::decode_read_request_payload(
+          invalid_request_header, {1, 1}, 1)
+          .error != ProtocolError::truncated_payload) {
+    return fail("typed request accepted header/payload length mismatch");
+  }
+  const std::array<std::byte, ohl::parser::kReadReplyPrefixBytes>
+      reply_payload{};
+  auto reply_trailing =
+      payload_frame(MessageType::read_reply, reply_payload, 1);
+  --reply_trailing.header.payload_length;
+  if (ohl::parser::decode_read_reply_payload(reply_trailing, 1, 1).error !=
+      ProtocolError::trailing_bytes) {
+    return fail("typed reply accepted header/payload length mismatch");
+  }
+  auto ready_truncated = payload_frame(MessageType::ready, {});
+  ready_truncated.header.payload_length = 1;
+  if (ohl::parser::decode_ready_payload(ready_truncated).error !=
+      ProtocolError::truncated_payload) {
+    return fail("typed ready accepted header/payload length mismatch");
+  }
+
+  std::array<std::byte, ohl::parser::kHelloPayloadBytes> invalid_hello{};
+  PayloadWriter invalid_writer{invalid_hello};
+  (void)invalid_writer.write_u64(0);
+  (void)invalid_writer.write_u32(1);
+  ProtocolStateValidator validator{kSession};
+  if (decode_hello_then_observe(
+          validator, payload_frame(MessageType::hello, invalid_hello)) !=
+          ProtocolError::noncanonical_value ||
+      validator.state() != SessionState::awaiting_hello ||
+      validator.message_count() != 0) {
+    return fail("dispatch observed a message before typed acceptance");
+  }
+  if (decode_hello_then_observe(
+          validator, payload_frame(MessageType::hello, valid_hello)) !=
+          ProtocolError::none ||
+      validator.state() != SessionState::awaiting_ready ||
+      validator.message_count() != 1) {
+    return fail("dispatch did not observe a typed-valid message");
+  }
+  return true;
+}
+
 }  // namespace
 
 int main() {
@@ -1122,7 +1768,10 @@ int main() {
                  test_direction_and_active_terminal_rejections() &&
                  test_cancelling_crossed_traffic_rejections() &&
                  test_terminal_and_cancel_rejections() &&
-                 test_cancellation_and_budgets()
+                 test_cancellation_and_budgets() &&
+                 test_typed_hello_and_ready() &&
+                 test_typed_read_request() && test_typed_read_reply() &&
+                 test_typed_failure_atomicity_and_ordering()
              ? 0
              : 1;
 }
