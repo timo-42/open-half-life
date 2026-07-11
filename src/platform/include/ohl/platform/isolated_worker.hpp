@@ -58,6 +58,59 @@ struct IsolatedWorkerWaitResult {
   IsolatedWorkerError error{IsolatedWorkerError::none};
 };
 
+class IsolatedWorkerCancellationSource;
+
+// A copyable observation handle for one monotonic cancellation request. A
+// default-constructed token has no source and is never cancelled. Tokens keep
+// their shared state alive independently of the source that created them.
+class IsolatedWorkerCancellationToken final {
+ public:
+  IsolatedWorkerCancellationToken() noexcept = default;
+  IsolatedWorkerCancellationToken(
+      const IsolatedWorkerCancellationToken&) noexcept = default;
+  IsolatedWorkerCancellationToken& operator=(
+      const IsolatedWorkerCancellationToken&) noexcept = default;
+  IsolatedWorkerCancellationToken(
+      IsolatedWorkerCancellationToken&&) noexcept = default;
+  IsolatedWorkerCancellationToken& operator=(
+      IsolatedWorkerCancellationToken&&) noexcept = default;
+  ~IsolatedWorkerCancellationToken() = default;
+
+  [[nodiscard]] bool cancellation_requested() const noexcept;
+
+ private:
+  struct State;
+  explicit IsolatedWorkerCancellationToken(
+      std::shared_ptr<const State> state) noexcept;
+
+  std::shared_ptr<const State> state_;
+
+  friend class IsolatedWorkerCancellationSource;
+};
+
+// The request authority paired with cancellation tokens. Construction creates
+// shared state and may allocate. Requests are monotonic and idempotent; the
+// first request returns true and later requests return false.
+class IsolatedWorkerCancellationSource final {
+ public:
+  IsolatedWorkerCancellationSource();
+  IsolatedWorkerCancellationSource(
+      const IsolatedWorkerCancellationSource&) noexcept = default;
+  IsolatedWorkerCancellationSource& operator=(
+      const IsolatedWorkerCancellationSource&) noexcept = default;
+  IsolatedWorkerCancellationSource(
+      IsolatedWorkerCancellationSource&&) noexcept = default;
+  IsolatedWorkerCancellationSource& operator=(
+      IsolatedWorkerCancellationSource&&) noexcept = default;
+  ~IsolatedWorkerCancellationSource() = default;
+
+  [[nodiscard]] IsolatedWorkerCancellationToken token() const noexcept;
+  [[nodiscard]] bool request_cancellation() noexcept;
+
+ private:
+  std::shared_ptr<IsolatedWorkerCancellationToken::State> state_;
+};
+
 struct IsolatedWorkerLaunchResult;
 
 // A single confined child and its private full-duplex byte channel. At most
@@ -78,10 +131,12 @@ class IsolatedWorker final {
   // win.
   [[nodiscard]] IsolatedWorkerIoResult read_exact(
       std::span<std::byte> destination,
-      std::chrono::steady_clock::time_point deadline) noexcept;
+      std::chrono::steady_clock::time_point deadline,
+      IsolatedWorkerCancellationToken cancellation = {}) noexcept;
   [[nodiscard]] IsolatedWorkerIoResult write_all(
       std::span<const std::byte> source,
-      std::chrono::steady_clock::time_point deadline) noexcept;
+      std::chrono::steady_clock::time_point deadline,
+      IsolatedWorkerCancellationToken cancellation = {}) noexcept;
 
   // Both operations are idempotent and safe to call while I/O is active.
   // abort_io() permanently poisons the channel. close_channel() performs an

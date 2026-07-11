@@ -28,11 +28,21 @@ static_assert(
 static_assert(std::is_same_v<
               std::underlying_type_t<ohl::platform::IsolatedWorkerExitKind>,
               std::uint8_t>);
+static_assert(std::is_nothrow_default_constructible_v<
+              ohl::platform::IsolatedWorkerCancellationToken>);
+static_assert(std::is_nothrow_copy_constructible_v<
+              ohl::platform::IsolatedWorkerCancellationToken>);
+static_assert(std::is_nothrow_copy_assignable_v<
+              ohl::platform::IsolatedWorkerCancellationToken>);
+static_assert(!std::is_nothrow_default_constructible_v<
+              ohl::platform::IsolatedWorkerCancellationSource>);
 
 namespace {
 
 using Clock = std::chrono::steady_clock;
 using ohl::platform::IsolatedWorker;
+using ohl::platform::IsolatedWorkerCancellationSource;
+using ohl::platform::IsolatedWorkerCancellationToken;
 using ohl::platform::IsolatedWorkerError;
 using ohl::platform::IsolatedWorkerExitKind;
 using ohl::platform::IsolatedWorkerIoResult;
@@ -41,6 +51,7 @@ using ohl::platform::IsolatedWorkerWaitResult;
 using namespace std::chrono_literals;
 
 enum class BackendEvent : std::uint8_t { abort, close, termination };
+enum class Direction : std::uint8_t { read, write };
 
 struct FakeState final {
   std::atomic<int> read_calls{0};
@@ -57,11 +68,15 @@ struct FakeState final {
   std::atomic_bool aborted{false};
   std::atomic_bool closed{false};
   std::atomic_bool termination_requested{false};
+  std::atomic_bool read_cancellation_observed{false};
+  std::atomic_bool write_cancellation_observed{false};
 
   IsolatedWorkerIoResult read_result{};
   IsolatedWorkerIoResult write_result{};
   bool use_fixed_read_result{false};
   bool use_fixed_write_result{false};
+  bool ignore_read_cancellation{false};
+  bool ignore_write_cancellation{false};
   IsolatedWorkerWaitResult wait_result{IsolatedWorkerExitKind::clean,
                                        IsolatedWorkerError::none};
   IsolatedWorkerWaitResult terminate_result{
@@ -104,15 +119,22 @@ class FakeBackend final
 
   [[nodiscard]] IsolatedWorkerIoResult read_exact(
       const std::span<std::byte> destination,
-      const Clock::time_point deadline) noexcept override {
+      const Clock::time_point deadline,
+      const IsolatedWorkerCancellationToken cancellation) noexcept override {
     ++state_->read_calls;
     {
       const std::scoped_lock lock{state_->deadline_mutex};
       state_->read_deadline = deadline;
     }
-    block_direction(state_->block_read, state_->read_entered,
-                    state_->release_read);
+    block_io_direction(state_->block_read, state_->read_entered,
+                       state_->release_read, state_->read_cancellation_observed,
+                       cancellation, state_->ignore_read_cancellation);
     if (state_->aborted.load()) {
+      return {.error = IsolatedWorkerError::cancelled};
+    }
+    if (!state_->ignore_read_cancellation &&
+        cancellation.cancellation_requested()) {
+      state_->read_cancellation_observed.store(true);
       return {.error = IsolatedWorkerError::cancelled};
     }
     if (state_->use_fixed_read_result) {
@@ -123,15 +145,23 @@ class FakeBackend final
 
   [[nodiscard]] IsolatedWorkerIoResult write_all(
       const std::span<const std::byte> source,
-      const Clock::time_point deadline) noexcept override {
+      const Clock::time_point deadline,
+      const IsolatedWorkerCancellationToken cancellation) noexcept override {
     ++state_->write_calls;
     {
       const std::scoped_lock lock{state_->deadline_mutex};
       state_->write_deadline = deadline;
     }
-    block_direction(state_->block_write, state_->write_entered,
-                    state_->release_write);
+    block_io_direction(state_->block_write, state_->write_entered,
+                       state_->release_write,
+                       state_->write_cancellation_observed, cancellation,
+                       state_->ignore_write_cancellation);
     if (state_->aborted.load()) {
+      return {.error = IsolatedWorkerError::cancelled};
+    }
+    if (!state_->ignore_write_cancellation &&
+        cancellation.cancellation_requested()) {
+      state_->write_cancellation_observed.store(true);
       return {.error = IsolatedWorkerError::cancelled};
     }
     if (state_->use_fixed_write_result) {
@@ -213,6 +243,27 @@ class FakeBackend final
     state_->block_condition.wait(lock, [&released] { return released; });
   }
 
+  void block_io_direction(
+      const bool blocked, bool& entered, const bool& released,
+      std::atomic_bool& cancellation_observed,
+      const IsolatedWorkerCancellationToken& cancellation,
+      const bool ignore_cancellation) noexcept {
+    if (!blocked) {
+      return;
+    }
+    std::unique_lock lock{state_->block_mutex};
+    entered = true;
+    state_->block_condition.notify_all();
+    while (!released) {
+      if (!ignore_cancellation && cancellation.cancellation_requested()) {
+        cancellation_observed.store(true);
+        state_->block_condition.notify_all();
+        return;
+      }
+      state_->block_condition.wait_for(lock, 1ms);
+    }
+  }
+
   std::shared_ptr<FakeState> state_;
 };
 
@@ -259,6 +310,32 @@ class TestContext final {
  private:
   bool failed_{false};
 };
+
+void test_cancellation_token_lifecycle(TestContext& test) {
+  const IsolatedWorkerCancellationToken default_token;
+  test.expect(!default_token.cancellation_requested(),
+              "default token is never cancelled");
+
+  IsolatedWorkerCancellationToken surviving_token;
+  {
+    IsolatedWorkerCancellationSource source;
+    const auto original = source.token();
+    const auto copied = original;
+    test.expect(!original.cancellation_requested() &&
+                    !copied.cancellation_requested(),
+                "new and copied tokens begin unrequested");
+    test.expect(source.request_cancellation(),
+                "first cancellation request changes shared state");
+    test.expect(!source.request_cancellation(),
+                "repeated cancellation request is idempotent");
+    test.expect(original.cancellation_requested() &&
+                    copied.cancellation_requested(),
+                "all token copies observe the monotonic request");
+    surviving_token = copied;
+  }
+  test.expect(surviving_token.cancellation_requested(),
+              "token safely outlives its source");
+}
 
 template <typename Predicate>
 [[nodiscard]] bool wait_for_state(const std::shared_ptr<FakeState>& state,
@@ -451,6 +528,210 @@ void test_input_validation(TestContext& test) {
               "oversized write is rejected");
   test.expect(state->read_calls.load() == 0 && state->write_calls.load() == 0,
               "invalid I/O never reaches the backend");
+
+  IsolatedWorkerCancellationSource cancellation;
+  static_cast<void>(cancellation.request_cancellation());
+  test.expect(worker->read_exact(empty_mutable, Clock::now() - 1s,
+                                 cancellation.token()).error ==
+                  IsolatedWorkerError::invalid_argument,
+              "invalid argument precedes cancellation and deadline");
+  worker->close_channel();
+  std::array<std::byte, 1> bytes{};
+  test.expect(worker->read_exact(bytes, Clock::now() - 1s,
+                                 cancellation.token()).error ==
+                  IsolatedWorkerError::invalid_state,
+              "invalid stream state precedes cancellation and deadline");
+}
+
+void test_pre_cancelled_io(TestContext& test) {
+  std::array<std::byte, 4> bytes{};
+  for (const auto direction : {Direction::read, Direction::write}) {
+    auto state = std::make_shared<FakeState>();
+    auto worker = launch_worker(state);
+    test.expect(worker != nullptr, "worker launches for pre-cancellation");
+    if (worker == nullptr) {
+      continue;
+    }
+
+    IsolatedWorkerCancellationSource cancellation;
+    static_cast<void>(cancellation.request_cancellation());
+    const auto result = direction == Direction::read
+                            ? worker->read_exact(bytes, Clock::now() - 1s,
+                                                 cancellation.token())
+                            : worker->write_all(bytes, Clock::now() - 1s,
+                                                cancellation.token());
+    test.expect(result.error == IsolatedWorkerError::cancelled &&
+                    result.bytes_transferred == 0,
+                "pre-cancellation beats an expired deadline after admission");
+    test.expect(state->read_calls.load() == 0 &&
+                    state->write_calls.load() == 0,
+                "pre-cancelled operation never reaches the backend");
+    test.expect(state->abort_effects.load() == 1 &&
+                    state->close_effects.load() == 1,
+                "pre-cancelled operation poisons and closes exactly once");
+  }
+}
+
+void test_in_flight_cancellation(TestContext& test) {
+  std::array<std::byte, 4> bytes{};
+  for (const auto direction : {Direction::read, Direction::write}) {
+    auto state = std::make_shared<FakeState>();
+    state->block_read = direction == Direction::read;
+    state->block_write = direction == Direction::write;
+    auto worker = launch_worker(state);
+    test.expect(worker != nullptr, "worker launches for in-flight cancellation");
+    if (worker == nullptr) {
+      continue;
+    }
+
+    IsolatedWorkerCancellationSource cancellation;
+    IsolatedWorkerIoResult result;
+    std::thread operation{[&] {
+      result = direction == Direction::read
+                   ? worker->read_exact(bytes, Clock::time_point::max(),
+                                        cancellation.token())
+                   : worker->write_all(bytes, Clock::time_point::max(),
+                                       cancellation.token());
+    }};
+    BlockedOperationCleanup cleanup{state, operation};
+    const auto entered = wait_for_state(state, [&] {
+      return direction == Direction::read ? state->read_entered
+                                          : state->write_entered;
+    });
+    test.expect(entered, "operation reaches backend before cancellation");
+    if (entered) {
+      static_cast<void>(cancellation.request_cancellation());
+    }
+    const auto observed = entered && wait_for_state(state, [&] {
+      return direction == Direction::read
+                 ? state->read_cancellation_observed.load()
+                 : state->write_cancellation_observed.load();
+    });
+    release_blocked_operations(state);
+    operation.join();
+
+    test.expect(result.error == IsolatedWorkerError::cancelled && observed,
+                "backend receives and observes the operation token unchanged");
+    test.expect(state->abort_effects.load() == 1 &&
+                    state->close_effects.load() == 1,
+                "observed in-flight cancellation poisons and closes once");
+  }
+}
+
+void test_cancellation_races_and_direction_independence(TestContext& test) {
+  std::array<std::byte, 4> read_bytes{};
+  std::array<std::byte, 4> write_bytes{};
+  {
+    auto state = std::make_shared<FakeState>();
+    state->block_write = true;
+    state->ignore_write_cancellation = true;
+    auto worker = launch_worker(state);
+    test.expect(worker != nullptr, "worker launches for success race");
+    if (worker != nullptr) {
+      IsolatedWorkerCancellationSource cancellation;
+      IsolatedWorkerIoResult result;
+      std::thread writer{[&] {
+        result = worker->write_all(write_bytes, Clock::time_point::max(),
+                                   cancellation.token());
+      }};
+      BlockedOperationCleanup cleanup{state, writer};
+      const auto entered =
+          wait_for_state(state, [&] { return state->write_entered; });
+      test.expect(entered, "write reaches backend for success race");
+      if (entered) {
+        static_cast<void>(cancellation.request_cancellation());
+        {
+          const std::scoped_lock lock{state->block_mutex};
+          state->release_write = true;
+        }
+        state->block_condition.notify_all();
+      }
+      writer.join();
+      test.expect(result.error == IsolatedWorkerError::none &&
+                      result.bytes_transferred == write_bytes.size() &&
+                      state->abort_effects.load() == 0 &&
+                      state->close_effects.load() == 0,
+                  "complete successful transfer wins cancellation race");
+    }
+  }
+  {
+    auto state = std::make_shared<FakeState>();
+    state->block_read = true;
+    state->ignore_read_cancellation = true;
+    state->use_fixed_read_result = true;
+    state->read_result = {.bytes_transferred = 2,
+                          .error = IsolatedWorkerError::io_failure};
+    auto worker = launch_worker(state);
+    test.expect(worker != nullptr, "worker launches for error race");
+    if (worker != nullptr) {
+      IsolatedWorkerCancellationSource cancellation;
+      IsolatedWorkerIoResult result;
+      std::thread reader{[&] {
+        result = worker->read_exact(read_bytes, Clock::time_point::max(),
+                                    cancellation.token());
+      }};
+      BlockedOperationCleanup cleanup{state, reader};
+      const auto entered =
+          wait_for_state(state, [&] { return state->read_entered; });
+      test.expect(entered, "read reaches backend for error race");
+      if (entered) {
+        static_cast<void>(cancellation.request_cancellation());
+        {
+          const std::scoped_lock lock{state->block_mutex};
+          state->release_read = true;
+        }
+        state->block_condition.notify_all();
+      }
+      reader.join();
+      test.expect(result.error == IsolatedWorkerError::cancelled &&
+                      result.bytes_transferred == 0,
+                  "requested cancellation deterministically wins error race");
+    }
+  }
+  {
+    auto state = std::make_shared<FakeState>();
+    state->block_read = true;
+    state->block_write = true;
+    auto worker = launch_worker(state);
+    test.expect(worker != nullptr, "worker launches for token independence");
+    if (worker != nullptr) {
+      IsolatedWorkerCancellationSource read_cancellation;
+      IsolatedWorkerCancellationSource write_cancellation;
+      IsolatedWorkerIoResult read_result;
+      IsolatedWorkerIoResult write_result;
+      std::thread reader{[&] {
+        read_result = worker->read_exact(read_bytes, Clock::time_point::max(),
+                                         read_cancellation.token());
+      }};
+      std::thread writer{[&] {
+        write_result = worker->write_all(write_bytes, Clock::time_point::max(),
+                                         write_cancellation.token());
+      }};
+      const auto entered = wait_for_state(
+          state, [&] { return state->read_entered && state->write_entered; });
+      test.expect(entered, "both directions reach backend with separate tokens");
+      if (entered) {
+        static_cast<void>(read_cancellation.request_cancellation());
+      }
+      const auto poisoned = entered && wait_for_state(
+                                            state, [&] {
+                                              return state->aborted.load();
+                                            });
+      release_blocked_operations(state);
+      reader.join();
+      writer.join();
+      test.expect(read_result.error == IsolatedWorkerError::cancelled &&
+                      write_result.error == IsolatedWorkerError::cancelled &&
+                      poisoned &&
+                      state->read_cancellation_observed.load() &&
+                      !state->write_cancellation_observed.load() &&
+                      !write_cancellation.token().cancellation_requested(),
+                  "read request does not cancel the independent write token");
+      test.expect(state->abort_effects.load() == 1 &&
+                      state->close_effects.load() == 1,
+                  "cancelled direction poisons the shared stream once");
+    }
+  }
 }
 
 void test_direction_concurrency(TestContext& test) {
@@ -479,12 +760,16 @@ void test_direction_concurrency(TestContext& test) {
   test.expect(both_entered, "one reader and one writer can enter concurrently");
   if (both_entered) {
     std::array<std::byte, 1> duplicate{};
-    test.expect(worker->read_exact(duplicate, Clock::time_point::max()).error ==
+    IsolatedWorkerCancellationSource cancellation;
+    static_cast<void>(cancellation.request_cancellation());
+    test.expect(worker->read_exact(duplicate, Clock::now() - 1s,
+                                   cancellation.token()).error ==
                     IsolatedWorkerError::concurrent_operation,
-                "duplicate reader is rejected");
-    test.expect(worker->write_all(duplicate, Clock::time_point::max()).error ==
+                "duplicate reader precedes cancellation and deadline");
+    test.expect(worker->write_all(duplicate, Clock::now() - 1s,
+                                  cancellation.token()).error ==
                     IsolatedWorkerError::concurrent_operation,
-                "duplicate writer is rejected");
+                "duplicate writer precedes cancellation and deadline");
   }
 
   release_blocked_operations(state);
@@ -496,8 +781,6 @@ void test_direction_concurrency(TestContext& test) {
                   write_result.bytes_transferred == write_bytes.size(),
               "independent reader and writer complete successfully");
 }
-
-enum class Direction : std::uint8_t { read, write };
 
 struct PoisonCase final {
   std::string_view name;
@@ -856,9 +1139,13 @@ IsolatedWorkerBackendLaunchResult launch_isolated_worker_backend(
 
 int main() {
   TestContext test;
+  test_cancellation_token_lifecycle(test);
   test_launch_validation_and_ownership(test);
   test_deadlines(test);
   test_input_validation(test);
+  test_pre_cancelled_io(test);
+  test_in_flight_cancellation(test);
+  test_cancellation_races_and_direction_independence(test);
   test_direction_concurrency(test);
   test_backend_io_poisoning(test);
   test_caller_timeout_and_active_abort_poisoning(test);

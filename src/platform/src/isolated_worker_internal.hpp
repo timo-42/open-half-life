@@ -22,10 +22,12 @@ class IsolatedWorkerBackend {
 
   [[nodiscard]] virtual IsolatedWorkerIoResult read_exact(
       std::span<std::byte> destination,
-      std::chrono::steady_clock::time_point deadline) noexcept = 0;
+      std::chrono::steady_clock::time_point deadline,
+      IsolatedWorkerCancellationToken cancellation) noexcept = 0;
   [[nodiscard]] virtual IsolatedWorkerIoResult write_all(
       std::span<const std::byte> source,
-      std::chrono::steady_clock::time_point deadline) noexcept = 0;
+      std::chrono::steady_clock::time_point deadline,
+      IsolatedWorkerCancellationToken cancellation) noexcept = 0;
   virtual void abort_io() noexcept = 0;
   virtual void close_channel() noexcept = 0;
   virtual void request_termination() noexcept = 0;

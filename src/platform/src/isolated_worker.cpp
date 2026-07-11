@@ -70,6 +70,30 @@ template <typename Duration>
 
 }  // namespace
 
+struct IsolatedWorkerCancellationToken::State final {
+  std::atomic_bool requested{false};
+};
+
+IsolatedWorkerCancellationToken::IsolatedWorkerCancellationToken(
+    std::shared_ptr<const State> state) noexcept
+    : state_(std::move(state)) {}
+
+bool IsolatedWorkerCancellationToken::cancellation_requested() const noexcept {
+  return state_ != nullptr && state_->requested.load();
+}
+
+IsolatedWorkerCancellationSource::IsolatedWorkerCancellationSource()
+    : state_(std::make_shared<IsolatedWorkerCancellationToken::State>()) {}
+
+IsolatedWorkerCancellationToken IsolatedWorkerCancellationSource::token()
+    const noexcept {
+  return IsolatedWorkerCancellationToken{state_};
+}
+
+bool IsolatedWorkerCancellationSource::request_cancellation() noexcept {
+  return state_ != nullptr && !state_->requested.exchange(true);
+}
+
 struct IsolatedWorker::Impl {
   explicit Impl(std::unique_ptr<detail::IsolatedWorkerBackend> native_backend)
       noexcept
@@ -156,7 +180,8 @@ IsolatedWorker::~IsolatedWorker() {
 
 IsolatedWorkerIoResult IsolatedWorker::read_exact(
     const std::span<std::byte> destination,
-    const Clock::time_point deadline) noexcept {
+    const Clock::time_point deadline,
+    const IsolatedWorkerCancellationToken cancellation) noexcept {
   const auto effective_deadline =
       clamp_deadline(deadline, kMaximumIoDuration);
   if (destination.empty() || destination.data() == nullptr) {
@@ -173,11 +198,13 @@ IsolatedWorkerIoResult IsolatedWorker::read_exact(
   }
 
   IsolatedWorkerIoResult result;
-  if (effective_deadline <= Clock::now()) {
+  if (cancellation.cancellation_requested()) {
+    result.error = IsolatedWorkerError::cancelled;
+  } else if (effective_deadline <= Clock::now()) {
     result.error = IsolatedWorkerError::timeout;
   } else {
-    result =
-        implementation_->backend->read_exact(destination, effective_deadline);
+    result = implementation_->backend->read_exact(
+        destination, effective_deadline, cancellation);
   }
 
   if (result.bytes_transferred > destination.size()) {
@@ -185,6 +212,10 @@ IsolatedWorkerIoResult IsolatedWorker::read_exact(
   } else if (result.error == IsolatedWorkerError::none &&
              result.bytes_transferred != destination.size()) {
     result.error = IsolatedWorkerError::io_failure;
+  }
+  if (result.error != IsolatedWorkerError::none &&
+      cancellation.cancellation_requested()) {
+    result = {.error = IsolatedWorkerError::cancelled};
   }
 
   if (!implementation_->finish_io(
@@ -197,7 +228,8 @@ IsolatedWorkerIoResult IsolatedWorker::read_exact(
 
 IsolatedWorkerIoResult IsolatedWorker::write_all(
     const std::span<const std::byte> source,
-    const Clock::time_point deadline) noexcept {
+    const Clock::time_point deadline,
+    const IsolatedWorkerCancellationToken cancellation) noexcept {
   const auto effective_deadline =
       clamp_deadline(deadline, kMaximumIoDuration);
   if (source.empty() || source.data() == nullptr) {
@@ -214,10 +246,13 @@ IsolatedWorkerIoResult IsolatedWorker::write_all(
   }
 
   IsolatedWorkerIoResult result;
-  if (effective_deadline <= Clock::now()) {
+  if (cancellation.cancellation_requested()) {
+    result.error = IsolatedWorkerError::cancelled;
+  } else if (effective_deadline <= Clock::now()) {
     result.error = IsolatedWorkerError::timeout;
   } else {
-    result = implementation_->backend->write_all(source, effective_deadline);
+    result = implementation_->backend->write_all(
+        source, effective_deadline, cancellation);
   }
 
   if (result.bytes_transferred > source.size()) {
@@ -225,6 +260,10 @@ IsolatedWorkerIoResult IsolatedWorker::write_all(
   } else if (result.error == IsolatedWorkerError::none &&
              result.bytes_transferred != source.size()) {
     result.error = IsolatedWorkerError::io_failure;
+  }
+  if (result.error != IsolatedWorkerError::none &&
+      cancellation.cancellation_requested()) {
+    result = {.error = IsolatedWorkerError::cancelled};
   }
 
   if (!implementation_->finish_io(
