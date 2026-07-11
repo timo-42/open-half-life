@@ -46,7 +46,9 @@ The current M2 implementation fingerprints the validated ISO and publishes a
 metadata-only provenance record there; it does not extract game data yet.
 Payload metadata can be checked against bounded, cross-platform path and
 layout policies, but those checks are not yet connected to a production
-extractor.
+extractor. Production payload import remains unavailable on every platform;
+see [docs/IMPORT_READINESS.md](docs/IMPORT_READINESS.md) for the current
+readiness matrix and release-evidence gates.
 
 ## Status
 
@@ -54,8 +56,9 @@ The current implementation provides the M0 build and logging foundation, M1
 media preflight, and the read-only UDF and provenance-cache portions of M2.
 Run with `open-half-life --iso /path/to/owned-media.iso`; no installer or media
 binary is executed. See [docs/MILESTONES.md](docs/MILESTONES.md)
-for current progress and [docs/CLEAN_ROOM.md](docs/CLEAN_ROOM.md) before
-contributing compatibility work.
+for current progress, [docs/IMPORT_READINESS.md](docs/IMPORT_READINESS.md)
+for production import readiness, and [docs/CLEAN_ROOM.md](docs/CLEAN_ROOM.md)
+before contributing compatibility work.
 
 Half-Life is a trademark of Valve Corporation. This independent project is
 not affiliated with or endorsed by Valve Corporation.

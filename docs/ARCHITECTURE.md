@@ -247,9 +247,10 @@ process authority, so restricting callback suppliers is composition policy,
 not mechanical confinement. The transport otherwise has no process launch,
 ownership, termination, reap, executable or path selection, source-read,
 component-selection, catalog, destination, staging, publication, cache,
-application, or runtime-import authority. Native isolated-worker process
-management plus composition with the result bridge, source-read broker,
-selection policy, staging, and the application remain a later dependency.
+application, or runtime-import authority. Linux x86-64 native isolated-worker
+containment now exists as a disconnected source-selected backend. Parser-worker
+process management plus composition with the result bridge, source-read broker,
+selection policy, staging, and the application remain later dependencies.
 
 Commit `13f0fb0` adds the disconnected
 `OpenHalfLife::media_parser_handshake` library. Its direct dependencies are
@@ -407,23 +408,25 @@ authority; no worker/process launch, ownership, termination, or reap
 authority; and no destination, staging, cache-publication, application, or
 runtime-import authority. The abstract `platform::IsolatedWorker` facade
 already defines launch, exact I/O, abort/close, wait, and terminate-and-wait
-lifecycle operations, but committed HEAD still selects only the backend that
-returns `unsupported`; it has no successful native backend. Production
-composition is also missing the media-parser worker executable, bootstrap and
-service loop, and the higher process-session owner. That owner must allocate
-fresh protocol session IDs and worker epochs under an explicit uniqueness
-policy, keep the exact channel alive through handshake-proof consumption and
-the parent session, close the channel and `wait()`/reap after orderly protocol
-shutdown, and use `terminate_and_wait()` only for failure or orderly-close
-timeout paths. ParentSession owns none of those lifecycle actions.
+lifecycle operations, and committed HEAD source-selects a native containment
+backend only for Linux x86-64. Other platforms and Linux architectures select
+the unsupported backend. Production composition is still missing the
+media-parser worker executable, bootstrap and service loop, install rule,
+runtime selection, staging/publication integration, and the higher
+process-session owner. That owner must allocate fresh protocol session IDs and
+worker epochs under an explicit uniqueness policy, keep the exact channel alive
+through handshake-proof consumption and the parent session, close the channel
+and `wait()`/reap after orderly protocol shutdown, and use
+`terminate_and_wait()` only for failure or orderly-close timeout paths.
+ParentSession owns none of those lifecycle actions.
 
-Work resumes in dependency order: accept a native backend together with the
-worker/bootstrap/service loop; add the process-session owner and session-ID /
-epoch policy; compose handshake and ParentSession; then integrate a
-deterministic component-selection recipe before staging and publication. No
-further coherent disconnected parent-session package removes those blockers.
-Its tests are project-authored and synthetic and authorize no proprietary
-extraction.
+Work resumes in dependency order: qualify the Linux x86-64 native backend or
+add another tuple's native backend together with the worker/bootstrap/service
+loop; add the process-session owner and session-ID / epoch policy; compose
+handshake and ParentSession; then integrate a deterministic component-selection
+recipe before staging and publication. No further coherent disconnected
+parent-session package removes those blockers. Its tests are project-authored
+and synthetic and authorize no proprietary extraction.
 
 Deterministic parser fuzz validation was accepted at `81a7ee9`; its typed
 dispatch was extended at `d59b6c5`, for `stream_entry` at `f4d908a`, for
@@ -573,8 +576,8 @@ backend's post-publication parent-sync operation completed or failed. Cleanup
 failures are surfaced and may leave the transaction's owned private staging in
 place. A completed sync is not presented as a universal durability guarantee.
 These accepted boundaries perform no runtime extraction: production extraction
-remains absent and still requires accepted native backends on every supported
-platform.
+remains absent and still requires accepted native backend qualification for each
+supported platform tuple.
 The component-based store is tested with a deterministic in-memory fake and a
 Linux implementation. On Linux, an existing absolute root is walked from `/`
 through no-follow directory descriptors, ownership and mode are checked, and
