@@ -248,10 +248,12 @@ cache publication.
 The accepted P1 worker-side service is the separate static target
 `OpenHalfLife::parser_worker_service`. It links only
 `OpenHalfLife::parser`, is not installed, exposes no public header, and is not
-linked by the application, media stack, native worker, or other runtime target.
-Its private entry point drives one bounded worker-side OWP/1 lifetime using
-caller-supplied synchronous transport and dispatcher operation tables and two
-caller-owned scratch buffers. Those buffers must be disjoint from each other
+linked by the application or media stack. The Linux x86-64 installed worker now
+links a separate private freestanding runtime copy of the same protocol/service
+implementation; other native workers do not. Its private entry point drives one
+bounded worker-side OWP/1 lifetime using caller-supplied synchronous transport
+and dispatcher operation tables and two caller-owned scratch buffers. Those
+buffers must be disjoint from each other
 and from callback table, context, and operation storage. The service mediates
 enumeration, streaming, bounded requests for parent-owned source bytes,
 cancellation, and shutdown without choosing a payload format or parser.
@@ -269,8 +271,9 @@ Initial project-authored synthetic validation passed the focused service test
 1/1, the development suite 39/39, and the AddressSanitizer plus
 UndefinedBehaviorSanitizer suite 40/40. The accepted hosted qualification for
 this private disconnected boundary is recorded below. It does not select a real
-dispatcher, parse a user medium, exercise a service-bearing native worker,
-extract or publish bytes, or make production import available.
+dispatcher, parse a user medium, extract or publish bytes, or make production
+import available. Those initial tests predate the Linux bootstrap described
+below.
 
 Commit `909edcc` adds the separate
 `OpenHalfLife::media_parser_results` target as the trusted owner of candidate
@@ -536,23 +539,47 @@ import authority. The abstract `platform::IsolatedWorker` facade already
 defines launch, I/O, abort/close, wait, and terminate-and-wait operations, but
 committed HEAD source-selects a native containment backend only for Linux
 x86-64; other platforms and Linux architectures select the unsupported backend.
-Linux x86-64 now also installs a minimal production media-parser worker artifact
-for the root-owned `/usr/libexec/open-half-life` launcher contract. That
-artifact emits only the bounded readiness attestation, closes its readiness fd,
-and keeps the inherited lifecycle channel alive until close; it performs no
-parser, enumeration, source-read, extraction, staging, publication, or import
-semantics. Production composition still lacks a bootstrap that links the
-private worker service, a real payload dispatcher/parser, runtime selection,
-staging/publication integration, and a higher process-session owner. That owner
+Linux x86-64 now installs a service-bearing static media-parser worker artifact
+for the root-owned `/usr/libexec/open-half-life` launcher contract. The worker
+emits the exact readiness attestation on fd 4, closes that descriptor, and hosts
+one bounded OWP/1 lifetime over the inherited full-duplex fd 3 using a private
+freestanding copy of the accepted protocol/service implementation. Canonical
+`hello` produces exact-empty `ready`; shutdown and orderly peer close end
+cleanly. Protocol, unsupported-operation, transport, and internal failures map
+to stable sanitized exits and then to the public native lifecycle categories.
+
+The dispatcher is compile-fixed trusted project code and returns `unsupported`
+when enumeration or streaming begins. It is not selected by media and supplies
+no real parser, enumeration, source-read, extraction, staging, publication, or
+import semantics. Production composition still lacks that real payload
+dispatcher/parser, runtime selection, staging/publication integration, and a
+higher process-session owner. That owner
 must allocate unique nonzero session IDs and
 worker epochs, preserve the exact channel through proof and session lifetimes,
 perform orderly protocol shutdown followed by channel close and `wait()`/reap,
 and reserve `terminate_and_wait()` for failure or orderly-close timeout.
 ParentSession owns none of these actions.
 
-The resume order is therefore: qualify the Linux x86-64 native backend or add
-another tuple's native backend; implement a service-bearing worker bootstrap
-and real dispatcher/parser as a separate scope; add the process-session owner
+The worker remains a compile-fixed, pinned static x86-64 ELF identity. The
+native launcher verifies no-follow root-owned installation metadata, rejects
+writable or set-id images and unsupported/interpreted ELF identities, and then
+applies the fixed descriptor inventory, resource limits, no-new-privileges,
+Landlock, seccomp, readiness framing, and pidfd-backed lifecycle. Local
+`platform.isolated_worker.linux` evidence stages byte-identical production
+target bytes at the test backend's compile-fixed identity and launches them
+through this public path. It covers fragmented hello/ready/shutdown, malformed
+protocol failure, fixed unsupported enumeration, peer closure, idempotent close,
+cached terminal wait, and owned terminate-and-reap. The direct service and
+installed-artifact tests add truncated I/O, clean peer-close, static-image and
+payload-arena checks, exact fd-3 lifecycle, shutdown, and clean exit. These are
+synthetic Linux x86-64 tests only; no other supported tuple or production import
+is qualified. Final B1 validation passed the focused bootstrap set 4/4, the
+full development suite 40/40, and 50 consecutive real-launcher cases 50/50.
+Owned termination can resolve as either `clean` or `terminated` when orderly
+peer EOF wins; both outcomes are terminal, cached, and reaped.
+
+The resume order is therefore: add another tuple's native backend; implement a
+real dispatcher/parser as a separate scope; add the process-session owner
 plus session-ID/epoch policy; compose handshake and parent session; then add
 deterministic component selection, staging, and publication. Production
 extraction remains absent, and all current service and parent-session test
@@ -603,9 +630,9 @@ The final PR change was test-only: it replaced an oversized fixed stack buffer
 with payload-sized dynamic test storage so Windows x64 could execute the
 synthetic service suite. It changed neither production code nor service
 authority. The hosted evidence qualifies the private disconnected protocol
-boundary on those tested hosts, not a service-bearing native worker, real
-payload parsing, runtime selection or composition, extraction, staging,
-publication, or production import.
+boundary on those tested hosts. It predates and does not qualify the later B1
+Linux bootstrap, real payload parsing, runtime selection or composition,
+extraction, staging, publication, or production import.
 
 The earlier exact-SHA hosted build run `29147060407` at `ca576e9`, covering the
 trusted result bridge and media cancellation migration, passed all 32 GNU 13

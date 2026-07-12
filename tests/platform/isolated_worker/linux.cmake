@@ -88,6 +88,7 @@ target_compile_definitions(
   ohl_isolated_worker_linux_tests
   PRIVATE
     OHL_LINUX_TEST_WORKER_STAGE_PATH="${ohl_linux_test_worker_path}"
+    OHL_LINUX_TEST_PRODUCTION_WORKER_PATH="$<TARGET_FILE:ohl_media_parser_worker>"
     OHL_LINUX_TEST_WORKER_READY_PATH="$<TARGET_FILE:ohl_isolated_worker_linux_helper_ready>"
     OHL_LINUX_TEST_WORKER_BAD_READY_PATH="$<TARGET_FILE:ohl_isolated_worker_linux_helper_bad_ready>"
     OHL_LINUX_TEST_WORKER_NO_READY_PATH="$<TARGET_FILE:ohl_isolated_worker_linux_helper_no_ready>"
@@ -106,7 +107,7 @@ target_compile_definitions(
 )
 target_link_libraries(
   ohl_isolated_worker_linux_tests
-  PRIVATE ohl_isolated_worker_linux_test_backend
+  PRIVATE ohl_isolated_worker_linux_test_backend OpenHalfLife::parser
 )
 add_dependencies(
   ohl_isolated_worker_linux_tests
@@ -125,6 +126,7 @@ add_dependencies(
   ohl_isolated_worker_linux_helper_execveat_high_dirfd
   ohl_isolated_worker_linux_helper_execveat_wrong_flags
   ohl_isolated_worker_linux_helper_execveat_high_flags
+  ohl_media_parser_worker
 )
 ohl_enable_warnings(ohl_isolated_worker_linux_tests)
 add_test(
@@ -152,7 +154,8 @@ target_compile_definitions(
   PRIVATE OHL_LINUX_ISOLATED_WORKER_FREESTANDING=1
 )
 target_link_libraries(
-  ohl_media_parser_worker_install_smoke_tests PRIVATE Threads::Threads
+  ohl_media_parser_worker_install_smoke_tests
+  PRIVATE OpenHalfLife::parser Threads::Threads
 )
 add_dependencies(
   ohl_media_parser_worker_install_smoke_tests ohl_media_parser_worker
@@ -170,4 +173,38 @@ add_test(
 set_tests_properties(
   platform.media_parser_worker.install_smoke
   PROPERTIES TIMEOUT 30 LABELS "linux-isolated-worker;install"
+)
+
+add_executable(
+  ohl_media_parser_worker_service_linux_tests
+  ${CMAKE_CURRENT_LIST_DIR}/../media_parser_worker_service_linux_test.cpp
+)
+target_compile_features(
+  ohl_media_parser_worker_service_linux_tests PRIVATE cxx_std_20
+)
+target_include_directories(
+  ohl_media_parser_worker_service_linux_tests
+  PRIVATE ${PROJECT_SOURCE_DIR}/src/platform/src
+)
+target_compile_definitions(
+  ohl_media_parser_worker_service_linux_tests
+  PRIVATE
+    OHL_LINUX_ISOLATED_WORKER_FREESTANDING=1
+    OHL_MEDIA_PARSER_WORKER_SERVICE_TEST_PATH="$<TARGET_FILE:ohl_media_parser_worker>"
+)
+target_link_libraries(
+  ohl_media_parser_worker_service_linux_tests
+  PRIVATE OpenHalfLife::parser Threads::Threads
+)
+add_dependencies(
+  ohl_media_parser_worker_service_linux_tests ohl_media_parser_worker
+)
+ohl_enable_warnings(ohl_media_parser_worker_service_linux_tests)
+add_test(
+  NAME platform.media_parser_worker.service
+  COMMAND ohl_media_parser_worker_service_linux_tests
+)
+set_tests_properties(
+  platform.media_parser_worker.service
+  PROPERTIES TIMEOUT 30 LABELS "linux-isolated-worker;parser-worker-service"
 )

@@ -56,7 +56,9 @@ disconnected frame channel at `e4b819a`. The trusted parent handshake was
 accepted at `13f0fb0`, and the disconnected trusted parent session was accepted
 at `7bd9d38`. Accepted P1 work now also provides a private, non-installed,
 disconnected parser-worker service with synthetic boundary tests and accepted
-hosted cross-platform evidence from PR #7.
+hosted cross-platform evidence from PR #7. B1 now hosts that service in the
+installed, contained Linux x86-64 worker with a compile-fixed unsupported
+dispatcher and local real-launcher evidence.
 
 Production payload import remains unavailable on every platform. The current
 readiness matrix and release-evidence gates are tracked in
@@ -212,8 +214,9 @@ Current functionality:
 - the disconnected `OpenHalfLife::parser_worker_service` static target depends
   only on `OpenHalfLife::parser`. Its private callback-and-buffer contract
   drives one bounded worker-side protocol lifetime for enumeration, streaming,
-  parent-owned reads, cancellation, and shutdown. It is not installed or linked
-  into a runtime/native worker, chooses no real payload dispatcher/parser, and
+  parent-owned reads, cancellation, and shutdown. It is not installed or
+  exported; the Linux x86-64 worker links a separate private freestanding copy
+  of the same implementation. It chooses no real payload dispatcher/parser and
   owns no source path, destination, selection, staging, publication, cache, or
   application authority. Focused project-authored synthetic validation passed
   1/1, the development suite passed 39/39, and ASan plus UBSan passed 40/40;
@@ -221,6 +224,27 @@ Current functionality:
   sanitizers, the experimental Linux configuration, Windows x64, and macOS
   Apple Silicon. This is cross-platform evidence for the disconnected boundary,
   not production qualification
+- the installed Linux x86-64 static worker now emits and closes its exact
+  readiness record on fd 4, then hosts one bounded OWP/1 lifetime on fd 3. It
+  accepts canonical `hello`, emits exact-empty `ready`, and supports shutdown
+  and orderly peer close. Its compile-fixed project dispatcher rejects
+  enumeration and streaming as unsupported, and sanitized terminal outcomes
+  surface through the existing native lifecycle categories. It has no real
+  parser, source-read, selection, destination, staging, publication, cache, or
+  runtime authority
+- `platform.isolated_worker.linux` stages byte-identical production-target
+  worker bytes and launches them through the public native backend, covering
+  static identity, resource limits, no-new-privileges, Landlock, seccomp,
+  readiness EOF, pidfd lifecycle, fragmented hello/ready/shutdown, malformed
+  protocol failure, fixed unsupported enumeration, IPC close, cached wait, and
+  owned termination/reap. Direct service and install-smoke tests add truncated
+  I/O, peer-close, non-writable/non-set-id static image, payload arenas,
+  exact fd-3 shutdown,
+  and clean-exit evidence. The focused bootstrap set passed 4/4, the full
+  development suite passed 40/40, and the real-launcher test passed 50/50
+  consecutive runs. Owned termination may resolve as `clean` or `terminated`
+  when orderly EOF wins; both outcomes are terminal, cached, and reaped. This
+  is local Linux x86-64 bootstrap evidence only
 
 Remaining M2 work:
 
@@ -231,15 +255,15 @@ Remaining M2 work:
 - the constrained parser worker boundary in `MEDIA_IMPORT.md` remains
   mandatory before any third-party parser may feed production extraction. The
   accepted result bridge, source-read broker, frame channel, parent handshake,
-  parent session, and private worker service still need a service-bearing native
-  bootstrap, a real dispatcher/parser, lifecycle ownership, and explicit runtime
+  parent session, and service-bearing Linux worker still need a real
+  dispatcher/parser, higher lifecycle ownership, and explicit runtime
   composition with deterministic component selection and staging; the worker
   must have no raw-path, destination, or cache authority. Although the abstract
   `IsolatedWorker` lifecycle facade exists, committed HEAD source-selects a
   native containment backend only for Linux x86-64; other platforms and Linux
   architectures select the unsupported backend. The production gate is blocked
-  on the service-bearing worker bootstrap, real dispatcher/parser, runtime
-  selection, lifecycle ownership, and staging/publication integration. The
+  on the real dispatcher/parser, runtime selection, lifecycle ownership, and
+  staging/publication integration. The
   higher process-session owner must allocate unique session IDs and worker
   epochs, keep the channel alive, close plus `wait()`/reap after orderly
   shutdown, and use `terminate_and_wait()` for failure or orderly-close timeout
@@ -565,8 +589,8 @@ The abstract `IsolatedWorker` facade already supplies lifecycle operations, and
 committed HEAD source-selects a native containment backend for Linux x86-64;
 other platforms and Linux architectures select the unsupported backend.
 Remaining gates are qualification of a native backend for each supported tuple;
-the service-bearing media-parser worker bootstrap and real dispatcher/parser; a
-higher owner for session-ID and worker-epoch uniqueness, channel/session
+the real media dispatcher/parser; a higher owner for session-ID and
+worker-epoch uniqueness, channel/session
 lifetime, orderly close plus `wait()`/reap, and failure/timeout
 `terminate_and_wait()`; then handshake/session composition, deterministic
 selection, staging, and publication, in that order.
@@ -602,19 +626,22 @@ capability and their prepare/commit ordering; the frame channel owns only
 bounded framing over a caller-supplied byte capability; the handshake proves
 only the typed transition and exact broker policy binding; the parent session
 owns the guarded composition and transaction state above those pieces. No
-runtime target
-links these libraries. The frame channel and handshake do not launch or own a
-worker or sandbox, accept a source path, read source bytes, select a component,
+application or trusted parent-composition target links these libraries. The
+Linux installed worker hosts only its private service-runtime copy. The frame
+channel and handshake do not launch or own a worker or sandbox, accept a source
+path, read source bytes, select a component,
 stage or publish data, or grant runtime/application authority. They have no
 process termination or reap authority. The frame channel also accepts no
 executable, path, source, component selection, catalog, staging, destination,
 publication, cache, or application authority; the result and read bridges also
 create no worker or runtime import path and own no staging or publication.
 Linux x86-64 native isolated-worker containment exists as a source-selected
-backend, but the worker service has no real payload dispatcher and is not
-composed into that backend or the runtime. Worker bootstrap, process management,
-and runtime composition remain later dependencies. This work authorizes no
-proprietary extraction.
+backend, and its installed worker now hosts the private service implementation
+over fd 3. The compile-fixed dispatcher rejects payload operations as
+unsupported, and the worker is not composed with the trusted parent session or
+the runtime. A real parser, higher process-session management, deterministic
+selection, staging/publication, and runtime composition remain later
+dependencies. This work authorizes no proprietary extraction.
 
 ## Later milestones
 

@@ -2,6 +2,9 @@
 
 #include "ohl/platform/isolated_worker.hpp"
 
+#include "ohl/parser/protocol.hpp"
+#include "ohl/parser/protocol_messages.hpp"
+
 #include <elf.h>
 #include <signal.h>
 
@@ -23,6 +26,9 @@
 #ifndef OHL_LINUX_TEST_WORKER_STAGE_PATH
 #error "The Linux native test requires a compile-fixed staging path"
 #endif
+#ifndef OHL_LINUX_TEST_PRODUCTION_WORKER_PATH
+#error "The Linux native test requires the production worker target path"
+#endif
 
 namespace {
 
@@ -32,6 +38,9 @@ using ohl::platform::IsolatedWorker;
 using ohl::platform::IsolatedWorkerError;
 using ohl::platform::IsolatedWorkerExitKind;
 using ohl::platform::IsolatedWorkerService;
+namespace parser = ohl::parser;
+
+constexpr std::uint64_t kProductionSessionId = 0x4f484c434f4e5431ULL;
 
 class TestContext final {
  public:
@@ -158,6 +167,115 @@ void store_elf_header(std::span<std::byte> bytes,
     const std::chrono::milliseconds timeout = 2s) {
   return ohl::platform::launch_isolated_worker(IsolatedWorkerService::media_parser,
                                                 Clock::now() + timeout);
+}
+
+[[nodiscard]] std::unique_ptr<IsolatedWorker>
+require_contained_production_worker(TestContext& test) {
+  test.expect(stage_worker(OHL_LINUX_TEST_PRODUCTION_WORKER_PATH),
+              "stage actual production media parser worker");
+  const auto source =
+      load_worker_fixture(OHL_LINUX_TEST_PRODUCTION_WORKER_PATH);
+  const auto staged = load_worker_fixture(OHL_LINUX_TEST_WORKER_STAGE_PATH);
+  test.expect(!source.empty() && source == staged,
+              "staged worker bytes exactly match the production target");
+  auto launch = launch_worker();
+  test.expect(launch.valid(),
+              "production worker launches through native confinement");
+  if (!launch.valid()) {
+    std::cerr << "production worker launch error: "
+              << static_cast<int>(launch.error) << '\n';
+  }
+  return std::move(launch.worker);
+}
+
+[[nodiscard]] std::vector<std::byte> encode_synthetic_frame(
+    TestContext& test, const parser::FrameHeader& header,
+    const std::span<const std::byte> payload = {}) {
+  std::vector<std::byte> frame(parser::kFrameHeaderBytes + payload.size());
+  const auto encoded = parser::encode_frame(header, payload, frame);
+  test.expect(encoded.valid() && encoded.bytes_written == frame.size(),
+              "encode project-authored OWP/1 frame");
+  return frame;
+}
+
+[[nodiscard]] std::vector<std::byte> synthetic_hello(TestContext& test) {
+  std::array<std::byte, parser::kHelloPayloadBytes> payload{};
+  const auto encoded = parser::encode_hello_payload(
+      {.source_size = 4096U, .maximum_read_bytes = 256U}, payload);
+  test.expect(encoded.valid(), "encode project-authored hello payload");
+  return encode_synthetic_frame(
+      test,
+      {.type = parser::MessageType::hello,
+       .payload_length = static_cast<std::uint32_t>(payload.size()),
+       .session_id = kProductionSessionId,
+       .request_id = 0U},
+      payload);
+}
+
+[[nodiscard]] bool write_contained(
+    TestContext& test, IsolatedWorker& worker,
+    const std::span<const std::byte> bytes, const bool fragmented = false) {
+  std::size_t offset = 0U;
+  while (offset < bytes.size()) {
+    const std::size_t amount = fragmented ? 1U : bytes.size() - offset;
+    const auto written = worker.write_all(bytes.subspan(offset, amount),
+                                          Clock::now() + 1s);
+    if (written.error != IsolatedWorkerError::none ||
+        written.bytes_transferred != amount) {
+      test.expect(false, "contained worker exact write succeeds");
+      std::cerr << "contained write error="
+                << static_cast<int>(written.error)
+                << " bytes=" << written.bytes_transferred << '\n';
+      return false;
+    }
+    offset += amount;
+  }
+  return true;
+}
+
+[[nodiscard]] bool complete_contained_handshake(TestContext& test,
+                                                IsolatedWorker& worker) {
+  const auto hello = synthetic_hello(test);
+  if (!write_contained(test, worker, hello, true)) {
+    return false;
+  }
+  std::array<std::byte, parser::kFrameHeaderBytes> ready_bytes{};
+  const auto read =
+      worker.read_exact(ready_bytes, Clock::now() + 1s);
+  const auto ready = parser::decode_frame_header(ready_bytes);
+  const bool canonical =
+      read.error == IsolatedWorkerError::none &&
+      read.bytes_transferred == ready_bytes.size() && ready.valid() &&
+      ready.header.type == parser::MessageType::ready &&
+      ready.header.payload_length == 0U &&
+      ready.header.session_id == kProductionSessionId &&
+      ready.header.request_id == 0U;
+  test.expect(canonical,
+              "contained production worker returns canonical ready frame");
+  return canonical;
+}
+
+void expect_contained_terminal(TestContext& test, IsolatedWorker& worker,
+                               const IsolatedWorkerExitKind expected,
+                               const std::string_view message) {
+  const auto result = worker.wait(Clock::now() + 2s);
+  test.expect(result.error == IsolatedWorkerError::none &&
+                  result.exit == expected,
+              message);
+
+  std::byte trailing{};
+  const auto closed = worker.read_exact(
+      std::span<std::byte>{&trailing, 1U}, Clock::now() + 1s);
+  test.expect(closed.error == IsolatedWorkerError::peer_closed &&
+                  closed.bytes_transferred == 0U,
+              "terminal production worker closes inherited IPC");
+  worker.close_channel();
+  worker.close_channel();
+
+  const auto cached = worker.wait(Clock::now() + 1s);
+  test.expect(cached.error == IsolatedWorkerError::none &&
+                  cached.exit == expected,
+              "contained worker terminal reap result is cached");
 }
 
 void expect_bootstrap_rejection(TestContext& test, const char* helper,
@@ -467,6 +585,68 @@ void test_io_abort_timeout_and_reap(TestContext& test) {
   }
 }
 
+void test_production_worker_under_containment(TestContext& test) {
+  {
+    auto worker = require_contained_production_worker(test);
+    if (worker != nullptr && complete_contained_handshake(test, *worker)) {
+      const auto shutdown = encode_synthetic_frame(
+          test, {.type = parser::MessageType::shutdown,
+                 .payload_length = 0U,
+                 .session_id = kProductionSessionId,
+                 .request_id = 0U});
+      test.expect(write_contained(test, *worker, shutdown),
+                  "contained production worker accepts shutdown");
+      expect_contained_terminal(
+          test, *worker, IsolatedWorkerExitKind::clean,
+          "contained hello/ready/shutdown is clean and reaped");
+    }
+  }
+
+  {
+    auto worker = require_contained_production_worker(test);
+    if (worker != nullptr) {
+      std::array<std::byte, parser::kFrameHeaderBytes> malformed{};
+      test.expect(write_contained(test, *worker, malformed),
+                  "contained production worker accepts malformed probe bytes");
+      expect_contained_terminal(
+          test, *worker, IsolatedWorkerExitKind::failed,
+          "contained malformed frame fails with sanitized status and is reaped");
+    }
+  }
+
+  {
+    auto worker = require_contained_production_worker(test);
+    if (worker != nullptr && complete_contained_handshake(test, *worker)) {
+      const auto enumerate = encode_synthetic_frame(
+          test, {.type = parser::MessageType::enumerate,
+                 .payload_length = 0U,
+                 .session_id = kProductionSessionId,
+                 .request_id = 1U});
+      test.expect(write_contained(test, *worker, enumerate),
+                  "contained worker accepts unsupported operation request");
+      expect_contained_terminal(
+          test, *worker, IsolatedWorkerExitKind::failed,
+          "contained unsupported dispatcher fails and is reaped");
+    }
+  }
+
+  {
+    auto worker = require_contained_production_worker(test);
+    if (worker != nullptr) {
+      const auto terminated =
+          worker->terminate_and_wait(Clock::now() + 2s);
+      test.expect(terminated.error == IsolatedWorkerError::none &&
+                      (terminated.exit == IsolatedWorkerExitKind::terminated ||
+                       terminated.exit == IsolatedWorkerExitKind::clean),
+                  "contained production worker reaches an owned terminal state");
+      const auto cached = worker->wait(Clock::now() + 1s);
+      test.expect(cached.error == IsolatedWorkerError::none &&
+                      cached.exit == terminated.exit,
+                  "owned-terminal production worker is reaped exactly once");
+    }
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -476,5 +656,6 @@ int main() {
   test_sanitized_status(test);
   test_denied_syscalls(test);
   test_io_abort_timeout_and_reap(test);
+  test_production_worker_under_containment(test);
   return test.result();
 }

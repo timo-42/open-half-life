@@ -36,6 +36,7 @@ media_parser_transport -> parser + platform + Threads; disconnected from runtime
 media_parser_handshake -> media_parser_reads + media_parser_transport; disconnected from runtime targets
 media_parser_parent_session -> media_parser_handshake; disconnected from runtime targets
 parser_worker_service -> parser; private, non-installed, and disconnected from runtime targets
+Linux x86-64 media-parser worker -> private freestanding parser/service runtime copy
 vfs -> platform + standard library; libudfread is a private implementation edge
 parser -> standard library
 core/platform -> standard library
@@ -43,8 +44,10 @@ core/platform -> standard library
 experimental media cabinet adapter -> vfs + Unshield + zlib
 ```
 
-The current `parser` target is deliberately isolated: no runtime target depends
-on it, and its only allowed dependency edge is toward the standard library. Its
+The canonical `parser` target is deliberately isolated: no runtime target
+depends on it, and its only allowed dependency edge is toward the standard
+library. The Linux x86-64 worker's private freestanding runtime compiles the
+same protocol sources without exporting or linking this canonical target. Its
 accepted OWP/1 protocol layer provides canonical bounded framing and headers,
 generic bounded primitive payload readers and writers, per-frame and cumulative
 message/payload budgets, and fail-closed session ordering. Accepted typed
@@ -249,9 +252,11 @@ not mechanical confinement. The transport otherwise has no process launch,
 ownership, termination, reap, executable or path selection, source-read,
 component-selection, catalog, destination, staging, publication, cache,
 application, or runtime-import authority. Linux x86-64 native isolated-worker
-containment now exists as a disconnected source-selected backend. Parser-worker
-process management plus composition with the result bridge, source-read broker,
-selection policy, staging, and the application remain later dependencies.
+containment now exists as a disconnected source-selected backend. Its installed
+worker now hosts the bounded worker-side OWP/1 service described below. A higher
+parent process-session owner plus composition with the result bridge,
+source-read broker, selection policy, staging, and the application remain later
+dependencies.
 
 Commit `13f0fb0` adds the disconnected
 `OpenHalfLife::media_parser_handshake` library. Its direct dependencies are
@@ -411,24 +416,30 @@ runtime-import authority. The abstract `platform::IsolatedWorker` facade
 already defines launch, exact I/O, abort/close, wait, and terminate-and-wait
 lifecycle operations, and committed HEAD source-selects a native containment
 backend only for Linux x86-64. Other platforms and Linux architectures select
-the unsupported backend. Production composition is still missing a
-service-bearing media-parser worker bootstrap, a real payload dispatcher/parser,
-runtime selection, staging/publication integration, and the higher
-process-session owner. The private worker-service library is deliberately not
-an installed artifact. That owner must allocate fresh protocol session IDs and
-worker epochs under an explicit uniqueness policy, keep the exact channel alive
-through handshake-proof consumption and the parent session, close the channel
+the unsupported backend. The Linux x86-64 installed worker now contains the
+service-bearing media-parser bootstrap, but production composition is still
+missing a real payload dispatcher/parser, runtime selection,
+staging/publication integration, and the higher process-session owner. The
+canonical private worker-service library remains a non-installed artifact; the
+Linux worker links a separate private freestanding runtime built from the same
+protocol and service implementation. That higher owner must allocate fresh
+protocol session IDs and worker epochs under an explicit uniqueness policy,
+keep the exact channel alive through handshake-proof consumption and the parent
+session, close the channel
 and `wait()`/reap after orderly protocol shutdown, and use
 `terminate_and_wait()` only for failure or orderly-close timeout paths.
 ParentSession owns none of those lifecycle actions.
 
 The accepted P1 worker-side boundary is a separate static target,
 `OpenHalfLife::parser_worker_service`, whose only project dependency is
-`OpenHalfLife::parser`. It is not installed, no runtime or native-worker target
-links it, and its header and callback contracts remain private implementation
-details. The service drives one bounded OWP/1 worker lifetime over
-caller-supplied synchronous transport and dispatcher operation tables plus
-caller-owned, disjoint scratch buffers. It applies protocol ordering and
+`OpenHalfLife::parser`. It is not installed or exported, and its header and
+callback contracts remain private implementation details. On Linux x86-64, the
+installed native worker links a private freestanding runtime copy of the same
+protocol and service sources; the application, media stack, and other platform
+workers still do not link the canonical target. The service drives one bounded
+OWP/1 worker lifetime over caller-supplied synchronous transport and dispatcher
+operation tables plus caller-owned, disjoint scratch buffers. It applies
+protocol ordering and
 budgets while mediating enumerate, stream, parent-owned source reads,
 cancellation, and shutdown. It does not select or implement a payload parser.
 
@@ -447,14 +458,56 @@ suite passed 40/40. The merged hosted qualification for this disconnected
 boundary is recorded below. None of this evidence exercises proprietary media
 or a real payload parser.
 
-Work resumes in dependency order: qualify the Linux x86-64 native backend or
-add another tuple's native backend; add a service-bearing worker bootstrap and
-real dispatcher/parser as a separate scope; add the process-session owner and
+The B1 Linux x86-64 bootstrap binds that service to the native worker's exact
+descriptor inventory. The worker emits the fixed readiness attestation on fd 4,
+closes that descriptor, then hosts one OWP/1 lifetime over the inherited
+full-duplex fd 3. A canonical parent `hello` produces the exact empty worker
+`ready`; canonical shutdown and orderly peer close end cleanly. Malformed or
+truncated frames and transport failures map to stable sanitized failure exits,
+and the public native lifecycle exposes only the existing clean, failed,
+crashed, resource-limit, terminated, or unknown categories.
+
+The worker's dispatcher is compile-fixed project code and currently returns
+`unsupported` when enumeration or streaming begins. It cannot be selected or
+configured by media. Consequently the service can enforce handshake, protocol,
+cancellation, shutdown, and lifecycle rules inside containment, but cannot
+enumerate, parse, source-read, or extract a payload. The trusted parent retains
+all source, selection, destination, staging, publication, cache, and runtime
+authority.
+
+The build links a private static freestanding protocol/service runtime into the
+static x86-64 worker. The worker identity remains the compile-fixed
+`/usr/libexec/open-half-life/ohl-media-parser-worker`; the launcher pins and
+verifies its no-follow, non-writable, non-set-id, static x86-64 ELF identity
+before applying resource limits, no-new-privileges, Landlock, seccomp, the
+fixed descriptor inventory, readiness framing, and pidfd-backed lifecycle.
+This bootstrap is implemented and tested only on Linux x86-64. It is not a
+supported worker backend for another Linux architecture, Windows, or macOS.
+
+Local evidence includes `platform.isolated_worker.linux`, which stages the
+exact production-target bytes at the test backend's compile-fixed identity and
+launches them through the public native launcher. It covers fragmented
+`hello`/canonical `ready`/shutdown and clean reap, malformed-frame failure,
+compile-fixed unsupported enumeration, peer closure, idempotent channel close,
+cached terminal wait, and owned terminate-and-reap. The direct
+`platform.media_parser_worker.service` test additionally covers truncated
+headers and payloads plus orderly peer close, while
+`platform.media_parser_worker.install_smoke` checks the installed static image,
+non-writable/non-set-id mode, payload arenas, readiness framing, canonical
+fd-3 handshake, shutdown, and clean exit. These are project-authored synthetic
+Linux x86-64 tests, not proprietary-media or production-import evidence. Final
+B1 validation passed the four focused service/bootstrap tests at 4/4, the full
+development suite at 40/40, and 50 consecutive real-launcher test runs at
+50/50. Owned termination may observe either `clean` or `terminated` when
+orderly peer EOF wins the race with pidfd termination; both results are
+terminal, cached, and reaped.
+
+Work resumes in dependency order: add another tuple's native backend; add a real
+dispatcher/parser as a separate scope; add the process-session owner and
 session-ID / epoch policy; compose handshake and ParentSession; then integrate
 a deterministic component-selection recipe before staging and publication.
-The existing minimal installed worker does not compose this service. No current
-package removes those blockers, and the synthetic evidence authorizes no
-proprietary extraction.
+The installed Linux worker hosts the service but removes none of those later
+blockers, and the synthetic evidence authorizes no proprietary extraction.
 
 Deterministic parser fuzz validation was accepted at `81a7ee9`; its typed
 dispatch was extended at `d59b6c5`, for `stream_entry` at `f4d908a`, for
@@ -693,9 +746,10 @@ sanitizer and experimental Linux passed 40/40, and Windows x64 and macOS Apple
 Silicon passed 27/27. The final PR change replaced an oversized fixed stack
 buffer in the service test with payload-sized dynamic test storage so Windows
 x64 could run the synthetic suite; it did not change production code or the
-service contract. This qualifies the private disconnected boundary on the
-tested hosts, not a service-bearing native worker, real payload parser,
-runtime composition, extraction, staging, publication, or production import.
+service contract. This qualifies the private disconnected P1 boundary on the
+tested hosts, not a real payload parser, runtime composition, extraction,
+staging, publication, or production import. It predates and does not qualify
+the later Linux-only B1 bootstrap described above.
 
 ## Parser transport and parent-session qualification
 
