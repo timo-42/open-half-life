@@ -1,5 +1,8 @@
 #include "isolated_worker_linux_internal.hpp"
 
+#include "ohl/parser/protocol.hpp"
+#include "ohl/parser/protocol_messages.hpp"
+
 #include <elf.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -27,6 +30,9 @@ using namespace std::chrono_literals;
 using ohl::platform::detail::linux_isolated_worker::kWorkerChannelDescriptor;
 using ohl::platform::detail::linux_isolated_worker::kWorkerReadyAttestation;
 using ohl::platform::detail::linux_isolated_worker::kWorkerReadyDescriptor;
+namespace parser = ohl::parser;
+
+constexpr std::uint64_t kSessionId = 0x4f484c4253543031ULL;
 
 class TestContext final {
  public:
@@ -91,6 +97,34 @@ class UniqueFd final {
   return true;
 }
 
+[[nodiscard]] bool write_all(const int descriptor,
+                             const std::span<const std::byte> data) {
+  std::size_t offset = 0;
+  while (offset < data.size()) {
+    const ssize_t amount = ::write(
+        descriptor, data.data() + static_cast<std::ptrdiff_t>(offset),
+        data.size() - offset);
+    if (amount > 0) {
+      offset += static_cast<std::size_t>(amount);
+      continue;
+    }
+    if (amount < 0 && errno == EINTR) {
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+[[nodiscard]] bool write_frame(const int descriptor,
+                               const parser::FrameHeader& header,
+                               const std::span<const std::byte> payload = {}) {
+  std::vector<std::byte> frame(parser::kFrameHeaderBytes + payload.size());
+  const auto encoded = parser::encode_frame(header, payload, frame);
+  return encoded.valid() && encoded.bytes_written == frame.size() &&
+         write_all(descriptor, frame);
+}
+
 [[nodiscard]] std::vector<std::byte> read_file(const char* path) {
   std::ifstream input{path, std::ios::binary | std::ios::ate};
   if (!input) {
@@ -147,6 +181,35 @@ template <typename T>
   return true;
 }
 
+[[nodiscard]] bool has_static_protocol_payload_storage(
+    const std::span<const std::byte> bytes) {
+  if (bytes.size() < sizeof(Elf64_Ehdr)) {
+    return false;
+  }
+  const auto header = load_object<Elf64_Ehdr>(bytes, 0);
+  if (header.e_shentsize != sizeof(Elf64_Shdr) || header.e_shnum == 0U) {
+    return false;
+  }
+  const std::size_t table_offset = static_cast<std::size_t>(header.e_shoff);
+  const std::size_t table_size =
+      static_cast<std::size_t>(header.e_shnum) * sizeof(Elf64_Shdr);
+  if (table_offset > bytes.size() || table_size > bytes.size() - table_offset) {
+    return false;
+  }
+  constexpr std::uint64_t required_storage =
+      2ULL * parser::kMaximumFramePayloadBytes;
+  for (Elf64_Half index = 0; index < header.e_shnum; ++index) {
+    const auto section = load_object<Elf64_Shdr>(
+        bytes, table_offset +
+                   static_cast<std::size_t>(index) * sizeof(Elf64_Shdr));
+    if (section.sh_type == SHT_NOBITS && (section.sh_flags & SHF_ALLOC) != 0U &&
+        section.sh_size >= required_storage) {
+      return true;
+    }
+  }
+  return false;
+}
+
 [[nodiscard]] bool installed_mode_is_immutable_executable(const char* path) {
   struct stat status {};
   return ::stat(path, &status) == 0 && S_ISREG(status.st_mode) &&
@@ -171,6 +234,8 @@ void test_installed_artifact(TestContext& test, const char* worker_path) {
   const auto bytes = read_file(worker_path);
   test.expect(is_static_x86_64_elf(bytes),
               "installed worker is static x86-64 ELF without PT_INTERP");
+  test.expect(has_static_protocol_payload_storage(bytes),
+              "installed worker carries both maximum payload arenas in BSS");
 }
 
 void test_direct_lifecycle(TestContext& test, const char* worker_path) {
@@ -231,16 +296,41 @@ void test_direct_lifecycle(TestContext& test, const char* worker_path) {
   test.expect(::read(ready_read.get(), &trailing, 1) == 0,
               "installed worker closes readiness fd after attestation");
 
-  constexpr std::array payload{std::byte{0x41}, std::byte{0x42}};
-  test.expect(::write(parent_channel.get(), payload.data(), payload.size()) ==
-                  static_cast<ssize_t>(payload.size()),
-              "installed worker accepts inherited fd 3 lifecycle bytes");
-  struct pollfd channel_poll{parent_channel.get(), POLLIN, 0};
-  test.expect(::poll(&channel_poll, 1, 50) == 0,
-              "installed worker does not echo or implement parser semantics");
+  std::array<std::byte, parser::kHelloPayloadBytes> hello_payload{};
+  const auto hello = parser::encode_hello_payload(
+      {.source_size = 4096U, .maximum_read_bytes = 256U}, hello_payload);
+  test.expect(hello.valid(), "encode synthetic installed-worker hello");
+  test.expect(
+      write_frame(parent_channel.get(),
+                  {.type = parser::MessageType::hello,
+                   .payload_length =
+                       static_cast<std::uint32_t>(hello_payload.size()),
+                   .session_id = kSessionId,
+                   .request_id = 0U},
+                  hello_payload),
+      "installed worker accepts a complete OWP/1 hello on fd 3");
 
+  std::array<std::byte, parser::kFrameHeaderBytes> ready_bytes{};
+  test.expect(read_exact(parent_channel.get(), ready_bytes),
+              "installed worker emits a complete OWP/1 ready header");
+  const auto ready_frame = parser::decode_frame_header(ready_bytes);
+  test.expect(ready_frame.valid() &&
+                  ready_frame.header.type == parser::MessageType::ready &&
+                  ready_frame.header.payload_length == 0U &&
+                  ready_frame.header.session_id == kSessionId &&
+                  ready_frame.header.request_id == 0U,
+              "installed worker ready frame is exact and canonical");
+
+  test.expect(write_frame(parent_channel.get(),
+                          {.type = parser::MessageType::shutdown,
+                           .payload_length = 0U,
+                           .session_id = kSessionId,
+                           .request_id = 0U}),
+              "installed worker accepts canonical shutdown");
+  std::byte channel_trailing{};
+  test.expect(::read(parent_channel.get(), &channel_trailing, 1) == 0,
+              "installed worker closes fd 3 after canonical shutdown");
   parent_channel.reset();
-  std::this_thread::sleep_for(10ms);
   if (!wait_clean(child)) {
     static_cast<void>(::kill(child, SIGKILL));
     static_cast<void>(::waitpid(child, nullptr, 0));

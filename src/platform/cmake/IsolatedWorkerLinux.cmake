@@ -12,7 +12,13 @@ if(ohl_linux_worker_processor MATCHES "^(x86_64|amd64)$")
     src/media_parser_worker_linux.cpp
   )
   target_compile_features(ohl_media_parser_worker PRIVATE cxx_std_20)
-  target_include_directories(ohl_media_parser_worker PRIVATE src)
+  target_include_directories(
+    ohl_media_parser_worker
+    PRIVATE
+      src
+      ${PROJECT_SOURCE_DIR}/src/parser/include
+      ${PROJECT_SOURCE_DIR}/src/parser/src
+  )
   target_compile_definitions(
     ohl_media_parser_worker
     PRIVATE OHL_LINUX_ISOLATED_WORKER_FREESTANDING=1
@@ -29,6 +35,9 @@ if(ohl_linux_worker_processor MATCHES "^(x86_64|amd64)$")
   )
   target_link_options(
     ohl_media_parser_worker PRIVATE -nostdlib -static -no-pie -Wl,-e,_start
+  )
+  target_link_libraries(
+    ohl_media_parser_worker PRIVATE ohl_parser_worker_runtime
   )
   set_target_properties(
     ohl_media_parser_worker

@@ -20,16 +20,18 @@ evidence.
 - Isolated-worker containment means a native backend can launch a fixed worker
   identity with reduced authority and bounded IPC. Linux x86-64 has a
   source-selected containment backend with synthetic tests and an installed
-  minimal production worker artifact that attests readiness and services only
-  process/channel lifecycle. It still lacks parser/import semantics, a
-  lifecycle coordinator, a composed real payload dispatcher/parser,
-  deterministic component selection, runtime staging/publication integration,
-  and production qualification.
+  production worker artifact that attests readiness and hosts one bounded OWP/1
+  service lifetime over fd 3. Its compile-fixed dispatcher rejects payload
+  operations as unsupported, so it still lacks real parser/import semantics, a
+  higher parent process-session owner, deterministic component selection,
+  runtime staging/publication integration, and production qualification.
 - Parser-worker service availability means the private, non-installed static
   service can drive a synthetic worker-side OWP/1 session over injected
-  transport and dispatcher callbacks. It is disconnected from the application,
-  native worker, and import stack and therefore does not imply containment,
-  payload parsing, extraction, publication, or production import.
+  transport and dispatcher callbacks. Linux x86-64 also links a private
+  freestanding copy of that implementation into its contained installed worker.
+  The service remains disconnected from the application and import stack, and
+  neither form implies payload parsing, extraction, publication, or production
+  import.
 - Production end-to-end qualification means a supported platform tuple can
   perform the complete import path from pinned source through contained parser,
   deterministic selection, trusted staging, no-replace publication, runtime
@@ -40,7 +42,7 @@ evidence.
 
 | Platform | Build | App preflight and metadata-only cache | Isolated-worker containment | Production end-to-end qualification |
 | --- | --- | --- | --- | --- |
-| Linux x86-64 | Implemented. Existing Linux build evidence is not a production import tuple. | Implemented; no payload extraction. | Implemented as a source-selected native backend with project-authored synthetic tests. A minimal installed production worker artifact covers packaging and process/channel lifecycle only; the private parser-worker service is not linked into it, and a real dispatcher/parser, orchestration, runtime selection, and staging/publication integration remain absent. | Absent; import unavailable. |
+| Linux x86-64 | Implemented. Existing Linux build evidence is not a production import tuple. | Implemented; no payload extraction. | Implemented as a source-selected native backend with project-authored synthetic tests. The installed static worker hosts exact OWP/1 hello/ready/shutdown on fd 3 under the compile-fixed identity and native confinement. Its compile-fixed dispatcher rejects payload operations as unsupported; the higher process-session owner, real parser, runtime selection, and staging/publication integration remain absent. | Absent; import unavailable. |
 | Linux other architectures | Unevidenced and unqualified as import tuples. | Code path exists where the build is available; no payload extraction. | Unsupported; CMake selects the unsupported backend. | Absent; import unavailable. |
 | Windows x64 | Exact documented build/preflight tuple. | Implemented in hosted evidence; no payload extraction. | Unsupported; CMake selects the unsupported backend. | Absent; import unavailable. |
 | Windows other architectures | Unevidenced and unqualified. | Unevidenced for release qualification. | Unsupported; CMake selects the unsupported backend. | Absent; import unavailable. |
@@ -51,13 +53,15 @@ Platform-independent staging and the Linux atomic-directory store are
 implemented but disconnected from the application and parser stack. They do
 not change any production-import status in this matrix.
 
-## Current disconnected parser-worker service
+## Current parser-worker service and Linux bootstrap
 
 `OpenHalfLife::parser_worker_service` is an internal static library whose only
 project dependency is `OpenHalfLife::parser`. It is not installed and exposes
 no supported public API. It drives bounded worker-side protocol mechanics using
 trusted project-supplied callback tables and caller-owned scratch buffers, but
-does not select a real payload parser or compose with a native worker.
+does not select a real payload parser. The Linux x86-64 installed worker now
+links a separate private freestanding runtime built from the same protocol and
+service implementation; the application and import stack remain disconnected.
 
 The trusted parent retains the pinned source capability and sole authority over
 result acceptance, component selection, destinations, staging, and
@@ -89,14 +93,40 @@ x64 synthetic test could run; production code and the private service contract
 were unchanged.
 
 This accepted hosted evidence qualifies the private disconnected service
-boundary on the tested hosts. It does not cover a service-bearing bootstrap, a
-real dispatcher/parser, native containment composition, proprietary media,
-extraction, publication, or end-to-end import.
+boundary on the tested hosts. It predates and does not qualify the later B1
+Linux bootstrap, a real dispatcher/parser, proprietary media, extraction,
+publication, or end-to-end import.
 
-The next dependency is a separately reviewed worker bootstrap and real
-dispatcher/parser, followed by native lifecycle/runtime composition. Production
-payload import remains unavailable on every platform, and M2 remains in
-progress.
+The B1 bootstrap is Linux x86-64-only. The installed static worker emits and
+closes the exact readiness record on fd 4, then hosts a single bounded OWP/1
+lifetime over fd 3. It accepts canonical `hello`, emits exact-empty `ready`, and
+supports protocol shutdown and orderly peer closure. Its project-authored,
+compile-fixed dispatcher returns `unsupported` for enumeration or streaming;
+media cannot select or configure callbacks, and no payload parser or source-read
+implementation is present. Protocol, unsupported-operation, transport, and
+internal outcomes become sanitized child exits and the public lifecycle's
+bounded exit categories.
+
+`platform.isolated_worker.linux` verifies the exact production worker bytes
+through the public native launcher, so launch success crosses the compile-fixed
+static ELF identity checks, inherited nonblocking channel, resource limits,
+no-new-privileges, Landlock, seccomp, readiness EOF, and pidfd lifecycle. Its
+synthetic cases cover fragmented hello/ready/shutdown and clean reap, malformed
+protocol failure, unsupported enumeration, IPC peer closure, idempotent close,
+cached waits, and owned termination/reap. Direct service and installed-artifact
+tests add truncated I/O, clean peer-close, non-writable/non-set-id static-image,
+payload-arena, readiness, and exact fd-3 lifecycle coverage. This is local
+Linux x86-64 bootstrap evidence only, not cross-platform or production-import
+qualification.
+Final B1 validation passed the focused bootstrap set 4/4, the full development
+suite 40/40, and 50 repeated real-launcher cases 50/50. Owned termination can
+classify as `clean` or `terminated` if orderly peer EOF wins; either result is
+terminal, cached, and reaped.
+
+The next dependencies are a separately reviewed real dispatcher/parser and the
+higher parent process-session owner, followed by handshake/session, selection,
+staging, publication, and runtime composition. Production payload import
+remains unavailable on every platform, and M2 remains in progress.
 
 ## Input and fixture provenance
 
