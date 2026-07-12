@@ -22,6 +22,27 @@ target_link_libraries(ohl_parser_tests PRIVATE OpenHalfLife::parser)
 ohl_enable_warnings(ohl_parser_tests)
 add_test(NAME parser.protocol COMMAND ohl_parser_tests)
 
+add_executable(ohl_parser_worker_service_tests
+  parser/parser_worker_service_test.cpp
+)
+target_compile_features(ohl_parser_worker_service_tests PRIVATE cxx_std_20)
+target_include_directories(
+  ohl_parser_worker_service_tests
+  PRIVATE ${PROJECT_SOURCE_DIR}/src/parser/src
+)
+target_link_libraries(
+  ohl_parser_worker_service_tests
+  PRIVATE
+    OpenHalfLife::parser_worker_service
+    OpenHalfLife::parser
+)
+ohl_enable_warnings(ohl_parser_worker_service_tests)
+add_test(
+  NAME parser.worker_service
+  COMMAND ohl_parser_worker_service_tests
+)
+set_tests_properties(parser.worker_service PROPERTIES TIMEOUT 30)
+
 add_executable(ohl_media_parser_result_tests
   media/parser_result_session_test.cpp
 )

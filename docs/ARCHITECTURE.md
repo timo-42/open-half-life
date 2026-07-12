@@ -35,6 +35,7 @@ media_parser_reads -> media_parser_results; disconnected from runtime targets
 media_parser_transport -> parser + platform + Threads; disconnected from runtime targets
 media_parser_handshake -> media_parser_reads + media_parser_transport; disconnected from runtime targets
 media_parser_parent_session -> media_parser_handshake; disconnected from runtime targets
+parser_worker_service -> parser; private, non-installed, and disconnected from runtime targets
 vfs -> platform + standard library; libudfread is a private implementation edge
 parser -> standard library
 core/platform -> standard library
@@ -410,23 +411,50 @@ runtime-import authority. The abstract `platform::IsolatedWorker` facade
 already defines launch, exact I/O, abort/close, wait, and terminate-and-wait
 lifecycle operations, and committed HEAD source-selects a native containment
 backend only for Linux x86-64. Other platforms and Linux architectures select
-the unsupported backend. Production composition is still missing the
-media-parser worker executable, bootstrap and service loop, install rule,
+the unsupported backend. Production composition is still missing a
+service-bearing media-parser worker bootstrap, a real payload dispatcher/parser,
 runtime selection, staging/publication integration, and the higher
-process-session owner. That owner must allocate fresh protocol session IDs and
+process-session owner. The private worker-service library is deliberately not
+an installed artifact. That owner must allocate fresh protocol session IDs and
 worker epochs under an explicit uniqueness policy, keep the exact channel alive
 through handshake-proof consumption and the parent session, close the channel
 and `wait()`/reap after orderly protocol shutdown, and use
 `terminate_and_wait()` only for failure or orderly-close timeout paths.
 ParentSession owns none of those lifecycle actions.
 
+The accepted P1 worker-side boundary is a separate static target,
+`OpenHalfLife::parser_worker_service`, whose only project dependency is
+`OpenHalfLife::parser`. It is not installed, no runtime or native-worker target
+links it, and its header and callback contracts remain private implementation
+details. The service drives one bounded OWP/1 worker lifetime over
+caller-supplied synchronous transport and dispatcher operation tables plus
+caller-owned, disjoint scratch buffers. It applies protocol ordering and
+budgets while mediating enumerate, stream, parent-owned source reads,
+cancellation, and shutdown. It does not select or implement a payload parser.
+
+The trusted parent remains the sole owner of the pinned source capability,
+catalog acceptance, deterministic selection, destination, staging, and
+publication. From that parent boundary, the worker and everything it emits are
+untrusted and must still pass independent typed parent/result validation. The
+service operation tables may be supplied only by trusted project composition;
+media cannot configure them. Their code executes within the worker's ambient
+authority, so the private service contract is not a substitute for native
+containment.
+
+Focused synthetic service validation passed 1/1, the complete development
+suite passed 39/39, and the AddressSanitizer plus UndefinedBehaviorSanitizer
+suite passed 40/40. These are local boundary tests, not hosted or supported-host
+qualification, and they do not exercise proprietary media or a real payload
+parser.
+
 Work resumes in dependency order: qualify the Linux x86-64 native backend or
-add another tuple's native backend together with the worker/bootstrap/service
-loop; add the process-session owner and session-ID / epoch policy; compose
-handshake and ParentSession; then integrate a deterministic component-selection
-recipe before staging and publication. No further coherent disconnected
-parent-session package removes those blockers. Its tests are project-authored
-and synthetic and authorize no proprietary extraction.
+add another tuple's native backend; add a service-bearing worker bootstrap and
+real dispatcher/parser as a separate scope; add the process-session owner and
+session-ID / epoch policy; compose handshake and ParentSession; then integrate
+a deterministic component-selection recipe before staging and publication.
+The existing minimal installed worker does not compose this service. No current
+package removes those blockers, and the synthetic evidence authorizes no
+proprietary extraction.
 
 Deterministic parser fuzz validation was accepted at `81a7ee9`; its typed
 dispatch was extended at `d59b6c5`, for `stream_entry` at `f4d908a`, for

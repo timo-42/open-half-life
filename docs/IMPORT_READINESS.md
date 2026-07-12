@@ -22,8 +22,14 @@ evidence.
   source-selected containment backend with synthetic tests and an installed
   minimal production worker artifact that attests readiness and services only
   process/channel lifecycle. It still lacks parser/import semantics, a
-  lifecycle coordinator, deterministic component selection, runtime
-  staging/publication integration, and production qualification.
+  lifecycle coordinator, a composed real payload dispatcher/parser,
+  deterministic component selection, runtime staging/publication integration,
+  and production qualification.
+- Parser-worker service availability means the private, non-installed static
+  service can drive a synthetic worker-side OWP/1 session over injected
+  transport and dispatcher callbacks. It is disconnected from the application,
+  native worker, and import stack and therefore does not imply containment,
+  payload parsing, extraction, publication, or production import.
 - Production end-to-end qualification means a supported platform tuple can
   perform the complete import path from pinned source through contained parser,
   deterministic selection, trusted staging, no-replace publication, runtime
@@ -34,7 +40,7 @@ evidence.
 
 | Platform | Build | App preflight and metadata-only cache | Isolated-worker containment | Production end-to-end qualification |
 | --- | --- | --- | --- | --- |
-| Linux x86-64 | Implemented. Existing Linux build evidence is not a production import tuple. | Implemented; no payload extraction. | Implemented as a source-selected native backend with project-authored synthetic tests. A minimal installed production worker artifact covers packaging and process/channel lifecycle only; orchestration, parser/import service semantics, runtime selection, and staging/publication integration remain absent. | Absent; import unavailable. |
+| Linux x86-64 | Implemented. Existing Linux build evidence is not a production import tuple. | Implemented; no payload extraction. | Implemented as a source-selected native backend with project-authored synthetic tests. A minimal installed production worker artifact covers packaging and process/channel lifecycle only; the private parser-worker service is not linked into it, and a real dispatcher/parser, orchestration, runtime selection, and staging/publication integration remain absent. | Absent; import unavailable. |
 | Linux other architectures | Unevidenced and unqualified as import tuples. | Code path exists where the build is available; no payload extraction. | Unsupported; CMake selects the unsupported backend. | Absent; import unavailable. |
 | Windows x64 | Exact documented build/preflight tuple. | Implemented in hosted evidence; no payload extraction. | Unsupported; CMake selects the unsupported backend. | Absent; import unavailable. |
 | Windows other architectures | Unevidenced and unqualified. | Unevidenced for release qualification. | Unsupported; CMake selects the unsupported backend. | Absent; import unavailable. |
@@ -44,6 +50,28 @@ evidence.
 Platform-independent staging and the Linux atomic-directory store are
 implemented but disconnected from the application and parser stack. They do
 not change any production-import status in this matrix.
+
+## Current disconnected parser-worker service
+
+`OpenHalfLife::parser_worker_service` is an internal static library whose only
+project dependency is `OpenHalfLife::parser`. It is not installed and exposes
+no supported public API. It drives bounded worker-side protocol mechanics using
+trusted project-supplied callback tables and caller-owned scratch buffers, but
+does not select a real payload parser or compose with a native worker.
+
+The trusted parent retains the pinned source capability and sole authority over
+result acceptance, component selection, destinations, staging, and
+publication. The worker and its output remain untrusted at that boundary and
+receive none of those authorities. Synthetic local evidence passed the focused
+service test 1/1, the development suite 39/39, and the ASan plus UBSan suite
+40/40. That evidence does not cover a service-bearing bootstrap, a real
+dispatcher/parser, native containment composition, proprietary media,
+extraction, publication, supported-host qualification, or end-to-end import.
+
+The next dependency is a separately reviewed worker bootstrap and real
+dispatcher/parser, followed by native lifecycle/runtime composition. Production
+payload import remains unavailable on every platform, and M2 remains in
+progress.
 
 ## Input and fixture provenance
 

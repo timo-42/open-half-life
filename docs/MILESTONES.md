@@ -54,7 +54,8 @@ validation was accepted at `909edcc`, followed by portable media cancellation
 accepted at `0f2c78d`, trusted parser source reads at `c90f2d1`, and the
 disconnected frame channel at `e4b819a`. The trusted parent handshake was
 accepted at `13f0fb0`, and the disconnected trusted parent session was accepted
-at `7bd9d38`.
+at `7bd9d38`. Accepted P1 work now also provides a private, non-installed,
+disconnected parser-worker service with synthetic boundary tests.
 
 Production payload import remains unavailable on every platform. The current
 readiness matrix and release-evidence gates are tracked in
@@ -207,6 +208,16 @@ Current functionality:
   ignored. Prompt worker/source notifications, prepared-reply commit/abandon,
   synchronous sink delivery, buffer privacy, shutdown, and destruction follow
   the accepted lifecycle contracts
+- the disconnected `OpenHalfLife::parser_worker_service` static target depends
+  only on `OpenHalfLife::parser`. Its private callback-and-buffer contract
+  drives one bounded worker-side protocol lifetime for enumeration, streaming,
+  parent-owned reads, cancellation, and shutdown. It is not installed or linked
+  into a runtime/native worker, chooses no real payload dispatcher/parser, and
+  owns no source path, destination, selection, staging, publication, cache, or
+  application authority. Focused project-authored synthetic validation passed
+  1/1, the development suite passed 39/39, and ASan plus UBSan passed 40/40;
+  this is local internal-boundary evidence, not hosted or cross-platform
+  production qualification
 
 Remaining M2 work:
 
@@ -217,14 +228,14 @@ Remaining M2 work:
 - the constrained parser worker boundary in `MEDIA_IMPORT.md` remains
   mandatory before any third-party parser may feed production extraction. The
   accepted result bridge, source-read broker, frame channel, parent handshake,
-  and parent session still need native isolated-worker launch, ownership,
-  termination, and reap plus explicit runtime composition, deterministic
-  component selection, and staging integration; the worker must have no
-  raw-path, destination, or cache authority. Although the abstract
+  parent session, and private worker service still need a service-bearing native
+  bootstrap, a real dispatcher/parser, lifecycle ownership, and explicit runtime
+  composition with deterministic component selection and staging; the worker
+  must have no raw-path, destination, or cache authority. Although the abstract
   `IsolatedWorker` lifecycle facade exists, committed HEAD source-selects a
   native containment backend only for Linux x86-64; other platforms and Linux
   architectures select the unsupported backend. The production gate is blocked
-  on parser worker executable/bootstrap/service loop, install rule, runtime
+  on the service-bearing worker bootstrap, real dispatcher/parser, runtime
   selection, lifecycle ownership, and staging/publication integration. The
   higher process-session owner must allocate unique session IDs and worker
   epochs, keep the channel alive, close plus `wait()`/reap after orderly
@@ -236,8 +247,8 @@ Remaining M2 work:
   binaries or media-provided code
 - macOS and Windows atomic-directory stores and native adversarial gates,
   complete Linux filesystem qualification, cache locking/recovery, component
-  selection, and the parser worker boundary remain required before M2 can be
-  completed
+  selection, and parser-worker runtime composition remain required before M2
+  can be completed
 
 The package-4 run at `df5ea6d` remains the historical hosted evidence for that
 feature baseline. Current exact-SHA evidence at
@@ -530,7 +541,7 @@ The abstract `IsolatedWorker` facade already supplies lifecycle operations, and
 committed HEAD source-selects a native containment backend for Linux x86-64;
 other platforms and Linux architectures select the unsupported backend.
 Remaining gates are qualification of a native backend for each supported tuple;
-the media-parser worker executable, bootstrap, service loop, and install rule; a
+the service-bearing media-parser worker bootstrap and real dispatcher/parser; a
 higher owner for session-ID and worker-epoch uniqueness, channel/session
 lifetime, orderly close plus `wait()`/reap, and failure/timeout
 `terminate_and_wait()`; then handshake/session composition, deterministic
@@ -558,8 +569,8 @@ the source-read broker. Cross-platform broker evidence comes from build run
 `29148133002` above.
 
 This accepted protocol, result-validation, source-read, disconnected frame
-transport, parent-handshake, and parent-session stack supports active M2 work
-but is not a production import path.
+transport, parent-handshake, parent-session, and private worker-service stack
+supports active M2 work but is not a production import path.
 The result bridge owns
 catalog generation, promotion, membership, layout, stream remainder, and
 retirement; the read broker owns bounded reads from the retained pinned
@@ -576,9 +587,10 @@ executable, path, source, component selection, catalog, staging, destination,
 publication, cache, or application authority; the result and read bridges also
 create no worker or runtime import path and own no staging or publication.
 Linux x86-64 native isolated-worker containment exists as a source-selected
-backend, but process management around the parser worker and runtime
-composition remain later dependencies. This work authorizes no proprietary
-extraction.
+backend, but the worker service has no real payload dispatcher and is not
+composed into that backend or the runtime. Worker bootstrap, process management,
+and runtime composition remain later dependencies. This work authorizes no
+proprietary extraction.
 
 ## Later milestones
 
