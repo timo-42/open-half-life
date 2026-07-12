@@ -55,7 +55,8 @@ accepted at `0f2c78d`, trusted parser source reads at `c90f2d1`, and the
 disconnected frame channel at `e4b819a`. The trusted parent handshake was
 accepted at `13f0fb0`, and the disconnected trusted parent session was accepted
 at `7bd9d38`. Accepted P1 work now also provides a private, non-installed,
-disconnected parser-worker service with synthetic boundary tests.
+disconnected parser-worker service with synthetic boundary tests and accepted
+hosted cross-platform evidence from PR #7.
 
 Production payload import remains unavailable on every platform. The current
 readiness matrix and release-evidence gates are tracked in
@@ -216,8 +217,10 @@ Current functionality:
   owns no source path, destination, selection, staging, publication, cache, or
   application authority. Focused project-authored synthetic validation passed
   1/1, the development suite passed 39/39, and ASan plus UBSan passed 40/40;
-  this is local internal-boundary evidence, not hosted or cross-platform
-  production qualification
+  the accepted PR #7 hosted matrix also runs the service test across Linux x64,
+  sanitizers, the experimental Linux configuration, Windows x64, and macOS
+  Apple Silicon. This is cross-platform evidence for the disconnected boundary,
+  not production qualification
 
 Remaining M2 work:
 
@@ -251,11 +254,28 @@ Remaining M2 work:
   can be completed
 
 The package-4 run at `df5ea6d` remains the historical hosted evidence for that
-feature baseline. Current exact-SHA evidence at
-`3fd0375c7a759b0fcd269fa73d6bdc8a36123134` passes all five required jobs: Linux
-x64, Linux sanitizers, the Linux experimental configuration, Windows x64, and
-macOS Apple Silicon. This evidence validates implemented M2 functionality only;
-it is not evidence for the remaining production extraction path.
+feature baseline. [PR #7](https://github.com/timo-42/open-half-life/pull/7)
+accepted the current P1 disconnected worker-service tree at reviewed head
+[`3ec70b34f461ec7dddb1ca26770544df6debfe0f`](https://github.com/timo-42/open-half-life/commit/3ec70b34f461ec7dddb1ca26770544df6debfe0f),
+then rebased that tree onto `main` as
+[`6b3df8f1cf6660eed46246790bff382c6c4001b6`](https://github.com/timo-42/open-half-life/commit/6b3df8f1cf6660eed46246790bff382c6c4001b6).
+Both commits have exact tree
+`888bee1be57b45c7583fe05bcf22698725f5f651`. All 12 hosted jobs passed: Build
+runs
+[`29195613360`](https://github.com/timo-42/open-half-life/actions/runs/29195613360)
+and
+[`29195614365`](https://github.com/timo-42/open-half-life/actions/runs/29195614365)
+each passed Linux x64, sanitizers, the Linux experimental configuration,
+Windows x64, and macOS Apple Silicon; Parser fuzz smoke runs
+[`29195613343`](https://github.com/timo-42/open-half-life/actions/runs/29195613343)
+and
+[`29195614314`](https://github.com/timo-42/open-half-life/actions/runs/29195614314)
+each passed Linux Clang 18/libFuzzer. The final PR change replaced an oversized
+fixed stack buffer in the service test with payload-sized dynamic test storage
+so Windows x64 could run it; no production code changed. This evidence validates
+the private disconnected service and the implemented M2 stack only; it is not
+evidence for a real parser, worker/runtime composition, or the remaining
+production extraction path.
 
 The later `909edcc` bridge and `0f2c78d` cancellation migration have exact-SHA
 hosted evidence from build run `29147060407` at `ca576e9`. GNU 13 Linux passed
@@ -279,11 +299,12 @@ The disconnected frame channel was accepted and pushed at
 `e4b819a9efa37d5e401d111c4ac591365ce669ae`. Local validation completed a clean
 warnings-as-errors build with 83/83 steps, the full CTest suite at 34/34, 50
 consecutive passes each for the frame-channel and repository-policy tests, and
-the platform common-worker test at 1/1. These local results cover the trusted
-operation table, exact header/payload transfers, validation ordering, session
-binding, caller buffer/view lifetimes, concurrency, terminal poisoning,
-sanitized transfer errors, and abort wakeup. No hosted result is claimed for
-this commit.
+the platform common-worker test at 1/1. These exact-commit local results cover
+the trusted operation table, exact header/payload transfers, validation
+ordering, session binding, caller buffer/view lifetimes, concurrency, terminal
+poisoning, sanitized transfer errors, and abort wakeup. The later PR #7 hosted
+evidence above covers the same frame-channel implementation in the accepted
+merged tree.
 
 The trusted parent handshake was accepted and pushed at
 `13f0fb08e7d00159000f3721ebe0b0e1b1481188`. Its local clean
@@ -292,8 +313,9 @@ passed 35/35. Synthetic evidence covers independent hello/header bytes,
 exact-empty ready, observation order, deadline/token identity, exact policy and
 limits, proof moves and single extraction, downstream session/broker
 construction, every public pre-I/O rejection class, caller-buffer invalidation,
-sanitized terminal failure, one abort, and no escaped proof or view. No hosted
-result is claimed for `13f0fb0`.
+sanitized terminal failure, one abort, and no escaped proof or view. These
+exact-commit results are local; the later PR #7 hosted evidence above covers the
+same handshake implementation in the accepted merged tree.
 
 The trusted parent session was accepted and pushed at
 `7bd9d38213c7df160e0e84fcb50a9cacb0095558`. Hash, index, manifest, and diff
@@ -314,7 +336,9 @@ launch, staging, publication, and runtime authority. Request-ID exhaustion is
 not practically exercised without a counter seam, and stable injected
 source-read failure is covered at the broker layer because the parent factory
 does not expose the broker's operation-table seam. These are accepted coverage
-limitations. No hosted result is claimed for `7bd9d38`.
+limitations. These exact-commit results are local; the later PR #7 hosted
+evidence above covers the same parent-session implementation in the accepted
+merged tree.
 
 The accepted isolated parser protocol sequence starts with the bounded OWP/1
 codec at `3bc135c`, adds completion/cancellation race handling at `f17a40a`,

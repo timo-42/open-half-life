@@ -265,12 +265,12 @@ composition rather than media-selected extension points, but their ambient
 authority still depends on the native worker sandbox. The service does not
 make dispatcher output trusted.
 
-Project-authored synthetic validation passed the focused service test 1/1, the
-development suite 39/39, and the AddressSanitizer plus
-UndefinedBehaviorSanitizer suite 40/40. This is local internal-boundary evidence
-only: it does not select a real dispatcher, parse a user medium, exercise a
-service-bearing native worker, extract or publish bytes, qualify a supported
-host tuple, or make production import available.
+Initial project-authored synthetic validation passed the focused service test
+1/1, the development suite 39/39, and the AddressSanitizer plus
+UndefinedBehaviorSanitizer suite 40/40. The accepted hosted qualification for
+this private disconnected boundary is recorded below. It does not select a real
+dispatcher, parse a user medium, exercise a service-bearing native worker,
+extract or publish bytes, or make production import available.
 
 Commit `909edcc` adds the separate
 `OpenHalfLife::media_parser_results` target as the trusted owner of candidate
@@ -394,8 +394,9 @@ staging, and publication boundaries is still absent. The accepted local
 evidence at
 `e4b819a9efa37d5e401d111c4ac591365ce669ae` is a clean warnings-as-errors build
 of 83/83 steps, full CTest at 34/34, 50 consecutive frame-channel and repository
-policy passes, and the platform common-worker test at 1/1. No hosted result is
-claimed for this commit.
+policy passes, and the platform common-worker test at 1/1. These exact-commit
+results are local; the later P1 full-stack hosted evidence below covers the
+same frame-channel implementation in the accepted merged tree.
 
 Commit `13f0fb0` adds the disconnected
 `OpenHalfLife::media_parser_handshake` library above the source-read broker and
@@ -452,8 +453,9 @@ cache, runtime-import, or application authority. It
 does not create or own a worker and does not perform downstream session/broker,
 selection, staging, publication, or app composition. The accepted commit is
 `13f0fb08e7d00159000f3721ebe0b0e1b1481188`; local validation passed a clean
-warnings-as-errors build at 87/87 and the full CTest suite at 35/35. No hosted
-result is claimed for `13f0fb0`.
+warnings-as-errors build at 87/87 and the full CTest suite at 35/35. These
+exact-commit results are local; the later P1 full-stack hosted evidence below
+covers the same handshake implementation in the accepted merged tree.
 
 Commit `7bd9d38` adds the disconnected trusted parent session above that
 handshake. Its factory accepts a valid proof only for the exact same borrowed
@@ -573,8 +575,37 @@ driven through
 roughly `2^64 - 1` public operations because there is no counter seam. Stable
 injected native source-read failure is covered directly by the broker tests
 rather than through the parent factory, which intentionally exposes no
-source-operation table. These are accepted coverage limitations. No hosted
-result is claimed for this local pristine-tree validation of `7bd9d38`.
+source-operation table. These are accepted coverage limitations. This
+exact-commit validation is local; the later P1 full-stack hosted evidence below
+covers the same parent-session implementation in the accepted merged tree.
+
+[PR #7](https://github.com/timo-42/open-half-life/pull/7) accepted the P1
+disconnected parser-worker service at reviewed head
+[`3ec70b34f461ec7dddb1ca26770544df6debfe0f`](https://github.com/timo-42/open-half-life/commit/3ec70b34f461ec7dddb1ca26770544df6debfe0f).
+The rebased `main` commit is
+[`6b3df8f1cf6660eed46246790bff382c6c4001b6`](https://github.com/timo-42/open-half-life/commit/6b3df8f1cf6660eed46246790bff382c6c4001b6),
+and both have exact tree
+`888bee1be57b45c7583fe05bcf22698725f5f651`. All 12 hosted jobs in the PR
+rollup passed: Build runs
+[`29195613360`](https://github.com/timo-42/open-half-life/actions/runs/29195613360)
+and
+[`29195614365`](https://github.com/timo-42/open-half-life/actions/runs/29195614365)
+each passed Linux x64, sanitizers, the experimental Linux configuration,
+Windows x64, and macOS Apple Silicon, while Parser fuzz smoke runs
+[`29195613343`](https://github.com/timo-42/open-half-life/actions/runs/29195613343)
+and
+[`29195614314`](https://github.com/timo-42/open-half-life/actions/runs/29195614314)
+each passed the existing Linux Clang 18/libFuzzer job. The Build matrix ran the
+service test as part of full suites of 39/39 on Linux, 40/40 on sanitizer and
+experimental Linux, and 27/27 on Windows and macOS.
+
+The final PR change was test-only: it replaced an oversized fixed stack buffer
+with payload-sized dynamic test storage so Windows x64 could execute the
+synthetic service suite. It changed neither production code nor service
+authority. The hosted evidence qualifies the private disconnected protocol
+boundary on those tested hosts, not a service-bearing native worker, real
+payload parsing, runtime selection or composition, extraction, staging,
+publication, or production import.
 
 The earlier exact-SHA hosted build run `29147060407` at `ca576e9`, covering the
 trusted result bridge and media cancellation migration, passed all 32 GNU 13

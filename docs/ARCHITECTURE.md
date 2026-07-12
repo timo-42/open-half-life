@@ -441,11 +441,11 @@ media cannot configure them. Their code executes within the worker's ambient
 authority, so the private service contract is not a substitute for native
 containment.
 
-Focused synthetic service validation passed 1/1, the complete development
+Initial local synthetic service validation passed 1/1, the complete development
 suite passed 39/39, and the AddressSanitizer plus UndefinedBehaviorSanitizer
-suite passed 40/40. These are local boundary tests, not hosted or supported-host
-qualification, and they do not exercise proprietary media or a real payload
-parser.
+suite passed 40/40. The merged hosted qualification for this disconnected
+boundary is recorded below. None of this evidence exercises proprietary media
+or a real payload parser.
 
 Work resumes in dependency order: qualify the Linux x86-64 native backend or
 add another tuple's native backend; add a service-bearing worker bootstrap and
@@ -671,7 +671,33 @@ typed protocol only and did not build or fuzz the broker. The build evidence
 qualifies the disconnected broker on the tested hosts, not a worker, transport,
 runtime import path, staging, or publication.
 
-## Local parser transport and parent-session qualification
+[PR #7](https://github.com/timo-42/open-half-life/pull/7) accepted the P1
+disconnected parser-worker service at reviewed head
+[`3ec70b34f461ec7dddb1ca26770544df6debfe0f`](https://github.com/timo-42/open-half-life/commit/3ec70b34f461ec7dddb1ca26770544df6debfe0f).
+The rebased merge on `main` is
+[`6b3df8f1cf6660eed46246790bff382c6c4001b6`](https://github.com/timo-42/open-half-life/commit/6b3df8f1cf6660eed46246790bff382c6c4001b6);
+both commits have exact tree
+`888bee1be57b45c7583fe05bcf22698725f5f651`. The PR rollup records all 12
+hosted jobs green: the five-platform/configuration Build matrix and the Linux
+Clang 18/libFuzzer smoke job each ran for both push and pull-request events.
+The corresponding evidence is in Build runs
+[`29195613360`](https://github.com/timo-42/open-half-life/actions/runs/29195613360)
+and
+[`29195614365`](https://github.com/timo-42/open-half-life/actions/runs/29195614365),
+and Parser fuzz smoke runs
+[`29195613343`](https://github.com/timo-42/open-half-life/actions/runs/29195613343)
+and
+[`29195614314`](https://github.com/timo-42/open-half-life/actions/runs/29195614314).
+The hosted suites include `parser.worker_service`: Linux passed 39/39,
+sanitizer and experimental Linux passed 40/40, and Windows x64 and macOS Apple
+Silicon passed 27/27. The final PR change replaced an oversized fixed stack
+buffer in the service test with payload-sized dynamic test storage so Windows
+x64 could run the synthetic suite; it did not change production code or the
+service contract. This qualifies the private disconnected boundary on the
+tested hosts, not a service-bearing native worker, real payload parser,
+runtime composition, extraction, staging, publication, or production import.
+
+## Parser transport and parent-session qualification
 
 The accepted frame-channel commit is
 `e4b819a9efa37d5e401d111c4ac591365ce669ae`. Local validation completed a clean
@@ -682,7 +708,8 @@ The focused tests cover canonical 32-byte output, payload boundaries, validation
 ordering, caller storage and view lifetimes, malformed exact-I/O reports,
 sticky first-failure poisoning, cancellation and peer closure at header and
 payload stages, same-direction exclusion, duplex progress, and abort wakeup.
-These are local results only; no hosted result is claimed for `e4b819a` here.
+These exact-commit results are local. The later P1 full-stack hosted evidence
+above covers the same frame-channel implementation in the accepted merged tree.
 
 The trusted parent handshake was accepted at
 `13f0fb08e7d00159000f3721ebe0b0e1b1481188`. Local validation completed a clean
@@ -691,8 +718,9 @@ Synthetic tests independently verify canonical hello/header bytes, exact-empty
 ready, ordering, exact limits and policy, proof movement and consumption,
 downstream session/broker construction, pre-I/O rejection, unsanitized buffer
 invalidation, sanitized terminal transport failures, and absence of escaped
-views or proofs on failure. These are local results only; no hosted result is
-claimed for `13f0fb0`.
+views or proofs on failure. These exact-commit results are local; the later P1
+full-stack hosted evidence above covers the same handshake implementation in
+the accepted merged tree.
 
 The trusted parent session was accepted at
 `7bd9d38213c7df160e0e84fcb50a9cacb0095558`. Hash, index, manifest, and diff
@@ -714,9 +742,10 @@ dependency edge and absence of launch, path, staging, publication, and runtime
 authority. The practically unreachable `uint64_t` request-ID exhaustion path
 has no counter-injection seam, and stable injected source-read failure remains
 covered at the broker layer because the parent factory exposes no source-read
-operation-table seam. These are accepted test limitations. These results are
-from a pristine exact tree but remain local only; no hosted result is claimed
-for `7bd9d38`.
+operation-table seam. These are accepted test limitations. These exact-commit
+results are from a pristine local tree; the later P1 full-stack hosted evidence
+above covers the same parent-session implementation in the accepted merged
+tree.
 
 The intended gameplay/rendering graph remains under design. Each new edge must
 be expressed explicitly with `target_link_libraries` so CMake remains the
