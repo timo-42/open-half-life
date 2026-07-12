@@ -245,6 +245,33 @@ runtime target depends on it, and this protocol work authorizes no
 proprietary extraction, completion-failure reporting, destination mutation, or
 cache publication.
 
+The accepted P1 worker-side service is the separate static target
+`OpenHalfLife::parser_worker_service`. It links only
+`OpenHalfLife::parser`, is not installed, exposes no public header, and is not
+linked by the application, media stack, native worker, or other runtime target.
+Its private entry point drives one bounded worker-side OWP/1 lifetime using
+caller-supplied synchronous transport and dispatcher operation tables and two
+caller-owned scratch buffers. Those buffers must be disjoint from each other
+and from callback table, context, and operation storage. The service mediates
+enumeration, streaming, bounded requests for parent-owned source bytes,
+cancellation, and shutdown without choosing a payload format or parser.
+
+Authority remains asymmetric. The trusted parent owns the pinned source,
+validates every worker frame independently, establishes catalog membership,
+selects components, and alone may stage or publish. The worker is untrusted at
+that boundary and receives no raw source path, destination, cache, recipe, or
+publication capability. Its local callback tables are trusted project
+composition rather than media-selected extension points, but their ambient
+authority still depends on the native worker sandbox. The service does not
+make dispatcher output trusted.
+
+Project-authored synthetic validation passed the focused service test 1/1, the
+development suite 39/39, and the AddressSanitizer plus
+UndefinedBehaviorSanitizer suite 40/40. This is local internal-boundary evidence
+only: it does not select a real dispatcher, parse a user medium, exercise a
+service-bearing native worker, extract or publish bytes, qualify a supported
+host tuple, or make production import available.
+
 Commit `909edcc` adds the separate
 `OpenHalfLife::media_parser_results` target as the trusted owner of candidate
 and promoted result metadata. Its caller supplies a nonzero epoch unique to a
@@ -512,20 +539,22 @@ for the root-owned `/usr/libexec/open-half-life` launcher contract. That
 artifact emits only the bounded readiness attestation, closes its readiness fd,
 and keeps the inherited lifecycle channel alive until close; it performs no
 parser, enumeration, source-read, extraction, staging, publication, or import
-semantics. Production composition still lacks runtime selection,
-staging/publication integration, parser/import service semantics, and a higher
-process-session owner. That owner must allocate unique nonzero session IDs and
+semantics. Production composition still lacks a bootstrap that links the
+private worker service, a real payload dispatcher/parser, runtime selection,
+staging/publication integration, and a higher process-session owner. That owner
+must allocate unique nonzero session IDs and
 worker epochs, preserve the exact channel through proof and session lifetimes,
 perform orderly protocol shutdown followed by channel close and `wait()`/reap,
 and reserve `terminate_and_wait()` for failure or orderly-close timeout.
 ParentSession owns none of these actions.
 
 The resume order is therefore: qualify the Linux x86-64 native backend or add
-another tuple's native backend together with worker/bootstrap/service loop;
-process-session owner plus session-ID/epoch policy; handshake and parent session
-composition; deterministic component selection; then staging and publication.
-Production extraction remains absent, and all current parent-session test inputs
-are synthetic.
+another tuple's native backend; implement a service-bearing worker bootstrap
+and real dispatcher/parser as a separate scope; add the process-session owner
+plus session-ID/epoch policy; compose handshake and parent session; then add
+deterministic component selection, staging, and publication. Production
+extraction remains absent, and all current service and parent-session test
+inputs are synthetic.
 
 The exact accepted commit is
 `7bd9d38213c7df160e0e84fcb50a9cacb0095558`; its exact tree is
