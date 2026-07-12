@@ -62,11 +62,36 @@ does not select a real payload parser or compose with a native worker.
 The trusted parent retains the pinned source capability and sole authority over
 result acceptance, component selection, destinations, staging, and
 publication. The worker and its output remain untrusted at that boundary and
-receive none of those authorities. Synthetic local evidence passed the focused
-service test 1/1, the development suite 39/39, and the ASan plus UBSan suite
-40/40. That evidence does not cover a service-bearing bootstrap, a real
-dispatcher/parser, native containment composition, proprietary media,
-extraction, publication, supported-host qualification, or end-to-end import.
+receive none of those authorities. Initial local synthetic evidence passed the
+focused service test 1/1, the development suite 39/39, and the ASan plus UBSan
+suite 40/40.
+
+[PR #7](https://github.com/timo-42/open-half-life/pull/7) accepted the P1
+service at reviewed head
+[`3ec70b34f461ec7dddb1ca26770544df6debfe0f`](https://github.com/timo-42/open-half-life/commit/3ec70b34f461ec7dddb1ca26770544df6debfe0f),
+then rebased it onto `main` as
+[`6b3df8f1cf6660eed46246790bff382c6c4001b6`](https://github.com/timo-42/open-half-life/commit/6b3df8f1cf6660eed46246790bff382c6c4001b6).
+The two commits have the same exact tree,
+`888bee1be57b45c7583fe05bcf22698725f5f651`. All 12 hosted jobs in the PR
+rollup passed: the five-job Build matrix and one parser-fuzz smoke job each ran
+for push and pull-request events. Build runs
+[`29195613360`](https://github.com/timo-42/open-half-life/actions/runs/29195613360)
+and
+[`29195614365`](https://github.com/timo-42/open-half-life/actions/runs/29195614365)
+include the service test on Linux x64, sanitizers, the experimental Linux
+configuration, Windows x64, and macOS Apple Silicon; fuzz runs
+[`29195613343`](https://github.com/timo-42/open-half-life/actions/runs/29195613343)
+and
+[`29195614314`](https://github.com/timo-42/open-half-life/actions/runs/29195614314)
+cover the existing typed protocol only. The final test-only change replaced an
+oversized fixed stack buffer with payload-sized dynamic storage so the Windows
+x64 synthetic test could run; production code and the private service contract
+were unchanged.
+
+This accepted hosted evidence qualifies the private disconnected service
+boundary on the tested hosts. It does not cover a service-bearing bootstrap, a
+real dispatcher/parser, native containment composition, proprietary media,
+extraction, publication, or end-to-end import.
 
 The next dependency is a separately reviewed worker bootstrap and real
 dispatcher/parser, followed by native lifecycle/runtime composition. Production
