@@ -14,6 +14,14 @@ SHA-256, UDF classification, 2,048-byte cluster size, and outer-image
 integrity. It did not rerun the project detector, libudfread enumeration, or
 Unshield checks.
 
+An accepted read-only rerun on 2026-07-12, from a working tree based on main
+commit `da75f83`, reconfirmed the size and SHA-256, UDF classification,
+2,048-byte block size, aggregate file, directory, and logical-byte counts,
+source-control ignore status, successful project preflight and read-only mount,
+and metadata-only cache preparation. The temporary cache was removed after the
+check. No payload was extracted, no media executable was run, and the
+user-supplied build-929 label remains independently unverified.
+
 ## Medium
 
 - Edition: Half-Life Game of the Year Edition, user-identified build 929
