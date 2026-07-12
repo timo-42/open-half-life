@@ -124,9 +124,7 @@ void append_read_reply(std::vector<std::byte>& bytes,
                        const parser::ProtocolStatus status =
                            parser::ProtocolStatus::ok,
                        const std::uint32_t requested_length = 0U) {
-  std::array<std::byte, parser::kMaximumReadBytes +
-                            parser::kReadReplyPrefixBytes>
-      payload{};
+  std::vector<std::byte> payload(parser::kReadReplyPrefixBytes + data.size());
   const auto encoded = parser::encode_read_reply_payload(
       {.read_sequence = sequence, .status = status, .data = data}, sequence,
       requested_length == 0U ? static_cast<std::uint32_t>(data.size())
