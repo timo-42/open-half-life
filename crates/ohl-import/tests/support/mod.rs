@@ -437,3 +437,115 @@ pub fn open_session(fixture: &Fixture) -> OpenSession {
         session,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Synthetic PE/ISO fixtures
+//
+// Every byte below is project-authored. The PE layout follows Microsoft's
+// public "PE Format" specification (see `docs/FORMAT_SOURCES.md`); the names
+// are invented and correspond to nothing on any real medium.
+// ---------------------------------------------------------------------------
+
+#[allow(
+    unused_imports,
+    reason = "each integration test binary re-exports a subset"
+)]
+pub use ohl_import::testing::{
+    PE_HEADER_OFFSET, PE_OPTIONAL_HEADER_BYTES, PE_OVERLAY_OFFSET, synthetic_pe,
+    synthetic_pe_with_z_overlay,
+};
+
+/// Writes a single-file ISO 9660 image and pins it.
+///
+/// The image is produced by the `hadris-iso` writer from project-authored
+/// bytes; nothing in it comes from any real medium.
+#[must_use]
+pub fn synthetic_iso(file_name: &str, contents: Vec<u8>) -> Vec<u8> {
+    use hadris_iso::read::PathSeparator;
+    use hadris_iso::write::options::{BaseIsoLevel, CreationFeatures, IsoFormatOptions};
+    use hadris_iso::write::{File as IsoFile, InputFiles, IsoImageWriter};
+
+    let capacity = contents.len() + 4 * 1024 * 1024;
+    let files = InputFiles {
+        path_separator: PathSeparator::ForwardSlash,
+        files: vec![IsoFile::File {
+            name: Arc::new(file_name.to_owned()),
+            contents,
+        }],
+    };
+    let options = IsoFormatOptions {
+        volume_name: "SYNTHETIC".to_owned(),
+        system_id: None,
+        volume_set_id: None,
+        publisher_id: None,
+        preparer_id: None,
+        application_id: None,
+        sector_size: 2_048,
+        path_separator: PathSeparator::ForwardSlash,
+        features: CreationFeatures {
+            filenames: BaseIsoLevel::Level1 {
+                supports_lowercase: false,
+                supports_rrip: false,
+            },
+            long_filenames: false,
+            joliet: None,
+            rock_ridge: None,
+            el_torito: None,
+            hybrid_boot: None,
+        },
+        strict_charset: false,
+    };
+    let mut buffer = std::io::Cursor::new(vec![0u8; capacity]);
+    IsoImageWriter::create(&mut buffer, files, options).expect("synthetic iso image");
+    buffer.into_inner()
+}
+
+/// A pinned, mounted synthetic ISO holding one container-bearing file.
+pub struct MountedFixture {
+    root: TemporaryRoot,
+    media: ValidatedMedia,
+    mount: ohl_vfs::Mount,
+}
+
+impl MountedFixture {
+    /// Builds, writes, pins, fingerprints, and mounts a synthetic ISO whose
+    /// only file is `contents` under `file_name`.
+    #[must_use]
+    pub fn new(file_name: &str, contents: Vec<u8>) -> Self {
+        let root = TemporaryRoot::new();
+        let image = synthetic_iso(file_name, contents);
+        let path = root.path().join("synthetic.iso");
+        std::fs::write(&path, &image).expect("synthetic iso fixture");
+        let source = Arc::new(MediaSource::open(&path).expect("pinned iso source"));
+        let media = ValidatedMedia::fingerprinting(
+            Arc::clone(&source),
+            MediaDescription::new(
+                MediaClass::Iso9660,
+                "iso9660",
+                VolumeLabel::sanitized("SYNTHETIC"),
+            ),
+        )
+        .expect("stable synthetic iso");
+        let mount = ohl_vfs::Mount::open(source, ohl_vfs::DirectoryLimits::default())
+            .expect("mounted synthetic iso");
+        Self { root, media, mount }
+    }
+
+    /// The validated-media proof.
+    #[must_use]
+    pub const fn media(&self) -> &ValidatedMedia {
+        &self.media
+    }
+
+    /// The read-only mount.
+    #[must_use]
+    pub const fn mount(&self) -> &ohl_vfs::Mount {
+        &self.mount
+    }
+
+    /// The resolved temporary root.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        self.root.path()
+    }
+}

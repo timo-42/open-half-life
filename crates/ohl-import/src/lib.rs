@@ -48,10 +48,14 @@ pub mod catalog;
 pub mod frame_channel;
 pub mod handshake;
 pub mod io;
+pub mod locate;
 pub mod parent_session;
+pub mod pipeline;
+pub mod platform;
 pub mod process_session;
 pub mod result_session;
 pub mod source_read_broker;
+pub mod source_window;
 pub mod testing;
 
 pub use catalog::{
@@ -61,11 +65,19 @@ pub use catalog::{
 pub use frame_channel::{ChannelError, FrameBuffer, FrameChannel};
 pub use handshake::{HandshakeError, HandshakeProof, perform_parent_handshake};
 pub use io::{CancellationSource, CancellationToken, ExactIo, IoError};
+pub use locate::{
+    ContainerCandidate, ContainerKind, LocateLimits, locate_containers, pe_overlay_offset,
+};
 pub use parent_session::{
     CancelStep, Cancelled, Cancelling, Closed, Enumerating, Idle, ParserSession, RequestStep,
     SessionBuffers, SessionError, SessionPhase, SessionPhaseKind, Streaming, TerminalSession,
     create_parser_session, create_parser_session_with_ops,
 };
+pub use pipeline::{
+    DiscardProgress, ImportCancellation, ImportConfig, ImportError, ImportOutcome, ImportReport,
+    ProgressSink, choose_primary, run_import, run_import_with_worker,
+};
+pub use platform::{ParserWorkerProcess, WorkerChannel};
 pub use process_session::{
     AllocatorExhausted, OpenError, OpenFailure, ProcessSession, ProcessState, SessionAllocation,
     SessionConfig, SessionIdAllocator, ShutdownError, ShutdownFailure, ShutdownReady, WaitOutcome,
@@ -78,3 +90,4 @@ pub use source_read_broker::{
     NativeSourceOps, PrepareOutcome, PreparedReply, ReplyTicket, SourceOps, SourceReadBroker,
     SourceReadError, SourceReadLimits,
 };
+pub use source_window::SourceWindow;
