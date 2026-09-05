@@ -1,6 +1,8 @@
 //! The world renderer: pipeline, buffers, bind groups and the draw loop.
 
-use ohl_world::{DrawList, TextureImage, WorldModel, index_bytes, vertex_bytes};
+use ohl_world::{
+    DrawList, SpriteAsset, SpriteType, TextureImage, WorldModel, index_bytes, vertex_bytes,
+};
 
 use crate::camera::FreeFlyCamera;
 use crate::error::{RenderError, Result};
@@ -22,6 +24,17 @@ const CAMERA_UNIFORM_BYTES: wgpu::BufferAddress = 64 + 16;
 /// `mat4x4<f32>` plus two `vec4<f32>`s (parameters, render colour); must
 /// match `world_submodel.wgsl`'s `Camera`.
 const SUBMODEL_UNIFORM_BYTES: wgpu::BufferAddress = 64 + 16 + 16;
+
+/// `mat4x4<f32>` plus four `vec4<f32>`s (origin, right, up, params); must
+/// match `world_sprite.wgsl`'s `Instance`.
+const SPRITE_INSTANCE_UNIFORM_BYTES: wgpu::BufferAddress = 64 + 16 + 16 + 16 + 16;
+
+/// Bytes per sprite quad vertex: a `vec2<f32>` corner plus a `vec2<f32>` uv.
+const SPRITE_VERTEX_STRIDE: wgpu::BufferAddress = 16;
+
+/// GoldSrc's world-up axis, used by the sprite pass's fixed-upright
+/// billboard orientations (see [`WorldRenderer::draw_sprites`]).
+const WORLD_UP: [f32; 3] = [0.0, 0.0, 1.0];
 
 /// The colour a frame is cleared to before any geometry is drawn.
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
@@ -122,6 +135,20 @@ pub struct WorldRenderer {
     submodel_alpha_pipeline: wgpu::RenderPipeline,
     submodel_additive_pipeline: wgpu::RenderPipeline,
     submodel_draw_list: DrawList,
+    /// The sprite billboard pass: one pipeline per [`BlendKind`] (reusing
+    /// `texture_layout`/`world_sampler` for its per-frame texture), a
+    /// dedicated per-instance uniform layout, and a shared unit-quad
+    /// vertex/index buffer (every instance's actual size comes from its
+    /// uniform's `params.xy`, not the vertex data).
+    sprite_instance_layout: wgpu::BindGroupLayout,
+    sprite_opaque_pipeline: wgpu::RenderPipeline,
+    sprite_alpha_pipeline: wgpu::RenderPipeline,
+    sprite_additive_pipeline: wgpu::RenderPipeline,
+    sprite_vertex_buffer: wgpu::Buffer,
+    sprite_index_buffer: wgpu::Buffer,
+    /// One `(uniform buffer, bind group)` per instance drawn this frame,
+    /// grown on demand so a steady-state frame allocates nothing.
+    sprite_instance_slots: Vec<(wgpu::Buffer, wgpu::BindGroup)>,
 }
 
 /// One placed brush-entity submodel to draw with
@@ -134,6 +161,26 @@ pub struct SubmodelInstance<'a> {
     /// The entity's placement in world space, column-major (for example
     /// [`crate::placement`]).
     pub transform: Mat4,
+}
+
+/// One placed, animated sprite to draw with [`WorldRenderer::draw_sprites`].
+#[derive(Clone, Copy)]
+pub struct SpriteInstance<'a> {
+    /// The decoded sprite (orientation/blend metadata plus frames).
+    pub asset: &'a SpriteAsset,
+    /// The sprite's world-space centre.
+    pub origin: [f32; 3],
+    /// A uniform scale applied to the sprite's native pixel dimensions to
+    /// get its world-space size (`1.0` draws it one world unit per pixel).
+    /// Non-finite or non-positive values fall back to `1.0`.
+    pub scale: f32,
+    /// The `rendermode`/`renderamt` blend state, exactly as the submodel
+    /// pass uses it.
+    pub render_props: RenderProps,
+    /// The elapsed time (seconds) driving [`ohl_world::SpriteAsset::frame_at`]
+    /// (at the documented default 10 Hz framerate; this renderer has no
+    /// per-instance framerate override at this milestone).
+    pub frame_time: f32,
 }
 
 impl WorldRenderer {
@@ -585,6 +632,150 @@ impl WorldRenderer {
             false,
         );
 
+        // The sprite billboard pass: reuses `texture_layout` (identical
+        // {texture, sampler} shape) for its per-frame texture bind group,
+        // but needs its own instance-uniform layout (a different, smaller
+        // uniform than either the world or submodel pass).
+        let sprite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("ohl sprite shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("world_sprite.wgsl").into()),
+        });
+        let sprite_instance_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("ohl sprite instance layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(SPRITE_INSTANCE_UNIFORM_BYTES),
+                    },
+                    count: None,
+                }],
+            });
+        let sprite_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("ohl sprite pipeline layout"),
+                bind_group_layouts: &[Some(&sprite_instance_layout), Some(&texture_layout)],
+                immediate_size: 0,
+            });
+        let sprite_vertex_attributes = [
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x2,
+                offset: 0,
+                shader_location: 0,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x2,
+                offset: 8,
+                shader_location: 1,
+            },
+        ];
+        let make_sprite_pipeline =
+            |label: &'static str, blend: Option<wgpu::BlendState>, depth_write: bool| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&sprite_pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &sprite_shader,
+                        entry_point: Some("vertex_main"),
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                        buffers: &[Some(wgpu::VertexBufferLayout {
+                            array_stride: SPRITE_VERTEX_STRIDE,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &sprite_vertex_attributes,
+                        })],
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &sprite_shader,
+                        entry_point: Some("fragment_main"),
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: color_format,
+                            blend,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        // A billboard quad's winding depends on the
+                        // instance's own right/up axes (mirrored for
+                        // `SpriteType::Oriented`-style fixed quads), so both
+                        // sides are drawn, as with the rest of this crate's
+                        // passes.
+                        cull_mode: None,
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: DEPTH_FORMAT,
+                        depth_write_enabled: Some(depth_write),
+                        depth_compare: Some(wgpu::CompareFunction::Less),
+                        stencil: wgpu::StencilState::default(),
+                        bias: wgpu::DepthBiasState::default(),
+                    }),
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            };
+        // `RenderMode::Normal`/`Solid`: opaque, depth-written.
+        let sprite_opaque_pipeline = make_sprite_pipeline("ohl sprite opaque pipeline", None, true);
+        // `RenderMode::Color`/`Texture`: standard "over" alpha blending, not
+        // depth-written (depth-tested, since it must still be occluded by
+        // opaque world/model geometry drawn earlier this frame).
+        let sprite_alpha_pipeline = make_sprite_pipeline(
+            "ohl sprite alpha pipeline",
+            Some(wgpu::BlendState::ALPHA_BLENDING),
+            false,
+        );
+        // `RenderMode::Glow`/`Additive`: additive, not depth-written.
+        let sprite_additive_pipeline = make_sprite_pipeline(
+            "ohl sprite additive pipeline",
+            Some(wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::One,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent::OVER,
+            }),
+            false,
+        );
+        // A unit quad in local billboard space (`-1..=1` on both axes); each
+        // instance's uniform supplies the world-space right/up axes and
+        // half-extents that scale and orient it (see `world_sprite.wgsl`).
+        #[rustfmt::skip]
+        let sprite_vertices: [f32; 16] = [
+            -1.0, -1.0, 0.0, 1.0,
+             1.0, -1.0, 1.0, 1.0,
+             1.0,  1.0, 1.0, 0.0,
+            -1.0,  1.0, 0.0, 0.0,
+        ];
+        let sprite_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ohl sprite quad vertices"),
+            size: (sprite_vertices.len() * 4) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let sprite_vertex_bytes: Vec<u8> = sprite_vertices
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        context
+            .queue
+            .write_buffer(&sprite_vertex_buffer, 0, &sprite_vertex_bytes);
+        let sprite_indices: [u32; 6] = [0, 1, 2, 0, 2, 3];
+        let sprite_index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ohl sprite quad indices"),
+            size: (sprite_indices.len() * 4) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        context
+            .queue
+            .write_buffer(&sprite_index_buffer, 0, &index_bytes(&sprite_indices));
+
         Ok(Self {
             pipeline,
             camera_buffer,
@@ -611,6 +802,13 @@ impl WorldRenderer {
             submodel_alpha_pipeline,
             submodel_additive_pipeline,
             submodel_draw_list: DrawList::new(),
+            sprite_instance_layout,
+            sprite_opaque_pipeline,
+            sprite_alpha_pipeline,
+            sprite_additive_pipeline,
+            sprite_vertex_buffer,
+            sprite_index_buffer,
+            sprite_instance_slots: Vec::new(),
         })
     }
 
@@ -1082,4 +1280,273 @@ impl WorldRenderer {
         }
         context.queue.submit(Some(encoder.finish()));
     }
+
+    /// Grows the per-instance sprite uniform slots to hold at least `count`.
+    fn reserve_sprite_slots(&mut self, context: &GpuContext, count: usize) {
+        while self.sprite_instance_slots.len() < count {
+            let buffer = context.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("ohl sprite instance uniform"),
+                size: SPRITE_INSTANCE_UNIFORM_BYTES,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let bind_group = context
+                .device
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("ohl sprite instance bind group"),
+                    layout: &self.sprite_instance_layout,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buffer.as_entire_binding(),
+                    }],
+                });
+            self.sprite_instance_slots.push((buffer, bind_group));
+        }
+    }
+
+    /// Draws `instances` as camera-relative billboards, into the same
+    /// `target`/depth as the just-completed [`Self::render`] call (loaded,
+    /// not cleared).
+    ///
+    /// Must be called after [`Self::render`] in the same frame, so a depth
+    /// buffer already exists to test against.
+    ///
+    /// Each instance's quad orientation follows the documented SPR `type`
+    /// field (see `docs/FORMAT_SOURCES.md`): [`SpriteType::ParallelUpright`]
+    /// and [`SpriteType::FacingUpright`] stay vertical (world +Z) and only
+    /// rotate their facing axis around it (the latter facing the camera's
+    /// position rather than its view direction); [`SpriteType::Parallel`],
+    /// [`SpriteType::ParallelOriented`] and any undocumented type fully
+    /// align to the camera's own right/up axes (a true view-plane
+    /// billboard); [`SpriteType::Oriented`] ignores the camera and lies
+    /// flat in the world XY plane, since this milestone's [`SpriteInstance`]
+    /// carries no per-instance rotation to orient it by.
+    ///
+    /// Opaque instances (`RenderProps::blend_kind` is
+    /// [`BlendKind::Opaque`]) draw first, in input order; every translucent
+    /// instance (`AlphaBlend`/`Additive`) is then drawn back-to-front by
+    /// distance from the camera, and batches consecutive instances that
+    /// share the same decoded frame image into one texture upload.
+    #[allow(clippy::too_many_lines)]
+    pub fn draw_sprites(
+        &mut self,
+        context: &GpuContext,
+        instances: &[SpriteInstance<'_>],
+        camera: &FreeFlyCamera,
+        target: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+    ) {
+        if instances.is_empty() {
+            return;
+        }
+        let Some(depth_view) = self.depth.as_ref().map(|(view, _, _)| view.clone()) else {
+            return;
+        };
+        let device = &context.device;
+        let (width, height) = (width.max(1), height.max(1));
+        #[allow(clippy::cast_precision_loss)]
+        let aspect = width as f32 / height as f32;
+        let view_projection = camera.view_projection(aspect);
+        let forward = camera.direction();
+        // The camera's own right/up axes, i.e. a full view-plane billboard
+        // basis (tilts with pitch, unlike the fixed-world-up variants).
+        let view_right = math::normalize(math::cross(forward, WORLD_UP));
+        let view_up = math::cross(view_right, forward);
+
+        let mut items: Vec<SpriteDrawItem<'_>> = Vec::with_capacity(instances.len());
+        for instance in instances {
+            let asset = instance.asset;
+            if asset.frames.is_empty() {
+                continue;
+            }
+            let frame_index = asset.frame_at(instance.frame_time, 0.0);
+            let Some(image) = asset.frames.get(frame_index) else {
+                continue;
+            };
+            let to_camera = math::normalize([
+                camera.position[0] - instance.origin[0],
+                camera.position[1] - instance.origin[1],
+                camera.position[2] - instance.origin[2],
+            ]);
+            let (right, up) = match asset.kind {
+                SpriteType::ParallelUpright => {
+                    (math::normalize(math::cross(forward, WORLD_UP)), WORLD_UP)
+                }
+                SpriteType::FacingUpright => {
+                    (math::normalize(math::cross(to_camera, WORLD_UP)), WORLD_UP)
+                }
+                SpriteType::Oriented => ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+                SpriteType::Parallel | SpriteType::ParallelOriented | SpriteType::Unknown(_) => {
+                    (view_right, view_up)
+                }
+            };
+            let scale = if instance.scale.is_finite() && instance.scale > 0.0 {
+                instance.scale
+            } else {
+                1.0
+            };
+            #[allow(clippy::cast_precision_loss)]
+            let half_width = image.width() as f32 * 0.5 * scale;
+            #[allow(clippy::cast_precision_loss)]
+            let half_height = image.height() as f32 * 0.5 * scale;
+            let view_depth = math::dot(
+                [
+                    instance.origin[0] - camera.position[0],
+                    instance.origin[1] - camera.position[1],
+                    instance.origin[2] - camera.position[2],
+                ],
+                forward,
+            );
+            items.push(SpriteDrawItem {
+                right,
+                up,
+                origin: instance.origin,
+                half_width,
+                half_height,
+                image,
+                alpha: instance.render_props.alpha(),
+                blend: instance.render_props.blend_kind(),
+                view_depth,
+            });
+        }
+        if items.is_empty() {
+            return;
+        }
+        // Opaque first (draw order does not matter, depth testing handles
+        // it), then translucent back-to-front so blending composites
+        // correctly.
+        items.sort_by(
+            |a, b| match (a.blend == BlendKind::Opaque, b.blend == BlendKind::Opaque) {
+                (true, false) => core::cmp::Ordering::Less,
+                (false, true) => core::cmp::Ordering::Greater,
+                _ => b
+                    .view_depth
+                    .partial_cmp(&a.view_depth)
+                    .unwrap_or(core::cmp::Ordering::Equal),
+            },
+        );
+
+        self.reserve_sprite_slots(context, items.len());
+        let srgb = if self.srgb_output { 1.0f32 } else { 0.0f32 };
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("ohl sprite encoder"),
+        });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ohl sprite pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_vertex_buffer(0, self.sprite_vertex_buffer.slice(..));
+            pass.set_index_buffer(
+                self.sprite_index_buffer.slice(..),
+                wgpu::IndexFormat::Uint32,
+            );
+
+            // Batches consecutive same-frame instances (after the
+            // back-to-front sort above) so a run of one sprite type only
+            // uploads its texture once.
+            let mut current_key: Option<*const TextureImage> = None;
+            let mut current_bind_group: Option<wgpu::BindGroup> = None;
+            for (slot, item) in items.iter().enumerate() {
+                let Some((uniform_buffer, instance_bind_group)) =
+                    self.sprite_instance_slots.get(slot)
+                else {
+                    continue;
+                };
+                let mut uniform = Vec::with_capacity(
+                    usize::try_from(SPRITE_INSTANCE_UNIFORM_BYTES).unwrap_or(112),
+                );
+                for value in view_projection {
+                    uniform.extend_from_slice(&value.to_le_bytes());
+                }
+                for value in [item.origin[0], item.origin[1], item.origin[2], 0.0] {
+                    uniform.extend_from_slice(&value.to_le_bytes());
+                }
+                for value in [item.right[0], item.right[1], item.right[2], 0.0] {
+                    uniform.extend_from_slice(&value.to_le_bytes());
+                }
+                for value in [item.up[0], item.up[1], item.up[2], 0.0] {
+                    uniform.extend_from_slice(&value.to_le_bytes());
+                }
+                for value in [item.half_width, item.half_height, item.alpha, srgb] {
+                    uniform.extend_from_slice(&value.to_le_bytes());
+                }
+                context.queue.write_buffer(uniform_buffer, 0, &uniform);
+
+                let key: *const TextureImage = item.image;
+                if current_key != Some(key) {
+                    let (_texture, view) =
+                        upload_texture(context, item.image, "ohl sprite texture");
+                    current_bind_group =
+                        Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("ohl sprite texture bind group"),
+                            layout: &self.texture_layout,
+                            entries: &[
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: wgpu::BindingResource::TextureView(&view),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: wgpu::BindingResource::Sampler(&self.world_sampler),
+                                },
+                            ],
+                        }));
+                    current_key = Some(key);
+                }
+                let Some(texture_bind_group) = &current_bind_group else {
+                    continue;
+                };
+
+                let pipeline = match item.blend {
+                    BlendKind::Opaque => &self.sprite_opaque_pipeline,
+                    BlendKind::AlphaBlend => &self.sprite_alpha_pipeline,
+                    BlendKind::Additive => &self.sprite_additive_pipeline,
+                };
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, instance_bind_group, &[]);
+                pass.set_bind_group(1, texture_bind_group, &[]);
+                pass.draw_indexed(0..6, 0, 0..1);
+            }
+        }
+        context.queue.submit(Some(encoder.finish()));
+    }
+}
+
+/// One resolved, sorted sprite ready to draw; built from a
+/// [`SpriteInstance`] plus the camera state [`WorldRenderer::draw_sprites`]
+/// resolves it against.
+struct SpriteDrawItem<'a> {
+    right: [f32; 3],
+    up: [f32; 3],
+    origin: [f32; 3],
+    half_width: f32,
+    half_height: f32,
+    image: &'a TextureImage,
+    alpha: f32,
+    blend: BlendKind,
+    /// Signed distance along the camera's forward axis; larger is farther,
+    /// so sorting descending by this draws back-to-front.
+    view_depth: f32,
 }

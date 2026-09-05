@@ -84,7 +84,14 @@ fn liquid_quad_bsp() -> Vec<u8> {
 
 fn overhead_camera() -> FreeFlyCamera {
     FreeFlyCamera {
-        position: [0.0, 0.0, 200.0],
+        // Close enough over the `-64..64` quad (see `liquid_quad_bsp`) that
+        // it fills a clear majority of the frame: at the default 75-degree
+        // vertical FOV and this test's 4:3 aspect, a camera 200 units above
+        // only ever put the 128-unit-wide quad across about an eighth of
+        // the frame, so `liquid_pass_blends_over_the_cleared_background_*`
+        // could never see enough blended pixels to satisfy its coverage
+        // assertion regardless of the render pass's correctness.
+        position: [0.0, 0.0, 90.0],
         yaw: 0.0,
         pitch: 89.0,
         ..FreeFlyCamera::default()
