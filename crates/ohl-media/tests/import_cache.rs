@@ -10,8 +10,9 @@ use std::sync::mpsc;
 
 use fs4::fs_std::FileExt as _;
 use ohl_media::{
-    CacheLayout, CacheManifest, CacheReport, ImportCacheError, MANIFEST_FILE_NAME,
-    MANIFEST_SCHEMA_VERSION, PAYLOAD_STATE_NOT_IMPORTED, ValidatedMedia, prepare_import_cache,
+    CacheLayout, CacheManifest, CacheReport, ENTRIES_DIRECTORY_NAME, ImportCacheError,
+    MANIFEST_FILE_NAME, MANIFEST_SCHEMA_VERSION, PAYLOAD_STATE_NOT_IMPORTED, ValidatedMedia,
+    prepare_import_cache,
 };
 use support::{TemporaryRoot, pinned_source, synthetic_bytes, validated};
 
@@ -291,13 +292,44 @@ fn a_cache_root_component_that_is_not_a_directory_is_refused() {
 
 #[cfg(unix)]
 #[test]
-fn a_symbolic_link_in_the_cache_root_is_refused() {
+fn a_symbolic_link_ancestor_of_the_cache_root_is_resolved_and_accepted() {
+    // This is the macOS `--cache` scenario `CacheLayout::with_root`'s doc
+    // comment describes: `/tmp` and `/var` are themselves symbolic links to
+    // `/private/tmp` and `/private/var`, so a completely ordinary cache root
+    // has a symlinked ancestor. `with_root` must resolve it rather than
+    // refuse it, the way `a_cache_root_component_that_is_not_a_directory_is_refused`
+    // still refuses a *non-directory* blocking a root component.
     let fixture = fixture();
     let target = fixture.root.path().join("link-target");
     std::fs::create_dir(&target).expect("link target");
     let link = fixture.root.path().join("linked-cache");
     std::os::unix::fs::symlink(&target, &link).expect("symbolic link");
     let layout = CacheLayout::with_root(link.join("cache")).expect("absolute root");
+
+    // The symlinked ancestor is resolved to its real target at construction
+    // time, before any no-follow check runs.
+    assert_eq!(layout.root(), target.join("cache"));
+    assert_eq!(
+        prepare_import_cache(&fixture.media, &layout).expect("publication"),
+        CacheReport::Created
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symbolic_link_created_beneath_the_resolved_root_is_still_refused() {
+    // Resolving a pre-existing symlinked ancestor of the root must not weaken
+    // no-follow enforcement for anything this process itself goes on to
+    // create beneath that resolved root: `ensure_directory_tree` still walks
+    // every component fresh, on every call, with its own `symlink_metadata`
+    // check.
+    let fixture = fixture();
+    let layout = CacheLayout::with_root(fixture.root.path().join("cache")).expect("absolute root");
+    std::fs::create_dir_all(layout.root()).expect("cache root");
+    let outside = fixture.root.path().join("outside-sources");
+    std::fs::create_dir(&outside).expect("outside target");
+    std::os::unix::fs::symlink(&outside, layout.root().join(ENTRIES_DIRECTORY_NAME))
+        .expect("symbolic link");
 
     assert_eq!(
         prepare_import_cache(&fixture.media, &layout).expect_err("unsafe path"),

@@ -85,12 +85,27 @@ pub struct CacheLayout {
 impl CacheLayout {
     /// Uses an explicit cache root, as supplied by `--cache`.
     ///
+    /// The already-existing leading portion of `root` is resolved with
+    /// [`std::fs::canonicalize`] before the no-follow subtree checks run.
+    /// This matters on platforms where a standard, non-hostile directory is
+    /// itself reached through a symbolic link — notably macOS, where `/tmp`
+    /// and `/var` are symlinks to `/private/tmp` and `/private/var`, so a
+    /// `--cache` path under either (as most process temp directories are)
+    /// would otherwise be rejected by [`ensure_directory_tree`]'s
+    /// `symlink_metadata`-based, non-following walk. Canonicalizing here
+    /// only resolves symlinks that existed *before* this call; any
+    /// component this process goes on to create beneath the resolved root
+    /// is still walked and rejected if it turns out to be a symbolic link,
+    /// so no-follow enforcement is preserved for everything actually placed
+    /// in the cache.
+    ///
     /// # Errors
     ///
     /// [`ImportCacheError::UnsafeCachePath`] when `root` is relative, empty,
-    /// or contains a `.` or `..` component. The path is not touched here;
-    /// directory creation and the symbolic-link checks happen during
-    /// publication.
+    /// contains a `.` or `..` component, or when no ancestor of `root` can be
+    /// queried at all (which should not happen for an absolute path on a
+    /// working filesystem). Directory creation past the existing prefix and
+    /// the symbolic-link checks for it happen during publication.
     pub fn with_root(root: impl Into<PathBuf>) -> Result<Self, ImportCacheError> {
         let root = root.into();
         if !root.is_absolute() {
@@ -101,6 +116,7 @@ impl CacheLayout {
                 return Err(ImportCacheError::UnsafeCachePath);
             }
         }
+        let root = canonicalize_existing_prefix(&root)?;
         Ok(Self { root })
     }
 
@@ -421,6 +437,44 @@ fn read_manifest(path: &Path) -> Result<CacheManifest, ImportCacheError> {
     }
     let bytes = fs::read(path).map_err(|_| ImportCacheError::ManifestConflict)?;
     CacheManifest::parse(&bytes)
+}
+
+/// Resolves every symbolic link in whichever leading portion of `path`
+/// already exists on disk, then reattaches any remaining, not-yet-created
+/// components unchanged.
+///
+/// A component that does not exist yet cannot be a symbolic link, so it is
+/// safe to leave it untouched; [`ensure_directory_tree`] still walks it with
+/// its own no-follow checks once this process creates it. Walking from the
+/// full path upward (rather than resolving one component at a time) means a
+/// single `canonicalize` call handles the entire existing prefix, including
+/// a target of a symlink that itself lies outside `path`'s original
+/// directory (for example macOS's `/tmp` -> `/private/tmp`).
+///
+/// # Errors
+///
+/// [`ImportCacheError::UnsafeCachePath`] if no ancestor of `path`, down to
+/// and including the filesystem root, can be queried. For an absolute path
+/// on a working filesystem the root always exists, so this should not
+/// happen in practice.
+fn canonicalize_existing_prefix(path: &Path) -> Result<PathBuf, ImportCacheError> {
+    let mut trailing: Vec<&std::ffi::OsStr> = Vec::new();
+    let mut candidate = path;
+    loop {
+        if let Ok(mut resolved) = fs::canonicalize(candidate) {
+            for component in trailing.iter().rev() {
+                resolved.push(component);
+            }
+            return Ok(resolved);
+        }
+        match (candidate.file_name(), candidate.parent()) {
+            (Some(name), Some(parent)) => {
+                trailing.push(name);
+                candidate = parent;
+            }
+            _ => return Err(ImportCacheError::UnsafeCachePath),
+        }
+    }
 }
 
 /// Creates every component of `path`, refusing an unsafe one.
