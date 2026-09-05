@@ -131,7 +131,7 @@ impl core::fmt::Debug for WiseBackend {
 }
 
 /// Whether `error` only means "the window did not hold those bytes".
-const fn is_window_miss(error: &WiseError) -> bool {
+const fn is_window_miss(error: WiseError) -> bool {
     matches!(error, WiseError::SourceFailed)
 }
 
@@ -290,7 +290,7 @@ impl WiseBackend {
                 self.next_attempt(walk)
             }
             Ok(None) => Err(WiseError::Truncated),
-            Err(error) if is_window_miss(&error) => {
+            Err(error) if is_window_miss(error) => {
                 self.stage = Stage::Walk(walk);
                 Ok(Advance::NeedRead)
             }
@@ -391,7 +391,7 @@ impl WiseBackend {
                     }
                     script.bytes.extend_from_slice(&self.scratch[..written]);
                 }
-                Err(error) if is_window_miss(&error) => {
+                Err(error) if is_window_miss(error) => {
                     self.stage = Stage::Script(script);
                     return Ok(Advance::NeedRead);
                 }

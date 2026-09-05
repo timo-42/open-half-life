@@ -67,6 +67,9 @@ struct ParentTransport {
     reads: usize,
     /// Cancel the active request after this many `data_chunk`s.
     cancel_after_chunks: Option<usize>,
+    /// Replace the container with these bytes once this many requests have
+    /// completed, modelling a medium that changes under the worker.
+    swap_after_completes: Option<(usize, Vec<u8>)>,
     cancelled: bool,
     closed: bool,
     aborted: bool,
@@ -87,6 +90,7 @@ impl ParentTransport {
             reads_before_failure: None,
             reads: 0,
             cancel_after_chunks: None,
+            swap_after_completes: None,
             cancelled: false,
             closed: false,
             aborted: false,
@@ -121,7 +125,7 @@ impl ParentTransport {
                 MessageType::Hello,
                 SESSION_ID,
                 0,
-                HELLO_PAYLOAD_BYTES as u32,
+                u32::try_from(HELLO_PAYLOAD_BYTES).expect("hello payload fits"),
             ),
             &payload,
         );
@@ -151,7 +155,7 @@ impl ParentTransport {
                         MessageType::StreamEntry,
                         SESSION_ID,
                         request_id,
-                        written as u32,
+                        u32::try_from(written).expect("payload fits"),
                     ),
                     &payload[..written],
                 );
@@ -166,17 +170,19 @@ impl ParentTransport {
     fn answer_read(&mut self, header: FrameHeader, payload: &[u8]) {
         let frame = FrameView::new(header, payload);
         let policy = self.source_policy();
-        let request = decode_read_request_payload(&frame, &policy, header.request_id.max(1) as u32)
-            .or_else(|_| {
-                // The sequence number is the worker's; re-decode with the one
-                // it used, which the header does not carry.
-                (1..=64u32)
-                    .find_map(|sequence| {
-                        decode_read_request_payload(&frame, &policy, sequence).ok()
-                    })
-                    .ok_or(())
-            })
-            .expect("a decodable read request");
+        let request = decode_read_request_payload(
+            &frame,
+            &policy,
+            u32::try_from(header.request_id.max(1) & u64::from(u32::MAX)).expect("masked"),
+        )
+        .or_else(|_| {
+            // The sequence number is the worker's; re-decode with the one
+            // it used, which the header does not carry.
+            (1..=64u32)
+                .find_map(|sequence| decode_read_request_payload(&frame, &policy, sequence).ok())
+                .ok_or(())
+        })
+        .expect("a decodable read request");
         self.reads += 1;
         let failing = self
             .reads_before_failure
@@ -205,7 +211,7 @@ impl ParentTransport {
                 MessageType::ReadReply,
                 SESSION_ID,
                 header.request_id,
-                written as u32,
+                u32::try_from(written).expect("payload fits"),
             ),
             &payload[..written],
         );
@@ -263,6 +269,19 @@ impl ParentTransport {
                     .or_else(|_| decode_complete_payload(&frame, OperationPhase::Stream))
                     .expect("a decodable complete");
                 self.completes += 1;
+                if self
+                    .swap_after_completes
+                    .as_ref()
+                    .is_some_and(|(after, _)| self.completes == *after)
+                {
+                    let (_, bytes) = self.swap_after_completes.take().expect("checked above");
+                    assert_eq!(
+                        bytes.len(),
+                        self.container.len(),
+                        "the source size is fixed"
+                    );
+                    self.container = bytes;
+                }
                 self.send_next();
             }
             MessageType::CancelAck => {
@@ -434,7 +453,7 @@ fn a_wise_package_enumerates_streams_and_completes() {
 }
 
 #[test]
-fn a_wise_stream_with_a_broken_checksum_fails_the_request() {
+fn a_wise_stream_with_a_broken_checksum_is_not_offered() {
     let files = wise_files();
     let mut options = PackageOptions::with_files(files.clone());
     // Stream 0 is the bitmap and stream 1 the script, so stream 2 is the
@@ -449,20 +468,70 @@ fn a_wise_stream_with_a_broken_checksum_fails_the_request() {
         |_| {},
     );
     assert_eq!(result, Ok(()));
+    // The package itself says those bytes are damaged, so the entry is
+    // withheld rather than offered and failed halfway through a stream.
+    assert!(
+        !parent
+            .offered
+            .iter()
+            .any(|entry| entry.spelling == "maps/one.bsp")
+    );
+    // Every undamaged file is still offered, and still streams whole.
+    for file in files.iter().skip(1) {
+        let spelling = String::from_utf8(file.path.clone())
+            .expect("ascii")
+            .replace('\\', "/");
+        let token = parent
+            .offered
+            .iter()
+            .find(|entry| entry.spelling == spelling)
+            .expect("an undamaged file is still offered")
+            .token;
+        let (streamed, result) = run(
+            built.image.clone(),
+            vec![Next::Enumerate, Next::Stream(token)],
+            BackendLimits::default(),
+            |_| {},
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(streamed.streamed, file.content);
+    }
+}
+
+#[test]
+fn a_stream_whose_bytes_changed_after_enumeration_fails_verification() {
+    let files = wise_files();
+    let built = build_package(&PackageOptions::with_files(files.clone()));
+    let mut damaged = PackageOptions::with_files(files.clone());
+    damaged.corrupt_crc_of_stream = Some(2);
+    let damaged = build_package(&damaged);
+
+    let (parent, result) = run(
+        built.image.clone(),
+        vec![Next::Enumerate],
+        BackendLimits::default(),
+        |_| {},
+    );
+    assert_eq!(result, Ok(()));
     let token = parent
         .offered
         .iter()
         .find(|entry| entry.spelling == "maps/one.bsp")
-        .expect("the file is still offered")
+        .expect("offered")
         .token;
 
-    let (_, result) = run(
+    // Enumeration sees the intact package and offers the entry; the stream
+    // then reads a source whose trailing checksum no longer agrees with the
+    // bytes it inflated. Nothing is delivered on trust, so the request fails
+    // instead of publishing unverified bytes.
+    let (parent, result) = run(
         built.image,
         vec![Next::Enumerate, Next::Stream(token)],
         BackendLimits::default(),
-        |_| {},
+        |transport| transport.swap_after_completes = Some((1, damaged.image.clone())),
     );
     assert_eq!(result, Err(ServiceError::DispatchFailure));
+    assert_eq!(parent.completes, 1);
 }
 
 #[test]
@@ -538,7 +607,9 @@ fn a_cabinet_enumerates_and_streams() {
     let contents: Vec<Vec<u8>> = vec![
         vec![0x41; 30_000],
         b"cabinet payload ".repeat(300),
-        (0..12_000u32).map(|value| value as u8).collect(),
+        (0..12_000u32)
+            .map(|value| u8::try_from(value & 0xff).expect("masked"))
+            .collect(),
     ];
     let cabinet = build(&CabinetSpec::new(vec![FolderSpec::new(
         Method::MsZip,
