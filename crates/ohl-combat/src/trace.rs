@@ -11,6 +11,14 @@
 //! `docs/FORMAT_SOURCES.md`, "Combat and damage"); the multipliers attached
 //! to them are **to be black-box observed** and therefore live in a
 //! caller-supplied [`HitGroupScale`] whose `Default` scales nothing.
+//!
+//! A projectile or melee swing should not hit its own owner. Rather than
+//! asking the caller to omit the owner from the [`HitboxIndex`] — which
+//! would make that index unusable for anyone else's trace against the same
+//! tick — use [`trace_attack_filtered`] with a [`TraceFilter`] naming the
+//! owner (and, if relevant, the weapon entity) in its `ignore` slots; those
+//! entities are skipped during hitbox refinement but the index itself is
+//! left untouched.
 
 use glam::{EulerRot, Quat, Vec3};
 use ohl_physics::{CollisionModel, Hull};
@@ -170,6 +178,48 @@ impl TraceMask {
 impl Default for TraceMask {
     fn default() -> Self {
         Self::SHOT
+    }
+}
+
+/// What an attack trace is allowed to hit, plus entities it must never hit
+/// regardless of the mask.
+///
+/// The `ignore` slots hold up to two [`EntityId`]s — typically an attack's
+/// owner and, for a thrown or fired weapon entity, the weapon itself — that
+/// are skipped during hitbox refinement so an attack cannot hit its own
+/// source. `Default` ignores nothing and uses [`TraceMask::SHOT`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct TraceFilter {
+    /// Entities skipped when refining against the [`HitboxIndex`].
+    pub ignore: [Option<EntityId>; 2],
+    /// What the trace is allowed to hit.
+    pub mask: TraceMask,
+}
+
+impl TraceFilter {
+    /// A filter that ignores nothing, using `mask`.
+    #[must_use]
+    pub const fn new(mask: TraceMask) -> Self {
+        Self {
+            ignore: [None, None],
+            mask,
+        }
+    }
+
+    /// A filter using `mask` that also skips `owner` during hitbox
+    /// refinement.
+    #[must_use]
+    pub const fn ignoring(mask: TraceMask, owner: EntityId) -> Self {
+        Self {
+            ignore: [Some(owner), None],
+            mask,
+        }
+    }
+
+    /// Whether `id` is one of this filter's ignored entities.
+    #[must_use]
+    fn ignores(&self, id: EntityId) -> bool {
+        self.ignore[0] == Some(id) || self.ignore[1] == Some(id)
     }
 }
 
@@ -436,6 +486,9 @@ impl AttackTrace {
 ///
 /// Total: a degenerate segment, a non-finite endpoint or an empty index
 /// yields a miss rather than a panic.
+///
+/// A thin wrapper over [`trace_attack_filtered`] with an empty ignore list;
+/// use that function instead when an attack must not hit its own owner.
 #[must_use]
 pub fn trace_attack(
     world: &CollisionModel,
@@ -444,10 +497,29 @@ pub fn trace_attack(
     end: Vec3,
     mask: TraceMask,
 ) -> AttackTrace {
+    trace_attack_filtered(world, entities, start, end, TraceFilter::new(mask))
+}
+
+/// Traces an attack from `start` to `end`, as [`trace_attack`], but skipping
+/// every entity named in `filter.ignore` during hitbox refinement.
+///
+/// An ignored entity is invisible to the entity pass entirely: it cannot
+/// stop the trace and cannot be passed through to reach something behind
+/// it — the trace behaves exactly as if that entity were absent from
+/// `entities`. World geometry is unaffected by the ignore list.
+#[must_use]
+pub fn trace_attack_filtered(
+    world: &CollisionModel,
+    entities: &HitboxIndex,
+    start: Vec3,
+    end: Vec3,
+    filter: TraceFilter,
+) -> AttackTrace {
     if !start.is_finite() || !end.is_finite() {
         return AttackTrace::miss(if end.is_finite() { end } else { start });
     }
 
+    let mask = filter.mask;
     let mut best = AttackTrace::miss(end);
     if mask.world {
         let trace = world.trace(Hull::Point, start, end);
@@ -470,6 +542,9 @@ pub fn trace_attack(
 
     let delta = end - start;
     for entity in entities.entries() {
+        if filter.ignores(entity.id) {
+            continue;
+        }
         // Into the entity's own space, where its hitboxes are axis aligned.
         let inverse = entity.rotation.conjugate();
         let local_start = inverse * (start - entity.origin);
