@@ -13,7 +13,10 @@
 //! ([`DEFAULT_CARRY_RADIUS`]) around the landmark. Entities are correlated
 //! across the two maps by `globalname` (and, for the previous map's own
 //! mover state, by `targetname`), and the worldspawn `newunit` key discards
-//! carried state instead of applying it.
+//! carried state instead of applying it. A landmark either map does not
+//! declare leaves every offset unmeasurable, so the player stays at the
+//! destination's own `info_player_start` and only state that needs no
+//! placement travels.
 //!
 //! # To verify
 //!
@@ -215,8 +218,11 @@ pub struct CarriedEntity {
     pub globalname: Option<String>,
     /// `target`, when it has one.
     pub target: Option<String>,
-    /// Position relative to the landmark in the *source* map.
-    pub offset: [f32; 3],
+    /// Position relative to the landmark in the *source* map, or `None`
+    /// when that map declared no such landmark: an entity with no
+    /// counterpart in the destination then has no place to be put, and is
+    /// dropped rather than materialised at an arbitrary position.
+    pub offset: Option<[f32; 3]>,
     /// Component state.
     pub snapshot: EntitySnapshot,
 }
@@ -303,8 +309,12 @@ impl GlobalStateTable {
 pub struct TransitionState {
     /// The `info_landmark` name both maps share.
     pub landmark: String,
-    /// The player's position relative to the source map's landmark.
-    pub player_offset: [f32; 3],
+    /// The player's position relative to the source map's landmark, or
+    /// `None` when that map declared no such landmark. A transition with no
+    /// offset leaves the player at the destination's own
+    /// `info_player_start`, since an absolute source position means nothing
+    /// in the destination's coordinates.
+    pub player_offset: Option<[f32; 3]>,
     /// The player's yaw, in degrees.
     pub yaw: f32,
     /// The player's pitch, in degrees.
@@ -364,6 +374,12 @@ impl TransitionState {
     ///
     /// `eye` is the player's current position, and `globals` the game's
     /// current global state table (already seeded from this level).
+    ///
+    /// When `level` declares no `info_landmark` named `landmark` there is
+    /// nothing to measure against, so every offset is captured as `None`
+    /// and the destination falls back to its own `info_player_start`. State
+    /// that needs no placement (mover states, globals, and entities the
+    /// destination correlates by `globalname`/`targetname`) still travels.
     #[must_use]
     pub(crate) fn capture(
         level: &Level,
@@ -374,7 +390,7 @@ impl TransitionState {
         player: PlayerCarryState,
         globals: &GlobalStateTable,
     ) -> Self {
-        let origin = level.landmark_origin(landmark).unwrap_or(Vec3::ZERO);
+        let origin = level.landmark_origin(landmark);
         let registry = &level.registry;
         let volumes = transition_volumes(registry, landmark);
 
@@ -423,7 +439,12 @@ impl TransitionState {
                 continue;
             };
             let eligible = if volumes.is_empty() {
-                position.distance(origin) <= DEFAULT_CARRY_RADIUS
+                // With no transition volume and no landmark to measure
+                // from, the documented eligibility rule cannot be applied
+                // at all; only an entity the destination correlates by name
+                // travels, so the radius test is skipped rather than
+                // measured against an invented origin.
+                origin.is_none_or(|origin| position.distance(origin) <= DEFAULT_CARRY_RADIUS)
             } else {
                 volumes.iter().any(|volume| volume.contains(position))
             };
@@ -439,14 +460,14 @@ impl TransitionState {
                     .get::<&Target>(entity)
                     .ok()
                     .map(|target| target.0.clone()),
-                offset: (position - origin).to_array(),
+                offset: origin.map(|origin| (position - origin).to_array()),
                 snapshot,
             });
         }
 
         Self {
             landmark: landmark.to_string(),
-            player_offset: (eye - origin).to_array(),
+            player_offset: origin.map(|origin| (eye - origin).to_array()),
             yaw,
             pitch,
             player,
@@ -457,8 +478,9 @@ impl TransitionState {
     }
 
     /// Applies this state to a freshly loaded `level`, returning the world
-    /// position the player should be placed at when the destination map
-    /// declares the same landmark.
+    /// position the player should be placed at when *both* maps declare the
+    /// landmark, and `None` when either does not (the caller then leaves
+    /// the player at the destination's own `info_player_start`).
     ///
     /// A destination whose `worldspawn` sets `newunit` discards everything
     /// but the player's own placement, per the documented meaning of that
@@ -471,7 +493,7 @@ impl TransitionState {
             .as_ref()
             .is_some_and(|worldspawn| worldspawn.newunit)
         {
-            return origin.map(|origin| origin + Vec3::from_array(self.player_offset));
+            return self.player_position(origin);
         }
 
         for mover in &self.movers {
@@ -500,7 +522,14 @@ impl TransitionState {
             level.registry.world.despawn(entity).ok();
         }
 
-        origin.map(|origin| origin + Vec3::from_array(self.player_offset))
+        self.player_position(origin)
+    }
+
+    /// The player's world position in the destination, which needs both a
+    /// captured offset and a destination landmark to exist.
+    fn player_position(&self, origin: Option<Vec3>) -> Option<Vec3> {
+        let offset = self.player_offset?;
+        origin.map(|origin| origin + Vec3::from_array(offset))
     }
 
     /// Applies one carried entity: onto its `globalname` counterpart when
@@ -536,10 +565,10 @@ impl TransitionState {
                 return;
             }
         }
-        let Some(origin) = origin else {
+        let (Some(origin), Some(offset)) = (origin, carried.offset) else {
             return;
         };
-        let position = origin + Vec3::from_array(carried.offset);
+        let position = origin + Vec3::from_array(offset);
         let angles = carried
             .snapshot
             .transform

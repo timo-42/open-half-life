@@ -1611,7 +1611,9 @@ implemented from.
   player's landmark-relative pose, a `PlayerCarry` hook `ohl-player` will
   implement, entities inside the landmark's `trigger_transition` volumes or
   within `DEFAULT_CARRY_RADIUS`, the `globalname` state table and the
-  previous map's modified mover states; `newunit` drops all of it), `save`
+  previous map's modified mover states; `newunit` drops all of it, and a
+  landmark missing from either map leaves the player at the destination's
+  own `info_player_start`), `save`
   (a `GameSave` laid into `ohl-save`'s tagged sections, with
   `save_slot`/`load_slot`) and `text` (a `titles.txt` library, a
   `sentences.txt` `SentenceLookup`, and the `skill.cfg` reader feeding

@@ -91,7 +91,7 @@ prop_compose! {
         targetname in proptest::option::of("[a-z_]{1,16}"),
         globalname in proptest::option::of("[a-z_]{1,16}"),
         target in proptest::option::of("[a-z_]{1,16}"),
-        offset in (finite(), finite(), finite()),
+        offset in proptest::option::of((finite(), finite(), finite())),
         snapshot in snapshot(),
     ) -> CarriedEntity {
         CarriedEntity {
@@ -99,7 +99,7 @@ prop_compose! {
             targetname,
             globalname,
             target,
-            offset: [offset.0, offset.1, offset.2],
+            offset: offset.map(|(x, y, z)| [x, y, z]),
             snapshot,
         }
     }
@@ -108,7 +108,7 @@ prop_compose! {
 prop_compose! {
     fn transition()(
         landmark in "[a-z_]{1,16}",
-        offset in (finite(), finite(), finite()),
+        offset in proptest::option::of((finite(), finite(), finite())),
         yaw in finite(),
         pitch in finite(),
         health in finite(),
@@ -127,7 +127,7 @@ prop_compose! {
         }
         TransitionState {
             landmark,
-            player_offset: [offset.0, offset.1, offset.2],
+            player_offset: offset.map(|(x, y, z)| [x, y, z]),
             yaw,
             pitch,
             player: PlayerCarryState { health, armor, extra },
