@@ -13,18 +13,18 @@ use ohl_media::{
     CacheLayout, CacheManifest, CacheReport, ImportCacheError, MANIFEST_FILE_NAME,
     MANIFEST_SCHEMA_VERSION, PAYLOAD_STATE_NOT_IMPORTED, ValidatedMedia, prepare_import_cache,
 };
-use support::{pinned_source, synthetic_bytes, validated};
+use support::{TemporaryRoot, pinned_source, synthetic_bytes, validated};
 
 /// A cache root inside a temporary directory, plus a proof for one synthetic
 /// source.
 struct Fixture {
-    root: tempfile::TempDir,
+    root: TemporaryRoot,
     layout: CacheLayout,
     media: ValidatedMedia,
 }
 
 fn fixture() -> Fixture {
-    let root = tempfile::tempdir().expect("temporary directory");
+    let root = TemporaryRoot::new();
     let source = pinned_source(
         root.path(),
         "private-source-name.iso",
@@ -333,7 +333,7 @@ fn a_manifest_replaced_by_a_symbolic_link_is_a_conflict() {
 
 #[test]
 fn a_source_truncated_after_validation_publishes_nothing() {
-    let root = tempfile::tempdir().expect("temporary directory");
+    let root = TemporaryRoot::new();
     let path = root.path().join("shrinking.iso");
     std::fs::write(&path, synthetic_bytes(100_000)).expect("fixture");
     let source = std::sync::Arc::new(ohl_platform::MediaSource::open(&path).expect("pinned"));
@@ -356,7 +356,7 @@ fn a_source_truncated_after_validation_publishes_nothing() {
 
 #[test]
 fn two_sources_with_different_content_get_different_entries() {
-    let root = tempfile::tempdir().expect("temporary directory");
+    let root = TemporaryRoot::new();
     let layout = CacheLayout::with_root(root.path().join("cache")).expect("absolute root");
     let first = validated(pinned_source(root.path(), "a.iso", &synthetic_bytes(4_096)));
     let second = validated(pinned_source(root.path(), "b.iso", &synthetic_bytes(8_192)));
