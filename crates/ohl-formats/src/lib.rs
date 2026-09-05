@@ -19,7 +19,17 @@ pub mod palette;
 pub mod spr;
 pub mod wad3;
 
+// Game text/data format decoders (M8.1): bounded, never-panicking parsers
+// for the plain-text files GoldSrc/Half-Life load alongside its binary
+// assets. See `docs/FORMAT_SOURCES.md` ("Game text formats") for sources.
+pub mod hud_sprites;
+pub mod liblist;
+pub mod sentences;
+pub mod skill_cfg;
+pub mod titles;
+
 mod miptex_body;
+mod text_lines;
 mod util;
 
 #[cfg(any(test, feature = "test-support"))]

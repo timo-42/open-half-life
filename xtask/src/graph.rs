@@ -92,6 +92,11 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
     ("ohl-save", &["ohl-core"]),
     ("ohl-input", &["ohl-core"]),
     ("ohl-game", &["ohl-core", "ohl-formats", "ohl-world"]),
+    // Sourced campaign data (chapter/map sequence, difficulty, skill.cfg
+    // table): plain data plus small bounded lookups, so it only needs the
+    // shared diagnostics primitive. Deliberately not allowed to depend on
+    // `ohl-formats`; see `crates/ohl-campaign/src/skill_table.rs`.
+    ("ohl-campaign", &["ohl-core"]),
     ("ohl-ui", &["ohl-core"]),
     (COMPOSITION_ROOT, &[]),
 ];

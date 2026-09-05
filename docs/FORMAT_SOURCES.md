@@ -1031,3 +1031,83 @@ behaviour, not a copied formula. No SDK source (`dlls/*.cpp`) or decompiled
 GoldSrc logic was consulted for any of the above; only the public wiki pages
 named. `ohl-render` does not yet draw the resulting brush-model instances
 (see `docs/MILESTONES.md`, "M5 (Rust): entities").
+## Game text formats
+
+Sources reused from `.plan/m8-research.md` sections 2 and 5 (M8.1 research
+pass) for the plain-text, line-oriented files GoldSrc/Half-Life loads
+alongside its binary assets. Every parser below is implemented in
+`crates/ohl-formats` as a bounded, never-panicking decoder over caller-owned
+bytes; see each module's own doc comment for its bounded grammar summary.
+
+- `titles.txt` (HUD message/caption definitions, including the
+  `CHAPTER<N>_TITLE` strings shown on level load):
+  [developer.valvesoftware.com/wiki/Titles.txt](https://developer.valvesoftware.com/wiki/Titles.txt).
+  Implemented in `crates/ohl-formats/src/titles.rs`.
+- `sentences.txt` (names combining WAV samples into sentences spoken by
+  NPCs/`scripted_sentence`/`speaker`):
+  [developer.valvesoftware.com/wiki/Sentences.txt](https://developer.valvesoftware.com/wiki/Sentences.txt),
+  [VDC `Scripted_sentence_(GoldSrc)`](https://developer.valvesoftware.com/wiki/Scripted_sentence_(GoldSrc)),
+  [VDC `Speaker_(GoldSrc)`](https://developer.valvesoftware.com/wiki/Speaker_(GoldSrc)).
+  Implemented in `crates/ohl-formats/src/sentences.rs`.
+- `skill.cfg` (per-difficulty cvar dump executed on map load):
+  [TWHL "VERC: Adding New skill.cfg Entries"](https://twhl.info/wiki/page/VERC:_Adding_New_skill.cfg_Entries),
+  [TWHL "Vlatitude: Editing skill.cfg"](https://twhl.info/wiki/page/Vlatitude:_Editing_skill.cfg),
+  [TWHL vault "The skill.cfg file"](https://twhl.info/vault/view/4687).
+  Implemented in `crates/ohl-formats/src/skill_cfg.rs`; the
+  `sk_<subject>_<property><1|2|3>` naming convention (`1`/`2`/`3` =
+  easy/medium/hard) is also reused by `ohl-campaign`'s `SkillTable`.
+- `liblist.gam` (declares a GoldSrc game/mod to the engine/Steam: display
+  name, DLL paths, and single-player entry points):
+  [developer.valvesoftware.com/wiki/The_liblist.gam_File_Structure](https://developer.valvesoftware.com/wiki/The_liblist.gam_File_Structure),
+  [developer.valvesoftware.com/wiki/Liblist.gam/Half-Life](https://developer.valvesoftware.com/wiki/Liblist.gam/Half-Life).
+  Implemented in `crates/ohl-formats/src/liblist.rs`. Half-Life's
+  `startmap`/`trainmap` values (`c0a0`/`t0a0`) are reused as
+  `ohl_campaign::STARTMAP`/`TRAINMAP`.
+- `sprites/hud.txt` and `sprites/weapon_*.txt` (shared grammar: declares
+  HUD/weapon-icon sprite locations packed inside a shared `.spr` sheet):
+  [TWHL "hud.txt and weapon_*.txt"](https://twhl.info/wiki/page/hud.txt_and_weapon_*.txt).
+  Implemented in `crates/ohl-formats/src/hud_sprites.rs`.
+
+Every parser above bounds its own byte/line/entry counts via a `Limits`
+struct (see each module), is covered by a `proptest` "never panics on
+arbitrary bytes" test in `crates/ohl-formats/tests/text_formats.rs`, and has
+a matching `cargo fuzz` target under `crates/ohl-formats/fuzz/`
+(`titles_fuzz`, `sentences_fuzz`, `skill_cfg_fuzz`, `liblist_fuzz`,
+`hud_sprites_fuzz`).
+
+## Campaign map sequence
+
+The Half-Life single-player chapter titles and their internal `.bsp` map
+names, encoded as data in `crates/ohl-campaign/src/chapters.rs`, are
+publicly documented facts (see `docs/CLEAN_ROOM.md` rule 7) reused from
+`.plan/m8-research.md` section 1. Per-row citations live in that module's
+doc comment; the source list (all fetched during the M8 research pass) is:
+
+- [VDC `Liblist.gam/Half-Life`](https://developer.valvesoftware.com/wiki/Liblist.gam/Half-Life)
+  — `startmap "c0a0"`, `trainmap "t0a0"`.
+- Steam Community guide "half-life 1 map names"
+  (<https://steamcommunity.com/sharedfiles/filedetails/?id=3261669377>).
+- Steam Community guide "Half-Life Chapter Maps + Weapon Codes"
+  (<https://steamcommunity.com/sharedfiles/filedetails/?id=2828763459>).
+- [TWHL "Tutorial: Changing Levels"](https://twhl.info/wiki/page/Tutorial:_Changing_Levels).
+- [combineoverwiki.net/wiki/Half-Life_storyline](https://combineoverwiki.net/wiki/Half-Life_storyline)
+  (and its per-chapter pages, e.g. `/Office_Complex`,
+  `/Unforeseen_Consequences`, `/Anomalous_Materials_(chapter)`).
+- [strategywiki.org/wiki/Half-Life/Unforeseen_Consequences](https://strategywiki.org/wiki/Half-Life/Unforeseen_Consequences).
+
+Three items from the M8 research pass are flagged as **to verify** rather
+than encoded as confirmed facts (also documented in
+`crates/ohl-campaign/src/lib.rs`'s module doc comment):
+
+1. **Interloper's starting map prefix** — independent sources disagreed
+   (`c4a1a` vs `c4a2b`); `ohl_campaign::CHAPTERS`'s "Interloper" entry
+   deliberately carries an empty map list rather than commit an unverified
+   literal, pending a second independent citation.
+2. **`env_global`/save-file global-state-variable semantics** — referenced
+   by TWHL "Tutorial: Globals" but not confirmed from a directly fetched
+   page during the M8 research pass (VDC and the Half-Life Wiki both
+   returned bot-verification pages); not modeled by this milestone.
+3. **Player-inventory persistence across `changelevel`** — commonly
+   understood GoldSrc modding-community knowledge (the player edict
+   persists automatically, independent of `globalname`), but not confirmed
+   from a reachable public page in this pass.
