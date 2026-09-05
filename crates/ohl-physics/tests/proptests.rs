@@ -79,6 +79,7 @@ proptest! {
             wish_move: wish.normalize_or_zero(),
             jump,
             duck,
+            ..MoveInput::default()
         };
         for _ in 0..ticks {
             player_move(&model, &mut state, &input, &config, TICK_SECONDS);
@@ -103,6 +104,7 @@ proptest! {
             wish_move: Vec3::new(wish_x, wish_y, 0.0).normalize_or_zero(),
             jump: false,
             duck: false,
+            ..MoveInput::default()
         };
         for _ in 0..200 {
             player_move(&model, &mut state, &input, &config, TICK_SECONDS);

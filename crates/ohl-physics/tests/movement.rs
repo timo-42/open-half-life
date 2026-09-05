@@ -42,6 +42,7 @@ fn walking(direction: Vec3) -> MoveInput {
         wish_move: direction.normalize_or_zero(),
         jump: false,
         duck: false,
+        ..MoveInput::default()
     }
 }
 

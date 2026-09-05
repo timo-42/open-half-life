@@ -10,6 +10,13 @@ repository.workspace = true
 [lib]
 name = "ohl_physics"
 
+[features]
+default = []
+# Exposes this crate's synthetic collision fixtures (ladder, slime and lava
+# volumes) as a public, non-`cfg(test)` API, so integration tests and the
+# `ohl-player` crate's tests can build the same project-authored maps.
+test-support = ["ohl-formats/test-support"]
+
 [dependencies]
 ohl-core = { path = "../ohl-core", version = "=0.1.0" }
 ohl-formats = { path = "../ohl-formats", version = "=0.1.0" }
@@ -26,6 +33,9 @@ proptest = { workspace = true }
 ohl-formats = { path = "../ohl-formats", version = "=0.1.0", features = [
     "test-support",
 ] }
+# Self dependency so integration tests under `tests/` see `test_support`
+# without making the feature a default for downstream dependents.
+ohl-physics = { path = ".", features = ["test-support"] }
 
 [lints]
 workspace = true

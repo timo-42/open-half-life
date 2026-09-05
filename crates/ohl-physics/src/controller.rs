@@ -9,7 +9,7 @@
 use glam::Vec3;
 
 use crate::hull::CollisionModel;
-use crate::movement::{MoveConfig, MoveInput, PlayerState, player_move};
+use crate::movement::{MoveConfig, MoveEvents, MoveInput, PlayerState, player_move_events};
 
 /// The movement tick length, in seconds. Movement runs at this fixed rate
 /// regardless of frame rate; leftover time is carried into the next frame.
@@ -49,6 +49,15 @@ pub struct PlayerController {
     pub yaw: f32,
     /// View pitch in degrees; positive looks down.
     pub pitch: f32,
+    /// The velocity of whatever is carrying the player this frame (a
+    /// platform or train underfoot). The host sets it from the game's mover
+    /// state; it is applied for the duration of each move and removed
+    /// again, so it never accumulates into the player's own velocity.
+    pub base_velocity: Vec3,
+    /// Whether the player owns the long jump module, enabling the
+    /// duck-then-jump long jump.
+    pub long_jump_owned: bool,
+    last_events: MoveEvents,
     leftover: f32,
 }
 
@@ -59,6 +68,9 @@ impl Default for PlayerController {
             config: MoveConfig::default(),
             yaw: 0.0,
             pitch: 0.0,
+            base_velocity: Vec3::ZERO,
+            long_jump_owned: false,
+            last_events: MoveEvents::default(),
             leftover: 0.0,
         }
     }
@@ -104,6 +116,15 @@ impl PlayerController {
         self.yaw = if yaw < 0.0 { yaw + 360.0 } else { yaw };
         self.pitch =
             (self.pitch + delta_y * sensitivity).clamp(-MAX_PITCH_DEGREES, MAX_PITCH_DEGREES);
+    }
+
+    /// Everything the ticks run by the last [`Self::advance`] call
+    /// reported, merged: any landing keeps the fastest impact speed and
+    /// every flag is the OR of the ticks'. `ohl-player` turns these into
+    /// fall damage, drowning and HEV suit events.
+    #[must_use]
+    pub fn last_move_events(&self) -> MoveEvents {
+        self.last_events
     }
 
     /// Whether collision is currently disabled.
@@ -160,21 +181,25 @@ impl PlayerController {
         if !frame_seconds.is_finite() || frame_seconds <= 0.0 {
             return 0;
         }
+        self.last_events = MoveEvents::default();
         self.leftover += frame_seconds.min(0.25);
         let move_input = MoveInput {
             wish_move: self.wish_move(input),
             jump: input.jump,
             duck: input.duck,
+            base_velocity: self.base_velocity,
+            long_jump: self.long_jump_owned,
         };
         let mut ticks = 0;
         while self.leftover >= TICK_SECONDS && ticks < MAX_TICKS_PER_FRAME {
-            player_move(
+            let events = player_move_events(
                 model,
                 &mut self.state,
                 &move_input,
                 &self.config,
                 TICK_SECONDS,
             );
+            self.last_events.merge(events);
             self.leftover -= TICK_SECONDS;
             ticks += 1;
         }

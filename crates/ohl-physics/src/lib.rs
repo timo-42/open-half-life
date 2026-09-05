@@ -10,7 +10,7 @@
 //! - [`movement`]: the player movement step built on top of those traces —
 //!   gravity, ground detection, friction, ground and air acceleration,
 //!   jumping, stepping up, sliding along planes, ducking, a basic water
-//!   mode, and noclip.
+//!   mode, ladders, long jumps, riding movers, and noclip.
 //!
 //! [`controller::PlayerController`] wraps the two into the fixed-timestep
 //! object a host application drives from its frame loop.
@@ -30,13 +30,18 @@ extern crate alloc;
 pub mod controller;
 pub mod hull;
 pub mod movement;
+#[cfg(feature = "test-support")]
+pub mod test_support;
 
 pub use controller::{ControllerInput, PlayerController};
 pub use hull::{
     CollisionModel, DIST_EPSILON, HULL_SIZES, Hull, MAX_TRACE_DEPTH, Trace, contents,
     point_contents, trace_hull,
 };
-pub use movement::{MoveConfig, MoveInput, PlayerState, WaterLevel, player_move};
+pub use movement::{
+    LiquidKind, MoveConfig, MoveEvents, MoveInput, PlayerState, WaterLevel, categorize_liquid,
+    in_ladder_volume, ladder_normal, player_move, player_move_events,
+};
 
 /// Re-exported so callers can use this crate's vector type without also
 /// pinning `glam` themselves.

@@ -34,6 +34,63 @@ pub enum WaterLevel {
     Eyes,
 }
 
+impl WaterLevel {
+    /// The `0..=3` waterlevel index the Half-Life community documentation
+    /// (and this project's HUD/save code) uses for the same four states.
+    #[must_use]
+    pub const fn as_index(self) -> u8 {
+        match self {
+            Self::Dry => 0,
+            Self::Feet => 1,
+            Self::Waist => 2,
+            Self::Eyes => 3,
+        }
+    }
+
+    /// The level `index` names, saturating at [`Self::Eyes`].
+    #[must_use]
+    pub const fn from_index(index: u8) -> Self {
+        match index {
+            0 => Self::Dry,
+            1 => Self::Feet,
+            2 => Self::Waist,
+            _ => Self::Eyes,
+        }
+    }
+}
+
+/// Which liquid the player is standing in, taken from the BSP leaf contents
+/// at the player's position. The three swimmable contents values are the
+/// documented Quake/GoldSrc `CONTENTS_WATER`, `CONTENTS_SLIME` and
+/// `CONTENTS_LAVA` (see [`crate::hull::contents`]); what *damage* slime and
+/// lava do is not a movement concern and lives in `ohl-player`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LiquidKind {
+    /// Not in a liquid.
+    #[default]
+    None,
+    /// `CONTENTS_WATER`.
+    Water,
+    /// `CONTENTS_SLIME`.
+    Slime,
+    /// `CONTENTS_LAVA`.
+    Lava,
+}
+
+impl LiquidKind {
+    /// Classifies a raw contents value; anything that is not one of the
+    /// three liquids is [`Self::None`].
+    #[must_use]
+    pub const fn from_contents(value: i32) -> Self {
+        match value {
+            contents::WATER => Self::Water,
+            contents::SLIME => Self::Slime,
+            contents::LAVA => Self::Lava,
+            _ => Self::None,
+        }
+    }
+}
+
 /// The tunable constants of one movement step.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MoveConfig {
@@ -89,6 +146,41 @@ pub struct MoveConfig {
     pub view_height_standing: f32,
     /// Eye height above the origin while ducked.
     pub view_height_ducked: f32,
+    /// Climbing speed inside a `func_ladder` volume, units per second.
+    ///
+    /// `TODO(black-box)`: no published figure was found for the GoldSrc
+    /// ladder climb speed. This is a neutral placeholder (half the default
+    /// ground speed) and must be measured against the retail game before
+    /// this crate may claim parity.
+    pub ladder_speed: f32,
+    /// Speed of the push away from a ladder when the player jumps off it.
+    ///
+    /// `TODO(black-box)`: neutral placeholder, same magnitude as the jump
+    /// impulse, chosen only so the player clears the ladder volume.
+    pub ladder_detach_speed: f32,
+    /// Seconds after jumping off a ladder during which the player cannot
+    /// re-attach to one, so the jump actually leaves the volume.
+    ///
+    /// `TODO(black-box)`: neutral placeholder.
+    pub ladder_reattach_delay: f32,
+    /// Horizontal speed of a long jump (`item_longjump`).
+    ///
+    /// `TODO(black-box)`: the long-jump impulse is not published. Neutral
+    /// placeholder: 1.6x the default ground speed.
+    pub long_jump_forward_speed: f32,
+    /// Upward speed of a long jump.
+    ///
+    /// `TODO(black-box)`: neutral placeholder, a little over half the
+    /// standing jump impulse so the arc is long and flat.
+    pub long_jump_up_speed: f32,
+    /// How long after the duck key goes down a jump still counts as a long
+    /// jump. The public description of the move is that it only fires while
+    /// the player is *still crouching down*, not once fully crouched (see
+    /// `docs/FORMAT_SOURCES.md`, "Player systems"), so this window stands in
+    /// for the duck animation's length.
+    ///
+    /// `TODO(black-box)`: neutral placeholder.
+    pub long_jump_duck_window: f32,
 }
 
 impl Default for MoveConfig {
@@ -119,6 +211,12 @@ impl Default for MoveConfig {
             noclip_speed: 320.0,
             view_height_standing: 28.0,
             view_height_ducked: 12.0,
+            ladder_speed: 160.0,
+            ladder_detach_speed: 270.0,
+            ladder_reattach_delay: 0.3,
+            long_jump_forward_speed: 512.0,
+            long_jump_up_speed: 180.0,
+            long_jump_duck_window: 0.4,
         }
     }
 }
@@ -134,6 +232,16 @@ pub struct MoveInput {
     pub jump: bool,
     /// Whether the duck key is held.
     pub duck: bool,
+    /// The velocity of whatever the player is standing on or being pushed
+    /// by (a `func_plat`/`func_train` underfoot, or a conveyor). It is
+    /// added to the player's velocity for the duration of the move and
+    /// removed again afterwards, so riding a mover carries the player
+    /// without permanently changing their own velocity.
+    pub base_velocity: Vec3,
+    /// Whether the player owns the long jump module (`item_longjump`), so
+    /// a duck-then-jump inside [`MoveConfig::long_jump_duck_window`]
+    /// produces the long jump impulse instead of a crouch jump.
+    pub long_jump: bool,
 }
 
 /// Everything the movement step reads and writes about one player.
@@ -158,6 +266,16 @@ pub struct PlayerState {
     /// Whether a jump has been held since it last took effect, so holding
     /// the key does not auto-repeat.
     pub jump_held: bool,
+    /// Which liquid the player is in, if any.
+    pub liquid: LiquidKind,
+    /// Whether the player is currently attached to a `func_ladder` volume.
+    pub on_ladder: bool,
+    /// Seconds remaining before the player may attach to a ladder again
+    /// after jumping off one.
+    pub ladder_lockout: f32,
+    /// How long the duck key has been held, in seconds; used for the
+    /// long-jump window.
+    pub duck_seconds: f32,
 }
 
 impl Default for PlayerState {
@@ -171,6 +289,10 @@ impl Default for PlayerState {
             water_level: WaterLevel::Dry,
             noclip: false,
             jump_held: false,
+            liquid: LiquidKind::None,
+            on_ladder: false,
+            ladder_lockout: 0.0,
+            duck_seconds: 0.0,
         }
     }
 }
@@ -313,10 +435,21 @@ fn is_near_ledge(model: &CollisionModel, state: &PlayerState, config: &MoveConfi
     !trace.blocked()
 }
 
-/// Refreshes [`PlayerState::on_ground`], [`PlayerState::ground_normal`] and
-/// [`PlayerState::water_level`].
+/// Refreshes [`PlayerState::on_ground`], [`PlayerState::ground_normal`],
+/// [`PlayerState::water_level`] and [`PlayerState::liquid`].
 pub fn categorize_position(model: &CollisionModel, state: &mut PlayerState, config: &MoveConfig) {
-    state.water_level = water_level(model, state, config);
+    let (level, liquid) = categorize_liquid(model, state, config);
+    state.water_level = level;
+    state.liquid = liquid;
+
+    // A player hanging on a ladder is not standing on anything, even when
+    // the bottom of the ladder is on the floor: letting the ground probe
+    // snap them down would cancel every climbing step.
+    if state.on_ladder {
+        state.on_ground = false;
+        state.ground_normal = Vec3::ZERO;
+        return;
+    }
 
     // Moving up fast enough means the player has definitely left the ground
     // (this is what stops a jump from being cancelled on its first step).
@@ -344,19 +477,90 @@ pub fn categorize_position(model: &CollisionModel, state: &mut PlayerState, conf
     }
 }
 
-fn water_level(model: &CollisionModel, state: &PlayerState, config: &MoveConfig) -> WaterLevel {
+/// How deep the player is in a liquid and which liquid it is, sampled from
+/// the BSP leaf contents at the feet, the origin and the eye, exactly the
+/// three heights the documented `waterlevel` 0..3 scale distinguishes.
+///
+/// The reported [`LiquidKind`] is the one at the deepest sample that is in
+/// a liquid at all, so a player wading in water whose head is out of it is
+/// still "in water", and a player whose feet are in lava is in lava.
+#[must_use]
+pub fn categorize_liquid(
+    model: &CollisionModel,
+    state: &PlayerState,
+    config: &MoveConfig,
+) -> (WaterLevel, LiquidKind) {
     let foot_offset = state.hull().foot_offset();
-    let feet = state.origin - Vec3::Z * (foot_offset - 1.0);
-    if !contents::is_liquid(model.point_contents(feet)) {
-        return WaterLevel::Dry;
+    let feet = model.point_contents(state.origin - Vec3::Z * (foot_offset - 1.0));
+    if !contents::is_liquid(feet) {
+        return (WaterLevel::Dry, LiquidKind::None);
     }
-    if contents::is_liquid(model.point_contents(state.eye_position(config))) {
-        return WaterLevel::Eyes;
+    let waist = model.point_contents(state.origin);
+    let eye = model.point_contents(state.eye_position(config));
+    if contents::is_liquid(eye) {
+        return (WaterLevel::Eyes, LiquidKind::from_contents(eye));
     }
-    if contents::is_liquid(model.point_contents(state.origin)) {
-        return WaterLevel::Waist;
+    if contents::is_liquid(waist) {
+        return (WaterLevel::Waist, LiquidKind::from_contents(waist));
     }
-    WaterLevel::Feet
+    (WaterLevel::Feet, LiquidKind::from_contents(feet))
+}
+
+/// The horizontal directions [`ladder_normal`] probes in, in a fixed order
+/// so the result never depends on iteration order.
+const LADDER_PROBE_DIRECTIONS: [Vec3; 4] = [
+    Vec3::new(1.0, 0.0, 0.0),
+    Vec3::new(-1.0, 0.0, 0.0),
+    Vec3::new(0.0, 1.0, 0.0),
+    Vec3::new(0.0, -1.0, 0.0),
+];
+
+/// How far out [`ladder_normal`] probes, and in what step, when looking for
+/// the face of the ladder volume the player is standing against. The step
+/// is smaller than the 32-unit player hull so a thin ladder slab is found.
+const LADDER_PROBE_STEP: f32 = 4.0;
+const LADDER_PROBE_STEPS: u8 = 12;
+
+/// Whether `point` is inside a climbable volume (`CONTENTS_LADDER`, the
+/// contents a `func_ladder` brush is compiled with).
+#[must_use]
+pub fn is_ladder_contents(value: i32) -> bool {
+    value == contents::LADDER
+}
+
+/// Whether the player's origin is inside a climbable volume.
+#[must_use]
+pub fn in_ladder_volume(model: &CollisionModel, state: &PlayerState) -> bool {
+    is_ladder_contents(model.point_contents(state.origin))
+}
+
+/// The outward normal of the ladder face the player is on: the horizontal
+/// direction in which the ladder volume ends soonest without running into
+/// solid world. Zero when the player is not in a ladder volume, or when no
+/// open face was found (a fully embedded volume), which the caller treats
+/// as "not climbable".
+#[must_use]
+pub fn ladder_normal(model: &CollisionModel, state: &PlayerState) -> Vec3 {
+    if !in_ladder_volume(model, state) {
+        return Vec3::ZERO;
+    }
+    let mut best = Vec3::ZERO;
+    let mut best_distance = f32::INFINITY;
+    for direction in LADDER_PROBE_DIRECTIONS {
+        for step in 1..=LADDER_PROBE_STEPS {
+            let distance = LADDER_PROBE_STEP * f32::from(step);
+            let sample = model.point_contents(state.origin + direction * distance);
+            if is_ladder_contents(sample) {
+                continue;
+            }
+            if !contents::is_solid(sample) && distance < best_distance {
+                best_distance = distance;
+                best = direction;
+            }
+            break;
+        }
+    }
+    best
 }
 
 /// Slides `state` through the world for `dt` seconds, clipping its velocity
@@ -528,7 +732,48 @@ fn apply_duck(model: &CollisionModel, state: &mut PlayerState, input: &MoveInput
     }
 }
 
+/// What happened during one movement step that the rest of the game has to
+/// react to. Movement itself never applies damage or plays a sound; it only
+/// reports, so `ohl-player` owns every gameplay consequence.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct MoveEvents {
+    /// The downward speed, in units per second and positive, at the moment
+    /// the player touched the ground after being airborne. `None` when the
+    /// player did not land this step, and also when they landed in a liquid
+    /// or caught a ladder, both of which are documented as cancelling a
+    /// fall (see `docs/FORMAT_SOURCES.md`, "Player systems").
+    pub landed_speed: Option<f32>,
+    /// A long jump fired this step.
+    pub long_jumped: bool,
+    /// The player attached to a ladder this step.
+    pub ladder_attached: bool,
+    /// The player left a ladder this step.
+    pub ladder_detached: bool,
+    /// The player's [`WaterLevel`] changed this step.
+    pub water_level_changed: bool,
+}
+
+impl MoveEvents {
+    /// Folds a later step's events into this one: the fastest landing wins
+    /// and every flag is OR-ed, so a caller running several ticks per frame
+    /// still sees each thing that happened exactly once.
+    pub fn merge(&mut self, other: Self) {
+        self.landed_speed = match (self.landed_speed, other.landed_speed) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        };
+        self.long_jumped |= other.long_jumped;
+        self.ladder_attached |= other.ladder_attached;
+        self.ladder_detached |= other.ladder_detached;
+        self.water_level_changed |= other.water_level_changed;
+    }
+}
+
 /// Advances `state` by one fixed timestep of `dt` seconds.
+///
+/// This is [`player_move_events`] with the reported events discarded; it is
+/// kept as the simple entry point for callers that only want the motion.
 pub fn player_move(
     model: &CollisionModel,
     state: &mut PlayerState,
@@ -536,8 +781,22 @@ pub fn player_move(
     config: &MoveConfig,
     dt: f32,
 ) {
+    let _events = player_move_events(model, state, input, config, dt);
+}
+
+/// Advances `state` by one fixed timestep of `dt` seconds and reports what
+/// happened, so the caller can turn a landing into fall damage, a water
+/// level change into a drowning timer, and so on.
+pub fn player_move_events(
+    model: &CollisionModel,
+    state: &mut PlayerState,
+    input: &MoveInput,
+    config: &MoveConfig,
+    dt: f32,
+) -> MoveEvents {
+    let mut events = MoveEvents::default();
     if !dt.is_finite() || dt <= 0.0 {
-        return;
+        return events;
     }
     let (wish_dir, wish_scale) = wish_direction(input);
 
@@ -548,21 +807,122 @@ pub fn player_move(
         state.velocity = wish_dir * (config.noclip_speed * wish_scale);
         state.origin += state.velocity * dt;
         state.water_level = WaterLevel::Dry;
-        return;
+        state.liquid = LiquidKind::None;
+        events.ladder_detached = core::mem::replace(&mut state.on_ladder, false);
+        return events;
     }
 
-    apply_duck(model, state, input);
-    categorize_position(model, state, config);
-    apply_friction(model, state, config, dt);
+    let was_on_ground = state.on_ground;
+    let was_on_ladder = state.on_ladder;
+    let was_water_level = state.water_level;
+    let mut entry_velocity_z = state.velocity.z;
 
-    if state.is_swimming() {
-        water_move(model, state, input, config, wish_dir, wish_scale, dt);
+    apply_duck(model, state, input);
+    if input.duck {
+        state.duck_seconds += dt;
     } else {
-        walk_or_air_move(model, state, input, config, wish_dir, wish_scale, dt);
+        state.duck_seconds = 0.0;
+    }
+    state.ladder_lockout = (state.ladder_lockout - dt).max(0.0);
+    categorize_position(model, state, config);
+    update_ladder_attachment(model, state, config);
+
+    if state.on_ladder {
+        ladder_move(model, state, input, config, wish_dir, wish_scale, dt);
+    } else {
+        apply_friction(model, state, config, dt);
+        // The speed the player is falling at as this step begins. It is
+        // taken here, before the move, because the move itself clips the
+        // velocity into the ground plane the moment it touches down, which
+        // would otherwise leave nothing to report.
+        entry_velocity_z = state.velocity.z;
+        if state.is_swimming() {
+            water_move(model, state, input, config, wish_dir, wish_scale, dt);
+        } else {
+            events.long_jumped =
+                walk_or_air_move(model, state, input, config, wish_dir, wish_scale, dt);
+        }
     }
 
     clamp_velocity(state, config);
     categorize_position(model, state, config);
+
+    events.ladder_attached = state.on_ladder && !was_on_ladder;
+    events.ladder_detached = was_on_ladder && !state.on_ladder;
+    events.water_level_changed = state.water_level != was_water_level;
+    if !was_on_ground
+        && state.on_ground
+        && !was_on_ladder
+        && !state.on_ladder
+        && state.water_level == WaterLevel::Dry
+        && entry_velocity_z < 0.0
+    {
+        events.landed_speed = Some(-entry_velocity_z);
+    }
+    events
+}
+
+/// Attaches to or releases from a ladder volume, before the move itself
+/// runs. Attaching cancels the player's vertical speed, which is the
+/// documented behaviour of grabbing a GoldSrc ladder in mid-air.
+fn update_ladder_attachment(model: &CollisionModel, state: &mut PlayerState, config: &MoveConfig) {
+    if state.is_swimming() {
+        // Swimming wins over climbing: a ladder inside a pool does not stop
+        // the player from swimming.
+        state.on_ladder = false;
+        return;
+    }
+    let inside = ladder_normal(model, state) != Vec3::ZERO;
+    if !inside {
+        state.on_ladder = false;
+        return;
+    }
+    if state.on_ladder {
+        return;
+    }
+    if state.ladder_lockout > 0.0 {
+        return;
+    }
+    let _ = config;
+    state.on_ladder = true;
+    state.velocity = Vec3::ZERO;
+}
+
+/// One step of climbing. The wished-for direction is decomposed against the
+/// ladder's outward normal: the part pushing *into* the ladder climbs up,
+/// the part pulling away climbs down, and whatever is left slides sideways
+/// along the ladder plane. Gravity does not apply.
+#[allow(clippy::too_many_arguments)]
+fn ladder_move(
+    model: &CollisionModel,
+    state: &mut PlayerState,
+    input: &MoveInput,
+    config: &MoveConfig,
+    wish_dir: Vec3,
+    wish_scale: f32,
+    dt: f32,
+) {
+    let normal = ladder_normal(model, state);
+    if normal == Vec3::ZERO {
+        state.on_ladder = false;
+        return;
+    }
+
+    if input.jump && !state.jump_held {
+        // Jumping off pushes away from the ladder face and locks out
+        // re-attachment for long enough to clear the volume.
+        state.on_ladder = false;
+        state.jump_held = true;
+        state.ladder_lockout = config.ladder_reattach_delay;
+        state.velocity = normal * config.ladder_detach_speed;
+        return;
+    }
+    state.jump_held = input.jump;
+
+    let into = -wish_dir.dot(normal) * wish_scale;
+    let sideways = horizontal(wish_dir - normal * wish_dir.dot(normal)) * wish_scale;
+    state.velocity = (Vec3::Z * into + sideways) * config.ladder_speed;
+    slide_move(model, state, config, dt);
 }
 
 fn clamp_velocity(state: &mut PlayerState, config: &MoveConfig) {
@@ -576,6 +936,7 @@ fn clamp_velocity(state: &mut PlayerState, config: &MoveConfig) {
     );
 }
 
+/// Returns whether this step fired a long jump.
 #[allow(clippy::too_many_arguments)]
 fn walk_or_air_move(
     model: &CollisionModel,
@@ -585,12 +946,20 @@ fn walk_or_air_move(
     wish_dir: Vec3,
     wish_scale: f32,
     dt: f32,
-) {
+) -> bool {
     let wish_speed = ground_max_speed(state, config) * wish_scale;
+    let mut long_jumped = false;
 
     if input.jump {
         if state.on_ground && !state.jump_held {
-            state.velocity.z = config.jump_velocity;
+            if long_jump_ready(state, input, config) && wish_dir.length_squared() > 0.0 {
+                let forward = horizontal(wish_dir).normalize_or_zero();
+                state.velocity =
+                    forward * config.long_jump_forward_speed + Vec3::Z * config.long_jump_up_speed;
+                long_jumped = true;
+            } else {
+                state.velocity.z = config.jump_velocity;
+            }
             state.on_ground = false;
             state.ground_normal = Vec3::ZERO;
         }
@@ -599,6 +968,12 @@ fn walk_or_air_move(
         state.jump_held = false;
     }
 
+    let base = if input.base_velocity.is_finite() {
+        input.base_velocity
+    } else {
+        Vec3::ZERO
+    };
+
     if state.on_ground {
         // Walking accelerates horizontally; slopes and steps are climbed by
         // the move itself (the slide clips the velocity into the surface and
@@ -606,16 +981,34 @@ fn walk_or_air_move(
         // velocity stays flat while the player is on the ground.
         state.velocity.z = 0.0;
         state.velocity = accelerate(state.velocity, wish_dir, wish_speed, config.accelerate, dt);
+        state.velocity += base;
         step_move(model, state, config, dt);
+        state.velocity -= base;
         state.velocity.z = 0.0;
     } else {
         // Half the gravity before the move and half after, so the height a
         // jump reaches does not depend on the timestep.
         state.velocity.z -= config.gravity * dt * 0.5;
         state.velocity = air_accelerate(state.velocity, wish_dir, wish_speed, config, dt);
+        state.velocity += base;
         step_move(model, state, config, dt);
+        state.velocity -= base;
         state.velocity.z -= config.gravity * dt * 0.5;
     }
+    long_jumped
+}
+
+/// Whether a jump pressed right now is a long jump: the player owns the
+/// module, is crouching, and the duck key went down less than
+/// [`MoveConfig::long_jump_duck_window`] seconds ago. The public
+/// description of the move is that it only fires *during* the crouching
+/// motion, which is what the window models.
+fn long_jump_ready(state: &PlayerState, input: &MoveInput, config: &MoveConfig) -> bool {
+    input.long_jump
+        && input.duck
+        && state.ducked
+        && state.duck_seconds > 0.0
+        && state.duck_seconds <= config.long_jump_duck_window
 }
 
 /// A deliberately simple swimming mode: friction has already been applied,
