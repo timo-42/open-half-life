@@ -44,10 +44,17 @@
 //!
 //! # `unsafe` inventory
 //!
-//! `unsafe_code` is allowed for this package only, and only for the five
-//! kinds of site listed here. There is no allocator, no `static mut`, no
-//! transmute, and no unsafe trait implementation beyond the one `Sync` marker
-//! in row 5.
+//! `unsafe_code` is allowed for this package only, and only for the six kinds
+//! of site listed here. There is no `static mut` and no transmute. There is
+//! exactly one allocator — the `.bss` bump arena of row 6, installed as the
+//! `#[global_allocator]` — and exactly three unsafe trait implementations:
+//! the two `Sync` markers on the `static`s of rows 5 and 6, and the
+//! `GlobalAlloc` implementation of row 6.
+//!
+//! Rows 5 and 6 are both `static`s in `.bss` and both rest on the same fact:
+//! the process is single-threaded by construction, because `RLIMIT_NPROC` is
+//! 1 and neither `clone` nor `fork` is on the seccomp allowlist. If that ever
+//! stops holding, both rows stop being sound together.
 //!
 //! | # | Site | Why it is needed | Why it is sound |
 //! |---|------|------------------|-----------------|
@@ -55,7 +62,7 @@
 //! | 2 | `syscall3`, `syscall4`, `exit_group` | `core` exposes no syscall interface and no C library is linked. | Each wrapper passes only integers and pointers into live, correctly sized local buffers, declares the `rcx`/`r11`/`memory` clobbers the `syscall` instruction requires, and never lets the kernel touch memory outside a slice the caller owns. |
 //! | 3 | `rust_eh_personality` stub | The precompiled stable `core` was built with unwind tables, so a `DW.ref.rust_eh_personality` relocation survives into the image even though this package is compiled with `panic = "abort"`. | Nothing can ever unwind: the panic handler diverges into `exit_group`, so the symbol is never called. |
 //! | 4 | `memcpy`/`memset`/`memmove`/`memcmp`/`bcmp` | The prebuilt stable `compiler_builtins` does not ship its `mem` feature, so `core`'s slice and `str` codegen emits calls to these five symbols with nothing to resolve them once libc is gone. | Byte-at-a-time loops honouring the documented `memcpy`/`memmove` overlap rules; the callers are `core` itself, which upholds the pointer and length preconditions. |
-//! | 5 | `PayloadBuffer` (`UnsafeCell` + `unsafe impl Sync`) and the two `&mut` it hands out | The service needs two 1 MiB scratch buffers and there is no allocator for them, so they must live in `.bss`. | The process is single-threaded by construction (`RLIMIT_NPROC` is 1 and neither `clone` nor `fork` is on the seccomp allowlist), and `PayloadBuffer::take` is called exactly once per buffer, on the only thread, before the service starts, so no second `&mut` can exist. |
+//! | 5 | `PayloadBuffer` (`UnsafeCell` + `unsafe impl Sync`) and the two `&mut` it hands out | The service needs two 1 MiB scratch buffers before the dispatcher — and therefore the arena of row 6 — is ever used, and keeping them out of the arena leaves its whole capacity to the container decoders. | The process is single-threaded by construction (`RLIMIT_NPROC` is 1 and neither `clone` nor `fork` is on the seccomp allowlist), and `PayloadBuffer::take` is called exactly once per buffer, on the only thread, before the service starts, so no second `&mut` can exist. |
 //! | 6 | `BumpArena` (`UnsafeCell` + `unsafe impl Sync` + `unsafe impl GlobalAlloc`) | `GlobalAlloc` is an unsafe trait returning raw pointers, and the arena it hands out has to be a `static` because there is no other memory. | The process is single-threaded by construction (row 5), so the non-atomic cursor cannot race; `alloc` returns either a pointer to an aligned, in-bounds, never-previously-returned sub-slice of the arena or null, which the caller must already handle; `dealloc` does nothing, which is always sound; and the cursor only ever moves forward, so two live allocations can never overlap. |
 
 #![no_std]
