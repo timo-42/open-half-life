@@ -296,25 +296,9 @@ fn door_offset(level: &Level, instance: &ohl_game::ModelInstance) -> Vec3 {
 /// Maps `ohl-game`'s raw `rendermode`/`renderamt`/`rendercolor` keyvalues
 /// onto the renderer's typed render properties.
 fn render_props(props: ohl_game::keyvalues::RenderProps) -> RenderProps {
-    let mode = match props.mode {
-        1 => RenderMode::Color,
-        2 => RenderMode::Texture,
-        3 => RenderMode::Glow,
-        4 => RenderMode::Solid,
-        5 => RenderMode::Additive,
-        _ => RenderMode::Normal,
-    };
-    // `renderamt` defaults to 0 when the key is absent, which for an opaque
-    // entity means "fully opaque", not "invisible".
-    let amount = if props.mode == 0 {
-        255
-    } else {
-        u8::try_from(props.amt.clamp(0, 255)).unwrap_or(255)
-    };
-    RenderProps {
-        mode,
-        amount,
-        color: props.color,
-        fx: 0,
-    }
+    // `renderamt` defaults to 0 when the key is absent, which for either of
+    // the documented opaque modes means "fully opaque", not "invisible";
+    // `RenderProps::from_entity` applies that rule (and the unknown-mode
+    // fallback) for both `Normal` and `Solid`.
+    RenderProps::from_entity(props.mode, props.amt, props.color, 0)
 }

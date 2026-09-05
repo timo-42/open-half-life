@@ -89,6 +89,14 @@ impl Game {
         self.level.missing_models
     }
 
+    /// How many brush-entity submodels this level references that could not
+    /// be built, and so are not drawn. Media-derived: report it as data,
+    /// never in a log line.
+    #[must_use]
+    pub fn unbuildable_submodel_count(&self) -> usize {
+        self.level.unbuildable_submodels
+    }
+
     /// Whether this level has usable collision hulls, i.e. whether the
     /// player walks rather than flies.
     #[must_use]

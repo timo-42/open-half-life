@@ -6,7 +6,10 @@ use ohl_formats::wad3::{self, Wad3};
 use crate::culling::{Aabb, Frustum};
 use crate::error::{Result, WorldError};
 use crate::geometry::{FaceGeometry, WorldVertex};
-use crate::lightmap::{LUXEL_SIZE, LightmapExtents, ShelfPacker, ShelfRect, lightmap_extents};
+use crate::lightmap::{
+    LUXEL_SIZE, LightRamp, LightRampTable, LightmapExtents, ShelfPacker, ShelfRect,
+    lightmap_extents,
+};
 use crate::sky::is_sky_texture;
 use crate::spawn::{PlayerSpawn, find_player_start};
 use crate::texture::{TextureImage, resolve, trimmed};
@@ -38,6 +41,11 @@ pub struct WorldBuildOptions<'a> {
     pub wads: &'a [&'a [u8]],
     /// BSP decoding limits handed to `ohl-formats`.
     pub limits: Limits,
+    /// The documented GoldSrc lighting ramp applied to every lightmap
+    /// sample as it is packed into the atlas (see [`LightRamp`]). Defaults
+    /// to the documented cvar defaults; pass [`LightRamp::identity`] to keep
+    /// the raw compiled luxels.
+    pub ramp: LightRamp,
 }
 
 /// One contiguous run of indices sharing a texture.
@@ -107,7 +115,8 @@ pub struct WorldModel {
     /// pass after [`Self::batches`] (see [`crate::is_liquid_texture`]).
     pub liquid_batches: Vec<DrawBatch>,
     /// The packed RGBA8 lightmap atlas at each style's compiled (unweighted)
-    /// intensity. Re-blend with [`Self::blend_lightmap`] to animate light
+    /// intensity, with [`WorldBuildOptions::ramp`] already applied to every
+    /// sample. Re-blend with [`Self::blend_lightmap`] to animate light
     /// styles.
     pub lightmap_atlas: TextureImage,
     /// World-space bounds of the worldspawn model.
@@ -171,6 +180,25 @@ pub(crate) struct PendingFace {
     pub(crate) is_liquid: bool,
 }
 
+/// The outcome of [`WorldModel::build_submodels`]: the submodels that built,
+/// each paired with the `"*N"` index it was requested under, and every index
+/// that failed with the reason it failed.
+#[derive(Default)]
+pub struct SubmodelSet {
+    /// `(index, model)` for each submodel that built.
+    pub models: Vec<(usize, WorldModel)>,
+    /// `(index, error)` for each submodel that did not.
+    pub failures: Vec<(usize, WorldError)>,
+}
+
+impl SubmodelSet {
+    /// How many requested submodels failed to build.
+    #[must_use]
+    pub fn failure_count(&self) -> usize {
+        self.failures.len()
+    }
+}
+
 impl WorldModel {
     /// Builds the worldspawn model (submodel 0) from `bsp`.
     ///
@@ -195,6 +223,42 @@ impl WorldModel {
         index: usize,
     ) -> Result<Self> {
         Self::build_at(bsp, options, index)
+    }
+
+    /// The number of models (worldspawn plus brush-entity submodels) the map
+    /// declares, i.e. the exclusive upper bound on a valid `"*N"` index.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorldError`] when the model lump fails to decode.
+    pub fn submodel_count(bsp: &Bsp<'_>, limits: &Limits) -> Result<usize> {
+        Ok(bsp.models(limits)?.len())
+    }
+
+    /// Builds each requested brush-entity submodel, *reporting* the ones that
+    /// fail instead of dropping them.
+    ///
+    /// A caller wiring brush entities into a scene has to decide what to do
+    /// with a submodel that will not build; silently skipping it makes an
+    /// entity that should be visible disappear with no diagnostic (the
+    /// tram car in the first chapter is exactly this failure mode). This
+    /// helper keeps the successful models paired with the index they were
+    /// requested under, and returns every failure as data so the caller can
+    /// count, log or fail on it.
+    #[must_use]
+    pub fn build_submodels(
+        bsp: &Bsp<'_>,
+        options: &WorldBuildOptions<'_>,
+        indices: &[usize],
+    ) -> SubmodelSet {
+        let mut set = SubmodelSet::default();
+        for &index in indices {
+            match Self::build_submodel(bsp, options, index) {
+                Ok(model) => set.models.push((index, model)),
+                Err(error) => set.failures.push((index, error)),
+            }
+        }
+        set
     }
 
     #[allow(clippy::too_many_lines)]
@@ -227,7 +291,11 @@ impl WorldModel {
         }
 
         let models = bsp.models(limits)?;
-        let model = models.get(submodel).ok_or(WorldError::NoWorldModel)?;
+        let model = models.get(submodel).ok_or(if submodel == 0 {
+            WorldError::NoWorldModel
+        } else {
+            WorldError::SubmodelOutOfRange
+        })?;
         let faces = bsp.faces(limits)?;
         let texinfos = bsp.texinfo(limits)?;
         let vertices = bsp.vertices(limits)?;
@@ -243,6 +311,12 @@ impl WorldModel {
             return Err(WorldError::IndexOutOfRange);
         }
 
+        // The documented lighting ramp is applied per light-style layer as
+        // each layer is packed, so `light_tiles` (and therefore
+        // `blend_lightmap`) already hold ramped samples: style blending is a
+        // weighted sum in the ramped space, matching the documented
+        // "0 = dark, 1 = compiled, 2 = double" intensity scale.
+        let ramp = options.ramp.table();
         let mut packer = ShelfPacker::new(LIGHTMAP_ATLAS_WIDTH, LIGHTMAP_ATLAS_MAX_HEIGHT, 1);
         let mut atlas_pixels: Vec<(ShelfRect, Vec<u8>)> = Vec::new();
         // Reserve a 1x1 opaque-white tile so fullbright faces have somewhere
@@ -318,9 +392,19 @@ impl WorldModel {
                 && texinfo.flags.get() & TEX_SPECIAL == 0;
 
             let placement = if lit {
-                place_lightmap(bsp, face, min_s, max_s, min_t, max_t, limits, &mut packer)
-                    .ok()
-                    .flatten()
+                place_lightmap(
+                    bsp,
+                    face,
+                    min_s,
+                    max_s,
+                    min_t,
+                    max_t,
+                    limits,
+                    &ramp,
+                    &mut packer,
+                )
+                .ok()
+                .flatten()
             } else {
                 None
             };
@@ -826,7 +910,8 @@ struct LightmapPlacement {
 }
 
 /// Computes a face's lightmap extents, reads every light-style sample block
-/// it declares, and packs one tile for them all in the atlas. Returns
+/// it declares, maps each sample through `ramp`, and packs one tile for them
+/// all in the atlas. Returns
 /// `Ok(None)` when the face's samples are unavailable or the atlas is full,
 /// in which case it renders fullbright.
 ///
@@ -843,6 +928,7 @@ fn place_lightmap(
     min_t: f32,
     max_t: f32,
     limits: &Limits,
+    ramp: &LightRampTable,
     packer: &mut ShelfPacker,
 ) -> Result<Option<LightmapPlacement>> {
     let extents = lightmap_extents(min_s, max_s, min_t, max_t)?;
@@ -877,7 +963,12 @@ fn place_lightmap(
         };
         let mut pixels = Vec::with_capacity(samples.len() * 4);
         for sample in samples {
-            pixels.extend_from_slice(&[sample.r, sample.g, sample.b, 255]);
+            pixels.extend_from_slice(&[
+                ramp.apply(sample.r),
+                ramp.apply(sample.g),
+                ramp.apply(sample.b),
+                255,
+            ]);
         }
         *layer = Some(pixels);
     }

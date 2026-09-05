@@ -126,6 +126,7 @@ fn run_bytes(bsp_bytes: &[u8], wad_bytes: &[Vec<u8>]) -> Result<(), &'static str
         &WorldBuildOptions {
             wads: &wad_slices,
             limits,
+            ..WorldBuildOptions::default()
         },
     )
     .map_err(|_| "the map could not be turned into a renderable world")?;

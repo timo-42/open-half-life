@@ -145,14 +145,29 @@ fn run_submodel_test() {
     let bytes = liquid_world_with_brick_submodel_bsp();
     let limits = BspLimits::default();
     let bsp = Bsp::parse(&bytes, &limits).expect("synthetic map parses");
-    let world = WorldModel::build(&bsp, &WorldBuildOptions { wads: &[], limits })
-        .expect("worldspawn (liquid-only) builds");
+    let world = WorldModel::build(
+        &bsp,
+        &WorldBuildOptions {
+            wads: &[],
+            limits,
+            ..WorldBuildOptions::default()
+        },
+    )
+    .expect("worldspawn (liquid-only) builds");
     assert!(
         world.batches.is_empty(),
         "worldspawn has no opaque geometry, only a liquid face"
     );
-    let submodel = WorldModel::build_submodel(&bsp, &WorldBuildOptions { wads: &[], limits }, 1)
-        .expect("brick submodel builds");
+    let submodel = WorldModel::build_submodel(
+        &bsp,
+        &WorldBuildOptions {
+            wads: &[],
+            limits,
+            ..WorldBuildOptions::default()
+        },
+        1,
+    )
+    .expect("brick submodel builds");
     assert!(
         !submodel.batches.is_empty(),
         "the submodel's brick face is ordinary opaque geometry"

@@ -178,6 +178,10 @@ pub struct Level {
     pub sprites: Vec<SpritePlacement>,
     /// How many referenced sprites were not published in the payload.
     pub missing_sprites: usize,
+    /// How many brush-entity submodels this map references but could not be
+    /// built. Published, rather than silently dropped, so an entity that
+    /// should be visible cannot disappear without a number to point at.
+    pub unbuildable_submodels: usize,
     /// The `info_player_start` this map spawns the player at.
     pub spawn: Option<PlayerSpawn>,
 }
@@ -218,6 +222,7 @@ impl Level {
         let options = WorldBuildOptions {
             wads: &wad_slices,
             limits,
+            ..WorldBuildOptions::default()
         };
 
         let world = WorldModel::build(&bsp, &options).map_err(|_| EngineError::WorldUnbuildable)?;
@@ -228,16 +233,24 @@ impl Level {
         // Only the submodels an entity actually references are built: a map
         // publishes one per brush entity and nothing else draws them.
         let mut submodels = BTreeMap::new();
+        // A submodel that will not build used to be dropped silently, so a
+        // brush entity that should be on screen could vanish with no
+        // diagnostic at all. Count them instead and publish the count.
+        let mut unbuildable_submodels = 0usize;
         for instance in ohl_game::brush::model_instances(&registry) {
             let index = instance.model_index;
             if index == 0 || submodels.contains_key(&index) {
                 continue;
             }
             let Ok(index_usize) = usize::try_from(index) else {
+                unbuildable_submodels += 1;
                 continue;
             };
-            if let Ok(model) = WorldModel::build_submodel(&bsp, &options, index_usize) {
-                submodels.insert(index, model);
+            match WorldModel::build_submodel(&bsp, &options, index_usize) {
+                Ok(model) => {
+                    submodels.insert(index, model);
+                }
+                Err(_) => unbuildable_submodels += 1,
             }
         }
 
@@ -266,6 +279,7 @@ impl Level {
             sprite_assets,
             sprites,
             missing_sprites,
+            unbuildable_submodels,
         })
     }
 

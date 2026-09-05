@@ -875,6 +875,40 @@ conventions":
   draw back-to-front by camera distance, batching consecutive same-frame
   instances into one texture upload.
 
+M3 fidelity, round 2 (`ohl-world`, `ohl-render`) addresses the first two
+findings of the round-1 headless-capture review:
+
+- Lighting ramp. Compiled lightmap samples were copied into the RGBA8 atlas
+  verbatim and multiplied raw in the shader, which left every frame 2.5-3x
+  too dark and spent only ~20-30 of the 256 available code values.
+  `ohl_world::LightRamp` (`{ texgamma, lightgamma, brightness, overbright }`,
+  defaulting to the documented cvar defaults) is now applied to every luxel
+  as its tile is packed, per light-style layer, so style blending is a
+  weighted sum in the ramped space and `world.wgsl` stays a plain multiply.
+  Exposed as `WorldBuildOptions::ramp`; `LightRamp::identity()` keeps the raw
+  samples. Sources and the exact composition: `docs/FORMAT_SOURCES.md`,
+  "Rendering conventions".
+- Invisible brush entities. `RenderProps::from_entity` builds render
+  properties from raw `rendermode`/`renderamt`/`rendercolor`/`renderfx`
+  keyvalues and ignores `renderamt` for the two documented opaque modes
+  (`Normal`, `Solid`), so the common mapper habit of leaving `renderamt` at
+  its `0` default on a mode-0 brush entity no longer renders it invisible.
+  `WorldModel::build_submodels` returns a `SubmodelSet` that pairs each
+  built submodel with its `"*N"` index and reports every failure as data
+  (`failure_count`), so a caller can no longer drop a submodel silently, and
+  `WorldError::SubmodelOutOfRange` distinguishes "this map declares no
+  geometry" from "this entity references a submodel the map does not have".
+  `ohl-engine`'s `Level` counts the submodels it could not build and
+  publishes the count as `Game::unbuildable_submodel_count`, alongside the
+  existing missing-model count.
+
+  Still open after this package: a `func_tracktrain`-class brush entity is
+  drawn at its raw `origin` keyvalue rather than at the `path_track` it is
+  targeted at, so the first chapter's tram car is built and drawn but ends
+  up outside the visible area. That is entity/mover logic in `ohl-game`, not
+  a renderer defect, and is left to the milestone that implements track
+  movers.
+
 Verified:
 
 - headless: the offscreen path renders the project-authored synthetic room
@@ -888,7 +922,12 @@ Verified:
   cleared background, `draw_world_submodel` blends a translucent
   (`RenderMode::Texture`) submodel visibly over the cleared background, and
   `draw_sprites` brightens the centre of the frame with a synthetic
-  `RenderMode::Additive` sprite.
+  `RenderMode::Additive` sprite. A further gated test
+  (`headless_opaque_submodel_render.rs`) renders a `func_train`-like
+  submodel (model index 1) built from `renderamt`-less mode-0 and mode-4
+  keyvalues and asserts it occludes the darker worldspawn surface behind
+  it, with an explicitly translucent (mode 2, `renderamt` 0) entity as the
+  negative control.
 - on screen: **not verified** in the development environment used for this
   package, which has no display server. `--dev-bsp` was exercised there only
   as far as loading the map and reporting, through the sanitized error path,

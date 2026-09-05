@@ -210,7 +210,14 @@ fn exercise(bytes: &[u8]) {
     let Ok(bsp) = Bsp::parse(bytes, &limits) else {
         return;
     };
-    let Ok(model) = WorldModel::build(&bsp, &WorldBuildOptions { wads: &[], limits }) else {
+    let Ok(model) = WorldModel::build(
+        &bsp,
+        &WorldBuildOptions {
+            wads: &[],
+            limits,
+            ..WorldBuildOptions::default()
+        },
+    ) else {
         return;
     };
 

@@ -126,6 +126,7 @@ fn load_world(bsp_path: &Path, wad_paths: &[PathBuf]) -> Result<WorldModel, &'st
         &WorldBuildOptions {
             wads: &wad_slices,
             limits,
+            ..WorldBuildOptions::default()
         },
     )
     .map_err(|_| "the map could not be turned into a renderable world")

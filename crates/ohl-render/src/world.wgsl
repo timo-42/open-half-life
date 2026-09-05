@@ -1,10 +1,14 @@
 // World-surface shader: diffuse texture modulated by the baked lightmap.
 //
-// GoldSrc composites lighting in gamma space with no overbright multiplier,
-// so the baseline here is a plain product of the two samples. When the
-// render target is an sRGB format the hardware will encode the result on
-// write, so the shader converts back to linear first to keep the on-screen
-// result identical to the non-sRGB path.
+// The documented GoldSrc lighting ramp (texgamma/lightgamma/brightness/
+// overbright) is applied to the lightmap samples at atlas-build time, in
+// `ohl_world::LightRamp`, so both operands here already live in the same
+// gamma space and this stays a plain product of the two samples. Doing the
+// ramp upstream is deliberate: an 8-bit atlas of raw luxels spends only
+// ~20-30 code values, which no post-hoc framebuffer `pow()` can recover.
+// When the render target is an sRGB format the hardware will encode the
+// result on write, so the shader converts back to linear first to keep the
+// on-screen result identical to the non-sRGB path.
 
 struct Camera {
     view_projection: mat4x4<f32>,
