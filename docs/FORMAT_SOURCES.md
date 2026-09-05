@@ -1622,26 +1622,47 @@ search-engine result summaries, since `twhl.info` and
 environment (same limitation already recorded for "Entity keyvalues and map
 logic" and "Monster AI behaviour" above).
 
-- **Health and attack-damage numbers could not be independently verified.**
-  A dedicated research pass searched for the vanilla retail Half-Life
-  `skill.cfg` (the public, plain-text, widely-mirrored per-difficulty cvar
-  dump `ohl_formats::skill_cfg` already parses; see "Game text formats"
-  above) and found only *modified* copies: Sven Co-op's fork, at least one
-  other total-conversion mod's config, and a GameBanana upload
-  (gamebanana.com/scripts/raw/7885) whose own duplicate cvar sections
-  disagreed with each other. Independent search results for `sk_hgrunt_health`
-  alone returned three mutually contradictory value sets from unidentified
-  sources. No single source both claims to be, and is corroborated as,
-  vanilla retail `skill.cfg`. Consequently every health and melee/ranged
-  damage value in `crates/ohl-ai/src/monsters/table.rs`'s `spec_for` rows
-  is a **black-box placeholder** (`TODO(black-box)`), not a citation,
-  pending observation against legally obtained retail software. The
-  `sk_<subject>_<property><1|2|3>` cvar-naming *convention* itself (subject
+- **Health and primary melee/ranged attack-damage numbers**, cited to each
+  monster's own TWHL wiki page, `https://twhl.info/wiki/page/<entity>`
+  (reached via search-result snippets, since twhl.info returns HTTP 403 to
+  direct fetches from this environment). Values are `[easy, medium, hard]`
+  unless the page gives a single, non-skill-scaled number. Reach/range for
+  most monsters is not published by these pages and remains
+  `TODO(black-box)`, per `AttackSpec`'s own doc comment.
+
+  | monster (`TWHL:<entity>`) | health | melee | ranged | other published numbers (see `table.rs`/`brains.rs` constants) |
+  | --- | --- | --- | --- | --- |
+  | `Headcrab` | 10/10/20 | bite 5/10/10 | — | — |
+  | `Zombie` | 50/50/100 | slash 10/20/20 | — | both-hands swing 25/40/40 (`ZOMBIE_BOTH_HANDS_DAMAGE`) |
+  | `Houndeye` | 20/20/30 | — | blast 10/15/15, radius 192 (`HOUNDEYE_BLAST_RADIUS`) | halved without line of sight (`HOUNDEYE_BLAST_NO_LOS_MULTIPLIER`); squad blast bonus +10%/member, capped +30% (`brains::HOUNDEYE_PACK_BONUS_PER_MEMBER`/`_CAP`) |
+  | `Bullsquid` | 40/40/120 | bite 15/25/25 | spit 10/10/15, unlimited range (`f32::INFINITY`) | tail whip 25/35/35 (`BULLSQUID_WHIP_DAMAGE`) |
+  | `Alien_Slave` (vortigaunt) | 30/30/60 | claw 8/10/10 | zap 10/10/15 | rake 25 flat (`ALIEN_SLAVE_RAKE_DAMAGE`); flees when wounded and alone (not separately modeled; the crate's general flee path applies) |
+  | `Alien_Grunt` | 60/90/120 | punch 10/20/20 | hornet gun 4/5/8 | armour absorbs 20 flat per hit (`AGRUNT_ARMOR_ABSORPTION`) |
+  | `Human_Grunt` | 50/50/80 | kick 5/10/10 | MP5 3/4/5 | shotgun 3x5/5x5/6x5 pellets (`HGRUNT_SHOTGUN_PELLET_DAMAGE`/`_PELLET_COUNT`); grenade 100 flat (`HGRUNT_GRENADE_DAMAGE`); squads with flanking (`brains::GRUNT_FLANK`) |
+  | `Barney` | 35 (flat) | — | pistol 5/5/8 | — |
+  | `Scientist` | 20 (flat) | — | — | heals 25 HP within 128 units on a 60 s cooldown when target is below half health (`brains::SCIENTIST_HEAL_AMOUNT`/`_RANGE`/`_COOLDOWN`/`_THRESHOLD_FRACTION`) |
+  | `Turret` | 50/50/60 | — | 8/10/10 | 360-degree vision, 15 s max sleep, 30 degrees/0.1 s turn rate (`TURRET_MAX_SLEEP_SECONDS`/`_TURN_RATE_DEGREES_PER_SECOND`) |
+  | `Miniturret` | 40/40/50 | — | 5/5/8 | — |
+  | `Sentry` | 40/40/50 | — | 3/4/5 | — |
+  | `Ichthyosaur` | 200/200/400 | bite 20/35/50 | — | — |
+  | `Leech` | 2 (flat) | bite 2 (flat) | — | — |
+  | `Gargantua` | 800/800/1000 | melee 10/30/30 | flame 3/5/5 | ground-stomp 50/100/100 (`GARG_STOMP_DAMAGE`); published immune to all but energy/crush/mortar/blast damage — not modeled, since `ohl-ai`'s minimal `DamageEvent` carries no damage-type bitflags yet (see `crate::damage`'s unification note) |
+  | `Tentacle` | 75 (flat; retreats rather than dying) | touch 20, second touch level 25 (`TENTACLE_TOUCH2_DAMAGE`), reach ~336 | — | beak strike 200 flat (`TENTACLE_BEAK_DAMAGE`); beak heights +0/+256/+448/+640 (`TENTACLE_BEAK_HEIGHTS`), not yet wired into height-based hit detection |
+
+  The `sk_<subject>_<property><1|2|3>` cvar-naming *convention* (subject
   stems `headcrab`, `zombie`, `houndeye`, `bullsquid`, `islave`, `agrunt`,
   `hgrunt`, `barney`, `scientist`, `turret`, `miniturret`, `sentry`,
-  `ichthyosaur`, `leech`, `garg`, `tentacle`) is real, public, and already
-  implemented by `ohl_formats::skill_cfg` and `ohl_campaign::SkillTable`; only
-  the numeric values are unconfirmed.
+  `ichthyosaur`, `leech`, `garg`, `tentacle`) is separately public and
+  already implemented by `ohl_formats::skill_cfg` and
+  `ohl_campaign::SkillTable`; `table::SkillLookup` uses that same convention
+  so a caller's own parsed `skill.cfg` can override any value above per map,
+  but the table values themselves come from the TWHL pages, not from a
+  `skill.cfg` mirror. (An earlier research pass had instead searched for a
+  vanilla retail `skill.cfg` file itself and found only *modified* copies —
+  Sven Co-op's fork, another unidentified total-conversion mod, and a
+  GameBanana upload, gamebanana.com/scripts/raw/7885, whose own duplicate
+  cvar sections disagreed with each other — so no `skill.cfg` mirror was
+  used as a source.)
 - Blood color per monster family (red for humans/allies, yellow for
   headcrab/zombie, green for most other aliens, none for machines) is widely
   documented modding/mapping convention (the `BloodColor` FGD field on
@@ -1671,11 +1692,14 @@ logic" and "Monster AI behaviour" above).
   source for vanilla behaviour here.)
 
 Everything else under `crates/ohl-ai/src/monsters` — `MonsterBrain`'s
-schedule selection per kind, the new schedules (houndeye pack blast,
-bullsquid spit, alien slave zap, grunt suppress/flank/grenade, barney/
-scientist follow, scientist heal, turret deploy/retract/track, tentacle
-sound-driven strikes, gargantua flame/stomp), the squad-blast-bonus formula,
-the heal cooldown/threshold/range/amount, the gib-overkill multiplier, and
-the `Spawner` bookkeeping shape — is this project's own design, written only
-from the monster-level behavioural descriptions cited above and in "Monster
-AI behaviour"; no SDK schedule, AI routine or damage table was consulted.
+schedule selection per kind, the new schedules themselves (houndeye pack
+blast, bullsquid spit, alien slave zap, grunt suppress/flank/grenade,
+barney/scientist follow, scientist heal, turret deploy/retract/track,
+tentacle sound-driven strikes, gargantua flame/stomp), the gib-overkill
+multiplier, and the `Spawner` bookkeeping shape — is this project's own
+design, written only from the monster-level behavioural descriptions cited
+above and in "Monster AI behaviour"; no SDK schedule, AI routine or damage
+table was consulted. (The squad-blast-bonus formula and the heal
+cooldown/threshold/range/amount are *not* in this bucket — their numbers are
+cited in the table above; only the fact that they run as a `Task`-based
+schedule at all is project-authored.)

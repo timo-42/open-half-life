@@ -1403,11 +1403,14 @@ the sole place `Actor::health` is decremented today, guaranteeing exactly one
 `Died` per kill, a corpse/gib decision on overkill, `Fade Corpse`, and the
 eleven-value `TriggerCondition`/`TriggerTarget` pair; and `spawner::Spawner`,
 `monstermaker`'s `monstercount`/`delay`/`m_imaxlivechildren`/`Start On`/
-`Cyclic` semantics. **Every per-monster health and attack-damage number is a
-black-box placeholder**, not a citation — see `docs/FORMAT_SOURCES.md`,
-"Monster definitions", for the research pass that found only
-non-corroborated, mutually-disagreeing modified `skill.cfg` copies and no
-verifiable vanilla source.
+`Cyclic` semantics. **Every per-monster health and primary melee/ranged
+attack-damage number is cited to that monster's own TWHL wiki page**
+(`https://twhl.info/wiki/page/<entity>`); see `docs/FORMAT_SOURCES.md`,
+"Monster definitions", for the per-row citation table, including the
+houndeye's squad-blast-bonus numbers and the scientist's heal
+amount/cooldown/range/threshold. Attack reach/range for most monsters, view
+cones, look distances, movement speeds and every schedule's own timing
+remain `TODO(black-box)`.
 
 `monsters::integration` forward-declares the two minimal seams the concurrent
 node-graph (7.6) and projectile/explosion (7.3) packages will fill:
