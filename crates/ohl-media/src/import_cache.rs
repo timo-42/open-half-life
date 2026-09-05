@@ -495,8 +495,16 @@ fn canonicalize_existing_prefix(path: &Path) -> Result<PathBuf, ImportCacheError
 /// is returned unchanged, because there is no plain equivalent for it to
 /// fall back to. On every other target this is the identity function: there
 /// is no verbatim path form to strip.
+///
+/// This is `pub` (rather than `pub(crate)`) solely so this crate's own
+/// integration tests under `tests/`, which compile as a separate crate and
+/// so cannot see `pub(crate)` items, can canonicalize a path the same way
+/// production code does before comparing it against one produced by
+/// [`CacheLayout`]. It is deliberately not re-exported from the crate root
+/// and is not part of the crate's supported public API.
+#[doc(hidden)]
 #[cfg(windows)]
-fn strip_windows_verbatim_disk_prefix(path: PathBuf) -> PathBuf {
+pub fn strip_windows_verbatim_disk_prefix(path: PathBuf) -> PathBuf {
     use std::ffi::OsString;
     use std::path::Prefix;
 
@@ -517,8 +525,9 @@ fn strip_windows_verbatim_disk_prefix(path: PathBuf) -> PathBuf {
     PathBuf::from(rebuilt)
 }
 
+#[doc(hidden)]
 #[cfg(not(windows))]
-fn strip_windows_verbatim_disk_prefix(path: PathBuf) -> PathBuf {
+pub fn strip_windows_verbatim_disk_prefix(path: PathBuf) -> PathBuf {
     path
 }
 
