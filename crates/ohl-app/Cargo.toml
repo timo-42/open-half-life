@@ -1,0 +1,21 @@
+[package]
+name = "ohl-app"
+description = "Open Half-Life Rust composition-root binary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "open-half-life"
+path = "src/main.rs"
+
+[dependencies]
+ohl-core = { path = "../ohl-core", version = "=0.1.0", features = ["std"] }
+clap = { workspace = true, features = ["derive"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["fmt"] }
+
+[lints]
+workspace = true

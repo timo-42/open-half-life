@@ -1,5 +1,30 @@
 # Third-party software
 
+## Rust crates
+
+The Rust migration workspace (`Cargo.toml`, `crates/`, `xtask/`; see
+`.plan/rust-architecture-r1.md`) depends only on crates.io packages; it links
+no C libraries and defines no FFI boundary. `Cargo.lock` is the exact,
+reproducible inventory of every dependency (direct and transitive) actually
+built; `cargo deny check licenses` (configured in `deny.toml`) enforces the
+license allow list in CI and is the authoritative gate against copyleft
+licenses (GPL/LGPL/AGPL are denied by omission).
+
+Direct dependencies at R2 (M0-rs), each MIT or MIT/Apache-2.0 dual-licensed:
+
+- `thiserror` (MIT OR Apache-2.0) -- sanitized diagnostic derive, `ohl-core`
+- `sha2` (MIT OR Apache-2.0) -- SHA-256, `ohl-core`
+- `clap` (MIT OR Apache-2.0) -- CLI argument parsing, `ohl-app`
+- `tracing` / `tracing-subscriber` (MIT) -- structured logging, `ohl-app`
+- `toml` (MIT OR Apache-2.0) -- `Cargo.toml` parsing, `xtask`
+- `tempfile` (MIT OR Apache-2.0) -- temporary directories in `xtask` tests
+
+As later packages (R3+) add `ohl-iso9660`/`ohl-udf` (`hadris-iso`/`hadris-udf`,
+pinned at exact `2.3.0`), the freestanding parser worker (`rustix`,
+`seccompiler`, `landlock`), and the render/audio/input stack (`wgpu`, `winit`,
+`cpal`/`rodio`), this section will be extended; `cargo deny check` remains the
+enforced, up-to-date source of truth between updates to this file.
+
 ## libudfread 1.2.0
 
 Open Half-Life uses VideoLAN's libudfread for read-only access to UDF image

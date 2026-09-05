@@ -104,3 +104,100 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build-sanitize --output-on-failure
+
+  # --- Rust workspace (R2/M0-rs bootstrap; see .plan/rust-architecture-r1.md) ---
+  # The C++ tree above stays authoritative for M1 until Rust reaches parity;
+  # both build systems and both policy checkers run in CI during the
+  # transition (.plan/rust-architecture-r1.md section 4).
+
+  rust-fmt:
+    name: Rust fmt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+  rust-policy:
+    name: Rust policy and crate graph
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      OHL_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check tracked-file policy
+        run: cargo xtask policy
+
+      - name: Check crate dependency graph
+        run: cargo xtask graph
+
+  rust-clippy:
+    name: Rust clippy (${{ matrix.name }})
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: Linux x64
+          - os: windows-latest
+            name: Windows x64
+          - os: macos-latest
+            name: macOS Apple Silicon
+    runs-on: ${{ matrix.os }}
+    env:
+      OHL_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  rust-test:
+    name: Rust test (${{ matrix.name }})
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: Linux x64
+          - os: windows-latest
+            name: Windows x64
+          - os: macos-latest
+            name: macOS Apple Silicon
+    runs-on: ${{ matrix.os }}
+    env:
+      OHL_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - name: Test
+        run: cargo nextest run --workspace
+
+      - name: Doctest
+        run: cargo test --workspace --doc
+
+  rust-deny:
+    name: Rust cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: cargo-deny check
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses bans sources advisories

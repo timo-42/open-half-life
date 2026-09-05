@@ -1,0 +1,22 @@
+[package]
+name = "ohl-core"
+description = "Sanitized diagnostics, bounded arithmetic, and SHA-256 shared by the Open Half-Life Rust port"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ohl_core"
+
+[features]
+default = []
+std = []
+
+[dependencies]
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

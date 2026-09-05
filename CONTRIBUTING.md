@@ -27,5 +27,22 @@ cmake -P cmake/CheckRepository.cmake
 The policy check examines tracked and staged files, so run it after staging.
 It is a backstop, not permission to add game-derived data.
 
+For changes under the Rust workspace (`Cargo.toml`, `crates/`, `xtask/`), also
+run:
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo nextest run --workspace   # or: cargo test --workspace
+cargo deny check
+cargo xtask policy
+cargo xtask graph
+```
+
+`cargo xtask policy` reimplements `cmake/CheckRepository.cmake`'s rules for
+the Rust tree; `cargo xtask graph` enforces the crate dependency edges from
+`.plan/rust-architecture-r1.md`. Both build systems currently coexist (see
+`README.md`); keep both green until the C++ tree is removed at Rust M1 parity.
+
 Document every new dependency, its version, source, and license in
 `THIRD_PARTY_NOTICES.md`.
