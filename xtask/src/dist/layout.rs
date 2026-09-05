@@ -104,6 +104,12 @@ fn copy_into(source: &Path, destination: &Path) -> io::Result<()> {
 
 /// Marks `path` executable (mode `0o755`) on Unix; a no-op elsewhere, since
 /// Windows has no such bit and a `.exe` extension is what marks it runnable.
+///
+/// Only ever fails on Unix, so the non-Unix variant returns `()` rather than
+/// an always-`Ok` `Result` (which `clippy::unnecessary_wraps` rightly
+/// flags, the same tradeoff `worker_image.rs`'s
+/// `normalize_directory_permissions` makes); call sites are `cfg`-gated the
+/// same way to still propagate a Unix failure with `?`.
 #[cfg(unix)]
 fn mark_executable(path: &Path) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
@@ -111,12 +117,11 @@ fn mark_executable(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(unix))]
-fn mark_executable(_path: &Path) -> io::Result<()> {
-    Ok(())
-}
+fn mark_executable(_path: &Path) {}
 
 /// Forces a created directory to mode `0o755` (not group- or other-writable)
-/// on Unix; a no-op elsewhere.
+/// on Unix; a no-op elsewhere. See [`mark_executable`] for why the non-Unix
+/// variant returns `()` instead of an always-`Ok` `Result`.
 #[cfg(unix)]
 fn mark_directory_not_group_writable(path: &Path) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
@@ -124,9 +129,7 @@ fn mark_directory_not_group_writable(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(unix))]
-fn mark_directory_not_group_writable(_path: &Path) -> io::Result<()> {
-    Ok(())
-}
+fn mark_directory_not_group_writable(_path: &Path) {}
 
 /// Assembles the release layout under `output_root`, returning the path of
 /// the created `open-half-life-<version>-<triple>` directory.
@@ -143,19 +146,36 @@ pub fn assemble(inputs: &DistInputs<'_>, output_root: &Path) -> io::Result<PathB
 
     let bin_dir = dist_dir.join("bin");
     std::fs::create_dir_all(&bin_dir)?;
+    #[cfg(unix)]
     mark_directory_not_group_writable(&bin_dir)?;
+    #[cfg(not(unix))]
+    mark_directory_not_group_writable(&bin_dir);
     let installed_binary = bin_dir.join(inputs.binary_file_name);
     copy_into(inputs.binary_path, &installed_binary)?;
+    #[cfg(unix)]
     mark_executable(&installed_binary)?;
+    #[cfg(not(unix))]
+    mark_executable(&installed_binary);
 
     if let Some(worker_image_path) = inputs.worker_image_path {
         let libexec_dir = dist_dir.join("libexec").join("open-half-life");
         std::fs::create_dir_all(&libexec_dir)?;
-        mark_directory_not_group_writable(dist_dir.join("libexec").as_path())?;
-        mark_directory_not_group_writable(&libexec_dir)?;
+        #[cfg(unix)]
+        {
+            mark_directory_not_group_writable(dist_dir.join("libexec").as_path())?;
+            mark_directory_not_group_writable(&libexec_dir)?;
+        }
+        #[cfg(not(unix))]
+        {
+            mark_directory_not_group_writable(dist_dir.join("libexec").as_path());
+            mark_directory_not_group_writable(&libexec_dir);
+        }
         let installed_worker = libexec_dir.join(WORKER_IMAGE_FILE_NAME);
         copy_into(worker_image_path, &installed_worker)?;
+        #[cfg(unix)]
         mark_executable(&installed_worker)?;
+        #[cfg(not(unix))]
+        mark_executable(&installed_worker);
     }
 
     copy_into(inputs.license_path, &dist_dir.join("LICENSE"))?;
