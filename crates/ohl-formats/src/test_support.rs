@@ -470,3 +470,364 @@ impl Wad3Builder {
         out
     }
 }
+
+// ---------------------------------------------------------------------
+// MDL v10 / SPR fixtures
+// ---------------------------------------------------------------------
+
+/// Encodes a name into a fixed, NUL-padded field of any size (a generalized
+/// [`fixed_name`] for the 32/64-byte name fields used by MDL v10).
+#[must_use]
+pub fn fixed_name_sized<const N: usize>(name: &str) -> [u8; N] {
+    let mut out = [0u8; N];
+    let bytes = name.as_bytes();
+    let len = bytes.len().min(N);
+    out[..len].copy_from_slice(&bytes[..len]);
+    out
+}
+
+/// Byte offsets and sizes of every section in [`build_minimal_mdl10`]'s
+/// output, so tests can locate and corrupt one field at a time without
+/// re-deriving this layout by hand.
+#[derive(Debug, Clone, Copy)]
+pub struct MinimalMdl10Layout {
+    pub header_size: usize,
+    pub bones_offset: usize,
+    pub bones_size: usize,
+    pub textures_offset: usize,
+    pub texture_data_offset: usize,
+    pub texture_data_size: usize,
+    pub skin_refs_offset: usize,
+    pub sequences_offset: usize,
+    pub body_parts_offset: usize,
+    pub models_offset: usize,
+    pub meshes_offset: usize,
+    pub verts_offset: usize,
+    pub vert_bones_offset: usize,
+    pub norms_offset: usize,
+    pub norm_bones_offset: usize,
+    pub tricommands_offset: usize,
+    pub anim_data_offset: usize,
+    pub total_len: usize,
+}
+
+/// Builds a minimal, well-formed, synthetic MDL v10 file: 2 bones (a root
+/// and one child), 1 texture (16x16), 1 body part containing 1 model
+/// containing 1 mesh (a 4-trivert / 2-triangle strip over a synthetic
+/// quad), 1 sequence with 2 frames (bone 0's X position channel carries a
+/// real 2-value compressed animation run; every other channel is the
+/// bind-pose default), and no bone controllers, hitboxes, sequence groups,
+/// attachments, events, or transitions.
+///
+/// Every byte here is authored by this project for testing only; see
+/// `docs/CLEAN_ROOM.md`.
+#[must_use]
+#[allow(clippy::too_many_lines)]
+pub fn build_minimal_mdl10() -> (Vec<u8>, MinimalMdl10Layout) {
+    const HEADER_SIZE: usize = 244;
+    const BONE_SIZE: usize = 112;
+    const TEXTURE_SIZE: usize = 80;
+    const SEQUENCE_SIZE: usize = 176;
+    const BODYPART_SIZE: usize = 76;
+    const MODEL_SIZE: usize = 112;
+    const MESH_SIZE: usize = 20;
+    const VEC3_SIZE: usize = 12;
+    const TRIVERT_SIZE: usize = 8;
+
+    let tex_width = 16u32;
+    let tex_height = 16u32;
+    let palette = synthetic_palette();
+    let pixel_count = (tex_width * tex_height) as usize;
+    let texture_data_size = pixel_count + PALETTE_LEN * 3;
+
+    let bones_offset = HEADER_SIZE;
+    let bones_size = BONE_SIZE * 2;
+    let textures_offset = bones_offset + bones_size;
+    let texture_data_offset = textures_offset + TEXTURE_SIZE;
+    let skin_refs_offset = texture_data_offset + texture_data_size;
+    let skin_refs_size = 2; // 1 family * 1 ref * 2 bytes
+    let sequences_offset = skin_refs_offset + skin_refs_size;
+    let body_parts_offset = sequences_offset + SEQUENCE_SIZE;
+    let models_offset = body_parts_offset + BODYPART_SIZE;
+    let meshes_offset = models_offset + MODEL_SIZE;
+    let verts_offset = meshes_offset + MESH_SIZE;
+    let verts_size = VEC3_SIZE * 4;
+    let vert_bones_offset = verts_offset + verts_size;
+    let vert_bones_size = 4;
+    let norms_offset = vert_bones_offset + vert_bones_size;
+    let norms_size = VEC3_SIZE;
+    let norm_bones_offset = norms_offset + norms_size;
+    let norm_bones_size = 1;
+    let tricommands_offset = norm_bones_offset + norm_bones_size;
+    let tricommands_size = 4 + TRIVERT_SIZE * 4;
+    let anim_data_offset = tricommands_offset + tricommands_size;
+    // 2 bones * 12-byte offset records, then one 6-byte compressed run
+    // (2-byte valid/total header + 2 `i16` values) for bone 0's slot 0.
+    let anim_data_size = 12 * 2 + 6;
+    let total_len = anim_data_offset + anim_data_size;
+
+    let mut out = Vec::with_capacity(total_len);
+
+    // --- Header (patched with real offsets below; write zeros first). ---
+    out.extend_from_slice(b"IDST");
+    push_i32(&mut out, 10); // version
+    out.extend_from_slice(&fixed_name_sized::<64>("minimal"));
+    push_u32(&mut out, u32::try_from(total_len).unwrap()); // length
+    for _ in 0..3 {
+        push_f32(&mut out, 0.0); // eyeposition
+    }
+    for _ in 0..12 {
+        push_f32(&mut out, 0.0); // min, max, bbmin, bbmax
+    }
+    push_i32(&mut out, 0); // flags
+    push_u32(&mut out, 2); // num_bones
+    push_u32(&mut out, u32::try_from(bones_offset).unwrap());
+    push_u32(&mut out, 0); // num_bone_controllers
+    push_u32(&mut out, u32::try_from(textures_offset).unwrap()); // bone_controller_index (count 0, any in-bounds value)
+    push_u32(&mut out, 0); // num_hitboxes
+    push_u32(&mut out, u32::try_from(textures_offset).unwrap()); // hitbox_index
+    push_u32(&mut out, 1); // num_seq
+    push_u32(&mut out, u32::try_from(sequences_offset).unwrap());
+    push_u32(&mut out, 0); // num_seq_groups
+    push_u32(&mut out, u32::try_from(sequences_offset).unwrap()); // seq_group_index
+    push_u32(&mut out, 1); // num_textures
+    push_u32(&mut out, u32::try_from(textures_offset).unwrap());
+    push_u32(&mut out, u32::try_from(texture_data_offset).unwrap()); // texture_data_index
+    push_u32(&mut out, 1); // num_skin_ref
+    push_u32(&mut out, 1); // num_skin_families
+    push_u32(&mut out, u32::try_from(skin_refs_offset).unwrap());
+    push_u32(&mut out, 1); // num_body_parts
+    push_u32(&mut out, u32::try_from(body_parts_offset).unwrap());
+    push_u32(&mut out, 0); // num_attachments
+    push_u32(&mut out, u32::try_from(anim_data_offset).unwrap()); // attachment_index
+    push_i32(&mut out, 0); // sound_table
+    push_i32(&mut out, 0); // sound_index
+    push_i32(&mut out, 0); // sound_groups
+    push_i32(&mut out, 0); // sound_group_index
+    push_u32(&mut out, 0); // num_transitions
+    push_u32(&mut out, u32::try_from(anim_data_offset).unwrap()); // transition_index
+    assert_eq!(out.len(), HEADER_SIZE);
+
+    // --- Bones ---
+    // Bone 0: root.
+    out.extend_from_slice(&fixed_name_sized::<32>("root"));
+    push_i32(&mut out, -1); // parent
+    push_i32(&mut out, 0); // flags
+    for _ in 0..6 {
+        push_i32(&mut out, -1); // bonecontroller
+    }
+    for _ in 0..6 {
+        push_f32(&mut out, 0.0); // value
+    }
+    for _ in 0..6 {
+        push_f32(&mut out, 1.0); // scale
+    }
+    // Bone 1: child of bone 0.
+    out.extend_from_slice(&fixed_name_sized::<32>("child"));
+    push_i32(&mut out, 0); // parent
+    push_i32(&mut out, 0); // flags
+    for _ in 0..6 {
+        push_i32(&mut out, -1);
+    }
+    for _ in 0..6 {
+        push_f32(&mut out, 0.0);
+    }
+    for _ in 0..6 {
+        push_f32(&mut out, 1.0);
+    }
+    assert_eq!(out.len(), textures_offset);
+
+    // --- Texture ---
+    out.extend_from_slice(&fixed_name_sized::<64>("wall"));
+    push_u32(&mut out, 0); // flags
+    push_u32(&mut out, tex_width);
+    push_u32(&mut out, tex_height);
+    push_u32(&mut out, u32::try_from(texture_data_offset).unwrap());
+    assert_eq!(out.len(), texture_data_offset);
+    out.extend(core::iter::repeat_n(7u8, pixel_count));
+    for entry in &palette {
+        out.push(entry.r);
+        out.push(entry.g);
+        out.push(entry.b);
+    }
+    assert_eq!(out.len(), skin_refs_offset);
+
+    // --- Skin refs (1 family x 1 ref) ---
+    push_i16(&mut out, 0);
+    assert_eq!(out.len(), sequences_offset);
+
+    // --- Sequence ---
+    out.extend_from_slice(&fixed_name_sized::<32>("idle"));
+    push_f32(&mut out, 10.0); // fps
+    push_i32(&mut out, 0); // flags
+    push_i32(&mut out, 0); // activity
+    push_i32(&mut out, 0); // actweight
+    push_u32(&mut out, 0); // num_events
+    push_u32(&mut out, u32::try_from(anim_data_offset).unwrap()); // event_index
+    push_u32(&mut out, 2); // num_frames
+    push_i32(&mut out, 0); // num_pivots
+    push_i32(&mut out, 0); // pivot_index
+    push_i32(&mut out, 0); // motion_type
+    push_i32(&mut out, 0); // motion_bone
+    for _ in 0..3 {
+        push_f32(&mut out, 0.0); // linear_movement
+    }
+    push_i32(&mut out, 0); // automove_pos_index
+    push_i32(&mut out, 0); // automove_angle_index
+    for _ in 0..6 {
+        push_f32(&mut out, 0.0); // bbmin, bbmax
+    }
+    push_u32(&mut out, 1); // num_blends
+    push_u32(&mut out, u32::try_from(anim_data_offset).unwrap()); // anim_index
+    push_i32(&mut out, 0);
+    push_i32(&mut out, 0); // blend_type[2]
+    push_f32(&mut out, 0.0);
+    push_f32(&mut out, 0.0); // blend_start[2]
+    push_f32(&mut out, 0.0);
+    push_f32(&mut out, 0.0); // blend_end[2]
+    push_i32(&mut out, 0); // blend_parent
+    push_i32(&mut out, 0); // seq_group
+    push_i32(&mut out, 1); // entry_node
+    push_i32(&mut out, 1); // exit_node
+    push_i32(&mut out, 0); // node_flags
+    push_i32(&mut out, 0); // next_seq
+    assert_eq!(out.len(), body_parts_offset);
+
+    // --- Body part ---
+    out.extend_from_slice(&fixed_name_sized::<64>("body"));
+    push_u32(&mut out, 1); // num_models
+    push_i32(&mut out, 0); // base
+    push_u32(&mut out, u32::try_from(models_offset).unwrap());
+    assert_eq!(out.len(), models_offset);
+
+    // --- Model ---
+    out.extend_from_slice(&fixed_name_sized::<64>("model"));
+    push_i32(&mut out, 0); // type
+    push_f32(&mut out, 0.0); // bounding_radius
+    push_u32(&mut out, 1); // num_mesh
+    push_u32(&mut out, u32::try_from(meshes_offset).unwrap());
+    push_u32(&mut out, 4); // num_verts
+    push_u32(&mut out, u32::try_from(vert_bones_offset).unwrap());
+    push_u32(&mut out, u32::try_from(verts_offset).unwrap());
+    push_u32(&mut out, 1); // num_norms
+    push_u32(&mut out, u32::try_from(norm_bones_offset).unwrap());
+    push_u32(&mut out, u32::try_from(norms_offset).unwrap());
+    push_i32(&mut out, 0); // num_groups
+    push_i32(&mut out, 0); // group_index
+    assert_eq!(out.len(), meshes_offset);
+
+    // --- Mesh (a 4-trivert triangle strip: 2 triangles) ---
+    push_i32(&mut out, 4); // num_tris (trivert count, per the documented field)
+    push_u32(&mut out, u32::try_from(tricommands_offset).unwrap());
+    push_i32(&mut out, 0); // skin_ref
+    push_i32(&mut out, 0); // num_norms (unused)
+    push_u32(&mut out, 0); // norm_index (unused)
+    assert_eq!(out.len(), verts_offset);
+
+    // --- Verts: a unit quad ---
+    for (x, y) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
+        push_f32(&mut out, x);
+        push_f32(&mut out, y);
+        push_f32(&mut out, 0.0);
+    }
+    assert_eq!(out.len(), vert_bones_offset);
+    out.extend_from_slice(&[0u8; 4]);
+    assert_eq!(out.len(), norms_offset);
+
+    // --- Norms ---
+    push_f32(&mut out, 0.0);
+    push_f32(&mut out, 0.0);
+    push_f32(&mut out, 1.0);
+    assert_eq!(out.len(), norm_bones_offset);
+    out.push(0);
+    assert_eq!(out.len(), tricommands_offset);
+
+    // --- Trivert command stream: one strip of 4 (positive count). ---
+    push_i32(&mut out, 4);
+    for i in 0..4u16 {
+        push_i16(&mut out, i.cast_signed()); // vert_index
+        push_i16(&mut out, 0); // norm_index
+        let (s, t) = [(0, 0), (16, 0), (16, 16), (0, 16)][i as usize];
+        push_i16(&mut out, s);
+        push_i16(&mut out, t);
+    }
+    assert_eq!(out.len(), anim_data_offset);
+
+    // --- Animation data (seqgroup 0, embedded) ---
+    // Bone 0: slot 0 (X position) carries a real compressed run at relative
+    // offset 24 (right after both 12-byte offset records); every other
+    // slot is 0 (bind pose).
+    push_u16(&mut out, 24);
+    for _ in 0..5 {
+        push_u16(&mut out, 0);
+    }
+    // Bone 1: every slot uses the bind pose.
+    for _ in 0..6 {
+        push_u16(&mut out, 0);
+    }
+    out.push(2); // valid
+    out.push(2); // total
+    push_i16(&mut out, 10);
+    push_i16(&mut out, 20);
+    assert_eq!(out.len(), total_len);
+
+    let layout = MinimalMdl10Layout {
+        header_size: HEADER_SIZE,
+        bones_offset,
+        bones_size,
+        textures_offset,
+        texture_data_offset,
+        texture_data_size,
+        skin_refs_offset,
+        sequences_offset,
+        body_parts_offset,
+        models_offset,
+        meshes_offset,
+        verts_offset,
+        vert_bones_offset,
+        norms_offset,
+        norm_bones_offset,
+        tricommands_offset,
+        anim_data_offset,
+        total_len,
+    };
+    (out, layout)
+}
+
+/// Builds a minimal, well-formed, synthetic SPR file: an 8x8, 2-frame
+/// sprite sharing the project's synthetic 256-color palette.
+///
+/// Every byte here is authored by this project for testing only; see
+/// `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn build_minimal_spr() -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"IDSP");
+    push_i32(&mut out, 2); // version
+    push_i32(&mut out, 0); // type: VP_PARALLEL_UPRIGHT
+    push_i32(&mut out, 0); // texture_format: SPR_NORMAL
+    push_f32(&mut out, 5.656_854); // bounding_radius: sqrt(4^2 + 4^2)
+    push_u32(&mut out, 8); // max_width
+    push_u32(&mut out, 8); // max_height
+    push_u32(&mut out, 2); // num_frames
+    push_f32(&mut out, 0.0); // beam_length
+    push_i32(&mut out, 0); // sync_type: synchronized
+
+    let palette = synthetic_palette();
+    push_u16(&mut out, u16::try_from(PALETTE_LEN).unwrap());
+    for entry in &palette {
+        out.push(entry.r);
+        out.push(entry.g);
+        out.push(entry.b);
+    }
+
+    for fill in [1u8, 2u8] {
+        push_u32(&mut out, 0); // group
+        push_i32(&mut out, -4); // origin_x
+        push_i32(&mut out, -4); // origin_y
+        push_u32(&mut out, 8); // width
+        push_u32(&mut out, 8); // height
+        out.extend(core::iter::repeat_n(fill, 64));
+    }
+    out
+}

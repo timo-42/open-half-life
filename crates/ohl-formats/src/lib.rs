@@ -14,7 +14,9 @@ extern crate alloc;
 
 pub mod bsp30;
 pub mod error;
+pub mod mdl10;
 pub mod palette;
+pub mod spr;
 pub mod wad3;
 
 mod miptex_body;

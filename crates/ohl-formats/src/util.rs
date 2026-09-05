@@ -37,3 +37,17 @@ pub(crate) fn sub_slice(data: &[u8], offset: usize, length: usize) -> Result<&[u
     let end = offset.checked_add(length).ok_or(FormatError::OutOfBounds)?;
     data.get(offset..end).ok_or(FormatError::OutOfBounds)
 }
+
+/// Computes `width * height` as a bounds-checked pixel count, rejecting a
+/// product that would overflow, that exceeds `limit`, or that (on a
+/// 32-bit target) would not fit `usize`, instead of panicking or silently
+/// truncating.
+pub(crate) fn checked_pixel_count(width: u32, height: u32, limit: u32) -> Result<usize> {
+    let count = u64::from(width)
+        .checked_mul(u64::from(height))
+        .ok_or(FormatError::InvalidInput)?;
+    if count > u64::from(limit) {
+        return Err(FormatError::LimitExceeded);
+    }
+    usize::try_from(count).map_err(|_| FormatError::OutOfBounds)
+}
