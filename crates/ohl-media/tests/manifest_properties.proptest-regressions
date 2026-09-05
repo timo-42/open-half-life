@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 60145c4874bb48ca497e44355d89f0111edbcd0b913ba82da82592c8fe1868f2 # shrinks to manifest = CacheManifest { schema_version: 1, digest: MediaDigest(0000000000000000000000000000000000000000000000000000000000000000), size_bytes: 0, class: Udf, filesystem: "", label: "/", created_unix_seconds: 0, payload_state: "not-imported" }
