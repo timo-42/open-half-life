@@ -1,0 +1,45 @@
+# Standalone (non-member) package for the freestanding Linux test worker
+# image consumed by `ohl-platform`'s isolated-worker tests.
+#
+# It is deliberately *not* a member of the repository workspace:
+#
+# - a `#![no_std] #![no_main]` binary can only be compiled with
+#   `panic = "abort"` ("unwinding panics are not supported without std"), and
+#   `panic` is a profile-level setting that cannot be scoped to one package
+#   inside a workspace (`profile.<p>.package.<name>.panic` is rejected by
+#   Cargo);
+# - the workspace root manifest is owned by another work package and must not
+#   grow a `[profile]` section for a test fixture.
+#
+# `ohl-test-worker` (the workspace member one directory up) drives `cargo
+# build` for this package with an explicit `--target-dir`, so nothing here is
+# ever built by a plain `cargo build --workspace`.
+[package]
+name = "ohl-test-worker-image"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "ohl-media-parser-worker"
+path = "src/main.rs"
+
+[features]
+default = []
+# Never writes the readiness attestation, so the host observes a startup
+# deadline expiry instead of a ready worker.
+never-ready = []
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1

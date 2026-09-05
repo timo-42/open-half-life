@@ -16,6 +16,15 @@ ohl-core = { path = "../ohl-core", version = "=0.1.0" }
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["fs"] }
 
+# The Linux x86-64 isolated-worker backend. `seccompiler` compiles the syscall
+# allowlist and `landlock` probes the kernel ABI and builds the filesystem
+# ruleset - both in the parent, before `fork`, so the post-fork path stays
+# async-signal-safe.
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
+rustix = { workspace = true, features = ["event", "fs", "net", "pipe", "process"] }
+seccompiler = { workspace = true }
+landlock = { workspace = true }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = [
     "Win32_Foundation",
@@ -26,10 +35,12 @@ windows-sys = { version = "=0.61.2", features = [
 proptest = { workspace = true }
 tempfile = { workspace = true }
 
-# Only the Linux-gated FIFO test needs `rustix` directly; every other test
-# reaches the filesystem through `std`.
+# The Linux-gated FIFO test needs `rustix` directly; the isolated-worker tests
+# need the freestanding worker image that `ohl-test-worker` builds. Neither is
+# reachable from shipping code.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 rustix = { workspace = true, features = ["fs"] }
+ohl-test-worker = { path = "../ohl-test-worker", version = "=0.1.0" }
 
 # The workspace lint table cannot be inherited here: `[lints] workspace = true`
 # is exclusive with a local `[lints.rust]` table, and this crate must relax

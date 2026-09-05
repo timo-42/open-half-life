@@ -1,0 +1,15 @@
+[package]
+name = "ohl-test-worker"
+description = "Development-only builder for the freestanding Linux test worker image used by ohl-platform's isolated-worker tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "ohl_test_worker"
+
+[lints]
+workspace = true

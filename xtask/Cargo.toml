@@ -12,6 +12,11 @@ publish = false
 thiserror = { workspace = true }
 toml = "1.1.5"
 
+# `cargo xtask worker-image` builds and inspects the freestanding isolated-worker
+# test image. `ohl-test-worker` is a development-only crate; nothing shipping
+# depends on it.
+ohl-test-worker = { path = "../crates/ohl-test-worker", version = "=0.1.0" }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 
