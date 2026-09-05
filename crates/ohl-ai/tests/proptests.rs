@@ -1,6 +1,7 @@
 //! Property tests: the senses, the runner and the movement glue must be
 //! total — no panic, no non-finite state — for arbitrary inputs.
 
+use ohl_ai::monsters::nav_bridge::{NavBridge, NavBridgeLimits};
 use ohl_ai::monsters::table::{Difficulty, MonsterKind, spec_for};
 use ohl_ai::{
     Actor, AiWorld, Candidate, Classification, DamageEvent, DamageQueue, DamageSink, DefaultBrain,
@@ -9,7 +10,8 @@ use ohl_ai::{
     spawn_monster,
 };
 use ohl_formats::bsp30::{Bsp, Limits};
-use ohl_formats::test_support::build_collision_room_bsp;
+use ohl_formats::test_support::{Bsp30Builder, CollisionBrush, build_collision_room_bsp};
+use ohl_nav::{BuildLimits, NodeKind, NodeSeed};
 use ohl_physics::{CollisionModel, Hull};
 use proptest::prelude::*;
 
@@ -42,6 +44,57 @@ fn point() -> impl Strategy<Value = ohl_ai::Vec3> {
 fn classification() -> impl Strategy<Value = Classification> {
     (0usize..ohl_ai::CLASSIFICATION_COUNT)
         .prop_map(|index| Classification::from_index(index).expect("index is in range"))
+}
+
+/// A room like [`room`], split by a full-height wall (`x` in `-16..16`,
+/// `y` in `-128..128`) with both ends open, for [`NavBridge`] proptests.
+fn wall_room() -> CollisionModel {
+    let mut builder = Bsp30Builder::new();
+    builder.set_entities_text("{\n\"classname\" \"worldspawn\"\n}\n");
+    let heads = builder.push_collision_hulls(&[
+        CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+        CollisionBrush::half_space([0.0, 0.0, -1.0], -256.0),
+        CollisionBrush::half_space([-1.0, 0.0, 0.0], -512.0),
+        CollisionBrush::half_space([1.0, 0.0, 0.0], -512.0),
+        CollisionBrush::half_space([0.0, -1.0, 0.0], -512.0),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], -512.0),
+        CollisionBrush::box_brush([-16.0, -128.0, -16.0], [16.0, 128.0, 256.0]),
+    ]);
+    builder.push_model(
+        [-512.0, -512.0, 0.0],
+        [512.0, 512.0, 256.0],
+        [0.0, 0.0, 0.0],
+        heads,
+        2,
+        0,
+        0,
+    );
+    let bytes = builder.build();
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("the fixture parses as BSP v30");
+    CollisionModel::from_bsp(&bsp, &limits).expect("the fixture has usable collision hulls")
+}
+
+/// A 7x7 lattice over [`wall_room`], at 128-unit spacing.
+fn wall_room_lattice() -> Vec<NodeSeed> {
+    let coords = [-384.0, -256.0, -128.0, 0.0, 128.0, 256.0, 384.0];
+    coords
+        .iter()
+        .flat_map(|&x| {
+            coords
+                .iter()
+                .map(move |&y| NodeSeed::new(ohl_ai::Vec3::new(x, y, 8.0), NodeKind::Ground))
+        })
+        .collect()
+}
+
+fn hull() -> impl Strategy<Value = Hull> {
+    prop_oneof![
+        Just(Hull::Point),
+        Just(Hull::Standing),
+        Just(Hull::Large),
+        Just(Hull::Crouched),
+    ]
 }
 
 proptest! {
@@ -330,5 +383,36 @@ proptest! {
             ai.state_hash(&world)
         };
         prop_assert_eq!(run(), run());
+    }
+}
+
+proptest! {
+    // The graph build cost is shared work, not per-case work, but is still
+    // paid once per case here (proptest reruns the whole body); a smaller
+    // case count keeps this bounded.
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// `NavBridge::next_move` never panics and always returns a finite
+    /// position, for arbitrary origins, goals, hulls and step sizes,
+    /// against a fixed map with both an obstacle and a node graph.
+    #[test]
+    fn nav_bridge_next_move_is_total(
+        origin in point(),
+        goal in point(),
+        hull in hull(),
+        max_step in coordinate(),
+    ) {
+        let collision = wall_room();
+        let seeds = wall_room_lattice();
+        let mut bridge = NavBridge::build(
+            &seeds,
+            &collision,
+            &BuildLimits::default(),
+            NavBridgeLimits::default(),
+        );
+        let actor = hecs::World::new().spawn(());
+        bridge.begin_tick(&[actor]);
+        let next = bridge.next_move(actor, origin, goal, hull, &collision, max_step);
+        prop_assert!(next.is_finite(), "non-finite output: {next:?}");
     }
 }

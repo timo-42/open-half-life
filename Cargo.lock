@@ -2144,6 +2144,7 @@ dependencies = [
  "ohl-core",
  "ohl-formats",
  "ohl-game",
+ "ohl-nav",
  "ohl-physics",
  "ohl-world",
  "proptest",

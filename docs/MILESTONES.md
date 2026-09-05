@@ -1419,13 +1419,32 @@ node-graph (7.6) and projectile/explosion (7.3) packages will fill:
 implementation drops in at the composition root later without this
 package's data changing.
 
+`monsters::nav_bridge::NavBridge` is that real 7.6 implementation, now wired
+in: built once per map from `ohl-nav`'s `NodeGraph` (seeded from
+`info_node`/`info_node_air`, via `node_seeds_from_defs` over `ohl-game`'s
+typed `EntityDef`s) and attached with `AiWorld::attach_navigator`, it drives
+`advance_route` in place of the straight-line stepper whenever one is
+present. Per actor it caches an `ohl_nav::Path` plus its own `Steer` cursor,
+rebuilt when the goal drifts past the cited 80-unit
+`Route::needs_refresh` threshold, tries `straight_path_if_clear` before
+spending one of a bounded per-tick `find_path` search budget (default 8,
+shared across every actor so a tick stays bounded), and falls back to
+`StraightLineNavigator` when the graph is empty, no path exists, or the
+budget is spent this tick. Hull comes from the moving `Actor` (already keyed
+off `MonsterSpec::hull`/`SizeClass`); node kind (ground/air/water) needs no
+extra per-monster logic since `ohl-nav` already keeps ground and air/water
+links in disjoint, hull-validated subgraphs. `Route` itself is unchanged —
+it still only ever carries the path task's single ultimate goal, so
+`WaitForMovement`/`StopMoving`/the determinism hash are unaffected by
+whether a navigator is attached.
+
 Not yet done: scripted sequences and save sections (7.8); unifying
 `ohl-ai::damage`/`monsters::lifecycle` with `ohl-combat`'s `DamageInfo`
-(7.1); substituting real `Navigator`/`RangedAttackSink` implementations once
-7.6/7.3 land; observing every per-monster health/damage/range/timing number
-against legally obtained retail software. Every movement speed, view-cone
-angle, look distance, attack range, turn rate and damage threshold in the
-crate is a placeholder still to be black-box observed; see
+(7.1); substituting a real `RangedAttackSink` implementation once 7.3 lands;
+observing every per-monster health/damage/range/timing number against
+legally obtained retail software. Every movement speed, view-cone angle,
+look distance, attack range, turn rate and damage threshold in the crate is
+a placeholder still to be black-box observed; see
 `docs/FORMAT_SOURCES.md`, "Monster AI behaviour" and "Monster definitions".
 
 ## M8 (Rust): save container

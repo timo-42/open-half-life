@@ -15,6 +15,7 @@ ohl-core = { path = "../ohl-core", version = "=0.1.0" }
 ohl-physics = { path = "../ohl-physics", version = "=0.1.0" }
 ohl-world = { path = "../ohl-world", version = "=0.1.0" }
 ohl-game = { path = "../ohl-game", version = "=0.1.0" }
+ohl-nav = { path = "../ohl-nav", version = "=0.1.0" }
 # Pinned exact, matching the versions `ohl-game` and `ohl-physics` already
 # use, so the `hecs::World` this crate ticks is the same type `ohl-game`
 # builds and the vector type is shared with the trace API.

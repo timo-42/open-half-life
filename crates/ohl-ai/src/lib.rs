@@ -76,9 +76,9 @@ pub mod world;
 pub use brain::{DefaultBrain, default_next_state, schedule_by_name};
 pub use damage::{DamageEvent, DamageQueue, DamageSink};
 pub use monsters::{
-    CorpseDecision, MonsterBrain, MonsterKind, MonsterSpec, MonsterTrigger, Navigator,
-    NoOpRangedAttackSink, RangedAttackSink, StraightLineNavigator, TriggerCondition,
-    TriggerContext, apply_damage as apply_monster_damage,
+    CorpseDecision, MonsterBrain, MonsterKind, MonsterSpec, MonsterTrigger, NavBridge,
+    NavBridgeLimits, Navigator, NoOpRangedAttackSink, RangedAttackSink, StraightLineNavigator,
+    TriggerCondition, TriggerContext, apply_damage as apply_monster_damage, node_seeds_from_defs,
 };
 pub use movement::{MoveResult, Route, StuckDetector, move_toward};
 pub use rng::Pcg32;

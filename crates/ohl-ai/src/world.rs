@@ -20,6 +20,7 @@ use ohl_physics::{CollisionModel, Hull};
 use std::collections::BTreeMap;
 
 use crate::damage::{DamageEvent, DamageQueue, DamageSink, summarize};
+use crate::monsters::NavBridge;
 use crate::movement::{
     self, MoveResult, Route, StuckDetector, forward_from_yaw, move_toward, normalize_yaw,
     turn_toward, yaw_toward,
@@ -292,6 +293,10 @@ pub struct AiWorld {
     squads: SquadRoster,
     rng: Pcg32,
     tick_count: u64,
+    /// The real, `ohl-nav`-backed navigator, when one has been built for
+    /// the current map; `None` uses the straight-line fallback instead
+    /// (see [`advance_route`]).
+    navigator: Option<NavBridge>,
 }
 
 impl core::fmt::Debug for AiWorld {
@@ -318,6 +323,7 @@ impl AiWorld {
             squads: SquadRoster::new(),
             rng: Pcg32::new(seed),
             tick_count: 0,
+            navigator: None,
         }
     }
 
@@ -325,6 +331,25 @@ impl AiWorld {
     pub fn register_brain(&mut self, brain: Box<dyn Brain>) -> BrainId {
         self.brains.push(brain);
         BrainId(self.brains.len() - 1)
+    }
+
+    /// Attaches the real, `ohl-nav`-backed navigator built for the current
+    /// map, replacing the straight-line fallback every path task used until
+    /// now.
+    pub fn attach_navigator(&mut self, bridge: NavBridge) {
+        self.navigator = Some(bridge);
+    }
+
+    /// Detaches the navigator, restoring the straight-line fallback (e.g.
+    /// when leaving a map), and returns it.
+    pub fn detach_navigator(&mut self) -> Option<NavBridge> {
+        self.navigator.take()
+    }
+
+    /// The attached navigator, if any.
+    #[must_use]
+    pub fn navigator(&self) -> Option<&NavBridge> {
+        self.navigator.as_ref()
     }
 
     /// The relationship table, for per-map overrides.
@@ -386,6 +411,10 @@ impl AiWorld {
             .map(|(entity, _, _)| entity)
             .collect();
         order.sort_unstable_by_key(|entity: &Entity| entity.id());
+
+        if let Some(navigator) = self.navigator.as_mut() {
+            navigator.begin_tick(&order);
+        }
 
         for entity in order {
             self.tick_one(
@@ -679,7 +708,14 @@ impl AiWorld {
         ai.runner = runner;
 
         // --- Movement -----------------------------------------------------
-        let moved = advance_route(&mut actor, &mut ai, context.collision, dt);
+        let moved = advance_route(
+            entity,
+            &mut actor,
+            &mut ai,
+            context.collision,
+            self.navigator.as_mut(),
+            dt,
+        );
         if ai.move_speed > 0.0 {
             if ai.stuck.record(moved) {
                 ai.pending_conditions |= Conditions::BLOCKED;
@@ -835,10 +871,21 @@ fn snapshot_candidates(world: &World) -> Vec<Candidate> {
 }
 
 /// Follows the current route by one tick, returning the distance travelled.
+///
+/// `ai.route` still only ever carries the single ultimate goal a path task
+/// set ([`start_route`](MonsterExecutor::start_route) never changed): the
+/// node-graph routing a [`NavBridge`] does — multiple waypoints, per-hull
+/// links, local steering around obstacles — lives entirely inside the
+/// bridge's own per-actor cache, keyed off this same goal. `Route` stays
+/// the high-level "am I still moving, has the goal drifted" bookkeeping
+/// either way, so every other consumer (`WaitForMovement`, `StopMoving`,
+/// the determinism hash) is unaffected by whether a navigator is attached.
 fn advance_route(
+    entity: Entity,
     actor: &mut Actor,
     ai: &mut MonsterAi,
     collision: Option<&CollisionModel>,
+    navigator: Option<&mut NavBridge>,
     dt: f32,
 ) -> f32 {
     if ai.move_speed <= 0.0 || ai.route.is_finished() {
@@ -847,11 +894,22 @@ fn advance_route(
     let Some(waypoint) = ai.route.waypoint() else {
         return 0.0;
     };
-    let result = collision.map_or_else(
-        || straight_step(actor.origin, waypoint, ai.move_speed, dt),
-        |model| move_toward(model, actor.hull, actor.origin, waypoint, ai.move_speed, dt),
-    );
-    actor.origin = result.position;
+    let step = ai.move_speed * dt;
+    let (position, distance) = match (navigator, collision) {
+        (Some(navigator), Some(model)) => {
+            let next = navigator.next_move(entity, actor.origin, waypoint, actor.hull, model, step);
+            (next, (next - actor.origin).length())
+        }
+        (_, Some(model)) => {
+            let result = move_toward(model, actor.hull, actor.origin, waypoint, ai.move_speed, dt);
+            (result.position, result.distance)
+        }
+        (_, None) => {
+            let result = straight_step(actor.origin, waypoint, ai.move_speed, dt);
+            (result.position, result.distance)
+        }
+    };
+    actor.origin = position;
     if let Some(yaw) = yaw_toward(actor.origin, waypoint) {
         let (turned, _) = turn_toward(actor.yaw, yaw, TURN_RATE * dt);
         actor.yaw = turned;
@@ -860,7 +918,7 @@ fn advance_route(
     if ai.route.is_finished() {
         ai.move_speed = 0.0;
     }
-    result.distance
+    distance
 }
 
 /// The no-collision-data fallback: move straight toward the waypoint.
