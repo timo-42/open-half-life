@@ -50,6 +50,47 @@ the two samples directly. When a window surface offers only an sRGB format the
 shader converts the result back to linear first, so the hardware's sRGB encode
 round-trips to the same pixels the non-sRGB path produces.
 
+## Audio backend (`ohl-audio`)
+
+`ohl-audio` (the M5 sound package: bounded WAV decoding, the software mixer,
+and output device selection) follows the same "no C libraries" rule as
+`ohl-render`, but reaches it differently because of how each platform exposes
+its audio API:
+
+- **Linux has no way to reach ALSA (or PulseAudio/PipeWire) without linking a
+  C library.** `cpal`'s only Linux backend goes through the `alsa` crate,
+  whose `alsa-sys` dependency locates and links `libasound.so` through a
+  build-time `pkg-config` lookup — an actual link-time dependency on a
+  third-party C library, not a runtime `dlopen`. That is a different, more
+  direct kind of coupling than wgpu's Vulkan backend, which reaches the
+  Vulkan loader through `ash`'s runtime `libloading`-based `dlopen` and links
+  no Vulkan C library at build time. Because there is no pure-Rust
+  alternative to `alsa-sys`'s linkage on Linux (and the `jack`/`pulseaudio`
+  backends have the same problem with their own C libraries), `cpal` is
+  declared only as a `[target.'cfg(any(target_os = "macos", target_os =
+  "windows"))'.dependencies]` entry in `crates/ohl-audio/Cargo.toml`. Cargo
+  never resolves or builds `cpal` (or `alsa`/`alsa-sys`) at all when the
+  target is Linux, so a Linux CI runner needs no `libasound2-dev` package and
+  never touches `pkg-config` for this crate. There is consequently no
+  feature flag to gate: there is no Linux `cpal` code path to gate in the
+  first place. `ohl-audio::device` always resolves to the crate's own
+  `NullSink` on Linux.
+- **macOS (CoreAudio) and Windows (WASAPI) are reached without linking any
+  third-party C library.** `cpal`'s backends for those two platforms go
+  through `coreaudio-rs`/`objc2` and the official `windows` crate
+  respectively: both are safe(r) Rust bindings directly to the OS's own
+  audio API surface (an Apple framework, and a Windows COM/system DLL
+  interface), the same tier of exception already accepted for wgpu's
+  Vulkan-loader and Metal access in `ohl-render`. Nothing here vendors,
+  fetches, or links a redistributable third-party library the way libudfread
+  or Unshield do.
+
+`ohl_audio::device::open_default_device` therefore only ever attempts a real
+`cpal` device on macOS/Windows, and always falls back to `NullSink` (used
+directly and exclusively on Linux) when no such device is available — so a
+headless CI runner on any of the three platforms builds, lints, and runs the
+full test suite without an audio device.
+
 ## P4 renderer dependency facade (C++/CMake)
 
 This document records the accepted dependency facade implemented by

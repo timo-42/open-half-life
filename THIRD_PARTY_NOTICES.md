@@ -42,10 +42,27 @@ the backend policy):
 - `winit` `=0.30.13` (**Apache-2.0 only**, not dual-licensed) -- windowing and
   input, `ohl-app`, and only under the non-default `dev-tools` feature
 
-As later packages add the freestanding parser worker (`rustix`, `seccompiler`,
-`landlock`) and the audio/input stack (`cpal`/`rodio`), this section will be
-extended; `cargo deny check` remains the enforced, up-to-date source of truth
-between updates to this file.
+Added by the M5 audio package (`crates/ohl-audio`), pinned exactly in its
+`Cargo.toml` (see `docs/RENDER_DEPENDENCIES.md`, "Audio backend", for the full
+write-up and the Linux linking decision):
+
+- `hound` `=3.5.1` (Apache-2.0) -- writes synthetic WAV fixtures for this
+  crate's own tests only; WAV *decoding* is this crate's own bounded,
+  zero-copy chunk walker, `ohl-audio`, dev-dependency only
+- `cpal` `=0.18.2` (Apache-2.0) -- output device backend, `ohl-audio`, and
+  only ever a dependency on macOS/Windows (`[target.'cfg(...)']`): its only
+  Linux backend links `libasound` through `alsa-sys`'s build-time
+  `pkg-config` lookup, a genuine link-time C-library dependency the "No FFI"
+  rule forbids, so it is never even resolved for a Linux build. On
+  macOS/Windows it pulls in the transitive MIT/Apache-2.0-family crates
+  `coreaudio-rs`, `objc2` (and its `objc2-*` framework-binding crates),
+  `dispatch2`, `block2`, `mach2`, and the official `windows` crate family
+  (all MIT OR Apache-2.0), reaching CoreAudio and WASAPI directly rather than
+  vendoring or linking a third-party C library
+
+As later packages add the freestanding parser worker's remaining pieces and
+the input stack, this section will be extended; `cargo deny check` remains
+the enforced, up-to-date source of truth between updates to this file.
 
 ## libudfread 1.2.0
 
