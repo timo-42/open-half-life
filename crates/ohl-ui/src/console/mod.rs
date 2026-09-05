@@ -14,6 +14,11 @@ pub use view::draw as draw_console;
 /// The key that toggles the console, matching the Quake-family convention.
 pub const TOGGLE_KEY: egui::Key = egui::Key::Backtick;
 
+/// Maximum number of entries [`Console`]'s input history retains. Mirrors
+/// [`buffer::MAX_LINES`]'s bound on the scrollback buffer: older entries are
+/// dropped first once this is reached.
+pub const MAX_HISTORY: usize = 256;
+
 /// The developer console: state plus the built-in commands every instance
 /// registers (`help`, `echo`, `set`, `quit`, `map`).
 pub struct Console {
@@ -109,7 +114,16 @@ impl Console {
         if trimmed.is_empty() {
             return Vec::new();
         }
-        self.history.push(trimmed.to_string());
+        // Dedupe immediate repeats (repeatedly pressing enter on the same
+        // line, or replaying the last history entry, should not bloat the
+        // history), then bound it the same way the scrollback buffer is
+        // bounded: drop the oldest entry once the cap is reached.
+        if self.history.last().map(String::as_str) != Some(trimmed) {
+            self.history.push(trimmed.to_string());
+            while self.history.len() > MAX_HISTORY {
+                self.history.remove(0);
+            }
+        }
         self.history_cursor = None;
         self.buffer.push(&format!("] {trimmed}"));
 
@@ -348,6 +362,50 @@ mod tests {
         assert_eq!(matches, vec!["map", "mapname"]);
         console.apply_tab_completion();
         assert_eq!(console.input(), "map");
+    }
+
+    #[test]
+    fn history_dedupes_consecutive_repeats() {
+        let mut console = Console::new();
+        console.submit_line("echo one");
+        console.submit_line("echo dup");
+        console.submit_line("echo dup");
+        console.history_previous();
+        assert_eq!(console.input(), "echo dup");
+        console.history_previous();
+        assert_eq!(
+            console.input(),
+            "echo one",
+            "the repeated line must have been recorded only once"
+        );
+    }
+
+    #[test]
+    fn history_is_bounded_and_drops_the_oldest_entries() {
+        let mut console = Console::new();
+        // Every line is distinct, so none of these get deduped; this pushes
+        // MAX_HISTORY + 10 entries through a cap of MAX_HISTORY.
+        for index in 0..super::MAX_HISTORY + 10 {
+            console.submit_line(&format!("echo {index}"));
+        }
+
+        // Walking all the way back must stop after exactly MAX_HISTORY
+        // entries, landing on the oldest surviving one.
+        for _ in 0..super::MAX_HISTORY {
+            console.history_previous();
+        }
+        assert_eq!(
+            console.input(),
+            "echo 10",
+            "the first 10 entries should have been dropped to respect the cap"
+        );
+        let oldest = console.input().to_string();
+        console.history_previous();
+        assert_eq!(
+            console.input(),
+            oldest,
+            "there must be no entry older than the cap allows"
+        );
     }
 
     #[test]
