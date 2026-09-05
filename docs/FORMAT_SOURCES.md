@@ -324,6 +324,42 @@ fixtures are synthesized in-process by this project's own writers in
 `crates/ohl-formats/src/test_support.rs`; no bytes, names, or other content
 from any game installation are used or committed.
 
+## PE/COFF executable layout
+
+Source: [PE Format](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format)
+(Microsoft, public Windows documentation). Sections used: "MS-DOS Stub
+(Image Only)" and the `e_lfanew` field at offset `0x3c`; "Signature (Image
+Only)" (`PE\0\0`); "COFF File Header (Object and Image)" (`NumberOfSections`
+at offset 2, `SizeOfOptionalHeader` at offset 16); "Optional Header" (its
+presence and size only, never its contents); and "Section Table (Section
+Headers)" (`SizeOfRawData` at row offset 16 and `PointerToRawData` at row
+offset 20, with the 40-byte row size and the 96-section image ceiling).
+
+Terms: public Microsoft technical documentation for the executable container
+format. It is used only to compute *where one file's headers end*, in
+`crates/ohl-import/src/locate.rs`:
+
+- recognise a PE image by its DOS and `PE\0\0` signatures;
+- read the section count and optional-header size so the section table can be
+  located and bounded; and
+- take the overlay offset as the largest `PointerToRawData + SizeOfRawData`
+  over the sections that occupy file bytes.
+
+Everything past that offset is the image's overlay, which is where a
+self-extracting installer stores its archive. The project uses this to hand a
+parser worker a bounded window over one container instead of a whole medium.
+
+This source supports no payload parsing whatsoever: no import directory, no
+relocation, no resource, no code, and no execution. Nothing in the project
+loads, relocates, disassembles, or runs a PE image, and no media-derived
+constant, name, or layout enters the repository from it. The two container
+signatures the overlay is scanned for — the ASCII `MSCF` cabinet signature and
+the little-endian `u32` `0x8C65_5D13` — are recognised as opaque byte
+patterns only; recognising a signature is not parsing its container, and the
+container parsing rules themselves still require the public-source provenance
+demanded in the next section. All test fixtures are synthetic PE headers this
+project writes in-process (`ohl_import::testing::synthetic_pe`).
+
 ## Cabinet and component-selection parsing
 
 This section is about the **InstallShield-era** installer cabinet/header pair

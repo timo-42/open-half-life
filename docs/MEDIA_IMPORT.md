@@ -750,6 +750,83 @@ selection, and staging composition are implemented and accepted.
 Isolation limits parser authority; it does not make parser output safe to log,
 commit, or trust without validation.
 
+## Parent-side import composition (R4.7a)
+
+`ohl_import::pipeline::run_import` is the single place where the accepted
+boundaries above are joined into one operation. Its order is the contract:
+
+1. **Locate.** `ohl_import::locate` walks the mounted tree under
+   `LocateLimits` and classifies each file of at least 64 KiB from its first
+   bytes only. It recognises a Microsoft cabinet by `MSCF` at offset 0, and
+   walks the PE/COFF header chain (`docs/FORMAT_SOURCES.md`, "PE/COFF
+   executable layout") to compute an overlay offset, which it then scans in
+   bounded overlapping windows for the InstallShield 3 Z signature and for
+   `MSCF`. Every archive-controlled quantity is bounded: walk depth,
+   directories, pages per directory, files classified, header prefix bytes,
+   overlay bytes per file, and total bytes read. Reaching a limit, or
+   observing cancellation, truncates the search and returns what was already
+   found; it is never an error. A `ContainerCandidate`'s path is media-derived
+   local proprietary data: it is never logged, and the type's own `Debug`
+   redacts it.
+2. **Choose one container.** The policy is deterministic and total: an
+   InstallShield 3 Z archive wins over any cabinet, because a medium carrying
+   both is an installer whose cabinet is a secondary payload; among candidates
+   of the winning kind the largest wins, because a self-extracting stub's
+   small trailing archive is never the payload; and remaining ties are broken
+   by the candidates' deterministic order — kind, then normalized path, then
+   offset. The same medium therefore always yields the same choice. Media
+   this build recognises no container in never starts a worker process at all.
+3. **Bound the source window.** `ohl_import::SourceWindow` is a `SourceOps`
+   seam over the `ohl_vfs::MediaFile` for that one container plus a base
+   offset and a length. Worker read offsets become window-relative, and a read
+   that would cross the window's end is refused whole rather than truncated,
+   because a short read is not something the reply codec can express. The
+   window narrows *where* reads land; it does not replace the source-read
+   broker's quotas, which still bound per-request size, request count, and
+   cumulative reply bytes against the whole-source policy fixed at the
+   handshake. `verify_unchanged` still runs against the pinned `MediaSource`
+   before and after every serviced read.
+4. **Own one worker for one session.** `ProcessSession::open_with_ops`
+   launches the confined `IsolatedWorker` through
+   `ohl_import::platform::ParserWorkerProcess`, performs the handshake, and
+   composes the typestate `ParserSession` over the window.
+5. **Enumerate, then select, then plan.** The parent validates every worker
+   frame and promotes a catalog only after complete layout validation.
+   `ohl_payload::selection::select` then applies the user's runtime-only local
+   recipe — the recipe addresses components, and a flat worker catalog's
+   leading path element is taken as the component name — and only its output
+   reaches `ohl_payload::layout`.
+6. **Stage and publish once.** `ohl_payload::stage_payload` owns the commit
+   protocol unchanged: create-new staging, seal, complete-source
+   reverification, a final cancellation check, and one no-replace publication.
+   The pipeline supplies a `PayloadSource` that drives one `stream_entry` per
+   planned entry and forwards each validated `data_chunk` into staging.
+7. **Record the provenance.** On success the published tree's staging identity
+   is written to `payload-identity` inside the medium's existing provenance
+   cache entry. That file's whole content is the one-way staging identity and
+   a newline: no name, no path, no count, and no payload byte. The metadata
+   only manifest itself is untouched.
+
+Cleanup is uniform: every failure path terminates the worker exactly once
+(`ProcessSession` caches the escalation and `Drop` is the backstop) and
+discards the staging transaction, so no failing path can leave a published
+tree. Only a run that published, or found its exact payload already published,
+performs an orderly protocol shutdown.
+
+`ImportReport` carries counts of entries planned and imported and byte totals
+**in memory, for the caller**. Those counts are media-derived and must not be
+logged; the application logs fixed strings only. `ProgressSink` receives a
+fraction of the planned byte total and nothing else.
+
+This composition does not make production import available. This build's
+parser worker answers `unsupported` for every enumeration and stream: it emits
+no frame for the request it refuses and exits, which the parent observes as
+its peer closing and reports as the fixed `ImportError::Unsupported`. The
+application maps that to one fixed log line and exit status 0, so user-visible
+behaviour is unchanged until a real dispatcher exists (R4.7b). A manual run
+against one lawfully owned medium reached the confined worker, was refused,
+and published nothing; only the fixed lines and the exit status were recorded.
+
 ### Rust crate mapping
 
 The parent-side session family above is ported to the `ohl-import` crate
