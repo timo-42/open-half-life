@@ -164,3 +164,20 @@ its default-off experimental Unshield-linked adapter, zlib, and the P4
 graphics dependency facade's SDL/Vulkan-Headers/volk/MoltenVK acquisitions
 were removed along with that tree; none of those licenses apply to the
 current build.
+
+## `ohl-wise` (no third-party code)
+
+`crates/ohl-wise` contains **no third-party code**. The Wise Installation System
+package container it reads was implemented from public documentation only, listed
+with sections and terms in `docs/FORMAT_SOURCES.md` under "Wise Installation
+System packages": the CC0 Just Solve "Wise installer package" page, the README
+prose and field tables of the REWise project, the `rewise(1)` manual page, the
+exwise 0.5 README, the public Microsoft PE/COFF specification, RFC 1951 and the
+published CRC-32 definition (ITU-T V.42 / RFC 1952 section 8).
+
+REWise itself is GPL-3.0. Its source code and its ImHex pattern were deliberately
+not read, not opened and not copied; only its README's textual description of the
+container was consulted, as a statement of facts about a file format. The CRC-32
+table is derived at compile time from the published polynomial rather than
+transcribed from any implementation, and DEFLATE decoding is delegated to the
+`miniz_oxide` crate already recorded under "Rust crates".

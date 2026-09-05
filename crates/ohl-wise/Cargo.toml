@@ -1,0 +1,34 @@
+[package]
+name = "ohl-wise"
+description = "Clean-room bounded reader for Wise Installation System packages: PE overlay location, DEFLATE stream chain, script file table and streaming extraction"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ohl_wise"
+
+[features]
+default = []
+std = ["ohl-core/std"]
+# Synthetic, independently authored package writer used by this workspace's
+# tests and fuzz targets. Never enable in production builds.
+test-support = []
+
+[dependencies]
+ohl-core = { path = "../ohl-core", version = "=0.1.0" }
+miniz_oxide = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Self dev-dependency so integration tests and doctests always see the
+# synthetic writer, whatever feature set the workspace build selects.
+ohl-wise = { path = ".", version = "=0.1.0", features = ["test-support"] }
+ohl-vfs = { path = "../ohl-vfs", version = "=0.1.0" }
+ohl-platform = { path = "../ohl-platform", version = "=0.1.0" }
+proptest = { workspace = true }
+
+[lints]
+workspace = true
