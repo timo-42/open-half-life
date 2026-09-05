@@ -53,7 +53,10 @@ the accepted M1 path as part of the same PR.
 
 ## M2: media import and virtual filesystem
 
-Status: in progress (Rust). The narrative below this note describes the C++
+Status: in progress (Rust). The import path itself is implemented end to end
+on Linux x86-64 as of R4.7b; the milestone stays open for the other platform
+tuples and for the production release-evidence gates in
+`docs/IMPORT_READINESS.md`. The narrative below this note describes the C++
 implementation that was accepted against this milestone before the C++ tree
 was removed at Rust M1 parity; it is retained as historical acceptance
 evidence and, for the parts not yet ported, as the specification the Rust
@@ -305,27 +308,32 @@ Remaining M2 work:
   edition-specific selection data may be supplied only through a runtime-only
   local recipe, and any project-owned selection parser requires recorded public
   format provenance
-- the constrained parser worker boundary in `MEDIA_IMPORT.md` remains
-  mandatory before any third-party parser may feed production extraction. The
-  accepted result bridge, source-read broker, frame channel, parent handshake,
-  parent session, service-bearing Linux worker, and now the disconnected
-  `ParserProcessSession` process-session owner (accepted at `537c11b`) still
-  need a real dispatcher/parser and explicit runtime composition with
-  deterministic component selection and staging; the worker must have no
-  raw-path, destination, or cache authority. Although the abstract
-  `IsolatedWorker` lifecycle facade exists, committed HEAD source-selects a
-  native containment backend only for Linux x86-64; other platforms and Linux
-  architectures select the unsupported backend. The production gate is blocked
-  on the real dispatcher/parser, runtime selection, and staging/publication
-  integration
-- after the real dispatcher/parser, resume with deterministic component
-  selection, then staging and publication, and finally application composition
-- production payload extraction remains absent and must not execute installer
-  binaries or media-provided code
+- **Done at R4.7a/R4.7b on Linux x86-64.** The real dispatcher
+  (`ohl-parser-backends`: Wise overlay, MS-CAB, InstallShield 3 Z over the
+  OWP/1 pull model), the parent-side composition (`ohl_import::pipeline`:
+  locate, deterministic container choice, bounded source window, one worker
+  per session, enumerate, select, plan, stage, reverify, publish once, record
+  provenance) and the application composition (`ohl-app`: real import on first
+  run, `--payload-root`, runtime rediscovery of a published tree) are
+  implemented and exercised against a real medium. The worker still has no
+  raw-path, destination, cache, recipe-selection or publication authority
+- the abstract `IsolatedWorker` lifecycle facade exists, but a native
+  containment backend is source-selected only for Linux x86-64; every other
+  platform and Linux architecture selects the unsupported backend, so import
+  cannot begin there. Those backends remain required
+- production *qualification* is still blocked on the objective
+  release-evidence gates in `IMPORT_READINESS.md`: installed-package inventory
+  and identity, an installed-prefix hosted end-to-end run, crash/restart and
+  publication-recovery evidence, sanitizer/fuzz/stress campaigns over the new
+  container back ends, and independent architecture, security, reliability,
+  release, and product review. No tuple meets them, Linux x86-64 included
+- payload extraction must continue to never execute installer binaries or
+  media-provided code; the back ends decode container bytes only, inside a
+  confined worker with a fixed `.bss` arena and no `brk`/`mmap`
 - macOS and Windows atomic-directory stores and native adversarial gates,
-  complete Linux filesystem qualification, cache locking/recovery, component
-  selection, and parser-worker runtime composition remain required before M2
-  can be completed
+  complete Linux filesystem qualification, and cache locking/recovery remain
+  required before M2 can be completed. Component selection and parser-worker
+  runtime composition are no longer on that list: both landed at R4.7a/R4.7b
 
 The package-4 run at `df5ea6d` remains the historical hosted evidence for that
 feature baseline. [PR #7](https://github.com/timo-42/open-half-life/pull/7)
