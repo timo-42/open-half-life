@@ -1540,5 +1540,74 @@ than a literal `ohl_audio::PlayRequest`, which embeds a decoded
 `Arc<SoundBuffer>` this crate has no legitimate way to construct without
 touching a sound file.
 
-`ohl-ai` and the player systems (fall damage, drowning, flashlight, long
-jump) are later M7 packages and are not implemented here.
+The player systems (fall damage, drowning, flashlight, long jump) are a
+later M7 package and are not implemented here.
+
+## Monster AI behaviour
+
+Behavioural vocabulary only; no file format is involved and no SDK source,
+schedule table or decompilation was consulted (`docs/CLEAN_ROOM.md`).
+
+- TWHL wiki, "Monsters Programming" series (public Half-Life programming
+  documentation; the pages themselves return HTTP 403 to automated fetches
+  from this environment, so they were consulted via search-engine result
+  summaries, exactly as the "Entity keyvalues and map logic" section above
+  already documents for the same wiki):
+  - ["Monsters Programming - The Concepts of Half-Life's AI"](https://twhl.info/wiki/page/Monsters_Programming_-_The_Concepts_of_Half-Life's_AI):
+    that a monster carries a *monster state* which drives task and schedule
+    selection; that an *activity* ties a model sequence to an action; that a
+    *task* is one specific action and a *schedule* an ordered list of tasks
+    pursuing a larger goal; that *conditions* are what senses produce and
+    what interrupts a schedule.
+  - ["Monsters Programming - Classifications and Relationships"](https://twhl.info/wiki/page/Monsters_Programming_-_Classifications_and_Relationships)
+    and ["Reference: Monster classifications"](https://twhl.info/wiki/page/Reference:_Monster_classifications):
+    the classification vocabulary (none, machine, player, passive human,
+    human military, alien military, passive alien, alien monster, alien
+    prey, alien predator, insect, player ally, player bioweapon, alien
+    bioweapon, barnacle); the relationship values ally, no relationship,
+    dislike (will attack), hate (attacked in preference to a visible dislike
+    target), fear and nemesis (always attacked); that the relationships are
+    a class-versus-class matrix; and the one row quoted outright in public
+    summaries, that human soldiers hate the player, player allies and alien
+    soldiers.
+  - ["Monsters Programming - Schedules and Tasks"](https://twhl.info/wiki/page/Monsters_Programming_-_Schedules_and_Tasks)
+    and ["Monsters Programming - Standard and Squad Monsters"](https://twhl.info/wiki/page/Monsters_Programming_-_Standard_and_Squad_Monsters/6525):
+    that squad membership comes from the `netname` keyvalue, that one member
+    carries the `SquadLeader` spawnflag (bit 32), and that a leader recruits
+    up to three members, so a full squad is four monsters.
+  - The same series for the sensing rules used here: sight originates at
+    `origin + view_ofs` and is limited by a view cone; an enemy is chosen by
+    relationship first and distance second; an enemy that goes out of sight
+    within 256 units stays tracked; a route is refreshed when its goal moves
+    more than 80 units; hearing has a per-monster sensitivity multiplier,
+    published as 2 for the tentacle and 1 elsewhere; sounds are classified
+    as combat, danger, world or player, with carcass/meat/garbage smelled
+    rather than heard.
+
+**Everything else in `crates/ohl-ai` is project-authored.** In particular the
+`Task` set, every `Schedule` and its interrupt mask, the `ScheduleRunner`
+rules, the `Conditions` bit layout, the state transition function, the
+determinism hash and the squad roster representation were designed for this
+project from the descriptions above; no SDK schedule or task table was read,
+transcribed or adapted. Values that no public page gives are placeholders,
+marked in their own documentation as still to be black-box observed against
+legally obtained retail software: view-cone angles, look distances, walking
+and running speeds, turn rates, attack ranges, the heavy-damage threshold,
+cover distance, the stuck threshold, and every entry of
+`RelationshipTable::provisional` other than the published human-military row.
+
+Project behaviour supported: `crates/ohl-ai` turns perceived actors and
+sounds into a condition bitset, drives a per-monster `Brain` through one
+schedule at a time with interrupt checks, shares an enemy across a squad,
+and moves monsters with the same `ohl-physics` clip-hull traces the player
+uses. `AiWorld::tick` is deterministic — entities are processed in ascending
+entity id over a snapshot taken before anything moves, and all randomness
+comes from one seeded project-owned PCG32 — and `AiWorld::state_hash`
+digests the result so a fixed seed can be asserted to replay exactly.
+
+The generator itself is written from the public PCG paper: Melissa E.
+O'Neill, ["PCG: A Family of Simple Fast Space-Efficient Statistically Good
+Algorithms for Random Number Generation"](https://www.pcg-random.org/paper.html),
+Harvey Mudd College technical report HMC-CS-2014-0905 (2014) — the
+`PCG-XSH-RR 64/32` variant, its multiplier, its seeding routine and its
+unbiased bounded-draw rejection test.

@@ -2239,6 +2239,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ohl-ai"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "hecs",
+ "ohl-core",
+ "ohl-formats",
+ "ohl-game",
+ "ohl-physics",
+ "ohl-world",
+ "proptest",
+]
+
+[[package]]
 name = "ohl-app"
 version = "0.1.0"
 dependencies = [
