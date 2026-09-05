@@ -14,6 +14,7 @@ use hecs::Entity;
 use crate::registry::{
     Button, ChangeLevel, Door, MoverState, MultiManager, Platform, Registry, Transform, Trigger,
 };
+use crate::track_train::TrackTrainState;
 
 /// Finds the closest `func_door` or `func_button` within `radius` units of
 /// `position`, preferring a brush entity's precomputed bounding-box centre
@@ -151,6 +152,7 @@ impl Simulation {
         Self::advance_doors(registry, dt);
         self.advance_buttons(registry, dt, &mut events);
         Self::advance_platforms(registry, dt);
+        Self::advance_trains(registry, dt);
         for state in self.trigger_state.values_mut() {
             state.cooldown = (state.cooldown - dt).max(0.0);
         }
@@ -201,6 +203,10 @@ impl Simulation {
                 platform.state = MoverState::Opening;
                 platform.timer = 0.0;
             }
+            return;
+        }
+        if let Ok(train) = registry.world.query_one_mut::<&mut TrackTrainState>(entity) {
+            train.toggle();
             return;
         }
         if let Some(mm) = registry
@@ -359,6 +365,15 @@ impl Simulation {
                     }
                 }
             }
+        }
+    }
+
+    /// Advances every `func_train`/`func_tracktrain` along its resolved
+    /// `path_track`/`path_corner` chain; see
+    /// [`crate::track_train::TrackTrainState::advance`].
+    fn advance_trains(registry: &mut Registry, dt: f32) {
+        for train in registry.world.query_mut::<&mut TrackTrainState>() {
+            train.advance(dt);
         }
     }
 }
