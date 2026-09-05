@@ -41,6 +41,15 @@ pub struct BufferedEntry {
     pub name: Vec<u8>,
 }
 
+/// Why a container cannot be buffered whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BufferError {
+    /// The container declares no bytes at all.
+    Empty,
+    /// The container is larger than [`MAXIMUM_BUFFERED_BYTES`].
+    TooLarge,
+}
+
 /// A container being read into memory, front to back.
 #[derive(Debug)]
 pub struct ContainerBuffer {
@@ -52,10 +61,14 @@ impl ContainerBuffer {
     /// A buffer for a container of `size` bytes.
     ///
     /// # Errors
-    /// `()` when the container is empty or above [`MAXIMUM_BUFFERED_BYTES`].
-    pub fn new(size: u64) -> Result<Self, ()> {
-        if size == 0 || size > MAXIMUM_BUFFERED_BYTES {
-            return Err(());
+    /// [`BufferError`] when the container is empty or above
+    /// [`MAXIMUM_BUFFERED_BYTES`].
+    pub fn new(size: u64) -> Result<Self, BufferError> {
+        if size == 0 {
+            return Err(BufferError::Empty);
+        }
+        if size > MAXIMUM_BUFFERED_BYTES {
+            return Err(BufferError::TooLarge);
         }
         Ok(Self {
             bytes: Vec::new(),

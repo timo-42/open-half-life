@@ -40,7 +40,7 @@ pub mod spelling;
 pub mod window;
 pub mod wise;
 
-pub use buffered::{BufferedEntry, ContainerBuffer, MAXIMUM_BUFFERED_BYTES};
+pub use buffered::{BufferError, BufferedEntry, ContainerBuffer, MAXIMUM_BUFFERED_BYTES};
 pub use dispatcher::{
     BATCH_ENTRIES, BackendLimits, CHUNK_BYTES, ContainerDispatcher, ContainerKind, SpellingArena,
 };
