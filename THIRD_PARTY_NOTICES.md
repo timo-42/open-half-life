@@ -32,10 +32,20 @@ transitive MIT-licensed `hadris-common`, `hadris-fixed`, `hadris-io`,
 `bytemuck`, `embedded-io`, `endian-num`, `spin` and `zerocopy`
 (MIT OR Apache-2.0). `proptest` (MIT OR Apache-2.0) is a dev dependency only.
 
+Added by the M3 "first light" renderer, each pinned exactly in the depending
+crate's `Cargo.toml` (see `docs/RENDER_DEPENDENCIES.md` for the full table and
+the backend policy):
+
+- `wgpu` `=30.0.1` (MIT OR Apache-2.0) -- graphics API, `ohl-render`
+- `pollster` `=1.0.1` (Apache-2.0 OR MIT) -- blocking executor for wgpu's
+  futures, `ohl-render`
+- `winit` `=0.30.13` (**Apache-2.0 only**, not dual-licensed) -- windowing and
+  input, `ohl-app`, and only under the non-default `dev-tools` feature
+
 As later packages add the freestanding parser worker (`rustix`, `seccompiler`,
-`landlock`) and the render/audio/input stack (`wgpu`, `winit`, `cpal`/`rodio`),
-this section will be extended; `cargo deny check` remains the enforced,
-up-to-date source of truth between updates to this file.
+`landlock`) and the audio/input stack (`cpal`/`rodio`), this section will be
+extended; `cargo deny check` remains the enforced, up-to-date source of truth
+between updates to this file.
 
 ## libudfread 1.2.0
 

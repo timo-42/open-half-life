@@ -10,6 +10,9 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
+#[cfg(feature = "dev-tools")]
+mod dev_bsp;
+
 const APP_NAME: &str = "Open Half-Life";
 const VERSION: &str = env!("OHL_APP_VERSION");
 
@@ -24,6 +27,24 @@ struct Cli {
     /// hitting an "unknown argument" error.
     #[arg(long)]
     iso: Option<PathBuf>,
+
+    /// Development only: load a BSP v30 map straight off disk and open a
+    /// renderer window (press Escape to quit).
+    ///
+    /// This bypasses the media pipeline (no ISO validation, import, cache or
+    /// VFS) and exists only while the renderer is being built. It is
+    /// compiled in solely by the non-default `dev-tools` cargo feature and
+    /// is therefore absent from release builds.
+    #[cfg(feature = "dev-tools")]
+    #[arg(long, value_name = "PATH")]
+    dev_bsp: Option<PathBuf>,
+
+    /// Development only: WAD3 texture packages consulted for the map's
+    /// external textures. May be repeated. Without them, externally stored
+    /// textures render as a checkerboard placeholder.
+    #[cfg(feature = "dev-tools")]
+    #[arg(long, value_name = "PATH", requires = "dev_bsp")]
+    dev_wad: Vec<PathBuf>,
 }
 
 /// Formats an event as `[level] message`, mirroring the C++ `ohl::core::log`
@@ -86,6 +107,20 @@ fn main() -> std::process::ExitCode {
     tracing::info!("{APP_NAME} {VERSION}");
     tracing::info!("{}", platform_line());
     tracing::debug!(core_version = ohl_core::VERSION, "loaded ohl-core");
+
+    #[cfg(feature = "dev-tools")]
+    if let Some(path) = cli.dev_bsp.as_deref() {
+        // The path itself is never logged: the project's logging policy is
+        // uniform, and a user-supplied path is still untrusted input.
+        tracing::warn!("development map viewer: media pipeline is bypassed");
+        return match dev_bsp::run(path, &cli.dev_wad) {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(message) => {
+                eprintln!("{message}");
+                std::process::ExitCode::from(3)
+            }
+        };
+    }
 
     if let Some(iso) = cli.iso {
         drop(iso);

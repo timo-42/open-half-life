@@ -1,0 +1,435 @@
+//! The world renderer: pipeline, buffers, bind groups and the draw loop.
+
+use ohl_world::{DrawList, TextureImage, WorldModel, index_bytes, vertex_bytes};
+
+use crate::camera::FreeFlyCamera;
+use crate::error::{RenderError, Result};
+use crate::gpu::GpuContext;
+
+/// The depth format the renderer uses. `Depth32Float` is available on every
+/// wgpu backend, including downlevel and software adapters.
+pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
+/// Bytes per [`ohl_world::WorldVertex`].
+const VERTEX_STRIDE: wgpu::BufferAddress = 7 * 4;
+
+/// `mat4x4<f32>` plus one `vec4<f32>` of parameters.
+const CAMERA_UNIFORM_BYTES: wgpu::BufferAddress = 64 + 16;
+
+/// The colour a frame is cleared to before any geometry is drawn.
+const CLEAR_COLOR: wgpu::Color = wgpu::Color {
+    r: 0.02,
+    g: 0.02,
+    b: 0.04,
+    a: 1.0,
+};
+
+fn upload_texture(
+    context: &GpuContext,
+    image: &TextureImage,
+    label: &'static str,
+) -> wgpu::TextureView {
+    let size = wgpu::Extent3d {
+        width: image.width(),
+        height: image.height(),
+        depth_or_array_layers: 1,
+    };
+    let texture = context.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        // Deliberately not an sRGB format: GoldSrc's palettes and lightmaps
+        // are already gamma-encoded and are composited in that space.
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    context.queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        image.rgba(),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(image.width() * 4),
+            rows_per_image: Some(image.height()),
+        },
+        size,
+    );
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// Everything needed to draw one [`WorldModel`] into a colour target.
+pub struct WorldRenderer {
+    pipeline: wgpu::RenderPipeline,
+    camera_buffer: wgpu::Buffer,
+    global_bind_group: wgpu::BindGroup,
+    texture_bind_groups: Vec<wgpu::BindGroup>,
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    index_capacity: usize,
+    depth: Option<(wgpu::TextureView, u32, u32)>,
+    draw_list: DrawList,
+    srgb_output: bool,
+}
+
+impl WorldRenderer {
+    /// Uploads `model` and builds the pipeline for a `color_format` target.
+    #[allow(clippy::too_many_lines)]
+    pub fn new(
+        context: &GpuContext,
+        model: &WorldModel,
+        color_format: wgpu::TextureFormat,
+    ) -> Result<Self> {
+        let device = &context.device;
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("ohl world shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("world.wgsl").into()),
+        });
+
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("ohl world sampler"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let lightmap_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("ohl lightmap sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        let global_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("ohl global bind group layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(CAMERA_UNIFORM_BYTES),
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("ohl texture bind group layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+
+        let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ohl camera uniform"),
+            size: CAMERA_UNIFORM_BYTES,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let lightmap_view = upload_texture(context, &model.lightmap_atlas, "ohl lightmap atlas");
+        let global_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ohl global bind group"),
+            layout: &global_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&lightmap_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&lightmap_sampler),
+                },
+            ],
+        });
+
+        // One bind group per texture; a texture array would need a
+        // per-device maximum-binding negotiation that buys nothing at this
+        // milestone's batch counts.
+        let mut texture_bind_groups = Vec::with_capacity(model.textures.len());
+        for image in &model.textures {
+            let view = upload_texture(context, image, "ohl world texture");
+            texture_bind_groups.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("ohl texture bind group"),
+                layout: &texture_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
+                ],
+            }));
+        }
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("ohl world pipeline layout"),
+            bind_group_layouts: &[Some(&global_layout), Some(&texture_layout)],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("ohl world pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vertex_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: VERTEX_STRIDE,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x3,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 12,
+                            shader_location: 1,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 20,
+                            shader_location: 2,
+                        },
+                    ],
+                })],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fragment_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                // Face winding is not yet normalised across surfedge
+                // direction and `plane_side`, so both sides are drawn.
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let vertex_data = vertex_bytes(&model.vertices);
+        let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ohl world vertices"),
+            size: (vertex_data.len() as wgpu::BufferAddress).max(VERTEX_STRIDE),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        context.queue.write_buffer(&vertex_buffer, 0, &vertex_data);
+
+        let index_capacity = model.indices.len().max(3);
+        let index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ohl world indices"),
+            size: (index_capacity * 4) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        if model.vertices.is_empty() {
+            return Err(RenderError::WorldTooLarge);
+        }
+
+        Ok(Self {
+            pipeline,
+            camera_buffer,
+            global_bind_group,
+            texture_bind_groups,
+            vertex_buffer,
+            index_buffer,
+            index_capacity,
+            depth: None,
+            draw_list: DrawList::new(),
+            srgb_output: color_format.is_srgb(),
+        })
+    }
+
+    /// Recreates the depth buffer when the target size changes.
+    pub fn resize(&mut self, context: &GpuContext, width: u32, height: u32) {
+        let (width, height) = (width.max(1), height.max(1));
+        if matches!(self.depth, Some((_, w, h)) if w == width && h == height) {
+            return;
+        }
+        let texture = context.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("ohl depth buffer"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DEPTH_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        self.depth = Some((
+            texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            width,
+            height,
+        ));
+    }
+
+    /// The number of triangles the last [`Self::render`] call submitted.
+    #[must_use]
+    pub fn last_triangle_count(&self) -> usize {
+        self.draw_list.triangle_count()
+    }
+
+    /// Draws `model` from `camera` into `target`.
+    ///
+    /// Culling happens on the CPU in `ohl-world`: the PVS of the leaf the
+    /// camera stands in selects candidate faces and the frustum rejects the
+    /// rest, so only the surviving indices are uploaded each frame.
+    pub fn render(
+        &mut self,
+        context: &GpuContext,
+        model: &WorldModel,
+        camera: &FreeFlyCamera,
+        target: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+    ) {
+        self.resize(context, width, height);
+        #[allow(clippy::cast_precision_loss)]
+        let aspect = width.max(1) as f32 / height.max(1) as f32;
+        let view_projection = camera.view_projection(aspect);
+        let frustum = camera.frustum(aspect);
+        model.build_draw_list(camera.position, Some(&frustum), &mut self.draw_list);
+
+        let mut uniform = Vec::with_capacity(usize::try_from(CAMERA_UNIFORM_BYTES).unwrap_or(80));
+        for value in view_projection {
+            uniform.extend_from_slice(&value.to_le_bytes());
+        }
+        let srgb = if self.srgb_output { 1.0f32 } else { 0.0f32 };
+        for value in [srgb, 0.0, 0.0, 0.0] {
+            uniform.extend_from_slice(&value.to_le_bytes());
+        }
+        context.queue.write_buffer(&self.camera_buffer, 0, &uniform);
+
+        let indices =
+            &self.draw_list.indices[..self.draw_list.indices.len().min(self.index_capacity)];
+        if !indices.is_empty() {
+            context
+                .queue
+                .write_buffer(&self.index_buffer, 0, &index_bytes(indices));
+        }
+
+        let mut encoder = context
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("ohl world encoder"),
+            });
+        {
+            let depth_view = self
+                .depth
+                .as_ref()
+                .map(|(view, _, _)| view)
+                .expect("resize created the depth buffer above");
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ohl world pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(CLEAR_COLOR),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &self.global_bind_group, &[]);
+            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            for batch in &self.draw_list.batches {
+                let Some(bind_group) = self.texture_bind_groups.get(batch.texture) else {
+                    continue;
+                };
+                let end = batch.first_index + batch.index_count;
+                if end as usize > indices.len() {
+                    continue;
+                }
+                pass.set_bind_group(1, bind_group, &[]);
+                pass.draw_indexed(batch.first_index..end, 0, 0..1);
+            }
+        }
+        context.queue.submit(Some(encoder.finish()));
+    }
+}

@@ -1,4 +1,56 @@
-# P4 renderer dependency facade
+# Renderer dependencies
+
+This document covers two separate stacks:
+
+1. the Rust renderer's crates.io dependencies (`crates/ohl-render`,
+   `crates/ohl-app`), which are the direction of travel; and
+2. the historical C++/CMake "P4 renderer dependency facade"
+   (`cmake/RenderDependencies.cmake`), retained below while the C++ tree is
+   still buildable.
+
+## Rust renderer crates
+
+The Rust renderer links no C libraries and contains no `unsafe` code: wgpu and
+winit are safe Rust APIs and the workspace's `forbid(unsafe_code)` lint applies
+to `ohl-render` and `ohl-app` unchanged. Versions are pinned exactly in each
+crate's `Cargo.toml` (`=x.y.z`) and resolved reproducibly through `Cargo.lock`;
+`cargo deny check licenses` is the enforced gate.
+
+| Crate | Pinned version | License | Used by | Purpose |
+| --- | --- | --- | --- | --- |
+| `wgpu` | `=30.0.1` | MIT OR Apache-2.0 | `ohl-render` | Graphics API: instance/adapter/device/surface, WGSL pipelines, textures, buffers |
+| `winit` | `=0.30.13` | Apache-2.0 | `ohl-app` (`dev-tools` feature only) | Window creation, keyboard and pointer events |
+| `pollster` | `=1.0.1` | Apache-2.0 OR MIT | `ohl-render` | Blocks on wgpu's adapter/device/map futures without pulling in an async runtime |
+
+`winit` is Apache-2.0 only (not dual-licensed); that is on `deny.toml`'s allow
+list and is compatible with the repository's MIT-licensed code, but binary
+distributors must ship its `LICENSE` text with the notices required for every
+crate actually linked, which `Cargo.lock` enumerates.
+
+### Backend policy
+
+Per `PROMPT.md`, `ohl-render` requests wgpu's Vulkan backend on Linux and
+Windows and its Metal backend on macOS, then widens the search to
+`wgpu::Backends::PRIMARY` if the preferred backend produced no adapter.
+MoltenVK is not used: the Rust port links no C libraries, so a
+Vulkan-over-Metal translation layer is not an option.
+
+Every entry point that needs an adapter returns a fixed `RenderError::NoAdapter`
+rather than panicking, so a machine with no GPU — the normal case for a CI
+runner — can still build and unit-test the whole crate. The offscreen render
+test skips itself on such a machine, and is `#[ignore]`d by default with an
+`OHL_RENDER_GPU_TEST=1` opt-in.
+
+### Texture formats and gamma
+
+GoldSrc palettes and lightmaps are already gamma-encoded and are composited in
+that space with no overbright multiplier, so world textures and the lightmap
+atlas are uploaded as `Rgba8Unorm` (never `...Srgb`) and the shader multiplies
+the two samples directly. When a window surface offers only an sRGB format the
+shader converts the result back to linear first, so the hardware's sRGB encode
+round-trips to the same pixels the non-sRGB path produces.
+
+## P4 renderer dependency facade (C++/CMake)
 
 This document records the accepted dependency facade implemented by
 `cmake/RenderDependencies.cmake` and its isolated probe. It does not mean that
