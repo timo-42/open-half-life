@@ -1,0 +1,24 @@
+//! One frame's worth of player intent.
+
+/// A host-independent input snapshot handed to [`crate::Game::tick`].
+///
+/// The movement axes are the same tri-state the physics controller expects
+/// (`-1`, `0`, `+1`); `mouse_delta` is in raw device pixels and is scaled by
+/// [`crate::MOUSE_SENSITIVITY`].
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Input {
+    /// Forward (`+1`) / back (`-1`).
+    pub forward: i8,
+    /// Right (`+1`) / left (`-1`).
+    pub right: i8,
+    /// Up (`+1`) / down (`-1`), used only while noclipping.
+    pub up: i8,
+    /// Whether jump is held.
+    pub jump: bool,
+    /// Whether duck is held.
+    pub duck: bool,
+    /// Set for exactly the frame "use" was pressed, not while it is held.
+    pub use_pressed: bool,
+    /// Relative mouse motion since the last tick, in device pixels.
+    pub mouse_delta: (f32, f32),
+}
