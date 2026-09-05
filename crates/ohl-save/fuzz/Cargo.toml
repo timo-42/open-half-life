@@ -1,0 +1,41 @@
+# Standalone fuzzing package for `ohl-save`.
+#
+# Deliberately excluded from the main workspace: `cargo fuzz` needs a nightly
+# toolchain and a `libfuzzer-sys` dependency the pinned stable build must not
+# acquire. Run explicitly:
+#
+#     cargo +nightly fuzz run open_fuzz
+#     cargo +nightly fuzz run roundtrip_fuzz
+
+[workspace]
+members = ["."]
+
+[package]
+name = "ohl-save-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.ohl-save]
+path = ".."
+
+[[bin]]
+name = "open_fuzz"
+path = "fuzz_targets/open_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "roundtrip_fuzz"
+path = "fuzz_targets/roundtrip_fuzz.rs"
+test = false
+doc = false
+bench = false
