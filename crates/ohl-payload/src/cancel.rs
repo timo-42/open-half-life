@@ -169,6 +169,7 @@ impl Eq for CancellationSource {}
 #[cfg(test)]
 mod tests {
     use super::{CancellationSource, CancellationToken};
+    #[cfg(feature = "std")]
     use alloc::vec::Vec;
 
     #[test]
@@ -236,6 +237,10 @@ mod tests {
         assert!(requested.stop_requested());
     }
 
+    // The cross-thread observations need a thread to observe from. The type
+    // itself is `alloc`-only, so these two cases — and only these two — are
+    // gated on `std`.
+    #[cfg(feature = "std")]
     #[test]
     fn a_stop_request_is_observed_across_threads() {
         let source = CancellationSource::new();
@@ -250,6 +255,7 @@ mod tests {
         assert!(observer.join().expect("observer thread"));
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn concurrent_requests_have_exactly_one_winner() {
         let contested = CancellationSource::new();
