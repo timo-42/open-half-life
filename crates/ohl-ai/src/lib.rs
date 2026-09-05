@@ -23,6 +23,11 @@
 //! - [`spawn`]: attaching AI components to `ohl-game`'s entity registry.
 //! - [`damage`]: the minimal damage input, to be replaced by `ohl-combat`'s
 //!   richer `DamageInfo` (see the module docs).
+//! - [`monsters`]: package 7.7's per-monster `MonsterKind`/`MonsterSpec`
+//!   table, `MonsterBrain` and lifecycle (health intake, death, corpse/gib,
+//!   `TriggerCondition`).
+//! - [`spawner`]: `Spawner`, the `monstermaker` spawn-count/delay/
+//!   live-children bookkeeping.
 //! - [`rng`]: a project-owned seeded [`Pcg32`].
 //! - [`world`]: [`AiWorld`], the deterministic fixed-tick simulation over a
 //!   [`hecs::World`].
@@ -57,17 +62,24 @@
 
 pub mod brain;
 pub mod damage;
+pub mod monsters;
 pub mod movement;
 pub mod rng;
 pub mod schedule;
 pub mod senses;
 pub mod spawn;
+pub mod spawner;
 pub mod squad;
 pub mod state;
 pub mod world;
 
 pub use brain::{DefaultBrain, default_next_state, schedule_by_name};
 pub use damage::{DamageEvent, DamageQueue, DamageSink};
+pub use monsters::{
+    CorpseDecision, MonsterBrain, MonsterKind, MonsterSpec, MonsterTrigger, Navigator,
+    NoOpRangedAttackSink, RangedAttackSink, StraightLineNavigator, TriggerCondition,
+    TriggerContext, apply_damage as apply_monster_damage,
+};
 pub use movement::{MoveResult, Route, StuckDetector, move_toward};
 pub use rng::Pcg32;
 pub use schedule::{
@@ -78,6 +90,7 @@ pub use senses::{
     SoundKind, SoundList, Viewer, listen, look,
 };
 pub use spawn::{MonsterSpawn, MonsterSpawnRules, attach_monsters};
+pub use spawner::Spawner;
 pub use squad::{MAX_RECRUITS, MAX_SQUAD_SIZE, Squad, SquadCandidate, SquadRoster};
 pub use state::{
     CLASSIFICATION_COUNT, Classification, Conditions, MonsterState, Relationship, RelationshipTable,
