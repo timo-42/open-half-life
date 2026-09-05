@@ -850,7 +850,22 @@ conventions":
   drawn by this call. `light_styles::LightStyles` evaluates `a`..`z`
   pattern strings at a fixed 10 Hz, seeded with the documented default
   patterns for styles `0..=11` (see `docs/FORMAT_SOURCES.md`, "Rendering
-  conventions").
+  conventions"). `WorldRenderer::draw_sprites` draws a batch of
+  `SpriteInstance { asset, origin, scale, render_props, frame_time }`
+  billboards into the same colour/depth target, depth-tested but never
+  depth-written (per instance's own opaque/alpha/additive pipeline,
+  selected the same way `RenderProps::blend_kind` selects a submodel
+  pipeline): `SpriteType::ParallelUpright`/`FacingUpright` stay upright
+  (world +Z) and only rotate their facing axis (the latter facing the
+  camera's position, the former its view direction);
+  `Parallel`/`ParallelOriented`/unknown types fully align to the camera's
+  own right/up axes; `Oriented` lies flat in the world XY plane, since this
+  milestone's `SpriteInstance` carries no per-instance rotation to orient a
+  fixed-angle sprite by. Each instance picks its frame with
+  `SpriteAsset::frame_at` at the documented default 10 Hz (no per-instance
+  framerate override yet). Opaque instances draw first; translucent ones
+  draw back-to-front by camera distance, batching consecutive same-frame
+  instances into one texture upload.
 
 Verified:
 
@@ -860,10 +875,12 @@ Verified:
   using whatever adapter the host offers; on a machine with none, the test
   skips instead of failing. It is `#[ignore]`d by default, with an
   `OHL_RENDER_GPU_TEST=1` opt-in, so CI runners without GPUs stay green.
-  Three further gated offscreen tests cover M3.4: the sky pass fills the
-  frame when nothing else is drawn, the liquid pass blends visibly over the
-  cleared background, and `draw_world_submodel` blends a translucent
-  (`RenderMode::Texture`) submodel visibly over the cleared background.
+  Further gated offscreen tests cover M3.4: the sky pass fills the frame
+  when nothing else is drawn, the liquid pass blends visibly over the
+  cleared background, `draw_world_submodel` blends a translucent
+  (`RenderMode::Texture`) submodel visibly over the cleared background, and
+  `draw_sprites` brightens the centre of the frame with a synthetic
+  `RenderMode::Additive` sprite.
 - on screen: **not verified** in the development environment used for this
   package, which has no display server. `--dev-bsp` was exercised there only
   as far as loading the map and reporting, through the sanitized error path,
@@ -874,9 +891,10 @@ place any submodel or call `draw_world_submodel`; the entity's transform and
 render properties must come from a future milestone's entity parsing), a
 submodel's own liquid faces, texture animation (`+0`/`-0` frames), backface
 culling (winding is not yet normalised across `plane_side`, so both sides are
-drawn), mipmaps and anisotropy, sprite billboard *transforms* (the documented
-`type` is exposed but `ohl-render` does not yet build a per-frame billboard
-matrix from it), and any map source other than a path on disk.
+drawn), mipmaps and anisotropy, a per-instance rotation for
+`SpriteType::Oriented` sprites (drawn flat in the world XY plane instead;
+see `ohl-render`'s M3.4 entry above), and any map source other than a path
+on disk.
 
 ## M4 (Rust): movement
 
