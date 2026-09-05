@@ -1,0 +1,42 @@
+[package]
+name = "ohl-audio"
+description = "Bounded WAV decoding and a software mixer for Open Half-Life"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ohl_audio"
+
+[features]
+default = []
+std = []
+
+[dependencies]
+ohl-core = { path = "../ohl-core", version = "=0.1.0", features = ["std"] }
+
+[dev-dependencies]
+# `hound` is used only to *write* synthetic WAV fixtures for this crate's
+# tests (a well-suited, low-risk job for a general-purpose crate). Decoding
+# untrusted WAV bytes is this crate's own bounded, zero-copy chunk walker
+# (`src/wav.rs`, in the same style as `ohl-formats`'s BSP30/WAD3 decoders):
+# it has to inspect the `cue `/`smpl` chunks hound does not expose anyway, so
+# reading `fmt `/`data` through a second, independent parser would only add
+# risk for no benefit. See `src/wav.rs` module docs.
+hound = "=3.5.1"
+
+# `cpal`'s only Linux backend links libasound (via the `alsa` crate's
+# `alsa-sys`, which locates and links the system library through
+# `pkg-config` at build time). That is exactly the link-time C-library
+# dependency `PROMPT.md`'s "No FFI" rule forbids, so `cpal` is never even
+# resolved as a dependency on Linux: this table only lists it for macOS
+# (CoreAudio) and Windows (WASAPI), the same tier of OS-API exception already
+# accepted for wgpu's Vulkan/Metal backends in `ohl-render`. See
+# `docs/RENDER_DEPENDENCIES.md` ("Audio backend") for the full write-up.
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+cpal = "=0.18.2"
+
+[lints]
+workspace = true
