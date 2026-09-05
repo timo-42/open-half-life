@@ -12,12 +12,17 @@
 //! media-derived string ever reaches a log line. That includes the paths the
 //! developer passed on the command line, which are echoed nowhere.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use glam::Vec3;
 use ohl_formats::bsp30::{Bsp, Limits};
-use ohl_physics::{CollisionModel, ControllerInput, PlayerController, Vec3};
+use ohl_game::keyvalues::{self, Limits as KeyvalueLimits};
+use ohl_game::registry::Registry;
+use ohl_game::{Simulation, find_usable_within};
+use ohl_physics::{CollisionModel, ControllerInput, PlayerController};
 use ohl_render::{FreeFlyCamera, GpuContext, MoveInput, WindowSurface, WorldRenderer, wgpu};
 use ohl_world::{WorldBuildOptions, WorldModel};
 use winit::application::ApplicationHandler;
@@ -25,6 +30,10 @@ use winit::event::{DeviceEvent, DeviceId, ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
+
+/// How close (in GoldSrc units) the camera must be to a door or button for
+/// `E` to use it, mirroring a comfortable interaction range.
+const USE_RADIUS: f32 = 64.0;
 
 /// How often the frame-rate line is logged.
 const FPS_INTERVAL: Duration = Duration::from_secs(2);
@@ -72,6 +81,44 @@ pub fn run(bsp_path: &Path, wad_paths: &[PathBuf]) -> Result<(), &'static str> {
         tracing::warn!("map has no usable collision hulls; walking mode is unavailable");
     }
 
+    // Build the entity registry and its brush-model bounding boxes so
+    // `func_door`/`func_button`/`func_plat` and friends can be driven by the
+    // map logic simulation. Failure here is not fatal to the viewer: a map
+    // with no (or malformed) entities still renders, it just has nothing to
+    // `use`.
+    let kv_limits = KeyvalueLimits::default();
+    let mut model_bounds = BTreeMap::new();
+    if let Ok(models) = bsp.models(&limits) {
+        for (index, submodel) in models.iter().enumerate() {
+            let Ok(index) = u32::try_from(index) else {
+                continue;
+            };
+            model_bounds.insert(
+                index,
+                (
+                    [
+                        submodel.mins[0].get(),
+                        submodel.mins[1].get(),
+                        submodel.mins[2].get(),
+                    ],
+                    [
+                        submodel.maxs[0].get(),
+                        submodel.maxs[1].get(),
+                        submodel.maxs[2].get(),
+                    ],
+                ),
+            );
+        }
+    }
+    let registry = bsp.entities(&limits).map_or_else(
+        |_| Registry::build(&[], &BTreeMap::new(), &kv_limits),
+        |entities| {
+            let defs = keyvalues::parse_entities(&entities, &kv_limits);
+            Registry::build(&defs, &model_bounds, &kv_limits)
+        },
+    );
+    let simulation = Simulation::new();
+
     let event_loop = EventLoop::new().map_err(|_| "no window system is available")?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let camera = model
@@ -89,6 +136,10 @@ pub fn run(bsp_path: &Path, wad_paths: &[PathBuf]) -> Result<(), &'static str> {
         collision,
         controller,
         walk_input: ControllerInput::default(),
+        registry,
+        simulation,
+        use_pressed: false,
+        key_e_down: false,
         state: None,
         input: MoveInput::default(),
         last_frame: Instant::now(),
@@ -120,6 +171,14 @@ struct Viewer {
     walk_input: ControllerInput,
     /// Whether the walking player drives the camera (`V` toggles it).
     walking: bool,
+    registry: Registry,
+    simulation: Simulation,
+    /// Set for one `draw` call when `E` was pressed since the last frame,
+    /// so a held key does not fire "use" every frame.
+    use_pressed: bool,
+    /// Whether `E` was already down as of the last `KeyboardInput` event,
+    /// so `use_pressed` only latches on the press edge.
+    key_e_down: bool,
     state: Option<Active>,
     input: MoveInput,
     last_frame: Instant,
@@ -209,13 +268,31 @@ impl Viewer {
     }
 
     fn draw(&mut self) {
-        if self.state.is_none() {
-            return;
-        }
         let now = Instant::now();
         let delta = now.saturating_duration_since(self.last_frame);
         self.last_frame = now;
         self.update_view(delta.as_secs_f32());
+
+        if self.use_pressed {
+            self.use_pressed = false;
+            let position = Vec3::from_array(self.camera.position);
+            if let Some(entity) = find_usable_within(&self.registry, position, USE_RADIUS) {
+                let mut events = Vec::new();
+                self.simulation
+                    .use_entity(&mut self.registry, entity, None, &mut events);
+                // Level-change destinations are map-derived strings, so
+                // this deliberately drops them rather than logging; loading
+                // the next map is not implemented in this development-only
+                // viewer.
+            }
+        }
+        // Deterministic, fixed-timestep map logic (doors, buttons,
+        // platforms, multi_manager fan-out, triggers): advanced by the
+        // real frame delta here since the viewer has no fixed-tick loop of
+        // its own yet.
+        let _ = self
+            .simulation
+            .tick(&mut self.registry, delta.as_secs_f32());
 
         let Some(active) = self.state.as_mut() else {
             return;
@@ -335,6 +412,13 @@ impl ApplicationHandler for Viewer {
                 let pressed = event.state == ElementState::Pressed;
                 if pressed && !event.repeat {
                     self.toggle_mode(code);
+                }
+                if code == KeyCode::KeyE {
+                    if pressed && !self.key_e_down {
+                        self.use_pressed = true;
+                    }
+                    self.key_e_down = pressed;
+                    return;
                 }
                 self.set_axis(code, pressed);
             }

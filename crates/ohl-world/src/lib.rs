@@ -15,6 +15,7 @@
 //! renderer's job (`ohl-render`), so the culling planes in [`Frustum`] are
 //! expressed in the same space as the vertices.
 
+pub mod brush;
 mod culling;
 mod error;
 mod geometry;
@@ -28,6 +29,7 @@ mod vis;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
+pub use brush::{BrushModelGeometry, build_draw_list_for_model};
 pub use culling::{Aabb, Frustum};
 pub use error::{Result, WorldError};
 pub use geometry::{FaceGeometry, VERTEX_BYTES, WorldVertex, index_bytes, vertex_bytes};

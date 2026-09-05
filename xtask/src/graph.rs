@@ -86,7 +86,7 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
     ("ohl-render", &["ohl-core", "ohl-world"]),
     ("ohl-audio", &["ohl-core"]),
     ("ohl-input", &["ohl-core"]),
-    ("ohl-game", &["ohl-core"]),
+    ("ohl-game", &["ohl-core", "ohl-formats", "ohl-world"]),
     ("ohl-ui", &["ohl-core"]),
     (COMPOSITION_ROOT, &[]),
 ];

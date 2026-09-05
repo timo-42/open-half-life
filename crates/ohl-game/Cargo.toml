@@ -1,0 +1,29 @@
+[package]
+name = "ohl-game"
+description = "Entity registry and deterministic map logic built from clean-room GoldSrc entity keyvalues"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ohl_game"
+
+[features]
+default = []
+
+[dependencies]
+ohl-core = { path = "../ohl-core", version = "=0.1.0" }
+ohl-formats = { path = "../ohl-formats", version = "=0.1.0", features = ["std"] }
+ohl-world = { path = "../ohl-world", version = "=0.1.0" }
+# Pinned exact, as required for crates named by the Rust migration
+# architecture that are not yet in `[workspace.dependencies]`.
+glam = { version = "=0.33.6", default-features = false, features = ["std"] }
+hecs = { version = "=0.11.1", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

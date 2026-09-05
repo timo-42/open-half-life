@@ -981,3 +981,53 @@ All test fixtures are produced by a synthetic writer authored for this project
 (`ohl_wise::testing`), which invents its own PE stub, header filler, bitmap,
 script records and file contents. No byte, name, size or layout from any real
 medium appears in the code, tests, fixtures or this file.
+
+## Entity keyvalues and map logic
+
+- [TWHL wiki: func_door](https://twhl.info/wiki/page/func_door),
+  [func_button](https://twhl.info/wiki/page/func_button),
+  [func_plat](https://twhl.info/wiki/page/func_plat),
+  [multi_manager](https://twhl.info/wiki/page/multi_manager) and its
+  [Tutorial: Multi_manager](https://twhl.info/wiki/page/Tutorial:_Multi_manager),
+  [trigger_changelevel](https://twhl.info/wiki/page/trigger_changelevel),
+  [info_landmark](https://twhl.info/wiki/page/info_landmark), and
+  [path_corner](https://twhl.info/wiki/page/path_corner) (public Half-Life
+  mapping documentation; consulted via search-engine result summaries, since
+  the pages themselves return HTTP 403 to automated fetches from this
+  environment): `speed`, `wait`, `lip`, `dmg`, `health`, `delay`, `sounds`,
+  and a movement direction driven by `angles`/`angle` for `func_door` and
+  `func_plat`/`func_platform`; `speed`, `wait`, `health`, `delay`, `sounds`
+  and `target` for `func_button`; `multi_manager`'s fan-out convention (every
+  non-standard keyvalue is a `target -> delay in seconds` pair, capped at 16
+  entries, with a trailing `#N` suffix on repeated keys stripped by the game
+  before use, needed only because map-editor keyvalue tables require unique
+  keys); `trigger_changelevel`'s `map`/`landmark` keyvalues and their
+  requirement to match an `info_landmark` of the same name in the
+  destination map; `path_corner`/`path_track`'s `target` (next node) and
+  `wait`.
+- The `angle`/`angles` "straight up" (`-1`)/"straight down" (`-2`) sentinel
+  convention used by GoldSrc map editors in place of a numeric yaw is
+  standard, widely documented public knowledge for Quake-engine-family
+  `angles` keyvalues (e.g. the editors' own "Up"/"Down" combo-box choices for
+  any `angles`-driven mover); no SDK source was consulted for it.
+- `light`/`light_spot`/`light_environment`'s `_light`/`light` keyvalue format
+  (`brightness`, or `r g b`, or `r g b brightness`) and `_cone`/`style` keys
+  are standard, widely documented Half-Life mapping conventions (again
+  summarized via search results due to the 403s above).
+
+Project behaviour supported: `crates/ohl-game` (`keyvalues`, `registry`,
+`brush`, `logic`) turns the BSP entities lump (already parsed by
+`ohl_formats::bsp30::entities::parse`) into typed, bounded `EntityDef`s, a
+`hecs`-based entity registry with a bounded `targetname -> entities` index,
+brush-model instancing data, and a minimal deterministic map logic
+simulation: door/button/platform closed/opening/open/closing state machines,
+`multi_manager` fan-out, `trigger_once`/`trigger_multiple` dispatch with a
+`wait` cooldown, and a `trigger_changelevel` event. Door/platform travel
+distance is derived from the brush submodel's own bounding box (`maxs -
+mins`, projected onto the movement direction) minus `lip`, computed from
+`ohl_formats::bsp30::Model`'s `mins`/`maxs` fields — a straightforward
+application of the documented "lip subtracted from the brush's own extent"
+behaviour, not a copied formula. No SDK source (`dlls/*.cpp`) or decompiled
+GoldSrc logic was consulted for any of the above; only the public wiki pages
+named. `ohl-render` does not yet draw the resulting brush-model instances
+(see `docs/MILESTONES.md`, "M5 (Rust): entities").
