@@ -20,6 +20,12 @@ test-support = ["ohl-formats/test-support"]
 
 [dependencies]
 ohl-formats = { path = "../ohl-formats", version = "=0.1.0", features = ["std"] }
+# Decodes the six skybox TGA faces only; no PNG/JPEG/etc. codecs are pulled
+# in, and the default-feature codec/format grab-bag is disabled.
+image = { version = "=0.25.10", default-features = false, features = [
+    "tga",
+    "bmp",
+] }
 
 [dev-dependencies]
 proptest = { workspace = true }

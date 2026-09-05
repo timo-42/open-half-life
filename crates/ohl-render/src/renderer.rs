@@ -5,6 +5,7 @@ use ohl_world::{DrawList, TextureImage, WorldModel, index_bytes, vertex_bytes};
 use crate::camera::FreeFlyCamera;
 use crate::error::{RenderError, Result};
 use crate::gpu::GpuContext;
+use crate::light_styles::LightStyles;
 
 /// The depth format the renderer uses. `Depth32Float` is available on every
 /// wgpu backend, including downlevel and software adapters.
@@ -28,7 +29,7 @@ fn upload_texture(
     context: &GpuContext,
     image: &TextureImage,
     label: &'static str,
-) -> wgpu::TextureView {
+) -> (wgpu::Texture, wgpu::TextureView) {
     let size = wgpu::Extent3d {
         width: image.width(),
         height: image.height(),
@@ -46,22 +47,33 @@ fn upload_texture(
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
+    write_texture(context, &texture, size, image.rgba(), image.width());
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
+fn write_texture(
+    context: &GpuContext,
+    texture: &wgpu::Texture,
+    size: wgpu::Extent3d,
+    rgba: &[u8],
+    width: u32,
+) {
     context.queue.write_texture(
         wgpu::TexelCopyTextureInfo {
-            texture: &texture,
+            texture,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        image.rgba(),
+        rgba,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(image.width() * 4),
-            rows_per_image: Some(image.height()),
+            bytes_per_row: Some(width * 4),
+            rows_per_image: Some(size.height),
         },
         size,
     );
-    texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 /// Everything needed to draw one [`WorldModel`] into a colour target.
@@ -76,6 +88,20 @@ pub struct WorldRenderer {
     depth: Option<(wgpu::TextureView, u32, u32)>,
     draw_list: DrawList,
     srgb_output: bool,
+    /// Kept (rather than just its view) so [`Self::update_light_styles`] can
+    /// re-upload a re-blended atlas.
+    lightmap_texture: wgpu::Texture,
+    lightmap_size: (u32, u32),
+    /// The liquid ("water") pass: same bind group layouts as the opaque
+    /// pass (so it can reuse [`Self::texture_bind_groups`]), a dedicated
+    /// camera-like uniform carrying the turbulence phase and alpha, and its
+    /// own index buffer (liquid batches are a range within
+    /// [`ohl_world::DrawList::liquid_indices`], not [`Self::index_buffer`]).
+    liquid_pipeline: wgpu::RenderPipeline,
+    liquid_camera_buffer: wgpu::Buffer,
+    liquid_global_bind_group: wgpu::BindGroup,
+    liquid_index_buffer: wgpu::Buffer,
+    liquid_index_capacity: usize,
 }
 
 impl WorldRenderer {
@@ -168,7 +194,9 @@ impl WorldRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let lightmap_view = upload_texture(context, &model.lightmap_atlas, "ohl lightmap atlas");
+        let (lightmap_texture, lightmap_view) =
+            upload_texture(context, &model.lightmap_atlas, "ohl lightmap atlas");
+        let lightmap_size = (model.lightmap_atlas.width(), model.lightmap_atlas.height());
         let global_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("ohl global bind group"),
             layout: &global_layout,
@@ -193,7 +221,7 @@ impl WorldRenderer {
         // milestone's batch counts.
         let mut texture_bind_groups = Vec::with_capacity(model.textures.len());
         for image in &model.textures {
-            let view = upload_texture(context, image, "ohl world texture");
+            let (_texture, view) = upload_texture(context, image, "ohl world texture");
             texture_bind_groups.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("ohl texture bind group"),
                 layout: &texture_layout,
@@ -273,6 +301,105 @@ impl WorldRenderer {
             cache: None,
         });
 
+        // The liquid ("water") pass reuses `global_layout`/`texture_layout`
+        // (identical bind-group structure) and `texture_bind_groups`, so it
+        // only needs its own uniform buffer, bind group and pipeline.
+        let liquid_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("ohl world water shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("world_water.wgsl").into()),
+        });
+        let liquid_camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ohl liquid camera uniform"),
+            size: CAMERA_UNIFORM_BYTES,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let liquid_global_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ohl liquid global bind group"),
+            layout: &global_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: liquid_camera_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&lightmap_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&lightmap_sampler),
+                },
+            ],
+        });
+        let liquid_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("ohl liquid pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &liquid_shader,
+                entry_point: Some("vertex_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: VERTEX_STRIDE,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x3,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 12,
+                            shader_location: 1,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 20,
+                            shader_location: 2,
+                        },
+                    ],
+                })],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &liquid_shader,
+                entry_point: Some("fragment_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                // Sorted after the opaque pass and never itself
+                // depth-written, per the documented liquid-surface
+                // convention (see `docs/FORMAT_SOURCES.md`).
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        // A frame's liquid indices are a subset of `model.indices`, so the
+        // same upper bound the opaque buffer uses is always enough.
+        let liquid_index_capacity = model.indices.len().max(3);
+        let liquid_index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ohl liquid indices"),
+            size: (liquid_index_capacity * 4) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let vertex_data = vertex_bytes(&model.vertices);
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("ohl world vertices"),
@@ -305,7 +432,45 @@ impl WorldRenderer {
             depth: None,
             draw_list: DrawList::new(),
             srgb_output: color_format.is_srgb(),
+            lightmap_texture,
+            lightmap_size,
+            liquid_pipeline,
+            liquid_camera_buffer,
+            liquid_global_bind_group,
+            liquid_index_buffer,
+            liquid_index_capacity,
         })
+    }
+
+    /// Re-blends [`ohl_world::WorldModel::lightmap_atlas`] at `styles`'
+    /// intensities for `time_seconds` and re-uploads it, animating light
+    /// styles. Cheap enough to call once per rendered frame (or, since
+    /// styles only change at [`crate::STYLE_HZ`], only when that step has
+    /// advanced); a no-op if `model` is not the model this renderer was
+    /// built from.
+    pub fn update_light_styles(
+        &self,
+        context: &GpuContext,
+        model: &WorldModel,
+        styles: &LightStyles,
+        time_seconds: f32,
+    ) {
+        let blended = model.blend_lightmap(|style| styles.intensity(style, time_seconds));
+        if (blended.width(), blended.height()) != self.lightmap_size {
+            return;
+        }
+        let size = wgpu::Extent3d {
+            width: self.lightmap_size.0,
+            height: self.lightmap_size.1,
+            depth_or_array_layers: 1,
+        };
+        write_texture(
+            context,
+            &self.lightmap_texture,
+            size,
+            blended.rgba(),
+            size.width,
+        );
     }
 
     /// Recreates the depth buffer when the target size changes.
@@ -428,6 +593,119 @@ impl WorldRenderer {
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             for batch in &self.draw_list.batches {
+                let Some(bind_group) = self.texture_bind_groups.get(batch.texture) else {
+                    continue;
+                };
+                let end = batch.first_index + batch.index_count;
+                if end as usize > indices.len() {
+                    continue;
+                }
+                pass.set_bind_group(1, bind_group, &[]);
+                pass.draw_indexed(batch.first_index..end, 0, 0..1);
+            }
+        }
+        context.queue.submit(Some(encoder.finish()));
+    }
+
+    /// Draws this frame's liquid ("water") faces, translucent and without
+    /// writing depth, into the same `target`/depth as the just-completed
+    /// [`Self::render`] call (loaded, not cleared).
+    ///
+    /// Must be called after [`Self::render`] in the same frame: it draws
+    /// from the liquid batches that call's [`ohl_world::WorldModel::build_draw_list`]
+    /// already computed, rather than recomputing culling itself.
+    ///
+    /// `time_seconds` drives the UV turbulence phase; `alpha` (`0.0..=1.0`)
+    /// is the pass's overall translucency (a worldspawn or entity's
+    /// `renderamt`/255, defaulting to `1.0`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_liquid(
+        &mut self,
+        context: &GpuContext,
+        camera: &FreeFlyCamera,
+        target: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+        time_seconds: f32,
+        alpha: f32,
+    ) {
+        if self.draw_list.liquid_indices.is_empty() {
+            return;
+        }
+        let Some((depth_view, _, _)) = &self.depth else {
+            return;
+        };
+        #[allow(clippy::cast_precision_loss)]
+        let aspect = width.max(1) as f32 / height.max(1) as f32;
+        let view_projection = camera.view_projection(aspect);
+
+        let mut uniform = Vec::with_capacity(usize::try_from(CAMERA_UNIFORM_BYTES).unwrap_or(80));
+        for value in view_projection {
+            uniform.extend_from_slice(&value.to_le_bytes());
+        }
+        let srgb = if self.srgb_output { 1.0f32 } else { 0.0f32 };
+        for value in [
+            srgb,
+            if time_seconds.is_finite() {
+                time_seconds
+            } else {
+                0.0
+            },
+            alpha.clamp(0.0, 1.0),
+            0.0,
+        ] {
+            uniform.extend_from_slice(&value.to_le_bytes());
+        }
+        context
+            .queue
+            .write_buffer(&self.liquid_camera_buffer, 0, &uniform);
+
+        let indices = &self.draw_list.liquid_indices[..self
+            .draw_list
+            .liquid_indices
+            .len()
+            .min(self.liquid_index_capacity)];
+        context
+            .queue
+            .write_buffer(&self.liquid_index_buffer, 0, &index_bytes(indices));
+
+        let mut encoder = context
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("ohl liquid encoder"),
+            });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ohl liquid pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.liquid_pipeline);
+            pass.set_bind_group(0, &self.liquid_global_bind_group, &[]);
+            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            pass.set_index_buffer(
+                self.liquid_index_buffer.slice(..),
+                wgpu::IndexFormat::Uint32,
+            );
+            for batch in &self.draw_list.liquid_batches {
                 let Some(bind_group) = self.texture_bind_groups.get(batch.texture) else {
                     continue;
                 };

@@ -360,6 +360,98 @@ container parsing rules themselves still require the public-source provenance
 demanded in the next section. All test fixtures are synthetic PE headers this
 project writes in-process (`ohl_import::testing::synthetic_pe`).
 
+## Rendering conventions
+
+M3.4 (`crates/ohl-world/src/sky.rs`, `src/water.rs`, `src/sprite.rs` and
+`crates/ohl-render/src/sky.rs`, `src/water.rs`, `src/render_props.rs`,
+`src/light_styles.rs`) implements a handful of GoldSrc rendering
+conventions that live outside any file-format specification above: skybox
+assembly, liquid-surface classification and animation, brush/studio
+render modes, light styles, and sprite billboarding/timing.
+
+- Valve Developer Community, "Skybox"
+  (<https://developer.valvesoftware.com/wiki/Skybox>) and "Sky (2D)"
+  (<https://developer.valvesoftware.com/wiki/Sky_(2D)>): the worldspawn
+  `skyname` key names a set of six 24-bit TGA images loaded from
+  `<skyname><suffix>.tga`, one per documented suffix (`bk`, `dn`, `ft`,
+  `lf`, `rt`, `up`, back/down/front/left/right/up respectively), each
+  square and matched in size. `ohl_world::sky::SkyboxAsset::build` decodes
+  exactly these six caller-supplied images in that suffix order (recorded
+  in `SKY_FACE_SUFFIXES`); `crates/ohl-render/src/sky.rs` documents, as its
+  own engineering choice (not a claim from either article), the mapping
+  from this suffix order to `wgpu`'s cubemap array-layer order and to this
+  project's GoldSrc-axis world space (`+X` forward, `+Y` left, `+Z` up).
+- Valve Developer Community, "BSP (Half-Life)"
+  (<https://developer.valvesoftware.com/wiki/BSP_(Half-Life)>): a
+  `sky`-named surface carries the `TEX_SPECIAL` texinfo flag, is left
+  unlit by the compiler, and is replaced at draw time by the skybox rather
+  than rendered as ordinary geometry. `ohl_world::sky::is_sky_texture`
+  matches any texture name with a case-insensitive `sky` prefix, and the
+  world builder excludes such faces from the opaque draw list while still
+  keeping them in the PVS/visibility accounting.
+- the303.org, "GoldSrc Map Texture Tutorial", part 6, "Water textures"
+  (<https://www.the303.org/tutorials/gold_tex_water.htm>): documents the
+  `!`-prefixed naming convention for liquid textures (for example
+  `!water1`, `!lava`) and describes them only qualitatively as
+  "procedurally animated to distort and fluctuate"; it does not publish a
+  per-texel warp formula. `ohl_world::water::is_liquid_texture` matches
+  the documented `!` prefix plus the stock content's unprefixed `laser`/
+  `water` families (case-insensitive), routing matched faces to a
+  translucent, depth-write-disabled pass sorted after opaque geometry.
+  `ohl_render::water::turbulence_offset` and the matching GLSL in
+  `world_water.wgsl` implement this project's own sine-based UV warp
+  (amplitude, period and cross-axis phase-mixing constants), chosen only
+  to reproduce the tutorial's qualitative description; no formula,
+  amplitude or period is transcribed from any engine or specification.
+- Valve Developer Community, "Render Modes"
+  (<https://developer.valvesoftware.com/wiki/Render_Modes>): documents the
+  `rendermode` enum (`Normal`, `Color`, `Texture`, `Glow`, `Solid`,
+  `Additive`), the paired `renderamt`/`rendercolor`/`renderfx` keys, and
+  each mode's blending behaviour in prose.
+  `ohl_render::render_props::RenderMode`/`RenderProps` reproduce this
+  enum and map each variant to one of a small, precompiled set of blend
+  pipelines (`BlendKind::Opaque`/`AlphaBlend`/`Additive`); `kRenderGlow` is
+  treated identically to `kRenderTransAdd` at this milestone (recorded as
+  this project's own simplification, not a claim from the article).
+- id Software's Quake light-style convention, inherited unchanged by
+  GoldSrc and documented on the Valve Developer Community's "Light Styles"
+  article (<https://developer.valvesoftware.com/wiki/Light_Styles>): up to
+  four style indices per BSP face (`Face::styles`, already decoded by
+  `ohl_formats::bsp30`), each style a pattern string of `a`..`z`
+  characters stepped at a fixed 10 Hz, where `a` is fully dark, `m` is the
+  compiled ("normal") brightness, and `z` is double brightness, with the
+  default style table (style `0` = `"m"`, and the documented flicker/pulse/
+  strobe patterns for styles `1`.. as published on that article)
+  reproduced verbatim. `ohl_render::light_styles::char_intensity` and
+  `LightStyles` implement exactly this character-to-intensity mapping and
+  tick rate; `ohl_world::WorldModel::blend_lightmap` combines up to four
+  per-face style intensities against the baked lightmap atlas.
+- "Unofficial Half-Life WAD3 and SPRITE file format specification" (cited
+  above, "GoldSrc MDL v10 and SPR"): the `type` enum
+  (`VP_PARALLEL_UPRIGHT`/`FACING_UPRIGHT`/`VP_PARALLEL`/`ORIENTED`/
+  `VP_PARALLEL_ORIENTED`) selects one of GoldSrc's documented billboard
+  orientations, and the texture-format enum
+  (`SPR_NORMAL`/`SPR_ADDITIVE`/`SPR_INDEXALPHA`/`SPR_ALPHTEST`) selects a
+  per-pixel alpha convention. `ohl_world::sprite::SpriteAsset::build`
+  decodes every frame to RGBA8 applying the documented convention for
+  each format (`Normal`/`Additive` opaque, `AlphaTest` keys palette index
+  255 transparent as WAD3/BSP30 masked textures already do, `IndexAlpha`
+  uses the palette index as alpha directly) and preserves `type` for the
+  renderer to select a billboard transform by.
+- Valve Developer Community, "env_sprite"
+  (<https://developer.valvesoftware.com/wiki/Env_sprite>): documents that
+  sprite animation, like light styles, only advances on a fixed 10 Hz
+  engine tick and defaults to 10 frames per second when a sprite does not
+  declare its own `framerate`. `ohl_world::sprite::MAX_SPRITE_FRAMERATE`
+  and the sprite frame-timing helpers reproduce this 10 Hz cap and 10 fps
+  default.
+
+All sky, liquid, render-mode, light-style and sprite tests in
+`crates/ohl-world` and `crates/ohl-render` (including the
+`OHL_RENDER_GPU_TEST`-gated offscreen sky/water tests) run only against
+synthetic assets authored for this project; no texture, pattern string or
+sprite frame from any game installation is used or committed.
+
 ## Cabinet and component-selection parsing
 
 This section is about the **InstallShield-era** installer cabinet/header pair

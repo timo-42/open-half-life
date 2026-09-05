@@ -25,6 +25,8 @@ pub enum WorldError {
     /// A face's texture coordinates are not finite, so its lightmap extents
     /// cannot be computed.
     NonFiniteGeometry,
+    /// An image (skybox face or sprite frame) failed to decode.
+    InvalidImage,
 }
 
 impl fmt::Display for WorldError {
@@ -35,6 +37,7 @@ impl fmt::Display for WorldError {
             Self::IndexOutOfRange => "index is out of range for the referenced table",
             Self::LimitExceeded => "count exceeds the configured limit",
             Self::NonFiniteGeometry => "face geometry is not finite",
+            Self::InvalidImage => "image data failed to decode",
         };
         f.write_str(message)
     }
