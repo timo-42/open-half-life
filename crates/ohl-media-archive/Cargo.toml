@@ -1,0 +1,21 @@
+[package]
+name = "ohl-media-archive"
+description = "Shared read-only media-archive vocabulary for the Open Half-Life ISO 9660 and UDF wrappers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ohl_media_archive"
+
+[features]
+default = []
+std = ["ohl-core/std"]
+
+[dependencies]
+ohl-core = { path = "../ohl-core", version = "=0.1.0" }
+
+[lints]
+workspace = true

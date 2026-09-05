@@ -1,0 +1,40 @@
+# Standalone fuzzing workspace.
+#
+# It is deliberately excluded from the main workspace: `cargo fuzz` needs a
+# nightly toolchain and a `libfuzzer-sys` dependency that the pinned stable
+# build must not acquire. Run it explicitly:
+#
+#     cargo +nightly fuzz run iso9660_preflight
+#     cargo +nightly fuzz run udf_preflight
+[workspace]
+members = ["."]
+
+[package]
+name = "ohl-media-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ohl-iso9660 = { path = "../crates/ohl-iso9660", version = "=0.1.0" }
+ohl-udf = { path = "../crates/ohl-udf", version = "=0.1.0" }
+ohl-media-archive = { path = "../crates/ohl-media-archive", version = "=0.1.0" }
+
+[[bin]]
+name = "iso9660_preflight"
+path = "fuzz_targets/iso9660_preflight.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "udf_preflight"
+path = "fuzz_targets/udf_preflight.rs"
+test = false
+doc = false
+bench = false

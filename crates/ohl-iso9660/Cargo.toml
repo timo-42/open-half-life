@@ -1,0 +1,34 @@
+[package]
+name = "ohl-iso9660"
+description = "Bounded ECMA-119 preflight and read-only ISO 9660/Joliet archive wrapper"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ohl_iso9660"
+
+[features]
+default = []
+std = ["ohl-core/std", "ohl-media-archive/std"]
+
+[dependencies]
+ohl-core = { path = "../ohl-core", version = "=0.1.0" }
+ohl-media-archive = { path = "../ohl-media-archive", version = "=0.1.0" }
+# Pinned to the exact version recorded in the workspace `[workspace.dependencies]`
+# table. The pin is repeated here rather than inherited because Cargo refuses
+# `default-features = false` on an inherited dependency whose workspace entry
+# does not already set it, and this crate must not pull in `std`.
+hadris-iso = { version = "=2.3.0", default-features = false, features = [
+    "alloc",
+    "sync",
+    "joliet",
+] }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true
