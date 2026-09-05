@@ -183,6 +183,10 @@ fn check_identity(path: &std::path::Path, bytes: &[u8]) -> usize {
 /// path component from `target/<profile>` down to the installed image and
 /// refuses any that is group- or world-writable, so this has to be corrected
 /// before the image is installed underneath it.
+///
+/// Only meaningful on Unix (mode bits do not exist elsewhere), so this is
+/// cfg'd out entirely off Unix rather than left as unreachable dead code.
+#[cfg(unix)]
 fn strip_group_other_write_mode(mode: u32) -> Option<u32> {
     const GROUP_OTHER_WRITE: u32 = 0o022;
     let normalized = mode & !GROUP_OTHER_WRITE;
@@ -210,10 +214,12 @@ fn normalize_directory_permissions(path: &std::path::Path) -> Result<(), String>
     Ok(())
 }
 
+/// Off Unix there is no mode-bit concept to normalise, so this is a no-op;
+/// unlike the Unix version it cannot fail, hence the plain `()` return
+/// instead of an always-`Ok` `Result` (which `clippy::unnecessary_wraps`
+/// rightly flags).
 #[cfg(not(unix))]
-fn normalize_directory_permissions(_path: &std::path::Path) -> Result<(), String> {
-    Ok(())
-}
+fn normalize_directory_permissions(_path: &std::path::Path) {}
 
 /// Builds, audits and installs the shipping media-parser worker image.
 fn run_parser_worker_image() -> Result<usize, String> {
@@ -245,7 +251,10 @@ fn run_parser_worker_image() -> Result<usize, String> {
     // refuses. `install_parser_worker_image` only controls the directories it
     // creates beneath it (`libexec/open-half-life`), so this one has to be
     // fixed here.
+    #[cfg(unix)]
     normalize_directory_permissions(directory)?;
+    #[cfg(not(unix))]
+    normalize_directory_permissions(directory);
     let installed =
         install_parser_worker_image(&built, directory).map_err(|error| error.to_string())?;
     // Belt and braces: re-normalise the directories the install step just
@@ -253,7 +262,10 @@ fn run_parser_worker_image() -> Result<usize, String> {
     let mut created = directory.to_path_buf();
     for component in IMAGE_RELATIVE_DIRECTORIES {
         created.push(component);
+        #[cfg(unix)]
         normalize_directory_permissions(&created)?;
+        #[cfg(not(unix))]
+        normalize_directory_permissions(&created);
     }
     println!(
         "{IMAGE_NAME}: {} ({} bytes) -> {}",
@@ -329,37 +341,46 @@ pub fn run() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{SymbolViolation, strip_group_other_write_mode, symbol_violations};
+    use super::{SymbolViolation, symbol_violations};
 
     const SECTION_HEADER_BYTES: usize = 64;
 
-    #[test]
-    fn strips_a_group_writable_mode_left_by_umask_002() {
-        // `cargo build` under `umask 002` leaves `target/<profile>` at
-        // `0o775`; only the group-write bit must go.
-        assert_eq!(strip_group_other_write_mode(0o775), Some(0o755));
-    }
+    // `strip_group_other_write_mode` only exists on Unix (see its `cfg`), so
+    // these tests are gated the same way rather than failing to resolve the
+    // name on Windows/macOS.
+    #[cfg(unix)]
+    mod permission_normalisation {
+        use super::super::strip_group_other_write_mode;
 
-    #[test]
-    fn strips_an_other_writable_mode() {
-        assert_eq!(strip_group_other_write_mode(0o707), Some(0o705));
-    }
+        #[test]
+        fn strips_a_group_writable_mode_left_by_umask_002() {
+            // `cargo build` under `umask 002` leaves `target/<profile>` at
+            // `0o775`; only the group-write bit must go.
+            assert_eq!(strip_group_other_write_mode(0o775), Some(0o755));
+        }
 
-    #[test]
-    fn strips_both_group_and_other_write_bits_at_once() {
-        assert_eq!(strip_group_other_write_mode(0o777), Some(0o755));
-    }
+        #[test]
+        fn strips_an_other_writable_mode() {
+            assert_eq!(strip_group_other_write_mode(0o707), Some(0o705));
+        }
 
-    #[test]
-    fn leaves_an_already_clean_mode_untouched() {
-        assert_eq!(strip_group_other_write_mode(0o755), None);
-    }
+        #[test]
+        fn strips_both_group_and_other_write_bits_at_once() {
+            assert_eq!(strip_group_other_write_mode(0o777), Some(0o755));
+        }
 
-    #[test]
-    fn preserves_bits_outside_group_and_other_write() {
-        // A directory with no group or other access at all (`0o700`) must
-        // not gain any new permission: only a set write bit is ever cleared.
-        assert_eq!(strip_group_other_write_mode(0o700), None);
+        #[test]
+        fn leaves_an_already_clean_mode_untouched() {
+            assert_eq!(strip_group_other_write_mode(0o755), None);
+        }
+
+        #[test]
+        fn preserves_bits_outside_group_and_other_write() {
+            // A directory with no group or other access at all (`0o700`)
+            // must not gain any new permission: only a set write bit is ever
+            // cleared.
+            assert_eq!(strip_group_other_write_mode(0o700), None);
+        }
     }
 
     /// Builds a minimal ELF64 little-endian fixture whose only sections are a
