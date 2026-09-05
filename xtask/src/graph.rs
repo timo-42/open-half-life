@@ -31,6 +31,10 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
     ("ohl-iso9660", &["ohl-core", "ohl-media-archive"]),
     ("ohl-udf", &["ohl-core", "ohl-media-archive"]),
     ("ohl-cabinet-format", &["ohl-core"]),
+    // Clean-room InstallShield 3 "Z" archive and PKWARE DCL explode decoder.
+    // Unlike the cabinet crates it is written from public documentation, so
+    // it is an ordinary project-owned leaf over `ohl-core` (R4).
+    ("ohl-isz", &["ohl-core"]),
     ("ohl-cabinet", &["ohl-cabinet-format"]),
     ("ohl-platform", &["ohl-core"]),
     // Development-only: builds the freestanding isolated-worker test image.

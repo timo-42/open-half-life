@@ -8,6 +8,8 @@
 #     cargo +nightly fuzz run udf_preflight
 #     cargo +nightly fuzz run cabinet_header
 #     cargo +nightly fuzz run cabinet_extract
+#     cargo +nightly fuzz run isz_header
+#     cargo +nightly fuzz run isz_explode
 [workspace]
 members = ["."]
 
@@ -30,6 +32,10 @@ ohl-cabinet-format = { path = "../crates/ohl-cabinet-format", version = "=0.1.0"
 ohl-cabinet = { path = "../crates/ohl-cabinet", version = "=0.1.0", features = [
     "inflate",
     "md5",
+    "test-support",
+] }
+ohl-isz = { path = "../crates/ohl-isz", version = "=0.1.0", features = [
+    "std",
     "test-support",
 ] }
 
@@ -57,6 +63,20 @@ bench = false
 [[bin]]
 name = "cabinet_extract"
 path = "fuzz_targets/cabinet_extract.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "isz_header"
+path = "fuzz_targets/isz_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "isz_explode"
+path = "fuzz_targets/isz_explode.rs"
 test = false
 doc = false
 bench = false

@@ -1722,6 +1722,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ohl-isz"
+version = "0.1.0"
+dependencies = [
+ "ohl-core",
+ "ohl-isz",
+ "ohl-platform",
+ "ohl-vfs",
+ "proptest",
+]
+
+[[package]]
 name = "ohl-media"
 version = "0.1.0"
 dependencies = [
