@@ -2142,6 +2142,7 @@ dependencies = [
  "directories",
  "glam",
  "hadris-iso",
+ "ohl-assets",
  "ohl-core",
  "ohl-formats",
  "ohl-game",
@@ -2161,6 +2162,16 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "winit",
+]
+
+[[package]]
+name = "ohl-assets"
+version = "0.1.0"
+dependencies = [
+ "ohl-core",
+ "ohl-formats",
+ "proptest",
+ "tempfile",
 ]
 
 [[package]]
