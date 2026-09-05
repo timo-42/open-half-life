@@ -22,9 +22,13 @@ evidence.
   source-selected containment backend with synthetic tests and an installed
   production worker artifact that attests readiness and hosts one bounded OWP/1
   service lifetime over fd 3. Its compile-fixed dispatcher rejects payload
-  operations as unsupported, so it still lacks real parser/import semantics, a
-  higher parent process-session owner, deterministic component selection,
-  runtime staging/publication integration, and production qualification.
+  operations as unsupported, so it still lacks real parser/import semantics,
+  deterministic component selection, runtime staging/publication integration,
+  and production qualification. A higher parent process-session owner now
+  exists as the disconnected `OpenHalfLife::media_parser_process_session`
+  library (`ParserProcessSession`, accepted at `537c11b`,
+  [PR #12](https://github.com/timo-42/open-half-life/pull/12)), but it is not
+  composed with the worker, so this does not change any status below.
 - Parser-worker service availability means the private, non-installed static
   service can drive a synthetic worker-side OWP/1 session over injected
   transport and dispatcher callbacks. Linux x86-64 also links a private
@@ -42,7 +46,7 @@ evidence.
 
 | Platform | Build | App preflight and metadata-only cache | Isolated-worker containment | Production end-to-end qualification |
 | --- | --- | --- | --- | --- |
-| Linux x86-64 | Implemented. Existing Linux build evidence is not a production import tuple. | Implemented; no payload extraction. | Implemented as a source-selected native backend with project-authored synthetic tests. The installed static worker hosts exact OWP/1 hello/ready/shutdown on fd 3 under the compile-fixed identity and native confinement. Its compile-fixed dispatcher rejects payload operations as unsupported; the higher process-session owner, real parser, runtime selection, and staging/publication integration remain absent. | Absent; import unavailable. |
+| Linux x86-64 | Implemented. Existing Linux build evidence is not a production import tuple. | Implemented; no payload extraction. | Implemented as a source-selected native backend with project-authored synthetic tests. The installed static worker hosts exact OWP/1 hello/ready/shutdown on fd 3 under the compile-fixed identity and native confinement. Its compile-fixed dispatcher rejects payload operations as unsupported. The higher process-session owner (`ParserProcessSession`, accepted at `537c11b`) now exists but is disconnected from this worker; the real parser, runtime selection, and staging/publication integration remain absent. | Absent; import unavailable. |
 | Linux other architectures | Unevidenced and unqualified as import tuples. | Code path exists where the build is available; no payload extraction. | Unsupported; CMake selects the unsupported backend. | Absent; import unavailable. |
 | Windows x64 | Exact documented build/preflight tuple. | Implemented in hosted evidence; no payload extraction. | Unsupported; CMake selects the unsupported backend. | Absent; import unavailable. |
 | Windows other architectures | Unevidenced and unqualified. | Unevidenced for release qualification. | Unsupported; CMake selects the unsupported backend. | Absent; import unavailable. |
@@ -123,10 +127,11 @@ suite 40/40, and 50 repeated real-launcher cases 50/50. Owned termination can
 classify as `clean` or `terminated` if orderly peer EOF wins; either result is
 terminal, cached, and reaped.
 
-The next dependencies are a separately reviewed real dispatcher/parser and the
-higher parent process-session owner, followed by handshake/session, selection,
-staging, publication, and runtime composition. Production payload import
-remains unavailable on every platform, and M2 remains in progress.
+The next dependencies are a separately reviewed real dispatcher/parser,
+followed by composition of the now-accepted process-session owner with
+handshake/session, selection, staging, publication, and runtime composition.
+Production payload import remains unavailable on every platform, and M2
+remains in progress.
 
 ## Input and fixture provenance
 
