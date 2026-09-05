@@ -2,54 +2,97 @@
 
 ## M0: bootstrap
 
-Status: accepted; feature baseline at
-`df5ea6d51037671ef0165dacac9fe26df1bf4d2b`; current hosted CI at
-`3fd0375c7a759b0fcd269fa73d6bdc8a36123134`
+Status: accepted (Rust); evidence: PR #<n> ("Reach M1 parity in Rust and
+remove the C++ implementation"). This milestone was originally accepted
+against the C++ tree at feature baseline `df5ea6d51037671ef0165dacac9fe26df1bf4d2b`
+(hosted CI `3fd0375c7a759b0fcd269fa73d6bdc8a36123134`); that C++ tree has now
+been removed, and Rust reproduces the same acceptance criteria. The
+historical C++ evidence remains reachable in git history immediately before
+the "Remove C++ implementation superseded by the Rust workspace" commit.
 
-- C++20 CMake/Ninja build
-- Linux x64, Windows x64, and macOS Apple Silicon CI matrix
-- warning-clean `core`, `platform`, and `app` targets
-- basic logging and host-platform detection
-- unit and command-line smoke tests
+- Cargo workspace (Rust 2024 edition, `resolver = "3"`), `cargo xtask policy`
+  and `cargo xtask graph` in CI
+- Linux x64, Windows x64, and macOS Apple Silicon CI matrix (`rust-clippy`,
+  `rust-test`)
+- warning-clean `ohl-core`, `ohl-platform`, and `ohl-app` crates
+  (`unsafe_code = "forbid"` outside the two documented exceptions)
+- basic logging and host-platform detection (`Platform: <OS> <arch>`)
+- unit and command-line smoke tests (`crates/ohl-app/tests/cli.rs`)
 - clean-room and architecture documentation
-
-Hosted evidence includes Linux x64, Linux x64 with
-address/undefined-behavior sanitizers, Windows x64, macOS Apple Silicon, and a
-Linux x64 experimental-adapter build. All five required jobs pass for the
-historical package-1 through package-4 feature baseline. The same five jobs
-also pass at the current exact hosted-CI SHA above.
 
 ## M1: ISO detection
 
-Status: accepted; feature baseline at
-`df5ea6d51037671ef0165dacac9fe26df1bf4d2b`; current hosted CI at
-`3fd0375c7a759b0fcd269fa73d6bdc8a36123134`
+Status: accepted (Rust); evidence: PR #<n> ("Reach M1 parity in Rust and
+remove the C++ implementation"). Originally accepted against the same C++
+feature baseline as M0; see that note above.
 
 Implemented acceptance criteria:
 
 - accepts an ISO path via `--iso`, a positional argument, or a prompt
-- acquires the path once as a pinned, read-only `MediaSource` and does not
-  retain or reopen the selected path
+- acquires the path once as a pinned, read-only `ohl_platform::MediaSource`
+  and does not retain or reopen the selected path
 - rejects missing, non-regular, truncated, and structurally invalid files
-- performs bounded ECMA-167 NSR02 preflight through its recognition sequence,
-  anchor, exact descriptor CRC lengths, bounded extents, and volume records
-- computes a full project-owned SHA-256 fingerprint with source-stability
-  checks at validation boundaries
-- returns a move-only `ValidatedMedia` proof that binds the same pinned source,
-  structural inspection, size, and validation digest
-- confirms the filesystem and reads its root through pinned libudfread
+- runs the bounded ECMA-119 preflight (`ohl_iso9660::preflight`) and then the
+  bounded ECMA-167 NSR02 preflight (`ohl_udf::preflight`) — recognition
+  sequence, anchor, exact descriptor CRC lengths, bounded extents, and volume
+  records — over a shared block reader
+- computes a full project-owned SHA-256 fingerprint (`ohl_media::fingerprint`)
+  with source-stability checks at validation boundaries
+- returns a move-only `ohl_media::ValidatedMedia` proof that binds the same
+  pinned source, structural inspection, size, and validation digest
+- confirms the filesystem and reads its root through `ohl_vfs::Mount`
+  (backed by the pinned `ohl-iso9660`/`ohl-udf` readers)
 - logs sanitized validation failures and a generic mount result without
   exposing media-derived names, counts, paths, or content
-- covers valid and malformed project-authored synthetic images with tests
+- covers valid and malformed project-authored synthetic images with tests,
+  plus a manual run against a real Half-Life GOTY ISO reporting only
+  sanitized aggregates
 
-The hosted cross-platform and sanitizer evidence listed under M0 exercises the
-accepted M1 path as part of the same commit.
+The three-OS `rust-clippy`/`rust-test` CI evidence listed under M0 exercises
+the accepted M1 path as part of the same PR.
 
 ## M2: media import and virtual filesystem
 
-Status: in progress; packages 2–4 establish the capability, cache,
-planning/staging, VFS, and application-composition feature baseline at
-`df5ea6d51037671ef0165dacac9fe26df1bf4d2b`. Disconnected parser-result
+Status: in progress (Rust). The narrative below this note describes the C++
+implementation that was accepted against this milestone before the C++ tree
+was removed at Rust M1 parity; it is retained as historical acceptance
+evidence and, for the parts not yet ported, as the specification the Rust
+crates below must still reproduce (see the "Media import planning and
+staging" note in `docs/ARCHITECTURE.md`).
+
+The following crates have landed in Rust so far, each covering part of this
+milestone's surface:
+
+- `ohl-parser-protocol` — OWP/1 framing and all twelve typed message schemas,
+  budgets, and fail-closed session ordering (isolated; not yet wired to a
+  worker)
+- `ohl-media-archive` — the block-source trait, bounded directory-listing
+  model, path normalization, and the fixed classification vocabulary shared
+  by both media readers and `ohl-vfs`
+- `ohl-iso9660`, `ohl-udf` — bounded ECMA-119/Joliet and ECMA-167 NSR02
+  preflight and read-only archive wrappers over pinned `hadris-iso`/
+  `hadris-udf` 2.3.0
+- `ohl-vfs` — the uniform read-only `Mount` facade over both readers, with
+  bounded paged enumeration and move-only cursors
+- `ohl-media` — fingerprinting, the move-only `ValidatedMedia` proof, and the
+  metadata-only provenance cache
+- `ohl-formats` — early BSP30/WAD3/MDL10/SPR decoder work (M3 groundwork)
+- `ohl-parser-worker-service` and `ohl-parser-worker` — the bounded
+  worker-side OWP/1 lifetime and the freestanding sandboxed worker binary
+- `ohl-cabinet-format` and `ohl-cabinet` — the licensed Unshield-derived
+  cabinet translation (see `THIRD_PARTY_NOTICES.md`), isolated behind the
+  sandboxed worker
+- `ohl-import` and `ohl-payload` — parser import sessions (channel, broker,
+  catalog, handshake, process/result sessions) and payload path/layout/
+  selection/staging
+
+See `.plan/rust-architecture-r1.md` section 5, packages R4.1-R4.7, for the
+package plan those crates were built against; this note does not re-audit
+each crate's exact completeness against that plan.
+
+Historical C++ status (pre-removal): in progress; packages 2–4 establish the
+capability, cache, planning/staging, VFS, and application-composition feature
+baseline at `df5ea6d51037671ef0165dacac9fe26df1bf4d2b`. Disconnected parser-result
 validation was accepted at `909edcc`, followed by portable media cancellation
 accepted at `0f2c78d`, trusted parser source reads at `c90f2d1`, and the
 disconnected frame channel at `e4b819a`. The trusted parent handshake was
@@ -652,7 +695,9 @@ dependencies. This work authorizes no proprietary extraction.
 
 ## R2: Rust bootstrap
 
-Status: in progress; evidence to be added by the PR review.
+Status: accepted. Superseded by M0/M1 above: R2 added the Rust workspace
+beside the C++ tree; R3 (packages R3.1-R3.5) then brought Rust to M1 parity
+and removed the C++ tree in PR #<n>.
 
 Adds the Rust migration workspace (`.plan/rust-architecture-r1.md`) beside the
 still-authoritative C++ tree, without touching or removing any C++ code:
@@ -693,10 +738,33 @@ still-authoritative C++ tree, without touching or removing any C++ code:
   section), `CONTRIBUTING.md` (Rust validation steps), `THIRD_PARTY_NOTICES.md`
   (Rust crate inventory pointer)
 
-The C++ tree, its CMake/Ninja build, and `cmake/CheckRepository.cmake` are
-unchanged and remain the accepted, authoritative M0/M1 implementation; this
-package adds a parallel, not-yet-feature-complete Rust workspace per the
-two-step transition plan in `.plan/rust-architecture-r1.md` section 4.
+At the time this package landed, the C++ tree, its CMake/Ninja build, and
+`cmake/CheckRepository.cmake` were unchanged and remained the accepted,
+authoritative M0/M1 implementation; this package added a parallel,
+not-yet-feature-complete Rust workspace per the two-step transition plan in
+`.plan/rust-architecture-r1.md` section 4. That C++ tree, and
+`cmake/CheckRepository.cmake` itself, were removed once R3 reached the same
+milestone (`cargo xtask policy` reimplements its rules).
+
+## R3: Rust M1 parity and C++ removal
+
+Status: accepted; evidence: PR #<n> ("Reach M1 parity in Rust and remove the
+C++ implementation"), plus the `ohl-vfs` and `ohl-media` crates merged
+immediately before it.
+
+- R3.1-R3.3: `ohl_platform::MediaSource` pinning on all three tuples,
+  `ohl-iso9660`/`ohl-udf` preflight wrappers over pinned `hadris-iso`/
+  `hadris-udf` 2.3.0, and the fingerprint/`ValidatedMedia`/provenance-cache
+  crate (`ohl-media`)
+- R3.4: `ohl-vfs` mounts, path normalization, bounded paged enumeration, and
+  the move-only directory cursor
+- R3.5: `ohl-app`'s M1 CLI (`--iso`/positional/prompt, `--cache`, sanitized
+  logging identical to the removed C++ binary's) and the C++/CMake removal
+  described under M0-M2 above
+
+See M0 and M1 above for the reproduced acceptance criteria and M2 for the
+Rust crates this package's dependencies (`ohl-vfs`, `ohl-media`) contribute
+toward that milestone.
 
 ## M3 (Rust): first light
 

@@ -187,6 +187,16 @@ Untrusted container and filesystem metadata must be handled by a bounded parser
 boundary. Where a parser is not independently hardened, run it in a constrained
 worker process before allowing it to feed production import.
 
+> This section's policy applies unchanged to the Rust port, but the specific
+> component names below (`OpenHalfLife::parser_worker_service`,
+> `media_parser_results`, `media_parser_reads`, `media_parser_transport`,
+> `media_parser_handshake`, `media_parser_process_session`) are the removed
+> C++ tree's identifiers. The OWP/1 wire protocol itself is already
+> reimplemented, unchanged, in the Rust `ohl-parser-protocol` crate; the
+> session/handshake/broker/bridge/staging components those names describe are
+> still ahead as the Rust `ohl-import` crate (`.plan/rust-architecture-r1.md`
+> package R4.5). See `docs/MILESTONES.md` for current status.
+
 The current `parser` library is accepted as bounded protocol infrastructure
 only. It provides canonical OWP/1 framing, generic bounded primitive payload
 helpers, frame and cumulative budgets, and fail-closed session ordering,

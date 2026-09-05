@@ -14,35 +14,26 @@ observations from legally obtained software. Do not submit copyrighted media,
 extracted assets, raw file listings, keys, or fixtures derived from game data.
 Use project-authored synthetic fixtures.
 
-Build and test before submitting:
-
-```sh
-cmake --preset dev
-cmake --build --preset dev
-ctest --preset dev
-git add <intended-files>
-cmake -P cmake/CheckRepository.cmake
-```
-
-The policy check examines tracked and staged files, so run it after staging.
-It is a backstop, not permission to add game-derived data.
-
-For changes under the Rust workspace (`Cargo.toml`, `crates/`, `xtask/`), also
-run:
+The project is implemented entirely in Rust under `crates/`, with repository
+tooling in `xtask/`. There is no CMake or C++ tree. Build and test before
+submitting:
 
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace   # or: cargo test --workspace
 cargo deny check
+git add <intended-files>
 cargo xtask policy
 cargo xtask graph
 ```
 
-`cargo xtask policy` reimplements `cmake/CheckRepository.cmake`'s rules for
-the Rust tree; `cargo xtask graph` enforces the crate dependency edges from
-`.plan/rust-architecture-r1.md`. Both build systems currently coexist (see
-`README.md`); keep both green until the C++ tree is removed at Rust M1 parity.
+`cargo xtask policy` checks tracked and staged files against the repository's
+prohibited-content rules (asset/cache/imported prefixes, prohibited
+extensions, a size ceiling, and known installer/media magic signatures), so
+run it after staging; it is a backstop, not permission to add game-derived
+data. `cargo xtask graph` enforces the acyclic crate dependency edges from
+`.plan/rust-architecture-r1.md` section 1.
 
 Document every new dependency, its version, source, and license in
 `THIRD_PARTY_NOTICES.md`.

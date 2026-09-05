@@ -9,6 +9,21 @@ Checklist items are unmet unless a concrete review, test, hosted run, or
 release artifact is linked from the item. Absence of a link means absence of
 evidence.
 
+**Rust transition note.** The project's implementation is now entirely Rust;
+the C++ tree this page originally described (parser-worker service, Linux
+B1 bootstrap, process-session owner, staging/store backend) was removed at
+Rust M1 parity. None of that worker/staging surface has been ported to Rust
+yet — it is still-ahead work (`ohl-parser-worker-service`, `ohl-parser-worker`,
+`ohl-cabinet*`, `ohl-import`; see `docs/MILESTONES.md`'s M2 entry). The
+detailed narrative and evidence links below this note describe that removed
+C++ implementation and remain in this file only as the specification and
+historical qualification record the Rust port must reproduce or exceed. The
+bottom-line conclusion is unchanged by the language migration: **production
+payload import is unavailable on every platform, in both the historical C++
+build and the current Rust build.** Rust has, so far, reached parity with the
+C++ app-preflight-and-metadata-cache row only (`ohl-app`, `ohl-vfs`,
+`ohl-media`); every row past that remains not-yet-started in Rust.
+
 ## Status boundaries
 
 - Build availability means the relevant source can configure, compile, and run

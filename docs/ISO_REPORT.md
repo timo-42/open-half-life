@@ -49,11 +49,28 @@ verified.
 No executable from the medium was run. No archive was extracted, and no file
 content, CD key, or proprietary asset is included in this report.
 
+## Rust preflight note
+
+The Rust `ohl-app`/`ohl-vfs` preflight (`ohl_iso9660::preflight` run before
+`ohl_udf::preflight`, per `docs/ARCHITECTURE.md`) classifies this same medium
+as **ECMA-119 ISO 9660 + Joliet**, not UDF: it recognized a primary volume
+descriptor plus a Joliet supplementary descriptor and preferred the Joliet
+tree. This does not contradict the "Filesystem: read-only UDF 1.02" line
+above, which reflects the original 2026-07 inspection tooling's
+classification of the outer image; only bounded, sanitized aggregates were
+compared, never file contents. A manual, `#[ignore]`d Rust test run against
+this exact image (see `crates/ohl-vfs/tests/mount.rs`) reported
+`class=Iso9660`, `filesystem=Iso9660Joliet`, `volume_label_len=16`,
+`root_entry_count=19` — aggregates only, no names or paths.
+
 ## Engineering implications
 
-The engine now performs a bounded ECMA-167 preflight, mounts the UDF tree
-read-only through libudfread, and creates a content-addressed, metadata-only
-provenance cache entry. The default-off experimental InstallShield adapter can
+The Rust engine now performs the bounded ECMA-119 preflight described above,
+then the ECMA-167 preflight, mounts the recognized tree read-only through
+`ohl_vfs::Mount`, and creates a content-addressed, metadata-only provenance
+cache entry. The removed C++ implementation performed a bounded ECMA-167
+preflight only and mounted the UDF tree read-only through libudfread. The
+default-off experimental InstallShield adapter (C++, removed) could
 parse cabinet metadata in place through Unshield. Invalid cabinet descriptors
 are counted and make entry-count-bounded adapter output unsuitable for import
 instead of being silently skipped.

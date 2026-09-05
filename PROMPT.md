@@ -25,11 +25,11 @@ delegate those actions to scoped agents.
 -   Renderer:
     -   wgpu (Vulkan backend on Linux/Windows, Metal backend on macOS)
 -   Language:
-    -   Rust 2024 edition (migrating from the original C++20 tree; see
-        `.plan/rust-architecture-r1.md`)
+    -   Rust 2024 edition (the original C++20 tree was fully replaced at Rust
+        M1 parity; see `.plan/rust-architecture-r1.md` for the migration
+        architecture that guided the port)
 -   Build:
-    -   Cargo (the C++20/CMake+Ninja tree remains buildable in parallel until
-        Rust reaches M1 parity)
+    -   Cargo (a single workspace under `crates/`; no CMake, no C++, no FFI)
 -   Repository:
     -   git@github.com:timo-42/open-half-life.git
 

@@ -11,53 +11,10 @@ engine.
 
 ## Build
 
-Requirements:
-
-- A C++20 compiler
-- CMake 3.25 or newer
-- Ninja
-- Internet access for the first configure, to fetch pinned dependencies
-
-Configure, build, and test a developer build:
-
-```sh
-cmake --preset dev
-cmake --build --preset dev
-ctest --preset dev
-```
-
-To use an installed libudfread instead, configure with
-`-DOHL_USE_SYSTEM_UDFREAD=ON`; pkg-config must be able to find libudfread
-1.1.2 or newer.
-
-The default-off InstallShield feasibility adapter additionally requires Git
-and can be enabled with `-DOHL_ENABLE_EXPERIMENTAL_INSTALLSHIELD=ON`. It is not
-hardened for malicious cabinets and is not used by the application.
-
-Run it with:
-
-```sh
-./build/dev/src/app/open-half-life
-```
-
-The path ends in `.exe` on Windows.
-Supply `--cache /absolute/path` to override the platform user-cache location.
-The current M2 implementation fingerprints the validated ISO and publishes a
-metadata-only provenance record there; it does not extract game data yet.
-Payload metadata can be checked against bounded, cross-platform path and
-layout policies, but those checks are not yet connected to a production
-extractor. Production payload import remains unavailable on every platform;
-see [docs/IMPORT_READINESS.md](docs/IMPORT_READINESS.md) for the current
-readiness matrix and release-evidence gates.
-
-## Rust build
-
-The project is being ported from C++20 to Rust (Rust 2024 edition, no FFI, no
-linked C libraries; see [`.plan/rust-architecture-r1.md`](.plan/rust-architecture-r1.md)
-for the accepted migration architecture). The C++ tree above remains the
-authoritative, accepted M1 implementation until the Rust port reaches the same
-milestone; both build systems and both repository-policy checkers are kept
-green in CI during the transition.
+The project is implemented entirely in Rust (Rust 2024 edition, no FFI, no
+linked C libraries), as a Cargo workspace under `crates/`. There is no CMake
+or C++ build; the earlier C++ tree was removed once the Rust port reached M1
+parity (see [docs/MILESTONES.md](docs/MILESTONES.md)).
 
 Requirements: a stable Rust toolchain matching `rust-toolchain.toml` (installed
 automatically by `rustup` on first use) plus the `clippy` and `rustfmt`
@@ -66,30 +23,49 @@ components.
 ```sh
 cargo build --workspace
 cargo test --workspace
-cargo run -p ohl-app -- --version
 cargo xtask policy
 cargo xtask graph
 ```
 
-`cargo run -p ohl-app` builds the `open-half-life` Rust binary (the C++ binary
-of the same name lives under a different build directory, so the two never
-collide). At this stage it only reports its version and detected platform;
-`--iso PATH` is accepted and reports that media import is not implemented in
-the Rust build yet, rather than silently doing nothing.
+Run the composition-root binary:
+
+```sh
+cargo run -p ohl-app -- --iso /path/to/owned-media.iso
+```
+
+or `cargo run -p ohl-app -- /path/to/owned-media.iso` (positional form), or
+with no path at all, which prompts for one on stdin, as the previous C++
+build did. `--cache /absolute/path` overrides the platform per-user cache
+location the metadata-only provenance record is published under; the default
+is the platform's standard cache directory. `--version` reports the binary's
+version and exits; `cargo run -p ohl-app -- --version` or the built binary's
+`--version` both work.
+
+The current implementation fingerprints the validated ISO 9660/Joliet or UDF
+image, mounts it read-only, and publishes (or reuses) a metadata-only
+provenance record; it does not extract game data yet. See
+[docs/IMPORT_READINESS.md](docs/IMPORT_READINESS.md) for the current
+production-readiness matrix and release-evidence gates.
 
 ## Status
 
-The current implementation provides the M0 build and logging foundation, M1
-media preflight, and the read-only UDF and provenance-cache portions of M2.
-Run with `open-half-life --iso /path/to/owned-media.iso`; no installer or media
-binary is executed. See [docs/MILESTONES.md](docs/MILESTONES.md)
-for current progress, [docs/IMPORT_READINESS.md](docs/IMPORT_READINESS.md)
-for production import readiness, and [docs/CLEAN_ROOM.md](docs/CLEAN_ROOM.md)
-before contributing compatibility work.
+M0 (build and logging foundation) and M1 (media preflight, mount, and
+provenance cache) parity has been achieved in Rust; the earlier C++
+implementation has been removed. M2 (parser worker, cabinet/staging pipeline)
+is in progress: the OWP/1 protocol, media archive traits, the ISO 9660/UDF
+readers, the VFS mount facade, and the fingerprint/cache crates have already
+landed. M3 (wgpu/winit first light) is in progress. See
+[docs/MILESTONES.md](docs/MILESTONES.md) for current progress,
+[docs/IMPORT_READINESS.md](docs/IMPORT_READINESS.md) for production import
+readiness, and [docs/CLEAN_ROOM.md](docs/CLEAN_ROOM.md) before contributing
+compatibility work.
+
+Run with `cargo run -p ohl-app -- --iso /path/to/owned-media.iso`; no
+installer or media binary is executed.
 
 Half-Life is a trademark of Valve Corporation. This independent project is
 not affiliated with or endorsed by Valve Corporation.
 
-Repository-authored code is MIT licensed. The fetched libudfread dependency
-is LGPL-2.1-or-later; Unshield and zlib use permissive licenses. See
+Repository-authored code is MIT licensed; adopted Rust dependencies use
+permissive licenses (MIT, Apache-2.0, BSD, Zlib, Unicode-3.0). See
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
