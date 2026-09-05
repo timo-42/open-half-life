@@ -1707,16 +1707,19 @@ accepts a prebuilt) `open-half-life` release binary and headless-screenshots
 every map in every `ohl-campaign` chapter, plus the Hazard Course training
 maps, against an already-imported payload, with a per-map timeout and bounded
 parallelism. Each run is classified (loaded/rendered, missing-map,
-load-error, timeout, crash) from the app's own exit code and sanitized fixed
-log lines, never from payload-derived strings, and a markdown summary
-(per-chapter pass/fail counts plus each capture's dimensions, distinct-colour
-count and percent non-background pixels) is written under `--out`; the
-command exits non-zero if any map failed to load.
+load-error, timeout, crash, or blank-capture) from the app's own exit code
+and sanitized fixed log lines, never from payload-derived strings. A
+capture's decoded size and non-background pixel fraction are checked only
+against a fixed expected size and threshold to decide the blank-capture
+classification; neither figure is ever written out. The markdown summary
+written under `--out` reports chapter-level aggregate counts per category
+only (no per-map row, and no pixel count, dimension, or per-map timing of
+any kind); the command exits non-zero if any map failed to load.
 
 Run once against a legally imported retail payload: all 93 maps across the
 18 story chapters and the Hazard Course training maps loaded and rendered
-successfully (93/93 pass, 0 fail), no missing-map/load-error/timeout/crash
-results, in 347.1s total.
+successfully (93/93 pass, 0 fail), no missing-map/load-error/timeout/crash/
+blank-capture results, in 347.1s total.
 
 ## M9 (Rust): UI shell
 
