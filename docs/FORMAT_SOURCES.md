@@ -1245,3 +1245,85 @@ the same name more than once, lookup deterministically returns the first
 occurrence. All test and fuzz fixtures are produced by this project's own
 synthetic `PakBuilder` in `crates/ohl-formats/src/test_support.rs`; no bytes
 from any real PAK archive appear in the code, tests, or this file.
+## Combat and damage
+
+The `crates/ohl-combat` crate (damage model, attack traces against world
+hulls and posed studio hitboxes, combat events) was implemented from the
+public documentation below. No Valve SDK source (`dlls/*.cpp`,
+`pm_shared.c`), no decompiled or leaked engine code, and no third-party
+engine port was consulted; see `docs/CLEAN_ROOM.md`.
+
+As in "Collision hulls and player movement" above, two kinds of value are
+kept apart. **Vocabulary and structure** — the names of the damage types, the
+numbering of the hit groups, the player's published health and armour maxima
+— are documented well enough on public pages to implement directly.
+**Behavioural constants** — how the HEV suit splits damage between armour and
+health, the per-hit-group damage multipliers, per-skill-level scaling — are
+*not* published on any source this project may use. Rather than guess them,
+`ohl-combat` makes each one a field of a caller-supplied parameter struct
+(`ArmorRule`, `HitGroupScale`, `DifficultyScale`) whose `Default` is the
+neutral, no-op value, and marks it **to be black-box observed** ("BBO"):
+measured later against legally obtained retail software and recorded here as
+a project measurement, never as a Valve value. The crate's tests pass
+explicit values of their own instead of relying on those defaults.
+
+### Vocabulary and structure
+
+- TWHL wiki, [trigger_hurt](https://twhl.info/wiki/page/trigger_hurt) and
+  [game_player_hurt](https://twhl.info/wiki/page/game_player_hurt) (public
+  Half-Life mapping documentation; reviewed 2026-09-05 through search-engine
+  result summaries, since the pages themselves answer automated requests with
+  HTTP 403): the damage-type vocabulary a mapper selects from on a hurt
+  trigger — generic, crush, bullet, slash, burn/slowburn, freeze/slowfreeze,
+  fall, blast, club, shock, sonic, energy beam, drown, paralyze, nerve gas,
+  poison, radiation, acid — and the note that only a subset of them has a HUD
+  sprite of its own. `DamageType` names exactly this set; the *bit values*
+  are this project's own dense assignment in the order the list is written,
+  not a transcription of any engine header, and nothing in the crate depends
+  on a particular numeric value.
+- the303, ["GoldSrc MDL QC commands"](https://the303.org/tutorials/gold_qc.htm)
+  (public GoldSrc modelling reference, reviewed 2026-09-05): a studio model's
+  `$hbox` hitboxes carry a damage group, numbered 0 generic, 1 head, 2 chest,
+  3 stomach, 4 left arm, 5 right arm, 6 left leg, 7 right leg, and those
+  groups "not only act as damage multipliers but also cause the model to play
+  different animations". `HitGroup` is exactly this numbering; the
+  multipliers themselves are **BBO**, so `HitGroupScale::default()` scales
+  nothing.
+- Combine OverWiki,
+  [Hazardous Environment Suit](https://combineoverwiki.net/wiki/Hazardous_Environment_Suit)
+  and [Chargers](https://combineoverwiki.net/wiki/Chargers) (reviewed
+  2026-09-05 through search-engine result summaries; the site fronts
+  automated requests with a challenge page): the player carries at most 100
+  health and 100 suit power, and wall chargers restore health or suit power
+  from a limited reservoir. `Health::max` and `Armor::max` are therefore
+  stored per entity rather than assumed, with 100/100 the documented player
+  value; how a charger's reservoir is metered is **BBO** and is not part of
+  this package.
+- The collision side of an attack trace reuses the hull structure already
+  cited under "Collision hulls and player movement": a shot is traced through
+  hull 0, the point hull, because a bullet has no size.
+
+### Behavioural constants (all BBO, none shipped as a number)
+
+- The HEV absorption split (`ArmorRule { ratio, bonus }`). Half-Life's suit
+  demonstrably takes part of an incoming hit, but the split is not published;
+  the rule this crate implements — a fixed fraction always reaches health,
+  the remainder is charged to armour at a configurable armour-per-hit-point
+  rate, and anything armour cannot pay for reaches health as well — is this
+  project's own parameterisation, documented on `ArmorRule`. Its default is
+  the neutral rule (armour absorbs nothing).
+- Per-hit-group damage multipliers (`HitGroupScale`), per the303 citation
+  above: documented to exist, values unpublished.
+- Per-skill-level damage scaling (`DifficultyScale`): the published
+  per-monster tables quote three values, so the *shape* is public, but this
+  package ships no table and no multiplier.
+
+Project behaviour supported: `crates/ohl-combat` provides `DamageType`,
+`DamageInfo`, `Health`/`Armor` and `apply_damage` with the armour rule
+supplied by the caller; `trace_attack`, which traces the world through
+`ohl_physics`' point hull and then refines against a bounded `HitboxIndex` of
+posed studio hitboxes (built from `StudioPose::hitbox_bounds`, treated as
+oriented boxes in the entity's own space) and reports the nearest impact with
+its hit group; and a bounded `CombatEventQueue` the composition root drains
+for presentation. Weapons, projectiles, monsters and inventory are later M7
+packages and are not implemented here.

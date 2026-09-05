@@ -103,6 +103,14 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
     // shared diagnostics primitive. Deliberately not allowed to depend on
     // `ohl-formats`; see `crates/ohl-campaign/src/skill_table.rs`.
     ("ohl-campaign", &["ohl-core"]),
+    // Combat skeleton (M7.1): damage model, hit resolution against world
+    // hulls and posed studio hitboxes, and a bounded combat-event queue.
+    // No edge to `ohl-render`, `ohl-audio` or `ohl-ui`: presentation is
+    // pulled by the composition root from the event queue.
+    (
+        "ohl-combat",
+        &["ohl-core", "ohl-physics", "ohl-world", "ohl-game"],
+    ),
     ("ohl-ui", &["ohl-core"]),
     (COMPOSITION_ROOT, &[]),
 ];

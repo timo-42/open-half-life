@@ -1,0 +1,30 @@
+[package]
+name = "ohl-combat"
+description = "Clean-room combat skeleton: damage model, hit resolution and combat events"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ohl_combat"
+
+[dependencies]
+ohl-core = { path = "../ohl-core", version = "=0.1.0" }
+ohl-physics = { path = "../ohl-physics", version = "=0.1.0" }
+ohl-world = { path = "../ohl-world", version = "=0.1.0" }
+ohl-game = { path = "../ohl-game", version = "=0.1.0" }
+# Pinned exact, as required for crates named by the Rust migration
+# architecture that are not yet in `[workspace.dependencies]`; the same
+# version and feature set `ohl-game` uses, so the two share one `Vec3`.
+glam = { version = "=0.33.6", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+proptest = { workspace = true }
+ohl-formats = { path = "../ohl-formats", version = "=0.1.0", features = [
+    "test-support",
+] }
+
+[lints]
+workspace = true

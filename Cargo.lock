@@ -2216,6 +2216,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ohl-combat"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "ohl-core",
+ "ohl-formats",
+ "ohl-game",
+ "ohl-physics",
+ "ohl-world",
+ "proptest",
+]
+
+[[package]]
 name = "ohl-core"
 version = "0.1.0"
 dependencies = [

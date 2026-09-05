@@ -1068,6 +1068,59 @@ blending, sequence transition graphs and events, external sequence-group and
 external texture files, per-pixel lighting, backface culling, mipmaps, and
 any model source other than a path on disk.
 
+## M7 (Rust): combat
+
+Status: in progress. Package M7.1 adds `ohl-combat`, the combat skeleton the
+remaining M7 packages (weapons, projectiles, pickups, monsters, player
+systems) build on. See `.plan/m7-design.md` for the package breakdown and
+`docs/FORMAT_SOURCES.md`, "Combat and damage", for the sources.
+
+- `damage`: `DamageType`, a bitmask over Half-Life's published damage-type
+  vocabulary (generic, crush, bullet, slash, burn, freeze, fall, blast, club,
+  shock, sonic, energy beam, drown, paralyze, nerve gas, poison, radiation,
+  acid, slow burn, slow freeze); `DamageInfo` (attacker, inflictor, amount,
+  type, origin, direction); `Health` and `Armor` components; and
+  `apply_damage`, which splits a hit between armour and health according to a
+  caller-supplied `ArmorRule { ratio, bonus }`, reports `health_lost`,
+  `armor_lost` and a `killed` flag that is set only on the transition into
+  death, and rejects zero, negative and non-finite amounts through
+  `SanitizedError::InvalidInput`. A local `Difficulty` enum plus
+  `DifficultyScale` provide the per-skill-level scaling hook; `Difficulty`
+  mirrors `ohl_campaign::Difficulty` rather than depending on it, so
+  `ohl-combat` keeps the crate edges the M7 design gives it.
+- `trace`: `trace_attack` resolves a shot by tracing `ohl-physics`' point
+  hull through the world and then refining against a `HitboxIndex` — a
+  bounded, flat list of entities and their posed hitboxes that the caller
+  rebuilds each tick, so hit resolution never touches an ECS world. Each
+  entity's hitboxes come from `StudioPose::hitbox_bounds` and are treated as
+  oriented boxes in the entity's own space; the nearest impact, world or
+  entity, wins, and the result carries the entity, the hitbox index, its
+  published `HitGroup` and the surface normal.
+- `events`: a bounded `CombatEventQueue` of `DamageDealt`, `Killed` and
+  `Impact` events, drained by the composition root later. `ohl-combat` has no
+  dependency on `ohl-render`, `ohl-audio` or `ohl-ui`.
+
+Every behavioural constant the real game has but no usable public source
+documents — the HEV absorption split, per-hit-group multipliers,
+per-difficulty scaling — is a field of a caller-supplied parameter struct
+whose default is neutral and is marked "to be black-box observed" in
+`docs/FORMAT_SOURCES.md`; no unpublished number is shipped.
+
+Verified: `ohl-combat`'s unit and property tests against the project's
+synthetic collision-room BSP fixture and a hand-built two-bone hitbox pose —
+a shot at head height reports the head hitbox and one at chest height the
+chest hitbox, a ledge in front of the target takes the shot instead, a shot
+aimed past the target misses it, the nearer of two targets wins, a rotated
+box is hit through its orientation, and `proptest` shows a trace never panics
+and always reports a fraction in `0..=1` with its impact point on the traced
+segment, while damage application never restores health or armour and never
+removes more than the target had.
+
+Not yet done: everything else in M7 — the weapon table and firing state
+machines, projectiles and radius damage, ammo and inventory, `ohl-ai`,
+per-monster definitions, and the player systems (fall damage, drowning,
+flashlight, long jump) with their save sections.
+
 ## M8 (Rust): save container
 
 Status: in progress. Adds `ohl-save`, a project-owned, versioned save-file
@@ -1203,6 +1256,6 @@ screens, and an editable bindings screen.
 - M4: player movement (M4.1 hulls and walking in progress, see above)
 - M5: interactive entities (Rust `ohl-game`, M5.1, in progress, see above)
 - M6: models and animation (Rust studio models in progress, see above)
-- M7: combat
+- M7: combat (Rust combat skeleton in progress, see above)
 - M8: full campaign compatibility (Rust save container in progress, see above)
 - M9: release hardening
