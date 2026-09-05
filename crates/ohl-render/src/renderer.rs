@@ -335,6 +335,15 @@ impl WorldRenderer {
         ));
     }
 
+    /// The depth buffer this renderer last rendered with, so a second pass
+    /// (the studio-model pass, for instance) can draw into the same depth
+    /// state instead of allocating its own. `None` before the first
+    /// [`Self::render`] or [`Self::resize`] call.
+    #[must_use]
+    pub fn depth_view(&self) -> Option<&wgpu::TextureView> {
+        self.depth.as_ref().map(|(view, _, _)| view)
+    }
+
     /// The number of triangles the last [`Self::render`] call submitted.
     #[must_use]
     pub fn last_triangle_count(&self) -> usize {

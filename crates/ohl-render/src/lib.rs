@@ -20,6 +20,7 @@ mod gpu;
 pub mod math;
 mod offscreen;
 mod renderer;
+mod studio;
 mod surface;
 
 pub use camera::{FreeFlyCamera, MoveInput};
@@ -27,6 +28,7 @@ pub use error::{RenderError, Result};
 pub use gpu::{GpuContext, preferred_backends};
 pub use offscreen::{OFFSCREEN_FORMAT, OffscreenTarget};
 pub use renderer::{DEPTH_FORMAT, WorldRenderer};
+pub use studio::{ModelInstance, StudioRenderer, placement};
 pub use surface::WindowSurface;
 
 /// Re-exported so callers can name wgpu types (surface targets, formats)

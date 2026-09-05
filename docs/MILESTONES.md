@@ -862,12 +862,97 @@ Not yet done: brush-entity (submodel) collision, ladders, conveyors and
 push volumes, water currents, the duck transition delay, and any verification
 of the movement constants against the real game.
 
+## M6 (Rust): models and animation
+
+Status: in progress. Studio models (MDL v10) load, skin, animate and render
+alongside world geometry; only the offscreen path has been verified in this
+environment (see "Verified" below).
+
+Adds one module to each existing renderer crate plus one development-only
+flag; the BSP pipeline is untouched.
+
+- `ohl-world`: `StudioModel` turns an `ohl_formats::mdl10::Mdl` into owned,
+  indexed triangle geometry. Each body part's sub-models and meshes are
+  triangulated from the documented strip (`N > 0`) / fan (`N < 0`) trivert
+  command stream, with identical `(vertex, normal, s, t)` tuples collapsed
+  into shared vertices; every vertex carries its single bone index, its
+  normal, and texture coordinates normalised by the referenced texture's
+  own width and height. Textures are decoded from 8-bit indexed pixels plus
+  the trailing palette to RGBA, with palette index 255 keyed transparent for
+  `STUDIO_NF_MASKED` textures, and their `STUDIO_NF_*` flags
+  (chrome/additive/masked/fullbright and the rest) are published per
+  texture. Skin families remap each mesh's texture slot. `StudioPose`
+  samples a sequence at a wall-clock time: the frame index advances at the
+  sequence's own `fps`, the fractional part interpolates linearly between
+  two adjacent frames (positions lerped, rotations normalised-lerped along
+  the shorter arc), a `STUDIO_LOOPING` sequence wraps and any other holds
+  its last frame, and per-bone local transforms are composed along the
+  parent chain into model-space matrices. Hitbox and attachment transforms
+  are exposed for later packages. Bone controllers and multi-animation
+  blending stay at their defaults (blend 0 only), and sequences stored in an
+  external sequence-group file fall back to the bind pose.
+  `WorldModel::ambient_at` returns an approximate ambient colour for a point
+  by averaging the mean lightmap colour of the faces in its BSP leaf.
+- `ohl-render`: a studio pipeline separate from the world one. WGSL does the
+  skinning (one bone per vertex, up to 128 bone matrices in a per-instance
+  uniform buffer), lighting is a per-vertex Lambert term against one
+  directional light plus the caller-supplied ambient, chrome textures ignore
+  their stored coordinates and use a view-space sphere-map approximation
+  instead, masked textures alpha-test in the fragment stage, and additive
+  textures go through a second, depth-write-disabled pipeline drawn after
+  the opaque meshes. A `ModelInstance` list is drawn after world geometry
+  into the same colour and depth target (the world renderer now exposes its
+  depth view for exactly this), or into its own cleared depth buffer when
+  there is no map.
+- `ohl-app`: `--dev-mdl PATH` behind the same non-default `dev-tools` cargo
+  feature. It opens a window on the model, plays the current sequence at its
+  own frame rate, and cycles sequences with `[` and `]`. Combined with
+  `--dev-bsp` it loads the map too and places the model at the map's player
+  start; on its own the model orbits in front of the camera. Like
+  `--dev-bsp` it loads files straight off disk and therefore **bypasses the
+  media pipeline**, and neither the supplied paths nor any model-derived
+  count or index appears in a log line.
+
+Approximations, documented here because they are deliberate rather than
+incidental:
+
+- entity lighting is the leaf-average lightmap colour at the model's origin,
+  not GoldSrc's downward trace onto a specific surface;
+- shading is per vertex, not per pixel, and uses one directional light;
+- chrome is a view-space sphere map with this project's own scale and bias,
+  matching the reviewed community description of the mode rather than any
+  published formula (see `docs/FORMAT_SOURCES.md`).
+
+Verified:
+
+- headless: the offscreen path renders the project-authored synthetic model
+  (two triangles, one 16x16 texture, a two-bone chain and a two-frame
+  compressed animation sampled halfway between its frames) into an RGBA
+  buffer and asserts that a meaningful part of the frame is not the cleared
+  background, using whatever adapter the host offers; on a machine with
+  none, the test skips instead of failing. Like the world render test it is
+  `#[ignore]`d by default with an `OHL_RENDER_GPU_TEST=1` opt-in.
+- unit and property tests: triangulation counts, texture-coordinate ranges,
+  the bone parent chain, pose interpolation continuity and midpoint values,
+  looping versus held playback, and a `proptest` that model building and
+  pose sampling never panic for any sequence description, frame or playback
+  time the synthetic fixture can be rewritten to hold.
+- on screen: **not verified** in the development environment used for this
+  package, which has no display server. `--dev-mdl` was exercised there only
+  as far as loading the model and reporting, through the sanitized error
+  path, that no window system is available.
+
+Not yet done: bone controllers and mouth control, multi-animation sequence
+blending, sequence transition graphs and events, external sequence-group and
+external texture files, per-pixel lighting, backface culling, mipmaps, and
+any model source other than a path on disk.
+
 ## Later milestones
 
 - M3: BSP rendering (Rust first light in progress, see above)
 - M4: player movement (M4.1 hulls and walking in progress, see above)
 - M5: interactive entities
-- M6: models and animation
+- M6: models and animation (Rust studio models in progress, see above)
 - M7: combat
 - M8: full campaign compatibility
 - M9: release hardening
