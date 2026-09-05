@@ -1,6 +1,6 @@
 [package]
 name = "ohl-formats"
-description = "Clean-room, no_std, bounds-checked decoders for GoldSrc BSP v30 maps and WAD3 texture packages"
+description = "Clean-room, no_std, bounds-checked decoders for GoldSrc BSP v30 maps, WAD3 texture packages, and Quake PAK archives"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

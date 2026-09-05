@@ -5,6 +5,7 @@
 
 use ohl_formats::bsp30::{Bsp, LumpId};
 use ohl_formats::mdl10::{Mdl, SequenceGroupFile};
+use ohl_formats::pak::Directory;
 use ohl_formats::spr::Spr;
 use ohl_formats::wad3::Wad3;
 use proptest::prelude::*;
@@ -55,6 +56,18 @@ fn exercise_wad3(data: &[u8]) {
         let _ = wad.decode_miptex(&entry);
     }
     let _ = wad.find("anything");
+}
+
+fn exercise_pak(data: &[u8]) {
+    let limits = ohl_formats::pak::Limits::default();
+    let Ok(dir) = Directory::parse(data, &limits) else {
+        return;
+    };
+    for entry in dir.entries().take(64) {
+        let _ = entry.trimmed_name();
+        let _ = entry.name_matches("anything");
+    }
+    let _ = dir.find("anything");
 }
 
 fn exercise_mdl10(data: &[u8]) {
@@ -145,5 +158,10 @@ proptest! {
     #[test]
     fn spr_parse_never_panics(data in proptest::collection::vec(any::<u8>(), 0..4096)) {
         exercise_spr(&data);
+    }
+
+    #[test]
+    fn pak_parse_never_panics(data in proptest::collection::vec(any::<u8>(), 0..4096)) {
+        exercise_pak(&data);
     }
 }

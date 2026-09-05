@@ -1111,3 +1111,34 @@ than encoded as confirmed facts (also documented in
    understood GoldSrc modding-community knowledge (the player edict
    persists automatically, independent of `globalname`), but not confirmed
    from a reachable public page in this pass.
+
+## Quake PAK archives
+
+- "Unofficial Quake Specs", Quake Documentation version 3.4, Section 3.1 "The
+  PACK files format" (subsections 3.1.1 "The PACK Header" and 3.1.2 "The PACK
+  Directory"; compiled by Uwe Girlich with contributions credited on the
+  document, public since 1996), mirrored at
+  <https://www.gamers.org/dEngine/quake/spec/quake-spec34/qkspec_3.htm>:
+  documents the 12-byte `pakheader_t` (`"PACK"` magic, a `diroffset` and a
+  `dirsize`, both little-endian 32-bit byte counts, with the entry count
+  "deduced by dividing by `sizeof(pakentry_t) = 0x40`") and the 64-byte
+  `pakentry_t` (a 56-byte NUL-padded `filename`, then a 32-bit `offset` and a
+  32-bit `size`, both relative to the start of the file). This project's
+  `pak` module reuses this header/entry shape unchanged; id Software's
+  original PAK format is unmodified by GoldSrc, so no separate GoldSrc-only
+  source is needed here.
+
+### Behaviours supported
+
+`crates/ohl-formats`'s `pak` module validates the header magic, computes the
+directory entry count as `dir_size / 64` and rejects a non-zero remainder,
+bounds the directory itself and every entry's `offset + size` against the
+archive's total length (or, via `Directory::from_parts`, against a caller-
+supplied total length when only the header fields and directory bytes were
+read — so a caller streaming a large PAK from disk never has to hold the
+whole archive in memory just to validate its directory), and rejects any
+entry whose 56-byte name field has no NUL terminator. When a directory lists
+the same name more than once, lookup deterministically returns the first
+occurrence. All test and fuzz fixtures are produced by this project's own
+synthetic `PakBuilder` in `crates/ohl-formats/src/test_support.rs`; no bytes
+from any real PAK archive appear in the code, tests, or this file.

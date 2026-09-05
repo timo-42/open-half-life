@@ -2,17 +2,26 @@
 //!
 //! This module exists behind the `dev-tools` cargo feature (off by default,
 //! so it is absent from release builds) purely so a developer can look at a
-//! map while the renderer is being built. It loads a `.bsp` straight off
-//! disk and therefore **bypasses the media pipeline entirely**: no ISO
-//! validation, no import, no cache, no VFS. It is not a supported way to run
+//! map while the renderer is being built. It is not a supported way to run
 //! the game and it will be removed once maps arrive through the real
 //! pipeline.
+//!
+//! Two ways of finding the map and its texture packages are supported:
+//!
+//! - [`run`]: `--dev-bsp` (and any `--dev-wad`) name plain filesystem paths,
+//!   read straight off disk. This **bypasses the media pipeline entirely**:
+//!   no ISO validation, no import, no cache, no VFS, no asset filesystem.
+//! - [`run_payload`]: `--dev-payload <files dir>` plus `--dev-bsp
+//!   <relative path>` resolve the map (and, from its worldspawn `wad` key,
+//!   its texture packages) through [`ohl_assets::AssetFs`] over an already-
+//!   imported payload tree, the way the real pipeline eventually will.
 //!
 //! Logging policy is the same here as everywhere else in the project: no
 //! media-derived string ever reaches a log line. That includes the paths the
 //! developer passed on the command line, which are echoed nowhere.
 
 use std::collections::BTreeMap;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -45,7 +54,9 @@ const INITIAL_SIZE: (u32, u32) = (1280, 720);
 /// free-fly camera keeps its own copy of this.
 const WALK_SENSITIVITY: f32 = 0.15;
 
-/// Runs the viewer until the window closes or Escape is pressed.
+/// Runs the viewer until the window closes or Escape is pressed, loading
+/// the map and its texture packages straight off disk by their absolute (or
+/// working-directory-relative) paths.
 ///
 /// Returns a fixed, sanitized message on failure; the caller prints it as
 /// is.
@@ -55,10 +66,61 @@ pub fn run(bsp_path: &Path, wad_paths: &[PathBuf]) -> Result<(), &'static str> {
     for path in wad_paths {
         wad_bytes.push(std::fs::read(path).map_err(|_| "a texture package could not be read")?);
     }
+    run_bytes(&bsp_bytes, &wad_bytes)
+}
+
+/// Runs the viewer over a map resolved through an [`ohl_assets::AssetFs`]
+/// mounted at `files_dir` (an imported payload's `files/` directory, using
+/// the default `valve` search path): `bsp_relative_path` is a game-relative
+/// asset path (for example `maps/crossfire.bsp`), and its texture packages
+/// are resolved automatically from the map's worldspawn `wad` key, exactly
+/// as GoldSrc resolves them.
+///
+/// Returns a fixed, sanitized message on failure; the caller prints it as
+/// is.
+pub fn run_payload(files_dir: &Path, bsp_relative_path: &str) -> Result<(), &'static str> {
+    let asset_fs = ohl_assets::AssetFs::mount_default(files_dir)
+        .map_err(|_| "the development payload directory could not be indexed")?;
+
+    let mut bsp_bytes = Vec::new();
+    asset_fs
+        .open(bsp_relative_path)
+        .map_err(|_| "the map could not be found in the development payload")?
+        .read_to_end(&mut bsp_bytes)
+        .map_err(|_| "the map file could not be read")?;
+
+    // The worldspawn `wad` key names the map's texture packages by their
+    // mapper-authored absolute path; `resolve_wads` matches them by
+    // basename only, ignoring those directories, exactly as GoldSrc does.
+    let limits = Limits::default();
+    let wad_value = Bsp::parse(&bsp_bytes, &limits)
+        .ok()
+        .and_then(|bsp| bsp.entities(&limits).ok())
+        .and_then(|entities| {
+            entities
+                .first()
+                .and_then(|worldspawn| worldspawn.get("wad").cloned())
+        })
+        .unwrap_or_default();
+
+    let mut wad_bytes = Vec::new();
+    for mut wad in asset_fs.resolve_wads(&wad_value) {
+        let mut bytes = Vec::new();
+        if wad.read_to_end(&mut bytes).is_ok() {
+            wad_bytes.push(bytes);
+        }
+    }
+
+    run_bytes(&bsp_bytes, &wad_bytes)
+}
+
+/// Shared tail of [`run`] and [`run_payload`]: parses the map, builds the
+/// renderable world, and drives the window event loop.
+fn run_bytes(bsp_bytes: &[u8], wad_bytes: &[Vec<u8>]) -> Result<(), &'static str> {
     let wad_slices: Vec<&[u8]> = wad_bytes.iter().map(Vec::as_slice).collect();
 
     let limits = Limits::default();
-    let bsp = Bsp::parse(&bsp_bytes, &limits).map_err(|_| "the map file is not a BSP v30 map")?;
+    let bsp = Bsp::parse(bsp_bytes, &limits).map_err(|_| "the map file is not a BSP v30 map")?;
     let model = WorldModel::build(
         &bsp,
         &WorldBuildOptions {

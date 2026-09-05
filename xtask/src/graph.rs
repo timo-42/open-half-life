@@ -77,6 +77,12 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
         ],
     ),
     ("ohl-formats", &["ohl-core"]),
+    // GoldSrc-style asset filesystem: resolves game-relative asset paths
+    // over an imported payload's loose files and PAK archives, using
+    // `ohl-formats`' PAK directory decoder. Read-only and independent of
+    // `ohl-vfs` (which mounts the pinned installation medium itself, not
+    // its extracted payload).
+    ("ohl-assets", &["ohl-core", "ohl-formats"]),
     ("ohl-world", &["ohl-formats", "ohl-vfs"]),
     // Clip-hull tracing and player movement: the hulls come from
     // `ohl-formats`' BSP30 reader and diagnostics from `ohl-core`.
