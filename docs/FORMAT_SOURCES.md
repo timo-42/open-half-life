@@ -145,6 +145,127 @@ test fixtures are synthesized in-process by this project's own writers in
 `crates/ohl-formats/src/test_support.rs`; no bytes, names, or other content
 from any game installation are used or committed.
 
+## GoldSrc MDL v10 and SPR
+
+- "MDL: Half Life 1 file format", `malortie/assimp` GitHub wiki, authored by
+  Marc-Antoine Lortie, last edited 2019-12-16
+  (<https://github.com/malortie/assimp/wiki/MDL:-Half-Life-1-file-format>,
+  raw source: <https://raw.githubusercontent.com/wiki/malortie/assimp/MDL:-Half-Life-1-file-format.md>):
+  a community wiki page (prose and per-field tables, not a restatement of
+  Valve's `studio.h`) documenting the GoldSrc "IDST"/version-10 studiomodel
+  layout end to end: the 244-byte main/external-texture-file header and its
+  `id`/`version`/`name`/`length`/`eyeposition`/`min`/`max`/`bbmin`/`bbmax`/
+  `flags` fields followed by every `num*`/`*index` count-and-offset pair
+  (bones, bone controllers, hitboxes, sequences, sequence groups, textures
+  plus `texturedataindex`, skin refs/families plus `skinindex`, body parts,
+  attachments, sound fields, and the transition graph); the 76-byte
+  "IDSQ" sequence-group-file header (and the note that a full header may
+  also be used to load one); the 112-byte bone chunk (`name`, `parent`,
+  `flags`, six-slot `bonecontroller`/`value`/`scale` arrays mapped to the
+  `STUDIO_X/Y/Z/XR/YR/ZR` motion-type slots); the 24-byte bone-controller
+  chunk; the 32-byte hitbox chunk; the 80-byte texture chunk (noting pixel
+  data is excluded from that size) and the skin-family remapping-matrix
+  convention; the 176-byte sequence-description chunk (`label`, `fps`,
+  `flags`, `activity`, `actweight`, `numevents`/`eventindex`, `numframes`,
+  unused `numpivots`/`pivotindex`, `motiontype`, `motionbone`,
+  `linearmovement`, unused `automoveposindex`/`automoveangleindex`,
+  `bbmin`/`bbmax`, `numblends`, `animindex`, two-slot
+  `blendtype`/`blendstart`/`blendend`, `blendparent`, `seqgroup`,
+  `entrynode`/`exitnode`, `nodeflags`, `nextseq`) and its documented
+  animation-blending formula; the 104-byte sequence-group chunk; the
+  12-byte per-bone animation-frame-offset chunk (six `unsigned short`
+  offsets, one per motion-type slot, zero meaning "no data, use the bind
+  pose") and the documented bone-major/motion-type-minor layout of
+  contiguous per-blend animation-offset chunks; the 2-byte
+  `mstudioanimvalue_t` `{valid, total}` run header (the page states this
+  scheme's *purpose* — removing consecutive identical compressed values —
+  but explicitly defers the exact read algorithm to Valve's own source,
+  which this project does not consult; see the note on
+  `ohl_formats::mdl10::decode_anim_channel` below); the `numtransitions x
+  numtransitions` adjacency-matrix sequence transition graph and its
+  1-based entry/exit node numbering; the 76-byte animation-event chunk; the
+  88-byte attachment chunk; the 76-byte body-part chunk and its
+  local/global model-index `base` divisor; the 112-byte model chunk
+  (vertex/normal counts, offsets, and the separate `vertinfoindex`/
+  `norminfoindex` per-vertex/per-normal bone-index arrays, with the note
+  that GoldSrc assigns exactly one bone per vertex); the 20-byte mesh
+  chunk and its documented triangle-strip (`N > 0`)/triangle-fan (`N < 0`)
+  trivert command-stream framing; and the 8-byte trivert chunk (`vertindex`,
+  `normindex`, absolute `s`/`t` texture coordinates). This project's
+  `mdl10` module implements `RawHeader`, `RawSequenceHeader`, `Bone`,
+  `BoneController`, `Hitbox`, `Texture`, `SequenceGroup`, `Sequence`,
+  `AnimEvent`, `Attachment`, `Bodypart`, `Model`, `Mesh`, `RawTrivert`,
+  `AnimOffsets`, and `AnimValueHeader` directly from this page, and the
+  header-field ordering was independently re-verified: summing every
+  documented field's declared byte size in order reproduces the page's own
+  244/176/112 total sizes exactly.
+  - The page's Texture section documents only the 80-byte header and does
+    not state where the palette for a texture's pixel data lives. Since
+    GoldSrc textures are the same generic 8-bit-indexed convention this
+    crate already implements for WAD3/BSP30 miptexes (see above: pixel
+    data immediately followed by a trailing 256-entry RGB palette, no mip
+    levels for a model texture), `Mdl::decode_texture` applies that same,
+    separately documented convention here; this is this project's own
+    design decision, not something the reviewed MDL page states.
+  - The page's Model section describes `vertinfoindex`/`norminfoindex` only
+    in prose ("an array of int ... maps each vertex position to a bone
+    index") without a byte-size table row. This project treats each array
+    as one byte per vertex/normal (`Mdl::vertex_bones`/`Mdl::normal_bones`),
+    consistent with GoldSrc's documented practical 128-bone limit (which
+    fits a single byte) and with the bandwidth-efficient convention used by
+    every other GoldSrc indexed-array field this crate has reviewed; this
+    is this project's own engineering interpretation, validated only by
+    this project's own self-consistent synthetic round-trip fixtures (see
+    `crates/ohl-formats/src/test_support.rs`), not a byte-size claim made
+    by the reviewed page.
+  - The page explicitly declines to restate the compressed
+    animation-value *decode* algorithm, deferring instead to Valve's own
+    source (which this project does not consult per its clean-room
+    policy). `ohl_formats::mdl10::decode_anim_channel`'s run/hold walk
+    (each run's `valid` raw values are read literally for the frames they
+    cover; the run's last value is held for any remaining frames up to
+    `total`) is therefore this project's own independent design against
+    the documented `valid`/`total` field *semantics* only, not a
+    transcription of any Valve source. It is exercised only against this
+    project's own synthetic fixtures.
+- "Unofficial Half-Life WAD3 and SPRITE file format specification",
+  Revision 05, Author: Yuraj, Date: 15.01.2012 (already recorded above for
+  its WAD3 section; the same document's "SPRITE" section is the basis for
+  `mdl_formats::spr`): documents the 40-byte sprite header (`"IDSP"` magic,
+  `version` (2), sprite `type` enum `VP_PARALLEL_UPRIGHT`/`FACING_UPRIGHT`/
+  `VP_PARALLEL`/`ORIENTED`/`VP_PARALLEL_ORIENTED`, texture-format enum
+  `SPR_NORMAL`/`SPR_ADDITIVE`/`SPR_INDEXALPHA`/`SPR_ALPHTEST`, `float`
+  bounding radius, maximum frame `width`/`height`, frame count, beam
+  `length`, and `synctype` (`0` synchronized / `1` random)); the
+  size-prefixed color palette (`uint16` color count followed by that many
+  24-bit RGB triples); and the flat per-frame layout (`group`, signed
+  `origin` X/Y, `width`, `height`, then `width * height` indexed pixel
+  bytes). This project's `spr` module implements `RawHeader`, `RawFrame`,
+  `SpriteType`, `TextureFormat`, and `SyncType` directly from this
+  document. The reviewed document's Frame section describes only this
+  flat layout; it does not separately describe a nested "frame group"
+  sub-structure (an interval array followed by repeated single frames),
+  so this project decodes exactly the documented flat layout and exposes
+  the per-frame `group` field unmodified rather than inventing an
+  undocumented grouped form. Because the documented palette is
+  size-prefixed rather than fixed at 256 entries (unlike WAD3/BSP30
+  miptexes), `spr::SprImage` uses its own plain-slice palette type
+  instead of reusing `crate::palette::Palette`/`Indexed8` (both fixed to
+  exactly 256 entries).
+
+The project-owned `mdl10` and `spr` decoders in `crates/ohl-formats` are
+zero-copy, bounds-checked readers over these documented layouts, following
+the same validation discipline as `bsp30`/`wad3` (every count, offset, and
+index is checked against the actual buffer before use; see
+`crates/ohl-formats/src/error.rs` for the fixed rejection reasons). Neither
+module implements multi-file model loading (external texture files,
+external "IDSQ" sequence-group files): each file is parsed independently,
+and `Mdl::sample_bone_animation` takes the relevant animation-data buffer
+explicitly so a caller controls which file's bytes are used. All test
+fixtures are synthesized in-process by this project's own writers in
+`crates/ohl-formats/src/test_support.rs`; no bytes, names, or other content
+from any game installation are used or committed.
+
 ## Cabinet and component-selection parsing
 
 Project-owned cabinet or installer component-selection parsing logic requires

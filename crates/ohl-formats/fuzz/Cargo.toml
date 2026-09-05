@@ -29,3 +29,17 @@ path = "fuzz_targets/wad3_fuzz.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "mdl10_fuzz"
+path = "fuzz_targets/mdl10_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "spr_fuzz"
+path = "fuzz_targets/spr_fuzz.rs"
+test = false
+doc = false
+bench = false
