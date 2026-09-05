@@ -69,10 +69,23 @@ struct Cli {
 
     /// Development only: WAD3 texture packages consulted for the map's
     /// external textures. May be repeated. Without them, externally stored
-    /// textures render as a checkerboard placeholder.
+    /// textures render as a checkerboard placeholder. Ignored when
+    /// `--dev-payload` is given: its texture packages are resolved
+    /// automatically instead.
     #[cfg(feature = "dev-tools")]
     #[arg(long, value_name = "PATH", requires = "dev_bsp")]
     dev_wad: Vec<PathBuf>,
+
+    /// Development only: an imported payload's `files/` directory. When
+    /// given together with `--dev-bsp`, the map path is resolved as a
+    /// game-relative asset path (for example `maps/crossfire.bsp`) through
+    /// `ohl_assets::AssetFs` instead of straight off disk, and its texture
+    /// packages are resolved automatically from the map's worldspawn `wad`
+    /// key. Without `--dev-payload`, `--dev-bsp` keeps its original
+    /// absolute-path behaviour.
+    #[cfg(feature = "dev-tools")]
+    #[arg(long, value_name = "PATH", requires = "dev_bsp")]
+    dev_payload: Option<PathBuf>,
 
     /// Directory for the metadata-only provenance cache.
     ///
@@ -242,6 +255,32 @@ fn map_preflight(
     }
 }
 
+/// Runs the `--dev-bsp` development map viewer, resolving the map (and,
+/// when `--dev-payload` was given, its texture packages) either straight
+/// off disk or through `ohl_assets::AssetFs`. Neither path is ever logged:
+/// the project's logging policy is uniform, and a user-supplied path is
+/// still untrusted input.
+#[cfg(feature = "dev-tools")]
+fn run_dev_bsp(cli: &Cli) -> ExitCode {
+    tracing::warn!("development map viewer: media pipeline is bypassed");
+    let path = cli.dev_bsp.as_deref().expect("checked by the caller");
+    let outcome = if let Some(files_dir) = cli.dev_payload.as_deref() {
+        match path.to_str() {
+            Some(relative) => dev_bsp::run_payload(files_dir, relative),
+            None => Err("the map path must be valid UTF-8 when used with --dev-payload"),
+        }
+    } else {
+        dev_bsp::run(path, &cli.dev_wad)
+    };
+    match outcome {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(message) => {
+            eprintln!("{message}");
+            std::process::ExitCode::from(3)
+        }
+    }
+}
+
 fn run(cli: Cli) -> ExitCode {
     tracing::info!("{APP_NAME} {VERSION}");
     tracing::info!("{}", platform_line());
@@ -277,15 +316,8 @@ fn run_dev_tools(cli: &Cli) -> Option<ExitCode> {
         );
     }
 
-    if let Some(path) = cli.dev_bsp.as_deref() {
-        tracing::warn!("development map viewer: media pipeline is bypassed");
-        return Some(match dev_bsp::run(path, &cli.dev_wad) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(message) => {
-                eprintln!("{message}");
-                ExitCode::from(3)
-            }
-        });
+    if cli.dev_bsp.is_some() {
+        return Some(run_dev_bsp(cli));
     }
 
     None

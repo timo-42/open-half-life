@@ -1151,3 +1151,68 @@ pub fn build_collision_slope_bsp(normal_y: f32, normal_z: f32) -> Vec<u8> {
     );
     builder.build()
 }
+
+// ---------------------------------------------------------------------
+// PAK archive fixtures
+// ---------------------------------------------------------------------
+
+/// Encodes a name into a fixed, NUL-padded 56-byte PAK entry name field.
+#[must_use]
+pub fn fixed_pak_name(name: &str) -> [u8; 56] {
+    fixed_name_sized::<56>(name)
+}
+
+/// A synthetic PAK archive builder.
+#[derive(Default)]
+pub struct PakBuilder {
+    entries: Vec<([u8; 56], Vec<u8>)>,
+}
+
+impl PakBuilder {
+    /// A builder with no entries.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds a member file with `name` (encoded into the fixed 56-byte,
+    /// NUL-padded name field) and `body` bytes.
+    pub fn add_entry(&mut self, name: &str, body: Vec<u8>) {
+        self.entries.push((fixed_pak_name(name), body));
+    }
+
+    /// Adds an entry whose 56-byte name field is supplied verbatim
+    /// (unpadded or deliberately un-terminated), for malformed-fixture
+    /// tests.
+    pub fn add_raw_named_entry(&mut self, name: [u8; 56], body: Vec<u8>) {
+        self.entries.push((name, body));
+    }
+
+    /// Serializes the whole file: header, entry bodies, then the
+    /// directory.
+    #[must_use]
+    pub fn build(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"PACK");
+        // Placeholders for `diroffset`/`dirsize`, patched below.
+        let dir_offset_pos = out.len();
+        push_u32(&mut out, 0);
+        push_u32(&mut out, 0);
+
+        let mut directory = Vec::new();
+        for (name, body) in &self.entries {
+            let offset = u32::try_from(out.len()).unwrap();
+            out.extend_from_slice(body);
+            directory.extend_from_slice(name);
+            push_u32(&mut directory, offset);
+            push_u32(&mut directory, u32::try_from(body.len()).unwrap());
+        }
+
+        let dir_offset = u32::try_from(out.len()).unwrap();
+        let dir_size = u32::try_from(directory.len()).unwrap();
+        out[dir_offset_pos..dir_offset_pos + 4].copy_from_slice(&dir_offset.to_le_bytes());
+        out[dir_offset_pos + 4..dir_offset_pos + 8].copy_from_slice(&dir_size.to_le_bytes());
+        out.extend_from_slice(&directory);
+        out
+    }
+}

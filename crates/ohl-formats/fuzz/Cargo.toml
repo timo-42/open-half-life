@@ -78,3 +78,10 @@ path = "fuzz_targets/hud_sprites_fuzz.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "pak_fuzz"
+path = "fuzz_targets/pak_fuzz.rs"
+test = false
+doc = false
+bench = false

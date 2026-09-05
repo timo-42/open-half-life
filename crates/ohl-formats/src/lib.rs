@@ -1,5 +1,5 @@
-//! Clean-room, `no_std` + `alloc` decoders for GoldSrc BSP v30 maps and
-//! WAD3 texture packages.
+//! Clean-room, `no_std` + `alloc` decoders for GoldSrc BSP v30 maps, WAD3
+//! texture packages, and Quake `PACK` archives.
 //!
 //! Every decoder in this crate is a borrowing, zero-copy view over caller-
 //! supplied bytes: no lump, entry, or count is ever trusted without first
@@ -15,6 +15,7 @@ extern crate alloc;
 pub mod bsp30;
 pub mod error;
 pub mod mdl10;
+pub mod pak;
 pub mod palette;
 pub mod spr;
 pub mod wad3;
