@@ -220,4 +220,414 @@ class SyntheticValidatedMedia final {
   ohl::media::IsoValidationResult validation_;
 };
 
+// ---------------------------------------------------------------------------
+// Independently authored synthetic ECMA-119 (ISO 9660) / Joliet fixtures.
+//
+// Every byte below is written from the public ECMA-119 structure and the
+// public Joliet escape-sequence definition. No name, layout, count or byte
+// originates from any real game medium.
+// ---------------------------------------------------------------------------
+
+inline constexpr std::size_t kIso9660SectorCount = 300;
+inline constexpr std::uint32_t kIsoPrimaryDescriptorSector = 16;
+inline constexpr std::uint32_t kIsoPathTableSector = 19;
+inline constexpr std::uint32_t kIsoPrimaryRootSector = 24;
+inline constexpr std::uint32_t kIsoPrimaryChildSector = 25;
+inline constexpr std::uint32_t kIsoJolietRootSector = 26;
+inline constexpr std::uint32_t kIsoJolietChildSector = 27;
+inline constexpr std::uint32_t kIsoSentinelDataSector = 30;
+inline constexpr std::uint32_t kIsoNestedDataSector = 31;
+
+inline constexpr std::string_view kIsoVolumeLabel{"OHL SYNTHETIC"};
+inline constexpr std::string_view kIsoPrimaryDirectoryName{"FIXDIR"};
+inline constexpr std::string_view kIsoPrimarySentinelName{"SENTINEL.TXT"};
+inline constexpr std::string_view kIsoPrimaryNestedName{"NESTED.BIN"};
+inline constexpr std::string_view kIsoPrimaryLoopName{"LOOPDIR"};
+inline constexpr std::string_view kIsoJolietDirectoryName{"FixtureDir"};
+inline constexpr std::string_view kIsoJolietSentinelName{"Sentinel.txt"};
+inline constexpr std::string_view kIsoJolietNestedName{"Nested.bin"};
+inline constexpr std::string_view kIsoJolietLoopName{"LoopDir"};
+inline constexpr std::string_view kIsoSentinelContents{
+    "open-half-life synthetic sentinel payload\n"};
+inline constexpr std::string_view kIsoNestedContents{
+    "open-half-life synthetic nested payload\n"};
+
+struct SyntheticIso9660Options {
+  std::size_t sector_count{kIso9660SectorCount};
+  bool joliet{true};
+  bool terminator{true};
+  std::uint16_t logical_block_size{2'048};
+  bool volume_space_too_large{false};
+  bool root_extent_outside_volume{false};
+  bool file_extent_outside_volume{false};
+  bool directory_cycle{false};
+  bool overlong_identifier{false};
+  bool multi_extent_file{false};
+  std::uint32_t extra_root_files{0};
+  // A file record claiming to live on another volume of the volume set.
+  std::uint16_t file_record_volume_sequence{1};
+  // Non-zero replaces the root directory record's data length, which
+  // ECMA-119 9.1.4 requires to be a whole number of logical blocks.
+  std::uint32_t root_size_override{0};
+  // Non-zero replaces the child directory record's data length.
+  std::uint32_t child_directory_size_override{0};
+  // Writes an additional, deliberately malformed supplementary descriptor
+  // that carries no Joliet escape sequence.
+  bool malformed_non_joliet_supplementary{false};
+  // Adds two Joliet siblings differing only in ASCII case.
+  bool joliet_case_siblings{false};
+};
+
+inline void iso_write_u8(std::vector<std::byte>& image,
+                         const std::size_t offset, const std::uint8_t value) {
+  image.at(offset) = static_cast<std::byte>(value);
+}
+
+inline void iso_write_both_u16(std::vector<std::byte>& image,
+                               const std::size_t offset,
+                               const std::uint16_t value) {
+  iso_write_u8(image, offset, static_cast<std::uint8_t>(value & 0xffU));
+  iso_write_u8(image, offset + 1,
+               static_cast<std::uint8_t>((value >> 8U) & 0xffU));
+  iso_write_u8(image, offset + 2,
+               static_cast<std::uint8_t>((value >> 8U) & 0xffU));
+  iso_write_u8(image, offset + 3, static_cast<std::uint8_t>(value & 0xffU));
+}
+
+inline void iso_write_little_u32(std::vector<std::byte>& image,
+                                 const std::size_t offset,
+                                 const std::uint32_t value) {
+  for (std::size_t index = 0; index < 4; ++index) {
+    iso_write_u8(image, offset + index,
+                 static_cast<std::uint8_t>((value >> (8U * index)) & 0xffU));
+  }
+}
+
+inline void iso_write_big_u32(std::vector<std::byte>& image,
+                              const std::size_t offset,
+                              const std::uint32_t value) {
+  for (std::size_t index = 0; index < 4; ++index) {
+    iso_write_u8(image, offset + index,
+                 static_cast<std::uint8_t>(
+                     (value >> (8U * (3U - index))) & 0xffU));
+  }
+}
+
+inline void iso_write_both_u32(std::vector<std::byte>& image,
+                               const std::size_t offset,
+                               const std::uint32_t value) {
+  iso_write_little_u32(image, offset, value);
+  iso_write_big_u32(image, offset + 4, value);
+}
+
+inline void iso_write_bytes(std::vector<std::byte>& image,
+                            const std::size_t offset,
+                            const std::span<const std::byte> value) {
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    image.at(offset + index) = value[index];
+  }
+}
+
+inline void iso_write_ascii(std::vector<std::byte>& image,
+                            const std::size_t offset,
+                            const std::string_view value) {
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    iso_write_u8(image, offset + index,
+                 static_cast<std::uint8_t>(value[index]));
+  }
+}
+
+inline void iso_fill_ascii_field(std::vector<std::byte>& image,
+                                 const std::size_t offset,
+                                 const std::size_t size,
+                                 const std::string_view value) {
+  for (std::size_t index = 0; index < size; ++index) {
+    iso_write_u8(
+        image, offset + index,
+        static_cast<std::uint8_t>(index < value.size()
+                                      ? static_cast<std::uint8_t>(value[index])
+                                      : 0x20U));
+  }
+}
+
+// UCS-2 big-endian field padded with U+0020, as Joliet requires.
+inline void iso_fill_ucs2_field(std::vector<std::byte>& image,
+                                const std::size_t offset,
+                                const std::size_t size,
+                                const std::string_view value) {
+  for (std::size_t index = 0; index * 2U + 1U < size; ++index) {
+    const auto character =
+        static_cast<std::uint8_t>(index < value.size()
+                                      ? static_cast<std::uint8_t>(value[index])
+                                      : 0x20U);
+    iso_write_u8(image, offset + index * 2U, 0);
+    iso_write_u8(image, offset + index * 2U + 1U, character);
+  }
+}
+
+[[nodiscard]] inline std::vector<std::byte> iso_identifier(
+    const std::string_view name, const bool ucs2) {
+  std::vector<std::byte> encoded;
+  if (ucs2) {
+    encoded.reserve(name.size() * 2U);
+    for (const auto character : name) {
+      encoded.push_back(std::byte{0});
+      encoded.push_back(static_cast<std::byte>(
+          static_cast<unsigned char>(character)));
+    }
+  } else {
+    encoded.reserve(name.size());
+    for (const auto character : name) {
+      encoded.push_back(static_cast<std::byte>(
+          static_cast<unsigned char>(character)));
+    }
+  }
+  return encoded;
+}
+
+struct SyntheticIsoRecord {
+  std::vector<std::byte> identifier;
+  std::uint32_t extent{0};
+  std::uint32_t size{0};
+  bool directory{false};
+  std::uint8_t extra_flags{0};
+  std::uint8_t declared_identifier_length_override{0};
+  std::uint16_t volume_sequence{1};
+};
+
+// Writes one ECMA-119 directory record and returns its recorded length.
+inline std::size_t iso_write_record(std::vector<std::byte>& image,
+                                    const std::size_t offset,
+                                    const SyntheticIsoRecord& record) {
+  const auto identifier_length = record.identifier.size();
+  auto length = 33U + identifier_length;
+  if ((length % 2U) != 0U) {
+    ++length;
+  }
+  iso_write_u8(image, offset, static_cast<std::uint8_t>(length));
+  iso_write_u8(image, offset + 1, 0);
+  iso_write_both_u32(image, offset + 2, record.extent);
+  iso_write_both_u32(image, offset + 10, record.size);
+  iso_write_u8(image, offset + 18, 98);  // years since 1900
+  iso_write_u8(image, offset + 19, 1);
+  iso_write_u8(image, offset + 20, 1);
+  iso_write_u8(image, offset + 25,
+               static_cast<std::uint8_t>(
+                   (record.directory ? 0x02U : 0x00U) | record.extra_flags));
+  iso_write_u8(image, offset + 26, 0);
+  iso_write_u8(image, offset + 27, 0);
+  iso_write_both_u16(image, offset + 28, record.volume_sequence);
+  iso_write_u8(image, offset + 32,
+               record.declared_identifier_length_override != 0
+                   ? record.declared_identifier_length_override
+                   : static_cast<std::uint8_t>(identifier_length));
+  iso_write_bytes(image, offset + 33, record.identifier);
+  return length;
+}
+
+inline void iso_write_directory(std::vector<std::byte>& image,
+                                const std::uint32_t sector,
+                                const std::uint32_t parent_sector,
+                                const std::vector<SyntheticIsoRecord>& records,
+                                const bool ucs2) {
+  const auto base = static_cast<std::size_t>(sector) * kSyntheticSectorSize;
+  std::size_t offset = base;
+  SyntheticIsoRecord self;
+  self.identifier = {std::byte{0x00}};
+  self.extent = sector;
+  self.size = static_cast<std::uint32_t>(kSyntheticSectorSize);
+  self.directory = true;
+  offset += iso_write_record(image, offset, self);
+  SyntheticIsoRecord parent = self;
+  parent.identifier = {std::byte{0x01}};
+  parent.extent = parent_sector;
+  offset += iso_write_record(image, offset, parent);
+  (void)ucs2;
+  for (const auto& record : records) {
+    offset += iso_write_record(image, offset, record);
+  }
+}
+
+inline void iso_write_volume_descriptor(
+    std::vector<std::byte>& image, const std::uint32_t sector,
+    const std::uint8_t type, const SyntheticIso9660Options& options,
+    const std::uint32_t volume_blocks, const std::uint32_t root_sector,
+    const bool joliet) {
+  const auto base = static_cast<std::size_t>(sector) * kSyntheticSectorSize;
+  iso_write_u8(image, base, type);
+  iso_write_ascii(image, base + 1, "CD001");
+  iso_write_u8(image, base + 6, 1);
+  iso_fill_ascii_field(image, base + 8, 32, "");
+  if (joliet) {
+    iso_fill_ucs2_field(image, base + 40, 32, kIsoVolumeLabel);
+    iso_write_u8(image, base + 88, 0x25U);
+    iso_write_u8(image, base + 89, 0x2fU);
+    iso_write_u8(image, base + 90, 0x45U);
+  } else {
+    iso_fill_ascii_field(image, base + 40, 32, kIsoVolumeLabel);
+  }
+  iso_write_both_u32(image, base + 80,
+                     options.volume_space_too_large ? volume_blocks + 100U
+                                                    : volume_blocks);
+  iso_write_both_u16(image, base + 120, 1);
+  iso_write_both_u16(image, base + 124, 1);
+  iso_write_both_u16(image, base + 128, options.logical_block_size);
+  iso_write_both_u32(image, base + 132, 10);
+  iso_write_little_u32(image, base + 140, kIsoPathTableSector);
+  iso_write_little_u32(image, base + 144, 0);
+  iso_write_big_u32(image, base + 148, kIsoPathTableSector);
+  iso_write_big_u32(image, base + 152, 0);
+
+  SyntheticIsoRecord root;
+  root.identifier = {std::byte{0x00}};
+  root.extent = options.root_extent_outside_volume ? volume_blocks + 5U
+                                                   : root_sector;
+  root.size = options.root_size_override != 0
+                  ? options.root_size_override
+                  : static_cast<std::uint32_t>(kSyntheticSectorSize);
+  root.directory = true;
+  (void)iso_write_record(image, base + 156, root);
+
+  iso_fill_ascii_field(image, base + 190, 128, "");
+  iso_fill_ascii_field(image, base + 318, 128, "");
+  iso_fill_ascii_field(image, base + 446, 128, "");
+  iso_write_u8(image, base + 881, 1);
+}
+
+// Builds one complete synthetic ECMA-119 image, optionally carrying a Joliet
+// supplementary descriptor and optionally one deliberate structural defect.
+[[nodiscard]] inline std::vector<std::byte> make_synthetic_iso9660_image(
+    const SyntheticIso9660Options options = {}) {
+  if (options.sector_count < 64) {
+    throw std::invalid_argument{"synthetic ISO 9660 image is too small"};
+  }
+  std::vector<std::byte> image(options.sector_count * kSyntheticSectorSize);
+  const auto volume_blocks =
+      static_cast<std::uint32_t>(options.sector_count);
+
+  iso_write_volume_descriptor(image, kIsoPrimaryDescriptorSector, 1, options,
+                              volume_blocks, kIsoPrimaryRootSector, false);
+  std::uint32_t next_descriptor = kIsoPrimaryDescriptorSector + 1U;
+  if (options.joliet) {
+    iso_write_volume_descriptor(image, next_descriptor, 2, options,
+                                volume_blocks, kIsoJolietRootSector, true);
+    ++next_descriptor;
+  }
+  if (options.malformed_non_joliet_supplementary) {
+    SyntheticIso9660Options malformed = options;
+    malformed.logical_block_size = 512;
+    malformed.root_extent_outside_volume = true;
+    iso_write_volume_descriptor(image, next_descriptor, 2, malformed,
+                                volume_blocks, kIsoPrimaryRootSector, false);
+    ++next_descriptor;
+  }
+  if (options.terminator) {
+    const auto base =
+        static_cast<std::size_t>(next_descriptor) * kSyntheticSectorSize;
+    iso_write_u8(image, base, 255);
+    iso_write_ascii(image, base + 1, "CD001");
+    iso_write_u8(image, base + 6, 1);
+  }
+
+  // Minimal type-L path table describing only the root directory.
+  const auto path_table =
+      static_cast<std::size_t>(kIsoPathTableSector) * kSyntheticSectorSize;
+  iso_write_u8(image, path_table, 1);
+  iso_write_u8(image, path_table + 1, 0);
+  iso_write_little_u32(image, path_table + 2, kIsoPrimaryRootSector);
+  iso_write_u8(image, path_table + 6, 1);
+  iso_write_u8(image, path_table + 8, 0);
+
+  iso_write_ascii(image,
+                  static_cast<std::size_t>(kIsoSentinelDataSector) *
+                      kSyntheticSectorSize,
+                  kIsoSentinelContents);
+  iso_write_ascii(image,
+                  static_cast<std::size_t>(kIsoNestedDataSector) *
+                      kSyntheticSectorSize,
+                  kIsoNestedContents);
+
+  const auto build_tree = [&](const bool ucs2, const std::uint32_t root_sector,
+                              const std::uint32_t child_sector,
+                              const std::string_view directory_name,
+                              const std::string_view sentinel_name,
+                              const std::string_view nested_name,
+                              const std::string_view loop_name) {
+    std::vector<SyntheticIsoRecord> root_records;
+    SyntheticIsoRecord directory;
+    directory.identifier = iso_identifier(directory_name, ucs2);
+    directory.extent = child_sector;
+    directory.size = options.child_directory_size_override != 0
+                         ? options.child_directory_size_override
+                         : static_cast<std::uint32_t>(kSyntheticSectorSize);
+    directory.directory = true;
+    root_records.push_back(std::move(directory));
+
+    SyntheticIsoRecord sentinel;
+    sentinel.identifier = iso_identifier(
+        std::string{sentinel_name} + ";1", ucs2);
+    sentinel.extent = options.file_extent_outside_volume ? volume_blocks + 5U
+                                                         : kIsoSentinelDataSector;
+    sentinel.size = static_cast<std::uint32_t>(kIsoSentinelContents.size());
+    if (options.multi_extent_file) {
+      sentinel.extra_flags = 0x80U;
+    }
+    if (options.overlong_identifier) {
+      sentinel.declared_identifier_length_override =
+          static_cast<std::uint8_t>(sentinel.identifier.size() + 40U);
+    }
+    sentinel.volume_sequence = options.file_record_volume_sequence;
+    root_records.push_back(std::move(sentinel));
+
+    if (options.joliet_case_siblings && ucs2) {
+      for (const auto& sibling :
+           {std::pair<std::string_view, std::uint32_t>{"CaseName.txt", 8U},
+            std::pair<std::string_view, std::uint32_t>{"casename.txt", 9U}}) {
+        SyntheticIsoRecord entry;
+        entry.identifier =
+            iso_identifier(std::string{sibling.first} + ";1", true);
+        entry.extent = kIsoSentinelDataSector;
+        entry.size = sibling.second;
+        root_records.push_back(std::move(entry));
+      }
+    }
+
+    for (std::uint32_t index = 0; index < options.extra_root_files; ++index) {
+      SyntheticIsoRecord extra;
+      const auto name = "EXTRA" + std::to_string(index) + ".TXT;1";
+      extra.identifier = iso_identifier(name, ucs2);
+      extra.extent = kIsoSentinelDataSector;
+      extra.size = 8;
+      root_records.push_back(std::move(extra));
+    }
+    iso_write_directory(image, root_sector, root_sector, root_records, ucs2);
+
+    std::vector<SyntheticIsoRecord> child_records;
+    SyntheticIsoRecord nested;
+    nested.identifier = iso_identifier(std::string{nested_name} + ";1", ucs2);
+    nested.extent = kIsoNestedDataSector;
+    nested.size = static_cast<std::uint32_t>(kIsoNestedContents.size());
+    child_records.push_back(std::move(nested));
+    if (options.directory_cycle) {
+      SyntheticIsoRecord loop;
+      loop.identifier = iso_identifier(loop_name, ucs2);
+      loop.extent = root_sector;
+      loop.size = static_cast<std::uint32_t>(kSyntheticSectorSize);
+      loop.directory = true;
+      child_records.push_back(std::move(loop));
+    }
+    iso_write_directory(image, child_sector, root_sector, child_records, ucs2);
+  };
+
+  build_tree(false, kIsoPrimaryRootSector, kIsoPrimaryChildSector,
+             kIsoPrimaryDirectoryName, kIsoPrimarySentinelName,
+             kIsoPrimaryNestedName, kIsoPrimaryLoopName);
+  if (options.joliet) {
+    build_tree(true, kIsoJolietRootSector, kIsoJolietChildSector,
+               kIsoJolietDirectoryName, kIsoJolietSentinelName,
+               kIsoJolietNestedName, kIsoJolietLoopName);
+  }
+  return image;
+}
+
 }  // namespace ohl::media::test

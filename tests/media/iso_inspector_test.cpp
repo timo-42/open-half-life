@@ -1,8 +1,11 @@
 #include "ohl/media/iso_inspector.hpp"
 
+#include "synthetic_media_test_support.hpp"
+
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -367,6 +370,125 @@ int main() {
                    ohl::media::MediaError::unsupported_filesystem,
                    "random data") != 0) {
     return 1;
+  }
+
+  // --- ECMA-119 (ISO 9660) and Joliet -------------------------------------
+  //
+  // Every fixture below is independently authored from the public ECMA-119
+  // structure and the public Joliet escape-sequence definition.
+
+  const auto validate_iso9660 =
+      [&](const std::string_view name,
+          const ohl::media::test::SyntheticIso9660Options& options) {
+        const auto path = directory / name;
+        if (!write_image(path,
+                         ohl::media::test::make_synthetic_iso9660_image(
+                             options))) {
+          std::cerr << "failed to write synthetic ISO 9660 image\n";
+          std::exit(1);
+        }
+        return validate_path(path);
+      };
+
+  const auto joliet_media = validate_iso9660("iso9660-joliet.iso", {});
+  if (!joliet_media.valid()) {
+    std::cerr << "synthetic ISO 9660 + Joliet image was rejected: "
+              << ohl::media::to_string(joliet_media.error) << '\n';
+    return 1;
+  }
+  {
+    const auto& inspection = joliet_media.media->inspection();
+    if (inspection.media_class != ohl::media::MediaClass::iso9660 ||
+        inspection.filesystem != "ECMA-119 ISO 9660 + Joliet" ||
+        inspection.volume_label != "OHL SYNTHETIC" ||
+        inspection.source_sha256.size() != 64) {
+      std::cerr << "ISO 9660 + Joliet inspection reported unexpected fields\n";
+      return 1;
+    }
+  }
+
+  const auto primary_only =
+      validate_iso9660("iso9660-primary.iso", {.joliet = false});
+  if (!primary_only.valid() ||
+      primary_only.media->inspection().media_class !=
+          ohl::media::MediaClass::iso9660 ||
+      primary_only.media->inspection().filesystem != "ECMA-119 ISO 9660" ||
+      primary_only.media->inspection().volume_label != "OHL SYNTHETIC") {
+    std::cerr << "primary-only ISO 9660 image was not accepted\n";
+    return 1;
+  }
+
+  if (expect_error(
+          validate_iso9660("iso9660-block-size.iso",
+                           {.logical_block_size = 512}).error,
+          ohl::media::MediaError::invalid_structure,
+          "ISO 9660 logical block size other than 2048") != 0) {
+    return 1;
+  }
+
+  if (expect_error(
+          validate_iso9660("iso9660-no-terminator.iso",
+                           {.terminator = false}).error,
+          ohl::media::MediaError::invalid_structure,
+          "ISO 9660 descriptor set without a terminator") != 0) {
+    return 1;
+  }
+
+  if (expect_error(
+          validate_iso9660("iso9660-volume-space.iso",
+                           {.volume_space_too_large = true}).error,
+          ohl::media::MediaError::invalid_structure,
+          "ISO 9660 volume space size beyond the pinned source") != 0) {
+    return 1;
+  }
+
+  if (expect_error(
+          validate_iso9660("iso9660-root-extent.iso",
+                           {.root_extent_outside_volume = true}).error,
+          ohl::media::MediaError::invalid_structure,
+          "ISO 9660 root extent outside the volume") != 0) {
+    return 1;
+  }
+
+  if (expect_error(
+          validate_iso9660("iso9660-root-size.iso",
+                           {.root_size_override = 100}).error,
+          ohl::media::MediaError::invalid_structure,
+          "ISO 9660 root directory length that is not a whole block") != 0) {
+    return 1;
+  }
+
+  {
+    // A supplementary descriptor without a Joliet escape sequence is skipped
+    // rather than validated, so a defect in one cannot reject the volume.
+    const auto tolerated = validate_iso9660(
+        "iso9660-non-joliet-supplementary.iso",
+        {.joliet = false, .malformed_non_joliet_supplementary = true});
+    if (!tolerated.valid() ||
+        tolerated.media->inspection().filesystem != "ECMA-119 ISO 9660") {
+      std::cerr << "a malformed non-Joliet supplementary descriptor was not "
+                   "skipped\n";
+      return 1;
+    }
+  }
+
+  {
+    auto truncated =
+        ohl::media::test::make_synthetic_iso9660_image({.joliet = false});
+    // Damage the primary descriptor's standard identifier: the image is then
+    // neither an ECMA-167 nor an ECMA-119 volume.
+    truncated[16 * ohl::media::test::kSyntheticSectorSize + 3] =
+        std::byte{'X'};
+    const auto path = directory / "iso9660-not-a-volume.iso";
+    if (!write_image(path, truncated)) {
+      std::cerr << "failed to write non-volume synthetic image\n";
+      return 1;
+    }
+    if (expect_error(validate_path(path).error,
+                     ohl::media::MediaError::unsupported_filesystem,
+                     "image without any recognised volume structure") != 0) {
+      return 1;
+    }
   }
 
   std::filesystem::remove_all(directory, error_code);

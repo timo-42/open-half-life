@@ -3,7 +3,7 @@
 #include "ohl/media/iso_inspector.hpp"
 #include "ohl/platform/media_source.hpp"
 #include "ohl/platform/platform.hpp"
-#include "ohl/vfs/udf_archive.hpp"
+#include "ohl/vfs/media_archive.hpp"
 
 #include <filesystem>
 #include <iostream>
@@ -176,21 +176,26 @@ int run(const std::vector<std::filesystem::path>& arguments) {
   }
   auto validated = std::move(*validation.media);
 
-  ohl::vfs::UdfArchive archive;
-  if (archive.open(validated.source()) != ohl::vfs::VfsError::none) {
+  const auto media_format =
+      validated.inspection().media_class == ohl::media::MediaClass::iso9660
+          ? ohl::vfs::MediaFormat::iso9660
+          : ohl::vfs::MediaFormat::udf;
+  ohl::vfs::MediaArchive archive;
+  if (archive.open(media_format, validated.source()) !=
+      ohl::vfs::VfsError::none) {
     ohl::core::log(ohl::core::LogLevel::error,
-                   "Media is not a readable UDF filesystem.");
+                   "Media is not a readable read-only media image.");
     return 1;
   }
   const auto root = archive.list("/");
   if (root.error != ohl::vfs::VfsError::none) {
     ohl::core::log(ohl::core::LogLevel::error,
-                   "The UDF root directory could not be read.");
+                   "The media root directory could not be read.");
     return 1;
   }
 
   ohl::core::log(ohl::core::LogLevel::info,
-                 "Mounted read-only UDF image.");
+                 "Mounted read-only media image.");
 
   if (!parse_result.cache_path.has_value()) {
     parse_result.cache_path = ohl::platform::default_cache_directory();

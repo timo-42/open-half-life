@@ -385,11 +385,6 @@ DirectoryPageEngineResult DirectoryPageEngine::next_page() {
 
 }  // namespace detail
 
-struct DirectoryCursor::Impl {
-  std::shared_ptr<ArchiveState> owner;
-  std::unique_ptr<detail::DirectoryPageEngine> engine;
-};
-
 DirectoryCursor::DirectoryCursor() = default;
 DirectoryCursor::~DirectoryCursor() = default;
 DirectoryCursor::DirectoryCursor(DirectoryCursor&&) noexcept = default;
@@ -676,12 +671,14 @@ DirectoryPage UdfArchive::list_page(const std::string_view path) const {
 DirectoryPage UdfArchive::continue_list(DirectoryCursor cursor) const {
   DirectoryPage result;
   if (!cursor.valid() || !is_open() ||
-      cursor.implementation_->owner != implementation_->state) {
+      cursor.implementation_->owner.get() !=
+          static_cast<void*>(implementation_->state.get())) {
     result.error = VfsError::invalid_cursor;
     return result;
   }
 
-  const auto state = cursor.implementation_->owner;
+  const auto state =
+      std::static_pointer_cast<ArchiveState>(cursor.implementation_->owner);
   auto engine = std::move(cursor.implementation_->engine);
   cursor.implementation_.reset();
   const std::scoped_lock lock{state->mutex};

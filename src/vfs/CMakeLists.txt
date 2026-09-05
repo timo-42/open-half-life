@@ -1,6 +1,8 @@
 add_library(ohl_vfs STATIC
   src/udf_media_input.cpp
   src/udf_archive.cpp
+  src/iso9660_archive.cpp
+  src/media_archive.cpp
 )
 
 add_library(OpenHalfLife::vfs ALIAS ohl_vfs)

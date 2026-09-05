@@ -22,6 +22,9 @@ namespace detail {
 class DirectoryArchiveTestHarness;
 }
 
+class UdfArchive;
+class Iso9660Archive;
+
 enum class VfsError {
   none,
   not_open,
@@ -107,6 +110,7 @@ class DirectoryCursor final {
   std::unique_ptr<Impl> implementation_;
 
   friend class UdfArchive;
+  friend class Iso9660Archive;
 };
 
 class DirectoryPage final {

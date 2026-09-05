@@ -288,6 +288,252 @@ using Sector = std::array<std::byte, kSectorSize>;
   return found_primary && found_partition && found_logical && found_terminator;
 }
 
+// --- ECMA-119 (ISO 9660) bounded structural preflight -----------------------
+//
+// Every field below is read from a fixed offset inside one 2,048-byte
+// descriptor that was already read in full, so no length drives an
+// allocation. Both-endian fields must agree before any value is used.
+
+constexpr std::uint64_t kIsoDescriptorScanLimit = 32;
+constexpr std::size_t kIsoDirectoryRecordBytes = 34;
+constexpr std::uint8_t kIsoTypePrimary = 1;
+constexpr std::uint8_t kIsoTypeSupplementary = 2;
+constexpr std::uint8_t kIsoTypeTerminator = 255;
+
+[[nodiscard]] bool read_both_endian_u32(const std::span<const std::byte> bytes,
+                                        const std::size_t offset,
+                                        std::uint32_t& value) noexcept {
+  const auto little = read_little_u32(bytes, offset);
+  const auto big =
+      static_cast<std::uint32_t>(byte_at(bytes, offset + 7)) |
+      (static_cast<std::uint32_t>(byte_at(bytes, offset + 6)) << 8U) |
+      (static_cast<std::uint32_t>(byte_at(bytes, offset + 5)) << 16U) |
+      (static_cast<std::uint32_t>(byte_at(bytes, offset + 4)) << 24U);
+  value = little;
+  return little == big;
+}
+
+[[nodiscard]] bool read_both_endian_u16(const std::span<const std::byte> bytes,
+                                        const std::size_t offset,
+                                        std::uint16_t& value) noexcept {
+  const auto little = read_little_u16(bytes, offset);
+  const auto big = static_cast<std::uint16_t>(
+      static_cast<std::uint16_t>(byte_at(bytes, offset + 3)) |
+      static_cast<std::uint16_t>(
+          static_cast<std::uint16_t>(byte_at(bytes, offset + 2)) << 8U));
+  value = little;
+  return little == big;
+}
+
+[[nodiscard]] bool is_iso_descriptor(const Sector& sector) noexcept {
+  const std::span<const std::byte> bytes{sector};
+  return byte_at(bytes, 1) == 'C' && byte_at(bytes, 2) == 'D' &&
+         byte_at(bytes, 3) == '0' && byte_at(bytes, 4) == '0' &&
+         byte_at(bytes, 5) == '1' && byte_at(bytes, 6) == 1;
+}
+
+// Microsoft's public Joliet specification reserves three UCS-2 level escape
+// sequences in the supplementary volume descriptor.
+[[nodiscard]] bool has_joliet_escape(
+    const std::span<const std::byte> bytes) noexcept {
+  if (byte_at(bytes, 88) != 0x25U || byte_at(bytes, 89) != 0x2fU) {
+    return false;
+  }
+  const auto level = byte_at(bytes, 90);
+  return level == 0x40U || level == 0x43U || level == 0x45U;
+}
+
+[[nodiscard]] std::string sanitize_ascii(const std::string_view value) {
+  std::string decoded;
+  decoded.reserve(value.size());
+  for (const auto character : value) {
+    const auto byte = static_cast<unsigned char>(character);
+    decoded.push_back(byte >= 0x20U && byte <= 0x7eU ? character : '?');
+  }
+  while (!decoded.empty() && decoded.back() == ' ') {
+    decoded.pop_back();
+  }
+  return decoded;
+}
+
+[[nodiscard]] std::string decode_iso_label(
+    const std::span<const std::byte> bytes, const bool ucs2) {
+  std::string decoded;
+  if (ucs2) {
+    for (std::size_t index = 40; index + 1 < 72; index += 2) {
+      const auto high = byte_at(bytes, index);
+      const auto low = byte_at(bytes, index + 1);
+      decoded.push_back(high == 0 ? static_cast<char>(low) : '?');
+    }
+  } else {
+    for (std::size_t index = 40; index < 72; ++index) {
+      decoded.push_back(static_cast<char>(byte_at(bytes, index)));
+    }
+  }
+  return sanitize_ascii(decoded);
+}
+
+struct IsoDescriptorFields {
+  std::uint32_t volume_blocks{0};
+  std::uint32_t root_extent{0};
+  std::uint32_t root_size{0};
+};
+
+// Validates one primary or supplementary descriptor against the pinned image
+// geometry. sector_count is the number of whole 2,048-byte sectors actually
+// present in the source, so no accepted extent can point outside the file.
+//
+// This validator is an intentional, independent second copy of the bounded
+// descriptor checks in src/vfs/src/iso9660_archive.cpp. The preflight decides
+// whether media may be used at all and the reader re-validates everything it
+// parses; the two must be kept in sync when either changes.
+[[nodiscard]] bool valid_iso_volume_descriptor(
+    const Sector& sector, const std::uint64_t sector_count,
+    IsoDescriptorFields& fields) noexcept {
+  const std::span<const std::byte> bytes{sector};
+
+  std::uint16_t block_size = 0;
+  if (!read_both_endian_u16(bytes, 128, block_size) ||
+      block_size != kSectorSize) {
+    return false;
+  }
+
+  std::uint16_t volume_set_size = 0;
+  if (!read_both_endian_u16(bytes, 120, volume_set_size) ||
+      volume_set_size == 0) {
+    return false;
+  }
+
+  std::uint32_t volume_blocks = 0;
+  if (!read_both_endian_u32(bytes, 80, volume_blocks) || volume_blocks == 0 ||
+      static_cast<std::uint64_t>(volume_blocks) > sector_count) {
+    return false;
+  }
+
+  std::uint32_t path_table_bytes = 0;
+  if (!read_both_endian_u32(bytes, 132, path_table_bytes) ||
+      path_table_bytes == 0 ||
+      static_cast<std::uint64_t>(path_table_bytes) >
+          static_cast<std::uint64_t>(volume_blocks) * kSectorSize) {
+    return false;
+  }
+  const auto path_table_sectors =
+      (static_cast<std::uint64_t>(path_table_bytes) + kSectorSize - 1U) /
+      kSectorSize;
+  const auto path_table_in_bounds =
+      [volume_blocks, path_table_sectors](
+          const std::uint32_t location) noexcept {
+        if (location == 0) {
+          return true;  // Optional tables are recorded as zero.
+        }
+        return static_cast<std::uint64_t>(location) + path_table_sectors <=
+               volume_blocks;
+      };
+  const auto type_l_location = read_little_u32(bytes, 140);
+  if (type_l_location == 0 || !path_table_in_bounds(type_l_location) ||
+      !path_table_in_bounds(read_little_u32(bytes, 144))) {
+    return false;
+  }
+
+  const auto root = bytes.subspan(156, kIsoDirectoryRecordBytes);
+  if (byte_at(root, 0) != kIsoDirectoryRecordBytes ||
+      byte_at(root, 1) != 0 || (byte_at(root, 25) & 0x02U) == 0 ||
+      (byte_at(root, 25) & 0x80U) != 0 || byte_at(root, 26) != 0 ||
+      byte_at(root, 27) != 0) {
+    return false;
+  }
+  std::uint32_t root_extent = 0;
+  std::uint32_t root_size = 0;
+  std::uint16_t root_volume_sequence = 0;
+  // ECMA-119 9.1.4: a directory's data length is a whole number of blocks,
+  // and only the first volume of a volume set is readable here.
+  if (!read_both_endian_u32(root, 2, root_extent) ||
+      !read_both_endian_u32(root, 10, root_size) || root_size == 0 ||
+      (root_size % kSectorSize) != 0 ||
+      !read_both_endian_u16(root, 28, root_volume_sequence) ||
+      root_volume_sequence != 1 || root_volume_sequence > volume_set_size) {
+    return false;
+  }
+  const auto root_sectors =
+      (static_cast<std::uint64_t>(root_size) + kSectorSize - 1U) / kSectorSize;
+  if (static_cast<std::uint64_t>(root_extent) + root_sectors >
+      volume_blocks) {
+    return false;
+  }
+
+  fields.volume_blocks = volume_blocks;
+  fields.root_extent = root_extent;
+  fields.root_size = root_size;
+  return true;
+}
+
+enum class IsoScan {
+  not_iso,
+  invalid,
+  read_failed,
+  recognized,
+};
+
+[[nodiscard]] IsoScan scan_iso9660_descriptors(
+    const SharedMediaSource& source, const std::uint64_t sector_count,
+    bool& joliet, std::string& volume_label) {
+  Sector sector{};
+  if (!read_sector(source, kFirstRecognitionSector, sector)) {
+    return IsoScan::read_failed;
+  }
+  if (!is_iso_descriptor(sector) ||
+      byte_at(std::span<const std::byte>{sector}, 0) != kIsoTypePrimary) {
+    return IsoScan::not_iso;
+  }
+
+  bool found_primary = false;
+  bool found_terminator = false;
+  std::string primary_label;
+  std::string joliet_label;
+  for (std::uint64_t index = 0; index < kIsoDescriptorScanLimit; ++index) {
+    const auto location = kFirstRecognitionSector + index;
+    if (location >= sector_count) {
+      return IsoScan::invalid;
+    }
+    if (index != 0 && !read_sector(source, location, sector)) {
+      return IsoScan::read_failed;
+    }
+    if (!is_iso_descriptor(sector)) {
+      return IsoScan::invalid;
+    }
+    const std::span<const std::byte> bytes{sector};
+    const auto type = byte_at(bytes, 0);
+    if (type == kIsoTypeTerminator) {
+      found_terminator = true;
+      break;
+    }
+    IsoDescriptorFields fields;
+    if (type == kIsoTypePrimary) {
+      if (!valid_iso_volume_descriptor(sector, sector_count, fields)) {
+        return IsoScan::invalid;
+      }
+      found_primary = true;
+      primary_label = decode_iso_label(bytes, false);
+    } else if (type == kIsoTypeSupplementary && has_joliet_escape(bytes)) {
+      // A supplementary descriptor without a Joliet escape sequence describes
+      // an encoding the project reader does not interpret; it is skipped so a
+      // defect in one cannot reject an otherwise valid primary volume.
+      if (!valid_iso_volume_descriptor(sector, sector_count, fields)) {
+        return IsoScan::invalid;
+      }
+      joliet = true;
+      joliet_label = decode_iso_label(bytes, true);
+    }
+  }
+
+  if (!found_primary || !found_terminator) {
+    return IsoScan::invalid;
+  }
+  volume_label = joliet && !joliet_label.empty() ? joliet_label
+                                                 : primary_label;
+  return IsoScan::recognized;
+}
+
 }  // namespace
 
 ValidatedMedia::ValidatedMedia(SharedMediaSource source,
@@ -349,9 +595,53 @@ IsoValidationResult validate_iso(SharedMediaSource source,
 
   bool read_failed = false;
   if (!has_udf_102_recognition_sequence(source, read_failed)) {
-    result.error = phase_error(
-        source, read_failed ? MediaError::io_error
-                            : MediaError::unsupported_filesystem);
+    if (read_failed) {
+      result.error = phase_error(source, MediaError::io_error);
+      return result;
+    }
+    // No ECMA-167 volume recognition sequence: the image may still be a plain
+    // ECMA-119 (ISO 9660) volume, optionally carrying a Joliet supplementary
+    // descriptor. Both media classes are supported first class.
+    bool joliet = false;
+    const auto scan = scan_iso9660_descriptors(
+        source, sector_count, joliet, inspection.volume_label);
+    switch (scan) {
+      case IsoScan::read_failed:
+        result.error = phase_error(source, MediaError::io_error);
+        return result;
+      case IsoScan::not_iso:
+        result.error = phase_error(source, MediaError::unsupported_filesystem);
+        return result;
+      case IsoScan::invalid:
+        result.error = phase_error(source, MediaError::invalid_structure);
+        return result;
+      case IsoScan::recognized:
+        break;
+    }
+
+    result.error = verify_source(source);
+    if (result.error != MediaError::none) {
+      return result;
+    }
+    inspection.media_class = MediaClass::iso9660;
+    inspection.filesystem =
+        joliet ? "ECMA-119 ISO 9660 + Joliet" : "ECMA-119 ISO 9660";
+    if (!fingerprint_source(source, inspection.size_bytes,
+                            limits.maximum_source_bytes,
+                            inspection.source_sha256)) {
+      result.error = phase_error(source, MediaError::io_error);
+      return result;
+    }
+    result.error = verify_source(source);
+    if (result.error != MediaError::none) {
+      return result;
+    }
+    SourceFingerprint iso_fingerprint{
+        .size_bytes = inspection.size_bytes,
+        .sha256 = inspection.source_sha256,
+    };
+    result.media = ValidatedMedia{std::move(source), std::move(inspection),
+                                  std::move(iso_fingerprint)};
     return result;
   }
 
@@ -388,6 +678,7 @@ IsoValidationResult validate_iso(SharedMediaSource source,
     return result;
   }
 
+  inspection.media_class = MediaClass::udf;
   inspection.filesystem = "ECMA-167 NSR02 candidate";
   if (!fingerprint_source(source, inspection.size_bytes,
                           limits.maximum_source_bytes,

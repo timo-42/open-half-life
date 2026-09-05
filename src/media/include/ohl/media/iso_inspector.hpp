@@ -29,20 +29,40 @@ enum class MediaError {
     case MediaError::none:
       return "none";
     case MediaError::too_small:
-      return "file is too small to contain a supported UDF image";
+      return "file is too small to contain a supported media image";
     case MediaError::source_too_large:
       return "media exceeds the configured validation limit";
     case MediaError::source_changed:
       return "media changed during validation";
     case MediaError::unsupported_filesystem:
-      return "media does not contain a supported ECMA-167 NSR02 structure";
+      return "media does not contain a supported ECMA-167 NSR02 or "
+             "ECMA-119 ISO 9660 structure";
     case MediaError::invalid_structure:
-      return "UDF descriptor structure is invalid or truncated";
+      return "media descriptor structure is invalid or truncated";
     case MediaError::io_error:
       return "media could not be read";
   }
 
   return "unknown media error";
+}
+
+// The read-only media class that the bounded preflight recognised. Both
+// classes are first-class; the value selects the reader used downstream.
+enum class MediaClass {
+  udf,
+  iso9660,
+};
+
+[[nodiscard]] constexpr std::string_view to_string(
+    const MediaClass value) noexcept {
+  switch (value) {
+    case MediaClass::udf:
+      return "udf";
+    case MediaClass::iso9660:
+      return "iso9660";
+  }
+
+  return "unknown";
 }
 
 struct SourceFingerprint {
@@ -58,6 +78,7 @@ struct SourceFingerprint {
 
 struct IsoInspection {
   MediaError error{MediaError::none};
+  MediaClass media_class{MediaClass::udf};
   std::uint64_t size_bytes{0};
   std::string source_sha256;
   std::string filesystem;

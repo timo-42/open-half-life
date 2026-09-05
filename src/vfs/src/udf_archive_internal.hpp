@@ -9,6 +9,22 @@
 #include <vector>
 
 namespace ohl::vfs::detail {
+class DirectoryPageEngine;
+}
+
+namespace ohl::vfs {
+
+// Shared cursor state for every archive reader in this library. The owner is
+// the type-erased mounted-archive state; continue_list() only compares its
+// identity, so no reader-specific type crosses this boundary.
+struct DirectoryCursor::Impl {
+  std::shared_ptr<void> owner;
+  std::unique_ptr<detail::DirectoryPageEngine> engine;
+};
+
+}  // namespace ohl::vfs
+
+namespace ohl::vfs::detail {
 
 struct DirectoryProviderResult {
   VfsError error{VfsError::none};

@@ -474,6 +474,7 @@ add_executable(ohl_media_tests
   media/iso_inspector_test.cpp
 )
 target_compile_features(ohl_media_tests PRIVATE cxx_std_20)
+target_include_directories(ohl_media_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/media)
 target_link_libraries(ohl_media_tests PRIVATE OpenHalfLife::media)
 ohl_enable_warnings(ohl_media_tests)
 add_test(NAME media.iso_inspector COMMAND ohl_media_tests)
@@ -558,6 +559,24 @@ target_compile_features(ohl_vfs_tests PRIVATE cxx_std_20)
 target_link_libraries(ohl_vfs_tests PRIVATE OpenHalfLife::vfs)
 ohl_enable_warnings(ohl_vfs_tests)
 add_test(NAME vfs.udf_archive COMMAND ohl_vfs_tests)
+
+add_executable(ohl_vfs_iso9660_tests
+  vfs/iso9660_archive_test.cpp
+)
+target_compile_features(ohl_vfs_iso9660_tests PRIVATE cxx_std_20)
+target_include_directories(
+  ohl_vfs_iso9660_tests
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/media
+)
+target_link_libraries(
+  ohl_vfs_iso9660_tests
+  PRIVATE
+    OpenHalfLife::vfs
+    OpenHalfLife::media
+)
+ohl_enable_warnings(ohl_vfs_iso9660_tests)
+add_test(NAME vfs.iso9660_archive COMMAND ohl_vfs_iso9660_tests)
+set_tests_properties(vfs.iso9660_archive PROPERTIES TIMEOUT 60)
 
 add_test(
   NAME repository.policy
