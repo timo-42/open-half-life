@@ -115,6 +115,21 @@ impl Game {
         &self.level.registry
     }
 
+    /// This level's `env_sprite`/`env_glow`/`cycler_sprite` placements,
+    /// drawn each frame by [`Self::render`].
+    #[must_use]
+    pub fn sprites(&self) -> &[crate::level::SpritePlacement] {
+        &self.level.sprites
+    }
+
+    /// How many referenced sprites this level references that the payload
+    /// does not publish. Media-derived: report it as data, never in a log
+    /// line.
+    #[must_use]
+    pub fn missing_sprite_count(&self) -> usize {
+        self.level.missing_sprites
+    }
+
     /// The camera the next [`Self::render`] draws from.
     #[must_use]
     pub fn camera(&self) -> &FreeFlyCamera {

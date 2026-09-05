@@ -10,7 +10,7 @@ use glam::Vec3;
 use ohl_game::registry::{Door, MoverState};
 use ohl_render::{
     FreeFlyCamera, GpuContext, LightStyles, ModelInstance, RenderMode, RenderProps, SkyRenderer,
-    StudioRenderer, SubmodelInstance, WorldRenderer, placement, wgpu,
+    SpriteInstance, StudioRenderer, SubmodelInstance, WorldRenderer, placement, wgpu,
 };
 use ohl_world::StudioPose;
 
@@ -99,6 +99,41 @@ impl Renderers {
 
         self.world
             .render_liquid(context, camera, target.view, width, height, elapsed, 1.0);
+
+        self.draw_sprites(context, level, camera, elapsed, target);
+    }
+
+    /// Draws every placed `env_sprite`/`env_glow`/`cycler_sprite` entity.
+    fn draw_sprites(
+        &mut self,
+        context: &GpuContext,
+        level: &Level,
+        camera: &FreeFlyCamera,
+        elapsed: f32,
+        target: RenderTarget<'_>,
+    ) {
+        let instances: Vec<SpriteInstance<'_>> = level
+            .sprites
+            .iter()
+            .filter_map(|sprite| {
+                let asset = level.sprite_assets.get(sprite.sprite)?;
+                Some(SpriteInstance {
+                    asset,
+                    origin: sprite.origin,
+                    scale: sprite.scale,
+                    render_props: render_props(sprite.render),
+                    frame_time: elapsed,
+                })
+            })
+            .collect();
+        self.world.draw_sprites(
+            context,
+            &instances,
+            camera,
+            target.view,
+            target.width.max(1),
+            target.height.max(1),
+        );
     }
 
     /// Draws every placed studio model at its sampled pose.
@@ -118,7 +153,7 @@ impl Renderers {
             let mut poses = Vec::new();
             let mut placements = Vec::new();
             for prop in level.props.iter().filter(|prop| prop.model == slot) {
-                let Ok(pose) = StudioPose::sample(model, 0, elapsed) else {
+                let Ok(pose) = StudioPose::sample(model, prop.sequence, elapsed) else {
                     continue;
                 };
                 poses.push(pose);
@@ -127,14 +162,16 @@ impl Renderers {
             if poses.is_empty() {
                 continue;
             }
+            let bodies: Vec<[u32; 1]> = placements.iter().map(|prop| [prop.body]).collect();
             let instances: Vec<ModelInstance<'_>> = poses
                 .iter()
                 .zip(&placements)
-                .map(|(pose, prop)| ModelInstance {
+                .zip(&bodies)
+                .map(|((pose, prop), body)| ModelInstance {
                     transform: placement(prop.origin, prop.yaw),
                     pose,
-                    body: &[],
-                    skin: 0,
+                    body,
+                    skin: prop.skin,
                     ambient: ambient_at(level, prop.origin),
                     light_direction: ModelInstance::default_light_direction(),
                     light_color: KEY_LIGHT,

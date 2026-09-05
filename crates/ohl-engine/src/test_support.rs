@@ -24,7 +24,11 @@ pub const NEXT_MAP: &str = "ohlsynth2";
 /// The entity block: a lit room with a player start, one brush door on
 /// submodel 1, a landmark, and a `trigger_changelevel` the door's `use`
 /// chain never reaches (tests fire it directly).
-fn entities_text(next_map: &str) -> String {
+///
+/// `extra` (one or more complete `{ ... }` entity blocks) is appended after
+/// the fixture's own entities, so a test can add a prop or sprite entity
+/// without duplicating the rest of the fixture.
+fn entities_text_with_extra(next_map: &str, extra: &str) -> String {
     format!(
         "{{\n\"classname\" \"worldspawn\"\n}}\n\
          {{\n\"classname\" \"info_player_start\"\n\"origin\" \"0 0 32\"\n\"angle\" \"0\"\n}}\n\
@@ -36,7 +40,8 @@ fn entities_text(next_map: &str) -> String {
          {{\n\"classname\" \"func_button\"\n\"target\" \"ohl_exit\"\n\
          \"origin\" \"0 100 32\"\n\"speed\" \"50\"\n\"wait\" \"1\"\n\"delay\" \"0\"\n}}\n\
          {{\n\"classname\" \"trigger_changelevel\"\n\"targetname\" \"ohl_exit\"\n\
-         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n}}\n"
+         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n}}\n\
+         {extra}"
     )
 }
 
@@ -53,11 +58,21 @@ pub fn synthetic_map_bsp() -> Vec<u8> {
 #[must_use]
 #[allow(clippy::too_many_lines)]
 pub fn synthetic_map_bsp_named(next_map: &str) -> Vec<u8> {
+    synthetic_map_bsp_with_extra_entity(next_map, "")
+}
+
+/// As [`synthetic_map_bsp_named`], with one or more extra entity blocks
+/// (already-formatted `{ ... }` text) appended to the entities lump, so a
+/// test can add e.g. a `monster_generic` prop or an `env_sprite` without
+/// rebuilding the whole fixture's geometry.
+#[must_use]
+#[allow(clippy::too_many_lines)]
+pub fn synthetic_map_bsp_with_extra_entity(next_map: &str, extra_entity: &str) -> Vec<u8> {
     const HALF: f32 = 192.0;
     const HEIGHT: f32 = 192.0;
 
     let mut b = Bsp30Builder::new();
-    b.set_entities_text(&entities_text(next_map));
+    b.set_entities_text(&entities_text_with_extra(next_map, extra_entity));
 
     b.push_plane([0.0, 0.0, 1.0], 0.0, 2);
     b.push_plane([1.0, 0.0, 0.0], 0.0, 0);

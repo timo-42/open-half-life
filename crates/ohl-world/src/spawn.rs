@@ -42,9 +42,15 @@ fn parse_angle(value: &str) -> Option<f32> {
 
 /// Finds the first `info_player_start` and reads its origin and facing.
 ///
-/// GoldSrc entities carry facing either as a scalar `angle` or as an
-/// `angles` triple of `pitch yaw roll`; both are accepted, with `angles`
-/// taking precedence when present.
+/// GoldSrc entities carry facing either as a scalar `angle` (the legacy yaw
+/// key; see the Valve Developer Community `angle` page) or as an `angles`
+/// triple of `pitch yaw roll` (see the VDC `angles` page). Editors of that
+/// era routinely emit both keys, with `angles` left at its default
+/// `"0 0 0"` and the real facing only in `angle`. Per the TWHL/VDC keyvalue
+/// docs, when both are present the non-zero/more specific value wins, so
+/// this reads `angles` only when it parses *and* at least one component is
+/// non-zero; otherwise it falls back to `angle`, and finally to the
+/// zero-yaw, zero-pitch default.
 #[must_use]
 pub fn find_player_start(entities: &[Entity]) -> Option<PlayerSpawn> {
     let entity = entities
@@ -54,7 +60,11 @@ pub fn find_player_start(entities: &[Entity]) -> Option<PlayerSpawn> {
         .get("origin")
         .and_then(|value| parse_vec3(value))
         .unwrap_or([0.0, 0.0, 0.0]);
-    let (pitch, yaw) = match entity.get("angles").and_then(|value| parse_vec3(value)) {
+    let angles = entity
+        .get("angles")
+        .and_then(|value| parse_vec3(value))
+        .filter(|angles| angles.iter().any(|component| *component != 0.0));
+    let (pitch, yaw) = match angles {
         Some(angles) => (angles[0], angles[1]),
         None => (
             0.0,
@@ -106,6 +116,23 @@ mod tests {
         let spawn = find_player_start(&entities).expect("found");
         assert!((spawn.pitch - 10.0).abs() < f32::EPSILON);
         assert!((spawn.yaw - 20.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn zero_angles_triple_defers_to_scalar_angle() {
+        // Editors commonly emit both keys with `angles` left at its default
+        // "0 0 0" and the real facing only in `angle`; the zero triple must
+        // not silently override the real yaw.
+        let entities = vec![entity(&[
+            ("classname", "info_player_start"),
+            ("origin", "0 0 0"),
+            ("angle", "90"),
+            ("angles", "0 0 0"),
+        ])];
+        let spawn = find_player_start(&entities).expect("found");
+        assert!((spawn.yaw - 90.0).abs() < f32::EPSILON);
+        assert!(spawn.pitch.abs() < f32::EPSILON);
     }
 
     #[test]
