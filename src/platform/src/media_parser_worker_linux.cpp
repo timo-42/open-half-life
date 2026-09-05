@@ -39,6 +39,18 @@ extern "C" void* memmove(void* const destination, const void* const source,
   return destination;
 }
 
+extern "C" int memcmp(const void* const lhs, const void* const rhs,
+                       const std::size_t size) noexcept {
+  const auto* const left = static_cast<const unsigned char*>(lhs);
+  const auto* const right = static_cast<const unsigned char*>(rhs);
+  for (std::size_t index = 0; index < size; ++index) {
+    if (left[index] != right[index]) {
+      return static_cast<int>(left[index]) - static_cast<int>(right[index]);
+    }
+  }
+  return 0;
+}
+
 namespace {
 
 using ohl::platform::detail::linux_isolated_worker::kWorkerChannelDescriptor;
@@ -78,6 +90,25 @@ constexpr int kInternalErrorExit = 70;
   static_cast<void>(raw_syscall(__NR_exit_group, status));
   __builtin_unreachable();
 }
+
+}  // namespace
+
+// libstdc++ 15 enables `_GLIBCXX_ASSERTIONS` for unoptimized builds and
+// references this hook from <span>/<bits/*> precondition checks (e.g.
+// std::span::operator[]/first/subspan used by protocol.cpp and
+// protocol_messages.cpp). The freestanding worker links `-nostdlib`, so the
+// hosted libstdc++ definition is unavailable; provide a private, terminating
+// replacement instead of disabling the hardening checks. The signature must
+// match the declaration in <bits/c++config.h> exactly (extern "C++",
+// noreturn, cold, noexcept) for the linker to resolve it.
+namespace std {
+[[noreturn]] __attribute__((__cold__)) void __glibcxx_assert_fail(
+    const char*, int, const char*, const char*) noexcept {
+  exit_worker(kInternalErrorExit);
+}
+}  // namespace std
+
+namespace {
 
 struct KernelSignalAction {
   std::uintptr_t handler{0U};
