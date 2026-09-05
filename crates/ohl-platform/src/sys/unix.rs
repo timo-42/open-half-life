@@ -20,13 +20,21 @@ use crate::media_source::MediaSourceError;
 
 /// Maps an acquisition `errno` onto the sanitized open-failure taxonomy.
 ///
-/// `ELOOP` is reported as [`MediaSourceError::NotRegularFile`] because on
-/// this platform it is exactly how `O_NOFOLLOW` refuses a symbolic link in
-/// the final component, which is a type rejection and not an I/O failure.
+/// Three errnos are reported as [`MediaSourceError::NotRegularFile`] because
+/// on this platform they are the kernel refusing the object's *type*, not an
+/// I/O failure:
+///
+/// - `ELOOP` is exactly how `O_NOFOLLOW` refuses a symbolic link in the final
+///   component;
+/// - `ENXIO` is how Linux refuses `open` on a socket file;
+/// - `EOPNOTSUPP` is how macOS refuses the same thing.
+///
+/// Without this the caller could not distinguish "you selected a socket" from
+/// a transient failure, and would report the wrong thing to the user.
 fn map_open_error(error: Errno) -> MediaSourceError {
     match error {
         Errno::NOENT | Errno::NOTDIR => MediaSourceError::NotFound,
-        Errno::LOOP => MediaSourceError::NotRegularFile,
+        Errno::LOOP | Errno::NXIO | Errno::OPNOTSUPP => MediaSourceError::NotRegularFile,
         Errno::MFILE | Errno::NFILE | Errno::NOMEM => MediaSourceError::ResourceExhausted,
         _ => MediaSourceError::OpenFailed,
     }
@@ -137,10 +145,12 @@ mod tests {
     fn open_errors_are_classified_without_leaking_errno() {
         assert_eq!(map_open_error(Errno::NOENT), MediaSourceError::NotFound);
         assert_eq!(map_open_error(Errno::NOTDIR), MediaSourceError::NotFound);
-        assert_eq!(
-            map_open_error(Errno::LOOP),
-            MediaSourceError::NotRegularFile
-        );
+        for type_rejection in [Errno::LOOP, Errno::NXIO, Errno::OPNOTSUPP] {
+            assert_eq!(
+                map_open_error(type_rejection),
+                MediaSourceError::NotRegularFile
+            );
+        }
         assert_eq!(
             map_open_error(Errno::MFILE),
             MediaSourceError::ResourceExhausted

@@ -86,7 +86,10 @@ fn a_symbolic_link_in_the_final_component_is_rejected() {
     );
 }
 
-#[cfg(unix)]
+// `mknodat` is a Linux-only entry point in `rustix`, so the FIFO case is
+// gated to Linux; `a_socket_file_is_rejected` below covers the same
+// non-regular-file rejection through a portable route on every Unix.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_fifo_is_rejected_without_blocking() {
     use rustix::fs::{CWD, FileType, Mode, mknodat};
@@ -103,6 +106,23 @@ fn a_fifo_is_rejected_without_blocking() {
         MediaSource::open(&path).map(|_| ()),
         Err(MediaSourceError::NotRegularFile)
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_socket_file_is_rejected() {
+    let root = tempfile::tempdir().expect("temporary directory");
+    let path = root.path().join("synthetic-source.socket");
+    // Binding a listener is the portable way to put a non-regular file into
+    // the filesystem: it works on every Unix, unlike `mknod`.
+    let listener =
+        std::os::unix::net::UnixListener::bind(&path).expect("synthetic socket creation");
+
+    assert_eq!(
+        MediaSource::open(&path).map(|_| ()),
+        Err(MediaSourceError::NotRegularFile)
+    );
+    drop(listener);
 }
 
 #[cfg(unix)]

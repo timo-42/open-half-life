@@ -11,7 +11,7 @@ repository.workspace = true
 name = "ohl_platform"
 
 [dependencies]
-ohl-core = { path = "../ohl-core" }
+ohl-core = { path = "../ohl-core", version = "=0.1.0" }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["fs"] }
@@ -26,7 +26,9 @@ windows-sys = { version = "=0.61.2", features = [
 proptest = { workspace = true }
 tempfile = { workspace = true }
 
-[target.'cfg(unix)'.dev-dependencies]
+# Only the Linux-gated FIFO test needs `rustix` directly; every other test
+# reaches the filesystem through `std`.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
 rustix = { workspace = true, features = ["fs"] }
 
 # The workspace lint table cannot be inherited here: `[lints] workspace = true`
