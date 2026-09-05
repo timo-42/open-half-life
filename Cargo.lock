@@ -143,15 +143,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arbitrary"
-version = "1.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
-dependencies = [
- "derive_arbitrary",
-]
-
-[[package]]
 name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -333,39 +324,6 @@ dependencies = [
  "rustix 0.38.44",
  "wayland-backend",
  "wayland-client",
-]
-
-[[package]]
-name = "camino"
-version = "1.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb1307f12aa967b5a58416e87b3653360e0fd614a016b6e970db08fecbb1b80d"
-dependencies = [
- "serde_core",
-]
-
-[[package]]
-name = "cargo-platform"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd0061da739915fae12ea00e16397555ed4371a6bb285431aab930f61b0aa4ba"
-dependencies = [
- "serde",
- "serde_core",
-]
-
-[[package]]
-name = "cargo_metadata"
-version = "0.23.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef987d17b0a113becdd19d3d0022d04d7ef41f9efe4f3fb63ac44ba61df3ade9"
-dependencies = [
- "camino",
- "cargo-platform",
- "semver",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -626,15 +584,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853"
 
 [[package]]
-name = "crc32fast"
-version = "1.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8498c871161e1742aaa9d52551b2d6ebdd4c3d45a3be423e3728f33b955be550"
-dependencies = [
- "cfg-if",
-]
-
-[[package]]
 name = "critical-section"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -673,17 +622,6 @@ name = "dasp_sample"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c87e182de0887fd5361989c677c4e8f5000cd9491d6d563161a8f3a5519fc7f"
-
-[[package]]
-name = "derive_arbitrary"
-version = "1.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e567bd82dcff979e4b03460c307b3cdc9e96fde3d73bed1496d2bc75d9dd62a"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
 
 [[package]]
 name = "digest"
@@ -963,46 +901,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
-name = "fdeflate"
-version = "0.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e6853b52649d4ac5c0bd02320cddc5ba956bdb407c4b75a2c6b75bf51500f8c"
-dependencies = [
- "simd-adler32",
-]
-
-[[package]]
 name = "fearless_simd"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b97b65636e5b9ef369943878ac74335ba1c55c1cb6adbf1e2c293c624248d693"
 
 [[package]]
-name = "filetime"
-version = "0.2.29"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c287a33c7f0a620c38e641e7f60827713987b3c0f26e8ddc9462cc69cf75759"
-dependencies = [
- "cfg-if",
- "libc",
-]
-
-[[package]]
 name = "find-msvc-tools"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e0f1c7c3a72c66fd80abe965175f7523475c0489a87d3ff9d6e8c87d87a9d2d"
-
-[[package]]
-name = "flate2"
-version = "1.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb"
-dependencies = [
- "crc32fast",
- "miniz_oxide 0.9.1",
- "zlib-rs",
-]
 
 [[package]]
 name = "fnv"
@@ -1159,6 +1067,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "21fef0953c54fd3de2f44b743fbf77e044c81a25faee03636dfccc0d35135e23"
 dependencies = [
  "libm",
+ "serde_core",
 ]
 
 [[package]]
@@ -1471,7 +1380,6 @@ dependencies = [
  "byteorder-lite",
  "moxcms",
  "num-traits",
- "png",
 ]
 
 [[package]]
@@ -1741,17 +1649,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
 dependencies = [
  "adler2",
- "simd-adler32",
-]
-
-[[package]]
-name = "miniz_oxide"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
-dependencies = [
- "adler2",
- "simd-adler32",
 ]
 
 [[package]]
@@ -2239,20 +2136,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ohl-ai"
-version = "0.1.0"
-dependencies = [
- "glam",
- "hecs",
- "ohl-core",
- "ohl-formats",
- "ohl-game",
- "ohl-physics",
- "ohl-world",
- "proptest",
-]
-
-[[package]]
 name = "ohl-app"
 version = "0.1.0"
 dependencies = [
@@ -2260,11 +2143,8 @@ dependencies = [
  "directories",
  "glam",
  "hadris-iso",
- "image",
  "ohl-assets",
- "ohl-campaign",
  "ohl-core",
- "ohl-engine",
  "ohl-formats",
  "ohl-game",
  "ohl-import",
@@ -2277,9 +2157,7 @@ dependencies = [
  "ohl-platform",
  "ohl-render",
  "ohl-udf",
- "ohl-ui",
  "ohl-vfs",
- "ohl-wise",
  "ohl-world",
  "tempfile",
  "tracing",
@@ -2313,7 +2191,7 @@ version = "0.1.0"
 dependencies = [
  "hadris-iso",
  "md-5",
- "miniz_oxide 0.8.9",
+ "miniz_oxide",
  "ohl-cabinet",
  "ohl-cabinet-format",
  "proptest",
@@ -2339,40 +2217,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "ohl-combat"
-version = "0.1.0"
-dependencies = [
- "glam",
- "ohl-core",
- "ohl-formats",
- "ohl-game",
- "ohl-physics",
- "ohl-world",
- "proptest",
-]
-
-[[package]]
 name = "ohl-core"
 version = "0.1.0"
 dependencies = [
  "sha2",
  "thiserror 2.0.20",
-]
-
-[[package]]
-name = "ohl-engine"
-version = "0.1.0"
-dependencies = [
- "glam",
- "ohl-assets",
- "ohl-core",
- "ohl-engine",
- "ohl-formats",
- "ohl-game",
- "ohl-physics",
- "ohl-render",
- "ohl-world",
- "tempfile",
 ]
 
 [[package]]
@@ -2398,18 +2247,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ohl-gameplay"
-version = "0.1.0"
-dependencies = [
- "ohl-audio",
- "ohl-combat",
- "ohl-core",
- "ohl-game",
- "ohl-ui",
- "proptest",
-]
-
-[[package]]
 name = "ohl-import"
 version = "0.1.0"
 dependencies = [
@@ -2420,7 +2257,6 @@ dependencies = [
  "ohl-payload",
  "ohl-platform",
  "ohl-vfs",
- "ohl-wise",
  "proptest",
  "tempfile",
  "thiserror 2.0.20",
@@ -2473,7 +2309,7 @@ dependencies = [
 name = "ohl-mscab"
 version = "0.1.0"
 dependencies = [
- "miniz_oxide 0.8.9",
+ "miniz_oxide",
  "ohl-core",
  "ohl-mscab",
  "ohl-platform",
@@ -2482,17 +2318,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "ohl-parser-backends"
+name = "ohl-nav"
 version = "0.1.0"
 dependencies = [
+ "glam",
  "ohl-core",
- "ohl-isz",
- "ohl-mscab",
- "ohl-parser-protocol",
- "ohl-parser-worker-service",
- "ohl-payload",
- "ohl-wise",
+ "ohl-formats",
+ "ohl-physics",
+ "postcard",
  "proptest",
+ "serde",
 ]
 
 [[package]]
@@ -2623,7 +2458,7 @@ dependencies = [
 name = "ohl-wise"
 version = "0.1.0"
 dependencies = [
- "miniz_oxide 0.8.9",
+ "miniz_oxide",
  "ohl-core",
  "ohl-platform",
  "ohl-vfs",
@@ -2758,19 +2593,6 @@ name = "plain"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
-
-[[package]]
-name = "png"
-version = "0.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60769b8b31b2a9f263dae2776c37b1b28ae246943cf719eb6946a1db05128a61"
-dependencies = [
- "bitflags 2.13.1",
- "crc32fast",
- "fdeflate",
- "flate2",
- "miniz_oxide 0.8.9",
-]
 
 [[package]]
 name = "polling"
@@ -3175,10 +2997,6 @@ name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
-dependencies = [
- "serde",
- "serde_core",
-]
 
 [[package]]
 name = "serde"
@@ -3257,12 +3075,6 @@ name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
-
-[[package]]
-name = "simd-adler32"
-version = "0.3.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
 name = "simd_cesu8"
@@ -3410,16 +3222,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
-]
-
-[[package]]
-name = "tar"
-version = "0.4.46"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
-dependencies = [
- "filetime",
- "libc",
 ]
 
 [[package]]
@@ -4441,17 +4243,11 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 name = "xtask"
 version = "0.1.0"
 dependencies = [
- "cargo_metadata",
- "flate2",
  "ohl-parser-worker",
  "ohl-test-worker",
- "serde_json",
- "sha2",
- "tar",
  "tempfile",
  "thiserror 2.0.20",
  "toml",
- "zip",
 ]
 
 [[package]]
@@ -4475,39 +4271,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "zip"
-version = "4.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "caa8cd6af31c3b31c6631b8f483848b91589021b28fffe50adada48d4f4d2ed1"
-dependencies = [
- "arbitrary",
- "crc32fast",
- "flate2",
- "indexmap",
- "memchr",
- "zopfli",
-]
-
-[[package]]
-name = "zlib-rs"
-version = "0.6.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34b31d188d9d685a4f9c7b46d6e36631b07058d2cfe190267adce54dc230bf12"
-
-[[package]]
 name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
-
-[[package]]
-name = "zopfli"
-version = "0.8.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f05cd8797d63865425ff89b5c4a48804f35ba0ce8d125800027ad6017d2b5249"
-dependencies = [
- "bumpalo",
- "crc32fast",
- "log",
- "simd-adler32",
-]

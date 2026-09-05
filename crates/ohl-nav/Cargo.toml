@@ -1,0 +1,36 @@
+[package]
+name = "ohl-nav"
+description = "Clean-room navigation node graph, A* pathfinding and local steering for monster movement"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ohl_nav"
+
+[features]
+default = []
+# Makes the built graph serialisable so a host can cache it next to a map.
+serde = ["dep:serde", "glam/serde"]
+
+[dependencies]
+ohl-core = { path = "../ohl-core", version = "=0.1.0" }
+ohl-formats = { path = "../ohl-formats", version = "=0.1.0" }
+ohl-physics = { path = "../ohl-physics", version = "=0.1.0" }
+# Pinned exactly, like every other third-party dependency in this workspace,
+# and to the same version `ohl-physics` uses so the `Vec3` type matches.
+glam = { version = "=0.33.6", default-features = false, features = ["std"] }
+serde = { version = "=1.0.229", features = ["derive"], optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+# Only used by the `serde` feature's round-trip test.
+postcard = { workspace = true, features = ["alloc"] }
+ohl-formats = { path = "../ohl-formats", version = "=0.1.0", features = [
+    "test-support",
+] }
+
+[lints]
+workspace = true
