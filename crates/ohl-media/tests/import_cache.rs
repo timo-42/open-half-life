@@ -255,10 +255,18 @@ fn an_explicit_cache_root_override_is_honoured() {
         prepare_import_cache(&fixture.media, &overridden).expect("publication"),
         CacheReport::Created
     );
+    // Compare canonical forms on both sides: `overridden`'s paths are
+    // already resolved (and, on Windows, restated to their plain drive
+    // form) by `CacheLayout::with_root`, but the raw `override_root` this
+    // test built may still differ in casing or 8.3-short-name spelling from
+    // what the filesystem now reports for the same directory.
+    let canonical_override_root = ohl_media::import_cache::strip_windows_verbatim_disk_prefix(
+        std::fs::canonicalize(&override_root).expect("override root now exists"),
+    );
     assert!(
         overridden
             .manifest_path(fixture.media.digest())
-            .starts_with(&override_root)
+            .starts_with(&canonical_override_root)
     );
     assert!(
         !fixture.layout.root().exists(),
