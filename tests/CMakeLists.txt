@@ -126,6 +126,36 @@ add_test(
 )
 set_tests_properties(media.parser_parent_session PROPERTIES TIMEOUT 30)
 
+# This test needs a controllable IsolatedWorker without launching a real
+# confined process. It compiles the platform-independent isolated_worker.cpp
+# directly (as ohl_isolated_worker_common_tests does) and supplies its own
+# detail::launch_isolated_worker_backend seam; that directly-compiled
+# translation unit resolves IsolatedWorker's symbols before the real
+# OpenHalfLife::platform archive (pulled in transitively by
+# media_parser_process_session) is ever consulted, so no OS-native worker
+# backend or subprocess launch is exercised.
+add_executable(ohl_media_parser_process_session_tests
+  media/parser_process_session_test.cpp
+  ${PROJECT_SOURCE_DIR}/src/platform/src/isolated_worker.cpp
+)
+target_compile_features(
+  ohl_media_parser_process_session_tests PRIVATE cxx_std_20
+)
+target_include_directories(
+  ohl_media_parser_process_session_tests
+  PRIVATE ${PROJECT_SOURCE_DIR}/src/platform/src
+)
+target_link_libraries(
+  ohl_media_parser_process_session_tests
+  PRIVATE OpenHalfLife::media_parser_process_session Threads::Threads
+)
+ohl_enable_warnings(ohl_media_parser_process_session_tests)
+add_test(
+  NAME media.parser_process_session
+  COMMAND ohl_media_parser_process_session_tests
+)
+set_tests_properties(media.parser_process_session PROPERTIES TIMEOUT 30)
+
 add_library(ohl_parser_fuzz_entry OBJECT
   parser/protocol_fuzz.cpp
 )
