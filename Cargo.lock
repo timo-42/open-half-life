@@ -1923,6 +1923,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ohl-mscab"
+version = "0.1.0"
+dependencies = [
+ "miniz_oxide",
+ "ohl-core",
+ "ohl-mscab",
+ "ohl-platform",
+ "ohl-vfs",
+ "proptest",
+]
+
+[[package]]
 name = "ohl-parser-protocol"
 version = "0.1.0"
 dependencies = [

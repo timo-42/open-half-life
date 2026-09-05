@@ -1,0 +1,31 @@
+[workspace]
+
+[package]
+name = "ohl-mscab-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.ohl-mscab]
+path = ".."
+features = ["test-support"]
+
+[[bin]]
+name = "cabinet_fuzz"
+path = "fuzz_targets/cabinet_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "block_fuzz"
+path = "fuzz_targets/block_fuzz.rs"
+test = false
+doc = false
+bench = false

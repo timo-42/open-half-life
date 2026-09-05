@@ -73,6 +73,15 @@ Added by the M4 "movement" physics crate, pinned exactly in
 
 Both are built with `default-features = false`, so neither pulls in `std`.
 
+Added at R4 by the Microsoft Cabinet decoder:
+
+- `miniz_oxide` (MIT OR Apache-2.0 OR Zlib) -- RFC 1951 DEFLATE, `ohl-mscab`.
+  It is built with its default feature set, which is exactly `with-alloc`, so
+  it stays `no_std` and links only `core` and `alloc`. It brings the
+  transitive `adler2` crate (0BSD OR MIT OR Apache-2.0). The MSZIP and LZX
+  framing around DEFLATE is project-owned, clean-room code (see
+  `docs/FORMAT_SOURCES.md`).
+
 As later packages add the freestanding parser worker (`rustix`, `seccompiler`,
 `landlock`) and the audio/input stack (`cpal`/`rodio`), this section will be
 extended; `cargo deny check` remains the enforced, up-to-date source of truth

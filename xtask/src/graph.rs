@@ -30,6 +30,9 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
     ("ohl-media-archive", &["ohl-core"]),
     ("ohl-iso9660", &["ohl-core", "ohl-media-archive"]),
     ("ohl-udf", &["ohl-core", "ohl-media-archive"]),
+    // Clean-room MS-CAB container decoder used by the sandboxed parser
+    // worker; it only needs the shared sanitized diagnostics.
+    ("ohl-mscab", &["ohl-core"]),
     ("ohl-cabinet-format", &["ohl-core"]),
     // Clean-room InstallShield 3 "Z" archive and PKWARE DCL explode decoder.
     // Unlike the cabinet crates it is written from public documentation, so

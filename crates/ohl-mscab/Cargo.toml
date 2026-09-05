@@ -1,0 +1,39 @@
+[package]
+name = "ohl-mscab"
+description = "Clean-room, no_std, bounds-checked decoder for the Microsoft Cabinet (MS-CAB) container with MSZIP and LZX decompression"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ohl_mscab"
+
+[features]
+default = []
+std = ["ohl-core/std"]
+# Exposes the synthetic cabinet writer used by this crate's own tests as a
+# public, non-cfg(test) API so integration tests under `tests/` and the
+# standalone `fuzz/` workspace can build fixtures from the same
+# project-authored synthetic data.
+test-support = []
+
+[dependencies]
+ohl-core = { path = "../ohl-core", version = "=0.1.0" }
+# `miniz_oxide`'s default feature set is exactly `with-alloc`: the crate stays
+# `no_std` and only gains `alloc`, which is what this crate needs (and all it
+# may have, since it links into the freestanding parser worker).
+miniz_oxide = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+# Self dependency so integration tests under `tests/` (which link the
+# ordinary, non-`cfg(test)` build of this library) can see the synthetic
+# cabinet writer without making `test-support` a default feature.
+ohl-mscab = { path = ".", features = ["test-support", "std"] }
+ohl-vfs = { path = "../ohl-vfs", version = "=0.1.0" }
+ohl-platform = { path = "../ohl-platform", version = "=0.1.0" }
+
+[lints]
+workspace = true
