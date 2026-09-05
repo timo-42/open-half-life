@@ -36,17 +36,26 @@ int main() {
     return 1;
   }
 
-  if (!rejects({{1, "../escape", 1}},
-               ohl::media::PayloadLayoutError::invalid_path) ||
-      !rejects({{1, "SyntheticBranch/Alpha.item", 1},
-                {2, "SYNTHETICBRANCH/ALPHA.ITEM", 1}},
+  const std::vector<ohl::media::PayloadEntryMetadata> escape_entries{
+      {1, "../escape", 1}};
+  const std::vector<ohl::media::PayloadEntryMetadata> case_alias_entries{
+      {1, "SyntheticBranch/Alpha.item", 1},
+      {2, "SYNTHETICBRANCH/ALPHA.ITEM", 1}};
+  const std::vector<ohl::media::PayloadEntryMetadata> case_alias_dir_entries{
+      {1, "FixtureRoot/alpha", 1}, {2, "fixtureroot/beta", 1}};
+  const std::vector<ohl::media::PayloadEntryMetadata> file_dir_alias_entries{
+      {1, "FixtureLeaf", 1}, {2, "FixtureLeaf/child", 1}};
+  const std::vector<ohl::media::PayloadEntryMetadata>
+      dir_file_alias_entries{{1, "FixtureTree/child", 1},
+                              {2, "FIXTURETREE", 1}};
+  if (!rejects(escape_entries, ohl::media::PayloadLayoutError::invalid_path) ||
+      !rejects(case_alias_entries,
                ohl::media::PayloadLayoutError::path_conflict) ||
-      !rejects({{1, "FixtureRoot/alpha", 1},
-                {2, "fixtureroot/beta", 1}},
+      !rejects(case_alias_dir_entries,
                ohl::media::PayloadLayoutError::path_conflict) ||
-      !rejects({{1, "FixtureLeaf", 1}, {2, "FixtureLeaf/child", 1}},
+      !rejects(file_dir_alias_entries,
                ohl::media::PayloadLayoutError::path_conflict) ||
-      !rejects({{1, "FixtureTree/child", 1}, {2, "FIXTURETREE", 1}},
+      !rejects(dir_file_alias_entries,
                ohl::media::PayloadLayoutError::path_conflict)) {
     std::cerr << "unsafe or ambiguous payload layout was accepted\n";
     return 1;
@@ -58,19 +67,29 @@ int main() {
       .maximum_entry_bytes = 10,
       .maximum_total_bytes = 15,
   };
-  if (!rejects({{1, "a", 1}, {2, "b", 1}, {3, "c", 1}},
+  const std::vector<ohl::media::PayloadEntryMetadata> too_many_entries{
+      {1, "a", 1}, {2, "b", 1}, {3, "c", 1}};
+  const std::vector<ohl::media::PayloadEntryMetadata> too_many_path_bytes{
+      {1, "123456", 1}, {2, "12345", 1}};
+  const std::vector<ohl::media::PayloadEntryMetadata>
+      source_token_conflict_entries{{1, "a", 1}, {1, "b", 1}};
+  const std::vector<ohl::media::PayloadEntryMetadata> entry_too_large_entries{
+      {1, "a", 11}};
+  const std::vector<ohl::media::PayloadEntryMetadata>
+      payload_too_large_entries{{1, "a", 8}, {2, "b", 8}};
+  if (!rejects(too_many_entries,
                ohl::media::PayloadLayoutError::too_many_entries,
                small_limits) ||
-      !rejects({{1, "123456", 1}, {2, "12345", 1}},
+      !rejects(too_many_path_bytes,
                ohl::media::PayloadLayoutError::too_many_path_bytes,
                small_limits) ||
-      !rejects({{1, "a", 1}, {1, "b", 1}},
+      !rejects(source_token_conflict_entries,
                ohl::media::PayloadLayoutError::source_token_conflict,
                small_limits) ||
-      !rejects({{1, "a", 11}},
+      !rejects(entry_too_large_entries,
                ohl::media::PayloadLayoutError::entry_too_large,
                small_limits) ||
-      !rejects({{1, "a", 8}, {2, "b", 8}},
+      !rejects(payload_too_large_entries,
                ohl::media::PayloadLayoutError::payload_too_large,
                small_limits)) {
     std::cerr << "payload resource limits were not enforced\n";
@@ -83,7 +102,8 @@ int main() {
       .maximum_entry_bytes = 2,
       .maximum_total_bytes = 1,
   };
-  if (!rejects({}, ohl::media::PayloadLayoutError::invalid_limits,
+  const std::vector<ohl::media::PayloadEntryMetadata> empty_entries{};
+  if (!rejects(empty_entries, ohl::media::PayloadLayoutError::invalid_limits,
                invalid_limits)) {
     std::cerr << "invalid payload limits were accepted\n";
     return 1;

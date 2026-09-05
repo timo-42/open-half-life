@@ -49,6 +49,21 @@ constexpr rlim_t kStackLimit = 8U * 1024U * 1024U;
   __builtin_unreachable();
 }
 
+}  // namespace
+
+// See src/platform/src/media_parser_worker_linux.cpp for rationale: GCC 15's
+// libstdc++ enables `_GLIBCXX_ASSERTIONS` for unoptimized builds and this
+// freestanding (`-nostdlib -static`) test helper needs the same private,
+// terminating replacement for the hosted definition.
+namespace std {
+[[noreturn]] __attribute__((__cold__)) void __glibcxx_assert_fail(
+    const char*, int, const char*, const char*) noexcept {
+  exit_worker(1);
+}
+}  // namespace std
+
+namespace {
+
 [[nodiscard]] bool write_all(const int descriptor, const std::byte* data,
                              const std::size_t size) noexcept {
   std::size_t offset = 0;
