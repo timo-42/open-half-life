@@ -66,7 +66,7 @@ impl core::fmt::Debug for WindowSource {
             .field("filled", &self.filled)
             .field("source_size", &self.source_size)
             .field("pending", &self.pending)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -214,11 +214,9 @@ impl WindowSource {
         // pinned, or the request is simply wider than the window can ever be.
         let taken = held.min(wanted);
         let short = taken < wanted && (self.buffer.len() as u64) >= wanted;
-        if taken == 0 || short {
-            if !self.pinned {
-                return Err(self.miss(offset));
-            }
-            // Pinned: whatever the window holds is the whole answer.
+        // When pinned, whatever the window holds is the whole answer.
+        if (taken == 0 || short) && !self.pinned {
+            return Err(self.miss(offset));
         }
         let taken = usize::try_from(taken).unwrap_or(0);
         let from = usize::try_from(offset.saturating_sub(self.base)).unwrap_or(0);
@@ -249,7 +247,10 @@ mod tests {
         assert!(window.read(4096, &mut out).is_err());
         let pending = window.take_pending().expect("a miss arms a read");
         assert_eq!(pending.offset, 4096);
-        assert_eq!(pending.length, DEFAULT_WINDOW_BYTES as u32);
+        assert_eq!(
+            usize::try_from(pending.length).expect("window fits"),
+            DEFAULT_WINDOW_BYTES
+        );
         assert!(!window.has_pending());
     }
 
@@ -284,7 +285,7 @@ mod tests {
     #[test]
     fn a_short_tail_is_served_when_the_source_really_ends() {
         let mut window = WindowSource::new(4100, 4096);
-        assert!(window.deliver(4096, &vec![9u8; 4]));
+        assert!(window.deliver(4096, &[9u8; 4]));
         let mut out = [0u8; 64];
         assert_eq!(window.read(4096, &mut out).expect("tail"), 4);
     }

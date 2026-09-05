@@ -39,6 +39,7 @@
 //! terminal. A stream whose trailing checksum, declared checksum or measured
 //! size does not verify fails the request instead of delivering the bytes.
 
+use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -116,7 +117,9 @@ enum Plan {
 
 /// The recognised container.
 enum Container {
-    Wise(WiseBackend),
+    /// Boxed: the Wise walk's state dwarfs the other variants, and the
+    /// container is moved in and out of `self.container` on every step.
+    Wise(Box<WiseBackend>),
     Cabinet(ContainerBuffer),
     ZArchive(ContainerBuffer),
 }
@@ -294,7 +297,6 @@ impl<'arena> ContainerDispatcher<'arena> {
     fn advance(&mut self) -> Result<Emission, DispatchError> {
         loop {
             match self.active {
-                Active::None => return Err(DispatchError::Failed),
                 Active::Stream(_) => return self.stream_step(),
                 Active::Enumerate(EnumerateStage::Detect) => {
                     if let Some(emission) = self.detect()? {
@@ -320,7 +322,9 @@ impl<'arena> ContainerDispatcher<'arena> {
                     self.active = Active::Enumerate(EnumerateStage::Emit(to));
                     return Ok(Emission::Batch { from, to });
                 }
-                Active::Enumerate(EnumerateStage::Done) => return Err(DispatchError::Failed),
+                Active::None | Active::Enumerate(EnumerateStage::Done) => {
+                    return Err(DispatchError::Failed);
+                }
             }
         }
     }
@@ -350,12 +354,14 @@ impl<'arena> ContainerDispatcher<'arena> {
         };
         self.kind = Some(kind);
         self.container = Some(match kind {
-            ContainerKind::WiseOverlay => Container::Wise(WiseBackend::new(self.limits.wise)),
+            ContainerKind::WiseOverlay => {
+                Container::Wise(Box::new(WiseBackend::new(self.limits.wise)))
+            }
             ContainerKind::MicrosoftCabinet => Container::Cabinet(
-                ContainerBuffer::new(source_size).map_err(|()| DispatchError::Unsupported)?,
+                ContainerBuffer::new(source_size).map_err(|_| DispatchError::Unsupported)?,
             ),
             ContainerKind::InstallShieldZ => Container::ZArchive(
-                ContainerBuffer::new(source_size).map_err(|()| DispatchError::Unsupported)?,
+                ContainerBuffer::new(source_size).map_err(|_| DispatchError::Unsupported)?,
             ),
         });
         self.active = Active::Enumerate(match kind {
@@ -454,13 +460,12 @@ impl<'arena> ContainerDispatcher<'arena> {
                 break;
             }
             let recorded = backend.recorded_name(entry.token);
-            let accepted = match recorded {
-                Some(bytes) => spellings.accept(bytes),
-                None => {
-                    let index = u32::try_from(entry.token.saturating_sub(UNNAMED_TOKEN_BASE))
-                        .unwrap_or(u32::MAX);
-                    spellings.accept(unnamed_spelling(index).as_bytes())
-                }
+            let accepted = if let Some(bytes) = recorded {
+                spellings.accept(bytes)
+            } else {
+                let index = u32::try_from(entry.token.saturating_sub(UNNAMED_TOKEN_BASE))
+                    .unwrap_or(u32::MAX);
+                spellings.accept(unnamed_spelling(index).as_bytes())
             };
             // A name this build would not offer is simply not offered; the
             // rest of the package is still importable.
@@ -702,9 +707,10 @@ impl Dispatcher for ContainerDispatcher<'_> {
             return Err(DispatchError::Failed);
         }
         if matches!(self.active, Active::Enumerate(EnumerateStage::Load)) {
-            let buffer = match self.container.as_mut() {
-                Some(Container::Cabinet(buffer) | Container::ZArchive(buffer)) => buffer,
-                _ => return Err(DispatchError::Failed),
+            let Some(Container::Cabinet(buffer) | Container::ZArchive(buffer)) =
+                self.container.as_mut()
+            else {
+                return Err(DispatchError::Failed);
             };
             return buffer
                 .append(reply.data)
