@@ -1175,6 +1175,64 @@ published Half-Life value; only the step height reuses the documented
 movement figure. The node lattices and rooms in the tests are synthetic
 fixtures built by `ohl_formats::test_support`.
 
+## Player spawn facing and model/sprite-carrying entity keyvalues
+
+- [TWHL wiki: info_player_start](https://twhl.info/wiki/page/info_player_start)
+  and [Tutorial: Keys](https://twhl.info/wiki/page/Tutorial:_Keys) (public
+  Half-Life mapping documentation; consulted via search-engine result
+  summaries, since the pages themselves return HTTP 403 to automated
+  fetches from this environment): `info_player_start`'s single documented
+  facing keyvalue is Hammer's combined "Pitch Yaw Roll (angles)" field; the
+  scalar "Angle" field is the same editor's older, yaw-only convention for
+  the same purpose (both write to an entity's `angle`/`angles` keys
+  interchangeably in the FGD, which is why GoldSrc entities of this era
+  routinely carry both, with only one of the two actually set by the
+  mapper).
+- [Valve Developer Community: light_spot (GoldSrc)](https://developer.valvesoftware.com/wiki/Light_spot_(GoldSrc))
+  (same access caveat as above): documents a concrete, citable precedence
+  example for this entity family — the single-axis `pitch` keyvalue
+  overrides `angles`' own pitch component even when `pitch` is left at its
+  default of `0`, i.e. the more specific/explicitly-authored key wins over
+  the combined one. No page found documents the `angle`/`angles` pair's
+  interaction directly (the two are normally treated as alternatives, not
+  as a combination), so `find_player_start`'s rule — read `angles` only
+  when it is present *and* has at least one non-zero component, otherwise
+  fall back to `angle`, otherwise default to zero — is this project's own
+  application of that same "the more specific, actually-set value wins"
+  principle to the `angle`/`angles` pair, chosen because a `"0 0 0"`
+  `angles` alongside a real `angle` is the failure mode this project's
+  fidelity review actually observed (see `.plan/fidelity-round-1.md`,
+  finding D3), not a rule copied from any single source.
+- [TWHL wiki: monster_generic](https://twhl.info/wiki/page/monster_generic)
+  (disambiguated at
+  [monster_generic (Half-Life)](https://twhl.info/wiki/page/monster_generic_(Half-Life)/514)),
+  [monster_furniture](https://twhl.info/wiki/page/monster_furniture), and
+  [Tutorial: The packing (and non-packing) of bodygroups and skin groups in
+  GoldSource models](https://twhl.info/wiki/page/Tutorial:_The_packing_(and_non-packing)_of_bodygroups_and_skin_groups_in_GoldSource_models)
+  (same access caveat): `monster_generic`/`monster_furniture`'s `model`
+  keyvalue names the studio model to display; `body` selects the model's
+  bodygroup combination and `skin` its skin family, both accepted (per the
+  bodygroup/skin tutorial above) on any cycler- or monster_generic-style
+  entity even where a mapping tool's own FGD omits them from its property
+  dialog.
+- [TWHL wiki: cycler_sprite](https://twhl.info/wiki/page/cycler_sprite),
+  [env_sprite](https://twhl.info/wiki/page/env_sprite) (disambiguated at
+  [env_sprite (Half-Life)](https://twhl.info/wiki/page/env_sprite_(Half-Life)/4042)),
+  and [env_glow](https://twhl.info/wiki/page/env_glow) (same access
+  caveat): all three place a `.spr` sprite named by the entity's own
+  `model` keyvalue (`cycler_sprite`'s sprite is solid and animatable;
+  `env_sprite`'s is the general-purpose, triggerable sprite; `env_glow`'s
+  is a non-animating, non-triggerable variant used for light glows), which
+  is why this project treats them as the sprite-only classes excluded from
+  studio-model loading even when a `model` keyvalue happens to end in
+  `.mdl`.
+
+Project behaviour supported: `ohl_world::spawn::find_player_start` and
+`ohl-engine`'s `Level::{load_studio_models,load_sprites}` (see
+`crates/ohl-engine/src/level.rs`) implement the keyvalue reads described
+above; no SDK source or decompiled GoldSrc logic was consulted for any of
+it, only the public wiki pages named.
+
 ## Game text formats
 
 Sources reused from `.plan/m8-research.md` sections 2 and 5 (M8.1 research
