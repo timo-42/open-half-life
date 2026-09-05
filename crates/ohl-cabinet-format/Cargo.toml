@@ -1,0 +1,31 @@
+[package]
+name = "ohl-cabinet-format"
+description = "InstallShield cabinet header, descriptor and table parsing (a licensed derivative of Unshield)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT"
+repository.workspace = true
+
+[lib]
+name = "ohl_cabinet_format"
+
+[features]
+default = []
+std = []
+# Synthetic, independently authored cabinet header writer used by this
+# workspace's tests and fuzz targets. Never enable in production builds.
+test-support = []
+
+[dependencies]
+ohl-core = { path = "../ohl-core", version = "=0.1.0" }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Self dev-dependency so integration tests and doctests always see the
+# synthetic writer, whatever feature set the workspace build selects.
+ohl-cabinet-format = { path = ".", version = "=0.1.0", features = ["test-support"] }
+proptest = { workspace = true }
+
+[lints]
+workspace = true
