@@ -8,8 +8,10 @@
 //! `rt`, `up`, each 256x256). See `docs/FORMAT_SOURCES.md`, "Rendering
 //! conventions", for the full citation list.
 
+use std::io::Cursor;
+
 use crate::error::{Result, WorldError};
-use crate::texture::TextureImage;
+use crate::texture::{MAX_TEXTURE_EDGE, TextureImage};
 
 /// The documented skybox face-name suffixes, in the order
 /// [`SkyboxAsset::build`] expects them.
@@ -64,11 +66,26 @@ impl SkyboxAsset {
     }
 }
 
+/// Decodes one face, reading only the format's fixed-size header to check
+/// its declared width/height against [`MAX_TEXTURE_EDGE`] *before* decoding
+/// any pixel data, so a maliciously (or corruptly) huge declared dimension
+/// is rejected instead of driving an unbounded allocation.
 fn decode_face(bytes: &[u8]) -> Result<TextureImage> {
-    let decoded = image::load_from_memory_with_format(bytes, image::ImageFormat::Tga)
-        .or_else(|_| image::load_from_memory_with_format(bytes, image::ImageFormat::Bmp))
+    if let Ok(decoder) = image::codecs::tga::TgaDecoder::new(Cursor::new(bytes)) {
+        return decode_from_capped(decoder);
+    }
+    let decoder = image::codecs::bmp::BmpDecoder::new(Cursor::new(bytes))
         .map_err(|_| WorldError::InvalidImage)?;
-    let rgba = decoded.to_rgba8();
+    decode_from_capped(decoder)
+}
+
+fn decode_from_capped<D: image::ImageDecoder>(source: D) -> Result<TextureImage> {
+    let (width, height) = source.dimensions();
+    if width == 0 || height == 0 || width > MAX_TEXTURE_EDGE || height > MAX_TEXTURE_EDGE {
+        return Err(WorldError::InvalidImage);
+    }
+    let image = image::DynamicImage::from_decoder(source).map_err(|_| WorldError::InvalidImage)?;
+    let rgba = image.to_rgba8();
     let (width, height) = (rgba.width(), rgba.height());
     TextureImage::new(width, height, rgba.into_raw())
 }
@@ -129,6 +146,24 @@ mod tests {
         let bad = [0u8; 4];
         let good = tiny_tga([1, 2, 3]);
         let faces: [&[u8]; 6] = [&bad, &good, &good, &good, &good, &good];
+        assert!(SkyboxAsset::build(faces).is_err());
+    }
+
+    #[test]
+    fn rejects_a_declared_dimension_above_the_cap_without_decoding_pixels() {
+        // A header claiming a 65535x65535 image (far above
+        // `MAX_TEXTURE_EDGE`) but with no pixel data at all: if the cap
+        // were checked only after decoding, this would either panic or
+        // attempt a multi-gigabyte allocation instead of erroring cleanly.
+        let mut huge = vec![0u8; 18];
+        huge[2] = 2; // uncompressed true-color
+        huge[12] = 0xFF; // width low byte
+        huge[13] = 0xFF; // width high byte
+        huge[14] = 0xFF; // height low byte
+        huge[15] = 0xFF; // height high byte
+        huge[16] = 24; // bits per pixel
+        let good = tiny_tga([1, 2, 3]);
+        let faces: [&[u8]; 6] = [&huge, &good, &good, &good, &good, &good];
         assert!(SkyboxAsset::build(faces).is_err());
     }
 

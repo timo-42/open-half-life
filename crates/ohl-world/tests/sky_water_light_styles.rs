@@ -5,7 +5,7 @@
 
 use ohl_formats::bsp30::Bsp;
 use ohl_formats::test_support::Bsp30Builder;
-use ohl_world::{BspLimits, WorldBuildOptions, WorldModel};
+use ohl_world::{BspLimits, DrawList, WorldBuildOptions, WorldModel};
 
 /// Three quads: one `sky`-textured, one `!water`-textured, one ordinary,
 /// all referenced by a single leaf. Geometry and lighting are otherwise
@@ -115,6 +115,18 @@ fn liquid_faces_are_routed_to_the_liquid_batches() {
     assert_eq!(liquid_indices, 6, "one liquid quad, two triangles");
     let opaque_indices: u32 = model.batches.iter().map(|b| b.index_count).sum();
     assert_eq!(opaque_indices, 6, "one ordinary quad, two triangles");
+}
+
+#[test]
+fn build_draw_list_for_model_draws_every_face_unconditionally() {
+    let model = build_model();
+    let mut list = DrawList::new();
+    model.build_draw_list_for_model(&mut list);
+    assert_eq!(list.indices, model.indices);
+    assert_eq!(list.batches, model.batches);
+    assert_eq!(list.liquid_indices, model.indices);
+    assert_eq!(list.liquid_batches, model.liquid_batches);
+    assert_eq!(list.sky_visible, model.has_sky);
 }
 
 #[test]

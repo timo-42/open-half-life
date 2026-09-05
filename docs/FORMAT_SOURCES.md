@@ -381,6 +381,14 @@ render modes, light styles, and sprite billboarding/timing.
   own engineering choice (not a claim from either article), the mapping
   from this suffix order to `wgpu`'s cubemap array-layer order and to this
   project's GoldSrc-axis world space (`+X` forward, `+Y` left, `+Z` up).
+  Neither article documents a maximum face size (the 256x256 figure above
+  is the stock content's convention, not a hard limit); `ohl_world::sky::
+  decode_face` reads only each format's fixed-size header first (via
+  `image::ImageDecoder::dimensions`) and rejects a declared width or height
+  above `ohl_world::texture::MAX_TEXTURE_EDGE` *before* decoding any pixel
+  data, the same bound this crate already enforces for every other
+  texture, so a maliciously (or corruptly) huge declared dimension cannot
+  drive an unbounded allocation.
 - Valve Developer Community, "BSP (Half-Life)"
   (<https://developer.valvesoftware.com/wiki/BSP_(Half-Life)>): a
   `sky`-named surface carries the `TEX_SPECIAL` texinfo flag, is left
@@ -420,12 +428,15 @@ render modes, light styles, and sprite billboarding/timing.
   `ohl_formats::bsp30`), each style a pattern string of `a`..`z`
   characters stepped at a fixed 10 Hz, where `a` is fully dark, `m` is the
   compiled ("normal") brightness, and `z` is double brightness, with the
-  default style table (style `0` = `"m"`, and the documented flicker/pulse/
-  strobe patterns for styles `1`.. as published on that article)
-  reproduced verbatim. `ohl_render::light_styles::char_intensity` and
-  `LightStyles` implement exactly this character-to-intensity mapping and
-  tick rate; `ohl_world::WorldModel::blend_lightmap` combines up to four
-  per-face style intensities against the baked lightmap atlas.
+  default style table for styles `0..=11` (style `0` = `"m"`, and the
+  documented flicker/pulse/strobe patterns for styles `1..=11` as published
+  on that article) reproduced verbatim in
+  `ohl_render::light_styles::DEFAULT_PATTERNS`; styles beyond `11` have no
+  documented default and stay unconfigured (neutral `1.0`) until a caller
+  sets one. `ohl_render::light_styles::char_intensity` and `LightStyles`
+  implement exactly this character-to-intensity mapping and tick rate;
+  `ohl_world::WorldModel::blend_lightmap` combines up to four per-face
+  style intensities against the baked lightmap atlas.
 - "Unofficial Half-Life WAD3 and SPRITE file format specification" (cited
   above, "GoldSrc MDL v10 and SPR"): the `type` enum
   (`VP_PARALLEL_UPRIGHT`/`FACING_UPRIGHT`/`VP_PARALLEL`/`ORIENTED`/

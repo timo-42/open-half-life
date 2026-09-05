@@ -39,22 +39,45 @@ pub struct LightStyles {
     patterns: Vec<String>,
 }
 
+/// The documented default pattern for styles `0..=11`, reproduced verbatim
+/// from the Valve Developer Community's "Light Styles" article (see
+/// `docs/FORMAT_SOURCES.md`, "Rendering conventions"), which publishes this
+/// same table (inherited unchanged from id Software's Quake) as the set of
+/// compiled-in styles every map can select by index without declaring its
+/// own pattern: `0` normal, `1` flicker A, `2` slow strong pulse, `3` candle
+/// A, `4` fast strobe, `5` gentle pulse 1, `6` flicker B, `7` candle B, `8`
+/// candle C, `9` slow strobe, `10` fluorescent flicker, `11` slow pulse not
+/// fade to black. Styles `12..MAX_LIGHT_STYLES` have no documented default
+/// and stay empty (neutral `1.0`) until a caller configures them.
+const DEFAULT_PATTERNS: [&str; 12] = [
+    "m",
+    "mmnmmommommnonmmonqnmmo",
+    "abcdefghijklmnopqrstuvwxyzyxwvutsrqponmlkjihgfedcba",
+    "mmmmmaaaaammmmmaaaaaabcdefgabcdefg",
+    "mamamamamama",
+    "jklmnopqrstuvwxyzyxwvutsrqponmlkj",
+    "nmonqnmomnmomomno",
+    "mmmaaaabcdefgmmmmaaaammmaamm",
+    "mmmaaammmaaammmabcdefaaaammmmabcdefmmmaaaa",
+    "aaaaaaaazzzzzzzz",
+    "mmamammmmammamamaaamammma",
+    "abcdefghijklmnopqrrqponmlkjihgfedcba",
+];
+
 impl Default for LightStyles {
     fn default() -> Self {
         let mut patterns = vec![String::new(); MAX_LIGHT_STYLES];
-        // Style 0's documented default is the constant pattern "m" (normal,
-        // unmodulated brightness).
-        if let Some(style0) = patterns.first_mut() {
-            style0.push('m');
+        for (slot, pattern) in patterns.iter_mut().zip(DEFAULT_PATTERNS) {
+            slot.push_str(pattern);
         }
         Self { patterns }
     }
 }
 
 impl LightStyles {
-    /// A table with only style 0 set (to the documented constant "m"),
-    /// matching the brightness every face already renders at before any
-    /// style animation is configured.
+    /// A table seeded with the documented default patterns for styles
+    /// `0..=11` ([`DEFAULT_PATTERNS`]), matching the brightness every face
+    /// already renders at before any style animation is configured.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -121,12 +144,19 @@ mod tests {
     }
 
     #[test]
-    fn default_table_only_configures_style_zero() {
+    fn default_table_seeds_the_documented_styles_zero_through_eleven() {
         let styles = LightStyles::new();
         assert!((styles.intensity(0, 0.0) - char_intensity(b'm')).abs() < 1e-6);
-        // An unconfigured style, and the "unused" sentinel, both read
-        // neutral rather than dark.
-        assert_eq!(styles.intensity(5, 0.0), 1.0);
+        // Style 9 is documented as a slow strobe, "aaaaaaaazzzzzzzz": dark
+        // for its first eight characters, so its very first sample is dark
+        // rather than the neutral fallback an unconfigured style would give.
+        assert_eq!(styles.intensity(9, 0.0), char_intensity(b'a'));
+        // Style 4 is documented as a fast strobe, "mamamamamama": its
+        // second character is 'a', not 'm'.
+        assert_eq!(styles.intensity(4, 0.1), char_intensity(b'a'));
+        // Beyond the documented 0..=11 table, and the "unused" sentinel,
+        // both read neutral rather than dark.
+        assert_eq!(styles.intensity(12, 0.0), 1.0);
         assert_eq!(styles.intensity(STYLE_NONE, 0.0), 1.0);
     }
 
