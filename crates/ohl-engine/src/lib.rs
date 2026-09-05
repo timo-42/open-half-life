@@ -36,6 +36,7 @@ pub use assets::{AssetFsSource, AssetSource, MemoryAssets};
 pub use error::{EngineError, Result};
 pub use game::{Game, GameEvent};
 pub use input::Input;
+pub use level::SpritePlacement;
 pub use render::RenderTarget;
 
 /// How far the mouse turns the player, in degrees per pixel.
