@@ -10,10 +10,11 @@ Compatibility implementations record their public technical basis here.
 
 The project-owned parser is deliberately only a bounded NSR02 structural
 preflight; it does not claim full UDF conformance. Full read-only filesystem
-interpretation is delegated to the independently maintained `libudfread`
-dependency described in `THIRD_PARTY_NOTICES.md`; the Rust port in
-`crates/ohl-udf` delegates it to `hadris-udf` instead, behind the same
-project-owned preflight and the same anti-abuse limits.
+interpretation is delegated to the pinned `hadris-udf` dependency described in
+`THIRD_PARTY_NOTICES.md`, behind the same project-owned preflight and the
+same anti-abuse limits, in `crates/ohl-udf`. (The removed C++ implementation
+delegated the equivalent job to the independently maintained `libudfread` C
+dependency instead.)
 
 ## ECMA-119 / ISO 9660 and Joliet
 

@@ -29,14 +29,26 @@ Compatibility code should be reviewable without access to copyrighted source
 or assets. New third-party dependencies must have licenses compatible with
 the project and be recorded before distribution.
 
-The media preflight is based on the published ECMA-167 second edition, ECMA
-TR/71, and the consolidated UDF requirements in ECMA TR/112-7. Exact sections
-and links are recorded in `FORMAT_SOURCES.md`. Synthetic test images contain
-only descriptors authored for this project and no game data. Full UDF reading
-uses the open-source libudfread dependency and is isolated behind the VFS API.
-Experimental InstallShield cabinet interpretation uses the MIT-licensed
-Unshield library; the installer itself is never run. This adapter is disabled
-by default pending malformed-input hardening or process isolation.
+The media preflight is based on the published ECMA-119 fourth edition (ISO
+9660 plus the public Joliet escape-sequence specification), ECMA-167 second
+edition, ECMA TR/71, and the consolidated UDF requirements in ECMA TR/112-7.
+Exact sections and links are recorded in `FORMAT_SOURCES.md`. Synthetic test
+images contain only descriptors authored for this project and no game data.
+The project's own `ohl-iso9660` and `ohl-udf` crates implement the bounded
+structural preflight from those public sources directly; they wrap the
+pinned, adopted `hadris-iso`/`hadris-udf` 2.3.0 crates only for the archive
+read path itself (extent/record decoding), never for the preflight decision.
+The C++ implementation's `libudfread` C dependency has been removed along
+with the C++ tree.
+
+Cabinet (InstallShield) interpretation is planned as a Rust translation of
+the MIT-licensed Unshield project, isolated into two leaf crates,
+`ohl-cabinet-format` and `ohl-cabinet` (not yet implemented; see
+`docs/MILESTONES.md`). That translated code (~3,200 lines) is licensed,
+Unshield-derived work, kept out of the clean-room-authored parser stack, and
+will run only inside the sandboxed parser worker; the installer itself is
+never run. Its predecessor, the C++ Unshield-linked adapter, has been removed
+along with the C++ tree.
 
 `MEDIA_IMPORT.md` defines the local proprietary-data boundary for ISO bytes,
 internal identifiers, extracted output, parser communication, diagnostics,

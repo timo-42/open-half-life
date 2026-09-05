@@ -1,54 +1,94 @@
 # Architecture
 
-Open Half-Life is split into narrow C++ libraries. Dependencies point from
-high-level orchestration toward low-level services; cyclic module dependencies
-are not allowed.
+Open Half-Life is a Rust workspace split into narrow crates under `crates/`.
+Dependencies point from high-level orchestration toward low-level services;
+`cargo xtask graph` enforces that the intra-workspace dependency graph stays
+acyclic and matches the table below, which restates
+`.plan/rust-architecture-r1.md` section 1.
 
-The intended module set is:
+| crate | responsibility | std? |
+| --- | --- | --- |
+| `ohl-core` | errors, sanitized diagnostics, SHA-256, bounded arithmetic | `no_std` + `alloc` |
+| `ohl-parser-protocol` | OWP/1 framing, twelve typed schemas, budgets, ordering | `no_std`, no `alloc` |
+| `ohl-parser-worker-service` | one bounded worker-side OWP/1 lifetime | `no_std`, no `alloc` |
+| `ohl-parser-worker` | binary: fd 4 readiness, fd 3 lifetime, fixed dispatcher | `no_std` + `no_main` |
+| `ohl-media-archive` | block-source trait, bounded listing model, path rules, classification vocabulary shared by both media readers and `ohl-vfs` | `no_std` + `alloc` |
+| `ohl-iso9660`, `ohl-udf` | thin wrappers over pinned `hadris-iso`/`hadris-udf` 2.3.0 plus anti-abuse limits | `no_std` + `alloc` |
+| `ohl-cabinet-format` | cabinet structure parsing/validation (Unshield translation) | `no_std` + `alloc` |
+| `ohl-cabinet` | inflate, deobfuscation, split volumes, chunk streaming over `VolumeSource` | `no_std` + `alloc` |
+| `ohl-platform` | `MediaSource`, atomic-directory publication, per-OS sandbox | std, `unsafe` allowed |
+| `ohl-vfs` | mounts, normalization, bounded paged enumeration, read-only files | std |
+| `ohl-media` | preflight-result mapping, fingerprint, `ValidatedMedia`, provenance cache | std |
+| `ohl-import` | handshake/parent/process session, read broker, result bridge, selection, staging | std |
+| `ohl-formats` | BSP30/WAD3/MDL10/SPR decoders | `no_std` + `alloc` |
+| `ohl-render`, `ohl-audio`, `ohl-input` | wgpu passes; cpal/rodio; winit events | std |
+| `ohl-world`, `ohl-physics`, `ohl-game`, `ohl-ui` | world state, GoldSrc hulls, rules, egui HUD | std |
+| `ohl-app` | composition root binary (`open-half-life`) | std |
+| `xtask` | policy check, worker image build, packaging | std |
 
-- `core`: logging, diagnostics, common utilities
-- `platform`: operating-system and architecture abstraction
-- `parser`: accepted bounded protocol infrastructure; not a worker runtime
-- `formats`: independent parsers for documented binary formats
-- `vfs`: path normalization, mounts, and read-only virtual files
-- `media`: validation and import of user-provided media
-- `render`: Vulkan rendering and MoltenVK integration
-- `audio`, `input`: runtime device services
-- `world`, `physics`: world representation and simulation
-- `game`: single-player rules and entity behavior
-- `ui`: menus and in-game user interface
-- `tools`: developer and media-inspection programs
-- `app`: composition root and executable lifecycle
+`ohl-core`, `ohl-parser-protocol`, `ohl-media-archive`, `ohl-iso9660`,
+`ohl-udf`, `ohl-platform`, `ohl-vfs`, `ohl-media`, `ohl-formats`, `ohl-app`,
+and `xtask` exist today. `ohl-parser-worker-service`, `ohl-parser-worker`,
+`ohl-cabinet-format`, `ohl-cabinet`, `ohl-import`, and the render/audio/
+input/world/physics/game/ui crates are still ahead; see
+`docs/MILESTONES.md` for current status. New crates must add their
+dependency-edge row to `xtask/src/graph.rs`'s `ALLOWED_EDGES` table before
+`cargo xtask graph` passes, and must keep the workspace-wide
+`unsafe_code = "forbid"` lint unless they are one of the two exempt crates
+below.
 
-The `core`, `parser`, `platform`, `media`, `vfs`, and `app` modules now exist.
-New modules must expose public headers beneath `include/ohl/<module>` and keep
-implementation details in `src`. Third-party API types should not leak across
-module interfaces.
-
-The current dependency direction is:
+The allowed direct intra-workspace dependency edges are:
 
 ```text
-app -> core + platform + media + vfs
-media -> platform + standard library; core is a private implementation edge
-media_parser_results -> media + parser; disconnected from runtime targets
-media_parser_reads -> media_parser_results; disconnected from runtime targets
-media_parser_transport -> parser + platform + Threads; disconnected from runtime targets
-media_parser_handshake -> media_parser_reads + media_parser_transport; disconnected from runtime targets
-media_parser_parent_session -> media_parser_handshake; disconnected from runtime targets
-parser_worker_service -> parser; private, non-installed, and disconnected from runtime targets
-Linux x86-64 media-parser worker -> private freestanding parser/service runtime copy
-vfs -> platform + standard library; libudfread is a private implementation edge
-parser -> standard library
-core/platform -> standard library
-
-experimental media cabinet adapter -> vfs + Unshield + zlib
+ohl-core            -> (none)
+ohl-parser-protocol -> ohl-core
+ohl-parser-worker-service -> ohl-parser-protocol
+ohl-parser-worker   -> ohl-parser-worker-service
+ohl-media-archive   -> ohl-core
+ohl-iso9660 | ohl-udf -> ohl-core, ohl-media-archive
+ohl-cabinet         -> ohl-cabinet-format -> ohl-core
+ohl-platform        -> ohl-core
+ohl-vfs             -> ohl-core, ohl-platform, ohl-media-archive, ohl-iso9660, ohl-udf
+ohl-media           -> ohl-platform, ohl-core
+ohl-import          -> ohl-media, ohl-vfs, ohl-parser-protocol, ohl-platform
+ohl-formats         -> ohl-core
+ohl-world/physics   -> ohl-formats, ohl-vfs
+ohl-render/audio/input/ui -> ohl-core (+ ohl-world for render)
+ohl-app             -> any crate above (the composition root)
 ```
 
-The canonical `parser` target is deliberately isolated: no runtime target
-depends on it, and its only allowed dependency edge is toward the standard
-library. The Linux x86-64 worker's private freestanding runtime compiles the
-same protocol sources without exporting or linking this canonical target. Its
-accepted OWP/1 protocol layer provides canonical bounded framing and headers,
+There is deliberately no `ohl-vfs -> ohl-media` edge, so a container reader
+can never reach the provenance cache or fingerprinting logic; the two cabinet
+crates isolate a licensed MIT-derived translation (~3,200 lines) from
+clean-room code and run only inside the sandboxed parser worker.
+
+## `unsafe` inventory
+
+Every crate carries the workspace-wide `#![forbid(unsafe_code)]` lint except
+two, which instead `allow` it (a `forbid` level cannot be relaxed by a
+crate-level attribute, so the allowance lives in each crate's own
+`Cargo.toml`):
+
+- **`ohl-platform`** — Windows FFI (`GetFileType`, `GetFileInformationByHandle`
+  for the pinned native identity `MediaSource` needs but `std` does not
+  expose) and, once the Linux worker launcher lands, the fork/exec, seccomp
+  install, pidfd, and `renameat2` calls that give the isolated parser worker
+  its sandboxed lifetime. Every unsafe site carries a `// SAFETY:` comment and
+  is inventoried in the crate's own module documentation.
+- **`ohl-parser-worker`** — the freestanding binary's own `_start` entry
+  point, because a `#![no_std] #![no_main]` binary has no runtime to hand
+  control to `main` for it.
+
+Both crates carry `#![deny(unsafe_op_in_unsafe_fn)]`. No other crate,
+including every parser and format decoder, contains an `unsafe` block.
+
+
+The `ohl-parser-protocol` crate is deliberately isolated: nothing outside the
+parser-worker chain depends on it, and its only allowed dependency edge is
+`ohl-core` (see the crate table above). The `no_std`, no-`alloc` bound means
+the same protocol sources build unchanged into the freestanding
+`ohl-parser-worker` binary. Its accepted OWP/1 protocol layer provides
+canonical bounded framing and headers,
 generic bounded primitive payload readers and writers, per-frame and cumulative
 message/payload budgets, and fail-closed session ordering. Accepted typed
 schemas now cover `hello`, exact-empty `ready`, `enumerate`, `stream_entry`,
@@ -123,6 +163,16 @@ reject noncanonical values, and require complete payload consumption. The
 twelve accepted decoders provide that validation for `hello`, `ready`,
 `enumerate`, `stream_entry`, `read_request`, `read_reply`, `entry_batch`,
 `data_chunk`, `complete`, `cancel`, `cancel_ack`, and `shutdown`.
+
+> The remainder of this section (through "Media import planning and
+> staging") specifies the accepted result-bridge, read-broker, handshake, and
+> parent/process-session design the removed C++ tree implemented and hosted
+> CI qualified. It is retained as the byte-for-byte specification the Rust
+> `ohl-import` crate (package R4.5 in `.plan/rust-architecture-r1.md`) must
+> reproduce; that crate does not exist yet, so the `OpenHalfLife::` names and
+> commit hashes below are historical identifiers into git history before the
+> C++ removal, not current Rust crate or module names. See
+> `docs/MILESTONES.md` for what has actually landed in Rust so far.
 
 Commit `909edcc` adds `OpenHalfLife::media_parser_results`, a trusted but
 deliberately disconnected receiver for those validated results. A caller gives
@@ -553,22 +603,26 @@ one-way `media -> vfs` edge shown above.
 
 ## Pinned media capability and content validation
 
-`platform::MediaSource` is a read-only capability for one natively opened file
-object. Path resolution occurs only during acquisition; sharing the capability
-shares the same pinned native identity, and positional reads never reopen the
-path. Identity pinning prevents a later pathname replacement from retargeting
-the source. It does not make the underlying bytes immutable: an external
-writer may still mutate the opened object. Phase boundaries therefore call
-`verify_unchanged()` to compare native identity, type, size, and available
-content-change indicators with the acquisition snapshot.
+`ohl_platform::MediaSource` is a read-only, move-only capability for one
+natively opened file object. Path resolution occurs only during acquisition;
+sharing the capability (behind an `Arc`) shares the same pinned native
+identity, and positional reads never reopen the path. Identity pinning
+prevents a later pathname replacement from retargeting the source. It does
+not make the underlying bytes immutable: an external writer may still mutate
+the opened object. Phase boundaries therefore call `verify_unchanged()` to
+compare native identity, type, size, and available content-change indicators
+with the acquisition snapshot.
 
-`media::ValidatedMedia` binds that same capability to a bounded structural
-inspection and full SHA-256 fingerprint. It is evidence that the source passed
-those gates at validation time, not a promise that future content cannot
-change. Before metadata-only cache publication, `media` verifies the pinned
-source again, rehashes it end to end, requires the digest to equal the
-validation fingerprint, and publishes nothing on mismatch or read failure.
-Source paths and media bytes are not persisted.
+`ohl_media::ValidatedMedia` binds that same capability to a
+[`MediaDescription`](../crates/ohl-media/src/description.rs) (the plain value
+`ohl-app` maps a preflight crate's result onto) and a full SHA-256 fingerprint
+(`ohl_media::fingerprint`). It is a move-only, non-`Clone` proof: evidence
+that the source passed those gates at validation time, not a promise that
+future content cannot change. Before metadata-only cache publication,
+`ohl_media::prepare_import_cache` verifies the pinned source again, rehashes
+it end to end, requires the digest to equal the validation fingerprint, and
+publishes nothing on mismatch or read failure. Source paths and media bytes
+are not persisted.
 
 The metadata cache uses the verified digest as its source-directory identity.
 Current standard-library checks require an absolute cache root and reject
@@ -582,19 +636,24 @@ without usable hard links fail publication safely. The standard-library
 directory-component checks are not a fully pinned native traversal; native
 directory handling remains separate hardening work for payload import.
 
-The application acquires the source once, discards the selected path, validates
-that capability, mounts `validated.source()` through `vfs`, and passes the same
-`ValidatedMedia` to cache preparation. It never reopens the original path.
-This acquire-once flow is the accepted composition for the current startup;
-`app` remains the only composition root.
+`ohl-app` acquires the source once, discards the selected path, runs the ISO
+9660 preflight then the UDF preflight (`ohl_iso9660::preflight`,
+`ohl_udf::preflight`) to classify it, mounts the same shared `Arc<MediaSource>`
+through `ohl_vfs::Mount`, and passes the same `ValidatedMedia` to cache
+preparation. It never reopens the original path. This acquire-once flow is
+the accepted composition for startup; `ohl-app` remains the only composition
+root.
 
 ## Bounded read-only VFS
 
-The `vfs` target wraps libudfread behind C++ pImpl types, so third-party API
-types do not leak into the engine. It retains the pinned `MediaSource` for the
-mount lifetime, checks source stability around operations, serializes
-third-party access, and exposes normalized read-only paths, seekable files, and
-explicitly shared read-only mount handles.
+`ohl-vfs`'s `Mount` type wraps the `ohl-iso9660` and `ohl-udf` readers (which
+in turn wrap the pinned `hadris-iso`/`hadris-udf` crates) behind one facade
+type, so neither third-party reader's API types leak into the engine. It
+retains the pinned `Arc<MediaSource>` for the mount lifetime via
+`MediaSourceBlockReader`, checks source stability around operations
+(periodically and via `verify_unchanged()`), serializes third-party access
+behind a mutex, and exposes normalized read-only paths, seekable files, and
+explicitly shared (`Mount::share()`) read-only mount handles.
 
 Directory enumeration is bounded and opaque. `list_page()` returns entries in
 provider order plus a move-only `DirectoryCursor` only when continuation is
@@ -621,6 +680,16 @@ the constrained worker protocol in `MEDIA_IMPORT.md` before it may supply
 production import data.
 
 ## Media import planning and staging
+
+> This section specifies the accepted path-normalization, layout, staging,
+> and native-store design the removed C++ tree implemented (Unshield-backed
+> cabinet extraction, `renameat2(RENAME_NOREPLACE)` publication, the Linux
+> native-store qualification). None of it exists in Rust yet: `ohl-import`
+> and the two `ohl-cabinet*` crates (package R4.4/R4.6 in
+> `.plan/rust-architecture-r1.md`) are still ahead. It is retained as the
+> specification those crates must reproduce; `media`, `Unshield`, and the
+> commit hashes below are the historical C++ identity, not current Rust
+> names.
 
 The always-built `media` path and layout policy is independent of Unshield. It
 normalizes archive-controlled names to a strict printable-ASCII subset,
@@ -701,116 +770,18 @@ Because Unshield is not hardened for malicious cabinet metadata, the adapter
 is excluded from default builds and normal startup. The app is the only
 composition root.
 
-## Hosted qualification
+## Hosted qualification history
 
-The accepted package-1 through package-4 state at
-`df5ea6d51037671ef0165dacac9fe26df1bf4d2b` is current in hosted CI. The
-required jobs pass on Linux x64, Linux x64 with address/undefined-behavior
-sanitizers, Linux x64 with the experimental adapter enabled, Windows x64, and
-macOS Apple Silicon. This evidence qualifies the implemented capability,
-validation, cache, VFS, and application-composition behavior described above;
-it does not qualify the absent production extraction path.
+The two sections that used to follow here recorded exact-commit hosted CI
+evidence (Build run IDs, CTest pass counts, per-platform matrices) for the
+C++ tree removed in this pull request. Every commit hash they cited is still
+reachable in git history before the "Remove C++ implementation superseded by
+the Rust workspace" commit, so that qualification evidence is not lost, only
+no longer current. Current Rust acceptance evidence — which PR accepted each
+milestone, and what tests and lints ran — lives in `docs/MILESTONES.md`
+instead of here, so it does not go stale the same way.
 
-The later trusted-result bridge at `909edcc` and media cancellation migration
-at `0f2c78d` are covered by exact-SHA hosted build run `29147060407` at
-`ca576e9`. GNU 13 Linux passed all 32 tests, including the bridge; the
-experimental and sanitizer jobs passed; and Windows passed. AppleClang 17 on
-macOS passed all 22 tests, including `media.cancellation` and the bridge. This
-confirms the common cancellation portability correction and disconnected
-result-validation target on the required hosted platforms; it does not qualify
-a native worker, source broker, staging composition, macOS atomic store, or
-runtime import path. Because the tests-only `ca576e9` change did not trigger
-the parser-fuzz workflow, the accepted hosted fuzz evidence for the typed
-protocol at that point remained the earlier `ba84cfc` run.
-
-The trusted source-read broker was accepted and pushed at
-`c90f2d1a7cbabdb90b688197d2d34ceb48526aeb`. The full local CTest suite passed
-33/33, including synthetic sequence, budget, stability, failure, cancellation,
-ticket, buffer, and capability-lifetime coverage. Exact-commit hosted build run
-`29148133002` also passed Linux x64, sanitizers, the experimental cabinet
-adapter, Windows x64, and macOS Apple Silicon; this is the cross-platform broker
-evidence. Fuzz run `29148132997` separately passed Clang 18/libFuzzer for the
-typed protocol only and did not build or fuzz the broker. The build evidence
-qualifies the disconnected broker on the tested hosts, not a worker, transport,
-runtime import path, staging, or publication.
-
-[PR #7](https://github.com/timo-42/open-half-life/pull/7) accepted the P1
-disconnected parser-worker service at reviewed head
-[`3ec70b34f461ec7dddb1ca26770544df6debfe0f`](https://github.com/timo-42/open-half-life/commit/3ec70b34f461ec7dddb1ca26770544df6debfe0f).
-The rebased merge on `main` is
-[`6b3df8f1cf6660eed46246790bff382c6c4001b6`](https://github.com/timo-42/open-half-life/commit/6b3df8f1cf6660eed46246790bff382c6c4001b6);
-both commits have exact tree
-`888bee1be57b45c7583fe05bcf22698725f5f651`. The PR rollup records all 12
-hosted jobs green: the five-platform/configuration Build matrix and the Linux
-Clang 18/libFuzzer smoke job each ran for both push and pull-request events.
-The corresponding evidence is in Build runs
-[`29195613360`](https://github.com/timo-42/open-half-life/actions/runs/29195613360)
-and
-[`29195614365`](https://github.com/timo-42/open-half-life/actions/runs/29195614365),
-and Parser fuzz smoke runs
-[`29195613343`](https://github.com/timo-42/open-half-life/actions/runs/29195613343)
-and
-[`29195614314`](https://github.com/timo-42/open-half-life/actions/runs/29195614314).
-The hosted suites include `parser.worker_service`: Linux passed 39/39,
-sanitizer and experimental Linux passed 40/40, and Windows x64 and macOS Apple
-Silicon passed 27/27. The final PR change replaced an oversized fixed stack
-buffer in the service test with payload-sized dynamic test storage so Windows
-x64 could run the synthetic suite; it did not change production code or the
-service contract. This qualifies the private disconnected P1 boundary on the
-tested hosts, not a real payload parser, runtime composition, extraction,
-staging, publication, or production import. It predates and does not qualify
-the later Linux-only B1 bootstrap described above.
-
-## Parser transport and parent-session qualification
-
-The accepted frame-channel commit is
-`e4b819a9efa37d5e401d111c4ac591365ce669ae`. Local validation completed a clean
-warnings-as-errors build with 83/83 steps, the full CTest suite at 34/34, 50
-consecutive passes each of `media.parser_frame_channel` and
-`repository.policy`, and the existing platform common-worker test at 1/1.
-The focused tests cover canonical 32-byte output, payload boundaries, validation
-ordering, caller storage and view lifetimes, malformed exact-I/O reports,
-sticky first-failure poisoning, cancellation and peer closure at header and
-payload stages, same-direction exclusion, duplex progress, and abort wakeup.
-These exact-commit results are local. The later P1 full-stack hosted evidence
-above covers the same frame-channel implementation in the accepted merged tree.
-
-The trusted parent handshake was accepted at
-`13f0fb08e7d00159000f3721ebe0b0e1b1481188`. Local validation completed a clean
-warnings-as-errors build with 87/87 steps and the full CTest suite at 35/35.
-Synthetic tests independently verify canonical hello/header bytes, exact-empty
-ready, ordering, exact limits and policy, proof movement and consumption,
-downstream session/broker construction, pre-I/O rejection, unsanitized buffer
-invalidation, sanitized terminal transport failures, and absence of escaped
-views or proofs on failure. These exact-commit results are local; the later P1
-full-stack hosted evidence above covers the same handshake implementation in
-the accepted merged tree.
-
-The trusted parent session was accepted at
-`7bd9d38213c7df160e0e84fcb50a9cacb0095558`. Hash, index, manifest, and diff
-guards showed that the seven-file parent-session package matched the commit.
-Independent pristine local verification used `git archive` of exact tree
-`f28715ef827044928a0c9cc1ce45464d5c8d9519`; the archive SHA-256 was
-`6361378e63c5de330784836106851fd4b0afb4d4b239d10b495912fe585a8123`.
-It compiled committed `isolated_worker_unsupported.cpp` and excluded all dirty
-native-backend files from the shared worktree. A clean Linux GCC 14 Debug
-warnings-as-errors build passed 91/91 steps, the full CTest suite passed 36/36,
-and the explicit repository-policy test passed 1/1. Synthetic behavioral
-coverage includes exact-channel factory binding, proof preservation on
-rejection, request and operation transitions, atomic outbound callback
-crossings, receive/cancel races, prompt first-cause notifications, ticket
-commit/abandon behavior, sink and buffer lifetime rules, privacy-sensitive
-scratch/reply handling, terminal destruction, and no escaped frame or payload
-result. Separate API, source, and CMake review establishes the disconnected
-dependency edge and absence of launch, path, staging, publication, and runtime
-authority. The practically unreachable `uint64_t` request-ID exhaustion path
-has no counter-injection seam, and stable injected source-read failure remains
-covered at the broker layer because the parent factory exposes no source-read
-operation-table seam. These are accepted test limitations. These exact-commit
-results are from a pristine local tree; the later P1 full-stack hosted evidence
-above covers the same parent-session implementation in the accepted merged
-tree.
-
-The intended gameplay/rendering graph remains under design. Each new edge must
-be expressed explicitly with `target_link_libraries` so CMake remains the
-source of truth and cycles can be rejected in review.
+The intended gameplay/rendering crate graph remains under design. Each new
+edge must be added explicitly to `xtask/src/graph.rs`'s `ALLOWED_EDGES` table
+so `cargo xtask graph` remains the source of truth and cycles are rejected
+automatically rather than in review alone.
