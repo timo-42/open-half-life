@@ -13,6 +13,10 @@ name = "ohl_iso9660"
 [features]
 default = []
 std = ["ohl-core/std", "ohl-media-archive/std"]
+# Exposes the synthetic ECMA-119/Joliet image builder outside this crate's own
+# tests, so other crates (currently `ohl-vfs`) can mount the same fixtures
+# through a real `MediaSource` instead of duplicating the builder.
+test-support = []
 
 [dependencies]
 ohl-core = { path = "../ohl-core", version = "=0.1.0" }

@@ -1,0 +1,32 @@
+[package]
+name = "ohl-vfs"
+description = "Read-only VFS mounts over pinned media sources (ISO 9660/Joliet and UDF)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ohl_vfs"
+
+[dependencies]
+ohl-core = { path = "../ohl-core", version = "=0.1.0", features = ["std"] }
+ohl-platform = { path = "../ohl-platform", version = "=0.1.0" }
+ohl-media-archive = { path = "../ohl-media-archive", version = "=0.1.0", features = [
+    "std",
+] }
+ohl-iso9660 = { path = "../ohl-iso9660", version = "=0.1.0", features = [
+    "std",
+] }
+ohl-udf = { path = "../ohl-udf", version = "=0.1.0", features = ["std"] }
+
+[dev-dependencies]
+ohl-iso9660 = { path = "../ohl-iso9660", version = "=0.1.0", features = [
+    "std",
+    "test-support",
+] }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

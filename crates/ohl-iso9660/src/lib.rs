@@ -7,7 +7,7 @@ extern crate alloc;
 pub mod adaptor;
 pub mod archive;
 pub mod preflight;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
 pub use adaptor::BlockCursor;
