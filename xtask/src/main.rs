@@ -3,9 +3,12 @@
 //! - `cargo xtask policy` reimplements `cmake/CheckRepository.cmake`.
 //! - `cargo xtask graph` validates the crate dependency graph against the
 //!   allowed edges from `.plan/rust-architecture-r1.md` section 1.
+//! - `cargo xtask worker-image` builds the freestanding isolated-worker test
+//!   image and proves it is a static, non-interpreted `ET_EXEC` binary.
 
 mod graph;
 mod policy;
+mod worker_image;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -76,8 +79,9 @@ fn main() -> ExitCode {
     match subcommand.as_deref() {
         Some("policy") => run_policy(&root),
         Some("graph") => run_graph(&root),
+        Some("worker-image") => worker_image::run(),
         other => {
-            eprintln!("usage: cargo xtask <policy|graph>");
+            eprintln!("usage: cargo xtask <policy|graph|worker-image>");
             if let Some(other) = other {
                 eprintln!("unknown subcommand: {other}");
             }

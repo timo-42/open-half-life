@@ -33,6 +33,10 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
     ("ohl-cabinet-format", &["ohl-core"]),
     ("ohl-cabinet", &["ohl-cabinet-format"]),
     ("ohl-platform", &["ohl-core"]),
+    // Development-only: builds the freestanding isolated-worker test image.
+    // It has no dependencies and nothing shipping may depend on it (only
+    // `[dev-dependencies]`, which this table deliberately does not inspect).
+    ("ohl-test-worker", &[]),
     (
         "ohl-vfs",
         &[
