@@ -627,6 +627,34 @@ impl WorldModel {
         &self.vis
     }
 
+    /// Fills `out` with every face of this model, with no PVS or frustum
+    /// culling.
+    ///
+    /// Meant for a brush entity's own submodel (see [`Self::build_submodel`])
+    /// rather than worldspawn: GoldSrc draws a submodel entity whenever the
+    /// *entity* itself is visible, not by re-testing its faces against the
+    /// eye leaf's PVS the way [`Self::build_draw_list`] does for worldspawn,
+    /// and this crate does not parse entity visibility (or the `origin` key
+    /// a mover applies) at this milestone, so the conservative default is to
+    /// draw the whole submodel unconditionally (see `docs/MILESTONES.md`,
+    /// M3.4). `out.indices`/`out.liquid_indices` both become a full copy of
+    /// this model's own index buffer (the two are byte-identical here,
+    /// since neither PVS nor frustum removed anything from either); a
+    /// caller draws [`Self::batches`]/[`Self::liquid_batches`] from
+    /// whichever copy each references.
+    pub fn build_draw_list_for_model(&self, out: &mut DrawList) {
+        out.indices.clear();
+        out.indices.extend_from_slice(&self.indices);
+        out.batches.clear();
+        out.batches.extend_from_slice(&self.batches);
+        out.liquid_indices.clear();
+        out.liquid_indices.extend_from_slice(&self.indices);
+        out.liquid_batches.clear();
+        out.liquid_batches.extend_from_slice(&self.liquid_batches);
+        out.visible.clear();
+        out.sky_visible = self.has_sky;
+    }
+
     /// Fills `out` with the index ranges visible from `eye`.
     ///
     /// Faces are kept when the leaf that references them is in the eye

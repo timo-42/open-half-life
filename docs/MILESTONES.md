@@ -784,8 +784,11 @@ Adds two crates and one development-only flag:
   keyed transparent for `{`-prefixed names), external textures resolved from
   caller-supplied WAD3 packages and otherwise replaced by a checkerboard
   placeholder, a decompressed potentially-visible set, a frustum test, and
-  the `info_player_start` origin and facing. Submodel 0 only; submodels 1..
-  need entity-driven transforms that do not exist yet.
+  the `info_player_start` origin and facing. `WorldModel::build_submodel`
+  builds any other submodel (a brush entity's `"*N"` `model` key) the same
+  way, as its own standalone `WorldModel`; this crate does not parse entity
+  keys itself (that is a future milestone's job), so a caller supplies both
+  the submodel index and the entity's placement transform.
 - `ohl-render`: a wgpu 30 renderer — Vulkan on Linux/Windows and Metal on
   macOS with a fallback to `wgpu::Backends::PRIMARY`, WGSL shaders
   multiplying the diffuse texture by the lightmap in GoldSrc's overbright-free
@@ -821,16 +824,33 @@ conventions":
   `WorldModel::blend_lightmap` now blends up to four per-face light styles
   (`Face::styles`) against the baked atlas using a caller-supplied
   intensity table instead of always sampling style 0.
+  `WorldModel::build_draw_list_for_model` fills a `DrawList` with every face
+  of a submodel unconditionally (no PVS or frustum culling): GoldSrc draws
+  a submodel entity whenever the *entity* itself is visible rather than
+  culling its faces leaf-by-leaf the way worldspawn is, and this crate does
+  not parse entity visibility yet, so the conservative default is to draw
+  the whole submodel.
 - `ohl-render`: a sky pass draws the cubemap at infinite depth behind all
   other geometry; a liquid pass draws the translucent batches after opaque
   geometry with depth testing but no depth write, perturbing UVs by
   `water::turbulence_offset` (mirrored in `world_water.wgsl`). `RenderProps
   { mode, amount, color, fx }` reproduces the documented `rendermode` enum
-  (`Normal`/`Color`/`Texture`/`Glow`/`Solid`/`Additive`) and selects one of
-  three precompiled blend pipelines (opaque, alpha-blend, additive) per
-  `draw_world_submodel` call. `light_styles::LightStyles` evaluates
-  `a`..`z` pattern strings at a fixed 10 Hz using the documented default
-  style table.
+  (`Normal`/`Color`/`Texture`/`Glow`/`Solid`/`Additive`) and maps each
+  variant to one of three precompiled blend pipelines (opaque, alpha-blend,
+  additive). `WorldRenderer::draw_world_submodel` draws one placed
+  `SubmodelInstance` (a submodel `WorldModel` plus its entity transform)
+  with `RenderProps`' blend state, into the same colour/depth target the
+  opaque world pass already rendered into that frame: it builds the
+  submodel's vertex/index buffers and its own texture/lightmap bind groups
+  fresh on every call rather than caching them (brush entities are
+  typically small, and this keeps the first-light implementation simple),
+  and pre-multiplies the camera's view-projection by the entity transform
+  on the CPU rather than uploading the transform separately. It draws only
+  a submodel's opaque batches; a submodel's own liquid faces are not yet
+  drawn by this call. `light_styles::LightStyles` evaluates `a`..`z`
+  pattern strings at a fixed 10 Hz, seeded with the documented default
+  patterns for styles `0..=11` (see `docs/FORMAT_SOURCES.md`, "Rendering
+  conventions").
 
 Verified:
 
@@ -840,15 +860,19 @@ Verified:
   using whatever adapter the host offers; on a machine with none, the test
   skips instead of failing. It is `#[ignore]`d by default, with an
   `OHL_RENDER_GPU_TEST=1` opt-in, so CI runners without GPUs stay green.
-  Two further gated offscreen tests cover M3.4: the sky pass fills the frame
-  when nothing else is drawn, and the liquid pass blends visibly over the
-  cleared background.
+  Three further gated offscreen tests cover M3.4: the sky pass fills the
+  frame when nothing else is drawn, the liquid pass blends visibly over the
+  cleared background, and `draw_world_submodel` blends a translucent
+  (`RenderMode::Texture`) submodel visibly over the cleared background.
 - on screen: **not verified** in the development environment used for this
   package, which has no display server. `--dev-bsp` was exercised there only
   as far as loading the map and reporting, through the sanitized error path,
   that no window system is available.
 
-Not yet done: submodels 1.., texture animation (`+0`/`-0` frames), backface
+Not yet done: parsing entity keys (`ohl-app`'s `--dev-bsp` viewer does not yet
+place any submodel or call `draw_world_submodel`; the entity's transform and
+render properties must come from a future milestone's entity parsing), a
+submodel's own liquid faces, texture animation (`+0`/`-0` frames), backface
 culling (winding is not yet normalised across `plane_side`, so both sides are
 drawn), mipmaps and anisotropy, sprite billboard *transforms* (the documented
 `type` is exposed but `ohl-render` does not yet build a per-frame billboard
