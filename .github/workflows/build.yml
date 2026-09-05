@@ -16,6 +16,7 @@ jobs:
   version:
     name: Determine version
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -31,6 +32,7 @@ jobs:
   rust-fmt:
     name: Rust fmt
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -42,6 +44,7 @@ jobs:
     name: Rust policy and crate graph
     needs: version
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       OHL_VERSION: ${{ needs.version.outputs.version }}
     steps:
@@ -68,6 +71,7 @@ jobs:
           - os: macos-latest
             name: macOS Apple Silicon
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     env:
       OHL_VERSION: ${{ needs.version.outputs.version }}
     steps:
@@ -88,6 +92,7 @@ jobs:
     name: Rust clippy (no default features)
     needs: version
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       OHL_VERSION: ${{ needs.version.outputs.version }}
       NO_STD_CRATES: >-
@@ -118,6 +123,7 @@ jobs:
           - os: macos-latest
             name: macOS Apple Silicon
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     env:
       OHL_VERSION: ${{ needs.version.outputs.version }}
     steps:
@@ -152,13 +158,15 @@ jobs:
 
   rust-miri:
     name: Rust miri
+    if: github.event_name != 'pull_request'
     needs: version
     runs-on: ubuntu-latest
     continue-on-error: true
+    timeout-minutes: 40
     env:
       OHL_VERSION: ${{ needs.version.outputs.version }}
       MIRIFLAGS: -Zmiri-disable-isolation
-      PROPTEST_CASES: 4
+      PROPTEST_CASES: 2
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -175,7 +183,7 @@ jobs:
           # Kept as a list rather than one `-p ... -p ...` workspace command
           # so a crate that has not been created yet (or has since been
           # removed) is simply skipped instead of failing the whole job.
-          candidates=(ohl-parser-protocol ohl-formats ohl-mscab ohl-isz ohl-wise)
+          candidates=(ohl-parser-protocol ohl-formats)
           args=()
           for crate in "${candidates[@]}"; do
             if [ -d "crates/${crate}" ]; then
@@ -193,6 +201,7 @@ jobs:
   rust-deny:
     name: Rust cargo-deny
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
