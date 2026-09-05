@@ -12,10 +12,18 @@
 //!
 //! # What it recognises
 //!
+//! - **Wise installer package**, by a PE overlay whose first bytes
+//!   [`ohl_wise::locate_first_stream`] confirms are a compressed stream
+//!   chain. The confirmation inflates a bounded prefix of a bounded window;
+//!   it decodes no file, reads no script, and keeps nothing.
 //! - **Microsoft cabinet**, by the ASCII `MSCF` signature at offset 0 of a
 //!   file, and by the same signature inside a PE overlay.
 //! - **InstallShield 3 Z archive**, by its little-endian `u32` signature
 //!   `0x8C65_5D13` inside a PE overlay.
+//!
+//! A Wise package is checked first, because its overlay legitimately contains
+//! arbitrary compressed bytes in which either of the two fixed signatures can
+//! occur by chance.
 //!
 //! The PE/COFF walk — DOS header, `e_lfanew`, the `PE\0\0` signature, the
 //! COFF file header, the optional-header size, and the section table — is
@@ -77,6 +85,9 @@ pub const MINIMUM_CANDIDATE_BYTES: u64 = 64 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum ContainerKind {
+    /// A Wise installer package: the whole PE image, whose overlay holds the
+    /// package.
+    WiseOverlay,
     /// An InstallShield 3 Z archive, found in a PE overlay.
     InstallShieldZ,
     /// A Microsoft cabinet, at offset 0 or in a PE overlay.
@@ -94,9 +105,31 @@ pub struct ContainerCandidate {
     /// What the signature says the container is.
     pub kind: ContainerKind,
     /// The container's first byte, as an offset inside that file.
+    ///
+    /// For [`ContainerKind::WiseOverlay`] this is where the overlay starts,
+    /// which is *not* where the worker's window starts; see
+    /// [`ContainerCandidate::window`].
     pub offset: u64,
     /// The container's length: everything from `offset` to the file's end.
     pub length: u64,
+}
+
+impl ContainerCandidate {
+    /// The byte window a worker is given for this candidate: its offset in
+    /// the file and its length.
+    ///
+    /// A cabinet and a Z archive begin at a signature, so the window begins
+    /// there too and the worker never sees the stub. A Wise package is
+    /// located from its PE section table, and the worker has to recompute
+    /// that offset itself — the wire protocol's `enumerate` carries no field
+    /// to tell it — so its window is the whole image.
+    #[must_use]
+    pub const fn window(&self) -> (u64, u64) {
+        match self.kind {
+            ContainerKind::WiseOverlay => (0, self.offset.saturating_add(self.length)),
+            _ => (self.offset, self.length),
+        }
+    }
 }
 
 impl fmt::Debug for ContainerCandidate {
@@ -325,6 +358,71 @@ fn scan_for_signature<R: PrefixReader>(
     Ok(None)
 }
 
+/// The bounded prefix of an overlay a Wise confirmation looks at.
+///
+/// It has to hold the undocumented header (157 bytes on the medium this was
+/// developed against, and bounded by `ohl_wise::Limits::max_header_scan_bytes`
+/// at 4 KiB) plus enough compressed bytes for the first stream to inflate its
+/// confirmation minimum.
+const WISE_PROBE_BYTES: usize = 64 * 1024;
+
+/// An `ohl_wise::ImageSource` over an already-read overlay prefix.
+///
+/// The prefix is presented as a whole image starting at the overlay, which is
+/// exactly the shape `locate_first_stream` expects, and nothing outside it can
+/// be read.
+struct OverlayPrefix<'a>(&'a [u8]);
+
+impl ohl_wise::ImageSource for OverlayPrefix<'_> {
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> Result<usize, ohl_wise::Error> {
+        let start = usize::try_from(offset).unwrap_or(usize::MAX).min(self.0.len());
+        let available = &self.0[start..];
+        let taken = available.len().min(buf.len());
+        buf[..taken].copy_from_slice(&available[..taken]);
+        Ok(taken)
+    }
+
+    fn len(&mut self) -> Result<u64, ohl_wise::Error> {
+        Ok(self.0.len() as u64)
+    }
+}
+
+/// Whether the overlay at `overlay` begins a Wise package.
+///
+/// This is a *recognition* check, not a parse: it confirms that a compressed
+/// stream starts within the documented header-scan distance of the overlay.
+/// It never walks the chain, never reads the script and never keeps a byte.
+fn is_wise_overlay<R: PrefixReader>(
+    reader: &mut R,
+    overlay: u64,
+    size: u64,
+    budget: &mut ReadBudget,
+) -> bool {
+    let wanted = u64::try_from(WISE_PROBE_BYTES)
+        .unwrap_or(u64::MAX)
+        .min(size.saturating_sub(overlay));
+    let granted = budget.take(wanted);
+    let Ok(granted) = usize::try_from(granted) else {
+        return false;
+    };
+    if granted == 0 {
+        return false;
+    }
+    let mut prefix = vec![0u8; granted];
+    let Ok(filled) = reader.read_at(overlay, &mut prefix) else {
+        return false;
+    };
+    prefix.truncate(filled);
+    let limits = ohl_wise::Limits::DEFAULT;
+    let window = ohl_wise::Overlay {
+        offset: 0,
+        len: prefix.len() as u64,
+        image_len: prefix.len() as u64,
+    };
+    let mut source = OverlayPrefix(&prefix);
+    ohl_wise::locate_first_stream(&mut source, &window, &limits, &ohl_wise::NeverCancelled).is_ok()
+}
+
 /// Classifies one file, reading at most its header prefix and its overlay.
 fn classify_file<R: PrefixReader>(
     reader: &mut R,
@@ -356,6 +454,9 @@ fn classify_file<R: PrefixReader>(
     if overlay >= size {
         // Sections fill the file: there is no overlay to search.
         return Ok(None);
+    }
+    if is_wise_overlay(reader, overlay, size, budget) {
+        return Ok(Some((ContainerKind::WiseOverlay, overlay)));
     }
     let span = (size - overlay).min(limits.overlay_scan_bytes);
     let found = scan_for_signature(reader, overlay, span, budget, cancellation)?;

@@ -23,7 +23,7 @@ use thiserror::Error;
 
 use crate::catalog::{ImportLimits, WorkerEpoch};
 use crate::frame_channel::{FrameBuffer, FrameChannel};
-use crate::handshake::{HandshakeError, perform_parent_handshake};
+use crate::handshake::{HandshakeError, perform_parent_handshake_over_window};
 use crate::io::{CancellationToken, ExactIo, IoError, sealed};
 use crate::parent_session::{
     Cancelled, Closed, Idle, ParserSession, SessionError, TerminalSession,
@@ -431,9 +431,10 @@ impl<W: WorkerProcess> ProcessSession<W> {
         let channel = Arc::new(FrameChannel::new(self.session_id, self.worker.io()));
         self.channel = Some(Arc::clone(&channel));
 
-        let proof = match perform_parent_handshake(
+        let proof = match perform_parent_handshake_over_window(
             &channel,
             media,
+            ops.window_length(media.source()),
             config.source_read_limits,
             config.protocol_budgets,
             buffer,

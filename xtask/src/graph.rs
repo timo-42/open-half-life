@@ -23,6 +23,21 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
     ("ohl-parser-protocol", &["ohl-core"]),
     ("ohl-parser-worker-service", &["ohl-parser-protocol"]),
     ("ohl-parser-worker", &["ohl-parser-worker-service"]),
+    // The container back ends the worker image hosts: the dispatcher logic
+    // lives here, outside the freestanding image, so it can be unit-tested on
+    // the host through the real service (R4.7b).
+    (
+        "ohl-parser-backends",
+        &[
+            "ohl-core",
+            "ohl-parser-protocol",
+            "ohl-parser-worker-service",
+            "ohl-payload",
+            "ohl-wise",
+            "ohl-mscab",
+            "ohl-isz",
+        ],
+    ),
     // `ohl-media-archive` holds the block-source trait, the bounded listing
     // model, the path rules and the fixed classification vocabulary that both
     // media readers and `ohl-vfs` share. Keeping it separate is what lets the
@@ -74,6 +89,10 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
             "ohl-vfs",
             "ohl-parser-protocol",
             "ohl-platform",
+            // Recognition only: the parent confirms that a PE overlay begins
+            // a Wise stream chain before it hands the worker a window over
+            // it. Every decode happens in the confined worker.
+            "ohl-wise",
         ],
     ),
     ("ohl-formats", &["ohl-core"]),

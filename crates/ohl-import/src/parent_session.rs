@@ -774,7 +774,7 @@ pub fn create_parser_session_with_ops<T: ExactIo, O: SourceOps>(
     if !proof.matches_channel(&channel)
         || channel.is_terminal()
         || media.source().size() != media.size_bytes()
-        || policy.source_size() != media.size_bytes()
+        || policy.source_size() != ops.window_length(media.source())
         || policy.maximum_read_bytes() != limits.maximum_read_bytes()
     {
         channel.abort();

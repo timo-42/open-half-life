@@ -239,13 +239,9 @@ impl StagingPlan {
     }
 
     /// The published directory name for this plan.
+    #[must_use]
     pub fn published_name(&self) -> String {
-        let mut name = String::from(PUBLISHED_PREFIX);
-        for byte in self.identity.bytes() {
-            name.push(char::from(HEX[usize::from(byte >> 4)]));
-            name.push(char::from(HEX[usize::from(byte & 0x0f)]));
-        }
-        name
+        published_directory_name(&self.identity).unwrap_or_default()
     }
 
     /// The exact completion metadata document for this plan.
@@ -272,6 +268,37 @@ fn valid_component(component: &str) -> bool {
         && !component.contains('/')
         && !component.contains('\\')
         && !component.contains('\0')
+}
+
+/// The directory name a payload with `identity` is published under.
+///
+/// This is the one place the mapping lives, so a reader that only has an
+/// identity — a runtime looking for an already-published tree, say — resolves
+/// the same directory the staging protocol publishes.
+///
+/// Returns `None` for an identity that could never have been published: an
+/// empty or oversized one, or one holding a byte outside printable non-space
+/// ASCII.
+#[must_use]
+pub fn published_directory_name(identity: &str) -> Option<String> {
+    if identity.is_empty()
+        || identity.len() > MAXIMUM_IDENTITY_BYTES
+        || !identity.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+    {
+        return None;
+    }
+    let mut name = String::from(PUBLISHED_PREFIX);
+    for byte in identity.bytes() {
+        name.push(char::from(HEX[usize::from(byte >> 4)]));
+        name.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    Some(name)
+}
+
+/// The directory holding a published payload's planned tree.
+#[must_use]
+pub fn published_files_directory(root: &Path, identity: &str) -> Option<PathBuf> {
+    Some(root.join(published_directory_name(identity)?).join(FILES_DIRECTORY))
 }
 
 /// What a probe found at a plan's published name.
