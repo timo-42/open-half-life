@@ -16,6 +16,9 @@ toml = "1.1.5"
 # test image. `ohl-test-worker` is a development-only crate; nothing shipping
 # depends on it.
 ohl-test-worker = { path = "../crates/ohl-test-worker", version = "=0.1.0" }
+# ... and the shipping media-parser worker image, which it also installs at
+# the location `ohl-platform`'s launcher resolves.
+ohl-parser-worker = { path = "../crates/ohl-parser-worker", version = "=0.1.0" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

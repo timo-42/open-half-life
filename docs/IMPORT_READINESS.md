@@ -33,9 +33,12 @@ evidence.
   service can drive a synthetic worker-side OWP/1 session over injected
   transport and dispatcher callbacks. Linux x86-64 also links a private
   freestanding copy of that implementation into its contained installed worker.
-  The service remains disconnected from the application and import stack, and
-  neither form implies payload parsing, extraction, publication, or production
-  import.
+  The Rust port provides the same service as the `ohl-parser-worker-service`
+  crate over the `ohl-parser-protocol` crate, and `ohl-parser-worker` builds
+  and installs the freestanding `ohl-media-parser-worker` image that hosts one
+  lifetime with the compile-fixed unsupported dispatcher. The service remains
+  disconnected from the application and import stack, and no form implies
+  payload parsing, extraction, publication, or production import.
 - Production end-to-end qualification means a supported platform tuple can
   perform the complete import path from pinned source through contained parser,
   deterministic selection, trusted staging, no-replace publication, runtime
@@ -66,6 +69,10 @@ trusted project-supplied callback tables and caller-owned scratch buffers, but
 does not select a real payload parser. The Linux x86-64 installed worker now
 links a separate private freestanding runtime built from the same protocol and
 service implementation; the application and import stack remain disconnected.
+The Rust equivalents are the `ohl-parser-worker-service` crate and the
+`ohl-parser-worker` crate, whose `ohl-media-parser-worker` image is installed
+at `libexec/open-half-life/` beside the launching executable and answers every
+payload request with `unsupported`; production import stays unavailable.
 
 The trusted parent retains the pinned source capability and sole authority over
 result acceptance, component selection, destinations, staging, and

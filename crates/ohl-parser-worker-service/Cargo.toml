@@ -1,0 +1,17 @@
+[package]
+name = "ohl-parser-worker-service"
+description = "Worker-side OWP/1 service lifetime: handshake, dispatch stepping, budgets, cancellation, and fail-closed teardown"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ohl_parser_worker_service"
+
+[dependencies]
+ohl-parser-protocol = { path = "../ohl-parser-protocol", version = "=0.1.0" }
+
+[lints]
+workspace = true

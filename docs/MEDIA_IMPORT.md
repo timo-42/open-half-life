@@ -258,6 +258,17 @@ and from callback table, context, and operation storage. The service mediates
 enumeration, streaming, bounded requests for parent-owned source bytes,
 cancellation, and shutdown without choosing a payload format or parser.
 
+The Rust port carries the same contract in three crates. `ohl-parser-protocol`
+holds the OWP/1 framing, schemas and session validator; `ohl-parser-worker-service`
+holds the worker-side lifetime, with the C++ callback tables expressed as the
+`Transport` and `Dispatcher` traits and the buffer-overlap and view-lifetime
+rules enforced by the borrow checker instead of by pointer comparison; and
+`ohl-parser-worker` builds and installs the freestanding
+`ohl-media-parser-worker` image that hosts one lifetime with the compile-fixed
+unsupported dispatcher. All three are `no_std` and allocation-free, and the
+first two forbid `unsafe`. Production import remains unavailable: the shipped
+image refuses every enumeration and stream request.
+
 Authority remains asymmetric. The trusted parent owns the pinned source,
 validates every worker frame independently, establishes catalog membership,
 selects components, and alone may stage or publish. The worker is untrusted at
