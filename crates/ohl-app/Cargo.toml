@@ -17,16 +17,10 @@ default = []
 # adds `--dev-bsp`, which loads a map straight off disk and bypasses the
 # media pipeline entirely; see `docs/MILESTONES.md`. It must stay off by
 # default so no shipped binary can be pointed at arbitrary files this way.
-dev-tools = [
-    "dep:ohl-render",
-    "dep:ohl-world",
-    "dep:ohl-formats",
-    "dep:ohl-physics",
-    "dep:ohl-game",
-    "dep:glam",
-    "dep:ohl-assets",
-    "dep:winit",
-]
+# The production playable loop needs the renderer, world, engine and UI
+# crates unconditionally, so `dev-tools` now only gates the extra viewers'
+# own code paths, not their dependencies.
+dev-tools = []
 
 [dependencies]
 ohl-core = { path = "../ohl-core", version = "=0.1.0", features = ["std"] }
@@ -42,20 +36,24 @@ directories = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
-ohl-render = { path = "../ohl-render", version = "=0.1.0", optional = true }
-ohl-world = { path = "../ohl-world", version = "=0.1.0", optional = true }
+ohl-render = { path = "../ohl-render", version = "=0.1.0" }
+ohl-world = { path = "../ohl-world", version = "=0.1.0" }
 ohl-formats = { path = "../ohl-formats", version = "=0.1.0", features = [
     "std",
-], optional = true }
-ohl-physics = { path = "../ohl-physics", version = "=0.1.0", optional = true }
-ohl-game = { path = "../ohl-game", version = "=0.1.0", optional = true }
+] }
+ohl-physics = { path = "../ohl-physics", version = "=0.1.0" }
+ohl-game = { path = "../ohl-game", version = "=0.1.0" }
+ohl-engine = { path = "../ohl-engine", version = "=0.1.0" }
+ohl-ui = { path = "../ohl-ui", version = "=0.1.0" }
+ohl-campaign = { path = "../ohl-campaign", version = "=0.1.0" }
+# Only the PNG encoder: the headless capture writes one, and no other codec
+# is compiled in.
+image = { version = "=0.25.10", default-features = false, features = ["png"] }
 # Pinned exact to match `ohl-game`'s and `ohl-physics`'s own pins; used to
 # build the `Vec3` `find_usable_within` expects from the camera/player
 # position.
-glam = { version = "=0.33.6", default-features = false, features = [
-    "std",
-], optional = true }
-ohl-assets = { path = "../ohl-assets", version = "=0.1.0", optional = true }
+glam = { version = "=0.33.6", default-features = false, features = ["std"] }
+ohl-assets = { path = "../ohl-assets", version = "=0.1.0" }
 # `default-features = false` deliberately drops `wayland-csd-adwaita`, whose
 # sctk-adwaita -> ab_glyph -> ttf-parser chain carries an unmaintained-crate
 # advisory (RUSTSEC-2026-0192). Client-side decorations on Wayland fall back
@@ -65,9 +63,12 @@ winit = { version = "=0.30.13", default-features = false, features = [
     "x11",
     "wayland",
     "wayland-dlopen",
-], optional = true }
+] }
 
 [dev-dependencies]
+ohl-engine = { path = "../ohl-engine", version = "=0.1.0", features = [
+    "test-support",
+] }
 ohl-iso9660 = { path = "../ohl-iso9660", version = "=0.1.0", features = [
     "test-support",
 ] }

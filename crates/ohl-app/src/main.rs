@@ -33,6 +33,7 @@ use ohl_vfs::{DirectoryLimits, MediaSourceBlockReader, Mount};
 mod dev_bsp;
 #[cfg(feature = "dev-tools")]
 mod dev_mdl;
+mod game_run;
 
 /// The integration tests' synthetic fixtures, shared rather than duplicated:
 /// a binary crate's unit tests cannot `use` its own `tests/` modules, so they
@@ -110,6 +111,38 @@ struct Cli {
     /// `docs/MEDIA_IMPORT.md`.
     #[arg(long)]
     recipe: Option<PathBuf>,
+
+    /// The map to load, by its bare name. Without one the campaign's
+    /// documented start map is used (or the hazard-course start map with
+    /// `--training`).
+    #[arg(long, value_name = "NAME")]
+    map: Option<String>,
+
+    /// Start on the hazard course rather than the campaign's start map.
+    #[arg(long, conflicts_with = "map")]
+    training: bool,
+
+    /// Render offscreen and write a PNG here instead of opening a window.
+    #[arg(long, value_name = "PATH")]
+    headless_screenshot: Option<PathBuf>,
+
+    /// How many frames a headless capture advances before it is written.
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = 1,
+        requires = "headless_screenshot"
+    )]
+    frames: u32,
+
+    /// Stand at `x,y,z,pitch,yaw` for a headless capture instead of at the
+    /// map's player start.
+    #[arg(long, value_name = "X,Y,Z,PITCH,YAW", requires = "headless_screenshot")]
+    viewpoint: Option<game_run::Viewpoint>,
+
+    /// Open the playable window over an already-imported payload.
+    #[arg(long)]
+    play: bool,
 
     /// Path to a Half-Life installation ISO (positional form).
     #[arg(value_name = "PATH")]
@@ -358,7 +391,129 @@ fn run(cli: Cli) -> ExitCode {
         return code;
     }
 
+    if cli.play || cli.training || cli.map.is_some() || cli.headless_screenshot.is_some() {
+        return run_game_flow(&cli);
+    }
+
     run_media_flow(cli)
+}
+
+/// Resolves the payload store root the game reads from, and the map to
+/// start on.
+///
+/// Neither is logged: the payload root is a user-supplied path and the map
+/// name, though it comes from `ohl-campaign`'s own sourced table, names
+/// game content.
+fn run_game_flow(cli: &Cli) -> ExitCode {
+    let Ok(root) = payload_root(cli.payload_root.clone()) else {
+        tracing::error!("Payload location failed: no per-user data directory is available");
+        return ExitCode::from(EXIT_FAILURE);
+    };
+
+    let files = match locate_payload_files(cli, &root) {
+        Ok(files) => files,
+        Err(code) => return code,
+    };
+
+    let map = cli.map.clone().unwrap_or_else(|| {
+        if cli.training {
+            ohl_campaign::TRAINMAP.to_string()
+        } else {
+            ohl_campaign::STARTMAP.to_string()
+        }
+    });
+
+    match game_run::run(&game_run::GameArgs {
+        payload_files: &files,
+        map: &map,
+        screenshot: cli.headless_screenshot.as_deref(),
+        frames: cli.frames,
+        viewpoint: cli.viewpoint,
+    }) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(message) => {
+            tracing::error!("{message}");
+            ExitCode::from(EXIT_FAILURE)
+        }
+    }
+}
+
+/// Finds the published payload's `files/` directory: through the medium's
+/// own provenance entry when an ISO was given (importing first if it has
+/// not been imported yet), and otherwise by resolving the single published
+/// tree under the payload root.
+fn locate_payload_files(cli: &Cli, root: &Path) -> Result<PathBuf, ExitCode> {
+    if let Some(iso_path) = cli.iso.clone().or_else(|| cli.path.clone()) {
+        let Some((validated, mount)) = preflight(iso_path) else {
+            return Err(ExitCode::from(EXIT_FAILURE));
+        };
+        let layout = cache_layout(cli.cache.clone())?;
+        if let Some(tree) = ohl_import::find_published_payload(&layout, &validated, root) {
+            return Ok(tree.files_directory().to_path_buf());
+        }
+        match ohl_media::prepare_import_cache(&validated, &layout) {
+            Ok(report) => report.log(),
+            Err(error) => {
+                tracing::error!("Media cache preparation failed: {error}");
+                return Err(ExitCode::from(EXIT_FAILURE));
+            }
+        }
+        let code = import_payload(
+            &validated,
+            &mount,
+            &layout,
+            cli.recipe.as_deref(),
+            Some(root.to_path_buf()),
+        );
+        if code != ExitCode::SUCCESS {
+            return Err(code);
+        }
+        return ohl_import::find_published_payload(&layout, &validated, root)
+            .map(|tree| tree.files_directory().to_path_buf())
+            .ok_or_else(|| {
+                tracing::error!("No payload is published for this medium.");
+                ExitCode::from(EXIT_FAILURE)
+            });
+    }
+
+    if let Some(files) = sole_published_tree(root) {
+        return Ok(files);
+    }
+    tracing::error!("No imported payload was found. Import one first by passing --iso PATH.");
+    Err(ExitCode::from(EXIT_FAILURE))
+}
+
+/// The one published tree under `root`, when there is exactly one.
+///
+/// A published payload is a directory holding a `files` directory (see
+/// `ohl_payload::published_files_directory`); with no medium to identify
+/// which one this run belongs to, an unambiguous single tree is the only
+/// safe answer.
+fn sole_published_tree(root: &Path) -> Option<PathBuf> {
+    let mut found = None;
+    for entry in std::fs::read_dir(root).ok()? {
+        let files = entry.ok()?.path().join("files");
+        if !std::fs::symlink_metadata(&files).is_ok_and(|meta| meta.is_dir()) {
+            continue;
+        }
+        if found.is_some() {
+            return None;
+        }
+        found = Some(files);
+    }
+    found
+}
+
+/// The metadata-only provenance cache layout, defaulting per user.
+fn cache_layout(cache_root: Option<PathBuf>) -> Result<CacheLayout, ExitCode> {
+    let layout = match cache_root {
+        Some(root) => CacheLayout::with_root(root),
+        None => CacheLayout::user_default(),
+    };
+    layout.map_err(|error| {
+        tracing::error!("Media cache preparation failed: {error}");
+        ExitCode::from(EXIT_FAILURE)
+    })
 }
 
 /// The development-only viewers, which bypass the media pipeline entirely.
@@ -420,16 +575,9 @@ fn run_import_flow(
     recipe_path: Option<&Path>,
     payload_root: Option<PathBuf>,
 ) -> ExitCode {
-    let layout = match cache_root {
-        Some(root) => CacheLayout::with_root(root),
-        None => CacheLayout::user_default(),
-    };
-    let layout = match layout {
+    let layout = match cache_layout(cache_root) {
         Ok(layout) => layout,
-        Err(error) => {
-            tracing::error!("Media cache preparation failed: {error}");
-            return ExitCode::from(EXIT_FAILURE);
-        }
+        Err(code) => return code,
     };
 
     match ohl_media::prepare_import_cache(validated, &layout) {

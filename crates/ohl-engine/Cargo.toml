@@ -1,0 +1,37 @@
+[package]
+name = "ohl-engine"
+description = "Game state: world, entities, map logic, physics and rendering composed into one tickable loop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ohl_engine"
+
+[features]
+default = []
+# Publishes the synthetic map fixture used by this crate's own tests so
+# `ohl-app`'s CLI test can build the same payload tree without inventing a
+# second fixture.
+test-support = ["ohl-formats/test-support", "ohl-world/test-support"]
+
+[dependencies]
+ohl-core = { path = "../ohl-core", version = "=0.1.0", features = ["std"] }
+ohl-formats = { path = "../ohl-formats", version = "=0.1.0", features = ["std"] }
+ohl-world = { path = "../ohl-world", version = "=0.1.0" }
+ohl-render = { path = "../ohl-render", version = "=0.1.0" }
+ohl-physics = { path = "../ohl-physics", version = "=0.1.0" }
+ohl-game = { path = "../ohl-game", version = "=0.1.0" }
+ohl-assets = { path = "../ohl-assets", version = "=0.1.0" }
+# Pinned exact to match `ohl-game`'s and `ohl-physics`'s own pins: the
+# vector type crosses all three boundaries.
+glam = { version = "=0.33.6", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+ohl-engine = { path = ".", features = ["test-support"] }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

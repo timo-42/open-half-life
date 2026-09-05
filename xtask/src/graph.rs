@@ -131,6 +131,25 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
         &["ohl-core", "ohl-physics", "ohl-world", "ohl-game"],
     ),
     ("ohl-ui", &["ohl-core"]),
+    // The game state: the one crate allowed to compose world, entities, map
+    // logic, physics and rendering into a tickable loop, so `ohl-app` stays
+    // a thin composition root. It sits directly below `ohl-app` and nothing
+    // else may depend on it.
+    (
+        "ohl-engine",
+        &[
+            "ohl-core",
+            "ohl-world",
+            "ohl-render",
+            "ohl-physics",
+            "ohl-game",
+            "ohl-assets",
+            "ohl-formats",
+            "ohl-campaign",
+            "ohl-audio",
+            "ohl-ui",
+        ],
+    ),
     (COMPOSITION_ROOT, &[]),
 ];
 

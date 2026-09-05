@@ -1,0 +1,185 @@
+//! Project-authored synthetic fixtures, published so `ohl-app`'s CLI test
+//! can build the same payload tree this crate's own tests use.
+//!
+//! No bytes here come from any game installation; see `docs/CLEAN_ROOM.md`.
+
+use ohl_formats::test_support::{Bsp30Builder, CollisionBrush, collision_room_brushes};
+
+/// One quad in the fixture: its four corners in winding order, and the
+/// texture slot it draws with.
+type Quad = ([[f32; 3]; 4], u32);
+
+/// The map name the synthetic fixture is published under.
+pub const SYNTHETIC_MAP: &str = "ohlsynth";
+
+/// The `targetname` both the door and the button in the fixture use.
+pub const DOOR_NAME: &str = "ohl_door";
+
+/// The landmark the fixture's `trigger_changelevel` names.
+pub const LANDMARK: &str = "ohl_landmark";
+
+/// The destination map the fixture's `trigger_changelevel` names.
+pub const NEXT_MAP: &str = "ohlsynth2";
+
+/// The entity block: a lit room with a player start, one brush door on
+/// submodel 1, a landmark, and a `trigger_changelevel` the door's `use`
+/// chain never reaches (tests fire it directly).
+fn entities_text(next_map: &str) -> String {
+    format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"0 0 32\"\n\"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"func_door\"\n\"targetname\" \"{DOOR_NAME}\"\n\
+         \"model\" \"*1\"\n\"speed\" \"100\"\n\"wait\" \"4\"\n\"angle\" \"90\"\n\
+         \"origin\" \"0 0 0\"\n}}\n\
+         {{\n\"classname\" \"info_landmark\"\n\"targetname\" \"{LANDMARK}\"\n\
+         \"origin\" \"16 0 0\"\n}}\n\
+         {{\n\"classname\" \"func_button\"\n\"target\" \"ohl_exit\"\n\
+         \"origin\" \"0 100 32\"\n\"speed\" \"50\"\n\"wait\" \"1\"\n\"delay\" \"0\"\n}}\n\
+         {{\n\"classname\" \"trigger_changelevel\"\n\"targetname\" \"ohl_exit\"\n\
+         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n}}\n"
+    )
+}
+
+/// Builds the synthetic map: a closed, lit box with a second brush submodel
+/// for the door, collision hulls, and the entity block above.
+#[must_use]
+#[allow(clippy::too_many_lines)]
+pub fn synthetic_map_bsp() -> Vec<u8> {
+    synthetic_map_bsp_named(NEXT_MAP)
+}
+
+/// The same fixture with a caller-chosen `trigger_changelevel` destination,
+/// so a test can build the *destination* map too.
+#[must_use]
+#[allow(clippy::too_many_lines)]
+pub fn synthetic_map_bsp_named(next_map: &str) -> Vec<u8> {
+    const HALF: f32 = 192.0;
+    const HEIGHT: f32 = 192.0;
+
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(&entities_text(next_map));
+
+    b.push_plane([0.0, 0.0, 1.0], 0.0, 2);
+    b.push_plane([1.0, 0.0, 0.0], 0.0, 0);
+    let split_plane = 1u32;
+    b.push_edge(0, 0);
+
+    b.add_embedded_texture("ohlfloor", 64, 64, 210);
+    b.add_embedded_texture("ohldoor", 64, 64, 130);
+
+    // Two quads: the room's floor (submodel 0) and the door leaf
+    // (submodel 1), each with its own texture and fully-lit samples.
+    let quads: [Quad; 2] = [
+        (
+            [
+                [-HALF, -HALF, 0.0],
+                [HALF, -HALF, 0.0],
+                [HALF, HALF, 0.0],
+                [-HALF, HALF, 0.0],
+            ],
+            0,
+        ),
+        (
+            [
+                [-64.0, -8.0, 0.0],
+                [64.0, -8.0, 0.0],
+                [64.0, -8.0, 96.0],
+                [-64.0, -8.0, 96.0],
+            ],
+            1,
+        ),
+    ];
+    for (index, (corners, texture)) in quads.into_iter().enumerate() {
+        let base = u16::try_from(index * 4).expect("two quads fit u16");
+        for corner in corners {
+            b.push_vertex(corner);
+        }
+        for corner in 0..4u16 {
+            let next = (corner + 1) % 4;
+            b.push_edge(base + corner, base + next);
+        }
+        let first_edge = i32::try_from(index * 4 + 1).expect("fits");
+        for step in 0..4 {
+            b.push_surfedge(first_edge + step);
+        }
+        b.push_texinfo([1.0, 0.0, 0.0], 0.0, [0.0, 1.0, 0.0], 0.0, texture, 0);
+        let offset = i32::try_from(b.lighting.len()).expect("fits");
+        for sample in 0..900 {
+            let level = 96 + u8::try_from((sample * 7) % 128).unwrap_or(0);
+            b.push_lighting_rgb(level, level, level);
+        }
+        b.push_face(
+            0,
+            0,
+            u32::try_from(index * 4).expect("fits"),
+            4,
+            u16::try_from(index).expect("fits"),
+            [0, 0xFF, 0xFF, 0xFF],
+            offset,
+        );
+        b.push_marksurface(u16::try_from(index).expect("fits"));
+    }
+
+    b.visibility.push(0b0000_0011);
+    b.visibility.push(0b0000_0011);
+
+    let extent: i16 = 192;
+    let height: i16 = 192;
+    b.push_leaf(-2, -1, [0, 0, 0], [0, 0, 0], 0, 0, [0, 0, 0, 0]);
+    b.push_leaf(
+        -1,
+        0,
+        [-extent, -extent, 0],
+        [extent, extent, height],
+        0,
+        1,
+        [0, 0, 0, 0],
+    );
+    b.push_leaf(
+        -1,
+        0,
+        [-extent, -extent, 0],
+        [extent, extent, height],
+        1,
+        1,
+        [0, 0, 0, 0],
+    );
+    b.push_node(
+        split_plane,
+        -2,
+        -3,
+        [-extent, -extent, 0],
+        [extent, extent, height],
+        0,
+        2,
+    );
+
+    // Real clip hulls, so the walking player has a floor to stand on.
+    let brushes: Vec<CollisionBrush> = collision_room_brushes();
+    let head_nodes = b.push_collision_hulls(&brushes);
+
+    // Submodel 0: worldspawn (the floor face). Submodel 1: the door leaf.
+    b.push_model(
+        [-HALF, -HALF, 0.0],
+        [HALF, HALF, HEIGHT],
+        [0.0, 0.0, 0.0],
+        head_nodes,
+        2,
+        0,
+        1,
+    );
+    // A door leaf with real depth along its move direction (+Y), so the
+    // registry derives a non-zero travel distance and the door takes time
+    // to open.
+    b.push_model(
+        [-64.0, -8.0, 0.0],
+        [64.0, 56.0, 96.0],
+        [0.0, 0.0, 0.0],
+        [-1, -1, -1, -1],
+        1,
+        1,
+        1,
+    );
+
+    b.build()
+}

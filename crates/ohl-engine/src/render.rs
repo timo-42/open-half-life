@@ -1,0 +1,254 @@
+//! Drawing one frame of a [`crate::Game`].
+//!
+//! The pass order mirrors what each `ohl-render` entry point expects:
+//! opaque world (which clears colour and depth), studio models over the
+//! world's depth buffer, the skybox behind everything that has already been
+//! written, then the translucent passes — brush-entity submodels and
+//! liquids — which read depth without clearing it.
+
+use glam::Vec3;
+use ohl_game::registry::{Door, MoverState};
+use ohl_render::{
+    FreeFlyCamera, GpuContext, LightStyles, ModelInstance, RenderMode, RenderProps, SkyRenderer,
+    StudioRenderer, SubmodelInstance, WorldRenderer, placement, wgpu,
+};
+use ohl_world::StudioPose;
+
+use crate::error::{EngineError, Result};
+use crate::level::Level;
+
+/// The colour target one [`crate::Game::render`] call draws into.
+#[derive(Clone, Copy)]
+pub struct RenderTarget<'a> {
+    /// The view to draw into.
+    pub view: &'a wgpu::TextureView,
+    /// Its width in physical pixels.
+    pub width: u32,
+    /// Its height in physical pixels.
+    pub height: u32,
+    /// Its colour format, which the pipelines are built for.
+    pub format: wgpu::TextureFormat,
+}
+
+/// The ambient level used when a model's origin samples no lighting.
+const FALLBACK_AMBIENT: [f32; 3] = [0.35, 0.35, 0.35];
+
+/// The directional key light's colour.
+const KEY_LIGHT: [f32; 3] = [0.75, 0.75, 0.75];
+
+/// The GPU-side resources for one loaded level.
+pub(crate) struct Renderers {
+    world: WorldRenderer,
+    sky: Option<SkyRenderer>,
+    studio: Vec<StudioRenderer>,
+}
+
+impl Renderers {
+    pub(crate) fn new(
+        context: &GpuContext,
+        level: &Level,
+        format: wgpu::TextureFormat,
+    ) -> Result<Self> {
+        let world =
+            WorldRenderer::new(context, &level.world, format).map_err(|_| EngineError::Renderer)?;
+        // A skybox that will not upload is not worth failing the level for:
+        // the world still draws, just against the clear colour.
+        let sky = level
+            .skybox
+            .as_ref()
+            .and_then(|skybox| SkyRenderer::new(context, skybox, format).ok());
+        let mut studio = Vec::with_capacity(level.studio_models.len());
+        for model in &level.studio_models {
+            let Ok(renderer) = StudioRenderer::new(context, model, format) else {
+                // Keep the slots aligned with `Level::studio_models` by
+                // stopping here: a model this device cannot upload means the
+                // remaining ones are not addressable by index any more.
+                break;
+            };
+            studio.push(renderer);
+        }
+        Ok(Self { world, sky, studio })
+    }
+
+    pub(crate) fn draw(
+        &mut self,
+        context: &GpuContext,
+        level: &Level,
+        camera: &FreeFlyCamera,
+        light_styles: &LightStyles,
+        elapsed: f32,
+        target: RenderTarget<'_>,
+    ) {
+        let (width, height) = (target.width.max(1), target.height.max(1));
+
+        // Light styles animate at a fixed 10 Hz; re-blending the atlas each
+        // frame keeps the two in step without extra bookkeeping.
+        self.world
+            .update_light_styles(context, &level.world, light_styles, elapsed);
+        self.world
+            .render(context, &level.world, camera, target.view, width, height);
+
+        let depth = self.world.depth_view().cloned();
+        self.draw_props(context, level, camera, elapsed, depth.as_ref(), target);
+
+        if let (Some(sky), Some(depth)) = (self.sky.as_ref(), depth.as_ref()) {
+            sky.render(context, camera, target.view, depth, width, height);
+        }
+
+        self.draw_brush_entities(context, level, camera, target);
+
+        self.world
+            .render_liquid(context, camera, target.view, width, height, elapsed, 1.0);
+    }
+
+    /// Draws every placed studio model at its sampled pose.
+    fn draw_props(
+        &mut self,
+        context: &GpuContext,
+        level: &Level,
+        camera: &FreeFlyCamera,
+        elapsed: f32,
+        depth: Option<&wgpu::TextureView>,
+        target: RenderTarget<'_>,
+    ) {
+        for (slot, renderer) in self.studio.iter_mut().enumerate() {
+            let Some(model) = level.studio_models.get(slot) else {
+                continue;
+            };
+            let mut poses = Vec::new();
+            let mut placements = Vec::new();
+            for prop in level.props.iter().filter(|prop| prop.model == slot) {
+                let Ok(pose) = StudioPose::sample(model, 0, elapsed) else {
+                    continue;
+                };
+                poses.push(pose);
+                placements.push(*prop);
+            }
+            if poses.is_empty() {
+                continue;
+            }
+            let instances: Vec<ModelInstance<'_>> = poses
+                .iter()
+                .zip(&placements)
+                .map(|(pose, prop)| ModelInstance {
+                    transform: placement(prop.origin, prop.yaw),
+                    pose,
+                    body: &[],
+                    skin: 0,
+                    ambient: ambient_at(level, prop.origin),
+                    light_direction: ModelInstance::default_light_direction(),
+                    light_color: KEY_LIGHT,
+                })
+                .collect();
+            renderer.render(
+                context,
+                model,
+                camera,
+                &instances,
+                target.view,
+                target.width.max(1),
+                target.height.max(1),
+                depth,
+            );
+        }
+    }
+
+    /// Draws every brush entity's submodel with its own render mode, offset
+    /// by whatever the map-logic simulation has moved it to.
+    fn draw_brush_entities(
+        &mut self,
+        context: &GpuContext,
+        level: &Level,
+        camera: &FreeFlyCamera,
+        target: RenderTarget<'_>,
+    ) {
+        for instance in ohl_game::brush::model_instances(&level.registry) {
+            let Some(model) = level.submodels.get(&instance.model_index) else {
+                continue;
+            };
+            let offset = door_offset(level, &instance);
+            let origin = instance.origin + offset;
+            self.world.draw_world_submodel(
+                context,
+                SubmodelInstance {
+                    model,
+                    transform: placement(origin.to_array(), instance.angles.y),
+                },
+                render_props(instance.render),
+                camera,
+                target.view,
+                target.width.max(1),
+                target.height.max(1),
+            );
+        }
+    }
+}
+
+/// The lighting a model standing at `origin` picks up, falling back to a
+/// dim ambient where the map samples nothing.
+fn ambient_at(level: &Level, origin: [f32; 3]) -> [f32; 3] {
+    let sampled = level.world.ambient_at(origin);
+    if sampled.iter().all(|channel| *channel <= f32::EPSILON) {
+        FALLBACK_AMBIENT
+    } else {
+        sampled
+    }
+}
+
+/// How far a door has slid along its move direction, from the state machine
+/// `ohl-game` advances.
+///
+/// `ohl-game` models a door as a timed state machine rather than a moving
+/// transform, so the visual offset is derived here: the timer counts the
+/// remaining travel, which maps onto a `0..=1` fraction of the door's own
+/// `travel_distance`.
+fn door_offset(level: &Level, instance: &ohl_game::ModelInstance) -> Vec3 {
+    let Ok(door) = level.registry.world.get::<&Door>(instance.entity) else {
+        return Vec3::ZERO;
+    };
+    let travel_seconds = if door.speed > 0.0 {
+        door.travel_distance / door.speed
+    } else {
+        0.0
+    };
+    if travel_seconds <= 0.0 {
+        // An instantly-travelling door has no intermediate position to
+        // show; it is either where it started or fully open.
+        let fraction = f32::from(u8::from(door.state == MoverState::Open));
+        return door.movedir * door.travel_distance * fraction;
+    }
+    let progress = (door.timer / travel_seconds).clamp(0.0, 1.0);
+    let fraction = match door.state {
+        MoverState::Closed => 0.0,
+        MoverState::Open => 1.0,
+        MoverState::Opening => 1.0 - progress,
+        MoverState::Closing => progress,
+    };
+    door.movedir * door.travel_distance * fraction
+}
+
+/// Maps `ohl-game`'s raw `rendermode`/`renderamt`/`rendercolor` keyvalues
+/// onto the renderer's typed render properties.
+fn render_props(props: ohl_game::keyvalues::RenderProps) -> RenderProps {
+    let mode = match props.mode {
+        1 => RenderMode::Color,
+        2 => RenderMode::Texture,
+        3 => RenderMode::Glow,
+        4 => RenderMode::Solid,
+        5 => RenderMode::Additive,
+        _ => RenderMode::Normal,
+    };
+    // `renderamt` defaults to 0 when the key is absent, which for an opaque
+    // entity means "fully opaque", not "invisible".
+    let amount = if props.mode == 0 {
+        255
+    } else {
+        u8::try_from(props.amt.clamp(0, 255)).unwrap_or(255)
+    };
+    RenderProps {
+        mode,
+        amount,
+        color: props.color,
+        fx: 0,
+    }
+}
