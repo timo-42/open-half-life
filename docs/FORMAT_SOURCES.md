@@ -520,3 +520,116 @@ a coincidental byte pattern inside compressed data rather than an archive header
 The image therefore packages its payload some other way, and no aggregate over a
 real archive could be produced. The decoder's correctness rests entirely on the
 synthetic round-trip, malformed-rejection, property and fuzz tests.
+
+## Collision hulls and player movement
+
+The `crates/ohl-physics` crate (clip-hull tracing and the player movement
+step) was implemented from the public documentation below. Nothing in it is
+derived from the Valve SDK (`pm_shared.c` and friends), from GoldSrc or Quake
+engine source, or from another engine port; see `docs/CLEAN_ROOM.md`.
+
+Two kinds of value are recorded separately here, and the distinction is kept
+in the code as well: **structure** (how a hull tree is stored and traversed),
+which is documented well enough to implement directly, and **behavioural
+constants** (speeds, accelerations, epsilons), which are *community-reported
+defaults* rather than measurements made by this project. Every behavioural
+constant lives in `MoveConfig`, and each one still has to be verified against
+the real game before this project may claim movement parity.
+
+### Structure
+
+- "Unofficial Quake Specs", Quake Documentation version 3.4, Section 4 (full
+  citation in "GoldSrc BSP v30 and WAD3" above; re-reviewed 2026-09-05 at
+  <https://www.gamers.org/dEngine/quake/spec/quake-spec34/qkspec_4.htm>):
+  documents `clipnode_t` as a plane number plus two `short` children where a
+  positive child is another clip node and a negative child is a contents
+  value ("-2 = inside, -1 = outside"); that a model stores several head-node
+  ids, one for the rendering BSP tree and the others for clip-node trees used
+  for collision detection ("The clip nodes are much simpler than the BSP
+  nodes, so it makes collision detection faster"); and the `dleaf_t` type
+  values `-1` normal, `-2` solid, `-3` water, `-4` slime, `-5` lava, `-6`
+  sky. This project's `hull` module uses exactly this: one plane index and
+  two signed children per hull node, negative children read as contents.
+- Valve Developer Community, "BSP (GoldSrc)" (citation and review date in the
+  BSP section above; the site answered automated requests with HTTP 403 on
+  2026-09-05, so this entry relies on the review already recorded in this
+  file): `BSPCLIPNODE` is `int32 iPlane` plus two `int16` children, and
+  `BSPMODEL` carries four head nodes (`nHeadnodes[MAX_MAP_HULLS]`), one per
+  hull. That is why `CollisionModel` keeps four head links and why hull 0 is
+  the BSP node tree rather than a clip-node tree.
+- TWHL wiki, "HULLs" (<https://twhl.info/wiki/page/HULLs>) and "Tutorial:
+  Total Map Optimisation Part 3"
+  (<https://twhl.info/wiki/page/Tutorial:_Total_Map_Optimisation_Part_3_(wpoly,_clipnodes,_engine_limits,_compile_parameters)>),
+  reviewed 2026-09-05 through search result summaries because the site also
+  answered automated requests with HTTP 403: "There is one [hull] for a
+  standing player (72x32x32), one for a crouching player (36x32x32) and one
+  for large monsters (64x64x64)", "hull 1 accounts for normal standing
+  players, and hull 3 accounts for the crouched size of players", and "each
+  plane can have three clipnodes for each of the three hulls that the player
+  and monsters use ... a simple six sided cube will end up with 18
+  clipnodes". This is the source of `HULL_SIZES` and of the fact that the
+  compiler pre-expands each hull's planes, so a box sweep is a *point* trace
+  through the matching hull.
+- Half-Life Physics Reference, Chong Jiang Wei, chapter 5 "Ducking and
+  jumping" (<https://www.jwchong.com/hl/duckjump.html>, reviewed 2026-09-05):
+  "the difference in vertical player position (measured at the centre point
+  of the hull in use) using the ducked and standing hulls when resting on the
+  same ground level is exactly 18 units", and unducking on the ground places
+  the player "18 units above the ground". This project's duck/unduck step
+  moves the origin by that same 18 units, which is also what the hull table
+  above implies (36 - 18).
+
+### Behavioural constants
+
+- Half-Life Physics Reference, Chong Jiang Wei, chapter 4 "Player movement
+  basics" (<https://www.jwchong.com/hl/movement.html>, reviewed 2026-09-05):
+  documents friction as a scale factor built from `sv_friction` times an
+  entity friction times an *edgefriction* of 2 "when the player nears high
+  edges", with the low-speed arithmetic form using `sv_stopspeed` ("typically
+  100"); ground acceleration limited by `sv_accelerate * tau * M` where `M`
+  is `min(sv_maxspeed, |wish|)`; air acceleration using the same equation but
+  with the wished-for speed replaced by `min(30, M)`, which is the 30
+  units/second air speed cap; gravity as `sv_gravity` applied "as
+  half-gravity before and after position update via leapfrog integration for
+  frame-rate independence"; and a jump velocity of `sqrt(2 * gravity * 45)`
+  from the 45-unit jump height. This project's `accelerate`,
+  `air_accelerate`, `apply_friction` and gravity handling follow those
+  equations, and `MoveConfig::jump_velocity` is the same square root
+  (268.32816 at `sv_gravity 800`).
+- Default cvar values (`sv_gravity 800`, `sv_friction 4`, `sv_stopspeed 100`,
+  `sv_accelerate 10`, `sv_airaccelerate 10`, `sv_maxspeed 320`,
+  `sv_stepsize 18`, `sv_maxvelocity 2000`): these are the values the Half-Life
+  community consistently reports as the game's defaults (for example the
+  console-command references at <https://www.gamerconfig.eu/commands/half-life/>
+  and the movement reference above, reviewed 2026-09-05). They are recorded
+  here as **community-documented defaults, not values this project measured**;
+  they are the initial `MoveConfig` and must be verified against the real game.
+- Eye height: TWHL wiki, "VERC: Half-Life Dimensions"
+  (<https://twhl.info/wiki/page/VERC:_Half-Life_Dimensions>, reviewed
+  2026-09-05 through a search-result summary, site 403 as above): "a point
+  will appear to be at eye level if it is 64 units above the floor". With the
+  standing hull's origin 36 units above the floor that gives the 28-unit
+  standing view offset used here. The 12-unit ducked view offset (eye 30
+  units above the floor while the ducked origin is 18) is a
+  **black-box-observable default carried over by analogy**, not a value taken
+  from any document reviewed here, and must be verified later.
+- The `0.03125` (1/32 unit) trace epsilon and the "back up along the segment
+  until the point is no longer solid" fixup are the long-standing,
+  community-documented behaviour of BSP hull traces (`DIST_EPSILON`), used
+  here so a trace never ends exactly on a plane. The value is recorded as a
+  community-reported constant and is exposed as `hull::DIST_EPSILON`.
+- The walkable-slope limit of `0.7` on a surface normal's `z` component, the
+  4-bump / 5-plane slide move and the overbounce factor of `1.0` are likewise
+  community-documented behaviour of this family of movement code, kept in
+  `MoveConfig` (`slope_limit`, `max_bumps`, `max_clip_planes`, `overbounce`)
+  so they can be corrected once verified.
+- The GoldSrc contents additions beyond the six Quake values (`-7` origin,
+  `-8` clip, `-9`..`-14` current, `-15` translucent, `-16` ladder) are
+  community-documented; this crate accepts them, treats `CONTENTS_CLIP` as
+  blocking for players and every other non-solid value as passable, and
+  rejects any contents value outside `-16..=-1` as malformed input.
+
+Every collision fixture used by the tests is synthesized in-process by this
+project's own writers in `crates/ohl-formats/src/test_support.rs` (a box room
+with a step, a ledge, two ramps, a water pool and single-plane slopes); no
+bytes from any game installation are used or committed.

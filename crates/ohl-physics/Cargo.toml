@@ -1,0 +1,31 @@
+[package]
+name = "ohl-physics"
+description = "Clean-room GoldSrc-style clip-hull tracing and player movement"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ohl_physics"
+
+[dependencies]
+ohl-core = { path = "../ohl-core", version = "=0.1.0" }
+ohl-formats = { path = "../ohl-formats", version = "=0.1.0" }
+# Pinned exactly, like every other third-party dependency in this workspace.
+# Declared locally because the workspace dependency table (which mirrors the
+# crate list named by the migration architecture) does not carry `glam`.
+glam = { version = "=0.33.6", default-features = false, features = ["libm"] }
+# The scalar trigonometry the view-angle helpers need; `core` has no `sin`
+# or `cos`, and this is the same implementation `glam`'s `libm` feature uses.
+libm = { version = "=0.2.16", default-features = false }
+
+[dev-dependencies]
+proptest = { workspace = true }
+ohl-formats = { path = "../ohl-formats", version = "=0.1.0", features = [
+    "test-support",
+] }
+
+[lints]
+workspace = true

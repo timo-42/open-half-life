@@ -69,7 +69,11 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
     ),
     ("ohl-formats", &["ohl-core"]),
     ("ohl-world", &["ohl-formats", "ohl-vfs"]),
-    ("ohl-physics", &["ohl-formats", "ohl-vfs"]),
+    // Clip-hull tracing and player movement: the hulls come from
+    // `ohl-formats`' BSP30 reader and diagnostics from `ohl-core`.
+    // `ohl-vfs` stays listed for the map loading path this crate will use
+    // once maps arrive through the real pipeline.
+    ("ohl-physics", &["ohl-core", "ohl-formats", "ohl-vfs"]),
     ("ohl-render", &["ohl-core", "ohl-world"]),
     ("ohl-audio", &["ohl-core"]),
     ("ohl-input", &["ohl-core"]),
