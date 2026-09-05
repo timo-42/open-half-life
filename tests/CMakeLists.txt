@@ -570,10 +570,13 @@ set_tests_properties(
   PROPERTIES PASS_REGULAR_EXPRESSION "Usage:.*open-half-life"
 )
 
+string(REPLACE "." "[.]" OHL_BUILD_VERSION_REGEX "${OHL_BUILD_VERSION}")
+string(REPLACE "+" "[+]" OHL_BUILD_VERSION_REGEX "${OHL_BUILD_VERSION_REGEX}")
+
 add_test(NAME app.version COMMAND open-half-life --version)
 set_tests_properties(
   app.version
-  PROPERTIES PASS_REGULAR_EXPRESSION "Open Half-Life ${PROJECT_VERSION}"
+  PROPERTIES PASS_REGULAR_EXPRESSION "Open Half-Life ${OHL_BUILD_VERSION_REGEX}"
 )
 
 add_test(
