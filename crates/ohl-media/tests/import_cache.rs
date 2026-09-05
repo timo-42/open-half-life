@@ -9,10 +9,11 @@ mod support;
 use std::sync::mpsc;
 
 use fs4::fs_std::FileExt as _;
+#[cfg(unix)]
+use ohl_media::ENTRIES_DIRECTORY_NAME;
 use ohl_media::{
-    CacheLayout, CacheManifest, CacheReport, ENTRIES_DIRECTORY_NAME, ImportCacheError,
-    MANIFEST_FILE_NAME, MANIFEST_SCHEMA_VERSION, PAYLOAD_STATE_NOT_IMPORTED, ValidatedMedia,
-    prepare_import_cache,
+    CacheLayout, CacheManifest, CacheReport, ImportCacheError, MANIFEST_FILE_NAME,
+    MANIFEST_SCHEMA_VERSION, PAYLOAD_STATE_NOT_IMPORTED, ValidatedMedia, prepare_import_cache,
 };
 use support::{TemporaryRoot, pinned_source, synthetic_bytes, validated};
 

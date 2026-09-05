@@ -44,16 +44,22 @@ jobs:
         working-directory: crates/ohl-parser-protocol
         run: |
           mkdir -p fuzz/corpus/protocol
-          cargo +nightly fuzz run protocol -- -max_total_time=60
+          cargo +nightly fuzz run protocol \
+            --target x86_64-unknown-linux-gnu --sanitizer none \
+            -- -max_total_time=60
 
       - name: Fuzz ohl-formats (bsp30_fuzz, 60s)
         working-directory: crates/ohl-formats
         run: |
           mkdir -p fuzz/corpus/bsp30_fuzz
-          cargo +nightly fuzz run bsp30_fuzz -- -max_total_time=60
+          cargo +nightly fuzz run bsp30_fuzz \
+            --target x86_64-unknown-linux-gnu --sanitizer none \
+            -- -max_total_time=60
 
       - name: Fuzz ohl-formats (wad3_fuzz, 60s)
         working-directory: crates/ohl-formats
         run: |
           mkdir -p fuzz/corpus/wad3_fuzz
-          cargo +nightly fuzz run wad3_fuzz -- -max_total_time=60
+          cargo +nightly fuzz run wad3_fuzz \
+            --target x86_64-unknown-linux-gnu --sanitizer none \
+            -- -max_total_time=60
