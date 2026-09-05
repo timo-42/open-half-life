@@ -2384,6 +2384,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ohl-gameplay"
+version = "0.1.0"
+dependencies = [
+ "ohl-audio",
+ "ohl-combat",
+ "ohl-core",
+ "ohl-game",
+ "ohl-ui",
+ "proptest",
+]
+
+[[package]]
 name = "ohl-import"
 version = "0.1.0"
 dependencies = [
