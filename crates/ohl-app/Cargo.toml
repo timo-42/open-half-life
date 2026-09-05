@@ -17,7 +17,13 @@ default = []
 # adds `--dev-bsp`, which loads a map straight off disk and bypasses the
 # media pipeline entirely; see `docs/MILESTONES.md`. It must stay off by
 # default so no shipped binary can be pointed at arbitrary files this way.
-dev-tools = ["dep:ohl-render", "dep:ohl-world", "dep:ohl-formats", "dep:winit"]
+dev-tools = [
+    "dep:ohl-render",
+    "dep:ohl-world",
+    "dep:ohl-formats",
+    "dep:ohl-physics",
+    "dep:winit",
+]
 
 [dependencies]
 ohl-core = { path = "../ohl-core", version = "=0.1.0", features = ["std"] }
@@ -29,6 +35,7 @@ ohl-world = { path = "../ohl-world", version = "=0.1.0", optional = true }
 ohl-formats = { path = "../ohl-formats", version = "=0.1.0", features = [
     "std",
 ], optional = true }
+ohl-physics = { path = "../ohl-physics", version = "=0.1.0", optional = true }
 # `default-features = false` deliberately drops `wayland-csd-adwaita`, whose
 # sctk-adwaita -> ab_glyph -> ttf-parser chain carries an unmaintained-crate
 # advisory (RUSTSEC-2026-0192). Client-side decorations on Wayland fall back

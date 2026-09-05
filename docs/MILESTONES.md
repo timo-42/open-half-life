@@ -752,10 +752,52 @@ sampled), texture animation (`+0`/`-0` frames), backface culling (winding is
 not yet normalised across `plane_side`, so both sides are drawn), mipmaps and
 anisotropy, and any map source other than a path on disk.
 
+## M4 (Rust): movement
+
+Status: in progress. Package M4.1 adds collision hulls and a walking player;
+the remaining M4 packages (entity-driven brush models, ladders, trains and
+the rest of the movement environment) are not started.
+
+Adds one crate and extends the development-only viewer:
+
+- `ohl-physics`: clean-room clip-hull tracing and player movement, `no_std`
+  plus `alloc`. `CollisionModel::from_bsp` validates every plane, clip-node
+  child, leaf and head-node index once, then `trace` sweeps a segment through
+  any of the four documented hulls (point, standing 32x32x72, large 64x64x64,
+  crouched 32x32x36) with the classic recursive plane-clipping walk, a 1/32
+  unit epsilon, and a traversal depth limit so a cyclic hull tree costs a
+  bounded amount of work instead of overflowing the stack. On top of it,
+  `player_move` runs one fixed movement tick: ground categorization with a
+  0.7 slope limit, friction with the near-edge multiplier, ground and air
+  acceleration with the 30 unit/s air cap, jumping, an 18-unit step move,
+  a 4-bump slide, ducking, a basic swimming mode and noclip. Every tunable
+  lives in `MoveConfig`; the values are community-documented defaults that
+  still have to be verified against the real game (see
+  `docs/FORMAT_SOURCES.md`, "Collision hulls and player movement").
+- `ohl-app`: `--dev-bsp` now starts in a walking mode driven by
+  `PlayerController` at a fixed 100 Hz tick, spawning at the map's
+  `info_player_start` with a 28-unit standing (12-unit ducked) eye height.
+  `N` toggles noclip, `V` switches back to the free-fly camera, which stays
+  fully available. Both modes share the mouse look and WASD keys; nothing
+  outside the `dev-tools` feature changed.
+
+Verified: 32 tests in `ohl-physics` covering floor, wall and open-space
+traces against analytic expectations, start-solid and all-solid detection,
+hull selection, a rejected malformed map, a cyclic tree, gravity settling,
+a 45-unit jump apex, the 18-unit step succeeding where a 19-unit ledge
+fails, walkable versus too-steep slopes, friction decay, the air speed cap,
+ducking, swimming, noclip, and four `proptest` properties (traces always
+report a fraction in `0..=1` whose end position lies on the segment, and
+movement never produces a non-finite state or ends inside solid).
+
+Not yet done: brush-entity (submodel) collision, ladders, conveyors and
+push volumes, water currents, the duck transition delay, and any verification
+of the movement constants against the real game.
+
 ## Later milestones
 
 - M3: BSP rendering (Rust first light in progress, see above)
-- M4: player movement
+- M4: player movement (M4.1 hulls and walking in progress, see above)
 - M5: interactive entities
 - M6: models and animation
 - M7: combat

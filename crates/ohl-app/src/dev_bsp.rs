@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ohl_formats::bsp30::{Bsp, Limits};
+use ohl_physics::{CollisionModel, ControllerInput, PlayerController, Vec3};
 use ohl_render::{FreeFlyCamera, GpuContext, MoveInput, WindowSurface, WorldRenderer, wgpu};
 use ohl_world::{WorldBuildOptions, WorldModel};
 use winit::application::ApplicationHandler;
@@ -30,6 +31,10 @@ const FPS_INTERVAL: Duration = Duration::from_secs(2);
 
 /// The initial window size in physical pixels.
 const INITIAL_SIZE: (u32, u32) = (1280, 720);
+
+/// How far the mouse turns the walking player, in degrees per pixel. The
+/// free-fly camera keeps its own copy of this.
+const WALK_SENSITIVITY: f32 = 0.15;
 
 /// Runs the viewer until the window closes or Escape is pressed.
 ///
@@ -59,14 +64,31 @@ pub fn run(bsp_path: &Path, wad_paths: &[PathBuf]) -> Result<(), &'static str> {
     // face/texture counts are media-derived.
     tracing::info!("development map loaded");
 
+    // Collision hulls for the walking mode. A map whose hulls do not
+    // validate is still worth looking at, so this failure only disables
+    // walking.
+    let collision = CollisionModel::from_bsp(&bsp, &limits).ok();
+    if collision.is_none() {
+        tracing::warn!("map has no usable collision hulls; walking mode is unavailable");
+    }
+
     let event_loop = EventLoop::new().map_err(|_| "no window system is available")?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let camera = model
         .spawn
         .map_or_else(FreeFlyCamera::default, FreeFlyCamera::at_spawn);
+    let controller = model.spawn.map_or_else(PlayerController::default, |spawn| {
+        PlayerController::spawn_at(Vec3::from_array(spawn.origin), spawn.yaw, spawn.pitch)
+    });
     let mut app = Viewer {
         model,
         camera,
+        // Walking is the default when the map has hulls; V returns to the
+        // free-fly camera, which stays available for looking at geometry.
+        walking: collision.is_some(),
+        collision,
+        controller,
+        walk_input: ControllerInput::default(),
         state: None,
         input: MoveInput::default(),
         last_frame: Instant::now(),
@@ -92,6 +114,12 @@ struct Active {
 struct Viewer {
     model: WorldModel,
     camera: FreeFlyCamera,
+    /// The map's collision hulls, when it has usable ones.
+    collision: Option<CollisionModel>,
+    controller: PlayerController,
+    walk_input: ControllerInput,
+    /// Whether the walking player drives the camera (`V` toggles it).
+    walking: bool,
     state: Option<Active>,
     input: MoveInput,
     last_frame: Instant,
@@ -109,26 +137,89 @@ impl Viewer {
     fn set_axis(&mut self, key: KeyCode, pressed: bool) {
         let value = i8::from(pressed);
         match key {
-            KeyCode::KeyW => self.input.forward = value,
-            KeyCode::KeyS => self.input.forward = -value,
-            KeyCode::KeyD => self.input.right = value,
-            KeyCode::KeyA => self.input.right = -value,
-            KeyCode::Space => self.input.up = value,
-            KeyCode::ControlLeft => self.input.up = -value,
+            KeyCode::KeyW => {
+                self.input.forward = value;
+                self.walk_input.forward = value;
+            }
+            KeyCode::KeyS => {
+                self.input.forward = -value;
+                self.walk_input.forward = -value;
+            }
+            KeyCode::KeyD => {
+                self.input.right = value;
+                self.walk_input.right = value;
+            }
+            KeyCode::KeyA => {
+                self.input.right = -value;
+                self.walk_input.right = -value;
+            }
+            KeyCode::Space => {
+                self.input.up = value;
+                self.walk_input.up = value;
+                self.walk_input.jump = pressed;
+            }
+            KeyCode::ControlLeft => {
+                self.input.up = -value;
+                self.walk_input.up = -value;
+                self.walk_input.duck = pressed;
+            }
             KeyCode::ShiftLeft => self.input.fast = pressed,
             _ => {}
         }
     }
 
-    fn draw(&mut self) {
-        let Some(active) = self.state.as_mut() else {
+    /// Handles the two mode keys: `N` toggles noclip for the walking player
+    /// and `V` switches between walking and the free-fly camera.
+    fn toggle_mode(&mut self, key: KeyCode) {
+        match key {
+            KeyCode::KeyN if self.collision.is_some() => {
+                let noclip = self.controller.toggle_noclip();
+                tracing::info!(noclip, "walking mode: noclip toggled");
+            }
+            KeyCode::KeyV if self.collision.is_some() => {
+                self.walking = !self.walking;
+                if self.walking {
+                    // Resume walking from wherever the free-fly camera is
+                    // looking, dropping the player to the floor from there.
+                    self.controller.yaw = self.camera.yaw;
+                    self.controller.pitch = self.camera.pitch;
+                }
+                tracing::info!(walking = self.walking, "camera mode changed");
+            }
+            _ => {}
+        }
+    }
+
+    /// Advances whichever camera mode is active and returns the eye position
+    /// the renderer should use.
+    fn update_view(&mut self, seconds: f32) {
+        let Some(collision) = self.collision.as_ref() else {
+            self.camera.update(self.input, seconds);
             return;
         };
+        if self.walking {
+            self.controller.yaw = self.camera.yaw;
+            self.controller.pitch = self.camera.pitch;
+            self.controller
+                .advance(collision, &self.walk_input, seconds);
+            self.camera.position = self.controller.eye_position().to_array();
+        } else {
+            self.camera.update(self.input, seconds);
+        }
+    }
+
+    fn draw(&mut self) {
+        if self.state.is_none() {
+            return;
+        }
         let now = Instant::now();
         let delta = now.saturating_duration_since(self.last_frame);
         self.last_frame = now;
-        self.camera.update(self.input, delta.as_secs_f32());
+        self.update_view(delta.as_secs_f32());
 
+        let Some(active) = self.state.as_mut() else {
+            return;
+        };
         let Some(frame) = active.surface.acquire(&active.context) else {
             return;
         };
@@ -241,7 +332,11 @@ impl ApplicationHandler for Viewer {
                     event_loop.exit();
                     return;
                 }
-                self.set_axis(code, event.state == ElementState::Pressed);
+                let pressed = event.state == ElementState::Pressed;
+                if pressed && !event.repeat {
+                    self.toggle_mode(code);
+                }
+                self.set_axis(code, pressed);
             }
             WindowEvent::RedrawRequested => self.draw(),
             _ => {}
@@ -256,8 +351,10 @@ impl ApplicationHandler for Viewer {
     ) {
         if let DeviceEvent::MouseMotion { delta } = event {
             #[allow(clippy::cast_possible_truncation)]
-            self.camera
-                .apply_mouse_delta(delta.0 as f32, delta.1 as f32);
+            let (delta_x, delta_y) = (delta.0 as f32, delta.1 as f32);
+            self.camera.apply_mouse_delta(delta_x, delta_y);
+            self.controller
+                .apply_mouse_delta(delta_x, delta_y, WALK_SENSITIVITY);
         }
     }
 

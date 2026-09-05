@@ -831,3 +831,323 @@ pub fn build_minimal_spr() -> Vec<u8> {
     }
     out
 }
+
+// ---------------------------------------------------------------------
+// Collision-hull fixtures
+// ---------------------------------------------------------------------
+//
+// A BSP file carries one BSP node tree (hull 0, used for point traces) plus
+// three pre-expanded clip-hull trees built from `BSPCLIPNODE` records, one
+// per player bounding-box size. The writers below generate all four trees
+// from the same project-authored list of convex brushes, so collision tests
+// have a fixture whose hulls agree with each other by construction.
+//
+// The hull sizes and the plane-expansion rule are the publicly documented
+// ones recorded in `docs/FORMAT_SOURCES.md` under "Collision hulls and player
+// movement"; every byte produced here is authored by this project for testing
+// only (see `docs/CLEAN_ROOM.md`).
+
+/// One outward-facing half-space. The *solid* side is `normal · x <= dist`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HullPlane {
+    pub normal: [f32; 3],
+    pub dist: f32,
+}
+
+impl HullPlane {
+    #[must_use]
+    pub const fn new(normal: [f32; 3], dist: f32) -> Self {
+        Self { normal, dist }
+    }
+}
+
+/// A convex solid: the intersection of the solid sides of its planes.
+#[derive(Debug, Clone, Default)]
+pub struct CollisionBrush {
+    pub planes: Vec<HullPlane>,
+}
+
+impl CollisionBrush {
+    /// A brush from an explicit list of half-spaces.
+    #[must_use]
+    pub fn new(planes: &[HullPlane]) -> Self {
+        Self {
+            planes: planes.to_vec(),
+        }
+    }
+
+    /// A single unbounded half-space (`normal · x <= dist` is solid).
+    #[must_use]
+    pub fn half_space(normal: [f32; 3], dist: f32) -> Self {
+        Self::new(&[HullPlane::new(normal, dist)])
+    }
+
+    /// An axis-aligned solid box spanning `mins..maxs`.
+    #[must_use]
+    pub fn box_brush(mins: [f32; 3], maxs: [f32; 3]) -> Self {
+        let mut planes = Vec::new();
+        for axis in 0..3 {
+            let mut positive = [0.0f32; 3];
+            positive[axis] = 1.0;
+            let mut negative = [0.0f32; 3];
+            negative[axis] = -1.0;
+            planes.push(HullPlane::new(positive, maxs[axis]));
+            planes.push(HullPlane::new(negative, -mins[axis]));
+        }
+        Self { planes }
+    }
+}
+
+/// The four documented GoldSrc hull bounding boxes, in hull-index order:
+/// point, standing (32x32x72), large (64x64x64), and crouched (32x32x36).
+pub const FIXTURE_HULL_SIZES: [([f32; 3], [f32; 3]); 4] = [
+    ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+    ([-16.0, -16.0, -36.0], [16.0, 16.0, 36.0]),
+    ([-32.0, -32.0, -32.0], [32.0, 32.0, 32.0]),
+    ([-16.0, -16.0, -18.0], [16.0, 16.0, 18.0]),
+];
+
+/// Offsets `plane` outward so that a point trace through the expanded hull
+/// is equivalent to sweeping the box `mins..maxs` through the original
+/// solid (the documented hull-expansion rule: shift each plane by the
+/// box's support distance along the plane normal).
+fn expand_plane(plane: HullPlane, mins: [f32; 3], maxs: [f32; 3]) -> HullPlane {
+    let mut support = 0.0f32;
+    for axis in 0..3 {
+        let n = plane.normal[axis];
+        support += if n >= 0.0 {
+            n * mins[axis]
+        } else {
+            n * maxs[axis]
+        };
+    }
+    HullPlane::new(plane.normal, plane.dist - support)
+}
+
+/// Which tree kind [`Bsp30Builder::push_collision_hulls`] is emitting: the
+/// BSP node tree (hull 0, whose children reference leaves) or a clipnode
+/// tree (hulls 1-3, whose children reference contents values directly).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TreeKind {
+    Nodes,
+    Clipnodes,
+}
+
+/// `CONTENTS_EMPTY` / `CONTENTS_SOLID` / `CONTENTS_WATER` as encoded in a
+/// clipnode child link.
+const CHILD_EMPTY_CLIPNODE: i16 = -1;
+const CHILD_SOLID_CLIPNODE: i16 = -2;
+const CHILD_WATER_CLIPNODE: i16 = -3;
+/// Leaf 1 (empty), leaf 0 (solid) and leaf 2 (water), encoded as
+/// `!leaf_index`.
+const CHILD_EMPTY_LEAF: i16 = -2;
+const CHILD_SOLID_LEAF: i16 = -1;
+const CHILD_WATER_LEAF: i16 = -3;
+
+impl Bsp30Builder {
+    fn plane_count(&self) -> usize {
+        self.planes.len() / 20
+    }
+
+    /// Emits the tree deciding `brushes`: every point inside one of them
+    /// links to `inside`, everything else to `outside`.
+    fn emit_union(
+        &mut self,
+        brushes: &[CollisionBrush],
+        mins: [f32; 3],
+        maxs: [f32; 3],
+        kind: TreeKind,
+        inside: i16,
+        outside: i16,
+    ) -> i16 {
+        let Some((first, rest_brushes)) = brushes.split_first() else {
+            return outside;
+        };
+        // Everything on the front (outside) side of any of this brush's
+        // planes is outside this brush, so it is decided by the union of the
+        // remaining brushes; that subtree is built once and shared.
+        let rest = self.emit_union(rest_brushes, mins, maxs, kind, inside, outside);
+        let mut back = inside;
+        for plane in first.planes.iter().rev() {
+            let expanded = expand_plane(*plane, mins, maxs);
+            let plane_index = self.plane_count();
+            // `kind` 3 is the documented "any/non-axial" plane type, which is
+            // always a valid classification for any normal.
+            self.push_plane(expanded.normal, expanded.dist, 3);
+            let index = match kind {
+                TreeKind::Nodes => {
+                    let index = self.nodes.len() / 24;
+                    self.push_node(
+                        u32::try_from(plane_index).unwrap(),
+                        rest,
+                        back,
+                        [-4096; 3],
+                        [4096; 3],
+                        0,
+                        0,
+                    );
+                    index
+                }
+                TreeKind::Clipnodes => {
+                    let index = self.clipnodes.len() / 8;
+                    self.push_clipnode(i32::try_from(plane_index).unwrap(), rest, back);
+                    index
+                }
+            };
+            back = i16::try_from(index).unwrap();
+        }
+        back
+    }
+
+    /// Emits the BSP node tree and all three clip-hull trees for `brushes`
+    /// (the solid is their union), appending to the planes, nodes, leaves
+    /// and clipnodes lumps, and returns the four head-node indices in the
+    /// order `BSPMODEL::headnodes` stores them.
+    ///
+    /// Leaf 0 is the shared solid leaf, leaf 1 the empty leaf and leaf 2 a
+    /// water leaf, matching the documented convention that the tree's `-1`
+    /// child is solid.
+    pub fn push_collision_hulls(&mut self, brushes: &[CollisionBrush]) -> [i32; 4] {
+        self.push_collision_hulls_with_liquid(brushes, &[])
+    }
+
+    /// Like [`Self::push_collision_hulls`], but points inside `liquid` (and
+    /// outside every solid brush) get `CONTENTS_WATER`.
+    pub fn push_collision_hulls_with_liquid(
+        &mut self,
+        solid: &[CollisionBrush],
+        liquid: &[CollisionBrush],
+    ) -> [i32; 4] {
+        if self.leaves.is_empty() {
+            // Leaf 0: the shared solid leaf. Leaf 1: empty space. Leaf 2:
+            // water.
+            self.push_leaf(-2, -1, [-4096; 3], [4096; 3], 0, 0, [0; 4]);
+            self.push_leaf(-1, -1, [-4096; 3], [4096; 3], 0, 0, [0; 4]);
+            self.push_leaf(-3, -1, [-4096; 3], [4096; 3], 0, 0, [0; 4]);
+        }
+        let mut heads = [0i32; 4];
+        for (hull, (mins, maxs)) in FIXTURE_HULL_SIZES.iter().enumerate() {
+            let (kind, empty, solid_child, water) = if hull == 0 {
+                (
+                    TreeKind::Nodes,
+                    CHILD_EMPTY_LEAF,
+                    CHILD_SOLID_LEAF,
+                    CHILD_WATER_LEAF,
+                )
+            } else {
+                (
+                    TreeKind::Clipnodes,
+                    CHILD_EMPTY_CLIPNODE,
+                    CHILD_SOLID_CLIPNODE,
+                    CHILD_WATER_CLIPNODE,
+                )
+            };
+            let liquid_tree = self.emit_union(liquid, *mins, *maxs, kind, water, empty);
+            heads[hull] =
+                i32::from(self.emit_union(solid, *mins, *maxs, kind, solid_child, liquid_tree));
+        }
+        heads
+    }
+}
+
+/// The brush list of [`build_collision_room_bsp`], so tests can assert
+/// against the same geometry the fixture was built from.
+///
+/// The room's interior spans `[-256, 256]` on X and Y and `[0, 256]` on Z,
+/// with the floor's top surface at `z = 0`. It contains an 18-unit step
+/// (`x` 64..192), a 19-unit ledge (`x` -192..-64), a walkable ramp whose
+/// surface normal has `z = 0.8` (`y >= 128`), and a too-steep ramp whose
+/// surface normal has `z = 0.5` (`y <= -128`).
+#[must_use]
+pub fn collision_room_brushes() -> Vec<CollisionBrush> {
+    alloc::vec![
+        // Floor, ceiling and the four walls, each an unbounded half-space.
+        CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+        CollisionBrush::half_space([0.0, 0.0, -1.0], -256.0),
+        CollisionBrush::half_space([-1.0, 0.0, 0.0], -256.0),
+        CollisionBrush::half_space([1.0, 0.0, 0.0], -256.0),
+        CollisionBrush::half_space([0.0, -1.0, 0.0], -256.0),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], -256.0),
+        // An 18-unit step and a 19-unit ledge.
+        CollisionBrush::box_brush([64.0, -64.0, -16.0], [192.0, 64.0, 18.0]),
+        CollisionBrush::box_brush([-192.0, -64.0, -16.0], [-64.0, 64.0, 19.0]),
+        // A walkable ramp (surface normal z = 0.8) rising toward +Y.
+        CollisionBrush::new(&[
+            HullPlane::new([0.0, -0.6, 0.8], -76.8),
+            HullPlane::new([0.0, -1.0, 0.0], -128.0),
+        ]),
+        // A too-steep ramp (surface normal z = 0.5) rising toward -Y.
+        CollisionBrush::new(&[
+            HullPlane::new([0.0, 0.866_025_4, 0.5], -110.851_25),
+            HullPlane::new([0.0, 1.0, 0.0], -128.0),
+        ]),
+    ]
+}
+
+/// Builds a complete, project-authored BSP30 file whose collision hulls
+/// describe [`collision_room_brushes`], with an `info_player_start` standing
+/// on the floor at the origin.
+#[must_use]
+pub fn build_collision_room_bsp() -> Vec<u8> {
+    let mut builder = Bsp30Builder::new();
+    builder.set_entities_text(
+        "{\n\"classname\" \"worldspawn\"\n}\n\
+         {\n\"classname\" \"info_player_start\"\n\"origin\" \"0 0 36\"\n\"angle\" \"0\"\n}\n",
+    );
+    let heads = builder.push_collision_hulls(&collision_room_brushes());
+    builder.push_model(
+        [-256.0, -256.0, 0.0],
+        [256.0, 256.0, 256.0],
+        [0.0, 0.0, 0.0],
+        heads,
+        2,
+        0,
+        0,
+    );
+    builder.build()
+}
+
+/// Builds a BSP30 file with a flat floor at `z = 0` and a pool of water
+/// filling `0 < z <= 64`, so movement tests can enter and leave a liquid.
+#[must_use]
+pub fn build_collision_pool_bsp() -> Vec<u8> {
+    let mut builder = Bsp30Builder::new();
+    builder.set_entities_text("{\n\"classname\" \"worldspawn\"\n}\n");
+    let heads = builder.push_collision_hulls_with_liquid(
+        &[CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0)],
+        &[CollisionBrush::half_space([0.0, 0.0, 1.0], 64.0)],
+    );
+    builder.push_model(
+        [-4096.0, -4096.0, -4096.0],
+        [4096.0, 4096.0, 4096.0],
+        [0.0, 0.0, 0.0],
+        heads,
+        3,
+        0,
+        0,
+    );
+    builder.build()
+}
+
+/// Builds a BSP30 file whose only solid is a single unbounded ground plane
+/// with the given unit surface normal (`0, 1` is flat ground), passing
+/// through the world origin.
+///
+/// Used to check the walkable-slope limit from both sides.
+#[must_use]
+pub fn build_collision_slope_bsp(normal_y: f32, normal_z: f32) -> Vec<u8> {
+    let mut builder = Bsp30Builder::new();
+    builder.set_entities_text("{\n\"classname\" \"worldspawn\"\n}\n");
+    let heads =
+        builder.push_collision_hulls(&[CollisionBrush::half_space([0.0, normal_y, normal_z], 0.0)]);
+    builder.push_model(
+        [-4096.0, -4096.0, -4096.0],
+        [4096.0, 4096.0, 4096.0],
+        [0.0, 0.0, 0.0],
+        heads,
+        2,
+        0,
+        0,
+    );
+    builder.build()
+}

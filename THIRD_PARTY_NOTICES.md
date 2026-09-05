@@ -64,6 +64,20 @@ As later packages add the freestanding parser worker's remaining pieces and
 the input stack, this section will be extended; `cargo deny check` remains
 the enforced, up-to-date source of truth between updates to this file.
 
+Added by the M4 "movement" physics crate, pinned exactly in
+`crates/ohl-physics/Cargo.toml`:
+
+- `glam` `=0.33.6` (MIT OR Apache-2.0) -- vector math, `ohl-physics`
+- `libm` `=0.2.16` (MIT) -- the scalar trigonometry `core` does not provide,
+  and the same implementation `glam`'s `libm` feature uses, `ohl-physics`
+
+Both are built with `default-features = false`, so neither pulls in `std`.
+
+As later packages add the freestanding parser worker (`rustix`, `seccompiler`,
+`landlock`) and the audio/input stack (`cpal`/`rodio`), this section will be
+extended; `cargo deny check` remains the enforced, up-to-date source of truth
+between updates to this file.
+
 ## libudfread 1.2.0
 
 Open Half-Life uses VideoLAN's libudfread for read-only access to UDF image
