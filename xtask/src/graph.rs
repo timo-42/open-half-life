@@ -36,6 +36,7 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
     (
         "ohl-vfs",
         &[
+            "ohl-core",
             "ohl-platform",
             "ohl-media-archive",
             "ohl-iso9660",
