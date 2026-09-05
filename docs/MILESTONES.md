@@ -886,6 +886,82 @@ drawn), mipmaps and anisotropy, sprite billboard *transforms* (the documented
 `type` is exposed but `ohl-render` does not yet build a per-frame billboard
 matrix from it), and any map source other than a path on disk.
 
+## M3.3 (Rust): playable loop on the imported payload
+
+Status: in progress. The engine loads a map out of an imported payload and
+runs it: geometry, entities, map logic, collision, a walking player and a
+composed frame. Verified headless in this environment against real imported
+media; the windowed loop is unverified here (no display server).
+
+Adds one crate and the production `ohl-app` path:
+
+- `ohl-engine`: the `Game` state struct. It owns the worldspawn
+  `ohl_world::WorldModel`, the brush-entity submodels an entity actually
+  references, the `ohl_game::Registry` and `Simulation`, the
+  `ohl_physics::CollisionModel` and `PlayerController`, the light-style
+  table, the decoded skybox, the studio models the map's monster/prop
+  entities reference, and (once a GPU context is attached) the renderer
+  handles. It exposes exactly two verbs: `tick(dt, input)` advances the
+  frame from a host-independent `Input` snapshot (clamped to a maximum
+  step so a stalled frame cannot tunnel the player) and returns the
+  `GameEvent`s the host must act on, and `render(target)` composes one
+  frame: opaque world, studio models over the world's depth buffer, sky,
+  brush-entity submodels through `draw_world_submodel` with each entity's
+  `rendermode`/`renderamt`/`rendercolor`, then liquids. Light styles are
+  re-blended every frame at the documented 10 Hz. A door's visual offset is
+  derived from the `ohl-game` state machine's timer, because that crate
+  models a door as timed state rather than a moving transform.
+  `ohl_game::Event::LevelChange` surfaces as
+  `GameEvent::LevelChange { map, landmark }`, and `Game::change_level`
+  reloads the destination with the player placed at its landmark plus the
+  offset it had from the same landmark in the map it left.
+  Every asset arrives through the `AssetSource` trait, implemented by
+  `AssetFsSource` over `ohl_assets::AssetFs` and by `MemoryAssets` for
+  hosts and tests that already hold the bytes; the crate itself performs no
+  I/O and logs nothing.
+- `ohl-app`: the production playable path — `--map NAME`, `--training`,
+  `--play`, `--headless-screenshot PATH`, `--frames N`, `--viewpoint
+  X,Y,Z,PITCH,YAW` and `--spawn-offset DX,DY,DZ,DPITCH,DYAW`. It locates
+  the published payload (through the medium's own provenance entry when an
+  ISO is given, running the import first when nothing is published yet, and
+  otherwise resolving the single published tree under the payload root),
+  finds the directory inside it that holds the mod directories, mounts
+  `AssetFs` with the default search path, and picks the start map from
+  `ohl-campaign`'s sourced `STARTMAP`/`TRAINMAP` unless `--map` overrides
+  it. With a display it opens a winit window (WASD, mouse look, `E` to use,
+  backquote for the `ohl-ui` console, Escape to quit) with the HUD drawn
+  over the frame; without one, `--headless-screenshot` renders `--frames`
+  frames to an offscreen target and writes a 1280x720 PNG (the `image`
+  crate with only its `png` feature enabled) before exiting 0.
+
+Verified:
+
+- headless, on real imported media: the campaign start map and the hazard
+  course start map both load out of an imported payload and render to a
+  non-empty PNG, as do several `--spawn-offset` viewpoints on the start
+  map. Every frame carries thousands of distinct colours over more than
+  90% of its pixels, i.e. real lit geometry rather than the clear colour.
+- headless, on synthetic fixtures: `ohl-engine`'s own offscreen test
+  renders a whole composed frame of the project-authored synthetic map, and
+  `ohl-app`'s CLI test drives the built binary against a synthetic payload
+  tree and asserts the PNG it writes is lit. Both follow the project's
+  `OHL_RENDER_GPU_TEST=1` opt-in convention so GPU-less CI stays green.
+- unit: ticking advances the simulation clock and clamps an overlong frame,
+  `use` opens the door in front of the player, a `trigger_changelevel`
+  reached through a button surfaces `GameEvent::LevelChange`, a level
+  change preserves the player's offset from the shared landmark, and a
+  missing destination leaves the current level running.
+- on screen: **not verified** in the development environment used for this
+  package, which has no display server.
+
+Not yet done: sprites for `env_sprite`/`env_glow` entities (`ohl-world`
+decodes `SpriteAsset` but `ohl-render` has no sprite pass yet, so nothing
+places one), studio-model sequence selection (every placed model plays
+sequence 0), full level-transition state (only the player's position
+carries across a `changelevel`; inventory, entity state and global
+variables do not), HUD values (health and armour are placeholders, not
+driven by gameplay), audio, and any console command bound to the game.
+
 ## M4 (Rust): movement
 
 Status: in progress. Package M4.1 adds collision hulls and a walking player;

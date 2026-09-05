@@ -41,9 +41,37 @@ is the platform's standard cache directory. `--version` reports the binary's
 version and exits; `cargo run -p ohl-app -- --version` or the built binary's
 `--version` both work.
 
-The current implementation fingerprints the validated ISO 9660/Joliet or UDF
-image, mounts it read-only, and publishes (or reuses) a metadata-only
-provenance record; it does not extract game data yet. See
+That form imports the medium's payload and exits. To play it afterwards, add
+`--play` (or any of the flags below, which imply it):
+
+```sh
+cargo run --release -p ohl-app -- --play --payload-root /path/to/payload
+```
+
+The engine locates the published payload (through the medium's provenance
+entry when `--iso` is given, importing first if nothing is published yet, and
+otherwise resolving the single published tree under `--payload-root`), mounts
+its assets, and starts on the campaign's documented start map. `--map NAME`
+picks a different map and `--training` starts the hazard course instead.
+In the window, WASD moves, the mouse looks, `E` uses the nearest door or
+button, the backquote key opens the console, and Escape quits.
+
+On a machine with no display server, render offscreen instead:
+
+```sh
+cargo run --release -p ohl-app -- \
+  --payload-root /path/to/payload \
+  --headless-screenshot /path/to/shot.png --frames 30
+```
+
+That advances `--frames` frames and writes one 1280x720 PNG, then exits 0.
+`--viewpoint X,Y,Z,PITCH,YAW` captures from an explicit position and
+`--spawn-offset DX,DY,DZ,DPITCH,DYAW` from one relative to the map's player
+start.
+
+The import path fingerprints the validated ISO 9660/Joliet or UDF image,
+mounts it read-only, and publishes (or reuses) a metadata-only provenance
+record alongside the extracted payload. See
 [docs/IMPORT_READINESS.md](docs/IMPORT_READINESS.md) for the current
 production-readiness matrix and release-evidence gates.
 
@@ -54,7 +82,8 @@ provenance cache) parity has been achieved in Rust; the earlier C++
 implementation has been removed. M2 (parser worker, cabinet/staging pipeline)
 is in progress: the OWP/1 protocol, media archive traits, the ISO 9660/UDF
 readers, the VFS mount facade, and the fingerprint/cache crates have already
-landed. M3 (wgpu/winit first light) is in progress. See
+landed. M3 (wgpu/winit first light) is in progress, and its playable loop now runs a
+map out of an imported payload (see M3.3 in the milestones). See
 [docs/MILESTONES.md](docs/MILESTONES.md) for current progress,
 [docs/IMPORT_READINESS.md](docs/IMPORT_READINESS.md) for production import
 readiness, and [docs/CLEAN_ROOM.md](docs/CLEAN_ROOM.md) before contributing

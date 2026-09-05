@@ -140,6 +140,15 @@ struct Cli {
     #[arg(long, value_name = "X,Y,Z,PITCH,YAW", requires = "headless_screenshot")]
     viewpoint: Option<game_run::Viewpoint>,
 
+    /// Stand `dx,dy,dz,dpitch,dyaw` away from the map's player start for a
+    /// headless capture. Ignored when `--viewpoint` is given.
+    #[arg(
+        long,
+        value_name = "DX,DY,DZ,DPITCH,DYAW",
+        requires = "headless_screenshot"
+    )]
+    spawn_offset: Option<game_run::Viewpoint>,
+
     /// Open the playable window over an already-imported payload.
     #[arg(long)]
     play: bool,
@@ -429,6 +438,7 @@ fn run_game_flow(cli: &Cli) -> ExitCode {
         screenshot: cli.headless_screenshot.as_deref(),
         frames: cli.frames,
         viewpoint: cli.viewpoint,
+        spawn_offset: cli.spawn_offset,
     }) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
