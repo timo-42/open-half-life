@@ -27,6 +27,12 @@ dev-tools = [
 
 [dependencies]
 ohl-core = { path = "../ohl-core", version = "=0.1.0", features = ["std"] }
+ohl-platform = { path = "../ohl-platform", version = "=0.1.0" }
+ohl-media = { path = "../ohl-media", version = "=0.1.0" }
+ohl-vfs = { path = "../ohl-vfs", version = "=0.1.0" }
+ohl-media-archive = { path = "../ohl-media-archive", version = "=0.1.0" }
+ohl-iso9660 = { path = "../ohl-iso9660", version = "=0.1.0" }
+ohl-udf = { path = "../ohl-udf", version = "=0.1.0" }
 clap = { workspace = true, features = ["derive"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
@@ -46,6 +52,12 @@ winit = { version = "=0.30.13", default-features = false, features = [
     "wayland",
     "wayland-dlopen",
 ], optional = true }
+
+[dev-dependencies]
+ohl-iso9660 = { path = "../ohl-iso9660", version = "=0.1.0", features = [
+    "test-support",
+] }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
