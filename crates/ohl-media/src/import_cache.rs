@@ -451,6 +451,15 @@ fn read_manifest(path: &Path) -> Result<CacheManifest, ImportCacheError> {
 /// a target of a symlink that itself lies outside `path`'s original
 /// directory (for example macOS's `/tmp` -> `/private/tmp`).
 ///
+/// On Windows, [`std::fs::canonicalize`] returns the verbatim
+/// (`\\?\C:\...`) form; [`strip_windows_verbatim_disk_prefix`] restates a
+/// plain disk path back to its ordinary `C:\...` spelling so a caller that
+/// later re-derives or compares this root (as every test and the CLI's
+/// `--cache` echo do) sees the same familiar form it passed in, not an
+/// internal Windows implementation detail. This is a cosmetic restatement
+/// only: it changes no path component that matters to the no-follow walk
+/// below, which operates on `Path`, not on the string spelling.
+///
 /// # Errors
 ///
 /// [`ImportCacheError::UnsafeCachePath`] if no ancestor of `path`, down to
@@ -461,7 +470,8 @@ fn canonicalize_existing_prefix(path: &Path) -> Result<PathBuf, ImportCacheError
     let mut trailing: Vec<&std::ffi::OsStr> = Vec::new();
     let mut candidate = path;
     loop {
-        if let Ok(mut resolved) = fs::canonicalize(candidate) {
+        if let Ok(resolved) = fs::canonicalize(candidate) {
+            let mut resolved = strip_windows_verbatim_disk_prefix(resolved);
             for component in trailing.iter().rev() {
                 resolved.push(component);
             }
@@ -475,6 +485,41 @@ fn canonicalize_existing_prefix(path: &Path) -> Result<PathBuf, ImportCacheError
             _ => return Err(ImportCacheError::UnsafeCachePath),
         }
     }
+}
+
+/// Restates a Windows verbatim disk path (`\\?\C:\...`, what
+/// [`std::fs::canonicalize`] returns) back to its plain `C:\...` form.
+///
+/// Only the exact `VerbatimDisk` prefix shape is rewritten; every other
+/// prefix kind (a verbatim UNC share, a device namespace path, and so on)
+/// is returned unchanged, because there is no plain equivalent for it to
+/// fall back to. On every other target this is the identity function: there
+/// is no verbatim path form to strip.
+#[cfg(windows)]
+fn strip_windows_verbatim_disk_prefix(path: PathBuf) -> PathBuf {
+    use std::ffi::OsString;
+    use std::path::Prefix;
+
+    let mut components = path.components();
+    let Some(Component::Prefix(prefix)) = components.next() else {
+        return path;
+    };
+    let Prefix::VerbatimDisk(letter) = prefix.kind() else {
+        return path;
+    };
+
+    // `components` no longer yields the prefix; `as_path()` restates the
+    // remainder (the root separator plus every following component)
+    // untouched, so concatenating the plain drive spelling in front of it
+    // reproduces the ordinary `C:\...` form exactly.
+    let mut rebuilt = OsString::from(format!("{}:", letter as char));
+    rebuilt.push(components.as_path().as_os_str());
+    PathBuf::from(rebuilt)
+}
+
+#[cfg(not(windows))]
+fn strip_windows_verbatim_disk_prefix(path: PathBuf) -> PathBuf {
+    path
 }
 
 /// Creates every component of `path`, refusing an unsafe one.
@@ -644,6 +689,47 @@ mod tests {
             Some(layout.entries_directory().as_path())
         );
         assert_eq!(layout.root(), std::path::Path::new(root));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_verbatim_disk_prefix_is_stripped_to_its_plain_form() {
+        let verbatim = std::path::PathBuf::from(r"\\?\C:\cache\sources");
+        assert_eq!(
+            super::strip_windows_verbatim_disk_prefix(verbatim),
+            std::path::Path::new(r"C:\cache\sources")
+        );
+
+        // A drive root by itself has no trailing component to reattach.
+        let bare_root = std::path::PathBuf::from(r"\\?\C:\");
+        assert_eq!(
+            super::strip_windows_verbatim_disk_prefix(bare_root),
+            std::path::Path::new(r"C:\")
+        );
+
+        // Anything without a `VerbatimDisk` prefix (a verbatim UNC share,
+        // here) has no plain equivalent and passes through unchanged.
+        let unc = std::path::PathBuf::from(r"\\?\UNC\server\share\cache");
+        assert_eq!(super::strip_windows_verbatim_disk_prefix(unc.clone()), unc);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_nonexistent_root_below_an_existing_drive_is_resolved_and_extended() {
+        // The drive itself exists and canonicalizes to a verbatim path;
+        // `cache`/`sources` do not exist yet. The resolved root must still
+        // be the plain, non-verbatim form with both trailing components
+        // reattached unchanged, exactly as it was before resolution.
+        let root = super::canonicalize_existing_prefix(std::path::Path::new(
+            r"C:\definitely-nonexistent-open-half-life-cache-root\cache\sources",
+        ))
+        .expect("the drive root ancestor resolves");
+        assert_eq!(
+            root,
+            std::path::Path::new(
+                r"C:\definitely-nonexistent-open-half-life-cache-root\cache\sources"
+            )
+        );
     }
 
     #[test]
