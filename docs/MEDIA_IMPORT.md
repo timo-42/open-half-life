@@ -722,6 +722,28 @@ selection, and staging composition are implemented and accepted.
 Isolation limits parser authority; it does not make parser output safe to log,
 commit, or trust without validation.
 
+### Rust crate mapping
+
+The parent-side session family above is ported to the `ohl-import` crate
+(R4.5). The rules are unchanged; only the names are:
+
+| C++ (`src/media/`) | Rust (`crates/ohl-import/src/`) |
+| --- | --- |
+| `parser_frame_channel` | `frame_channel`, `io` (the sealed `ExactIo` capability) |
+| `parser_source_read_broker` | `source_read_broker` |
+| `parser_result_session`, `payload_layout` | `result_session`, `catalog` |
+| `parser_parent_handshake` | `handshake` |
+| `parser_parent_session` | `parent_session` (a typestate session) |
+| `parser_process_session` | `process_session` |
+
+Several documented runtime checks become type-level guarantees there: a session
+id and worker epoch are non-zero newtypes, the handshake proof and the reply
+ticket are move-only and consumed by their single use, the catalog view borrows
+the session that promoted it, and `receive_one` does not exist on an idle
+session. The `IsolatedWorker` adapter behind the sealed `WorkerProcess` trait
+arrives in R4.7; until then the crate is driven by in-crate synthetic
+transports and a fake worker.
+
 ## Fixtures and fuzz reproducers
 
 Permanent fixtures must be either independently authored synthetic data or data
