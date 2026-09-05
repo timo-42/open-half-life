@@ -164,6 +164,100 @@ fn a_newunit_destination_drops_the_carried_state() {
     );
 }
 
+/// A map with a player start and no `info_landmark` at all, so a
+/// transition out of it has nothing to measure the player against.
+fn landmarkless_map_entities() -> String {
+    "{\n\"classname\" \"worldspawn\"\n}\n\
+     {\n\"classname\" \"info_player_start\"\n\"origin\" \"0 0 32\"\n\"angle\" \"0\"\n}\n\
+     {\n\"classname\" \"light\"\n\"targetname\" \"OHL_CARRIED\"\n\
+     \"origin\" \"48 0 16\"\n\"_light\" \"200\"\n\"style\" \"3\"\n}\n"
+        .replace("OHL_CARRIED", CARRIED)
+}
+
+#[test]
+fn a_source_map_without_the_landmark_falls_back_to_the_destination_spawn() {
+    let mut assets = MemoryAssets::new();
+    assets.insert(
+        "maps/ohl_nolm.bsp",
+        synthetic_map_bsp_with_entities(&landmarkless_map_entities()),
+    );
+    assets.insert(
+        "maps/ohl_b.bsp",
+        synthetic_map_bsp_with_entities(&map_b_entities(false)),
+    );
+
+    let mut game = Game::load(&assets, "ohl_nolm").expect("the source map loads");
+    game.set_viewpoint([300.0, 25.0, 64.0], 0.0, 0.0);
+    let transition = game.capture_transition(LANDMARK);
+    assert!(
+        transition.player_offset.is_none(),
+        "no source landmark means no offset to carry"
+    );
+
+    game.change_level(&assets, "ohl_b", LANDMARK)
+        .expect("map B loads");
+
+    // Map B's own `info_player_start` is at `0 0 32`, nowhere near either
+    // the source position or map B's landmark at `100 0 0`.
+    let spawn = Game::load(&assets, "ohl_b")
+        .expect("map B loads on its own")
+        .eye_position();
+    assert_close(game.eye_position(), spawn);
+    // A carried entity with no offset and no counterpart in the
+    // destination is dropped rather than placed at an invented position.
+    assert!(carried_origin(&game).is_none());
+}
+
+#[test]
+fn a_destination_without_the_landmark_falls_back_to_its_own_spawn() {
+    let mut assets = MemoryAssets::new();
+    assets.insert(
+        "maps/ohl_a.bsp",
+        synthetic_map_bsp_with_entities(&map_a_entities("ohl_nolm")),
+    );
+    assets.insert(
+        "maps/ohl_nolm.bsp",
+        synthetic_map_bsp_with_entities(&landmarkless_map_entities()),
+    );
+
+    let mut game = Game::load(&assets, "ohl_a").expect("map A loads");
+    game.change_level(&assets, "ohl_nolm", LANDMARK)
+        .expect("the destination loads");
+
+    let spawn = Game::load(&assets, "ohl_nolm")
+        .expect("the destination loads on its own")
+        .eye_position();
+    assert_close(game.eye_position(), spawn);
+}
+
+#[test]
+fn state_still_travels_without_a_landmark_when_the_destination_names_it() {
+    let mut assets = MemoryAssets::new();
+    assets.insert(
+        "maps/ohl_nolm.bsp",
+        synthetic_map_bsp_with_entities(&landmarkless_map_entities()),
+    );
+    // The destination declares the same `targetname`, so the carried state
+    // has a counterpart to land on even with no landmark to place it by.
+    assets.insert(
+        "maps/ohl_twin.bsp",
+        synthetic_map_bsp_with_entities(&landmarkless_map_entities()),
+    );
+
+    let mut game = Game::load(&assets, "ohl_nolm").expect("the source map loads");
+    game.change_level(&assets, "ohl_twin", LANDMARK)
+        .expect("the destination loads");
+
+    let registry = game.registry();
+    let mut styles = Vec::new();
+    for (name, light) in &mut registry.world.query::<(&TargetName, &Light)>() {
+        if name.0 == CARRIED {
+            styles.push(light.style);
+        }
+    }
+    assert_eq!(styles, [3], "the state travelled onto exactly one entity");
+}
+
 #[test]
 fn save_load_save_is_byte_identical() {
     let assets = campaign(false);

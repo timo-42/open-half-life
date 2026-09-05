@@ -6,7 +6,7 @@ use glam::Vec3;
 use ohl_campaign::{Difficulty, SkillTable};
 use ohl_game::{Event, find_usable_within};
 use ohl_physics::{ControllerInput, PlayerController};
-use ohl_render::{FreeFlyCamera, GpuContext, LightStyles, MoveInput, wgpu};
+use ohl_render::{FreeFlyCamera, GpuContext, LightStyles, MoveInput};
 
 use crate::assets::AssetSource;
 use crate::error::{EngineError, Result};
@@ -67,9 +67,6 @@ pub struct Game {
     controller: PlayerController,
     light_styles: LightStyles,
     renderers: Option<Renderers>,
-    /// The colour format the renderers were built for, kept so a level
-    /// change can rebuild them without the host re-declaring it.
-    format: Option<wgpu::TextureFormat>,
     elapsed: f32,
     difficulty: Difficulty,
     skill: SkillTable,
@@ -128,7 +125,6 @@ impl Game {
             controller,
             light_styles: LightStyles::new(),
             renderers: None,
-            format: None,
             elapsed: 0.0,
             difficulty: config.difficulty,
             skill: load_skill_table(source),
@@ -390,6 +386,12 @@ impl Game {
     /// everything that travelled with them) relative to the destination's
     /// landmark.
     ///
+    /// When either map declares no `info_landmark` with this name the
+    /// player stays at the destination's own `info_player_start`, and a
+    /// carried entity the destination does not already declare is dropped:
+    /// neither has a position that means anything in the destination's
+    /// coordinates.
+    ///
     /// A destination whose `worldspawn` sets `newunit` keeps only the
     /// player's placement and carried state; every carried entity, mover
     /// state and global is dropped, per the documented meaning of that key.
@@ -429,8 +431,8 @@ impl Game {
                 PlayerController::spawn_at(Vec3::from_array(spawn.origin), spawn.yaw, spawn.pitch)
             });
         self.light_styles = LightStyles::new();
-        // The previous level's uploaded geometry is gone with it; only the
-        // target format carries over, and the next `render` rebuilds.
+        // The previous level's uploaded geometry is gone with it; the next
+        // `render` rebuilds against whatever target it is handed.
         self.renderers = None;
         self.elapsed = 0.0;
         self.globals = globals;
@@ -597,7 +599,6 @@ impl Game {
     /// [`crate::EngineError::Renderer`] when a GPU resource for this level
     /// could not be created.
     pub fn render(&mut self, context: &GpuContext, target: RenderTarget<'_>) -> Result<()> {
-        self.format = Some(target.format);
         if self.renderers.is_none() {
             self.renderers = Some(Renderers::new(context, &self.level, target.format)?);
         }
