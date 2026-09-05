@@ -68,7 +68,9 @@ fn success_path_mounts_and_prepares_the_cache() {
         "stderr: {stderr}"
     );
     assert!(
-        stderr.contains("Payload import is not implemented yet; no media executable was run."),
+        stderr.contains(
+            "No supported payload container was found in the media; nothing was imported."
+        ),
         "stderr: {stderr}"
     );
 

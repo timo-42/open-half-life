@@ -33,6 +33,9 @@ ohl-vfs = { path = "../ohl-vfs", version = "=0.1.0" }
 ohl-media-archive = { path = "../ohl-media-archive", version = "=0.1.0" }
 ohl-iso9660 = { path = "../ohl-iso9660", version = "=0.1.0" }
 ohl-udf = { path = "../ohl-udf", version = "=0.1.0" }
+ohl-import = { path = "../ohl-import", version = "=0.1.0" }
+ohl-payload = { path = "../ohl-payload", version = "=0.1.0" }
+directories = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
@@ -58,6 +61,8 @@ ohl-iso9660 = { path = "../ohl-iso9660", version = "=0.1.0", features = [
     "test-support",
 ] }
 tempfile = { workspace = true }
+hadris-iso = { workspace = true }
+ohl-parser-protocol = { path = "../ohl-parser-protocol", version = "=0.1.0" }
 
 [lints]
 workspace = true

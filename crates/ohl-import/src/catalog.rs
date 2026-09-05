@@ -91,6 +91,15 @@ impl NormalizedPath {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Wraps a spelling that already passed [`ohl_vfs::normalize_path`].
+    ///
+    /// Crate-internal on purpose: the invariant is "this string is the
+    /// output of the shared normalizer", and only code that just called it
+    /// can promise that.
+    pub(crate) const fn from_normalized(path: String) -> Self {
+        Self(path)
+    }
 }
 
 /// One entry as the worker described it, before planning.

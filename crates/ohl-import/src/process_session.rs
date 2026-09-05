@@ -26,7 +26,8 @@ use crate::frame_channel::{FrameBuffer, FrameChannel};
 use crate::handshake::{HandshakeError, perform_parent_handshake};
 use crate::io::{CancellationToken, ExactIo, IoError, sealed};
 use crate::parent_session::{
-    Cancelled, Closed, Idle, ParserSession, SessionError, TerminalSession, create_parser_session,
+    Cancelled, Closed, Idle, ParserSession, SessionError, TerminalSession,
+    create_parser_session_with_ops,
 };
 use crate::source_read_broker::{NativeSourceOps, SourceOps, SourceReadLimits};
 
@@ -392,6 +393,35 @@ impl<W: WorkerProcess> ProcessSession<W> {
         deadline: Instant,
         cancellation: &CancellationToken,
     ) -> Result<ParserSession<Idle, W::Io, NativeSourceOps>, OpenFailure> {
+        self.open_with_ops(
+            media,
+            config,
+            buffer,
+            deadline,
+            cancellation,
+            NativeSourceOps,
+        )
+    }
+
+    /// [`ProcessSession::open`] over an explicit source-operation seam.
+    ///
+    /// The seam is how a caller narrows the worker's read authority — see
+    /// [`SourceWindow`](crate::SourceWindow), which confines every serviced
+    /// read to one container file. It does not replace the broker's quotas:
+    /// `config`'s read limits still bound the size, count, and cumulative
+    /// bytes of what the worker may ask for.
+    ///
+    /// # Errors
+    /// As [`ProcessSession::open`].
+    pub fn open_with_ops<O: SourceOps>(
+        &mut self,
+        media: &ValidatedMedia,
+        config: SessionConfig,
+        buffer: &mut FrameBuffer,
+        deadline: Instant,
+        cancellation: &CancellationToken,
+        ops: O,
+    ) -> Result<ParserSession<Idle, W::Io, O>, OpenFailure> {
         if self.state != ProcessState::Idle || self.channel.is_some() {
             return Err(OpenFailure {
                 error: OpenError::InvalidState,
@@ -419,12 +449,13 @@ impl<W: WorkerProcess> ProcessSession<W> {
             }
         };
 
-        match create_parser_session(
+        match create_parser_session_with_ops(
             proof,
             channel,
             media,
             self.worker_epoch,
             config.import_limits,
+            ops,
         ) {
             Ok(session) => {
                 self.state = ProcessState::Open;

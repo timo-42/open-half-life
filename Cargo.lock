@@ -2041,11 +2041,16 @@ name = "ohl-app"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "directories",
+ "hadris-iso",
  "ohl-core",
  "ohl-formats",
+ "ohl-import",
  "ohl-iso9660",
  "ohl-media",
  "ohl-media-archive",
+ "ohl-parser-protocol",
+ "ohl-payload",
  "ohl-physics",
  "ohl-platform",
  "ohl-render",
@@ -2113,8 +2118,11 @@ dependencies = [
 name = "ohl-import"
 version = "0.1.0"
 dependencies = [
+ "hadris-iso",
+ "ohl-core",
  "ohl-media",
  "ohl-parser-protocol",
+ "ohl-payload",
  "ohl-platform",
  "ohl-vfs",
  "proptest",

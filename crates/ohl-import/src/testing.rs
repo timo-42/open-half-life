@@ -428,3 +428,81 @@ impl WorkerProcess for FakeWorker {
         state.terminate
     }
 }
+
+// ---------------------------------------------------------------------------
+// Synthetic PE fixtures
+//
+// Project-authored header bytes only: the layout follows Microsoft's public
+// "PE Format" specification (recorded in `docs/FORMAT_SOURCES.md`), the
+// section names are invented, and the image contains no code and is never
+// executed, loaded, or linked. They live here rather than in a test file so
+// the `ohl-app` composition root can drive the same fixture through its own
+// `cfg(test)` seam.
+// ---------------------------------------------------------------------------
+
+/// Deterministic project-authored filler bytes.
+#[must_use]
+pub fn synthetic_filler(length: usize) -> Vec<u8> {
+    (0..length)
+        .map(|index| u8::try_from((index * 31 + 7) % 251).unwrap_or(0))
+        .collect()
+}
+
+/// Where the synthetic PE's `PE\0\0` signature sits.
+pub const PE_HEADER_OFFSET: usize = 0x80;
+
+/// The optional-header size the synthetic PE declares (PE32+).
+pub const PE_OPTIONAL_HEADER_BYTES: u16 = 0xf0;
+
+/// The synthetic PE's overlay offset: the end of its second section.
+pub const PE_OVERLAY_OFFSET: u64 = 0x0800;
+
+/// Builds a minimal two-section PE image whose overlay is `overlay`.
+///
+/// The result is a legal-looking header region only: it is never executed,
+/// loaded, or given to a linker, and it contains no code.
+#[must_use]
+pub fn synthetic_pe(overlay: &[u8]) -> Vec<u8> {
+    let overlay_offset = usize::try_from(PE_OVERLAY_OFFSET).expect("bounded fixture offset");
+    let mut image = vec![0u8; overlay_offset];
+    image[0..2].copy_from_slice(b"MZ");
+    image[0x3c..0x40].copy_from_slice(&u32::try_from(PE_HEADER_OFFSET).unwrap().to_le_bytes());
+
+    let coff = PE_HEADER_OFFSET + 4;
+    image[PE_HEADER_OFFSET..coff].copy_from_slice(b"PE\0\0");
+    // Machine, NumberOfSections.
+    image[coff..coff + 2].copy_from_slice(&0x8664_u16.to_le_bytes());
+    image[coff + 2..coff + 4].copy_from_slice(&2_u16.to_le_bytes());
+    // SizeOfOptionalHeader at COFF offset 16.
+    image[coff + 16..coff + 18].copy_from_slice(&PE_OPTIONAL_HEADER_BYTES.to_le_bytes());
+
+    let table = coff + 20 + usize::from(PE_OPTIONAL_HEADER_BYTES);
+    for (index, (pointer, size)) in [(0x0400_u32, 0x0200_u32), (0x0600, 0x0200)]
+        .into_iter()
+        .enumerate()
+    {
+        let row = table + index * 40;
+        image[row..row + 8].copy_from_slice(b".synth\0\0");
+        // SizeOfRawData at row offset 16, PointerToRawData at row offset 20.
+        image[row + 16..row + 20].copy_from_slice(&size.to_le_bytes());
+        image[row + 20..row + 24].copy_from_slice(&pointer.to_le_bytes());
+    }
+    assert!(
+        table + 80 <= overlay_offset,
+        "the fixture header region fits"
+    );
+
+    image.extend_from_slice(overlay);
+    image
+}
+
+/// A synthetic PE at least `minimum` bytes long whose overlay starts with the
+/// InstallShield 3 Z signature.
+#[must_use]
+pub fn synthetic_pe_with_z_overlay(minimum: usize) -> Vec<u8> {
+    let overlay_offset = usize::try_from(PE_OVERLAY_OFFSET).expect("bounded fixture offset");
+    let overlay_len = minimum.saturating_sub(overlay_offset).max(4);
+    let mut overlay = synthetic_filler(overlay_len);
+    overlay[0..4].copy_from_slice(&crate::locate::INSTALLSHIELD_Z_SIGNATURE.to_le_bytes());
+    synthetic_pe(&overlay)
+}
