@@ -552,13 +552,21 @@ The dispatcher is compile-fixed trusted project code and returns `unsupported`
 when enumeration or streaming begins. It is not selected by media and supplies
 no real parser, enumeration, source-read, extraction, staging, publication, or
 import semantics. Production composition still lacks that real payload
-dispatcher/parser, runtime selection, staging/publication integration, and a
-higher process-session owner. That owner
-must allocate unique nonzero session IDs and
-worker epochs, preserve the exact channel through proof and session lifetimes,
-perform orderly protocol shutdown followed by channel close and `wait()`/reap,
-and reserve `terminate_and_wait()` for failure or orderly-close timeout.
-ParentSession owns none of these actions.
+dispatcher/parser, runtime selection, and staging/publication integration.
+
+The higher process-session owner now exists as the disconnected
+`OpenHalfLife::media_parser_process_session` library (`ParserProcessSession`),
+accepted at `537c11b` ([PR #12](https://github.com/timo-42/open-half-life/pull/12)).
+Its paired `ParserSessionIdAllocator` hands out nonzero, monotonic, unique
+session IDs and worker epochs and fails closed on exhaustion. It owns exactly
+one `platform::IsolatedWorker` for one session's lifetime: `open()` performs
+the handshake and builds `ParserParentSession` from its proof; orderly
+shutdown drives protocol shutdown, `close_channel()`, then `wait()`; any
+failure, cancellation, or timeout escalates to a single cached
+`terminate_and_wait()`; the destructor never abandons a live worker. It is
+move-only and has no raw-path, destination, cache, staging, publication, or
+component-selection authority. It remains disconnected from the application.
+`ParentSession` itself owns none of these actions.
 
 The worker remains a compile-fixed, pinned static x86-64 ELF identity. The
 native launcher verifies no-follow root-owned installation metadata, rejects
@@ -579,8 +587,8 @@ Owned termination can resolve as either `clean` or `terminated` when orderly
 peer EOF wins; both outcomes are terminal, cached, and reaped.
 
 The resume order is therefore: add another tuple's native backend; implement a
-real dispatcher/parser as a separate scope; add the process-session owner
-plus session-ID/epoch policy; compose handshake and parent session; then add
+real dispatcher/parser as a separate scope; compose the now-accepted
+process-session owner with the handshake and parent session; then add
 deterministic component selection, staging, and publication. Production
 extraction remains absent, and all current service and parent-session test
 inputs are synthetic.

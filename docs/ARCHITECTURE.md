@@ -253,10 +253,11 @@ ownership, termination, reap, executable or path selection, source-read,
 component-selection, catalog, destination, staging, publication, cache,
 application, or runtime-import authority. Linux x86-64 native isolated-worker
 containment now exists as a disconnected source-selected backend. Its installed
-worker now hosts the bounded worker-side OWP/1 service described below. A higher
-parent process-session owner plus composition with the result bridge,
-source-read broker, selection policy, staging, and the application remain later
-dependencies.
+worker now hosts the bounded worker-side OWP/1 service described below. The
+higher parent process-session owner now exists too, as the disconnected
+`OpenHalfLife::media_parser_process_session` target described below. Its
+composition with the result bridge, source-read broker, selection policy,
+staging, and the application remain later dependencies.
 
 Commit `13f0fb0` adds the disconnected
 `OpenHalfLife::media_parser_handshake` library. Its direct dependencies are
@@ -418,16 +419,25 @@ lifecycle operations, and committed HEAD source-selects a native containment
 backend only for Linux x86-64. Other platforms and Linux architectures select
 the unsupported backend. The Linux x86-64 installed worker now contains the
 service-bearing media-parser bootstrap, but production composition is still
-missing a real payload dispatcher/parser, runtime selection,
-staging/publication integration, and the higher process-session owner. The
-canonical private worker-service library remains a non-installed artifact; the
-Linux worker links a separate private freestanding runtime built from the same
-protocol and service implementation. That higher owner must allocate fresh
-protocol session IDs and worker epochs under an explicit uniqueness policy,
-keep the exact channel alive through handshake-proof consumption and the parent
-session, close the channel
-and `wait()`/reap after orderly protocol shutdown, and use
-`terminate_and_wait()` only for failure or orderly-close timeout paths.
+missing a real payload dispatcher/parser, runtime selection, and
+staging/publication integration. The canonical private worker-service library
+remains a non-installed artifact; the Linux worker links a separate private
+freestanding runtime built from the same protocol and service implementation.
+
+The higher process-session owner now exists as the disconnected
+`OpenHalfLife::media_parser_process_session` library
+(`ParserProcessSession`, `src/media/parser_process_session.cpp`), accepted at
+`537c11b` ([PR #12](https://github.com/timo-42/open-half-life/pull/12)). Its
+paired `ParserSessionIdAllocator` hands out nonzero, monotonic, unique session
+IDs and worker epochs and fails closed on exhaustion rather than wrapping.
+`ParserProcessSession` owns exactly one `platform::IsolatedWorker` for one
+session's lifetime: `open()` performs the handshake and builds the
+`ParserParentSession` from its proof; orderly shutdown drives protocol
+shutdown, then `close_channel()`, then `wait()`; any failure, cancellation, or
+timeout escalates to a single cached `terminate_and_wait()`. The destructor
+never abandons a live worker. It is move-only and non-copyable, and has no
+raw-path, destination, cache, staging, publication, or component-selection
+authority; it is still disconnected from the application.
 ParentSession owns none of those lifecycle actions.
 
 The accepted P1 worker-side boundary is a separate static target,
@@ -502,9 +512,9 @@ development suite at 40/40, and 50 consecutive real-launcher test runs at
 orderly peer EOF wins the race with pidfd termination; both results are
 terminal, cached, and reaped.
 
-Work resumes in dependency order: add another tuple's native backend; add a real
-dispatcher/parser as a separate scope; add the process-session owner and
-session-ID / epoch policy; compose handshake and ParentSession; then integrate
+Work resumes in dependency order: add another tuple's native backend; add a
+real dispatcher/parser as a separate scope; compose the now-accepted
+process-session owner with the handshake and `ParentSession`; then integrate
 a deterministic component-selection recipe before staging and publication.
 The installed Linux worker hosts the service but removes none of those later
 blockers, and the synthetic evidence authorizes no proprietary extraction.

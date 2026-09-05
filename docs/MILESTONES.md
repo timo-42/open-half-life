@@ -58,7 +58,10 @@ at `7bd9d38`. Accepted P1 work now also provides a private, non-installed,
 disconnected parser-worker service with synthetic boundary tests and accepted
 hosted cross-platform evidence from PR #7. B1 now hosts that service in the
 installed, contained Linux x86-64 worker with a compile-fixed unsupported
-dispatcher and local real-launcher evidence.
+dispatcher and local real-launcher evidence. The higher parent process-session
+owner and its session-ID/worker-epoch allocation policy were accepted at
+`537c11b` ([PR #12](https://github.com/timo-42/open-half-life/pull/12)); see
+"Remaining M2 work" below for what it still lacks.
 
 Production payload import remains unavailable on every platform. The current
 readiness matrix and release-evidence gates are tracked in
@@ -224,6 +227,13 @@ Current functionality:
   sanitizers, the experimental Linux configuration, Windows x64, and macOS
   Apple Silicon. This is cross-platform evidence for the disconnected boundary,
   not production qualification
+- [PR #10](https://github.com/timo-42/open-half-life/pull/10) (`fb9a2df`) fixed
+  GCC 15 hardened-libstdc++ linking of the freestanding worker: GCC 15 enables
+  `_GLIBCXX_ASSERTIONS` by default and its `<span>`/`<bits/*>` precondition
+  checks pull in hosted `memcmp` and `std::__glibcxx_assert_fail` symbols that
+  the `-nostdlib`-linked freestanding worker and its isolated-worker test
+  helper cannot resolve; the fix adds private, terminating shims for both
+  instead of disabling the hardening checks
 - the installed Linux x86-64 static worker now emits and closes its exact
   readiness record on fd 4, then hosts one bounded OWP/1 lifetime on fd 3. It
   accepts canonical `hello`, emits exact-empty `ready`, and supports shutdown
@@ -255,21 +265,18 @@ Remaining M2 work:
 - the constrained parser worker boundary in `MEDIA_IMPORT.md` remains
   mandatory before any third-party parser may feed production extraction. The
   accepted result bridge, source-read broker, frame channel, parent handshake,
-  parent session, and service-bearing Linux worker still need a real
-  dispatcher/parser, higher lifecycle ownership, and explicit runtime
-  composition with deterministic component selection and staging; the worker
-  must have no raw-path, destination, or cache authority. Although the abstract
+  parent session, service-bearing Linux worker, and now the disconnected
+  `ParserProcessSession` process-session owner (accepted at `537c11b`) still
+  need a real dispatcher/parser and explicit runtime composition with
+  deterministic component selection and staging; the worker must have no
+  raw-path, destination, or cache authority. Although the abstract
   `IsolatedWorker` lifecycle facade exists, committed HEAD source-selects a
   native containment backend only for Linux x86-64; other platforms and Linux
   architectures select the unsupported backend. The production gate is blocked
-  on the real dispatcher/parser, runtime selection, lifecycle ownership, and
-  staging/publication integration. The
-  higher process-session owner must allocate unique session IDs and worker
-  epochs, keep the channel alive, close plus `wait()`/reap after orderly
-  shutdown, and use `terminate_and_wait()` for failure or orderly-close timeout
-- after those lifecycle pieces, resume with handshake/parent-session
-  composition, deterministic component selection, and only then staging and
-  publication
+  on the real dispatcher/parser, runtime selection, and staging/publication
+  integration
+- after the real dispatcher/parser, resume with deterministic component
+  selection, then staging and publication, and finally application composition
 - production payload extraction remains absent and must not execute installer
   binaries or media-provided code
 - macOS and Windows atomic-directory stores and native adversarial gates,
