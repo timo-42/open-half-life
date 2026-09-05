@@ -122,6 +122,16 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
     // shared diagnostics primitive. Deliberately not allowed to depend on
     // `ohl-formats`; see `crates/ohl-campaign/src/skill_table.rs`.
     ("ohl-campaign", &["ohl-core"]),
+    // Monster AI core: conditions, senses, the schedule/task runner, squads
+    // and the movement glue. It reads world visibility from `ohl-world`,
+    // traces through `ohl-physics`, and attaches its components to the
+    // `ohl-game` entity registry rather than owning a second entity world.
+    // Deliberately no edge to `ohl-render`, `ohl-audio` or `ohl-ui`:
+    // presentation is pulled from the event list `AiWorld::tick` returns.
+    (
+        "ohl-ai",
+        &["ohl-core", "ohl-physics", "ohl-world", "ohl-game"],
+    ),
     // Combat skeleton (M7.1): damage model, hit resolution against world
     // hulls and posed studio hitboxes, and a bounded combat-event queue.
     // No edge to `ohl-render`, `ohl-audio` or `ohl-ui`: presentation is

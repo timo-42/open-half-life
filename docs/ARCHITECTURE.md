@@ -24,6 +24,7 @@ acyclic and matches the table below, which restates
 | `ohl-render`, `ohl-audio`, `ohl-input` | wgpu passes; cpal/rodio; winit events | std |
 | `ohl-world`, `ohl-physics`, `ohl-game`, `ohl-ui` | world state, GoldSrc hulls, rules, egui HUD | std |
 | `ohl-combat` | damage model, attack traces against hulls and studio hitboxes, combat events | std |
+| `ohl-ai` | monster conditions, senses, schedules, squads, movement glue | std |
 | `ohl-app` | composition root binary (`open-half-life`) | std |
 | `xtask` | policy check, worker image build, packaging | std |
 
