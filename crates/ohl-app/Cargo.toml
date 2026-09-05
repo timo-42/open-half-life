@@ -22,6 +22,8 @@ dev-tools = [
     "dep:ohl-world",
     "dep:ohl-formats",
     "dep:ohl-physics",
+    "dep:ohl-game",
+    "dep:glam",
     "dep:winit",
 ]
 
@@ -45,6 +47,13 @@ ohl-formats = { path = "../ohl-formats", version = "=0.1.0", features = [
     "std",
 ], optional = true }
 ohl-physics = { path = "../ohl-physics", version = "=0.1.0", optional = true }
+ohl-game = { path = "../ohl-game", version = "=0.1.0", optional = true }
+# Pinned exact to match `ohl-game`'s and `ohl-physics`'s own pins; used to
+# build the `Vec3` `find_usable_within` expects from the camera/player
+# position.
+glam = { version = "=0.33.6", default-features = false, features = [
+    "std",
+], optional = true }
 # `default-features = false` deliberately drops `wayland-csd-adwaita`, whose
 # sctk-adwaita -> ab_glyph -> ttf-parser chain carries an unmaintained-crate
 # advisory (RUSTSEC-2026-0192). Client-side decorations on Wayland fall back

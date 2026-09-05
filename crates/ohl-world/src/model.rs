@@ -118,13 +118,13 @@ struct WorldPlane {
 }
 
 /// Per-face data collected before the texture-major reordering.
-struct PendingFace {
-    texture: usize,
-    vertices: Vec<WorldVertex>,
-    bounds: Aabb,
+pub(crate) struct PendingFace {
+    pub(crate) texture: usize,
+    pub(crate) vertices: Vec<WorldVertex>,
+    pub(crate) bounds: Aabb,
     /// The mean of the face's style-0 lightmap samples, in `0..1`, used as
     /// the ambient approximation for entities standing near it.
-    average_light: [f32; 3],
+    pub(crate) average_light: [f32; 3],
 }
 
 impl WorldModel {
@@ -534,7 +534,7 @@ impl WorldModel {
 
 /// Projects each position onto the face's texture axes, returning the
 /// `(s, t)` pairs and the face's world-space bounds.
-fn surface_coordinates(
+pub(crate) fn surface_coordinates(
     positions: &[[f32; 3]],
     texinfo: &TexInfo,
 ) -> Result<(Vec<(f32, f32)>, Aabb)> {
@@ -689,7 +689,7 @@ type Mesh = (Vec<WorldVertex>, Vec<u32>);
 ///
 /// Returns the mesh, the model bounds, the reordered faces, the static
 /// batches, and a `pending slot -> ordered slot` permutation.
-fn assemble(
+pub(crate) fn assemble(
     pending: &[PendingFace],
     atlas_scale: (f32, f32),
 ) -> (Mesh, Aabb, Vec<FaceGeometry>, Vec<DrawBatch>, Vec<u32>) {

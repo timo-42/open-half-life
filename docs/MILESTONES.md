@@ -862,6 +862,69 @@ Not yet done: brush-entity (submodel) collision, ladders, conveyors and
 push volumes, water currents, the duck transition delay, and any verification
 of the movement constants against the real game.
 
+## M5 (Rust): entities
+
+Status: in progress (M5.1). Adds `ohl-game`, the entity registry and a
+minimal, deterministic map logic simulation, and wires both into the
+`ohl-app` development viewer.
+
+- `ohl-game::keyvalues`: lenient, bounded, never-panicking conversion of
+  `ohl_formats::bsp30::entities::parse`'s raw key/value maps into typed
+  `EntityDef`s (classname, origin, angles, targetname/target, spawnflags,
+  `model` as a brush index or asset path, `rendermode`/`renderamt`/
+  `rendercolor`), plus a `worldspawn` `wad` list parser. Unknown keys are
+  preserved; malformed or oversized fields fall back to a default or a
+  bounded truncation rather than rejecting the entity. Covered by
+  `proptest` (never panics on arbitrary input; keyvalue strings and `wad`
+  lists round-trip).
+- `ohl-game::registry`: a `hecs::World` populated from the parsed entities,
+  with components for classname, transform, brush-model index (and its
+  precomputed bounding-box centre), targetname/target, spawnflags, render
+  properties, and `Door`/`Button`/`Platform` (`func_door`, `func_button`,
+  `func_plat`), `Light` (`light`/`light_spot`/`light_environment`),
+  `PlayerStart`, `Landmark`/`ChangeLevel` (`info_landmark`,
+  `trigger_changelevel`), `Path` (`path_corner`/`path_track`),
+  `MultiManager` and a generic `Trigger` for other `trigger_*` classnames,
+  falling back to `Unknown`. A bounded `targetname -> entities` index
+  supports name-based lookups; `worldspawn`'s `skyname` and `wad` list are
+  parsed into their own component.
+- `ohl-game::brush`: gathers one `ModelInstance` (model index, transform,
+  render properties) per brush entity for a renderer to draw. `ohl-world`
+  gained a matching, additive `build_draw_list_for_model` (submodel 1..
+  geometry, fullbright since no per-submodel lightmap atlas exists yet);
+  `ohl-app`'s viewer does not yet call it (see "Not yet done").
+- `ohl-game::logic`: a `Simulation` with a bounded `Fire { target, delay }`
+  event queue, name-index dispatch, door/button/platform
+  closed/opening/open/closing state machines driven by `speed`/`wait`/`lip`
+  and a movement direction derived from `angles`/`angle` (including the
+  `-1`/`-2` "straight up"/"straight down" sentinel), `multi_manager` fan-out,
+  `trigger_once`/`trigger_multiple` dispatch (including the `wait` cooldown),
+  and `trigger_changelevel` emitting a `LevelChange { map, landmark }` event
+  for the caller to act on. No rendering, physics, AI or combat.
+- `ohl-app` (`dev-tools`): after loading a map, builds the registry and
+  simulation from its entities lump and submodel bounding boxes, ticks the
+  simulation every frame, and presses of `E` `use` the nearest door/button
+  within 64 units of the active eye position — the walking player's eye
+  when `V` has walking mode engaged (see M4 above), otherwise the free-fly
+  camera — preferring a brush entity's bounding-box centre over its
+  usually-zero `origin` keyvalue.
+
+Verified: `ohl-game`'s unit and property tests (parsing, registry
+construction and name-index lookups, door open/wait/close timing, a button
+firing a door target after a delay, `multi_manager` fan-out ordering,
+`trigger_multiple`'s `wait` cooldown, `trigger_changelevel`'s event) and
+`ohl-world`'s new `build_draw_list_for_model` tests, against the project's
+existing synthetic BSP fixture. `E` was not exercised on screen (same
+no-display-server limitation as M3).
+
+Not yet done: `ohl-render` has no draw path for `ModelInstance`s yet, so
+brush entities (doors, buttons, platforms) are not visually drawn or
+animated in the viewer even though their state machines run; `func_door_rotating`
+is dispatched through the same `Door` component as a translating door rather
+than a rotation; damage-triggered doors/buttons (`health`), sounds, and
+`momentary_door`/`func_train`/monster-driven `path_corner` following are not
+implemented.
+
 ## M6 (Rust): models and animation
 
 Status: in progress. Studio models (MDL v10) load, skin, animate and render
@@ -1009,7 +1072,7 @@ screens, and an editable bindings screen.
 
 - M3: BSP rendering (Rust first light in progress, see above)
 - M4: player movement (M4.1 hulls and walking in progress, see above)
-- M5: interactive entities
+- M5: interactive entities (Rust `ohl-game`, M5.1, in progress, see above)
 - M6: models and animation (Rust studio models in progress, see above)
 - M7: combat
 - M8: full campaign compatibility
