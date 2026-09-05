@@ -137,10 +137,17 @@ pub fn build_draw_list_for_model(
             // `lightmap_uv` note above), so this reads as the same neutral
             // white an unlit worldspawn face gets.
             average_light: [1.0, 1.0, 1.0],
+            // This module does not resolve texture names (only the
+            // resolved `textures` slot index), so it cannot classify a
+            // liquid surface (see `crate::water::is_liquid_texture`); every
+            // face is treated as opaque, matching this function's
+            // pre-existing (liquid-unaware) behaviour.
+            is_liquid: false,
         });
     }
 
-    let ((vertices, indices), _bounds, _faces, batches, _order) = assemble(&pending, (1.0, 1.0));
+    let ((vertices, indices), _bounds, _faces, batches, _liquid_batches, _order) =
+        assemble(&pending, (1.0, 1.0));
     Ok(BrushModelGeometry {
         vertices,
         indices,
