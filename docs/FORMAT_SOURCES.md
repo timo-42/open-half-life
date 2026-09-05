@@ -23,6 +23,79 @@ content identity to user-provided media. Known-answer tests use the published
 empty-string and `abc` vectors plus a multi-block vector; no proprietary data
 is used in tests.
 
+## GoldSrc BSP v30 and WAD3
+
+- "Unofficial Quake Specs", Quake Documentation version 3.4, Section 4 "Level
+  Map Models" (compiled by Uwe Girlich with contributions credited on the
+  document including Olivier Montanuy, Frank Maddin, Simon Cooke, and Frans
+  P. de Vries; public since 1996), mirrored at
+  <https://www.gamers.org/dEngine/quake/spec/quake-spec34/qkspec_4.htm>:
+  documents the id Software BSP29 `dheader_t` (magic-free `version` field
+  followed by 15 `{offset, length}` directory lumps in a fixed order:
+  entities, planes, miptex, vertices, visilist, nodes, texinfo, faces,
+  lightmaps, clipnodes, leaves, lface, edges, ledges, models), the
+  `plane_t`, `miptex_t`/`mipheader_t`, `vertex_t`, run-length-encoded
+  `vislist` (a `0` byte begins a run of empty/all-invisible bytes whose count
+  follows in the next byte), `node_t`, `surface_t` (texinfo), `face_t`,
+  `lightmap` byte array, `clipnode_t`, `dleaf_t`, `lface` mark-surface array,
+  `edge_t`, signed `ledges` (surfedges), and `model_t` layouts. This project's
+  `bsp30` module reuses this lump order, directory shape, and every struct
+  layout except where GoldSrc BSP v30 diverges (see below); it is the basis
+  for `Bsp30Header`, `Plane`, `Vertex`, `Edge`, the signed `Surfedge`, and the
+  `Model` accessor.
+- Valve Developer Community, "BSP (GoldSrc)"
+  (<https://developer.valvesoftware.com/wiki/BSP_(GoldSrc)>, community wiki
+  content under CC BY-NC-SA 3.0, reviewed 2026-09-05; the article is marked a
+  stub and carries no separate author/date byline): documents that GoldSrc
+  raised the BSP version field to `30`, keeps the same 15-lump directory
+  shape as BSP29, and diverges from BSP29 in the following struct fields used
+  by this project: `BSPNODE` (`iPlane: uint32`, signed `int16` children,
+  `int16` mins/maxs, `uint16` firstFace/nFaces), `BSPCLIPNODE` (`int32`
+  `iPlane`, two `int16` children), `BSPLEAF` (`int32 nContents`, `int32
+  nVisOffset`, `int16` mins/maxs, `uint16` iFirstMarkSurface/nMarkSurfaces,
+  four `uint8 nAmbientLevels`), `BSPFACE` (`uint16 iPlane`, `uint16
+  nPlaneSide`, `uint32 iFirstEdge`, `uint16 nEdges`, `uint16 iTextureInfo`,
+  four `uint8 nStyles`, `int32 nLightmapOffset`), `BSPTEXTUREINFO` (two
+  `VECTOR3D`+`float` shift pairs, `uint32 iMiptex`, `uint32 nFlags`), the
+  `BSPMIPTEX` in-lump header (`char szName[16]`, `uint32 nWidth/nHeight`, four
+  `uint32 nOffsets` that are `0` when the texture is stored externally in a
+  WAD instead of embedded), and that the lighting lump is an array of RGB
+  byte triples rather than BSP29's single-channel samples. This project's
+  `bsp30` module uses this page for `Node`, `Clipnode`, `Leaf`, `Face`,
+  `TexInfo`, the embedded/external `Miptex` header, and the RGB `Lighting`
+  lump; the RLE visibility algorithm itself is taken from the BSP29 source
+  above, which this page does not restate. This page documents only the
+  20-byte `BSPMIPTEX` header (name/width/height/four offsets) and the
+  external-texture convention (all four offsets `0`); it does not describe
+  the embedded pixel/palette body. For an embedded miptex's mip pixel arrays
+  and trailing palette this project reuses the WAD3 miptex body layout
+  documented below, since GoldSrc embeds the identical miptex body inline in
+  the BSP texture lump instead of inside a WAD3 directory entry.
+- "Unofficial Half-Life WAD3 and SPRITE file format specification", Revision
+  05, Author: Yuraj, Date: 15.01.2012, published at
+  <http://yuraj.ucoz.com/> (stable mirror used for this review:
+  <https://yuraj11.github.io/old-files/half-life-formats.pdf>): documents the
+  WAD3 header (`"WAD3"` magic, `uint32` texture count, `uint32` directory
+  offset), the 32-byte directory entry (`uint32` offset, `uint32` compressed
+  length, `uint32` full length, `uint8` type, `uint8` compression, 2 bytes
+  padding, 16-byte null-padded name), the entry type bytes (`0x40`
+  spraydecal/tempdecal, `0x42` qpic/cached, `0x43` miptex, `0x46` font), and
+  the miptex texture body (16-byte name, `uint32` width/height, four `uint32`
+  mip offsets relative to the texture body start, indexed pixel data sized
+  `width*height`, `width/2*height/2`, `width/4*height/4`, `width/8*height/8`
+  for the four mip levels, a trailing `uint16` palette-length field observed
+  as `256`, and 768 bytes of 24-bit RGB palette). This project's `wad3`
+  module implements `Wad3Header`, `DirectoryEntry`, the entry-type constants,
+  and `Miptex` directly from this document.
+
+The project-owned `bsp30` and `wad3` decoders in `crates/ohl-formats` are
+zero-copy, bounds-checked readers over these documented layouts; every count,
+offset, and index is validated against the actual lump/file bounds before use
+(see `crates/ohl-formats/src/error.rs` for the fixed rejection reasons). All
+test fixtures are synthesized in-process by this project's own writers in
+`crates/ohl-formats/src/test_support.rs`; no bytes, names, or other content
+from any game installation are used or committed.
+
 ## Cabinet and component-selection parsing
 
 Project-owned cabinet or installer component-selection parsing logic requires

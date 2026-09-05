@@ -319,6 +319,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ohl-formats"
+version = "0.1.0"
+dependencies = [
+ "ohl-core",
+ "ohl-formats",
+ "proptest",
+ "zerocopy",
+]
+
+[[package]]
 name = "ohl-platform"
 version = "0.1.0"
 dependencies = [
