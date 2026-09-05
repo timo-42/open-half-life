@@ -1,0 +1,48 @@
+# Standalone (non-member) package for the freestanding Linux media-parser
+# worker image.
+#
+# It is deliberately *not* a member of the repository workspace:
+#
+# - a `#![no_std] #![no_main]` binary can only be compiled with
+#   `panic = "abort"` ("unwinding panics are not supported without std"), and
+#   `panic` is a profile-level setting that cannot be scoped to one package
+#   inside a workspace (`profile.<p>.package.<name>.panic` is rejected by
+#   Cargo);
+# - the workspace root manifest is owned by another work package and must not
+#   grow a `[profile]` section for one binary;
+# - `unsafe_code` is `forbid` workspace-wide, and this package needs a local
+#   `allow` for its documented entry point, syscall and `mem` shims.
+#
+# `ohl-parser-worker` (the workspace member one directory up) drives `cargo
+# build` for this package with an explicit `--target-dir`, so nothing here is
+# ever built by a plain `cargo build --workspace`.
+[package]
+name = "ohl-parser-worker-image"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "ohl-media-parser-worker"
+path = "src/main.rs"
+
+[dependencies]
+ohl-parser-protocol = { path = "../../ohl-parser-protocol", version = "=0.1.0" }
+ohl-parser-worker-service = { path = "../../ohl-parser-worker-service", version = "=0.1.0" }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = true
+# Debug info is dropped, but the symbol table is kept on purpose: `cargo xtask
+# worker-image` proves the image references no libc symbol and has no
+# undefined symbol, which needs `.symtab` to be present.
+strip = "debuginfo"
+codegen-units = 1

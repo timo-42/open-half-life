@@ -4,7 +4,9 @@
 //! - `cargo xtask graph` validates the crate dependency graph against the
 //!   allowed edges from `.plan/rust-architecture-r1.md` section 1.
 //! - `cargo xtask worker-image` builds the freestanding isolated-worker test
-//!   image and proves it is a static, non-interpreted `ET_EXEC` binary.
+//!   image and the shipping media-parser worker image, proves each is a
+//!   static, non-interpreted `ET_EXEC` binary, and installs the latter at
+//!   `<target>/<profile>/libexec/open-half-life/ohl-media-parser-worker`.
 
 mod graph;
 mod policy;
