@@ -820,3 +820,128 @@ guessed at:
 All fixtures are produced by the project's own writer in
 `crates/ohl-mscab/src/test_support.rs` and `src/lzx_writer.rs`, using invented
 file names and synthetic payloads.
+
+## Wise Installation System packages
+
+The `crates/ohl-wise` reader is **written only from the public documents below**.
+No implementation source, no ImHex pattern and no decompiled code was read or
+copied; the REWise project's code and its ImHex pattern are GPL-3.0 and were
+deliberately excluded, so only that project's README prose and field tables were
+consulted. `THIRD_PARTY_NOTICES.md` records that this crate contains no
+third-party code.
+
+### Sources
+
+- **"Wise installer package"**, Just Solve the File Format Problem (Archive Team
+  file formats wiki), content licensed CC0, retrieved 5 September 2026.
+  <http://fileformats.archiveteam.org/wiki/Wise_installer_package>
+  Sections used: the *FormatInfo* block (self-extracting Windows executable,
+  extension `.exe`, released about 1992, produced by Wise Installation System and
+  its successors) and the lead paragraph ("It uses DEFLATE compression. Several
+  utilities have been developed to directly extract the component files.
+  Evidently, it's challenging to support all the different format variants"), plus
+  the *Software* list, which is where the two corroborating tools below come from.
+- **REWise README**, CYBERDEV, GPL-3.0 project, README prose and tables only,
+  retrieved 5 September 2026. <https://codeberg.org/CYBERDEV/REWise>
+  **Terms note:** the project's *code* and its ImHex pattern are GPL-3.0 and were
+  not read, not opened and not copied; only the README's textual description of
+  the container was used, as a statement of facts about the format.
+  Sections used: *Technical* — "A Wise installer is a PE or NE executable with
+  extra data appended to the end of it (overlay-data at the overlay-offset). The
+  overlay-data contains a Wise specific header. After the Wise header there is raw
+  `DEFLATE`d data without file-headers, after each `DEFLATE`d data entry there is a
+  CRC32 for the inflated data. The `DEFLATE`d data + CRC32 continues until `EOF`.
+  Unless the installer is created with the `zip` support option, then before each
+  `DEFLATE` data there is a `zip` local file header, and there is no CRC32 after
+  the `DEFLATE` data since it is in the `zip` local file header."; the statement
+  that the first inflated file is a `.dib` colour file that is skipped and the
+  second is a binary script file carrying the installation metadata; the per-file
+  script-record field table (two unknown bytes, deflate start and end offsets as
+  `uint32_t`, file date and file time as `uint16_t` each, inflated size as
+  `uint32_t`, twenty null bytes, a CRC-32 that is checked only when non-zero, a
+  NUL-terminated destination file name, language-specific file text entries, and a
+  terminating null byte); the *PE build dates* table of known stub overlay offsets
+  (`0x3800`, `0x3A00`, `0x3C00`, `0x3E00`, `0x4C00`, `0x5200`, `0x5E00`, `0x9C00`,
+  and one stub whose overlay lives in `.rsrc`), with PE build dates from October
+  1998 to October 2001 and stub versions 7.01 through 9.02.204.0; and *Known
+  issues* — "The `ScriptDeflateOffset` isn't correct on some installers, there are
+  still some unknowns on how to calculate this proper", "WiseScript `OP 0x18` is
+  not understood", the note that language/component association still has
+  unknowns, that installers whose inflated size exceeds the advertised size are
+  rejected by that tool, and that multi-file/multi-disc installers and patch
+  operations are unsupported.
+- **`rewise(1)` manual page**, openSUSE Tumbleweed manual pages, rewise 0.3.0,
+  retrieved 5 September 2026.
+  <https://manpages.opensuse.org/Tumbleweed/rewise/rewise.1.en.html>
+  Sections used: the description (extraction "without executing" the PE/NE file,
+  targeting installers released between 1999 and 2004), and the operations list —
+  extract, raw-extract of all overlay data, list, and verify CRC-32 without
+  writing output — which corroborates that per-entry CRC-32 verification is the
+  container's own integrity mechanism.
+- **exwise 0.5 README.TXT**, Andrew de Quincey, 1998 (corroboration only).
+  <https://github.com/lmop/exwise>
+  Sections used: *Notes* — "The WISE executable is basically a stub with a load of
+  Zip deflated files stuck on the end, missing the standard zip headers" — and
+  *Usage*/*Problems* — "filenames are NOT preserved in the wise executable; you
+  need to parse the install script to find those out", which independently
+  confirms both the raw-DEFLATE chain and that names live only in the script.
+- **Microsoft PE/COFF Specification** (public), used for overlay location: the
+  DOS header's `e_lfanew` at offset `0x3C`, the `PE\0\0` signature, the COFF file
+  header (`NumberOfSections`, `SizeOfOptionalHeader`), and the 40-byte section
+  headers (`SizeOfRawData`, `PointerToRawData`). The overlay begins at the highest
+  `PointerToRawData + SizeOfRawData`.
+  <https://learn.microsoft.com/windows/win32/debug/pe-format>
+- **RFC 1951**, *DEFLATE Compressed Data Format Specification version 1.3*, for
+  the raw DEFLATE streams, which are decoded by the `miniz_oxide` dependency
+  through its streaming `inflate` interface. Block type 3 being reserved (section
+  3.2.3) is used to skip impossible candidate offsets during the header scan.
+  <https://www.rfc-editor.org/rfc/rfc1951>
+- **CRC-32 definition**, ITU-T V.42 section 8.1.1.6.2 and RFC 1952 section 8
+  (*Gzip file format specification*), which specify the reflected polynomial
+  `0xEDB88320`, the initial value and final complement, and the 256-entry table
+  algorithm. The table is derived at compile time from the polynomial in
+  `crates/ohl-wise/src/crc32.rs`; no table constant was transcribed. The published
+  check value for `"123456789"` (`0xCBF43926`) is asserted in a unit test.
+  <https://www.rfc-editor.org/rfc/rfc1952#section-8>
+
+### Project behaviour supported
+
+`crates/ohl-wise` locates the overlay from the PE section table (or accepts a
+caller-supplied offset, since the stub offsets above are published), then locates
+the first compressed stream by a bounded scan of at most 4 KiB that accepts a
+candidate only when it inflates cleanly as raw DEFLATE and is followed by a `u32`
+equal to the CRC-32 of the inflated bytes. **No Wise header field is decoded**,
+because no public source documents the header's layout; only its observed length
+is reported. The `zip`-enabled variant is detected by its `PK\x03\x04` local file
+header signature and rejected rather than misparsed. The chain is then walked to
+end of file, streaming each entry through `miniz_oxide` in caller-bounded chunks,
+computing the CRC-32 incrementally and comparing it with the trailing `u32`; a
+mismatch is reported, not hidden, and a bounded one-to-three-byte resynchronisation
+is attempted before accepting a mismatch, with every resynchronisation reported as
+an event.
+
+The script binary (the second stream) is **not** interpreted as an instruction
+stream: no opcode is decoded, because no public source documents the opcode
+vocabulary or the length of any other record, and guessing would silently mis-skip
+at the first unknown opcode. Only the documented per-file record above is
+recognised, structurally, requiring the twenty zero bytes, a non-zero inflated
+size within the configured ceiling, and a non-empty printable NUL-terminated path.
+The stored deflate offsets are validated and reported but are advisory: REWise
+documents that they are not correct on some installers, and that is reproducible.
+Records are therefore mapped onto streams by verifiable content evidence — the
+declared CRC-32 and inflated size must equal a measured stream's — falling back to
+the stored offsets (overlay-relative, image-absolute, or first-stream-relative,
+whichever matches most records) only when a record declares no checksum. Streams
+that no record claims stay reachable by chain index, so extraction works even for
+packages whose script names nothing.
+
+Anti-abuse limits bound every axis: PE header bytes, section count, header scan
+distance, stream count, compressed and inflated bytes per stream, total inflated
+bytes, script bytes, file-record count and path bytes. Every walk can be cancelled
+between chunks. Every failure is a fixed, project-defined code; destination paths
+are exposed as a byte string whose `Debug` prints only a length.
+
+All test fixtures are produced by a synthetic writer authored for this project
+(`ohl_wise::testing`), which invents its own PE stub, header filler, bitmap,
+script records and file contents. No byte, name, size or layout from any real
+medium appears in the code, tests, fixtures or this file.

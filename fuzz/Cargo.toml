@@ -8,6 +8,9 @@
 #     cargo +nightly fuzz run udf_preflight
 #     cargo +nightly fuzz run cabinet_header
 #     cargo +nightly fuzz run cabinet_extract
+#     cargo +nightly fuzz run wise_package
+#     cargo +nightly fuzz run wise_chain
+#     cargo +nightly fuzz run wise_script
 #     cargo +nightly fuzz run isz_header
 #     cargo +nightly fuzz run isz_explode
 [workspace]
@@ -29,6 +32,7 @@ ohl-iso9660 = { path = "../crates/ohl-iso9660", version = "=0.1.0" }
 ohl-udf = { path = "../crates/ohl-udf", version = "=0.1.0" }
 ohl-media-archive = { path = "../crates/ohl-media-archive", version = "=0.1.0" }
 ohl-cabinet-format = { path = "../crates/ohl-cabinet-format", version = "=0.1.0", features = ["test-support"] }
+ohl-wise = { path = "../crates/ohl-wise", version = "=0.1.0", features = ["test-support"] }
 ohl-cabinet = { path = "../crates/ohl-cabinet", version = "=0.1.0", features = [
     "inflate",
     "md5",
@@ -77,6 +81,27 @@ bench = false
 [[bin]]
 name = "isz_explode"
 path = "fuzz_targets/isz_explode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wise_package"
+path = "fuzz_targets/wise_package.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wise_chain"
+path = "fuzz_targets/wise_chain.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wise_script"
+path = "fuzz_targets/wise_script.rs"
 test = false
 doc = false
 bench = false

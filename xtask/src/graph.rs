@@ -38,6 +38,11 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
     // Unlike the cabinet crates it is written from public documentation, so
     // it is an ordinary project-owned leaf over `ohl-core` (R4).
     ("ohl-isz", &["ohl-core"]),
+    // Clean-room Wise Installation System package decoder: PE overlay, the
+    // CRC-32-terminated DEFLATE stream chain, the script file table and
+    // bounded extraction. Written from public documentation, so it is an
+    // ordinary project-owned leaf over `ohl-core` (R4).
+    ("ohl-wise", &["ohl-core"]),
     ("ohl-cabinet", &["ohl-cabinet-format"]),
     ("ohl-platform", &["ohl-core"]),
     // Development-only: builds the freestanding isolated-worker test image.
