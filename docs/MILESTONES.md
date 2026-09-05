@@ -1200,10 +1200,47 @@ and always reports a fraction in `0..=1` with its impact point on the traced
 segment, while damage application never restores health or armour and never
 removes more than the target had.
 
-Not yet done: everything else in M7 — the weapon table and firing state
-machines, projectiles and radius damage, ammo and inventory, `ohl-ai`,
-per-monster definitions, and the player systems (fall damage, drowning,
-flashlight, long jump) with their save sections.
+Package M7.2 adds `ammo`, `weapons` and `firing` to `ohl-combat`, on top of
+the M7.1 skeleton above; see `docs/FORMAT_SOURCES.md`, "Weapons and firing
+(M7.2)" for its sources.
+
+- `ammo`: `AmmoType`, Half-Life's twelve published ammunition classes, each
+  with its published carry cap where a usable source states one (`Snarks`'
+  cap does not and is an explicit, marked black-box placeholder); a bounded
+  `AmmoPool` that never exceeds capacity and never goes negative.
+- `weapons`: `WeaponId`'s fourteen weapons and a `const fn spec` table of
+  `WeaponSpec`s (kind, damage, clip size, ammo type, cycle time, reload time,
+  an optional secondary fire), one cited comment per entry; every value this
+  project could not confirm on a usable source is wrapped in `BlackBox<T>`
+  with a `// TODO(black-box)` marker instead of being invented.
+- `firing`: `FiringState`, a deterministic per-weapon state machine
+  (`Idle`, `Firing`, `Reloading`, `Charging`, `Beam`, `Holstered`) driven by
+  `tick(dt, WeaponInput, &mut AmmoPool)`, producing `WeaponAction`s
+  (`Hitscan`, `Melee`, `SpawnProjectile`, `BeamTick`, `PlaySequence`,
+  `Sound`, `Empty`) and consuming clip or pool ammo as it goes; the gauss
+  gun's published charge/overcharge rule (a release before 10 seconds scales
+  damage 25..=200, a hold past 10 seconds deals 50 self-damage instead) is
+  implemented directly. `resolve_hitscan` turns a hitscan action and
+  `trace_attack` results into `DamageInfo` records at the spec's damage and
+  damage type.
+
+Verified: the weapon table's published numbers are asserted against the
+design table; firing cycles (fire, then cannot fire again until the cycle
+time elapses, then can), reloads (only when the clip is short and the pool
+has ammo) and dry fire (no ammo anywhere) are covered by unit tests; the
+gauss charge/overcharge behaviour and the hornet gun's regenerating-clip
+placeholder each have a dedicated test; a `.357` shot and a shotgun blast
+against a target in the project's synthetic collision room deposit their
+documented per-hit damage through the same `trace_attack` /
+`resolve_hitscan` / `apply_damage` pipeline the composition root will drive;
+and `proptest` shows the state machine never panics over arbitrary weapons,
+starting ammo and input sequences, that its ammo pool never exceeds capacity,
+and that a gauss charge/release always yields a charge damage in `25..=200`,
+a self-damage of exactly 50, or neither, never both.
+
+Not yet done: everything else in M7 — projectiles and radius damage, ammo and
+inventory pickups, `ohl-ai`, per-monster definitions, and the player systems
+(fall damage, drowning, flashlight, long jump) with their save sections.
 
 ## M8 (Rust): save container
 
