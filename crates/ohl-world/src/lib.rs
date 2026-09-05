@@ -36,10 +36,12 @@ pub use brush::{BrushModelGeometry, build_draw_list_for_model};
 pub use culling::{Aabb, Frustum};
 pub use error::{Result, WorldError};
 pub use geometry::{FaceGeometry, VERTEX_BYTES, WorldVertex, index_bytes, vertex_bytes};
-pub use lightmap::{LightmapExtents, ShelfPacker, ShelfRect, lightmap_extents};
+pub use lightmap::{
+    LightRamp, LightRampTable, LightmapExtents, ShelfPacker, ShelfRect, lightmap_extents,
+};
 pub use model::{
-    DrawBatch, DrawList, LIGHTMAP_ATLAS_MAX_HEIGHT, LIGHTMAP_ATLAS_WIDTH, WorldBuildOptions,
-    WorldModel,
+    DrawBatch, DrawList, LIGHTMAP_ATLAS_MAX_HEIGHT, LIGHTMAP_ATLAS_WIDTH, SubmodelSet,
+    WorldBuildOptions, WorldModel,
 };
 pub use sky::{SKY_FACE_SUFFIXES, SkyboxAsset, is_sky_texture};
 pub use spawn::{PlayerSpawn, find_player_start};

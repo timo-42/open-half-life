@@ -6,7 +6,8 @@ use ohl_world::test_support::{
     EXTERNAL_TEXTURE_NAME, ROOM_FACE_COUNT, ROOM_HALF_WIDTH, synthetic_room_bsp, synthetic_room_wad,
 };
 use ohl_world::{
-    BspLimits, DrawList, Frustum, TextureImage, WorldBuildOptions, WorldModel, lightmap_extents,
+    BspLimits, DrawList, Frustum, LightRamp, TextureImage, WorldBuildOptions, WorldModel,
+    lightmap_extents,
 };
 
 use ohl_formats::bsp30::Bsp;
@@ -16,7 +17,15 @@ fn build(wads: &[&[u8]]) -> (Vec<u8>, WorldModel) {
     let model = {
         let limits = BspLimits::default();
         let bsp = Bsp::parse(&bytes, &limits).expect("synthetic room parses");
-        WorldModel::build(&bsp, &WorldBuildOptions { wads, limits }).expect("synthetic room builds")
+        WorldModel::build(
+            &bsp,
+            &WorldBuildOptions {
+                wads,
+                limits,
+                ..WorldBuildOptions::default()
+            },
+        )
+        .expect("synthetic room builds")
     };
     (bytes, model)
 }
@@ -172,4 +181,98 @@ fn writes_the_synthetic_room_for_manual_checks() {
         synthetic_room_wad(),
     )
     .expect("temporary directory is writable");
+}
+
+fn build_with_ramp(ramp: LightRamp) -> WorldModel {
+    let bytes = synthetic_room_bsp();
+    let limits = BspLimits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("synthetic room parses");
+    WorldModel::build(
+        &bsp,
+        &WorldBuildOptions {
+            wads: &[],
+            limits,
+            ramp,
+        },
+    )
+    .expect("synthetic room builds")
+}
+
+/// Every packed luxel must be the raw compiled sample mapped through the
+/// documented ramp, and the composed product of a known texel and a known
+/// luxel must land on a pinned code value.
+///
+/// The raw product a plain multiply would give is what made every capture
+/// 2.5-3x too dark; this pins the tone curve so that regression cannot
+/// return unnoticed.
+#[test]
+fn lightmap_samples_are_ramped_before_they_reach_the_atlas() {
+    let raw = build_with_ramp(LightRamp::identity());
+    let ramped = build_with_ramp(LightRamp::default());
+    let table = LightRamp::default().table();
+
+    let raw_pixels = raw.lightmap_atlas.rgba();
+    let ramped_pixels = ramped.lightmap_atlas.rgba();
+    assert_eq!(raw_pixels.len(), ramped_pixels.len());
+    let (raw_chunks, _) = raw_pixels.as_chunks::<4>();
+    let (ramped_chunks, _) = ramped_pixels.as_chunks::<4>();
+    for (raw_byte, ramped_byte) in raw_chunks.iter().zip(ramped_chunks.iter()) {
+        for channel in 0..3 {
+            assert_eq!(table.apply(raw_byte[channel]), ramped_byte[channel]);
+        }
+        assert_eq!(
+            raw_byte[3], ramped_byte[3],
+            "the ramp touches colour only, never alpha"
+        );
+    }
+
+    // The composed value a plain-multiply shader produces for a mid-grey
+    // texel (0x80) over the fixture's darkest luxel (0x40).
+    let texel = 0x80u32;
+    let luxel = 0x40u8;
+    let raw_product = texel * u32::from(luxel) / 255;
+    let ramped_product = texel * u32::from(table.apply(luxel)) / 255;
+    assert_eq!(
+        raw_product, 0x20,
+        "the un-ramped product is the old baseline"
+    );
+    assert_eq!(
+        ramped_product, 68,
+        "the ramped product is the pinned tone-curve constant"
+    );
+}
+
+/// An unlit/fullbright face samples the reserved white tile, which the ramp
+/// must leave at white (the ramp fixes both endpoints).
+#[test]
+fn the_fullbright_white_tile_survives_the_ramp() {
+    let model = build_with_ramp(LightRamp::default());
+    let atlas = model.lightmap_atlas.rgba();
+    assert_eq!(
+        &atlas[..4],
+        &[255, 255, 255, 255],
+        "the reserved 1x1 white tile stays fullbright"
+    );
+}
+
+/// `build_submodels` reports a submodel that will not build instead of
+/// dropping it, so an entity that should be visible cannot vanish silently.
+#[test]
+fn build_submodels_reports_failures_instead_of_dropping_them() {
+    let bytes = synthetic_room_bsp();
+    let limits = BspLimits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("synthetic room parses");
+    let options = WorldBuildOptions {
+        wads: &[],
+        limits,
+        ..WorldBuildOptions::default()
+    };
+    let count = WorldModel::submodel_count(&bsp, &limits).expect("model lump decodes");
+    assert!(count >= 1, "worldspawn is always model 0");
+    let set = WorldModel::build_submodels(&bsp, &options, &[0, count + 7]);
+    assert_eq!(set.models.len(), 1);
+    assert_eq!(set.models[0].0, 0);
+    assert_eq!(set.failure_count(), 1);
+    assert_eq!(set.failures[0].0, count + 7);
+    assert_eq!(set.failures[0].1, ohl_world::WorldError::SubmodelOutOfRange);
 }

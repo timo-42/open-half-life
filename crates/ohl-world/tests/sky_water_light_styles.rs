@@ -87,7 +87,15 @@ fn build_model() -> WorldModel {
     let bytes = synthetic_bsp();
     let limits = BspLimits::default();
     let bsp = Bsp::parse(&bytes, &limits).expect("synthetic map parses");
-    WorldModel::build(&bsp, &WorldBuildOptions { wads: &[], limits }).expect("synthetic map builds")
+    WorldModel::build(
+        &bsp,
+        &WorldBuildOptions {
+            wads: &[],
+            limits,
+            ..WorldBuildOptions::default()
+        },
+    )
+    .expect("synthetic map builds")
 }
 
 #[test]

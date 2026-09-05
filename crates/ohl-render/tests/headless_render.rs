@@ -38,6 +38,7 @@ fn render_frame() -> Option<Vec<u8>> {
         &WorldBuildOptions {
             wads: &[&wad],
             limits,
+            ..WorldBuildOptions::default()
         },
     )
     .expect("synthetic room builds");

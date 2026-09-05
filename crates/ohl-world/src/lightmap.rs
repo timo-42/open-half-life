@@ -32,6 +32,150 @@ impl LightmapExtents {
     }
 }
 
+/// The documented GoldSrc lighting-ramp parameters applied to compiled
+/// lightmap samples at atlas-build time.
+///
+/// GoldSrc does not composite raw luxels: the documented client cvars
+/// `texgamma`, `lightgamma`, `brightness` and `gamma` describe a load-time
+/// ramp between the compiled lightmap and the gamma space the diffuse
+/// texture is multiplied in (Valve Developer Community, "Lightmap
+/// (GoldSrc)"; MetaHookSv renderer documentation, which states that
+/// `texgamma` "convert[s] textures from gamma color space to linear color
+/// space", `lightgamma` "convert[s] lightmaps from gamma color space to
+/// linear color space", `brightness` "shift[s] up the lightgamma and make[s]
+/// lightmaps brighter" and `gamma` "control[s] the final output gamma"; see
+/// `docs/FORMAT_SOURCES.md`, "Rendering conventions"). The published
+/// documentation gives the conventions and the cvar defaults but no
+/// transcribable formula, so the composition below is this project's own
+/// parameterised reconstruction of them, calibrated black-box against
+/// public screenshots; no engine source was consulted.
+///
+/// For a stored luxel `l` in `0.0..=1.0` the ramp is
+///
+/// ```text
+/// display = l ^ (1 / lightgamma)                       // lightgamma ramp
+/// shifted = clamp(display * overbright + brightness, 0, 1)
+/// out     = shifted ^ (lightgamma / texgamma)          // into texture space
+/// ```
+///
+/// Step 1 encodes the compiled sample (an accumulated, linear light
+/// intensity) through the documented `lightgamma` ramp. Step 2 is the
+/// documented `brightness` shift and the overbright/lightscale multiplier,
+/// with the documented clamp to the representable range. Step 3 rebases the
+/// result from `lightgamma` space into the `texgamma` space the decoded
+/// 8-bit diffuse texture is already stored in, so the shader's product of
+/// the two samples is a same-space product and `world.wgsl` stays a plain
+/// multiply.
+///
+/// At the documented defaults the composition reduces to `l ^ (1 /
+/// texgamma)`, a ~2.1x lift on mid-tone luxels and the identity at both
+/// endpoints; `brightness`/`overbright` are the only stages that clip.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LightRamp {
+    /// The documented `texgamma` cvar (default `2.2`): the gamma space the
+    /// diffuse texture samples are stored in, and therefore the space the
+    /// ramp's output is rebased into.
+    pub texgamma: f32,
+    /// The documented `lightgamma` cvar (default `2.5`, matching the
+    /// 1998-era default `gamma 2.5`): the gamma of the ramp applied to the
+    /// compiled lightmap sample.
+    pub lightgamma: f32,
+    /// The documented `brightness` cvar, as an additive shift in `0.0..=1.0`
+    /// of the ramped value (default `0.0`, i.e. no shift).
+    pub brightness: f32,
+    /// The documented overbright/lightscale multiplier applied to the ramped
+    /// value before the clamp (default `1.0`, i.e. no overbright).
+    pub overbright: f32,
+}
+
+impl Default for LightRamp {
+    fn default() -> Self {
+        Self {
+            texgamma: 2.2,
+            lightgamma: 2.5,
+            brightness: 0.0,
+            overbright: 1.0,
+        }
+    }
+}
+
+impl LightRamp {
+    /// A ramp that leaves every sample untouched, for callers (and tests)
+    /// that want the raw compiled luxels.
+    #[must_use]
+    pub fn identity() -> Self {
+        Self {
+            texgamma: 1.0,
+            lightgamma: 1.0,
+            brightness: 0.0,
+            overbright: 1.0,
+        }
+    }
+
+    /// Evaluates the ramp for one normalised sample in `0.0..=1.0`.
+    #[must_use]
+    pub fn evaluate(&self, sample: f32) -> f32 {
+        let lightgamma = if self.lightgamma.is_finite() && self.lightgamma > 0.0 {
+            self.lightgamma
+        } else {
+            1.0
+        };
+        let texgamma = if self.texgamma.is_finite() && self.texgamma > 0.0 {
+            self.texgamma
+        } else {
+            1.0
+        };
+        let brightness = if self.brightness.is_finite() {
+            self.brightness
+        } else {
+            0.0
+        };
+        let overbright = if self.overbright.is_finite() {
+            self.overbright.max(0.0)
+        } else {
+            1.0
+        };
+        let display = sample.clamp(0.0, 1.0).powf(1.0 / lightgamma);
+        let shifted = (display * overbright + brightness).clamp(0.0, 1.0);
+        shifted.powf(lightgamma / texgamma).clamp(0.0, 1.0)
+    }
+
+    /// Bakes the ramp into a 256-entry lookup table over 8-bit code values.
+    #[must_use]
+    pub fn table(&self) -> LightRampTable {
+        let mut entries = [0u8; 256];
+        for (code, entry) in entries.iter_mut().enumerate() {
+            #[allow(clippy::cast_precision_loss)]
+            let sample = code as f32 / 255.0;
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            {
+                *entry = (self.evaluate(sample) * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
+            }
+        }
+        LightRampTable { entries }
+    }
+}
+
+/// A [`LightRamp`] baked into a 256-entry 8-bit lookup table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LightRampTable {
+    entries: [u8; 256],
+}
+
+impl Default for LightRampTable {
+    fn default() -> Self {
+        LightRamp::default().table()
+    }
+}
+
+impl LightRampTable {
+    /// Maps one 8-bit lightmap code value through the ramp.
+    #[must_use]
+    pub fn apply(&self, code: u8) -> u8 {
+        self.entries[code as usize]
+    }
+}
+
 /// The luxel spacing GoldSrc bakes lightmaps at, in texture units.
 pub const LUXEL_SIZE: f32 = 16.0;
 
@@ -176,7 +320,7 @@ impl ShelfPacker {
 
 #[cfg(test)]
 mod tests {
-    use super::{LUXEL_SIZE, ShelfPacker, lightmap_extents};
+    use super::{LUXEL_SIZE, LightRamp, ShelfPacker, lightmap_extents};
 
     #[test]
     fn a_single_luxel_face_is_one_by_one() {
@@ -217,6 +361,80 @@ mod tests {
         assert_eq!((a.x, a.y), (0, 0));
         assert_eq!(b.y, 4, "second rect must start a new shelf");
         assert_eq!(packer.used_height(), 6);
+    }
+
+    #[test]
+    fn default_ramp_fixes_the_endpoints_and_lifts_mid_tones() {
+        let table = LightRamp::default().table();
+        assert_eq!(table.apply(0), 0, "black stays black");
+        assert_eq!(table.apply(255), 255, "a fully lit luxel stays fully lit");
+        // A typical corridor luxel must land well above its raw code value:
+        // the whole point of the ramp is that the 8-bit atlas spends more
+        // than the ~20 code values a raw copy uses.
+        let lifted = table.apply(64);
+        assert!(
+            (130..=142).contains(&lifted),
+            "a 0x40 luxel ramps to about 2.1x, got {lifted}"
+        );
+        assert!(table.apply(128) > 180);
+    }
+
+    #[test]
+    fn ramp_is_monotone_and_identity_is_a_no_op() {
+        let table = LightRamp::default().table();
+        let mut previous = 0;
+        for code in 0..=255u8 {
+            let value = table.apply(code);
+            assert!(value >= previous, "the ramp never darkens as input rises");
+            previous = value;
+        }
+        let identity = LightRamp::identity().table();
+        for code in 0..=255u8 {
+            assert_eq!(identity.apply(code), code);
+        }
+    }
+
+    #[test]
+    fn brightness_and_overbright_shift_and_clamp() {
+        let dark = LightRamp {
+            overbright: 0.0,
+            ..LightRamp::default()
+        }
+        .table();
+        assert_eq!(dark.apply(200), 0, "a zero overbright blacks the ramp out");
+        let bright = LightRamp {
+            brightness: 1.0,
+            ..LightRamp::default()
+        }
+        .table();
+        assert_eq!(
+            bright.apply(0),
+            255,
+            "the documented clamp caps the brightness shift at white"
+        );
+    }
+
+    #[test]
+    fn ramp_never_panics_on_degenerate_parameters() {
+        for ramp in [
+            LightRamp {
+                texgamma: 0.0,
+                lightgamma: -1.0,
+                brightness: f32::NAN,
+                overbright: f32::INFINITY,
+            },
+            LightRamp {
+                texgamma: f32::NAN,
+                lightgamma: f32::NAN,
+                brightness: -10.0,
+                overbright: -3.0,
+            },
+        ] {
+            let table = ramp.table();
+            for code in 0..=255u8 {
+                let _ = table.apply(code);
+            }
+        }
     }
 
     #[test]

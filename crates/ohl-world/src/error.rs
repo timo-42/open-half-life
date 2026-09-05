@@ -17,6 +17,11 @@ pub enum WorldError {
     /// The map declares no submodels, so there is no worldspawn model to
     /// build geometry from.
     NoWorldModel,
+    /// The requested brush-entity submodel index (`"*N"`) is not present in
+    /// the map's model table. Distinct from [`Self::NoWorldModel`] so a
+    /// caller can tell "this map has no geometry at all" from "this entity
+    /// references a submodel this map does not declare".
+    SubmodelOutOfRange,
     /// A record referenced an index outside the table it points into.
     IndexOutOfRange,
     /// A count, size, or byte total exceeded this crate's configured
@@ -34,6 +39,7 @@ impl fmt::Display for WorldError {
         let message = match self {
             Self::Format(_) => "map lump failed to decode",
             Self::NoWorldModel => "map declares no worldspawn submodel",
+            Self::SubmodelOutOfRange => "map does not declare the requested brush submodel",
             Self::IndexOutOfRange => "index is out of range for the referenced table",
             Self::LimitExceeded => "count exceeds the configured limit",
             Self::NonFiniteGeometry => "face geometry is not finite",

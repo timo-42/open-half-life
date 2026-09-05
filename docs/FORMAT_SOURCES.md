@@ -457,6 +457,54 @@ render modes, light styles, and sprite billboarding/timing.
   and the sprite frame-timing helpers reproduce this 10 Hz cap and 10 fps
   default.
 
+- The GoldSrc lighting ramp (`ohl_world::LightRamp`, applied in
+  `crates/ohl-world/src/model.rs` as each face's lightmap tile is packed).
+  The public documentation describes the ramp's *conventions* and its cvar
+  defaults, but publishes no transcribable formula, so the composition in
+  `LightRamp::evaluate` is this project's own parameterised reconstruction
+  of those conventions, checked black-box against public screenshots. No
+  engine source was consulted; see `docs/CLEAN_ROOM.md`. The parameters are
+  left at their documented defaults rather than fitted: with the ramp
+  applied, headless captures still sit below the reference screenshots'
+  mean luminance, but the remaining gap is attributable to content those
+  references have and this renderer does not yet draw (the tram car's
+  placement, studio props and sprites), so fitting a gain to it now would
+  bake that gap into the tone curve. Sources:
+  - MetaHookSv renderer documentation
+    (<https://github.com/hzqst/MetaHookSv/blob/main/docs/Renderer.md>), which
+    documents the four GoldSrc cvars this ramp is parameterised on:
+    `texgamma` "convert[s] textures from gamma color space to linear color
+    space", `lightgamma` "convert[s] lightmaps from gamma color space to
+    linear color space", `brightness` "shift[s] up the lightgamma and make[s]
+    lightmaps brighter", and `gamma` "control[s] the final output gamma,
+    convert[s] colors from linear space to screen gamma space". It also
+    records that GoldSrc's own compositing happens in gamma space
+    ("`r_gamma_blend 1`: blends transparent objects in gamma space instead
+    of linear space (default vanilla behavior)"), which is why
+    `world.wgsl` stays a plain multiply and the ramp is applied upstream, at
+    atlas-build time.
+  - Valve Developer Community, "Lightmap (GoldSrc)"
+    (<https://developer.valvesoftware.com/wiki/Lightmap_(GoldSrc)>): the
+    compiled lightmap is a grid of accumulated light samples at one luxel
+    per 16 texture units, i.e. an intensity, not a display-referred colour.
+  - "GoldSrc Cinematography (No DemoEdit)"
+    (<https://steamcommunity.com/sharedfiles/filedetails/?id=1172439308>),
+    section 5b: documents the shipped defaults `lightgamma "2.5"`
+    ("adjusts the gamma of light sources on the map"), `gamma` and
+    `brightness`, and that a map reload is required for a change to take
+    effect — i.e. the ramp is a load-time transform of the lightmap, not a
+    per-frame one.
+
+  `LightRamp`'s defaults are the documented ones (`texgamma` 2.2,
+  `lightgamma` 2.5, `brightness` 0, `overbright` 1); at those values the
+  composition reduces to `sample ^ (1 / texgamma)`, which lifts a mid-tone
+  luxel by about 2.1x while fixing both endpoints. `LightRamp::identity`
+  restores the raw compiled samples. The ramp is applied per light-style
+  layer before blending, so `WorldModel::blend_lightmap`'s weighted sum of
+  style intensities happens in the ramped space, consistent with the
+  documented "`a` dark / `m` normal / `z` double" intensity scale being a
+  brightness multiplier rather than an intensity one.
+
 All sky, liquid, render-mode, light-style and sprite tests in
 `crates/ohl-world` and `crates/ohl-render` (including the
 `OHL_RENDER_GPU_TEST`-gated offscreen sky/water tests) run only against

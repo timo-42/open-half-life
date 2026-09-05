@@ -229,8 +229,15 @@ fn run_liquid_pass_test() {
     let bytes = liquid_quad_bsp();
     let limits = BspLimits::default();
     let bsp = Bsp::parse(&bytes, &limits).expect("synthetic liquid map parses");
-    let model = WorldModel::build(&bsp, &WorldBuildOptions { wads: &[], limits })
-        .expect("synthetic liquid map builds");
+    let model = WorldModel::build(
+        &bsp,
+        &WorldBuildOptions {
+            wads: &[],
+            limits,
+            ..WorldBuildOptions::default()
+        },
+    )
+    .expect("synthetic liquid map builds");
     assert!(
         !model.liquid_batches.is_empty(),
         "the quad is a liquid face"

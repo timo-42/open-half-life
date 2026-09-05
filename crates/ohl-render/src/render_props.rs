@@ -69,7 +69,64 @@ impl Default for RenderProps {
     }
 }
 
+impl RenderMode {
+    /// The documented `rendermode` index for this mode.
+    #[must_use]
+    pub fn index(self) -> u8 {
+        match self {
+            Self::Normal => 0,
+            Self::Color => 1,
+            Self::Texture => 2,
+            Self::Glow => 3,
+            Self::Solid => 4,
+            Self::Additive => 5,
+        }
+    }
+
+    /// The mode a `rendermode` keyvalue selects, or [`Self::Normal`] for any
+    /// value outside the documented enum (the same fallback the documented
+    /// default has: an entity with no `rendermode` key draws normally).
+    #[must_use]
+    pub fn from_index(index: i32) -> Self {
+        match index {
+            1 => Self::Color,
+            2 => Self::Texture,
+            3 => Self::Glow,
+            4 => Self::Solid,
+            5 => Self::Additive,
+            _ => Self::Normal,
+        }
+    }
+}
+
 impl RenderProps {
+    /// Builds render properties from an entity's raw
+    /// `rendermode`/`renderamt`/`rendercolor`/`renderfx` keyvalues, applying
+    /// the documented defaults for absent or out-of-range values.
+    ///
+    /// `amount` is deliberately *ignored* for [`RenderMode::Normal`] and
+    /// [`RenderMode::Solid`]: per the "Render Modes" article those modes draw
+    /// opaque, and mappers routinely leave `renderamt` at its `0` default on
+    /// a mode-0 entity. Taking `renderamt` verbatim there makes an ordinary
+    /// opaque brush entity (a `func_train` car, say) render fully
+    /// transparent, i.e. invisible.
+    #[must_use]
+    pub fn from_entity(mode: i32, amount: i32, color: [u8; 3], fx: i32) -> Self {
+        let mode = RenderMode::from_index(mode);
+        let amount = match mode {
+            RenderMode::Normal | RenderMode::Solid => 255,
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            _ => amount.clamp(0, 255) as u8,
+        };
+        Self {
+            mode,
+            amount,
+            color,
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            fx: fx.clamp(0, 255) as u8,
+        }
+    }
+
     /// Which precompiled pipeline family this mode draws with.
     #[must_use]
     pub fn blend_kind(self) -> BlendKind {
@@ -167,6 +224,43 @@ mod tests {
             }
             .uses_render_color()
         );
+    }
+
+    #[test]
+    fn mode_zero_ignores_renderamt() {
+        // A mapper leaving `renderamt` at its 0 default on a mode-0 brush
+        // entity must still draw opaque, not invisible.
+        let props = RenderProps::from_entity(0, 0, [255, 255, 255], 0);
+        assert_eq!(props.mode, RenderMode::Normal);
+        assert_eq!(props.amount, 255);
+        assert_eq!(props.alpha(), 1.0);
+        assert_eq!(props.blend_kind(), BlendKind::Opaque);
+        // The same holds for `kRenderTransAlpha`, which is also opaque.
+        let props = RenderProps::from_entity(4, 0, [255, 255, 255], 0);
+        assert_eq!(props.mode, RenderMode::Solid);
+        assert_eq!(props.alpha(), 1.0);
+    }
+
+    #[test]
+    fn from_entity_maps_modes_and_clamps_amount() {
+        assert_eq!(RenderProps::from_entity(2, 128, [1, 2, 3], 7).amount, 128);
+        assert_eq!(RenderProps::from_entity(2, -5, [1, 2, 3], 0).amount, 0);
+        assert_eq!(RenderProps::from_entity(2, 900, [1, 2, 3], 0).amount, 255);
+        // An unknown mode falls back to the documented default.
+        assert_eq!(
+            RenderProps::from_entity(99, 0, [1, 2, 3], 0).mode,
+            RenderMode::Normal
+        );
+        for mode in [
+            RenderMode::Normal,
+            RenderMode::Color,
+            RenderMode::Texture,
+            RenderMode::Glow,
+            RenderMode::Solid,
+            RenderMode::Additive,
+        ] {
+            assert_eq!(RenderMode::from_index(i32::from(mode.index())), mode);
+        }
     }
 
     #[test]
