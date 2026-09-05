@@ -130,13 +130,21 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
     ("ohl-campaign", &["ohl-core"]),
     // Monster AI core: conditions, senses, the schedule/task runner, squads
     // and the movement glue. It reads world visibility from `ohl-world`,
-    // traces through `ohl-physics`, and attaches its components to the
-    // `ohl-game` entity registry rather than owning a second entity world.
-    // Deliberately no edge to `ohl-render`, `ohl-audio` or `ohl-ui`:
-    // presentation is pulled from the event list `AiWorld::tick` returns.
+    // traces through `ohl-physics`, attaches its components to the
+    // `ohl-game` entity registry rather than owning a second entity world,
+    // and routes monster movement over `ohl-nav`'s node graph (package 7.6)
+    // via `monsters::nav_bridge::NavBridge`. Deliberately no edge to
+    // `ohl-render`, `ohl-audio` or `ohl-ui`: presentation is pulled from the
+    // event list `AiWorld::tick` returns.
     (
         "ohl-ai",
-        &["ohl-core", "ohl-physics", "ohl-world", "ohl-game"],
+        &[
+            "ohl-core",
+            "ohl-physics",
+            "ohl-world",
+            "ohl-game",
+            "ohl-nav",
+        ],
     ),
     // Combat skeleton (M7.1): damage model, hit resolution against world
     // hulls and posed studio hitboxes, and a bounded combat-event queue.

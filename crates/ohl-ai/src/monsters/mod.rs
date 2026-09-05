@@ -14,6 +14,10 @@
 //!   [`integration::RangedAttackSink`] seams for packages 7.6/7.3, which are
 //!   being built concurrently, with dependency-free default
 //!   implementations.
+//! - [`nav_bridge`]: [`nav_bridge::NavBridge`], the real package 7.6
+//!   (`ohl-nav`) implementation that fills the `Navigator` seam — attached
+//!   via [`crate::world::AiWorld::attach_navigator`] — with its own richer,
+//!   per-actor, per-hull, budget-bounded `next_move`.
 //!
 //! [`crate::spawner`] (at the crate root, not under this module) holds the
 //! `monstermaker` spawn-count/delay/live-children bookkeeping; it is
@@ -25,6 +29,7 @@
 pub mod brains;
 pub mod integration;
 pub mod lifecycle;
+pub mod nav_bridge;
 pub mod table;
 
 pub use brains::MonsterBrain;
@@ -33,6 +38,7 @@ pub use lifecycle::{
     CorpseDecision, MonsterTrigger, TriggerCondition, TriggerContext, apply_damage,
     apply_damage_with_corpses, should_fade_corpse,
 };
+pub use nav_bridge::{NavBridge, NavBridgeLimits, node_seeds_from_defs};
 pub use table::{
     AttackSpec, BloodKind, Difficulty, MonsterFlags, MonsterKind, MonsterSpec, spec_for,
 };
