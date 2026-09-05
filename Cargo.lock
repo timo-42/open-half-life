@@ -1699,6 +1699,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ohl-import"
+version = "0.1.0"
+dependencies = [
+ "ohl-media",
+ "ohl-parser-protocol",
+ "ohl-platform",
+ "ohl-vfs",
+ "proptest",
+ "tempfile",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "ohl-iso9660"
 version = "0.1.0"
 dependencies = [

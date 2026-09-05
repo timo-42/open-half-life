@@ -1,0 +1,25 @@
+[package]
+name = "ohl-import"
+description = "Parent-side parser import sessions: OWP/1 frame transport, source-read broker, result catalog, handshake and session ownership"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ohl_import"
+
+[dependencies]
+ohl-parser-protocol = { path = "../ohl-parser-protocol", version = "=0.1.0" }
+ohl-platform = { path = "../ohl-platform", version = "=0.1.0" }
+ohl-media = { path = "../ohl-media", version = "=0.1.0" }
+ohl-vfs = { path = "../ohl-vfs", version = "=0.1.0" }
+thiserror = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
