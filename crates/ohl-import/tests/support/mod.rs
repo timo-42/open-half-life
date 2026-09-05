@@ -44,6 +44,19 @@ pub fn synthetic_bytes(length: usize) -> Vec<u8> {
         .collect()
 }
 
+/// Deterministic, incompressible invented bytes, for fixtures that must stay
+/// larger than a compressor can make them.
+#[must_use]
+pub fn synthetic_noise(length: usize, seed: u32) -> Vec<u8> {
+    let mut state = seed | 1;
+    (0..length)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            u8::try_from(state >> 24).unwrap_or(0)
+        })
+        .collect()
+}
+
 /// A generous deadline for tests that must not time out.
 #[must_use]
 pub fn deadline() -> Instant {

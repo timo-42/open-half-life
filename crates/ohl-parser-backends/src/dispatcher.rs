@@ -44,7 +44,9 @@ use alloc::vec::Vec;
 
 use ohl_parser_protocol::{ArchiveSpelling, EntryBatchEntry, ReadReply, SourceReadPolicy};
 use ohl_parser_worker_service::{DispatchAction, DispatchError, Dispatcher, Operation};
-use ohl_wise::{ChecksumStatus, Error as WiseError, Limits as WiseLimits, NeverCancelled, StreamReader};
+use ohl_wise::{
+    ChecksumStatus, Error as WiseError, Limits as WiseLimits, NeverCancelled, StreamReader,
+};
 
 use crate::buffered::{
     BufferedEntry, ContainerBuffer, cabinet_entries, cabinet_extract, z_archive_entries,
@@ -513,7 +515,12 @@ impl<'arena> ContainerDispatcher<'arena> {
                 compressed_offset,
                 declared_crc32,
                 size_bytes,
-            } => self.wise_step(&mut operation, compressed_offset, declared_crc32, size_bytes),
+            } => self.wise_step(
+                &mut operation,
+                compressed_offset,
+                declared_crc32,
+                size_bytes,
+            ),
         };
         self.active = Active::Stream(operation);
         emission
@@ -724,4 +731,3 @@ impl Dispatcher for ContainerDispatcher<'_> {
         self.armed = None;
     }
 }
-

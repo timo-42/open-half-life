@@ -375,7 +375,9 @@ struct OverlayPrefix<'a>(&'a [u8]);
 
 impl ohl_wise::ImageSource for OverlayPrefix<'_> {
     fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> Result<usize, ohl_wise::Error> {
-        let start = usize::try_from(offset).unwrap_or(usize::MAX).min(self.0.len());
+        let start = usize::try_from(offset)
+            .unwrap_or(usize::MAX)
+            .min(self.0.len());
         let available = &self.0[start..];
         let taken = available.len().min(buf.len());
         buf[..taken].copy_from_slice(&available[..taken]);
