@@ -51,6 +51,10 @@ pub struct FaceGeometry {
     pub index_count: u32,
     /// World-space bounds, used by the frustum test.
     pub bounds: Aabb,
+    /// Whether this face's texture is a liquid surface
+    /// ([`crate::is_liquid_texture`]), and so belongs in the translucent
+    /// water pass instead of the opaque one.
+    pub is_liquid: bool,
 }
 
 /// Serialises `vertices` into the renderer's little-endian vertex format.

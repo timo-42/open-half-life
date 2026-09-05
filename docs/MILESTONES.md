@@ -770,7 +770,9 @@ toward that milestone.
 
 Status: in progress. A BSP v30 map with its baked lightmaps renders in a
 window on a machine with a GPU; only the offscreen path has been verified in
-this environment (see "Verified" below).
+this environment (see "Verified" below). Package M3.4 adds sky, liquids,
+brush/studio render modes, light styles and SPR sprites (below); submodels
+1.., texture animation and backface culling remain open (see "Not yet done").
 
 Adds two crates and one development-only flag:
 
@@ -801,6 +803,35 @@ Adds two crates and one development-only flag:
   Neither the supplied paths nor any map-derived count appears in a log line:
   the project's sanitized-logging policy is applied uniformly here too.
 
+Package M3.4 adds renderer polish on top of the above, all clean-room from
+the public sources recorded in `docs/FORMAT_SOURCES.md`, "Rendering
+conventions":
+
+- `ohl-world`: `sky::SkyboxAsset` decodes the six documented
+  `<skyname><suffix>.tga` faces (`image` `=0.25.10`, `tga`/`bmp` features
+  only) into one owned RGBA8 image per face; `sky::is_sky_texture` excludes
+  `sky`-prefixed faces from the opaque world batches instead of drawing
+  them as ordinary textures. `water::is_liquid_texture` classifies
+  `!`-prefixed and `laser`/`water`-family surfaces as liquids, routed to a
+  translucent batch list kept separate from the opaque one. `sprite::
+  SpriteAsset` decodes SPR frames to RGBA8 applying the documented
+  per-format alpha convention and exposes the documented billboard `type`
+  and sync mode; sprite frame timing advances at the declared `framerate`
+  capped at the documented 10 Hz engine tick, defaulting to 10 fps.
+  `WorldModel::blend_lightmap` now blends up to four per-face light styles
+  (`Face::styles`) against the baked atlas using a caller-supplied
+  intensity table instead of always sampling style 0.
+- `ohl-render`: a sky pass draws the cubemap at infinite depth behind all
+  other geometry; a liquid pass draws the translucent batches after opaque
+  geometry with depth testing but no depth write, perturbing UVs by
+  `water::turbulence_offset` (mirrored in `world_water.wgsl`). `RenderProps
+  { mode, amount, color, fx }` reproduces the documented `rendermode` enum
+  (`Normal`/`Color`/`Texture`/`Glow`/`Solid`/`Additive`) and selects one of
+  three precompiled blend pipelines (opaque, alpha-blend, additive) per
+  `draw_world_submodel` call. `light_styles::LightStyles` evaluates
+  `a`..`z` pattern strings at a fixed 10 Hz using the documented default
+  style table.
+
 Verified:
 
 - headless: the offscreen path renders the project-authored synthetic room
@@ -809,16 +840,19 @@ Verified:
   using whatever adapter the host offers; on a machine with none, the test
   skips instead of failing. It is `#[ignore]`d by default, with an
   `OHL_RENDER_GPU_TEST=1` opt-in, so CI runners without GPUs stay green.
+  Two further gated offscreen tests cover M3.4: the sky pass fills the frame
+  when nothing else is drawn, and the liquid pass blends visibly over the
+  cleared background.
 - on screen: **not verified** in the development environment used for this
   package, which has no display server. `--dev-bsp` was exercised there only
   as far as loading the map and reporting, through the sanitized error path,
   that no window system is available.
 
-Not yet done: submodels 1.., sky and other `TEX_SPECIAL` surfaces are drawn
-as ordinary textures, animated and alternate light styles (only style 0 is
-sampled), texture animation (`+0`/`-0` frames), backface culling (winding is
-not yet normalised across `plane_side`, so both sides are drawn), mipmaps and
-anisotropy, and any map source other than a path on disk.
+Not yet done: submodels 1.., texture animation (`+0`/`-0` frames), backface
+culling (winding is not yet normalised across `plane_side`, so both sides are
+drawn), mipmaps and anisotropy, sprite billboard *transforms* (the documented
+`type` is exposed but `ohl-render` does not yet build a per-frame billboard
+matrix from it), and any map source other than a path on disk.
 
 ## M4 (Rust): movement
 

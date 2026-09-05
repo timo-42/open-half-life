@@ -21,10 +21,13 @@ mod error;
 mod geometry;
 mod lightmap;
 mod model;
+mod sky;
 mod spawn;
+mod sprite;
 mod studio;
 mod texture;
 mod vis;
+mod water;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
@@ -38,7 +41,9 @@ pub use model::{
     DrawBatch, DrawList, LIGHTMAP_ATLAS_MAX_HEIGHT, LIGHTMAP_ATLAS_WIDTH, WorldBuildOptions,
     WorldModel,
 };
+pub use sky::{SKY_FACE_SUFFIXES, SkyboxAsset, is_sky_texture};
 pub use spawn::{PlayerSpawn, find_player_start};
+pub use sprite::{MAX_SPRITE_FRAMERATE, SpriteAsset};
 pub use studio::{
     BoneMatrix, MAX_BONES, MAX_STUDIO_VERTICES, STUDIO_LOOPING, STUDIO_NF_ADDITIVE,
     STUDIO_NF_ALPHA, STUDIO_NF_CHROME, STUDIO_NF_FLATSHADE, STUDIO_NF_FULLBRIGHT, STUDIO_NF_MASKED,
@@ -47,6 +52,7 @@ pub use studio::{
     StudioTexture, StudioVertex, studio_vertex_bytes,
 };
 pub use texture::TextureImage;
+pub use water::is_liquid_texture;
 
 /// Re-exported so callers can pass decoding limits without also depending
 /// on `ohl-formats` directly.
@@ -55,4 +61,11 @@ pub use ohl_formats::bsp30::Limits as BspLimits;
 /// Re-exported so callers can pass studio-model decoding limits without
 /// also depending on `ohl-formats` directly.
 pub use ohl_formats::mdl10::Limits as StudioLimits;
+
+/// Re-exported so callers can pass sprite decoding limits, and read a
+/// sprite's orientation/blend metadata, without also depending on
+/// `ohl-formats` directly.
+pub use ohl_formats::spr::{
+    Limits as SprLimits, SpriteType, SyncType, TextureFormat as SprTextureFormat,
+};
 pub use vis::VisibilitySet;

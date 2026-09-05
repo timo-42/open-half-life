@@ -17,17 +17,24 @@
 mod camera;
 mod error;
 mod gpu;
+mod light_styles;
 pub mod math;
 mod offscreen;
+mod render_props;
 mod renderer;
+mod sky;
 mod studio;
 mod surface;
+mod water;
 
 pub use camera::{FreeFlyCamera, MoveInput};
 pub use error::{RenderError, Result};
 pub use gpu::{GpuContext, preferred_backends};
+pub use light_styles::{LightStyles, MAX_LIGHT_STYLES, STYLE_HZ};
 pub use offscreen::{OFFSCREEN_FORMAT, OffscreenTarget};
+pub use render_props::{BlendKind, RenderMode, RenderProps};
 pub use renderer::{DEPTH_FORMAT, WorldRenderer};
+pub use sky::SkyRenderer;
 pub use studio::{ModelInstance, StudioRenderer, placement};
 pub use surface::WindowSurface;
 

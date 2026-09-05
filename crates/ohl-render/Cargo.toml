@@ -20,7 +20,10 @@ pollster = "=1.0.1"
 ohl-world = { path = "../ohl-world", version = "=0.1.0", features = [
     "test-support",
 ] }
-ohl-formats = { path = "../ohl-formats", version = "=0.1.0", features = ["std"] }
+ohl-formats = { path = "../ohl-formats", version = "=0.1.0", features = [
+    "std",
+    "test-support",
+] }
 
 [lints]
 workspace = true

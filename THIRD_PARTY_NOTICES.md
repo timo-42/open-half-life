@@ -57,6 +57,13 @@ the backend policy):
 - `winit` `=0.30.13` (**Apache-2.0 only**, not dual-licensed) -- windowing and
   input, `ohl-app`, and only under the non-default `dev-tools` feature
 
+Added at M3.4 by skybox-face decoding (`ohl-world`), pinned exactly:
+
+- `image` `=0.25.10` (MIT OR Apache-2.0) -- decodes the six TGA (and BMP)
+  skybox faces named by a map's `skyname` key, `ohl-world`. Built with
+  `default-features = false` and only the `tga` and `bmp` features enabled,
+  so no other codec (PNG, JPEG, etc.) is compiled in.
+
 Added by the M5 audio package (`crates/ohl-audio`), pinned exactly in its
 `Cargo.toml` (see `docs/RENDER_DEPENDENCIES.md`, "Audio backend", for the full
 write-up and the Linux linking decision):

@@ -134,7 +134,7 @@ fn edges_are_sane(width: u32, height: u32) -> bool {
     width > 0 && height > 0 && width <= MAX_TEXTURE_EDGE && height <= MAX_TEXTURE_EDGE
 }
 
-fn trimmed(name: &[u8; 16]) -> &[u8] {
+pub(crate) fn trimmed(name: &[u8; 16]) -> &[u8] {
     let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
     &name[..end]
 }
