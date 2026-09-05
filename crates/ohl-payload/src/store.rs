@@ -298,7 +298,10 @@ pub fn published_directory_name(identity: &str) -> Option<String> {
 /// The directory holding a published payload's planned tree.
 #[must_use]
 pub fn published_files_directory(root: &Path, identity: &str) -> Option<PathBuf> {
-    Some(root.join(published_directory_name(identity)?).join(FILES_DIRECTORY))
+    Some(
+        root.join(published_directory_name(identity)?)
+            .join(FILES_DIRECTORY),
+    )
 }
 
 /// What a probe found at a plan's published name.

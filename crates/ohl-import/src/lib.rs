@@ -65,8 +65,7 @@ pub use catalog::{
 };
 pub use frame_channel::{ChannelError, FrameBuffer, FrameChannel};
 pub use handshake::{
-    HandshakeError, HandshakeProof, perform_parent_handshake,
-    perform_parent_handshake_over_window,
+    HandshakeError, HandshakeProof, perform_parent_handshake, perform_parent_handshake_over_window,
 };
 pub use io::{CancellationSource, CancellationToken, ExactIo, IoError};
 pub use locate::{
@@ -87,10 +86,10 @@ pub use process_session::{
     SessionConfig, SessionIdAllocator, ShutdownError, ShutdownFailure, ShutdownReady, WaitOutcome,
     WorkerExit, WorkerProcess,
 };
-pub use runtime::{PayloadTree, find_published_payload};
 pub use result_session::{
     ByteSink, ReadRequestOutcome, ResultSession, ResultSessionError, SinkRejected,
 };
+pub use runtime::{PayloadTree, find_published_payload};
 pub use source_read_broker::{
     NativeSourceOps, PrepareOutcome, PreparedReply, ReplyTicket, SourceOps, SourceReadBroker,
     SourceReadError, SourceReadLimits,

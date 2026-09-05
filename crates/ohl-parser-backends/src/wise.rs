@@ -383,10 +383,7 @@ impl WiseBackend {
                 self.finish_mapping(&script.overlay, &bytes);
                 return Ok(Advance::Ready);
             }
-            match self
-                .reader
-                .read(source, &NeverCancelled, &mut self.scratch)
-            {
+            match self.reader.read(source, &NeverCancelled, &mut self.scratch) {
                 Ok(0) if !self.reader.is_finished() => return Err(WiseError::Truncated),
                 Ok(written) => {
                     if script.bytes.len() as u64 + written as u64 > ceiling {
@@ -433,7 +430,10 @@ impl WiseBackend {
             return None;
         }
         let index = usize::try_from(token).ok()?;
-        self.table.records().get(index).map(|record| record.path.as_bytes())
+        self.table
+            .records()
+            .get(index)
+            .map(|record| record.path.as_bytes())
     }
 
     /// Every resolved entry, records first and unnamed streams after them, in

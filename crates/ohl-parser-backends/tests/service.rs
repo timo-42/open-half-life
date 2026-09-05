@@ -139,9 +139,13 @@ impl ParentTransport {
             ),
             Next::Stream(token) => {
                 let mut payload = [0u8; 8];
-                let written =
-                    encode_stream_entry_payload(&StreamEntry { source_token: token }, &mut payload)
-                        .expect("stream request encoding");
+                let written = encode_stream_entry_payload(
+                    &StreamEntry {
+                        source_token: token,
+                    },
+                    &mut payload,
+                )
+                .expect("stream request encoding");
                 self.push_frame(
                     &FrameHeader::new(
                         MessageType::StreamEntry,
@@ -166,9 +170,11 @@ impl ParentTransport {
             .or_else(|_| {
                 // The sequence number is the worker's; re-decode with the one
                 // it used, which the header does not carry.
-                (1..=64u32).find_map(|sequence| {
-                    decode_read_request_payload(&frame, &policy, sequence).ok()
-                }).ok_or(())
+                (1..=64u32)
+                    .find_map(|sequence| {
+                        decode_read_request_payload(&frame, &policy, sequence).ok()
+                    })
+                    .ok_or(())
             })
             .expect("a decodable read request");
         self.reads += 1;
@@ -288,7 +294,8 @@ impl Transport for ParentTransport {
             if self.outgoing.len() < FRAME_HEADER_BYTES {
                 return IoStatus::Ok;
             }
-            let Ok(head) = <&[u8; FRAME_HEADER_BYTES]>::try_from(&self.outgoing[..FRAME_HEADER_BYTES])
+            let Ok(head) =
+                <&[u8; FRAME_HEADER_BYTES]>::try_from(&self.outgoing[..FRAME_HEADER_BYTES])
             else {
                 return IoStatus::Failed;
             };
@@ -386,7 +393,9 @@ fn a_wise_package_enumerates_streams_and_completes() {
     // Every recorded file is offered, under its recorded relative path, at
     // its measured size, plus the package's unnamed streams.
     for file in &files {
-        let spelling = String::from_utf8(file.path.clone()).expect("ascii").replace('\\', "/");
+        let spelling = String::from_utf8(file.path.clone())
+            .expect("ascii")
+            .replace('\\', "/");
         let offered = parent
             .offered
             .iter()
@@ -403,7 +412,9 @@ fn a_wise_package_enumerates_streams_and_completes() {
 
     // Streaming each offered file yields exactly its bytes.
     for file in &files {
-        let spelling = String::from_utf8(file.path.clone()).expect("ascii").replace('\\', "/");
+        let spelling = String::from_utf8(file.path.clone())
+            .expect("ascii")
+            .replace('\\', "/");
         let token = parent
             .offered
             .iter()
