@@ -342,3 +342,27 @@ No independently authored public specification of the InstallShield 5/6-era cabi
 container was located. Every layout-bearing candidate traces back to disassembly of
 proprietary installer binaries, so project-owned cabinet or component-selection
 parsing must remain unimplemented.
+
+### Licensed derivative: the `ohl-cabinet-format` and `ohl-cabinet` crates
+
+The two Rust crates `crates/ohl-cabinet-format` and `crates/ohl-cabinet` are a
+**licensed derivative of the MIT-licensed Unshield 1.6.2** (commit
+`51de441ba6893f11026d4671ccef9e8e2a4634fa`): they are a direct Rust translation
+of its C implementation, adopted as a deliberate, recorded exception so that
+installer cabinet extraction can proceed without linking a C library. Their
+format knowledge is therefore **not clean-room**, and Unshield's own provenance
+is the one rejected above.
+
+That exception changes nothing about project-owned parsing. Specifically:
+
+- These crates must stay isolated: they are leaves of the crate graph, are
+  attributed in `THIRD_PARTY_NOTICES.md` and in per-crate `LICENSE-UNSHIELD`
+  files, and may be linked only by the sandboxed, worker-only parser process.
+- They must never be used as a source for project-owned parsing. Their code,
+  constants, structure layouts, comments, tests and fixtures may not be copied
+  into, restated in, cited by, or used to reverse-engineer any project-owned
+  cabinet or component-selection parser, nor to satisfy the public-source
+  requirement stated at the top of this section.
+- The finding recorded above stands unchanged: no independently authored public
+  specification of the InstallShield 5/6-era cabinet container has been located,
+  so project-owned cabinet or component-selection parsing **may not begin**.

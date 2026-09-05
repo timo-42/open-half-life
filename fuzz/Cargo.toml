@@ -6,6 +6,8 @@
 #
 #     cargo +nightly fuzz run iso9660_preflight
 #     cargo +nightly fuzz run udf_preflight
+#     cargo +nightly fuzz run cabinet_header
+#     cargo +nightly fuzz run cabinet_extract
 [workspace]
 members = ["."]
 
@@ -24,6 +26,12 @@ libfuzzer-sys = "0.4"
 ohl-iso9660 = { path = "../crates/ohl-iso9660", version = "=0.1.0" }
 ohl-udf = { path = "../crates/ohl-udf", version = "=0.1.0" }
 ohl-media-archive = { path = "../crates/ohl-media-archive", version = "=0.1.0" }
+ohl-cabinet-format = { path = "../crates/ohl-cabinet-format", version = "=0.1.0", features = ["test-support"] }
+ohl-cabinet = { path = "../crates/ohl-cabinet", version = "=0.1.0", features = [
+    "inflate",
+    "md5",
+    "test-support",
+] }
 
 [[bin]]
 name = "iso9660_preflight"
@@ -35,6 +43,20 @@ bench = false
 [[bin]]
 name = "udf_preflight"
 path = "fuzz_targets/udf_preflight.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cabinet_header"
+path = "fuzz_targets/cabinet_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cabinet_extract"
+path = "fuzz_targets/cabinet_extract.rs"
 test = false
 doc = false
 bench = false

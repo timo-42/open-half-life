@@ -1,0 +1,37 @@
+[package]
+name = "ohl-cabinet"
+description = "Streaming InstallShield cabinet extraction over a caller-supplied volume source (a licensed derivative of Unshield)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT"
+repository.workspace = true
+
+[lib]
+name = "ohl_cabinet"
+
+[features]
+default = ["inflate"]
+std = ["ohl-cabinet-format/std"]
+inflate = ["dep:miniz_oxide"]
+md5 = ["dep:md-5"]
+# Synthetic, independently authored cabinet writer used by this workspace's
+# tests and fuzz targets. Never enable in production builds.
+test-support = ["ohl-cabinet-format/test-support", "inflate"]
+
+[dependencies]
+ohl-cabinet-format = { path = "../ohl-cabinet-format", version = "=0.1.0" }
+thiserror = { workspace = true }
+miniz_oxide = { workspace = true, optional = true }
+md-5 = { version = "=0.10.6", default-features = false, optional = true }
+
+[dev-dependencies]
+# Self dev-dependency so integration tests always see the synthetic writer,
+# whatever feature set the workspace build selects.
+ohl-cabinet = { path = ".", version = "=0.1.0", features = ["test-support"] }
+ohl-cabinet-format = { path = "../ohl-cabinet-format", version = "=0.1.0", features = ["test-support"] }
+hadris-iso = { workspace = true }
+proptest = { workspace = true }
+
+[lints]
+workspace = true

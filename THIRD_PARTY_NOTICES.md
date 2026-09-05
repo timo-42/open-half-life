@@ -67,6 +67,40 @@ Version 1.6.2 is pinned at commit
 <https://github.com/twogood/unshield>. Unshield is copyright David Eriksson
 and other contributors and is licensed under the MIT license.
 
+## `ohl-cabinet-format` and `ohl-cabinet` (Rust translation of Unshield)
+
+The two Rust crates `crates/ohl-cabinet-format` and `crates/ohl-cabinet` are a
+**licensed derivative of Unshield 1.6.2** (commit
+`51de441ba6893f11026d4671ccef9e8e2a4634fa`), not clean-room work. Their
+knowledge of the InstallShield 5/6/2003 cabinet container -- the common header
+and version encodings, the cabinet descriptor and its offset tables, file,
+component, file-group and directory descriptor layouts, the volume headers, the
+length-prefixed raw DEFLATE chunk framing, the obfuscation keystream, and the
+split-volume rules -- was obtained by translating Unshield's C implementation
+into Rust. Unshield is copyright David Eriksson and contributors and is
+licensed under the MIT license; its full text, together with the required
+"portions translated from Unshield (c) David Eriksson" attribution, is kept in
+`crates/ohl-cabinet-format/LICENSE-UNSHIELD` and
+`crates/ohl-cabinet/LICENSE-UNSHIELD`, and is restated in each crate's
+crate-level documentation.
+
+Constraints on these two crates, enforced by the `xtask graph` edge table and
+required by `docs/CLEAN_ROOM.md`:
+
+- They are leaves of the dependency graph. Only the sandboxed parser worker
+  may link them; no other crate may depend on them.
+- Their format knowledge must never be used as a source for, copied into,
+  restated in, or cited by project-owned parsing code, documentation, tests or
+  fixtures. The finding recorded in `docs/FORMAT_SOURCES.md` -- that
+  project-owned cabinet or component-selection parsing **may not begin**
+  without an independently authored public specification -- is unchanged.
+- They link no C library. The translation is `#![no_std]` plus `alloc` and
+  `#![forbid(unsafe_code)]`, replaces Unshield's unchecked pointer arithmetic
+  and fixed-size buffers with validated offsets and caller-supplied limits,
+  never opens a path or builds a filename, and uses the Rust crates
+  `miniz_oxide` (raw DEFLATE, MIT) and optionally `md-5` (RustCrypto,
+  MIT OR Apache-2.0) instead of zlib and the RSA MD5 reference code.
+
 ## zlib 1.3.1
 
 Unshield uses zlib for decompression. CMake fetches zlib 1.3.1 pinned at commit
