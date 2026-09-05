@@ -1280,6 +1280,134 @@ Project behaviour supported: `ohl_world::spawn::find_player_start` and
 `crates/ohl-engine/src/level.rs`) implement the keyvalue reads described
 above; no SDK source or decompiled GoldSrc logic was consulted for any of
 it, only the public wiki pages named.
+## Player systems
+
+The `crates/ohl-player` crate (health and HEV armor, fall damage, drowning,
+`trigger_hurt` and liquid contact damage, HEV suit voice events, the
+flashlight, long-jump ownership, HUD and save state) and the additions to
+`crates/ohl-physics` for ladders, liquid categorisation, riding a mover and
+the long-jump impulse were implemented from the public documentation below.
+No Valve SDK source, decompiled GoldSrc, game data file or another engine
+port was read; see `docs/CLEAN_ROOM.md`.
+
+As in "Collision hulls and player movement" above, **structure and
+behaviour** (what a system does) are separated from **behavioural
+constants** (how fast, how much, how long). Constants with a public source
+are cited below and are still *community-reported*, not measured by this
+project. Constants with no reachable public source are neutral placeholders
+marked `TODO(black-box)` in the code, to be measured against legally
+obtained retail software before this project claims parity; they are listed
+at the end of this section.
+
+### Behaviour
+
+- [TWHL wiki: func_ladder](https://twhl.info/wiki/page/func_ladder) and
+  [Tutorial: Ladders](https://twhl.info/wiki/page/Tutorial:_Ladders)
+  (consulted 2026-09-05 via search-engine result summaries; the pages
+  themselves return HTTP 403 to automated fetches from this environment):
+  `func_ladder` "creates an invisible brush which, when touched by the
+  player, allows them to climb up, down, or sideways, along its surface",
+  and the same effect is available by setting a brush entity's contents
+  (`skin`) keyvalue to `-16`, i.e. `CONTENTS_LADDER`. That is why
+  `ohl-physics` keys climbing off the leaf contents at the player's origin
+  rather than off an entity list, and why the crate offers climbing *up,
+  down and sideways* against the ladder's outward face.
+- [TWHL wiki: trigger_hurt](https://twhl.info/wiki/page/trigger_hurt) (same
+  403/search-summary caveat): `dmg` is "the amount of damage to deal out per
+  second", `damagetype` selects the kind of damage and its values add up ("a
+  value of 24 deals both burn (8) and freeze (16) damage"), "a trigger_hurt
+  performs a hit every 0.5 seconds, and the amount is 0.5x dmg per hit", a
+  negative `dmg` heals ("healing pools can be achieved with a trigger_hurt
+  and a negative value"), and the `Start Off` (2) spawnflag exists. This is
+  the source of `ohl_game::TriggerHurt`, of
+  `ohl_game::TRIGGER_HURT_INTERVAL_SECONDS`, of `ohl-player`'s half-second
+  contact-damage cadence, and of the two `damagetype` bit values the crate
+  recognises. The remaining bits of that field are `TODO(black-box)`.
+- [Half-Life Physics Reference, chapter 11 "Health and
+  damage"](https://www.jwchong.com/hl/damage.html) (Chong Jiang Wei,
+  reviewed 2026-09-05; the same public reference already cited for movement
+  above): fall damage is `D = (25/111) * (v_z - 580)`, with 580 ups named as
+  `PLAYER_MAX_SAFE_FALL_SPEED` and `25/111` as `DAMAGE_FOR_FALL_SPEED`, so
+  that `v_z = 1024` gives `D = 100`, "the maximum safe height is 210.25 units
+  and the fatal height (assuming a health of 100) is 655.36 units"; and the
+  armor split `ΔH = int(D/5)` while armor remains, `ΔH = int(D - 2A)` on the
+  hit that exhausts it, with `A' = max(0, A - 2D/5)`, plus "if the damage
+  type is `DMG_FALL` or `DMG_DROWN`, then the armour value will remain the
+  same". `ohl_player::damage` implements exactly these equations
+  (`SAFE_FALL_SPEED`, `DAMAGE_PER_EXCESS_FALL_SPEED`,
+  `ARMOR_DRAIN_PER_DAMAGE`, `HEALTH_SHARE_OF_DAMAGE`,
+  `DAMAGE_COVERED_PER_ARMOR`, `DamageKind::bypasses_armor`).
+- [SourceRuns wiki: Landing
+  methods](https://wiki.sourceruns.org/wiki/Landing_methods) (reviewed
+  2026-09-05): "landing in puddles of water, no matter how shallow, will
+  always break your fall and cancel any fall damage", and in GoldSrc "you can
+  simply airstrafe to a ladder and touch it to get rid of any vertical
+  velocity". `ohl_physics::MoveEvents::landed_speed` is therefore `None`
+  when the landing happens in a liquid or on a ladder, and attaching to a
+  ladder zeroes the player's velocity.
+- [Combine OverWiki: HEV Suit](https://combineoverwiki.net/wiki/HEV_Suit)
+  and [Hazardous Environment Suit/Quotes](https://combineoverwiki.net/wiki/Hazardous_Environment_Suit/Quotes)
+  (reviewed 2026-09-05): the suit's published maxima (health 100, armor 100),
+  that "the HEV suit's charge absorbs more than two-thirds of damage from
+  most sources, with the exception of fall damage, which is absorbed directly
+  into body-integrity", and the *categories* the suit speaks in — systems
+  startup, vital signs and health critical, electrical and extreme-heat
+  damage, blood toxin levels, lacerations, fractures, blood loss, internal
+  bleeding, morphine and antitoxin administration, battery/medkit/weapon/
+  ammunition acquisition, long-jump module activation, radioactivity,
+  chemical waste and biohazard detection, armor compromised, power critical,
+  ammunition depleted. `ohl_player::suit::SuitOccasion` is that list.
+  **The sentence text, the `sound/sentences.txt` group names and the WAV
+  files are game data and are never reproduced here**: each occasion carries
+  a project-owned symbolic name (`health_critical`, `armor_gone`, ...) that
+  the host maps against the user's own installation.
+- [Combine OverWiki: Flashlight](https://combineoverwiki.net/wiki/Flashlight)
+  (reviewed 2026-09-05): the HEV flashlight "runs on an auxiliary source
+  independent of the suit's power supply", "slowly drains its energy supply
+  while in use and recharges when turned off". `ohl_player`'s flashlight is
+  a boolean plus a `0.0..=1.0` charge with exactly that behaviour; both rates
+  are `TODO(black-box)`.
+- [TWHL wiki: item_longjump](https://twhl.info/wiki/page/item_longjump) and
+  the [Half-Life Wiki: Long Jump
+  Module](https://half-life.fandom.com/wiki/Long_Jump_Module) (search
+  summaries, 2026-09-05): `item_longjump` "spawns a long jump module,
+  granting the ability to the player that picks it up to perform long
+  jumps", "cannot be picked up without the suit", only one may be carried,
+  and the move "is usable by crouching and jumping in short succession" —
+  "a long jump will only work if players trigger it during the crouching
+  motion", because "once Gordon has fully crouched, pressing the jump button
+  will have him perform a regular crouch jump". `MoveConfig::long_jump_duck_window`
+  models that window; the impulse magnitudes are `TODO(black-box)`.
+- Riding movers: `func_plat`/`func_train`-style entities carry whatever
+  stands on them, which `ohl-physics` implements as a base velocity
+  (`MoveInput::base_velocity`) added for the duration of one move and
+  removed afterwards, so the ride never accumulates into the player's own
+  velocity. The mover entities themselves are documented in "Entity
+  keyvalues and map logic" above.
+
+### Black-box placeholders
+
+These have no reachable public source and are neutral defaults, each marked
+`TODO(black-box)` at its definition:
+
+- `ohl_physics::MoveConfig`: `ladder_speed`, `ladder_detach_speed`,
+  `ladder_reattach_delay`, `long_jump_forward_speed`, `long_jump_up_speed`,
+  `long_jump_duck_window`.
+- `ohl_player::PlayerConfig`: `air_capacity_seconds`,
+  `drown_interval_seconds`, `drown_damage`, `air_recovery_rate`,
+  `slime_damage_per_second`, `lava_damage_per_second`,
+  `health_critical_fraction`, `near_death_fraction`,
+  `flashlight_drain_per_second`, `flashlight_recharge_per_second`.
+- `ohl_player::suit`: `SUIT_SPACING_SECONDS`, `SUIT_COOLDOWN_SECONDS` and
+  the `SuitOccasion::priority` ordering.
+- `ohl_player::damage::damage_type_bits`: every `trigger_hurt` `damagetype`
+  bit other than burn (8) and freeze (16).
+
+Every fixture used by the tests of both crates is synthesized in-process by
+this project's own writers (`crates/ohl-formats/src/test_support.rs` and the
+contents-generic ladder/slime/lava rooms in
+`crates/ohl-physics/src/test_support.rs`); no bytes from any game
+installation are used or committed.
 
 ## Game text formats
 

@@ -188,6 +188,16 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
         "ohl-gameplay",
         &["ohl-core", "ohl-combat", "ohl-game", "ohl-ui", "ohl-audio"],
     ),
+    // Player systems (health/armor, fall damage, drowning, contact damage,
+    // HEV suit voice events, flashlight, long jump ownership). It reads the
+    // movement step's reports from `ohl-physics`, `trigger_hurt`/
+    // `func_ladder` map data from `ohl-game`, saves through `ohl-save`, and
+    // projects the HUD into `ohl-ui` behind an optional feature. No edge to
+    // `ohl-audio`: suit speech is emitted as events the host maps.
+    (
+        "ohl-player",
+        &["ohl-core", "ohl-physics", "ohl-game", "ohl-save", "ohl-ui"],
+    ),
     (COMPOSITION_ROOT, &[]),
 ];
 

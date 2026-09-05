@@ -350,6 +350,34 @@ pub struct Trigger {
     pub delay: f32,
 }
 
+/// `trigger_hurt`: a volume that damages whatever is inside it.
+///
+/// The published behaviour (TWHL's `trigger_hurt` page, see
+/// `docs/FORMAT_SOURCES.md` "Player systems") is that `dmg` is the damage
+/// *per second*, applied as a hit every half second worth half of it, and
+/// that `damagetype` is a bit field whose values add up. A negative `dmg`
+/// heals, which is the documented way mappers build healing pools.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TriggerHurt {
+    /// `dmg`: damage per second while the player is inside the volume.
+    pub damage_per_second: f32,
+    /// `damagetype`: the documented additive damage-type bit field, kept
+    /// verbatim so `ohl-player` can classify the hit.
+    pub damage_type: u32,
+}
+
+/// The documented interval, in seconds, between two `trigger_hurt` hits:
+/// "a `trigger_hurt` performs a hit every 0.5 seconds, and the amount is
+/// 0.5x `dmg` per hit".
+pub const TRIGGER_HURT_INTERVAL_SECONDS: f32 = 0.5;
+
+/// Marks a `func_ladder`: an invisible brush the player can climb. The
+/// brush itself is compiled with `CONTENTS_LADDER`, which is what
+/// `ohl-physics` actually tests against; this component only records that
+/// the entity exists so a host can list, disable or move one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ladder;
+
 /// Any classname not otherwise recognised.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -721,6 +749,30 @@ impl Registry {
                     }
                     world.insert_one(entity, MultiManager { targets }).ok();
                 }
+                "func_ladder" => {
+                    world.insert_one(entity, Ladder).ok();
+                }
+                "trigger_hurt" => {
+                    world
+                        .insert_one(
+                            entity,
+                            Trigger {
+                                once: false,
+                                wait: numeric(def, "wait", 0.2),
+                                delay: numeric(def, "delay", 0.0),
+                            },
+                        )
+                        .ok();
+                    let hurt = TriggerHurt {
+                        damage_per_second: numeric(def, "dmg", 0.0),
+                        damage_type: def
+                            .keyvalues
+                            .get("damagetype")
+                            .and_then(|value| value.trim().parse::<u32>().ok())
+                            .unwrap_or(0),
+                    };
+                    world.insert_one(entity, hurt).ok();
+                }
                 name if name.starts_with("trigger_") => {
                     let trigger = Trigger {
                         once: name == "trigger_once",
@@ -854,6 +906,39 @@ mod tests {
         let entity = registry.find("mm1")[0];
         let mm = registry.world.get::<&MultiManager>(entity).expect("mm");
         assert_eq!(mm.targets.len(), 2);
+    }
+
+    #[test]
+    fn trigger_hurt_keeps_its_damage_and_damage_type() {
+        let entities = vec![raw(&[
+            ("classname", "trigger_hurt"),
+            ("targetname", "acid"),
+            ("dmg", "20"),
+            // The documented additive bit field: 8 (burn) + 16 (freeze).
+            ("damagetype", "24"),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let entity = registry.find("acid")[0];
+        let hurt = registry.world.get::<&TriggerHurt>(entity).expect("hurt");
+        assert!((hurt.damage_per_second - 20.0).abs() < f32::EPSILON);
+        assert_eq!(hurt.damage_type, 24);
+        // It is still a trigger, so the ordinary trigger plumbing applies.
+        assert!(registry.world.get::<&Trigger>(entity).is_ok());
+    }
+
+    #[test]
+    fn func_ladder_gets_a_ladder_marker() {
+        let entities = vec![raw(&[
+            ("classname", "func_ladder"),
+            ("targetname", "ladder1"),
+            ("model", "*3"),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let entity = registry.find("ladder1")[0];
+        assert!(registry.world.get::<&Ladder>(entity).is_ok());
+        assert!(registry.world.get::<&Unknown>(entity).is_err());
     }
 
     #[test]

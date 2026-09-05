@@ -1522,6 +1522,76 @@ a placeholder still to be black-box observed; see
   and paths", for sources and `TODO(black-box)` items (`bank`, `dmg` and
   `wheels` are recorded but not applied; `path_track`'s `altpath` branching
   is not implemented).
+Not yet done: everything else in M7 — the weapon table and firing state
+machines, projectiles and radius damage, ammo and inventory, `ohl-ai`,
+per-monster definitions, and the rest of the player systems (item and
+charger entities, `scripted_sequence` integration) — see "M7.8 (Rust):
+player systems" below for the part that is done.
+
+## M7.8 (Rust): player systems
+
+Status: in progress. Package 7.8a of the M7 plan (`.plan/m7-design.md`
+section 3): everything about the player that is not motion, plus the
+movement modes M4 left out.
+
+`ohl-physics` (additive):
+
+- ladders. A player whose origin is inside a `CONTENTS_LADDER` volume
+  attaches to it; the ladder's outward normal is found by probing the four
+  horizontal directions for the nearest open face. Pressing into the face
+  climbs up, pulling away climbs down, and the rest of the wish slides
+  sideways along the ladder plane. Gravity does not apply while attached,
+  catching a ladder in mid-air cancels the fall, jumping pushes off along
+  the normal with a short re-attach lockout, and leaving the volume
+  detaches.
+- liquids. `categorize_liquid` reports both the documented `waterlevel`
+  0..3 and *which* liquid it is (`LiquidKind::Water/Slime/Lava`), sampled
+  from the leaf contents at the feet, the origin and the eye.
+- riding movers. `MoveInput::base_velocity` is added to the player's
+  velocity for the duration of one move and removed afterwards, so standing
+  on a `func_plat`/`func_train` carries the player without the ride
+  accumulating into their own velocity.
+- the long jump. With the module owned, a jump pressed within
+  `MoveConfig::long_jump_duck_window` of the duck key going down produces a
+  flat forward+up impulse instead of a crouch jump.
+- reporting. `player_move_events` returns a `MoveEvents` with the landing
+  impact speed (suppressed when landing in a liquid or catching a ladder),
+  the long jump, ladder attach/detach and water level changes.
+  `player_move` is unchanged and now delegates to it.
+
+`ohl-player` (new crate): health, HEV armor, suit/long-jump ownership, the
+flashlight, `waterlevel`, the air timer and the damage-type flags; systems
+for fall damage, drowning, `trigger_hurt` intake, slime/lava contact damage,
+HEV suit voice events with per-occasion cooldowns and staggered delays, and
+the flashlight's drain/recharge. `PlayerSystems::tick(dt, input,
+physics_output, contents_query) -> Vec<PlayerEvent>` is the hook the game
+loop package will call; nothing here draws or plays anything. Save/load goes
+through one `ohl-save` section (tag `0x20`) with a `snapshot()`/`restore()`
+pair that clamps every restored value.
+
+`ohl-game` (additive): a `TriggerHurt` component (`dmg`, `damagetype`) and a
+`Ladder` marker for `func_ladder`.
+
+Every published constant is cited in `docs/FORMAT_SOURCES.md` under "Player
+systems"; everything else is a neutral `TODO(black-box)` placeholder, listed
+in the same section, that must be measured against legally obtained retail
+software before parity is claimed.
+
+Verified: ladder climb/descend/detach and the ladder normal in a synthetic
+ladder room, the four water levels and slime/lava categorisation in a
+synthetic pool, a platform ride carrying the player exactly one
+platform-second, the long-jump window (module present, module absent, window
+expired), a landing impact reported for a fall but not for a step or a
+splash, the published fall-damage curve and armor split, the drowning timer
+and its recovery, the half-second `trigger_hurt` cadence and its healing
+case, suit events firing once per cooldown and never without the suit, the
+flashlight's toggle/drain/auto-off/recharge, a save section that round-trips
+byte-identically, and proptests that no input makes the systems panic or
+drives health, armor, air or charge out of range.
+
+Not yet done: wiring into the game loop (`ohl-app`/`ohl-engine` are owned by
+other packages), item and charger entities, `scripted_sequence` integration,
+and the per-entity health/AI save sections (`0x21`/`0x22`).
 
 ## M8 (Rust): save container
 
@@ -1774,7 +1844,7 @@ CI).
 - M4: player movement (M4.1 hulls and walking in progress, see above)
 - M5: interactive entities (Rust `ohl-game`, M5.1, in progress, see above)
 - M6: models and animation (Rust studio models in progress, see above)
-- M7: combat (Rust combat skeleton and `ohl-ai` monster AI core, package 7.5,
-  in progress, see above)
+- M7: combat (Rust combat skeleton, `ohl-ai` monster AI core, package 7.5,
+  and player systems in progress, see above)
 - M8: full campaign compatibility (Rust save container in progress, see above)
 - M9: release hardening
