@@ -413,6 +413,12 @@ impl IsolatedWorker {
     pub(crate) fn terminating_signal(&self) -> Option<i32> {
         self.backend.terminating_signal()
     }
+
+    /// Process ID of the confined child, for the test that stops and
+    /// continues it mid-read.
+    pub(crate) fn child_process_id(&self) -> u32 {
+        self.backend.child_process_id()
+    }
 }
 
 #[cfg(test)]

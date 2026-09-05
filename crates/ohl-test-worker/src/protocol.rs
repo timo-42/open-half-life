@@ -43,5 +43,22 @@ pub const MODE_FORBIDDEN_SYSCALL: u8 = 0x03;
 /// Mode byte: exit immediately with the status in the next payload byte.
 pub const MODE_EXIT: u8 = 0x04;
 
+/// Mode byte: report which of the first [`FD_PROBE_CEILING`] descriptors are
+/// open as a little-endian `u64` bitmask, then keep serving.
+///
+/// The probe uses `ppoll`, because it is the only allowlisted syscall that
+/// distinguishes an open descriptor from a closed one (`POLLNVAL`); `fcntl`
+/// would be the obvious tool and is deliberately not in the policy.
+pub const MODE_FD_INVENTORY: u8 = 0x05;
+
+/// How many descriptor numbers [`MODE_FD_INVENTORY`] probes.
+pub const FD_PROBE_CEILING: i32 = 64;
+
+/// The descriptors a bootstrapped worker must still have once it has attested
+/// readiness and closed [`READY_FD`]: `/dev/null` on 0/1/2 and the channel on
+/// 3. [`IMAGE_FD`] and the Landlock ruleset descriptor are `O_CLOEXEC`, so
+/// `execveat` closes them, and `close_range` removed everything else.
+pub const EXPECTED_FD_MASK: u64 = 0b1111;
+
 /// Exit status the worker uses for any protocol or I/O failure of its own.
 pub const WORKER_PROTOCOL_FAILURE_STATUS: i32 = 90;

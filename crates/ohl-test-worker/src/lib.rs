@@ -128,23 +128,7 @@ pub fn build_test_worker_image(variant: TestWorkerVariant) -> Result<PathBuf, Bu
     if variant == TestWorkerVariant::NeverReady {
         command.arg("--features").arg("never-ready");
     }
-    // Never let the outer build's flags or wrappers leak into the image: the
-    // image needs its own link arguments and must not, for example, inherit
-    // an instrumentation wrapper from `cargo test`.
-    for variable in [
-        "RUSTFLAGS",
-        "CARGO_ENCODED_RUSTFLAGS",
-        "RUSTDOCFLAGS",
-        "CARGO_ENCODED_RUSTDOCFLAGS",
-        "RUSTC_WRAPPER",
-        "RUSTC_WORKSPACE_WRAPPER",
-        "CARGO_BUILD_TARGET",
-        "CARGO_BUILD_RUSTFLAGS",
-        "CARGO_TARGET_DIR",
-        "CARGO_MAKEFLAGS",
-    ] {
-        command.env_remove(variable);
-    }
+    scrub_build_environment(&mut command);
 
     let output = command.output()?;
     if !output.status.success() {
@@ -157,6 +141,180 @@ pub fn build_test_worker_image(variant: TestWorkerVariant) -> Result<PathBuf, Bu
         .join("release")
         .join("ohl-media-parser-worker");
     stage_read_only(&built, &root.join(format!("{}-image", variant.slug())))
+}
+
+/// Environment variables removed by name before the nested `cargo` runs.
+///
+/// The image must be built from nothing but its own manifest and build
+/// script: an inherited compiler, wrapper, linker, or flag set could quietly
+/// turn it into a dynamically linked, instrumented, or differently targeted
+/// binary that the host backend would then refuse to execute (or, worse,
+/// would execute with a C runtime attached).
+const SCRUBBED_ENVIRONMENT_NAMES: [&str; 21] = [
+    "RUSTFLAGS",
+    "CARGO_ENCODED_RUSTFLAGS",
+    "RUSTDOCFLAGS",
+    "CARGO_ENCODED_RUSTDOCFLAGS",
+    "RUSTC",
+    "RUSTC_WRAPPER",
+    "RUSTC_WORKSPACE_WRAPPER",
+    "RUSTC_LINKER",
+    "CARGO_BUILD_TARGET",
+    "CARGO_BUILD_RUSTFLAGS",
+    "CARGO_BUILD_RUSTC",
+    "CARGO_BUILD_RUSTC_WRAPPER",
+    "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
+    "CARGO_TARGET_DIR",
+    "CARGO_MAKEFLAGS",
+    "CC",
+    "CXX",
+    "CFLAGS",
+    "CXXFLAGS",
+    "AR",
+    "RANLIB",
+];
+
+/// Name prefixes and suffixes removed in addition to
+/// [`SCRUBBED_ENVIRONMENT_NAMES`]: everything `LD*` (`LD_PRELOAD`,
+/// `LD_LIBRARY_PATH`, `LD_AUDIT`, `LDFLAGS`, ...) and every per-target
+/// `CARGO_TARGET_<TRIPLE>_{RUSTFLAGS,LINKER,RUNNER,AR}`, whose middle
+/// component cannot be spelled out ahead of time.
+fn is_scrubbed_environment_name(name: &str) -> bool {
+    SCRUBBED_ENVIRONMENT_NAMES.contains(&name)
+        || name.starts_with("LD")
+        || (name.starts_with("CARGO_TARGET_")
+            && (name.ends_with("_RUSTFLAGS")
+                || name.ends_with("_LINKER")
+                || name.ends_with("_RUNNER")
+                || name.ends_with("_AR")))
+}
+
+/// Removes every variable [`is_scrubbed_environment_name`] names from the
+/// nested build. Names that are not valid UTF-8 cannot match a variable Cargo
+/// or `rustc` reads, so they are left alone.
+fn scrub_build_environment(command: &mut std::process::Command) {
+    for (name, _) in std::env::vars_os() {
+        if name.to_str().is_some_and(is_scrubbed_environment_name) {
+            command.env_remove(&name);
+        }
+    }
+}
+
+/// Symbols whose presence in an image's symbol table means a C library was
+/// linked into it, even statically - in which case the image would start with
+/// a full libc runtime behind the seccomp allowlist instead of the
+/// freestanding `_start` the host expects.
+///
+/// `malloc` is included because a freestanding image has no allocator at all;
+/// its only plausible source is a libc object.
+pub const STATIC_LIBC_SYMBOL_NAMES: [&str; 8] = [
+    "__libc_start_main",
+    "__libc_csu_init",
+    "__libc_csu_fini",
+    "__libc_init_first",
+    "_IO_2_1_stdout_",
+    "_IO_2_1_stderr_",
+    "__cxa_finalize",
+    "malloc",
+];
+
+/// Every name from [`STATIC_LIBC_SYMBOL_NAMES`] that `bytes` *defines* or
+/// references, in symbol-table order and without duplicates.
+///
+/// This is the statically linked libc check `cargo xtask worker-image`
+/// applies on top of the "no `PT_INTERP`, no `PT_DYNAMIC`" identity test: a
+/// static libc leaves no dynamic marker behind, so the symbol table is the
+/// only place it shows up.
+///
+/// # Errors
+///
+/// A fixed reason string when `bytes` is not an ELF64 little-endian file, or
+/// when its section or symbol tables are truncated. A file with no symbol
+/// table at all yields `Ok(&[])`: the caller decides whether a stripped image
+/// is acceptable (`cargo xtask worker-image` separately requires `.symtab` on
+/// the shipping image).
+pub fn static_libc_symbols(bytes: &[u8]) -> Result<Vec<&'static str>, &'static str> {
+    const SECTION_HEADER_BYTES: usize = 64;
+    const SYMBOL_BYTES: usize = 24;
+    const SHT_SYMTAB: u32 = 2;
+    const SHT_DYNSYM: u32 = 11;
+
+    let read_u16 = |offset: usize| -> Option<u16> {
+        Some(u16::from_le_bytes(
+            bytes.get(offset..offset + 2)?.try_into().ok()?,
+        ))
+    };
+    let read_u32 = |offset: usize| -> Option<u32> {
+        Some(u32::from_le_bytes(
+            bytes.get(offset..offset + 4)?.try_into().ok()?,
+        ))
+    };
+    let read_u64 = |offset: usize| -> Option<u64> {
+        Some(u64::from_le_bytes(
+            bytes.get(offset..offset + 8)?.try_into().ok()?,
+        ))
+    };
+
+    let header = bytes
+        .get(..SECTION_HEADER_BYTES)
+        .ok_or("truncated header")?;
+    if header[..4] != [0x7f, b'E', b'L', b'F'] || header[4] != 2 || header[5] != 1 {
+        return Err("not an ELF64 little-endian file");
+    }
+    let section_offset = usize::try_from(read_u64(0x28).ok_or("truncated header")?)
+        .map_err(|_| "unreadable section header offset")?;
+    let entry_size = usize::from(read_u16(0x3a).ok_or("truncated header")?);
+    let count = usize::from(read_u16(0x3c).ok_or("truncated header")?);
+    if entry_size < SECTION_HEADER_BYTES {
+        return Err("short section headers");
+    }
+
+    let section = |index: usize| -> Option<(u32, usize, usize, usize)> {
+        let base = section_offset.checked_add(index.checked_mul(entry_size)?)?;
+        let kind = read_u32(base.checked_add(4)?)?;
+        let offset = usize::try_from(read_u64(base.checked_add(0x18)?)?).ok()?;
+        let size = usize::try_from(read_u64(base.checked_add(0x20)?)?).ok()?;
+        let link = usize::try_from(read_u32(base.checked_add(0x28)?)?).ok()?;
+        Some((kind, offset, size, link))
+    };
+
+    let mut found: Vec<&'static str> = Vec::new();
+    for index in 0..count {
+        let (kind, offset, size, link) = section(index).ok_or("truncated section header")?;
+        if kind != SHT_SYMTAB && kind != SHT_DYNSYM {
+            continue;
+        }
+        let (_, string_offset, string_size, _) = section(link).ok_or("missing string table")?;
+        let strings = bytes
+            .get(string_offset..string_offset.checked_add(string_size).ok_or("bad strtab")?)
+            .ok_or("truncated string table")?;
+        let table = bytes
+            .get(offset..offset.checked_add(size).ok_or("bad symtab")?)
+            .ok_or("truncated symbol table")?;
+        for entry in table.as_chunks::<SYMBOL_BYTES>().0 {
+            let name_offset = usize::try_from(u32::from_le_bytes(
+                entry[..4].try_into().expect("four bytes"),
+            ))
+            .map_err(|_| "unreadable symbol name offset")?;
+            let Some(rest) = strings.get(name_offset..) else {
+                continue;
+            };
+            let Some(end) = rest.iter().position(|byte| *byte == 0) else {
+                continue;
+            };
+            let Ok(name) = core::str::from_utf8(&rest[..end]) else {
+                continue;
+            };
+            if let Some(known) = STATIC_LIBC_SYMBOL_NAMES
+                .iter()
+                .find(|candidate| **candidate == name)
+                && !found.contains(known)
+            {
+                found.push(known);
+            }
+        }
+    }
+    Ok(found)
 }
 
 /// Copies `source` to `destination` through a temporary file and leaves the
@@ -263,5 +421,127 @@ mod tests {
     #[test]
     fn a_truncated_file_is_not_summarised() {
         assert!(summarise_elf(&[0x7f, b'E', b'L', b'F']).is_none());
+    }
+}
+
+#[cfg(test)]
+mod audit_tests {
+    use super::{STATIC_LIBC_SYMBOL_NAMES, is_scrubbed_environment_name, static_libc_symbols};
+
+    /// Minimal ELF64 little-endian file whose only sections are a string
+    /// table and a symbol table holding `names`.
+    fn fixture(names: &[&str]) -> Vec<u8> {
+        const SECTION_HEADER_BYTES: usize = 64;
+        let mut strings = vec![0_u8];
+        let mut offsets = Vec::new();
+        for name in names {
+            offsets.push(u32::try_from(strings.len()).expect("a small fixture"));
+            strings.extend_from_slice(name.as_bytes());
+            strings.push(0);
+        }
+        let mut table = vec![0_u8; 24];
+        for offset in &offsets {
+            table.extend_from_slice(&offset.to_le_bytes());
+            table.extend_from_slice(&[0x10, 0]);
+            table.extend_from_slice(&1_u16.to_le_bytes());
+            table.extend_from_slice(&0_u64.to_le_bytes());
+            table.extend_from_slice(&0_u64.to_le_bytes());
+        }
+
+        let string_offset = SECTION_HEADER_BYTES;
+        let symbol_offset = string_offset + strings.len();
+        let section_offset = symbol_offset + table.len();
+        let mut bytes = vec![0_u8; SECTION_HEADER_BYTES];
+        bytes[..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+        bytes[4] = 2;
+        bytes[5] = 1;
+        bytes[0x28..0x30].copy_from_slice(
+            &u64::try_from(section_offset)
+                .expect("a small fixture")
+                .to_le_bytes(),
+        );
+        bytes[0x3a..0x3c].copy_from_slice(&64_u16.to_le_bytes());
+        bytes[0x3c..0x3e].copy_from_slice(&3_u16.to_le_bytes());
+        bytes.extend_from_slice(&strings);
+        bytes.extend_from_slice(&table);
+
+        let mut section = |kind: u32, offset: usize, size: usize, link: u32| {
+            let mut entry = vec![0_u8; SECTION_HEADER_BYTES];
+            entry[4..8].copy_from_slice(&kind.to_le_bytes());
+            entry[0x18..0x20].copy_from_slice(
+                &u64::try_from(offset)
+                    .expect("a small fixture")
+                    .to_le_bytes(),
+            );
+            entry[0x20..0x28]
+                .copy_from_slice(&u64::try_from(size).expect("a small fixture").to_le_bytes());
+            entry[0x28..0x2c].copy_from_slice(&link.to_le_bytes());
+            bytes.extend_from_slice(&entry);
+        };
+        section(0, 0, 0, 0);
+        section(3, string_offset, strings.len(), 0);
+        section(2, symbol_offset, table.len(), 1);
+        bytes
+    }
+
+    #[test]
+    fn a_freestanding_symbol_table_names_no_libc_symbol() {
+        let bytes = fixture(&["_start", "memcpy", "ohl_test_worker_start"]);
+        assert_eq!(static_libc_symbols(&bytes), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn a_statically_linked_libc_is_detected_by_its_own_symbols() {
+        for name in STATIC_LIBC_SYMBOL_NAMES {
+            let bytes = fixture(&["_start", name]);
+            assert_eq!(
+                static_libc_symbols(&bytes),
+                Ok(vec![name]),
+                "{name} must be reported"
+            );
+        }
+    }
+
+    #[test]
+    fn each_libc_symbol_is_reported_once() {
+        let bytes = fixture(&["malloc", "malloc", "__libc_start_main"]);
+        assert_eq!(
+            static_libc_symbols(&bytes),
+            Ok(vec!["malloc", "__libc_start_main"])
+        );
+    }
+
+    #[test]
+    fn a_non_elf_file_is_rejected() {
+        assert!(static_libc_symbols(&[0_u8; 8]).is_err());
+        assert!(static_libc_symbols(&[0x7f_u8; 64]).is_err());
+    }
+
+    #[test]
+    fn the_scrub_covers_compilers_linkers_and_per_target_flags() {
+        for name in [
+            "RUSTFLAGS",
+            "RUSTC",
+            "RUSTC_WRAPPER",
+            "CC",
+            "CFLAGS",
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+            "LDFLAGS",
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS",
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER",
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER",
+        ] {
+            assert!(
+                is_scrubbed_environment_name(name),
+                "{name} must be scrubbed"
+            );
+        }
+        for name in ["PATH", "HOME", "CARGO", "CARGO_TARGET_DIR_SUFFIX"] {
+            assert!(
+                !is_scrubbed_environment_name(name),
+                "{name} must be left alone"
+            );
+        }
     }
 }

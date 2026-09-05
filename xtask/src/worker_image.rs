@@ -10,8 +10,9 @@
 //!
 //! - the `ohl-test-worker` fixture image, in its two startup variants;
 //! - the shipping `ohl-media-parser-worker` image, which is additionally
-//!   proved to reference no libc symbol and to have no undefined symbol at
-//!   all, and is then installed at
+//!   proved to reference no libc symbol, to define none of the well-known
+//!   symbols a statically linked libc would bring in, and to have no
+//!   undefined symbol at all, and is then installed at
 //!   `<directory of this executable>/libexec/open-half-life/`, which is
 //!   exactly where the backend resolves it.
 
@@ -234,6 +235,24 @@ fn run_parser_worker_image() -> Result<usize, String> {
                 eprintln!("error: {}: {violation}", built.display());
             }
             failures += violations.len();
+        }
+        Err(reason) => {
+            eprintln!("error: {}: {reason}", built.display());
+            failures += 1;
+        }
+    }
+
+    // A statically linked C library leaves no PT_INTERP and no PT_DYNAMIC
+    // behind, so the identity check above cannot see it; its own symbols can.
+    match ohl_test_worker::static_libc_symbols(&bytes) {
+        Ok(found) => {
+            for name in &found {
+                eprintln!(
+                    "error: {}: statically linked libc symbol `{name}`",
+                    built.display()
+                );
+            }
+            failures += found.len();
         }
         Err(reason) => {
             eprintln!("error: {}: {reason}", built.display());

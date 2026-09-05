@@ -593,7 +593,25 @@ The worker remains a compile-fixed, pinned static x86-64 ELF identity. The
 native launcher verifies no-follow root-owned installation metadata, rejects
 writable or set-id images and unsupported/interpreted ELF identities, and then
 applies the fixed descriptor inventory, resource limits, no-new-privileges,
-Landlock, seccomp, readiness framing, and pidfd-backed lifecycle. Local
+Landlock, seccomp, readiness framing, and pidfd-backed lifecycle. Every step
+after `fork` is a raw syscall, including the seccomp installation: the
+allowlist is compiled and wrapped in its `sock_fprog` by the parent and
+installed by the child through `seccomp(SECCOMP_SET_MODE_FILTER, ...)`, so no
+libc code, PLT indirection, or errno write runs between `fork` and `execveat`.
+The allowlist is `execveat` (constrained to the image descriptor and
+`AT_EMPTY_PATH`), `read`, `write`, `close`, `ppoll`, `restart_syscall`, `exit`,
+and `exit_group`; `restart_syscall` is allowed because the kernel, not the
+worker, issues it when a stop/continue cycle interrupts a blocking call, and
+denying it would make an external `SIGSTOP` a fatal policy violation. The
+confined child's descriptor table after `execveat` is exactly `{0, 1, 2, 3, 4}`
+and, once readiness is attested and that descriptor closed, `{0, 1, 2, 3}`;
+this is asserted from inside the sandbox by probing descriptor numbers with
+`ppoll`, because `/proc/<pid>/fd` is not readable there. The Landlock ruleset
+names the already-verified image through `/proc/self/fd/<n>`, which is the only
+way to attach a rule to an open descriptor rather than to a re-resolved path,
+so a readable `/proc` is a hard requirement of the Linux backend; where it is
+absent or hidden the ruleset cannot be built and the launch fails closed with
+`confinement_unavailable` rather than running with a weaker sandbox. Local
 `platform.isolated_worker.linux` evidence stages byte-identical production
 target bytes at the test backend's compile-fixed identity and launches them
 through this public path. It covers fragmented hello/ready/shutdown, malformed
