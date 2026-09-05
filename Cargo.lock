@@ -1741,6 +1741,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ohl-payload"
+version = "0.1.0"
+dependencies = [
+ "ohl-core",
+ "ohl-platform",
+ "proptest",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "ohl-platform"
 version = "0.1.0"
 dependencies = [

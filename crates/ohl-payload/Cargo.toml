@@ -1,0 +1,30 @@
+[package]
+name = "ohl-payload"
+description = "Payload path policy, layout planning, deterministic component selection, and transactional staging for the Open Half-Life Rust port"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ohl_payload"
+
+[features]
+default = ["std"]
+# The `path`, `layout` and `cancel` policy core builds without `std`.
+# Everything that reaches a filesystem, a pinned source, or a recipe file
+# needs `std`.
+std = ["ohl-core/std", "dep:ohl-platform", "dep:toml"]
+
+[dependencies]
+ohl-core = { path = "../ohl-core", version = "=0.1.0" }
+ohl-platform = { path = "../ohl-platform", version = "=0.1.0", optional = true }
+toml = { version = "=1.1.5", optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

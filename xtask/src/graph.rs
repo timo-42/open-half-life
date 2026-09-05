@@ -48,10 +48,16 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
         ],
     ),
     ("ohl-media", &["ohl-platform", "ohl-core"]),
+    // `ohl-payload` owns the payload path policy, layout planning, component
+    // selection, and the transactional staging layer over `ohl-platform`'s
+    // create-new staging and no-replace publication primitives (R4.6).
+    // `ohl-import` composes it into an import session.
+    ("ohl-payload", &["ohl-core", "ohl-platform"]),
     (
         "ohl-import",
         &[
             "ohl-media",
+            "ohl-payload",
             "ohl-vfs",
             "ohl-parser-protocol",
             "ohl-platform",

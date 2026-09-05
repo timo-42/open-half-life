@@ -27,3 +27,7 @@ compile_commands.json
 Thumbs.db
 *.log
 *.swp
+
+# Runtime-only local selection recipes are user data, never repository data
+# (see docs/MEDIA_IMPORT.md and crates/ohl-payload/src/selection.rs).
+*.recipe.toml
