@@ -18,6 +18,18 @@ option(
   "Build the unaudited InstallShield cabinet adapter"
   OFF
 )
+set(
+  OHL_VERSION_OVERRIDE
+  ""
+  CACHE STRING
+  "Version string to embed in the binary, overriding the CMake project \
+version (set by CI from git describe via vergit)"
+)
+if(OHL_VERSION_OVERRIDE)
+  set(OHL_BUILD_VERSION "${OHL_VERSION_OVERRIDE}")
+else()
+  set(OHL_BUILD_VERSION "${PROJECT_VERSION}")
+endif()
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")

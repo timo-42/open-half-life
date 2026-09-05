@@ -5,7 +5,7 @@ add_executable(open-half-life
 target_compile_features(open-half-life PRIVATE cxx_std_20)
 target_compile_definitions(
   open-half-life
-  PRIVATE OHL_VERSION="${PROJECT_VERSION}"
+  PRIVATE OHL_VERSION="${OHL_BUILD_VERSION}"
 )
 target_link_libraries(
   open-half-life
