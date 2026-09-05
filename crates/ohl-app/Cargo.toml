@@ -72,6 +72,12 @@ ohl-iso9660 = { path = "../ohl-iso9660", version = "=0.1.0", features = [
 tempfile = { workspace = true }
 hadris-iso = { workspace = true }
 ohl-parser-protocol = { path = "../ohl-parser-protocol", version = "=0.1.0" }
+# The synthetic Wise package writer, for the real-worker import test. It is a
+# development dependency only: nothing shipped builds it.
+ohl-wise = { path = "../ohl-wise", version = "=0.1.0", features = [
+    "std",
+    "test-support",
+] }
 
 [lints]
 workspace = true

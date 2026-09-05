@@ -89,6 +89,54 @@ fn push_enumeration(transport: &SyntheticTransport, session: u64) {
     );
 }
 
+/// A spelling the catalog planner accepts but the destination policy does
+/// not: a trailing dot is a legal archive name and an illegal portable file
+/// name.
+const UNUSABLE_PATH: &str = "invented/gamma.";
+
+/// [`push_enumeration`] plus one entry no destination policy will accept.
+fn push_enumeration_with_an_unusable_spelling(transport: &SyntheticTransport, session: u64) {
+    let batch = entry_batch_payload(
+        &[
+            BatchEntry {
+                source_token: 1,
+                archive_path: FIRST_PATH,
+                size_bytes: FIRST_BYTES as u64,
+            },
+            BatchEntry {
+                source_token: 2,
+                archive_path: SECOND_PATH,
+                size_bytes: SECOND_BYTES as u64,
+            },
+            BatchEntry {
+                source_token: 3,
+                archive_path: UNUSABLE_PATH,
+                size_bytes: 16,
+            },
+        ],
+        import_limits(),
+    );
+    transport.push_frame(
+        &ohl_parser_protocol::FrameHeader::new(
+            MessageType::EntryBatch,
+            session,
+            1,
+            u32::try_from(batch.len()).expect("bounded fixture batch"),
+        ),
+        &batch,
+    );
+    let complete = complete_payload(OperationPhase::Enumerate);
+    transport.push_frame(
+        &ohl_parser_protocol::FrameHeader::new(
+            MessageType::Complete,
+            session,
+            1,
+            u32::try_from(complete.len()).expect("bounded fixture completion"),
+        ),
+        &complete,
+    );
+}
+
 /// Queues one entry's chunks and its completion for `request_id`.
 fn push_stream(transport: &SyntheticTransport, session: u64, request_id: u64, data: &[u8]) {
     let mut remaining = data.len() as u64;
@@ -225,6 +273,32 @@ fn tokens() -> (CancellationToken, StagingToken) {
 }
 
 #[test]
+fn an_entry_the_destination_policy_refuses_is_skipped_and_counted() {
+    let harness = Harness::new();
+    let (first, second) = entry_bytes();
+    push_enumeration_with_an_unusable_spelling(&harness.transport, harness.session);
+    push_stream(&harness.transport, harness.session, 2, &first);
+    push_stream(&harness.transport, harness.session, 3, &second);
+
+    let (transport_token, staging_token) = tokens();
+    let report = harness
+        .run(
+            ImportCancellation {
+                transport: &transport_token,
+                staging: &staging_token,
+            },
+            &mut ohl_import::DiscardProgress,
+        )
+        .expect("one unusable spelling does not cost the import");
+
+    assert_eq!(report.outcome, ImportOutcome::Published);
+    assert_eq!(report.entries_skipped, 1);
+    assert_eq!(report.entries_planned, 2);
+    assert_eq!(report.entries_imported, 2);
+    assert_eq!(report.bytes_planned, (FIRST_BYTES + SECOND_BYTES) as u64);
+}
+
+#[test]
 fn a_complete_run_publishes_the_planned_tree_and_records_its_identity() {
     let harness = Harness::new();
     let (first, second) = entry_bytes();
@@ -249,6 +323,7 @@ fn a_complete_run_publishes_the_planned_tree_and_records_its_identity() {
     assert_eq!(report.outcome, ImportOutcome::Published);
     assert_eq!(report.entries_planned, 2);
     assert_eq!(report.entries_imported, 2);
+    assert_eq!(report.entries_skipped, 0);
     assert_eq!(report.bytes_planned, (FIRST_BYTES + SECOND_BYTES) as u64);
     assert_eq!(report.bytes_imported, report.bytes_planned);
     assert!(
@@ -302,6 +377,20 @@ fn a_complete_run_publishes_the_planned_tree_and_records_its_identity() {
             .all(|pair| pair[1] >= pair[0] && pair[1] <= 1.0)
     );
     assert!((progress.fractions.last().copied().unwrap_or(0.0) - 1.0).abs() < f32::EPSILON);
+
+    // The runtime finds the published tree from the medium alone, and it
+    // only opens what the payload policy accepts.
+    let tree = ohl_import::find_published_payload(
+        &layout,
+        harness.fixture.media(),
+        &harness.payload_root(),
+    )
+    .expect("the published tree is discoverable");
+    assert!(tree.contains("invented/alpha.dat"));
+    assert!(tree.contains("invented\\beta.dat"));
+    assert!(!tree.contains("invented/missing.dat"));
+    assert!(!tree.contains("../escape"));
+    assert_eq!(tree.files_directory(), published.join("files"));
 
     // The worker was shut down in order, not killed.
     assert_eq!(harness.worker.terminate_calls(), 0);

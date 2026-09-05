@@ -23,6 +23,11 @@ ohl-wise = { path = "../ohl-wise", version = "=0.1.0", features = ["std"] }
 thiserror = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
+# The synthetic Wise package writer, for the location tests.
+ohl-wise = { path = "../ohl-wise", version = "=0.1.0", features = [
+    "std",
+    "test-support",
+] }
 proptest = { workspace = true }
 tempfile = { workspace = true }
 hadris-iso = { workspace = true }

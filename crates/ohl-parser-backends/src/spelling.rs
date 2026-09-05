@@ -150,7 +150,10 @@ mod tests {
     #[test]
     fn separators_fold_and_the_spelling_is_kept_as_recorded() {
         let mut set = SpellingSet::new();
-        assert_eq!(set.accept(b"%MAINDIR%\\valve\\halflife.wad").unwrap(), "%MAINDIR%/valve/halflife.wad");
+        assert_eq!(
+            set.accept(b"%MAINDIR%\\valve\\halflife.wad").unwrap(),
+            "%MAINDIR%/valve/halflife.wad"
+        );
         assert_eq!(set.len(), 1);
     }
 

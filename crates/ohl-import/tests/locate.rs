@@ -12,8 +12,8 @@ use ohl_import::locate::{
 };
 use ohl_import::{CancellationSource, CancellationToken};
 use support::{
-    MountedFixture, PE_HEADER_OFFSET, PE_OVERLAY_OFFSET, synthetic_bytes, synthetic_pe,
-    synthetic_pe_with_z_overlay,
+    MountedFixture, PE_HEADER_OFFSET, PE_OVERLAY_OFFSET, synthetic_bytes, synthetic_noise,
+    synthetic_pe, synthetic_pe_with_z_overlay,
 };
 
 #[test]
@@ -112,6 +112,49 @@ fn a_pe_with_a_z_overlay_is_located_in_a_mounted_image() {
     assert_eq!(candidate.length, file.len() as u64 - PE_OVERLAY_OFFSET);
     // The candidate's path is media-derived, so only its shape is asserted.
     assert!(candidate.archive_path.as_str().starts_with('/'));
+}
+
+#[test]
+fn a_pe_carrying_a_wise_package_is_located_as_a_wise_overlay() {
+    use ohl_wise::testing::{PackageOptions, SyntheticFile, build_package};
+
+    let package = build_package(&PackageOptions::with_files(vec![SyntheticFile::new(
+        b"invented\\alpha.dat",
+        synthetic_noise(200 * 1024, 0x1234),
+    )]));
+    let fixture = MountedFixture::new("SETUP.EXE", package.image.clone());
+
+    let found = locate_containers(
+        fixture.mount(),
+        &LocateLimits::default(),
+        &CancellationToken::default(),
+    )
+    .expect("a bounded walk");
+
+    assert_eq!(found.len(), 1, "exactly one candidate: {found:?}");
+    let candidate = &found[0];
+    assert_eq!(candidate.kind, ContainerKind::WiseOverlay);
+    assert_eq!(candidate.offset, package.overlay_offset);
+    // The worker recomputes the overlay itself, so its window is the whole
+    // image rather than the overlay.
+    assert_eq!(candidate.window(), (0, package.image.len() as u64));
+}
+
+#[test]
+fn a_pe_overlay_that_is_not_a_stream_chain_is_not_a_wise_package() {
+    // The Z fixture's overlay is deliberately not compressed data, so the
+    // Wise confirmation must decline it and leave the signature scan to
+    // classify the file.
+    let file = synthetic_pe_with_z_overlay(128 * 1024);
+    let fixture = MountedFixture::new("SETUP.EXE", file);
+    let found = locate_containers(
+        fixture.mount(),
+        &LocateLimits::default(),
+        &CancellationToken::default(),
+    )
+    .expect("a bounded walk");
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].kind, ContainerKind::InstallShieldZ);
 }
 
 #[test]

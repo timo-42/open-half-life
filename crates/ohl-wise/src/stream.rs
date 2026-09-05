@@ -424,7 +424,10 @@ mod tests {
             }
         }
         assert_eq!(out, first);
-        assert_eq!(reader.finish(&mut source).unwrap().checksum, ChecksumStatus::Match);
+        assert_eq!(
+            reader.finish(&mut source).unwrap().checksum,
+            ChecksumStatus::Match
+        );
 
         reader.restart(second_at);
         assert!(!reader.is_finished());

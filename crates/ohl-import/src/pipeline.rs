@@ -249,11 +249,9 @@ pub fn choose_primary(candidates: &[ContainerCandidate]) -> Option<&ContainerCan
         ContainerKind::InstallShieldZ,
         ContainerKind::MicrosoftCabinet,
     ];
-    let preferred = PREFERENCE.into_iter().find(|kind| {
-        candidates
-            .iter()
-            .any(|candidate| candidate.kind == *kind)
-    })?;
+    let preferred = PREFERENCE
+        .into_iter()
+        .find(|kind| candidates.iter().any(|candidate| candidate.kind == *kind))?;
     candidates
         .iter()
         .filter(|candidate| candidate.kind == preferred)

@@ -2069,6 +2069,7 @@ dependencies = [
  "ohl-render",
  "ohl-udf",
  "ohl-vfs",
+ "ohl-wise",
  "ohl-world",
  "tempfile",
  "tracing",
