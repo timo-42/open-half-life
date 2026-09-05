@@ -85,6 +85,11 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
     ("ohl-physics", &["ohl-core", "ohl-formats", "ohl-vfs"]),
     ("ohl-render", &["ohl-core", "ohl-world"]),
     ("ohl-audio", &["ohl-core"]),
+    // Versioned save-file container: bounded header, tagged section table
+    // with per-section and whole-file SHA-256 integrity, and an atomic-write
+    // save-slot directory. Project-owned format, independent of the world/
+    // gameplay crates it will eventually be driven by.
+    ("ohl-save", &["ohl-core"]),
     ("ohl-input", &["ohl-core"]),
     ("ohl-game", &["ohl-core", "ohl-formats", "ohl-world"]),
     ("ohl-ui", &["ohl-core"]),

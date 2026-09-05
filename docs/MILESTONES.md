@@ -1010,6 +1010,43 @@ blending, sequence transition graphs and events, external sequence-group and
 external texture files, per-pixel lighting, backface culling, mipmaps, and
 any model source other than a path on disk.
 
+## M8 (Rust): save container
+
+Status: in progress. Adds `ohl-save`, a project-owned, versioned save-file
+container: a fixed magic, a format version, a bounded header (game version,
+creation time, map identity, chapter/title, and a reserved thumbnail slot), a
+tagged section table with a per-section SHA-256 digest, the section
+payloads, and a whole-file SHA-256 trailer. **This is not the id
+Tech/GoldSrc `.sav`/`.hl1` save format**; it is a from-scratch binary
+container designed for this project (see `crates/ohl-save/README.md` and
+`docs/ARCHITECTURE.md`'s "Save files" paragraph for the exact layout).
+
+`SaveWriter::begin(header)` → `add_section`/`add_section_serde` (the latter
+encoding with `postcard`) → `finish(&limits)` produces the bytes.
+`SaveReader::open(bytes, &limits)` validates every offset, length, and
+digest against the file size and the caller-supplied `Limits` before
+trusting them, then exposes `header()`, `sections()`, `section(tag)`, and
+`deserialize::<T>(tag)`. A major format-version mismatch is always rejected;
+a minor-version mismatch and section-table entries whose tag is reserved for
+this crate's own future use are tolerated and counted rather than causing a
+failure. `SaveSlot` layers a directory of `<slot>.ohlsave` files on top, with
+`AUTOSAVE_SLOT_NAME`/`QUICKSAVE_SLOT_NAME`, atomic write-to-temp-then-rename
+publication, bounded `list()`, and `delete()`.
+
+Verified: unit tests cover round-tripping, every-field tamper (header,
+table, section digest, trailer), truncation at every byte length including a
+dedicated 64-byte-boundary sweep, limits enforcement, unknown-section
+skipping, and minor/major version rules; `proptest` checks that opening
+never panics on arbitrary bytes and that arbitrary headers/sections
+round-trip exactly; `tests/integration.rs` exercises the same guarantees
+through the public API, including `SaveSlot` listing over a temporary
+directory. A standalone `fuzz/` package (`open_fuzz`, `roundtrip_fuzz`) ran
+60 seconds each with no crashes during development.
+
+Not yet done: wiring `ohl-save` into `ohl-game`/`ohl-app` to actually
+serialize and restore world/entity state; no section tags are defined by any
+other crate yet, so this milestone is the container format only.
+
 ## M9 (Rust): UI shell
 
 Status: in progress. `ohl-ui` adds an egui-based overlay: a Quake-style
@@ -1075,5 +1112,5 @@ screens, and an editable bindings screen.
 - M5: interactive entities (Rust `ohl-game`, M5.1, in progress, see above)
 - M6: models and animation (Rust studio models in progress, see above)
 - M7: combat
-- M8: full campaign compatibility
+- M8: full campaign compatibility (Rust save container in progress, see above)
 - M9: release hardening

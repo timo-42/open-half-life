@@ -770,6 +770,43 @@ Because Unshield is not hardened for malicious cabinet metadata, the adapter
 is excluded from default builds and normal startup. The app is the only
 composition root.
 
+## Save files
+
+`ohl-save` is a project-owned, versioned save-file container over `ohl-core`
+only. **It is not the id Tech/GoldSrc `.sav`/`.hl1` save format**: the layout
+below was designed from scratch for this project. A file is a fixed 8-byte
+magic, a `u16` major/minor format version, a bounded header (a game-version
+string, a Unix creation timestamp, a map-identity string, a chapter/title
+string, and a reserved thumbnail byte slot — every variable-length field is
+length-prefixed and checked against a fixed maximum on both write and read),
+a `u32` section count, a section table (one `tag: u32, offset: u64,
+length: u64, sha256: [u8; 32]` entry per section), the concatenated section
+payloads in table order, and a whole-file SHA-256 trailer. `SaveReader::open`
+validates every table entry's offset and length against the file size and a
+caller-supplied `Limits` (maximum section count, maximum single-section
+size, maximum file size) before trusting them, verifies every section's
+digest and the whole-file trailer, and never panics on truncated or
+adversarially crafted input. A major-version mismatch is always rejected
+(`SaveError::UnsupportedMajorVersion`); a minor-version mismatch is
+tolerated, as are section-table entries whose tag falls below
+`MIN_APPLICATION_TAG` (reserved for this crate's own current or future use)
+that this build does not otherwise interpret — their integrity is still
+verified, but they are excluded from ordinary lookups and reported via
+`SaveReader::unknown_section_count` instead of causing a failure.
+`SaveWriter::begin(header)` / `add_section` / `add_section_serde` (the
+latter encoding a `serde` value with `postcard`) / `finish(&limits)` builds
+a file; `SaveReader::open(bytes, &limits)` reads one back and exposes
+`header()`, `sections()`, `section(tag)`, and `deserialize::<T>(tag)`.
+`SaveSlot` layers a directory of `<slot>.ohlsave` files on top, with a
+default per-user save directory resolved through `directories`,
+`AUTOSAVE_SLOT_NAME`/`QUICKSAVE_SLOT_NAME` conventions, bounded `list()`,
+`delete()`, and write-to-temp-then-rename publication (documented per-target
+guarantee in `crates/ohl-save/src/slot.rs`; unlike
+`ohl_platform::atomic_directory`'s create-only primitive, a slot write is
+meant to replace its previous contents). No section tags are defined by any
+other crate yet: wiring `ohl-save` into `ohl-game`/`ohl-app` to actually
+serialize and restore world/entity state is later work.
+
 ## Hosted qualification history
 
 The two sections that used to follow here recorded exact-commit hosted CI
