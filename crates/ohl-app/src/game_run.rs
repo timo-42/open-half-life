@@ -85,6 +85,9 @@ pub struct GameArgs<'a> {
     pub frames: u32,
     /// Where to stand for a headless capture.
     pub viewpoint: Option<Viewpoint>,
+    /// Where to stand for a headless capture, relative to the map's player
+    /// start. Ignored when `viewpoint` is given.
+    pub spawn_offset: Option<Viewpoint>,
 }
 
 /// Runs the playable loop, either headless (writing a PNG) or windowed.
@@ -92,7 +95,8 @@ pub struct GameArgs<'a> {
 /// Returns a fixed, sanitized message on failure; the caller prints it as
 /// is.
 pub fn run(args: &GameArgs<'_>) -> Result<(), &'static str> {
-    let asset_fs = ohl_assets::AssetFs::mount_default(args.payload_files)
+    let root = game_root(args.payload_files);
+    let asset_fs = ohl_assets::AssetFs::mount_default(&root)
         .map_err(|_| "the payload directory could not be indexed")?;
     let source = AssetFsSource::new(asset_fs);
     let mut game = Game::load(&source, args.map).map_err(|_| {
@@ -115,6 +119,31 @@ pub fn run(args: &GameArgs<'_>) -> Result<(), &'static str> {
     }
 }
 
+/// The directory inside a published payload that holds the mod directories.
+///
+/// An installer stages its files under its own destination variable rather
+/// than at the tree root, so the mod directories can sit one level in. This
+/// looks for the base mod directory at the root first and then, in sorted
+/// order for determinism, one level down. Nothing here is logged: every
+/// name involved comes from the medium.
+fn game_root(files: &Path) -> std::path::PathBuf {
+    const BASE_MOD: &str = ohl_assets::DEFAULT_SEARCH_PATHS[0];
+
+    if files.join(BASE_MOD).is_dir() {
+        return files.to_path_buf();
+    }
+    let Ok(entries) = std::fs::read_dir(files) else {
+        return files.to_path_buf();
+    };
+    let mut candidates: Vec<std::path::PathBuf> =
+        entries.flatten().map(|entry| entry.path()).collect();
+    candidates.sort();
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.join(BASE_MOD).is_dir())
+        .unwrap_or_else(|| files.to_path_buf())
+}
+
 /// Renders `frames` frames offscreen and writes the last one as a PNG.
 fn capture(game: &mut Game, args: &GameArgs<'_>, path: &Path) -> Result<(), &'static str> {
     let context = GpuContext::headless().map_err(|_| "no usable graphics adapter is available")?;
@@ -124,6 +153,18 @@ fn capture(game: &mut Game, args: &GameArgs<'_>, path: &Path) -> Result<(), &'st
 
     if let Some(viewpoint) = args.viewpoint {
         game.set_viewpoint(viewpoint.position, viewpoint.pitch, viewpoint.yaw);
+    } else if let Some(offset) = args.spawn_offset {
+        // Relative to wherever the map's own player start put the camera,
+        // so a capture can be aimed without anyone having to know (or
+        // record) a map's coordinates.
+        let camera = game.camera();
+        let position = [
+            camera.position[0] + offset.position[0],
+            camera.position[1] + offset.position[1],
+            camera.position[2] + offset.position[2],
+        ];
+        let (pitch, yaw) = (camera.pitch + offset.pitch, camera.yaw + offset.yaw);
+        game.set_viewpoint(position, pitch, yaw);
     }
 
     for _ in 0..args.frames.max(1) {
