@@ -1,13 +1,21 @@
 # Production import readiness
 
-Production payload import is unavailable on every platform. No current build
-can extract a user medium into a playable payload set, publish that payload for
-runtime use, or claim end-to-end production qualification.
+Linux x86-64 can now extract a user medium into a payload set and publish it
+for runtime use. It is **not** production-qualified, and every other platform
+tuple remains unavailable: no build on any other tuple can extract a medium at
+all, and no tuple on any platform meets the release-evidence gates below.
 
 This page records release evidence that must exist before that status changes.
 Checklist items are unmet unless a concrete review, test, hosted run, or
 release artifact is linked from the item. Absence of a link means absence of
 evidence.
+
+**Read the R4.7b section first.** Everything below the R4.7a section
+predates the worker's real dispatcher and describes a build that could not
+extract anything. It is retained as the specification and the historical
+qualification record; where it says import is unavailable on every platform,
+read "unavailable on every platform except Linux x86-64, which is implemented
+but unqualified".
 
 **Rust transition note.** The project's implementation is now entirely Rust;
 the C++ tree this page originally described (parser-worker service, Linux
@@ -66,10 +74,66 @@ Evidence, all local and all on Linux x86-64:
   and was refused. Only the fixed log lines and the exit status were recorded;
   no name, count, or byte from that medium is in this repository.
 
-What is still absent is unchanged and is the whole of R4.7b and beyond: a real
-payload dispatcher and parser inside the worker, and the production
-qualification gates listed further down. Until those exist, every "production
-end-to-end qualification" cell below stays "absent".
+The real dispatcher that finishes this arrived at R4.7b; see the next section.
+
+## Rust R4.7b: Linux x86-64 imports end to end; no tuple is qualified
+
+The worker now has a real dispatcher. `ohl-parser-backends` recognises a Wise
+installer overlay, a Microsoft cabinet or an InstallShield 3 Z archive from
+the source window the parent pins over the container, enumerates it into
+`entry_batch` frames and streams each entry as verified `data_chunk`s, all
+over the OWP/1 pull model with no capability of its own. `ohl-app` runs the
+import on first run and rediscovers the published tree afterwards. The whole
+path — pinned source, contained parser, selection, staging, complete-source
+reverification, no-replace publication, provenance, runtime discovery — now
+executes for real on Linux x86-64.
+
+**This is an implementation status, not a qualification status.** Every
+objective release-evidence gate listed further down remains unmet: there is no
+installed-package inventory, no installed-prefix hosted end-to-end run, no
+crash/restart/publication-recovery evidence, no sanitizer/fuzz/stress campaign
+over the new back ends, and no independent architecture, security, reliability,
+release, or product review. The "production end-to-end qualification" column
+below therefore stays "absent" for every tuple, Linux x86-64 included.
+
+Every other tuple is unavailable for a simpler reason: containment is
+source-selected for Linux x86-64 only, and everywhere else the unsupported
+backend refuses to launch a worker, so no import can begin.
+
+Evidence, all local and all on Linux x86-64:
+
+- Back-end coverage runs the real worker service over a scripted transport,
+  against synthetic Wise, cabinet and Z packages built by the decoders' own
+  project-authored writers (`crates/ohl-parser-backends/tests/service.rs`):
+  enumerate/stream/complete for each container kind, a checksum-mismatched
+  Wise stream that is withheld from the offer rather than failed mid-stream, a
+  stream whose source bytes change after enumeration and is refused at
+  verification instead of published, a cancel between chunks, a source-read
+  failure, an exhausted walk budget, and an unrecognised container.
+- Pipeline coverage against the scripted synthetic worker is unchanged
+  (`crates/ohl-import/tests/pipeline.rs`), extended for the new
+  `WiseOverlay` candidate kind, the `Wise > Z > largest cabinet` choice, and
+  runtime discovery of an already-published tree
+  (`crates/ohl-import/tests/locate.rs`).
+- The `#[ignore]`d `crates/ohl-app/tests/worker_image.rs` runs the shipped
+  binary with the **real** installed worker image (after
+  `cargo xtask worker-image`) against a synthetic ISO carrying a synthetic
+  PE with a Wise overlay, and verifies the published tree's CRCs; a second
+  case still requires the sanitized refusal for a container the build cannot
+  decode. Both pass.
+- One manual run against a lawfully owned medium completed the import, and a
+  second run reused the published tree. Only the fixed log lines, the exit
+  status, the elapsed time and aggregate counts were recorded; no name, path,
+  or byte from that medium is in this repository.
+
+The worker image's heap is a fixed 96 MiB `.bss` bump arena installed as the
+`#[global_allocator]`, well inside the launcher's `RLIMIT_DATA` (256 MiB) and
+`RLIMIT_AS` (512 MiB). It never calls `brk` or `mmap`, never reclaims, and
+panics into a fail-closed exit when exhausted. It is the image's only new
+`unsafe` site and is documented as row 6 of that package's `unsafe` inventory;
+every other crate keeps `forbid(unsafe_code)`. See
+[MEDIA_IMPORT.md](MEDIA_IMPORT.md), "The worker's container back ends
+(R4.7b)".
 
 ## Status boundaries
 
@@ -79,6 +143,10 @@ end-to-end qualification" cell below stays "absent".
   once, validate the pinned source, mount the read-only UDF root, and publish a
   local provenance manifest without media bytes or extracted output. It does
   not imply payload extraction.
+- Payload import implemented means the tuple can actually run the whole path —
+  locate, contained parse, selection, staging, complete-source reverification,
+  no-replace publication, provenance, runtime discovery — against a real
+  medium. It carries no qualification claim whatsoever: see the last column.
 - Isolated-worker containment means a native backend can launch a fixed worker
   identity with reduced authority and bounded IPC. Linux x86-64 has a
   source-selected containment backend with synthetic tests and an installed
@@ -109,14 +177,14 @@ end-to-end qualification" cell below stays "absent".
 
 ## Platform matrix
 
-| Platform | Build | App preflight and metadata-only cache | Isolated-worker containment | Production end-to-end qualification |
-| --- | --- | --- | --- | --- |
-| Linux x86-64 | Implemented. Existing Linux build evidence is not a production import tuple. | Implemented; no payload extraction. | Implemented as a source-selected native backend with project-authored synthetic tests. The installed static worker hosts exact OWP/1 hello/ready/shutdown on fd 3 under the compile-fixed identity and native confinement. Its compile-fixed dispatcher rejects payload operations as unsupported. The higher process-session owner (`ParserProcessSession`, accepted at `537c11b`) now exists but is disconnected from this worker; the real parser, runtime selection, and staging/publication integration remain absent. | Absent; import unavailable. |
-| Linux other architectures | Unevidenced and unqualified as import tuples. | Code path exists where the build is available; no payload extraction. | Unsupported; CMake selects the unsupported backend. | Absent; import unavailable. |
-| Windows x64 | Exact documented build/preflight tuple. | Implemented in hosted evidence; no payload extraction. | Unsupported; CMake selects the unsupported backend. | Absent; import unavailable. |
-| Windows other architectures | Unevidenced and unqualified. | Unevidenced for release qualification. | Unsupported; CMake selects the unsupported backend. | Absent; import unavailable. |
-| macOS Apple Silicon | Exact documented build/preflight tuple. | Implemented in hosted evidence; no payload extraction. | Unsupported; CMake selects the unsupported backend. | Absent; import unavailable. |
-| macOS other architectures | Unevidenced and unqualified. | Unevidenced for release qualification. | Unsupported; CMake selects the unsupported backend. | Absent; import unavailable. |
+| Platform | Build | App preflight and metadata-only cache | Isolated-worker containment | Payload import implemented | Production end-to-end qualification |
+| --- | --- | --- | --- | --- | --- |
+| Linux x86-64 | Implemented. Existing Linux build evidence is not a production import tuple. | Implemented; no payload extraction. | Implemented as a source-selected native backend with project-authored synthetic tests. The installed static worker hosts exact OWP/1 hello/ready/shutdown on fd 3 under the compile-fixed identity and native confinement. Its dispatcher decodes Wise, MS-CAB and IS3 Z containers for real (R4.7b), and the process-session owner, runtime selection and staging/publication are composed with it. | Implemented end to end (R4.7b): Wise overlay, MS-CAB and IS3 Z containers enumerate and stream through the confined worker, and a published payload is rediscovered at runtime. Local synthetic and manual evidence only. | Absent; implemented but unqualified — no release-evidence gate below is met. |
+| Linux other architectures | Unevidenced and unqualified as import tuples. | Code path exists where the build is available; no payload extraction. | Unsupported; CMake selects the unsupported backend. | Absent; containment selects the unsupported backend, so no worker launches. | Absent; import unavailable. |
+| Windows x64 | Exact documented build/preflight tuple. | Implemented in hosted evidence; no payload extraction. | Unsupported; CMake selects the unsupported backend. | Absent; containment selects the unsupported backend, so no worker launches. | Absent; import unavailable. |
+| Windows other architectures | Unevidenced and unqualified. | Unevidenced for release qualification. | Unsupported; CMake selects the unsupported backend. | Absent; containment selects the unsupported backend, so no worker launches. | Absent; import unavailable. |
+| macOS Apple Silicon | Exact documented build/preflight tuple. | Implemented in hosted evidence; no payload extraction. | Unsupported; CMake selects the unsupported backend. | Absent; containment selects the unsupported backend, so no worker launches. | Absent; import unavailable. |
+| macOS other architectures | Unevidenced and unqualified. | Unevidenced for release qualification. | Unsupported; CMake selects the unsupported backend. | Absent; containment selects the unsupported backend, so no worker launches. | Absent; import unavailable. |
 
 Platform-independent staging and the Linux atomic-directory store are
 implemented but disconnected from the application and parser stack. They do
@@ -196,11 +264,15 @@ suite 40/40, and 50 repeated real-launcher cases 50/50. Owned termination can
 classify as `clean` or `terminated` if orderly peer EOF wins; either result is
 terminal, cached, and reaped.
 
-The next dependencies are a separately reviewed real dispatcher/parser,
-followed by composition of the now-accepted process-session owner with
-handshake/session, selection, staging, publication, and runtime composition.
-Production payload import remains unavailable on every platform, and M2
-remains in progress.
+That dispatcher, and the composition of the process-session owner with
+handshake/session, selection, staging, publication and runtime discovery,
+landed at R4.7a and R4.7b. The next dependencies are the objective
+release-evidence gates below — installed-package inventory and identity,
+installed-prefix hosted end-to-end runs, crash/restart/publication recovery,
+sanitizer/fuzz/stress campaigns over the new back ends, and independent
+review — plus containment backends for the other platform tuples. Production
+payload import remains unqualified on every platform and unavailable on every
+tuple except Linux x86-64, and M2 remains in progress.
 
 ## Input and fixture provenance
 

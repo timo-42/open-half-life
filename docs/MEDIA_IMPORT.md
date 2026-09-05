@@ -8,9 +8,10 @@ operates across a strict local proprietary-data boundary.
 This policy applies to runtime import, developer investigation, tests, fuzzing,
 diagnostics, and support workflows. It supplements `CLEAN_ROOM.md`; it does not
 authorize extraction or other behavior that the runtime has not implemented.
-Production payload import is not available on any platform; see
-[IMPORT_READINESS.md](IMPORT_READINESS.md) for the readiness matrix and unmet
-release-evidence gates.
+Linux x86-64 now performs the whole import end to end; every other platform
+tuple is unavailable, and no tuple is production-qualified. See
+[IMPORT_READINESS.md](IMPORT_READINESS.md) for the readiness matrix and the
+unmet release-evidence gates.
 
 ## Data classification
 
@@ -818,14 +819,9 @@ performs an orderly protocol shutdown.
 logged; the application logs fixed strings only. `ProgressSink` receives a
 fraction of the planned byte total and nothing else.
 
-This composition does not make production import available. This build's
-parser worker answers `unsupported` for every enumeration and stream: it emits
-no frame for the request it refuses and exits, which the parent observes as
-its peer closing and reports as the fixed `ImportError::Unsupported`. The
-application maps that to one fixed log line and exit status 0, so user-visible
-behaviour is unchanged until a real dispatcher exists (R4.7b). A manual run
-against one lawfully owned medium reached the confined worker, was refused,
-and published nothing; only the fixed lines and the exit status were recorded.
+At R4.7a this composition still published nothing, because the worker
+answered `unsupported` for every enumeration and stream. The back ends that
+answer for real arrive in the next section.
 
 ### Rust crate mapping
 
@@ -845,9 +841,100 @@ Several documented runtime checks become type-level guarantees there: a session
 id and worker epoch are non-zero newtypes, the handshake proof and the reply
 ticket are move-only and consumed by their single use, the catalog view borrows
 the session that promoted it, and `receive_one` does not exist on an idle
-session. The `IsolatedWorker` adapter behind the sealed `WorkerProcess` trait
-arrives in R4.7; until then the crate is driven by in-crate synthetic
-transports and a fake worker.
+session. The `IsolatedWorker` adapter behind the sealed `WorkerProcess` trait arrived
+in R4.7; the crate is still driven by in-crate synthetic transports and a fake
+worker for its own tests.
+
+## The worker's container back ends (R4.7b)
+
+`ohl-parser-backends` is the dispatcher the shipped worker hosts. It joins the
+three clean-room decoders to the OWP/1 pull model, in which the worker may
+only *ask* for bytes and must return exactly one bounded action per step. It
+is `no_std`, `forbid(unsafe_code)`, opens nothing, executes nothing, and holds
+no capability: the only bytes it ever sees are the ones the parent chose to
+answer inside one window.
+
+### Detection and the source window
+
+The parent hands the worker a window over the whole PE file, and the
+dispatcher recognises the container from the first bytes of that window:
+a Wise installer overlay (primary), a Microsoft cabinet, or an InstallShield 3
+Z archive. `locate`'s parent-side policy is the mirror image and is
+deterministic and total: **Wise overlay > InstallShield 3 Z > largest
+cabinet**, ties broken by the candidates' own order. A medium this build
+recognises no container in never starts a worker.
+
+The Wise chain is 250 MiB-scale and walked forward, so it is read through a
+sliding `WindowSource`: a read the window cannot serve arms exactly one
+bounded `read_request` and the same step simply runs again once the parent has
+answered. The two random-access containers are instead buffered whole, bounded
+before the first byte by `MAXIMUM_BUFFERED_BYTES` (32 MiB); anything larger is
+refused as unsupported rather than decoded partially.
+
+### The heap is a fixed arena
+
+The worker image has no allocator to borrow, so it carries one: a forward-only
+bump allocator over a single `ARENA_BYTES` (96 MiB) `.bss` region, installed
+as the `#[global_allocator]`. It never calls `brk` or `mmap` — neither is on
+the seccomp allowlist and both are forbidden symbols in the image audit — it
+never reclaims a freed block, and it simply runs out, which is a panic and
+therefore a fail-closed exit. It is sized well inside the launcher's
+`RLIMIT_DATA` (256 MiB) and `RLIMIT_AS` (512 MiB).
+
+This is the image's only new `unsafe` site (row 6 of the `unsafe` inventory in
+`crates/ohl-parser-worker/image/src/main.rs`): `GlobalAlloc` is an unsafe
+trait returning raw pointers and the arena has to be a `static`, so it needs
+`UnsafeCell`, `unsafe impl Sync` and `unsafe impl GlobalAlloc`. It is sound
+because the process is single-threaded by construction (`RLIMIT_NPROC` is 1
+and neither `clone` nor `fork` is on the seccomp allowlist), so the non-atomic
+cursor cannot race; `alloc` returns either an aligned, in-bounds,
+never-previously-returned sub-slice or null, which the caller must already
+handle; `dealloc` does nothing, which is always sound; and the cursor only
+moves forward, so two live allocations can never overlap. Every other crate in
+the workspace, this one included, keeps `forbid(unsafe_code)`.
+
+The back ends are written for that arena: one `StreamReader` is reused for
+every Wise stream rather than one allocated per stream, and a separate 8 MiB
+spelling arena is claimed once per process.
+
+### Enumeration
+
+`enumerate` walks the container once and answers in `entry_batch` frames.
+
+- The **token** is the entry's record index in its container, and is opaque to
+  the parent.
+- The **archive path** is a bounded byte string produced by the same
+  `ohl-payload` path policy the parent uses for its destinations, so the
+  worker's spellings and the parent's rules are one rule set rather than two
+  that must agree. A name this build would not offer is simply not offered;
+  the rest of the package stays importable.
+- A **stream no record names** is still reachable: it is offered under the
+  reserved `unnamed/<index>` directory, with a token above a reserved base.
+- A Wise stream whose trailing checksum did not match at walk time is **not**
+  offered. Streaming it would verify the same checksum and fail the request,
+  which would cost the whole import an entry the package itself says is
+  damaged. The walk still counts it, so nothing is silently renumbered.
+- Recorded names are untrusted media-derived bytes. They live in caller-owned
+  storage, are `Debug`-redacted at every layer they pass through, and no error
+  variant carries a media-derived byte.
+
+### Streaming
+
+`stream_entry` answers in `data_chunk` frames and verifies before it completes.
+Nothing is delivered on trust: the stream's trailing checksum, the record's
+own declared CRC-32 when it declares one, the measured inflated length and the
+number of bytes actually emitted must **all** agree with the enumerated size,
+or the request fails rather than completing with unverified bytes. A `cancel`
+between chunks ends the stream without completing it.
+
+### Application behaviour
+
+`ohl-app` performs the real import on first run and logs fixed strings only —
+coarse quarter-mark progress and `Payload import complete.` A `--payload-root`
+option selects the directory published trees live under; `find_published_payload`
+rediscovers an already-published tree at runtime, so a second run reuses it
+instead of importing again. Counts, byte totals and names stay in
+`ImportReport` in memory, for the caller, and are never logged.
 
 ## Fixtures and fuzz reproducers
 
