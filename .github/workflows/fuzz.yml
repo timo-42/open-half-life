@@ -2,6 +2,7 @@ name: Rust fuzz smoke
 
 on:
   push:
+    branches: [main]
     paths:
       - .github/workflows/fuzz.yml
       - crates/**
@@ -17,6 +18,10 @@ on:
       - Cargo.lock
   workflow_dispatch:
 
+concurrency:
+  group: "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}"
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -25,9 +30,10 @@ jobs:
     name: Linux x64 cargo-fuzz smoke
     runs-on: ubuntu-latest
     # Discovered dynamically below: every `crates/*/fuzz` directory, every
-    # target inside it, 60s each. Bump this if a new fuzz crate or target
-    # pushes the total past the current handful of minutes of headroom.
-    timeout-minutes: 30
+    # target inside it, 30s each, up to 4 running concurrently via `xargs
+    # -P4`. Bump this if a new fuzz crate or target pushes the total past
+    # the current handful of minutes of headroom.
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -47,25 +53,45 @@ jobs:
       # (one `fuzz_targets/*.rs` file each), rather than a fixed list, so a
       # new fuzz crate or a new target added to an existing one is smoke-run
       # here automatically instead of needing this workflow edited too.
-      - name: Fuzz every target for 60s
+      #
+      # Each target runs for only 30s (down from 60s) and targets are run up
+      # to 4 at a time via `xargs -P4`, matching the runner's vCPU count, so
+      # the ~9-target smoke finishes in a couple of minutes wall-clock
+      # instead of serially summing to 9 * 30s.
+      - name: Fuzz every target for 30s
         shell: bash
         run: |
           set -euo pipefail
-          for fuzz_dir in crates/*/fuzz; do
-            [ -d "$fuzz_dir" ] || continue
+
+          run_one() {
+            local fuzz_dir="$1" target_source="$2"
+            local crate_dir crate_name target
             crate_dir="$(dirname "$fuzz_dir")"
             crate_name="$(basename "$crate_dir")"
+            target="$(basename "$target_source" .rs)"
+            echo "::group::Fuzz ${crate_name} (${target}, 30s)"
+            mkdir -p "$fuzz_dir/corpus/$target"
+            (
+              cd "$crate_dir"
+              cargo +nightly fuzz run "$target" \
+                --target x86_64-unknown-linux-gnu --sanitizer none \
+                -- -max_total_time=30
+            )
+            echo "::endgroup::"
+          }
+          export -f run_one
+
+          jobs=()
+          for fuzz_dir in crates/*/fuzz; do
+            [ -d "$fuzz_dir" ] || continue
             for target_source in "$fuzz_dir"/fuzz_targets/*.rs; do
               [ -f "$target_source" ] || continue
-              target="$(basename "$target_source" .rs)"
-              echo "::group::Fuzz ${crate_name} (${target}, 60s)"
-              mkdir -p "$fuzz_dir/corpus/$target"
-              (
-                cd "$crate_dir"
-                cargo +nightly fuzz run "$target" \
-                  --target x86_64-unknown-linux-gnu --sanitizer none \
-                  -- -max_total_time=60
-              )
-              echo "::endgroup::"
+              jobs+=("$fuzz_dir"$'\t'"$target_source")
             done
           done
+
+          printf '%s\n' "${jobs[@]}" | xargs -P4 -d '\n' -I{} bash -c '
+            IFS=$'"'"'\t'"'"' read -r fuzz_dir target_source <<< "{}"
+            run_one "$fuzz_dir" "$target_source"
+          '
+
