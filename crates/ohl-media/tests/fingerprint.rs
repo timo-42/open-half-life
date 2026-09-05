@@ -114,15 +114,33 @@ fn an_in_place_rewrite_between_chunks_is_reported_as_a_change() {
     let path = root.path().join("rewritten.bin");
     std::fs::write(&path, synthetic_bytes(window * 4)).expect("fixture");
     let source = MediaSource::open(&path).expect("pinned source");
+    let original_time = std::fs::metadata(&path)
+        .expect("metadata")
+        .modified()
+        .expect("modification time");
 
     let error = fingerprint_with_progress(&source, &mut |hashed| {
-        if hashed == FINGERPRINT_CHUNK_BYTES {
-            let mut writer = std::fs::OpenOptions::new()
-                .write(true)
-                .open(&path)
-                .expect("writer");
-            writer.write_all(b"rewritten").expect("rewrite");
+        if hashed != FINGERPRINT_CHUNK_BYTES {
+            return;
         }
+        let mut writer = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("writer");
+        // Same length, so only the change indicator can reveal this.
+        writer.write_all(b"rewritten").expect("rewrite");
+        writer.sync_all().expect("flush");
+        // Bump the indicator explicitly: a same-size rewrite performed inside
+        // the filesystem's timestamp granularity is indistinguishable, which
+        // is what the equivalent `ohl-platform` test documents. Windows
+        // resolves `ftLastWriteTime` far more coarsely than the few
+        // milliseconds this test takes.
+        writer
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(original_time + std::time::Duration::from_secs(2)),
+            )
+            .expect("timestamp bump");
     })
     .expect_err("a rewritten source cannot be fingerprinted");
     assert_eq!(error, MediaError::SourceChanged);
