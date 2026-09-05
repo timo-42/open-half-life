@@ -690,3 +690,57 @@ fn the_recognised_kinds_are_the_three_documented_ones() {
     ];
     assert_eq!(kinds.len(), 3);
 }
+
+// ------------------------------------------------------------- properties ---
+
+// Arbitrary bytes are a container this build has never seen. Whatever the
+// dispatcher decides about them, it must decide it without panicking and
+// without running forever: the service's own budgets are the only thing
+// standing between a hostile medium and the worker, and a panic inside the
+// freestanding image is an abort, not an error.
+//
+// Every input here is randomly generated; nothing is derived from media.
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(96))]
+
+    #[test]
+    fn arbitrary_bytes_never_panic_the_dispatcher(
+        bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 64..8192),
+    ) {
+        let (parent, _) = run(
+            bytes,
+            vec![Next::Enumerate, Next::Stream(0), Next::Shutdown],
+            BackendLimits::default(),
+            |_| {},
+        );
+        // Whatever happened, nothing may be offered without the enumeration
+        // having completed, and no entry may be offered twice.
+        let mut tokens: Vec<u64> = parent.offered.iter().map(|entry| entry.token).collect();
+        let before = tokens.len();
+        tokens.sort_unstable();
+        tokens.dedup();
+        proptest::prop_assert_eq!(tokens.len(), before);
+    }
+
+    // The same, for bytes that begin like a container this build recognises:
+    // a plausible prefix drives detection past its first branch, which is
+    // where an unbounded read or an arithmetic overflow would live.
+    #[test]
+    fn arbitrary_bytes_behind_a_known_signature_never_panic(
+        signature in proptest::sample::select(vec![
+            b"MSCF".to_vec(),
+            b"MZ".to_vec(),
+            b"ISc(".to_vec(),
+        ]),
+        bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 64..8192),
+    ) {
+        let mut container = signature;
+        container.extend_from_slice(&bytes);
+        let (_, _) = run(
+            container,
+            vec![Next::Enumerate, Next::Stream(0), Next::Shutdown],
+            BackendLimits::default(),
+            |_| {},
+        );
+    }
+}

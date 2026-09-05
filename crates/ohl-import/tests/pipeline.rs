@@ -469,8 +469,8 @@ fn a_cancellation_mid_stream_discards_the_stage_and_terminates_the_worker_once()
 
 #[test]
 fn a_worker_that_closes_without_answering_the_enumeration_is_unsupported() {
-    // The shipped worker's dispatcher refuses every enumeration, emits no
-    // frame, and exits: the parent sees its peer close.
+    // A worker that cannot decode the container emits no frame and exits:
+    // the parent sees its peer close and reports `Unsupported`.
     let harness = Harness::new();
     let (transport_token, staging_token) = tokens();
     let error = harness

@@ -10,12 +10,11 @@ Checklist items are unmet unless a concrete review, test, hosted run, or
 release artifact is linked from the item. Absence of a link means absence of
 evidence.
 
-**Read the R4.7b section first.** Everything below the R4.7a section
-predates the worker's real dispatcher and describes a build that could not
-extract anything. It is retained as the specification and the historical
-qualification record; where it says import is unavailable on every platform,
-read "unavailable on every platform except Linux x86-64, which is implemented
-but unqualified".
+**Read the R4.7b section first.** Everything below it predates the worker's
+real dispatcher and describes a build that could not extract anything. It is
+retained as the specification and the historical qualification record; where
+it says import is unavailable on every platform, read "unavailable on every
+platform except Linux x86-64, which is implemented but unqualified".
 
 **Rust transition note.** The project's implementation is now entirely Rust;
 the C++ tree this page originally described (parser-worker service, Linux
@@ -47,10 +46,11 @@ runtime-only recipe, plans a layout, streams every planned entry through
 `ohl_payload`'s create-new staging, reverifies the complete pinned source, and
 publishes once with no-replace. `ohl-app` runs it after its M1 flow.
 
-This changes no row below. **Production payload import remains unavailable on
-every platform**, because the installed worker's compile-fixed dispatcher
-answers `unsupported` for every enumeration and stream. No build can extract a
-user medium, and no payload has ever been published from one.
+At R4.7a this changed no row below: **production payload import remained
+unavailable on every platform**, because the installed worker's compile-fixed
+dispatcher answered `unsupported` for every enumeration and stream, so no
+build could extract a user medium. R4.7b replaced that dispatcher; the next
+section records what changed and what did not.
 
 Evidence, all local and all on Linux x86-64:
 

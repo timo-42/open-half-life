@@ -411,8 +411,13 @@ fn run_import_flow(
     import_payload(validated, mount, &layout, recipe_path, payload_root)
 }
 
-/// The fixed line for a build whose parser worker refuses every enumeration.
-const UNSUPPORTED_LINE: &str = "Payload import is not supported by this build's parser worker yet; no media executable was run.";
+/// The fixed line for a medium whose container the worker cannot decode.
+///
+/// The worker recognises Wise overlays, Microsoft cabinets and InstallShield
+/// 3 Z archives; anything else is refused, as is a container whose bytes do
+/// not decode. The line names no format, because naming one would leak which
+/// container the medium carries.
+const UNSUPPORTED_LINE: &str = "Payload import is not supported for this medium's container format; no media executable was run.";
 
 /// Coarse import progress, logged as fixed strings at the quarter marks.
 ///
@@ -567,8 +572,9 @@ fn report_import(outcome: Result<ohl_import::ImportReport, ohl_import::ImportErr
             tracing::info!("Payload import complete.");
             ExitCode::SUCCESS
         }
-        // The shipped worker refuses every enumeration. Until a real
-        // dispatcher exists that is the expected outcome, not a user error.
+        // The worker decoded nothing it recognises in this medium. That is
+        // a property of the medium, not a user error, so it is not a failure
+        // exit.
         Err(ohl_import::ImportError::Unsupported) => {
             tracing::info!("{UNSUPPORTED_LINE}");
             ExitCode::SUCCESS

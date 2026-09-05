@@ -27,7 +27,7 @@ use std::process::Command;
 
 use support::{synthetic_container_iso, synthetic_wise_files, synthetic_wise_iso};
 
-const UNSUPPORTED_LINE: &str = "Payload import is not supported by this build's parser worker yet; no media executable was run.";
+const UNSUPPORTED_LINE: &str = "Payload import is not supported for this medium's container format; no media executable was run.";
 
 /// Removes the group and world write bits from one directory.
 fn tighten(directory: &Path) {

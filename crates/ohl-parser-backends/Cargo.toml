@@ -31,6 +31,7 @@ ohl-isz = { path = "../ohl-isz", version = "=0.1.0" }
 ohl-wise = { path = "../ohl-wise", version = "=0.1.0", features = ["test-support"] }
 ohl-mscab = { path = "../ohl-mscab", version = "=0.1.0", features = ["test-support"] }
 ohl-isz = { path = "../ohl-isz", version = "=0.1.0", features = ["test-support"] }
+proptest = { workspace = true }
 
 [lints]
 workspace = true
