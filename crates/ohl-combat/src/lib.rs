@@ -10,7 +10,9 @@
 //! - [`trace`]: [`trace::trace_attack`], which resolves a shot against world
 //!   geometry (`ohl_physics`' point hull) and against a caller-supplied
 //!   [`trace::HitboxIndex`] of posed studio hitboxes, returning the nearest
-//!   impact and its hit group.
+//!   impact and its hit group. [`trace::trace_attack_filtered`] additionally
+//!   takes a [`trace::TraceFilter`] to skip an attack's owner (and its
+//!   weapon entity) during hitbox refinement.
 //! - [`events`]: a bounded [`events::CombatEventQueue`] the host application
 //!   drains each tick to drive audio, HUD and effects. Presentation is pull
 //!   only; this crate has no edge to `ohl-render`, `ohl-audio` or `ohl-ui`.
@@ -46,7 +48,7 @@ pub use damage::{
 pub use events::{CombatEvent, CombatEventQueue, SurfaceKind};
 pub use trace::{
     AttackTrace, EntityHitboxes, EntityId, HitGroup, HitGroupScale, HitboxIndex, HitboxLimits,
-    HitboxVolume, TraceMask, trace_attack,
+    HitboxVolume, TraceFilter, TraceMask, trace_attack, trace_attack_filtered,
 };
 
 /// Re-exported so callers can use this crate's vector and rotation types

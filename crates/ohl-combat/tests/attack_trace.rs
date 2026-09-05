@@ -6,8 +6,8 @@
 //! two bone matrices, which is all `hitbox_bounds` needs.
 
 use ohl_combat::{
-    AttackTrace, EntityHitboxes, EntityId, HitGroup, HitboxIndex, HitboxLimits, Quat, TraceMask,
-    Vec3, trace_attack,
+    AttackTrace, EntityHitboxes, EntityId, HitGroup, HitboxIndex, HitboxLimits, Quat, TraceFilter,
+    TraceMask, Vec3, trace_attack, trace_attack_filtered,
 };
 use ohl_formats::bsp30::{Bsp, Limits};
 use ohl_formats::test_support::build_collision_room_bsp;
@@ -277,4 +277,71 @@ fn the_hit_group_vocabulary_round_trips() {
     // Untrusted model data outside the published range is not rejected.
     assert_eq!(HitGroup::from_index(-3), HitGroup::Generic);
     assert_eq!(HitGroup::from_index(99), HitGroup::Generic);
+}
+
+#[test]
+fn an_ignored_entity_in_front_of_another_is_passed_through() {
+    let world = room();
+    // Entity 1 (the owner) stands nearer the shooter than entity 2; without
+    // a filter it would be the nearer hit.
+    let entities = index_of(vec![
+        posed_entity(1, Vec3::new(96.0, 0.0, 64.0)),
+        posed_entity(2, Vec3::new(192.0, 0.0, 64.0)),
+    ]);
+    let start = Vec3::new(0.0, 0.0, 64.0);
+    let end = Vec3::new(256.0, 0.0, 64.0);
+
+    let unfiltered = trace_attack(&world, &entities, start, end, TraceMask::SHOT);
+    assert_eq!(unfiltered.entity, Some(EntityId(1)));
+
+    let filter = TraceFilter::ignoring(TraceMask::SHOT, EntityId(1));
+    let filtered = trace_attack_filtered(&world, &entities, start, end, filter);
+    assert_eq!(filtered.entity, Some(EntityId(2)));
+    assert_on_segment(&filtered, start, end);
+}
+
+#[test]
+fn ignoring_both_entities_returns_the_world_hit() {
+    let world = room();
+    let entities = index_of(vec![
+        posed_entity(1, Vec3::new(96.0, 0.0, 64.0)),
+        posed_entity(2, Vec3::new(192.0, 0.0, 64.0)),
+    ]);
+    // Both entities sit well inside the room, closer than the far wall; the
+    // segment reaches past the wall at x = 256 so the world still stops it.
+    let start = Vec3::new(0.0, 0.0, 64.0);
+    let end = Vec3::new(512.0, 0.0, 64.0);
+
+    let filter = TraceFilter {
+        ignore: [Some(EntityId(1)), Some(EntityId(2))],
+        mask: TraceMask::SHOT,
+    };
+    let trace = trace_attack_filtered(&world, &entities, start, end, filter);
+
+    assert_eq!(trace.entity, None, "both candidates are ignored");
+    assert!(trace.hit(), "the far wall still stops the shot");
+    assert_on_segment(&trace, start, end);
+
+    // With no entities ignored, the world result is the same trace ...
+    let unfiltered = trace_attack(&world, &entities, start, end, TraceMask::WORLD_ONLY);
+    assert!((unfiltered.fraction - trace.fraction).abs() < f32::EPSILON);
+    assert_eq!(unfiltered.end, trace.end);
+}
+
+#[test]
+fn trace_attack_is_equivalent_to_an_empty_filter() {
+    let world = room();
+    let entities = index_of(vec![posed_entity(7, Vec3::new(128.0, 0.0, 64.0))]);
+    let start = Vec3::new(0.0, 0.0, 64.0);
+    let end = Vec3::new(256.0, 0.0, 64.0);
+
+    let plain = trace_attack(&world, &entities, start, end, TraceMask::SHOT);
+    let via_filter = trace_attack_filtered(
+        &world,
+        &entities,
+        start,
+        end,
+        TraceFilter::new(TraceMask::SHOT),
+    );
+    assert_eq!(plain, via_filter);
 }

@@ -2,7 +2,8 @@
 
 use ohl_combat::{
     Armor, ArmorRule, DamageInfo, DamageType, EntityHitboxes, EntityId, HitGroup, HitboxIndex,
-    HitboxLimits, Quat, TraceMask, Vec3, apply_damage, trace_attack,
+    HitboxLimits, Quat, TraceFilter, TraceMask, Vec3, apply_damage, trace_attack,
+    trace_attack_filtered,
 };
 use ohl_formats::bsp30::{Bsp, Limits};
 use ohl_formats::test_support::build_collision_room_bsp;
@@ -79,6 +80,45 @@ proptest! {
         if mask.world {
             prop_assert!(world_only.fraction >= trace.fraction - 1e-4);
             prop_assert!(world_only.entity.is_none());
+        }
+    }
+
+    /// A filtered trace stays total too: a fraction in `0..=1`, an impact
+    /// point on the segment, and never a hit against an ignored entity.
+    #[test]
+    fn a_filtered_trace_never_panics_and_never_hits_an_ignored_entity(
+        start in point(),
+        end in point(),
+        entities in prop::collection::vec(entity(), 0..6),
+        world_blocks in any::<bool>(),
+        entities_block in any::<bool>(),
+        ignore_a in prop::option::of(0u64..8),
+        ignore_b in prop::option::of(0u64..8),
+    ) {
+        let world = room();
+        let mut index = HitboxIndex::new(HitboxLimits::default());
+        for entity in entities {
+            index.push(entity);
+        }
+        let filter = TraceFilter {
+            ignore: [ignore_a.map(EntityId), ignore_b.map(EntityId)],
+            mask: TraceMask { world: world_blocks, entities: entities_block },
+        };
+        let trace = trace_attack_filtered(&world, &index, start, end, filter);
+
+        prop_assert!((0.0..=1.0).contains(&trace.fraction), "fraction {}", trace.fraction);
+        let expected = start + (end - start) * trace.fraction;
+        prop_assert!(
+            (trace.end - expected).length() <= 0.05 + expected.length() * 1e-4,
+            "end {:?} is not at fraction {} of {start:?} -> {end:?}",
+            trace.end,
+            trace.fraction
+        );
+        prop_assert!(trace.end.is_finite());
+        prop_assert!(trace.surface_normal.is_finite());
+        if let Some(id) = trace.entity {
+            prop_assert_ne!(Some(id.0), ignore_a);
+            prop_assert_ne!(Some(id.0), ignore_b);
         }
     }
 
