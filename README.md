@@ -75,6 +75,37 @@ record alongside the extracted payload. See
 [docs/IMPORT_READINESS.md](docs/IMPORT_READINESS.md) for the current
 production-readiness matrix and release-evidence gates.
 
+## Release builds
+
+`cargo xtask dist` builds the release binary (and, on a Linux x86-64 host
+targeting Linux, the sandboxed media-parser worker image alongside it), then
+assembles a versioned, self-contained release folder under
+`target/dist/open-half-life-<version>-<target-triple>/`:
+
+```text
+bin/open-half-life[.exe]
+libexec/open-half-life/ohl-media-parser-worker   (Linux only)
+LICENSE
+THIRD_PARTY_NOTICES.md
+licenses/                                        (every dependency's declared license)
+README-dist.md
+SHA256SUMS
+```
+
+and archives it as a `.tar.gz` (Linux/macOS) or `.zip` (Windows) next to it.
+`OHL_VERSION` (falling back to `CARGO_PKG_VERSION`) selects the version, the
+same as the binary's own `--version` output. Pass `--target <triple>` to
+package for another target; cross-compiling the binary itself is best
+effort (it depends on your toolchain having that target installed) and the
+worker image, being Linux x86-64-only, is only ever bundled for a Linux
+x86-64 host building for Linux. No game data is ever included in the
+archive.
+
+CI runs `cargo xtask dist` on Linux, Windows and macOS runners for a `v*` tag
+push or a manual dispatch and uploads each archive as a workflow artifact
+(see the `release` job in `.github/workflows/build.yml`); nothing is
+published to GitHub Releases yet.
+
 ## Status
 
 M0 (build and logging foundation) and M1 (media preflight, mount, and

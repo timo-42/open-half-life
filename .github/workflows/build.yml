@@ -3,7 +3,9 @@ name: Build
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}"
@@ -210,3 +212,42 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check licenses bans sources advisories
+
+  # Packages a release with `cargo xtask dist` on each of the three
+  # platforms and uploads the resulting archive as a workflow artifact.
+  # Triggered by a `v*` tag push or a manual `workflow_dispatch`, not by
+  # every ordinary push/PR; does not publish anything to GitHub Releases
+  # yet (see `docs/MILESTONES.md`, M9 packaging).
+  release:
+    name: Release (${{ matrix.name }})
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: Linux x64
+          - os: windows-latest
+            name: Windows x64
+          - os: macos-latest
+            name: macOS Apple Silicon
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      OHL_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Package
+        run: cargo xtask dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-half-life-${{ needs.version.outputs.version }}-${{ matrix.os }}
+          path: |
+            target/dist/*.tar.gz
+            target/dist/*.zip
+          if-no-files-found: error
