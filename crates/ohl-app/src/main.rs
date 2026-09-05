@@ -9,8 +9,10 @@
 //! cache entry. It then composes the R4.7a payload import: it locates one
 //! container in the mounted tree, hands a confined parser worker a bounded
 //! window over it, and stages whatever the worker enumerates into the
-//! payload store. This build's worker answers `unsupported` for every
-//! enumeration, so no payload is produced yet; see `docs/MILESTONES.md`.
+//! payload store. On Linux x86-64 that import is real end to end: the
+//! confined worker recognises the container, enumerates it and streams its
+//! entries, and this binary publishes the payload tree. See
+//! `docs/MEDIA_IMPORT.md` and `docs/MILESTONES.md`.
 //!
 //! Every failure is logged as a single sanitized line and maps to the same
 //! exit codes the C++ `src/app/main.cpp` used: `2` for a command-line usage
@@ -431,6 +433,36 @@ fn run_import_flow(
 /// The fixed line for a build whose parser worker refuses every enumeration.
 const UNSUPPORTED_LINE: &str = "Payload import is not supported by this build's parser worker yet; no media executable was run.";
 
+/// Coarse import progress, logged as fixed strings at the quarter marks.
+///
+/// The sink receives a fraction of the planned byte total and nothing else —
+/// no name, no path, no count — so the lines it writes are fixed strings by
+/// construction.
+#[derive(Debug, Default)]
+struct QuarterProgress {
+    reported: u8,
+}
+
+impl ohl_import::ProgressSink for QuarterProgress {
+    fn report(&mut self, fraction: f32) {
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the fraction is clamped to 0..=1 by the pipeline"
+        )]
+        let quarters = (fraction.clamp(0.0, 1.0) * 4.0) as u8;
+        while self.reported < quarters.min(4) {
+            self.reported += 1;
+            match self.reported {
+                1 => tracing::info!("Payload import 25% complete."),
+                2 => tracing::info!("Payload import 50% complete."),
+                3 => tracing::info!("Payload import 75% complete."),
+                _ => tracing::info!("Payload import 100% complete."),
+            }
+        }
+    }
+}
+
 /// The include-everything recipe used when the user supplies none.
 const DEFAULT_RECIPE: &str = "version = 1\ndefault_decision = \"include\"\n";
 
@@ -490,7 +522,7 @@ fn import_payload(
         transport: &transport,
         staging: &staging,
     };
-    let mut progress = ohl_import::DiscardProgress;
+    let mut progress = QuarterProgress::default();
     let outcome = ohl_import::run_import(
         validated,
         mount,
@@ -551,6 +583,7 @@ fn report_import(outcome: Result<ohl_import::ImportReport, ohl_import::ImportErr
             } else {
                 tracing::info!("Payload already imported.");
             }
+            tracing::info!("Payload import complete.");
             ExitCode::SUCCESS
         }
         // The shipped worker refuses every enumeration. Until a real

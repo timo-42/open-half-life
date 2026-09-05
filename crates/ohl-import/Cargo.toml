@@ -17,6 +17,9 @@ ohl-media = { path = "../ohl-media", version = "=0.1.0" }
 ohl-core = { path = "../ohl-core", version = "=0.1.0", features = ["std"] }
 ohl-vfs = { path = "../ohl-vfs", version = "=0.1.0" }
 ohl-payload = { path = "../ohl-payload", version = "=0.1.0" }
+# Only the Wise *recognition* check: `locate` confirms that a PE overlay
+# begins a stream chain. Decoding happens in the confined worker.
+ohl-wise = { path = "../ohl-wise", version = "=0.1.0", features = ["std"] }
 thiserror = { workspace = true, features = ["std"] }
 
 [dev-dependencies]

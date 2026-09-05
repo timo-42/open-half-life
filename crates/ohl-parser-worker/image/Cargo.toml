@@ -33,6 +33,7 @@ path = "src/main.rs"
 [dependencies]
 ohl-parser-protocol = { path = "../../ohl-parser-protocol", version = "=0.1.0" }
 ohl-parser-worker-service = { path = "../../ohl-parser-worker-service", version = "=0.1.0" }
+ohl-parser-backends = { path = "../../ohl-parser-backends", version = "=0.1.0" }
 
 [profile.dev]
 panic = "abort"

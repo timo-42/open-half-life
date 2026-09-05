@@ -2269,6 +2269,7 @@ dependencies = [
  "ohl-payload",
  "ohl-platform",
  "ohl-vfs",
+ "ohl-wise",
  "proptest",
  "tempfile",
  "thiserror 2.0.20",
@@ -2327,6 +2328,19 @@ dependencies = [
  "ohl-platform",
  "ohl-vfs",
  "proptest",
+]
+
+[[package]]
+name = "ohl-parser-backends"
+version = "0.1.0"
+dependencies = [
+ "ohl-core",
+ "ohl-isz",
+ "ohl-mscab",
+ "ohl-parser-protocol",
+ "ohl-parser-worker-service",
+ "ohl-payload",
+ "ohl-wise",
 ]
 
 [[package]]

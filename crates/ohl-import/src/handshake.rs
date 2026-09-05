@@ -118,17 +118,58 @@ pub fn perform_parent_handshake<T: ExactIo>(
     deadline: Instant,
     cancellation: &CancellationToken,
 ) -> Result<HandshakeProof<T>, HandshakeError> {
+    perform_parent_handshake_over_window(
+        channel,
+        media,
+        media.size_bytes(),
+        source_read_limits,
+        protocol_budgets,
+        buffer,
+        deadline,
+        cancellation,
+    )
+}
+
+/// [`perform_parent_handshake`] for a worker that sees only part of the
+/// pinned object.
+///
+/// `source_size` is what the worker is told the source is, and it must be
+/// exactly what the session's source seam will serve — the length of the
+/// window, not of the medium. A worker told the source is larger than its
+/// window would make an ordinary read past the container's end, which the
+/// window refuses and the parent has to report as a source failure.
+///
+/// # Errors
+/// As [`perform_parent_handshake`], plus
+/// [`HandshakeError::InvalidConfiguration`] for a zero `source_size` or one
+/// larger than the medium.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "every argument is one capability or one budget of the exchange"
+)]
+pub fn perform_parent_handshake_over_window<T: ExactIo>(
+    channel: &FrameChannel<T>,
+    media: &ValidatedMedia,
+    source_size: u64,
+    source_read_limits: SourceReadLimits,
+    protocol_budgets: ProtocolBudgets,
+    buffer: &mut FrameBuffer,
+    deadline: Instant,
+    cancellation: &CancellationToken,
+) -> Result<HandshakeProof<T>, HandshakeError> {
     if let Some(failure) = channel.failure() {
         return Err(HandshakeError::Channel(failure));
     }
     if media.source().size() != media.size_bytes()
+        || source_size == 0
+        || source_size > media.size_bytes()
         || protocol_budgets.maximum_messages() < 2
         || protocol_budgets.maximum_payload_bytes() < u64::from(HELLO_PAYLOAD_LENGTH)
     {
         return Err(HandshakeError::InvalidConfiguration);
     }
     let source_read_policy =
-        SourceReadPolicy::new(media.size_bytes(), source_read_limits.maximum_read_bytes())
+        SourceReadPolicy::new(source_size, source_read_limits.maximum_read_bytes())
             .map_err(|_| HandshakeError::InvalidConfiguration)?;
 
     let mut protocol = SessionValidator::new(channel.session_id(), protocol_budgets);

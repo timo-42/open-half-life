@@ -2,11 +2,22 @@
 //!
 //! This binary is the confined side of the OWP/1 contract. It writes the
 //! readiness attestation on descriptor 4, hosts exactly one
-//! `run_parser_worker_service` lifetime over descriptor 3 with the
-//! compile-fixed `UnsupportedDispatcher`, and exits with a fixed status. It
-//! parses no arguments, reads no environment, opens no file and allocates
-//! nothing: there is no allocator at all, so a heap request cannot compile,
-//! let alone run.
+//! `run_parser_worker_service` lifetime over descriptor 3 with
+//! `ohl_parser_backends::ContainerDispatcher`, and exits with a fixed status.
+//! It parses no arguments, reads no environment and opens no file.
+//!
+//! # The heap
+//!
+//! The container decoders need `alloc` — a DEFLATE decoder state, a script
+//! binary, a stream table — so this image carries one: a bump allocator over
+//! a fixed [`ARENA_BYTES`] `.bss` region. It never calls `brk` or `mmap`
+//! (neither is on the seccomp allowlist and both are forbidden symbols in the
+//! image audit), never reclaims a freed block, and simply runs out, which is
+//! a panic and therefore a fail-closed exit. The arena is sized well inside
+//! the launcher's `RLIMIT_DATA` (256 MiB) and `RLIMIT_AS` (512 MiB), and the
+//! back ends are written for it: they reuse one stream reader for every
+//! stream instead of allocating one per stream, and refuse any container that
+//! would have to be buffered whole above their own ceiling.
 //!
 //! It is built with `-nostdlib -static -no-pie` and issues raw `syscall`
 //! instructions only, so `ohl-platform`'s seccomp allowlist (`execveat`,
@@ -43,22 +54,28 @@
 //! | 1 | `global_asm!` `_start` | A `-nostdlib` image has no C runtime, so the ELF entry point is written by hand: clear the frame pointer, align the stack to 16 bytes, tail-call into Rust. | The block touches only `rbp`/`rsp`/`rdi` before calling a diverging `extern "C"` function, exactly as the System V AMD64 process-entry ABI prescribes. |
 //! | 2 | `syscall3`, `syscall4`, `exit_group` | `core` exposes no syscall interface and no C library is linked. | Each wrapper passes only integers and pointers into live, correctly sized local buffers, declares the `rcx`/`r11`/`memory` clobbers the `syscall` instruction requires, and never lets the kernel touch memory outside a slice the caller owns. |
 //! | 3 | `rust_eh_personality` stub | The precompiled stable `core` was built with unwind tables, so a `DW.ref.rust_eh_personality` relocation survives into the image even though this package is compiled with `panic = "abort"`. | Nothing can ever unwind: the panic handler diverges into `exit_group`, so the symbol is never called. |
-//! | 4 | `memcpy`/`memset`/`memmove`/`memcmp` | The prebuilt stable `compiler_builtins` does not ship its `mem` feature, so `core`'s slice codegen emits calls to these four symbols with nothing to resolve them once libc is gone. | Byte-at-a-time loops honouring the documented `memcpy`/`memmove` overlap rules; the callers are `core` itself, which upholds the pointer and length preconditions. |
-//! | 5 | `PayloadBuffer` (`UnsafeCell` + `unsafe impl Sync`) and the two `&mut` it hands out | The service needs two 1 MiB scratch buffers and there is no allocator, so they must live in `.bss`. | The process is single-threaded by construction (`RLIMIT_NPROC` is 1 and neither `clone` nor `fork` is on the seccomp allowlist), and `PayloadBuffer::take` is called exactly once per buffer, on the only thread, before the service starts, so no second `&mut` can exist. |
+//! | 4 | `memcpy`/`memset`/`memmove`/`memcmp`/`bcmp` | The prebuilt stable `compiler_builtins` does not ship its `mem` feature, so `core`'s slice and `str` codegen emits calls to these five symbols with nothing to resolve them once libc is gone. | Byte-at-a-time loops honouring the documented `memcpy`/`memmove` overlap rules; the callers are `core` itself, which upholds the pointer and length preconditions. |
+//! | 5 | `PayloadBuffer` (`UnsafeCell` + `unsafe impl Sync`) and the two `&mut` it hands out | The service needs two 1 MiB scratch buffers and there is no allocator for them, so they must live in `.bss`. | The process is single-threaded by construction (`RLIMIT_NPROC` is 1 and neither `clone` nor `fork` is on the seccomp allowlist), and `PayloadBuffer::take` is called exactly once per buffer, on the only thread, before the service starts, so no second `&mut` can exist. |
+//! | 6 | `BumpArena` (`UnsafeCell` + `unsafe impl Sync` + `unsafe impl GlobalAlloc`) | `GlobalAlloc` is an unsafe trait returning raw pointers, and the arena it hands out has to be a `static` because there is no other memory. | The process is single-threaded by construction (row 5), so the non-atomic cursor cannot race; `alloc` returns either a pointer to an aligned, in-bounds, never-previously-returned sub-slice of the arena or null, which the caller must already handle; `dealloc` does nothing, which is always sound; and the cursor only ever moves forward, so two live allocations can never overlap. |
 
 #![no_std]
 #![no_main]
 #![allow(unsafe_code)]
 
+extern crate alloc;
+
+use core::alloc::{GlobalAlloc, Layout};
 use core::arch::{asm, global_asm};
 use core::cell::UnsafeCell;
 use core::ffi::c_void;
 use core::panic::PanicInfo;
+use core::ptr;
 
+use ohl_parser_backends::{BackendLimits, ContainerDispatcher};
 use ohl_parser_protocol::MAXIMUM_FRAME_PAYLOAD_BYTES;
 use ohl_parser_worker_service::{
     InputStatus, IoStatus, ServiceBuffers, ServiceError, ServiceFailure, ServiceLimits, Transport,
-    UnsupportedDispatcher, run_parser_worker_service,
+    run_parser_worker_service,
 };
 
 include!("../../src/contract.rs");
@@ -324,6 +341,75 @@ impl Transport for ChannelTransport {
     }
 }
 
+// ------------------------------------------------------------- the heap ----
+
+/// The fixed heap, in bytes.
+///
+/// Sized against the launcher's `RLIMIT_DATA` (256 MiB) and `RLIMIT_AS`
+/// (512 MiB) with room to spare, and far above what the back ends actually
+/// need: a Wise walk of a quarter-gigabyte package holds one stream reader,
+/// one script binary and two tables.
+const ARENA_BYTES: usize = 96 * 1024 * 1024;
+
+/// The spelling storage the dispatcher copies offered names into, taken from
+/// the arena once per process.
+const SPELLING_ARENA_BYTES: usize = 8 * 1024 * 1024;
+
+/// A forward-only bump allocator over one `.bss` arena.
+///
+/// See `unsafe` inventory row 6. There is no `brk`, no `mmap` and no free
+/// list: memory is handed out in order and reclaimed only by process exit,
+/// which is exactly the shape a one-shot, single-threaded, fail-closed worker
+/// can afford. Exhaustion returns null, which `alloc` turns into the standard
+/// allocation-failure panic, which this image turns into a fixed exit status.
+struct BumpArena {
+    memory: UnsafeCell<[u8; ARENA_BYTES]>,
+    cursor: UnsafeCell<usize>,
+}
+
+// SAFETY: inventory #6.
+unsafe impl Sync for BumpArena {}
+
+// SAFETY: inventory #6.
+unsafe impl GlobalAlloc for BumpArena {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let base = self.memory.get().cast::<u8>();
+        // SAFETY: single-threaded by construction, so this is the only live
+        // borrow of the cursor.
+        let cursor = unsafe { &mut *self.cursor.get() };
+        let start = base as usize;
+        let Some(unaligned) = start.checked_add(*cursor) else {
+            return ptr::null_mut();
+        };
+        let align = layout.align().max(1);
+        let Some(aligned) = unaligned.checked_add(align - 1).map(|value| value & !(align - 1))
+        else {
+            return ptr::null_mut();
+        };
+        let Some(end) = aligned.checked_add(layout.size()) else {
+            return ptr::null_mut();
+        };
+        if end > start + ARENA_BYTES {
+            return ptr::null_mut();
+        }
+        *cursor = end - start;
+        // SAFETY: `aligned .. end` lies inside the arena, is aligned for the
+        // layout, and the cursor has moved past it, so it is never returned
+        // twice.
+        unsafe { base.add(aligned - start) }
+    }
+
+    unsafe fn dealloc(&self, _pointer: *mut u8, _layout: Layout) {
+        // A bump allocator reclaims nothing before process exit.
+    }
+}
+
+#[global_allocator]
+static HEAP: BumpArena = BumpArena {
+    memory: UnsafeCell::new([0; ARENA_BYTES]),
+    cursor: UnsafeCell::new(0),
+};
+
 // -------------------------------------------------------------- buffers ----
 
 /// One 1 MiB `.bss` scratch buffer, handed out exactly once.
@@ -395,9 +481,10 @@ fn serve() -> i32 {
     // SAFETY: inventory #5. This is the only `take` of either buffer, on the
     // only thread, and both borrows live until the process exits.
     let (receive_payload, send_payload) = unsafe { (RECEIVE_PAYLOAD.take(), SEND_PAYLOAD.take()) };
+    let mut spellings = alloc::vec![0u8; SPELLING_ARENA_BYTES];
     let outcome = run_parser_worker_service(
         ChannelTransport::new(),
-        UnsupportedDispatcher::new(),
+        ContainerDispatcher::new(&mut spellings, BackendLimits::default()),
         ServiceBuffers {
             receive_payload,
             send_payload,
@@ -461,6 +548,13 @@ unsafe extern "C" fn memmove(
         }
     }
     destination
+}
+
+/// `bcmp` has `memcmp`'s comparison semantics but only its zero/non-zero
+/// result is specified, so it forwards.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn bcmp(first: *const c_void, second: *const c_void, count: usize) -> i32 {
+    unsafe { memcmp(first, second, count) }
 }
 
 #[unsafe(no_mangle)]

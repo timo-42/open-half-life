@@ -3,6 +3,12 @@
 version = 4
 
 [[package]]
+name = "adler2"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
+
+[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -63,11 +69,48 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
+name = "miniz_oxide"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
+dependencies = [
+ "adler2",
+]
+
+[[package]]
 name = "ohl-core"
 version = "0.1.0"
 dependencies = [
  "sha2",
  "thiserror",
+]
+
+[[package]]
+name = "ohl-isz"
+version = "0.1.0"
+dependencies = [
+ "ohl-core",
+]
+
+[[package]]
+name = "ohl-mscab"
+version = "0.1.0"
+dependencies = [
+ "miniz_oxide",
+ "ohl-core",
+]
+
+[[package]]
+name = "ohl-parser-backends"
+version = "0.1.0"
+dependencies = [
+ "ohl-core",
+ "ohl-isz",
+ "ohl-mscab",
+ "ohl-parser-protocol",
+ "ohl-parser-worker-service",
+ "ohl-payload",
+ "ohl-wise",
 ]
 
 [[package]]
@@ -83,6 +126,7 @@ dependencies = [
 name = "ohl-parser-worker-image"
 version = "0.1.0"
 dependencies = [
+ "ohl-parser-backends",
  "ohl-parser-protocol",
  "ohl-parser-worker-service",
 ]
@@ -92,6 +136,22 @@ name = "ohl-parser-worker-service"
 version = "0.1.0"
 dependencies = [
  "ohl-parser-protocol",
+]
+
+[[package]]
+name = "ohl-payload"
+version = "0.1.0"
+dependencies = [
+ "ohl-core",
+]
+
+[[package]]
+name = "ohl-wise"
+version = "0.1.0"
+dependencies = [
+ "miniz_oxide",
+ "ohl-core",
+ "thiserror",
 ]
 
 [[package]]
