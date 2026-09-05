@@ -28,6 +28,12 @@ allow = [
     # Allowed for build-only tooling dependencies only; no MPL-2.0 code is
     # linked into a distributed Open Half-Life binary.
     "MPL-2.0",
+    # Cover `epaint_default_fonts` (pulled in by `egui`/`ohl-ui`'s
+    # `default_fonts` feature): permissively licensed font *data*, not code,
+    # for egui's built-in proportional/monospace/emoji faces. Both are OSI
+    # approved, FSF-free font licenses; see THIRD_PARTY_NOTICES.md.
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
 ]
 confidence-threshold = 0.8
 

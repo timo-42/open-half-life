@@ -1,0 +1,37 @@
+[package]
+name = "ohl-ui"
+description = "egui-based UI shell for Open Half-Life: console, HUD and menus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ohl_ui"
+
+[dependencies]
+ohl-core = { path = "../ohl-core", version = "=0.1.0", features = ["std"] }
+egui = "=0.36.1"
+egui-wgpu = "=0.36.1"
+egui-winit = { version = "=0.36.1", default-features = false, features = [
+    "x11",
+    "wayland",
+] }
+wgpu = "=30.0.1"
+winit = { version = "=0.30.13", default-features = false, features = [
+    "rwh_06",
+    "x11",
+    "wayland",
+    "wayland-dlopen",
+] }
+
+[dev-dependencies]
+# Dev-only: gives the offscreen render test a GPU device, queue and readback
+# target without ohl-ui depending on the renderer crate at runtime. Graph
+# policy (`xtask/src/graph.rs`) does not inspect `[dev-dependencies]`.
+ohl-render = { path = "../ohl-render", version = "=0.1.0" }
+pollster = "=1.0.1"
+
+[lints]
+workspace = true
