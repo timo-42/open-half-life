@@ -254,6 +254,63 @@ from any game installation are used or committed.
   instead of reusing `crate::palette::Palette`/`Indexed8` (both fixed to
   exactly 256 entries).
 
+## GoldSrc studio-model rendering semantics
+
+`crates/ohl-world/src/studio.rs` and `crates/ohl-render/src/studio.rs`
+turn the decoded MDL v10 data above into renderable geometry. The reviewed
+`malortie/assimp` MDL page (above) documents the *layout* of the `flags`
+fields but not their bit values: it links out to Valve's own `studio.h`
+for those, which this project does not consult. The bit values and the
+rendering behaviour they select were taken from the following community
+write-ups instead.
+
+- "MDL_Format.md", `skyrim/hlviewer.js` repository documentation
+  (<https://github.com/skyrim/hlviewer.js/blob/master/docs/MDL_Format.md>,
+  raw source:
+  <https://raw.githubusercontent.com/skyrim/hlviewer.js/master/docs/MDL_Format.md>):
+  a community-authored GoldSrc MDL format document that enumerates the
+  texture flag bits by name and value — `STUDIO_NF_FLATSHADE = 0x01`,
+  `STUDIO_NF_CHROME = 0x02`, `STUDIO_NF_FULLBRIGHT = 0x04`,
+  `STUDIO_NF_NOMIPS = 0x08`, `STUDIO_NF_ALPHA = 0x10`,
+  `STUDIO_NF_ADDITIVE = 0x20`, `STUDIO_NF_MASKED = 0x40` — and notes the
+  bone-level "has chrome" summary flag. `ohl_world::STUDIO_NF_*` reproduces
+  exactly this list of names and values.
+- "GoldSrc Model Chrome Tutorial", the303.org
+  (<https://www.the303.org/tutorials/gold_mdl_chrome.htm>): describes
+  GoldSrc's chrome texture mode in prose — "with chrome mode existing UV's
+  are unused due to the nature of it", "the spherical image space of the
+  texture is mapped by the corresponding normals of the object", and that
+  the mapping is taken relative to a camera reference point rather than the
+  surface's own texture coordinates. `crates/ohl-render/src/studio.wgsl`
+  implements that description as a view-space sphere ("matcap") map: the
+  skinned normal is rotated into view space and its XY components,
+  remapped from `-1..1` into `0..1`, index the chrome texture. The exact
+  scale and bias are this project's own choice; the reviewed page states
+  the behaviour but no formula.
+- Sequence flags: the reviewed MDL page again defers the bit values to
+  Valve's header. The303's "GoldSrc MDL QC commands" page
+  (<https://the303.org/tutorials/gold_qc.htm>) documents the `$sequence`
+  `loop` option that sets the compiled sequence's looping bit, and the
+  wider modelling community consistently records that bit as
+  `STUDIO_LOOPING = 0x0001`. `ohl_world::STUDIO_LOOPING` uses that value;
+  it is exercised only against this project's own synthetic fixtures and
+  is recorded here as a community-sourced value, not one restated from any
+  Valve header this project has read.
+
+Two further rendering decisions in these modules are this project's own
+engineering choices rather than claims made by any reviewed page, and are
+documented as such in `docs/MILESTONES.md`:
+
+- per-vertex Lambert shading against one directional light plus an ambient
+  term, where the ambient term is the mean lightmap colour of the faces in
+  the BSP leaf the model stands in (`ohl_world::WorldModel::ambient_at`);
+  GoldSrc's own entity lighting traces downward onto a surface, which this
+  approximates far more coarsely;
+- normalising a trivert's documented absolute `s`/`t` texel coordinates by
+  the referenced texture's own `width`/`height`, which follows directly
+  from the page's description of those fields as absolute rather than
+  normalised, and from the texture chunk's `width`/`height` fields.
+
 The project-owned `mdl10` and `spr` decoders in `crates/ohl-formats` are
 zero-copy, bounds-checked readers over these documented layouts, following
 the same validation discipline as `bsp30`/`wad3` (every count, offset, and

@@ -101,6 +101,8 @@ pub struct WorldModel {
     /// `leaf_faces[leaf]` is a `(start, count)` slice of `leaf_face_list`.
     leaf_faces: Vec<(u32, u32)>,
     leaf_face_list: Vec<u32>,
+    /// `face_light[ordered_face]` is that face's mean lightmap colour.
+    face_light: Vec<[f32; 3]>,
     vis: VisibilitySet,
     max_walk_depth: u32,
 }
@@ -120,6 +122,9 @@ struct PendingFace {
     texture: usize,
     vertices: Vec<WorldVertex>,
     bounds: Aabb,
+    /// The mean of the face's style-0 lightmap samples, in `0..1`, used as
+    /// the ambient approximation for entities standing near it.
+    average_light: [f32; 3],
 }
 
 impl WorldModel {
@@ -238,9 +243,16 @@ impl WorldModel {
             } else {
                 None
             };
-            if let Some((rect, _, pixels)) = &tile {
-                atlas_pixels.push((*rect, pixels.clone()));
-            }
+            let average_light = match &tile {
+                Some((rect, _, pixels)) => {
+                    atlas_pixels.push((*rect, pixels.clone()));
+                    average_rgb(pixels)
+                }
+                // An unlit or fullbright face contributes nothing useful to
+                // the ambient estimate, so it reads as neutral white, the
+                // same value its geometry is shaded with.
+                None => [1.0, 1.0, 1.0],
+            };
 
             let texture_size = (
                 f64::from(textures[texture].width()),
@@ -270,6 +282,7 @@ impl WorldModel {
                 texture,
                 vertices: face_vertices,
                 bounds,
+                average_light,
             });
         }
 
@@ -279,6 +292,12 @@ impl WorldModel {
 
         let (mesh, model_bounds, ordered_faces, batches, order) = assemble(&pending, atlas_scale);
         let (mesh_vertices, mesh_indices) = mesh;
+        let mut face_light = vec![[1.0f32; 3]; pending.len()];
+        for (original_slot, face) in pending.iter().enumerate() {
+            if let Some(slot) = face_light.get_mut(order[original_slot] as usize) {
+                *slot = face.average_light;
+            }
+        }
 
         // Remap `bsp face -> ordered face`.
         for slot in &mut face_slot {
@@ -359,6 +378,7 @@ impl WorldModel {
             planes,
             leaf_faces,
             leaf_face_list,
+            face_light,
             vis,
             max_walk_depth: limits.max_walk_depth,
         })
@@ -398,6 +418,45 @@ impl WorldModel {
         let start = start as usize;
         let end = start + count as usize;
         self.leaf_face_list.get(start..end).unwrap_or(&[])
+    }
+
+    /// An approximate ambient light colour, in `0..1`, for an entity
+    /// standing at `point`.
+    ///
+    /// GoldSrc's own entity lighting traces downward and samples the
+    /// lightmap of the surface it lands on. This is a deliberately coarser
+    /// approximation with the same intent: it averages the mean lightmap
+    /// colour of every face the containing leaf references, which is cheap,
+    /// never fails, and is documented as an approximation in
+    /// `docs/MILESTONES.md`. A point outside the map, or in a leaf with no
+    /// faces, reads as neutral white so a model is never invisible.
+    #[must_use]
+    pub fn ambient_at(&self, point: [f32; 3]) -> [f32; 3] {
+        let Some(leaf) = self.leaf_at(point) else {
+            return [1.0, 1.0, 1.0];
+        };
+        let slots = self.leaf_face_slots(leaf);
+        let mut sum = [0.0f64; 3];
+        let mut count = 0u32;
+        for &slot in slots {
+            let Some(light) = self.face_light.get(slot as usize) else {
+                continue;
+            };
+            for axis in 0..3 {
+                sum[axis] += f64::from(light[axis]);
+            }
+            count += 1;
+        }
+        if count == 0 {
+            return [1.0, 1.0, 1.0];
+        }
+        let scale = f64::from(count);
+        #[allow(clippy::cast_possible_truncation)]
+        [
+            (sum[0] / scale) as f32,
+            (sum[1] / scale) as f32,
+            (sum[2] / scale) as f32,
+        ]
     }
 
     /// The decompressed visibility set.
@@ -570,6 +629,29 @@ fn atlas_uv(s: f32, t: f32, rect: ShelfRect, extents: LightmapExtents) -> [f32; 
     // Stored in atlas *pixels*; `assemble` scales to 0..1 once the atlas
     // height is known.
     [x + luxel_s + 0.5, y + luxel_t + 0.5]
+}
+
+/// The mean colour of an RGBA8 tile, in `0..1`.
+fn average_rgb(pixels: &[u8]) -> [f32; 3] {
+    let (texels, _) = pixels.as_chunks::<4>();
+    if texels.is_empty() {
+        return [1.0, 1.0, 1.0];
+    }
+    let mut sum = [0.0f64; 3];
+    for texel in texels {
+        for (axis, total) in sum.iter_mut().enumerate() {
+            *total += f64::from(texel[axis]);
+        }
+    }
+    // A tile is at most a few thousand texels, so the divisor is exact in
+    // `f64`; the cast back to `f32` is the only rounding step.
+    let scale = f64::from(u32::try_from(texels.len()).unwrap_or(u32::MAX)) * 255.0;
+    #[allow(clippy::cast_possible_truncation)]
+    [
+        (sum[0] / scale) as f32,
+        (sum[1] / scale) as f32,
+        (sum[2] / scale) as f32,
+    ]
 }
 
 fn white_uv(white: ShelfRect) -> [f32; 2] {

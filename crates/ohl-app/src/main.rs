@@ -24,6 +24,8 @@ use ohl_vfs::{DirectoryLimits, MediaSourceBlockReader, Mount};
 
 #[cfg(feature = "dev-tools")]
 mod dev_bsp;
+#[cfg(feature = "dev-tools")]
+mod dev_mdl;
 
 const APP_NAME: &str = "Open Half-Life";
 const VERSION: &str = env!("OHL_APP_VERSION");
@@ -70,6 +72,19 @@ struct Cli {
     /// Path to a Half-Life installation ISO (positional form).
     #[arg(value_name = "PATH")]
     path: Option<PathBuf>,
+
+    /// Development only: load a studio model (MDL v10) straight off disk and
+    /// open a renderer window showing it animating (`[` and `]` cycle the
+    /// sequence, Escape quits).
+    ///
+    /// Combined with `--dev-bsp` the map is loaded too and the model is
+    /// placed at its player start; on its own the model simply orbits in
+    /// front of the camera. Like `--dev-bsp` this bypasses the media
+    /// pipeline and is compiled in solely by the non-default `dev-tools`
+    /// cargo feature.
+    #[cfg(feature = "dev-tools")]
+    #[arg(long, value_name = "PATH")]
+    dev_mdl: Option<PathBuf>,
 }
 
 /// Formats an event as `[level] message`, mirroring the C++ `ohl::core::log`
@@ -204,6 +219,18 @@ fn run(cli: Cli) -> ExitCode {
     tracing::info!("{APP_NAME} {VERSION}");
     tracing::info!("{}", platform_line());
     tracing::debug!(core_version = ohl_core::VERSION, "loaded ohl-core");
+
+    #[cfg(feature = "dev-tools")]
+    if let Some(path) = cli.dev_mdl.as_deref() {
+        tracing::warn!("development model viewer: media pipeline is bypassed");
+        return match dev_mdl::run(path, cli.dev_bsp.as_deref(), &cli.dev_wad) {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(message) => {
+                eprintln!("{message}");
+                std::process::ExitCode::from(3)
+            }
+        };
+    }
 
     #[cfg(feature = "dev-tools")]
     if let Some(path) = cli.dev_bsp.as_deref() {

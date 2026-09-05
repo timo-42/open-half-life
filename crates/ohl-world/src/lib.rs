@@ -21,6 +21,7 @@ mod geometry;
 mod lightmap;
 mod model;
 mod spawn;
+mod studio;
 mod texture;
 mod vis;
 
@@ -36,9 +37,20 @@ pub use model::{
     WorldModel,
 };
 pub use spawn::{PlayerSpawn, find_player_start};
+pub use studio::{
+    BoneMatrix, MAX_BONES, MAX_STUDIO_VERTICES, STUDIO_LOOPING, STUDIO_NF_ADDITIVE,
+    STUDIO_NF_ALPHA, STUDIO_NF_CHROME, STUDIO_NF_FLATSHADE, STUDIO_NF_FULLBRIGHT, STUDIO_NF_MASKED,
+    STUDIO_NF_NOMIPS, STUDIO_VERTEX_BYTES, StudioAttachment, StudioBodyPart, StudioBone,
+    StudioHitbox, StudioMesh, StudioModel, StudioPose, StudioSequence, StudioSubModel,
+    StudioTexture, StudioVertex, studio_vertex_bytes,
+};
 pub use texture::TextureImage;
 
 /// Re-exported so callers can pass decoding limits without also depending
 /// on `ohl-formats` directly.
 pub use ohl_formats::bsp30::Limits as BspLimits;
+
+/// Re-exported so callers can pass studio-model decoding limits without
+/// also depending on `ohl-formats` directly.
+pub use ohl_formats::mdl10::Limits as StudioLimits;
 pub use vis::VisibilitySet;
