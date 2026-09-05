@@ -11,6 +11,7 @@
 //!   parser worker image) and assembles a versioned, self-contained release
 //!   folder plus a `.tar.gz`/`.zip` archive under `target/dist/`.
 
+mod campaign_smoke;
 mod dist;
 mod graph;
 mod policy;
@@ -87,8 +88,14 @@ fn main() -> ExitCode {
         Some("graph") => run_graph(&root),
         Some("worker-image") => worker_image::run(),
         Some("dist") => dist::run(&root, &std::env::args().skip(2).collect::<Vec<_>>()),
+        Some("campaign-smoke") => {
+            let rest: Vec<String> = std::env::args().skip(2).collect();
+            campaign_smoke::run(&root, &rest)
+        }
         other => {
-            eprintln!("usage: cargo xtask <policy|graph|worker-image|dist>");
+            eprintln!(
+                "usage: cargo xtask <policy|graph|worker-image|dist|campaign-smoke>"
+            );
             if let Some(other) = other {
                 eprintln!("unknown subcommand: {other}");
             }
