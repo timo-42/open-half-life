@@ -23,12 +23,25 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
     ("ohl-parser-protocol", &["ohl-core"]),
     ("ohl-parser-worker-service", &["ohl-parser-protocol"]),
     ("ohl-parser-worker", &["ohl-parser-worker-service"]),
-    ("ohl-iso9660", &["ohl-core"]),
-    ("ohl-udf", &["ohl-core"]),
+    // `ohl-media-archive` holds the block-source trait, the bounded listing
+    // model, the path rules and the fixed classification vocabulary that both
+    // media readers and `ohl-vfs` share. Keeping it separate is what lets the
+    // two readers stay independent of each other (R3.2).
+    ("ohl-media-archive", &["ohl-core"]),
+    ("ohl-iso9660", &["ohl-core", "ohl-media-archive"]),
+    ("ohl-udf", &["ohl-core", "ohl-media-archive"]),
     ("ohl-cabinet-format", &["ohl-core"]),
     ("ohl-cabinet", &["ohl-cabinet-format"]),
     ("ohl-platform", &["ohl-core"]),
-    ("ohl-vfs", &["ohl-platform", "ohl-iso9660", "ohl-udf"]),
+    (
+        "ohl-vfs",
+        &[
+            "ohl-platform",
+            "ohl-media-archive",
+            "ohl-iso9660",
+            "ohl-udf",
+        ],
+    ),
     ("ohl-media", &["ohl-platform"]),
     (
         "ohl-import",
@@ -230,6 +243,31 @@ mod tests {
                 to: "ohl-vfs".to_string(),
             }]
         );
+    }
+
+    #[test]
+    fn allows_the_media_archive_edges_the_readers_need() {
+        let mut deps = BTreeMap::new();
+        deps.insert(
+            "ohl-iso9660".to_string(),
+            vec!["ohl-core".to_string(), "ohl-media-archive".to_string()],
+        );
+        deps.insert(
+            "ohl-udf".to_string(),
+            vec!["ohl-core".to_string(), "ohl-media-archive".to_string()],
+        );
+        deps.insert(
+            "ohl-media-archive".to_string(),
+            vec!["ohl-core".to_string()],
+        );
+        assert!(check_edges(&deps).is_empty());
+    }
+
+    #[test]
+    fn rejects_an_edge_between_the_two_media_readers() {
+        let mut deps = BTreeMap::new();
+        deps.insert("ohl-udf".to_string(), vec!["ohl-iso9660".to_string()]);
+        assert_eq!(check_edges(&deps).len(), 1);
     }
 
     #[test]

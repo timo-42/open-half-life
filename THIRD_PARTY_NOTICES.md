@@ -19,11 +19,23 @@ Direct dependencies at R2 (M0-rs), each MIT or MIT/Apache-2.0 dual-licensed:
 - `toml` (MIT OR Apache-2.0) -- `Cargo.toml` parsing, `xtask`
 - `tempfile` (MIT OR Apache-2.0) -- temporary directories in `xtask` tests
 
-As later packages (R3+) add `ohl-iso9660`/`ohl-udf` (`hadris-iso`/`hadris-udf`,
-pinned at exact `2.3.0`), the freestanding parser worker (`rustix`,
-`seccompiler`, `landlock`), and the render/audio/input stack (`wgpu`, `winit`,
-`cpal`/`rodio`), this section will be extended; `cargo deny check` remains the
-enforced, up-to-date source of truth between updates to this file.
+Added at R3.2 by the media readers, each MIT licensed and pinned at exact
+`2.3.0`:
+
+- `hadris-iso` (MIT) -- ECMA-119 / Joliet directory decoding, `ohl-iso9660`
+- `hadris-udf` (MIT) -- ECMA-167 descriptor and directory decoding, `ohl-udf`
+
+Both are built with `default-features = false` and only `alloc`, `sync` and
+(for `hadris-iso`) `joliet`, so neither pulls in `std`. They bring the
+transitive MIT-licensed `hadris-common`, `hadris-fixed`, `hadris-io`,
+`hadris-macros`, `hadris-part` and `hadris-path` crates plus `bitflags`,
+`bytemuck`, `embedded-io`, `endian-num`, `spin` and `zerocopy`
+(MIT OR Apache-2.0). `proptest` (MIT OR Apache-2.0) is a dev dependency only.
+
+As later packages add the freestanding parser worker (`rustix`, `seccompiler`,
+`landlock`) and the render/audio/input stack (`wgpu`, `winit`, `cpal`/`rodio`),
+this section will be extended; `cargo deny check` remains the enforced,
+up-to-date source of truth between updates to this file.
 
 ## libudfread 1.2.0
 
