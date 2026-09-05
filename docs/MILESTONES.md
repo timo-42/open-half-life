@@ -1557,6 +1557,47 @@ composition with the world renderer, cursor grab/release on screen
 transitions), persisting variables and options across sessions, load/save
 screens, and an editable bindings screen.
 
+## M7 (Rust): monster navigation
+
+`crates/ohl-nav` (package 7.6), the navigation layer the AI crate routes
+with. It is a leaf over `ohl-core`, `ohl-physics` and `ohl-formats` and knows
+nothing about entities, so `ohl-ai` can compose it without a cycle.
+
+- `graph`: `NodeGraph::build` takes node positions and kinds (ground, air,
+  water — a host extracts them from `info_node`/`info_node_air` entities, or
+  uses `node_seeds_from_entities` on an already-parsed entities lump) plus a
+  `CollisionModel`. Ground nodes are dropped onto the floor; air nodes are
+  left where they are; ground and air nodes never link to each other
+  (published behaviour, see `docs/FORMAT_SOURCES.md`, "Navigation"). Every
+  candidate pair inside the link radius is validated once per hull — step up,
+  sweep across, sample the floor, drop at the far end — so one graph serves
+  the point, 32x32x72, 64x64x64 and 32x32x36 hulls with different answers.
+  Construction is bounded (max nodes, links per node, candidate pairs),
+  deterministic, and serialisable behind the `serde` feature so a host can
+  cache it.
+- `path`: A* per hull with a Euclidean heuristic, a bounded expansion
+  counter, endpoint attachment by hull trace to the nearest reachable node,
+  and a `straight_path_if_clear` shortcut for the open-room case.
+- `steer`: `Steer::next_move` turns a path into a `MoveIntent`
+  (`dir`, `speed_scale`, `reached`, `blocked`) with waypoint advancement and
+  skip-ahead, plane sliding, two rotated side probes, a documented creep
+  fallback, and a progress-window stuck flag telling the caller to re-path.
+
+Verified: per-hull linking through a 40-unit doorway (the humanoid hull
+passes, the large hull does not) and a 160-unit one; rejection of links
+across an unsupported floor gap and through walls; ground snapping; the
+construction bounds and determinism; A* agreeing with a brute-force Dijkstra
+for every pair of a 5x5 lattice and on a hand-computed optimum; endpoint
+attachment and its radius; the exploration bound; steering around a corner,
+sliding along a wall and detecting a wedged mover in a fixed-tick
+simulation; and proptests that building, pathing and steering never panic
+for arbitrary positions and bounded limits, that graphs rebuild identically,
+and that returned paths are contiguous.
+
+Not yet done: `ohl-ai` still has to call this crate instead of its
+straight-line route placeholder, and nothing caches a built graph to disk
+yet.
+
 ## M9 (Rust): packaging
 
 Status: in progress. `cargo xtask dist` builds the release `open-half-life`

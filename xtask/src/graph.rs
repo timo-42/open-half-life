@@ -108,6 +108,12 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
     // `ohl-vfs` stays listed for the map loading path this crate will use
     // once maps arrive through the real pipeline.
     ("ohl-physics", &["ohl-core", "ohl-formats", "ohl-vfs"]),
+    // Navigation node graph, A* and local steering. It needs the hull
+    // traces (`ohl-physics`) to validate links per hull and the BSP entity
+    // parser (`ohl-formats`) for the one helper that reads `info_node`
+    // seeds; it deliberately does *not* depend on `ohl-game`, so the AI
+    // layer can compose it without a cycle.
+    ("ohl-nav", &["ohl-core", "ohl-physics", "ohl-formats"]),
     ("ohl-render", &["ohl-core", "ohl-world"]),
     ("ohl-audio", &["ohl-core"]),
     // Versioned save-file container: bounded header, tagged section table

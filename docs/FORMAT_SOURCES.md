@@ -1134,6 +1134,47 @@ behaviour, not a copied formula. No SDK source (`dlls/*.cpp`) or decompiled
 GoldSrc logic was consulted for any of the above; only the public wiki pages
 named. `ohl-render` does not yet draw the resulting brush-model instances
 (see `docs/MILESTONES.md`, "M5 (Rust): entities").
+## Navigation
+
+- [TWHL wiki: info_node](https://twhl.info/wiki/page/info_node),
+  [info_node_air](https://twhl.info/wiki/page/info_node_air),
+  [Tutorial: All about info_nodes](https://twhl.info/wiki/page/Tutorial:_All_about_info_nodes)
+  and
+  [Monsters Programming - Node graph system (part 1)](https://twhl.info/wiki/page/Monsters_Programming_-_Node_graph_system_(part_1))
+  (public Half-Life mapping documentation; like the entity pages cited under
+  "Entity keyvalues and map logic" these return HTTP 403 to automated fetches
+  from this environment, so they were consulted via search-engine result
+  summaries): `info_node` and `info_node_air` are the two point entities that
+  mark navigable positions for monsters; the server builds a *node graph*
+  from their positions plus the links between them, weights those links, and
+  routes a monster from A to B over it; `info_node` is dropped to ground
+  level and `info_node_air` is not; the two kinds never link to each other;
+  air nodes serve flying monsters (alien controller, flock) and aquatic ones
+  (leech, ichthyosaur). Only these published semantics were used — no node
+  graph file format, no link-validation rule and no cost function was taken
+  from any Valve source, and the `.nod`/`.nrp` files the retail game caches
+  are neither read nor written.
+- The four hull sizes a link is validated against are the published ones
+  already recorded above under "Collision hulls and player movement".
+- A* is the standard public shortest-path algorithm (Hart, Nilsson and
+  Raphael, "A Formal Basis for the Heuristic Determination of Minimum Cost
+  Paths", 1968), used here with the ordinary Euclidean heuristic; steering
+  by forward probes, plane sliding and a stuck window is likewise ordinary,
+  publicly described game-AI practice.
+
+Project behaviour supported: `crates/ohl-nav` builds a `NodeGraph` from
+caller-supplied node positions and kinds plus the map's
+`ohl_physics::CollisionModel`, validating every candidate link once per hull
+with hull traces (step-up, horizontal sweep, floor-support samples and a
+bounded drop for ground links; a single sweep for air and water links), then
+runs A* per hull and steers the last leg. Every numeric parameter — link
+radius, links per node, candidate-pair budget, drop allowance, sample
+spacing, probe distances and angles, the stuck window, the exploration
+ceiling — is a project choice documented on the field that carries it, not a
+published Half-Life value; only the step height reuses the documented
+movement figure. The node lattices and rooms in the tests are synthetic
+fixtures built by `ohl_formats::test_support`.
+
 ## Game text formats
 
 Sources reused from `.plan/m8-research.md` sections 2 and 5 (M8.1 research
