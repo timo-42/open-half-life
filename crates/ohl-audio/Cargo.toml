@@ -26,6 +26,9 @@ ohl-core = { path = "../ohl-core", version = "=0.1.0", features = ["std"] }
 # reading `fmt `/`data` through a second, independent parser would only add
 # risk for no benefit. See `src/wav.rs` module docs.
 hound = "=3.5.1"
+# Fuzzes `wav::decode` over arbitrary and mutated bytes; see
+# `tests/proptest_never_panics.rs`.
+proptest = { workspace = true }
 
 # `cpal`'s only Linux backend links libasound (via the `alsa` crate's
 # `alsa-sys`, which locates and links the system library through
