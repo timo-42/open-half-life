@@ -1068,6 +1068,70 @@ blending, sequence transition graphs and events, external sequence-group and
 external texture files, per-pixel lighting, backface culling, mipmaps, and
 any model source other than a path on disk.
 
+## M7 (Rust): monster AI core
+
+Status: in progress (package 7.5). Adds `ohl-ai`, the decision-making half
+of the monsters: what they perceive, what state that puts them in, which
+schedule of tasks they run, how a squad shares an enemy, and the movement
+glue that turns a task into clip-hull-traced motion. It renders nothing,
+plays nothing and resolves no damage; `AiWorld::tick` returns an `AiEvent`
+list for `ohl-app` and, later, `ohl-combat` to act on. Per the crate-graph
+policy (`xtask/src/graph.rs`) it depends only on `ohl-core`, `ohl-physics`,
+`ohl-world` and `ohl-game`.
+
+- `state`: `MonsterState` (none/idle/alert/combat/hunt/prone/script/
+  playdead/dead), the published `Classification` vocabulary, `Relationship`
+  ordered so that `Ord` *is* the enemy-selection priority, the data-driven
+  `RelationshipTable` with a small **provisional** default matrix, and a
+  29-bit `Conditions` set (`SEE_ENEMY`, `SEE_HATE`/`FEAR`/`DISLIKE`/
+  `NEMESIS`, `SEE_CLIENT`, `ENEMY_OCCLUDED`/`TOOFAR`/`FACING_ME`/`DEAD`,
+  `NEW_ENEMY`, `HEAR_SOUND`/`DANGER`/`COMBAT`, `SMELL`, `LIGHT_DAMAGE`,
+  `HEAVY_DAMAGE`, `CAN_MELEE_ATTACK1/2`, `CAN_RANGE_ATTACK1/2`,
+  `TASK_FAILED`, `SCHEDULE_DONE`, `PROVOKED`, `NO_AMMO_LOADED`, `BLOCKED`,
+  `IN_DANGER`, `SPECIAL1/2`).
+- `senses`: `look()` filters candidates by look distance, the `ohl-world`
+  potentially-visible set, the view cone and finally an `ohl-physics`
+  point-hull trace from `origin + view_ofs` to the target's eye, then picks
+  an enemy by relationship then distance; `listen()` scans a bounded
+  `SoundList` scaled by `Senses::hearing_sensitivity`; `EnemyMemory` keeps
+  the last known position and applies the published "occluded within 256
+  units is still known" rule.
+- `schedule`: a `Task` enum, a `Schedule` of `&'static [Task]` plus an
+  interrupt mask, a `ScheduleRunner` that advances one task per tick after
+  checking the mask, and the `Brain` trait (`select_schedule(state,
+  conditions)`). `brain` supplies the project's own default schedule set and
+  state machine.
+- `squad`: `SquadRoster` groups monsters by `netname`, lets a `SquadLeader`
+  recruit at most three members, and shares an enemy across the squad.
+- `movement`: `Route` (already the waypoint-plus-cursor shape the node graph
+  of package 7.6 needs, with a straight-line fallback today), `move_toward`
+  with a step-up over 18-unit obstructions, and a `StuckDetector`.
+- `spawn`: attaches `Actor`/`MonsterAi`/`SquadTag` to the entities
+  `ohl_game::Registry` already spawned, so there is one entity world.
+- `damage`: a deliberately minimal `DamageEvent`/`DamageSink` pair, to be
+  replaced by `ohl-combat`'s richer `DamageInfo` when package 7.1 lands.
+- `rng`: a project-owned `PCG-XSH-RR 64/32` generator written from the
+  public PCG paper, so the AI has a save-restorable random stream with no
+  third-party dependency.
+
+Verified: unit tests per module; integration tests over a project-authored
+synthetic BSP room divided by a wall show line of sight flipping idle to
+combat in a single tick, the wall blocking a sight line the open room
+allows, occlusion dropping the monster to alert while retaining the last
+known position, an enemy occluded beyond 256 units being forgotten, a danger
+sound interrupting the running schedule, a squad leader recruiting exactly
+three members, and 1,000 ticks replaying to identical `state_hash` digests;
+`proptest` checks that sight, hearing, the movement step, the route cursor,
+the stuck detector and a full tick never panic and never produce non-finite
+state for arbitrary positions.
+
+Not yet done: the node graph and A* (package 7.6), per-monster definitions
+and attacks (7.7), scripted sequences and save sections (7.8), and unifying
+`ohl-ai::damage` with `ohl-combat`'s `DamageInfo` (7.1). Every movement
+speed, view-cone angle, look distance, attack range, turn rate and damage
+threshold in the crate is a placeholder still to be black-box observed; see
+`docs/FORMAT_SOURCES.md`, "Monster AI behaviour".
+
 ## M8 (Rust): save container
 
 Status: in progress. Adds `ohl-save`, a project-owned, versioned save-file
@@ -1203,6 +1267,6 @@ screens, and an editable bindings screen.
 - M4: player movement (M4.1 hulls and walking in progress, see above)
 - M5: interactive entities (Rust `ohl-game`, M5.1, in progress, see above)
 - M6: models and animation (Rust studio models in progress, see above)
-- M7: combat
+- M7: combat (Rust `ohl-ai` monster AI core, package 7.5, in progress, see above)
 - M8: full campaign compatibility (Rust save container in progress, see above)
 - M9: release hardening

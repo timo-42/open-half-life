@@ -23,6 +23,7 @@ acyclic and matches the table below, which restates
 | `ohl-formats` | BSP30/WAD3/MDL10/SPR decoders | `no_std` + `alloc` |
 | `ohl-render`, `ohl-audio`, `ohl-input` | wgpu passes; cpal/rodio; winit events | std |
 | `ohl-world`, `ohl-physics`, `ohl-game`, `ohl-ui` | world state, GoldSrc hulls, rules, egui HUD | std |
+| `ohl-ai` | monster conditions, senses, schedules, squads, movement glue | std |
 | `ohl-app` | composition root binary (`open-half-life`) | std |
 | `xtask` | policy check, worker image build, packaging | std |
 

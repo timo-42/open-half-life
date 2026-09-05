@@ -1,0 +1,34 @@
+[package]
+name = "ohl-ai"
+description = "Clean-room monster AI core: conditions, senses, schedules, squads and movement glue"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ohl_ai"
+
+[dependencies]
+ohl-core = { path = "../ohl-core", version = "=0.1.0" }
+ohl-physics = { path = "../ohl-physics", version = "=0.1.0" }
+ohl-world = { path = "../ohl-world", version = "=0.1.0" }
+ohl-game = { path = "../ohl-game", version = "=0.1.0" }
+# Pinned exact, matching the versions `ohl-game` and `ohl-physics` already
+# use, so the `hecs::World` this crate ticks is the same type `ohl-game`
+# builds and the vector type is shared with the trace API.
+glam = { version = "=0.33.6", default-features = false, features = ["std"] }
+hecs = { version = "=0.11.1", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+proptest = { workspace = true }
+ohl-formats = { path = "../ohl-formats", version = "=0.1.0", features = [
+    "test-support",
+] }
+ohl-world = { path = "../ohl-world", version = "=0.1.0", features = [
+    "test-support",
+] }
+
+[lints]
+workspace = true
