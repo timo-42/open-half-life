@@ -20,9 +20,56 @@ C++ implementation and remain in this file only as the specification and
 historical qualification record the Rust port must reproduce or exceed. The
 bottom-line conclusion is unchanged by the language migration: **production
 payload import is unavailable on every platform, in both the historical C++
-build and the current Rust build.** Rust has, so far, reached parity with the
-C++ app-preflight-and-metadata-cache row only (`ohl-app`, `ohl-vfs`,
-`ohl-media`); every row past that remains not-yet-started in Rust.
+build and the current Rust build.** Rust has since ported the parser
+protocol, the worker service and its installed freestanding image, the
+parent-side session stack, the payload staging boundary, and — at R4.7a, see
+the next section — the composition that joins them (`ohl-parser-protocol`,
+`ohl-parser-worker-service`, `ohl-parser-worker`, `ohl-import`,
+`ohl-payload`, `ohl-app`). The one thing that composition still cannot do is
+the thing this page is about: the worker has no real dispatcher, so nothing
+is ever extracted or published.
+
+## Rust R4.7a: the parent-side pipeline is composed, import is still unavailable
+
+The Rust parent side is now composed end to end, up to the point where the
+worker refuses. `ohl_import::pipeline::run_import` locates one container in a
+mounted medium, hands a confined `IsolatedWorker` a bounded window over that
+container, drives the handshake and enumeration, applies the user's
+runtime-only recipe, plans a layout, streams every planned entry through
+`ohl_payload`'s create-new staging, reverifies the complete pinned source, and
+publishes once with no-replace. `ohl-app` runs it after its M1 flow.
+
+This changes no row below. **Production payload import remains unavailable on
+every platform**, because the installed worker's compile-fixed dispatcher
+answers `unsupported` for every enumeration and stream. No build can extract a
+user medium, and no payload has ever been published from one.
+
+Evidence, all local and all on Linux x86-64:
+
+- The composed pipeline publishes a payload only when a worker actually
+  enumerates and streams, which today only the crate's scripted synthetic
+  worker does (`crates/ohl-import/tests/pipeline.rs`): a complete run, a
+  repeat run that is a cache hit, a cancellation mid-stream that discards the
+  stage and terminates the worker once, a transport failure, a refusal, and a
+  medium with no container that never starts a worker.
+- Container location is covered against project-authored synthetic PE images
+  and synthetic ISOs (`crates/ohl-import/tests/locate.rs`): a two-section PE
+  with a Z-signature overlay, a PE with no overlay, truncated and malformed
+  headers, an impossible section count, a cabinet at offset 0, an
+  under-minimum file, a plain file, an exhausted read budget, and an observed
+  cancellation.
+- The `#[ignore]`d `crates/ohl-app/tests/worker_image.rs` runs the shipped
+  binary against a synthetic ISO with the **real** installed worker image
+  (after `cargo xtask worker-image`) and requires the sanitized `unsupported`
+  outcome, exit status 0, and nothing published.
+- One manual run against a lawfully owned medium reached the confined worker
+  and was refused. Only the fixed log lines and the exit status were recorded;
+  no name, count, or byte from that medium is in this repository.
+
+What is still absent is unchanged and is the whole of R4.7b and beyond: a real
+payload dispatcher and parser inside the worker, and the production
+qualification gates listed further down. Until those exist, every "production
+end-to-end qualification" cell below stays "absent".
 
 ## Status boundaries
 
