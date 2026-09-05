@@ -16,6 +16,17 @@
 //! - [`events`]: a bounded [`events::CombatEventQueue`] the host application
 //!   drains each tick to drive audio, HUD and effects. Presentation is pull
 //!   only; this crate has no edge to `ohl-render`, `ohl-audio` or `ohl-ui`.
+//! - [`ammo`]: [`ammo::AmmoType`], Half-Life's published ammunition classes
+//!   with their published carry caps, and a bounded [`ammo::AmmoPool`].
+//! - [`weapons`]: [`weapons::WeaponId`] and the [`weapons::spec`] table of
+//!   [`weapons::WeaponSpec`]s — published damage, clip size and ammo type
+//!   per weapon, with every unpublished number wrapped in
+//!   [`weapons::BlackBox`] and marked `// TODO(black-box)`.
+//! - [`firing`]: [`firing::FiringState`], the per-weapon firing state
+//!   machine (`tick`, driven by [`firing::WeaponInput`], producing
+//!   [`firing::WeaponAction`]s), and [`firing::resolve_hitscan`], which
+//!   turns a hitscan action and its `trace_attack` results into
+//!   [`damage::DamageInfo`] records.
 //!
 //! # No numbers we cannot cite
 //!
@@ -37,19 +48,28 @@
 //! `ohl-physics`.
 #![forbid(unsafe_code)]
 
+pub mod ammo;
 pub mod damage;
 pub mod events;
+pub mod firing;
 pub mod trace;
+pub mod weapons;
 
+pub use ammo::{AmmoPool, AmmoType};
 pub use damage::{
     Armor, ArmorRule, DamageInfo, DamageOutcome, DamageType, Difficulty, DifficultyScale, Health,
     apply_damage,
 };
 pub use events::{CombatEvent, CombatEventQueue, SurfaceKind};
+pub use firing::{
+    FiringState, GAUSS_CHARGE_DAMAGE_RANGE, GAUSS_OVERCHARGE_SECONDS, GAUSS_OVERCHARGE_SELF_DAMAGE,
+    Sequence, SoundKind, WeaponAction, WeaponInput, resolve_hitscan, resolve_hitscan_with_amount,
+};
 pub use trace::{
     AttackTrace, EntityHitboxes, EntityId, HitGroup, HitGroupScale, HitboxIndex, HitboxLimits,
     HitboxVolume, TraceFilter, TraceMask, trace_attack, trace_attack_filtered,
 };
+pub use weapons::{BlackBox, SecondaryFire, WeaponId, WeaponKind, WeaponSpec, spec};
 
 /// Re-exported so callers can use this crate's vector and rotation types
 /// without also pinning `glam` themselves, matching `ohl_physics::Vec3`.

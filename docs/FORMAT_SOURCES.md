@@ -1325,5 +1325,62 @@ supplied by the caller; `trace_attack`, which traces the world through
 posed studio hitboxes (built from `StudioPose::hitbox_bounds`, treated as
 oriented boxes in the entity's own space) and reports the nearest impact with
 its hit group; and a bounded `CombatEventQueue` the composition root drains
-for presentation. Weapons, projectiles, monsters and inventory are later M7
-packages and are not implemented here.
+for presentation.
+
+### Weapons and firing (M7.2)
+
+`ammo` and `weapons` were implemented from Combine OverWiki's per-weapon
+pages (`combineoverwiki.net/wiki/<Weapon Name>`), reviewed 2026-09-05 through
+search-engine result summaries (the site fronts automated requests with a
+challenge page). Every damage value, clip size and ammo carry cap in
+`weapons::spec`'s table entries is cited on the entry that carries it; the
+per-weapon citation comments in `crates/ohl-combat/src/weapons.rs` are the
+authoritative record, this section is a summary:
+
+- Crowbar: 10 damage (5 on a combo's repeat swing), melee, "~0.3 second"
+  swing cadence.
+- Glock: 8 damage, 17-round clip, 250-round max reserve, two fire modes (only
+  single-shot is modeled; no usable source distinguishes a burst cadence).
+- .357 Magnum: 40 damage, 6-round clip, 36-round max reserve.
+- MP5: 5 damage per bullet, 50-round clip, 250-round max reserve, 600 rounds
+  per minute (600 / 60 = 0.1 s between shots); its underslung 40mm launcher
+  fires an M5 grenade for 100 damage from a 10-round reserve.
+- Shotgun: single-barrel primary fires 6 pellets at 5 damage each, 8-round
+  clip, 125-round max reserve; double-barrel secondary fires 12 pellets at
+  the same per-pellet damage from the same clip.
+- Crossbow: 50 damage per bolt, 5-round clip, 50-bolt max reserve.
+- RPG: 100 damage (single-player value), laser-guided, 5-rocket max reserve.
+- Gauss Gun: uncharged primary 20 damage; secondary charges up to 10 seconds
+  and releases 25 up to 200 damage, reflecting off metal; holding the charge
+  past 10 seconds costs 50 health instead of firing. 100-cell max reserve.
+- Egon: continuous beam, 14 damage per cell, 100-cell max reserve.
+- Hornetgun: 7 damage per hornet, primary fires at 240/minute (0.25 s cycle)
+  and homes, secondary at 600/minute (0.1 s cycle) and does not; 8-hornet
+  clip, described as regenerating (the regeneration interval is unpublished).
+- Hand Grenade: 100 damage, ~5 second fuse, 10-grenade max reserve.
+- Satchel Charge: 150 damage, 5-charge max reserve.
+- Tripmine: 150 damage, 5-mine max reserve, ~3 second arm delay.
+- Snark: 10 damage per bite, 2 health, self-destructs roughly 20 seconds
+  after its last attack, 5 carried per pickup. No usable source publishes a
+  separate maximum-carried total, so `AmmoType::Snarks` is an explicit
+  **BBO** with a neutral 15-unit placeholder.
+
+**BBO, not shipped as a number:** every spread cone, every projectile speed,
+every reload time, the gauss charge curve's exact shape beyond its published
+endpoints, the egon cell-drain tick interval, and the hornet gun's clip
+regeneration interval. Each lives behind `weapons::BlackBox<T>` on the
+`WeaponSpec`/`SecondaryFire` field that needs it, with a `// TODO(black-box)`
+marker at its neutral placeholder in `weapons::spec`.
+
+`firing::FiringState` is this project's own state machine (`Idle`, `Firing`,
+`Reloading`, `Charging`, `Beam`, `Holstered`) driving a `WeaponSpec` from
+`WeaponInput`; its only published numbers are the cited cycle times above and
+the gauss overcharge threshold/self-damage/charge range already listed.
+`firing::resolve_hitscan` turns a hitscan action and the caller's
+`trace_attack` results into `DamageInfo` records using the spec's damage and
+`DamageType`; which `DamageType` each weapon is assigned (bullet, blast, club,
+slash, shock, energy beam) is this project's own categorisation into the
+vocabulary above, not itself a cited fact.
+
+Projectiles, explosives, radius damage, and ammo/weapon pickups are later M7
+packages (M7.3, M7.4) and are not implemented here.
