@@ -1,0 +1,47 @@
+[package]
+name = "ohl-platform"
+description = "Pinned read-only media-source capability and atomic directory publication primitives for the Open Half-Life Rust port"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ohl_platform"
+
+[dependencies]
+ohl-core = { path = "../ohl-core" }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["fs"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+] }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }
+
+[target.'cfg(unix)'.dev-dependencies]
+rustix = { workspace = true, features = ["fs"] }
+
+# The workspace lint table cannot be inherited here: `[lints] workspace = true`
+# is exclusive with a local `[lints.rust]` table, and this crate must relax
+# `unsafe_code` from the workspace-wide `forbid` (a `forbid` level cannot be
+# overridden by a crate-level `#![allow]` attribute). The clippy section below
+# is a verbatim copy of `[workspace.lints.clippy]`; keep the two in sync.
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+doc_markdown = "allow"
