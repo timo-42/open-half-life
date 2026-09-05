@@ -1273,9 +1273,62 @@ grenade launched at any speed up to 12000 units/s and any angle never ends a
 tick inside solid, and that ticking is total; and replaying one seed with the
 same inputs reproduces the event sequence exactly.
 
-Not yet done: everything else in M7 — ammo and inventory pickups, `ohl-ai`,
-per-monster definitions, and the player systems (fall damage, drowning,
-flashlight, long jump) with their save sections.
+Package M7.4 adds `inventory`, `pickups` and a new `ohl-gameplay` crate on
+top of the M7.1/M7.2 skeleton above; see `docs/FORMAT_SOURCES.md`, "Pickups
+and chargers", for its sources.
+
+- `inventory`: `Inventory`, the player's owned-weapon bitset (over
+  `WeaponId`'s fourteen variants), a bounded `AmmoPool` per `AmmoType`
+  (reusing `ammo::AmmoPool`'s published carry caps), per-weapon loaded
+  clips, the current selection, and `hud_slot`, a project-authored (not
+  published) HUD slot/position layout. `give_weapon`/`give_ammo`/`drop`/
+  `holster`/`select_next`/`select_prev`/`select_slot` are all deterministic;
+  `give_weapon` only unlocks a weapon, leaving ammo to the same
+  `give_ammo` path an ammo-box pickup uses, so there is exactly one place
+  that enforces a carry cap.
+- `pickups`: `classify_classname`, mapping Half-Life's published
+  `weapon_*`/`ammo_*`/`item_healthkit`/`item_battery`/`item_suit`/
+  `item_longjump`/`func_healthcharger`/`func_recharge` classnames (TWHL
+  wiki) to a `PickupKind`; `try_pickup`, which resolves a touch pickup
+  against an `Inventory` and the target's `Health`/`Armor`, reporting
+  `PickupOutcome { taken, remaining }` (a full pool or an already-owned flag
+  item is not taken); and `ChargerState`, a use-and-hold reservoir model for
+  `func_healthcharger`/`func_recharge` that drains to Combine OverWiki's
+  published 50 HP / 75-50-35 (easy/medium/hard) totals. Every pickup
+  *amount* this source does not publish (ammo box contents, healthkit/
+  battery amounts, a weapon pickup's bundled ammo, the charger drain rate)
+  is a `weapons::BlackBox` placeholder with a `// TODO(black-box)` marker,
+  never invented as a plain number.
+- `ohl-gameplay` (new crate; `ohl-core, ohl-combat, ohl-game, ohl-ui,
+  ohl-audio`): `GameplayBridge`, which turns `ohl-combat`'s `CombatEvent`s,
+  `WeaponAction`s and `PickupOutcome`s into `ohl_ui::HudState` updates
+  (health/armor synced from the current `Health`/`Armor` rather than
+  accumulated by subtraction, clip/reserve ammo from the current
+  `Inventory`, the damage flash, and a pickup message), `SoundCue`s (a
+  lightweight entity/channel-class/optional-asset-path record, not itself
+  an `ohl_audio::PlayRequest`, since this crate never decodes a sound file
+  and so has no `Arc<SoundBuffer>` to embed in one) and `ViewModelAction`s
+  (`Draw`/`Idle`/`Fire`/`Reload`/`Holster`) for the later viewmodel
+  animation work; both output queues are bounded, on
+  `ohl_combat::CombatEventQueue`'s "drop and count the overflow" model.
+  Every sound asset path this package ships is `None`: no source this
+  project may use publishes Half-Life's sound file layout as reusable data,
+  and `docs/CLEAN_ROOM.md` rule 7 requires a clean-room provenance review
+  before any such literal enters source.
+
+Verified: each published carry cap, the classname-to-`PickupKind` mapping,
+each published charger total (50 HP; 75/50/35 suit power), a full ammo pool
+correctly reporting a pickup as not taken, and a fixed weapon-pickup then
+weapon-fire then damage-event sequence producing the exact expected
+`HudState` (clip/reserve ammo, health, armor, damage flash, pickup message)
+are covered by unit tests; `proptest` shows an arbitrary sequence of
+give-weapon/give-ammo/select/drop operations never lets any `Inventory` ammo
+pool exceed its capacity or go negative and never lets a clip exceed its
+weapon's clip size.
+
+Not yet done: everything else in M7 — `ohl-ai`, per-monster definitions, and
+the player systems (fall damage, drowning, flashlight, long jump) with their
+save sections.
 
 ## M8 (Rust): save container
 

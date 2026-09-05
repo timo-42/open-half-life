@@ -150,6 +150,16 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
             "ohl-ui",
         ],
     ),
+    // M7.4's HUD/audio/viewmodel bridge: consumes `ohl-combat`'s
+    // `CombatEvent`/`WeaponAction`/pickup output and produces
+    // `ohl-ui::HudState` updates, sound cues (keyed by asset path, not an
+    // `ohl-audio::PlayRequest` itself; see the crate's docs) and viewmodel
+    // actions. Kept out of `ohl-app`/`ohl-engine` so neither `ohl-ui` nor
+    // `ohl-audio` needs an edge back to `ohl-combat`.
+    (
+        "ohl-gameplay",
+        &["ohl-core", "ohl-combat", "ohl-game", "ohl-ui", "ohl-audio"],
+    ),
     (COMPOSITION_ROOT, &[]),
 ];
 

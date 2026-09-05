@@ -1,0 +1,24 @@
+[package]
+name = "ohl-gameplay"
+description = "Bridges ohl-combat simulation output into HUD state, sound cues and viewmodel actions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ohl_gameplay"
+
+[dependencies]
+ohl-core = { path = "../ohl-core", version = "=0.1.0", features = ["std"] }
+ohl-combat = { path = "../ohl-combat", version = "=0.1.0" }
+ohl-game = { path = "../ohl-game", version = "=0.1.0" }
+ohl-ui = { path = "../ohl-ui", version = "=0.1.0" }
+ohl-audio = { path = "../ohl-audio", version = "=0.1.0", features = ["std"] }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

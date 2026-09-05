@@ -1382,9 +1382,6 @@ the gauss overcharge threshold/self-damage/charge range already listed.
 slash, shock, energy beam) is this project's own categorisation into the
 vocabulary above, not itself a cited fact.
 
-Ammo and weapon pickups are a later M7 package (M7.4) and are not
-implemented here.
-
 ### Projectiles, explosions and deployables (M7.3)
 
 `projectile`, `explosion` and `deployables` extend `ohl-combat` with the
@@ -1472,3 +1469,76 @@ self-damage hook; and `proptest` shows a grenade launched at any speed up to
 room, and that ticking is total for every projectile kind and every step
 length. Determinism is pinned by replaying the same seed and inputs and
 comparing the event sequences.
+
+### Pickups and chargers (M7.4)
+
+`ohl-combat`'s `inventory` and `pickups` modules, and the new `ohl-gameplay`
+crate, were implemented from the public documentation below. Reviewed
+2026-09-05, largely through search-engine result summaries: TWHL and Combine
+OverWiki both front automated requests with a JS proof-of-work/challenge
+page, the same access limitation already recorded above and in
+`.plan/m7-design.md` §0.
+
+**Vocabulary and structure (classnames):**
+
+- TWHL wiki, [weaponbox](https://twhl.info/wiki/page/weaponbox), "Weapons
+  Programming - Standard Weapons" and "Weapons Programming - Custom Ammo
+  Types" (`CGlockAmmo`/`ammo_9mmclip`, `CPythonAmmo`/`ammo_357`,
+  `CShotgunAmmo`/`ammo_buckshot`, `CCrossbowAmmo`/`ammo_crossbow`,
+  `CRpgAmmo`/`ammo_rpgclip`, `CGaussAmmo`/`ammo_gaussclip`,
+  `CMP5AmmoGrenade`/`ammo_ARgrenades`), and the individual `weapon_hornetgun`
+  and `weapon_rpg` pages: the `weapon_*`/`ammo_*` classname vocabulary
+  `pickups::classify_classname` matches. `weapon_glock`/`weapon_9mmhandgun`
+  are noted as the same weapon; `ammo_9mmAR` is a second classname for the
+  same 9mm ammo type `ammo_9mmclip` grants (the MP5 belt box versus the
+  Glock clip box).
+- TWHL wiki, `item_healthkit`, `func_healthcharger` and `func_recharge`
+  pages, and the Valve Developer Community `func_healthcharger` page (a
+  `Func_healthcharger` brush-entity description also reachable without the
+  challenge page): these four classnames, plus the equally well-documented
+  `item_battery`/`item_suit`/`item_longjump` `CItem` subclasses in the same
+  public entity hierarchy, are `classify_classname`'s remaining arms.
+- No path or name literal derived from user media appears in either module:
+  every classname above is drawn from the public wiki pages cited, per
+  `docs/CLEAN_ROOM.md` rule 7.
+
+**Behavioural constants:**
+
+- Combine OverWiki, "Chargers" (as cited under "Combat and damage" above):
+  a health charger's reservoir is 50 HP; a suit charger's is 75/50/35
+  (easy/medium/hard). `pickups::HEALTH_CHARGER_TOTAL` and
+  `pickups::SUIT_CHARGER_TOTAL_BY_DIFFICULTY` are exactly these published
+  numbers; `pickups::ChargerState` drains to them and no further.
+- `ammo::AmmoType::published_max_carry` (already cited under "Weapons and
+  firing (M7.2)") is `inventory::Inventory`'s ammo-pool cap; no new number
+  is introduced for carry caps here.
+
+**BBO, not shipped as a number:** no usable source states how much ammo one
+`ammo_*`/`weapon_*` pickup grants (only the carry cap), how much
+`item_healthkit`/`item_battery` restore, or a charger's per-second drain
+rate (only its total reservoir, above). Each is a
+`weapons::BlackBox<T>`-wrapped placeholder with a `// TODO(black-box)`
+marker: `pickups::ammo_pickup_amount` (a quarter of the pool's capacity),
+`pickups::weapon_pickup_ammo` (the weapon's clip size, or one unit with no
+clip concept), `pickups::HEALTHKIT_AMOUNT` (25), `pickups::BATTERY_AMOUNT`
+(15), and `pickups::CHARGER_DRAIN_RATE` (the health charger's total over
+five simulated seconds). `inventory::hud_slot`'s slot/position layout is
+likewise this project's own, undocumented, in a module doc comment rather
+than a `BlackBox` (it is a UI layout choice, not a gameplay number).
+Multiplayer respawn flags are out of scope: single-player pickups are
+simply consumed, matching `.plan/m7-design.md`'s single-player focus.
+
+**`ohl-gameplay`** introduces no new numeric fact: it maps `ohl-combat`
+output to `ohl_ui::HudState` fields, `SoundCue`s and `ViewModelAction`s.
+Its sound-asset-path lookup tables (`sounds::weapon_sound_path`,
+`pickup_sound_path`, `charger_sound_path`) are all `None`: no source this
+project may use publishes Half-Life's sound file layout as reusable data,
+and `docs/CLEAN_ROOM.md` rule 7 requires a clean-room provenance review
+before any such path literal enters source. A `SoundCue` is therefore this
+crate's own record (entity, `ohl_audio::ChannelClass`, optional path) rather
+than a literal `ohl_audio::PlayRequest`, which embeds a decoded
+`Arc<SoundBuffer>` this crate has no legitimate way to construct without
+touching a sound file.
+
+`ohl-ai` and the player systems (fall damage, drowning, flashlight, long
+jump) are later M7 packages and are not implemented here.

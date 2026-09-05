@@ -38,6 +38,15 @@
 //! - [`deployables`]: [`deployables::DeployableSet`], satchel charges the
 //!   owner sets off together and tripmines that arm after the published three
 //!   seconds and then watch a beam along their own normal.
+//! - [`inventory`]: [`inventory::Inventory`], the player's owned weapons,
+//!   per-weapon clips, per-[`ammo::AmmoType`] pools, current selection and
+//!   HUD slot layout (M7.4).
+//! - [`pickups`]: [`pickups::classify_classname`], mapping published
+//!   `weapon_*`/`ammo_*`/`item_*`/`func_healthcharger`/`func_recharge`
+//!   classnames to a [`pickups::PickupKind`]; [`pickups::try_pickup`],
+//!   which resolves a touch pickup against an [`inventory::Inventory`] and
+//!   the target's health/armour; and [`pickups::ChargerState`], the
+//!   use-and-hold health/suit charger model (M7.4).
 //!
 //! # No numbers we cannot cite
 //!
@@ -65,6 +74,8 @@ pub mod deployables;
 pub mod events;
 pub mod explosion;
 pub mod firing;
+pub mod inventory;
+pub mod pickups;
 pub mod projectile;
 pub mod trace;
 pub mod weapons;
@@ -83,6 +94,12 @@ pub use explosion::{BlastHit, BlastTarget, ExplosionRule, radius_damage};
 pub use firing::{
     FiringState, GAUSS_CHARGE_DAMAGE_RANGE, GAUSS_OVERCHARGE_SECONDS, GAUSS_OVERCHARGE_SELF_DAMAGE,
     Sequence, SoundKind, WeaponAction, WeaponInput, resolve_hitscan, resolve_hitscan_with_amount,
+};
+pub use inventory::{HudSlot, Inventory, hud_slot};
+pub use pickups::{
+    BATTERY_AMOUNT, CHARGER_DRAIN_RATE, ChargerState, HEALTH_CHARGER_TOTAL, HEALTHKIT_AMOUNT,
+    PickupKind, PickupOutcome, SUIT_CHARGER_TOTAL_BY_DIFFICULTY, ammo_pickup_amount,
+    classify_classname, try_pickup, weapon_pickup_ammo,
 };
 pub use projectile::{
     HAND_GRENADE_FUSE_SECONDS, Projectile, ProjectileEvent, ProjectileId, ProjectileKind,
