@@ -127,4 +127,8 @@ impl SourceOps for SourceWindow {
     ) -> Result<(), MediaSourceError> {
         self.read_window(offset, destination)
     }
+
+    fn window_length(&self, _source: &MediaSource) -> u64 {
+        self.length
+    }
 }

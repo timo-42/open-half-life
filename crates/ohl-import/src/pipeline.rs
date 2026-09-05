@@ -167,6 +167,10 @@ pub struct ImportReport {
     pub outcome: ImportOutcome,
     /// The published payload's staging identity.
     pub payload_identity: String,
+    /// Entries the worker offered whose spelling this build's destination
+    /// policy refuses. They are dropped, not imported, and nothing about them
+    /// is logged.
+    pub entries_skipped: u64,
     /// Entries the recipe selected and layout accepted.
     pub entries_planned: u64,
     /// Entries that streamed to their exact declared size.
@@ -227,24 +231,29 @@ pub enum ImportError {
 ///
 /// The policy is deterministic and total:
 ///
-/// 1. an InstallShield 3 Z archive wins over any cabinet, because on media
+/// 1. a Wise package wins over everything, because when a medium has one its
+///    overlay *is* the payload and any signature found inside that overlay is
+///    a coincidence of compressed bytes;
+/// 2. an InstallShield 3 Z archive wins over any cabinet, because on media
 ///    that carry both, the cabinet is a secondary payload of the same
 ///    installer;
-/// 2. among candidates of the winning kind, the largest wins, because a
+/// 3. among candidates of the winning kind, the largest wins, because a
 ///    self-extracting stub's small trailing archive is never the payload;
-/// 3. ties are broken by the candidates' deterministic order — kind, then
+/// 4. ties are broken by the candidates' deterministic order — kind, then
 ///    normalized path, then offset — so the same medium always yields the
 ///    same choice.
 #[must_use]
 pub fn choose_primary(candidates: &[ContainerCandidate]) -> Option<&ContainerCandidate> {
-    let preferred = if candidates
-        .iter()
-        .any(|candidate| candidate.kind == ContainerKind::InstallShieldZ)
-    {
-        ContainerKind::InstallShieldZ
-    } else {
-        ContainerKind::MicrosoftCabinet
-    };
+    const PREFERENCE: [ContainerKind; 3] = [
+        ContainerKind::WiseOverlay,
+        ContainerKind::InstallShieldZ,
+        ContainerKind::MicrosoftCabinet,
+    ];
+    let preferred = PREFERENCE.into_iter().find(|kind| {
+        candidates
+            .iter()
+            .any(|candidate| candidate.kind == *kind)
+    })?;
     candidates
         .iter()
         .filter(|candidate| candidate.kind == preferred)
@@ -627,8 +636,9 @@ fn run_import_inner<W: WorkerProcess, F: FnOnce() -> Result<W, ImportError>>(
     let file = mount
         .open_file(primary.archive_path.as_str())
         .map_err(|_| ImportError::Media)?;
+    let (window_offset, window_length) = primary.window();
     let window =
-        SourceWindow::new(file, primary.offset, primary.length).map_err(|_| ImportError::Media)?;
+        SourceWindow::new(file, window_offset, window_length).map_err(|_| ImportError::Media)?;
 
     // 2. Own the worker for exactly one session.
     let mut process = ProcessSession::new(launch()?, allocation);
@@ -686,12 +696,20 @@ fn run_import_inner<W: WorkerProcess, F: FnOnce() -> Result<W, ImportError>>(
     //    an entry the user did not select.
     let catalog = idle.catalog().ok_or(ImportError::Worker)?;
     let generation = catalog.generation();
+    // A spelling the destination policy refuses is dropped here, one entry
+    // at a time, and counted: one unusable name out of a thousand must not
+    // cost the whole import. The count is media-derived and is not logged.
+    let mut entries_skipped = 0u64;
     let selectable: Vec<SelectableEntry> = catalog
         .entries()
         .iter()
-        .map(|entry| {
+        .filter_map(|entry| {
             let archive_path = entry.relative_path().as_str().trim_start_matches('/');
-            SelectableEntry {
+            if ohl_payload::PayloadPath::parse(archive_path).is_err() {
+                entries_skipped = entries_skipped.saturating_add(1);
+                return None;
+            }
+            Some(SelectableEntry {
                 source_token: entry.source_token().0,
                 // The recipe addresses components; the worker's catalog is
                 // flat, so the leading path element is the component name.
@@ -701,7 +719,7 @@ fn run_import_inner<W: WorkerProcess, F: FnOnce() -> Result<W, ImportError>>(
                     .to_owned(),
                 archive_path: archive_path.to_owned(),
                 size_bytes: entry.size_bytes(),
-            }
+            })
         })
         .collect();
 
@@ -795,6 +813,7 @@ fn run_import_inner<W: WorkerProcess, F: FnOnce() -> Result<W, ImportError>>(
     Ok(ImportReport {
         outcome,
         payload_identity,
+        entries_skipped,
         entries_planned,
         entries_imported,
         bytes_planned,
@@ -814,6 +833,28 @@ mod tests {
             offset: 0,
             length,
         }
+    }
+
+    #[test]
+    fn a_wise_package_wins_over_everything_else() {
+        let candidates = vec![
+            candidate("/a", ContainerKind::WiseOverlay, 10),
+            candidate("/b", ContainerKind::InstallShieldZ, 1_000),
+            candidate("/c", ContainerKind::MicrosoftCabinet, 100_000),
+        ];
+        assert_eq!(
+            choose_primary(&candidates).map(|found| found.kind),
+            Some(ContainerKind::WiseOverlay)
+        );
+    }
+
+    #[test]
+    fn a_wise_candidate_is_windowed_over_the_whole_image() {
+        let mut found = candidate("/a", ContainerKind::WiseOverlay, 1_000);
+        found.offset = 14_848;
+        assert_eq!(found.window(), (0, 15_848));
+        let cabinet = candidate("/b", ContainerKind::MicrosoftCabinet, 1_000);
+        assert_eq!(cabinet.window(), (0, 1_000));
     }
 
     #[test]

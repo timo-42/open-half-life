@@ -54,6 +54,7 @@ pub mod pipeline;
 pub mod platform;
 pub mod process_session;
 pub mod result_session;
+pub mod runtime;
 pub mod source_read_broker;
 pub mod source_window;
 pub mod testing;
@@ -63,7 +64,10 @@ pub use catalog::{
     NormalizedPath, PlannedEntry, SourceToken, WorkerEpoch, plan_catalog,
 };
 pub use frame_channel::{ChannelError, FrameBuffer, FrameChannel};
-pub use handshake::{HandshakeError, HandshakeProof, perform_parent_handshake};
+pub use handshake::{
+    HandshakeError, HandshakeProof, perform_parent_handshake,
+    perform_parent_handshake_over_window,
+};
 pub use io::{CancellationSource, CancellationToken, ExactIo, IoError};
 pub use locate::{
     ContainerCandidate, ContainerKind, LocateLimits, locate_containers, pe_overlay_offset,
@@ -83,6 +87,7 @@ pub use process_session::{
     SessionConfig, SessionIdAllocator, ShutdownError, ShutdownFailure, ShutdownReady, WaitOutcome,
     WorkerExit, WorkerProcess,
 };
+pub use runtime::{PayloadTree, find_published_payload};
 pub use result_session::{
     ByteSink, ReadRequestOutcome, ResultSession, ResultSessionError, SinkRejected,
 };

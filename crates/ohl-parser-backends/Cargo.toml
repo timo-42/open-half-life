@@ -1,0 +1,36 @@
+[package]
+name = "ohl-parser-backends"
+description = "Container dispatcher back ends for the sandboxed OWP/1 parser worker: Wise, MS-CAB and InstallShield 3 Z enumeration and streaming over the pull-model protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ohl_parser_backends"
+
+[features]
+default = []
+# Only the host-side tests need `std`; the worker image builds without it.
+std = ["ohl-core/std", "ohl-wise/std", "ohl-mscab/std", "ohl-isz/std"]
+
+[dependencies]
+ohl-core = { path = "../ohl-core", version = "=0.1.0" }
+ohl-parser-protocol = { path = "../ohl-parser-protocol", version = "=0.1.0" }
+ohl-parser-worker-service = { path = "../ohl-parser-worker-service", version = "=0.1.0" }
+# The payload path policy core is `no_std` + `alloc`; taking it here is what
+# makes the worker's spellings and the parent's destination policy the same
+# rule set.
+ohl-payload = { path = "../ohl-payload", version = "=0.1.0", default-features = false }
+ohl-wise = { path = "../ohl-wise", version = "=0.1.0" }
+ohl-mscab = { path = "../ohl-mscab", version = "=0.1.0" }
+ohl-isz = { path = "../ohl-isz", version = "=0.1.0" }
+
+[dev-dependencies]
+ohl-wise = { path = "../ohl-wise", version = "=0.1.0", features = ["test-support"] }
+ohl-mscab = { path = "../ohl-mscab", version = "=0.1.0", features = ["test-support"] }
+ohl-isz = { path = "../ohl-isz", version = "=0.1.0", features = ["test-support"] }
+
+[lints]
+workspace = true

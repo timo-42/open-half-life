@@ -124,6 +124,25 @@ impl StreamReader {
         self.finished
     }
 
+    /// Reuses this reader for the stream starting at `offset`.
+    ///
+    /// Every measurement, the decoder state and the staging buffer are reset,
+    /// so a caller that walks many streams allocates one reader instead of
+    /// one per stream. That matters for the freestanding worker, whose whole
+    /// heap is a fixed arena.
+    pub fn restart(&mut self, offset: u64) {
+        self.state.reset(DataFormat::Raw);
+        self.start = offset;
+        self.read_cursor = offset;
+        self.input_pos = 0;
+        self.input_len = 0;
+        self.consumed = 0;
+        self.inflated = 0;
+        self.crc = Crc32::new();
+        self.finished = false;
+        self.stalled = false;
+    }
+
     /// Inflated bytes produced so far.
     #[must_use]
     pub const fn inflated_len(&self) -> u64 {
@@ -381,6 +400,50 @@ mod tests {
             inflate_stream(&mut source, 0, limits, &mut Discard, &NeverCancelled),
             Err(Error::LimitExceeded(Limit::InflatedBytesPerStream))
         );
+    }
+
+    #[test]
+    fn a_restarted_reader_decodes_the_next_stream() {
+        let first = alloc::vec![0x41u8; 700];
+        let second = alloc::vec![0x42u8; 900];
+        let mut image = packed(&first, true);
+        let second_at = image.len() as u64;
+        image.extend_from_slice(&packed(&second, true));
+        let mut source = SliceSource::new(&image);
+
+        let mut reader = super::StreamReader::new(0, Limits::DEFAULT);
+        let mut buffer = alloc::vec![0u8; 256];
+        let mut out: Vec<u8> = Vec::new();
+        loop {
+            let written = reader
+                .read(&mut source, &NeverCancelled, &mut buffer)
+                .unwrap();
+            out.extend_from_slice(&buffer[..written]);
+            if reader.is_finished() {
+                break;
+            }
+        }
+        assert_eq!(out, first);
+        assert_eq!(reader.finish(&mut source).unwrap().checksum, ChecksumStatus::Match);
+
+        reader.restart(second_at);
+        assert!(!reader.is_finished());
+        assert_eq!(reader.inflated_len(), 0);
+        assert_eq!(reader.compressed_len(), 0);
+        out.clear();
+        loop {
+            let written = reader
+                .read(&mut source, &NeverCancelled, &mut buffer)
+                .unwrap();
+            out.extend_from_slice(&buffer[..written]);
+            if reader.is_finished() {
+                break;
+            }
+        }
+        assert_eq!(out, second);
+        let metrics = reader.finish(&mut source).unwrap();
+        assert_eq!(metrics.checksum, ChecksumStatus::Match);
+        assert_eq!(metrics.compressed_offset, second_at);
     }
 
     #[test]

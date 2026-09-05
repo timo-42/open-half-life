@@ -185,6 +185,15 @@ pub trait SourceOps: sealed::Sealed {
         offset: u64,
         destination: &mut [u8],
     ) -> Result<(), MediaSourceError>;
+
+    /// The number of bytes this seam is willing to serve, counted from
+    /// offset zero.
+    ///
+    /// This is what the worker is told the source is, so a seam that narrows
+    /// the pinned object to one container must report the narrowed length:
+    /// telling a worker the source is larger than the seam will serve turns
+    /// an ordinary read past the end into a source failure.
+    fn window_length(&self, source: &MediaSource) -> u64;
 }
 
 /// The native [`MediaSource`] methods.
@@ -205,6 +214,10 @@ impl SourceOps for NativeSourceOps {
         destination: &mut [u8],
     ) -> Result<(), MediaSourceError> {
         source.read_exact_at(offset, destination)
+    }
+
+    fn window_length(&self, source: &MediaSource) -> u64 {
+        source.size()
     }
 }
 

@@ -322,6 +322,11 @@ impl SourceOps for ScriptedSourceOps {
             Some(error) => error,
         }
     }
+
+    /// The whole pinned object: this double narrows nothing.
+    fn window_length(&self, source: &MediaSource) -> u64 {
+        source.size()
+    }
 }
 
 /// One lifecycle call made on a [`FakeWorker`].

@@ -75,7 +75,7 @@ pub use stage::{
 #[cfg(feature = "std")]
 pub use store::{
     DirectoryPayloadStore, PayloadStore, PayloadStoreError, PayloadTransaction, ProbeState,
-    PublishState, StagingEntry, StagingPlan,
+    PublishState, StagingEntry, StagingPlan, published_directory_name, published_files_directory,
 };
 #[cfg(feature = "std")]
 pub use stream::{
