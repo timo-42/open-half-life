@@ -14,9 +14,30 @@
 //! 6. `landlock_restrict_self` on a ruleset built (and ABI-probed) in the
 //!    parent that handles every filesystem access the running kernel knows
 //!    about and grants exactly one rule: execute+read on the worker image;
-//! 7. the seccomp-BPF allowlist, compiled in the parent, with
+//! 7. the seccomp-BPF allowlist - compiled *and* wrapped in its
+//!    `struct sock_fprog` by the parent, installed by the child with a raw
+//!    `seccomp(SECCOMP_SET_MODE_FILTER, ...)` - with
 //!    `SECCOMP_RET_KILL_PROCESS` as the mismatch action;
 //! 8. `execveat(5, "", ["ohl-media-parser-worker"], [], AT_EMPTY_PATH)`.
+//!
+//! # Descriptor inventory
+//!
+//! Every descriptor the parent creates for a launch is `O_CLOEXEC` from the
+//! syscall that creates it, so an unexpected `exec` anywhere in the parent
+//! can never leak one: the channel socketpair (`SOCK_CLOEXEC`), the readiness
+//! pipe (`O_CLOEXEC`), the verified image (`O_CLOEXEC`), the collision-safe
+//! duplicates (`F_DUPFD_CLOEXEC`), the Landlock ruleset and its `O_PATH`
+//! handle (the kernel and the `landlock` crate both force `O_CLOEXEC`), and
+//! the pidfd (`pidfd_open` always sets `O_CLOEXEC`). The child then rebuilds
+//! its own table from scratch: `dup3` puts the four inherited descriptors on
+//! 3..=6 - 3 and 4 without `O_CLOEXEC` because the worker must keep them
+//! across `execveat`, 5 and 6 with it because it must not - and
+//! `close_range(7, ~0)` removes everything else, including the descriptors
+//! `std`'s own spawn machinery holds. The worker therefore starts with
+//! exactly `{0, 1, 2, 3, 4}` and, once it has attested readiness and closed
+//! 4, with exactly `{0, 1, 2, 3}`; `RLIMIT_NOFILE` of 8 caps what it can ever
+//! add. `fd_inventory_after_exec_is_exactly_the_contract` asserts this from
+//! inside the confined child.
 //!
 //! Steps 3-8 are unreachable for a caller: the image is opened and verified
 //! (regular file, owned by root or by this user, no write bits, no set-id
@@ -25,7 +46,11 @@
 //! what gets executed, so there is no TOCTOU window.
 //!
 //! Everything the child does after `fork` is async-signal-safe: raw syscalls
-//! and reads of buffers allocated by the parent, no allocation, no locks.
+//! and reads of buffers allocated by the parent, no allocation, no locks, no
+//! libc. In particular the seccomp filter is installed through the same raw
+//! `syscall` wrapper as every other step rather than through
+//! `seccompiler::apply_filter`, which would route the last confinement step
+//! through libc's PLT and its errno TLS slot.
 
 use super::{
     IsolatedWorkerCancellationToken, IsolatedWorkerError, IsolatedWorkerExitKind,
@@ -50,7 +75,7 @@ use rustix::net::{AddressFamily, SendFlags, Shutdown, SocketFlags, SocketType};
 use rustix::process::{Pid, Signal};
 use seccompiler::{
     BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter,
-    SeccompRule, TargetArch,
+    SeccompRule, TargetArch, sock_filter,
 };
 
 /// Descriptor the private channel is bound to in the child.
@@ -119,16 +144,29 @@ const RLIMIT_AS: isize = 9;
 /// | `read`, `write` | the protocol channel and the readiness attestation |
 /// | `close` | closing [`READY_FD`] is what signals "ready" to the host |
 /// | `ppoll` | lets a worker block for input instead of spinning against `RLIMIT_CPU` |
+/// | `restart_syscall` | the kernel's own resumption of an interrupted blocking call (see below) |
 /// | `exit`, `exit_group` | orderly shutdown |
+///
+/// `restart_syscall` is never issued by the worker: the kernel inserts it
+/// when a process is stopped and continued (`SIGSTOP`/`SIGCONT`, a debugger
+/// attach, cgroup freezing) in the middle of a blocking call that carries
+/// resumption state in a `restart_block` (`ERESTART_RESTARTBLOCK`; a plain
+/// socket `read` instead rewinds into the original syscall and needs
+/// nothing). Denying it would turn such a stop into
+/// `SECCOMP_RET_KILL_PROCESS` - a self-inflicted denial of service triggered
+/// by something entirely outside the worker's control. It carries no
+/// arguments of its own and can only resume a call the process already made
+/// and the policy already allowed, so allowing it grants no new authority.
 ///
 /// Notably absent: `openat`, `mmap`, `mprotect`, `brk`, `socket`, `clone`,
 /// `fork`, `prctl` and every `*stat`. A statically linked, freestanding
 /// worker needs none of them, so any appearance is a genuine escape attempt.
-const ALLOWED_SYSCALLS: [isize; 6] = [
+const ALLOWED_SYSCALLS: [isize; 7] = [
     SYS_READ,
     SYS_WRITE,
     SYS_CLOSE,
     SYS_PPOLL,
+    SYS_RESTART_SYSCALL,
     SYS_EXIT,
     SYS_EXIT_GROUP,
 ];
@@ -137,6 +175,7 @@ const SYS_READ: isize = 0;
 const SYS_WRITE: isize = 1;
 const SYS_CLOSE: isize = 3;
 const SYS_PPOLL: isize = 271;
+const SYS_RESTART_SYSCALL: isize = 219;
 const SYS_EXIT: isize = 60;
 const SYS_EXIT_GROUP: isize = 231;
 const SYS_EXECVEAT: isize = 322;
@@ -189,6 +228,27 @@ impl BootstrapFailure {
 /// Raw `syscall` instruction wrappers, used only between `fork` and `execveat`
 /// where allocation, locking, and most library code are forbidden.
 ///
+/// # Clobbers and options
+///
+/// Both blocks follow the x86-64 Linux syscall ABI exactly:
+///
+/// - `rax` carries the syscall number in and the result out; `rdi`, `rsi`,
+///   `rdx`, `r10`, `r8` (and `r9`, unused here) carry the arguments;
+/// - the `syscall` instruction destroys `rcx` (return address) and `r11`
+///   (saved `rflags`), so both are declared `lateout(_)`;
+/// - the **`memory` clobber is implicit**: `asm!` assumes a block reads and
+///   writes arbitrary memory unless `options(nomem)` or `options(readonly)`
+///   is given, and neither is, because the kernel does read and write through
+///   the pointer arguments. This is what keeps the compiler from reordering
+///   or eliding stores into buffers that a syscall then reads;
+/// - `options(nostack)` is valid: `syscall` pushes nothing, the kernel
+///   switches to its own stack, and neither block touches the red zone or
+///   emits a call;
+/// - `options(preserves_flags)` is deliberately *not* given, because the
+///   kernel entry sequence clobbers `rflags` through `r11`;
+/// - `options(pure)` / `readonly` are likewise absent - a syscall is a side
+///   effect and must never be cached or reordered.
+///
 /// See the `unsafe` inventory in `crate` docs, entries 3-5.
 mod raw {
     use std::arch::asm;
@@ -207,9 +267,9 @@ mod raw {
         a4: isize,
     ) -> isize {
         let result: isize;
-        // SAFETY: guaranteed by this function's own contract. The clobber
-        // list (`rcx`, `r11`, `memory`) is the one the kernel entry sequence
-        // requires on x86-64.
+        // SAFETY: guaranteed by this function's own contract. The clobbers
+        // (`rcx`, `r11`, and the implicit `memory` clobber) are the ones the
+        // x86-64 kernel entry sequence requires; see the module docs.
         unsafe {
             asm!(
                 "syscall",
@@ -230,7 +290,10 @@ mod raw {
     /// Terminates the whole process immediately, without running any
     /// destructor, atexit handler, or buffered flush.
     pub(super) fn exit_group(status: i32) -> ! {
-        // SAFETY: `exit_group` never returns and dereferences nothing.
+        // SAFETY: `exit_group` never returns and dereferences nothing, so
+        // `noreturn` is correct by construction and the implicit `memory`
+        // clobber is irrelevant. `nostack` holds for the same reason as in
+        // `syscall`.
         unsafe {
             asm!(
                 "syscall",
@@ -248,11 +311,16 @@ const SYS_PRLIMIT64: isize = 302;
 const SYS_PRCTL: isize = 157;
 const SYS_GETPPID: isize = 110;
 const SYS_LANDLOCK_RESTRICT_SELF: isize = 446;
+const SYS_SECCOMP: isize = 317;
 
 const PR_SET_PDEATHSIG: isize = 1;
 const PR_SET_NO_NEW_PRIVS: isize = 38;
 const SIGKILL: isize = 9;
 const O_CLOEXEC: isize = 0o2_000_000;
+const SECCOMP_SET_MODE_FILTER: isize = 1;
+/// `BPF_MAXINSNS`: the kernel's own ceiling on a filter program, and the
+/// reason `struct sock_fprog::len` is only 16 bits wide.
+const BPF_MAX_INSTRUCTIONS: usize = 4096;
 
 /// The `struct rlimit64` layout `prlimit64` expects.
 #[repr(C)]
@@ -261,8 +329,26 @@ struct Rlimit64 {
     hard: u64,
 }
 
+/// The `struct sock_fprog` layout `seccomp(SECCOMP_SET_MODE_FILTER, ...)`
+/// expects: an instruction count and a pointer to that many `sock_filter`s.
+///
+/// Only ever built from [`ChildBootstrap::filter_pointer`] and
+/// [`ChildBootstrap::filter_length`], both computed in the parent.
+#[repr(C)]
+struct SockFprog {
+    length: u16,
+    filter: *const sock_filter,
+}
+
 /// Everything the child needs, captured before `fork` so that the post-fork
 /// path only reads plain data.
+///
+/// `filter` owns the compiled BPF program; it is kept alive here for the
+/// whole lifetime of the bootstrap so that the address in `filter_pointer`
+/// stays valid across `fork` (moving the `Vec` moves the handle, never the
+/// heap buffer it points at). The pointer is held as a `usize` rather than a
+/// raw pointer so the struct stays `Send + Sync`, which `pre_exec` requires,
+/// without any `unsafe impl`.
 struct ChildBootstrap {
     channel: RawFd,
     ready: RawFd,
@@ -270,9 +356,38 @@ struct ChildBootstrap {
     ruleset: RawFd,
     parent: u32,
     filter: BpfProgram,
+    filter_pointer: usize,
+    filter_length: u16,
 }
 
 impl ChildBootstrap {
+    /// Builds the bootstrap in the parent, including the `sock_fprog` fields
+    /// the child installs verbatim.
+    fn new(
+        channel: RawFd,
+        ready: RawFd,
+        image: RawFd,
+        ruleset: RawFd,
+        filter: BpfProgram,
+    ) -> Result<Self, IsolatedWorkerError> {
+        if filter.is_empty() || filter.len() > BPF_MAX_INSTRUCTIONS {
+            return Err(IsolatedWorkerError::ConfinementUnavailable);
+        }
+        let filter_length =
+            u16::try_from(filter.len()).map_err(|_| IsolatedWorkerError::ConfinementUnavailable)?;
+        let filter_pointer = filter.as_ptr() as usize;
+        Ok(Self {
+            channel,
+            ready,
+            image,
+            ruleset,
+            parent: std::process::id(),
+            filter,
+            filter_pointer,
+            filter_length,
+        })
+    }
+
     /// Reports `failure` on `descriptor` and leaves immediately.
     fn fail(descriptor: RawFd, failure: BootstrapFailure) -> ! {
         let byte = failure as u8;
@@ -372,7 +487,33 @@ impl ChildBootstrap {
             Self::fail(READY_FD, BootstrapFailure::Landlock);
         }
 
-        if seccompiler::apply_filter(&self.filter).is_err() {
+        // The filter is installed by hand instead of through
+        // `seccompiler::apply_filter`, which would call `libc::prctl` and
+        // `libc::syscall` - a PLT indirection plus an errno TLS write - in the
+        // one place where only raw syscalls are allowed. `program` is a plain
+        // stack local; the instruction buffer it points at was allocated,
+        // measured, and address-captured by the parent before `fork`, so
+        // nothing here allocates.
+        let program = SockFprog {
+            length: self.filter_length,
+            filter: self.filter_pointer as *const sock_filter,
+        };
+        let installed = self.filter_pointer == self.filter.as_ptr() as usize
+            && usize::from(self.filter_length) == self.filter.len()
+        // SAFETY: as above; `seccomp` reads `length` instructions from the
+        // program the parent compiled, which outlives this call. Flags are
+        // zero, so the syscall returns instead of taking a listener path.
+            && unsafe {
+                raw::syscall(
+                    SYS_SECCOMP,
+                    SECCOMP_SET_MODE_FILTER,
+                    0,
+                    std::ptr::from_ref(&program) as isize,
+                    0,
+                    0,
+                )
+            } == 0;
+        if !installed {
             Self::fail(READY_FD, BootstrapFailure::Seccomp);
         }
 
@@ -585,10 +726,21 @@ const HIGHEST_KNOWN_LANDLOCK_ABI: ABI = ABI::V9;
 /// image - because `execveat` still has to work after `restrict_self`. Any
 /// other path is unreachable for the worker.
 ///
-/// Fails closed: a kernel without Landlock, or one whose ABI the pinned
-/// `landlock` crate cannot express, yields
-/// [`IsolatedWorkerError::ConfinementUnavailable`] rather than a weaker
-/// sandbox.
+/// # `/proc/self/fd` dependency
+///
+/// Landlock rules are attached to a *path*, not to a descriptor, so the one
+/// rule this ruleset grants has to name the already-open, already-verified
+/// image. `/proc/self/fd/<n>` is the only way to do that without reopening
+/// the file by its real name and reintroducing the TOCTOU window the
+/// descriptor-based verification exists to close. That makes a mounted
+/// `/proc` (with the running process able to see its own `self/fd`) a hard
+/// requirement of this backend: in a mount namespace without `/proc`, or
+/// under a `hidepid`/`subset=pid` configuration that hides it, `PathFd::new`
+/// fails and this function returns
+/// [`IsolatedWorkerError::ConfinementUnavailable`]. That is the intended
+/// behaviour - **it fails closed**: no ruleset means no launch, never a
+/// launch with a weaker sandbox. The same is true of a kernel without
+/// Landlock, or one whose ABI the pinned `landlock` crate cannot express.
 fn build_landlock_ruleset(image: &File) -> Result<OwnedFd, IsolatedWorkerError> {
     let path = PathFd::new(format!("/proc/self/fd/{}", image.as_raw_fd()))
         .map_err(|_| IsolatedWorkerError::ConfinementUnavailable)?;
@@ -797,14 +949,13 @@ impl Backend {
         let image_copy = temporary(image.as_fd())?;
         let ruleset_copy = temporary(ruleset.as_fd())?;
 
-        let bootstrap = ChildBootstrap {
-            channel: channel_copy.as_raw_fd(),
-            ready: ready_copy.as_raw_fd(),
-            image: image_copy.as_raw_fd(),
-            ruleset: ruleset_copy.as_raw_fd(),
-            parent: std::process::id(),
+        let bootstrap = ChildBootstrap::new(
+            channel_copy.as_raw_fd(),
+            ready_copy.as_raw_fd(),
+            image_copy.as_raw_fd(),
+            ruleset_copy.as_raw_fd(),
             filter,
-        };
+        )?;
 
         // The program path is never used: `pre_exec` diverges into
         // `execveat` on the verified descriptor. `Stdio::null` is what puts
@@ -1088,6 +1239,14 @@ impl Backend {
     #[cfg(test)]
     pub(super) fn terminating_signal(&self) -> Option<i32> {
         self.terminating_signal
+    }
+
+    /// Process ID of the confined child, for the test that stops and
+    /// continues it. The child is never reaped while a [`Backend`] is alive,
+    /// so the ID cannot have been reused.
+    #[cfg(test)]
+    pub(super) fn child_process_id(&self) -> u32 {
+        self.child.id()
     }
 }
 

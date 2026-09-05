@@ -278,6 +278,87 @@ fn dropping_a_live_worker_reaps_it() {
     );
 }
 
+/// The confined child must start with `/dev/null` on 0/1/2 and the channel on
+/// 3, and nothing else: the image and ruleset descriptors are `O_CLOEXEC`,
+/// the readiness descriptor is closed by the worker itself, and
+/// `close_range(7, ~0)` removed everything the parent's spawn machinery held.
+///
+/// The worker probes the first 64 descriptor numbers with `ppoll` and reports
+/// a bitmask, which is the only way to observe the table from the outside:
+/// `/proc/<pid>/fd` is unreadable once Landlock is in force.
+#[test]
+fn fd_inventory_after_exec_is_exactly_the_contract() {
+    let mut worker = launch_ready();
+    send_frame(&mut worker, &[protocol::MODE_FD_INVENTORY]).expect("the mode is selected");
+    let reply = receive_frame(&mut worker).expect("the inventory arrives");
+    let mask = u64::from_le_bytes(
+        reply
+            .as_slice()
+            .try_into()
+            .expect("the inventory is one little-endian u64"),
+    );
+    assert_eq!(
+        mask,
+        protocol::EXPECTED_FD_MASK,
+        "the confined descriptor table must be exactly {{0, 1, 2, 3}}, got {mask:#b}"
+    );
+
+    worker.close_channel();
+    assert_eq!(
+        worker.wait(deadline(Duration::from_secs(5))),
+        Ok(IsolatedWorkerExitKind::Clean)
+    );
+}
+
+/// `SIGSTOP` in the middle of a blocking channel read, then `SIGCONT`: the
+/// worker must come back and keep serving.
+///
+/// A stop interrupts whatever blocking call the worker is in, and the kernel
+/// resumes it afterwards - either by rewinding straight back into the
+/// original syscall (what a socket `read` does, through `ERESTARTSYS`) or,
+/// for the calls that carry resumption state, by issuing `restart_syscall` on
+/// the process's behalf (`ERESTART_RESTARTBLOCK`). The second form is why
+/// `restart_syscall` is on the allowlist: without it, anything able to stop
+/// the process - job control, a debugger attach, a cgroup freeze - could turn
+/// into `SECCOMP_RET_KILL_PROCESS`, a denial of service the worker itself
+/// cannot avoid. This test pins the observable half of that contract: a
+/// stop/continue cycle must never be fatal.
+#[test]
+fn a_stopped_and_continued_worker_survives_and_keeps_serving() {
+    use rustix::process::{Pid, Signal, kill_process};
+
+    let mut worker = launch_ready();
+    send_frame(&mut worker, &[protocol::MODE_ECHO_REVERSED, 1, 2]).expect("the mode is selected");
+    assert_eq!(
+        receive_frame(&mut worker).expect("the first reply arrives"),
+        vec![2, 1]
+    );
+
+    let pid = Pid::from_raw(i32::try_from(worker.child_process_id()).expect("a positive pid"))
+        .expect("a live child pid");
+    // The worker is now blocked in `read` on the channel.
+    kill_process(pid, Signal::STOP).expect("the child stops");
+    std::thread::sleep(Duration::from_millis(100));
+    kill_process(pid, Signal::CONT).expect("the child continues");
+
+    send_frame(&mut worker, &[protocol::MODE_ECHO_REVERSED, 3, 4]).expect("the request is written");
+    assert_eq!(
+        receive_frame(&mut worker).expect("the worker survived the stop"),
+        vec![4, 3]
+    );
+    assert_eq!(
+        worker.terminating_signal(),
+        None,
+        "the worker must still be running, not killed by seccomp"
+    );
+
+    worker.close_channel();
+    assert_eq!(
+        worker.wait(deadline(Duration::from_secs(5))),
+        Ok(IsolatedWorkerExitKind::Clean)
+    );
+}
+
 #[test]
 fn twenty_consecutive_launches_all_succeed() {
     for round in 0..20u8 {

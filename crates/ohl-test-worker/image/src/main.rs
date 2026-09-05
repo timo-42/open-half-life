@@ -3,7 +3,8 @@
 //! This binary is the confined side of the `ohl-platform` isolated-worker
 //! contract. It is built with `-nostdlib -static -no-pie` and issues raw
 //! `syscall` instructions only, so that the host's seccomp allowlist
-//! (`execveat`, `read`, `write`, `close`, `ppoll`, `exit`, `exit_group`) is
+//! (`execveat`, `read`, `write`, `close`, `ppoll`, `restart_syscall`, `exit`,
+//! `exit_group`) is
 //! sufficient to run it and any additional syscall is a genuine policy
 //! violation rather than libc noise.
 //!
@@ -37,6 +38,29 @@ const SYS_EXIT_GROUP: usize = 231;
 const SYS_OPENAT: usize = 257;
 
 const AT_FDCWD: i32 = -100;
+
+/// `POLLNVAL`: the descriptor is not open. Reported regardless of `events`.
+const POLLNVAL: i16 = 0x0020;
+
+/// Largest `nfds` the kernel accepts, which is `RLIMIT_NOFILE` - 8 under the
+/// host's resource limits - so the descriptor probe runs in chunks of eight.
+const POLL_CHUNK: i32 = 8;
+
+/// `struct pollfd`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct PollFd {
+    descriptor: i32,
+    events: i16,
+    revents: i16,
+}
+
+/// `struct timespec`.
+#[repr(C)]
+struct Timespec {
+    seconds: i64,
+    nanoseconds: i64,
+}
 
 global_asm!(
     ".global _start",
@@ -163,6 +187,57 @@ fn hang_forever() -> ! {
     }
 }
 
+/// Bitmask of the descriptors below [`FD_PROBE_CEILING`] that are still open,
+/// probed with `ppoll` and a zero timeout: a closed descriptor comes back
+/// with `POLLNVAL`, an open one with zero (nothing was requested).
+///
+/// Returns `None` if the probe itself fails, which the host reports as a
+/// protocol failure rather than as an empty descriptor table.
+fn fd_inventory() -> Option<u64> {
+    let mut mask = 0u64;
+    let mut base = 0i32;
+    while base < FD_PROBE_CEILING {
+        let mut probes = [PollFd {
+            descriptor: 0,
+            events: 0,
+            revents: 0,
+        }; POLL_CHUNK as usize];
+        let mut index = 0i32;
+        while index < POLL_CHUNK {
+            probes[index as usize].descriptor = base + index;
+            index += 1;
+        }
+        let timeout = Timespec {
+            seconds: 0,
+            nanoseconds: 0,
+        };
+        // SAFETY: inventory #2. The kernel reads `POLL_CHUNK` `pollfd`s and
+        // one `timespec` from live locals of this frame and writes back only
+        // into the `revents` fields of that same array.
+        let ready = unsafe {
+            syscall4(
+                SYS_PPOLL,
+                probes.as_mut_ptr() as isize,
+                POLL_CHUNK as isize,
+                core::ptr::from_ref(&timeout) as isize,
+                0,
+            )
+        };
+        if ready < 0 {
+            return None;
+        }
+        let mut index = 0i32;
+        while index < POLL_CHUNK {
+            if probes[index as usize].revents & POLLNVAL == 0 {
+                mask |= 1u64 << (base + index);
+            }
+            index += 1;
+        }
+        base += POLL_CHUNK;
+    }
+    Some(mask)
+}
+
 fn crash() -> ! {
     // SAFETY: inventory #1/#2 rationale: `ud2` raises SIGILL, which is the
     // whole point of this mode, and never returns.
@@ -212,6 +287,18 @@ fn serve(buffer: &mut [u8; MAX_FRAME_BYTES]) -> i32 {
                 } else {
                     WORKER_PROTOCOL_FAILURE_STATUS
                 };
+            }
+            MODE_FD_INVENTORY => {
+                let Some(mask) = fd_inventory() else {
+                    return WORKER_PROTOCOL_FAILURE_STATUS;
+                };
+                let reply_length = 8u32;
+                if !write_all(CHANNEL_FD, &reply_length.to_le_bytes())
+                    || !write_all(CHANNEL_FD, &mask.to_le_bytes())
+                {
+                    return WORKER_PROTOCOL_FAILURE_STATUS;
+                }
+                continue;
             }
             MODE_ECHO_REVERSED => {}
             _ => return WORKER_PROTOCOL_FAILURE_STATUS,
