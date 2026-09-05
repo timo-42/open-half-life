@@ -27,6 +27,17 @@
 //!   [`firing::WeaponAction`]s), and [`firing::resolve_hitscan`], which
 //!   turns a hitscan action and its `trace_attack` results into
 //!   [`damage::DamageInfo`] records.
+//! - [`projectile`]: a bounded [`projectile::ProjectileSet`] of simulated
+//!   projectiles — crossbow bolts, guided rockets, arcing grenades, homing
+//!   hornets and hopping snarks — advanced at the fixed tick by swept hull-0
+//!   traces against the world and the same [`trace::HitboxIndex`], so nothing
+//!   ever tunnels, and reporting [`projectile::ProjectileEvent`]s.
+//! - [`explosion`]: [`explosion::radius_damage`], linear-falloff blast damage
+//!   with a documented line-of-sight rule, a self-damage hook and a pushback
+//!   vector.
+//! - [`deployables`]: [`deployables::DeployableSet`], satchel charges the
+//!   owner sets off together and tripmines that arm after the published three
+//!   seconds and then watch a beam along their own normal.
 //!
 //! # No numbers we cannot cite
 //!
@@ -50,8 +61,11 @@
 
 pub mod ammo;
 pub mod damage;
+pub mod deployables;
 pub mod events;
+pub mod explosion;
 pub mod firing;
+pub mod projectile;
 pub mod trace;
 pub mod weapons;
 
@@ -60,10 +74,19 @@ pub use damage::{
     Armor, ArmorRule, DamageInfo, DamageOutcome, DamageType, Difficulty, DifficultyScale, Health,
     apply_damage,
 };
+pub use deployables::{
+    DeployableEvent, DeployableId, DeployableKind, DeployableSet, DeployableTuning, MAX_SATCHELS,
+    MAX_TRIPMINES, Satchel, TRIPMINE_ARM_SECONDS, Tripmine,
+};
 pub use events::{CombatEvent, CombatEventQueue, SurfaceKind};
+pub use explosion::{BlastHit, BlastTarget, ExplosionRule, radius_damage};
 pub use firing::{
     FiringState, GAUSS_CHARGE_DAMAGE_RANGE, GAUSS_OVERCHARGE_SECONDS, GAUSS_OVERCHARGE_SELF_DAMAGE,
     Sequence, SoundKind, WeaponAction, WeaponInput, resolve_hitscan, resolve_hitscan_with_amount,
+};
+pub use projectile::{
+    HAND_GRENADE_FUSE_SECONDS, Projectile, ProjectileEvent, ProjectileId, ProjectileKind,
+    ProjectileLimits, ProjectileSet, ProjectileTuning, ProjectileWorld, SNARK_LIFETIME_SECONDS,
 };
 pub use trace::{
     AttackTrace, EntityHitboxes, EntityId, HitGroup, HitGroupScale, HitboxIndex, HitboxLimits,

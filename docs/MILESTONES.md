@@ -1238,9 +1238,44 @@ starting ammo and input sequences, that its ammo pool never exceeds capacity,
 and that a gauss charge/release always yields a charge damage in `25..=200`,
 a self-damage of exactly 50, or neither, never both.
 
-Not yet done: everything else in M7 — projectiles and radius damage, ammo and
-inventory pickups, `ohl-ai`, per-monster definitions, and the player systems
-(fall damage, drowning, flashlight, long jump) with their save sections.
+Package M7.3 adds `projectile`, `explosion` and `deployables` to
+`ohl-combat`; see `docs/FORMAT_SOURCES.md`, "Projectiles, explosions and
+deployables (M7.3)" for its sources.
+
+- `projectile`: a bounded `ProjectileSet` of crossbow bolts, RPG rockets
+  (optionally steered toward a laser-designated point), MP5 and hand
+  grenades (which arc and bounce), hornets (homing on primary fire, straight
+  on secondary) and snarks (which hop toward the nearest entity in the hitbox
+  index and bite it). Every projectile advances at the fixed tick under
+  `MoveConfig`'s gravity by a *swept* hull-0 trace against the world refined
+  against the same `HitboxIndex` hitscan uses, so nothing tunnels at any
+  speed; bouncers keep sweeping with the time left over after each impact,
+  with a documented placeholder restitution, and park once they settle.
+  Reports `ProjectileEvent::{Impact, Detonate, Expired}`; damage stays the
+  caller's job. The published hand-grenade five second fuse and snark
+  ~20 second self-destruct are named constants.
+- `explosion`: `radius_damage`, linear (and therefore monotonic) falloff from
+  a blast centre, measured to the nearest face of a target's hitbox, with an
+  all-or-nothing world line-of-sight check, a self-damage scaling hook and a
+  blast pushback vector alongside each `DamageInfo`.
+- `deployables`: `DeployableSet`, satchel charges the owner sets off together
+  and tripmines placed from a world trace that arm after the published three
+  seconds and then watch a beam cast along their own normal, both bounded by
+  the published maximum of five each.
+
+Verified: fuse and lifetime timings fire at the published times and not
+before; rocket guidance converges where flying straight does not; hornet
+homing never turns away from its target; a snark settles, closes and bites; a
+tripmine arms exactly once and trips on the first hitbox to cross its beam;
+satchels cap at five and detonate together; radius damage is monotonic,
+spares occluded targets and honours the self-damage hook; `proptest` shows a
+grenade launched at any speed up to 12000 units/s and any angle never ends a
+tick inside solid, and that ticking is total; and replaying one seed with the
+same inputs reproduces the event sequence exactly.
+
+Not yet done: everything else in M7 — ammo and inventory pickups, `ohl-ai`,
+per-monster definitions, and the player systems (fall damage, drowning,
+flashlight, long jump) with their save sections.
 
 ## M8 (Rust): save container
 

@@ -1382,5 +1382,93 @@ the gauss overcharge threshold/self-damage/charge range already listed.
 slash, shock, energy beam) is this project's own categorisation into the
 vocabulary above, not itself a cited fact.
 
-Projectiles, explosives, radius damage, and ammo/weapon pickups are later M7
-packages (M7.3, M7.4) and are not implemented here.
+Ammo and weapon pickups are a later M7 package (M7.4) and are not
+implemented here.
+
+### Projectiles, explosions and deployables (M7.3)
+
+`projectile`, `explosion` and `deployables` extend `ohl-combat` with the
+things a weapon spawns rather than resolves instantly. They were written from
+the same Combine OverWiki weapon pages cited under "Weapons and firing (M7.2)"
+above (`combineoverwiki.net/wiki/<Weapon Name>`, reviewed 2026-09-05 through
+search-engine result summaries, since the site fronts automated requests with
+a challenge page). No Valve SDK source, decompiled binary or leaked material
+was consulted; see `docs/CLEAN_ROOM.md`.
+
+Only five numbers in this package are published, and each is a named
+constant carrying its citation:
+
+- Combine OverWiki, "Hand Grenade": a **five second fuse**, started when the
+  pin is pulled — `projectile::HAND_GRENADE_FUSE_SECONDS`.
+- Combine OverWiki, "Snark": a snark "self-destructs roughly **20 seconds**
+  after attacking" — `projectile::SNARK_LIFETIME_SECONDS`. This crate starts
+  the timer at spawn and restarts it on every bite, which is the reading of
+  the published sentence that also gives an untouched snark a finite life.
+- Combine OverWiki, "Tripmine": the mine plays an arming cue for about
+  **three seconds** after placement before its beam goes live —
+  `deployables::TRIPMINE_ARM_SECONDS`.
+- Combine OverWiki, "Satchel Charge" and "Tripmine": a maximum of **five**
+  of each carried — `deployables::MAX_SATCHELS` and
+  `deployables::MAX_TRIPMINES`, matching the carry caps already recorded on
+  `ammo::AmmoType::Satchels` and `ammo::AmmoType::Tripmines`. Both weapons'
+  150 damage is the value already cited in the M7.2 weapon table; this
+  package does not restate it, it reads `weapons::spec`.
+
+**BBO, not shipped as a number:** every projectile speed, every blast radius
+(no usable source publishes one for *any* Half-Life explosive), the bounce
+restitution and surface drag, the resting-speed threshold, the RPG's and
+hornet's turn rates, the hornet's and crossbow bolt's lifetimes, the MP5
+grenade's fuse, the snark's hop cadence, hop speed and bite interval, the
+tripmine's beam length and placement reach, the blast self-damage rule and
+the blast pushback strength. Each is a `weapons::BlackBox<T>` field of
+`projectile::ProjectileTuning`, `explosion::ExplosionRule` or
+`deployables::DeployableTuning`, with a `// TODO(black-box)` marker at its
+neutral placeholder.
+
+Project behaviour, none of it a claim about the original engine:
+
+- `projectile::ProjectileSet` advances a bounded list of projectiles at the
+  fixed tick. Gravity comes from `ohl_physics::MoveConfig` scaled by
+  `ProjectileTuning::gravity_scale`; which projectiles fall at all is this
+  project's categorisation of published behaviour (a bolt and a rocket fly
+  flat, a thrown grenade and a snark arc). Every move is a *swept* trace —
+  `ohl_physics`' hull 0 through the world, refined against the caller's
+  `HitboxIndex` by `trace_attack` — so a projectile can never tunnel through
+  a wall at any speed; a bouncing projectile keeps sweeping with the time
+  left after each impact, up to a bounded number of bumps, and parks itself
+  once its speed drops below the resting threshold. Guidance (the RPG's laser
+  point, the hornet's homing target) turns the velocity toward the goal by at
+  most a turn rate per substep, keeping speed. The set reports
+  `ProjectileEvent::{Impact, Detonate, Expired}`; damage is the caller's job.
+- `explosion::radius_damage` uses **linear** falloff — full damage at the
+  centre, none at the radius — which is monotonically non-increasing in
+  distance and is this project's own choice: Half-Life's real curve is not
+  published. Distance is measured to the nearest point of a target's hitbox
+  when the caller supplies one. Line of sight is checked with a world-only
+  trace and is all-or-nothing: a target behind cover takes nothing. The
+  original engine is widely described as *attenuating* blast damage through
+  cover rather than nullifying it, but how is unpublished, so the
+  conservative rule ships and the attenuated case is BBO.
+- `deployables::DeployableSet` holds one owner's placed charges, bounded by
+  the published five-of-each maxima. Satchels are remote-detonated all at
+  once; a tripmine is placed by a world-only hull-0 trace, sticks to the
+  surface normal it found, arms after the published three seconds, and then
+  casts a beam along its own normal each tick, detonating when an entity
+  hitbox stops that beam.
+
+Verified: against the project's synthetic collision-room BSP fixture and
+hand-built cube hitboxes — the hand grenade's fuse and the snark's lifetime
+fire at the published times and not before; a rocket detonates on its first
+impact and a guided rocket converges on its laser point while an unguided one
+does not; a homing hornet's alignment with its target never decreases and a
+targetless one flies straight; a snark settles, hops toward the nearest
+entity and bites it; a crossbow bolt does not drop; the tripmine arms exactly
+once at three seconds, refuses to trip before that, and detonates on the
+first hitbox to cross its beam; five satchels are the maximum and detonating
+sets all of them off together; radius damage falls off monotonically, is
+measured from a hitbox face, spares occluded targets, and honours the
+self-damage hook; and `proptest` shows a grenade launched at any speed up to
+12000 units/s and any angle never ends a tick inside solid or outside the
+room, and that ticking is total for every projectile kind and every step
+length. Determinism is pinned by replaying the same seed and inputs and
+comparing the event sequences.
