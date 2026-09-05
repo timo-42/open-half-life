@@ -11,6 +11,20 @@ publish = false
 [dependencies]
 thiserror = { workspace = true }
 toml = "1.1.5"
+sha2 = { workspace = true }
+
+# `cargo xtask dist` walks `cargo metadata` to collect every dependency's
+# declared license and version for the bundled `licenses/` folder.
+cargo_metadata = "=0.23.1"
+# Archive writers for the release tarball/zip. `flate2` is restricted to its
+# pure-Rust `rust_backend` (miniz_oxide) so packaging never links a C zlib;
+# `zip` is restricted to its `deflate` method for the same reason (its
+# defaults pull in zstd-sys, bzip2 and lzma, all of which are C or C-adjacent).
+tar = { version = "=0.4.46", default-features = false }
+flate2 = { version = "=1.1.10", default-features = false, features = [
+    "rust_backend",
+] }
+zip = { version = "=4.6.1", default-features = false, features = ["deflate"] }
 
 # `cargo xtask worker-image` builds and inspects the freestanding isolated-worker
 # test image. `ohl-test-worker` is a development-only crate; nothing shipping
@@ -22,6 +36,11 @@ ohl-parser-worker = { path = "../crates/ohl-parser-worker", version = "=0.1.0" }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# Only used to build `cargo_metadata::Metadata` fixtures for the license
+# walker's unit tests, from a hand-written `cargo metadata`-shaped JSON
+# string; the real `dist` command always gets its `Metadata` from an actual
+# `cargo metadata` invocation.
+serde_json = "=1.0.151"
 
 [lints]
 workspace = true

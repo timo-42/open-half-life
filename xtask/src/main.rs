@@ -7,7 +7,11 @@
 //!   image and the shipping media-parser worker image, proves each is a
 //!   static, non-interpreted `ET_EXEC` binary, and installs the latter at
 //!   `<target>/<profile>/libexec/open-half-life/ohl-media-parser-worker`.
+//! - `cargo xtask dist` builds the release binary (and, on Linux x86-64, the
+//!   parser worker image) and assembles a versioned, self-contained release
+//!   folder plus a `.tar.gz`/`.zip` archive under `target/dist/`.
 
+mod dist;
 mod graph;
 mod policy;
 mod worker_image;
@@ -82,8 +86,9 @@ fn main() -> ExitCode {
         Some("policy") => run_policy(&root),
         Some("graph") => run_graph(&root),
         Some("worker-image") => worker_image::run(),
+        Some("dist") => dist::run(&root, &std::env::args().skip(2).collect::<Vec<_>>()),
         other => {
-            eprintln!("usage: cargo xtask <policy|graph|worker-image>");
+            eprintln!("usage: cargo xtask <policy|graph|worker-image|dist>");
             if let Some(other) = other {
                 eprintln!("unknown subcommand: {other}");
             }
