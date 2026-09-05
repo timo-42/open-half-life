@@ -283,6 +283,71 @@ fn run_dev_bsp(cli: &Cli) -> ExitCode {
     }
 }
 
+/// Opens the pinned source, classifies it, validates it, and mounts its
+/// read-only root.
+///
+/// Every failure has already been logged through `log_preflight_failure` when
+/// this returns `None`; the caller only has to choose the exit status.
+fn preflight(iso_path: PathBuf) -> Option<(ValidatedMedia, Mount)> {
+    // The path is acquired exactly once into the pinned capability, then
+    // discarded: nothing past this point ever sees it again.
+    let source = match MediaSource::open(&iso_path) {
+        Ok(source) => Arc::new(source),
+        Err(error) => {
+            log_preflight_failure(error);
+            return None;
+        }
+    };
+    drop(iso_path);
+
+    let mut probe = match MediaSourceBlockReader::new(Arc::clone(&source)) {
+        Ok(probe) => probe,
+        Err(error) => {
+            log_preflight_failure(error);
+            return None;
+        }
+    };
+
+    let classification = match classify(&mut probe) {
+        Ok(classification) => classification,
+        Err(error) => {
+            log_preflight_failure(error);
+            return None;
+        }
+    };
+    drop(probe);
+
+    let validated =
+        match ValidatedMedia::fingerprinting(Arc::clone(&source), classification.description) {
+            Ok(validated) => validated,
+            Err(error) => {
+                log_preflight_failure(error);
+                return None;
+            }
+        };
+
+    let mount = match Mount::open_as(
+        classification.vfs_class,
+        Arc::clone(&source),
+        DirectoryLimits::default(),
+    ) {
+        Ok(mount) => mount,
+        Err(error) => {
+            log_preflight_failure(error);
+            return None;
+        }
+    };
+
+    if let Err(error) = mount.list_page("/") {
+        log_preflight_failure(error);
+        return None;
+    }
+
+    tracing::info!("Mounted read-only media image.");
+
+    Some((validated, mount))
+}
+
 fn run(cli: Cli) -> ExitCode {
     tracing::info!("{APP_NAME} {VERSION}");
     tracing::info!("{}", platform_line());
@@ -333,61 +398,9 @@ fn run_media_flow(cli: Cli) -> ExitCode {
         return ExitCode::from(EXIT_USAGE);
     };
 
-    // The path is acquired exactly once into the pinned capability, then
-    // discarded: nothing past this point ever sees it again.
-    let source = match MediaSource::open(&iso_path) {
-        Ok(source) => Arc::new(source),
-        Err(error) => {
-            log_preflight_failure(error);
-            return ExitCode::from(EXIT_FAILURE);
-        }
-    };
-    drop(iso_path);
-
-    let mut probe = match MediaSourceBlockReader::new(Arc::clone(&source)) {
-        Ok(probe) => probe,
-        Err(error) => {
-            log_preflight_failure(error);
-            return ExitCode::from(EXIT_FAILURE);
-        }
-    };
-
-    let classification = match classify(&mut probe) {
-        Ok(classification) => classification,
-        Err(error) => {
-            log_preflight_failure(error);
-            return ExitCode::from(EXIT_FAILURE);
-        }
-    };
-    drop(probe);
-
-    let validated =
-        match ValidatedMedia::fingerprinting(Arc::clone(&source), classification.description) {
-            Ok(validated) => validated,
-            Err(error) => {
-                log_preflight_failure(error);
-                return ExitCode::from(EXIT_FAILURE);
-            }
-        };
-
-    let mount = match Mount::open_as(
-        classification.vfs_class,
-        Arc::clone(&source),
-        DirectoryLimits::default(),
-    ) {
-        Ok(mount) => mount,
-        Err(error) => {
-            log_preflight_failure(error);
-            return ExitCode::from(EXIT_FAILURE);
-        }
-    };
-
-    if let Err(error) = mount.list_page("/") {
-        log_preflight_failure(error);
+    let Some((validated, mount)) = preflight(iso_path) else {
         return ExitCode::from(EXIT_FAILURE);
-    }
-
-    tracing::info!("Mounted read-only media image.");
+    };
 
     run_import_flow(
         &validated,
