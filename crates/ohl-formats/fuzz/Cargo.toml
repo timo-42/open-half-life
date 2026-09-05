@@ -1,0 +1,31 @@
+[workspace]
+
+[package]
+name = "ohl-formats-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.ohl-formats]
+path = ".."
+features = ["test-support"]
+
+[[bin]]
+name = "bsp30_fuzz"
+path = "fuzz_targets/bsp30_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wad3_fuzz"
+path = "fuzz_targets/wad3_fuzz.rs"
+test = false
+doc = false
+bench = false

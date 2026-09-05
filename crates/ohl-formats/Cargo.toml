@@ -1,0 +1,35 @@
+[package]
+name = "ohl-formats"
+description = "Clean-room, no_std, bounds-checked decoders for GoldSrc BSP v30 maps and WAD3 texture packages"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ohl_formats"
+
+[features]
+default = []
+std = []
+# Exposes the synthetic BSP30/WAD3 fixture writers used by this crate's own
+# tests as a public, non-cfg(test) API so the standalone `fuzz/` workspace
+# (which cannot see this crate's `#[cfg(test)]` items) can build corpora from
+# the same project-owned synthetic data.
+test-support = []
+
+[dependencies]
+ohl-core = { path = "../ohl-core", version = "=0.1.0" }
+zerocopy = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+proptest = { workspace = true }
+# Self dependency so integration tests under `tests/` (which link the
+# ordinary, non-`cfg(test)` build of this library) can still see the
+# `test_support` fixture writers without making `test-support` a default
+# feature for downstream dependents.
+ohl-formats = { path = ".", features = ["test-support"] }
+
+[lints]
+workspace = true
