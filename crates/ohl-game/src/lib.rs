@@ -20,8 +20,10 @@ pub mod brush;
 pub mod keyvalues;
 pub mod logic;
 pub mod registry;
+pub mod track_train;
 
 pub use brush::ModelInstance;
 pub use keyvalues::{EntityDef, Limits as KeyvalueLimits, ModelRef};
 pub use logic::{Event, LevelChange, Simulation, find_usable_within};
 pub use registry::Registry;
+pub use track_train::{PathChain, PathNode, TrackTrain, TrackTrainState};

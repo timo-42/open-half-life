@@ -195,13 +195,22 @@ pub struct ChangeLevel {
     pub landmark: String,
 }
 
-/// `path_corner`/`path_track`: the next node's name and a pause.
-#[derive(Debug, Clone, PartialEq)]
+/// `path_corner`/`path_track`: the next node's name, a pause, and (for
+/// `func_tracktrain`) a `path_track`-only speed override and stop flag. See
+/// `docs/FORMAT_SOURCES.md` ("Track trains and paths") for the public
+/// sources these last two fields were taken from.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Path {
-    /// The `target` keyvalue: the next corner/track node's `targetname`.
-    pub next: Option<String>,
     /// Seconds a follower waits at this node.
     pub wait: f32,
+    /// `path_track`'s documented "New Train Speed": reassigns a
+    /// `func_tracktrain`'s speed as it passes this node.
+    pub speed: Option<f32>,
+    /// The documented "Wait for retrigger" spawnflag: a `func_tracktrain`
+    /// stops here until explicitly re-triggered, rather than continuing
+    /// after `wait` seconds. See
+    /// [`crate::track_train::path_stop_from_flags`].
+    pub stop: bool,
 }
 
 /// `multi_manager`: every non-standard keyvalue is a `target -> delay`
@@ -496,10 +505,30 @@ impl Registry {
                 }
                 "path_corner" | "path_track" => {
                     let path = Path {
-                        next: def.target.clone(),
                         wait: numeric(def, "wait", 0.0),
+                        speed: def
+                            .keyvalues
+                            .get("speed")
+                            .and_then(|v| v.trim().parse::<f32>().ok())
+                            .filter(|v| v.is_finite()),
+                        stop: crate::track_train::path_stop_from_flags(def.spawnflags),
                     };
                     world.insert_one(entity, path).ok();
+                }
+                "func_train" | "func_tracktrain" => {
+                    let train = crate::track_train::TrackTrain {
+                        turns_to_face: def.classname == "func_tracktrain",
+                        speed: numeric(def, "speed", 100.0),
+                        start_speed: numeric(def, "startspeed", 0.0),
+                        height: numeric(def, "height", 4.0),
+                        bank: numeric(def, "bank", 0.0),
+                        dmg: numeric(def, "dmg", 0.0),
+                        wheels: numeric(def, "wheels", 0.0),
+                        no_user_control: crate::track_train::TrackTrain::no_user_control_from_flags(
+                            def.spawnflags,
+                        ),
+                    };
+                    world.insert_one(entity, train).ok();
                 }
                 "multi_manager" => {
                     let reserved = [
@@ -543,12 +572,17 @@ impl Registry {
             }
         }
 
-        Self {
+        let mut registry = Self {
             world,
             name_index,
             worldspawn,
             entities,
-        }
+        };
+        // Second pass: a train's first `path_track`/`path_corner` node
+        // commonly appears later in the entities lump than the train
+        // itself, so the whole `targetname` index must exist first.
+        crate::track_train::spawn_all(&mut registry);
+        registry
     }
 
     /// Entities whose `targetname` is `name`, bounded to
