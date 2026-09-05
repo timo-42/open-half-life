@@ -1700,6 +1700,24 @@ Not yet done: real player/inventory carry (the `PlayerCarry` hook still
 returns health/armor placeholders until `ohl-player` implements it) and the
 three "to verify" citation items.
 
+### M8.3 (Rust): all-chapters smoke
+
+Status: done. `cargo xtask campaign-smoke --payload-root <dir>` builds (or
+accepts a prebuilt) `open-half-life` release binary and headless-screenshots
+every map in every `ohl-campaign` chapter, plus the Hazard Course training
+maps, against an already-imported payload, with a per-map timeout and bounded
+parallelism. Each run is classified (loaded/rendered, missing-map,
+load-error, timeout, crash) from the app's own exit code and sanitized fixed
+log lines, never from payload-derived strings, and a markdown summary
+(per-chapter pass/fail counts plus each capture's dimensions, distinct-colour
+count and percent non-background pixels) is written under `--out`; the
+command exits non-zero if any map failed to load.
+
+Run once against a legally imported retail payload: all 93 maps across the
+18 story chapters and the Hazard Course training maps loaded and rendered
+successfully (93/93 pass, 0 fail), no missing-map/load-error/timeout/crash
+results, in 347.1s total.
+
 ## M9 (Rust): UI shell
 
 Status: in progress. `ohl-ui` adds an egui-based overlay: a Quake-style
