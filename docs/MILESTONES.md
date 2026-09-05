@@ -698,9 +698,63 @@ unchanged and remain the accepted, authoritative M0/M1 implementation; this
 package adds a parallel, not-yet-feature-complete Rust workspace per the
 two-step transition plan in `.plan/rust-architecture-r1.md` section 4.
 
+## M3 (Rust): first light
+
+Status: in progress. A BSP v30 map with its baked lightmaps renders in a
+window on a machine with a GPU; only the offscreen path has been verified in
+this environment (see "Verified" below).
+
+Adds two crates and one development-only flag:
+
+- `ohl-world`: turns an `ohl_formats::bsp30::Bsp` into an owned, GPU-ready
+  `WorldModel` — triangle-fan face geometry following surfedge winding,
+  texture coordinates from the texinfo axes, per-face lightmap extents
+  computed at the documented 16-unit luxel spacing and packed into one
+  RGBA8 atlas by a shelf packer, embedded miptexes decoded to RGBA (index 255
+  keyed transparent for `{`-prefixed names), external textures resolved from
+  caller-supplied WAD3 packages and otherwise replaced by a checkerboard
+  placeholder, a decompressed potentially-visible set, a frustum test, and
+  the `info_player_start` origin and facing. Submodel 0 only; submodels 1..
+  need entity-driven transforms that do not exist yet.
+- `ohl-render`: a wgpu 30 renderer — Vulkan on Linux/Windows and Metal on
+  macOS with a fallback to `wgpu::Backends::PRIMARY`, WGSL shaders
+  multiplying the diffuse texture by the lightmap in GoldSrc's overbright-free
+  gamma space, one vertex buffer plus a per-frame index buffer grouped into
+  per-texture batches, a per-batch bind group with the lightmap atlas bound
+  globally, a `Depth32Float` buffer, a WASD/mouse free-fly camera in GoldSrc
+  units (Z-up world, right-handed view, `0..1` clip depth), resize handling,
+  and an offscreen render-to-texture path with CPU readback.
+- `ohl-app`: `--dev-bsp PATH [--dev-wad PATH]...` behind the non-default
+  `dev-tools` cargo feature. It opens a winit 0.30 window on the renderer,
+  quits on Escape, and logs a frame-rate line every two seconds. It loads a
+  map straight off disk and therefore **bypasses the media pipeline** (no ISO
+  validation, import, cache or VFS); it is a development aid only and is
+  absent from release builds, which is why the feature is off by default.
+  Neither the supplied paths nor any map-derived count appears in a log line:
+  the project's sanitized-logging policy is applied uniformly here too.
+
+Verified:
+
+- headless: the offscreen path renders the project-authored synthetic room
+  (six lit faces, one embedded and one WAD3 texture, two leaves with a real
+  compressed visibility lump) to an RGBA buffer and asserts the frame is lit,
+  using whatever adapter the host offers; on a machine with none, the test
+  skips instead of failing. It is `#[ignore]`d by default, with an
+  `OHL_RENDER_GPU_TEST=1` opt-in, so CI runners without GPUs stay green.
+- on screen: **not verified** in the development environment used for this
+  package, which has no display server. `--dev-bsp` was exercised there only
+  as far as loading the map and reporting, through the sanitized error path,
+  that no window system is available.
+
+Not yet done: submodels 1.., sky and other `TEX_SPECIAL` surfaces are drawn
+as ordinary textures, animated and alternate light styles (only style 0 is
+sampled), texture animation (`+0`/`-0` frames), backface culling (winding is
+not yet normalised across `plane_side`, so both sides are drawn), mipmaps and
+anisotropy, and any map source other than a path on disk.
+
 ## Later milestones
 
-- M3: BSP rendering
+- M3: BSP rendering (Rust first light in progress, see above)
 - M4: player movement
 - M5: interactive entities
 - M6: models and animation

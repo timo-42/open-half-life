@@ -1,0 +1,29 @@
+[package]
+name = "ohl-world"
+description = "Renderable world model built from clean-room GoldSrc BSP v30 data"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ohl_world"
+
+[features]
+default = []
+# Publishes the synthetic-room BSP/WAD fixture writers as a public,
+# non-`cfg(test)` API so `ohl-render`'s headless test and `ohl-app`'s
+# development-only `--dev-bsp` manual check can share one project-authored
+# fixture instead of each inventing their own.
+test-support = ["ohl-formats/test-support"]
+
+[dependencies]
+ohl-formats = { path = "../ohl-formats", version = "=0.1.0", features = ["std"] }
+
+[dev-dependencies]
+proptest = { workspace = true }
+ohl-world = { path = ".", features = ["test-support"] }
+
+[lints]
+workspace = true

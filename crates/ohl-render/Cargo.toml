@@ -1,0 +1,26 @@
+[package]
+name = "ohl-render"
+description = "wgpu renderer for Open Half-Life world geometry"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ohl_render"
+
+[dependencies]
+ohl-core = { path = "../ohl-core", version = "=0.1.0", features = ["std"] }
+ohl-world = { path = "../ohl-world", version = "=0.1.0" }
+wgpu = "=30.0.1"
+pollster = "=1.0.1"
+
+[dev-dependencies]
+ohl-world = { path = "../ohl-world", version = "=0.1.0", features = [
+    "test-support",
+] }
+ohl-formats = { path = "../ohl-formats", version = "=0.1.0", features = ["std"] }
+
+[lints]
+workspace = true

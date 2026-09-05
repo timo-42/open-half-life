@@ -11,11 +11,34 @@ repository.workspace = true
 name = "open-half-life"
 path = "src/main.rs"
 
+[features]
+default = []
+# Development-only aids that are never part of a release build. `dev-tools`
+# adds `--dev-bsp`, which loads a map straight off disk and bypasses the
+# media pipeline entirely; see `docs/MILESTONES.md`. It must stay off by
+# default so no shipped binary can be pointed at arbitrary files this way.
+dev-tools = ["dep:ohl-render", "dep:ohl-world", "dep:ohl-formats", "dep:winit"]
+
 [dependencies]
 ohl-core = { path = "../ohl-core", version = "=0.1.0", features = ["std"] }
 clap = { workspace = true, features = ["derive"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
+ohl-render = { path = "../ohl-render", version = "=0.1.0", optional = true }
+ohl-world = { path = "../ohl-world", version = "=0.1.0", optional = true }
+ohl-formats = { path = "../ohl-formats", version = "=0.1.0", features = [
+    "std",
+], optional = true }
+# `default-features = false` deliberately drops `wayland-csd-adwaita`, whose
+# sctk-adwaita -> ab_glyph -> ttf-parser chain carries an unmaintained-crate
+# advisory (RUSTSEC-2026-0192). Client-side decorations on Wayland fall back
+# to the compositor's, which is fine for a development-only viewer.
+winit = { version = "=0.30.13", default-features = false, features = [
+    "rwh_06",
+    "x11",
+    "wayland",
+    "wayland-dlopen",
+], optional = true }
 
 [lints]
 workspace = true
