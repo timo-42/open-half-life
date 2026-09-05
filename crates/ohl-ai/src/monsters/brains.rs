@@ -17,10 +17,13 @@
 //! barney/scientist following the player, a scientist healing a hurt ally, a
 //! sentry turret deploying/retracting/tracking, a tentacle striking toward a
 //! sound, and a gargantua's flame/stomp attacks — see
-//! `docs/FORMAT_SOURCES.md`, "Monster definitions". The exact timings,
-//! ranges, damage numbers, squad-bonus formula and heal cooldown/threshold
-//! are this project's own **`TODO(black-box)`** placeholders; nothing here
-//! reproduces a decompiled schedule or AI routine.
+//! `docs/FORMAT_SOURCES.md`, "Monster definitions". The houndeye
+//! squad-blast-bonus formula's *existence* is published (squads bonus a
+//! blast, capped, halved without line of sight) and its numbers are cited
+//! there too, as are the scientist's heal amount/cooldown/range/threshold;
+//! attack reach/range and every schedule's own timing remain this project's
+//! own **`TODO(black-box)`** placeholders. Nothing here reproduces a
+//! decompiled schedule or AI routine.
 
 use crate::schedule::{Activity, Brain, Schedule, Task};
 use crate::senses::{Senses, TENTACLE_HEARING_SENSITIVITY};
@@ -265,42 +268,45 @@ pub fn schedule_by_name(name: &str) -> Option<&'static Schedule> {
         .or_else(|| crate::brain::schedule_by_name(name))
 }
 
-// --- Invented (black-box) tuning constants ---------------------------------
+// --- Tuning constants -------------------------------------------------------
+//
+// The houndeye/scientist numbers below are cited to the same TWHL pages as
+// their `table::spec_for` rows (`TWHL:Houndeye`, `TWHL:Scientist`; see
+// `docs/FORMAT_SOURCES.md`, "Monster definitions"). Anything not published —
+// marked `TODO(black-box)` — is this project's own placeholder.
 
-/// How much a houndeye's blast damage scales per squad member beyond
-/// itself, e.g. 3 packmates blasting together hit harder than one alone.
-/// **`TODO(black-box)`**: the existence of pack behaviour is published; this
-/// formula and its coefficient are not.
-pub const HOUNDEYE_PACK_BONUS_PER_MEMBER: f32 = 0.25;
+/// `TWHL:Houndeye`'s published per-squad-member blast damage bonus: +10%
+/// per packmate.
+pub const HOUNDEYE_PACK_BONUS_PER_MEMBER: f32 = 0.10;
 
-/// The largest multiplier [`houndeye_pack_bonus`] returns, so an
-/// unreasonably large squad cannot make the attack unbounded.
-pub const HOUNDEYE_PACK_BONUS_CAP: f32 = 2.5;
+/// `TWHL:Houndeye`'s published cap on the blast bonus: +30% (a squad of up
+/// to four, so at most three *other* packmates).
+pub const HOUNDEYE_PACK_BONUS_CAP: f32 = 1.30;
 
-/// The health fraction below which a scientist will heal an ally.
-/// **`TODO(black-box)`**.
+/// `TWHL:Scientist`'s published heal threshold: the target must be below
+/// half health.
 pub const SCIENTIST_HEAL_THRESHOLD_FRACTION: f32 = 0.5;
 
-/// How far away a scientist can still administer first aid, in world units.
-/// **`TODO(black-box)`**.
+/// `TWHL:Scientist`'s published heal range, in world units.
 pub const SCIENTIST_HEAL_RANGE: f32 = 128.0;
 
-/// How much health one heal restores. **`TODO(black-box)`**.
+/// `TWHL:Scientist`'s published heal amount, in health points.
 pub const SCIENTIST_HEAL_AMOUNT: f32 = 25.0;
 
-/// The shortest time between two heals from the same scientist, in seconds.
-/// **`TODO(black-box)`**.
-pub const SCIENTIST_HEAL_COOLDOWN: f32 = 10.0;
+/// `TWHL:Scientist`'s published heal cooldown, in seconds.
+pub const SCIENTIST_HEAL_COOLDOWN: f32 = 60.0;
 
 /// The blast damage a houndeye (or its pack) actually deals, given the base
-/// per-hit damage from [`MonsterSpec::ranged`] and the number of *other*
-/// squadmates joining the blast.
+/// per-hit damage from [`MonsterSpec::ranged`], the number of *other*
+/// squadmates joining the blast, and whether the blast has line of sight to
+/// its target.
 ///
-/// Project-owned formula (`TODO(black-box)`): `base * (1 + bonus *
-/// packmates)`, capped at [`HOUNDEYE_PACK_BONUS_CAP`] so the multiplier
-/// cannot run away.
+/// Published formula: `base * (1 + bonus * packmates)`, capped at
+/// [`HOUNDEYE_PACK_BONUS_CAP`], then halved
+/// ([`crate::monsters::table::HOUNDEYE_BLAST_NO_LOS_MULTIPLIER`]) when
+/// `has_line_of_sight` is `false`.
 #[must_use]
-pub fn houndeye_pack_bonus(base_damage: f32, packmates: u32) -> f32 {
+pub fn houndeye_pack_bonus(base_damage: f32, packmates: u32, has_line_of_sight: bool) -> f32 {
     // Squads are bounded by `MAX_SQUAD_SIZE` (four), so this narrowing never
     // loses meaningful precision; `as` is used rather than `f32::from`
     // because there is no lossless `From<u32> for f32` in `core`.
@@ -308,7 +314,12 @@ pub fn houndeye_pack_bonus(base_damage: f32, packmates: u32) -> f32 {
     let packmates = packmates as f32;
     let multiplier =
         (1.0 + HOUNDEYE_PACK_BONUS_PER_MEMBER * packmates).min(HOUNDEYE_PACK_BONUS_CAP);
-    base_damage * multiplier
+    let los_multiplier = if has_line_of_sight {
+        1.0
+    } else {
+        super::table::HOUNDEYE_BLAST_NO_LOS_MULTIPLIER
+    };
+    base_damage * multiplier * los_multiplier
 }
 
 /// Whether a scientist may heal now: the target is hurt below the threshold
@@ -639,17 +650,25 @@ mod tests {
 
     #[test]
     fn houndeye_pack_bonus_scales_with_squad_size_and_is_capped() {
-        let solo = houndeye_pack_bonus(10.0, 0);
+        let solo = houndeye_pack_bonus(10.0, 0, true);
         assert!((solo - 10.0).abs() < 1e-6);
-        let trio = houndeye_pack_bonus(10.0, 3);
+        let trio = houndeye_pack_bonus(10.0, 3, true);
         assert!(trio > solo);
-        let huge = houndeye_pack_bonus(10.0, 1_000);
+        assert!((trio - 10.0 * HOUNDEYE_PACK_BONUS_CAP).abs() < 1e-4);
+        let huge = houndeye_pack_bonus(10.0, 1_000, true);
         assert!((huge - 10.0 * HOUNDEYE_PACK_BONUS_CAP).abs() < 1e-4);
     }
 
+    #[test]
+    fn houndeye_pack_bonus_is_halved_without_line_of_sight() {
+        let seen = houndeye_pack_bonus(10.0, 2, true);
+        let occluded = houndeye_pack_bonus(10.0, 2, false);
+        assert!((occluded - seen * 0.5).abs() < 1e-6);
+    }
+
     /// The houndeye's blast reach is `MonsterBrain::range_attack_range`,
-    /// resolved from its table row's `ranged.range` (an invented, checked-in
-    /// fixture value — see `crate::monsters::table`'s black-box note).
+    /// resolved from its table row's `ranged.range` — `TWHL:Houndeye`'s
+    /// published 192-unit blast radius (`table::HOUNDEYE_BLAST_RADIUS`).
     #[test]
     fn a_houndeyes_blast_radius_matches_its_table_row() {
         let brain = MonsterBrain::for_kind(MonsterKind::Houndeye).expect("defined");
@@ -657,7 +676,7 @@ mod tests {
         // Invented, checked-in fixture value (see `crate::monsters::table`'s
         // black-box note); `AiWorld::tick_one` gates
         // `Conditions::CAN_RANGE_ATTACK1` on exactly this distance.
-        let expected_radius = 384.0;
+        let expected_radius = crate::monsters::table::HOUNDEYE_BLAST_RADIUS;
         assert!((brain.range_attack_range() - expected_radius).abs() < 1e-6);
     }
 
