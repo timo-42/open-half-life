@@ -43,3 +43,39 @@ pub fn validated(source: Arc<MediaSource>) -> ValidatedMedia {
 pub fn expected_digest(bytes: &[u8]) -> MediaDigest {
     MediaDigest::from_bytes(ohl_core::StreamingSha256::digest(bytes))
 }
+
+/// A temporary directory whose path has been fully resolved.
+///
+/// macOS puts `TMPDIR` under `/var`, which is itself a symbolic link to
+/// `/private/var`. The cache's directory-tree check never follows a link, so
+/// a layout rooted at the unresolved path is correctly refused as unsafe.
+/// Resolving the root once here is what the C++ test did with
+/// `std::filesystem::canonical`, and it keeps the check under test rather
+/// than the platform's temporary-directory spelling.
+pub struct TemporaryRoot {
+    directory: tempfile::TempDir,
+    path: std::path::PathBuf,
+}
+
+impl TemporaryRoot {
+    /// Creates and resolves a temporary directory.
+    #[must_use]
+    pub fn new() -> Self {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = std::fs::canonicalize(directory.path()).expect("resolved temporary directory");
+        Self { directory, path }
+    }
+
+    /// The resolved root path.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        debug_assert!(self.directory.path().exists());
+        &self.path
+    }
+}
+
+impl Default for TemporaryRoot {
+    fn default() -> Self {
+        Self::new()
+    }
+}
