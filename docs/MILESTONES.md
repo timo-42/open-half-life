@@ -650,6 +650,54 @@ the runtime. A real parser, higher process-session management, deterministic
 selection, staging/publication, and runtime composition remain later
 dependencies. This work authorizes no proprietary extraction.
 
+## R2: Rust bootstrap
+
+Status: in progress; evidence to be added by the PR review.
+
+Adds the Rust migration workspace (`.plan/rust-architecture-r1.md`) beside the
+still-authoritative C++ tree, without touching or removing any C++ code:
+
+- root virtual Cargo workspace (`resolver = "3"`, `edition = "2024"`,
+  `rust-version = "1.98"`), workspace-wide lints forbidding `unsafe_code` and
+  enabling `clippy::all`/`clippy::pedantic`, and pinned exact
+  `[workspace.dependencies]` versions for the crates named in the migration
+  architecture
+- `rust-toolchain.toml` (stable 1.98.1 with `clippy`/`rustfmt`), `rustfmt.toml`,
+  `deny.toml` (MIT/Apache-2.0/BSD/Zlib/Unicode-3.0/etc. allow list, GPL/LGPL/
+  AGPL denied by omission), and `.cargo/config.toml` (`cargo xtask` alias)
+- `ohl-core`: `no_std` + optional `std` feature crate providing a
+  `SanitizedError` diagnostic type whose `Display` output is always a fixed,
+  project-defined string, bounded checked-arithmetic helpers, and a streaming
+  SHA-256 wrapper over the pinned `sha2` crate, covered by the FIPS 180-4 test
+  vectors (empty string, `"abc"`, and the two-block message)
+- `ohl-app`: the `open-half-life` Rust binary (clap-based CLI, `--version`
+  stamped from `OHL_VERSION` at build time the same way the C++ binary reads
+  `OHL_VERSION_OVERRIDE`, `--iso PATH` accepted but reporting that media
+  import is not implemented in the Rust build yet with exit code 2,
+  `tracing`-based `[level] message` logging to stderr mirroring
+  `ohl::core::log`, and a `Platform: <OS> <arch>` line mirroring
+  `ohl::platform::to_string`)
+- `xtask`: `cargo xtask policy` reimplementing `cmake/CheckRepository.cmake`'s
+  tracked-file rules (private-path prefixes, prohibited extensions, the 50 MiB
+  ceiling, and the `MZ`/`MSCF`/`IWAD`/`PWAD`/`PACK` magic-byte check) with unit
+  tests against temporary Git repositories, and `cargo xtask graph` validating
+  the crate dependency graph against the full allowed-edge table from the
+  migration architecture (most edges reference crates that do not exist yet,
+  so the check currently validates `ohl-core` and `ohl-app` and will start
+  covering later crates automatically as they are added)
+- CI: new `rust-fmt`, `rust-policy`, `rust-clippy` (three-OS), `rust-test`
+  (three-OS, `cargo-nextest`), and `rust-deny` jobs alongside the unchanged C++
+  jobs, with the shared `vergit` version passed through as `OHL_VERSION`
+- docs: `PROMPT.md` (Rust 2024/Cargo, winit, wgpu with Vulkan on Linux/Windows
+  and Metal on macOS, a "No FFI" clean-room rule), `README.md` (Rust build
+  section), `CONTRIBUTING.md` (Rust validation steps), `THIRD_PARTY_NOTICES.md`
+  (Rust crate inventory pointer)
+
+The C++ tree, its CMake/Ninja build, and `cmake/CheckRepository.cmake` are
+unchanged and remain the accepted, authoritative M0/M1 implementation; this
+package adds a parallel, not-yet-feature-complete Rust workspace per the
+two-step transition plan in `.plan/rust-architecture-r1.md` section 4.
+
 ## Later milestones
 
 - M3: BSP rendering

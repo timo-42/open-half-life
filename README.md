@@ -50,6 +50,33 @@ extractor. Production payload import remains unavailable on every platform;
 see [docs/IMPORT_READINESS.md](docs/IMPORT_READINESS.md) for the current
 readiness matrix and release-evidence gates.
 
+## Rust build
+
+The project is being ported from C++20 to Rust (Rust 2024 edition, no FFI, no
+linked C libraries; see [`.plan/rust-architecture-r1.md`](.plan/rust-architecture-r1.md)
+for the accepted migration architecture). The C++ tree above remains the
+authoritative, accepted M1 implementation until the Rust port reaches the same
+milestone; both build systems and both repository-policy checkers are kept
+green in CI during the transition.
+
+Requirements: a stable Rust toolchain matching `rust-toolchain.toml` (installed
+automatically by `rustup` on first use) plus the `clippy` and `rustfmt`
+components.
+
+```sh
+cargo build --workspace
+cargo test --workspace
+cargo run -p ohl-app -- --version
+cargo xtask policy
+cargo xtask graph
+```
+
+`cargo run -p ohl-app` builds the `open-half-life` Rust binary (the C++ binary
+of the same name lives under a different build directory, so the two never
+collide). At this stage it only reports its version and detected platform;
+`--iso PATH` is accepted and reports that media import is not implemented in
+the Rust build yet, rather than silently doing nothing.
+
 ## Status
 
 The current implementation provides the M0 build and logging foundation, M1

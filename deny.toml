@@ -1,0 +1,48 @@
+# cargo-deny configuration for the Rust migration workspace.
+# Run with: cargo deny check licenses bans sources advisories
+
+[graph]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+]
+
+[advisories]
+version = 2
+ignore = []
+
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Zlib",
+    "0BSD",
+    "ISC",
+    "Unicode-3.0",
+    "CC0-1.0",
+    # Allowed for build-only tooling dependencies only; no MPL-2.0 code is
+    # linked into a distributed Open Half-Life binary.
+    "MPL-2.0",
+]
+confidence-threshold = 0.8
+
+# GPL/LGPL/AGPL and other copyleft licenses are denied by omission from
+# `allow` above; `cargo deny` fails closed for any license not explicitly
+# allowed.
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+deny = [
+    { name = "openssl-sys" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

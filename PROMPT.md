@@ -23,12 +23,13 @@ delegate those actions to scoped agents.
     -   Linux x64
     -   macOS Apple Silicon
 -   Renderer:
-    -   Vulkan
-    -   MoltenVK on macOS
+    -   wgpu (Vulkan backend on Linux/Windows, Metal backend on macOS)
 -   Language:
-    -   C++20
+    -   Rust 2024 edition (migrating from the original C++20 tree; see
+        `.plan/rust-architecture-r1.md`)
 -   Build:
-    -   CMake + Ninja
+    -   Cargo (the C++20/CMake+Ninja tree remains buildable in parallel until
+        Rust reaches M1 parity)
 -   Repository:
     -   git@github.com:timo-42/open-half-life.git
 
@@ -39,6 +40,8 @@ delegate those actions to scoped agents.
 -   Never commit proprietary assets.
 -   Require users to provide their own ISO.
 -   Implement documented file formats independently.
+-   No FFI: the Rust port links no C libraries and exposes no FFI boundary;
+    reuse crates.io crates instead of vendoring or binding C/C++ code.
 
 ## Model configuration
 
@@ -230,13 +233,14 @@ Never execute installer binaries.
 
 Primary API:
 
--   Vulkan
+-   wgpu, using its Vulkan backend on Linux and Windows
 
 macOS:
 
--   MoltenVK
+-   wgpu, using its Metal backend (MoltenVK is dropped: the Rust port links no
+    C libraries, so a Vulkan-over-Metal translation layer is not an option)
 
-SDL3 for windowing.
+winit for windowing.
 
 ## Milestones
 
