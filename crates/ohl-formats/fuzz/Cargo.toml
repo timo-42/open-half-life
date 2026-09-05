@@ -43,3 +43,38 @@ path = "fuzz_targets/spr_fuzz.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "titles_fuzz"
+path = "fuzz_targets/titles_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sentences_fuzz"
+path = "fuzz_targets/sentences_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "skill_cfg_fuzz"
+path = "fuzz_targets/skill_cfg_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "liblist_fuzz"
+path = "fuzz_targets/liblist_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hud_sprites_fuzz"
+path = "fuzz_targets/hud_sprites_fuzz.rs"
+test = false
+doc = false
+bench = false

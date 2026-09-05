@@ -1,0 +1,20 @@
+[package]
+name = "ohl-campaign"
+description = "Sourced Half-Life single-player chapter/map sequence, difficulty, and skill.cfg table lookups"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ohl_campaign"
+
+[dependencies]
+ohl-core = { path = "../ohl-core", version = "=0.1.0" }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

@@ -1046,6 +1046,40 @@ directory. A standalone `fuzz/` package (`open_fuzz`, `roundtrip_fuzz`) ran
 Not yet done: wiring `ohl-save` into `ohl-game`/`ohl-app` to actually
 serialize and restore world/entity state; no section tags are defined by any
 other crate yet, so this milestone is the container format only.
+## M8 (Rust): campaign data and text formats
+
+Status: in progress. M8.1: bounded, never-panicking parsers for the plain-text
+game/data files GoldSrc/Half-Life loads alongside its binary assets, plus a new
+crate carrying the sourced single-player chapter/map sequence and a
+`skill.cfg`-backed difficulty table.
+
+- `ohl-formats` gains five new modules (`titles`, `sentences`, `skill_cfg`,
+  `liblist`, `hud_sprites`), each a bounded, `no_std` + `alloc` decoder with
+  its own `Limits` struct, sharing a small internal bounded line-splitter
+  (`text_lines`). Every module is covered by hand-written unit tests plus a
+  `proptest` "never panics on arbitrary bytes" property
+  (`crates/ohl-formats/tests/text_formats.rs`) and a matching `cargo fuzz`
+  target under `crates/ohl-formats/fuzz/`. See `docs/FORMAT_SOURCES.md`
+  ("Game text formats") for the public documentation each parser was
+  implemented from.
+- `ohl-campaign` (new crate, `no_std` + `alloc`, depends only on
+  `ohl-core` per `xtask/src/graph.rs`'s dependency policy): the sourced
+  Half-Life chapter/map sequence (`CHAPTERS`, `chapter_of`, `next_chapter`),
+  `STARTMAP`/`TRAINMAP` defaults, a `Difficulty` enum
+  (Easy/Medium/Hard → `skill.cfg` suffix 1/2/3), and `SkillTable`, a
+  difficulty-aware lookup built from already-parsed `(cvar, value)` pairs
+  (deliberately not from `ohl-formats` types directly, to keep the
+  dependency edge to `ohl-core` only). See `docs/FORMAT_SOURCES.md`
+  ("Campaign map sequence") for per-row citations.
+- Three items from the M8 research pass are flagged **to verify** rather
+  than encoded as confirmed facts: Interloper's starting map prefix
+  (sources disagreed; left as an empty map list), `env_global`/save-file
+  global-state-variable semantics (not modeled), and player-inventory
+  persistence across `changelevel` (not confirmed from a public page). See
+  `crates/ohl-campaign/src/lib.rs`'s module documentation.
+
+Not yet done: wiring either crate into `ohl-game`/`ohl-import`'s campaign
+bootstrap, save/restore semantics, and the two open citation items above.
 
 ## M9 (Rust): UI shell
 
