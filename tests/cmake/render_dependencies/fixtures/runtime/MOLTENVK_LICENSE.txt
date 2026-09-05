@@ -1,1 +1,0 @@
-Synthetic external MoltenVK fixture. Project-authored and test-only.

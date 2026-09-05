@@ -1,4 +1,5 @@
-//! Reimplementation of `cmake/CheckRepository.cmake`'s tracked-file policy.
+//! Tracked-file policy check, originally `cmake/CheckRepository.cmake` in the
+//! now-removed C++ build, ported here with identical rules.
 //!
 //! Rules (kept identical to the CMake script so both checkers agree during
 //! the R2 transition period, see `.plan/rust-architecture-r1.md` section 4):
