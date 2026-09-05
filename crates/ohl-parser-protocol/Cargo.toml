@@ -1,0 +1,22 @@
+[package]
+name = "ohl-parser-protocol"
+description = "OWP/1 parser-worker wire protocol: framing, twelve typed schemas, budgets, and session ordering"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ohl_parser_protocol"
+
+[dependencies]
+ohl-core = { path = "../ohl-core", version = "=0.1.0" }
+thiserror = { workspace = true }
+zerocopy = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

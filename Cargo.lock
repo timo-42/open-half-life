@@ -512,6 +512,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ohl-parser-protocol"
+version = "0.1.0"
+dependencies = [
+ "ohl-core",
+ "proptest",
+ "thiserror",
+ "zerocopy",
+]
+
+[[package]]
 name = "ohl-platform"
 version = "0.1.0"
 dependencies = [

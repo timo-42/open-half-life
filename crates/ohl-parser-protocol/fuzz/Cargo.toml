@@ -1,0 +1,28 @@
+# Standalone (non-member) fuzzing package. It declares its own empty
+# `[workspace]` so it is excluded from the repository workspace without
+# editing the root manifest, exactly as `cargo fuzz` expects.
+[package]
+name = "ohl-parser-protocol-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+# Not listed in the root `[workspace.dependencies]`; pinned exactly here.
+libfuzzer-sys = "=0.4.13"
+ohl-parser-protocol = { path = "..", version = "=0.1.0" }
+
+[profile.release]
+debug = true
+
+[[bin]]
+name = "protocol"
+path = "fuzz_targets/protocol.rs"
+test = false
+doc = false
+bench = false
