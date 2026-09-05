@@ -268,6 +268,12 @@ from any game installation are used or committed.
 
 ## Cabinet and component-selection parsing
 
+This section is about the **InstallShield-era** installer cabinet/header pair
+(`*.cab` + `*.hdr` written by InstallShield 5/6) and about installer
+component-selection logic. It is not about the Microsoft Cabinet format, which
+is publicly specified by Microsoft and is recorded separately under
+"Microsoft Cabinet (MS-CAB)" below.
+
 Project-owned cabinet or installer component-selection parsing logic requires
 public-source provenance before implementation begins. Add the lawfully public
 technical source to this file with its version, stable link, relevant sections,
@@ -633,3 +639,126 @@ Every collision fixture used by the tests is synthesized in-process by this
 project's own writers in `crates/ohl-formats/src/test_support.rs` (a box room
 with a step, a ledge, two ramps, a water pool and single-plane slopes); no
 bytes from any game installation are used or committed.
+
+## Microsoft Cabinet (MS-CAB)
+
+Microsoft publishes a complete specification of the cabinet container and of
+both compression formats cabinets use, so `crates/ohl-mscab` is implemented
+from those documents alone. No other implementation's source was read, and no
+byte, name, layout, count, or listing from any real medium appears in the
+crate, in its tests, or in this repository.
+
+### Sources
+
+- Microsoft, "Microsoft Cabinet Format" (MS-CAB), archived MSDN specification,
+  documenting cabinet format version 1.3:
+  <https://learn.microsoft.com/en-us/previous-versions/bb417343(v=msdn.10)>
+  (also published at
+  <https://learn.microsoft.com/en-us/previous-versions/bb267310(v=vs.85)>).
+  Sections used: "Data type conventions" (u1/u2/u4, little-endian, no padding);
+  `CFHEADER` (signature `MSCF`, `reserved1`, `cbCabinet`, `reserved2`,
+  `coffFiles`, `reserved3`, `versionMinor`/`versionMajor`, `cFolders`,
+  `cFiles`, `flags` with `cfhdrPREV_CABINET` 0x0001, `cfhdrNEXT_CABINET`
+  0x0002 and `cfhdrRESERVE_PRESENT` 0x0004, `setID`, `iCabinet`, the optional
+  `cbCFHeader`/`cbCFFolder`/`cbCFData` reserve sizes, `abReserve`, and the four
+  optional `szCabinetPrev`/`szDiskPrev`/`szCabinetNext`/`szDiskNext` strings);
+  `CFFOLDER` (`coffCabStart`, `cCFData`, `typeCompress`, `abReserve`);
+  `CFFILE` (`cbFile`, `uoffFolderStart`, `iFolder` including
+  `ifoldCONTINUED_FROM_PREV` 0xFFFD, `ifoldCONTINUED_TO_NEXT` 0xFFFE and
+  `ifoldCONTINUED_PREV_AND_NEXT` 0xFFFF and their documented meaning of folder
+  0 / `cFolders - 1`, the packed `date` and `time` encodings, the `attribs`
+  bits including `_A_NAME_IS_UTF` 0x80, and `szName`); `CFDATA` (`csum`,
+  `cbData`, `cbUncomp`, `abReserve`, `ab`); the `CSUMCompute` checksum
+  algorithm and the two-step block checksum; the constraint that a `CFDATA`
+  block may not occupy more than 32768+6144 compressed bytes and represents at
+  most 32 KB of uncompressed data; and the description of folders that start in
+  one cabinet and continue into succeeding cabinets of a set.
+- Microsoft, "Microsoft LZX Data Compression Format", published with the
+  document above (same archived MSDN specification). Sections used: window
+  size (a power of two from 2^15 to 2^21, not stored in the stream and passed
+  to the decoder); the window-size/position-slot table (32K -> 30 slots, 64K ->
+  32, 128K -> 34, 256K -> 36, 512K -> 38, 1 MB -> 40, 2 MB -> 42); block types
+  (1 verbatim, 2 aligned offset, 3 uncompressed, others undefined); the
+  position-slot base/footer table; the main tree (256 + 8 * NUM_POSITION_SLOTS
+  elements), length tree (249 elements), aligned offset tree (8 elements) and
+  pretrees (20 elements, 4 bits each); the canonical-tree constraints; the
+  uncompressed-block layout (bit padding, R0/R1/R2 as little-endian DWORDs,
+  raw bytes, odd-length pad byte); the 16-bit little-endian bitstream word
+  order; the rule that the bitstream is padded to a 16-bit boundary after each
+  32,768-byte CAB input frame so that one `CFDATA` block carries exactly one
+  frame; and E8 call translation, including the header bit plus 32-bit
+  translation size and the rule that translation stops after the 32,768th
+  frame in a folder.
+- [MS-PATCH]: "LZX DELTA Compression and Decompression", protocol revision
+  14.1, 8/19/2025:
+  <https://learn.microsoft.com/en-us/openspecs/exchange_server_protocols/ms-patch/cc78752a-b4af-4eee-88cb-01f4d8a4c2bf>.
+  LZXD is documented as a derivative of the Microsoft Cabinet LZX format and
+  restates the shared structures with more precise pseudo-code. Sections used:
+  2.1.1 Bitstream, 2.1.4 Repeated Offsets (initial state (1,1,1), the swap
+  rules and the offset+2 displacement), 2.1.5 Match Lengths, 2.1.6 Position
+  Slot, 2.2.2 E8 Call Translation (the reverse-translation pseudo-code),
+  2.3.1.1 Block Type Field, 2.3.1.2 Block Size Field (24 bits as three 8-bit
+  groups, most significant first), 2.3.2.1 Uncompressed Block, 2.3.2.2
+  Verbatim Block, 2.3.2.3 Aligned Offset Block, 2.4 Huffman Trees, 2.5
+  Encoding the Trees and Pretrees (the delta codes 0..16 and the run codes 17,
+  18 and 19), 2.6 Compressed Token Sequence, 2.6.2 (the position slot / base
+  position / footer bits table) and 2.7 Decoding Matches and Literals (the
+  decoder pseudo-code, including the extra-length escape).
+- [MS-MCI]: "Microsoft ZIP (MSZIP) Compression and Decompression Data
+  Structure", protocol revision 7.3, 10/17/2016:
+  <https://learn.microsoft.com/en-us/openspecs/exchange_server_protocols/ms-mci/27f0a9bf-9567-4e40-ad66-6ae9ab9d2786>,
+  section 2 (Structures):
+  <https://learn.microsoft.com/en-us/openspecs/exchange_server_protocols/ms-mci/3048c471-f739-4d30-bcb3-a962cfe84a69>.
+  Used for: the 2-byte MSZIP signature 0x43 0x4B (`CK`) at the start of every
+  block; each block being a single DEFLATE compression operation whose last
+  RFC 1951 block is marked as the end of the stream; the statement that
+  "decoding trees MUST be discarded after each RFC 1951 block, but the history
+  buffer MUST be maintained"; and the 32 KB per-block uncompressed maximum.
+- [RFC 1951], DEFLATE Compressed Data Format Specification version 1.3, May
+  1996: <https://www.rfc-editor.org/rfc/rfc1951>. Already recorded above for
+  the reviewed-source list; here it is the normative reference [MS-MCI] points
+  at for the MSZIP bit format. DEFLATE itself is decoded by the independently
+  maintained `miniz_oxide` dependency (see `THIRD_PARTY_NOTICES.md`), not by
+  project-owned code.
+- Microsoft, "TCOMPfromLZXWindow macro (fdi_fci_types.h)":
+  <https://learn.microsoft.com/en-us/windows/win32/api/fdi_fci_types/nf-fdi_fci_types-tcompfromlzxwindow>.
+  Used only for the documented fact that a cabinet's LZX window size is carried
+  inside the compression-type value and that its "possible value range is
+  15-21".
+
+### Behaviours supported
+
+`crates/ohl-mscab` parses `CFHEADER`, `CFFOLDER`, `CFFILE` and `CFDATA` over a
+caller-supplied volume source, verifies the documented `CFDATA` checksum
+whenever `csum` is non-zero, and decompresses uncompressed, MSZIP and LZX
+folders. It streams a folder's uncompressed bytes in bounded chunks, seeks to
+one file inside a folder, resolves a folder that continues across the cabinets
+of a set from segments the caller supplies, and polls a cancellation token
+between data blocks. Every count, offset, size and index is checked against the
+caller's `Limits` and against the pinned source before use, and every rejection
+is a fixed, content-free error code.
+
+Quantum-compressed folders are deliberately out of scope and are reported as
+unsupported: no public Quantum specification was reviewed for this project.
+
+Two details the documents leave open are handled conservatively rather than
+guessed at:
+
+- **`CFFOLDER.typeCompress` numeric codes.** [MS-CAB] states only that "the
+  valid values are defined in each compression format's specification" and does
+  not restate the `tcomp*` constants. The decoder therefore reads the low
+  nibble as the method (0 uncompressed, 1 MSZIP, 2 Quantum, 3 LZX) and, for
+  LZX, bits 8..=12 as the window size in bits, which is the split implied by
+  the published `TCOMPfromLZXWindow` range of 15-21. Any window value outside
+  15..=21, and any method code the crate does not implement, is rejected as
+  unsupported instead of being interpreted.
+- **The `CFDATA` checksum span when a per-block reserved area is present.**
+  The documented computation seeds the header fold with the data fold and
+  covers `sizeof(CFDATA) - sizeof(csum)` bytes, which is unambiguous (the four
+  bytes `cbData` and `cbUncomp`) only when `cbCFData` is zero. A block that
+  carries a reserved area is accepted if it matches either reading; a block
+  without one is checked exactly.
+
+All fixtures are produced by the project's own writer in
+`crates/ohl-mscab/src/test_support.rs` and `src/lzx_writer.rs`, using invented
+file names and synthetic payloads.
