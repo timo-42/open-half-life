@@ -86,6 +86,24 @@ Added by the M4 "movement" physics crate, pinned exactly in
 - `libm` `=0.2.16` (MIT) -- the scalar trigonometry `core` does not provide,
   and the same implementation `glam`'s `libm` feature uses, `ohl-physics`
 
+Added by the M9 UI shell, pinned exactly in `crates/ohl-ui/Cargo.toml` (see
+`docs/RENDER_DEPENDENCIES.md`, "UI shell (`ohl-ui`)", for the full write-up):
+
+- `egui` / `egui-wgpu` / `egui-winit` `=0.36.1` (MIT OR Apache-2.0) --
+  immediate-mode GUI, its wgpu renderer, and its winit input bridge,
+  `ohl-ui`
+- `egui`'s default `default_fonts` feature transitively pulls in
+  `epaint_default_fonts` `=0.36.1`, which bundles the Hack, Noto Emoji and
+  Ubuntu font files as embedded data (not code) under `OFL-1.1` and
+  `Ubuntu-font-1.0` respectively -- both OSI-approved, FSF-free font
+  licenses, added to `deny.toml`'s allow list alongside the code licenses
+  above
+- `ohl-ui`'s dev-dependencies additionally pull in `ohl-render` (path
+  dependency, not a new external crate) purely to get a GPU device, queue
+  and offscreen readback target for its gated render test; this is a
+  test-only edge the crate-graph policy (`xtask/src/graph.rs`) does not
+  inspect
+
 Both are built with `default-features = false`, so neither pulls in `std`.
 
 Added at R4 by the Microsoft Cabinet decoder:

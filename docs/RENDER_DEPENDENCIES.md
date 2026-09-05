@@ -47,6 +47,39 @@ the two samples directly. When a window surface offers only an sRGB format the
 shader converts the result back to linear first, so the hardware's sRGB encode
 round-trips to the same pixels the non-sRGB path produces.
 
+## UI shell (`ohl-ui`)
+
+`ohl-ui` (the M9 UI package: the developer console, HUD and menus) adds an
+immediate-mode UI layer over the same wgpu device `ohl-render` uses, and the
+same winit window `ohl-app` owns under its `dev-tools` feature. It links no C
+library and contains no `unsafe` code, matching `ohl-render`.
+
+| Crate | Pinned version | License | Used by | Purpose |
+| --- | --- | --- | --- | --- |
+| `egui` | `=0.36.1` | MIT OR Apache-2.0 | `ohl-ui` | Immediate-mode GUI: widgets, layout, input state |
+| `egui-wgpu` | `=0.36.1` | MIT OR Apache-2.0 | `ohl-ui` | Renders egui's tessellated output with wgpu |
+| `egui-winit` | `=0.36.1` | MIT OR Apache-2.0 | `ohl-ui` | Translates winit window events into egui's `RawInput` |
+
+All three resolve against this workspace's exact `wgpu =30.0.1` and
+`winit =0.30.13` pins with no version conflict (verified with `cargo tree`
+before adding the dependency); `egui-winit` is built with only the `x11` and
+`wayland` platform features enabled, matching `ohl-app`'s own winit feature
+set. `egui`'s default `default_fonts` feature pulls in `epaint_default_fonts`,
+which bundles the Hack, Noto Emoji and Ubuntu fonts embedded as data (not
+code) under OFL-1.1 and Ubuntu-font-1.0 respectively — both OSI-approved,
+FSF-free font licenses; `deny.toml`'s allow list covers them explicitly (see
+`THIRD_PARTY_NOTICES.md`).
+
+`UiLayer` (`crates/ohl-ui/src/layer.rs`) owns the `egui::Context`, the
+`egui-wgpu::Renderer` and, in windowed mode, the `egui-winit::State` input
+bridge; a headless mode with no window backs the offscreen render test
+(`crates/ohl-ui/tests/headless_ui_render.rs`), which follows the same
+`OHL_RENDER_GPU_TEST=1`/`#[ignore]` convention as `ohl-render`'s own offscreen
+tests and uses `ohl-render` as a `[dev-dependencies]`-only source of a GPU
+device, queue and readback target (the crate-graph policy in
+`xtask/src/graph.rs` does not inspect `[dev-dependencies]`, so this does not
+create a runtime dependency edge from `ohl-ui` to `ohl-render`).
+
 ## Audio backend (`ohl-audio`)
 
 `ohl-audio` (the M5 sound package: bounded WAV decoding, the software mixer,

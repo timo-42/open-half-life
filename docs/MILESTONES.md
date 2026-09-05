@@ -947,6 +947,64 @@ blending, sequence transition graphs and events, external sequence-group and
 external texture files, per-pixel lighting, backface culling, mipmaps, and
 any model source other than a path on disk.
 
+## M9 (Rust): UI shell
+
+Status: in progress. `ohl-ui` adds an egui-based overlay: a Quake-style
+developer console, a data-driven HUD and a menu skeleton, plus the
+`UiLayer` adapter that turns winit window events and a wgpu frame into
+rendered egui output. It depends only on `ohl-core` per the crate-graph
+policy (`xtask/src/graph.rs`); `ohl-app` and `ohl-render` are not modified by
+this package and will wire it up in a later change.
+
+- `UiLayer` (`crates/ohl-ui/src/layer.rs`) owns the `egui::Context`, an
+  `egui-wgpu::Renderer` and, in windowed mode, the `egui-winit::State` input
+  bridge. `handle_window_event` reports whether egui consumed a winit event;
+  `begin_frame`/`begin_frame_headless` start a pass, and
+  `end_frame_and_render` tessellates, uploads textures/buffers and records
+  the draw calls into a caller-supplied `wgpu::CommandEncoder` and
+  `wgpu::TextureView`, applying egui's platform output (cursor icon,
+  clipboard) back to the window when one exists. The headless variant needs
+  no window at all, which is what the offscreen render test uses.
+- `console`: a bounded (4,096-line) sanitized scrollback buffer, a
+  `CommandRegistry` (`register`/`execute`/prefix-based tab completion), a
+  typed and bounded `Variables` ("cvar") table with change callbacks, and a
+  `Console` that ties them together with an input line, history navigation
+  and the built-in `help`, `echo`, `set`, `quit` and `map <name>` commands.
+  `quit` and `map` raise `ConsoleEvent`s rather than acting directly, so the
+  host validates a map name against the asset index before switching levels.
+- `hud`: `HudState` (health, armor, clip/reserve ammo, a decaying damage
+  flash, a timed message/title, crosshair visibility) plus an egui-painter
+  draw function scaled to the window; layout only, updated by the game.
+- `menu`: `Screen` (`InGame`/`MainMenu`/`Pause`/`Console`) with the input
+  capture rule each screen implies (`InGame` releases the keyboard, mouse
+  and cursor to gameplay; every other screen captures them), a main/pause
+  menu skeleton (New game / Load / Save / Options / Quit), an options pane
+  (mouse sensitivity, volume, field of view, each bounded) and a bindings
+  placeholder screen, all reporting intent through `MenuAction` rather than
+  acting directly.
+
+Verified:
+
+- unit tests: the command registry (tokenizing, dispatch, unknown-command
+  and empty-line errors, tab completion), variables (typed parsing, bounds
+  rejection, change callbacks, unknown-name errors), the scrollback buffer's
+  4,096-line bound and control-character sanitization, the console's history
+  and tab-completion behaviour, HUD state clamping/decay/message countdown,
+  and the menu screen's input-capture state machine.
+- headless: an offscreen test renders one frame of the HUD plus an open
+  console with scrollback text into an RGBA target and asserts a meaningful
+  part of the frame differs from the cleared background. Like the renderer's
+  own offscreen tests it is `#[ignore]`d by default with an
+  `OHL_RENDER_GPU_TEST=1` opt-in, using `ohl-render` as a dev-only dependency
+  for the GPU device and readback helpers.
+- on screen: **not verified**; wiring `UiLayer` into `ohl-app`'s window and
+  render loop is left to a later change.
+
+Not yet done: wiring into `ohl-app` (console toggle key handling, HUD/menu
+composition with the world renderer, cursor grab/release on screen
+transitions), persisting variables and options across sessions, load/save
+screens, and an editable bindings screen.
+
 ## Later milestones
 
 - M3: BSP rendering (Rust first light in progress, see above)
