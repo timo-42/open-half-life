@@ -46,6 +46,7 @@ ohl-game = { path = "../ohl-game", version = "=0.1.0" }
 ohl-engine = { path = "../ohl-engine", version = "=0.1.0" }
 ohl-ui = { path = "../ohl-ui", version = "=0.1.0" }
 ohl-campaign = { path = "../ohl-campaign", version = "=0.1.0" }
+ohl-save = { path = "../ohl-save", version = "=0.1.0" }
 # Only the PNG encoder: the headless capture writes one, and no other codec
 # is compiled in.
 image = { version = "=0.25.10", default-features = false, features = ["png"] }

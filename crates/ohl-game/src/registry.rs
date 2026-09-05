@@ -22,10 +22,12 @@ const MAX_ENTITIES_PER_NAME: usize = 64;
 
 /// `classname`, kept verbatim.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ClassName(pub String);
 
 /// Position and facing, in GoldSrc world units and degrees.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Transform {
     /// World-space origin.
     pub origin: Vec3,
@@ -35,6 +37,7 @@ pub struct Transform {
 
 /// `model` when it names a brush submodel (`*N`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BrushModel(pub u32);
 
 /// The world-space centre of a brush entity's submodel bounding box, when
@@ -44,18 +47,22 @@ pub struct BrushModel(pub u32);
 /// checks such as "use the nearest door" should prefer this over
 /// [`Transform::origin`] when it is present.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BrushCenter(pub Vec3);
 
 /// `targetname`.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TargetName(pub String);
 
 /// `target`.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Target(pub String);
 
 /// `spawnflags`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SpawnFlags(pub u32);
 
 /// `rendermode`/`renderamt`/`rendercolor`, re-exported from
@@ -67,6 +74,7 @@ pub type RenderPropsComponent = RenderProps;
 /// behaviour of these entities: they sit closed/at rest, travel to the far
 /// position, optionally wait there, then travel back).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum MoverState {
     /// At the starting position.
     Closed,
@@ -83,6 +91,7 @@ pub enum MoverState {
 /// `angles`/`angle`, `dmg`, `health`, `delay` and the `movesnd`/`stopsnd`
 /// sound indices.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Door {
     /// Units per second.
     pub speed: f32,
@@ -115,6 +124,7 @@ pub struct Door {
 
 /// `func_button`: `speed`, `wait`, `health`, `delay` and a `sounds` index.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Button {
     /// Units per second the button travels in when pressed.
     pub speed: f32,
@@ -140,6 +150,7 @@ pub struct Button {
 /// distance (the public-documented behaviour when a mapper wants a platform
 /// to travel further or less than its own brush height).
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Platform {
     /// Units per second.
     pub speed: f32,
@@ -163,6 +174,7 @@ pub struct Platform {
 /// `light`/`light_spot`/`light_environment`: brightness, colour, style and
 /// (for spot/environment lights) an aim.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Light {
     /// Brightness, the first number of the `_light`/`light` keyvalue.
     pub brightness: f32,
@@ -177,16 +189,19 @@ pub struct Light {
 
 /// Marks the `info_player_start` entity; its pose lives in [`Transform`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PlayerStart;
 
 /// Marks an `info_landmark` entity, used together with [`ChangeLevel`] to
 /// align the player across a level transition; its position lives in
 /// [`Transform`] and its name in [`TargetName`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Landmark;
 
 /// `trigger_changelevel`: the destination map and the shared landmark name.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ChangeLevel {
     /// The `map` keyvalue.
     pub map: String,
@@ -195,11 +210,105 @@ pub struct ChangeLevel {
     pub landmark: String,
 }
 
+/// `globalname`: the cross-level correlation key. Two entities in two
+/// different maps that share a `globalname` are the same entity as far as a
+/// level transition is concerned, which is how a mover keeps its state
+/// across a `changelevel` (public mapping documentation only; see
+/// `docs/FORMAT_SOURCES.md`, "Campaign flow").
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct GlobalName(pub String);
+
+/// A brush entity's submodel bounding box, copied from the BSP model lump
+/// when `model_bounds` supplied it. Kept alongside [`BrushCenter`] because a
+/// `trigger_transition` volume needs the full box, not just its middle.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct BrushBounds {
+    /// Lower corner.
+    pub mins: Vec3,
+    /// Upper corner.
+    pub maxs: Vec3,
+}
+
+impl BrushBounds {
+    /// Whether `point` lies inside (or exactly on) this box.
+    #[must_use]
+    pub fn contains(&self, point: Vec3) -> bool {
+        point.cmpge(self.mins).all() && point.cmple(self.maxs).all()
+    }
+}
+
+/// Marks a `trigger_transition` volume. Its [`TargetName`] is the
+/// `info_landmark` name it gates, and its [`BrushBounds`] bound which
+/// entities may travel to the next map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct TransitionVolume;
+
+/// One global state variable's value.
+///
+/// The three documented states a global can hold. **To verify:** the M8
+/// research pass could not retrieve a public page describing the exact
+/// on-disk/save encoding of `env_global` state, so this enum models the
+/// documented *behaviour* (a named variable that is off, on, or dead) and
+/// not any specific byte layout; see `.plan/m8-research.md` open item 2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum GlobalStateValue {
+    /// The variable is unset/inactive.
+    #[default]
+    Off,
+    /// The variable is set/active.
+    On,
+    /// The variable is permanently retired: an entity correlated with it is
+    /// not respawned in a later map.
+    Dead,
+}
+
+/// `env_global`: names a global state variable, the value activating it
+/// writes, and the value it seeds on map load.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct EnvGlobal {
+    /// The `globalstate` keyvalue: the variable's name.
+    pub global_state: String,
+    /// The value written when this entity is activated (`triggermode`;
+    /// `None` means "toggle between off and on").
+    pub trigger_mode: Option<GlobalStateValue>,
+    /// The `initialstate` value seeded on map load when the entity's
+    /// documented "Set Initial State" spawnflag (bit `1`) is set.
+    pub initial_state: GlobalStateValue,
+    /// Whether the spawnflag asking for [`Self::initial_state`] to be
+    /// applied on load is set.
+    pub sets_initial_state: bool,
+}
+
+/// `env_message` (a `titles.txt` entry name) or `game_text` (literal text),
+/// with the fade/hold timings the HUD shows it for.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Message {
+    /// `message`: a `titles.txt` entry name for `env_message`, the literal
+    /// text for `game_text`.
+    pub message: String,
+    /// `true` when [`Self::message`] is literal text (`game_text`) rather
+    /// than a `titles.txt` entry name (`env_message`).
+    pub literal: bool,
+    /// `fadein` seconds, when the entity overrides it.
+    pub fadein: Option<f32>,
+    /// `fadeout` seconds, when the entity overrides it.
+    pub fadeout: Option<f32>,
+    /// `holdtime` seconds, when the entity overrides it.
+    pub holdtime: Option<f32>,
+}
+
 /// `path_corner`/`path_track`: the next node's name, a pause, and (for
 /// `func_tracktrain`) a `path_track`-only speed override and stop flag. See
 /// `docs/FORMAT_SOURCES.md` ("Track trains and paths") for the public
 /// sources these last two fields were taken from.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Path {
     /// Seconds a follower waits at this node.
     pub wait: f32,
@@ -218,6 +327,7 @@ pub struct Path {
 /// the public documentation of how the entity is authored). Bounded to the
 /// documented limit of 16 fan-out targets.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MultiManager {
     /// `(target, delay in seconds)`, in authored order.
     pub targets: Vec<(String, f32)>,
@@ -229,6 +339,7 @@ pub const MAX_MULTI_MANAGER_TARGETS: usize = 16;
 /// `trigger_once`/`trigger_multiple` and any other `trigger_*` this crate
 /// does not give a dedicated component to.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Trigger {
     /// `true` for `trigger_once` (fires at most once); `false` for
     /// `trigger_multiple` and other repeatable triggers.
@@ -241,15 +352,20 @@ pub struct Trigger {
 
 /// Any classname not otherwise recognised.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Unknown;
 
 /// `worldspawn`'s map-wide keys.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Worldspawn {
     /// `skyname`.
     pub skyname: String,
     /// `wad`, split into individual package paths.
     pub wads: Vec<String>,
+    /// `newunit`: the map starts a new unit, so the previous level's
+    /// carried-over state is discarded rather than applied.
+    pub newunit: bool,
 }
 
 /// Standard GoldSrc `angle` sentinel meaning "straight up".
@@ -389,7 +505,23 @@ impl Registry {
                         f32::midpoint(mins[2], maxs[2]),
                     );
                     world.insert_one(entity, BrushCenter(center)).ok();
+                    world
+                        .insert_one(
+                            entity,
+                            BrushBounds {
+                                mins: Vec3::from_array(*mins),
+                                maxs: Vec3::from_array(*maxs),
+                            },
+                        )
+                        .ok();
                 }
+            }
+            if let Some(global) = def
+                .keyvalues
+                .get("globalname")
+                .filter(|value| !value.is_empty())
+            {
+                world.insert_one(entity, GlobalName(global.clone())).ok();
             }
 
             match def.classname.as_str() {
@@ -402,6 +534,10 @@ impl Registry {
                     worldspawn = Some(Worldspawn {
                         skyname: def.keyvalues.get("skyname").cloned().unwrap_or_default(),
                         wads,
+                        newunit: def
+                            .keyvalues
+                            .get("newunit")
+                            .is_some_and(|value| value.trim() != "0" && !value.trim().is_empty()),
                     });
                 }
                 "func_door" | "func_door_rotating" => {
@@ -503,6 +639,33 @@ impl Registry {
                     };
                     world.insert_one(entity, change).ok();
                 }
+                "trigger_transition" => {
+                    world.insert_one(entity, TransitionVolume).ok();
+                }
+                "env_global" => {
+                    let env_global = EnvGlobal {
+                        global_state: def
+                            .keyvalues
+                            .get("globalstate")
+                            .cloned()
+                            .unwrap_or_default(),
+                        trigger_mode: global_state_value(def.keyvalues.get("triggermode")),
+                        initial_state: global_state_value(def.keyvalues.get("initialstate"))
+                            .unwrap_or_default(),
+                        sets_initial_state: def.spawnflags & 1 != 0,
+                    };
+                    world.insert_one(entity, env_global).ok();
+                }
+                "env_message" | "game_text" => {
+                    let message = Message {
+                        message: def.keyvalues.get("message").cloned().unwrap_or_default(),
+                        literal: def.classname == "game_text",
+                        fadein: optional_numeric(def, "fadein"),
+                        fadeout: optional_numeric(def, "fadeout"),
+                        holdtime: optional_numeric(def, "holdtime"),
+                    };
+                    world.insert_one(entity, message).ok();
+                }
                 "path_corner" | "path_track" => {
                     let path = Path {
                         wait: numeric(def, "wait", 0.0),
@@ -585,6 +748,21 @@ impl Registry {
         registry
     }
 
+    /// Registers an entity spawned after [`Self::build`] (for example one
+    /// carried in from the previous map across a level transition) in the
+    /// name index, under the same [`MAX_ENTITIES_PER_NAME`] bound.
+    ///
+    /// Passing `None` records nothing: an unnamed entity is not indexed.
+    pub fn index(&mut self, entity: Entity, name: Option<&str>) {
+        let Some(name) = name.filter(|name| !name.is_empty()) else {
+            return;
+        };
+        let bucket = self.name_index.entry(name.to_string()).or_default();
+        if bucket.len() < MAX_ENTITIES_PER_NAME {
+            bucket.push(entity);
+        }
+    }
+
     /// Entities whose `targetname` is `name`, bounded to
     /// [`MAX_ENTITIES_PER_NAME`].
     #[must_use]
@@ -593,6 +771,26 @@ impl Registry {
             .get(name)
             .map_or(&[] as &[Entity], Vec::as_slice)
     }
+}
+
+/// Reads a documented `env_global` mode keyvalue (`triggermode`,
+/// `initialstate`): `0` off, `1` on, `2` dead, anything else (including the
+/// documented `3` "toggle" `triggermode`) `None`.
+fn global_state_value(value: Option<&String>) -> Option<GlobalStateValue> {
+    match value?.trim() {
+        "0" => Some(GlobalStateValue::Off),
+        "1" => Some(GlobalStateValue::On),
+        "2" => Some(GlobalStateValue::Dead),
+        _ => None,
+    }
+}
+
+/// A finite numeric keyvalue, or `None` when the entity does not set it.
+fn optional_numeric(def: &EntityDef, key: &str) -> Option<f32> {
+    def.keyvalues
+        .get(key)
+        .and_then(|value| value.trim().parse::<f32>().ok())
+        .filter(|value| value.is_finite())
 }
 
 fn numeric(def: &EntityDef, key: &str, default: f32) -> f32 {

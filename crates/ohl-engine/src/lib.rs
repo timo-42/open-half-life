@@ -29,15 +29,28 @@ mod input;
 mod level;
 mod render;
 
+// Campaign flow (M8.2): level transitions, save/load, chapter titles and
+// difficulty. See `docs/FORMAT_SOURCES.md` ("Campaign flow") for the public
+// documentation these semantics were implemented from.
+pub mod save;
+pub mod text;
+pub mod transition;
+
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
 pub use assets::{AssetFsSource, AssetSource, MemoryAssets};
 pub use error::{EngineError, Result};
-pub use game::{Game, GameEvent};
+pub use game::{Game, GameConfig, GameEvent};
 pub use input::Input;
 pub use level::SpritePlacement;
 pub use render::RenderTarget;
+pub use save::GameSave;
+pub use text::{AssetPath, MessageBlock, SentenceLookup, TitleLibrary};
+pub use transition::{
+    DEFAULT_CARRY_RADIUS, DefaultPlayerCarry, GlobalStateTable, PlayerCarry, PlayerCarryState,
+    TransitionState,
+};
 
 /// How far the mouse turns the player, in degrees per pixel.
 pub const MOUSE_SENSITIVITY: f32 = 0.15;

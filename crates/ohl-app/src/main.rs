@@ -51,6 +51,28 @@ const EXIT_USAGE: u8 = 2;
 /// A media, mount, or cache failure.
 const EXIT_FAILURE: u8 = 1;
 
+/// The `--difficulty` choices, mapped onto `ohl-campaign`'s documented
+/// `skill` cvar values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum DifficultyArg {
+    /// `skill 1`.
+    Easy,
+    /// `skill 2`.
+    Medium,
+    /// `skill 3`.
+    Hard,
+}
+
+impl From<DifficultyArg> for ohl_campaign::Difficulty {
+    fn from(value: DifficultyArg) -> Self {
+        match value {
+            DifficultyArg::Easy => Self::Easy,
+            DifficultyArg::Medium => Self::Medium,
+            DifficultyArg::Hard => Self::Hard,
+        }
+    }
+}
+
 /// `Open Half-Life <version>` command line.
 #[derive(Debug, Parser)]
 #[command(name = "Open Half-Life", version = VERSION, about = None, long_about = None)]
@@ -121,6 +143,15 @@ struct Cli {
     /// Start on the hazard course rather than the campaign's start map.
     #[arg(long, conflicts_with = "map")]
     training: bool,
+
+    /// Resume from a save slot instead of starting a map fresh.
+    #[arg(long, value_name = "SLOT", conflicts_with_all = ["map", "training"])]
+    load: Option<String>,
+
+    /// The campaign difficulty, selecting which `skill.cfg` values the game
+    /// reads.
+    #[arg(long, value_name = "LEVEL", default_value = "medium")]
+    difficulty: DifficultyArg,
 
     /// Render offscreen and write a PNG here instead of opening a window.
     #[arg(long, value_name = "PATH")]
@@ -400,7 +431,12 @@ fn run(cli: Cli) -> ExitCode {
         return code;
     }
 
-    if cli.play || cli.training || cli.map.is_some() || cli.headless_screenshot.is_some() {
+    if cli.play
+        || cli.training
+        || cli.map.is_some()
+        || cli.load.is_some()
+        || cli.headless_screenshot.is_some()
+    {
         return run_game_flow(&cli);
     }
 
@@ -435,6 +471,8 @@ fn run_game_flow(cli: &Cli) -> ExitCode {
     match game_run::run(&game_run::GameArgs {
         payload_files: &files,
         map: &map,
+        load_slot: cli.load.as_deref(),
+        difficulty: cli.difficulty.into(),
         screenshot: cli.headless_screenshot.as_deref(),
         frames: cli.frames,
         viewpoint: cli.viewpoint,

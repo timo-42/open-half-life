@@ -64,6 +64,7 @@ pub enum ModelRef {
 
 /// `rendermode`/`renderamt`/`rendercolor`, GoldSrc's render-fx keyvalues.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RenderProps {
     /// `rendermode`; `0` (`kRenderNormal`) when absent or unparsable.
     pub mode: i32,

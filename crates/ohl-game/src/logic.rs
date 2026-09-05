@@ -12,7 +12,8 @@ use glam::Vec3;
 use hecs::Entity;
 
 use crate::registry::{
-    Button, ChangeLevel, Door, MoverState, MultiManager, Platform, Registry, Transform, Trigger,
+    Button, ChangeLevel, Door, Message, MoverState, MultiManager, Platform, Registry, Transform,
+    Trigger,
 };
 use crate::track_train::TrackTrainState;
 
@@ -75,10 +76,14 @@ pub struct Fire {
 /// An externally visible outcome of the simulation the caller must act on
 /// (there is no in-crate handling for a level change: loading the next map
 /// is the caller's job).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     /// A `trigger_changelevel` fired.
     LevelChange(LevelChange),
+    /// An `env_message`/`game_text` fired; the caller resolves the
+    /// `titles.txt` entry (when [`Message::literal`] is `false`) and shows
+    /// it.
+    Message(Message),
 }
 
 /// The destination of a level transition.
@@ -97,6 +102,41 @@ pub struct LevelChange {
 struct TriggerState {
     used: bool,
     cooldown: f32,
+}
+
+/// One scheduled event, as stored in a save file.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct PendingFire {
+    /// The `targetname` this event will activate.
+    pub target: String,
+    /// The activator's `hecs` bit pattern, when it had one.
+    pub activator: Option<u64>,
+    /// Seconds remaining before it fires.
+    pub delay: f32,
+}
+
+/// One trigger's cooldown state, as stored in a save file.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct TriggerSnapshot {
+    /// The trigger entity's `hecs` bit pattern.
+    pub entity: u64,
+    /// Whether a `trigger_once` has already fired.
+    pub used: bool,
+    /// Seconds left before the trigger may fire again.
+    pub cooldown: f32,
+}
+
+/// A [`Simulation`]'s persistable bookkeeping: what is scheduled and which
+/// triggers are spent or cooling down.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct SimulationState {
+    /// Scheduled events, in queue order.
+    pub pending: Vec<PendingFire>,
+    /// Per-trigger cooldown state, ordered by entity.
+    pub triggers: Vec<TriggerSnapshot>,
 }
 
 /// The map logic simulation: an event queue plus per-tick state-machine
@@ -232,9 +272,79 @@ impl Simulation {
             events.push(Event::LevelChange(change));
             return;
         }
+        if let Some(message) = registry
+            .world
+            .get::<&Message>(entity)
+            .ok()
+            .map(|message| Message::clone(&message))
+        {
+            events.push(Event::Message(message));
+            return;
+        }
         if registry.world.get::<&Trigger>(entity).is_ok() {
             self.activate_trigger(registry, entity, activator);
         }
+    }
+
+    /// This simulation's own bookkeeping (scheduled events and per-trigger
+    /// cooldowns), in a form a save file can hold.
+    ///
+    /// Entities are recorded by their `hecs` bit pattern, which is stable
+    /// for a registry rebuilt from the same map in the same order; a
+    /// snapshot restored onto a different map's registry simply does not
+    /// match any entity and is ignored.
+    #[must_use]
+    pub fn snapshot(&self) -> SimulationState {
+        SimulationState {
+            pending: self
+                .pending
+                .iter()
+                .map(|fire| PendingFire {
+                    target: fire.target.clone(),
+                    activator: fire.activator.map(|entity| entity.to_bits().get()),
+                    delay: fire.delay,
+                })
+                .collect(),
+            triggers: self
+                .trigger_state
+                .iter()
+                .map(|(entity, state)| TriggerSnapshot {
+                    entity: entity.to_bits().get(),
+                    used: state.used,
+                    cooldown: state.cooldown,
+                })
+                .collect(),
+        }
+    }
+
+    /// Replaces this simulation's bookkeeping with `state`, dropping
+    /// anything beyond the same bounds [`Self::fire`] enforces.
+    pub fn restore(&mut self, state: &SimulationState) {
+        self.pending = state
+            .pending
+            .iter()
+            .take(MAX_PENDING_EVENTS)
+            .map(|fire| Fire {
+                target: fire.target.clone(),
+                activator: fire.activator.and_then(Entity::from_bits),
+                delay: fire.delay.max(0.0),
+            })
+            .collect();
+        self.trigger_state = state
+            .triggers
+            .iter()
+            .filter_map(|trigger| {
+                Entity::from_bits(trigger.entity).map(|entity| {
+                    (
+                        entity,
+                        TriggerState {
+                            used: trigger.used,
+                            cooldown: trigger.cooldown.max(0.0),
+                        },
+                    )
+                })
+            })
+            .collect();
     }
 
     fn activate_trigger(

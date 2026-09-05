@@ -14,7 +14,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ohl_engine::{AssetFsSource, Game, GameEvent, Input, RenderTarget};
+use ohl_engine::{AssetFsSource, Game, GameConfig, GameEvent, Input, RenderTarget};
 use ohl_render::{GpuContext, OFFSCREEN_FORMAT, OffscreenTarget, WindowSurface, wgpu};
 use ohl_ui::{UiLayer, console::Console, hud::HudState};
 use winit::application::ApplicationHandler;
@@ -35,6 +35,9 @@ const CAPTURE_STEP: f32 = 1.0 / 60.0;
 
 /// How often the frame-rate line is logged.
 const FPS_INTERVAL: Duration = Duration::from_secs(2);
+
+/// How long a chapter title stays on the HUD, in seconds.
+const CHAPTER_TITLE_SECONDS: f32 = 5.0;
 
 /// A caller-chosen camera placement for a headless capture.
 #[derive(Debug, Clone, Copy)]
@@ -88,6 +91,24 @@ pub struct GameArgs<'a> {
     /// Where to stand for a headless capture, relative to the map's player
     /// start. Ignored when `viewpoint` is given.
     pub spawn_offset: Option<Viewpoint>,
+    /// A save slot to resume from instead of loading `map` fresh.
+    pub load_slot: Option<&'a str>,
+    /// The campaign difficulty.
+    pub difficulty: ohl_campaign::Difficulty,
+}
+
+/// The save directory this run reads and writes slots in, or `None` when the
+/// platform publishes no per-user data directory.
+fn save_slot_dir() -> Option<ohl_save::SaveSlot> {
+    ohl_save::SaveSlot::default_dir().map(ohl_save::SaveSlot::new)
+}
+
+/// A save file's creation timestamp. Wall-clock time is host state, not
+/// game state, so the engine takes it as an argument.
+fn now_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
 /// Runs the playable loop, either headless (writing a PNG) or windowed.
@@ -99,11 +120,23 @@ pub fn run(args: &GameArgs<'_>) -> Result<(), &'static str> {
     let asset_fs = ohl_assets::AssetFs::mount_default(&root)
         .map_err(|_| "the payload directory could not be indexed")?;
     let source = AssetFsSource::new(asset_fs);
-    let mut game = Game::load(&source, args.map).map_err(|_| {
-        // The map name is media-derived, so the reason names the step, not
-        // the asset.
-        "the start map could not be loaded from the payload"
-    })?;
+    let config = GameConfig {
+        difficulty: args.difficulty,
+    };
+    let mut game = match args.load_slot {
+        Some(name) => {
+            let slot = save_slot_dir().ok_or("no per-user save directory is available")?;
+            // Neither the slot name nor the saved map name is logged: one is
+            // user-supplied, the other media-derived.
+            Game::load_slot(&source, &slot, name)
+                .map_err(|_| "the save slot could not be loaded")?
+        }
+        None => Game::load_with(&source, args.map, &config).map_err(|_| {
+            // The map name is media-derived, so the reason names the step,
+            // not the asset.
+            "the start map could not be loaded from the payload"
+        })?,
+    };
     tracing::info!("Map loaded.");
     if game.missing_model_count() > 0 {
         // Deliberately no count: it is derived from the map's own contents.
@@ -172,8 +205,13 @@ fn capture(game: &mut Game, args: &GameArgs<'_>, path: &Path) -> Result<(), &'st
         // light styles, liquid turbulence, model sequences) advances.
         let events = game.tick(CAPTURE_STEP, &Input::default());
         for event in events {
-            let GameEvent::LevelChange { .. } = event;
-            tracing::info!("A level change fired during capture; it was not followed.");
+            match event {
+                GameEvent::LevelChange { .. } => {
+                    tracing::info!("A level change fired during capture; it was not followed.");
+                }
+                // Both carry map-authored text, so neither is logged.
+                GameEvent::ChapterTitle(_) | GameEvent::Message { .. } => {}
+            }
         }
         game.render(
             &context,
@@ -201,12 +239,14 @@ fn capture(game: &mut Game, args: &GameArgs<'_>, path: &Path) -> Result<(), &'st
 }
 
 /// Opens a window and runs the loop until it closes or Escape is pressed.
+#[allow(clippy::needless_pass_by_value)]
 fn windowed(game: Game, source: &AssetFsSource) -> Result<(), &'static str> {
     let event_loop = EventLoop::new().map_err(|_| "no window system is available")?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App {
         game,
         source,
+        saves: save_slot_dir(),
         input: Input::default(),
         key_use_down: false,
         console: Console::new(),
@@ -235,6 +275,9 @@ struct Active {
 struct App<'a> {
     game: Game,
     source: &'a AssetFsSource,
+    /// The save directory quicksave/quickload and the level-change autosave
+    /// use, when the platform publishes one.
+    saves: Option<ohl_save::SaveSlot>,
     input: Input,
     /// Whether "use" was already down as of the last keyboard event, so the
     /// one-frame press edge is not re-latched by key repeat.
@@ -282,6 +325,49 @@ impl App<'_> {
         };
     }
 
+    /// Writes the autosave slot after a level change, if a save directory
+    /// exists. A failure is reported once and never retried in a loop.
+    fn autosave(&mut self) {
+        if self.write_slot(ohl_save::AUTOSAVE_SLOT_NAME) {
+            tracing::info!("Autosaved.");
+        }
+    }
+
+    fn quicksave(&mut self) {
+        if self.write_slot(ohl_save::QUICKSAVE_SLOT_NAME) {
+            tracing::info!("Quicksaved.");
+        }
+    }
+
+    /// Writes one save slot, reporting failure as a fixed line. The slot
+    /// name is never logged: it is either a constant or user-supplied.
+    fn write_slot(&mut self, name: &str) -> bool {
+        let Some(slot) = self.saves.as_ref() else {
+            tracing::warn!("No per-user save directory is available; not saving.");
+            return false;
+        };
+        if self.game.save_slot(slot, name, now_unix_secs()).is_ok() {
+            true
+        } else {
+            tracing::warn!("The save could not be written.");
+            false
+        }
+    }
+
+    /// Reloads the quicksave slot in place.
+    fn quickload(&mut self) {
+        let Some(slot) = self.saves.as_ref() else {
+            tracing::warn!("No per-user save directory is available; not loading.");
+            return;
+        };
+        if let Ok(game) = Game::load_slot(self.source, slot, ohl_save::QUICKSAVE_SLOT_NAME) {
+            self.game = game;
+            tracing::info!("Quickload complete.");
+        } else {
+            tracing::warn!("The quicksave could not be loaded.");
+        }
+    }
+
     fn draw(&mut self) {
         let now = Instant::now();
         let delta = now.saturating_duration_since(self.last_frame);
@@ -293,12 +379,25 @@ impl App<'_> {
         self.input.mouse_delta = (0.0, 0.0);
         self.input.use_pressed = false;
         for event in self.game.tick(delta.as_secs_f32(), &frame_input) {
-            let GameEvent::LevelChange { map, landmark } = event;
-            // Neither string is logged: both are map-derived.
-            if self.game.change_level(self.source, &map, &landmark).is_ok() {
-                tracing::info!("Level changed.");
-            } else {
-                tracing::warn!("The destination map is not published; staying here.");
+            match event {
+                GameEvent::LevelChange { map, landmark } => {
+                    // Neither string is logged: both are map-derived.
+                    if self.game.change_level(self.source, &map, &landmark).is_ok() {
+                        tracing::info!("Level changed.");
+                        self.autosave();
+                    } else {
+                        tracing::warn!("The destination map is not published; staying here.");
+                    }
+                }
+                GameEvent::ChapterTitle(title) => {
+                    // The title itself is map-derived, so it goes to the HUD
+                    // and never to a log line.
+                    self.hud.show_message(title, CHAPTER_TITLE_SECONDS);
+                }
+                GameEvent::Message { block } => {
+                    let seconds = block.total_seconds();
+                    self.hud.show_message(block.text, seconds);
+                }
             }
         }
         self.hud.decay_damage_flash(2.0, delta.as_secs_f32());
@@ -453,6 +552,18 @@ impl ApplicationHandler for App<'_> {
                     return;
                 }
                 if self.console.is_open() {
+                    return;
+                }
+                if code == KeyCode::F6 {
+                    if pressed && !event.repeat {
+                        self.quicksave();
+                    }
+                    return;
+                }
+                if code == KeyCode::F7 {
+                    if pressed && !event.repeat {
+                        self.quickload();
+                    }
                     return;
                 }
                 if code == KeyCode::KeyE {
