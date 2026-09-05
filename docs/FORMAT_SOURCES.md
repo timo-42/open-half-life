@@ -366,3 +366,157 @@ That exception changes nothing about project-owned parsing. Specifically:
 - The finding recorded above stands unchanged: no independently authored public
   specification of the InstallShield 5/6-era cabinet container has been located,
   so project-owned cabinet or component-selection parsing **may not begin**.
+
+## InstallShield 3 Z archives and PKWARE DCL explode
+
+The `crates/ohl-isz` decoder is **written from the public documents below**. It is
+not a translation of, and does not reuse, any existing implementation. This is a
+different provenance situation from the InstallShield 5/6 cabinet container
+recorded in the previous section: for the *version 3* "Z" container an
+independently authored public description does exist, and the compression it uses
+is publicly specified.
+
+### Sources
+
+- **"InstallShield Z"**, Just Solve the File Format Problem (Archive Team file
+  formats wiki), page ID 4894, revision 50952, last modified 30 August 2025,
+  content licensed CC0.
+  <http://fileformats.archiveteam.org/wiki/InstallShield_Z>
+  ( permanent link:
+  <http://fileformats.archiveteam.org/index.php?title=InstallShield_Z&oldid=50952> ).
+  Sections used: *Identification* (files begin with the bytes
+  `13 5D 65 8C 3A 01 02 00`), the statement that the format is used by version 3 of
+  InstallShield and that it uses PKWARE DCL Implode compression, and *Specifications*,
+  which links the structure description below.
+- **`ISArchiveV3.h`**, Wolfgang Frisch, `unshieldv3`, Apache-2.0, first published
+  2019. <https://github.com/wfr/unshieldv3/blob/master/ISArchiveV3.h>
+  This is the "has some info about the format" specification the wiki cites. Used
+  as a *structure description only*: the field order, widths and meanings of the
+  archive header (signature words, entry count, archive size, expanded size,
+  volume count/number, split begin/end addresses, table-of-contents address,
+  directory count) and of the entry record (volume end, index, expanded size,
+  stored size, offset, date/time, record size, attribute flags including
+  `UNCOMPRESSED = 0x10`, split flag, volume start), plus the directory record's
+  entry count, record size and length-prefixed name. Field layouts are facts about
+  the format; no code, comment text, test data or algorithm from that project was
+  copied or translated.
+- **"PKWARE DCL Implode"**, Just Solve the File Format Problem, last modified
+  13 February 2023, content licensed CC0.
+  <http://fileformats.archiveteam.org/wiki/PKWARE_DCL_Implode>
+  Sections used: *Format details* (LZ77 with fixed, predefined Huffman codebooks)
+  and *Identification* (two-byte header: literal-coding flag `0x00`/`0x01`, then
+  dictionary size `0x04`/`0x05`/`0x06` for 1 KiB, 2 KiB and 4 KiB).
+- **`blast.c` format description**, Mark Adler, version 1.3, 24 August 2013, zlib
+  licence, distributed with zlib in `contrib/blast`.
+  <https://github.com/madler/zlib/tree/master/contrib/blast>
+  Sections used: the three "Format notes" comment blocks (bit order within a byte;
+  codes stored bit-reversed with the first code of the shortest length all ones;
+  the token grammar, the meaning of the two header bytes, the end code, the
+  distance shift rule and the treatment of overlapped copies), the fixed codebooks
+  and length base/extra tables, and the published known-answer vector
+  `00 04 82 24 25 8f 80 7f` decoding to `AIAIAIAIAIAIA`. `blast.c` credits the
+  primary public specification: the reverse-engineered description posted by
+  **Ben Rudiak-Gould** to `comp.compression` on 13 August 2001
+  (<https://groups.google.com/g/comp.compression/c/M5P064or93o/m/W1ca1-ad6kgJ>).
+
+### Decision: WRITE from the public documents
+
+The alternatives were audited before any code was written.
+
+- **`unshield` 0.2.0** (Aaron Griffith, MIT,
+  <https://github.com/agrif/unshield>, 548 lines, dependencies `byteorder` and
+  `explode`) and its decompressor **`explode` 0.1.2** (same author, MIT, itself
+  described as "based on `blast.c` by Mark Adler"). Both were fetched and read.
+  They were rejected for adoption because:
+  - both are **`std`-only** (`std::io::{Read, Seek}`, `std::io::Error`,
+    `std::error::Error`), so neither can be linked into this workspace's
+    `#![no_std]` + `alloc` parser crates;
+  - `unshield::Archive::new` always seeks to **absolute offset 0**, so it cannot
+    read an archive embedded at a base offset inside an installer overlay, which is
+    exactly the case this project must handle;
+  - it exposes **no limits**: `files`, `size`, `toc_offset`, `dirs`, the per-record
+    chunk sizes and the name lengths are all used unchecked;
+  - it **panics on malformed input**. Ten adversarial cases were run against it in
+    a throwaway crate. `toc_offset = u32::MAX` panics in a debug build with an
+    attempt-to-subtract-with-overflow in `format.rs` (`size - toc_offset`), and in
+    a release build the same wraparound resizes a `Vec` to a ~4 GiB allocation
+    before the read fails; an archive-size field of `0xFFFF_FF00` likewise
+    allocates ~4 GiB from a single attacker-controlled `u32`. A directory record
+    whose chunk size is zero is silently accepted and produces a degenerate
+    listing rather than an error;
+  - it ignores the entry attribute flags, so it explodes stored (uncompressed)
+    entries as though they were imploded;
+  - it has **no cancellation**, no streaming extraction (whole entries are read
+    into a `Vec`), and no multi-volume handling at all.
+- **Translating** `unshield`/`explode` into `no_std` was rejected because it would
+  create a second licensed-derivative island for a format that, unlike the
+  version 5/6 cabinet, *does* have an independently authored public description —
+  and because the parts worth keeping (bounds checks, `Limits`, offset support,
+  streaming, cancellation) would all have had to be written from scratch anyway.
+
+Writing from the documents above yields exactly what the project needs: a
+`#![no_std]` + `alloc`, `#![forbid(unsafe_code)]` decoder that reads through a
+caller-supplied `ArchiveSource` at an arbitrary base offset, validates every count,
+offset and length against `Limits`, streams bounded chunks, and polls a
+`Cancellation` token between them.
+
+One artefact is derived from a licensed source and is attributed rather than
+re-derived: the format's three fixed Huffman codebooks and the length base and
+extra-bit tables, read from `blast.c` (zlib licence). These are constants defined
+by the format itself rather than authored code; they are restated in a different
+form (explicit `(bit length, run length)` pairs instead of the packed nibble
+encoding upstream uses) and their completeness is verified by a unit test. The
+notice is reproduced in `crates/ohl-isz/LICENSE-BLAST` and in
+`THIRD_PARTY_NOTICES.md`.
+
+### Supported behaviour
+
+`crates/ohl-isz` supports:
+
+- locating an archive inside a larger container: `find_signature` scans a
+  caller-supplied source in bounded windows, with an overlap so a signature
+  straddling two windows is still found, under a `max_scan_bytes` budget;
+- parsing the 59-byte archive header at an arbitrary base offset, rejecting either
+  wrong signature word, a table-of-contents address outside the archive, an archive
+  size below the fixed 255-byte data start, mutually inconsistent directory and
+  entry counts, and any count or size above `Limits`;
+- parsing the table of contents: directory records and entry records, each with a
+  record size that must cover its own fixed part plus its name and must stay inside
+  the table, with names returned as bounded, opaque byte strings whose `Debug`
+  output is redacted, and with each entry's offset and extent validated against the
+  archive;
+- streaming extraction of stored entries (attribute bit `0x10`) and of
+  DCL-imploded entries, in bounded chunks, with the expanded byte count checked
+  against the entry record and a cancellation token polled between chunks;
+- PKWARE DCL explode for dictionary codes 4, 5 and 6 (1 KiB, 2 KiB and 4 KiB
+  windows), both raw and Huffman-coded literals, rejecting a literal flag above 1,
+  a dictionary code outside `4..=6`, a distance reaching before the start of the
+  stream, and a stream that ends mid-token.
+
+`crates/ohl-isz` does **not** support **multi-volume (split) archives**. The format
+does have them: the header records a volume count, a 1-based volume number, a
+multi-volume marker and a split begin/end address range, and each entry record
+records a split flag together with its first and last volume. Those fields are
+parsed and surfaced, and an archive or entry that uses them is rejected with
+`Error::SplitArchiveUnsupported` rather than silently mis-decoded. Supporting them
+would require a volume-number-to-bytes mapping that this crate deliberately does
+not have, since it never opens a path or builds a filename.
+
+All fixtures used by the crate's tests and by its two `fuzz/` targets are produced
+by the project-authored synthetic writer and test-only implode encoder in
+`crates/ohl-isz/src/testing.rs`, from invented names and invented bytes. No byte,
+name, listing or layout from any real medium appears in the crate, its tests or
+this file.
+
+### Finding: the project's own reference image carries no InstallShield 3 archive
+
+The `#[ignore]`d manual survey `crates/ohl-isz/tests/manual_iso.rs` was run once
+against the operator's own Half-Life Game of the Year Edition image. It mounted the
+image through `ohl-vfs`, walked it, and scanned every file of at least 64 KiB —
+18 files, 398,613,978 bytes — for the archive signature. The full eight-byte
+signature does not occur anywhere on the image. The first signature word occurs
+exactly once, on its own, not followed by the second signature word, which makes it
+a coincidental byte pattern inside compressed data rather than an archive header.
+The image therefore packages its payload some other way, and no aggregate over a
+real archive could be produced. The decoder's correctness rests entirely on the
+synthetic round-trip, malformed-rejection, property and fuzz tests.

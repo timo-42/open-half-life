@@ -1,0 +1,35 @@
+[package]
+name = "ohl-isz"
+description = "Clean-room, no_std, bounds-checked decoder for InstallShield 3 Z archives and PKWARE DCL imploded data"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ohl_isz"
+
+[features]
+default = []
+std = ["ohl-core/std"]
+# Exposes the synthetic, project-authored Z-archive writer and the test-only
+# DCL implode encoder as a public, non-`cfg(test)` API so integration tests
+# and the standalone `fuzz/` workspace can build corpora from the same
+# project-owned synthetic data. Never enable in production builds.
+test-support = []
+
+[dependencies]
+ohl-core = { path = "../ohl-core", version = "=0.1.0" }
+
+[dev-dependencies]
+# Self dependency so integration tests under `tests/` (which link the
+# ordinary, non-`cfg(test)` build of this library) still see the synthetic
+# writer without making `test-support` a default feature for dependents.
+ohl-isz = { path = ".", version = "=0.1.0", features = ["std", "test-support"] }
+ohl-vfs = { path = "../ohl-vfs", version = "=0.1.0" }
+ohl-platform = { path = "../ohl-platform", version = "=0.1.0" }
+proptest = { workspace = true }
+
+[lints]
+workspace = true

@@ -111,6 +111,27 @@ required by `docs/CLEAN_ROOM.md`:
   `miniz_oxide` (raw DEFLATE, MIT) and optionally `md-5` (RustCrypto,
   MIT OR Apache-2.0) instead of zlib and the RSA MD5 reference code.
 
+## `ohl-isz` (PKWARE DCL code tables from `blast`)
+
+`crates/ohl-isz` is a clean-room decoder for InstallShield 3 "Z" archives and
+for the PKWARE Data Compression Library "implode" streams they contain,
+written from the public documents recorded in
+[`docs/FORMAT_SOURCES.md`](docs/FORMAT_SOURCES.md). It is **not** a
+translation of any implementation and it links no third-party crate other
+than the workspace's own `ohl-core`.
+
+One artefact is derived from a licensed source and is attributed here for
+transparency: the format's three fixed Huffman codebooks (the bit lengths of
+the 256 literal, 16 length and 64 distance codes) together with the length
+base and extra-bit tables. Those are constants defined by the format itself
+rather than authored code. They were read from the format description
+distributed with Mark Adler's `blast` (`contrib/blast/blast.c`, version 1.3,
+24 August 2013, zlib licence, <https://github.com/madler/zlib>), which in turn
+credits Ben Rudiak-Gould's 2001 `comp.compression` description as the primary
+public specification. The tables are restated in a different form and their
+completeness is verified by a unit test. The zlib licence text is reproduced
+in `crates/ohl-isz/LICENSE-BLAST`.
+
 ## zlib 1.3.1
 
 Unshield uses zlib for decompression. CMake fetches zlib 1.3.1 pinned at commit
