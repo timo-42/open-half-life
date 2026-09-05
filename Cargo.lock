@@ -2342,6 +2342,7 @@ dependencies = [
  "ohl-parser-worker-service",
  "ohl-payload",
  "ohl-wise",
+ "proptest",
 ]
 
 [[package]]

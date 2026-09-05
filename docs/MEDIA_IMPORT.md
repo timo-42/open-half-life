@@ -276,9 +276,11 @@ holds the worker-side lifetime, with the C++ callback tables expressed as the
 rules enforced by the borrow checker instead of by pointer comparison; and
 `ohl-parser-worker` builds and installs the freestanding
 `ohl-media-parser-worker` image that hosts one lifetime with the compile-fixed
-unsupported dispatcher. All three are `no_std` and allocation-free, and the
-first two forbid `unsafe`. Production import remains unavailable: the shipped
-image refuses every enumeration and stream request.
+unsupported dispatcher. All three are `no_std` and the first two are
+allocation-free; all three forbid `unsafe` except the image, whose inventory
+is reproduced in its own module documentation. Since R4.7b the image hosts the
+real `ohl-parser-backends` dispatcher, so it enumerates and streams the
+containers it recognises and refuses only the ones it does not.
 
 Authority remains asymmetric. The trusted parent owns the pinned source,
 validates every worker frame independently, establishes catalog membership,

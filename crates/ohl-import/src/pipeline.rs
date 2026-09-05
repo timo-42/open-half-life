@@ -196,9 +196,10 @@ pub enum ImportError {
     /// No confined parser worker could be launched on this build.
     #[error("no parser worker could be launched")]
     WorkerUnavailable,
-    /// The worker refused the operation. The shipped worker's dispatcher
-    /// answers `unsupported` for every enumeration and stream, emits no
-    /// frame, and exits, which the parent observes as the peer closing.
+    /// The worker refused the operation: it recognised no container it can
+    /// decode, or the container's bytes did not decode. It answers
+    /// `unsupported` by emitting no frame and exiting, which the parent
+    /// observes as the peer closing.
     #[error("the parser worker does not support this container")]
     Unsupported,
     /// The worker, the transport, or the protocol failed.
