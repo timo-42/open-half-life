@@ -1,0 +1,30 @@
+[package]
+name = "ohl-media"
+description = "Media fingerprinting, the validated-media proof, and the metadata-only provenance cache for the Open Half-Life Rust port"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ohl_media"
+
+[dependencies]
+ohl-core = { path = "../ohl-core", version = "=0.1.0", features = ["std"] }
+ohl-platform = { path = "../ohl-platform", version = "=0.1.0" }
+directories = { workspace = true }
+fs4 = { workspace = true }
+tempfile = { workspace = true }
+tracing = { workspace = true }
+# Not in the workspace table: the manifest codec is local to this crate.
+# Pinned exactly, like every other dependency in the workspace.
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

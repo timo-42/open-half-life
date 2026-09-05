@@ -43,7 +43,7 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
             "ohl-udf",
         ],
     ),
-    ("ohl-media", &["ohl-platform"]),
+    ("ohl-media", &["ohl-platform", "ohl-core"]),
     (
         "ohl-import",
         &[
