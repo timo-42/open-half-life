@@ -51,6 +51,19 @@ proptest! {
 
     #[test]
     fn case_only_variants_agree_on_existence(name in "[a-zA-Z]{1,12}") {
+        // Windows reserved device stems (`CON`, `PRN`, `AUX`, `NUL`,
+        // `COM1`-`9`, `LPT1`-`9`) are deliberately rejected by
+        // `ohl_assets::path::normalize` regardless of case, since a name
+        // this crate accepted would later be joined onto a real filesystem
+        // path and handed to the platform's file-open call. Generating one
+        // here would make this existence-agreement check indistinguishable
+        // from that intentional rejection.
+        let reserved = [
+            "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7",
+            "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+        ];
+        prop_assume!(!reserved.contains(&name.to_ascii_lowercase().as_str()));
+
         let dir = tempfile::tempdir().unwrap();
         let files_dir = dir.path().join("files");
         std::fs::create_dir_all(files_dir.join("valve")).unwrap();
