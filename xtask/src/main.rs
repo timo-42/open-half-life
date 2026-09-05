@@ -1,6 +1,6 @@
 //! `cargo xtask`: repository policy and crate-graph checks.
 //!
-//! - `cargo xtask policy` reimplements `cmake/CheckRepository.cmake`.
+//! - `cargo xtask policy` reimplements the former C++ build's `cmake/CheckRepository.cmake` tracked-file policy (removed with the C++ tree at M1-rs parity).
 //! - `cargo xtask graph` validates the crate dependency graph against the
 //!   allowed edges from `.plan/rust-architecture-r1.md` section 1.
 //! - `cargo xtask worker-image` builds the freestanding isolated-worker test
