@@ -1591,8 +1591,42 @@ crate carrying the sourced single-player chapter/map sequence and a
   persistence across `changelevel` (not confirmed from a public page). See
   `crates/ohl-campaign/src/lib.rs`'s module documentation.
 
-Not yet done: wiring either crate into `ohl-game`/`ohl-import`'s campaign
-bootstrap, save/restore semantics, and the two open citation items above.
+Not yet done: the two open citation items above.
+
+## M8 (Rust): campaign flow
+
+Status: in progress. M8.2 wires the M8.1 data and text formats into the
+running game: level transitions that carry state, save/load over the
+`ohl-save` container, chapter titles and HUD messages, and a
+difficulty-selected `skill.cfg` table. See `docs/FORMAT_SOURCES.md`
+("Campaign flow") for the public documentation these semantics were
+implemented from.
+
+- `ohl-game` gains (additively) a `globalname` component, brush bounds, a
+  `trigger_transition` marker, `env_global` and `env_message`/`game_text`
+  components, a worldspawn `newunit` flag, an `Event::Message` variant, a
+  serializable `SimulationState` snapshot, and an optional `serde` feature
+  that derives `Serialize`/`Deserialize` on every entity component.
+- `ohl-engine` gains `transition` (a `TransitionState` carrying the
+  player's landmark-relative pose, a `PlayerCarry` hook `ohl-player` will
+  implement, entities inside the landmark's `trigger_transition` volumes or
+  within `DEFAULT_CARRY_RADIUS`, the `globalname` state table and the
+  previous map's modified mover states; `newunit` drops all of it), `save`
+  (a `GameSave` laid into `ohl-save`'s tagged sections, with
+  `save_slot`/`load_slot`) and `text` (a `titles.txt` library, a
+  `sentences.txt` `SentenceLookup`, and the `skill.cfg` reader feeding
+  `ohl_campaign::SkillTable`). `GameEvent` grows `ChapterTitle` and
+  `Message` variants.
+- `ohl-app` gains `--load <slot>` and `--difficulty easy|medium|hard`, an
+  autosave on level change, F6/F7 quicksave/quickload in the windowed loop,
+  and shows chapter titles and `env_message` text in the HUD message area.
+- Save section tags: engine header `16`, player carry `17`, entity registry
+  `18`, simulation `19`, global state `20`, light-style time `21`, view
+  `22`. A save read back and written again is byte identical.
+
+Not yet done: real player/inventory carry (the `PlayerCarry` hook still
+returns health/armor placeholders until `ohl-player` implements it) and the
+three "to verify" citation items.
 
 ## M9 (Rust): UI shell
 

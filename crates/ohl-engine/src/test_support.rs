@@ -56,7 +56,6 @@ pub fn synthetic_map_bsp() -> Vec<u8> {
 /// The same fixture with a caller-chosen `trigger_changelevel` destination,
 /// so a test can build the *destination* map too.
 #[must_use]
-#[allow(clippy::too_many_lines)]
 pub fn synthetic_map_bsp_named(next_map: &str) -> Vec<u8> {
     synthetic_map_bsp_with_extra_entity(next_map, "")
 }
@@ -68,11 +67,20 @@ pub fn synthetic_map_bsp_named(next_map: &str) -> Vec<u8> {
 #[must_use]
 #[allow(clippy::too_many_lines)]
 pub fn synthetic_map_bsp_with_extra_entity(next_map: &str, extra_entity: &str) -> Vec<u8> {
+    synthetic_map_bsp_with_entities(&entities_text_with_extra(next_map, extra_entity))
+}
+
+/// The same room geometry with a caller-authored entity block, so a test can
+/// build a second map of a two-map campaign (its own landmark, its own
+/// carried entities) without inventing new geometry.
+#[must_use]
+#[allow(clippy::too_many_lines)]
+pub fn synthetic_map_bsp_with_entities(entities: &str) -> Vec<u8> {
     const HALF: f32 = 192.0;
     const HEIGHT: f32 = 192.0;
 
     let mut b = Bsp30Builder::new();
-    b.set_entities_text(&entities_text_with_extra(next_map, extra_entity));
+    b.set_entities_text(entities);
 
     b.push_plane([0.0, 0.0, 1.0], 0.0, 2);
     b.push_plane([1.0, 0.0, 0.0], 0.0, 0);

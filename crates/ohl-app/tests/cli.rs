@@ -171,3 +171,38 @@ fn directory_fails_preflight() {
         "stderr: {stderr}"
     );
 }
+
+#[test]
+fn the_difficulty_flag_only_accepts_the_three_documented_levels() {
+    let output = run(&["--difficulty", "nightmare", "--play"]);
+    assert!(
+        !output.status.success(),
+        "an unknown difficulty is rejected"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("difficulty"),
+        "the usage error names the offending flag"
+    );
+}
+
+#[test]
+fn a_save_slot_and_a_start_map_are_mutually_exclusive() {
+    let output = run(&["--load", "quicksave", "--map", "ohlsynth"]);
+    assert!(
+        !output.status.success(),
+        "--load and --map cannot both be given"
+    );
+}
+
+#[test]
+fn the_help_text_lists_the_campaign_flow_flags() {
+    let output = run(&["--help"]);
+    assert!(output.status.success(), "--help succeeds");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--load"), "--load is documented");
+    assert!(
+        stdout.contains("--difficulty"),
+        "--difficulty is documented"
+    );
+}

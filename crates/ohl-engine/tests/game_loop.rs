@@ -116,14 +116,20 @@ fn a_change_level_event_reaches_the_host() {
                 ..Input::default()
             },
         );
-        if let Some(event) = events.into_iter().next() {
+        if let Some(event) = events
+            .into_iter()
+            .find(|event| matches!(event, GameEvent::LevelChange { .. }))
+        {
             change = Some(event);
             break;
         }
     }
 
     let GameEvent::LevelChange { map, landmark } =
-        change.expect("the button's target is a trigger_changelevel");
+        change.expect("the button's target is a trigger_changelevel")
+    else {
+        panic!("the level-change event is the one that was searched for");
+    };
     assert_eq!(map, NEXT_MAP);
     assert_eq!(landmark, LANDMARK);
 }

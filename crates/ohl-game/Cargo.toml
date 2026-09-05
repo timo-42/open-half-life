@@ -12,6 +12,11 @@ name = "ohl_game"
 
 [features]
 default = []
+# Adds `Serialize`/`Deserialize` derives to the entity components and to the
+# map-logic simulation's snapshot type, so a host (today `ohl-engine`'s save
+# and level-transition code) can persist entity state without this crate
+# taking a serialization dependency by default.
+serde = ["dep:serde", "glam/serde"]
 
 [dependencies]
 ohl-core = { path = "../ohl-core", version = "=0.1.0" }
@@ -21,9 +26,15 @@ ohl-world = { path = "../ohl-world", version = "=0.1.0" }
 # architecture that are not yet in `[workspace.dependencies]`.
 glam = { version = "=0.33.6", default-features = false, features = ["std"] }
 hecs = { version = "=0.11.1", default-features = false, features = ["std"] }
+# Optional, exact-pinned to match `ohl-save`'s own pin: the two crates'
+# serialized values travel together inside one save container.
+serde = { version = "=1.0.229", features = ["derive"], optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+# Self dependency so this crate's own tests exercise the serde derives the
+# `serde` feature adds without making it a default feature for dependents.
+ohl-game = { path = ".", features = ["serde"] }
 
 [lints]
 workspace = true

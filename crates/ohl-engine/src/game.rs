@@ -1,7 +1,9 @@
 //! The game state and its two verbs: [`Game::tick`] and
-//! [`Game::render`](crate::Game::render).
+//! [`Game::render`](crate::Game::render), plus the campaign flow layered on
+//! them: level transitions, save/load, chapter titles and difficulty.
 
 use glam::Vec3;
+use ohl_campaign::{Difficulty, SkillTable};
 use ohl_game::{Event, find_usable_within};
 use ohl_physics::{ControllerInput, PlayerController};
 use ohl_render::{FreeFlyCamera, GpuContext, LightStyles, MoveInput, wgpu};
@@ -11,10 +13,15 @@ use crate::error::{EngineError, Result};
 use crate::input::Input;
 use crate::level::Level;
 use crate::render::{RenderTarget, Renderers};
+use crate::save::{EngineHeader, GameSave, ViewState};
+use crate::text::{MessageBlock, SentenceLookup, TitleLibrary, load_skill_table};
+use crate::transition::{
+    DefaultPlayerCarry, EntitySnapshot, GlobalStateTable, PlayerCarry, TransitionState,
+};
 use crate::{MAX_TICK_SECONDS, MOUSE_SENSITIVITY, USE_RADIUS};
 
 /// Something the simulation produced that only the host can act on.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum GameEvent {
     /// A `trigger_changelevel` fired. The host decides whether and when to
     /// call [`Game::change_level`].
@@ -25,6 +32,32 @@ pub enum GameEvent {
         /// relative position across.
         landmark: String,
     },
+    /// A map was loaded whose chapter `ohl-campaign` knows a title for.
+    /// The host shows it in the HUD's message area.
+    ChapterTitle(String),
+    /// An `env_message`/`game_text` fired and was resolved against
+    /// `titles.txt`.
+    Message {
+        /// The resolved text and its fade/hold timings.
+        block: MessageBlock,
+    },
+}
+
+/// How a [`Game`] is started: everything the host chooses rather than the
+/// map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GameConfig {
+    /// The campaign difficulty, selecting which `skill.cfg` cvar suffix
+    /// [`Game::skill_table`] lookups read.
+    pub difficulty: Difficulty,
+}
+
+impl Default for GameConfig {
+    fn default() -> Self {
+        Self {
+            difficulty: Difficulty::Medium,
+        }
+    }
 }
 
 /// One loaded level plus everything that acts on it.
@@ -38,16 +71,33 @@ pub struct Game {
     /// change can rebuild them without the host re-declaring it.
     format: Option<wgpu::TextureFormat>,
     elapsed: f32,
+    difficulty: Difficulty,
+    skill: SkillTable,
+    titles: TitleLibrary,
+    sentences: SentenceLookup,
+    globals: GlobalStateTable,
+    carry: Box<dyn PlayerCarry>,
+    /// Events produced outside [`Self::tick`] (a chapter title on load),
+    /// drained by the next tick so a host has exactly one event path.
+    pending: Vec<GameEvent>,
 }
 
 impl Game {
     /// Loads `map` through `source` and places the player at its
-    /// `info_player_start`.
+    /// `info_player_start`, on the default difficulty.
     ///
     /// # Errors
     /// As [`crate::level::Level::load`].
     pub fn load(source: &dyn AssetSource, map: &str) -> Result<Self> {
-        Ok(Self::from_level(Level::load(source, map)?))
+        Self::load_with(source, map, &GameConfig::default())
+    }
+
+    /// Loads `map` with a host-chosen [`GameConfig`].
+    ///
+    /// # Errors
+    /// As [`crate::level::Level::load`].
+    pub fn load_with(source: &dyn AssetSource, map: &str, config: &GameConfig) -> Result<Self> {
+        Ok(Self::from_level(Level::load(source, map)?, source, *config))
     }
 
     /// Loads a level from map bytes the caller already holds.
@@ -55,16 +105,23 @@ impl Game {
     /// # Errors
     /// As [`crate::level::Level::from_bytes`].
     pub fn from_map_bytes(source: &dyn AssetSource, map: &str, bytes: &[u8]) -> Result<Self> {
-        Ok(Self::from_level(Level::from_bytes(source, map, bytes)?))
+        Ok(Self::from_level(
+            Level::from_bytes(source, map, bytes)?,
+            source,
+            GameConfig::default(),
+        ))
     }
 
-    fn from_level(level: Level) -> Self {
+    fn from_level(level: Level, source: &dyn AssetSource, config: GameConfig) -> Self {
         let camera = level
             .spawn
             .map_or_else(FreeFlyCamera::default, FreeFlyCamera::at_spawn);
         let controller = level.spawn.map_or_else(PlayerController::default, |spawn| {
             PlayerController::spawn_at(Vec3::from_array(spawn.origin), spawn.yaw, spawn.pitch)
         });
+        let mut globals = GlobalStateTable::new();
+        globals.seed_from(&level.registry);
+        let pending = chapter_title_event(&level.name).into_iter().collect();
         Self {
             level,
             camera,
@@ -73,6 +130,13 @@ impl Game {
             renderers: None,
             format: None,
             elapsed: 0.0,
+            difficulty: config.difficulty,
+            skill: load_skill_table(source),
+            titles: TitleLibrary::load(source),
+            sentences: SentenceLookup::load(source),
+            globals,
+            carry: Box::new(DefaultPlayerCarry::default()),
+            pending,
         }
     }
 
@@ -80,6 +144,13 @@ impl Game {
     #[must_use]
     pub fn map(&self) -> &str {
         &self.level.name
+    }
+
+    /// The chapter title `ohl-campaign` resolves for the current map, when
+    /// it knows one.
+    #[must_use]
+    pub fn chapter_title(&self) -> Option<&'static str> {
+        ohl_campaign::chapter_of(&self.level.name).map(|chapter| chapter.title)
     }
 
     /// How many studio models this level references that the payload does
@@ -150,10 +221,67 @@ impl Game {
         self.camera.position
     }
 
-    /// Seconds of simulated time since this level was loaded.
+    /// Seconds of simulated time since this level was loaded. Also the time
+    /// the light-style animation is evaluated at.
     #[must_use]
     pub fn elapsed(&self) -> f32 {
         self.elapsed
+    }
+
+    /// The campaign difficulty this game runs at.
+    #[must_use]
+    pub fn difficulty(&self) -> Difficulty {
+        self.difficulty
+    }
+
+    /// Selects a difficulty; `skill.cfg` lookups follow immediately.
+    pub fn set_difficulty(&mut self, difficulty: Difficulty) {
+        self.difficulty = difficulty;
+    }
+
+    /// The `skill.cfg` table the combat and AI crates read their tuned
+    /// values from, keyed by the current [`Self::difficulty`].
+    #[must_use]
+    pub fn skill_table(&self) -> &SkillTable {
+        &self.skill
+    }
+
+    /// One `skill.cfg` value at the current difficulty, e.g.
+    /// `skill("sk_headcrab_health")`.
+    #[must_use]
+    pub fn skill(&self, subject_property: &str) -> Option<&str> {
+        self.skill.lookup(subject_property, self.difficulty)
+    }
+
+    /// The `titles.txt` library backing `env_message` and chapter titles.
+    #[must_use]
+    pub fn titles(&self) -> &TitleLibrary {
+        &self.titles
+    }
+
+    /// The `sentences.txt` lookup for HEV/scientist voice lines.
+    #[must_use]
+    pub fn sentences(&self) -> &SentenceLookup {
+        &self.sentences
+    }
+
+    /// The `globalname`/`env_global` state table.
+    #[must_use]
+    pub fn global_state(&self) -> &GlobalStateTable {
+        &self.globals
+    }
+
+    /// The player-carry hook's current state (health/armor placeholders
+    /// until `ohl-player` supplies its own implementation).
+    #[must_use]
+    pub fn player_carry(&self) -> crate::transition::PlayerCarryState {
+        self.carry.capture()
+    }
+
+    /// Replaces the player-carry hook, so `ohl-player` can own the player's
+    /// state without this crate depending on it.
+    pub fn set_player_carry(&mut self, carry: Box<dyn PlayerCarry>) {
+        self.carry = carry;
     }
 
     /// Moves the camera (and the walking player) to an explicit viewpoint,
@@ -226,25 +354,104 @@ impl Game {
         }
         events.extend(self.level.simulation.tick(&mut self.level.registry, dt));
 
-        events
-            .into_iter()
-            .map(|event| match event {
-                Event::LevelChange(change) => GameEvent::LevelChange {
-                    map: change.map,
-                    landmark: change.landmark,
-                },
-            })
-            .collect()
+        let mut out = std::mem::take(&mut self.pending);
+        out.extend(events.into_iter().map(|event| match event {
+            Event::LevelChange(change) => GameEvent::LevelChange {
+                map: change.map,
+                landmark: change.landmark,
+            },
+            Event::Message(message) => GameEvent::Message {
+                block: self.titles.resolve(&message),
+            },
+        }));
+        out
     }
 
-    /// Loads `map` and places the player relative to `landmark`.
+    /// Captures everything that travels through `landmark` out of the
+    /// current level: the player's landmark-relative pose and carried
+    /// state, the entities inside the landmark's `trigger_transition`
+    /// volumes (or within [`crate::DEFAULT_CARRY_RADIUS`] of it when the
+    /// map declares none), the global state table, and this level's
+    /// modified door/button states.
+    #[must_use]
+    pub fn capture_transition(&self, landmark: &str) -> TransitionState {
+        TransitionState::capture(
+            &self.level,
+            landmark,
+            Vec3::from_array(self.camera.position),
+            self.camera.yaw,
+            self.camera.pitch,
+            self.carry.capture(),
+            &self.globals,
+        )
+    }
+
+    /// Loads `map` and applies `transition` to it, placing the player (and
+    /// everything that travelled with them) relative to the destination's
+    /// landmark.
     ///
-    /// The basic transition this milestone implements: the player's offset
-    /// from the landmark in the *current* level is preserved against the
-    /// same-named landmark in the destination. When either level lacks the
-    /// landmark, the destination's own `info_player_start` is used instead.
-    /// Nothing else (inventory, entity state, global variables) carries
-    /// across yet.
+    /// A destination whose `worldspawn` sets `newunit` keeps only the
+    /// player's placement and carried state; every carried entity, mover
+    /// state and global is dropped, per the documented meaning of that key.
+    ///
+    /// # Errors
+    /// As [`Game::load`]; the current level is left untouched on failure.
+    pub fn apply_transition(
+        &mut self,
+        source: &dyn AssetSource,
+        map: &str,
+        transition: &TransitionState,
+    ) -> Result<()> {
+        let mut next = Level::load(source, map)?;
+        let newunit = next
+            .registry
+            .worldspawn
+            .as_ref()
+            .is_some_and(|worldspawn| worldspawn.newunit);
+        let placement = transition.apply(&mut next);
+
+        let mut globals = if newunit {
+            GlobalStateTable::new()
+        } else {
+            transition.globals.clone()
+        };
+        globals.seed_from(&next.registry);
+
+        self.level = next;
+        self.camera = self
+            .level
+            .spawn
+            .map_or_else(FreeFlyCamera::default, FreeFlyCamera::at_spawn);
+        self.controller = self
+            .level
+            .spawn
+            .map_or_else(PlayerController::default, |spawn| {
+                PlayerController::spawn_at(Vec3::from_array(spawn.origin), spawn.yaw, spawn.pitch)
+            });
+        self.light_styles = LightStyles::new();
+        // The previous level's uploaded geometry is gone with it; only the
+        // target format carries over, and the next `render` rebuilds.
+        self.renderers = None;
+        self.elapsed = 0.0;
+        self.globals = globals;
+        self.carry.restore(&transition.player);
+
+        if let Some(position) = placement {
+            self.camera.position = position.to_array();
+            self.camera.yaw = transition.yaw;
+            self.camera.pitch = transition.pitch;
+            self.controller =
+                PlayerController::spawn_at(position, transition.yaw, transition.pitch);
+        }
+        self.pending.extend(chapter_title_event(&self.level.name));
+        Ok(())
+    }
+
+    /// Loads `map` and places the player relative to `landmark`, carrying
+    /// everything [`Self::capture_transition`] finds.
+    ///
+    /// When either map lacks the landmark the destination's own
+    /// `info_player_start` is used instead.
     ///
     /// # Errors
     /// As [`Game::load`]; the current level is left untouched on failure.
@@ -254,29 +461,133 @@ impl Game {
         map: &str,
         landmark: &str,
     ) -> Result<()> {
-        let offset = self
-            .level
-            .landmark_origin(landmark)
-            .map(|origin| Vec3::from_array(self.camera.position) - origin);
+        let transition = self.capture_transition(landmark);
+        self.apply_transition(source, map, &transition)
+    }
 
-        let next = Level::load(source, map)?;
-        let placement = offset
-            .zip(next.landmark_origin(landmark))
-            .map(|(offset, origin)| origin + offset);
-
-        let format = self.format;
-        let (yaw, pitch) = (self.camera.yaw, self.camera.pitch);
-        *self = Self::from_level(next);
-        if let Some(position) = placement {
-            self.camera.position = position.to_array();
-            self.camera.yaw = yaw;
-            self.camera.pitch = pitch;
-            self.controller = PlayerController::spawn_at(position, yaw, pitch);
+    /// This game's state as a save payload, stamped with a host-supplied
+    /// timestamp (this crate reads no clock).
+    #[must_use]
+    pub fn to_save(&self, created_at_unix_secs: u64) -> GameSave {
+        GameSave {
+            created_at_unix_secs,
+            header: EngineHeader {
+                map: self.level.name.clone(),
+                chapter_title: self.chapter_title().map(str::to_string),
+                difficulty: self.difficulty.skill_cvar_value(),
+                elapsed: self.elapsed,
+            },
+            view: ViewState {
+                position: self.camera.position,
+                yaw: self.camera.yaw,
+                pitch: self.camera.pitch,
+            },
+            player: self.carry.capture(),
+            entities: self
+                .level
+                .registry
+                .entities
+                .iter()
+                .map(|entity| EntitySnapshot::capture(&self.level.registry, *entity))
+                .collect(),
+            simulation: self.level.simulation.snapshot(),
+            globals: self.globals.clone(),
+            light_style_time: self.elapsed,
         }
-        // The previous level's uploaded geometry is gone with it; only the
-        // target format carries over, and the next `render` rebuilds.
-        self.format = format;
-        Ok(())
+    }
+
+    /// Serializes this game into an [`ohl_save`] container.
+    ///
+    /// # Errors
+    /// [`EngineError::SaveUnwritable`] when the container rejects a section.
+    pub fn save_bytes(&self, created_at_unix_secs: u64) -> Result<Vec<u8>> {
+        self.to_save(created_at_unix_secs).to_bytes()
+    }
+
+    /// Writes this game into `slot`'s save directory under `name`
+    /// (`ohl_save::AUTOSAVE_SLOT_NAME`, `ohl_save::QUICKSAVE_SLOT_NAME`, or
+    /// any name `ohl_save::validate_slot_name` accepts).
+    ///
+    /// # Errors
+    /// [`EngineError::SaveUnwritable`] when the payload could not be built
+    /// or the slot could not be written.
+    pub fn save_slot(
+        &self,
+        slot: &ohl_save::SaveSlot,
+        name: &str,
+        created_at_unix_secs: u64,
+    ) -> Result<()> {
+        let bytes = self.save_bytes(created_at_unix_secs)?;
+        slot.write(name, &bytes)
+            .map_err(|_| EngineError::SaveUnwritable)
+    }
+
+    /// Rebuilds a game from a save payload: the map named in the save is
+    /// loaded through `source`, then every stored section is applied to it.
+    ///
+    /// # Errors
+    /// [`EngineError::MapNotFound`] when the payload no longer publishes
+    /// the saved map, else as [`Game::load`].
+    pub fn from_save(source: &dyn AssetSource, save: &GameSave) -> Result<Self> {
+        let config = GameConfig {
+            difficulty: save.difficulty(),
+        };
+        let mut game = Self::load_with(source, &save.header.map, &config)?;
+        game.restore(save);
+        Ok(game)
+    }
+
+    /// Reads a save container and rebuilds the game it describes.
+    ///
+    /// # Errors
+    /// [`EngineError::SaveUnreadable`] when the container does not open or
+    /// a section is missing, else as [`Game::from_save`].
+    pub fn load_bytes(source: &dyn AssetSource, bytes: &[u8]) -> Result<Self> {
+        Self::from_save(source, &GameSave::from_bytes(bytes)?)
+    }
+
+    /// Reads `name` out of `slot`'s save directory and rebuilds the game.
+    ///
+    /// # Errors
+    /// [`EngineError::SaveUnreadable`] when the slot could not be read,
+    /// else as [`Game::load_bytes`].
+    pub fn load_slot(
+        source: &dyn AssetSource,
+        slot: &ohl_save::SaveSlot,
+        name: &str,
+    ) -> Result<Self> {
+        let bytes = slot.read(name).map_err(|_| EngineError::SaveUnreadable)?;
+        Self::load_bytes(source, &bytes)
+    }
+
+    /// Applies a save payload onto this (already map-matched) game.
+    fn restore(&mut self, save: &GameSave) {
+        for (entity, snapshot) in self
+            .level
+            .registry
+            .entities
+            .clone()
+            .iter()
+            .zip(&save.entities)
+        {
+            snapshot.apply(&mut self.level.registry, *entity);
+        }
+        self.level.simulation.restore(&save.simulation);
+        self.globals = save.globals.clone();
+        self.carry.restore(&save.player);
+        self.elapsed = save.header.elapsed;
+        self.camera.position = save.view.position;
+        self.camera.yaw = save.view.yaw;
+        self.camera.pitch = save.view.pitch;
+        self.controller = PlayerController::spawn_at(
+            Vec3::from_array(save.view.position),
+            save.view.yaw,
+            save.view.pitch,
+        );
+        self.difficulty = save.difficulty();
+        // A load is a map load: the chapter title is announced again.
+        self.pending.clear();
+        self.pending.extend(chapter_title_event(&self.level.name));
     }
 
     /// Draws the current frame into `target`, creating the GPU resources
@@ -303,4 +614,10 @@ impl Game {
         );
         Ok(())
     }
+}
+
+/// The chapter-title event for `map`, when `ohl-campaign` knows the chapter
+/// that map belongs to.
+fn chapter_title_event(map: &str) -> Option<GameEvent> {
+    ohl_campaign::chapter_of(map).map(|chapter| GameEvent::ChapterTitle(chapter.title.to_string()))
 }

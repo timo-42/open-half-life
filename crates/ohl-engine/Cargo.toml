@@ -23,15 +23,30 @@ ohl-formats = { path = "../ohl-formats", version = "=0.1.0", features = ["std"] 
 ohl-world = { path = "../ohl-world", version = "=0.1.0" }
 ohl-render = { path = "../ohl-render", version = "=0.1.0" }
 ohl-physics = { path = "../ohl-physics", version = "=0.1.0" }
-ohl-game = { path = "../ohl-game", version = "=0.1.0" }
+ohl-game = { path = "../ohl-game", version = "=0.1.0", features = ["serde"] }
+ohl-save = { path = "../ohl-save", version = "=0.1.0" }
+ohl-campaign = { path = "../ohl-campaign", version = "=0.1.0" }
+# Exact-pinned to match `ohl-save`'s and `ohl-game`'s own pins: the save
+# sections this crate writes are serialized with all three in the same tree.
+serde = { version = "=1.0.229", features = ["derive"] }
 ohl-assets = { path = "../ohl-assets", version = "=0.1.0" }
 # Pinned exact to match `ohl-game`'s and `ohl-physics`'s own pins: the
 # vector type crosses all three boundaries.
-glam = { version = "=0.33.6", default-features = false, features = ["std"] }
+glam = { version = "=0.33.6", default-features = false, features = [
+    "std",
+    "serde",
+] }
 
 [dev-dependencies]
 ohl-engine = { path = ".", features = ["test-support"] }
 tempfile = { workspace = true }
+proptest = { workspace = true }
+# The integration tests name these crates' types directly (a save slot, a
+# difficulty, an entity component), so they need them as dev-dependencies
+# even though the library already depends on them.
+ohl-save = { path = "../ohl-save", version = "=0.1.0" }
+ohl-campaign = { path = "../ohl-campaign", version = "=0.1.0" }
+ohl-game = { path = "../ohl-game", version = "=0.1.0", features = ["serde"] }
 
 [lints]
 workspace = true

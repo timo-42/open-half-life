@@ -16,6 +16,11 @@ pub enum EngineError {
     WorldUnbuildable,
     /// A GPU resource could not be created.
     Renderer,
+    /// A save file could not be built or written.
+    SaveUnwritable,
+    /// A save file could not be read, or does not hold the sections this
+    /// build needs.
+    SaveUnreadable,
 }
 
 impl fmt::Display for EngineError {
@@ -25,6 +30,8 @@ impl fmt::Display for EngineError {
             Self::MapUnreadable => "the map is not a BSP v30 map this build can read",
             Self::WorldUnbuildable => "the map could not be turned into a renderable world",
             Self::Renderer => "the renderer could not be created",
+            Self::SaveUnwritable => "the save file could not be written",
+            Self::SaveUnreadable => "the save file could not be read",
         };
         f.write_str(message)
     }

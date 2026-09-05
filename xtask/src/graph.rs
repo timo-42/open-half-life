@@ -172,6 +172,10 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
             "ohl-campaign",
             "ohl-audio",
             "ohl-ui",
+            // Campaign flow (M8.2): the engine composes its save payload
+            // into `ohl-save`'s container, which stays a pure container
+            // crate and never learns about game state.
+            "ohl-save",
         ],
     ),
     // M7.4's HUD/audio/viewmodel bridge: consumes `ohl-combat`'s

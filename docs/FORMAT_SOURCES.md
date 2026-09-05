@@ -1362,6 +1362,77 @@ than encoded as confirmed facts (also documented in
    persists automatically, independent of `globalname`), but not confirmed
    from a reachable public page in this pass.
 
+## Campaign flow
+
+Level transitions, cross-level state and the on-load presentation
+(`crates/ohl-engine/src/transition.rs`, `save.rs`, `text.rs`, plus the
+`globalname`/`env_global`/`env_message`/`trigger_transition` components in
+`crates/ohl-game/src/registry.rs`) were implemented from these public
+mapping/documentation pages only; no SDK source or decompiled logic was
+consulted, and the M8 research pass that collected them is recorded in
+`.plan/m8-research.md` section 3.
+
+- [TWHL "VERC: In Depth: Level Transitions"](https://twhl.info/wiki/page/VERC:_In_Depth:_Level_Transitions)
+  and [TWHL "Tutorial: Changing Levels"](https://twhl.info/wiki/page/Tutorial:_Changing_Levels):
+  a level change needs a `trigger_changelevel` in each of the two maps naming
+  the *other* map, plus a matching pair of `info_landmark` entities sharing
+  one `targetname`; the player is placed in the destination at their offset
+  from that landmark. A `trigger_transition` volume, when present, gates the
+  change and bounds which entities may travel (an entity must be inside the
+  volume, or otherwise in the landmark's PVS). Entities persist across a
+  transition when correlated by a shared `globalname`; unnamed entities do
+  not. The worldspawn `newunit` key discards the previous level's carried
+  state instead of applying it.
+- [TWHL "Tutorial: Globals"](https://twhl.info/wiki/page/Tutorial:_Globals):
+  `env_global`/global state variables are the documented cross-level state
+  mechanism, with a named variable that is off, on, or dead.
+- [VDC "Titles.txt"](https://developer.valvesoftware.com/wiki/Titles.txt)
+  and [VDC "Sentences.txt"](https://developer.valvesoftware.com/wiki/Sentences.txt):
+  already cited under "Game text formats" for the parsers; this milestone
+  adds the *game* view of them (a `titles.txt` entry resolved for an
+  `env_message`, with its `$fadein`/`$holdtime`/`$fadeout` timings, and a
+  `sentences.txt` entry expanded to one `sound/<token>.wav` asset per word).
+- [TWHL "VERC: Adding New skill.cfg Entries"](https://twhl.info/wiki/page/VERC:_Adding_New_skill.cfg_Entries),
+  [TWHL "Vlatitude: Editing skill.cfg"](https://twhl.info/wiki/page/Vlatitude:_Editing_skill.cfg),
+  [TWHL vault "The skill.cfg file"](https://twhl.info/vault/view/4687):
+  `skill.cfg` is executed on map load and only sets `sk_<subject>_<property><N>`
+  cvars, `N` in `{1,2,3}` selecting easy/medium/hard via the `skill` cvar.
+- [VDC `Liblist.gam/Half-Life`](https://developer.valvesoftware.com/wiki/Liblist.gam/Half-Life):
+  `startmap`/`trainmap`, already consumed by `ohl-app`'s game flow.
+
+Project-owned decisions that are **not** read from any of the above, and are
+documented as such in the code:
+
+- The save container itself is this project's own format
+  (`ohl-save`; magic `OHLSAVE\0`, a tagged section table with SHA-256
+  integrity). It is **not** the GoldSrc `.sav`/`.hl1` format. `ohl-engine`
+  only chooses what goes in the sections: engine header (map, chapter title,
+  difficulty, elapsed) `16`, player carry `17`, entity registry `18`,
+  simulation `19`, global state `20`, light-style time `21`, view `22`.
+- `DEFAULT_CARRY_RADIUS` (512 units): a stand-in for the documented
+  "inside the transition volume, or in the landmark's PVS" eligibility rule,
+  used only when a map declares no `trigger_transition` volume for the
+  landmark.
+- `DEFAULT_HOLD_SECONDS` (4 s): the hold time used when a `titles.txt` entry
+  sets no `$holdtime` and the entity overrides none.
+
+Still flagged **to verify** (unchanged from `.plan/m8-research.md`'s open
+items; the three are also restated in `crates/ohl-campaign/src/lib.rs`):
+
+1. **Interloper's starting map prefix** — sources disagreed (`c4a1a` vs
+   `c4a2b`); `ohl_campaign::CHAPTERS` still carries an empty map list there.
+2. **`env_global` save semantics** — this milestone models the documented
+   *behaviour* (a named global that is off/on/dead, seeded by an
+   `env_global`'s `initialstate` when its "Set Initial State" spawnflag is
+   set, and removing a `globalname`-correlated entity when the global is
+   dead). The exact stored form was never retrieved from a public page, so
+   `ohl_game::registry::GlobalStateValue` and
+   `ohl_engine::GlobalStateTable` are explicitly documented as unverified.
+3. **Player-inventory persistence across `changelevel`** — still
+   unconfirmed; `ohl_engine::PlayerCarryState` therefore carries only
+   health/armor placeholders plus an opaque blob for the future
+   `ohl-player` implementation of the `PlayerCarry` hook.
+
 ## Quake PAK archives
 
 - "Unofficial Quake Specs", Quake Documentation version 3.4, Section 3.1 "The
