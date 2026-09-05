@@ -248,6 +248,7 @@ mod tests {
     use super::{COMPOSITION_ROOT, GraphViolation, check_edges, discover_dependencies};
     use std::collections::BTreeMap;
     use std::fs;
+    use std::path::Path;
 
     #[test]
     fn allows_edges_from_the_architecture_table() {
@@ -336,6 +337,33 @@ mod tests {
             vec!["ohl-mystery".to_string()],
         );
         assert_eq!(check_edges(&deps).len(), 1);
+    }
+
+    #[test]
+    fn every_crate_under_crates_appears_in_the_allowed_edge_table() {
+        // Discovers the crates actually tracked under `crates/` in this
+        // checkout and asserts each one is a key in `ALLOWED_EDGES`, so a new
+        // crate that forgets to update the table fails here instead of
+        // silently passing `check_edges` as an "unknown crate" only when
+        // something happens to depend on it.
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask lives one directory below the workspace root");
+        let dependencies =
+            discover_dependencies(workspace_root).expect("real crate manifests parse");
+        assert!(
+            !dependencies.is_empty(),
+            "expected to discover at least one crate under crates/"
+        );
+        let known = super::known_crate_names();
+        let missing: Vec<&String> = dependencies
+            .keys()
+            .filter(|name| !known.contains(&name.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "crate(s) under crates/ missing from ALLOWED_EDGES: {missing:?}"
+        );
     }
 
     #[test]

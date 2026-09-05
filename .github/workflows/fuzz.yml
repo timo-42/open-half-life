@@ -24,7 +24,10 @@ jobs:
   rust-fuzz-smoke:
     name: Linux x64 cargo-fuzz smoke
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Discovered dynamically below: every `crates/*/fuzz` directory, every
+    # target inside it, 60s each. Bump this if a new fuzz crate or target
+    # pushes the total past the current handful of minutes of headroom.
+    timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -40,26 +43,29 @@ jobs:
         with:
           tool: cargo-fuzz
 
-      - name: Fuzz ohl-parser-protocol (protocol, 60s)
-        working-directory: crates/ohl-parser-protocol
+      # Loops over every `crates/*/fuzz` directory and every target inside it
+      # (one `fuzz_targets/*.rs` file each), rather than a fixed list, so a
+      # new fuzz crate or a new target added to an existing one is smoke-run
+      # here automatically instead of needing this workflow edited too.
+      - name: Fuzz every target for 60s
+        shell: bash
         run: |
-          mkdir -p fuzz/corpus/protocol
-          cargo +nightly fuzz run protocol \
-            --target x86_64-unknown-linux-gnu --sanitizer none \
-            -- -max_total_time=60
-
-      - name: Fuzz ohl-formats (bsp30_fuzz, 60s)
-        working-directory: crates/ohl-formats
-        run: |
-          mkdir -p fuzz/corpus/bsp30_fuzz
-          cargo +nightly fuzz run bsp30_fuzz \
-            --target x86_64-unknown-linux-gnu --sanitizer none \
-            -- -max_total_time=60
-
-      - name: Fuzz ohl-formats (wad3_fuzz, 60s)
-        working-directory: crates/ohl-formats
-        run: |
-          mkdir -p fuzz/corpus/wad3_fuzz
-          cargo +nightly fuzz run wad3_fuzz \
-            --target x86_64-unknown-linux-gnu --sanitizer none \
-            -- -max_total_time=60
+          set -euo pipefail
+          for fuzz_dir in crates/*/fuzz; do
+            [ -d "$fuzz_dir" ] || continue
+            crate_dir="$(dirname "$fuzz_dir")"
+            crate_name="$(basename "$crate_dir")"
+            for target_source in "$fuzz_dir"/fuzz_targets/*.rs; do
+              [ -f "$target_source" ] || continue
+              target="$(basename "$target_source" .rs)"
+              echo "::group::Fuzz ${crate_name} (${target}, 60s)"
+              mkdir -p "$fuzz_dir/corpus/$target"
+              (
+                cd "$crate_dir"
+                cargo +nightly fuzz run "$target" \
+                  --target x86_64-unknown-linux-gnu --sanitizer none \
+                  -- -max_total_time=60
+              )
+              echo "::endgroup::"
+            done
+          done

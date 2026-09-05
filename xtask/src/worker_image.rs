@@ -17,7 +17,9 @@
 
 use std::process::ExitCode;
 
-use ohl_parser_worker::{IMAGE_NAME, build_parser_worker_image, install_parser_worker_image};
+use ohl_parser_worker::{
+    IMAGE_NAME, IMAGE_RELATIVE_DIRECTORIES, build_parser_worker_image, install_parser_worker_image,
+};
 use ohl_test_worker::{
     EM_X86_64, ET_EXEC, TestWorkerVariant, build_test_worker_image, summarise_elf,
 };
@@ -171,6 +173,48 @@ fn check_identity(path: &std::path::Path, bytes: &[u8]) -> usize {
     failures
 }
 
+/// Strips a group- or other-write bit from `mode` if either is set, leaving
+/// every other bit (including any already-restrictive read/execute bits)
+/// untouched. Returns `None` when `mode` already has neither bit set, so the
+/// caller can skip a needless `chmod`.
+///
+/// An ambient `umask 002` makes `cargo build` leave `target/<profile>`
+/// group-writable (mode `0o775`); the isolated-worker launcher walks every
+/// path component from `target/<profile>` down to the installed image and
+/// refuses any that is group- or world-writable, so this has to be corrected
+/// before the image is installed underneath it.
+fn strip_group_other_write_mode(mode: u32) -> Option<u32> {
+    const GROUP_OTHER_WRITE: u32 = 0o022;
+    let normalized = mode & !GROUP_OTHER_WRITE;
+    (normalized != mode).then_some(normalized)
+}
+
+/// Applies [`strip_group_other_write_mode`] to `path` on disk, doing nothing
+/// if it is already free of group- and other-write bits.
+#[cfg(unix)]
+fn normalize_directory_permissions(path: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| format!("failed to read permissions of {}: {error}", path.display()))?;
+    let mode = metadata.permissions().mode();
+    if let Some(normalized) = strip_group_other_write_mode(mode) {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(normalized)).map_err(
+            |error| {
+                format!(
+                    "failed to normalise permissions of {}: {error}",
+                    path.display()
+                )
+            },
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn normalize_directory_permissions(_path: &std::path::Path) -> Result<(), String> {
+    Ok(())
+}
+
 /// Builds, audits and installs the shipping media-parser worker image.
 fn run_parser_worker_image() -> Result<usize, String> {
     let built = build_parser_worker_image().map_err(|error| error.to_string())?;
@@ -196,8 +240,21 @@ fn run_parser_worker_image() -> Result<usize, String> {
     let directory = executable
         .parent()
         .ok_or_else(|| "this executable has no parent directory".to_owned())?;
+    // `target/<profile>` is the first path component the launcher walks; an
+    // ambient `umask 002` leaves it group-writable, which the launcher
+    // refuses. `install_parser_worker_image` only controls the directories it
+    // creates beneath it (`libexec/open-half-life`), so this one has to be
+    // fixed here.
+    normalize_directory_permissions(directory)?;
     let installed =
         install_parser_worker_image(&built, directory).map_err(|error| error.to_string())?;
+    // Belt and braces: re-normalise the directories the install step just
+    // created, in case a future change there stops forcing an exact mode.
+    let mut created = directory.to_path_buf();
+    for component in IMAGE_RELATIVE_DIRECTORIES {
+        created.push(component);
+        normalize_directory_permissions(&created)?;
+    }
     println!(
         "{IMAGE_NAME}: {} ({} bytes) -> {}",
         built.display(),
@@ -272,9 +329,38 @@ pub fn run() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{SymbolViolation, symbol_violations};
+    use super::{SymbolViolation, strip_group_other_write_mode, symbol_violations};
 
     const SECTION_HEADER_BYTES: usize = 64;
+
+    #[test]
+    fn strips_a_group_writable_mode_left_by_umask_002() {
+        // `cargo build` under `umask 002` leaves `target/<profile>` at
+        // `0o775`; only the group-write bit must go.
+        assert_eq!(strip_group_other_write_mode(0o775), Some(0o755));
+    }
+
+    #[test]
+    fn strips_an_other_writable_mode() {
+        assert_eq!(strip_group_other_write_mode(0o707), Some(0o705));
+    }
+
+    #[test]
+    fn strips_both_group_and_other_write_bits_at_once() {
+        assert_eq!(strip_group_other_write_mode(0o777), Some(0o755));
+    }
+
+    #[test]
+    fn leaves_an_already_clean_mode_untouched() {
+        assert_eq!(strip_group_other_write_mode(0o755), None);
+    }
+
+    #[test]
+    fn preserves_bits_outside_group_and_other_write() {
+        // A directory with no group or other access at all (`0o700`) must
+        // not gain any new permission: only a set write bit is ever cleared.
+        assert_eq!(strip_group_other_write_mode(0o700), None);
+    }
 
     /// Builds a minimal ELF64 little-endian fixture whose only sections are a
     /// string table and a symbol table holding `symbols` as

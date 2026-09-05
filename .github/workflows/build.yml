@@ -70,7 +70,34 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  # Linux-only companion to `rust-clippy`: checks every crate that declares a
+  # `std` feature (the no_std-capable ones) with that feature off, so a `std`
+  # item that leaked out from behind its cfg gate is caught here instead of
+  # only ever being built with `std` enabled. Deliberately scoped with `-p` to
+  # just those crates rather than `--workspace`, so a crate with no
+  # `[features]` table at all (for which `--no-default-features` is a no-op
+  # anyway) can never turn this job red for an unrelated reason.
+  rust-clippy-no-default:
+    name: Rust clippy (no default features)
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      OHL_VERSION: ${{ needs.version.outputs.version }}
+      NO_STD_CRATES: >-
+        -p ohl-audio -p ohl-cabinet -p ohl-cabinet-format -p ohl-core
+        -p ohl-formats -p ohl-iso9660 -p ohl-isz -p ohl-media-archive
+        -p ohl-mscab -p ohl-payload -p ohl-udf
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Clippy
+        run: cargo clippy $NO_STD_CRATES --all-targets --no-default-features -- -D warnings
+
+      - name: Test
+        run: cargo test $NO_STD_CRATES --no-default-features
 
   rust-test:
     name: Rust test (${{ matrix.name }})
@@ -102,6 +129,61 @@ jobs:
 
       - name: Doctest
         run: cargo test --workspace --doc
+
+      # Linux only: exercises every feature combination together (`dev-tools`
+      # included), on top of the default-features run above. GPU-touching
+      # tests stay behind their existing `#[ignore]` gates either way, so
+      # this only widens feature coverage, not the runner's capabilities.
+      - name: Test (all features)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo test --workspace --all-features
+
+      # Linux only: the freestanding worker image is Linux x86-64-only (see
+      # `ohl_parser_worker::BuildError::Unsupported`), so this cannot run on
+      # the other two runners.
+      - name: Worker image
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo xtask worker-image
+
+  rust-miri:
+    name: Rust miri
+    needs: version
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      OHL_VERSION: ${{ needs.version.outputs.version }}
+      MIRIFLAGS: -Zmiri-disable-isolation
+      PROPTEST_CASES: 4
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install nightly toolchain with Miri
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      - name: Run Miri on the crates it can reach
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Kept as a list rather than one `-p ... -p ...` workspace command
+          # so a crate that has not been created yet (or has since been
+          # removed) is simply skipped instead of failing the whole job.
+          candidates=(ohl-parser-protocol ohl-formats ohl-mscab ohl-isz ohl-wise)
+          args=()
+          for crate in "${candidates[@]}"; do
+            if [ -d "crates/${crate}" ]; then
+              args+=(-p "${crate}")
+            else
+              echo "skipping ${crate}: not present under crates/"
+            fi
+          done
+          if [ "${#args[@]}" -eq 0 ]; then
+            echo "no candidate crates present; nothing to do"
+            exit 0
+          fi
+          cargo +nightly miri test "${args[@]}"
 
   rust-deny:
     name: Rust cargo-deny
