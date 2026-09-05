@@ -1,10 +1,12 @@
 //! Property tests: the senses, the runner and the movement glue must be
 //! total — no panic, no non-finite state — for arbitrary inputs.
 
+use ohl_ai::monsters::table::{Difficulty, MonsterKind, spec_for};
 use ohl_ai::{
-    Actor, AiWorld, Candidate, Classification, DefaultBrain, MonsterAi, Pcg32, RelationshipTable,
-    Route, Senses, SightContext, SoundEvent, SoundKind, StuckDetector, Viewer, listen, look,
-    move_toward, spawn_actor, spawn_monster,
+    Actor, AiWorld, Candidate, Classification, DamageEvent, DamageQueue, DamageSink, DefaultBrain,
+    MonsterAi, MonsterBrain, Pcg32, RelationshipTable, Route, Senses, SightContext, SoundEvent,
+    SoundKind, StuckDetector, Viewer, apply_monster_damage, listen, look, move_toward, spawn_actor,
+    spawn_monster,
 };
 use ohl_formats::bsp30::{Bsp, Limits};
 use ohl_formats::test_support::build_collision_room_bsp;
@@ -242,5 +244,91 @@ proptest! {
         }
         let float = rng.next_f32();
         prop_assert!((0.0..1.0).contains(&float));
+    }
+
+    /// Every defined monster kind's health/damage resolution is total, for
+    /// any difficulty and any skill-table override (including ones that
+    /// return non-finite values).
+    #[test]
+    fn monster_table_lookups_never_panic(
+        kind_index in 0usize..16,
+        difficulty_index in 0usize..3,
+        override_value in coordinate(),
+        has_override in any::<bool>(),
+    ) {
+        let kind = MonsterKind::defined()[kind_index].clone();
+        let difficulty = Difficulty::ALL[difficulty_index];
+        let spec = spec_for(&kind).expect("every defined kind has a spec");
+        let lookup: &dyn Fn(&str) -> Option<f32> =
+            &|_: &str| has_override.then_some(override_value);
+        let skill: Option<&ohl_ai::monsters::table::SkillLookup<'_>> = Some(lookup);
+        let health = spec.resolve_health(&kind, difficulty, skill);
+        prop_assert!(health.is_finite() || (has_override && !override_value.is_finite()));
+        if let Some(melee) = spec.melee {
+            let _ = melee.resolve_damage(difficulty, "sk_x_dmg1", skill);
+        }
+        if let Some(ranged) = spec.ranged {
+            let _ = ranged.resolve_damage(difficulty, "sk_x_dmg1", skill);
+        }
+    }
+
+    /// Applying arbitrary queued damage never panics, whatever health an
+    /// actor started with.
+    #[test]
+    fn lifecycle_apply_damage_is_total(
+        starting_health in coordinate(),
+        amounts in prop::collection::vec(coordinate(), 0..8),
+    ) {
+        let mut world = hecs::World::new();
+        let attacker = world.spawn((0u8,));
+        let victim = world.spawn((
+            Actor::new(Classification::HumanMilitary, ohl_ai::Vec3::ZERO)
+                .with_health(starting_health),
+        ));
+        let mut queue = DamageQueue::new();
+        for amount in amounts {
+            queue.push_damage(DamageEvent::new(victim, attacker, amount, ohl_ai::Vec3::ZERO));
+        }
+        // The only property required of arbitrary (including overflowing)
+        // damage sums is that this never panics and reports at most one
+        // death; `f32` arithmetic can still carry health to `-inf` from
+        // finite but very large queued amounts, so finiteness of the
+        // resulting health is deliberately not asserted here.
+        let events = apply_monster_damage(&mut world, &queue, 2.0);
+        prop_assert!(events.len() <= 1);
+        let actor = world.get::<&Actor>(victim);
+        prop_assert!(actor.is_ok());
+    }
+
+    /// Ticking with a per-kind `MonsterBrain` in place of the generic
+    /// `DefaultBrain` stays deterministic: the same seed replays to the
+    /// same `state_hash` digest.
+    #[test]
+    fn monster_brain_ticking_stays_deterministic(
+        kind_index in 0usize..16,
+        seed in any::<u64>(),
+    ) {
+        let kind = MonsterKind::defined()[kind_index].clone();
+        let run = || {
+            let mut ai = AiWorld::new(seed);
+            let brain = ai.register_brain(Box::new(
+                MonsterBrain::for_kind(kind.clone()).expect("defined kind"),
+            ));
+            let mut world = hecs::World::new();
+            spawn_monster(
+                &mut world,
+                Actor::new(Classification::HumanMilitary, ohl_ai::Vec3::new(-64.0, 0.0, 0.0)),
+                brain,
+            );
+            spawn_actor(
+                &mut world,
+                Actor::new(Classification::Player, ohl_ai::Vec3::new(64.0, 0.0, 0.0)).as_client(),
+            );
+            for _ in 0..64 {
+                ai.tick(&mut world, &SightContext::empty(), 0.05);
+            }
+            ai.state_hash(&world)
+        };
+        prop_assert_eq!(run(), run());
     }
 }

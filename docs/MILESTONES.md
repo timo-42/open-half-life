@@ -1386,12 +1386,44 @@ three members, and 1,000 ticks replaying to identical `state_hash` digests;
 the stuck detector and a full tick never panic and never produce non-finite
 state for arbitrary positions.
 
-Not yet done: the node graph and A* (package 7.6), per-monster definitions
-and attacks (7.7), scripted sequences and save sections (7.8), and unifying
-`ohl-ai::damage` with `ohl-combat`'s `DamageInfo` (7.1). Every movement
-speed, view-cone angle, look distance, attack range, turn rate and damage
-threshold in the crate is a placeholder still to be black-box observed; see
-`docs/FORMAT_SOURCES.md`, "Monster AI behaviour".
+Package 7.7 (`crates/ohl-ai/src/monsters`, `crates/ohl-ai/src/spawner.rs`)
+adds the sixteen defined `MonsterKind`s (headcrab, zombie, houndeye,
+bullsquid, alien slave, alien grunt, human grunt, barney, scientist, turret,
+miniturret, sentry, ichthyosaur, leech, gargantua, tentacle, plus
+`Unknown(classname)`), each with a `MonsterSpec` (health, melee/ranged
+attack, hull, classification, blood, size class, door-opening, flags) behind
+a `sk_<subject>_<property><N>`-style `SkillLookup` override hook; one
+data-driven `MonsterBrain` covering all sixteen, with the new schedules
+package 7.5's default set did not need (houndeye pack blast, bullsquid spit,
+alien slave zap, grunt suppress/flank/grenade, barney/scientist follow,
+scientist heal, turret deploy/retract/track, tentacle sound-driven strikes,
+gargantua flame/stomp as a scripted-set-piece placeholder) and the
+squad-blast-bonus/heal-cooldown math they need; `lifecycle::apply_damage`,
+the sole place `Actor::health` is decremented today, guaranteeing exactly one
+`Died` per kill, a corpse/gib decision on overkill, `Fade Corpse`, and the
+eleven-value `TriggerCondition`/`TriggerTarget` pair; and `spawner::Spawner`,
+`monstermaker`'s `monstercount`/`delay`/`m_imaxlivechildren`/`Start On`/
+`Cyclic` semantics. **Every per-monster health and attack-damage number is a
+black-box placeholder**, not a citation — see `docs/FORMAT_SOURCES.md`,
+"Monster definitions", for the research pass that found only
+non-corroborated, mutually-disagreeing modified `skill.cfg` copies and no
+verifiable vanilla source.
+
+`monsters::integration` forward-declares the two minimal seams the concurrent
+node-graph (7.6) and projectile/explosion (7.3) packages will fill:
+`Navigator::next_move` (today: `StraightLineNavigator`) and
+`RangedAttackSink::spawn` (today: `NoOpRangedAttackSink`), so a real
+implementation drops in at the composition root later without this
+package's data changing.
+
+Not yet done: scripted sequences and save sections (7.8); unifying
+`ohl-ai::damage`/`monsters::lifecycle` with `ohl-combat`'s `DamageInfo`
+(7.1); substituting real `Navigator`/`RangedAttackSink` implementations once
+7.6/7.3 land; observing every per-monster health/damage/range/timing number
+against legally obtained retail software. Every movement speed, view-cone
+angle, look distance, attack range, turn rate and damage threshold in the
+crate is a placeholder still to be black-box observed; see
+`docs/FORMAT_SOURCES.md`, "Monster AI behaviour" and "Monster definitions".
 
 ## M8 (Rust): save container
 

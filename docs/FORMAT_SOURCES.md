@@ -1611,3 +1611,71 @@ Algorithms for Random Number Generation"](https://www.pcg-random.org/paper.html)
 Harvey Mudd College technical report HMC-CS-2014-0905 (2014) — the
 `PCG-XSH-RR 64/32` variant, its multiplier, its seeding routine and its
 unbiased bounded-draw rejection test.
+
+## Monster definitions
+
+Package 7.7 (`crates/ohl-ai/src/monsters`): the sixteen `monster_*` classnames
+`MonsterKind` names, their published classification, and their
+`TriggerCondition`/`TriggerTarget` and `monstermaker` keyvalues. Consulted via
+search-engine result summaries, since `twhl.info` and
+`developer.valvesoftware.com` return HTTP 403 to automated fetches from this
+environment (same limitation already recorded for "Entity keyvalues and map
+logic" and "Monster AI behaviour" above).
+
+- **Health and attack-damage numbers could not be independently verified.**
+  A dedicated research pass searched for the vanilla retail Half-Life
+  `skill.cfg` (the public, plain-text, widely-mirrored per-difficulty cvar
+  dump `ohl_formats::skill_cfg` already parses; see "Game text formats"
+  above) and found only *modified* copies: Sven Co-op's fork, at least one
+  other total-conversion mod's config, and a GameBanana upload
+  (gamebanana.com/scripts/raw/7885) whose own duplicate cvar sections
+  disagreed with each other. Independent search results for `sk_hgrunt_health`
+  alone returned three mutually contradictory value sets from unidentified
+  sources. No single source both claims to be, and is corroborated as,
+  vanilla retail `skill.cfg`. Consequently every health and melee/ranged
+  damage value in `crates/ohl-ai/src/monsters/table.rs`'s `spec_for` rows
+  is a **black-box placeholder** (`TODO(black-box)`), not a citation,
+  pending observation against legally obtained retail software. The
+  `sk_<subject>_<property><1|2|3>` cvar-naming *convention* itself (subject
+  stems `headcrab`, `zombie`, `houndeye`, `bullsquid`, `islave`, `agrunt`,
+  `hgrunt`, `barney`, `scientist`, `turret`, `miniturret`, `sentry`,
+  `ichthyosaur`, `leech`, `garg`, `tentacle`) is real, public, and already
+  implemented by `ohl_formats::skill_cfg` and `ohl_campaign::SkillTable`; only
+  the numeric values are unconfirmed.
+- Blood color per monster family (red for humans/allies, yellow for
+  headcrab/zombie, green for most other aliens, none for machines) is widely
+  documented modding/mapping convention (the `BloodColor` FGD field on
+  monster entities), not a numeric fact, and is recorded as
+  `table::BloodKind`.
+- `TriggerCondition`/`TriggerTarget` (a `monster_generic` keyvalue pair: fire
+  a named target entity when a documented condition occurs), from VDC
+  `Monster_generic_(GoldSrc)` search-result snippets, consistently repeated
+  across independently worded queries: `0` no trigger, `1` see player (mad at
+  player), `2` take damage, `3` half health remaining, `4` death, `7` hear
+  world, `8` hear player, `9` hear combat, `10` see player unconditionally.
+  Conditions `5` and `6` did not appear in any reachable snippet across
+  roughly six differently worded queries and are modeled in
+  `lifecycle::TriggerCondition` as `Unconfirmed5`/`Unconfirmed6`, evaluated as
+  never firing until an independently verified meaning is found, rather than
+  guessed at.
+- `monstermaker` keyvalues and spawnflags, from VDC `Monstermaker_(GoldSrc)`
+  and TWHL `monstermaker` search-result snippets: `monstertype` (classname to
+  spawn), `monstercount` (total spawns; `-1` unlimited), `m_imaxlivechildren`
+  (max simultaneously alive children; new spawns withheld at the cap), `delay`
+  (seconds between spawns), spawnflag bit `1` "Start ON" (spawn immediately
+  rather than waiting for a trigger) and bit `4` "Cyclic" (keep spawning
+  rather than stopping after one quota). Modeled in `crates/ohl-ai/src/spawner.rs`'s
+  `Spawner`. (A Sven Co-op wiki page for the same entity name, fetched
+  directly, shows a modified/forked version — different spawnflag bits, and
+  the entity marked obsolete there — which is explicitly *not* used as a
+  source for vanilla behaviour here.)
+
+Everything else under `crates/ohl-ai/src/monsters` — `MonsterBrain`'s
+schedule selection per kind, the new schedules (houndeye pack blast,
+bullsquid spit, alien slave zap, grunt suppress/flank/grenade, barney/
+scientist follow, scientist heal, turret deploy/retract/track, tentacle
+sound-driven strikes, gargantua flame/stomp), the squad-blast-bonus formula,
+the heal cooldown/threshold/range/amount, the gib-overkill multiplier, and
+the `Spawner` bookkeeping shape — is this project's own design, written only
+from the monster-level behavioural descriptions cited above and in "Monster
+AI behaviour"; no SDK schedule, AI routine or damage table was consulted.
