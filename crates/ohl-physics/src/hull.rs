@@ -90,6 +90,17 @@ pub const DIST_EPSILON: f32 = 0.031_25;
 /// malformed map cannot recurse without end.
 pub const MAX_TRACE_DEPTH: u32 = 256;
 
+/// The largest number of solid brush entities one [`CollisionModel`] will
+/// attach. `CollisionModel::attach_brush` refuses anything past this rather
+/// than growing `brushes` without bound: every attached brush costs one
+/// extra tree walk per trace (see [`CollisionModel::trace`]), so an
+/// unbounded count is an unbounded per-trace cost. No published GoldSrc map
+/// comes remotely close to this many solid brush entities; a map that
+/// somehow did would simply have its excess brush entities fall back to
+/// having no collision, rather than the engine's per-frame cost growing
+/// without limit.
+pub const MAX_ATTACHED_BRUSHES: usize = 512;
+
 /// The four documented GoldSrc hulls, in the order the compiler writes them
 /// into `BSPMODEL::headnodes`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -192,7 +203,13 @@ pub struct Trace {
     pub all_solid: bool,
     /// The segment started inside solid.
     pub start_solid: bool,
-    /// Some part of the segment was in open (empty) space.
+    /// Some part of the segment was in open (empty) space, *as seen by the
+    /// world tree alone*: an attached solid brush entity's own hull tree
+    /// treats everywhere outside its own small footprint as empty, so
+    /// folding a brush's `in_open` into this field would routinely report
+    /// "open" for a segment that, once the brush is accounted for
+    /// (`CollisionModel::contents_at`'s solid-wins-over-world rule), never
+    /// left world solid at all. See [`combine`].
     pub in_open: bool,
     /// Some part of the segment was in a liquid or other non-empty,
     /// non-solid volume.
@@ -252,6 +269,52 @@ pub struct BrushId(usize);
 struct BrushPart {
     heads: [i32; 4],
     origin: Vec3,
+    /// The submodel's own compiled bounding box (`BSPMODEL::mins/maxs`),
+    /// relative to the same frame [`Self::heads`]'s trees are in (i.e.
+    /// before [`Self::origin`] is added). Used only for the broad-phase
+    /// check in [`CollisionModel::trace`] and
+    /// [`CollisionModel::contents_at`]; it plays no part in what is
+    /// actually solid, which is decided by walking the hull tree.
+    mins: Vec3,
+    maxs: Vec3,
+}
+
+impl BrushPart {
+    /// Whether every hull's head link is already a bare contents value
+    /// rather than a tree: such a brush has no boundary and cannot bound a
+    /// volume (see the no-op case documented on [`CollisionModel::trace`]),
+    /// so it is not a "brush" for [`CollisionModel::brush_count`]'s
+    /// purposes. [`CollisionModel::detach_brush`] reduces a brush to this
+    /// same state, so a despawned brush entity is excluded exactly the same
+    /// way a submodel that was always bare contents is.
+    fn is_bare(&self) -> bool {
+        self.heads.iter().all(|&head| head < 0)
+    }
+
+    /// This brush's world-space bounding box, expanded by `hull`'s box, so
+    /// a segment or point that falls entirely outside it cannot reach the
+    /// brush's hull tree at all (the Minkowski sum of the hull box with the
+    /// brush's own bounds).
+    fn broad_bounds(&self, hull: Hull) -> (Vec3, Vec3) {
+        let (hull_mins, hull_maxs) = hull.bounds();
+        (
+            self.origin + self.mins + hull_mins,
+            self.origin + self.maxs + hull_maxs,
+        )
+    }
+}
+
+/// Whether the axis-aligned box `(a_mins, a_maxs)` overlaps `(b_mins,
+/// b_maxs)` on every axis. Touching boxes (equal on an axis) count as
+/// overlapping, matching the hull trees' own closed-on-the-plane
+/// convention.
+fn boxes_overlap(a_mins: Vec3, a_maxs: Vec3, b_mins: Vec3, b_maxs: Vec3) -> bool {
+    a_mins.x <= b_maxs.x
+        && a_maxs.x >= b_mins.x
+        && a_mins.y <= b_maxs.y
+        && a_maxs.y >= b_mins.y
+        && a_mins.z <= b_maxs.z
+        && a_maxs.z >= b_mins.z
 }
 
 /// A map's collision hulls: the validated planes plus the four hull trees.
@@ -425,6 +488,12 @@ impl CollisionModel {
     /// The caller decides *which* entities are solid: `trigger_*` volumes,
     /// `func_illusionary` and `func_ladder` are documented as non-solid and
     /// must not be attached (see `ohl_game::brush::is_solid_brush`).
+    ///
+    /// Refuses once [`MAX_ATTACHED_BRUSHES`] are already attached, so a
+    /// pathological map cannot make every later trace arbitrarily
+    /// expensive; the caller already tolerates an attach failure (a brush
+    /// that could not attach simply has no collision), so this is not a
+    /// new failure mode for it to handle.
     pub fn attach_brush(
         &mut self,
         bsp: &Bsp<'_>,
@@ -438,6 +507,9 @@ impl CollisionModel {
         if !origin.is_finite() {
             return Err(SanitizedError::InvalidInput);
         }
+        if self.brushes.len() >= MAX_ATTACHED_BRUSHES {
+            return Err(SanitizedError::Unsupported);
+        }
         let raw_models = bsp
             .models(limits)
             .map_err(|_| SanitizedError::InvalidInput)?;
@@ -447,6 +519,20 @@ impl CollisionModel {
         let model = raw_models
             .get(model_index)
             .ok_or(SanitizedError::NotFound)?;
+
+        let mins = Vec3::new(
+            model.mins[0].get(),
+            model.mins[1].get(),
+            model.mins[2].get(),
+        );
+        let maxs = Vec3::new(
+            model.maxs[0].get(),
+            model.maxs[1].get(),
+            model.maxs[2].get(),
+        );
+        if !mins.is_finite() || !maxs.is_finite() {
+            return Err(SanitizedError::InvalidInput);
+        }
 
         let mut heads = [contents::EMPTY; 4];
         for (hull, head) in heads.iter_mut().enumerate() {
@@ -471,7 +557,12 @@ impl CollisionModel {
             };
         }
 
-        self.brushes.push(BrushPart { heads, origin });
+        self.brushes.push(BrushPart {
+            heads,
+            origin,
+            mins,
+            maxs,
+        });
         Ok(BrushId(self.brushes.len() - 1))
     }
 
@@ -488,10 +579,55 @@ impl CollisionModel {
         }
     }
 
-    /// How many solid brush entities are attached.
+    /// Detaches an attached brush entity, so a map-logic despawn (a
+    /// `func_wall` floor removed by a scripted `killtarget`, for example)
+    /// stops blocking the player instead of leaving a solid the collision
+    /// model has no other way to learn is gone.
+    ///
+    /// This does not remove the brush's slot — every other attached
+    /// brush's [`BrushId`] is that brush's index into `brushes`, and
+    /// shifting the array would silently repoint them at the wrong brush.
+    /// Instead its head links are reduced to the same "bare contents, no
+    /// tree" state a genuinely empty submodel starts in, which
+    /// [`Self::trace`] and [`Self::contents_at`] already treat as a no-op,
+    /// and which [`Self::brush_count`] already excludes. Detaching an
+    /// already-detached (or never-attached, out-of-range) `brush` is a
+    /// harmless no-op.
+    pub fn detach_brush(&mut self, brush: BrushId) {
+        if let Some(part) = self.brushes.get_mut(brush.0) {
+            part.heads = [contents::EMPTY; 4];
+        }
+    }
+
+    /// Test-only: widens `brush`'s broad-phase bounds to cover the whole
+    /// coordinate space, so a test can compare [`Self::trace`] and
+    /// [`Self::contents_at`] with and without the broad-phase skip against
+    /// the exact same attached brush, rather than only asserting on
+    /// specific hand-picked positions. Does not touch the brush's actual
+    /// hull tree, so whether this was called never changes what a trace
+    /// reports — only whether the broad phase gets a chance to skip the
+    /// walk that finds it.
+    #[cfg(feature = "test-support")]
+    pub fn widen_brush_bounds_for_test(&mut self, brush: BrushId) {
+        if let Some(part) = self.brushes.get_mut(brush.0) {
+            part.mins = Vec3::splat(f32::NEG_INFINITY);
+            part.maxs = Vec3::splat(f32::INFINITY);
+        }
+    }
+
+    /// How many solid brush entities are attached and still contribute a
+    /// real collision tree.
+    ///
+    /// A submodel whose four heads were already bare contents values at
+    /// attach time (an entity compiled with no actual brush geometry, which
+    /// [`Self::trace`] and [`Self::contents_at`] both treat as a no-op) and
+    /// a brush [`Self::detach_brush`] has since reduced to that same state
+    /// are both excluded: neither one is a brush a player can actually
+    /// collide with, so counting either would overstate how much collision
+    /// work an attached-brush count is meant to describe.
     #[must_use]
     pub fn brush_count(&self) -> usize {
-        self.brushes.len()
+        self.brushes.iter().filter(|part| !part.is_bare()).count()
     }
 
     fn nodes_of(&self, hull: Hull) -> &[HullNode] {
@@ -520,6 +656,13 @@ impl CollisionModel {
             let head = brush.heads[hull.index()];
             if head < 0 {
                 // A bare contents value, not a tree: see `trace`.
+                continue;
+            }
+            // Broad phase: a point outside this brush's own (hull-expanded)
+            // bounds cannot be inside its tree, so the walk below can only
+            // ever answer "empty" for it — skip straight to that answer.
+            let (mins, maxs) = brush.broad_bounds(hull);
+            if !boxes_overlap(point, point, mins, maxs) {
                 continue;
             }
             let link = self.walk(self.nodes_of(hull), head, point - brush.origin);
@@ -584,6 +727,16 @@ impl CollisionModel {
                 // and a "solid everywhere" one would fill the map with
                 // solid, which no brush entity can be. Either way it
                 // contributes nothing to the move.
+                continue;
+            }
+            // Broad phase: skip the tree walk entirely when the segment's
+            // own bounding box cannot reach this brush's (hull-expanded)
+            // bounds. This can only ever rule out a miss, never a hit: a
+            // segment whose box misses the brush's box cannot cross any
+            // plane inside it.
+            let (mins, maxs) = brush.broad_bounds(hull);
+            let (seg_mins, seg_maxs) = (start.min(end), start.max(end));
+            if !boxes_overlap(seg_mins, seg_maxs, mins, maxs) {
                 continue;
             }
             let hit = self.trace_tree(hull, head, brush.origin, start, end);
@@ -784,15 +937,20 @@ impl CollisionModel {
     }
 }
 
-/// Folds one tree's trace into the running best.
+/// Folds one attached brush's trace into the running best, which starts as
+/// the world tree's own trace.
 ///
 /// "Best" is the hit nearest the start: a move is stopped by whichever
 /// solid it reaches first, so the smaller fraction (and its plane) wins.
-/// The volume flags are unions — a segment that passed through open space
-/// in the world and through a brush's solid did both — except that a start
-/// inside *any* solid stops the move outright.
+/// `in_water` is a union — a segment that passed through open space in the
+/// world and through a brush's liquid did both, and a solid brush entity's
+/// hull tree never reports a liquid contents anyway (only the world's
+/// water/slime/lava volumes do), so this never fires from an attached
+/// brush in practice. `in_open` is deliberately *not* unioned in: see its
+/// field doc on [`Trace`] for why that would be wrong, and left to whatever
+/// the world tree's own trace already set. A start inside *any* solid
+/// (world or brush) stops the move outright.
 fn combine(best: &mut Trace, hit: &Trace) {
-    best.in_open |= hit.in_open;
     best.in_water |= hit.in_water;
     best.all_solid |= hit.all_solid;
     if hit.start_solid {

@@ -2524,7 +2524,6 @@ Open follow-ups, in no particular priority order:
   scripted-navigation budget, and stayed undone rather than added as a
   flaky smoke scenario (see `.plan/fidelity-round-7.md`, which is
   git-ignored and local-only, for what blocked it).
-
 ## Status as of 2026-09-07
 
 This section is a snapshot, not a replacement for the package-by-package
@@ -2641,3 +2640,24 @@ equivalent bullets in the 2026-09-06 snapshot above where they overlap):
   `publish-release` (PR #83) has never run against a real tag; the next
   actual tag push will be its first real exercise, and the first entry in
   this project's GitHub Releases.
+
+- **Brush collision follow-ups: detach on despawn, broad-phase, caps
+  (PR #91 review).** A despawned solid brush entity (a `func_wall` floor
+  removed by a scripted `killtarget`, for example) used to stay attached to
+  `ohl_physics::hull::CollisionModel` forever, since nothing ever told the
+  collision model the entity was gone; `Level::sync_brush_collision` now
+  detects a despawned or component-stripped entity in one pass over its own
+  `brush_collision` list (no per-step allocation, no O(n²) name/entity
+  search — each entry already names its own `BrushId`) and calls the new
+  `CollisionModel::detach_brush`, which reduces that brush to the same
+  bare-contents no-op state a submodel with no real geometry already was.
+  `CollisionModel::brush_count` now excludes both cases. Separately,
+  `trace`/`contents_at` gained a broad-phase check (each attached brush's
+  own compiled bounding box, expanded by the traced hull's size) that skips
+  a brush's tree walk entirely once its segment or point cannot reach it,
+  attaching is capped at a documented `MAX_ATTACHED_BRUSHES`, and
+  `Trace::in_open` is now documented and computed as world-only (an
+  attached brush's own hull tree reports "empty" almost everywhere outside
+  its own small footprint, so folding it into `in_open` previously
+  overstated how much of a trace was genuinely open once brushes were
+  attached).

@@ -3006,3 +3006,18 @@ a door's timer or a track train's position, overriding the world camera
 `ohl-engine::Game` renders from and reports through `Game::eye_position()`
 while a sequence is active, and gates player movement/attack input (but not
 mouse look) while the active sequence's "Freeze Player" flag is set.
+
+### `TODO(black-box)` items, continued (brush-collision follow-ups)
+
+23. **`func_water`/`func_ladder` submodels contribute no contents yet.**
+    `ohl_physics::hull::CollisionModel` only ever attaches a brush entity's
+    submodel as *solid* (`CollisionModel::attach_brush`, called from
+    `ohl_game::brush::is_solid_brush`'s solid set); `func_water` and
+    `func_ladder` are both excluded from that set (documented as non-solid;
+    see `NEVER_SOLID` in `crates/ohl-game/src/brush.rs`) and so are never
+    attached at all, meaning neither one's own submodel currently marks any
+    space as `CONTENTS_WATER` or `CONTENTS_LADDER` — only a world-brush
+    volume compiled with those contents does. A `func_water`/`func_ladder`
+    built as its own brush entity therefore does not yet swim or climb
+    where a mapper placed it; this is unmeasured against any public source
+    and is a gap, not a documented design choice.
