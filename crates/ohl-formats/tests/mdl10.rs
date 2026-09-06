@@ -262,28 +262,27 @@ fn rejects_attachment_table_outside_file() {
 }
 
 #[test]
-fn rejects_mesh_trivert_run_exceeding_declared_count() {
-    let (bytes, layout) = build_minimal_mdl10();
+fn rejects_mesh_trivert_run_exceeding_the_configured_limit() {
+    // `mesh.num_tris` is not the decode loop's bound (see
+    // `Mdl::decode_mesh_commands`'s doc comment: black-box observation
+    // against real retail models found it is a post-triangulation triangle
+    // count, not a trivert-record budget, and a from-scratch reference
+    // decode loop does not consult it either), so this fixture's
+    // unmodified command stream (one real strip of 4 triverts) is used
+    // as is; only `limits.max_triverts` is lowered below that run's
+    // length to exercise the actual bound.
+    let (bytes, _) = build_minimal_mdl10();
     let limits = Limits::default();
     let mdl = Mdl::parse(&bytes, &limits).unwrap();
     let body_parts = mdl.body_parts(&limits).unwrap();
     let models = mdl.models(&body_parts[0], &limits).unwrap();
-    let mut meshes = mdl.meshes(&models[0], &limits).unwrap().to_vec();
+    let meshes = mdl.meshes(&models[0], &limits).unwrap();
 
-    // Corrupt the mesh's `num_tris` (trivert budget) down to 1 while the
-    // command stream still declares a run of 4.
-    let mut bad = bytes.clone();
-    corrupt_i32(&mut bad, layout.meshes_offset, 1);
-    let mdl_bad = Mdl::parse(&bad, &limits).unwrap();
-    let body_parts = mdl_bad.body_parts(&limits).unwrap();
-    let models = mdl_bad.models(&body_parts[0], &limits).unwrap();
-    let bad_meshes = mdl_bad.meshes(&models[0], &limits).unwrap();
-    assert!(
-        mdl_bad
-            .decode_mesh_commands(&bad_meshes[0], &limits)
-            .is_err()
-    );
-    let _ = meshes.pop();
+    let tiny_limits = Limits {
+        max_triverts: 1,
+        ..Limits::default()
+    };
+    assert!(mdl.decode_mesh_commands(&meshes[0], &tiny_limits).is_err());
 }
 
 #[test]

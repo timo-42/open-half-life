@@ -776,52 +776,49 @@ impl<'a> Mdl<'a> {
     /// Decodes `mesh`'s triangle-strip/fan command stream into a bounded
     /// list of triangles.
     ///
-    /// Every command's declared trivert count is validated against
-    /// `limits.max_triverts` (checked cumulatively across the whole mesh,
-    /// not just per-command) before any allocation grows, and decoding
-    /// stops with an error rather than reading past `mesh.num_tris`
-    /// triverts' worth of command-stream bytes.
+    /// The stream is a signed 16-bit run header (positive: strip; negative:
+    /// fan; zero: end of stream) followed by `abs(header)` trivert records,
+    /// each four 16-bit values (`vertindex`, `normindex`, `s`, `t`),
+    /// repeated until the terminator; see `docs/FORMAT_SOURCES.md`, "GoldSrc
+    /// MDL v10 and SPR" for the public format description this is read
+    /// from, and black-box observation against real, legally obtained
+    /// retail studio models (`docs/CLEAN_ROOM.md` rule 1 — behavior
+    /// observed by running lawfully owned software, no decompilation, no
+    /// bytes committed) for the confirming evidence.
+    ///
+    /// `mesh.num_tris` is **not** used as the loop bound: that same
+    /// black-box observation showed it is the mesh's post-triangulation
+    /// *triangle* count (a strip or fan of `N` triverts yields `N - 2`
+    /// triangles), not a trivert-record budget. Decoding instead walks the
+    /// command stream until its own zero-header terminator, and
+    /// `limits.max_triverts` bounds the cumulative trivert-record count
+    /// consumed (checked before each run's bytes are read, so a malformed
+    /// stream cannot grow an allocation past the limit first).
     pub fn decode_mesh_commands(&self, mesh: &Mesh, limits: &Limits) -> Result<Vec<Triangle>> {
-        let num_tris =
-            usize::try_from(mesh.num_tris.get()).map_err(|_| FormatError::InvalidInput)?;
-        if num_tris > limits.max_triverts {
-            return Err(FormatError::LimitExceeded);
-        }
-        // `num_tris` is the documented trivert budget for this mesh's whole
-        // command stream (every strip/fan run's triverts combined), so
-        // reserve exactly that many `RawTrivert` records' worth of bytes.
-        let trivert_bytes_len = num_tris
-            .checked_mul(size_of::<RawTrivert>())
-            .ok_or(FormatError::OutOfBounds)?;
-        // The command stream is `count: i32` headers interleaved with
-        // trivert records; the exact byte length isn't known up front
-        // (headers are interspersed), so read from `tri_index` onward and
-        // let `sub_slice` bound each access as we walk it instead.
+        // The command stream is a run-length `count: i16` header
+        // (positive: triangle strip; negative: triangle fan; zero:
+        // terminator) followed by `abs(count)` 8-byte trivert records,
+        // repeated until the terminator. Both the header and every trivert
+        // field are 16-bit (not the 32-bit header this module used before
+        // this fix, which misaligned every read after the first command on
+        // any mesh with more than one run; see `docs/FORMAT_SOURCES.md`).
         let mut cursor = mesh.tri_index.get() as usize;
         let mut consumed_triverts = 0usize;
         let mut triangles = Vec::new();
 
         loop {
-            if consumed_triverts >= num_tris {
-                break;
-            }
-            let header_bytes = sub_slice(self.data, cursor, 4)?;
-            let count = i32::from_le_bytes([
-                header_bytes[0],
-                header_bytes[1],
-                header_bytes[2],
-                header_bytes[3],
-            ]);
-            cursor = cursor.checked_add(4).ok_or(FormatError::OutOfBounds)?;
+            let header_bytes = sub_slice(self.data, cursor, 2)?;
+            let count = i16::from_le_bytes([header_bytes[0], header_bytes[1]]);
+            cursor = cursor.checked_add(2).ok_or(FormatError::OutOfBounds)?;
             if count == 0 {
                 break;
             }
             let is_fan = count < 0;
             let run_len = count.unsigned_abs() as usize;
-            if consumed_triverts
+            consumed_triverts = consumed_triverts
                 .checked_add(run_len)
-                .is_none_or(|total| total > num_tris)
-            {
+                .ok_or(FormatError::OutOfBounds)?;
+            if consumed_triverts > limits.max_triverts {
                 return Err(FormatError::LimitExceeded);
             }
             let run_bytes = sub_slice(
@@ -845,7 +842,6 @@ impl<'a> Mdl<'a> {
                 })
                 .collect();
             if run_len < 3 {
-                consumed_triverts += run_len;
                 continue;
             }
             if is_fan {
@@ -870,12 +866,7 @@ impl<'a> Mdl<'a> {
                     }
                 }
             }
-            consumed_triverts += run_len;
-            if triangles.len() > limits.max_triverts {
-                return Err(FormatError::LimitExceeded);
-            }
         }
-        let _ = trivert_bytes_len;
         Ok(triangles)
     }
 

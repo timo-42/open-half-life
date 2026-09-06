@@ -480,6 +480,21 @@ struct StudioLoad {
     missing: usize,
 }
 
+/// The companion external-texture asset path for a `.mdl` asset path
+/// (`models/zombie.mdl` -> `models/zombiet.mdl`), or `None` when `key`
+/// does not end in `.mdl`.
+///
+/// GoldSrc studio models whose textures are stored separately (to let
+/// several skins of the same body share one texture file) publish zero
+/// embedded textures in the main file and instead ship a second file with
+/// the same base name plus a trailing `t` (see `docs/FORMAT_SOURCES.md`,
+/// "GoldSrc MDL v10 and SPR"). `key` is already lower-cased by the caller,
+/// so the result is too.
+fn external_texture_path(key: &str) -> Option<String> {
+    let stem = key.strip_suffix(".mdl")?;
+    Some(format!("{stem}t.mdl"))
+}
+
 /// Loads the studio models this map's monster and prop entities reference,
 /// skipping (and counting) the ones the payload does not publish.
 fn load_studio_models(source: &dyn AssetSource, defs: &[EntityDef]) -> StudioLoad {
@@ -494,8 +509,23 @@ fn load_studio_models(source: &dyn AssetSource, defs: &[EntityDef]) -> StudioLoa
         if !wants_studio_model(&def.classname) {
             continue;
         }
-        let Some(ModelRef::Asset(path)) = def.model.as_ref() else {
-            continue;
+        // Most `monster_*` classnames carry no `model` keyvalue at all in
+        // the map's entity lump: GoldSrc's own monster class hardcodes its
+        // model in `Spawn`/`Precache`, not in map data (see
+        // `wants_studio_model`'s doc comment and
+        // `ohl_ai::MonsterKind::default_model_path`'s). A monster whose
+        // entity has no explicit `model` keyvalue therefore falls back to
+        // that table instead of being skipped outright, which is what lets
+        // it draw at all rather than simulate invisibly.
+        let path: std::borrow::Cow<'_, str> = match def.model.as_ref() {
+            Some(ModelRef::Asset(path)) => std::borrow::Cow::Borrowed(path.as_str()),
+            None if def.classname.starts_with("monster_") => {
+                match ohl_ai::MonsterKind::from_classname(&def.classname).default_model_path() {
+                    Some(default_path) => std::borrow::Cow::Borrowed(default_path),
+                    None => continue,
+                }
+            }
+            _ => continue,
         };
         let key = path.to_ascii_lowercase();
         if !std::path::Path::new(&key)
@@ -512,7 +542,16 @@ fn load_studio_models(source: &dyn AssetSource, defs: &[EntityDef]) -> StudioLoa
             } else {
                 source
                     .read(&key)
-                    .and_then(|bytes| StudioModel::parse(&bytes, &studio_limits).ok())
+                    .and_then(|bytes| {
+                        let texture_bytes =
+                            external_texture_path(&key).and_then(|path| source.read(&path));
+                        StudioModel::parse_with_external_texture(
+                            &bytes,
+                            texture_bytes.as_deref(),
+                            &studio_limits,
+                        )
+                        .ok()
+                    })
                     .map(|model| {
                         models.push(model);
                         models.len() - 1
@@ -599,6 +638,69 @@ mod tests {
         assert_eq!(prop.body, 5);
         assert_eq!(prop.skin, 1);
         assert!((prop.yaw - 45.0).abs() < f32::EPSILON);
+    }
+
+    /// A `monster_*` entity with no `model` keyvalue at all (how GoldSrc's
+    /// own map compiler emits every standard monster, since the model is
+    /// hardcoded in the monster's own class rather than authored per map)
+    /// must still resolve a studio prop, via
+    /// `ohl_ai::MonsterKind::default_model_path`'s classname table, as long
+    /// as the payload publishes that default path (fidelity F3).
+    #[test]
+    fn monster_with_no_model_keyvalue_resolves_via_the_default_model_table() {
+        let map = synthetic_map_bsp_with_extra_entity(
+            "next",
+            "{\n\"classname\" \"monster_zombie\"\n\
+             \"origin\" \"11 22 33\"\n\"angle\" \"90\"\n}\n",
+        );
+        let (mdl_bytes, _layout) = build_minimal_mdl10();
+        let mut assets = MemoryAssets::new();
+        assets.insert("maps/ohlsynth.bsp", map.clone());
+        assets.insert("models/zombie.mdl", mdl_bytes);
+
+        let level = Level::from_bytes(&assets, "ohlsynth", &map).expect("level loads");
+
+        assert_eq!(level.missing_models, 0);
+        assert_eq!(level.studio_models.len(), 1);
+        let prop = level
+            .props
+            .iter()
+            .find(|prop| (prop.origin[0] - 11.0).abs() < f32::EPSILON)
+            .expect("monster_zombie prop placed from its default model");
+        assert!((prop.yaw - 90.0).abs() < f32::EPSILON);
+    }
+
+    /// The same missing-model-keyvalue monster, when the payload does not
+    /// publish its default model path, must be counted missing rather than
+    /// silently placed with no model.
+    #[test]
+    fn monster_with_no_model_keyvalue_and_no_payload_asset_counts_as_missing() {
+        let map = synthetic_map_bsp_with_extra_entity(
+            "next",
+            "{\n\"classname\" \"monster_zombie\"\n\"origin\" \"0 0 0\"\n}\n",
+        );
+        let assets = MemoryAssets::new();
+        let level = Level::from_bytes(&assets, "ohlsynth", &map).expect("level loads");
+        assert_eq!(level.studio_models.len(), 0);
+        assert_eq!(level.props.len(), 0);
+        assert_eq!(level.missing_models, 1);
+    }
+
+    /// A `monster_*` classname this project's table does not define at all
+    /// (`ohl_ai::MonsterKind::Unknown`) has no default path to guess, so it
+    /// is skipped exactly like before this fix — not counted missing,
+    /// since there was never a candidate asset path to fail to resolve.
+    #[test]
+    fn monster_of_an_undefined_kind_with_no_model_keyvalue_is_not_counted_missing() {
+        let map = synthetic_map_bsp_with_extra_entity(
+            "next",
+            "{\n\"classname\" \"monster_not_in_the_table\"\n\"origin\" \"0 0 0\"\n}\n",
+        );
+        let assets = MemoryAssets::new();
+        let level = Level::from_bytes(&assets, "ohlsynth", &map).expect("level loads");
+        assert_eq!(level.studio_models.len(), 0);
+        assert_eq!(level.props.len(), 0);
+        assert_eq!(level.missing_models, 0);
     }
 
     /// A sprite-only classname (`env_sprite`) must not be loaded as a

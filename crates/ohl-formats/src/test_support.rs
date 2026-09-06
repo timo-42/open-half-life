@@ -559,7 +559,10 @@ pub fn build_minimal_mdl10() -> (Vec<u8>, MinimalMdl10Layout) {
     let norm_bones_offset = norms_offset + norms_size;
     let norm_bones_size = 1;
     let tricommands_offset = norm_bones_offset + norm_bones_size;
-    let tricommands_size = 4 + TRIVERT_SIZE * 4;
+    // A 2-byte `i16` run-length header, the run's 4 triverts, and a 2-byte
+    // `i16` zero terminator (see `Mdl::decode_mesh_commands`'s doc comment
+    // for why the header and terminator are 16-bit, not 32-bit).
+    let tricommands_size = 2 + TRIVERT_SIZE * 4 + 2;
     let anim_data_offset = tricommands_offset + tricommands_size;
     // 2 bones * 12-byte offset records, then one 6-byte compressed run
     // (2-byte valid/total header + 2 `i16` values) for bone 0's slot 0.
@@ -717,7 +720,9 @@ pub fn build_minimal_mdl10() -> (Vec<u8>, MinimalMdl10Layout) {
     assert_eq!(out.len(), meshes_offset);
 
     // --- Mesh (a 4-trivert triangle strip: 2 triangles) ---
-    push_i32(&mut out, 4); // num_tris (trivert count, per the documented field)
+    // `num_tris` is not used by `Mdl::decode_mesh_commands` (see that
+    // method's doc comment); the value here is a placeholder.
+    push_i32(&mut out, 2);
     push_u32(&mut out, u32::try_from(tricommands_offset).unwrap());
     push_i32(&mut out, 0); // skin_ref
     push_i32(&mut out, 0); // num_norms (unused)
@@ -742,8 +747,9 @@ pub fn build_minimal_mdl10() -> (Vec<u8>, MinimalMdl10Layout) {
     out.push(0);
     assert_eq!(out.len(), tricommands_offset);
 
-    // --- Trivert command stream: one strip of 4 (positive count). ---
-    push_i32(&mut out, 4);
+    // --- Trivert command stream: one strip of 4 (positive count), then
+    // --- the terminating zero header.
+    push_i16(&mut out, 4);
     for i in 0..4u16 {
         push_i16(&mut out, i.cast_signed()); // vert_index
         push_i16(&mut out, 0); // norm_index
@@ -751,6 +757,7 @@ pub fn build_minimal_mdl10() -> (Vec<u8>, MinimalMdl10Layout) {
         push_i16(&mut out, s);
         push_i16(&mut out, t);
     }
+    push_i16(&mut out, 0); // terminator
     assert_eq!(out.len(), anim_data_offset);
 
     // --- Animation data (seqgroup 0, embedded) ---
