@@ -8,7 +8,7 @@
 
 use ohl_engine::test_support::{
     SCRIPT_MAP, actor_origin, entity_block, entity_of_classname, script_game, script_room_bsp,
-    script_room_entities, use_input,
+    script_room_entities, strip_monster_ai, use_input,
 };
 use ohl_engine::{Game, GameEvent, Input, TICK_SECONDS};
 
@@ -544,4 +544,90 @@ fn the_player_group_is_cleared_by_a_level_change() {
     );
     tick(&mut game, 10);
     assert!(game.followers().is_empty());
+}
+
+/// M7.11 follow-up (`.plan/smoke-round-3.md`, "Scripted-sequence probe"):
+/// a walk-mode script bound to a monster that never moves — here made
+/// inert by stripping its `MonsterAi` outright, the worst case of "cannot
+/// reach the mark" — must still let go within
+/// `ohl_ai::scripts::SCRIPT_MOVE_TIMEOUT_SECONDS`, not hold the monster
+/// forever. Regression guard for the round-3 probe's finding that
+/// `active_script_count` could rise above zero and never return to it.
+#[test]
+fn a_walk_script_bound_to_an_inert_monster_does_not_stall_forever() {
+    let entities = script_room_entities(
+        [-192.0, -192.0, 36.0],
+        &format!(
+            "{}{}{}",
+            entity_block(
+                "monster_barney",
+                [0.0, 0.0, 36.0],
+                0.0,
+                &[("targetname", "ohl_guard")],
+            ),
+            entity_block(
+                "scripted_sequence",
+                [800.0, 0.0, 36.0],
+                90.0,
+                &[
+                    ("targetname", "ohl_script"),
+                    ("m_iszEntity", "ohl_guard"),
+                    ("m_iszPlay", "ohl_action"),
+                    ("m_fMoveTo", "1"),
+                    ("target", "ohl_after"),
+                ],
+            ),
+            trigger_auto("ohl_script") + &exit_trigger("ohl_after"),
+        ),
+    );
+    let mut game = script_game(&entities);
+    let guard = entity_of_classname(&game, "monster_barney").expect("the guard spawned");
+    let spawn = actor_origin(&game, guard);
+
+    // The auto trigger fires on the first tick, so the script takes the
+    // guard over almost immediately.
+    tick(&mut game, 5);
+    assert_eq!(
+        game.active_script_count(),
+        1,
+        "the script possesses the guard"
+    );
+
+    // Now make the guard inert: no `MonsterAi` at all, so nothing ever
+    // drives it toward the mark, however long the script waits.
+    strip_monster_ai(&mut game, guard);
+
+    // One tick short of the documented bound: still trying.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a tick count derived from two small, positive, fixed constants"
+    )]
+    let timeout_ticks = (f64::from(ohl_ai::scripts::SCRIPT_MOVE_TIMEOUT_SECONDS)
+        / f64::from(TICK_SECONDS)) as usize;
+    tick(&mut game, timeout_ticks.saturating_sub(50));
+    assert_eq!(
+        game.active_script_count(),
+        1,
+        "still within the documented bound"
+    );
+    assert_eq!(game.script_timeout_count(), 0);
+
+    // Comfortably past the bound: the script must have given up.
+    tick(&mut game, 200);
+    assert_eq!(
+        game.active_script_count(),
+        0,
+        "an inert monster's script must not stall forever"
+    );
+    assert_eq!(game.script_timeout_count(), 1);
+    assert_eq!(
+        game.script_completion_count(),
+        0,
+        "a give-up is not a completion, so `target` never fires"
+    );
+    assert!(
+        (actor_origin(&game, guard) - spawn).length() < 8.0,
+        "an inert monster never walked toward the mark on its own"
+    );
 }

@@ -2715,3 +2715,44 @@ marked `TODO(black-box)` in the code rather than guessed:
     dormant, waiting or finished script neither moves nor animates it. The
     published looping-idle behaviour is therefore only partially modelled
     and is still to be black-box observed.
+
+### `TODO(black-box)` items, continued (M7.11 follow-up: a bounded give-up)
+
+22. **A script whose monster never satisfies `ScriptPhase::Moving`'s mark
+    condition now gives up instead of waiting forever.** Item 6 above
+    already recorded that no page says what a script does when its monster
+    cannot reach the mark, and that this project previously chose to keep
+    waiting. `.plan/smoke-round-3.md`'s "Scripted-sequence probe" found
+    that choice observable: it drove an idle-input CLI probe against the
+    campaign start map for up to five minutes of simulated time without
+    `active_script_count` ever returning to zero. Instrumented aggregate
+    counts (phase tallies, `has_monster_ai`, distance-to-mark, `m_fMoveTo`
+    mode; no names, discarded after the investigation) showed the bound
+    monsters were not stuck at all — they closed on their marks and
+    completed repeatedly — so on that map the non-zero count reflects
+    several `Repeatable` `scripted_sequence`s whose own retrigger chain
+    keeps at least one of them active at any moment, which this project has
+    no basis to call incorrect. The *general* hazard item 6 flagged (an
+    unreachable mark, or a monster with no `MonsterAi` to move it at all,
+    holding a script's possession open indefinitely) is still real and
+    still undocumented, so this project now bounds it rather than leaving
+    it open-ended:
+    `ohl_ai::scripts::SCRIPT_MOVE_TIMEOUT_SECONDS` (30 seconds, a project
+    placeholder, not a measurement) caps how long `ScriptPhase::Moving` may
+    wait for arrival, facing or the warp; past it, `ScriptRunner::give_up`
+    releases the monster exactly as an interruption would (dormant, intact,
+    retriggerable) but counted separately
+    (`ohl_ai::scripts::ScriptStep::timed_out`,
+    `ohl_engine::AiState::script_timeout_count`,
+    `ohl_engine::Game::script_timeout_count`). No `target` fires and no
+    teleport is invented for the walk/run case: TWHL's "Instantaneous"
+    freeze note (item 12) already shows this project is willing to leave a
+    genuinely undocumented warp-timing detail unmodelled rather than guess
+    one, and the same restraint applies here. Covered by
+    `ohl-ai::scripts::tests` (one test per `m_fMoveTo` mode's timeout
+    behaviour, a give-up-looks-like-a-release check, and a boundary check
+    that a merely slow approach is not cut short) and by
+    `ohl-engine`'s `a_walk_script_bound_to_an_inert_monster_does_not_stall_forever`
+    integration test, which strips `MonsterAi` from a bound monster
+    entirely (the worst case of "cannot reach the mark") and asserts the
+    script still lets go within the bound.

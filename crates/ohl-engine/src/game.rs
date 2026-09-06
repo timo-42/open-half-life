@@ -290,6 +290,15 @@ impl Game {
         &self.level.registry
     }
 
+    /// As [`Self::registry`], mutably, so a test can put an entity into a
+    /// world state the ordinary spawn path never produces (an inert actor
+    /// with no `MonsterAi`, say) without a second, parallel construction
+    /// path just for tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn registry_mut(&mut self) -> &mut ohl_game::Registry {
+        &mut self.level.registry
+    }
+
     /// This level's `env_sprite`/`env_glow`/`cycler_sprite` placements,
     /// drawn each frame by [`Self::render`].
     #[must_use]
@@ -459,6 +468,15 @@ impl Game {
     #[must_use]
     pub fn script_completion_count(&self) -> u64 {
         self.systems.ai().script_completion_count()
+    }
+
+    /// How many scripted sequences have given up on ever satisfying their
+    /// mark condition and released their monster, since this level was
+    /// loaded. See `ohl_ai::scripts::SCRIPT_MOVE_TIMEOUT_SECONDS`'s doc
+    /// comment. Data, never a log line.
+    #[must_use]
+    pub fn script_timeout_count(&self) -> u64 {
+        self.systems.ai().script_timeout_count()
     }
 
     /// The allies currently following the player, oldest first. Data, never
