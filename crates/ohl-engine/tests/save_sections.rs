@@ -7,6 +7,7 @@
 use ohl_combat::{ProjectileKind, WeaponId, hud_slot};
 use ohl_engine::test_support::{AI_MAP, ai_room_bsp, monster_entities, queue_monster_damage};
 use ohl_engine::{EngineError, Game, Input, MemoryAssets, TICK_SECONDS};
+use ohl_formats::test_support::build_minimal_mdl10;
 
 /// A room with a player start, a weapon and its ammo within pickup range of
 /// the spawn, and one monster the test kills directly (`queue_monster_damage`)
@@ -165,6 +166,119 @@ fn a_save_missing_the_new_sections_still_loads() {
         reloaded.projectile_count(),
         0,
         "no SECTION_PROJECTILES: nothing to restore"
+    );
+}
+
+/// Two `monster_generic` props naming the exact citable model paths
+/// [`DeployableKind::Satchel`]/[`DeployableKind::Tripmine`] resolve to
+/// (`default_deployable_model_path` in `crate::projectiles`, not
+/// reachable directly from an integration test, but the literals are
+/// published in `docs/FORMAT_SOURCES.md`): once the payload actually
+/// publishes those `.mdl` assets, `ProjectileSystem::configure_models`
+/// (run by `Systems::attach_level`, on every fresh load, exactly as it
+/// would for a real map with a loaded satchel/tripmine model) wires them
+/// up on its own, no test-only override needed.
+fn entities_with_deployable_models() -> String {
+    format!(
+        "{}\
+         {{\n\"classname\" \"monster_generic\"\n\"model\" \"models/w_satchel.mdl\"\n\
+         \"origin\" \"-200 -200 -200\"\n}}\n\
+         {{\n\"classname\" \"monster_generic\"\n\"model\" \"models/v_tripmine.mdl\"\n\
+         \"origin\" \"-200 -220 -200\"\n}}\n",
+        entities()
+    )
+}
+
+fn game_assets_with_deployable_models() -> MemoryAssets {
+    let bytes = ai_room_bsp(&entities_with_deployable_models(), false);
+    let mut assets = MemoryAssets::new();
+    assets.insert(&format!("maps/{AI_MAP}.bsp"), bytes);
+    let (satchel_mdl, _) = build_minimal_mdl10();
+    let (tripmine_mdl, _) = build_minimal_mdl10();
+    assets.insert("models/w_satchel.mdl", satchel_mdl);
+    assets.insert("models/v_tripmine.mdl", tripmine_mdl);
+    assets
+}
+
+fn game_with_deployable_models() -> Game {
+    let bytes = ai_room_bsp(&entities_with_deployable_models(), false);
+    let assets = game_assets_with_deployable_models();
+    Game::from_map_bytes(&assets, AI_MAP, &bytes).expect("the AI room loads")
+}
+
+/// M7.9 P4b's `SECTION_PROJECTILES` restores the plain `DeployableSet`/
+/// `ProjectileSet` data; the model-backed stand-in entities (drawn,
+/// damageable) are re-created by `restore_snapshot` itself, never
+/// serialized. Places one satchel and one tripmine on a map that actually
+/// published both kinds' models, saves, reloads, and checks the stand-ins
+/// came back one-for-one with the restored deployables (drawn again, and
+/// reachable by the player's own hitscan again), and that a save -> load
+/// -> save chain including them is still byte-identical.
+#[test]
+fn deployable_stand_ins_survive_a_save_load_boundary() {
+    let mut game = game_with_deployable_models();
+    tick(&mut game, &Input::default());
+
+    let satchel = game.debug_place_satchel([0.0, 40.0, 36.0]);
+    assert!(satchel.is_some(), "the satchel must place");
+    let tripmine = game.debug_place_tripmine([0.0, -40.0, 36.0], [0.0, 0.0, -1.0]);
+    assert!(
+        tripmine.is_some(),
+        "the placement trace must find the floor"
+    );
+
+    assert_eq!(game.deployable_count(), 2);
+    assert_eq!(
+        game.deployable_stand_in_count(),
+        2,
+        "both placed deployables must have a stand-in entity, this map having \
+         actually loaded both kinds' models"
+    );
+
+    let first = game.save_bytes(1_700_000_000).expect("the save is written");
+    let reloaded = Game::load_bytes(&game_assets_with_deployable_models(), &first)
+        .expect("the save is read back");
+
+    assert_eq!(reloaded.deployable_count(), 2, "both deployables restore");
+    assert_eq!(
+        reloaded.deployable_stand_in_count(),
+        2,
+        "a restore must re-create a stand-in for every restored deployable, \
+         not leave them undrawn and undamageable"
+    );
+
+    let second = reloaded
+        .save_bytes(1_700_000_000)
+        .expect("the reloaded game saves again");
+    assert_eq!(
+        first, second,
+        "a save -> load -> save chain with placed deployables is byte-identical"
+    );
+}
+
+/// A save written by a build that predates this fix (an ordinary
+/// `SECTION_PROJECTILES` payload — the wire format never changed, since a
+/// stand-in was never serialized to begin with) still loads, and now
+/// additionally gets its stand-ins re-created where a pre-fix build would
+/// have left the restored deployable undrawn and undamageable.
+#[test]
+fn a_pre_fix_save_still_loads_and_now_gets_its_stand_ins_back() {
+    let mut game = game_with_deployable_models();
+    tick(&mut game, &Input::default());
+    game.debug_place_tripmine([0.0, -40.0, 36.0], [0.0, 0.0, -1.0])
+        .expect("the placement trace finds the floor");
+
+    // `to_save`/`SECTION_PROJECTILES` predates this fix and is unchanged by
+    // it (see this module's own doc): the bytes below are exactly what a
+    // pre-fix build would also have written.
+    let bytes = game.save_bytes(1_700_000_000).expect("the save is written");
+    let reloaded = Game::load_bytes(&game_assets_with_deployable_models(), &bytes)
+        .expect("a save from before this fix still loads");
+    assert_eq!(reloaded.deployable_count(), 1);
+    assert_eq!(
+        reloaded.deployable_stand_in_count(),
+        1,
+        "this fix re-creates the stand-in a pre-fix build would have left missing"
     );
 }
 

@@ -2471,3 +2471,14 @@ Open follow-ups, in no particular priority order:
   drawn model, its owner — is ignored per trace instead
   (`ohl_combat::Projectile::self_id`/`owner`, `TraceFilter::ignoring`), never
   by narrowing the index everyone else traces against.
+- **Deployable stand-ins and a projectile's `self_id` are re-created on
+  load.** `SECTION_PROJECTILES` restores the plain `DeployableSet`/
+  `ProjectileSet` data but never carried a model-backed stand-in entity or
+  a `hecs::Entity` handle (never serialisable across a save to begin
+  with); `ProjectileSystem::restore_snapshot` now re-spawns a fresh
+  stand-in for every restored satchel/tripmine and every model-backed
+  in-flight projectile, so a restored deployable draws and stays
+  damageable again and a restored projectile's own movement trace ignores
+  its own drawn model again. The save wire format is unchanged; a save
+  from before this fix still loads and simply gets its stand-ins back
+  where it would previously have come back undrawn and undamageable.
