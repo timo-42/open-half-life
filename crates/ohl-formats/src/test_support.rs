@@ -1136,6 +1136,68 @@ pub fn build_collision_pool_bsp() -> Vec<u8> {
     builder.build()
 }
 
+/// The top surface of [`build_brush_entity_floor_bsp`]'s slab.
+pub const BRUSH_FLOOR_TOP_Z: f32 = 0.0;
+
+/// The half-extent of [`build_brush_entity_floor_bsp`]'s slab on X and Y:
+/// the slab spans `[-128, 128]` on both, so a player standing at the origin
+/// is well inside it and one at `x = 512` is off it entirely.
+pub const BRUSH_FLOOR_HALF_EXTENT: f32 = 128.0;
+
+/// Builds a BSP30 file whose only floor is a *brush entity*: the worldspawn
+/// model (submodel 0) is completely empty — an open void with nothing solid
+/// in it — and submodel 1 is a slab whose top surface is at
+/// [`BRUSH_FLOOR_TOP_Z`], referenced as `"*1"` by an entity with the
+/// caller-chosen `classname` (`"func_wall"` for a solid one).
+///
+/// Maps routinely build a floor this way, and the worldspawn hulls alone
+/// therefore do not describe what the player stands on: anything tracing
+/// only submodel 0 sees a bottomless void here.
+#[must_use]
+pub fn build_brush_entity_floor_bsp(classname: &str) -> Vec<u8> {
+    let mut builder = Bsp30Builder::new();
+    builder.set_entities_text(&alloc::format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"0 0 40\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"{classname}\"\n\"model\" \"*1\"\n}}\n"
+    ));
+    // Submodel 0: no solids at all.
+    let world_heads = builder.push_collision_hulls(&[]);
+    // Submodel 1: the floor slab, 16 units thick under `BRUSH_FLOOR_TOP_Z`.
+    let slab_heads = builder.push_collision_hulls(&[CollisionBrush::box_brush(
+        [-BRUSH_FLOOR_HALF_EXTENT, -BRUSH_FLOOR_HALF_EXTENT, -16.0],
+        [
+            BRUSH_FLOOR_HALF_EXTENT,
+            BRUSH_FLOOR_HALF_EXTENT,
+            BRUSH_FLOOR_TOP_Z,
+        ],
+    )]);
+    builder.push_model(
+        [-4096.0, -4096.0, -4096.0],
+        [4096.0, 4096.0, 4096.0],
+        [0.0, 0.0, 0.0],
+        world_heads,
+        2,
+        0,
+        0,
+    );
+    builder.push_model(
+        [-BRUSH_FLOOR_HALF_EXTENT, -BRUSH_FLOOR_HALF_EXTENT, -16.0],
+        [
+            BRUSH_FLOOR_HALF_EXTENT,
+            BRUSH_FLOOR_HALF_EXTENT,
+            BRUSH_FLOOR_TOP_Z,
+        ],
+        [0.0, 0.0, 0.0],
+        slab_heads,
+        2,
+        0,
+        0,
+    );
+    builder.build()
+}
+
 /// Builds a BSP30 file whose only solid is a single unbounded ground plane
 /// with the given unit surface normal (`0, 1` is flat ground), passing
 /// through the world origin.

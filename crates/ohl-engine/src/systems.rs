@@ -763,6 +763,9 @@ impl Systems {
         input: LatchedInput,
         dt: f32,
     ) {
+        // Doors, platforms and trains moved by last step's map logic must
+        // collide where they now are, not where they were compiled.
+        level.sync_brush_collision();
         if let Some(collision) = level.collision.as_ref() {
             controller.yaw = camera.yaw;
             controller.pitch = camera.pitch;

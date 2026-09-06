@@ -35,7 +35,7 @@ pub mod test_support;
 
 pub use controller::{ControllerInput, PlayerController};
 pub use hull::{
-    CollisionModel, DIST_EPSILON, HULL_SIZES, Hull, MAX_TRACE_DEPTH, Trace, contents,
+    BrushId, CollisionModel, DIST_EPSILON, HULL_SIZES, Hull, MAX_TRACE_DEPTH, Trace, contents,
     point_contents, trace_hull,
 };
 pub use movement::{

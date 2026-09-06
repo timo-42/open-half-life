@@ -2,7 +2,7 @@
 
 use ohl_formats::bsp30::{Bsp, Limits};
 use ohl_formats::test_support::{
-    Bsp30Builder, build_collision_room_bsp, build_collision_slope_bsp,
+    Bsp30Builder, build_brush_entity_floor_bsp, build_collision_room_bsp, build_collision_slope_bsp,
 };
 use ohl_physics::{CollisionModel, Hull, Trace, Vec3, contents, point_contents, trace_hull};
 
@@ -234,4 +234,146 @@ fn a_map_with_an_out_of_range_child_is_rejected() {
     let limits = Limits::default();
     let bsp = Bsp::parse(&bytes, &limits).expect("parses");
     assert!(CollisionModel::from_bsp(&bsp, &limits).is_err());
+}
+
+// ---------------------------------------------------------------------
+// Brush-entity hulls
+//
+// A map's worldspawn model is not the whole collision world: the compiler
+// moves every brush entity into its own `BSPMODEL`, so a floor built as a
+// `func_wall` is absent from submodel 0 entirely. These tests use the
+// `build_brush_entity_floor_bsp` fixture, whose worldspawn model is an
+// empty void and whose submodel 1 is a floor slab.
+// ---------------------------------------------------------------------
+
+/// The fixture's void world plus its slab attached as a solid brush entity.
+fn brush_floor() -> CollisionModel {
+    let bytes = build_brush_entity_floor_bsp("func_wall");
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+    let mut model =
+        CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable collision hulls");
+    model
+        .attach_brush(&bsp, &limits, 1, Vec3::ZERO)
+        .expect("the fixture declares submodel 1");
+    model
+}
+
+#[test]
+fn the_worldspawn_model_alone_has_no_floor_to_stand_on() {
+    let bytes = build_brush_entity_floor_bsp("func_wall");
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+    let model = CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable hulls");
+
+    assert_eq!(model.brush_count(), 0);
+    let trace = model.trace(
+        Hull::Standing,
+        Vec3::new(0.0, 0.0, 100.0),
+        Vec3::new(0.0, 0.0, -100.0),
+    );
+    assert!(
+        (trace.fraction - 1.0).abs() < f32::EPSILON,
+        "the void world stopped a fall it has nothing to stop with"
+    );
+}
+
+#[test]
+fn an_attached_brush_entity_stops_the_same_fall() {
+    let model = brush_floor();
+    assert_eq!(model.brush_count(), 1);
+
+    let start = Vec3::new(0.0, 0.0, 100.0);
+    let end = Vec3::new(0.0, 0.0, -100.0);
+    let trace = model.trace(Hull::Standing, start, end);
+
+    assert!(trace.fraction < 1.0, "the slab did not stop the fall");
+    // The standing hull's bottom is 36 units below its origin, so the origin
+    // comes to rest 36 units above the slab's top surface.
+    assert!(
+        (trace.end_pos.z - 36.0).abs() < 0.2,
+        "stopped at {} rather than on the slab",
+        trace.end_pos.z
+    );
+    assert!(trace.plane_normal.z > 0.9, "the hit plane is not a floor");
+    assert_on_segment(&trace, start, end);
+}
+
+#[test]
+fn a_fall_beside_the_slab_still_passes_through() {
+    let model = brush_floor();
+    let trace = model.trace(
+        Hull::Standing,
+        Vec3::new(512.0, 0.0, 100.0),
+        Vec3::new(512.0, 0.0, -100.0),
+    );
+    assert!(
+        (trace.fraction - 1.0).abs() < f32::EPSILON,
+        "a brush 512 units away blocked the fall"
+    );
+}
+
+#[test]
+fn moving_a_brush_moves_what_it_blocks() {
+    let bytes = build_brush_entity_floor_bsp("func_wall");
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+    let mut model = CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable hulls");
+    let brush = model
+        .attach_brush(&bsp, &limits, 1, Vec3::ZERO)
+        .expect("the fixture declares submodel 1");
+
+    // Slide the slab 512 units along +X, the way a door's map logic would.
+    model.set_brush_origin(brush, Vec3::new(512.0, 0.0, 0.0));
+
+    let over_the_old_place = model.trace(
+        Hull::Standing,
+        Vec3::new(0.0, 0.0, 100.0),
+        Vec3::new(0.0, 0.0, -100.0),
+    );
+    assert!(
+        (over_the_old_place.fraction - 1.0).abs() < f32::EPSILON,
+        "the slab still blocks where it no longer is"
+    );
+
+    let over_the_new_place = model.trace(
+        Hull::Standing,
+        Vec3::new(512.0, 0.0, 100.0),
+        Vec3::new(512.0, 0.0, -100.0),
+    );
+    assert!(
+        over_the_new_place.fraction < 1.0,
+        "the slab does not block where it now is"
+    );
+    assert!((over_the_new_place.end_pos.z - 36.0).abs() < 0.2);
+}
+
+#[test]
+fn a_point_inside_an_attached_brush_reads_as_solid() {
+    let model = brush_floor();
+    assert!(contents::is_solid(point_contents(
+        &model,
+        Vec3::new(0.0, 0.0, -8.0)
+    )));
+    assert!(!contents::is_solid(point_contents(
+        &model,
+        Vec3::new(0.0, 0.0, 64.0)
+    )));
+}
+
+#[test]
+fn attaching_the_worldspawn_model_or_a_missing_one_is_rejected() {
+    let bytes = build_brush_entity_floor_bsp("func_wall");
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+    let mut model = CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable hulls");
+
+    assert!(model.attach_brush(&bsp, &limits, 0, Vec3::ZERO).is_err());
+    assert!(model.attach_brush(&bsp, &limits, 99, Vec3::ZERO).is_err());
+    assert!(
+        model
+            .attach_brush(&bsp, &limits, 1, Vec3::new(f32::NAN, 0.0, 0.0))
+            .is_err()
+    );
+    assert_eq!(model.brush_count(), 0);
 }

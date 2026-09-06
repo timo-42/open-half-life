@@ -8,7 +8,7 @@ use ohl_game::hecs::Entity;
 use ohl_game::keyvalues::{self, EntityDef, Limits as KeyvalueLimits, ModelRef};
 use ohl_game::registry::{ClassName, Landmark, TargetName, Transform};
 use ohl_game::{Registry, Simulation};
-use ohl_physics::CollisionModel;
+use ohl_physics::{BrushId, CollisionModel};
 use ohl_world::{
     LightRamp, PlayerSpawn, SKY_FACE_SUFFIXES, SkyboxAsset, StudioLimits, StudioModel,
     WorldBuildOptions, WorldModel,
@@ -166,8 +166,14 @@ pub struct Level {
     pub registry: Registry,
     /// The map-logic simulation driving this level's entities.
     pub simulation: Simulation,
-    /// Collision hulls, when the map has usable ones.
+    /// Collision hulls, when the map has usable ones. Carries the world
+    /// hulls *and* every solid brush entity's, kept at its current position
+    /// by [`Self::sync_brush_collision`].
     pub collision: Option<CollisionModel>,
+    /// Which attached brush hull belongs to which brush entity, so a mover
+    /// can be followed as the map logic advances it. Empty when the map has
+    /// no usable collision hulls.
+    pub brush_collision: Vec<(Entity, BrushId)>,
     /// The `skyname` skybox, when the payload publishes its six faces.
     pub skybox: Option<SkyboxAsset>,
     /// Studio models referenced by this map's entities, in load order.
@@ -216,6 +222,35 @@ pub struct Level {
     /// *not* in [`Registry::entities`]: that list is index-aligned with
     /// `defs`, and a save references entities by their index in it.
     pub player: Entity,
+}
+
+/// Attaches every solid brush entity's collision hulls to `model`, and
+/// reports which attached hull belongs to which entity.
+///
+/// The worldspawn hulls alone are not what a player walks on: the compiler
+/// moves every brush entity into its own submodel, so a `func_wall` floor
+/// slab or a closed `func_door` is missing from model 0 entirely. Without
+/// this the player falls through any floor a mapper built as an entity.
+fn attach_solid_brushes(
+    model: &mut CollisionModel,
+    bsp: &Bsp<'_>,
+    limits: &BspLimits,
+    registry: &Registry,
+) -> Vec<(Entity, BrushId)> {
+    let mut attached = Vec::new();
+    for instance in ohl_game::brush::solid_model_instances(registry) {
+        let Ok(index) = usize::try_from(instance.model_index) else {
+            continue;
+        };
+        if index == 0 {
+            // `"*0"` is the worldspawn model, which `model` already holds.
+            continue;
+        }
+        if let Ok(id) = model.attach_brush(bsp, limits, index, instance.origin) {
+            attached.push((instance.entity, id));
+        }
+    }
+    attached
 }
 
 /// The classname the engine's own player entity carries. Project-authored:
@@ -343,7 +378,11 @@ impl Level {
             }
         }
 
-        let collision = CollisionModel::from_bsp(&bsp, &limits).ok();
+        let mut collision = CollisionModel::from_bsp(&bsp, &limits).ok();
+        let brush_collision = collision
+            .as_mut()
+            .map(|model| attach_solid_brushes(model, &bsp, &limits, &registry))
+            .unwrap_or_default();
         let skybox = registry
             .worldspawn
             .as_ref()
@@ -393,6 +432,7 @@ impl Level {
             registry,
             simulation: Simulation::new(),
             collision,
+            brush_collision,
             skybox,
             studio_models: studio.models,
             studio_model_paths: studio.paths,
@@ -406,6 +446,35 @@ impl Level {
             defs,
             player,
         })
+    }
+
+    /// Moves every attached brush hull to where its entity currently is.
+    ///
+    /// Call once per simulation step *before* the player moves, so a door
+    /// or train blocks (and carries) at the position it is drawn at rather
+    /// than at the position it was compiled at.
+    pub fn sync_brush_collision(&mut self) {
+        if self.brush_collision.is_empty() {
+            return;
+        }
+        let instances = ohl_game::brush::solid_model_instances(&self.registry);
+        let offsets: Vec<(Entity, Vec3)> = instances
+            .iter()
+            .map(|instance| {
+                (
+                    instance.entity,
+                    instance.origin + crate::render::brush_offset(self, instance),
+                )
+            })
+            .collect();
+        let Some(model) = self.collision.as_mut() else {
+            return;
+        };
+        for (entity, brush) in &self.brush_collision {
+            if let Some((_, origin)) = offsets.iter().find(|(other, _)| other == entity) {
+                model.set_brush_origin(*brush, *origin);
+            }
+        }
     }
 
     /// The world-space origin of the landmark named `landmark`, when this

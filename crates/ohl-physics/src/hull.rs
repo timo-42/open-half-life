@@ -239,7 +239,33 @@ struct HullPlane {
     dist: f32,
 }
 
+/// Identifies one solid brush entity attached to a [`CollisionModel`] with
+/// [`CollisionModel::attach_brush`], so its origin can be updated as the
+/// map logic moves it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BrushId(usize);
+
+/// One solid brush entity's hulls: the head links of its `BSPMODEL` plus
+/// the world-space offset the map logic has moved it by since the map was
+/// compiled.
+#[derive(Debug, Clone, Copy)]
+struct BrushPart {
+    heads: [i32; 4],
+    origin: Vec3,
+}
+
 /// A map's collision hulls: the validated planes plus the four hull trees.
+///
+/// A map's *worldspawn* hulls are only part of what a player collides with:
+/// the compiler moves every brush entity (`func_wall`, `func_door`,
+/// `func_plat`, `func_breakable`, ...) out of model 0 and into its own
+/// `BSPMODEL`, referenced from the entity lump as `"*N"` (Valve Developer
+/// Community, "BSP (GoldSrc)"; see `docs/FORMAT_SOURCES.md`). Each of those
+/// submodels carries its own four head nodes into the same shared plane and
+/// clipnode arrays, so a player trace has to visit the world tree *and*
+/// every solid brush entity's tree and keep the nearest hit. Attach those
+/// with [`Self::attach_brush`]; without them a floor built as a `func_wall`
+/// is simply not there and the player falls through it.
 #[derive(Debug, Clone)]
 pub struct CollisionModel {
     planes: Vec<HullPlane>,
@@ -250,6 +276,8 @@ pub struct CollisionModel {
     clip_nodes: Vec<HullNode>,
     /// Per-hull head links, in `BSPMODEL::headnodes` order.
     heads: [i32; 4],
+    /// The solid brush entities that move with the map logic.
+    brushes: Vec<BrushPart>,
 }
 
 fn valid_contents(value: i32) -> Result<i32, SanitizedError> {
@@ -380,7 +408,90 @@ impl CollisionModel {
             point_nodes,
             clip_nodes,
             heads,
+            brushes: Vec::new(),
         })
+    }
+
+    /// Attaches brush-entity submodel `model_index` as a solid the player
+    /// collides with, standing `origin` away from where it was compiled.
+    ///
+    /// Only the submodel's four head links are taken: every brush entity
+    /// indexes the same shared plane and clipnode arrays this model already
+    /// validated, so an attached brush costs four integers and adds one
+    /// extra tree walk per trace. `model_index` must name a real submodel
+    /// (`1..`); `0` is the worldspawn model this type already holds and is
+    /// rejected so a caller cannot double-count the world.
+    ///
+    /// The caller decides *which* entities are solid: `trigger_*` volumes,
+    /// `func_illusionary` and `func_ladder` are documented as non-solid and
+    /// must not be attached (see `ohl_game::brush::is_solid_brush`).
+    pub fn attach_brush(
+        &mut self,
+        bsp: &Bsp<'_>,
+        limits: &Limits,
+        model_index: usize,
+        origin: Vec3,
+    ) -> Result<BrushId, SanitizedError> {
+        if model_index == 0 {
+            return Err(SanitizedError::InvalidInput);
+        }
+        if !origin.is_finite() {
+            return Err(SanitizedError::InvalidInput);
+        }
+        let raw_models = bsp
+            .models(limits)
+            .map_err(|_| SanitizedError::InvalidInput)?;
+        let raw_leaves = bsp
+            .leaves(limits)
+            .map_err(|_| SanitizedError::InvalidInput)?;
+        let model = raw_models
+            .get(model_index)
+            .ok_or(SanitizedError::NotFound)?;
+
+        let mut heads = [contents::EMPTY; 4];
+        for (hull, head) in heads.iter_mut().enumerate() {
+            let raw = model.headnodes[hull].get();
+            let node_count = if hull == 0 {
+                self.point_nodes.len()
+            } else {
+                self.clip_nodes.len()
+            };
+            *head = if raw >= 0 {
+                if usize::try_from(raw).map_err(|_| SanitizedError::InvalidInput)? >= node_count {
+                    return Err(SanitizedError::InvalidInput);
+                }
+                raw
+            } else if hull == 0 {
+                let leaf = raw_leaves
+                    .get(usize::try_from(!raw).map_err(|_| SanitizedError::InvalidInput)?)
+                    .ok_or(SanitizedError::InvalidInput)?;
+                valid_contents(leaf.contents.get())?
+            } else {
+                valid_contents(raw)?
+            };
+        }
+
+        self.brushes.push(BrushPart { heads, origin });
+        Ok(BrushId(self.brushes.len() - 1))
+    }
+
+    /// Moves an attached brush entity to `origin` (its offset from where it
+    /// was compiled), so a door or platform collides where it currently is.
+    /// A non-finite `origin` is ignored rather than poisoning every later
+    /// trace.
+    pub fn set_brush_origin(&mut self, brush: BrushId, origin: Vec3) {
+        if !origin.is_finite() {
+            return;
+        }
+        if let Some(part) = self.brushes.get_mut(brush.0) {
+            part.origin = origin;
+        }
+    }
+
+    /// How many solid brush entities are attached.
+    #[must_use]
+    pub fn brush_count(&self) -> usize {
+        self.brushes.len()
     }
 
     fn nodes_of(&self, hull: Hull) -> &[HullNode] {
@@ -397,15 +508,34 @@ impl CollisionModel {
     }
 
     /// The contents value `point` falls in, as seen by `hull`.
+    ///
+    /// An attached solid brush entity wins over the world: standing inside
+    /// a closed `func_door` is solid even where the worldspawn tree says
+    /// the space is empty. A brush that does *not* contain the point
+    /// contributes nothing, so it can never turn world water or a ladder
+    /// volume back into plain empty space.
     #[must_use]
     pub fn contents_at(&self, hull: Hull, point: Vec3) -> i32 {
-        let nodes = self.nodes_of(hull);
-        let mut link = self.heads[hull.index()];
+        for brush in &self.brushes {
+            let head = brush.heads[hull.index()];
+            if head < 0 {
+                // A bare contents value, not a tree: see `trace`.
+                continue;
+            }
+            let link = self.walk(self.nodes_of(hull), head, point - brush.origin);
+            if contents::is_solid(link) {
+                return link;
+            }
+        }
+        self.walk(self.nodes_of(hull), self.heads[hull.index()], point)
+    }
+
+    /// Walks `link`'s tree down to the contents value at `point`.
+    fn walk(&self, nodes: &[HullNode], mut link: i32, point: Vec3) -> i32 {
         for _ in 0..MAX_TRACE_DEPTH {
             if link < 0 {
                 return link;
             }
-            // Every child link was bounds-checked at construction.
             // Every non-negative child link was bounds-checked at
             // construction, so this index is always in range.
             let node = &nodes[link.cast_unsigned() as usize];
@@ -426,35 +556,40 @@ impl CollisionModel {
 
     /// Traces the segment `start -> end` through `hull` and reports where it
     /// first entered solid.
+    ///
+    /// The world tree and every attached solid brush entity are traced, and
+    /// the nearest of those hits is the answer: a `func_wall` floor slab
+    /// stops a falling player exactly as a worldspawn floor does.
     #[must_use]
     pub fn trace(&self, hull: Hull, start: Vec3, end: Vec3) -> Trace {
-        let mut trace = Trace::miss(end);
-        trace.all_solid = true;
         if !start.is_finite() || !end.is_finite() {
             // Nothing sensible can be traced; report a fully blocked move so
             // callers keep the entity where it is.
+            let mut trace = Trace::miss(end);
             trace.fraction = 0.0;
             trace.end_pos = start;
+            trace.all_solid = true;
             trace.start_solid = true;
             trace.contents = contents::SOLID;
             return trace;
         }
 
-        let nodes = self.nodes_of(hull);
-        let head = self.heads[hull.index()];
-        self.recurse(
-            nodes,
-            head,
-            0.0,
-            1.0,
-            start,
-            end,
-            MAX_TRACE_DEPTH,
-            &mut trace,
-        );
-        if trace.all_solid {
-            trace.start_solid = true;
+        let mut trace = self.trace_tree(hull, self.heads[hull.index()], Vec3::ZERO, start, end);
+        for brush in &self.brushes {
+            let head = brush.heads[hull.index()];
+            if head < 0 {
+                // This submodel's tree for this hull is a bare contents
+                // value with no plane in it, so it has no boundary and
+                // bounds no volume: an "empty everywhere" brush is a no-op
+                // and a "solid everywhere" one would fill the map with
+                // solid, which no brush entity can be. Either way it
+                // contributes nothing to the move.
+                continue;
+            }
+            let hit = self.trace_tree(hull, head, brush.origin, start, end);
+            combine(&mut trace, &hit);
         }
+
         if trace.start_solid {
             // A move that begins inside solid goes nowhere, so the reported
             // position is where it started; this keeps
@@ -464,6 +599,40 @@ impl CollisionModel {
             trace.end_pos = start;
         }
         trace.contents = self.contents_at(hull, trace.end_pos);
+        trace
+    }
+
+    /// Traces `start -> end` through the single tree rooted at `head`,
+    /// which sits `offset` away from where it was compiled.
+    ///
+    /// The segment is moved into the tree's own frame, traced there, and the
+    /// result moved back: a hull tree is a set of planes, so translating the
+    /// query is the same as translating the tree and costs nothing per node.
+    fn trace_tree(&self, hull: Hull, head: i32, offset: Vec3, start: Vec3, end: Vec3) -> Trace {
+        let (local_start, local_end) = (start - offset, end - offset);
+        let mut trace = Trace::miss(local_end);
+        trace.all_solid = true;
+        self.recurse(
+            self.nodes_of(hull),
+            head,
+            0.0,
+            1.0,
+            local_start,
+            local_end,
+            MAX_TRACE_DEPTH,
+            &mut trace,
+        );
+        if trace.all_solid {
+            trace.start_solid = true;
+        }
+        if trace.start_solid {
+            trace.fraction = 0.0;
+            trace.end_pos = local_start;
+        }
+        trace.end_pos += offset;
+        // A plane's normal is unchanged by a translation; only its distance
+        // from the origin moves with it.
+        trace.plane_dist += trace.plane_normal.dot(offset);
         trace
     }
 
@@ -612,6 +781,28 @@ impl CollisionModel {
             link = node.children[side];
         }
         contents::SOLID
+    }
+}
+
+/// Folds one tree's trace into the running best.
+///
+/// "Best" is the hit nearest the start: a move is stopped by whichever
+/// solid it reaches first, so the smaller fraction (and its plane) wins.
+/// The volume flags are unions — a segment that passed through open space
+/// in the world and through a brush's solid did both — except that a start
+/// inside *any* solid stops the move outright.
+fn combine(best: &mut Trace, hit: &Trace) {
+    best.in_open |= hit.in_open;
+    best.in_water |= hit.in_water;
+    best.all_solid |= hit.all_solid;
+    if hit.start_solid {
+        best.start_solid = true;
+    }
+    if hit.fraction < best.fraction {
+        best.fraction = hit.fraction;
+        best.end_pos = hit.end_pos;
+        best.plane_normal = hit.plane_normal;
+        best.plane_dist = hit.plane_dist;
     }
 }
 

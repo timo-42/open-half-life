@@ -944,6 +944,27 @@ the real game before this project may claim movement parity.
   clipnodes". This is the source of `HULL_SIZES` and of the fact that the
   compiler pre-expands each hull's planes, so a box sweep is a *point* trace
   through the matching hull.
+- Valve Developer Community, "BSP (GoldSrc)" and "Brush entity" (citation
+  and review date in the BSP section above; the site answered automated
+  requests with HTTP 403 on 2026-09-05, so this entry relies on the review
+  already recorded in this file), together with the TWHL wiki's entity
+  reference pages for `func_wall`, `func_door` and `func_illusionary`: a
+  brush entity's brushes are compiled out of the worldspawn model and into
+  their own `BSPMODEL`, referenced from the entity lump as `"*N"`, and that
+  submodel carries its own four `nHeadnodes` into the same shared plane and
+  clipnode arrays. A player therefore collides with the world tree *and*
+  with every solid brush entity's tree; the worldspawn hulls alone do not
+  describe a floor a mapper built as a `func_wall`. This is why
+  `CollisionModel::attach_brush` exists and why `CollisionModel::trace`
+  keeps the nearest hit across the world tree and each attached brush.
+  `func_illusionary` ("a brush that is drawn but has no collision") and
+  `func_ladder` ("an invisible brush which, when touched by the player,
+  allows them to climb") are documented as non-solid, as is `func_water`
+  (a swimmable volume) and every `trigger_*` volume, so
+  `ohl_game::brush::is_solid_brush` excludes exactly those.
+  TODO(black-box): a brush entity's `angles` are not applied to its
+  collision hulls (only its translation is), and a mover does not yet carry
+  a player standing on it; both need verification against the real game.
 - Half-Life Physics Reference, Chong Jiang Wei, chapter 5 "Ducking and
   jumping" (<https://www.jwchong.com/hl/duckjump.html>, reviewed 2026-09-05):
   "the difference in vertical player position (measured at the centre point

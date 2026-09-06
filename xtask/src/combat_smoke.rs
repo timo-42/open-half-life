@@ -87,18 +87,26 @@ const BASE_ABSENT: [&str; 6] = [
 
 /// The fixed lines a scenario that does pick up and fire a weapon expects
 /// present, beyond [`BASE_PRESENT`].
-const FIRE_AND_PICKUP_PRESENT: [&str; 4] = [
+///
+/// "A shot hit an entity." joined this list once the player collided with
+/// solid brush entities as well as with worldspawn: before that the walk in
+/// this scenario dropped through the map's floors and ended somewhere with
+/// nothing in the swing's reach, so the swing connected with nothing. With
+/// the walk now following the floor the scenario was tuned against, the
+/// swing lands, which is the behaviour this smoke is meant to observe.
+const FIRE_AND_PICKUP_PRESENT: [&str; 5] = [
     "Scripted input loaded.",
     "Scripted input finished.",
     "A pickup was collected.",
     "The player fired a weapon.",
+    "A shot hit an entity.",
 ];
 
-/// [`BASE_ABSENT`] minus the two lines [`FIRE_AND_PICKUP_PRESENT`] moves to
-/// its own present set: nothing in this scenario's swing has anything to
-/// hit, damage or kill, and nothing in it can damage the player either.
-const FIRE_AND_PICKUP_ABSENT: [&str; 4] = [
-    "A shot hit an entity.",
+/// [`BASE_ABSENT`] minus the three lines [`FIRE_AND_PICKUP_PRESENT`] moves
+/// to its own present set: the swing lands, but nothing in this scenario
+/// takes enough damage to report a monster hurt or killed, and nothing in
+/// it can damage the player either.
+const FIRE_AND_PICKUP_ABSENT: [&str; 3] = [
     "A monster took damage.",
     "A monster died.",
     "The player took damage.",
