@@ -1320,6 +1320,27 @@ behaviour, not a copied formula. No SDK source (`dlls/*.cpp`) or decompiled
 GoldSrc logic was consulted for any of the above; only the public wiki pages
 named. `ohl-render` does not yet draw the resulting brush-model instances
 (see `docs/MILESTONES.md`, "M5 (Rust): entities").
+
+- TWHL's `trigger_once`/`trigger_multiple` pages (already cited above)
+  describe both as an invisible **solid** volume that "activates its
+  targets when something touches it"; since the previous bullet already
+  establishes every `trigger_*` brush is collision-only (never rendered,
+  but still a real solid for touch purposes), "touches" here is ordinary
+  brush-vs-brush collision, i.e. the moving entity's own bounding box
+  overlapping the trigger's brush bounds — not a single point (the
+  entity's origin) entering it. `ohl_game::logic::Simulation::touch_triggers`
+  implements exactly that overlap test against the player's hull box (see
+  "Collision hulls and player movement" above for the published
+  `Hull::Standing`/`Hull::Crouched` box sizes), fixing a gap where a
+  `trigger_once`/`trigger_multiple` gating a `func_door` (or any other
+  target) never fired from player movement at all — only from another
+  entity's `use`/fire chain reaching it by name. `ohl-engine`'s
+  `Systems::triggers_and_movers` (phase 12) calls it once per fixed step
+  with the player's standing-hull box built from `self.physics_output.origin`.
+  **`TODO(black-box)`**: the crouched hull is not threaded through to this
+  call site yet, so a ducking player's touch test still uses the standing
+  box.
+
 ## Navigation
 
 - [TWHL wiki: info_node](https://twhl.info/wiki/page/info_node),

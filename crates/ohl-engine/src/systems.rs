@@ -40,7 +40,7 @@ use glam::Vec3;
 use ohl_game::hecs::Entity;
 use ohl_game::registry::Transform;
 use ohl_game::{Event, find_usable_within};
-use ohl_physics::{ControllerInput, PlayerController};
+use ohl_physics::{ControllerInput, HULL_SIZES, Hull, PlayerController};
 use ohl_player::PlayerSystems;
 use ohl_render::{FreeFlyCamera, MoveInput};
 
@@ -1006,6 +1006,22 @@ impl Systems {
                 self.ai.queue_use(position);
             }
         }
+        // `trigger_once`/`trigger_multiple` fire when the player's own
+        // bounding box touches their brush volume, not just when a single
+        // point does; using the standing hull here (see
+        // `ohl_physics::Hull::Standing`) so a door gated behind a touch
+        // trigger opens as the player walks up to it, the way a real touch
+        // trigger tests brush-against-brush.
+        // TODO(black-box): the crouched hull (`Hull::Crouched`) is not
+        // threaded through to this phase, so a ducking player is tested
+        // against the standing box instead of their own, smaller one.
+        let (hull_mins, hull_maxs) = HULL_SIZES[Hull::Standing.index()];
+        let player_origin = self.physics_output.origin;
+        let player_mins = player_origin + Vec3::from_array(hull_mins);
+        let player_maxs = player_origin + Vec3::from_array(hull_maxs);
+        level
+            .simulation
+            .touch_triggers(&mut level.registry, player_mins, player_maxs, None);
         events.extend(level.simulation.tick(&mut level.registry, dt));
     }
 
