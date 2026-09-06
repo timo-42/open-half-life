@@ -180,7 +180,8 @@ struct Cli {
     /// The lightmap ramp's overbright multiplier.
     ///
     /// `ohl_world::lightmap::LightRamp::default()`'s `overbright` (`1.0`,
-    /// i.e. no multiplier) is left unchanged by default. A fidelity
+    /// i.e. no multiplier) remains the engine's documented raw default;
+    /// this application-level default is calibrated separately. A fidelity
     /// investigation (round 4, finding E5) measured this project's mean
     /// scene luma at roughly 1.7x below public reference screenshots
     /// across six clean viewpoints, and found that GoldSrc's OpenGL
@@ -189,18 +190,27 @@ struct Cli {
     /// doubles brightness beyond the ordinary 0..=1 range — but that
     /// convention ships *disabled* by default in stock Half-Life
     /// (`gl_overbright 0`), so no public source pins a specific non-default
-    /// multiplier as this project's own documented default. This flag lets
-    /// a caller opt into the researched 2x convention (`--overbright 2.0`)
-    /// or the round 4 measured ratio (`--overbright 1.7`) without this
-    /// project fitting either value into the shipped default; see
+    /// multiplier as an engine fact. A follow-up fidelity investigation
+    /// (round 5) measured `--overbright 1.7` bringing this project's
+    /// captures to roughly 1.01x the public-reference mean luma with no
+    /// added clipping, against roughly 1.72x under at `1.0`. This project
+    /// therefore adopts `1.7` as the application's own calibrated display
+    /// default — a project display choice, not a claimed engine fact — while
+    /// `1.0` remains available for the raw, unmultiplied lightmap; see
     /// `docs/FORMAT_SOURCES.md`, "Rendering conventions". Must be a finite
     /// number greater than `0` and no more than `8.0` (see
     /// [`parse_overbright`]).
     #[arg(
         long,
         value_name = "MULTIPLIER",
-        default_value_t = 1.0,
-        value_parser = parse_overbright
+        default_value_t = 1.7,
+        value_parser = parse_overbright,
+        long_help = "The lightmap ramp's overbright multiplier: project default \
+calibrated against public reference screenshots (round 5, ~1.01x the \
+public-reference mean luma with no added clipping); 1.0 = raw lightmap \
+(ohl_world::lightmap::LightRamp::default()'s engine value, unmultiplied). \
+See docs/FORMAT_SOURCES.md, \"Rendering conventions\". Must be a finite \
+number greater than 0 and no more than 8.0."
     )]
     overbright: f32,
 
@@ -907,7 +917,29 @@ mod tests {
     use ohl_platform::MediaSource;
     use ohl_vfs::{DirectoryLimits, Mount};
 
-    use super::{DEFAULT_RECIPE, load_recipe, platform_line, report_import};
+    use clap::Parser as _;
+
+    use super::{Cli, DEFAULT_RECIPE, load_recipe, platform_line, report_import};
+
+    /// The app's own `--overbright` default is the round 5 calibrated
+    /// `1.7`, not the engine's raw `1.0` (see
+    /// `ohl_world::lightmap::LightRamp::default()` and
+    /// `ohl_engine::GameConfig::default()`, both left unchanged at `1.0`).
+    /// This is a project display default, not a claimed engine fact; see
+    /// `docs/FORMAT_SOURCES.md`, "Rendering conventions".
+    #[test]
+    fn the_overbright_default_is_the_calibrated_1_7() {
+        let cli = Cli::parse_from(["open-half-life", "--play"]);
+        assert_eq!(cli.overbright, 1.7);
+    }
+
+    /// A caller can still opt back into the engine's raw, unmultiplied
+    /// lightmap ramp with an explicit `--overbright 1.0`.
+    #[test]
+    fn an_explicit_overbright_of_1_0_still_yields_the_raw_ramp() {
+        let cli = Cli::parse_from(["open-half-life", "--overbright", "1.0", "--play"]);
+        assert_eq!(cli.overbright, 1.0);
+    }
 
     #[test]
     fn platform_line_has_expected_shape() {

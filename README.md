@@ -102,10 +102,14 @@ documented start map); `--training` starts the Hazard Course instead;
 `--load SLOT` resumes a save slot rather than starting a map fresh (mutually
 exclusive with `--map`/`--training`); `--difficulty easy|medium|hard`
 selects which `skill.cfg` values the game reads (default `medium`); and
-`--overbright MULTIPLIER` scales the lightmap ramp above its default `1.0`
-(no multiplier) — see `--help` for the fidelity-investigation background,
-which found GoldSrc's overbright convention shipped disabled by default with
-no public source pinning a specific non-default value.
+`--overbright MULTIPLIER` scales the lightmap ramp; the app defaults it to
+`1.7`, a project display default calibrated against public reference
+screenshots (fidelity round 5), not a claimed engine fact — the engine's own
+`LightRamp`/`GameConfig` defaults stay at the raw, unmultiplied `1.0`. Pass
+`--overbright 1.0` to get that raw lighting back. See `--help` for the full
+fidelity-investigation background, including GoldSrc's overbright convention
+shipping disabled by default with no public source pinning a specific
+non-default value.
 
 **Headless screenshots**, for a machine with no display server (a GPU
 adapter is still required):
@@ -231,9 +235,11 @@ systems, projectiles, track trains and scripted sequences/talk monsters are
 implemented and covered by automated tests, but have not yet been
 play-tested end to end on a real display by a person. Save/load works over
 the project-owned `ohl-save` container (not the GoldSrc `.sav` format).
-Known fidelity gaps: scene lighting reads dimmer than public reference
-screenshots unless `--overbright` is set (see `--help` and
-`docs/FORMAT_SOURCES.md`, "Rendering conventions"); the Hazard Course
+Known fidelity gaps: scene lighting is calibrated against public reference
+screenshots via the app's own `--overbright 1.7` default (pass
+`--overbright 1.0` for the engine's raw, unmultiplied lighting; see
+`--help` and `docs/FORMAT_SOURCES.md`, "Rendering conventions"); the Hazard
+Course
 training spawn view has not been verified against a reference; and monster
 models loading from the payload is implemented but not yet merged to `main`
 ([PR #78](https://github.com/timo-42/open-half-life/pull/78)). See
