@@ -636,6 +636,39 @@ impl AiWorld {
         }
         ai.conditions = conditions;
 
+        // --- Scripted possession ------------------------------------------
+        // A monster a `scripted_sequence` has taken over keeps sensing and
+        // remembering — that is what lets an interruptible script notice
+        // damage or an enemy — but chooses no state and runs no schedule
+        // while `crate::scripts::ScriptHold` is present. It still follows
+        // whatever route the script set, through exactly the same
+        // navigator seam every other route uses.
+        if world.get::<&crate::scripts::ScriptHold>(entity).is_ok() {
+            ai.runner.clear();
+            let moved = advance_route(
+                entity,
+                &mut actor,
+                &mut ai,
+                context.collision,
+                self.navigator.as_mut(),
+                dt,
+            );
+            if ai.move_speed > 0.0 {
+                if ai.stuck.record(moved) {
+                    ai.pending_conditions |= Conditions::BLOCKED;
+                }
+            } else {
+                ai.stuck.reset();
+            }
+            if let Ok(mut slot) = world.get::<&mut Actor>(entity) {
+                *slot = actor;
+            }
+            if let Ok(mut slot) = world.get::<&mut MonsterAi>(entity) {
+                *slot = ai;
+            }
+            return;
+        }
+
         // --- State --------------------------------------------------------
         let next_state = brain.next_state(ai.state, conditions);
         if next_state != ai.state {

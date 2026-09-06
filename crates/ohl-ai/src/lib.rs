@@ -20,6 +20,10 @@
 //! - [`movement`]: [`Route`], [`movement::move_toward`] and
 //!   [`StuckDetector`].
 //! - [`squad`]: [`SquadRoster`], leader recruitment and enemy sharing.
+//! - [`scripts`]: the `scripted_sequence`/`aiscripted_sequence` state
+//!   machine and the [`ScriptHold`] marker that suspends a monster's brain
+//!   while a script owns it.
+//! - [`follow`]: the `monster_scientist`/`monster_barney` follow layer.
 //! - [`spawn`]: attaching AI components to `ohl-game`'s entity registry.
 //! - [`damage`]: the minimal damage input, to be replaced by `ohl-combat`'s
 //!   richer `DamageInfo` (see the module docs).
@@ -62,10 +66,12 @@
 
 pub mod brain;
 pub mod damage;
+pub mod follow;
 pub mod monsters;
 pub mod movement;
 pub mod rng;
 pub mod schedule;
+pub mod scripts;
 pub mod senses;
 pub mod spawn;
 pub mod spawner;
@@ -75,6 +81,7 @@ pub mod world;
 
 pub use brain::{DefaultBrain, default_next_state, schedule_by_name};
 pub use damage::{DamageEvent, DamageQueue, DamageSink};
+pub use follow::{FollowChange, FollowRoster, Follower};
 pub use monsters::{
     CorpseDecision, MonsterBrain, MonsterKind, MonsterSpec, MonsterTrigger, NavBridge,
     NavBridgeLimits, Navigator, NoOpRangedAttackSink, RangedAttackSink, StraightLineNavigator,
@@ -82,6 +89,7 @@ pub use monsters::{
 };
 pub use movement::{MoveResult, Route, StuckDetector, move_toward};
 pub use rng::Pcg32;
+pub use scripts::{ScriptAction, ScriptHold, ScriptPhase, ScriptRunner, ScriptSense, ScriptStep};
 pub use schedule::{
     Activity, Brain, RunOutcome, Schedule, ScheduleRunner, Task, TaskExecutor, TaskStatus,
 };
