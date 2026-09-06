@@ -19,9 +19,10 @@ acyclic and matches the table below, which restates
 | `ohl-platform` | `MediaSource`, atomic-directory publication, per-OS sandbox | std, `unsafe` allowed |
 | `ohl-vfs` | mounts, normalization, bounded paged enumeration, read-only files | std |
 | `ohl-media` | preflight-result mapping, fingerprint, `ValidatedMedia`, provenance cache | std |
-| `ohl-import` | handshake/parent/process session, read broker, result bridge, selection, staging | std |
+| `ohl-import` | handshake/parent/process session, read broker, result bridge | std |
+| `ohl-payload` | payload path policy, layout planning, component selection recipe, staging/publication | std |
 | `ohl-formats` | BSP30/WAD3/MDL10/SPR decoders | `no_std` + `alloc` |
-| `ohl-render`, `ohl-audio`, `ohl-input` | wgpu passes; cpal/rodio; winit events | std |
+| `ohl-render`, `ohl-audio` | wgpu passes; cpal/rodio (winit window/input events are handled directly in `ohl-app`, not a separate crate) | std |
 | `ohl-world`, `ohl-physics`, `ohl-game`, `ohl-ui` | world state, GoldSrc hulls, rules, egui HUD | std |
 | `ohl-combat` | damage model, attack traces against hulls and studio hitboxes, combat events | std |
 | `ohl-ai` | monster conditions, senses, schedules, squads, movement glue | std |
