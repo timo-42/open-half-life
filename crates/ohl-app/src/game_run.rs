@@ -237,15 +237,30 @@ fn run_scripted(
     let mut log = crate::script_log::ScriptLog::new(game);
     for input in script.inputs() {
         for event in game.tick(CAPTURE_STEP, input) {
-            if let GameEvent::LevelChange { map, landmark } = event {
-                handle_level_change(
-                    game,
-                    source,
-                    &map,
-                    &landmark,
-                    args.follow_level_change,
-                    args.script_log,
-                );
+            match event {
+                GameEvent::LevelChange { map, landmark } => {
+                    handle_level_change(
+                        game,
+                        source,
+                        &map,
+                        &landmark,
+                        args.follow_level_change,
+                        args.script_log,
+                    );
+                }
+                // The same fixed line the interactive window logs
+                // (`GameRun::draw`, below): a scripted/headless run is
+                // otherwise silent about the player's death, even though
+                // `ohl_engine::Systems::step` has already stopped
+                // simulating the player's movement from this point on.
+                GameEvent::PlayerDied => {
+                    tracing::info!("The player died.");
+                }
+                GameEvent::ChapterTitle(_)
+                | GameEvent::Message { .. }
+                | GameEvent::Sound(_)
+                | GameEvent::Suit(_)
+                | GameEvent::ViewModel(_) => {}
             }
         }
         if args.script_log {

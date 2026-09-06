@@ -471,9 +471,69 @@ pub fn categorize_position(model: &CollisionModel, state: &mut PlayerState, conf
         if state.velocity.z < 0.0 {
             state.velocity.z = 0.0;
         }
+        unstick_from_ground(model, state, config);
     } else {
         state.on_ground = false;
         state.ground_normal = Vec3::ZERO;
+    }
+}
+
+/// How far [`unstick_from_ground`] tries nudging the player upward, in
+/// one-unit steps, to recover a landing whose own ground-probe trace still
+/// reports the hull embedded in solid. A hard-enough closing velocity can
+/// resolve [`categorize_position`]'s short probe to a surface the full
+/// standing/crouched hull still overlaps by a hair (the probe trace backs
+/// off only [`crate::hull::DIST_EPSILON`] short of the plane, not the
+/// hull's own bounding box), which otherwise leaves the player permanently
+/// embedded rather than resting on top. Bounded rather than searched
+/// until success, so a landing spot that is genuinely solid all the way
+/// through (a mapper's own error) gives up instead of looping.
+const UNSTICK_MAX_NUDGE: f32 = 34.0;
+
+/// The step [`unstick_from_ground`] nudges by on each attempt.
+const UNSTICK_STEP: f32 = 1.0;
+
+/// Whether `origin` is embedded in solid, checked both the way a fresh
+/// landing already checks (a zero-length trace in the player's own
+/// standing/crouched hull) and the way [`crate::game::Game::eye_is_in_solid`]
+/// (out of this crate, but documented on that method) checks: a point query
+/// against hull 0 at the eye position. The two hulls are compiled and
+/// simplified independently (see `docs/FORMAT_SOURCES.md`'s "Collision
+/// hulls and player movement" section), so a landing spot can clear one and
+/// still fail the other — most often a low overhang that the standing
+/// hull's coarser box never touches but the eye point, higher up and
+/// exact, pokes straight into.
+fn origin_is_stuck(
+    model: &CollisionModel,
+    origin: Vec3,
+    state: &PlayerState,
+    config: &MoveConfig,
+) -> bool {
+    let hull = state.hull();
+    if model.trace(hull, origin, origin).start_solid {
+        return true;
+    }
+    let eye = origin + Vec3::Z * (state.eye_position(config) - state.origin).z;
+    contents::is_solid(model.point_contents(eye))
+}
+
+/// If `state.origin` is embedded in solid by either of [`origin_is_stuck`]'s
+/// two tests, nudges it straight up in [`UNSTICK_STEP`] increments, up to
+/// [`UNSTICK_MAX_NUDGE`] units, and keeps the first offset that clears both.
+/// Leaves `state` untouched if no such offset is found within the bound: a
+/// stuck player is no better off, but no worse either.
+fn unstick_from_ground(model: &CollisionModel, state: &mut PlayerState, config: &MoveConfig) {
+    if !origin_is_stuck(model, state.origin, state, config) {
+        return;
+    }
+    let mut offset = UNSTICK_STEP;
+    while offset <= UNSTICK_MAX_NUDGE {
+        let candidate = state.origin + Vec3::Z * offset;
+        if !origin_is_stuck(model, candidate, state, config) {
+            state.origin = candidate;
+            return;
+        }
+        offset += UNSTICK_STEP;
     }
 }
 
