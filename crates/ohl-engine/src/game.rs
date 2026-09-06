@@ -486,6 +486,16 @@ impl Game {
         self.difficulty
     }
 
+    /// The lightmap ramp's overbright multiplier this game was loaded with
+    /// (see [`GameConfig::overbright`]). A display setting, not save state:
+    /// it is not stored in [`GameSave`] and is not restored by
+    /// [`Self::from_save`]/[`Self::load_bytes`]/[`Self::load_slot`] unless
+    /// their `_with` variant is given an explicit [`GameConfig`].
+    #[must_use]
+    pub fn overbright(&self) -> f32 {
+        self.overbright
+    }
+
     /// Selects a difficulty; `skill.cfg` lookups follow immediately.
     pub fn set_difficulty(&mut self, difficulty: Difficulty) {
         self.difficulty = difficulty;
@@ -840,13 +850,35 @@ impl Game {
     /// Rebuilds a game from a save payload: the map named in the save is
     /// loaded through `source`, then every stored section is applied to it.
     ///
+    /// `difficulty` always comes from `save` (it is save state); the
+    /// lightmap ramp's `overbright` multiplier is a display setting instead
+    /// (`GameSave` carries no such field), so this keeps it at
+    /// [`GameConfig::default`]'s value. Use [`Self::from_save_with`] to
+    /// override it, for example to carry a `--overbright` command-line
+    /// choice across a save/load.
+    ///
     /// # Errors
     /// [`EngineError::MapNotFound`] when the payload no longer publishes
     /// the saved map, else as [`Game::load`].
     pub fn from_save(source: &dyn AssetSource, save: &GameSave) -> Result<Self> {
+        Self::from_save_with(source, save, &GameConfig::default())
+    }
+
+    /// As [`Self::from_save`], with a caller-chosen [`GameConfig`] for
+    /// settings that are not save state. Only [`GameConfig::overbright`] is
+    /// read; `config.difficulty` is ignored in favour of `save`'s own
+    /// difficulty, which is always save state.
+    ///
+    /// # Errors
+    /// As [`Self::from_save`].
+    pub fn from_save_with(
+        source: &dyn AssetSource,
+        save: &GameSave,
+        config: &GameConfig,
+    ) -> Result<Self> {
         let config = GameConfig {
             difficulty: save.difficulty(),
-            ..GameConfig::default()
+            overbright: config.overbright,
         };
         let mut game = Self::load_with(source, &save.header.map, &config)?;
         game.restore(save);
@@ -859,7 +891,20 @@ impl Game {
     /// [`EngineError::SaveUnreadable`] when the container does not open or
     /// a section is missing, else as [`Game::from_save`].
     pub fn load_bytes(source: &dyn AssetSource, bytes: &[u8]) -> Result<Self> {
-        Self::from_save(source, &GameSave::from_bytes(bytes)?)
+        Self::load_bytes_with(source, bytes, &GameConfig::default())
+    }
+
+    /// As [`Self::load_bytes`], with a caller-chosen [`GameConfig`]; see
+    /// [`Self::from_save_with`].
+    ///
+    /// # Errors
+    /// As [`Self::load_bytes`].
+    pub fn load_bytes_with(
+        source: &dyn AssetSource,
+        bytes: &[u8],
+        config: &GameConfig,
+    ) -> Result<Self> {
+        Self::from_save_with(source, &GameSave::from_bytes(bytes)?, config)
     }
 
     /// Reads `name` out of `slot`'s save directory and rebuilds the game.
@@ -872,8 +917,22 @@ impl Game {
         slot: &ohl_save::SaveSlot,
         name: &str,
     ) -> Result<Self> {
+        Self::load_slot_with(source, slot, name, &GameConfig::default())
+    }
+
+    /// As [`Self::load_slot`], with a caller-chosen [`GameConfig`]; see
+    /// [`Self::from_save_with`].
+    ///
+    /// # Errors
+    /// As [`Self::load_slot`].
+    pub fn load_slot_with(
+        source: &dyn AssetSource,
+        slot: &ohl_save::SaveSlot,
+        name: &str,
+        config: &GameConfig,
+    ) -> Result<Self> {
         let bytes = slot.read(name).map_err(|_| EngineError::SaveUnreadable)?;
-        Self::load_bytes(source, &bytes)
+        Self::load_bytes_with(source, &bytes, config)
     }
 
     /// Applies a save payload onto this (already map-matched) game.
