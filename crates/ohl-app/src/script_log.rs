@@ -14,6 +14,10 @@
 //!   increasing past its value when the script started.
 //! - "A monster died." — [`ohl_engine::Game::monster_death_count`]
 //!   increasing the same way.
+//! - "A scripted sequence started." / "A scripted sequence finished." —
+//!   `ohl_engine::Game::active_script_count` rising above zero and, having
+//!   done so, returning to it. Both are fixed strings: no script, monster
+//!   or sequence name is ever interpolated (design §10).
 //!
 //! The remaining four are TODO hooks, not wired, because their sources do
 //! not exist on this branch (M7.9 P1, PR #70, is not merged; see
@@ -41,6 +45,9 @@ use ohl_engine::Game;
 pub struct ScriptLog {
     monster_damaged: bool,
     monster_died: bool,
+    script_started: bool,
+    script_finished: bool,
+    script_was_active: bool,
     baseline_damage_events: u64,
     baseline_deaths: u64,
 }
@@ -54,6 +61,9 @@ impl ScriptLog {
         Self {
             monster_damaged: false,
             monster_died: false,
+            script_started: false,
+            script_finished: false,
+            script_was_active: game.active_script_count() > 0,
             baseline_damage_events: game.monster_damage_event_count(),
             baseline_deaths: game.monster_death_count(),
         }
@@ -72,5 +82,16 @@ impl ScriptLog {
             self.monster_died = true;
             tracing::info!("A monster died.");
         }
+
+        let active = game.active_script_count() > 0;
+        if active && !self.script_started {
+            self.script_started = true;
+            tracing::info!("A scripted sequence started.");
+        }
+        if !active && self.script_was_active && !self.script_finished {
+            self.script_finished = true;
+            tracing::info!("A scripted sequence finished.");
+        }
+        self.script_was_active = active;
     }
 }
