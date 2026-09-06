@@ -93,9 +93,7 @@ fn main() -> ExitCode {
             campaign_smoke::run(&root, &rest)
         }
         other => {
-            eprintln!(
-                "usage: cargo xtask <policy|graph|worker-image|dist|campaign-smoke>"
-            );
+            eprintln!("usage: cargo xtask <policy|graph|worker-image|dist|campaign-smoke>");
             if let Some(other) = other {
                 eprintln!("unknown subcommand: {other}");
             }
