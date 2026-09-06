@@ -236,9 +236,16 @@ jobs:
     timeout-minutes: 30
     env:
       OHL_VERSION: ${{ needs.version.outputs.version }}
+    outputs:
+      linux-triple: ${{ steps.target.outputs.triple }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Determine target triple
+        id: target
+        shell: bash
+        run: echo "triple=$(cargo xtask dist --print-target)" >> "$GITHUB_OUTPUT"
 
       - name: Package
         run: cargo xtask dist
@@ -246,8 +253,66 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: open-half-life-${{ needs.version.outputs.version }}-${{ matrix.os }}
+          name: open-half-life-${{ needs.version.outputs.version }}-${{ steps.target.outputs.triple }}
           path: |
             target/dist/*.tar.gz
             target/dist/*.zip
           if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release
+    # Only ever runs for a real `v*` tag push — never for `workflow_dispatch`,
+    # which has no tag to attach a release to. `release` itself stays
+    # tag/dispatch-gated (see above); this job narrows that further.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [version, release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build release notes from docs/MILESTONES.md
+        shell: bash
+        run: |
+          awk '
+            /^## Status as of/ { found=1 }
+            found && /^## / && !/^## Status as of/ { exit }
+            found { print }
+          ' docs/MILESTONES.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "error: could not find a \"Status as of\" section in docs/MILESTONES.md" >&2
+            exit 1
+          fi
+
+      - name: Download release archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "open-half-life-*"
+          path: dist-artifacts
+          merge-multiple: true
+
+      - name: Write a top-level SHA256SUMS for the release archives
+        working-directory: dist-artifacts
+        shell: bash
+        run: sha256sum -- *.tar.gz *.zip > SHA256SUMS
+
+      - name: Create or update the GitHub Release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          assets=(dist-artifacts/*.tar.gz dist-artifacts/*.zip dist-artifacts/SHA256SUMS)
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${assets[@]}" \
+              --repo "${{ github.repository }}" --clobber
+          else
+            gh release create "$TAG" "${assets[@]}" \
+              --repo "${{ github.repository }}" \
+              --title "Open Half-Life $TAG" \
+              --notes-file release-notes.md
+          fi
