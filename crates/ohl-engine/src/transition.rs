@@ -55,10 +55,15 @@ pub const MAX_CARRIED_ENTITIES: usize = 256;
 
 /// The player state a transition (and a save file) carries.
 ///
-/// `health`/`armor` are placeholders owned by this crate until `ohl-player`
-/// implements [`PlayerCarry`] over the real player entity; `extra` is an
-/// opaque, already-serialized blob that implementation fills in, so adding
-/// inventory later needs no change here.
+/// `health` and `armor` are the player's real values (`ohl_player::Player`'s
+/// own state, M7.9 P1); `extra` is an opaque, already-serialized blob —
+/// today `crate::combat::CombatState::capture_carry`'s encoding of owned
+/// weapons, per-weapon clips, reserve ammo, the HEV suit and the long jump
+/// module — built and applied by `crate::systems::Systems::{capture_carry,
+/// restore_carry}`, which `Game::capture_transition`/`to_save` and
+/// `Game::apply_transition`/`restore` call directly. `extra`'s *shape* is
+/// deliberately opaque to this module, so a later encoding change needs no
+/// change here.
 ///
 /// **To verify:** that the player's inventory persists across a
 /// `changelevel` at all is community knowledge that the M8 research pass
@@ -84,9 +89,14 @@ impl Default for PlayerCarryState {
     }
 }
 
-/// The hook `ohl-player` implements so the player's own state survives a
-/// level change and a save/load round trip, without this crate depending on
-/// that package.
+/// A host-replaceable seam over [`PlayerCarryState`], predating M7.9 P1's
+/// direct `crate::systems::Systems::{capture_carry, restore_carry}` wiring.
+/// `Game` still notifies whatever is installed here on every transition and
+/// save/load (so [`Game::player_carry`](crate::game::Game::player_carry)
+/// stays readable for a host that wants it), but the *authoritative* health,
+/// armor, weapons and ammo capture and restore for a transition or a save
+/// goes through `Systems` directly today, not through this trait's own
+/// implementation.
 pub trait PlayerCarry {
     /// The state to carry across.
     fn capture(&self) -> PlayerCarryState;
@@ -94,9 +104,10 @@ pub trait PlayerCarry {
     fn restore(&mut self, state: &PlayerCarryState);
 }
 
-/// The default [`PlayerCarry`]: it holds the health/armor placeholders and
-/// nothing else, so the engine has working behaviour before `ohl-player`
-/// lands.
+/// The default [`PlayerCarry`]: a plain holder for whatever was last
+/// [`restore`](PlayerCarry::restore)d, with no capture logic of its own —
+/// see the trait's doc comment for why that no longer matters for
+/// correctness.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DefaultPlayerCarry {
     /// The carried state, readable by a HUD.

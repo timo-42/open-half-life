@@ -43,6 +43,16 @@ pub enum GameEvent {
         /// The resolved text and its fade/hold timings.
         block: MessageBlock,
     },
+    /// A cue the host should play. `ohl_gameplay::SoundCue::path` is always
+    /// `None` until a clean-room provenance review admits a sound asset
+    /// path; see `crate::presentation`'s module docs.
+    Sound(ohl_gameplay::SoundCue),
+    /// An HEV suit voice occasion, which the host maps to a voice line.
+    Suit(ohl_player::SuitEvent),
+    /// A viewmodel animation the host should play next.
+    ViewModel(ohl_gameplay::ViewModelAction),
+    /// The player's health reached zero.
+    PlayerDied,
 }
 
 /// How a [`Game`] is started: everything the host chooses rather than the
@@ -289,6 +299,35 @@ impl Game {
         self.systems.debug_show_viewmodel_and_sprite(model_slot);
     }
 
+    /// The player's weapons, ammo, HEV suit and long-jump ownership.
+    ///
+    /// A freshly built value each call (see `crate::combat`'s module docs
+    /// for why): weapon ownership, clips and selection mirror this game's
+    /// long-lived inventory exactly, and every ammo pool is stamped from
+    /// the engine's own reserve ledger, which is the only ammo count this
+    /// crate ever treats as authoritative.
+    #[must_use]
+    pub fn inventory(&self) -> ohl_combat::Inventory {
+        self.systems.inventory()
+    }
+
+    /// The player's current health, from `ohl_player::Player`'s own state
+    /// (not the world entity's `ohl_combat::Health` component, which is a
+    /// mirror written after damage resolution; see `crate::damage_map`'s
+    /// module docs for why the two exist side by side).
+    #[must_use]
+    pub fn player_health(&self) -> f32 {
+        self.systems.player_health()
+    }
+
+    /// The player's current HEV armor, from `ohl_player::Player`'s own
+    /// state (not the world entity's `ohl_combat::Armor` component; see
+    /// [`Self::player_health`]).
+    #[must_use]
+    pub fn player_armor(&self) -> f32 {
+        self.systems.player_armor()
+    }
+
     /// The single client entity, carrying [`crate::components::PlayerTag`].
     ///
     /// It is a real entity in the same world every other entity lives in,
@@ -500,6 +539,19 @@ impl Game {
                 block: self.titles.resolve(&message),
             },
         }));
+        out.extend(
+            self.systems
+                .drain_presentation_events()
+                .into_iter()
+                .map(|event| match event {
+                    crate::presentation::PresentationEvent::Sound(cue) => GameEvent::Sound(cue),
+                    crate::presentation::PresentationEvent::Suit(suit) => GameEvent::Suit(suit),
+                    crate::presentation::PresentationEvent::ViewModel(action) => {
+                        GameEvent::ViewModel(action)
+                    }
+                    crate::presentation::PresentationEvent::PlayerDied => GameEvent::PlayerDied,
+                }),
+        );
         out
     }
 
@@ -531,7 +583,11 @@ impl Game {
             Vec3::from_array(self.camera.position),
             self.camera.yaw,
             self.camera.pitch,
-            self.carry.capture(),
+            // M7.9 P1: `self.systems` is now the real source of the
+            // player's health/armor/weapons/ammo/suit/long-jump, not the
+            // `self.carry` placeholder `#62` wrote before `ohl-player`
+            // existed; see `Systems::capture_carry`'s doc comment.
+            self.systems.capture_carry(),
             &self.globals,
         )
     }
@@ -593,6 +649,7 @@ impl Game {
         self.systems.reset();
         self.systems
             .attach_level(&mut self.level, self.difficulty, &self.skill);
+        self.systems.restore_carry(&transition.player);
         self.globals = globals;
         self.carry.restore(&transition.player);
 
@@ -642,7 +699,7 @@ impl Game {
                 yaw: self.camera.yaw,
                 pitch: self.camera.pitch,
             },
-            player: self.carry.capture(),
+            player: self.systems.capture_carry(),
             entities: self
                 .level
                 .registry
@@ -749,6 +806,17 @@ impl Game {
         self.systems.reset();
         self.systems
             .attach_level(&mut self.level, self.difficulty, &self.skill);
+        // `save.player` genuinely round-trips health, armor, owned
+        // weapons, per-weapon clips, reserve ammo, the HEV suit and the
+        // long jump module: `GameSave` (and so `PlayerCarryState`,
+        // `extra` blob included) is serialized whole into the `ohl-save`
+        // container, so a save written by `Self::to_save` already carries
+        // `Systems::capture_carry`'s encoding through a real file, not
+        // just an in-memory transition. `TODO(P4)`: fold this ad hoc byte
+        // encoding into its own `SECTION_INVENTORY` (§6) instead, so a
+        // save's inventory section is self-describing independent of
+        // `PlayerCarryState`'s shape.
+        self.systems.restore_carry(&save.player);
         // A load is a map load: the chapter title is announced again.
         self.pending.clear();
         self.pending.extend(chapter_title_event(&self.level.name));

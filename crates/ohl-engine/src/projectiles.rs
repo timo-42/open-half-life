@@ -3,8 +3,11 @@
 //! [`ProjectileSystem`] is [`crate::systems::Systems`]' phase-7 body: it
 //! owns `ohl_combat`'s [`ProjectileSet`] and [`DeployableSet`], builds the
 //! [`ProjectileWorld`] they sweep through from the level's collision hulls
-//! and a [`HitboxIndex`] rebuilt from every entity carrying a
-//! [`StudioAnim`], and turns their events into either a queued
+//! and phase 5's [`HitboxIndex`] (`crate::combat::rebuild_hitbox_index`,
+//! owned by `crate::systems::Systems` and already excluding this module's
+//! own model-backed entities — see [`ProjectileSystem::model_entities`] —
+//! so a rocket cannot detonate on its own drawn model), and turns their
+//! events into either a queued
 //! [`DamageInfo`] (direct hits and blast damage, by calling
 //! [`ohl_combat::radius_damage`]) or a [`TransientSprite`] (impacts,
 //! detonations). Model-backed projectile kinds (a rocket, a bolt, a
@@ -27,14 +30,12 @@ use std::collections::BTreeMap;
 use glam::Vec3;
 use ohl_combat::{
     BlastTarget, DamageInfo, DamageType, DeployableEvent, DeployableId, DeployableSet,
-    DeployableTuning, EntityHitboxes, EntityId as CombatEntityId, ExplosionRule, HitboxIndex,
-    HitboxLimits, ProjectileEvent, ProjectileId, ProjectileKind, ProjectileSet, ProjectileTuning,
-    ProjectileWorld, radius_damage,
+    DeployableTuning, EntityId as CombatEntityId, ExplosionRule, HitboxIndex, ProjectileEvent,
+    ProjectileId, ProjectileKind, ProjectileSet, ProjectileTuning, ProjectileWorld, radius_damage,
 };
 use ohl_game::hecs::Entity;
 use ohl_game::registry::Transform;
 use ohl_physics::MoveConfig;
-use ohl_world::StudioPose;
 
 use crate::components::{Owner, StudioAnim};
 use crate::ids::{entity_id, entity_of};
@@ -133,6 +134,14 @@ impl ProjectileSystem {
         self.projectiles.len()
             + self.deployables.satchels().len()
             + self.deployables.tripmines().len()
+    }
+
+    /// The model-backed entities this system owns (a flying rocket, a
+    /// placed tripmine, ...), for phase 5's hitbox rebuild
+    /// (`crate::combat::rebuild_hitbox_index`) to exclude: a projectile's
+    /// own drawn model must not be able to stop its own sweep in phase 7.
+    pub(crate) fn model_entities(&self) -> impl Iterator<Item = Entity> + '_ {
+        self.models.values().copied()
     }
 
     /// Points `kind`'s model-backed rendering at one of
@@ -253,9 +262,15 @@ impl ProjectileSystem {
 
     /// Advances every projectile and deployable by `dt` seconds, queuing
     /// the damage and transient sprites their events imply.
+    ///
+    /// `hitboxes` is phase 5's rebuild (`crate::combat::rebuild_hitbox_index`,
+    /// owned by `crate::systems::Systems`), already excluding this system's
+    /// own model-backed entities (see [`Self::model_entities`]) — this
+    /// system traces against it rather than rebuilding its own index.
     pub(crate) fn tick(
         &mut self,
         level: &mut Level,
+        hitboxes: &HitboxIndex,
         dt: f32,
         damage_queue: &mut Vec<QueuedDamage>,
         sprites: &mut TransientSprites,
@@ -266,7 +281,6 @@ impl ProjectileSystem {
             // than guessing.
             return;
         }
-        let index = build_hitbox_index(level, &self.models);
 
         let mut events = Vec::new();
         {
@@ -274,7 +288,7 @@ impl ProjectileSystem {
             // before `sync_model_entities` needs `level` mutably.
             let world = ProjectileWorld {
                 collision: level.collision.as_ref().expect("checked above"),
-                entities: &index,
+                entities: hitboxes,
                 movement: &self.movement,
                 tuning: &self.tuning,
             };
@@ -290,7 +304,7 @@ impl ProjectileSystem {
         self.deployables.tick(
             dt,
             collision,
-            &index,
+            hitboxes,
             &self.deployable_tuning,
             &mut deploy_events,
         );
@@ -491,33 +505,6 @@ fn blast_targets(level: &Level) -> Vec<BlastTarget> {
     targets
 }
 
-/// Rebuilds the [`HitboxIndex`] a projectile or deployable's traces run
-/// against this tick, from every entity carrying [`StudioAnim`] and a
-/// [`Transform`] except the model-backed projectile entities themselves
-/// (`exclude`), so a rocket cannot detonate on its own drawn model.
-fn build_hitbox_index(level: &Level, exclude: &BTreeMap<ProjectileId, Entity>) -> HitboxIndex {
-    let mut index = HitboxIndex::new(HitboxLimits::default());
-    for (entity, anim, transform) in
-        &mut level
-            .registry
-            .world
-            .query::<(ohl_game::hecs::Entity, &StudioAnim, &Transform)>()
-    {
-        if exclude.values().any(|&owned| owned == entity) {
-            continue;
-        }
-        let Some(model) = level.studio_models.get(anim.model) else {
-            continue;
-        };
-        let Ok(pose) = StudioPose::sample(model, anim.sequence, anim.cycle) else {
-            continue;
-        };
-        let mut entry = EntityHitboxes::from_transform(entity_id(entity), transform);
-        entry.push_studio_hitboxes(&pose, &model.hitboxes);
-        index.push(entry);
-    }
-    index
-}
 
 /// Pushes a transient sprite at `position`, when the level has published at
 /// least one sprite asset to draw it with (see `crate::sprites`'s module
@@ -556,11 +543,19 @@ mod tests {
     use crate::level::Level;
     use crate::sprites::TransientSprites;
     use crate::test_support::synthetic_map_bsp;
+    use ohl_combat::{HitboxIndex, HitboxLimits};
 
     fn synthetic_level() -> Level {
         let assets = MemoryAssets::new();
         let bytes = synthetic_map_bsp();
         Level::from_bytes(&assets, "ohlsynth", &bytes).expect("the synthetic map loads")
+    }
+
+    /// An empty hitbox index: these tests exercise the swept world-collision
+    /// path and the deployable/blast logic, neither of which needs an entity
+    /// hitbox to be present.
+    fn empty_hitboxes() -> HitboxIndex {
+        HitboxIndex::new(HitboxLimits::default())
     }
 
     #[test]
@@ -586,7 +581,7 @@ mod tests {
         );
 
         for _ in 0..30 {
-            system.tick(&mut level, 1.0 / 30.0, &mut damage, &mut sprites);
+            system.tick(&mut level, &empty_hitboxes(), 1.0 / 30.0, &mut damage, &mut sprites);
         }
 
         // Whatever is left in flight (a grenade bounces, so it may still be
@@ -664,14 +659,14 @@ mod tests {
         let mut sprites = TransientSprites::new();
         // Just under the arming delay: the beam must not be live yet.
         for _ in 0..(2 * 30) {
-            system.tick(&mut level, 1.0 / 30.0, &mut damage, &mut sprites);
+            system.tick(&mut level, &empty_hitboxes(), 1.0 / 30.0, &mut damage, &mut sprites);
         }
         assert_eq!(system.deployables.tripmines().len(), 1);
         assert!(!system.deployables.tripmines()[0].armed);
 
         // Past the published three seconds: it must be armed now.
         for _ in 0..(2 * 30) {
-            system.tick(&mut level, 1.0 / 30.0, &mut damage, &mut sprites);
+            system.tick(&mut level, &empty_hitboxes(), 1.0 / 30.0, &mut damage, &mut sprites);
         }
         assert!(system.deployables.tripmines()[0].armed);
     }
@@ -725,7 +720,7 @@ mod tests {
                 glam::Vec3::new(vx, vy, vz),
             );
             for _ in 0..ticks {
-                system.tick(&mut level, dt, &mut damage, &mut sprites);
+                system.tick(&mut level, &empty_hitboxes(), dt, &mut damage, &mut sprites);
             }
             for projectile in system.projectiles.projectiles() {
                 prop_assert!(projectile.position.is_finite());

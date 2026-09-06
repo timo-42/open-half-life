@@ -313,8 +313,17 @@ fn capture(game: &mut Game, args: &GameArgs<'_>, path: &Path) -> Result<(), &'st
                 GameEvent::LevelChange { .. } => {
                     tracing::info!("A level change fired during capture; it was not followed.");
                 }
-                // Both carry map-authored text, so neither is logged.
-                GameEvent::ChapterTitle(_) | GameEvent::Message { .. } => {}
+                // Map-authored text, presentation events with nothing to
+                // act on during a still capture (M7.9 P1): none of these
+                // are logged.
+                GameEvent::ChapterTitle(_)
+                | GameEvent::Message { .. }
+                | GameEvent::Sound(_)
+                | GameEvent::Suit(_)
+                | GameEvent::ViewModel(_) => {}
+                GameEvent::PlayerDied => {
+                    tracing::info!("The player died during capture.");
+                }
             }
         }
         game.render(
@@ -502,8 +511,30 @@ impl App<'_> {
                     let seconds = block.total_seconds();
                     self.hud.show_message(block.text, seconds);
                 }
+                // M7.9 P1 presentation events. `ohl_gameplay::SoundCue::path`
+                // is always `None` until a clean-room provenance review
+                // admits a sound asset path, and viewmodel/suit-voice
+                // rendering are later work, so there is nothing to act on
+                // here yet beyond the fixed line below.
+                GameEvent::Sound(_) | GameEvent::Suit(_) | GameEvent::ViewModel(_) => {}
+                GameEvent::PlayerDied => {
+                    tracing::info!("The player died.");
+                }
             }
         }
+        // Health, armor, ammo and the damage flash are `Game::hud()`'s own
+        // state (M7.9 P1), written every step from the player's inventory
+        // and combat events; the title/message fields above are this
+        // struct's own (`env_message`/chapter titles arrive as `GameEvent`s,
+        // not through `HudState`), so this copies the former without
+        // clobbering the latter.
+        let engine_hud = self.game.hud();
+        self.hud.health = engine_hud.health;
+        self.hud.armor = engine_hud.armor;
+        self.hud.clip_ammo = engine_hud.clip_ammo;
+        self.hud.reserve_ammo = engine_hud.reserve_ammo;
+        self.hud.damage_flash = self.hud.damage_flash.max(engine_hud.damage_flash);
+
         self.hud.decay_damage_flash(2.0, delta.as_secs_f32());
         self.hud.tick_message(delta.as_secs_f32());
 
@@ -675,6 +706,7 @@ impl ApplicationHandler for App<'_> {
                         self.input.use_pressed = true;
                     }
                     self.key_use_down = pressed;
+                    self.input.use_held = pressed;
                     return;
                 }
                 self.set_axis(code, pressed);

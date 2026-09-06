@@ -184,6 +184,10 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
             // engine ticks, and the node graph its navigator paths over.
             "ohl-ai",
             "ohl-nav",
+            // M7.9 P1 (weapons, pickups, damage routing, HUD/audio): the
+            // combat-to-presentation bridge and the player's own systems.
+            "ohl-gameplay",
+            "ohl-player",
         ],
     ),
     // M7.4's HUD/audio/viewmodel bridge: consumes `ohl-combat`'s

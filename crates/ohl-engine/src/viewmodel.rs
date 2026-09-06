@@ -7,51 +7,28 @@
 //! The design this package implements (`docs/MILESTONES.md`, "M7.9 (Rust):
 //! engine integration") calls for the sequence to be driven by
 //! `ohl_gameplay::ViewModelAction` and the model to be chosen by the
-//! player's current `ohl_combat::WeaponId` through the inventory. Neither
-//! `ohl-gameplay` (the sound/HUD/viewmodel-action bridge) nor an `Inventory`
-//! is wired into this crate yet — that lands with the sibling package that
-//! adds `ohl-gameplay` as a dependency (`xtask/src/graph.rs`'s authorized
-//! `ohl-engine` row). Rather than add that dependency edge from this
-//! package (out of its authorized scope), [`ViewModelAction`] is
-//! reproduced here as a small, closed, project-authored enum with the same
-//! five variants; it is written to be a drop-in match for
-//! `ohl_gameplay::ViewModelAction` so unifying the two later is a type
-//! substitution, not a redesign.
+//! player's current `ohl_combat::WeaponId` through the inventory.
+//! `ohl-gameplay` is now a dependency of this crate (M7.9 P1), so
+//! [`ViewModel::queue_action`] takes that type directly rather than a local
+//! duplicate.
 //!
-//! Likewise, no new asset-loading path is added: this package does not
-//! touch `crates/ohl-engine/src/level.rs`, so a view model can only be one
-//! of the studio models the level already loaded for its own props
+//! No new asset-loading path is added: this package does not touch
+//! `crates/ohl-engine/src/level.rs`, so a view model can only be one of the
+//! studio models the level already loaded for its own props
 //! (`Level::studio_models`). [`ViewModel::set_model`] is the seam a later
 //! package (or a test) uses to point the view model at one of them;
 //! resolving a `WeaponId` to a *loaded* model index by path is deferred to
-//! whichever package adds the inventory and its asset lookup. The path
-//! itself, wherever it ends up read from, must never reach a log line (see
+//! whichever package adds the inventory's asset lookup. The path itself,
+//! wherever it ends up read from, must never reach a log line (see
 //! `docs/CLEAN_ROOM.md`).
 
+use ohl_gameplay::ViewModelAction;
 use ohl_render::math::{self, Mat4};
 use ohl_render::{FreeFlyCamera, ModelInstance};
 use ohl_world::StudioPose;
 
 use crate::level::Level;
 use crate::systems::SystemsConfig;
-
-/// Which viewmodel animation should play next. See the module doc: this is
-/// this project's own vocabulary, shaped to match
-/// `ohl_gameplay::ViewModelAction` exactly so the two can be unified later.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ViewModelAction {
-    /// The weapon was just drawn.
-    Draw,
-    /// No shot fired or reload in progress; the idle loop.
-    Idle,
-    /// A shot was just fired.
-    Fire,
-    /// A reload just started.
-    Reload,
-    /// The weapon is being holstered.
-    Holster,
-}
 
 /// Maps an action to a model-local sequence index.
 ///
@@ -97,8 +74,8 @@ impl ViewModel {
 
     /// Selects the sequence `action` implies, restarting the cursor only
     /// when the sequence actually changes (a repeated action does not
-    /// stutter).
-    #[allow(dead_code)]
+    /// stutter). Called from `crate::presentation::Presentation::tick`
+    /// (phase 13) for every viewmodel action the gameplay bridge queues.
     pub(crate) fn queue_action(&mut self, action: ViewModelAction) {
         let sequence = sequence_for(action);
         if self.sequence != sequence {
@@ -235,9 +212,10 @@ pub(crate) fn build_frame(
 
 #[cfg(test)]
 mod tests {
+    use ohl_gameplay::ViewModelAction;
     use ohl_render::FreeFlyCamera;
 
-    use super::{ViewModel, ViewModelAction, placement, view_camera};
+    use super::{ViewModel, placement, view_camera};
     use crate::systems::SystemsConfig;
 
     #[test]
