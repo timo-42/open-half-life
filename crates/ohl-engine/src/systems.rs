@@ -723,7 +723,16 @@ impl Systems {
         } else {
             input
         };
-        Self::player_move(level, camera, controller, input, dt); // 2
+        // A dead player stops moving: no more gravity, no more responding
+        // to input. `player_systems` (phase 3, below) is what first learns
+        // the player just died this same step (from this step's own
+        // `physics_output`, e.g. a lethal fall's landing), so the freeze
+        // only takes effect from the *next* step onward — the same step
+        // that already killed the player still gets to finish its own
+        // move and land normally.
+        if !self.player.state.dead {
+            Self::player_move(level, camera, controller, input, dt); // 2
+        }
         self.physics_output = ohl_player::PhysicsOutput::from_move(
             &controller.state,
             &controller.config,

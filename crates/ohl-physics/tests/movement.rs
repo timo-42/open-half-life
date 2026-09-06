@@ -6,9 +6,10 @@ use ohl_formats::test_support::{
     build_collision_slope_bsp,
 };
 use ohl_physics::controller::TICK_SECONDS;
+use ohl_physics::test_support::{build_flat_floor_bsp, collision_model_from};
 use ohl_physics::{
     CollisionModel, ControllerInput, MoveConfig, MoveInput, PlayerController, PlayerState, Vec3,
-    WaterLevel, player_move,
+    WaterLevel, contents, player_move, point_contents,
 };
 
 fn model_from(bytes: &[u8]) -> CollisionModel {
@@ -444,4 +445,49 @@ fn a_worldspawn_only_model_lets_the_player_fall_through_a_brush_entity_floor() {
     );
     assert!(!state.on_ground);
     assert!(state.origin.z < 0.0);
+}
+
+/// A drop long enough to reach `MoveConfig::max_velocity` (`sv_maxvelocity`,
+/// the documented `2000` units/second clamp — see this crate's own module
+/// doc and `docs/FORMAT_SOURCES.md`) before the player ever reaches the
+/// floor must still land cleanly on top of it, not embedded partway
+/// through it: this is the PR #95 Xen-fall report's own failure mode,
+/// where a long enough fall's landing tick could resolve with the player's
+/// origin on the right side of the ground-probe trace's own
+/// `DIST_EPSILON` backoff but still overlapping the standing hull's actual
+/// bounding box (`unstick_from_ground`, `crates/ohl-physics/src/movement.rs`).
+#[test]
+fn a_terminal_velocity_drop_lands_on_the_floor_rather_than_inside_it() {
+    let model = collision_model_from(&build_flat_floor_bsp());
+    let config = MoveConfig::default();
+
+    // 2500 units up is comfortably past the distance `max_velocity` is
+    // reached at (v = sqrt(2 * gravity * height) exceeds 2000 units/second
+    // well before this height under `MoveConfig::default()`'s documented
+    // `gravity: 800.0`), so this drop's last tick before landing is
+    // clamped at (or very near) terminal velocity.
+    let mut state = PlayerState::at(Vec3::new(0.0, 0.0, 2500.0));
+    simulate(&model, &mut state, &MoveInput::default(), &config, 3.0);
+
+    assert!(state.on_ground, "the player never found the floor");
+    assert!(
+        (state.origin.z - FLOOR_ORIGIN_Z).abs() < 1.0,
+        "settled at {} rather than resting on the floor at {FLOOR_ORIGIN_Z}",
+        state.origin.z
+    );
+
+    // Not embedded, checked the same two ways a fresh landing itself does:
+    // the standing hull's own zero-length trace, and a point query against
+    // hull 0 at the eye position (`ohl_engine::Game::eye_is_in_solid`'s own
+    // check, out of this crate but documented on that method).
+    let hull_trace = model.trace(state.hull(), state.origin, state.origin);
+    assert!(
+        !hull_trace.start_solid,
+        "the standing hull is embedded in solid at the landing spot"
+    );
+    let eye = state.eye_position(&config);
+    assert!(
+        !contents::is_solid(point_contents(&model, eye)),
+        "the eye position is embedded in solid at the landing spot"
+    );
 }
