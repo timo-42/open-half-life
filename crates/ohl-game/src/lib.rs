@@ -20,6 +20,7 @@ pub mod brush;
 pub mod keyvalues;
 pub mod logic;
 pub mod registry;
+pub mod scripts;
 pub mod track_train;
 
 /// Re-exported so a caller can name `Entity`, `World` and the query types
