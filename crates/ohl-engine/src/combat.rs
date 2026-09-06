@@ -129,6 +129,14 @@ pub(crate) struct CombatState {
     /// weapon has ever been selected.
     firing_weapon: Option<WeaponId>,
     firing: FiringState,
+    /// How many times the player has actually fired a weapon (a hitscan,
+    /// melee swing, beam tick or spawned projectile — not a dry-fire, a
+    /// reload or a holster) since this level was attached. Media-derived:
+    /// data, never a log line from this crate.
+    fired_count: u64,
+    /// How many of those shots landed on an entity. Media-derived: data,
+    /// never a log line from this crate.
+    hit_count: u64,
 }
 
 impl CombatState {
@@ -138,7 +146,23 @@ impl CombatState {
             ammo: AmmoBank::new(),
             firing_weapon: None,
             firing: FiringState::new(spec(WeaponId::Crowbar)),
+            fired_count: 0,
+            hit_count: 0,
         }
+    }
+
+    /// How many times the player has actually fired a weapon. Media-derived:
+    /// data, never a log line from this crate.
+    #[must_use]
+    pub(crate) fn fired_count(&self) -> u64 {
+        self.fired_count
+    }
+
+    /// How many of those shots landed on an entity. Media-derived: data,
+    /// never a log line from this crate.
+    #[must_use]
+    pub(crate) fn hit_count(&self) -> u64 {
+        self.hit_count
     }
 
     /// Mutable access to the weapon inventory and the reserve-ammo ledger
@@ -260,7 +284,10 @@ impl CombatState {
                 clip: self.inventory.clip(id),
             })
             .collect();
-        let ammo = AmmoType::ALL.iter().map(|&kind| self.ammo.current(kind)).collect();
+        let ammo = AmmoType::ALL
+            .iter()
+            .map(|&kind| self.ammo.current(kind))
+            .collect();
         #[allow(clippy::cast_possible_truncation)]
         let selected = self
             .inventory
@@ -268,19 +295,22 @@ impl CombatState {
             .and_then(|id| WeaponId::ALL.iter().position(|&w| w == id))
             .map(|index| index as u8);
         #[allow(clippy::cast_possible_truncation)]
-        let firing = self.firing_weapon.and_then(|id| {
-            WeaponId::ALL
-                .iter()
-                .position(|&w| w == id)
-                .map(|index| index as u8)
-        }).map(|weapon| {
-            let (state_tag, timer) = self.firing.state_tag_and_timer();
-            crate::save_state::FiringSnapshot {
-                weapon,
-                state_tag,
-                timer,
-            }
-        });
+        let firing = self
+            .firing_weapon
+            .and_then(|id| {
+                WeaponId::ALL
+                    .iter()
+                    .position(|&w| w == id)
+                    .map(|index| index as u8)
+            })
+            .map(|weapon| {
+                let (state_tag, timer) = self.firing.state_tag_and_timer();
+                crate::save_state::FiringSnapshot {
+                    weapon,
+                    state_tag,
+                    timer,
+                }
+            });
         crate::save_state::InventorySnapshot {
             weapons,
             ammo,
@@ -321,35 +351,35 @@ impl CombatState {
             self.inventory.give_long_jump();
             player.state.longjump_owned = true;
         }
-        if let Some(index) = snapshot.selected {
-            if let Some(&id) = WeaponId::ALL.get(index as usize) {
-                // `Inventory`'s selection API is cycle-only; a bounded
-                // `select_next` walk is the only way to land on an exact
-                // weapon (see `crate::transition`'s own note on the same
-                // limitation). Bounded by the closed weapon set, so a
-                // save naming a weapon this player does not own cannot
-                // loop.
-                for _ in 0..=WeaponId::ALL.len() {
-                    if self.inventory.selected() == Some(id) {
-                        break;
-                    }
-                    if self.inventory.select_next().is_none() {
-                        break;
-                    }
+        if let Some(index) = snapshot.selected
+            && let Some(&id) = WeaponId::ALL.get(index as usize)
+        {
+            // `Inventory`'s selection API is cycle-only; a bounded
+            // `select_next` walk is the only way to land on an exact
+            // weapon (see `crate::transition`'s own note on the same
+            // limitation). Bounded by the closed weapon set, so a
+            // save naming a weapon this player does not own cannot
+            // loop.
+            for _ in 0..=WeaponId::ALL.len() {
+                if self.inventory.selected() == Some(id) {
+                    break;
+                }
+                if self.inventory.select_next().is_none() {
+                    break;
                 }
             }
         }
         self.firing_weapon = None;
-        if let Some(firing) = &snapshot.firing {
-            if let Some(&id) = WeaponId::ALL.get(firing.weapon as usize) {
-                self.firing = FiringState::restore(
-                    spec(id),
-                    self.inventory.clip(id),
-                    firing.state_tag,
-                    firing.timer,
-                );
-                self.firing_weapon = Some(id);
-            }
+        if let Some(firing) = &snapshot.firing
+            && let Some(&id) = WeaponId::ALL.get(firing.weapon as usize)
+        {
+            self.firing = FiringState::restore(
+                spec(id),
+                self.inventory.clip(id),
+                firing.state_tag,
+                firing.timer,
+            );
+            self.firing_weapon = Some(id);
         }
     }
 
@@ -436,7 +466,8 @@ impl CombatState {
                 // `BlackBox` marker on this field), and sampling one needs a
                 // random source this package does not yet own.
                 WeaponAction::Hitscan { count, .. } => {
-                    Self::queue_ranged(
+                    self.fired_count += 1;
+                    self.hit_count += Self::queue_ranged(
                         hitboxes,
                         collision,
                         controller,
@@ -445,10 +476,11 @@ impl CombatState {
                         count,
                         HITSCAN_RANGE,
                         damage_queue,
-                    );
+                    ) as u64;
                 }
                 WeaponAction::Melee => {
-                    Self::queue_ranged(
+                    self.fired_count += 1;
+                    self.hit_count += Self::queue_ranged(
                         hitboxes,
                         collision,
                         controller,
@@ -457,10 +489,11 @@ impl CombatState {
                         1,
                         MELEE_RANGE,
                         damage_queue,
-                    );
+                    ) as u64;
                 }
                 WeaponAction::BeamTick => {
-                    Self::queue_ranged(
+                    self.fired_count += 1;
+                    self.hit_count += Self::queue_ranged(
                         hitboxes,
                         collision,
                         controller,
@@ -469,19 +502,19 @@ impl CombatState {
                         1,
                         HITSCAN_RANGE,
                         damage_queue,
-                    );
+                    ) as u64;
                 }
                 // A physical projectile from `WeaponAction::SpawnProjectile` is
-                // simulated and resolved by a later package
-                // (`ohl-engine/src/projectiles.rs`, M7.9 P3). Nothing to
-                // queue here yet.
-                WeaponAction::SpawnProjectile { .. }
-                | WeaponAction::PlaySequence(_)
-                | WeaponAction::Sound(_)
-                | WeaponAction::Empty => {}
+                // simulated and resolved by `crate::projectiles` (M7.9 P3);
+                // whether it lands is that module's own event, not counted
+                // as a hit here, but firing it still counts as firing.
+                WeaponAction::SpawnProjectile { .. } => {
+                    self.fired_count += 1;
+                }
+                WeaponAction::PlaySequence(_) | WeaponAction::Sound(_) | WeaponAction::Empty => {}
             }
             if let Some(damage) = self.firing.take_charge_damage() {
-                Self::queue_amount(
+                self.hit_count += Self::queue_amount(
                     hitboxes,
                     collision,
                     controller,
@@ -489,7 +522,7 @@ impl CombatState {
                     damage,
                     current_spec.damage_type,
                     damage_queue,
-                );
+                ) as u64;
             }
         }
         if let Some(self_damage) = self.firing.take_self_damage() {
@@ -523,7 +556,7 @@ impl CombatState {
         count: u32,
         range: f32,
         damage_queue: &mut Vec<QueuedDamage>,
-    ) {
+    ) -> usize {
         let start = controller.eye_position();
         let end = start + controller.view_direction() * range;
         let filter = TraceFilter::ignoring(TraceMask::SHOT, player_id);
@@ -547,11 +580,14 @@ impl CombatState {
             Some(player_id),
             Some(player_id),
         );
+        let mut hit_count = 0usize;
         for (target_id, info) in targets.into_iter().zip(hits) {
             if let Some(target) = entity_of(target_id) {
                 damage_queue.push(QueuedDamage { target, info });
+                hit_count += 1;
             }
         }
+        hit_count
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -563,9 +599,9 @@ impl CombatState {
         amount: f32,
         damage_type: DamageType,
         damage_queue: &mut Vec<QueuedDamage>,
-    ) {
+    ) -> usize {
         if !amount.is_finite() || amount <= 0.0 {
-            return;
+            return 0;
         }
         let start = controller.eye_position();
         let end = start + controller.view_direction() * HITSCAN_RANGE;
@@ -576,6 +612,9 @@ impl CombatState {
                 .from_point(trace.end, trace.surface_normal)
                 .from_entities(player_id, player_id);
             damage_queue.push(QueuedDamage { target, info });
+            1
+        } else {
+            0
         }
     }
 }
@@ -643,6 +682,7 @@ pub(crate) fn resolve_damage(
     hud: &mut ohl_ui::hud::HudState,
     presentation: &mut Presentation,
     player_events: &mut Vec<ohl_player::PlayerEvent>,
+    player_damage_events: &mut u64,
 ) {
     let player_combat_id = entity_id(player_id);
     let mut left_for_lifecycle = Vec::with_capacity(damage_queue.len());
@@ -658,6 +698,7 @@ pub(crate) fn resolve_damage(
         }
         let QueuedDamage { target, info } = queued;
         if target == player_id {
+            *player_damage_events += 1;
             let kind = damage_map::damage_kind_of(info.kind);
             let mut events = Vec::new();
             player.apply_damage(info.amount, kind, &mut events);

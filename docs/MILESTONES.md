@@ -1980,9 +1980,9 @@ level transitions keep their behaviour.
   can produce; and a unit test that `combat-smoke`'s summary names no
   payload path or pixel statistic.
 
-  Not yet done: M7.9 P4b (the five additive save sections in
-  `ohl-engine::save`/`save_state`) and, once M7.9 P1 lands, wiring the four
-  TODO(P1) milestone lines above.
+  Not yet done: nothing — M7.9 P4b (below) adds the five additive save
+  sections and wires the four TODO(P1) milestone lines above now that M7.9
+  P1 has landed.
 
 - **M7.9 P1: weapons, pickups, damage routing and HUD/audio.**
   `ohl-engine::combat` rebuilds `ohl_combat::HitboxIndex` each step from
@@ -2066,6 +2066,82 @@ level transitions keep their behaviour.
   health exactly as they were; the existing headless capture still renders.
 
   Not yet done: P4 (save sections and the scripted-input smoke).
+
+- **M7.9 P4b: save sections for combat, AI and projectiles; remaining
+  scripted log lines.** Five additive save-file sections, allocated next
+  to #62's in one place (`ohl-engine::save`): `SECTION_INVENTORY` (23,
+  `save_state::InventorySnapshot` — owned weapons/clips, `AmmoBank`
+  reserves, selection, and the drawn weapon's firing-state-machine summary
+  via new `ohl_combat::FiringState::{state_tag_and_timer, restore}`),
+  `SECTION_ENTITY_COMBAT` (24, one `Option<(health, armor)>`-shaped entry
+  per registry entity in spawn order, reading a monster's live health from
+  `ohl_ai::Actor` — the value `apply_monster_damage` actually moves —
+  rather than its spawn-time `Health` component), `SECTION_AI` (25, one
+  `save_state::AiSnapshot` per entity: `MonsterState`/`Activity` tags with
+  new `from_tag` reverse mappings, the running schedule's stable name
+  restored through new `ohl_ai::ScheduleRunner::{started, restore}`, task
+  index, enemy and route waypoints by spawn index, `Conditions` raw bits,
+  squad name/leader), `SECTION_PROJECTILES` (26, every live
+  `ohl_combat::Projectile`/`Satchel`/`Tripmine` plus new
+  `ProjectileSet::{next_id_and_rng_state, restore_from_parts}` and
+  `DeployableSet::{next_id, restore_from_parts}` so ids and the snark-hop
+  random stream continue exactly where the save left them) and
+  `SECTION_RNG` (27, `Systems`'s shared `ohl_ai::Pcg32` state plus a new
+  substep counter). Entities are referenced only by their position in
+  `Registry::entities`, never `hecs::Entity` bits
+  (`save_state::{spawn_index_of, entity_at_spawn_index}`); a `monstermaker`
+  child is not in that list at all (it is spawned directly through
+  `registry.world.spawn`), so it is not saved — a documented, bounded
+  `TODO(P4b-followup)`, not silent corruption. A new
+  `save::optional_section` helper tells `ohl_save::SaveError::
+  SectionNotFound` (a pre-P4b save, missing tags 23-27 entirely — loads as
+  `None`/a default) apart from a section present but failing to decode
+  (fails closed with `EngineError::SaveUnreadable`, same as every other
+  section). The additive API this needed in `ohl-ai`/`ohl-combat` stays
+  serde-free (`ohl-engine`'s own `save_state` DTOs are the only new
+  `serde` surface); `MonsterAi`/`Inventory`/`ProjectileSet`/`DeployableSet`
+  themselves are untouched beyond the new methods.
+
+  `crates/ohl-app/src/script_log.rs` now wires the four milestone lines
+  M7.9 P4a left as TODO(P1): "The player fired a weapon."/"A shot hit an
+  entity." from new `Game::{weapon_fired_count, shot_hit_count}` (backed by
+  new `CombatState` counters incremented in `Systems`'s phase 6), "A
+  pickup was collected." from new `Game::pickup_count` (a new
+  `PickupsState::taken_count`), and "The player took damage." from new
+  `Game::player_damage_event_count` (a new `Systems::player_damage_events`
+  counter, incremented in phase 9's player-damage branch, which
+  `crate::combat::resolve_damage` now takes as an added parameter).
+  `xtask/src/combat_smoke.rs`'s `Scenario` now carries its own
+  present/absent milestone-line set (rather than one fixed pair for every
+  scenario), so a later scenario that does reach one of the six can move
+  it from `absent` to `present` without touching the others.
+  `TODO(P4b-followup)`: no scenario added here reaches one yet — doing so
+  needs a script that walks the real training course to an actual weapon
+  pickup, and a few short scripted attempts against a real imported
+  payload during this package's own development did not reach one within
+  `t0a0`/`t0a0a` alone; see `xtask/src/combat_smoke.rs`'s `scenarios` doc
+  comment.
+
+  Verified: unit round trips for the AI/inventory/projectile/RNG snapshot
+  conversions and the new `ohl-ai`/`ohl-combat` additive methods;
+  integration tests (`crates/ohl-engine/tests/save_sections.rs`) that a
+  save -> load -> save chain after firing a weapon, killing a monster,
+  picking up ammo and leaving a live projectile in flight is byte-identical
+  (which also exercises the fired/hit counters end to end, against this
+  package's own synthetic fixture); a save missing tags 23-27 (a pre-P4b
+  file) still loads with defaults; a save with a corrupted `SECTION_AI`
+  fails closed with `SaveUnreadable`; a fixed-seed scripted run continued
+  after a load produces the same `ai_state_hash` as the uninterrupted run
+  (which also required fixing a pre-existing bug: `Game::to_save`/
+  `Game::restore` stored/restored the player's *eye* position as the
+  `PlayerController`'s spawn *origin*, silently displacing the reloaded
+  player upward by the stance's eye offset every save/load); a proptest
+  that decoding an arbitrary `postcard` byte string into any new snapshot
+  type never panics.
+
+  Clean-room: the save format is this project's own (`ohl-save`), not
+  GoldSrc's `.sav` layout; the script format and every log line remain
+  project-authored fixed strings, per `docs/m79-design.md` §10.
 
 ## M9 (Rust): packaging
 

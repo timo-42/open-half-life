@@ -475,3 +475,46 @@ fn beam_blocked(
 ) -> bool {
     beam_trace(mine, world, entities, tuning).0.is_some()
 }
+
+#[cfg(test)]
+mod restore_tests {
+    use super::{DeployableId, DeployableSet, Satchel, Tripmine};
+    use glam::Vec3;
+
+    #[test]
+    fn restore_from_parts_keeps_exact_ids_and_next_id() {
+        let satchels = vec![Satchel {
+            id: DeployableId(3),
+            owner: None,
+            position: Vec3::new(1.0, 2.0, 3.0),
+            age: 0.5,
+        }];
+        let tripmines = vec![Tripmine {
+            id: DeployableId(4),
+            owner: None,
+            position: Vec3::new(4.0, 5.0, 6.0),
+            normal: Vec3::Z,
+            age: 1.0,
+            armed: true,
+        }];
+        let restored = DeployableSet::restore_from_parts(satchels.clone(), tripmines.clone(), 5);
+        assert_eq!(restored.satchels(), satchels.as_slice());
+        assert_eq!(restored.tripmines(), tripmines.as_slice());
+        assert_eq!(restored.next_id(), 5);
+    }
+
+    #[test]
+    fn restore_from_parts_truncates_past_the_published_maxima() {
+        let satchels = vec![
+            Satchel {
+                id: DeployableId(0),
+                owner: None,
+                position: Vec3::ZERO,
+                age: 0.0
+            };
+            super::MAX_SATCHELS + 1
+        ];
+        let restored = DeployableSet::restore_from_parts(satchels, Vec::new(), 0);
+        assert_eq!(restored.satchels().len(), super::MAX_SATCHELS);
+    }
+}

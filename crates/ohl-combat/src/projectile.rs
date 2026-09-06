@@ -867,3 +867,57 @@ impl Rng {
         scaled / 65_536.0
     }
 }
+
+#[cfg(test)]
+mod restore_tests {
+    use super::{Projectile, ProjectileId, ProjectileKind, ProjectileLimits, ProjectileSet};
+    use glam::Vec3;
+
+    fn sample_projectile(id: u32) -> Projectile {
+        Projectile {
+            id: ProjectileId(id),
+            kind: ProjectileKind::Rocket,
+            owner: None,
+            position: Vec3::new(1.0, 2.0, 3.0),
+            velocity: Vec3::new(4.0, 5.0, 6.0),
+            age: 0.5,
+            fuse: None,
+            guide_point: None,
+            target: None,
+            attack_cooldown: 0.0,
+            hop_cooldown: 0.0,
+            resting: false,
+        }
+    }
+
+    #[test]
+    fn restore_from_parts_keeps_exact_ids_and_restart_state() {
+        let mut original = ProjectileSet::new(ProjectileLimits::default(), 42);
+        original.spawn(
+            ProjectileKind::Rocket,
+            None,
+            Vec3::ZERO,
+            Vec3::new(100.0, 0.0, 0.0),
+            &super::ProjectileTuning::default(),
+        );
+        let (next_id, rng_state) = original.next_id_and_rng_state();
+        let projectiles: Vec<_> = original.projectiles().to_vec();
+
+        let restored = ProjectileSet::restore_from_parts(
+            projectiles.clone(),
+            ProjectileLimits::default(),
+            next_id,
+            rng_state,
+        );
+        assert_eq!(restored.projectiles(), projectiles.as_slice());
+        assert_eq!(restored.next_id_and_rng_state(), (next_id, rng_state));
+    }
+
+    #[test]
+    fn restore_from_parts_truncates_past_the_limit() {
+        let limits = ProjectileLimits { max_projectiles: 1 };
+        let projectiles = vec![sample_projectile(0), sample_projectile(1)];
+        let restored = ProjectileSet::restore_from_parts(projectiles, limits, 2, 0);
+        assert_eq!(restored.len(), 1);
+    }
+}

@@ -327,6 +327,21 @@ pub struct RngSnapshot {
     pub increment: u64,
     /// How many fixed steps have run since the level was attached.
     pub substep_counter: u64,
+    /// `ohl_ai::AiWorld::rng_snapshot`'s first element. The AI world's own
+    /// random stream is a distinct generator seeded from a draw off
+    /// [`Self::state`]/[`Self::increment`] at construction time
+    /// (`crate::systems::Systems::new`), so it needs its own save entry —
+    /// without it, a save/load continued by more ticks would not
+    /// reproduce the same `ai_state_hash` an uninterrupted run does
+    /// whenever anything in `ohl-ai` draws randomness (a snark's hop, a
+    /// schedule's `WaitRandom`).
+    pub ai_state: u64,
+    /// `ohl_ai::AiWorld::rng_snapshot`'s second element.
+    pub ai_increment: u64,
+    /// `ohl_ai::AiWorld::tick_count`, mixed into `state_hash` itself, so a
+    /// save omitting it would desync the very digest a determinism check
+    /// compares.
+    pub ai_tick_count: u64,
 }
 
 /// The fixed tag [`ProjectileKind`] is stored as. Values never change once
@@ -358,7 +373,13 @@ pub(crate) const fn projectile_kind_from_tag(tag: u8) -> Option<ProjectileKind> 
     })
 }
 
-/// Captures one entity's `SECTION_ENTITY_COMBAT` (24) entry.
+/// Captures one entity's `SECTION_ENTITY_COMBAT` (24) entry, or `None` when
+/// the entity no longer exists in the world at all (a gibbed monster,
+/// `world.despawn`ed outright by `crate::ai::AiState::retire`) — restoring
+/// a `None` entry despawns the entity again, since a fresh level load
+/// always re-spawns every map-declared monster first (`crate::ai::AiState::
+/// attach_level`'s own `attach_monsters` call knows nothing about what a
+/// save recorded).
 ///
 /// Health is read from `ohl_ai::Actor::health` when the entity carries one
 /// — the value `ohl_ai::apply_monster_damage` actually moves — falling back
@@ -366,7 +387,13 @@ pub(crate) const fn projectile_kind_from_tag(tag: u8) -> Option<ProjectileKind> 
 /// otherwise; a monster carries both, so `Health::max` still supplies the
 /// maximum an `Actor` alone does not record.
 #[must_use]
-pub(crate) fn snapshot_entity_combat(level: &Level, entity: Entity) -> EntityCombatSnapshot {
+pub(crate) fn snapshot_entity_combat(
+    level: &Level,
+    entity: Entity,
+) -> Option<EntityCombatSnapshot> {
+    if !level.registry.world.contains(entity) {
+        return None;
+    }
     let bare_health = level
         .registry
         .world
@@ -378,7 +405,12 @@ pub(crate) fn snapshot_entity_combat(level: &Level, entity: Entity) -> EntityCom
         .world
         .get::<&ohl_ai::Actor>(entity)
         .ok()
-        .map(|actor| (actor.health, bare_health.map_or(actor.health, |(_, max)| max)))
+        .map(|actor| {
+            (
+                actor.health,
+                bare_health.map_or(actor.health, |(_, max)| max),
+            )
+        })
         .or(bare_health);
     let armor = level
         .registry
@@ -386,35 +418,42 @@ pub(crate) fn snapshot_entity_combat(level: &Level, entity: Entity) -> EntityCom
         .get::<&ohl_combat::Armor>(entity)
         .ok()
         .map(|armor| (armor.current, armor.max));
-    EntityCombatSnapshot { health, armor }
+    Some(EntityCombatSnapshot { health, armor })
 }
 
-/// Restores one entity's `SECTION_ENTITY_COMBAT` (24) entry, writing every
-/// component this entity still has that the snapshot describes; a
-/// component the live entity does not carry (a save taken against a
-/// different registry shape) is simply left alone.
+/// Restores one entity's `SECTION_ENTITY_COMBAT` (24) entry. `snapshot`
+/// being `None` despawns `entity` when the (freshly attach-level-spawned)
+/// level still has it live, so a monster the save recorded as gone stays
+/// gone after the load; `Some` writes every component this entity still
+/// has that the snapshot describes, leaving alone any component the live
+/// entity does not carry (a save taken against a different registry
+/// shape).
 pub(crate) fn restore_entity_combat(
     level: &mut Level,
     entity: Entity,
-    snapshot: &EntityCombatSnapshot,
+    snapshot: Option<&EntityCombatSnapshot>,
 ) {
-    if let Some((current, _)) = snapshot.health {
-        if let Ok(mut actor) = level.registry.world.get::<&mut ohl_ai::Actor>(entity) {
-            actor.health = current;
-            actor.alive = current > 0.0;
-        }
+    let Some(snapshot) = snapshot else {
+        let _ = level.registry.world.despawn(entity);
+        return;
+    };
+    if let Some((current, _)) = snapshot.health
+        && let Ok(mut actor) = level.registry.world.get::<&mut ohl_ai::Actor>(entity)
+    {
+        actor.health = current;
+        actor.alive = current > 0.0;
     }
-    if let Some((current, max)) = snapshot.health {
-        if let Ok(mut health) = level.registry.world.get::<&mut ohl_combat::Health>(entity) {
-            health.current = current;
-            health.max = max;
-        }
+    if let Some((current, max)) = snapshot.health
+        && let Ok(mut health) = level.registry.world.get::<&mut ohl_combat::Health>(entity)
+    {
+        health.current = current;
+        health.max = max;
     }
-    if let Some((current, max)) = snapshot.armor {
-        if let Ok(mut armor) = level.registry.world.get::<&mut ohl_combat::Armor>(entity) {
-            armor.current = current;
-            armor.max = max;
-        }
+    if let Some((current, max)) = snapshot.armor
+        && let Ok(mut armor) = level.registry.world.get::<&mut ohl_combat::Armor>(entity)
+    {
+        armor.current = current;
+        armor.max = max;
     }
 }
 
@@ -429,7 +468,13 @@ pub(crate) fn vec3_array(value: Vec3) -> [f32; 3] {
 /// simulation a `NaN` position.
 #[must_use]
 pub(crate) fn array_vec3(value: [f32; 3]) -> Vec3 {
-    let sanitize = |component: f32| if component.is_finite() { component } else { 0.0 };
+    let sanitize = |component: f32| {
+        if component.is_finite() {
+            component
+        } else {
+            0.0
+        }
+    };
     Vec3::new(sanitize(value[0]), sanitize(value[1]), sanitize(value[2]))
 }
 
@@ -450,7 +495,10 @@ mod tests {
     #[test]
     fn every_projectile_kind_round_trips_through_its_tag() {
         for kind in ALL_KINDS {
-            assert_eq!(projectile_kind_from_tag(projectile_kind_tag(kind)), Some(kind));
+            assert_eq!(
+                projectile_kind_from_tag(projectile_kind_tag(kind)),
+                Some(kind)
+            );
         }
     }
 
@@ -469,5 +517,32 @@ mod tests {
     fn a_non_finite_component_is_sanitized_to_zero() {
         let restored = array_vec3([f32::NAN, f32::INFINITY, 4.0]);
         assert_eq!(restored, glam::Vec3::new(0.0, 0.0, 4.0));
+    }
+}
+
+#[cfg(test)]
+mod decode_proptests {
+    use proptest::prelude::*;
+
+    use super::{
+        AiSnapshot, EntityCombatSnapshot, InventorySnapshot, ProjectilesSnapshot, RngSnapshot,
+    };
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// Decoding arbitrary bytes as any M7.9 P4b snapshot type never
+        /// panics, matching `ohl_save`'s and `ohl_engine::GameSave`'s own
+        /// "never panic on adversarial section bytes" guarantee.
+        #[test]
+        fn decoding_arbitrary_bytes_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..512)) {
+            let _: Result<InventorySnapshot, _> = postcard::from_bytes(&bytes);
+            let _: Result<EntityCombatSnapshot, _> = postcard::from_bytes(&bytes);
+            let _: Result<Vec<Option<EntityCombatSnapshot>>, _> = postcard::from_bytes(&bytes);
+            let _: Result<AiSnapshot, _> = postcard::from_bytes(&bytes);
+            let _: Result<Vec<Option<AiSnapshot>>, _> = postcard::from_bytes(&bytes);
+            let _: Result<ProjectilesSnapshot, _> = postcard::from_bytes(&bytes);
+            let _: Result<RngSnapshot, _> = postcard::from_bytes(&bytes);
+        }
     }
 }

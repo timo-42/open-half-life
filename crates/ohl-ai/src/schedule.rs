@@ -405,7 +405,11 @@ impl ScheduleRunner {
             schedule: Some(schedule),
             task_index,
             started,
-            timer: if timer.is_finite() { timer.max(0.0) } else { 0.0 },
+            timer: if timer.is_finite() {
+                timer.max(0.0)
+            } else {
+                0.0
+            },
         }
     }
 
@@ -565,6 +569,53 @@ mod tests {
     use super::{Activity, RunOutcome, Schedule, ScheduleRunner, Task, TaskExecutor, TaskStatus};
     use crate::rng::Pcg32;
     use crate::state::Conditions;
+
+    const ALL_ACTIVITIES: [Activity; 12] = [
+        Activity::Idle,
+        Activity::Alert,
+        Activity::Walk,
+        Activity::Run,
+        Activity::Crouch,
+        Activity::Threat,
+        Activity::Melee,
+        Activity::Range,
+        Activity::Reload,
+        Activity::Flinch,
+        Activity::Cover,
+        Activity::Die,
+    ];
+
+    #[test]
+    fn every_activity_round_trips_through_its_tag() {
+        for activity in ALL_ACTIVITIES {
+            assert_eq!(Activity::from_tag(activity.tag()), Some(activity));
+        }
+    }
+
+    #[test]
+    fn an_unrecognised_activity_tag_is_rejected() {
+        assert_eq!(Activity::from_tag(255), None);
+    }
+
+    #[test]
+    fn a_schedule_runner_restore_falls_back_to_cleared_for_an_unknown_name() {
+        // `schedule_by_name` only resolves what `crate::brain` registers, so
+        // this test exercises the "unknown name" fallback path; the
+        // resolvable path (a name `crate::brain` does register) is covered
+        // by `ohl-engine`'s own save round-trip tests, which run against a
+        // brain table this crate does not itself construct in a unit test.
+        let restored = ScheduleRunner::restore("a name nothing registers", 1, true, 4.5);
+        assert!(!restored.is_running());
+        assert_eq!(restored.task_index(), 0);
+        assert!(!restored.started());
+        assert!((restored.timer() - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn a_schedule_runner_restore_clamps_a_non_finite_timer_to_zero() {
+        let restored = ScheduleRunner::restore("", 0, false, f32::NAN);
+        assert!((restored.timer() - 0.0).abs() < f32::EPSILON);
+    }
 
     #[derive(Default)]
     struct Recorder {

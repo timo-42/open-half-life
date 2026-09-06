@@ -429,8 +429,7 @@ impl ProjectileSystem {
     /// snapshot left off.
     #[must_use]
     pub(crate) fn snapshot(&self, level: &Level) -> crate::save_state::ProjectilesSnapshot {
-        let (projectile_next_id, projectile_rng_state) =
-            self.projectiles.next_id_and_rng_state();
+        let (projectile_next_id, projectile_rng_state) = self.projectiles.next_id_and_rng_state();
         let projectiles = self
             .projectiles
             .projectiles()
@@ -511,17 +510,17 @@ impl ProjectileSystem {
                 Some(ohl_combat::Projectile {
                     id: ProjectileId(entry.id),
                     kind,
-                    owner: entry
-                        .owner
-                        .and_then(|index| crate::save_state::combat_id_at_spawn_index(level, index)),
+                    owner: entry.owner.and_then(|index| {
+                        crate::save_state::combat_id_at_spawn_index(level, index)
+                    }),
                     position: crate::save_state::array_vec3(entry.position),
                     velocity: crate::save_state::array_vec3(entry.velocity),
                     age: entry.age,
                     fuse: entry.fuse,
                     guide_point: entry.guide_point.map(crate::save_state::array_vec3),
-                    target: entry
-                        .target
-                        .and_then(|index| crate::save_state::combat_id_at_spawn_index(level, index)),
+                    target: entry.target.and_then(|index| {
+                        crate::save_state::combat_id_at_spawn_index(level, index)
+                    }),
                     attack_cooldown: entry.attack_cooldown,
                     hop_cooldown: entry.hop_cooldown,
                     resting: entry.resting,
@@ -560,11 +559,8 @@ impl ProjectileSystem {
                 armed: entry.armed,
             })
             .collect();
-        self.deployables = DeployableSet::restore_from_parts(
-            satchels,
-            tripmines,
-            snapshot.deployable_next_id,
-        );
+        self.deployables =
+            DeployableSet::restore_from_parts(satchels, tripmines, snapshot.deployable_next_id);
     }
 
     /// Keeps each model-backed projectile's entity in step with its

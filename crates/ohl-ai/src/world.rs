@@ -381,6 +381,28 @@ impl AiWorld {
         self.tick_count
     }
 
+    /// This world's own random stream's raw state, for save files. Additive,
+    /// for `.plan/m79-design.md` §6/§8 P4b: a caller that owns the seed
+    /// this world was constructed with (`Systems::rng`, in `ohl-engine`)
+    /// still needs this to continue the *same* stream across a save/load,
+    /// since [`Self::new`] always reseeds from its constructor argument
+    /// rather than resuming wherever a previous instance's stream had
+    /// advanced to.
+    #[must_use]
+    pub fn rng_snapshot(&self) -> (u64, u64) {
+        self.rng.snapshot()
+    }
+
+    /// Restores this world's random stream and tick counter from a
+    /// previous [`Self::rng_snapshot`]/[`Self::tick_count`], so a
+    /// determinism test (or a real save/load) that continues ticking after
+    /// a restore reproduces the same sequence an uninterrupted run would.
+    /// Additive, for save-file restore.
+    pub fn restore_determinism_state(&mut self, rng: (u64, u64), tick_count: u64) {
+        self.rng = Pcg32::from_snapshot(rng);
+        self.tick_count = tick_count;
+    }
+
     /// Adds a sound or scent for the next tick's [`listen`] pass.
     pub fn emit_sound(&mut self, event: SoundEvent) -> bool {
         self.sounds.push(event)

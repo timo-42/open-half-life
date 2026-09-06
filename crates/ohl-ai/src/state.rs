@@ -587,7 +587,19 @@ impl fmt::Display for Conditions {
 
 #[cfg(test)]
 mod tests {
-    use super::{Classification, Conditions, Relationship, RelationshipTable};
+    use super::{Classification, Conditions, MonsterState, Relationship, RelationshipTable};
+
+    #[test]
+    fn every_monster_state_round_trips_through_its_tag() {
+        for state in MonsterState::ALL {
+            assert_eq!(MonsterState::from_tag(state.tag()), Some(state));
+        }
+    }
+
+    #[test]
+    fn an_unrecognised_monster_state_tag_is_rejected() {
+        assert_eq!(MonsterState::from_tag(255), None);
+    }
 
     #[test]
     fn every_condition_bit_is_distinct() {

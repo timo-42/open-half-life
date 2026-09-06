@@ -5,9 +5,10 @@
 //! `ohl_save::SaveWriter` into a container whose framing, table and digests
 //! are all correct, but whose section *contents* are arbitrary bytes.
 //! Occasionally a tag lands on one of `ohl_engine::save`'s own section tags
-//! (16 through 22), which drives `postcard` decoding of that section with
-//! adversarial bytes; other tags are simply carried as unknown sections.
-//! Either way `GameSave::from_bytes` must never panic.
+//! (16 through 27 — the M7.9 P4b sections 23-27 included), which drives
+//! `postcard` decoding of that section with adversarial bytes; other tags
+//! are simply carried as unknown sections. Either way `GameSave::from_bytes`
+//! must never panic.
 
 #![no_main]
 
@@ -24,8 +25,8 @@ const MAX_SECTIONS: usize = 16;
 /// Most bytes kept from one section's arbitrary payload.
 const MAX_SECTION_BYTES: usize = 512;
 /// Most tag offsets tried, so a good share of inputs land on the real
-/// section tags (16 through 22) `ohl_engine::save` interprets.
-const MAX_TAG_OFFSET: u8 = 10;
+/// section tags (16 through 27) `ohl_engine::save` interprets.
+const MAX_TAG_OFFSET: u8 = 11;
 
 #[derive(Debug, Arbitrary)]
 struct FuzzSection {
