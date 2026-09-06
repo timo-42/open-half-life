@@ -2211,3 +2211,301 @@ closed loop's wrap-around instead of a dead end — with `toggle`/`turn_on`/
 path shared with doors, buttons and platforms. `ohl-engine`'s `render.rs`
 reads the resolved position/yaw each frame the same way it already reads a
 door's timer, via `track_train_transform`.
+
+## Scripted sequences and talk monsters
+
+Behavioural and keyvalue vocabulary only; no file format is involved and no
+SDK source, engine source or decompilation was consulted
+(`docs/CLEAN_ROOM.md`). Implemented in `ohl-game`'s `scripts` module (the
+keyvalues, the spawnflag bits and the `ScriptActivation` component the map
+logic bumps), `ohl-ai`'s `scripts` and `follow` modules (the script state
+machine, the `ScriptHold` brain-suspension marker and the follow roster),
+and `ohl-engine`'s `ai` module (target selection, movement through the
+existing `Navigator`/`NavBridge` seam, sequence-name resolution against the
+loaded studio model, and `target` firing through
+`ohl_game::logic::Simulation`).
+
+`developer.valvesoftware.com` returns HTTP 403 to automated fetches from
+this environment, so its pages were read through Internet Archive snapshots
+of the exact URLs cited below, and one page (`trigger_auto`) through
+search-engine result summaries — the same fallback this document already
+records for the TWHL wiki under "Monster AI behaviour". TWHL's entity pages
+were fetched directly.
+
+### Sources
+
+- [VDC `Scripted_sequence_(GoldSrc)`](https://developer.valvesoftware.com/wiki/Scripted_sequence_(GoldSrc))
+  and [TWHL `scripted_sequence`](https://twhl.info/wiki/page/scripted_sequence).
+- [VDC `Aiscripted_sequence_(GoldSrc)`](https://developer.valvesoftware.com/wiki/Aiscripted_sequence_(GoldSrc))
+  and [TWHL `aiscripted_sequence`](https://twhl.info/wiki/page/aiscripted_sequence).
+- [TWHL "Tutorial: Scripted Sequences"](https://twhl.info/wiki/page/Tutorial:_Scripted_Sequences).
+- [VDC `Scripted_sentence_(GoldSrc)`](https://developer.valvesoftware.com/wiki/Scripted_sentence_(GoldSrc))
+  and [TWHL `scripted_sentence`](https://twhl.info/wiki/page/scripted_sentence).
+- [VDC `Monster_scientist_(GoldSrc)`](https://developer.valvesoftware.com/wiki/Monster_scientist_(GoldSrc))
+  and [TWHL `monster_scientist`](https://twhl.info/wiki/page/monster_scientist).
+- [VDC `Monster_barney_(GoldSrc)`](https://developer.valvesoftware.com/wiki/Monster_barney_(GoldSrc))
+  and [TWHL `monster_barney`](https://twhl.info/wiki/page/monster_barney).
+- [VDC `Monster_generic_(GoldSrc)`](https://developer.valvesoftware.com/wiki/Monster_generic_(GoldSrc))
+  and [TWHL `monster_generic`](https://twhl.info/wiki/page/monster_generic).
+- [VDC `Trigger_auto_(GoldSrc)`](https://developer.valvesoftware.com/wiki/Trigger_auto_(GoldSrc))
+  and [TWHL `trigger_auto`](https://twhl.info/wiki/page/trigger_auto).
+
+**Deliberately not used**: the Source-engine
+[`Scripted_sequence`](https://developer.valvesoftware.com/wiki/Scripted_sequence)
+page, whose keyvalues (`m_iszEntry`, `m_iszPostIdle`, `m_iszCustomMove`,
+`m_bLoopActionSequence`, `m_iszNextScript`, the input/output entries) and
+whose extra spawnflag bits (16 "Start on Spawn", 256 "Loop in Post Idle",
+512 "Priority Script", 1024 "Search Cyclically", 2048 "No Complaints", 4096
+"Allow NPC Death") and extra `m_fMoveTo` value (`3`, "Custom movement")
+belong to a different engine. `MoveTo::from_raw` rejects `3` for exactly
+this reason. The TWHL "Monsters Programming" coding series was also not
+used for this section: those pages reproduce engine/SDK code.
+
+### `scripted_sequence` and `aiscripted_sequence` keyvalues
+
+All from the two VDC GoldSrc pages and the two matching TWHL pages, which
+agree on every name below.
+
+- `m_iszEntity`, "Target Monster": "The name of the monster entity that this
+  sequence affects. You can also input a monster classname." TWHL adds:
+  "(Only one monster will be chosen to follow the sequence.)"
+- `m_iszPlay`, "Action Animation": the animation the target monster
+  performs. **No sequence name is written into this project**: the string
+  is a map-authored name resolved at runtime against the sequence label
+  table of whatever model the monster loaded
+  (`ohl_world::StudioModel::sequence_by_name`).
+- `m_iszIdle`, "Idle Animation": "an animation you want Target Monster to
+  perform on a loop until the scripted_sequence is triggered" (VDC,
+  `scripted_sequence`). TWHL's `aiscripted_sequence` page states it "Won't
+  work for aiscripted_sequence"; `ScriptDef::idle_sequence` therefore
+  reports it as absent there rather than silently playing it.
+- `m_flRadius`, "Search Radius": "If you input a monster classname into
+  Target Monster, the entity will pick a monster within this radius of the
+  entity to follow the sequence. If none are within the radius, the first
+  monster to enter the radius will follow the sequence." The engine's
+  classname search re-runs every step until it finds one, which is that
+  second sentence.
+- `m_flRepeat`, "Repeat Rate": see the `TODO(black-box)` list below.
+- `m_fMoveTo`, "Move to Position": the choices below.
+- `target` / `delay` / `killtarget`: the entity triggered when the sequence
+  completes, the delay in seconds before that happens, and the entity
+  removed. TWHL: "The entity name to trigger after the scripted animation is
+  performed (or, in case the Action Animation is not specified, after the
+  monster moved to the script)" — hence `ScriptDef::play_sequence`
+  returning `None` completing the script as soon as the monster is on the
+  mark.
+- `angles`: "The monster will turn to face the given yaw angle before
+  performing the animation. Pitch and roll are not used." Only the yaw is
+  read.
+- `m_iFinishSchedule`, "AI Schedule when done": recorded as published (0
+  Default AI, 1 Ambush; functional only on `aiscripted_sequence`) but **not
+  implemented**; see the `TODO(black-box)` list.
+
+### `m_fMoveTo` choices
+
+`0` No — "The monster will not move or turn. It will perform the animation
+wherever it is."; `1` Walk; `2` Run — walks/runs to the sequence, then
+performs the animation; `4` Instantaneous — "instantly warp to the location
+of the scripted_sequence and perform the animation"; `5` No - Turn to Face
+— "will not move, but will turn to the scripted_sequence's angle before
+performing the animation". `3` is not defined for GoldSrc. Modelled as
+`ohl_game::scripts::MoveTo`; the walk and run modes route through the
+existing `ohl_ai::Route`/`NavBridge` movement seam, so a scripted walk uses
+the same navigator as any other.
+
+### Spawnflags
+
+`scripted_sequence` (VDC GoldSrc page, meanings from TWHL):
+
+- `4` Repeatable — "the sequence can be repeated more than once. Otherwise
+  the entity will be removed once the sequence is complete."
+- `8` Leave Corpse — "the monster leaves its corpse instead of fading out."
+- `32` No Interruptions — "the sequence cannot be interrupted. The monster
+  will ignore damage until the sequence is complete, as with the
+  aiscripted_sequence entity."
+- `64` Override AI — "the script will possess its target even when the
+  monster is in the combat state at the moment of the call" (VDC: "Treat
+  this entity like an aiscripted_sequence.").
+- `128` No Script Movement — "when the sequence is completed, the monster
+  will be placed back where the Action Animation started (if the animation
+  would cause the monster to move)."
+
+`aiscripted_sequence`: the VDC GoldSrc page lists only `4` and `8`; TWHL
+adds that `32` and `64` "Ha[ve] no effect for aiscripted_sequence since it
+assumes this is always enabled", and that `128` means the same as above.
+`ScriptDef::no_interruptions`/`overrides_ai` therefore return `true`
+unconditionally for an `aiscripted_sequence`.
+
+Bits `1`, `2`, `16`, `512` and above are **not defined** for either entity
+in GoldSrc and are ignored. `256` ("No Reset Entity") is documented by TWHL
+for Opposing Force only and is likewise ignored.
+
+### The difference between the two entities
+
+"Using the scripted_sequence entity as base, the aiscripted_sequence point
+entity inherits the same responsibility… The primary difference being that
+it completely overrides the targeted monster's AI. Regardless of what you do
+to the monster, it will follow this sequence." (VDC/TWHL, identical
+wording.) TWHL: "A scripted_sequence with both spawnflags 'No Interruptions'
+and 'Override AI' is a near perfect equivalent to this entity." The tutorial
+adds: "You cannot distract Barney from doing what the script has called him
+to do."
+
+### `scripted_sentence`
+
+Keyvalues (VDC GoldSrc page; expanded wording from TWHL): `sentence`
+("Sentence Name", a `sound\sentences.txt` name, or a group name without the
+leading `!` to pick a random member), `entity` ("Speaker Type", a
+`targetname` or a classname), `listener` ("Listener Type"), `radius`
+("Search Radius"; "The radius doesn't affect the search by a targetname"),
+`duration` ("Sentence Time"; "The game doesn't automatically calculate the
+duration of the sentence, so the mapper must make sure this value is big
+enough"), `refire` ("Delay before trying to find the appropriate monster
+again once the scripted_sentence is activated but failed to find the
+speaker"), `delay`, `volume` ("Range: 0 - 10"), `attenuation` (`0` Small
+Radius, `1` Medium Radius, `2` Large Radius, `3` Play Everywhere), `target`,
+`killtarget`.
+
+Spawnflags: `1` Fire Once ("removed from the game once the sentence has
+started playing"), `2` Followers Only ("the sentence will play only when the
+speaker is in the state of following the player"), `4` Interrupt Speech, `8`
+Concurrent.
+
+The sentence itself is resolved through the engine's existing
+`ohl_engine::SentenceLookup`. **The resolved words are asset paths**: per
+`docs/CLEAN_ROOM.md` rule 7 none of them enters this project's source, a
+`GameEvent`, or any diagnostic, so the emitted `ohl_gameplay::SoundCue`
+always carries `path: None` — the same policy `ohl_gameplay::sounds`
+already applies to every weapon, pickup and charger cue. An empty sentence
+group and a resolved one therefore produce the same cue. Only a word *count*
+crosses the boundary, as data (`Game`'s AI counters), never as a log line.
+
+### Talk monsters
+
+- `monster_scientist`: "They can follow the player and administer weak
+  antidote for wounds." "Using the 'Pre-Disaster' spawnflag will make this
+  entity refuse to follow the player." TWHL's Pre-Disaster wording: "thinks
+  the Black Mesa incident has not happened and thus will not follow the
+  player if asked". Published spawnflags used here: `256` Pre-Disaster.
+  (`1` Wait Till Seen, `2` Gag, `4` MonsterClip, `16` Prisoner, `128`
+  WaitForScript — "Does nothing, not implemented" — and `512` Fade Corpse
+  are recorded but only `512` is already modelled, by
+  `ohl_ai::monsters::MonsterFlags::FADES_CORPSE`.)
+  `body` (`-1` Random, `0` Glasses, `1` Einstein, `2` Luther, `3` Slick;
+  "Only difference is appearance") and `UseSentence`/`UnUseSentence` ("plays
+  when the player brings the NPC into their group" / "removes the NPC from
+  their group") are recorded but not implemented.
+  The heal numbers TWHL publishes (20 HP health, 25 HP healed, 128-unit
+  range, 60 s cooldown) were already cited under "Monster definitions" and
+  are unchanged by this package. The scientist's flee behaviour continues to
+  use the existing `ohl_ai::brain::FLEE` schedule its `MonsterBrain` already
+  selects; see the `TODO(black-box)` list for what the wikis do not say.
+- `monster_barney`: "Security Guards are friendly Non-Player Characters
+  (NPCs) that will assist the player by following them around and fending
+  off enemies using a pistol with unlimited ammo." Its allied faction
+  (`Classification::PlayerAlly`) and its combat behaviour were already wired
+  by M7.7/M7.9 P2 and are reused unchanged; this package adds only the
+  follow layer. Same `256` Pre-Disaster flag as the scientist.
+- The one published follow *number*: "Only two friendly NPCs can follow the
+  player at one time, the player can bring along two security guards, two
+  scientists, or one of each. If the player already has two allies and tries
+  to recruit another one, the new NPC will join the player's squad and
+  another will leave." (VDC `monster_barney`.) Modelled as
+  `ohl_ai::follow::MAX_FOLLOWERS` and `FollowRoster`.
+- `monster_generic`: "Used to spawn models for use with scripted sequences
+  (scripted_sequence and aiscripted_sequence)." Its `model`, `body`, `skin`,
+  `TriggerCondition`/`TriggerTarget` keys and its flags are published; note
+  that bit `4` means "Not Solid" here, **not** "MonsterClip" as on
+  `monster_barney`/`monster_scientist`. This project has no
+  `monster_generic` row in `ohl_ai::monsters::table`, so it spawns as the
+  documented inert `Actor`; a script can still teleport it, turn it and play
+  its sequences, which is what the entity exists for.
+
+### `trigger_auto`
+
+Needed so a map can start a script without the player doing anything.
+Published (via search-result summaries of the two pages cited above, since
+both 403 automated fetches): it "automatically fires its targets on map
+spawn"; `target` is "the targetname of an entity this entity will trigger
+when activated"; `delay` is "delay in seconds before firing the targeted
+entity"; spawnflag `1` "Remove On fire" — "the trigger_auto will be removed
+from the game after firing". Implemented as
+`ohl_game::registry::AutoTrigger`, fired by `Simulation::tick` in ascending
+entity order.
+
+### `TODO(black-box)` items
+
+Everything below is undocumented on every page this project may use, and is
+marked `TODO(black-box)` in the code rather than guessed:
+
+1. **`m_flRepeat`'s unit and meaning.** The published label is "Repeat Rate
+   ms" but the published prose describes it as how often the search radius
+   is re-checked. This project reads it as seconds of delay before a
+   repeatable script plays again (`ohl_game::scripts::ScriptDef::repeat`).
+2. **`m_iszAttack`.** Named in no page for either scripting entity; not
+   implemented.
+3. **Every keyvalue default.** No GoldSrc default is published for
+   `m_flRadius`, `m_flRepeat`, `m_fMoveTo`, `delay`, `volume`,
+   `attenuation`, `duration` or `refire`; this project defaults each to the
+   conservative zero/`No`.
+4. **Which monster a classname search picks.** "Only one monster will be
+   chosen" without saying which; this project takes the nearest and breaks
+   ties by entity id, purely so the choice is deterministic.
+5. **Arrival, facing and turning tolerances.** `SCRIPT_ARRIVE_RADIUS`,
+   `SCRIPT_FACING_TOLERANCE_DEGREES` and `SCRIPT_TURN_RATE_DEGREES` in
+   `ohl-engine`'s `ai` module are project placeholders.
+6. **A monster that cannot reach its mark.** No page says what a script does
+   then; this project keeps waiting rather than inventing a give-up rule.
+7. **An unresolvable action animation's length.**
+   `SCRIPT_FALLBACK_ACTION_SECONDS` is a project placeholder used only when
+   the monster's model publishes no sequence under `m_iszPlay` (or has no
+   model at all), so that `target` still fires.
+8. **Exactly what interrupts a script.** The pages say only that "No
+   Interruptions" makes the monster "ignore damage"; this project treats
+   damage and acquiring a new enemy as the interrupting stimuli, and returns
+   an interrupted script to its dormant, idle-animation state.
+9. **A script whose monster is in combat without `Override AI`.** The flag's
+   meaning is published; what happens to the *activation* that was refused
+   is not. This project drops it rather than queueing it.
+10. **`m_iFinishSchedule`.** The two choices are published but their effect
+    on the monster's schedule afterwards is not, so the key is parsed as
+    part of the map's data and otherwise ignored.
+11. **Animation blending and the reset after a sequence.** Undocumented; the
+    Opposing Force "No Reset Entity" flag implies a default reset, which is
+    not modelled.
+12. **The "Instantaneous" freeze.** TWHL says the script freezes the monster
+    after teleporting it and needs a second trigger "at least ~0.1 s later";
+    no exact interval is given, so this project plays the action animation
+    directly after the warp.
+13. **Follow distance, catch-up speed and repath interval.** No page states
+    any of them; `ohl_ai::follow::FOLLOW_DISTANCE` reuses the stand-off the
+    existing `FOLLOW_PLAYER` schedule already used, and
+    `SCRIPT_WALK_SPEED`/`SCRIPT_RUN_SPEED` reuse `ohl_ai::Brain::speeds`'s
+    own provisional pair.
+14. **Which of two allies leaves when a third is recruited.** Published as
+    "another will leave"; this project evicts the longest-serving one, the
+    only choice that keeps the roster deterministic.
+15. **A talk monster's `use` range.** Undocumented; `TALK_USE_RADIUS` reuses
+    the engine's existing `USE_RADIUS` so one key press cannot mean two
+    different reaches.
+16. **Scientist fear/flee mechanics.** Trigger conditions, flee target
+    selection, duration and recovery are undocumented on every page this
+    project may use. The existing `ohl_ai::brain::FLEE` schedule, already
+    selected on the published `SEE_FEAR` condition, is unchanged; nothing
+    new was invented for it.
+17. **Sentence timing and speech arbitration.** The engine "doesn't
+    automatically calculate the duration of the sentence", so `duration` is
+    honoured as published and nothing is derived from the sentence itself.
+    The `Interrupt Speech` and `Concurrent` flags are parsed but their
+    arbitration radius and PVS rules are described only qualitatively, so
+    they are not implemented. The 4096-unit player-listener search radius is
+    stated only by TWHL and is not implemented either, as `listener` itself
+    is recorded but not acted on.
+18. **`trigger_auto`'s `globalstate`.** "or as soon as the specified global
+    state becomes active" — the key is not modelled; a `trigger_auto` here
+    always fires on load.
+19. **`Leave Corpse` beyond fading.** This project makes a script-possessed
+    monster's corpse permanent when the flag is set; the published sentence
+    ("instead of fading out") supports that much, but the interaction with
+    a monster that dies mid-script — TWHL notes a dying monster can still be
+    possessed — is undocumented and not modelled.
