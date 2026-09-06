@@ -182,7 +182,7 @@ cargo xtask graph     # validates the crate dependency graph against xtask/src/g
   `cpal`'s only Linux backend links `libasound` through a build-time
   `pkg-config` lookup, which the project's "No FFI" rule forbids as
   written, so there is currently no real Linux audio backend (decision
-  still open; see `docs/MILESTONES.md`, "Status as of 2026-09-06"). On
+  still open; see `docs/MILESTONES.md`, "Status as of 2026-09-07"). On
   macOS and Windows, `cpal` reaches the OS's own audio API (CoreAudio,
   WASAPI) with no such concern.
 - **Linux import worker sandbox**: the isolated media-parser worker's
@@ -245,26 +245,78 @@ one to). See the `release` and `publish-release` jobs in
 
 ## Status
 
-Plainly: import is verified end to end on Linux x86-64 against one real
-ISO layout (see [docs/IMPORT_READINESS.md](docs/IMPORT_READINESS.md) for
-the production-readiness gates that are *not* yet met on any platform,
-Linux included). All 93 campaign maps (18 story chapters plus the Hazard
-Course) load and render successfully headless
-(`cargo xtask campaign-smoke`). Combat, monster AI, navigation, player
-systems, projectiles, track trains and scripted sequences/talk monsters are
-implemented and covered by automated tests, but have not yet been
-play-tested end to end on a real display by a person. Save/load works over
-the project-owned `ohl-save` container (not the GoldSrc `.sav` format).
-Known fidelity gaps: scene lighting is calibrated against public reference
+Plainly, for a new reader: this project imports its own copy of a lawfully
+owned game's payload and renders it, but nobody has yet sat down and played
+it interactively on a real screen.
+
+**What works:**
+
+- **Import**, on Linux x86-64, from one real ISO layout: the medium is
+  fingerprinted, mounted read-only, its Wise/MS-CAB/InstallShield-3-Z
+  payload is parsed by a sandboxed worker process, and the result is
+  published as a metadata-only provenance record plus an extracted payload
+  tree. See [docs/IMPORT_READINESS.md](docs/IMPORT_READINESS.md) for the
+  production-readiness gates that are *not* yet met on any platform, Linux
+  included — only one ISO layout has been exercised, and no other platform
+  tuple can extract a medium at all yet.
+- **All 93 campaign maps** (18 story chapters plus the Hazard Course) load
+  and render successfully headless (`cargo xtask campaign-smoke`), with
+  monsters, props and sprites rendering alongside the world geometry.
+- **Movement and collision**: the player collides against both worldspawn
+  geometry and solid brush entities (doors, moving platforms, and the
+  like), not only the static world.
+- **Interactive map logic**: touch triggers (fired by the player's own
+  movement, not only `use`), doors, buttons, `func_train`/`func_tracktrain`
+  track trains, `trigger_camera` view sequences, scripted
+  sequences/talk monsters, and level transitions by touch
+  (`trigger_changelevel`) or by `use`.
+- **Combat and AI**: weapons, pickups, damage, monster AI, and navigation
+  are implemented and exercised by a scripted combat scenario that picks up
+  and fires a weapon (`cargo xtask combat-smoke`).
+- **Save/load** works over the project-owned `ohl-save` container (not the
+  GoldSrc `.sav` format), with typed sections covering the engine header,
+  entity registry, map-logic simulation, global state, light-style time,
+  camera/player pose, and — as of M7.9 P4b — inventory, entity combat
+  state, AI state, projectiles/deployables and the RNG stream.
+- **Scripted-input smokes**: a project-owned deterministic script format
+  drives headless runs for both the campaign and combat scenarios above,
+  with fixed milestone log lines asserted in CI.
+- **Release packaging**: `cargo xtask dist` builds a stripped, versioned
+  release archive for Linux, Windows and macOS, and a pushed `v*` tag
+  publishes it as a GitHub Release (see "Releases" below).
+
+**What is not verified yet:**
+
+- No interactive play-test end to end on a real display by a person —
+  combat, AI, navigation, movers and scripted sequences are exercised only
+  by automated unit/integration/property tests and the headless smokes
+  above.
+- Audio on Linux is a null sink: `cpal`'s only Linux backend links
+  `libasound` through a build-time `pkg-config` lookup, which this
+  project's "no FFI" rule forbids as written, so there is no real Linux
+  audio output today (macOS and Windows are unaffected). See "Platform
+  notes" above and `docs/MILESTONES.md`'s "Linux audio backend decision"
+  follow-up.
+- No real-display input test: keyboard/mouse input, the window loop, and
+  rendering have been exercised offscreen (headless screenshots, scripted
+  input) but not against a real display server and real hardware input.
+
+**Known gaps** (see `docs/MILESTONES.md`'s "Status as of" sections for the
+full list): `func_tracktrain` `altpath` branching is recorded but not
+applied; a `monstermaker` cannot yet be toggled at runtime by its own
+`targetname`; a `scripted_sequence` target's pre-trigger idle animation
+(`m_iszIdle`) is not yet modelled; and weapon inventory still rides inside
+`SECTION_PLAYER_CARRY`'s ad hoc encoding rather than its own save section.
+
+**Fidelity note:** scene lighting is calibrated against public reference
 screenshots via the app's own `--overbright 1.7` default (pass
 `--overbright 1.0` for the engine's raw, unmultiplied lighting; see
-`--help` and `docs/FORMAT_SOURCES.md`, "Rendering conventions"); the Hazard
-Course
-training spawn view has not been verified against a reference; and monster
-models loading from the payload is implemented but not yet merged to `main`
-([PR #78](https://github.com/timo-42/open-half-life/pull/78)). See
-[docs/MILESTONES.md](docs/MILESTONES.md) for the full package-by-package
-history and its closing "Status as of 2026-09-06" summary, and
+`--help` and `docs/FORMAT_SOURCES.md`, "Rendering conventions"); this is a
+project display default, not a claimed engine fact. The Hazard Course
+training spawn view has not been verified against a reference.
+
+See [docs/MILESTONES.md](docs/MILESTONES.md) for the full package-by-package
+history and its closing "Status as of" summaries, and
 [docs/CLEAN_ROOM.md](docs/CLEAN_ROOM.md) before contributing compatibility
 work.
 
