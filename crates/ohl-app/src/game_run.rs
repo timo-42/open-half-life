@@ -14,6 +14,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "dev-tools")]
+use glam::Vec3;
 use ohl_engine::{AssetFsSource, Game, GameConfig, GameEvent, Input, RenderTarget};
 use ohl_render::{GpuContext, OFFSCREEN_FORMAT, OffscreenTarget, WindowSurface, wgpu};
 use ohl_ui::{UiLayer, console::Console, hud::HudState};
@@ -104,6 +106,16 @@ pub struct GameArgs<'a> {
     /// The lightmap ramp's overbright multiplier (`--overbright`); see
     /// `ohl_engine::GameConfig::overbright`.
     pub overbright: f32,
+    /// Follows a `trigger_changelevel` during a headless/scripted run
+    /// (`--follow-level-change`) instead of logging that it was not
+    /// followed and staying on the original map.
+    pub follow_level_change: bool,
+    /// Places the capture viewpoint this many units from the nearest
+    /// spawned monster instead of at the map's player start or a caller
+    /// chosen viewpoint (`--viewpoint-at-nearest-monster`, `dev-tools`
+    /// only). Ignored without `headless_screenshot`.
+    #[cfg(feature = "dev-tools")]
+    pub viewpoint_at_nearest_monster: Option<f32>,
 }
 
 /// The save directory this run reads and writes slots in, or `None` when the
@@ -157,12 +169,37 @@ pub fn run(args: &GameArgs<'_>) -> Result<(), &'static str> {
     }
 
     if let Some(script_path) = args.script {
-        return run_scripted(&mut game, args, script_path);
+        return run_scripted(&mut game, &source, args, script_path);
     }
 
     match args.screenshot {
-        Some(path) => capture(&mut game, args, path),
+        Some(path) => capture(&mut game, &source, args, path),
         None => windowed(game, &source),
+    }
+}
+
+/// Logs the outcome of a `GameEvent::LevelChange` a headless/scripted run
+/// just received: with `--follow-level-change`, calls the same
+/// [`Game::change_level`] the windowed loop uses and keeps ticking on the
+/// destination map, logging the fixed "A level change was followed." line
+/// (gated on `script_log`, matching this module's other milestone lines);
+/// without the flag, or when the destination could not be loaded, the
+/// original map keeps running and the existing "not followed" line is
+/// logged unconditionally, exactly as before this flag existed.
+fn handle_level_change(
+    game: &mut Game,
+    source: &AssetFsSource,
+    map: &str,
+    landmark: &str,
+    follow: bool,
+    script_log: bool,
+) {
+    if follow && game.change_level(source, map, landmark).is_ok() {
+        if script_log {
+            tracing::info!("A level change was followed.");
+        }
+    } else {
+        tracing::info!("A level change fired during capture; it was not followed.");
     }
 }
 
@@ -172,6 +209,7 @@ pub fn run(args: &GameArgs<'_>) -> Result<(), &'static str> {
 /// `crate::script_log` for the milestone log lines.
 fn run_scripted(
     game: &mut Game,
+    source: &AssetFsSource,
     args: &GameArgs<'_>,
     script_path: &Path,
 ) -> Result<(), &'static str> {
@@ -199,8 +237,15 @@ fn run_scripted(
     let mut log = crate::script_log::ScriptLog::new(game);
     for input in script.inputs() {
         for event in game.tick(CAPTURE_STEP, input) {
-            if let GameEvent::LevelChange { .. } = event {
-                tracing::info!("A level change fired during capture; it was not followed.");
+            if let GameEvent::LevelChange { map, landmark } = event {
+                handle_level_change(
+                    game,
+                    source,
+                    &map,
+                    &landmark,
+                    args.follow_level_change,
+                    args.script_log,
+                );
             }
         }
         if args.script_log {
@@ -251,6 +296,47 @@ fn write_screenshot(game: &mut Game, path: &Path) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Development only: places the capture eye `distance` units from whichever
+/// spawned monster sits closest to the map's own player start, at the
+/// monster's eye height, facing it, in noclip (see [`Game::set_viewpoint`]).
+///
+/// Logs only the fixed "placed"/"not found" lines documented on
+/// `--viewpoint-at-nearest-monster`: never a position, a distance or a
+/// classname, matching this module's usual logging policy.
+#[cfg(feature = "dev-tools")]
+fn place_viewpoint_near_nearest_monster(game: &mut Game, distance: f32) {
+    let from = Vec3::from_array(game.camera().position);
+    let Some(monster_eye) = game.nearest_monster_position(from) else {
+        tracing::info!("No monster found for the capture viewpoint.");
+        return;
+    };
+
+    // Approach from whichever horizontal side the map's own player start
+    // sits on, so the placement is deterministic (never an arbitrary
+    // direction) without needing a caller-chosen angle.
+    let mut away = from - monster_eye;
+    away.z = 0.0;
+    let away = if away.length_squared() > 1e-6 {
+        away.normalize()
+    } else {
+        Vec3::X
+    };
+    let distance = if distance.is_finite() {
+        distance.max(1.0)
+    } else {
+        1.0
+    };
+    let eye = Vec3::new(
+        monster_eye.x + away.x * distance,
+        monster_eye.y + away.y * distance,
+        monster_eye.z,
+    );
+    let facing = -away;
+    let yaw = facing.y.atan2(facing.x).to_degrees();
+    game.set_viewpoint(eye.to_array(), 0.0, yaw);
+    tracing::info!("Capture viewpoint placed near a monster.");
+}
+
 /// The directory inside a published payload that holds the mod directories.
 ///
 /// An installer stages its files under its own destination variable rather
@@ -277,13 +363,34 @@ fn game_root(files: &Path) -> std::path::PathBuf {
 }
 
 /// Renders `frames` frames offscreen and writes the last one as a PNG.
-fn capture(game: &mut Game, args: &GameArgs<'_>, path: &Path) -> Result<(), &'static str> {
+fn capture(
+    game: &mut Game,
+    source: &AssetFsSource,
+    args: &GameArgs<'_>,
+    path: &Path,
+) -> Result<(), &'static str> {
     let context = GpuContext::headless().map_err(|_| "no usable graphics adapter is available")?;
     let (width, height) = CAPTURE_SIZE;
     let target = OffscreenTarget::new(&context, width, height)
         .map_err(|_| "no offscreen target could be created")?;
 
-    if let Some(viewpoint) = args.viewpoint {
+    #[cfg(feature = "dev-tools")]
+    let placed_at_monster = if let Some(distance) = args.viewpoint_at_nearest_monster {
+        place_viewpoint_near_nearest_monster(game, distance);
+        true
+    } else {
+        false
+    };
+    #[cfg(not(feature = "dev-tools"))]
+    let placed_at_monster = false;
+
+    if placed_at_monster {
+        // Handled above; the ordinary viewpoint/spawn-offset chain below is
+        // mutually exclusive with it (clap's own `requires` wiring already
+        // keeps `--viewpoint`/`--spawn-offset` and
+        // `--viewpoint-at-nearest-monster` from making sense together, so
+        // this just documents that this branch takes priority).
+    } else if let Some(viewpoint) = args.viewpoint {
         game.set_viewpoint(viewpoint.position, viewpoint.pitch, viewpoint.yaw);
     } else if let Some(offset) = args.spawn_offset {
         // Relative to wherever the map's own player start put the camera,
@@ -304,7 +411,9 @@ fn capture(game: &mut Game, args: &GameArgs<'_>, path: &Path) -> Result<(), &'st
     // ordinary spawn placement does; surface that as a warning rather than
     // silently writing a meaningless frame. The message is a fixed string
     // with no map-derived data, per this module's logging policy.
-    if (args.viewpoint.is_some() || args.spawn_offset.is_some()) && game.eye_is_in_solid() {
+    if (args.viewpoint.is_some() || args.spawn_offset.is_some() || placed_at_monster)
+        && game.eye_is_in_solid()
+    {
         tracing::warn!("Capture viewpoint starts inside solid geometry.");
     }
 
@@ -314,8 +423,15 @@ fn capture(game: &mut Game, args: &GameArgs<'_>, path: &Path) -> Result<(), &'st
         let events = game.tick(CAPTURE_STEP, &Input::default());
         for event in events {
             match event {
-                GameEvent::LevelChange { .. } => {
-                    tracing::info!("A level change fired during capture; it was not followed.");
+                GameEvent::LevelChange { map, landmark } => {
+                    handle_level_change(
+                        game,
+                        source,
+                        &map,
+                        &landmark,
+                        args.follow_level_change,
+                        args.script_log,
+                    );
                 }
                 // Map-authored text, presentation events with nothing to
                 // act on during a still capture (M7.9 P1): none of these

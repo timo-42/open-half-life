@@ -98,6 +98,11 @@ fn parse_overbright(value: &str) -> Result<f32, String> {
 }
 
 /// `Open Half-Life <version>` command line.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each is an independent command-line switch, not related state a caller could \
+confuse for one another"
+)]
 #[derive(Debug, Parser)]
 #[command(name = "Open Half-Life", version = VERSION, about = None, long_about = None)]
 struct Cli {
@@ -261,6 +266,27 @@ number greater than 0 and no more than 8.0."
     /// `docs/m79-design.md` §7. Ignored without `--script`.
     #[arg(long, requires = "script")]
     script_log: bool,
+
+    /// Follows a `trigger_changelevel` during a headless (`--headless-
+    /// screenshot`) or scripted (`--script`) run, calling the same
+    /// [`ohl_engine::Game::change_level`] path the interactive window
+    /// uses instead of staying on the original map. Without this flag the
+    /// run logs a fixed "not followed" line and keeps rendering the map it
+    /// started on, which remains the default so an ordinary capture never
+    /// silently jumps to a different map.
+    #[arg(long)]
+    follow_level_change: bool,
+
+    /// Development only: places the headless capture eye `DISTANCE` units
+    /// from the nearest spawned monster, at the monster's eye height,
+    /// facing it, in noclip, instead of at the map's player start or a
+    /// caller-chosen `--viewpoint`/`--spawn-offset`. Never logs a position
+    /// or classname (see `ohl_engine::Game::nearest_monster_position`).
+    /// Like `--dev-mdl` this is compiled in solely by the non-default
+    /// `dev-tools` cargo feature.
+    #[cfg(feature = "dev-tools")]
+    #[arg(long, value_name = "DISTANCE", requires = "headless_screenshot")]
+    viewpoint_at_nearest_monster: Option<f32>,
 
     /// Development only: load a studio model (MDL v10) straight off disk and
     /// open a renderer window showing it animating (`[` and `]` cycle the
@@ -555,6 +581,9 @@ fn run_game_flow(cli: &Cli) -> ExitCode {
         script: cli.script.as_deref(),
         script_log: cli.script_log,
         overbright: cli.overbright,
+        follow_level_change: cli.follow_level_change,
+        #[cfg(feature = "dev-tools")]
+        viewpoint_at_nearest_monster: cli.viewpoint_at_nearest_monster,
     }) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {

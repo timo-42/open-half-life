@@ -483,6 +483,20 @@ impl Game {
         self.systems.ai().monster_count(&self.level)
     }
 
+    /// The eye position of whichever spawned, living monster sits closest
+    /// to `from`, or `None` when this level has none.
+    ///
+    /// Additive and data-only, like [`Self::monster_count`]: a caller (a
+    /// headless capture viewpoint, say) may place a camera from this, but
+    /// this method itself never logs a position or classname. See
+    /// [`crate::ai::AiState::nearest_monster_position`].
+    #[must_use]
+    pub fn nearest_monster_position(&self, from: Vec3) -> Option<Vec3> {
+        self.systems
+            .ai()
+            .nearest_monster_position(&self.level, from)
+    }
+
     /// A digest of the whole AI simulation — every actor's pose, health and
     /// faction, every monster's state, schedule and route, the sound list
     /// and the random stream.
