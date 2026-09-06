@@ -930,7 +930,11 @@ mod tests {
     #[test]
     fn the_overbright_default_is_the_calibrated_1_7() {
         let cli = Cli::parse_from(["open-half-life", "--play"]);
-        assert_eq!(cli.overbright, 1.7);
+        assert!(
+            (cli.overbright - 1.7).abs() < f32::EPSILON,
+            "expected the calibrated 1.7 default, got {}",
+            cli.overbright
+        );
     }
 
     /// A caller can still opt back into the engine's raw, unmultiplied
@@ -938,7 +942,11 @@ mod tests {
     #[test]
     fn an_explicit_overbright_of_1_0_still_yields_the_raw_ramp() {
         let cli = Cli::parse_from(["open-half-life", "--overbright", "1.0", "--play"]);
-        assert_eq!(cli.overbright, 1.0);
+        assert!(
+            (cli.overbright - 1.0).abs() < f32::EPSILON,
+            "expected the raw 1.0 ramp, got {}",
+            cli.overbright
+        );
     }
 
     #[test]
