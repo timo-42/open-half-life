@@ -2373,6 +2373,30 @@ cross-compilation.
   without firing its target). See `docs/FORMAT_SOURCES.md`, "Camera
   sequences", for sources and every `TODO(black-box)` item.
 
+- **M7.13: trigger_changelevel fires on touch.** Fixes a gap where the
+  dedicated `trigger_changelevel` arm in `Registry::build` ran ahead of the
+  generic `trigger_*` arm and never attached the touch-capable `Trigger`
+  component the way every other `trigger_*` does, so only `use`/being
+  targeted could ever reach a level-transition volume, not the player's own
+  movement (unlike `trigger_once`/`trigger_multiple`, fixed for touch
+  earlier by `Simulation::touch_triggers`). `Registry::build` now also
+  attaches `Trigger` to a `trigger_changelevel`, unless its published "USE
+  Only" spawnflag (`SPAWNFLAG_CHANGELEVEL_USE_ONLY`, bit `2`) is set, in
+  which case it stays `use`-only exactly as before.
+  `Simulation::touch_changelevel_triggers` fires the `Event::LevelChange` on
+  a rising overlap edge rather than every overlapping frame a continuously
+  touched volume produces, and (conservatively, since no public source
+  states the destination-map-arrival case either way) never fires on a
+  volume's first observation even if already overlapping, so a freshly
+  loaded map's own return trigger requires leaving and re-entering before
+  it can fire. Covered by `ohl-game` unit tests (touch fires once per
+  entrance and not again while still overlapping; "USE Only" ignores touch
+  but still responds to `use`) and an `ohl-engine` integration test driving
+  a scripted walk into a synthetic `trigger_changelevel` volume, asserting
+  exactly one `GameEvent::LevelChange` and a real `Game::change_level`
+  transition. See `docs/FORMAT_SOURCES.md`, "Entity keyvalues and map
+  logic", for the source and the exact `TODO(black-box)` wording.
+
 ## Status as of 2026-09-06
 
 This section is a snapshot, not a replacement for the package-by-package

@@ -1361,6 +1361,24 @@ named. `ohl-render` does not yet draw the resulting brush-model instances
   **`TODO(black-box)`**: the crouched hull is not threaded through to this
   call site yet, so a ducking player's touch test still uses the standing
   box.
+- [TWHL wiki: trigger_changelevel](https://twhl.info/wiki/page/trigger_changelevel)
+  (already cited above; consulted via a search-engine result summary of the
+  page, same 403 caveat): its "USE Only (2)" spawnflag reads "Entity can
+  only be triggered by another event", i.e. a `trigger_changelevel` fires
+  from the player's own bounding box touching its volume, the same as any
+  other `trigger_*`, *unless* that flag is set, in which case it only
+  responds to `use`/being targeted. `ohl_game::registry::Registry::build`'s
+  dedicated `trigger_changelevel` arm now also attaches a [`Trigger`]
+  component (gated on `SPAWNFLAG_CHANGELEVEL_USE_ONLY`), and
+  `Simulation::touch_changelevel_triggers` fires the
+  [`Event::LevelChange`] on a rising overlap edge rather than every
+  overlapping frame. **`TODO(black-box)`**: no public source states
+  whether the destination map's own return `trigger_changelevel` can fire
+  again on the very frame the player arrives already standing inside it;
+  this project's conservative reading (a volume's first observation never
+  fires by itself, so a fresh map load requires leaving and re-entering
+  before it can fire again) is recorded at the point of use in
+  `ohl_game::logic::Simulation::touch_changelevel_triggers`.
 
 ## Navigation
 

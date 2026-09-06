@@ -102,6 +102,11 @@ pub struct LevelChange {
 struct TriggerState {
     used: bool,
     cooldown: f32,
+    /// Whether a `trigger_changelevel`'s touch volume was overlapping the
+    /// player on the last check, per [`Simulation::touch_changelevel_triggers`];
+    /// `None` means "never checked yet" so the first observation can be
+    /// told apart from a genuine rising edge.
+    changelevel_touching: Option<bool>,
 }
 
 /// One scheduled event, as stored in a save file.
@@ -126,6 +131,9 @@ pub struct TriggerSnapshot {
     pub used: bool,
     /// Seconds left before the trigger may fire again.
     pub cooldown: f32,
+    /// A `trigger_changelevel`'s last-observed touch state, mirroring
+    /// [`TriggerState::changelevel_touching`].
+    pub changelevel_touching: Option<bool>,
 }
 
 /// A [`Simulation`]'s persistable bookkeeping: what is scheduled and which
@@ -190,7 +198,12 @@ impl Simulation {
     /// logic", touch triggers). `trigger_hurt` shares the same [`Trigger`]
     /// component but is excluded here: it is polled on its own radius-based
     /// path (`ohl-engine`'s player-systems phase) and firing its `target`
-    /// through this path too is unimplemented/out of scope.
+    /// through this path too is unimplemented/out of scope. `trigger_changelevel`
+    /// also shares the same component (when it is not "USE Only"; see
+    /// [`crate::registry::SPAWNFLAG_CHANGELEVEL_USE_ONLY`]) but is excluded
+    /// here too: it needs its own edge-triggered one-shot bookkeeping
+    /// rather than the plain-`Trigger` `used`/`cooldown` path, and is
+    /// handled by [`Self::touch_changelevel_triggers`] below.
     ///
     /// Entities are visited in ascending id order so which trigger fires
     /// first (when several volumes overlap on the same step) is
@@ -201,11 +214,13 @@ impl Simulation {
         player_mins: Vec3,
         player_maxs: Vec3,
         activator: Option<Entity>,
+        events: &mut Vec<Event>,
     ) {
         let mut touched: Vec<Entity> = registry
             .world
             .query::<(Entity, &Trigger, &BrushBounds)>()
             .without::<&TriggerHurt>()
+            .without::<&ChangeLevel>()
             .iter()
             .filter(|(_, _, bounds)| {
                 aabb_overlaps(player_mins, player_maxs, bounds.mins, bounds.maxs)
@@ -215,6 +230,59 @@ impl Simulation {
         touched.sort_unstable_by_key(|entity| entity.id());
         for entity in touched {
             self.activate_trigger(registry, entity, activator);
+        }
+        self.touch_changelevel_triggers(registry, player_mins, player_maxs, events);
+    }
+
+    /// Fires a `trigger_changelevel` (not "USE Only"; see
+    /// [`Self::touch_triggers`]'s doc comment) the moment the player's AABB
+    /// transitions from not overlapping to overlapping its volume — an
+    /// edge-triggered touch, unlike the plain [`Trigger`] path above, so a
+    /// player standing in the volume across many fixed steps (e.g. while
+    /// the destination map streams in) only ever produces one
+    /// [`Event::LevelChange`] for that entrance.
+    ///
+    /// TODO(black-box): no public source states whether the destination
+    /// map's own return `trigger_changelevel` can fire again on the very
+    /// frame the player arrives already standing inside it. This project
+    /// takes the conservative reading: the *first* observation of any
+    /// `trigger_changelevel` volume never fires by itself, even when
+    /// already overlapping, so a freshly loaded map requires the player to
+    /// leave and re-enter the volume before it can fire — see
+    /// `docs/FORMAT_SOURCES.md` ("Entity keyvalues and map logic").
+    fn touch_changelevel_triggers(
+        &mut self,
+        registry: &mut Registry,
+        player_mins: Vec3,
+        player_maxs: Vec3,
+        events: &mut Vec<Event>,
+    ) {
+        let mut candidates: Vec<(Entity, bool)> = registry
+            .world
+            .query::<(Entity, &Trigger, &ChangeLevel, &BrushBounds)>()
+            .iter()
+            .map(|(entity, _, _, bounds)| {
+                (
+                    entity,
+                    aabb_overlaps(player_mins, player_maxs, bounds.mins, bounds.maxs),
+                )
+            })
+            .collect();
+        candidates.sort_unstable_by_key(|(entity, _)| entity.id());
+        for (entity, overlapping) in candidates {
+            let state = self.trigger_state.entry(entity).or_default();
+            let previously_touching = state.changelevel_touching;
+            state.changelevel_touching = Some(overlapping);
+            let rising_edge = overlapping && previously_touching == Some(false);
+            if !rising_edge {
+                continue;
+            }
+            if let Ok(change) = registry.world.get::<&ChangeLevel>(entity) {
+                events.push(Event::LevelChange(LevelChange {
+                    map: change.map.clone(),
+                    landmark: change.landmark.clone(),
+                }));
+            }
         }
     }
 
@@ -401,6 +469,7 @@ impl Simulation {
                     entity: entity.to_bits().get(),
                     used: state.used,
                     cooldown: state.cooldown,
+                    changelevel_touching: state.changelevel_touching,
                 })
                 .collect(),
         }
@@ -429,6 +498,7 @@ impl Simulation {
                         TriggerState {
                             used: trigger.used,
                             cooldown: trigger.cooldown.max(0.0),
+                            changelevel_touching: trigger.changelevel_touching,
                         },
                     )
                 })
@@ -886,6 +956,7 @@ mod tests {
         let mut registry = Registry::build(&defs, &bounds, &Limits::default());
         let mut sim = Simulation::new();
         let door = registry.find("startdoor")[0];
+        let mut events = Vec::new();
 
         // The player's origin (a standing-hull-sized box) has not yet
         // reached the volume: no touch, door stays closed.
@@ -894,6 +965,7 @@ mod tests {
             Vec3::new(-16.0, -16.0, -36.0),
             Vec3::new(16.0, 16.0, 36.0),
             None,
+            &mut events,
         );
         sim.tick(&mut registry, 0.05);
         assert_eq!(
@@ -909,6 +981,7 @@ mod tests {
             Vec3::new(84.0, -16.0, -36.0),
             Vec3::new(116.0, 16.0, 36.0),
             None,
+            &mut events,
         );
         sim.tick(&mut registry, 0.05);
         assert_eq!(
@@ -943,16 +1016,131 @@ mod tests {
         let mut registry = Registry::build(&defs, &bounds, &Limits::default());
         let mut sim = Simulation::new();
         let door = registry.find("door1")[0];
+        let mut events = Vec::new();
         sim.touch_triggers(
             &mut registry,
             Vec3::new(0.0, 0.0, 0.0),
             Vec3::new(1.0, 1.0, 1.0),
             None,
+            &mut events,
         );
         sim.tick(&mut registry, 0.05);
         assert_eq!(
             registry.world.get::<&Door>(door).unwrap().state,
             MoverState::Closed
+        );
+    }
+
+    /// A plain (non-"USE Only") `trigger_changelevel` fires from the
+    /// player's own bounding box overlapping its volume, the same way a
+    /// `trigger_multiple` does — per the TWHL `trigger_changelevel` page
+    /// (see `docs/FORMAT_SOURCES.md`, "Entity keyvalues and map logic").
+    #[test]
+    fn trigger_changelevel_fires_on_touch() {
+        let entities = vec![raw(&[
+            ("classname", "trigger_changelevel"),
+            ("model", "*1"),
+            ("map", "next_map"),
+            ("landmark", "next_landmark"),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut bounds = BTreeMap::new();
+        bounds.insert(1u32, ([0.0, 0.0, 0.0], [64.0, 64.0, 64.0]));
+        let mut registry = Registry::build(&defs, &bounds, &Limits::default());
+        let mut sim = Simulation::new();
+
+        // Not yet overlapping: the volume has never been observed, so per
+        // this project's conservative reading it must not fire even though
+        // this frame is the first check.
+        let mut events = Vec::new();
+        sim.touch_triggers(
+            &mut registry,
+            Vec3::new(200.0, 200.0, 200.0),
+            Vec3::new(210.0, 210.0, 210.0),
+            None,
+            &mut events,
+        );
+        assert!(events.is_empty());
+
+        // Walks into the volume: a genuine rising edge, so it fires.
+        sim.touch_triggers(
+            &mut registry,
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 1.0, 1.0),
+            None,
+            &mut events,
+        );
+        assert_eq!(
+            events,
+            vec![Event::LevelChange(LevelChange {
+                map: "next_map".to_string(),
+                landmark: "next_landmark".to_string(),
+            })]
+        );
+
+        // Still overlapping on the next check: must not fire again.
+        events.clear();
+        sim.touch_triggers(
+            &mut registry,
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 1.0, 1.0),
+            None,
+            &mut events,
+        );
+        assert!(events.is_empty());
+    }
+
+    /// The published "USE Only" spawnflag (`2`) on `trigger_changelevel`:
+    /// per the TWHL wiki page, "Entity can only be triggered by another
+    /// event", so a player merely touching the volume must not fire it
+    /// (only `Simulation::use_entity`/being targeted may).
+    #[test]
+    fn trigger_changelevel_use_only_ignores_touch() {
+        let entities = vec![raw(&[
+            ("classname", "trigger_changelevel"),
+            ("model", "*1"),
+            ("map", "next_map"),
+            ("landmark", "next_landmark"),
+            ("spawnflags", "2"),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut bounds = BTreeMap::new();
+        bounds.insert(1u32, ([0.0, 0.0, 0.0], [64.0, 64.0, 64.0]));
+        let mut registry = Registry::build(&defs, &bounds, &Limits::default());
+        let mut sim = Simulation::new();
+        let entity = registry
+            .world
+            .query::<(Entity, &ChangeLevel)>()
+            .iter()
+            .next()
+            .expect("the fixture declares one trigger_changelevel")
+            .0;
+
+        let mut events = Vec::new();
+        sim.touch_triggers(
+            &mut registry,
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 1.0, 1.0),
+            None,
+            &mut events,
+        );
+        sim.touch_triggers(
+            &mut registry,
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 1.0, 1.0),
+            None,
+            &mut events,
+        );
+        assert!(events.is_empty(), "\"USE Only\" must never fire from touch");
+
+        // `use` still works.
+        sim.use_entity(&mut registry, entity, None, &mut events);
+        assert_eq!(
+            events,
+            vec![Event::LevelChange(LevelChange {
+                map: "next_map".to_string(),
+                landmark: "next_landmark".to_string(),
+            })]
         );
     }
 }
