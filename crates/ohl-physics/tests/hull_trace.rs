@@ -4,7 +4,9 @@ use ohl_formats::bsp30::{Bsp, Limits};
 use ohl_formats::test_support::{
     Bsp30Builder, build_brush_entity_floor_bsp, build_collision_room_bsp, build_collision_slope_bsp,
 };
-use ohl_physics::{CollisionModel, Hull, Trace, Vec3, contents, point_contents, trace_hull};
+use ohl_physics::{
+    CollisionModel, Hull, MAX_ATTACHED_BRUSHES, Trace, Vec3, contents, point_contents, trace_hull,
+};
 
 fn model_from(bytes: &[u8]) -> CollisionModel {
     let limits = Limits::default();
@@ -376,4 +378,106 @@ fn attaching_the_worldspawn_model_or_a_missing_one_is_rejected() {
             .is_err()
     );
     assert_eq!(model.brush_count(), 0);
+}
+
+#[test]
+fn detaching_a_brush_lets_the_fall_pass_through_again() {
+    let bytes = build_brush_entity_floor_bsp("func_wall");
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+    let mut model = CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable hulls");
+    let brush = model
+        .attach_brush(&bsp, &limits, 1, Vec3::ZERO)
+        .expect("the fixture declares submodel 1");
+    assert_eq!(model.brush_count(), 1);
+
+    // A despawned solid brush entity (e.g. removed by a scripted
+    // `killtarget`) must stop blocking the player, exactly like this.
+    model.detach_brush(brush);
+    assert_eq!(
+        model.brush_count(),
+        0,
+        "a detached brush must not count as an attached collision brush"
+    );
+
+    let trace = model.trace(
+        Hull::Standing,
+        Vec3::new(0.0, 0.0, 100.0),
+        Vec3::new(0.0, 0.0, -100.0),
+    );
+    assert!(
+        (trace.fraction - 1.0).abs() < f32::EPSILON,
+        "a detached brush still blocked the fall"
+    );
+    assert!(!contents::is_solid(point_contents(
+        &model,
+        Vec3::new(0.0, 0.0, -8.0)
+    )));
+}
+
+#[test]
+fn brush_count_excludes_a_submodel_that_was_always_bare_contents() {
+    // A submodel whose four heads are already bare contents values (no
+    // plane, no tree) at attach time — the compiled equivalent of an
+    // entity with no actual brush geometry — bounds no volume and so is
+    // not a "brush" `brush_count` should describe, the same way a brush
+    // `detach_brush` has reduced to that state is not.
+    let mut builder = Bsp30Builder::new();
+    builder.set_entities_text("{\n\"classname\" \"worldspawn\"\n}\n");
+    let world_heads = builder.push_collision_hulls(&[]);
+    let bare_heads = builder.push_collision_hulls(&[]);
+    builder.push_model([-64.0; 3], [64.0; 3], [0.0; 3], world_heads, 1, 0, 0);
+    builder.push_model([0.0; 3], [0.0; 3], [0.0; 3], bare_heads, 1, 0, 0);
+    let bytes = builder.build();
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+    let mut model = CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable hulls");
+
+    model
+        .attach_brush(&bsp, &limits, 1, Vec3::ZERO)
+        .expect("the fixture declares submodel 1");
+    assert_eq!(
+        model.brush_count(),
+        0,
+        "a bare-contents submodel is not a real collision brush"
+    );
+}
+
+#[test]
+fn attach_brush_refuses_past_the_documented_cap() {
+    let bytes = build_brush_entity_floor_bsp("func_wall");
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+    let mut model = CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable hulls");
+
+    for _ in 0..MAX_ATTACHED_BRUSHES {
+        model
+            .attach_brush(&bsp, &limits, 1, Vec3::ZERO)
+            .expect("under the documented cap");
+    }
+    assert_eq!(model.brush_count(), MAX_ATTACHED_BRUSHES);
+    assert!(
+        model.attach_brush(&bsp, &limits, 1, Vec3::ZERO).is_err(),
+        "the cap was not enforced"
+    );
+    assert_eq!(model.brush_count(), MAX_ATTACHED_BRUSHES);
+}
+
+#[test]
+fn a_fall_that_never_reaches_a_far_off_brush_is_unaffected_by_the_broad_phase() {
+    // A regression pin for the broad phase specifically: `brush_floor`'s
+    // slab sits within +/-128 on X and Y, so a fall well outside that (and
+    // outside the hull's own width) must never consult its tree at all,
+    // and must report exactly the same miss as it did before the broad
+    // phase existed (see `a_fall_beside_the_slab_still_passes_through`).
+    let model = brush_floor();
+    let trace = model.trace(
+        Hull::Large,
+        Vec3::new(10_000.0, 10_000.0, 100.0),
+        Vec3::new(10_064.0, 10_064.0, -100.0),
+    );
+    assert!(
+        (trace.fraction - 1.0).abs() < f32::EPSILON,
+        "a segment nowhere near the slab was blocked"
+    );
 }

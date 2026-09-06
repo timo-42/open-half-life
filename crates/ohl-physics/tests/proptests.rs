@@ -2,10 +2,10 @@
 //! must terminate, stay finite, and honour its documented invariants.
 
 use ohl_formats::bsp30::{Bsp, Limits};
-use ohl_formats::test_support::build_collision_room_bsp;
+use ohl_formats::test_support::{build_brush_entity_floor_bsp, build_collision_room_bsp};
 use ohl_physics::controller::TICK_SECONDS;
 use ohl_physics::{
-    CollisionModel, MoveConfig, MoveInput, PlayerState, Vec3, player_move, trace_hull,
+    CollisionModel, Hull, MoveConfig, MoveInput, PlayerState, Vec3, player_move, trace_hull,
 };
 use proptest::prelude::*;
 
@@ -14,6 +14,26 @@ fn room() -> CollisionModel {
     let limits = Limits::default();
     let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
     CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable collision hulls")
+}
+
+/// [`build_brush_entity_floor_bsp`]'s slab, attached as a solid brush
+/// entity, alongside the same model with that brush's broad-phase bounds
+/// widened to cover the whole coordinate space (see
+/// [`CollisionModel::widen_brush_bounds_for_test`]). The two differ only in
+/// whether `trace`/`contents_at`'s broad phase ever gets a chance to skip
+/// this brush's tree walk; comparing them is exactly how the broad phase's
+/// central claim — "skipping never changes the answer" — gets checked.
+fn brush_with_and_without_broad_phase() -> (CollisionModel, CollisionModel) {
+    let bytes = build_brush_entity_floor_bsp("func_wall");
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+    let mut narrow = CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable hulls");
+    let brush = narrow
+        .attach_brush(&bsp, &limits, 1, Vec3::ZERO)
+        .expect("the fixture declares submodel 1");
+    let mut wide = narrow.clone();
+    wide.widen_brush_bounds_for_test(brush);
+    (narrow, wide)
 }
 
 prop_compose! {
@@ -113,5 +133,27 @@ proptest! {
         // inside solid: movement never pushes the player into geometry.
         let trace = model.trace(state.hull(), state.origin, state.origin);
         prop_assert!(!trace.start_solid, "ended inside solid at {:?}", state.origin);
+    }
+
+    #[test]
+    fn the_broad_phase_never_changes_a_trace(
+        start in any_point(),
+        end in any_point(),
+        hull_index in 0usize..4,
+    ) {
+        let (narrow, wide) = brush_with_and_without_broad_phase();
+        let with_broad_phase = trace_hull(&narrow, hull_index, start, end);
+        let without_broad_phase = trace_hull(&wide, hull_index, start, end);
+        prop_assert_eq!(with_broad_phase, without_broad_phase);
+    }
+
+    #[test]
+    fn the_broad_phase_never_changes_a_contents_query(
+        point in any_point(),
+        hull_index in 0usize..4,
+    ) {
+        let (narrow, wide) = brush_with_and_without_broad_phase();
+        let hull = Hull::from_index(hull_index).expect("0..4 is always a valid hull index");
+        prop_assert_eq!(narrow.contents_at(hull, point), wide.contents_at(hull, point));
     }
 }

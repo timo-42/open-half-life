@@ -3,7 +3,10 @@
 //!
 //! No bytes here come from any game installation; see `docs/CLEAN_ROOM.md`.
 
-use ohl_formats::test_support::{Bsp30Builder, CollisionBrush, collision_room_brushes};
+use ohl_formats::test_support::{
+    BRUSH_FLOOR_HALF_EXTENT, BRUSH_FLOOR_TOP_Z, Bsp30Builder, CollisionBrush,
+    collision_room_brushes,
+};
 
 /// One quad in the fixture: its four corners in winding order, and the
 /// texture slot it draws with.
@@ -671,4 +674,35 @@ pub fn use_input() -> crate::Input {
         use_pressed: true,
         ..crate::Input::default()
     }
+}
+
+/// [`ohl_formats::test_support::build_brush_entity_floor_bsp`]'s geometry —
+/// a void worldspawn model and, on submodel 1, a floor slab of the kind a
+/// mapper builds as a brush entity — with a caller-authored entity block
+/// instead of that helper's fixed one, so a test can add e.g. a monster and
+/// a `scripted_sequence` whose `killtarget` names the floor. Reproduces the
+/// same "brush entity is the only floor" shape `brush_entity_collision.rs`
+/// tests, plus whatever map logic `entities` adds.
+#[must_use]
+pub fn killable_brush_floor_bsp(entities: &str) -> Vec<u8> {
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(entities);
+    // Submodel 0: no solids at all, exactly like
+    // `build_brush_entity_floor_bsp`'s void world.
+    let world_heads = b.push_collision_hulls(&[]);
+    // Submodel 1: the floor slab, 16 units thick under `BRUSH_FLOOR_TOP_Z`.
+    let slab_mins = [
+        -BRUSH_FLOOR_HALF_EXTENT,
+        -BRUSH_FLOOR_HALF_EXTENT,
+        BRUSH_FLOOR_TOP_Z - 16.0,
+    ];
+    let slab_maxs = [
+        BRUSH_FLOOR_HALF_EXTENT,
+        BRUSH_FLOOR_HALF_EXTENT,
+        BRUSH_FLOOR_TOP_Z,
+    ];
+    let slab_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(slab_mins, slab_maxs)]);
+    b.push_model([-4096.0; 3], [4096.0; 3], [0.0; 3], world_heads, 2, 0, 0);
+    b.push_model(slab_mins, slab_maxs, [0.0; 3], slab_heads, 2, 0, 0);
+    b.build()
 }

@@ -453,28 +453,40 @@ impl Level {
     /// Call once per simulation step *before* the player moves, so a door
     /// or train blocks (and carries) at the position it is drawn at rather
     /// than at the position it was compiled at.
+    ///
+    /// An entry whose entity has since despawned (a `func_wall` removed by
+    /// a scripted `killtarget`, for example — see `ai.rs`'s
+    /// `finish_script_step`) is detached from the collision model instead
+    /// of skipped: without that, a brush the map logic removed keeps
+    /// blocking the player forever, since the collision model has no other
+    /// way to learn an attached brush is gone. The stale entry is then
+    /// dropped from `brush_collision` so later calls do not pay to look it
+    /// up again. This is a single pass over `brush_collision` with no
+    /// per-call allocation: each entry already names its own `BrushId`
+    /// (recorded once, at attach time), so there is no per-step name or
+    /// entity search to do.
     pub fn sync_brush_collision(&mut self) {
         if self.brush_collision.is_empty() {
             return;
         }
-        let instances = ohl_game::brush::solid_model_instances(&self.registry);
-        let offsets: Vec<(Entity, Vec3)> = instances
-            .iter()
-            .map(|instance| {
-                (
-                    instance.entity,
-                    instance.origin + crate::render::brush_offset(self, instance),
-                )
-            })
-            .collect();
-        let Some(model) = self.collision.as_mut() else {
+        let Self {
+            registry,
+            collision,
+            brush_collision,
+            ..
+        } = self;
+        let Some(model) = collision.as_mut() else {
             return;
         };
-        for (entity, brush) in &self.brush_collision {
-            if let Some((_, origin)) = offsets.iter().find(|(other, _)| other == entity) {
-                model.set_brush_origin(*brush, *origin);
-            }
-        }
+        brush_collision.retain(|(entity, brush)| {
+            let Ok(transform) = registry.world.get::<&Transform>(*entity) else {
+                model.detach_brush(*brush);
+                return false;
+            };
+            let offset = crate::render::brush_offset(registry, *entity);
+            model.set_brush_origin(*brush, transform.origin + offset);
+            true
+        });
     }
 
     /// The world-space origin of the landmark named `landmark`, when this

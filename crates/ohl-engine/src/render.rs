@@ -337,8 +337,9 @@ impl Renderers {
             let Some(model) = level.submodels.get(&instance.model_index) else {
                 continue;
             };
-            let (train_offset, yaw_override) = track_train_transform(level, &instance);
-            let offset = door_offset(level, &instance) + train_offset;
+            let (train_offset, yaw_override) =
+                track_train_transform(&level.registry, instance.entity);
+            let offset = door_offset(&level.registry, instance.entity) + train_offset;
             let origin = instance.origin + offset;
             let yaw = yaw_override.unwrap_or(instance.angles.y);
             self.world.draw_world_submodel(
@@ -391,17 +392,13 @@ fn ambient_at(level: &Level, origin: [f32; 3]) -> [f32; 3] {
 /// model away from the track. See `docs/CLEAN_ROOM.md`-governed
 /// `.plan/fidelity-round-2.md` finding E1.
 pub(crate) fn track_train_transform(
-    level: &Level,
-    instance: &ohl_game::ModelInstance,
+    registry: &ohl_game::Registry,
+    entity: Entity,
 ) -> (Vec3, Option<f32>) {
-    let Ok(state) = level
-        .registry
-        .world
-        .get::<&TrackTrainState>(instance.entity)
-    else {
+    let Ok(state) = registry.world.get::<&TrackTrainState>(entity) else {
         return (Vec3::ZERO, None);
     };
-    let Ok(train) = level.registry.world.get::<&TrackTrain>(instance.entity) else {
+    let Ok(train) = registry.world.get::<&TrackTrain>(entity) else {
         return (Vec3::ZERO, None);
     };
     (
@@ -417,8 +414,8 @@ pub(crate) fn track_train_transform(
 /// transform, so the visual offset is derived here: the timer counts the
 /// remaining travel, which maps onto a `0..=1` fraction of the door's own
 /// `travel_distance`.
-pub(crate) fn door_offset(level: &Level, instance: &ohl_game::ModelInstance) -> Vec3 {
-    let Ok(door) = level.registry.world.get::<&Door>(instance.entity) else {
+pub(crate) fn door_offset(registry: &ohl_game::Registry, entity: Entity) -> Vec3 {
+    let Ok(door) = registry.world.get::<&Door>(entity) else {
         return Vec3::ZERO;
     };
     let travel_seconds = if door.speed > 0.0 {
@@ -447,8 +444,8 @@ pub(crate) fn door_offset(level: &Level, instance: &ohl_game::ModelInstance) -> 
 /// The same value the renderer offsets the submodel by, so the brush the
 /// player collides with is exactly the brush that is drawn: a door caught
 /// mid-slide blocks where it looks like it is, not where it was authored.
-pub(crate) fn brush_offset(level: &Level, instance: &ohl_game::ModelInstance) -> Vec3 {
-    door_offset(level, instance) + track_train_transform(level, instance).0
+pub(crate) fn brush_offset(registry: &ohl_game::Registry, entity: Entity) -> Vec3 {
+    door_offset(registry, entity) + track_train_transform(registry, entity).0
 }
 
 /// Maps `ohl-game`'s raw `rendermode`/`renderamt`/`rendercolor` keyvalues
