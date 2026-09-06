@@ -15,7 +15,9 @@
 //! arbitrary (and bounded), so the fuzzer's coverage feedback concentrates
 //! on the restore path this package added rather than rediscovering
 //! `sections_fuzz`'s own truncation/corruption coverage of the pre-existing
-//! sections.
+//! sections. A successful load also ticks the reloaded `Game` a few steps,
+//! cheaply exercising the simulation phases against whatever state
+//! `restore()` actually built, not just the restore call itself.
 
 #![no_main]
 
@@ -96,11 +98,17 @@ fuzz_target!(|input: FuzzInput| {
         return;
     }
 
-    // The five sections this package added, with arbitrary (bounded) bytes:
-    // most inputs fail to decode as the documented DTO and are read back as
-    // the section's own default (missing/corrupt is handled by
-    // `GameSave::from_bytes` itself), but coverage feedback finds the ones
-    // that do decode, which is what actually exercises `restore()`'s logic.
+    // The five sections this package added, with arbitrary (bounded) bytes.
+    // Most inputs fail to decode as the documented DTO: `GameSave::
+    // from_bytes` (via `crate::save::optional_section`) then reports the
+    // whole read as `EngineError::SaveUnreadable` rather than substituting a
+    // default — a section present but corrupt fails the load closed, the
+    // same as every other section; only a section absent from the
+    // container entirely reads back as `None`/a default, which none of
+    // these five ever are here (each is always written, just with
+    // arbitrary bytes). Coverage feedback still finds the inputs that *do*
+    // decode as the documented DTO, which is what actually exercises
+    // `restore()`'s own logic on adversarial-but-well-typed values.
     for (tag, raw) in [
         (SECTION_INVENTORY, &input.inventory),
         (SECTION_ENTITY_COMBAT, &input.entity_combat),
@@ -116,5 +124,16 @@ fuzz_target!(|input: FuzzInput| {
         return;
     };
 
-    let _ = Game::load_bytes(&assets, &container);
+    let Ok(mut reloaded) = Game::load_bytes(&assets, &container) else {
+        return;
+    };
+    // Cheaply exercises ticking a state `restore()` actually built (not
+    // just the restore call itself): a handful of steps is enough to run
+    // every phase at least once against whatever the arbitrary sections
+    // left in the AI/projectile/inventory state, at negligible cost per
+    // input.
+    let tick_input = ohl_engine::Input::default();
+    for _ in 0..4 {
+        reloaded.tick(ohl_engine::TICK_SECONDS, &tick_input);
+    }
 });

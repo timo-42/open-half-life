@@ -260,3 +260,59 @@ fn ai_state_hash_matches_across_a_save_load_boundary() {
         "continuing a scripted run after a save/load must reproduce the same AI state"
     );
 }
+
+/// A restored route cursor at exactly the waypoint count is `Route`'s own
+/// valid "finished" state (`ohl_ai::movement::Route::is_finished`), not an
+/// out-of-range value: a fixed regression for a clamp that used to rewind
+/// it to `len - 1`, un-finishing a completed route on every load and
+/// breaking the save -> load -> save byte identity.
+#[test]
+fn a_finished_route_cursor_survives_a_save_load_boundary() {
+    let mut game = game();
+    game.tick(TICK_SECONDS, &Input::default());
+
+    let monster = *monster_entities(&game)
+        .first()
+        .expect("the fixture places exactly one monster");
+    let index = game
+        .registry()
+        .entities
+        .iter()
+        .position(|entity| *entity == monster)
+        .expect("the monster is a registry entity");
+
+    let mut save = game.to_save(1_700_000_000);
+    let ai = save
+        .ai
+        .as_mut()
+        .expect("SECTION_AI is always populated by this build")
+        .get_mut(index)
+        .expect("the monster's own slot")
+        .as_mut()
+        .expect("a thinking monster always has an AiSnapshot");
+    // Two waypoints, cursor at `2`: the route has just finished, one step
+    // past its last waypoint.
+    ai.route_waypoints = vec![[0.0, 0.0, 0.0], [64.0, 0.0, 0.0]];
+    ai.route_current = 2;
+
+    let first = save.to_bytes().expect("the edited save still encodes");
+    let reloaded = Game::load_bytes(&game_assets(), &first).expect("it reads back");
+    let second = reloaded
+        .save_bytes(1_700_000_000)
+        .expect("the reloaded game saves again");
+    assert_eq!(
+        first, second,
+        "a finished route's cursor must round-trip exactly, not rewind"
+    );
+
+    let restored_ai = reloaded
+        .registry()
+        .world
+        .get::<&ohl_ai::MonsterAi>(monster)
+        .expect("the monster still carries a MonsterAi");
+    assert_eq!(restored_ai.route.current, 2);
+    assert!(
+        restored_ai.route.is_finished(),
+        "the route must still report finished after the load"
+    );
+}
