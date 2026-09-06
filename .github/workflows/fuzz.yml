@@ -32,8 +32,12 @@ jobs:
     # Discovered dynamically below: every `crates/*/fuzz` directory, every
     # target inside it, 30s each, up to 4 running concurrently via `xargs
     # -P4`. Bump this if a new fuzz crate or target pushes the total past
-    # the current handful of minutes of headroom.
-    timeout-minutes: 15
+    # the current handful of minutes of headroom. Raised from 15 to 25 for
+    # M9.1: the total is now 19 targets across seven fuzz crates, and the
+    # `ohl-engine` and `ohl-app` fuzz packages each compile the full
+    # renderer/window dependency chain in their own release target
+    # directory before their first target can run.
+    timeout-minutes: 25
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

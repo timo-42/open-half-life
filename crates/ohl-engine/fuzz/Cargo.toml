@@ -1,17 +1,17 @@
-# Standalone fuzzing package for `ohl-save`.
+# Standalone fuzzing package for `ohl-engine`'s `GameSave` decoder.
 #
 # Deliberately excluded from the main workspace: `cargo fuzz` needs a nightly
 # toolchain and a `libfuzzer-sys` dependency the pinned stable build must not
 # acquire. Run explicitly:
 #
-#     cargo +nightly fuzz run open_fuzz
-#     cargo +nightly fuzz run roundtrip_fuzz
+#     cargo +nightly fuzz run decode_fuzz
+#     cargo +nightly fuzz run sections_fuzz
 
 [workspace]
 members = ["."]
 
 [package]
-name = "ohl-save-fuzz"
+name = "ohl-engine-fuzz"
 version = "0.0.0"
 edition = "2024"
 license = "MIT"
@@ -27,19 +27,22 @@ libfuzzer-sys = "0.4"
 # it is pinned again here).
 arbitrary = { version = "=1.4.2", features = ["derive"] }
 
-[dependencies.ohl-save]
+[dependencies.ohl-engine]
 path = ".."
 
+[dependencies.ohl-save]
+path = "../../ohl-save"
+
 [[bin]]
-name = "open_fuzz"
-path = "fuzz_targets/open_fuzz.rs"
+name = "decode_fuzz"
+path = "fuzz_targets/decode_fuzz.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "roundtrip_fuzz"
-path = "fuzz_targets/roundtrip_fuzz.rs"
+name = "sections_fuzz"
+path = "fuzz_targets/sections_fuzz.rs"
 test = false
 doc = false
 bench = false

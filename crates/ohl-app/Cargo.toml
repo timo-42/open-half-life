@@ -7,6 +7,12 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+# Only re-exports `script` (see `src/lib.rs`) so `fuzz/` can reach it without
+# duplicating the source; the shipped binary below does not use this target.
+name = "ohl_app"
+path = "src/lib.rs"
+
 [[bin]]
 name = "open-half-life"
 path = "src/main.rs"
