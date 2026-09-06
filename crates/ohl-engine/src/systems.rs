@@ -30,10 +30,10 @@ use ohl_game::{Event, find_usable_within};
 use ohl_physics::{ControllerInput, PlayerController};
 use ohl_render::{FreeFlyCamera, MoveInput};
 
+use crate::USE_RADIUS;
 use crate::components::StudioAnim;
 use crate::input::Input;
 use crate::level::Level;
-use crate::USE_RADIUS;
 
 /// The project's default random seed.
 ///
@@ -62,6 +62,8 @@ impl Default for SystemsConfig {
 /// Held axes apply to every step of the frame; edges (a press, not a hold)
 /// apply to the first step only, so a single press cannot fire a phase ten
 /// times in one long frame.
+// As `Input`: independent buttons, latched.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct LatchedInput {
     pub(crate) forward: i8,
@@ -327,15 +329,4 @@ impl Default for Systems {
     fn default() -> Self {
         Self::new(SystemsConfig::default())
     }
-}
-
-/// Whether `level` has exactly one entity carrying [`PlayerTag`], which
-/// every phase above assumes.
-#[cfg(test)]
-pub(crate) fn player_tag_count(level: &Level) -> usize {
-    let mut query = level
-        .registry
-        .world
-        .query::<&crate::components::PlayerTag>();
-    (&mut query).into_iter().count()
 }
