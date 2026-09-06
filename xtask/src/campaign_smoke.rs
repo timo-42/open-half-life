@@ -22,6 +22,14 @@
 //! width/height and non-background pixel fraction are used only to decide
 //! its `blank-capture` classification; neither the pixel counts nor the
 //! dimensions themselves are ever written to the summary or stdout.
+//!
+//! Default `--jobs` policy: each worker drives its own offscreen software
+//! (lavapipe) renderer, and those renderers self-contend for the same CPU
+//! cores when run one-per-hardware-thread. Measured on a 16-thread host,
+//! the naive default (one worker per `available_parallelism` thread) timed
+//! out 26 of 93 maps that all pass when run serially. [`default_job_count`]
+//! instead defaults to a quarter of the host's parallelism, clamped to
+//! `[1, 4]`; `--jobs` still overrides it explicitly.
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -51,7 +59,14 @@ struct Args {
     #[arg(long, default_value_t = 8)]
     frames: u32,
 
-    /// Bounded parallelism; defaults to the host's available parallelism.
+    /// Bounded parallelism. Defaults to a quarter of the host's available
+    /// parallelism (minimum 1, maximum 4), not the full parallelism count:
+    /// each worker drives an offscreen software (lavapipe) renderer, and
+    /// running one worker per hardware thread makes those renderers
+    /// self-contend for the same CPU cores badly enough to blow past the
+    /// per-map `--timeout` (observed: 26/93 maps timed out at 16 workers on
+    /// a 16-thread host vs. 0/93 run serially). Pass `--jobs` explicitly to
+    /// override.
     #[arg(long)]
     jobs: Option<usize>,
 
@@ -181,6 +196,21 @@ fn classify(outcome: &RunOutcome) -> Category {
         }
         None => Category::Crash,
     }
+}
+
+/// The default `--jobs` worker count for a host reporting `available`
+/// hardware threads (`std::thread::available_parallelism`).
+///
+/// Each worker drives its own offscreen software (lavapipe) renderer;
+/// running one worker per hardware thread makes those renderers
+/// self-contend for the same CPU cores badly enough to blow past the
+/// per-map `--timeout` (measured: 26/93 maps timed out at 16 workers on a
+/// 16-thread host, versus 0/93 run serially). Defaulting to a quarter of
+/// the host's parallelism, clamped to `[1, 4]`, keeps the default run
+/// parallel without that self-contention; `--jobs` still overrides this
+/// explicitly.
+fn default_job_count(available: usize) -> usize {
+    (available / 4).clamp(1, 4)
 }
 
 /// One job: a map to capture, tagged with the chapter it belongs to.
@@ -600,9 +630,9 @@ pub fn run(root: &Path, raw_args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let workers = args
-        .jobs
-        .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, std::num::NonZero::get));
+    let workers = args.jobs.unwrap_or_else(|| {
+        default_job_count(std::thread::available_parallelism().map_or(1, std::num::NonZero::get))
+    });
     let timeout = Duration::from_secs(args.timeout);
 
     let jobs = all_jobs();
@@ -654,6 +684,24 @@ mod tests {
             exit_code,
             last_error_line: last_error_line.map(ToString::to_string),
         }
+    }
+
+    #[test]
+    fn default_job_count_is_a_quarter_of_parallelism_clamped_to_one_and_four() {
+        // Below the point where a quarter is at least 1, the floor wins.
+        assert_eq!(default_job_count(0), 1);
+        assert_eq!(default_job_count(1), 1);
+        assert_eq!(default_job_count(3), 1);
+        // A quarter, once it clears 1.
+        assert_eq!(default_job_count(4), 1);
+        assert_eq!(default_job_count(8), 2);
+        assert_eq!(default_job_count(12), 3);
+        // The 16-thread host this default was tuned against: 26/93 maps
+        // timed out at 16 workers, 0/93 at 4.
+        assert_eq!(default_job_count(16), 4);
+        // Above the point where a quarter exceeds 4, the ceiling wins.
+        assert_eq!(default_job_count(32), 4);
+        assert_eq!(default_job_count(128), 4);
     }
 
     #[test]

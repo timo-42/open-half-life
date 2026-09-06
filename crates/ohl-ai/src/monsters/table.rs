@@ -271,7 +271,8 @@ pub enum MonsterKind {
     Zombie,
     /// `monster_houndeye`.
     Houndeye,
-    /// `monster_bullsquid`.
+    /// `monster_bullsquid` (also spawned by the published alias
+    /// `monster_bullchicken`; see [`Self::from_classname`]).
     Bullsquid,
     /// `monster_alien_slave`.
     AlienSlave,
@@ -330,13 +331,22 @@ impl MonsterKind {
 
     /// The kind for a map entity's `classname`, or [`Self::Unknown`] when it
     /// is not one of the sixteen this table defines.
+    ///
+    /// `monster_bullchicken` is accepted as an alias for [`Self::Bullsquid`]:
+    /// TWHL's "Reference: Entities and their models"
+    /// (<https://twhl.info/wiki/page/Reference:_Entities_and_their_models>;
+    /// see `docs/FORMAT_SOURCES.md`, "Monster definitions") lists this
+    /// monster's row under the classname `monster_bullchicken`, GoldSrc's
+    /// own internal name for the asset, rather than `monster_bullsquid`;
+    /// both classnames are accepted here so either published spelling
+    /// resolves to the same kind.
     #[must_use]
     pub fn from_classname(classname: &str) -> Self {
         match classname {
             "monster_headcrab" => Self::Headcrab,
             "monster_zombie" => Self::Zombie,
             "monster_houndeye" => Self::Houndeye,
-            "monster_bullsquid" => Self::Bullsquid,
+            "monster_bullsquid" | "monster_bullchicken" => Self::Bullsquid,
             "monster_alien_slave" => Self::AlienSlave,
             "monster_alien_grunt" => Self::AlienGrunt,
             "monster_human_grunt" => Self::HumanGrunt,
@@ -942,6 +952,23 @@ mod tests {
             matches!(kind, MonsterKind::Unknown(ref name) if name == "monster_totally_made_up")
         );
         assert!(spec_for(&kind).is_none());
+    }
+
+    #[test]
+    fn monster_bullchicken_is_an_alias_for_bullsquid() {
+        // TWHL's "Reference: Entities and their models" lists this
+        // monster's row under `monster_bullchicken` (GoldSrc's own
+        // internal asset name), not `monster_bullsquid`; both must
+        // resolve to the same kind. See docs/FORMAT_SOURCES.md, "Monster
+        // definitions".
+        assert_eq!(
+            MonsterKind::from_classname("monster_bullchicken"),
+            MonsterKind::Bullsquid
+        );
+        assert_eq!(
+            MonsterKind::from_classname("monster_bullsquid"),
+            MonsterKind::Bullsquid
+        );
     }
 
     #[test]

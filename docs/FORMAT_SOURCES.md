@@ -2291,6 +2291,28 @@ projectile speed are new `TODO(black-box)` placeholders, marked as such at
 each constant. `TriggerCondition`'s "heard the player" input has no
 counterpart in `ohl-ai`'s sound classification and is recorded as
 `TODO(black-box)` rather than guessed.
+
+- **`monster_bullchicken` classname alias** (`MonsterKind::from_classname`):
+  TWHL's "Reference: Entities and their models"
+  (<https://twhl.info/wiki/page/Reference:_Entities_and_their_models>), a
+  reference table built for `scripted_sequence` authors listing every
+  monster (and item) entity's classname, lists this monster's row under the
+  classname `monster_bullchicken` (reached via search-result snippets,
+  since `twhl.info` returns HTTP 403 to direct automated fetches from this
+  environment, the same limitation recorded elsewhere in this file),
+  GoldSrc's own internal classname for the asset, rather than
+  `monster_bullsquid`. `MonsterKind::from_classname` now accepts both
+  spellings as resolving to `MonsterKind::Bullsquid`; `monster_bullsquid`
+  remains accepted and `MonsterKind::Bullsquid::classname` is unchanged.
+  The same page's rows for the table's other fifteen defined kinds
+  (`monster_headcrab`, `monster_zombie`, `monster_houndeye`,
+  `monster_alien_slave`, `monster_alien_grunt`, `monster_human_grunt`,
+  `monster_barney`, `monster_scientist`, `monster_turret`,
+  `monster_miniturret`, `monster_sentry`, `monster_ichthyosaur`,
+  `monster_leech`, `monster_gargantua`, `monster_tentacle`) match the
+  classnames `from_classname` already accepted, so no further alias was
+  needed.
+
 ## Track trains and paths
 
 - [TWHL wiki: func_tracktrain](https://twhl.info/wiki/page/func_tracktrain),
