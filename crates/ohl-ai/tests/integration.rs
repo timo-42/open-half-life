@@ -382,6 +382,7 @@ fn the_visibility_pre_filter_never_hides_what_the_trace_would_see() {
         &WorldBuildOptions {
             wads: &wads,
             limits: Limits::default(),
+            ..Default::default()
         },
     )
     .expect("the fixture builds a world model");
