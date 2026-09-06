@@ -197,6 +197,55 @@ impl FiringState {
         self.clip = rounds.min(cap);
     }
 
+    /// A save-file summary of the internal state machine: a small fixed
+    /// discriminant (not [`FireState`] itself, which stays private so a save
+    /// format outlives this enum's shape) plus that state's own remaining
+    /// timer (`0.0` for a state with none). Additive, for
+    /// `.plan/m79-design.md` §6/§8 P4b's `SECTION_INVENTORY`.
+    ///
+    /// Tags: `0` idle, `1` firing, `2` reloading, `3` charging, `4` beam,
+    /// `5` holstered. [`Self::restore`] is the inverse.
+    #[must_use]
+    pub const fn state_tag_and_timer(&self) -> (u8, f32) {
+        match self.state {
+            FireState::Idle => (0, 0.0),
+            FireState::Firing { until } => (1, until),
+            FireState::Reloading { until } => (2, until),
+            FireState::Charging { since } => (3, since),
+            FireState::Beam => (4, 0.0),
+            FireState::Holstered => (5, 0.0),
+        }
+    }
+
+    /// Rebuilds a `FiringState` from [`Self::state_tag_and_timer`] plus the
+    /// clip it held. Additive, for save-file restore.
+    ///
+    /// An unrecognised tag (a future format this build predates) restores
+    /// `Idle`. A non-finite timer restores `0.0` rather than propagating a
+    /// corrupt float into a state machine that otherwise never sees one.
+    /// `elapsed`, `beam_accum` and the one-shot pending-damage fields are
+    /// not part of this summary (they are transient per-tick outputs
+    /// already drained by the time a save is taken) and always restore to
+    /// their fresh defaults, so a weapon captured mid-cycle resumes at the
+    /// start of that cycle's remaining timer rather than its exact
+    /// sub-tick accumulator.
+    #[must_use]
+    pub fn restore(spec: WeaponSpec, clip: u32, state_tag: u8, timer: f32) -> Self {
+        let timer = if timer.is_finite() { timer.max(0.0) } else { 0.0 };
+        let state = match state_tag {
+            1 => FireState::Firing { until: timer },
+            2 => FireState::Reloading { until: timer },
+            3 => FireState::Charging { since: timer },
+            4 => FireState::Beam,
+            5 => FireState::Holstered,
+            _ => FireState::Idle,
+        };
+        let mut restored = Self::new(spec);
+        restored.state = state;
+        restored.set_clip(clip);
+        restored
+    }
+
     /// Takes the damage a just-released gauss charge dealt, if any. `None`
     /// on every tick but the one the charged shot released on.
     pub fn take_charge_damage(&mut self) -> Option<f32> {

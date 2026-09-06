@@ -57,10 +57,11 @@ use ohl_ai::monsters::spec_for;
 use ohl_ai::monsters::table::Difficulty as AiDifficulty;
 use ohl_ai::scripts::{ScriptAction, ScriptHold, ScriptRunner, ScriptSense};
 use ohl_ai::{
-    Actor, AiEvent, AiEventKind, AiWorld, AttackKind, BrainId, Classification, Conditions,
-    CorpseDecision, DamageEvent, DamageQueue, DamageSink, MonsterAi, MonsterBrain, MonsterKind,
-    MonsterSpawn, MonsterSpawnRules, MonsterSpec, MonsterTrigger, SightContext, TriggerCondition,
-    TriggerContext, attach_monsters,
+    Activity, Actor, AiEvent, AiEventKind, AiWorld, AttackKind, BrainId, Classification,
+    Conditions, CorpseDecision, DamageEvent, DamageQueue, DamageSink, EnemyMemory, MonsterAi,
+    MonsterBrain, MonsterKind, MonsterSpawn, MonsterSpawnRules, MonsterSpec, MonsterState,
+    MonsterTrigger, Route, ScheduleRunner, SightContext, SquadTag, StuckDetector,
+    TriggerCondition, TriggerContext, attach_monsters,
 };
 use ohl_combat::{DamageType, HitboxIndex, HitboxLimits, TraceFilter, TraceMask};
 use ohl_game::hecs::Entity;
@@ -620,6 +621,129 @@ impl AiState {
     #[must_use]
     pub fn state_hash(&self, level: &Level) -> [u8; 32] {
         self.world.state_hash(&level.registry.world)
+    }
+
+    /// Captures `entity`'s `SECTION_AI` (25) entry, or `None` when it
+    /// carries no [`MonsterAi`].
+    #[must_use]
+    pub(crate) fn snapshot_entity(
+        level: &Level,
+        entity: Entity,
+    ) -> Option<crate::save_state::AiSnapshot> {
+        let ai = level.registry.world.get::<&MonsterAi>(entity).ok()?;
+        let enemy = ai.memory.and_then(|memory| {
+            crate::save_state::spawn_index_of(level, memory.entity).map(|index| {
+                crate::save_state::EnemyMemorySnapshot {
+                    enemy: index,
+                    last_known_position: crate::save_state::vec3_array(
+                        memory.last_known_position,
+                    ),
+                    time_since_seen: memory.time_since_seen,
+                    occluded: memory.occluded,
+                    last_known_distance: memory.last_known_distance,
+                }
+            })
+        });
+        let squad = level
+            .registry
+            .world
+            .get::<&SquadTag>(entity)
+            .ok()
+            .map(|tag| crate::save_state::SquadSnapshot {
+                name: tag.name.clone(),
+                leader: tag.leader,
+            });
+        Some(crate::save_state::AiSnapshot {
+            state_tag: ai.state.tag(),
+            conditions: ai.conditions.bits(),
+            pending_conditions: ai.pending_conditions.bits(),
+            schedule_name: ai.runner.schedule_name().to_string(),
+            task_index: u32::try_from(ai.runner.task_index()).unwrap_or(u32::MAX),
+            schedule_started: ai.runner.started(),
+            schedule_timer: ai.runner.timer(),
+            enemy,
+            route_waypoints: ai
+                .route
+                .waypoints
+                .iter()
+                .map(|waypoint| crate::save_state::vec3_array(*waypoint))
+                .collect(),
+            route_current: u32::try_from(ai.route.current).unwrap_or(u32::MAX),
+            route_goal: crate::save_state::vec3_array(ai.route.goal),
+            move_target: ai.move_target.map(crate::save_state::vec3_array),
+            cover: ai.cover.map(crate::save_state::vec3_array),
+            activity_tag: ai.activity.tag(),
+            move_speed: ai.move_speed,
+            ideal_yaw: ai.ideal_yaw,
+            stuck_ticks: ai.stuck.ticks(),
+            squad,
+        })
+    }
+
+    /// Restores `entity`'s `SECTION_AI` (25) entry. A no-op when `entity`
+    /// carries no [`MonsterAi`] (the save named an entity this level no
+    /// longer spawns a monster at — the registry shape changed, or the
+    /// entry was `None` to begin with).
+    pub(crate) fn restore_entity(
+        level: &mut Level,
+        entity: Entity,
+        snapshot: &crate::save_state::AiSnapshot,
+    ) {
+        if level.registry.world.get::<&MonsterAi>(entity).is_err() {
+            return;
+        }
+        let enemy = snapshot.enemy.as_ref().and_then(|memory| {
+            crate::save_state::entity_at_spawn_index(level, memory.enemy)
+                .map(|entity| (entity, memory))
+        });
+        let runner = ScheduleRunner::restore(
+            &snapshot.schedule_name,
+            snapshot.task_index as usize,
+            snapshot.schedule_started,
+            snapshot.schedule_timer,
+        );
+        let route = Route {
+            waypoints: snapshot
+                .route_waypoints
+                .iter()
+                .take(ohl_ai::movement::MAX_WAYPOINTS)
+                .copied()
+                .map(crate::save_state::array_vec3)
+                .collect(),
+            current: snapshot.route_current as usize,
+            goal: crate::save_state::array_vec3(snapshot.route_goal),
+        };
+        if let Ok(mut ai) = level.registry.world.get::<&mut MonsterAi>(entity) {
+            ai.state = MonsterState::from_tag(snapshot.state_tag).unwrap_or_default();
+            ai.conditions = Conditions::from_bits(snapshot.conditions);
+            ai.pending_conditions = Conditions::from_bits(snapshot.pending_conditions);
+            ai.runner = runner;
+            ai.memory = enemy.map(|(entity, memory)| EnemyMemory {
+                entity,
+                last_known_position: crate::save_state::array_vec3(memory.last_known_position),
+                time_since_seen: memory.time_since_seen,
+                occluded: memory.occluded,
+                last_known_distance: memory.last_known_distance,
+            });
+            ai.route = route;
+            ai.move_target = snapshot.move_target.map(crate::save_state::array_vec3);
+            ai.cover = snapshot.cover.map(crate::save_state::array_vec3);
+            ai.activity = Activity::from_tag(snapshot.activity_tag).unwrap_or_default();
+            ai.move_speed = snapshot.move_speed;
+            ai.ideal_yaw = snapshot.ideal_yaw;
+            ai.stuck = StuckDetector::from_ticks(snapshot.stuck_ticks);
+        }
+        if let Some(squad) = &snapshot.squad {
+            let _ = level.registry.world.insert_one(
+                entity,
+                SquadTag {
+                    name: squad.name.clone(),
+                    leader: squad.leader,
+                },
+            );
+        } else {
+            let _ = level.registry.world.remove_one::<SquadTag>(entity);
+        }
     }
 
     /// Phase 8 — one AI think step, and the attacks it produced.

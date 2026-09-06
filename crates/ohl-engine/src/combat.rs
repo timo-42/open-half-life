@@ -249,6 +249,110 @@ impl CombatState {
         }
     }
 
+    /// A typed [`crate::save_state::InventorySnapshot`] of everything this
+    /// state owns, for `SECTION_INVENTORY` (23). See that type's own docs
+    /// for why [`Self::capture_carry`]'s opaque blob still rides along.
+    pub(crate) fn snapshot(&self) -> crate::save_state::InventorySnapshot {
+        let weapons = WeaponId::ALL
+            .iter()
+            .map(|&id| crate::save_state::WeaponSnapshot {
+                owned: self.inventory.has_weapon(id),
+                clip: self.inventory.clip(id),
+            })
+            .collect();
+        let ammo = AmmoType::ALL.iter().map(|&kind| self.ammo.current(kind)).collect();
+        #[allow(clippy::cast_possible_truncation)]
+        let selected = self
+            .inventory
+            .selected()
+            .and_then(|id| WeaponId::ALL.iter().position(|&w| w == id))
+            .map(|index| index as u8);
+        #[allow(clippy::cast_possible_truncation)]
+        let firing = self.firing_weapon.and_then(|id| {
+            WeaponId::ALL
+                .iter()
+                .position(|&w| w == id)
+                .map(|index| index as u8)
+        }).map(|weapon| {
+            let (state_tag, timer) = self.firing.state_tag_and_timer();
+            crate::save_state::FiringSnapshot {
+                weapon,
+                state_tag,
+                timer,
+            }
+        });
+        crate::save_state::InventorySnapshot {
+            weapons,
+            ammo,
+            selected,
+            has_suit: self.inventory.has_suit(),
+            has_long_jump: self.inventory.has_long_jump(),
+            firing,
+            legacy_carry: self.capture_carry(),
+        }
+    }
+
+    /// Restores everything [`Self::snapshot`] captured. A `weapons`/`ammo`
+    /// list shorter than `WeaponId::ALL`/`AmmoType::ALL` (a save from a
+    /// build with fewer of either) simply leaves the remaining entries at
+    /// their fresh default, the same "stop where it runs out" tolerance
+    /// `restore_carry` already applies to the legacy blob.
+    pub(crate) fn restore_snapshot(
+        &mut self,
+        snapshot: &crate::save_state::InventorySnapshot,
+        player: &mut ohl_player::Player,
+    ) {
+        self.inventory = Inventory::new();
+        self.ammo = AmmoBank::new();
+        for (id, weapon) in WeaponId::ALL.iter().zip(&snapshot.weapons) {
+            if weapon.owned {
+                self.inventory.give_weapon(*id);
+                self.inventory.set_clip(*id, weapon.clip);
+            }
+        }
+        for (kind, &amount) in AmmoType::ALL.iter().zip(&snapshot.ammo) {
+            self.ammo.set(*kind, amount);
+        }
+        if snapshot.has_suit {
+            self.inventory.give_suit();
+            player.state.suit_equipped = true;
+        }
+        if snapshot.has_long_jump {
+            self.inventory.give_long_jump();
+            player.state.longjump_owned = true;
+        }
+        if let Some(index) = snapshot.selected {
+            if let Some(&id) = WeaponId::ALL.get(index as usize) {
+                // `Inventory`'s selection API is cycle-only; a bounded
+                // `select_next` walk is the only way to land on an exact
+                // weapon (see `crate::transition`'s own note on the same
+                // limitation). Bounded by the closed weapon set, so a
+                // save naming a weapon this player does not own cannot
+                // loop.
+                for _ in 0..=WeaponId::ALL.len() {
+                    if self.inventory.selected() == Some(id) {
+                        break;
+                    }
+                    if self.inventory.select_next().is_none() {
+                        break;
+                    }
+                }
+            }
+        }
+        self.firing_weapon = None;
+        if let Some(firing) = &snapshot.firing {
+            if let Some(&id) = WeaponId::ALL.get(firing.weapon as usize) {
+                self.firing = FiringState::restore(
+                    spec(id),
+                    self.inventory.clip(id),
+                    firing.state_tag,
+                    firing.timer,
+                );
+                self.firing_weapon = Some(id);
+            }
+        }
+    }
+
     /// Selects `slot`'s weapon (as [`Inventory::select_slot`]) and resets
     /// the firing state machine to it when the selection actually changed.
     fn select_slot(&mut self, slot: u8) {

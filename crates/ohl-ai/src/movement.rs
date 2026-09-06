@@ -240,6 +240,13 @@ impl StuckDetector {
     pub fn reset(&mut self) {
         self.ticks = 0;
     }
+
+    /// Rebuilds a detector with exactly `ticks` accumulated. Additive, for
+    /// save-file restore (`.plan/m79-design.md` §6/§8 P4b).
+    #[must_use]
+    pub const fn from_ticks(ticks: u32) -> Self {
+        Self { ticks }
+    }
 }
 
 /// A yaw, in degrees, that points from `from` toward `to`.

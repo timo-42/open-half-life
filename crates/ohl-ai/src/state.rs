@@ -73,6 +73,25 @@ impl MonsterState {
     pub const fn is_active(self) -> bool {
         !matches!(self, Self::None | Self::Dead)
     }
+
+    /// The state a previous [`Self::tag`] named, or `None` for a tag this
+    /// build does not recognise (a save file written by a newer build).
+    /// Additive, for save-file restore: `.plan/m79-design.md` §6/§8 P4b.
+    #[must_use]
+    pub const fn from_tag(tag: u8) -> Option<Self> {
+        Some(match tag {
+            0 => Self::None,
+            1 => Self::Idle,
+            2 => Self::Alert,
+            3 => Self::Combat,
+            4 => Self::Hunt,
+            5 => Self::Prone,
+            6 => Self::Script,
+            7 => Self::PlayDead,
+            8 => Self::Dead,
+            _ => return None,
+        })
+    }
 }
 
 impl fmt::Display for MonsterState {

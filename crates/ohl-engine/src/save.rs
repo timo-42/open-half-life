@@ -11,11 +11,35 @@
 //! deterministic: the same game state and the same header always produce
 //! byte-identical files, which is what the save -> load -> save round-trip
 //! test asserts.
+//!
+//! # The full tag map
+//!
+//! | tag | section | payload |
+//! | --- | --- | --- |
+//! | 16 | [`SECTION_ENGINE_HEADER`] | [`EngineHeader`]: map, chapter title, difficulty, elapsed time |
+//! | 17 | [`SECTION_PLAYER_CARRY`] | [`PlayerCarryState`]: health, armor, the `crate::combat::CombatState::capture_carry` opaque blob |
+//! | 18 | [`SECTION_ENTITY_REGISTRY`] | `Vec<`[`EntitySnapshot`]`>`, one per registry entity, in spawn order |
+//! | 19 | [`SECTION_SIMULATION`] | [`SimulationState`]: the map-logic simulation's scheduled events and trigger cooldowns |
+//! | 20 | [`SECTION_GLOBAL_STATE`] | [`GlobalStateTable`]: the `globalname`/`env_global` state table |
+//! | 21 | [`SECTION_LIGHT_STYLE_TIME`] | `f32`: the time the light-style animation is evaluated at |
+//! | 22 | [`SECTION_VIEW`] | [`ViewState`]: the camera/player pose |
+//! | 23 | [`SECTION_INVENTORY`] | [`InventorySnapshot`]: owned weapons, clips, ammo reserves, selection, the drawn weapon's firing summary (M7.9 P4b) |
+//! | 24 | [`SECTION_ENTITY_COMBAT`] | `Vec<`[`EntityCombatSnapshot`]`>`, one per registry entity, in spawn order (M7.9 P4b) |
+//! | 25 | [`SECTION_AI`] | `Vec<Option<`[`AiSnapshot`]`>>`, one per registry entity, in spawn order (M7.9 P4b) |
+//! | 26 | [`SECTION_PROJECTILES`] | [`ProjectilesSnapshot`]: live projectiles and placed deployables (M7.9 P4b) |
+//! | 27 | [`SECTION_RNG`] | [`RngSnapshot`]: the shared random stream and the substep counter (M7.9 P4b) |
+//! | 32 | *(reserved, `ohl-player`)* | `PlayerSnapshot`, written through `Player::snapshot()` when a later package wires it |
+//!
+//! Tags 23-27 are read as `None`/a default when absent, so a save written
+//! before M7.9 P4b still loads (`.plan/m79-design.md` §6); a section that is
+//! present but fails to decode fails the whole read closed
+//! ([`crate::EngineError::SaveUnreadable`]), same as every other section.
 
 use ohl_campaign::Difficulty;
 use ohl_game::SimulationState;
 use serde::{Deserialize, Serialize};
 
+use crate::save_state::{AiSnapshot, EntityCombatSnapshot, InventorySnapshot, ProjectilesSnapshot, RngSnapshot};
 use crate::transition::{EntitySnapshot, GlobalStateTable, PlayerCarryState};
 
 /// Engine header: which map is loaded, its chapter title, the difficulty
@@ -41,6 +65,21 @@ pub const SECTION_LIGHT_STYLE_TIME: u32 = 21;
 /// The camera/player pose, so a load resumes exactly where the save was
 /// taken rather than at the map's own player start.
 pub const SECTION_VIEW: u32 = 22;
+
+/// The typed weapon/ammo/firing inventory (M7.9 P4b).
+pub const SECTION_INVENTORY: u32 = 23;
+
+/// Per-entity health/armor, in spawn order (M7.9 P4b).
+pub const SECTION_ENTITY_COMBAT: u32 = 24;
+
+/// Per-entity AI state, in spawn order (M7.9 P4b).
+pub const SECTION_AI: u32 = 25;
+
+/// Live projectiles and placed deployables (M7.9 P4b).
+pub const SECTION_PROJECTILES: u32 = 26;
+
+/// The shared random stream and the substep counter (M7.9 P4b).
+pub const SECTION_RNG: u32 = 27;
 
 /// The engine header section's contents.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -88,6 +127,26 @@ pub struct GameSave {
     pub globals: GlobalStateTable,
     /// The light-style animation time, in seconds.
     pub light_style_time: f32,
+    /// The typed inventory snapshot (M7.9 P4b). Always populated by a
+    /// save this package writes; `None` only for a save read back whose
+    /// container has no tag 23 at all (a pre-M7.9-P4b file), in which case
+    /// `player.extra`'s legacy blob is what actually restores the
+    /// inventory.
+    pub inventory: Option<InventorySnapshot>,
+    /// Per-entity health/armor, in spawn order, zipped against `entities`
+    /// (M7.9 P4b). `None` (rather than an empty `Vec`) for a save missing
+    /// tag 24.
+    pub entity_combat: Option<Vec<EntityCombatSnapshot>>,
+    /// Per-entity AI state, in spawn order, zipped against `entities`
+    /// (M7.9 P4b). `None` (rather than an empty `Vec`) for a save missing
+    /// tag 25.
+    pub ai: Option<Vec<Option<AiSnapshot>>>,
+    /// Live projectiles and placed deployables (M7.9 P4b). `None` for a
+    /// save missing tag 26.
+    pub projectiles: Option<ProjectilesSnapshot>,
+    /// The shared random stream and the substep counter (M7.9 P4b). `None`
+    /// for a save missing tag 27.
+    pub rng: Option<RngSnapshot>,
 }
 
 impl GameSave {
@@ -130,6 +189,21 @@ impl GameSave {
             writer.add_section_serde(SECTION_GLOBAL_STATE, &self.globals)?;
             writer.add_section_serde(SECTION_LIGHT_STYLE_TIME, &self.light_style_time)?;
             writer.add_section_serde(SECTION_VIEW, &self.view)?;
+            if let Some(inventory) = &self.inventory {
+                writer.add_section_serde(SECTION_INVENTORY, inventory)?;
+            }
+            if let Some(entity_combat) = &self.entity_combat {
+                writer.add_section_serde(SECTION_ENTITY_COMBAT, entity_combat)?;
+            }
+            if let Some(ai) = &self.ai {
+                writer.add_section_serde(SECTION_AI, ai)?;
+            }
+            if let Some(projectiles) = &self.projectiles {
+                writer.add_section_serde(SECTION_PROJECTILES, projectiles)?;
+            }
+            if let Some(rng) = &self.rng {
+                writer.add_section_serde(SECTION_RNG, rng)?;
+            }
             Ok(())
         };
         write(&mut writer).map_err(|_| crate::EngineError::SaveUnwritable)?;
@@ -156,6 +230,11 @@ impl GameSave {
             simulation: section(&reader, SECTION_SIMULATION)?,
             globals: section(&reader, SECTION_GLOBAL_STATE)?,
             light_style_time: section(&reader, SECTION_LIGHT_STYLE_TIME)?,
+            inventory: optional_section(&reader, SECTION_INVENTORY)?,
+            entity_combat: optional_section(&reader, SECTION_ENTITY_COMBAT)?,
+            ai: optional_section(&reader, SECTION_AI)?,
+            projectiles: optional_section(&reader, SECTION_PROJECTILES)?,
+            rng: optional_section(&reader, SECTION_RNG)?,
         })
     }
 }
@@ -170,4 +249,24 @@ fn section<T: serde::de::DeserializeOwned>(
     reader
         .deserialize(tag)
         .map_err(|_| crate::EngineError::SaveUnreadable)
+}
+
+/// Deserializes one optional section (tags 23-27, M7.9 P4b): `Ok(None)`
+/// when the tag is simply absent (a save written before this package
+/// existed), [`crate::EngineError::SaveUnreadable`] when it is present but
+/// fails to decode. This is the one place this module distinguishes
+/// "missing" from "corrupt" — `.plan/m79-design.md` §8 P4b's rule that a
+/// missing section loads as a default while a present-but-broken one fails
+/// closed.
+fn optional_section<T: serde::de::DeserializeOwned>(
+    reader: &ohl_save::SaveReader<'_>,
+    tag: u32,
+) -> crate::Result<Option<T>> {
+    match reader.section(tag) {
+        Ok(bytes) => postcard::from_bytes(bytes)
+            .map(Some)
+            .map_err(|_| crate::EngineError::SaveUnreadable),
+        Err(ohl_save::SaveError::SectionNotFound) => Ok(None),
+        Err(_) => Err(crate::EngineError::SaveUnreadable),
+    }
 }
