@@ -250,12 +250,33 @@ const EXPECTED_CAPTURE_SIZE: (u32, u32) = (1280, 720);
 /// stuck loading screen, or similar) falls under it.
 const MIN_NON_BACKGROUND_FRACTION: f64 = 0.05;
 
-/// Decodes `path` and reports only whether it passes the two capture
-/// health checks: matching [`EXPECTED_CAPTURE_SIZE`], and clearing
+/// The smallest number of distinct RGBA colors a capture that fell under
+/// [`MIN_NON_BACKGROUND_FRACTION`] must still show before it is trusted as a
+/// genuinely rendered (if extremely sparse and dark) frame rather than a
+/// blank one.
+///
+/// Some legitimate maps ship a solid black (or otherwise near-uniform)
+/// skybox and are viewed from a spot where only a sliver of lit geometry is
+/// actually on screen; every pixel of that sliver still comes from real
+/// per-fragment lighting and lightmap sampling, which scatters it across
+/// many distinct, slightly-differing shades even though the frame is
+/// overwhelmingly one dominant background color. A capture the renderer
+/// never actually drew into — a stuck clear color, a frozen loading
+/// screen — has no such variation: it is exactly one color, or at most a
+/// small fixed handful from a static overlay. Requiring a real spread of
+/// distinct colors before accepting a fraction this low keeps the fraction
+/// check's original power to catch a truly blank capture while no longer
+/// misclassifying a legitimately dark, sparsely lit scene as one.
+const MIN_DISTINCT_COLORS_FOR_SPARSE_FRAME: usize = 64;
+
+/// Decodes `path` and reports only whether it passes the capture health
+/// checks: matching [`EXPECTED_CAPTURE_SIZE`], and either clearing
 /// [`MIN_NON_BACKGROUND_FRACTION`] (treating the most common RGBA color as
-/// the background). Never returns or retains the pixel counts, the
-/// computed fraction, or the decoded dimensions themselves — only the
-/// pass/fail boolean.
+/// the background) or, failing that, showing at least
+/// [`MIN_DISTINCT_COLORS_FOR_SPARSE_FRAME`] distinct colors (a real, if very
+/// sparse and dark, render). Never returns or retains the pixel counts, the
+/// computed fraction, the distinct-color count, or the decoded dimensions
+/// themselves — only the pass/fail boolean.
 fn capture_is_healthy(path: &Path) -> bool {
     let Ok(image) = image::open(path) else {
         return false;
@@ -278,6 +299,7 @@ fn capture_is_healthy(path: &Path) -> bool {
     #[allow(clippy::cast_precision_loss)]
     let non_background_fraction = (total_pixels - background_count) as f64 / total_pixels as f64;
     non_background_fraction >= MIN_NON_BACKGROUND_FRACTION
+        || counts.len() >= MIN_DISTINCT_COLORS_FOR_SPARSE_FRAME
 }
 
 /// Runs the app once for `job.map`, with a `timeout` deadline, and returns
@@ -787,6 +809,62 @@ mod tests {
         let path = dir.path().join("capture.png");
         let (width, height) = EXPECTED_CAPTURE_SIZE;
         let image = image::RgbaImage::from_pixel(width, height, image::Rgba([0, 0, 0, 255]));
+        image
+            .save_with_format(&path, image::ImageFormat::Png)
+            .expect("write a fixture capture");
+
+        assert!(!capture_is_healthy(&path));
+    }
+
+    /// A map with a legitimately near-uniform (e.g. solid-black skybox)
+    /// background can still be a genuine, correctly rendered capture even
+    /// though its non-background fraction falls under
+    /// [`MIN_NON_BACKGROUND_FRACTION`], as long as the sliver that is on
+    /// screen shows the kind of per-pixel lighting variation a real render
+    /// produces (many distinct colors), rather than the handful (or one) a
+    /// truly blank capture would show. This reproduces the class of bug
+    /// behind a real regression: a capture that is 99%+ one dominant color
+    /// but contains hundreds of distinct, real, lit shades in the rest must
+    /// not be classified the same as a stuck clear-color frame.
+    #[test]
+    fn capture_health_check_accepts_a_sparse_but_richly_colored_frame() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("capture.png");
+        let (width, height) = EXPECTED_CAPTURE_SIZE;
+        let mut image = image::RgbaImage::from_pixel(width, height, image::Rgba([0, 0, 0, 255]));
+        // Paint a tiny sliver (well under 1% of the frame) with many
+        // distinct, slightly different shades, mirroring how real
+        // per-fragment lighting scatters color across a small lit area.
+        let mut shade = 0u8;
+        for x in 0..width.min(200) {
+            let pixel = image.get_pixel_mut(x, height - 1);
+            shade = shade.wrapping_add(1);
+            *pixel = image::Rgba([shade, shade / 2, shade / 3, 255]);
+        }
+
+        image
+            .save_with_format(&path, image::ImageFormat::Png)
+            .expect("write a fixture capture");
+
+        assert!(capture_is_healthy(&path));
+    }
+
+    /// The counterpart to the sparse-but-colored case above: a capture that
+    /// is almost entirely one dominant color *and* only shows a small fixed
+    /// handful of other colors (well under
+    /// [`MIN_DISTINCT_COLORS_FOR_SPARSE_FRAME`]) is exactly what a stuck or
+    /// never-rendered frame (a static overlay over an unrendered clear
+    /// color, say) looks like, and must still be rejected.
+    #[test]
+    fn capture_health_check_rejects_a_sparse_frame_with_few_distinct_colors() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("capture.png");
+        let (width, height) = EXPECTED_CAPTURE_SIZE;
+        let mut image = image::RgbaImage::from_pixel(width, height, image::Rgba([0, 0, 0, 255]));
+        for x in 0..width.min(8) {
+            *image.get_pixel_mut(x, height - 1) = image::Rgba([200, 200, 200, 255]);
+        }
+
         image
             .save_with_format(&path, image::ImageFormat::Png)
             .expect("write a fixture capture");
