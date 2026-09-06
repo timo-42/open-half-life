@@ -2149,3 +2149,42 @@ top of the CI smoke; no panics were found in the code under test.
   and player systems in progress, see above)
 - M8: full campaign compatibility (Rust save container in progress, see above)
 - M9: release hardening
+
+- **M7.11: scripted sequences and talk monsters.** `ohl-game::scripts`
+  reads the published `scripted_sequence`/`aiscripted_sequence`/
+  `scripted_sentence` keyvalues, choice values and spawnflag bits, and adds
+  the one `ScriptActivation` component that puts those entities on the
+  existing `Simulation::activate` "use"/target-firing path shared with
+  doors, buttons and `multi_manager` (plus `trigger_auto`, so a map can
+  start a script unaided). `ohl-ai::scripts` runs the pure state machine —
+  every `m_fMoveTo` mode (no move, walk, run, instantaneous, turn to face),
+  `No Interruptions`, `Repeatable` and `m_flRepeat` — and its `ScriptHold`
+  marker suspends a possessed monster's brain inside `AiWorld::tick` while
+  leaving its senses, its damage intake and its route intact.
+  `ohl-ai::follow` adds the `monster_scientist`/`monster_barney` follow
+  layer: a player `use` toggles a talk monster into the player's group, the
+  published two-ally limit evicts the longest-serving member, and a
+  `Pre-Disaster` talk monster refuses; following itself reuses the
+  `FOLLOW_PLAYER` schedule and the `Navigator`/`NavBridge` movement seam
+  that already existed. `ohl-engine::ai` wires all of it additively into
+  phases 8 and 10 — target selection by `targetname` or by classname inside
+  `m_flRadius`, movement through the same navigator, sequence *names*
+  resolved at runtime against the monster's own loaded studio model (no
+  sequence-name literal is shipped), `target` fired through the map-logic
+  simulation, and `scripted_sentence` resolved through the existing
+  `SentenceLookup` into a `GameEvent::Sound` whose path is always `None` —
+  and exposes `Game::{active_script_count, script_start_count,
+  script_completion_count, followers}`. Behind `--script-log`, `ohl-app`
+  emits the two fixed lines "A scripted sequence started." and "A scripted
+  sequence finished."; nothing map-derived is ever interpolated. Covered by
+  `ohl-ai` unit tests over the whole state machine (each `m_fMoveTo` mode,
+  interruption with and without the flag, repeat behaviour), `ohl-engine`
+  integration tests over an extended synthetic room (a `trigger_auto`-driven
+  walking script that fires its target exactly once, a `No Interruptions`
+  script surviving mid-script damage, an instantaneous warp, a radius-bounded
+  classname search, a scientist following and unfollowing, a
+  `Pre-Disaster` scientist refusing, a `scripted_sentence` cue with no asset
+  path, and a determinism replay), and `proptest`s showing arbitrary
+  keyvalues on all three entities never panic and never produce non-finite
+  state. See `docs/FORMAT_SOURCES.md`, "Scripted sequences and talk
+  monsters", for sources and the nineteen `TODO(black-box)` items.
