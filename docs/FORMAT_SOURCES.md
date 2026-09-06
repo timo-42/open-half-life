@@ -1165,6 +1165,21 @@ medium appears in the code, tests, fixtures or this file.
   (`brightness`, or `r g b`, or `r g b brightness`) and `_cone`/`style` keys
   are standard, widely documented Half-Life mapping conventions (again
   summarized via search results due to the 403s above).
+- Every `trigger_*` entity is documented, across the TWHL/VDC `trigger_*`
+  family of pages (`trigger_once`, `trigger_multiple`, `trigger_hurt`,
+  `trigger_transition`, etc.; same 403/search-summary caveat as above), as
+  an invisible, collision-only volume: the client never draws a
+  `trigger_*` brush model regardless of its `rendermode`/texture. TWHL's
+  `func_ladder` page (already cited above, "Behaviour") documents that
+  entity the same way ("creates an invisible brush"). `ohl_game::brush::
+  model_instances` (`is_never_rendered`) excludes both from the render
+  instance list for this reason, while `Registry::build` still attaches
+  their `BrushModel`/`BrushBounds`/`BrushCenter` components unconditionally,
+  since `ohl-engine`'s `trigger_transition` handling (`transition.rs`) and
+  the rest of the map-logic simulation still need them. Before this
+  exclusion existed, a map's `trigger_transition` (routinely placed so it
+  encloses the player at a level's exit) rendered as ordinary opaque
+  geometry around the camera.
 
 Project behaviour supported: `crates/ohl-game` (`keyvalues`, `registry`,
 `brush`, `logic`) turns the BSP entities lump (already parsed by
