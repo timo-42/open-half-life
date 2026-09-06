@@ -1,0 +1,73 @@
+# M9 scripted-input scenario: a moving-player walk in "Forget About Freeman!".
+#
+# Project-authored; no bytes here come from any game installation (see
+# docs/CLEAN_ROOM.md). Run against "c3a1" ("Forget About Freeman!", per
+# ohl_campaign::CHAPTERS's own cited table) by xtask/src/combat_smoke.rs.
+#
+# A ~20-40s scripted walk forward with short steps and periodic turns,
+# the technique used to expose the M7.9-era brush-entity floor/touch-
+# trigger regressions (PR #90, PR #91) that static captures missed.
+#
+# The walk turns 45 degrees before advancing: tuned against this one
+# map's own player-start-relative geometry only (never recorded here
+# beyond this turn/walk technique) so the walk clears a nearby solid
+# corner instead of stalling against it.
+#
+# Expected fixed log lines, asserted by the harness rather than parsed
+# from this file:
+#   present: "Scripted input loaded.", "Scripted input finished.",
+#            "The player moved from the spawn point."
+#   absent:  "The player is inside solid geometry." (this scenario's own
+#            regression guard for the PR #91 class of bug)
+#            plus every other fixed line (no weapon, pickup, monster or
+#            player-damage path is expected on this walk)
+20 look 0 45
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 wait

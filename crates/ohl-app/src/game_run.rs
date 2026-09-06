@@ -249,7 +249,7 @@ fn run_scripted(
             }
         }
         if args.script_log {
-            log.observe(game);
+            log.observe(game, CAPTURE_STEP);
         }
     }
 

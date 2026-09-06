@@ -1,0 +1,98 @@
+# M9 scripted-input scenario: a moving-player walk in Xen.
+#
+# Project-authored; no bytes here come from any game installation (see
+# docs/CLEAN_ROOM.md). Run against "c4a1" (Xen, per
+# ohl_campaign::CHAPTERS's own cited table) by xtask/src/combat_smoke.rs.
+#
+# A ~20-40s scripted walk forward with short steps and periodic turns,
+# the technique used to expose the M7.9-era brush-entity floor/touch-
+# trigger regressions (PR #90, PR #91) that static captures missed.
+#
+# This chapter's own player start sits at the edge of a small platform:
+# walking forward for much more than half a second sends the player over
+# the edge into a long fall. This walk advances only briefly (well inside
+# the safe margin found while tuning this one map's own player-start-
+# relative geometry, never recorded here beyond ticks/degrees) and then
+# turns in place for the remainder of its run, rather than walking blind
+# off the platform.
+#
+# Expected fixed log lines, asserted by the harness rather than parsed
+# from this file:
+#   present: "Scripted input loaded.", "Scripted input finished.",
+#            "The player moved from the spawn point."
+#   absent:  "The player is inside solid geometry." (this scenario's own
+#            regression guard for the PR #91 class of bug)
+#            plus every other fixed line (no weapon, pickup, monster or
+#            player-damage path is expected on this walk)
+20 forward
+20 look 0 30
+20 wait
+20 look 0 -30
+20 wait
+20 look 0 30
+20 wait
+20 look 0 -30
+20 wait
+20 look 0 30
+20 wait
+20 look 0 -30
+20 wait
+20 look 0 30
+20 wait
+20 look 0 -30
+20 wait
+20 look 0 30
+20 wait
+20 look 0 -30
+20 wait
+20 look 0 30
+20 wait
+20 look 0 -30
+20 wait
+20 look 0 30
+20 wait
+20 look 0 -30
+20 wait
+20 look 0 30
+20 wait
+20 look 0 -30
+20 wait
+20 look 0 30
+20 wait
+20 look 0 -30
+20 wait
+20 look 0 30
+20 wait
+20 look 0 -30
+20 wait
+20 look 0 30
+20 wait
+20 look 0 -30
+20 wait
+20 look 0 30
+20 wait
+20 look 0 -30
+20 wait
+20 look 0 30
+20 wait
+20 look 0 -30
+20 wait
+20 look 0 30
+20 wait
+20 look 0 -30
+20 wait
+20 look 0 30
+20 wait
+20 look 0 -30
+20 wait
+20 look 0 30
+20 wait
+20 look 0 -30
+20 wait
+20 look 0 30
+20 wait
+20 look 0 -30
+20 wait
+20 look 0 30
+20 wait
+60 wait

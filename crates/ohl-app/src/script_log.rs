@@ -30,8 +30,33 @@
 //!   same rising-then-falling edge, over
 //!   `ohl_engine::Game::camera_sequence_active` (M7.12, `trigger_camera`).
 //!   Also fixed strings: no camera or `target` name is ever interpolated.
+//! - "The player moved from the spawn point." — the player's eye position
+//!   ([`ohl_engine::Game::eye_position`]) has moved more than
+//!   [`SPAWN_MOVE_THRESHOLD`] world units from where it stood when this
+//!   [`ScriptLog`] was created. A data-derived boolean latch: the distance
+//!   itself is never logged.
+//! - "The player is inside solid geometry." — this run's own regression
+//!   guard for the PR #91 class of bug (the player falling through a brush
+//!   entity's floor): [`ohl_engine::Game::eye_is_in_solid`] has read `true`
+//!   for a cumulative total of more than [`IN_SOLID_LOG_THRESHOLD_SECS`]
+//!   seconds. Every combat-smoke scenario asserts this line absent.
 
 use ohl_engine::Game;
+
+/// How far the player's eye must move from its spawn position, in world
+/// units, before [`ScriptLog::observe`] logs "The player moved from the
+/// spawn point." Chosen generously above ordinary standing-still jitter
+/// (turning in place, brief physics settling) so the line only fires for a
+/// scenario that actually walks somewhere.
+pub const SPAWN_MOVE_THRESHOLD: f32 = 64.0;
+
+/// How many cumulative seconds [`ohl_engine::Game::eye_is_in_solid`] must
+/// read `true` during one scripted run before [`ScriptLog::observe`] logs
+/// "The player is inside solid geometry." A single-tick false positive
+/// (e.g. a brief overlap while a door is still closing) should not trip
+/// this regression guard; a player who has actually fallen through the
+/// world stays in solid geometry far longer than one second.
+pub const IN_SOLID_LOG_THRESHOLD_SECS: f32 = 1.0;
 
 /// Tracks which milestone lines have already fired this run.
 #[allow(
@@ -52,12 +77,16 @@ pub struct ScriptLog {
     camera_started: bool,
     camera_finished: bool,
     camera_was_active: bool,
+    moved_from_spawn: bool,
+    in_solid: bool,
     baseline_fired: u64,
     baseline_hit: u64,
     baseline_damage_events: u64,
     baseline_deaths: u64,
     baseline_pickups: u64,
     baseline_player_damage: u64,
+    spawn_position: [f32; 3],
+    in_solid_seconds: f32,
 }
 
 impl ScriptLog {
@@ -79,19 +108,23 @@ impl ScriptLog {
             camera_started: false,
             camera_finished: false,
             camera_was_active: game.camera_sequence_active(),
+            moved_from_spawn: false,
+            in_solid: false,
             baseline_fired: game.weapon_fired_count(),
             baseline_hit: game.shot_hit_count(),
             baseline_damage_events: game.monster_damage_event_count(),
             baseline_deaths: game.monster_death_count(),
             baseline_pickups: game.pickup_count(),
             baseline_player_damage: game.player_damage_event_count(),
+            spawn_position: game.eye_position(),
+            in_solid_seconds: 0.0,
         }
     }
 
-    /// Call once per scripted tick, after [`Game::tick`]. Emits any
-    /// milestone line that just became true; never emits the same line
-    /// twice.
-    pub fn observe(&mut self, game: &Game) {
+    /// Call once per scripted tick, after [`Game::tick`], with the same
+    /// `dt` the tick just advanced by. Emits any milestone line that just
+    /// became true; never emits the same line twice.
+    pub fn observe(&mut self, game: &Game, dt: f32) {
         if !self.weapon_fired && game.weapon_fired_count() > self.baseline_fired {
             self.weapon_fired = true;
             tracing::info!("The player fired a weapon.");
@@ -139,5 +172,29 @@ impl ScriptLog {
             tracing::info!("A camera sequence finished.");
         }
         self.camera_was_active = camera_active;
+
+        if !self.moved_from_spawn {
+            let eye = game.eye_position();
+            let dx = eye[0] - self.spawn_position[0];
+            let dy = eye[1] - self.spawn_position[1];
+            let dz = eye[2] - self.spawn_position[2];
+            let distance_squared = dx * dx + dy * dy + dz * dz;
+            if distance_squared > SPAWN_MOVE_THRESHOLD * SPAWN_MOVE_THRESHOLD {
+                self.moved_from_spawn = true;
+                tracing::info!("The player moved from the spawn point.");
+            }
+        }
+
+        if !self.in_solid {
+            if game.eye_is_in_solid() {
+                self.in_solid_seconds += dt;
+                if self.in_solid_seconds > IN_SOLID_LOG_THRESHOLD_SECS {
+                    self.in_solid = true;
+                    tracing::info!("The player is inside solid geometry.");
+                }
+            } else {
+                self.in_solid_seconds = 0.0;
+            }
+        }
     }
 }

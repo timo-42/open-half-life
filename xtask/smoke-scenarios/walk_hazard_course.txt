@@ -1,0 +1,68 @@
+# M9 scripted-input scenario: a moving-player walk in Hazard Course.
+#
+# Project-authored; no bytes here come from any game installation (see
+# docs/CLEAN_ROOM.md). Run against ohl_campaign::TRAINMAP ("t0a0", the
+# first of ohl_campaign::HAZARD_COURSE_MAPS's own cited map names) by
+# xtask/src/combat_smoke.rs.
+#
+# A ~20-40s scripted walk forward with short steps and periodic turns,
+# the technique used to expose the M7.9-era brush-entity floor/touch-
+# trigger regressions (PR #90, PR #91) that static captures missed.
+#
+# Expected fixed log lines, asserted by the harness rather than parsed
+# from this file:
+#   present: "Scripted input loaded.", "Scripted input finished.",
+#            "The player moved from the spawn point."
+#   absent:  "The player is inside solid geometry." (this scenario's own
+#            regression guard for the PR #91 class of bug)
+#            plus every other fixed line (no weapon, pickup, monster or
+#            player-damage path is expected on this walk)
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 wait
