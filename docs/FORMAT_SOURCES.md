@@ -2509,3 +2509,28 @@ marked `TODO(black-box)` in the code rather than guessed:
     ("instead of fading out") supports that much, but the interaction with
     a monster that dies mid-script — TWHL notes a dying monster can still be
     possessed — is undocumented and not modelled.
+
+### `TODO(black-box)` items, continued (M7.11 review follow-ups)
+
+20. **What removing a single-use `scripted_sequence` actually means.** TWHL
+    says a script without `Repeatable` is one that "will be removed once the
+    sequence is complete", but no page this project may use says what
+    "removed" entails for the entity's own state or for anything still
+    pointing at it — whether its `targetname` stops resolving, whether a
+    later trigger aimed at it is silently dropped, or whether the monster it
+    named is affected. This project keeps the entity in the world in a
+    terminal `ScriptPhase::Done`, which refuses further activations and
+    touches nothing; a real removal would additionally drop it out of the
+    `targetname` index and out of `killtarget`'s reach, and the two are not
+    distinguishable from the published text.
+21. **Whether a dormant script's idle animation loops on a monster its own
+    brain is still driving.** `m_iszIdle` is published as an animation the
+    target monster performs "on a loop until the scripted_sequence is
+    triggered", but no page says how that interacts with the monster's
+    normal activity selection — a following ally or a monster walking a
+    `path_corner` route is animating itself at the same time. This project
+    resolves the ambiguity in the direction that cannot break anything: a
+    script animates its monster only while it is actually holding it, and a
+    dormant, waiting or finished script neither moves nor animates it. The
+    published looping-idle behaviour is therefore only partially modelled
+    and is still to be black-box observed.

@@ -391,6 +391,14 @@ pub const SPAWNFLAG_TRIGGER_AUTO_REMOVE_ON_FIRE: u32 = 1;
 /// **`TODO(black-box)`**: the published `globalstate` key — "or as soon as
 /// the specified global state becomes active" — is not modelled; a
 /// `trigger_auto` here always fires on load.
+///
+/// **Save/load note for M7.9 P4b**: [`Self::fired`] is one-shot state that
+/// lives only in the entity world, so a save taken after a `trigger_auto`
+/// has fired must persist it — otherwise restoring that save re-fires every
+/// auto trigger on the map, replaying whatever they started. Whoever wires
+/// the additive save sections in `ohl-engine`'s `save` module should carry
+/// this flag alongside `ohl_game::logic::SimulationState`'s own trigger
+/// cooldowns, which already travel in a save for exactly the same reason.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AutoTrigger {

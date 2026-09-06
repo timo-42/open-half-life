@@ -305,6 +305,12 @@ pub struct AiState {
     /// Sound cues produced by `scripted_sentence`, drained by
     /// [`crate::Game::tick`].
     sound_cues: Vec<ohl_gameplay::SoundCue>,
+    /// Bumped whenever this level's set of monsters changes (a level
+    /// attach, a `monstermaker` child). An unbound script only re-runs its
+    /// classname search when this moves, so a map full of scripts that name
+    /// a monster it never spawns costs one world sweep per spawn rather
+    /// than one per step.
+    spawn_generation: u64,
 }
 
 impl core::fmt::Debug for AiState {
@@ -341,6 +347,7 @@ impl AiState {
             script_completions: 0,
             sentence_words: 0,
             sound_cues: Vec::new(),
+            spawn_generation: 0,
         }
     }
 
@@ -411,6 +418,7 @@ impl AiState {
         self.script_completions = 0;
         self.sentence_words = 0;
         self.sound_cues.clear();
+        self.spawn_generation = self.spawn_generation.wrapping_add(1);
         self.world.detach_navigator();
         self.difficulty = ai_difficulty(difficulty);
 
@@ -985,6 +993,9 @@ impl AiState {
                 continue;
             };
             self.maker_children += 1;
+            // A new monster exists, so every unbound script gets one more
+            // chance to find its `m_iszEntity` target.
+            self.spawn_generation = self.spawn_generation.wrapping_add(1);
             if let Ok(mut component) = level.registry.world.get::<&mut MonsterMaker>(maker) {
                 component.0.note_spawned(child);
             }
@@ -1155,6 +1166,19 @@ struct ActiveScript {
     runner: ScriptRunner,
     /// The monster it has chosen, once one exists.
     actor: Option<Entity>,
+    /// The spawn generation the last unsuccessful target search ran
+    /// against, so an unbound script does not sweep the world every step.
+    /// A search only repeats once something new has spawned — or, once the
+    /// script has been triggered, on every step until it finds a monster,
+    /// which is the published "the first monster to enter the radius will
+    /// follow the sequence".
+    searched_generation: Option<u64>,
+    /// An activation received while no monster was bound yet.
+    pending_trigger: bool,
+    /// Whether the runner was holding its monster on the previous step, so
+    /// the engine can act on the *transition* out of possession rather
+    /// than reaching into an actor it does not own on every step.
+    was_active: bool,
     /// Seconds the action animation has been playing.
     played: f32,
     /// Where the action animation started, for `No Script Movement`.
@@ -1246,6 +1270,9 @@ impl AiState {
                     entity,
                     runner: ScriptRunner::new(script),
                     actor: None,
+                    searched_generation: None,
+                    pending_trigger: false,
+                    was_active: false,
                     played: 0.0,
                     play_origin: Vec3::ZERO,
                 });
@@ -1305,29 +1332,45 @@ impl AiState {
                 activated = true;
             }
         }
-        if script.actor.is_none() {
-            // A classname search that finds nothing simply runs again next
-            // step, which is the published "the first monster to enter the
-            // radius will follow the sequence".
+        script.pending_trigger |= activated;
+
+        if script.actor.is_none()
+            && (script.pending_trigger || script.searched_generation != Some(self.spawn_generation))
+        {
             script.actor = find_script_actor(level, script.runner.def());
+            script.searched_generation = Some(self.spawn_generation);
         }
         let Some(actor) = script
             .actor
             .filter(|actor| level.registry.world.contains(*actor))
         else {
-            if activated {
-                // Nothing to possess yet: the activation is dropped rather
-                // than queued, so a script cannot bank triggers.
-            }
             return;
         };
 
-        if activated && Self::may_possess(level, script, actor) && script.runner.trigger() {
-            self.script_starts += 1;
-            script.played = 0.0;
+        if script.pending_trigger {
+            if Self::may_possess(level, script, actor) && script.runner.trigger() {
+                self.script_starts += 1;
+                script.played = 0.0;
+            }
+            // Spent either way: an activation a monster refuses (it is in
+            // combat and this script does not `Override AI`) is dropped
+            // rather than queued. Only "no monster bound yet" banks it, so
+            // a script can still wait for `m_iszEntity` to spawn.
+            script.pending_trigger = false;
         }
 
-        let sense = Self::sense_script(level, script, actor, dt);
+        // A script that is not holding its monster still advances — a
+        // `m_flRepeat` wait is its own business — but it is told nothing
+        // about the actor and, in `apply_script_step`, allowed to touch
+        // nothing of it. Only a holding script reads the world.
+        let sense = if script.runner.is_active() {
+            Self::sense_script(level, script, actor, dt)
+        } else {
+            ScriptSense {
+                dt,
+                ..ScriptSense::default()
+            }
+        };
         let step = script.runner.update(&sense);
         self.apply_script_step(level, script, actor, step, dt);
     }
@@ -1412,17 +1455,35 @@ impl AiState {
         step: ohl_ai::ScriptStep,
         dt: f32,
     ) {
-        let def = script.runner.def().clone();
         if script.runner.is_active() {
             level.registry.world.insert_one(actor, ScriptHold).ok();
+            // Driving the actor is gated on the script actually holding
+            // it. `ScriptAction::None` — a dormant, waiting, finished or
+            // just-released script — reaches into nothing.
+            Self::drive_actor(level, script, actor, step.action, dt);
         }
-        match step.action {
+        self.finish_script_step(level, script, actor, step);
+    }
+
+    /// Carries out the one thing a *holding* script asked for this step.
+    fn drive_actor(
+        level: &mut Level,
+        script: &mut ActiveScript,
+        actor: Entity,
+        action: ScriptAction,
+        dt: f32,
+    ) {
+        // The mark and the facing come from the definition; nothing here
+        // needs to own a copy of it.
+        let (mark, yaw) = {
+            let def = script.runner.def();
+            (def.origin, def.yaw)
+        };
+        match action {
             ScriptAction::None => {}
             ScriptAction::Idle => {
                 stop_scripted_movement(level, actor);
-                if let Some(idle) = def.idle_sequence() {
-                    select_sequence(level, actor, idle);
-                }
+                Self::play_idle(level, script, actor);
             }
             ScriptAction::Approach { run } => {
                 let speed = if run {
@@ -1431,37 +1492,28 @@ impl AiState {
                     SCRIPT_WALK_SPEED
                 };
                 if let Ok(mut ai) = level.registry.world.get::<&mut MonsterAi>(actor) {
-                    if ai.route.is_finished() || ai.route.needs_refresh(def.origin) {
-                        ai.route = ohl_ai::Route::straight_line(def.origin);
+                    if ai.route.is_finished() || ai.route.needs_refresh(mark) {
+                        ai.route = ohl_ai::Route::straight_line(mark);
                         ai.stuck.reset();
                     }
-                    ai.move_target = Some(def.origin);
+                    ai.move_target = Some(mark);
                     ai.move_speed = speed;
                 }
-                if let Some(idle) = def.idle_sequence() {
-                    select_sequence(level, actor, idle);
-                }
+                Self::play_idle(level, script, actor);
             }
             ScriptAction::Teleport => {
                 stop_scripted_movement(level, actor);
-                place(level, actor, def.origin, def.yaw);
-                if let Some(idle) = def.idle_sequence() {
-                    select_sequence(level, actor, idle);
-                }
+                place(level, actor, mark, yaw);
+                Self::play_idle(level, script, actor);
             }
             ScriptAction::Face => {
                 stop_scripted_movement(level, actor);
                 if let Ok(mut a) = level.registry.world.get::<&mut Actor>(actor) {
-                    let (yaw, _) = ohl_ai::movement::turn_toward(
-                        a.yaw,
-                        def.yaw,
-                        SCRIPT_TURN_RATE_DEGREES * dt,
-                    );
-                    a.yaw = yaw;
+                    let (turned, _) =
+                        ohl_ai::movement::turn_toward(a.yaw, yaw, SCRIPT_TURN_RATE_DEGREES * dt);
+                    a.yaw = turned;
                 }
-                if let Some(idle) = def.idle_sequence() {
-                    select_sequence(level, actor, idle);
-                }
+                Self::play_idle(level, script, actor);
             }
             ScriptAction::Play => {
                 stop_scripted_movement(level, actor);
@@ -1471,41 +1523,81 @@ impl AiState {
                         .world
                         .get::<&Actor>(actor)
                         .map_or(Vec3::ZERO, |a| a.origin);
-                    if let Some(name) = def.play_sequence() {
-                        select_sequence(level, actor, name);
+                    let name = script
+                        .runner
+                        .def()
+                        .play_sequence()
+                        .map(std::string::ToString::to_string);
+                    if let Some(name) = name {
+                        select_sequence(level, actor, &name);
                     }
                 }
                 script.played += dt.max(0.0);
             }
         }
+    }
 
+    /// Fires `target`/`killtarget` on completion and hands the monster
+    /// back on the transition out of possession.
+    fn finish_script_step(
+        &mut self,
+        level: &mut Level,
+        script: &mut ActiveScript,
+        actor: Entity,
+        step: ohl_ai::ScriptStep,
+    ) {
         if step.completed {
             self.script_completions += 1;
-            if def.no_script_movement() {
+            let (no_script_movement, yaw, target, delay, kill_target) = {
+                let def = script.runner.def();
+                (
+                    def.no_script_movement(),
+                    def.yaw,
+                    def.target.clone(),
+                    def.delay,
+                    def.kill_target.clone(),
+                )
+            };
+            if no_script_movement {
                 let origin = script.play_origin;
-                place(level, actor, origin, def.yaw);
+                place(level, actor, origin, yaw);
             }
-            if !def.target.is_empty() {
-                level
-                    .simulation
-                    .fire(def.target.clone(), Some(actor), def.delay);
+            if !target.is_empty() {
+                level.simulation.fire(target, Some(actor), delay);
             }
-            if !def.kill_target.is_empty() {
-                let doomed: Vec<Entity> = level.registry.find(&def.kill_target).to_vec();
+            if !kill_target.is_empty() {
+                let doomed: Vec<Entity> = level.registry.find(&kill_target).to_vec();
                 for entity in doomed {
                     level.registry.world.despawn(entity).ok();
                 }
             }
         }
-        if step.released {
+
+        // The one place the script gives the monster back: exactly once, on
+        // the transition out of possession, never on the steps in between.
+        if script.was_active && !script.runner.is_active() {
             script.played = 0.0;
             level.registry.world.remove_one::<ScriptHold>(actor).ok();
             stop_scripted_movement(level, actor);
-            if def.leaves_corpse()
+            if script.runner.def().leaves_corpse()
                 && let Ok(mut corpse) = level.registry.world.get::<&mut Corpse>(actor)
             {
                 corpse.seconds_left = f32::INFINITY;
             }
+        }
+        script.was_active = script.runner.is_active();
+    }
+
+    /// Points `actor` at this script's idle animation, when the map named a
+    /// working one. Only called while the script holds `actor`.
+    fn play_idle(level: &mut Level, script: &ActiveScript, actor: Entity) {
+        let idle = script
+            .runner
+            .def()
+            .idle_sequence()
+            .map(std::string::ToString::to_string);
+        if let Some(idle) = idle {
+            select_sequence(level, actor, &idle);
         }
     }
 
