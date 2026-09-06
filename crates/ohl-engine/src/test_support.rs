@@ -456,6 +456,20 @@ pub fn entity_of_classname(game: &crate::Game, classname: &str) -> Option<ohl_ga
     found.first().copied()
 }
 
+/// Strips `entity`'s [`ohl_ai::MonsterAi`], if it has one, so a test can
+/// build the inert-actor state a `monster_*` classname missing from this
+/// project's spec table would otherwise produce (see
+/// `ohl_engine::ai::EngineSpawnRules::spawn_for`'s doc comment): an
+/// `Actor`, visible and possessable, that never thinks and never moves on
+/// its own. Used to prove a `scripted_sequence` bound to such a monster
+/// cannot stall forever (`ohl_ai::scripts::SCRIPT_MOVE_TIMEOUT_SECONDS`).
+pub fn strip_monster_ai(game: &mut crate::Game, entity: ohl_game::hecs::Entity) {
+    game.registry_mut()
+        .world
+        .remove_one::<ohl_ai::MonsterAi>(entity)
+        .ok();
+}
+
 /// An [`crate::Input`] with the `use` edge pressed.
 #[must_use]
 pub fn use_input() -> crate::Input {

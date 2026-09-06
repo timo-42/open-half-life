@@ -298,6 +298,12 @@ pub struct AiState {
     /// How many scripted sequences have completed their action animation
     /// since this level was attached.
     script_completions: u64,
+    /// How many scripted sequences have given up on ever satisfying
+    /// `ScriptPhase::Moving`'s mark condition and released their monster
+    /// (`ohl_ai::scripts::SCRIPT_MOVE_TIMEOUT_SECONDS`), since this level
+    /// was attached. A counted reason, never a log line: see that
+    /// constant's doc comment for why the bound exists.
+    script_timeouts: u64,
     /// How many sentence word slots have been resolved. The words
     /// themselves name assets and never leave this function; see
     /// [`AiState::speak`].
@@ -345,6 +351,7 @@ impl AiState {
             pending_use: None,
             script_starts: 0,
             script_completions: 0,
+            script_timeouts: 0,
             sentence_words: 0,
             sound_cues: Vec::new(),
             spawn_generation: 0,
@@ -416,6 +423,7 @@ impl AiState {
         self.pending_use = None;
         self.script_starts = 0;
         self.script_completions = 0;
+        self.script_timeouts = 0;
         self.sentence_words = 0;
         self.sound_cues.clear();
         self.spawn_generation = self.spawn_generation.wrapping_add(1);
@@ -1227,6 +1235,16 @@ impl AiState {
         self.script_completions
     }
 
+    /// How many scripted sequences have given up on ever satisfying
+    /// `ScriptPhase::Moving`'s mark condition and released their monster,
+    /// since this level was attached. See
+    /// `ohl_ai::scripts::SCRIPT_MOVE_TIMEOUT_SECONDS`'s doc comment: a
+    /// counted reason, never a log line.
+    #[must_use]
+    pub fn script_timeout_count(&self) -> u64 {
+        self.script_timeouts
+    }
+
     /// How many `sentences.txt` word slots a `scripted_sentence` has
     /// resolved. A count, never the words: they name assets.
     #[must_use]
@@ -1546,6 +1564,9 @@ impl AiState {
         actor: Entity,
         step: ohl_ai::ScriptStep,
     ) {
+        if step.timed_out {
+            self.script_timeouts += 1;
+        }
         if step.completed {
             self.script_completions += 1;
             let (no_script_movement, yaw, target, delay, kill_target) = {

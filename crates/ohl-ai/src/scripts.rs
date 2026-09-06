@@ -142,7 +142,30 @@ pub struct ScriptStep {
     pub completed: bool,
     /// The script was abandoned because something disturbed the monster.
     pub interrupted: bool,
+    /// The script was abandoned because its monster never satisfied the
+    /// mark condition (arrival, facing, or the warp) within
+    /// [`SCRIPT_MOVE_TIMEOUT_SECONDS`] of entering [`ScriptPhase::Moving`].
+    /// See that constant's doc comment: this is a project-authored bound,
+    /// not a published rule, and exists only so a script can never possess
+    /// a monster forever.
+    pub timed_out: bool,
 }
+
+/// How long [`ScriptPhase::Moving`] may wait for its mark condition
+/// (arrival, facing, or the warp) before the script gives up and releases
+/// its monster.
+///
+/// **`TODO(black-box)`**, per `docs/FORMAT_SOURCES.md`'s "A monster that
+/// cannot reach its mark" item: no public page says what a script does when
+/// its monster cannot reach the mark, so the previous behaviour — waiting
+/// forever — could hold a monster's brain hostage indefinitely (observed on
+/// the campaign start map's own intro sequence, `.plan/smoke-round-3.md`).
+/// This project instead bounds the wait and abandons the script, the same
+/// outcome a disturbance already produces, rather than inventing an
+/// undocumented teleport-on-timeout rule. At [`crate::scripts`]'s walking
+/// speed this comfortably covers an ordinary scripted-sequence approach
+/// distance while still being finite.
+pub const SCRIPT_MOVE_TIMEOUT_SECONDS: f32 = 30.0;
 
 /// One `scripted_sequence`/`aiscripted_sequence`, running.
 #[derive(Debug, Clone, PartialEq)]
@@ -152,6 +175,10 @@ pub struct ScriptRunner {
     timer: f32,
     completions: u32,
     warped: bool,
+    /// Seconds accumulated in the current [`ScriptPhase::Moving`] spell
+    /// without the mark condition becoming true. Reset whenever `Moving`
+    /// is (re-)entered; never touched outside it.
+    moving_elapsed: f32,
 }
 
 impl ScriptRunner {
@@ -164,6 +191,7 @@ impl ScriptRunner {
             timer: 0.0,
             completions: 0,
             warped: false,
+            moving_elapsed: 0.0,
         }
     }
 
@@ -218,6 +246,7 @@ impl ScriptRunner {
         self.phase = ScriptPhase::Moving;
         self.timer = 0.0;
         self.warped = false;
+        self.moving_elapsed = 0.0;
     }
 
     /// Abandons a running script without completing it.
@@ -231,10 +260,32 @@ impl ScriptRunner {
         self.phase = ScriptPhase::Dormant;
         self.timer = 0.0;
         self.warped = false;
+        self.moving_elapsed = 0.0;
         ScriptStep {
             action: ScriptAction::None,
             released: true,
             interrupted: true,
+            ..ScriptStep::default()
+        }
+    }
+
+    /// Gives up on a script whose monster never satisfied
+    /// [`ScriptPhase::Moving`]'s mark condition within
+    /// [`SCRIPT_MOVE_TIMEOUT_SECONDS`].
+    ///
+    /// Otherwise identical to [`Self::abandon`] — the monster is released
+    /// intact and a later trigger replays the script from the start — but
+    /// reported as `timed_out` rather than `interrupted` so a caller can
+    /// count the two reasons separately.
+    fn give_up(&mut self) -> ScriptStep {
+        self.phase = ScriptPhase::Dormant;
+        self.timer = 0.0;
+        self.warped = false;
+        self.moving_elapsed = 0.0;
+        ScriptStep {
+            action: ScriptAction::None,
+            released: true,
+            timed_out: true,
             ..ScriptStep::default()
         }
     }
@@ -264,7 +315,7 @@ impl ScriptRunner {
                 }
                 ScriptStep::default()
             }
-            ScriptPhase::Moving => self.tick_moving(*sense),
+            ScriptPhase::Moving => self.tick_moving(*sense, dt),
             ScriptPhase::Playing => self.tick_playing(*sense),
         }
     }
@@ -280,14 +331,11 @@ impl ScriptRunner {
         }
     }
 
-    fn tick_moving(&mut self, sense: ScriptSense) -> ScriptStep {
+    fn tick_moving(&mut self, sense: ScriptSense, dt: f32) -> ScriptStep {
         let arrived = match self.def.move_to {
             // "The monster will not move or turn": nothing to wait for.
             MoveTo::No => true,
-            // Walking and running wait for the engine to report arrival;
-            // `TODO(black-box)`: no page says what a script does when its
-            // monster cannot reach the mark at all, so it simply keeps
-            // waiting rather than inventing a give-up rule.
+            // Walking and running wait for the engine to report arrival.
             MoveTo::Walk | MoveTo::Run => sense.at_mark,
             // One tick of `Teleport` is enough: the engine places the
             // monster, and the next update finds it there.
@@ -299,6 +347,13 @@ impl ScriptRunner {
             MoveTo::TurnToFace => sense.facing_mark,
         };
         if !arrived {
+            // See `SCRIPT_MOVE_TIMEOUT_SECONDS`: bounded rather than
+            // indefinite, so a script can never possess a monster forever —
+            // whatever the reason it never satisfies the mark condition.
+            self.moving_elapsed += dt;
+            if self.moving_elapsed >= SCRIPT_MOVE_TIMEOUT_SECONDS {
+                return self.give_up();
+            }
             return ScriptStep {
                 action: self.approach_action(),
                 ..ScriptStep::default()
@@ -644,5 +699,142 @@ mod tests {
             assert!(!step.started);
         }
         assert!((runner.timer() - 1.0).abs() < f32::EPSILON);
+    }
+
+    /// Runs `runner` against `never_arrives` until it either times out or
+    /// hits `max_ticks`, returning the tick index (0-based) the timeout
+    /// happened on, or `None` if it never did. Every tick before the
+    /// timeout must report `Moving`, not `timed_out`, and not `released`.
+    fn ticks_until_timeout(
+        runner: &mut ScriptRunner,
+        never_arrives: ScriptSense,
+        max_ticks: u32,
+    ) -> Option<u32> {
+        for tick in 0..max_ticks {
+            let step = runner.update(&never_arrives);
+            if step.timed_out {
+                return Some(tick);
+            }
+            assert_eq!(runner.phase(), ScriptPhase::Moving, "still trying");
+            assert!(!step.released);
+        }
+        None
+    }
+
+    /// A walk-mode script whose monster never reports arrival gives up
+    /// after `SCRIPT_MOVE_TIMEOUT_SECONDS`, releasing the monster with
+    /// `timed_out` set rather than holding it forever. This is the
+    /// regression guard for the M7.11 follow-up: an inert or
+    /// never-arriving monster must not stall a script indefinitely.
+    #[test]
+    fn a_walk_script_that_never_arrives_times_out_and_releases_its_monster() {
+        // 0.1s a tick; comfortably more than the documented 30s bound needs.
+        const MAX_TICKS: u32 = 400;
+        let mut runner = script(&[("m_fMoveTo", "1")]);
+        assert!(runner.trigger());
+        let never_arrives = ScriptSense {
+            at_mark: false,
+            ..sense()
+        };
+        let timeout_tick = ticks_until_timeout(&mut runner, never_arrives, MAX_TICKS)
+            .expect("a script that never arrives must eventually give up");
+        let elapsed = f64::from(timeout_tick + 1) * f64::from(never_arrives.dt);
+        assert!(
+            (elapsed - f64::from(super::SCRIPT_MOVE_TIMEOUT_SECONDS)).abs() < 0.5,
+            "gave up at {elapsed}s, not near the documented {}s bound",
+            super::SCRIPT_MOVE_TIMEOUT_SECONDS
+        );
+        assert_eq!(runner.phase(), ScriptPhase::Dormant);
+        assert_eq!(runner.completions(), 0, "a give-up is not a completion");
+        assert!(runner.trigger(), "a timed-out script can run again");
+    }
+
+    /// Run mode times out exactly the same way as walk mode.
+    #[test]
+    fn a_run_script_that_never_arrives_also_times_out() {
+        const MAX_TICKS: u32 = 400;
+        let mut runner = script(&[("m_fMoveTo", "2")]);
+        assert!(runner.trigger());
+        let never_arrives = ScriptSense {
+            at_mark: false,
+            ..sense()
+        };
+        ticks_until_timeout(&mut runner, never_arrives, MAX_TICKS)
+            .expect("a run-mode script that never arrives must also give up");
+        assert_eq!(runner.phase(), ScriptPhase::Dormant);
+    }
+
+    /// A give-up releases the monster the same way an interruption does —
+    /// action `None`, `released` set, `completed` and `interrupted` unset —
+    /// distinguished only by `timed_out`, so a caller can count the two
+    /// reasons separately.
+    #[test]
+    fn timing_out_looks_like_a_release_tagged_with_its_own_reason() {
+        const MAX_TICKS: u32 = 400;
+        let mut runner = script(&[("m_fMoveTo", "1")]);
+        assert!(runner.trigger());
+        let never_arrives = ScriptSense {
+            at_mark: false,
+            ..sense()
+        };
+        let mut final_step = None;
+        for _ in 0..MAX_TICKS {
+            let step = runner.update(&never_arrives);
+            if step.timed_out {
+                final_step = Some(step);
+                break;
+            }
+        }
+        let step = final_step.expect("times out within the bound");
+        assert!(step.released && !step.interrupted && !step.completed);
+        assert_eq!(step.action, ScriptAction::None);
+    }
+
+    /// Arriving comfortably before the timeout still completes normally:
+    /// the bound must not cut a legitimate, merely-slow approach short.
+    #[test]
+    fn arriving_well_before_the_timeout_still_completes_normally() {
+        // Halfway through the bound: nowhere near giving up yet.
+        const HALFWAY_TICKS: u32 = 150;
+        let mut runner = script(&[("m_fMoveTo", "1")]);
+        assert!(runner.trigger());
+        let never_arrives = ScriptSense {
+            at_mark: false,
+            ..sense()
+        };
+        for _ in 0..HALFWAY_TICKS {
+            let step = runner.update(&never_arrives);
+            assert!(!step.timed_out);
+        }
+        let arrived = ScriptSense {
+            at_mark: true,
+            ..sense()
+        };
+        let step = runner.update(&arrived);
+        assert!(!step.timed_out);
+        assert_eq!(step.action, ScriptAction::Play);
+        assert_eq!(runner.phase(), ScriptPhase::Playing);
+    }
+
+    /// `MoveTo::No`, `Instantaneous` and `TurnToFace` all resolve within a
+    /// couple of ticks and never come close to the move timeout.
+    #[test]
+    fn quick_move_to_modes_never_time_out() {
+        for raw in ["0", "4", "5"] {
+            let mut runner = script(&[("m_fMoveTo", raw)]);
+            assert!(runner.trigger());
+            let mut step = runner.update(&ScriptSense {
+                facing_mark: true,
+                ..sense()
+            });
+            if step.action != ScriptAction::Play {
+                step = runner.update(&ScriptSense {
+                    facing_mark: true,
+                    ..sense()
+                });
+            }
+            assert!(!step.timed_out);
+            assert_eq!(step.action, ScriptAction::Play);
+        }
     }
 }
