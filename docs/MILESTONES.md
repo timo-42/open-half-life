@@ -1465,6 +1465,25 @@ look distance, attack range, turn rate and damage threshold in the crate is
 a placeholder still to be black-box observed; see
 `docs/FORMAT_SOURCES.md`, "Monster AI behaviour" and "Monster definitions".
 
+- **M7.10: track trains.** `ohl-game::track_train` resolves a
+  `func_train`/`func_tracktrain`'s `target` into a bounded `PathChain` of
+  `path_corner`/`path_track` nodes, places the train on its first node
+  (height-adjusted, and — for a `func_tracktrain` only — facing the second
+  node), and advances it along the chain at a fixed timestep, honouring each
+  node's `wait` pause, `path_track`'s own `speed` override and "Wait for
+  retrigger" stop flag, and a closed loop's wrap instead of a dead end;
+  `toggle`/`turn_on`/`turn_off`/`reverse` are wired through the existing
+  `Simulation::activate` "use" path shared with doors, buttons and
+  platforms, and `ohl-engine`'s `render.rs` reads the resolved position/yaw
+  each frame via a new `track_train_transform`, the same way it already
+  reads a door's timer. Covered by unit tests (spawn placement, chain
+  movement with node stop/wait/speed-override handling, reverse, loop) and a
+  `proptest` showing the reported position always lies on the chain's
+  polyline and is never `NaN`. See `docs/FORMAT_SOURCES.md`, "Track trains
+  and paths", for sources and `TODO(black-box)` items (`bank`, `dmg` and
+  `wheels` are recorded but not applied; `path_track`'s `altpath` branching
+  is not implemented).
+
 ## M8 (Rust): save container
 
 Status: in progress. Adds `ohl-save`, a project-owned, versioned save-file
