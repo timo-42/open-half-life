@@ -48,17 +48,17 @@ pub mod transition;
 pub mod test_support;
 
 pub use assets::{AssetFsSource, AssetSource, MemoryAssets};
+pub use components::{Charger, Corpse, Owner, Pickup, PlayerTag, StudioAnim};
 pub use error::{EngineError, Result};
 pub use game::{Game, GameConfig, GameEvent};
-pub use components::{Charger, Corpse, Owner, Pickup, PlayerTag, StudioAnim};
 pub use ids::{entity_id, entity_of};
 pub use input::Input;
 pub use level::{PLAYER_MAX_ARMOR, PLAYER_MAX_HEALTH, SpritePlacement};
-pub use systems::{Systems, SystemsConfig};
-pub use tick::{MAX_TICKS_PER_FRAME, TICK_SECONDS, TickClock};
 pub use render::RenderTarget;
 pub use save::GameSave;
+pub use systems::{Systems, SystemsConfig};
 pub use text::{AssetPath, MessageBlock, SentenceLookup, TitleLibrary};
+pub use tick::{MAX_TICKS_PER_FRAME, TICK_SECONDS, TickClock};
 pub use transition::{
     DEFAULT_CARRY_RADIUS, DefaultPlayerCarry, GlobalStateTable, PlayerCarry, PlayerCarryState,
     TransitionState,

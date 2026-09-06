@@ -53,6 +53,10 @@ ohl-save = { path = "../ohl-save", version = "=0.1.0" }
 ohl-campaign = { path = "../ohl-campaign", version = "=0.1.0" }
 ohl-game = { path = "../ohl-game", version = "=0.1.0", features = ["serde"] }
 ohl-combat = { path = "../ohl-combat", version = "=0.1.0" }
+ohl-formats = { path = "../ohl-formats", version = "=0.1.0", features = [
+    "std",
+    "test-support",
+] }
 
 [lints]
 workspace = true

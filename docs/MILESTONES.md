@@ -1820,6 +1820,52 @@ Not yet done: `ohl-ai` still has to call this crate instead of its
 straight-line route placeholder, and nothing caches a built graph to disk
 yet.
 
+## M7.9 (Rust): engine integration
+
+Status: in progress. Composes the M7/M8 crates into `ohl-engine`'s existing
+`Game::tick`/`Game::render` pair, so `ohl-app` stays a thin composition root.
+Everything is additive: no existing public API changes, and save/load and
+level transitions keep their behaviour.
+
+- **M7.9 P0: engine spine (fixed tick, one world, entity-driven models).**
+  `ohl-engine::tick` lifts the fixed timestep out of
+  `ohl_physics::PlayerController` and into the engine: `TickClock` turns a
+  variable frame time into whole `TICK_SECONDS` steps (re-exported from
+  `ohl_physics::controller`, so the two cannot drift), banking the remainder
+  and dropping the backlog at `MAX_TICKS_PER_FRAME`. `Game::tick` is now a
+  frame loop — clamp the frame, turn the view once (aiming is a frame-rate
+  concern), then run whole steps — and `Game::elapsed` advances one step at
+  a time, so a saved clock is a whole multiple of the step.
+  `ohl-engine::systems` holds the normative thirteen-phase step list as
+  private functions, with the phases M7.9 P1–P3 fill present as empty hooks;
+  damage resolves after AI thinks, and movers run last.
+  `ohl-engine::components` adds the components no other crate owns
+  (`StudioAnim`, `PlayerTag`, `Owner`, `Pickup`, `Charger`, `Corpse`),
+  reusing `ohl_combat::{Health, Armor}` rather than duplicating them, and
+  `ohl-engine::ids` maps a `hecs::Entity` to and from
+  `ohl_combat::EntityId`. `Level` keeps its parsed entity lump
+  (`Level::defs`, published as `Game::entity_defs`) and spawns the client
+  entity, which stays out of the definition-aligned `Registry::entities` so
+  saves keep referencing entities by spawn index. Every studio placement is
+  now an entity carrying a `StudioAnim`, and `render.rs` sources its studio
+  instances from the registry (sampled at each entity's own cursor) instead
+  of a static list, keeping M3's `sequence`/`body`/`skin` and sprite paths
+  intact. `Input` gains `attack`, `attack2`, `reload`, `select_slot` and
+  `flashlight_pressed`; `Game` gains `hud()`, `player_entity()`,
+  `prop_count()`, `entity_defs()` and the `SystemsConfig` accessors.
+  Verified: `TickClock` unit tests (whole multiples, banking, the clamp
+  dropping rather than banking, non-finite input); `entity_id`/`entity_of`
+  round-trips including a despawned entity and a recycled slot; an
+  integration test that the same simulated second lands in the same place
+  however it is cut into frames; and a proptest that an arbitrary frame time
+  and an arbitrary `Input` never panic and never advance the clock by more
+  than one clamped burst.
+
+  Not yet done: P1 (weapons, inventory, pickups, damage routing, HUD/audio),
+  P2 (AI and navigation wiring, and the `MonsterMaker` component that needs
+  `ohl-ai`), P3 (projectiles, view model, sprites) and P4 (save sections and
+  the scripted-input smoke).
+
 ## M9 (Rust): packaging
 
 Status: in progress. `cargo xtask dist` builds the release `open-half-life`

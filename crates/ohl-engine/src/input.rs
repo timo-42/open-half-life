@@ -5,6 +5,10 @@
 /// The movement axes are the same tri-state the physics controller expects
 /// (`-1`, `0`, `+1`); `mouse_delta` is in raw device pixels and is scaled by
 /// [`crate::MOUSE_SENSITIVITY`].
+// A frame's buttons are genuinely independent held/pressed flags, exactly as
+// the host's key bindings deliver them; folding them into enums would only
+// move the same fan-out into the binding layer.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Input {
     /// Forward (`+1`) / back (`-1`).
