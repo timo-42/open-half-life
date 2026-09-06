@@ -390,7 +390,10 @@ fn ambient_at(level: &Level, origin: [f32; 3]) -> [f32; 3] {
 /// top of the already-in-world-space geometry, displacing the rendered
 /// model away from the track. See `docs/CLEAN_ROOM.md`-governed
 /// `.plan/fidelity-round-2.md` finding E1.
-fn track_train_transform(level: &Level, instance: &ohl_game::ModelInstance) -> (Vec3, Option<f32>) {
+pub(crate) fn track_train_transform(
+    level: &Level,
+    instance: &ohl_game::ModelInstance,
+) -> (Vec3, Option<f32>) {
     let Ok(state) = level
         .registry
         .world
@@ -414,7 +417,7 @@ fn track_train_transform(level: &Level, instance: &ohl_game::ModelInstance) -> (
 /// transform, so the visual offset is derived here: the timer counts the
 /// remaining travel, which maps onto a `0..=1` fraction of the door's own
 /// `travel_distance`.
-fn door_offset(level: &Level, instance: &ohl_game::ModelInstance) -> Vec3 {
+pub(crate) fn door_offset(level: &Level, instance: &ohl_game::ModelInstance) -> Vec3 {
     let Ok(door) = level.registry.world.get::<&Door>(instance.entity) else {
         return Vec3::ZERO;
     };
@@ -437,6 +440,15 @@ fn door_offset(level: &Level, instance: &ohl_game::ModelInstance) -> Vec3 {
         MoverState::Closing => progress,
     };
     door.movedir * door.travel_distance * fraction
+}
+
+/// How far a brush entity has moved from where its geometry was compiled.
+///
+/// The same value the renderer offsets the submodel by, so the brush the
+/// player collides with is exactly the brush that is drawn: a door caught
+/// mid-slide blocks where it looks like it is, not where it was authored.
+pub(crate) fn brush_offset(level: &Level, instance: &ohl_game::ModelInstance) -> Vec3 {
+    door_offset(level, instance) + track_train_transform(level, instance).0
 }
 
 /// Maps `ohl-game`'s raw `rendermode`/`renderamt`/`rendercolor` keyvalues

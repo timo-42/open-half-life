@@ -45,6 +45,64 @@ fn is_never_rendered(classname: &str) -> bool {
     classname.starts_with("trigger_") || classname == "func_ladder"
 }
 
+/// Brush-entity classnames that are documented as *not* solid to the
+/// player, and so must never be attached to the collision model.
+///
+/// - `func_illusionary`: TWHL wiki, "func_illusionary" — a brush that is
+///   drawn but has no collision, the standard way to build a non-solid
+///   decoration.
+/// - `func_ladder`: TWHL wiki, "func_ladder" — an invisible brush the
+///   player climbs rather than collides with.
+/// - `func_water`: a swimmable liquid volume, not a wall; its contents are
+///   what the movement code's water handling reads.
+/// - every `trigger_*`: collision-only *volumes* that fire map logic when
+///   the player is inside them, which is impossible if they push the
+///   player out (see [`is_never_rendered`]).
+///
+/// See `docs/FORMAT_SOURCES.md`, "Entity keyvalues and map logic".
+const NEVER_SOLID: [&str; 3] = ["func_illusionary", "func_ladder", "func_water"];
+
+/// Whether a brush entity with this classname blocks the player.
+///
+/// Everything a map compiles into its own `BSPMODEL` is solid unless it is
+/// documented otherwise: `func_wall`, `func_door`, `func_plat`,
+/// `func_train`, `func_breakable`, `func_button` and the rest all stop the
+/// player, and a map routinely builds a floor out of one. The exceptions
+/// are in [`NEVER_SOLID`] and [`is_never_rendered`]'s `trigger_*` family.
+#[must_use]
+pub fn is_solid_brush(classname: &str) -> bool {
+    !classname.starts_with("trigger_") && !NEVER_SOLID.contains(&classname)
+}
+
+/// Collects one [`ModelInstance`] per brush entity that is solid to the
+/// player (see [`is_solid_brush`]), in registry spawn order.
+///
+/// This is the collision counterpart of [`model_instances`]: the two lists
+/// differ, because a brush can be solid and invisible (a `func_wall` with
+/// an aaatrigger-style texture) or visible and non-solid
+/// (`func_illusionary`).
+#[must_use]
+pub fn solid_model_instances(registry: &Registry) -> Vec<ModelInstance> {
+    let mut out = Vec::new();
+    for (entity, model, transform, render, classname) in
+        &mut registry
+            .world
+            .query::<(Entity, &BrushModel, &Transform, &RenderProps, &ClassName)>()
+    {
+        if !is_solid_brush(&classname.0) {
+            continue;
+        }
+        out.push(ModelInstance {
+            entity,
+            model_index: model.0,
+            origin: transform.origin,
+            angles: transform.angles,
+            render: *render,
+        });
+    }
+    out
+}
+
 /// Collects one [`ModelInstance`] per entity that has a [`BrushModel`], a
 /// [`Transform`] and a classname GoldSrc actually draws (excluding
 /// collision-only volumes; see [`is_never_rendered`]), in registry spawn

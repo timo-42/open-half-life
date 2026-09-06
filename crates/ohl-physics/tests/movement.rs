@@ -2,7 +2,8 @@
 
 use ohl_formats::bsp30::{Bsp, Limits};
 use ohl_formats::test_support::{
-    build_collision_pool_bsp, build_collision_room_bsp, build_collision_slope_bsp,
+    build_brush_entity_floor_bsp, build_collision_pool_bsp, build_collision_room_bsp,
+    build_collision_slope_bsp,
 };
 use ohl_physics::controller::TICK_SECONDS;
 use ohl_physics::{
@@ -386,4 +387,61 @@ fn the_controller_walks_forward_along_its_yaw_and_toggles_noclip() {
     assert!(controller.toggle_noclip());
     assert_eq!(controller.state.velocity, Vec3::ZERO);
     assert!(!controller.toggle_noclip());
+}
+
+/// A map whose floor is a brush entity (a `func_wall` slab over a void) is
+/// the ordinary case, not an exotic one: without the entity's own hulls in
+/// the collision model there is nothing under the player at all and they
+/// fall for as long as the simulation runs. With it attached, gravity must
+/// settle them on the slab exactly as on a worldspawn floor.
+#[test]
+fn the_player_stands_on_a_brush_entity_floor() {
+    let bytes = build_brush_entity_floor_bsp("func_wall");
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+    let mut model = CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable hulls");
+    model
+        .attach_brush(&bsp, &limits, 1, Vec3::ZERO)
+        .expect("the fixture declares submodel 1");
+
+    let config = MoveConfig::default();
+    let mut state = PlayerState::at(Vec3::new(0.0, 0.0, 64.0));
+    simulate(&model, &mut state, &MoveInput::default(), &config, 2.0);
+
+    assert!(state.on_ground, "the player never found the slab");
+    assert!(
+        (state.origin.z - FLOOR_ORIGIN_Z).abs() < 0.2,
+        "settled at {} rather than on the slab",
+        state.origin.z
+    );
+
+    // And walking off its edge is still a fall: the slab is 128 units wide,
+    // so a player driven far enough in +X leaves it.
+    simulate(&model, &mut state, &walking(Vec3::X), &config, 3.0);
+    assert!(
+        state.origin.z < FLOOR_ORIGIN_Z - 64.0,
+        "the player did not fall off the edge of a finite slab"
+    );
+}
+
+/// Without the brush entity attached the same fixture has no floor at all,
+/// which is exactly the failure a worldspawn-only collision model produced
+/// on a real map.
+#[test]
+fn a_worldspawn_only_model_lets_the_player_fall_through_a_brush_entity_floor() {
+    let bytes = build_brush_entity_floor_bsp("func_wall");
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+    let model = CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable hulls");
+
+    let mut state = PlayerState::at(Vec3::new(0.0, 0.0, 64.0));
+    simulate(
+        &model,
+        &mut state,
+        &MoveInput::default(),
+        &MoveConfig::default(),
+        2.0,
+    );
+    assert!(!state.on_ground);
+    assert!(state.origin.z < 0.0);
 }
