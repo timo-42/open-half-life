@@ -618,6 +618,15 @@ render modes, light styles, and sprite billboarding/timing.
   `overbright_two_matches_the_documented_full_bright_convention_at_code_128`
   test pins the documented "code 128 is the overbright reference point,
   doubling it saturates to white" behaviour for a caller who does opt in.
+  A follow-up fidelity investigation (round 5,
+  `.plan/fidelity-round-5.md`) measured `--overbright 1.7` bringing this
+  project's captures to roughly 1.01x the public-reference mean luma with
+  no added clipping, against roughly 1.72x under at the engine's raw
+  `1.0`, so `ohl-app` now defaults its own `--overbright` flag to `1.7` as
+  a project display default calibrated against public reference
+  screenshots — not a claimed engine fact — while
+  `LightRamp::default().overbright` and `GameConfig::default()` stay at
+  the documented raw `1.0`.
 
 All sky, liquid, render-mode, light-style and sprite tests in
 `crates/ohl-world` and `crates/ohl-render` (including the

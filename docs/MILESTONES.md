@@ -2405,3 +2405,12 @@ Open follow-ups, in no particular priority order:
   bullsquid asset, per TWHL's "Reference: Entities and their models"; see
   `docs/FORMAT_SOURCES.md`, "Monster definitions") as an alias for
   `monster_bullsquid`.
+- **`ohl-app`'s `--overbright` default calibrated to `1.7`.** A follow-up
+  fidelity investigation (round 5) measured `--overbright 1.7` bringing this
+  project's captures to roughly 1.01x the public-reference mean luma with no
+  added clipping, against roughly 1.72x under at `1.0`, so the application
+  now defaults `--overbright` to `1.7` as its own calibrated display
+  default — a project display choice, not a claimed engine fact.
+  `ohl_world::lightmap::LightRamp::default()` and
+  `ohl_engine::GameConfig::default()` stay unchanged at the documented raw
+  `1.0`; see `docs/FORMAT_SOURCES.md`, "Rendering conventions".
