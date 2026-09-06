@@ -188,7 +188,7 @@ fn every_prop_placement_becomes_a_drawable_entity_whose_cursor_advances() {
 fn arbitrary_input() -> impl Strategy<Value = Input> {
     (
         (any::<i8>(), any::<i8>(), any::<i8>()),
-        (any::<bool>(), any::<bool>(), any::<bool>()),
+        (any::<bool>(), any::<bool>(), any::<bool>(), any::<bool>()),
         (any::<bool>(), any::<bool>(), any::<bool>()),
         proptest::option::of(any::<u8>()),
         (any::<f32>(), any::<f32>()),
@@ -196,7 +196,7 @@ fn arbitrary_input() -> impl Strategy<Value = Input> {
         .prop_map(
             |(
                 (forward, right, up),
-                (jump, duck, use_pressed),
+                (jump, duck, use_pressed, use_held),
                 (attack, attack2, reload),
                 select_slot,
                 mouse_delta,
@@ -207,6 +207,7 @@ fn arbitrary_input() -> impl Strategy<Value = Input> {
                 jump,
                 duck,
                 use_pressed,
+                use_held,
                 attack,
                 attack2,
                 reload,

@@ -1898,8 +1898,7 @@ level transitions keep their behaviour.
   monsters; and a proptest over arbitrary node lattices and inputs never
   panics.
 
-  Not yet done: P1 (weapons, inventory, pickups, damage routing, HUD/audio)
-  and P4 (save sections and the scripted-input smoke).
+  Not yet done: P4 (save sections and the scripted-input smoke).
 
 - **M7.9 P3: projectiles, deployables, view model and transient sprites.**
   `ohl-engine::projectiles` fills phase 7: `ProjectileSystem` owns an
@@ -1984,6 +1983,89 @@ level transitions keep their behaviour.
   Not yet done: M7.9 P4b (the five additive save sections in
   `ohl-engine::save`/`save_state`) and, once M7.9 P1 lands, wiring the four
   TODO(P1) milestone lines above.
+
+- **M7.9 P1: weapons, pickups, damage routing and HUD/audio.**
+  `ohl-engine::combat` rebuilds `ohl_combat::HitboxIndex` each step from
+  every entity carrying a `StudioAnim` (phase 5); drives the selected
+  weapon's `ohl_combat::FiringState` and resolves its hitscan/melee/beam
+  actions through `trace_attack_filtered`, always ignoring the player
+  entity (phase 6). Firing consumes the engine's own `AmmoBank` rather than
+  `ohl_combat::Inventory`'s (grow-only) ammo pools directly — `Inventory`
+  never gains a subtracting mutator, so this crate keeps the bank as the
+  one authoritative reserve and hands out a freshly stamped `Inventory`
+  (`Game::inventory`) whenever a caller needs to read ammo from one.
+  `Systems` owns one shared `damage_queue: Vec<QueuedDamage>` (keyed by
+  `hecs::Entity`, not `ohl_combat::EntityId`), which phase 9 drains once:
+  damage aimed at the player routes to `ohl_player::Player` (armor, suit,
+  death), damage aimed at anything else to that entity's
+  `ohl_combat::Health`/`Armor` components. `ohl-engine::damage_map` is the
+  `ohl_player::DamageKind` <-> `ohl_combat::DamageType` mapping neither
+  player-systems crate needs to know about the other for (§3 of the design
+  note); the reduction order is fixed so a combined mask never depends on
+  iteration order. `ohl-engine::pickups` classifies `Level::defs` once per
+  level (lazily, so `level.rs` stays untouched) into `Pickup`/`Charger`
+  components, touch-tests them against the player's origin (phase 11), and
+  drains a charger's reservoir while `use` is held. `ohl-engine::presentation`
+  owns the one `ohl_gameplay::GameplayBridge` and turns `ohl_player::
+  PlayerEvent`s the bridge cannot see (the player's own health/armor) into
+  `HudState` updates and the four additive `GameEvent` variants: `Sound`,
+  `Suit`, `ViewModel`, `PlayerDied`. `ohl_player::Player::tick` is wired into
+  phase 3 from the `PhysicsOutput` phase 2's `PlayerController` reports, with
+  `trigger_hurt` volumes gathered by a radius test against the player's
+  origin (a documented `TODO(black-box)` stand-in for a real brush-overlap
+  test, matching the same simplification `pickups.rs` uses for its own touch
+  radius). Every `ohl_gameplay::SoundCue::path` this package emits is `None`
+  (§5): the plumbing is complete, the path table stays empty pending a
+  clean-room provenance review. `Game` gains `inventory()`, `player_health()`
+  and `player_armor()`.
+
+  Post-review fixes: `Input` gains `use_held` (a held axis) alongside the
+  pre-existing `use_pressed` edge; `PickupsState`'s charger drain and
+  `Player::tick`'s `PlayerInput::use_held` both key off the hold, not the
+  edge (the edge fires once per press regardless of how long the key stays
+  down, which cannot drive a use-and-hold charger). `Systems::{capture_carry,
+  restore_carry}` bind `#62`'s `PlayerCarry` seam (`transition.rs`) to this
+  package's real `ohl_player`/`CombatState`/`AmmoBank` state: a
+  `Game::change_level` now carries health, armor, owned weapons, per-weapon
+  clips, reserve ammo, the HEV suit and the long jump module across, via an
+  ad hoc byte encoding in `PlayerCarryState::extra`. A save/load round trip
+  already preserves the same state today, for free: `GameSave` (`extra`
+  blob included) is serialized whole into the `ohl-save` container, so
+  nothing about `to_save`/`from_save` needed to change. `TODO(P4)`: fold
+  this ad hoc encoding into its own `SECTION_INVENTORY` (§6) instead, so a
+  save's inventory section is self-describing independent of
+  `PlayerCarryState`'s shape. Weapon
+  *selection* is not carried — `Inventory`'s selection API is cycle-only,
+  with no way to force an exact weapon back into place — so a transition
+  holsters. `ohl-app` copies `Game::hud()`'s health/armor/ammo/damage-flash
+  fields into its own drawn `HudState` each frame (without clobbering that
+  struct's own title/message state, which arrives as `GameEvent`s, not
+  through `HudState`); `PickupsState` now calls
+  `GameplayBridge::on_pickup`, giving `GameEvent::Sound` its first real
+  producer. Known remaining gaps: hitscan `spread` is discarded (every
+  pellet of a multi-pellet shot traces the identical ray; `TODO(black-box)`
+  at the call site, since no usable source publishes Half-Life's spread
+  cones and sampling one needs a random source this package does not yet
+  own), and `CombatEvent::DamageDealt`'s `health_lost`/`armor_lost` fields
+  report the pre-armour amount and `0.0` rather than the true split (only
+  `target` is read by anything today).
+
+  Verified: `damage_kind_of` is total and order-independent for every
+  single-bit `DamageType` mask and for `BURN|FREEZE`; `damage_type_of`
+  composed with `damage_kind_of` is the identity on the eleven mapped
+  `DamageKind`s; firing at a synthetic target deposits exactly the weapon's
+  published per-shot damage, and never hits the player even when the player
+  is in the hitbox index; walking over a `weapon_*` entity adds it once and
+  respects its published ammo carry cap; a `func_healthcharger` drains while
+  `use_held` stays true and stops the instant it goes false, and a single
+  held tick restores exactly one tick's worth (never more, never less); a
+  proptest (now over a fixture that actually owns a weapon) that an
+  arbitrary sequence of `Input`s never drives health, armor, clip or reserve
+  ammo out of range and never panics; firing some ammo into a weapon's clip
+  and changing level leaves the reserve, the clip and the (already-damaged)
+  health exactly as they were; the existing headless capture still renders.
+
+  Not yet done: P4 (save sections and the scripted-input smoke).
 
 ## M9 (Rust): packaging
 

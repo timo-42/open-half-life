@@ -33,16 +33,21 @@ use ohl_game::hecs::Entity;
 use ohl_game::registry::Transform;
 use ohl_game::{Event, find_usable_within};
 use ohl_physics::{ControllerInput, PlayerController};
+use ohl_player::PlayerSystems;
 use ohl_render::{FreeFlyCamera, MoveInput};
 
 use crate::USE_RADIUS;
 use crate::ai::AiState;
+use crate::combat::CombatState;
 use crate::components::StudioAnim;
 use crate::input::Input;
 use crate::level::Level;
+use crate::pickups::PickupsState;
+use crate::presentation::{Presentation, PresentationEvent};
 use crate::projectiles::ProjectileSystem;
 use crate::sprites::TransientSprites;
 use crate::viewmodel::ViewModel;
+use ohl_combat::HitboxIndex;
 
 /// The project's default random seed.
 ///
@@ -65,6 +70,14 @@ pub struct QueuedDamage {
     /// What the hit does.
     pub info: ohl_combat::DamageInfo,
 }
+
+/// How close the player's origin must be to a `trigger_hurt` volume's own
+/// origin for it to apply this step. **To be black-box observed**: the real
+/// test is whether the player is inside the volume's brush, not within a
+/// radius of a point; see `crate::pickups::PICKUP_TOUCH_RADIUS` for the same
+/// simplification applied to pickups.
+// TODO(black-box): replace with a real volume-overlap test.
+const TRIGGER_HURT_RADIUS: f32 = 128.0;
 
 /// Everything about the step list a host chooses rather than the map.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -117,6 +130,10 @@ pub(crate) struct LatchedInput {
     pub(crate) attack: bool,
     pub(crate) attack2: bool,
     pub(crate) use_pressed: bool,
+    /// Whether "use" is currently held, mirroring [`Input::use_held`]. A
+    /// held axis, not an edge: it applies to every step of the frame, the
+    /// same as `attack`/`attack2`.
+    pub(crate) use_held: bool,
     pub(crate) reload_pressed: bool,
     pub(crate) flashlight_pressed: bool,
     pub(crate) select_slot: Option<u8>,
@@ -163,6 +180,7 @@ impl LatchedInput {
             attack: input.attack,
             attack2: input.attack2,
             use_pressed: false,
+            use_held: input.use_held,
             reload_pressed: false,
             flashlight_pressed: false,
             select_slot: None,
@@ -199,27 +217,49 @@ pub struct Systems {
     /// Edges delivered but not yet handed to a step. Sticky across frames
     /// that release no step, so a press on a short frame is not lost.
     pending_edges: PendingEdges,
-    /// The HUD the host draws. Written by the presentation phase; a default
-    /// until the gameplay bridge is wired in.
+    /// The HUD the host draws. Written by the presentation phase.
     hud: ohl_ui::hud::HudState,
     /// The one random stream every simulation phase shares, seeded from
     /// [`SystemsConfig::rng_seed`] and never from the environment.
     rng: ohl_ai::Pcg32,
-    /// Phase 9's queue: every hit a weapon (phase 6), a projectile or blast
-    /// (phase 7) or an AI attack (phase 8) produced this step, paired with
-    /// its target and drained once damage resolution runs. This is the
-    /// shared field `docs/m79-design.md` §8 asks P1 and P3 to agree on by
-    /// name and type.
+    /// Every hit a weapon (phase 6), a projectile or blast (phase 7) or an
+    /// AI attack (phase 8) produced this step, paired with its target.
+    /// Phase 9 drains everything aimed at the player or at a non-monster
+    /// entity; whatever targets a monster is left for phase 10's
+    /// `ohl_ai::apply_monster_damage` drain, which is the one place a
+    /// monster's health moves. This is the shared field `docs/m79-design.md`
+    /// §8 asks P1 and P3 to agree on by name and type.
     pub(crate) damage_queue: Vec<QueuedDamage>,
     /// The AI world, its brains and this map's navigator.
     pub(crate) ai: AiState,
     /// Phase 7's own state: live projectiles and placed deployables.
     projectiles: ProjectileSystem,
-    /// The bounded transient-sprite list phase 7 (and, later, phase 6's
-    /// muzzle flashes) fills; phase 13 ages it.
+    /// The bounded transient-sprite list phase 7 (and phase 6's muzzle
+    /// flashes, in a later package) fills; phase 13 ages it.
     transient_sprites: TransientSprites,
     /// The first-person view model's animation state.
     view_model: ViewModel,
+    /// The player's own health/armor/suit/flashlight/long-jump systems
+    /// (M7.9 P1). Motion lives in `ohl-physics`/`PlayerController`; this is
+    /// everything that reacts to it.
+    player: ohl_player::Player,
+    /// The hitbox index, weapon firing and damage queue (M7.9 P1).
+    combat: CombatState,
+    /// Pickup touch tests and chargers (M7.9 P1).
+    pickups: PickupsState,
+    /// The HUD/audio presentation bridge (M7.9 P1).
+    presentation: Presentation,
+    /// This step's player-systems events, produced in phase 3 and by phase
+    /// 9's damage routing, consumed by phase 13.
+    player_events: Vec<ohl_player::PlayerEvent>,
+    /// The posed hitbox index, rebuilt by phase 5 and read by phase 6 (and
+    /// phase 7's projectiles/deployables). Owned directly by `Systems`,
+    /// cleared and refilled each step rather than reallocated, so every
+    /// attack this step traces against the exact same index.
+    hitboxes: HitboxIndex,
+    /// The last player-move step's physics report, produced in phase 2 and
+    /// consumed by phase 3.
+    physics_output: ohl_player::PhysicsOutput,
 }
 
 impl Systems {
@@ -241,6 +281,13 @@ impl Systems {
             projectiles: ProjectileSystem::new(config.rng_seed),
             transient_sprites: TransientSprites::new(),
             view_model: ViewModel::new(),
+            player: ohl_player::Player::default(),
+            combat: CombatState::new(),
+            pickups: PickupsState::new(),
+            presentation: Presentation::new(),
+            player_events: Vec::new(),
+            physics_output: ohl_player::PhysicsOutput::default(),
+            hitboxes: HitboxIndex::new(ohl_combat::HitboxLimits::default()),
         }
     }
 
@@ -263,6 +310,53 @@ impl Systems {
     /// games from the same seed identical.
     pub fn rng(&mut self) -> &mut ohl_ai::Pcg32 {
         &mut self.rng
+    }
+
+    /// The player's weapons, ammo, HEV suit and long-jump ownership.
+    #[must_use]
+    pub(crate) fn inventory(&self) -> ohl_combat::Inventory {
+        self.combat.display_inventory()
+    }
+
+    /// The player's current health, from `ohl_player::Player`'s own state.
+    #[must_use]
+    pub(crate) fn player_health(&self) -> f32 {
+        self.player.state.health
+    }
+
+    /// The player's current HEV armor, from `ohl_player::Player`'s own
+    /// state.
+    #[must_use]
+    pub(crate) fn player_armor(&self) -> f32 {
+        self.player.state.armor
+    }
+
+    /// This step's player health/armor/weapons/ammo/suit/long-jump, as a
+    /// [`crate::transition::PlayerCarryState`] for a level change or a save.
+    /// See `crate::combat::CombatState::capture_carry`'s doc comment for
+    /// what `extra` holds, which already round-trips through a save file
+    /// unchanged (it is plain data inside `PlayerCarryState`).
+    #[must_use]
+    pub(crate) fn capture_carry(&self) -> crate::transition::PlayerCarryState {
+        crate::transition::PlayerCarryState {
+            health: self.player.state.health,
+            armor: self.player.state.armor,
+            extra: self.combat.capture_carry(),
+        }
+    }
+
+    /// Applies a previously captured [`crate::transition::PlayerCarryState`]
+    /// onto a freshly reset `Systems` (called right after
+    /// [`Self::reset`], so there is nothing else to clobber).
+    pub(crate) fn restore_carry(&mut self, state: &crate::transition::PlayerCarryState) {
+        self.player.state.health = state.health.clamp(0.0, self.player.config.max_health);
+        self.player.state.armor = state.armor.clamp(0.0, self.player.config.max_armor);
+        self.combat.restore_carry(&state.extra, &mut self.player);
+    }
+
+    /// Takes every presentation event collected since the last call.
+    pub(crate) fn drain_presentation_events(&mut self) -> Vec<PresentationEvent> {
+        self.presentation.drain_events()
     }
 
     /// The configuration this step list runs with.
@@ -380,17 +474,22 @@ impl Systems {
     ) {
         let input = self.latch_input(); // 1
         Self::player_move(level, camera, controller, input, dt); // 2
-        self.player_systems(dt); // 3
+        self.physics_output = ohl_player::PhysicsOutput::from_move(
+            &controller.state,
+            &controller.config,
+            &controller.last_move_events(),
+        );
+        self.player_systems(level, input, dt); // 3
         Self::actor_sync(level, camera, controller, dt); // 4
         self.rebuild_hitbox_index(level); // 5
-        self.weapons(dt); // 6
+        self.weapons(level, controller, dt, input); // 6
         self.projectiles(level, dt); // 7
         self.ai_think(level, dt); // 8
-        self.resolve_damage(); // 9
+        self.resolve_damage(level); // 9
         self.lifecycle(level, dt); // 10
-        self.pickups(level, input); // 11
+        self.pickups(level, input, dt); // 11
         Self::triggers_and_movers(level, camera, input, dt, events); // 12
-        self.presentation(dt); // 13
+        self.presentation(level, dt); // 13
     }
 
     /// Phase 1 — input latch. Axes hold for every step of the frame; edges
@@ -432,8 +531,37 @@ impl Systems {
 
     /// Phase 3 — player systems: fall damage, drowning, `trigger_hurt`,
     /// the suit, the flashlight and the long jump.
-    #[allow(clippy::unused_self)]
-    fn player_systems(&mut self, _dt: f32) {}
+    fn player_systems(&mut self, level: &Level, input: LatchedInput, dt: f32) {
+        let mut player_input = ohl_player::PlayerInput {
+            flashlight_pressed: input.flashlight_pressed,
+            use_held: input.use_held,
+            jump: input.jump,
+            duck: input.duck,
+            hurt: Vec::new(),
+        };
+        let player_origin = self.physics_output.origin;
+        for (hurt, transform) in &mut level
+            .registry
+            .world
+            .query::<(&ohl_game::TriggerHurt, &Transform)>()
+        {
+            if transform.origin.distance(player_origin) <= TRIGGER_HURT_RADIUS {
+                player_input.push_hurt(ohl_player::HurtInput::from_trigger_hurt(hurt));
+            }
+        }
+        let events = match level.collision.as_ref() {
+            Some(collision) => self
+                .player
+                .tick(dt, &player_input, &self.physics_output, collision),
+            None => self.player.tick(
+                dt,
+                &player_input,
+                &self.physics_output,
+                &ohl_player::EmptyWorld,
+            ),
+        };
+        self.player_events.extend(events);
+    }
 
     /// Phase 4 — actor sync: the player's world entity follows the player,
     /// and every studio animation cursor advances one step.
@@ -477,30 +605,48 @@ impl Systems {
 
     /// Phase 5 — hitbox index: rebuilt each step from every entity carrying
     /// a pose and an actor, so a trace hits where the model is drawn.
-    #[allow(clippy::unused_self)]
-    fn rebuild_hitbox_index(&mut self, _level: &mut Level) {}
+    /// Model-backed projectiles/deployables (a flying rocket, a placed
+    /// tripmine) are excluded, so a projectile's own drawn model cannot
+    /// stop its own sweep in phase 7.
+    fn rebuild_hitbox_index(&mut self, level: &mut Level) {
+        let exclude: Vec<Entity> = self.projectiles.model_entities().collect();
+        crate::combat::rebuild_hitbox_index(&mut self.hitboxes, level, &exclude);
+    }
 
     /// Phase 6 — weapons: the firing state machine, its hitscan traces and
     /// the damage they queue.
-    #[allow(clippy::unused_self)]
-    fn weapons(&mut self, _dt: f32) {}
+    fn weapons(
+        &mut self,
+        level: &Level,
+        controller: &PlayerController,
+        dt: f32,
+        input: LatchedInput,
+    ) {
+        self.combat.weapons(
+            level,
+            controller,
+            dt,
+            input,
+            level.player,
+            &self.hitboxes,
+            &mut self.damage_queue,
+            &mut self.hud,
+            &mut self.presentation,
+        );
+    }
 
     /// Phase 7 — projectiles and deployables, and the radius damage they
-    /// queue. See `crate::projectiles`. Also ages the transient-sprite list
-    /// and the view model's animation cursor: neither phase 6 (weapons,
-    /// still an empty hook) nor phase 13 (presentation, likewise) has
-    /// landed a body yet in this tree, and both are this package's own
-    /// state, so ageing them here rather than leaving them frozen keeps
-    /// `Game::viewmodel_visible` and the sprite cap meaningful standalone.
+    /// queue. See `crate::projectiles`. Traces against [`Self::hitboxes`]
+    /// (phase 5's rebuild), the same index phase 6's weapons used, rather
+    /// than rebuilding its own.
     fn projectiles(&mut self, level: &mut Level, dt: f32) {
         self.projectiles.tick(
             level,
+            &self.hitboxes,
             dt,
             &mut self.damage_queue,
             &mut self.transient_sprites,
         );
-        self.transient_sprites.tick(dt);
-        self.view_model.tick(dt);
     }
 
     /// Phase 8 — AI think and navigation. Runs before damage resolution on
@@ -511,8 +657,18 @@ impl Systems {
 
     /// Phase 9 — damage resolution: the queue is drained once, in insertion
     /// order.
-    #[allow(clippy::unused_self)]
-    fn resolve_damage(&mut self) {}
+    fn resolve_damage(&mut self, level: &mut Level) {
+        let player_id = level.player;
+        crate::combat::resolve_damage(
+            &mut self.damage_queue,
+            level,
+            &mut self.player,
+            player_id,
+            &mut self.hud,
+            &mut self.presentation,
+            &mut self.player_events,
+        );
+    }
 
     /// Phase 10 — lifecycle: deaths, corpses, gibs and `monstermaker`.
     fn lifecycle(&mut self, level: &mut Level, dt: f32) {
@@ -520,8 +676,24 @@ impl Systems {
     }
 
     /// Phase 11 — pickups: touch tests and the use-and-hold chargers.
-    #[allow(clippy::unused_self)]
-    fn pickups(&mut self, _level: &mut Level, _input: LatchedInput) {}
+    fn pickups(&mut self, level: &mut Level, input: LatchedInput, dt: f32) {
+        let player_origin = self.physics_output.origin;
+        #[allow(clippy::cast_possible_truncation)]
+        let player_tag = crate::ids::entity_id(level.player).0 as u32;
+        let (inventory, ammo) = self.combat.inventory_and_ammo_mut();
+        self.pickups.run(
+            level,
+            player_origin,
+            player_tag,
+            input,
+            dt,
+            inventory,
+            ammo,
+            &mut self.player,
+            &mut self.hud,
+            &mut self.presentation,
+        );
+    }
 
     /// Phase 12 — triggers and movers, last so everything else has already
     /// settled.
@@ -544,9 +716,17 @@ impl Systems {
     }
 
     /// Phase 13 — presentation: the HUD, sound cues and view-model actions
-    /// the host reads after the step.
-    #[allow(clippy::unused_self)]
-    fn presentation(&mut self, _dt: f32) {}
+    /// the host reads after the step; also ages the transient-sprite list
+    /// and the view model's own animation cursor (phase 7 no longer does,
+    /// now that this phase has landed).
+    fn presentation(&mut self, level: &mut Level, dt: f32) {
+        crate::combat::sync_player_components(level, &self.player);
+        let events = std::mem::take(&mut self.player_events);
+        self.presentation
+            .tick(dt, &mut self.hud, &self.player, events, &mut self.view_model);
+        self.transient_sprites.tick(dt);
+        self.view_model.tick(dt);
+    }
 }
 
 impl Default for Systems {

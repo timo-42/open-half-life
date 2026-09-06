@@ -22,7 +22,13 @@ pub struct Input {
     /// Whether duck is held.
     pub duck: bool,
     /// Set for exactly the frame "use" was pressed, not while it is held.
+    /// Drives an instantaneous action (opening a door, pressing a button).
     pub use_pressed: bool,
+    /// Whether "use" is currently held down. Held, not an edge: a
+    /// use-and-hold charger drains for as long as this stays `true`, unlike
+    /// [`Self::use_pressed`], which the host clears every frame regardless
+    /// of how long the key stays down.
+    pub use_held: bool,
     /// Whether primary fire is held. Held, not an edge: a fully automatic
     /// weapon fires for as long as it is down, and the firing state machine
     /// decides the cadence.

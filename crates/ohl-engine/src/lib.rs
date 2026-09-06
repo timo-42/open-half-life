@@ -45,6 +45,16 @@ pub mod tick;
 pub mod ai;
 pub mod nav;
 
+// M7.9 P1 (weapons, pickups, damage routing, HUD/audio): the hitbox index,
+// weapon firing and damage queue; pickup touch tests and chargers; HUD/audio
+// presentation through `GameEvent`. `damage_map` is the only one of these
+// with a public function surface (`Game`'s new accessors and the four new
+// `GameEvent` variants cover the rest).
+mod combat;
+pub mod damage_map;
+mod pickups;
+mod presentation;
+
 // Campaign flow (M8.2): level transitions, save/load, chapter titles and
 // difficulty. See `docs/FORMAT_SOURCES.md` ("Campaign flow") for the public
 // documentation these semantics were implemented from.

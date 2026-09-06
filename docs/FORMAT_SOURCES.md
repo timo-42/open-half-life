@@ -1924,6 +1924,17 @@ touching a sound file.
 The player systems (fall damage, drowning, flashlight, long jump) are a
 later M7 package and are not implemented here.
 
+**M7.9 P1 (engine wiring)** composes the above into `ohl-engine`'s tick
+loop — the hitbox index, weapon firing, the damage queue, pickup touch
+tests, chargers and the HUD/audio bridge — and introduces no number of its
+own. The `ohl_player::DamageKind` <-> `ohl_combat::DamageType` mapping
+(`ohl-engine::damage_map`) is a project-authored correspondence between two
+already-published vocabularies, not a new fact; its one open question
+(whether nerve gas and poison are one suit occasion or two) is recorded as
+`TODO(black-box)` in that module. The pickup and `trigger_hurt` touch radii
+this wiring uses in place of a real bounding-volume test are likewise
+`TODO(black-box)` placeholders, not measurements.
+
 ## Monster AI behaviour
 
 Behavioural vocabulary only; no file format is involved and no SDK source,
