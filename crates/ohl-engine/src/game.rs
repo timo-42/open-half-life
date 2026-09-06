@@ -391,6 +391,49 @@ impl Game {
         )
     }
 
+    /// Test-only hook: places a satchel directly, bypassing the weapon
+    /// wiring that does not exist yet for it (see
+    /// [`Self::debug_spawn_projectile`]'s doc for why this crate needs
+    /// these hooks at all). Used by the `SECTION_PROJECTILES` stand-in
+    /// restore tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn debug_place_satchel(&mut self, position: [f32; 3]) -> Option<ohl_combat::DeployableId> {
+        self.systems
+            .debug_place_satchel(&mut self.level, Vec3::from_array(position))
+    }
+
+    /// As [`Self::debug_place_satchel`], for a tripmine.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn debug_place_tripmine(
+        &mut self,
+        from: [f32; 3],
+        direction: [f32; 3],
+    ) -> Option<ohl_combat::DeployableId> {
+        self.systems.debug_place_tripmine(
+            &mut self.level,
+            Vec3::from_array(from),
+            Vec3::from_array(direction),
+        )
+    }
+
+    /// How many placed deployables currently have a model-backed stand-in
+    /// entity (drawn, and damageable). See
+    /// `crate::projectiles::ProjectileSystem::deployable_stand_in_count`.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn deployable_stand_in_count(&self) -> usize {
+        self.systems.debug_deployable_stand_in_count()
+    }
+
+    /// How many satchels/tripmines are currently placed, model or not — the
+    /// other half of the equality [`Self::deployable_stand_in_count`]
+    /// documents.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn deployable_count(&self) -> usize {
+        self.systems.debug_deployable_count()
+    }
+
     /// The player's weapons, ammo, HEV suit and long-jump ownership.
     ///
     /// A freshly built value each call (see `crate::combat`'s module docs
@@ -1133,7 +1176,8 @@ impl Game {
         }
         // `SECTION_PROJECTILES` (26, M7.9 P4b).
         if let Some(projectiles) = &save.projectiles {
-            self.systems.restore_projectiles(&self.level, projectiles);
+            self.systems
+                .restore_projectiles(&mut self.level, projectiles);
         }
         // `SECTION_RNG` (27, M7.9 P4b).
         if let Some(rng) = &save.rng {

@@ -515,10 +515,14 @@ impl Systems {
         self.projectiles.snapshot(level)
     }
 
-    /// Restores `SECTION_PROJECTILES` (26).
+    /// Restores `SECTION_PROJECTILES` (26), and re-creates every
+    /// model-backed stand-in entity it implies (see
+    /// `crate::projectiles::ProjectileSystem::restore_snapshot`'s doc);
+    /// takes the level mutably for that reason, unlike
+    /// [`Self::restore_entity_combat`]/[`Self::restore_ai`].
     pub(crate) fn restore_projectiles(
         &mut self,
-        level: &Level,
+        level: &mut Level,
         snapshot: &crate::save_state::ProjectilesSnapshot,
     ) {
         self.projectiles.restore_snapshot(level, snapshot);
@@ -619,6 +623,47 @@ impl Systems {
         velocity: Vec3,
     ) -> Option<ohl_combat::ProjectileId> {
         self.projectiles.spawn(level, kind, owner, origin, velocity)
+    }
+
+    /// Test-only: places a satchel directly, the model-configuring
+    /// counterpart of [`Self::spawn_projectile`] for a deployable.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn debug_place_satchel(
+        &mut self,
+        level: &mut Level,
+        position: Vec3,
+    ) -> Option<ohl_combat::DeployableId> {
+        self.projectiles.place_satchel(level, None, position)
+    }
+
+    /// As [`Self::debug_place_satchel`], for a tripmine.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn debug_place_tripmine(
+        &mut self,
+        level: &mut Level,
+        from: Vec3,
+        direction: Vec3,
+    ) -> Option<ohl_combat::DeployableId> {
+        self.projectiles
+            .place_tripmine(level, None, from, direction)
+    }
+
+    /// Test-only: how many placed deployables currently have a model-backed
+    /// stand-in entity, for asserting a restore re-created every one of
+    /// them (see [`crate::projectiles::ProjectileSystem::
+    /// deployable_stand_in_count`]).
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub(crate) fn debug_deployable_stand_in_count(&self) -> usize {
+        self.projectiles.deployable_stand_in_count()
+    }
+
+    /// As [`Self::debug_deployable_stand_in_count`], the deployable count
+    /// itself (model or not).
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub(crate) fn debug_deployable_count(&self) -> usize {
+        self.projectiles.deployable_count()
     }
 
     /// Clears everything a level change or a save load invalidates, keeping

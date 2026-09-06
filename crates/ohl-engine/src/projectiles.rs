@@ -46,21 +46,26 @@
 //! `Level::studio_models`'s doc) simply leaves the kind model-less, drawn
 //! as a sprite or not drawn at all, never a missing-asset error.
 //!
-//! # Not yet persisted
+//! # Re-created on restore, never persisted
 //!
 //! Neither [`ohl_combat::Projectile::self_id`] nor a deployable's
 //! stand-in `hecs` entity (tracked in [`ProjectileSystem::models`] and
 //! [`ProjectileSystem::deployable_models`]) is written by `ohl-engine`'s
-//! save/restore path (PR #80's five additive save sections). A restored
-//! `DeployableSet` today would come back with no stand-ins at all —
-//! simulated but undrawn and, worse, undamageable again, exactly the
-//! regression this module exists to fix — and a restored, still-in-flight
-//! projectile would come back with `self_id: None`. Whoever picks up a
-//! save-format follow-up for projectiles/deployables should re-run
-//! [`ProjectileSystem::configure_models`] and re-spawn every stand-in from
-//! the restored `ProjectileSet`/`DeployableSet` on load, rather than trying
-//! to serialise a `hecs::Entity` handle across a save (`hecs` gives no
-//! stability guarantee for those across a process, let alone a save file).
+//! save/restore path (PR #80's five additive save sections still hold only
+//! the plain `ProjectileSet`/`DeployableSet` data): `hecs` gives no
+//! stability guarantee for an `Entity` handle across a process, let alone
+//! a save file, so one is never serialised. Instead,
+//! [`ProjectileSystem::restore_snapshot`] re-runs
+//! [`ProjectileSystem::configure_models`]'s effect (the caller,
+//! `Systems::attach_level`, has always already called it once by the time
+//! restore runs) and re-spawns every stand-in from the just-restored
+//! `ProjectileSet`/`DeployableSet` itself: a placed satchel/tripmine gets
+//! a fresh [`StudioAnim`]+[`Health`]+[`DeployableRef`] entity so it draws
+//! and stays damageable again, and a model-backed in-flight projectile
+//! gets a fresh stand-in of its own so [`ohl_combat::Projectile::self_id`]
+//! is set again — without either, a restored deployable would come back
+//! simulated but undrawn and undamageable, and a restored projectile could
+//! detonate on its own drawn model the next tick.
 
 use std::collections::BTreeMap;
 
@@ -327,6 +332,24 @@ impl ProjectileSystem {
     #[allow(dead_code)]
     pub(crate) fn deployable_entity(&self, id: DeployableId) -> Option<Entity> {
         self.deployable_models.get(&id).copied()
+    }
+
+    /// How many placed satchels/tripmines currently have a model-backed
+    /// stand-in entity. Used by the `SECTION_PROJECTILES` restore tests to
+    /// assert this equals `self.deployables.satchels().len() +
+    /// self.deployables.tripmines().len()` after a load, i.e. that every
+    /// restored deployable got its stand-in back, not just some of them.
+    #[allow(dead_code)]
+    pub(crate) fn deployable_stand_in_count(&self) -> usize {
+        self.deployable_models.len()
+    }
+
+    /// How many placed satchels and tripmines are currently live, model or
+    /// not — the other half of the equality [`Self::deployable_stand_in_count`]
+    /// documents.
+    #[allow(dead_code)]
+    pub(crate) fn deployable_count(&self) -> usize {
+        self.deployables.satchels().len() + self.deployables.tripmines().len()
     }
 
     /// Spawns one projectile, and — when `kind` has a configured model — a
@@ -766,16 +789,36 @@ impl ProjectileSystem {
     }
 
     /// Restores everything [`Self::snapshot`] captured, replacing whatever
-    /// this system currently holds. Model-backed rendering entities are not
-    /// recreated (see `crate::save_state`'s module doc): the restored
-    /// projectiles simulate identically but draw as nothing until they
-    /// resolve.
+    /// this system currently holds, and then re-creates every model-backed
+    /// stand-in this module owns (see the module doc's former "Not yet
+    /// persisted" note): a restored satchel/tripmine gets a fresh stand-in
+    /// entity ([`StudioAnim`], [`Health`], [`DeployableRef`]) so it draws
+    /// and stays damageable, and a restored model-backed projectile gets a
+    /// fresh stand-in entity of its own so [`ohl_combat::Projectile::self_id`]
+    /// is set again (never the old `hecs::Entity` bits, which `hecs` gives
+    /// no cross-process stability for — always a brand new entity spawned
+    /// from the restored position/kind, exactly as
+    /// [`Self::spawn`]/[`Self::spawn_deployable_model`] do for a freshly
+    /// placed one). The caller must have already run
+    /// [`Self::configure_models`] against `level` (`Systems::attach_level`
+    /// always has, before `Systems::restore_projectiles` runs) or none of
+    /// this has a model to spawn and every kind restores model-less, as
+    /// before this method existed.
     pub(crate) fn restore_snapshot(
         &mut self,
-        level: &Level,
+        level: &mut Level,
         snapshot: &crate::save_state::ProjectilesSnapshot,
     ) {
-        self.models.clear();
+        // Never leaves a stale stand-in behind for this call to duplicate:
+        // despawn whatever this system currently tracks before rebuilding
+        // both sets, whether that came from a previous restore or from
+        // ordinary play.
+        for (_, entity) in std::mem::take(&mut self.models) {
+            let _ = level.registry.world.despawn(entity);
+        }
+        for (_, entity) in std::mem::take(&mut self.deployable_models) {
+            let _ = level.registry.world.despawn(entity);
+        }
         // Bounded before any allocation grows from it, not just by
         // `ProjectileSet`/`DeployableSet::restore_from_parts`'s own
         // truncation afterward: a corrupt or adversarial save naming an
@@ -807,16 +850,12 @@ impl ProjectileSystem {
                         .max(0.0),
                     hop_cooldown: crate::save_state::sanitize_f32(entry.hop_cooldown, 0.0).max(0.0),
                     resting: entry.resting,
-                    // Not persisted (see this method's own doc and
-                    // `crate::projectiles`' module doc's "Not yet
-                    // persisted" note): a restored projectile has no
-                    // model-backed stand-in entity yet, so it has nothing
-                    // to name here either. `sync_model_entities` never
-                    // populates `self.models` for a restored id, so this
-                    // stays `None` until a future save-format revision
-                    // re-spawns stand-ins on restore (see that note for
-                    // why a *later* respawn must also set this, or a
-                    // restored rocket could detonate on its own model).
+                    // Never the old `hecs::Entity` bits (not persisted,
+                    // and `hecs` gives no cross-process stability for
+                    // them anyway): left `None` here and set for real,
+                    // below, once this projectile has a fresh stand-in
+                    // entity of its own (or left `None` for a kind with
+                    // no configured model, same as a freshly spawned one).
                     self_id: None,
                 })
             })
@@ -857,6 +896,84 @@ impl ProjectileSystem {
             .collect();
         self.deployables =
             DeployableSet::restore_from_parts(satchels, tripmines, snapshot.deployable_next_id);
+        self.respawn_deployable_stand_ins(level);
+        self.respawn_projectile_models(level);
+    }
+
+    /// Spawns a fresh stand-in entity for every satchel/tripmine
+    /// [`Self::restore_snapshot`] just restored, in [`DeployableId`] order
+    /// ([`DeployableSet::satchels`]/[`DeployableSet::tripmines`] are kept
+    /// sorted by id, and this iterates them in that order) so the result
+    /// is deterministic and independent of iteration order over any
+    /// hash-based structure. `self.deployable_models` must already be
+    /// empty (`restore_snapshot` clears it before rebuilding
+    /// `self.deployables`); this never overwrites an existing entry, only
+    /// inserts fresh ones, so no duplicate stand-in is possible.
+    fn respawn_deployable_stand_ins(&mut self, level: &mut Level) {
+        let satchels = self.deployables.satchels().to_vec();
+        for satchel in satchels {
+            let owner = satchel.owner.and_then(entity_of);
+            self.spawn_deployable_model(
+                level,
+                DeployableKind::Satchel,
+                satchel.id,
+                satchel.position,
+                owner,
+            );
+        }
+        let tripmines = self.deployables.tripmines().to_vec();
+        for tripmine in tripmines {
+            let owner = tripmine.owner.and_then(entity_of);
+            self.spawn_deployable_model(
+                level,
+                DeployableKind::Tripmine,
+                tripmine.id,
+                tripmine.position,
+                owner,
+            );
+        }
+    }
+
+    /// As [`Self::respawn_deployable_stand_ins`], for every restored
+    /// projectile whose kind has a configured model
+    /// ([`Self::configure_models`]/[`Self::set_model_for`]): spawns the
+    /// same `Transform`+[`StudioAnim`] stand-in [`Self::spawn`] would for a
+    /// freshly fired one, at the projectile's restored position/velocity,
+    /// and sets [`ohl_combat::Projectile::self_id`] to it so the restored
+    /// projectile's own movement trace ignores its own drawn model again
+    /// (see the module doc's "A shared index, never a global exclusion").
+    /// A kind with no configured model restores exactly as before this
+    /// method existed: model-less, `self_id: None`.
+    fn respawn_projectile_models(&mut self, level: &mut Level) {
+        let projectiles = self.projectiles.projectiles().to_vec();
+        for projectile in projectiles {
+            let Some(model) = self.model_for(projectile.kind) else {
+                continue;
+            };
+            let yaw = if projectile.velocity.length_squared() > f32::EPSILON {
+                projectile
+                    .velocity
+                    .y
+                    .atan2(projectile.velocity.x)
+                    .to_degrees()
+            } else {
+                0.0
+            };
+            let entity = level.registry.world.spawn((
+                Transform {
+                    origin: projectile.position,
+                    angles: Vec3::new(0.0, yaw, 0.0),
+                },
+                StudioAnim::new(model, 0),
+            ));
+            if let Some(owner) = projectile.owner.and_then(entity_of) {
+                let _ = level.registry.world.insert_one(entity, Owner(owner));
+            }
+            self.models.insert(projectile.id, entity);
+            if let Some(restored) = self.projectiles.get_mut(projectile.id) {
+                restored.self_id = Some(entity_id(entity));
+            }
+        }
     }
 
     /// Keeps each model-backed projectile's entity in step with its
@@ -1260,6 +1377,143 @@ mod tests {
                 .get::<&ohl_combat::Health>(mine_entity)
                 .is_err(),
             "the stand-in entity must be despawned once it detonates"
+        );
+    }
+
+    /// As [`the_players_hitscan_can_hit_and_detonate_a_placed_tripmine`],
+    /// but the mine is placed, then snapshotted and restored (a save/load
+    /// round trip at this module's own level) before the hitscan runs: a
+    /// restored deployable's stand-in must be exactly as hittable and
+    /// damageable as one that was never saved at all, per this module's
+    /// doc's "Re-created on restore, never persisted".
+    #[test]
+    fn a_restored_tripmine_is_still_hit_and_detonated_by_the_players_hitscan() {
+        let mut level = synthetic_level();
+        let mut system = ProjectileSystem::new(0);
+        system.set_model_for_deployable(ohl_combat::DeployableKind::Tripmine, Some(0));
+
+        system
+            .place_tripmine(
+                &mut level,
+                None,
+                glam::Vec3::new(0.0, 0.0, 40.0),
+                glam::Vec3::new(0.0, 0.0, -1.0),
+            )
+            .expect("the placement trace finds the floor");
+
+        // Save, then restore into a fresh system exactly as `Game::restore`
+        // does (a fresh `Systems`/`ProjectileSystem`, `configure_models`
+        // already re-run by the equivalent of `attach_level` — here, the
+        // same `set_model_for_deployable` call above, which
+        // `restore_snapshot` never clears).
+        let snapshot = system.snapshot(&level);
+        let mut restored = ProjectileSystem::new(0);
+        restored.set_model_for_deployable(ohl_combat::DeployableKind::Tripmine, Some(0));
+        restored.restore_snapshot(&mut level, &snapshot);
+
+        assert_eq!(
+            restored.deployable_stand_in_count(),
+            1,
+            "the restored tripmine must have its stand-in entity back"
+        );
+        let mine_entity = restored
+            .deployables
+            .tripmines()
+            .first()
+            .map(|tripmine| tripmine.id)
+            .and_then(|id| restored.deployable_entity(id))
+            .expect("the restored mine has a stand-in entity");
+
+        let mut hitboxes = HitboxIndex::new(HitboxLimits::default());
+        let mut entry = ohl_combat::EntityHitboxes::new(
+            entity_id(mine_entity),
+            glam::Vec3::new(0.0, 0.0, 40.0),
+        );
+        entry.push_box(
+            0,
+            glam::Vec3::splat(-4.0),
+            glam::Vec3::splat(4.0),
+            ohl_combat::HitGroup::Generic,
+        );
+        hitboxes.push(entry);
+
+        let collision = level.collision.as_ref().expect("the fixture has hulls");
+        let trace = ohl_combat::trace_attack(
+            collision,
+            &hitboxes,
+            glam::Vec3::new(-64.0, 0.0, 40.0),
+            glam::Vec3::new(64.0, 0.0, 40.0),
+            ohl_combat::TraceMask::SHOT,
+        );
+        assert_eq!(
+            trace.entity,
+            Some(entity_id(mine_entity)),
+            "the player's hitscan must still reach the restored mine's stand-in"
+        );
+
+        let mut damage_queue = vec![QueuedDamage {
+            target: mine_entity,
+            info: ohl_combat::DamageInfo::new(50.0, ohl_combat::DamageType::BULLET),
+        }];
+        let mut player = ohl_player::Player::new(ohl_player::PlayerConfig::default());
+        let mut hud = ohl_ui::hud::HudState::default();
+        let mut presentation = crate::presentation::Presentation::new();
+        let mut player_events = Vec::new();
+        let mut player_damage_events = 0u64;
+        let player_id = level.player;
+        crate::combat::resolve_damage(
+            &mut damage_queue,
+            &mut level,
+            &mut player,
+            player_id,
+            &mut hud,
+            &mut presentation,
+            &mut player_events,
+            &mut player_damage_events,
+        );
+
+        let mut sprites = TransientSprites::new();
+        restored.resolve_deployable_damage(&mut level, &mut damage_queue, &mut sprites);
+
+        assert!(
+            restored.deployables.tripmines().is_empty(),
+            "the restored, killed tripmine must detonate and be removed"
+        );
+        assert_eq!(
+            restored.deployable_stand_in_count(),
+            0,
+            "its stand-in entity must be despawned once it detonates"
+        );
+    }
+
+    /// [`ProjectileSystem::restore_snapshot`] must never leave a duplicate
+    /// stand-in behind: calling it twice in a row from the same snapshot
+    /// (as a corrupted or repeated load might) must still leave exactly
+    /// one stand-in per placed deployable, not two.
+    #[test]
+    fn restoring_twice_never_duplicates_a_stand_in() {
+        let mut level = synthetic_level();
+        let mut system = ProjectileSystem::new(0);
+        system.set_model_for_deployable(ohl_combat::DeployableKind::Satchel, Some(0));
+        system.set_model_for_deployable(ohl_combat::DeployableKind::Tripmine, Some(0));
+        system.place_satchel(&mut level, None, glam::Vec3::new(0.0, 0.0, 40.0));
+        system
+            .place_tripmine(
+                &mut level,
+                None,
+                glam::Vec3::new(0.0, 0.0, 40.0),
+                glam::Vec3::new(0.0, 0.0, -1.0),
+            )
+            .expect("the placement trace finds the floor");
+        let snapshot = system.snapshot(&level);
+
+        system.restore_snapshot(&mut level, &snapshot);
+        assert_eq!(system.deployable_stand_in_count(), 2);
+        system.restore_snapshot(&mut level, &snapshot);
+        assert_eq!(
+            system.deployable_stand_in_count(),
+            2,
+            "a second restore from the same snapshot must not duplicate stand-ins"
         );
     }
 
