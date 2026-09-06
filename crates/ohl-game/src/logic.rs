@@ -194,6 +194,7 @@ impl Simulation {
         self.advance_buttons(registry, dt, &mut events);
         Self::advance_platforms(registry, dt);
         Self::advance_trains(registry, dt);
+        self.advance_cameras(registry, dt);
         for state in self.trigger_state.values_mut() {
             state.cooldown = (state.cooldown - dt).max(0.0);
         }
@@ -282,6 +283,14 @@ impl Simulation {
         }
         if let Ok(train) = registry.world.query_one_mut::<&mut TrackTrainState>(entity) {
             train.toggle();
+            return;
+        }
+        if let Ok((state, camera)) = registry.world.query_one_mut::<(
+            &mut crate::camera::TriggerCameraState,
+            &crate::registry::TriggerCamera,
+        )>(entity)
+        {
+            state.trigger(camera);
             return;
         }
         if let Some(mm) = registry
@@ -529,6 +538,27 @@ impl Simulation {
     fn advance_trains(registry: &mut Registry, dt: f32) {
         for train in registry.world.query_mut::<&mut TrackTrainState>() {
             train.advance(dt);
+        }
+    }
+
+    /// Advances every `trigger_camera` sequence, firing its completion
+    /// `target` (see [`crate::camera::completion_target`]) exactly once, the
+    /// tick [`crate::camera::TriggerCameraState::advance`] reports it
+    /// finished. Entities are drained in ascending id order so which
+    /// completion fires first is deterministic when more than one finishes
+    /// on the same tick.
+    fn advance_cameras(&mut self, registry: &mut Registry, dt: f32) {
+        let mut completed: Vec<Entity> = registry
+            .world
+            .query_mut::<(Entity, &mut crate::camera::TriggerCameraState)>()
+            .into_iter()
+            .filter_map(|(entity, state)| state.advance(dt).then_some(entity))
+            .collect();
+        completed.sort_unstable_by_key(|entity| entity.id());
+        for entity in completed {
+            if let Some(target) = crate::camera::completion_target(registry, entity) {
+                self.fire(target, Some(entity), 0.0);
+            }
         }
     }
 }

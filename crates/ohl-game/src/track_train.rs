@@ -162,7 +162,13 @@ impl PathChain {
     /// The node index a train moving forward from `index` would reach next,
     /// wrapping to `0` when [`Self::looped`] and `index` is the last node;
     /// `None` at a non-looped chain's last node (a documented dead end).
-    fn next_index(&self, index: usize) -> Option<usize> {
+    ///
+    /// `pub(crate)` so `crate::camera::TriggerCameraState` can walk the same
+    /// chain type a `trigger_camera`'s `moveto` resolves into, per the
+    /// public documentation recorded in `docs/FORMAT_SOURCES.md` ("Camera
+    /// sequences") that a `trigger_camera` follows `path_corner`s "similar
+    /// to a func_train".
+    pub(crate) fn next_index(&self, index: usize) -> Option<usize> {
         if index + 1 < self.nodes.len() {
             Some(index + 1)
         } else if self.looped && !self.nodes.is_empty() {
@@ -183,7 +189,8 @@ impl PathChain {
         }
     }
 
-    fn segment_len(&self, a: usize, b: usize) -> f32 {
+    /// `pub(crate)`; see [`Self::next_index`]'s doc comment.
+    pub(crate) fn segment_len(&self, a: usize, b: usize) -> f32 {
         self.nodes[a].position.distance(self.nodes[b].position)
     }
 }
