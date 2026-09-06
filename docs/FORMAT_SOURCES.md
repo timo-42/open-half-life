@@ -2069,6 +2069,21 @@ table was consulted. (The squad-blast-bonus formula and the heal
 cooldown/threshold/range/amount are *not* in this bucket — their numbers are
 cited in the table above; only the fact that they run as a `Task`-based
 schedule at all is project-authored.)
+
+M7.9 P2 (`crates/ohl-engine/src/ai.rs`) wires the above into the engine and
+adds two tables of its own, both **project-authored** and citing no
+published source: which `monster_*` classname gets which brain (it is one
+brain per `ohl_ai::MonsterKind` row, so the table is really just the
+classname list already cited above), and which monster attack resolves as a
+`ohl_combat::ProjectileKind` rather than a trace. The latter names this
+project's own projectile vocabulary and encodes no number; every damage,
+health and reach figure it consumes belongs to `ohl-ai`'s table and is cited
+(or marked `TODO(black-box)`) there. The `Fade Corpse` delay, the muzzle
+origin used for an attack trace, the default hitscan reach and the default
+projectile speed are new `TODO(black-box)` placeholders, marked as such at
+each constant. `TriggerCondition`'s "heard the player" input has no
+counterpart in `ohl-ai`'s sound classification and is recorded as
+`TODO(black-box)` rather than guessed.
 ## Track trains and paths
 
 - [TWHL wiki: func_tracktrain](https://twhl.info/wiki/page/func_tracktrain),

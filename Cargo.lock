@@ -2367,6 +2367,7 @@ name = "ohl-engine"
 version = "0.1.0"
 dependencies = [
  "glam",
+ "ohl-ai",
  "ohl-assets",
  "ohl-campaign",
  "ohl-combat",
@@ -2374,6 +2375,7 @@ dependencies = [
  "ohl-engine",
  "ohl-formats",
  "ohl-game",
+ "ohl-nav",
  "ohl-physics",
  "ohl-render",
  "ohl-save",

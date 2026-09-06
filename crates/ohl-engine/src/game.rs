@@ -115,7 +115,7 @@ impl Game {
         ))
     }
 
-    fn from_level(level: Level, source: &dyn AssetSource, config: GameConfig) -> Self {
+    fn from_level(mut level: Level, source: &dyn AssetSource, config: GameConfig) -> Self {
         let camera = level
             .spawn
             .map_or_else(FreeFlyCamera::default, FreeFlyCamera::at_spawn);
@@ -125,6 +125,9 @@ impl Game {
         let mut globals = GlobalStateTable::new();
         globals.seed_from(&level.registry);
         let pending = chapter_title_event(&level.name).into_iter().collect();
+        let skill = load_skill_table(source);
+        let mut systems = Systems::new(SystemsConfig::default());
+        systems.attach_level(&mut level, config.difficulty, &skill);
         Self {
             level,
             camera,
@@ -133,12 +136,12 @@ impl Game {
             renderers: None,
             elapsed: 0.0,
             difficulty: config.difficulty,
-            skill: load_skill_table(source),
+            skill,
             titles: TitleLibrary::load(source),
             sentences: SentenceLookup::load(source),
             globals,
             carry: Box::new(DefaultPlayerCarry::default()),
-            systems: Systems::new(SystemsConfig::default()),
+            systems,
             clock: TickClock::new(),
             pending,
         }
@@ -295,6 +298,40 @@ impl Game {
     #[must_use]
     pub fn player_entity(&self) -> ohl_game::hecs::Entity {
         self.level.player
+    }
+
+    /// How many entities in this level are currently thinking monsters.
+    ///
+    /// Media-derived: the count comes from the map's own entity list, so it
+    /// is returned as data and never written to a log line.
+    #[must_use]
+    pub fn monster_count(&self) -> usize {
+        self.systems.ai().monster_count(&self.level)
+    }
+
+    /// A digest of the whole AI simulation — every actor's pose, health and
+    /// faction, every monster's state, schedule and route, the sound list
+    /// and the random stream.
+    ///
+    /// Two games built from the same map bytes with the same seed and
+    /// ticked with the same input produce the same digest, which is what a
+    /// determinism test asserts. Data, never a log line.
+    #[must_use]
+    pub fn ai_state_hash(&self) -> [u8; 32] {
+        self.systems.ai().state_hash(&self.level)
+    }
+
+    /// The step list this game runs, mutably, so an in-crate caller can
+    /// reach a phase's own state (the AI world, the damage queue).
+    pub(crate) fn systems_mut(&mut self) -> &mut Systems {
+        &mut self.systems
+    }
+
+    /// How many monsters have died since this level was loaded. Data,
+    /// never a log line.
+    #[must_use]
+    pub fn monster_death_count(&self) -> u64 {
+        self.systems.ai().death_count()
     }
 
     /// The per-step configuration this game simulates with.
@@ -546,6 +583,8 @@ impl Game {
         self.elapsed = 0.0;
         self.clock = TickClock::new();
         self.systems.reset();
+        self.systems
+            .attach_level(&mut self.level, self.difficulty, &self.skill);
         self.globals = globals;
         self.carry.restore(&transition.player);
 
@@ -700,6 +739,8 @@ impl Game {
         self.difficulty = save.difficulty();
         self.clock = TickClock::new();
         self.systems.reset();
+        self.systems
+            .attach_level(&mut self.level, self.difficulty, &self.skill);
         // A load is a map load: the chapter title is announced again.
         self.pending.clear();
         self.pending.extend(chapter_title_event(&self.level.name));

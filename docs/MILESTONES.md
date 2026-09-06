@@ -1861,9 +1861,45 @@ level transitions keep their behaviour.
   and an arbitrary `Input` never panic and never advance the clock by more
   than one clamped burst.
 
-  Not yet done: P1 (weapons, inventory, pickups, damage routing, HUD/audio),
-  P2 (AI and navigation wiring, and the `MonsterMaker` component that needs
-  `ohl-ai`) and P4 (save sections and the scripted-input smoke).
+- **M7.9 P2: AI and navigation wiring.** `ohl-engine::ai` owns one
+  `ohl_ai::AiWorld` over the same entity world everything else uses: one
+  brain per `monster_*` classname the map declares (and per `monstermaker`
+  `monstertype`), registered in sorted classname order so brain ids are a
+  function of the map alone; `ohl_ai::attach_monsters` turns the entity lump
+  into monsters, with health from the species table overridden by
+  `skill.cfg`; and a classname with no table row is left inert rather than
+  guessed at. Phase 8 builds one `ohl_ai::SightContext` per step (PVS
+  pre-filter plus a hull-0 trace) and consumes the resulting `AiEvent`s:
+  activity and sequence events pick a `StudioAnim::sequence` by looking the
+  intent's name up in the loaded model's own sequence table (falling back to
+  sequence 0, with no sequence name written into the engine), and attacks
+  become either a filtered trace and a queued `ohl_combat::DamageInfo` or a
+  `ProjectileRequest` handed to a `ProjectileSpawner` seam M7.9 P3 fills.
+  Phase 10 applies queued damage through `ohl_ai::apply_monster_damage` —
+  the one place a monster's health moves, and so the one thing that can
+  report a death — then decides corpse or gib, fades the corpses whose
+  species fades, evaluates each monster's declared
+  `TriggerCondition`/`TriggerTarget` into `Simulation::fire`, and ticks every
+  `monstermaker`. `ohl-engine::nav` builds the map's `info_node`/
+  `info_node_air` lattice into an `ohl_ai::NavBridge` and attaches it; a map
+  with no nodes leaves the navigator detached and `ohl-ai`'s straight-line
+  fallback in charge, which is a supported state. The client is a real
+  entity with an `ohl_ai::Actor`, so monsters see, target and shoot the
+  player through the components they use for each other. `Systems` owns the
+  one `ohl_ai::Pcg32` seeded from `SystemsConfig::rng_seed` and the engine's
+  damage queue; `Game` gains `monster_count()`, `ai_state_hash()` and
+  `monster_death_count()`, all data and never logged. Verified: a monster
+  acquires the player across an open room and does not across a wall; a
+  `monstermaker` respects `monstercount` and `m_imaxlivechildren`; a killed
+  monster is reported dead exactly once and leaves a corpse that fades,
+  while an overkill gibs; two games from the same bytes, seed and inputs
+  produce the same `ai_state_hash` after 600 steps; two mutually hostile
+  monsters hurt each other end to end; a map with no `info_node` still moves
+  monsters; and a proptest over arbitrary node lattices and inputs never
+  panics.
+
+  Not yet done: P1 (weapons, inventory, pickups, damage routing, HUD/audio)
+  and P4 (save sections and the scripted-input smoke).
 
 - **M7.9 P3: projectiles, deployables, view model and transient sprites.**
   `ohl-engine::projectiles` fills phase 7: `ProjectileSystem` owns an

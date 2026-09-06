@@ -120,8 +120,12 @@ pub struct Corpse {
     pub seconds_left: f32,
 }
 
-// A `MonsterMaker(ohl_ai::Spawner)` component belongs beside these, but it
-// would make `ohl-ai` (and through it `ohl-nav`) a dependency of this crate
-// a package early: M7.9 P0's authorized `xtask/src/graph.rs` change adds
-// `ohl-combat` only. It is declared in P2 together with the AI wiring that
-// ticks it, which is the only code that would read it.
+/// A `monstermaker` and its spawn bookkeeping.
+///
+/// The keyvalue semantics (`monstertype`, `monstercount`, `delay`,
+/// `m_imaxlivechildren`, the `Start On` and `Cyclic` spawnflags) all live in
+/// [`ohl_ai::Spawner`]; the engine only reads the definition, ticks the
+/// spawner once per step in [`crate::ai::AiState::lifecycle`] and creates
+/// the child entity the spawner asks for.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MonsterMaker(pub ohl_ai::Spawner);

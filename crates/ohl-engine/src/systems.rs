@@ -32,6 +32,7 @@ use ohl_physics::{ControllerInput, PlayerController};
 use ohl_render::{FreeFlyCamera, MoveInput};
 
 use crate::USE_RADIUS;
+use crate::ai::AiState;
 use crate::components::StudioAnim;
 use crate::input::Input;
 use crate::level::Level;
@@ -45,6 +46,21 @@ use crate::viewmodel::ViewModel;
 /// same map bytes with the same config must step identically. It is saved
 /// and restored with the rest of the simulation state.
 pub const DEFAULT_RNG_SEED: u64 = 0x4F48_4C5F_5039_0001;
+
+/// One hit waiting to be resolved: who it lands on, and what it does.
+///
+/// [`ohl_combat::DamageInfo`] describes a hit without naming its target
+/// (it is handed straight to `ohl_combat::apply_damage` against a chosen
+/// health component), so the engine's queue pairs the two. Drained once per
+/// step, in insertion order, so the result never depends on iteration
+/// order.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct QueuedDamage {
+    /// The entity the hit lands on.
+    pub target: ohl_game::hecs::Entity,
+    /// What the hit does.
+    pub info: ohl_combat::DamageInfo,
+}
 
 /// Everything about the step list a host chooses rather than the map.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -182,13 +198,17 @@ pub struct Systems {
     /// The HUD the host draws. Written by the presentation phase; a default
     /// until the gameplay bridge is wired in.
     hud: ohl_ui::hud::HudState,
-    /// Phase 9's queue: every [`ohl_combat::DamageInfo`] a weapon
-    /// (phase 6), a projectile or blast (phase 7) or an AI attack
-    /// (phase 8) produced this step, drained once damage resolution runs.
-    /// This is the shared field `docs/m79-design.md` §8 asks P1 and P3 to
-    /// agree on by name and type; P3 (this package) is the first to create
-    /// it, since it lands without P1 in this tree.
-    pub(crate) damage_queue: Vec<ohl_combat::DamageInfo>,
+    /// The one random stream every simulation phase shares, seeded from
+    /// [`SystemsConfig::rng_seed`] and never from the environment.
+    rng: ohl_ai::Pcg32,
+    /// Phase 9's queue: every hit a weapon (phase 6), a projectile or blast
+    /// (phase 7) or an AI attack (phase 8) produced this step, paired with
+    /// its target and drained once damage resolution runs. This is the
+    /// shared field `docs/m79-design.md` §8 asks P1 and P3 to agree on by
+    /// name and type.
+    pub(crate) damage_queue: Vec<QueuedDamage>,
+    /// The AI world, its brains and this map's navigator.
+    pub(crate) ai: AiState,
     /// Phase 7's own state: live projectiles and placed deployables.
     projectiles: ProjectileSystem,
     /// The bounded transient-sprite list phase 7 (and, later, phase 6's
@@ -207,11 +227,34 @@ impl Systems {
             frame_input: Input::default(),
             pending_edges: PendingEdges::default(),
             hud: ohl_ui::hud::HudState::default(),
+            rng: ohl_ai::Pcg32::new(config.rng_seed),
             damage_queue: Vec::new(),
+            ai: AiState::new(config.rng_seed),
             projectiles: ProjectileSystem::new(config.rng_seed),
             transient_sprites: TransientSprites::new(),
             view_model: ViewModel::new(),
         }
+    }
+
+    /// The AI world this step list drives.
+    #[must_use]
+    pub fn ai(&self) -> &AiState {
+        &self.ai
+    }
+
+    /// The AI world, mutably, so a host can install a projectile spawner or
+    /// queue damage against a monster.
+    pub fn ai_mut(&mut self) -> &mut AiState {
+        &mut self.ai
+    }
+
+    /// The one random stream the simulation phases share.
+    ///
+    /// Public so a later package's phase can draw from the same seeded
+    /// stream rather than starting one of its own, which is what keeps two
+    /// games from the same seed identical.
+    pub fn rng(&mut self) -> &mut ohl_ai::Pcg32 {
+        &mut self.rng
     }
 
     /// The configuration this step list runs with.
@@ -286,10 +329,24 @@ impl Systems {
     }
 
     /// Clears everything a level change or a save load invalidates, keeping
-    /// the configuration.
+    /// the configuration. The caller re-attaches the new level with
+    /// [`Self::attach_level`].
     pub(crate) fn reset(&mut self) {
         let config = self.config;
         *self = Self::new(config);
+    }
+
+    /// Builds the AI state for a freshly loaded level: its monsters,
+    /// `monstermaker`s, declared triggers, navigation graph and the
+    /// client's own actor.
+    pub(crate) fn attach_level(
+        &mut self,
+        level: &mut Level,
+        difficulty: ohl_campaign::Difficulty,
+        skill: &ohl_campaign::SkillTable,
+    ) {
+        self.damage_queue.clear();
+        self.ai.attach_level(level, difficulty, skill);
     }
 
     /// Latches one frame's input. Called once per [`crate::Game::tick`],
@@ -322,7 +379,7 @@ impl Systems {
         self.projectiles(level, dt); // 7
         self.ai_think(level, dt); // 8
         self.resolve_damage(); // 9
-        self.lifecycle(dt); // 10
+        self.lifecycle(level, dt); // 10
         self.pickups(level, input); // 11
         Self::triggers_and_movers(level, camera, input, dt, events); // 12
         self.presentation(dt); // 13
@@ -388,6 +445,23 @@ impl Systems {
             transform.origin = origin;
             transform.angles = Vec3::new(camera.pitch, camera.yaw, 0.0);
         }
+        // The client's `Actor` is what lets a monster see, target and shoot
+        // the player through the components it uses for anything else.
+        let health = level
+            .registry
+            .world
+            .get::<&ohl_combat::Health>(player)
+            .ok()
+            .map(|health| *health);
+        if let Ok(mut actor) = level.registry.world.get::<&mut ohl_ai::Actor>(player) {
+            actor.origin = origin;
+            actor.view_ofs = controller.eye_position() - origin;
+            actor.yaw = camera.yaw;
+            if let Some(health) = health {
+                actor.health = health.current;
+                actor.alive = !health.is_dead();
+            }
+        }
         for anim in &mut level.registry.world.query::<&mut StudioAnim>() {
             anim.advance(dt);
         }
@@ -423,8 +497,9 @@ impl Systems {
 
     /// Phase 8 — AI think and navigation. Runs before damage resolution on
     /// purpose: see the module note.
-    #[allow(clippy::unused_self)]
-    fn ai_think(&mut self, _level: &mut Level, _dt: f32) {}
+    fn ai_think(&mut self, level: &mut Level, dt: f32) {
+        self.ai.think(level, dt, &mut self.damage_queue);
+    }
 
     /// Phase 9 — damage resolution: the queue is drained once, in insertion
     /// order.
@@ -432,8 +507,9 @@ impl Systems {
     fn resolve_damage(&mut self) {}
 
     /// Phase 10 — lifecycle: deaths, corpses, gibs and `monstermaker`.
-    #[allow(clippy::unused_self)]
-    fn lifecycle(&mut self, _dt: f32) {}
+    fn lifecycle(&mut self, level: &mut Level, dt: f32) {
+        self.ai.lifecycle(level, dt, &mut self.damage_queue);
+    }
 
     /// Phase 11 — pickups: touch tests and the use-and-hold chargers.
     #[allow(clippy::unused_self)]

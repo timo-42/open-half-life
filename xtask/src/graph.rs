@@ -180,6 +180,10 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
             // vocabulary and the pickup/charger types the engine's own
             // components wrap.
             "ohl-combat",
+            // M7.9 P2 (AI and navigation wiring): the monster AI world the
+            // engine ticks, and the node graph its navigator paths over.
+            "ohl-ai",
+            "ohl-nav",
         ],
     ),
     // M7.4's HUD/audio/viewmodel bridge: consumes `ohl-combat`'s
