@@ -60,8 +60,8 @@ use ohl_ai::{
     Activity, Actor, AiEvent, AiEventKind, AiWorld, AttackKind, BrainId, Classification,
     Conditions, CorpseDecision, DamageEvent, DamageQueue, DamageSink, EnemyMemory, MonsterAi,
     MonsterBrain, MonsterKind, MonsterSpawn, MonsterSpawnRules, MonsterSpec, MonsterState,
-    MonsterTrigger, Route, ScheduleRunner, SightContext, SquadTag, StuckDetector,
-    TriggerCondition, TriggerContext, attach_monsters,
+    MonsterTrigger, Route, ScheduleRunner, SightContext, SquadTag, StuckDetector, TriggerCondition,
+    TriggerContext, attach_monsters,
 };
 use ohl_combat::{DamageType, HitboxIndex, HitboxLimits, TraceFilter, TraceMask};
 use ohl_game::hecs::Entity;
@@ -388,6 +388,29 @@ impl AiState {
         &self.world
     }
 
+    /// `SECTION_RNG` (27, M7.9 P4b): this world's own random stream and
+    /// tick counter, which `Systems::new`'s deterministic reseeding
+    /// (`AiState::new`'s constructor argument, itself a draw off
+    /// `Systems::rng`) does not otherwise let a save continue past — see
+    /// `ohl_ai::AiWorld::rng_snapshot`'s own doc comment.
+    #[must_use]
+    pub(crate) fn rng_snapshot(&self) -> (u64, u64) {
+        self.world.rng_snapshot()
+    }
+
+    /// The tick counter half of the same snapshot; `ohl_ai::AiWorld::
+    /// state_hash` mixes it in, so a save omitting it would desync the
+    /// very digest a determinism test compares.
+    #[must_use]
+    pub(crate) fn tick_count(&self) -> u64 {
+        self.world.tick_count()
+    }
+
+    /// Restores what [`Self::rng_snapshot`]/[`Self::tick_count`] captured.
+    pub(crate) fn restore_rng(&mut self, rng: (u64, u64), tick_count: u64) {
+        self.world.restore_determinism_state(rng, tick_count);
+    }
+
     /// Queues damage against a monster, consumed by the next phase 10.
     ///
     /// This is the only way a monster loses health: the queue is applied by
@@ -635,9 +658,7 @@ impl AiState {
             crate::save_state::spawn_index_of(level, memory.entity).map(|index| {
                 crate::save_state::EnemyMemorySnapshot {
                     enemy: index,
-                    last_known_position: crate::save_state::vec3_array(
-                        memory.last_known_position,
-                    ),
+                    last_known_position: crate::save_state::vec3_array(memory.last_known_position),
                     time_since_seen: memory.time_since_seen,
                     occluded: memory.occluded,
                     last_known_distance: memory.last_known_distance,

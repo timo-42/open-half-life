@@ -357,6 +357,15 @@ mod tests {
     }
 
     #[test]
+    fn a_stuck_detector_restores_exactly_the_saved_tick_count() {
+        let restored = StuckDetector::from_ticks(super::STUCK_TICKS - 1);
+        assert_eq!(restored.ticks(), super::STUCK_TICKS - 1);
+        assert!(!restored.is_stuck());
+        let restored = StuckDetector::from_ticks(super::STUCK_TICKS);
+        assert!(restored.is_stuck());
+    }
+
+    #[test]
     fn yaw_helpers_agree_with_each_other() {
         let yaw = yaw_toward(Vec3::ZERO, Vec3::new(0.0, 10.0, 0.0)).expect("not vertical");
         assert!((yaw - 90.0).abs() < 1e-3);

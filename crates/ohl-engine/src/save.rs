@@ -39,7 +39,9 @@ use ohl_campaign::Difficulty;
 use ohl_game::SimulationState;
 use serde::{Deserialize, Serialize};
 
-use crate::save_state::{AiSnapshot, EntityCombatSnapshot, InventorySnapshot, ProjectilesSnapshot, RngSnapshot};
+use crate::save_state::{
+    AiSnapshot, EntityCombatSnapshot, InventorySnapshot, ProjectilesSnapshot, RngSnapshot,
+};
 use crate::transition::{EntitySnapshot, GlobalStateTable, PlayerCarryState};
 
 /// Engine header: which map is loaded, its chapter title, the difficulty
@@ -134,9 +136,15 @@ pub struct GameSave {
     /// inventory.
     pub inventory: Option<InventorySnapshot>,
     /// Per-entity health/armor, in spawn order, zipped against `entities`
-    /// (M7.9 P4b). `None` (rather than an empty `Vec`) for a save missing
-    /// tag 24.
-    pub entity_combat: Option<Vec<EntityCombatSnapshot>>,
+    /// (M7.9 P4b). The outer `Option` (`None` for a save missing tag 24
+    /// entirely) is this field's own presence; each inner slot's `None`
+    /// means the entity itself no longer existed in the world when the
+    /// save was taken (a gibbed monster, `world.despawn`ed outright) —
+    /// which restore acts on by despawning that slot's entity again, since
+    /// a fresh level load always re-spawns every map-declared monster
+    /// first. `Some` with both inner fields `None` means the entity
+    /// existed but carried neither a health nor an armor component.
+    pub entity_combat: Option<Vec<Option<EntityCombatSnapshot>>>,
     /// Per-entity AI state, in spawn order, zipped against `entities`
     /// (M7.9 P4b). `None` (rather than an empty `Vec`) for a save missing
     /// tag 25.

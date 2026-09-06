@@ -56,6 +56,11 @@ pub(crate) struct PickupsState {
     /// how many `func_healthcharger`/`func_recharge` a map can declare, so
     /// this never grows without limit.
     charger_kinds: Vec<(Entity, ChargerKind)>,
+    /// How many pickups have actually been taken since this level was
+    /// attached. Media-derived: data, never a log line from this crate —
+    /// `ohl-app`'s `--script-log` reads it to emit "A pickup was
+    /// collected." at most once per run.
+    taken_count: u64,
 }
 
 /// The largest number of chargers one level may classify, so a pathological
@@ -67,7 +72,15 @@ impl PickupsState {
         Self {
             spawned: false,
             charger_kinds: Vec::new(),
+            taken_count: 0,
         }
+    }
+
+    /// How many pickups have actually been taken since this level was
+    /// attached. Media-derived: data, never a log line from this crate.
+    #[must_use]
+    pub(crate) fn taken_count(&self) -> u64 {
+        self.taken_count
     }
 
     /// Attaches [`Pickup`]/[`Charger`] components to every entity
@@ -136,7 +149,7 @@ impl PickupsState {
         presentation: &mut crate::presentation::Presentation,
     ) {
         self.ensure_spawned(level);
-        touch_pickups(
+        self.taken_count += touch_pickups(
             level,
             player_origin,
             player_tag,
@@ -145,7 +158,7 @@ impl PickupsState {
             player,
             hud,
             presentation,
-        );
+        ) as u64;
         if input.use_held {
             self.drain_chargers(level, player_origin, dt, player);
         }
@@ -219,7 +232,7 @@ fn touch_pickups(
     player: &mut Player,
     hud: &mut ohl_ui::hud::HudState,
     presentation: &mut crate::presentation::Presentation,
-) {
+) -> usize {
     let mut touched: Vec<Entity> = Vec::new();
     for (entity, pickup, transform) in &mut level
         .registry
@@ -231,6 +244,7 @@ fn touch_pickups(
         }
     }
 
+    let mut taken_count = 0usize;
     for entity in touched {
         let Ok(kind) = level
             .registry
@@ -254,8 +268,10 @@ fn touch_pickups(
                     remaining: 0.0,
                 },
             );
+            taken_count += 1;
         }
     }
+    taken_count
 }
 
 /// Applies one pickup's effect; returns whether anything was actually

@@ -231,7 +231,11 @@ impl FiringState {
     /// sub-tick accumulator.
     #[must_use]
     pub fn restore(spec: WeaponSpec, clip: u32, state_tag: u8, timer: f32) -> Self {
-        let timer = if timer.is_finite() { timer.max(0.0) } else { 0.0 };
+        let timer = if timer.is_finite() {
+            timer.max(0.0)
+        } else {
+            0.0
+        };
         let state = match state_tag {
             1 => FireState::Firing { until: timer },
             2 => FireState::Reloading { until: timer },
@@ -557,6 +561,43 @@ mod tests {
     use super::*;
     use crate::ammo::AmmoType;
     use crate::weapons::spec;
+
+    #[test]
+    fn a_holstered_state_round_trips_through_its_summary() {
+        let state = FiringState::new(spec(WeaponId::Glock));
+        let (tag, timer) = state.state_tag_and_timer();
+        assert_eq!((tag, timer), (5, 0.0));
+        let restored = FiringState::restore(spec(WeaponId::Glock), 7, tag, timer);
+        assert_eq!(restored.state_tag_and_timer(), (tag, timer));
+        assert_eq!(restored.clip(), 7);
+    }
+
+    #[test]
+    fn every_documented_state_tag_restores_to_the_same_discriminant() {
+        for (tag, timer) in [
+            (0u8, 0.0f32),
+            (1, 0.4),
+            (2, 1.5),
+            (3, 3.0),
+            (4, 0.0),
+            (5, 0.0),
+        ] {
+            let restored = FiringState::restore(spec(WeaponId::Shotgun), 0, tag, timer);
+            assert_eq!(restored.state_tag_and_timer(), (tag, timer));
+        }
+    }
+
+    #[test]
+    fn an_unrecognised_tag_restores_to_idle() {
+        let restored = FiringState::restore(spec(WeaponId::Glock), 0, 200, 3.0);
+        assert_eq!(restored.state_tag_and_timer().0, 0);
+    }
+
+    #[test]
+    fn restore_sanitizes_a_non_finite_timer_to_zero() {
+        let restored = FiringState::restore(spec(WeaponId::Glock), 0, 1, f32::NAN);
+        assert_eq!(restored.state_tag_and_timer(), (1, 0.0));
+    }
 
     fn primary(down: bool) -> WeaponInput {
         WeaponInput {

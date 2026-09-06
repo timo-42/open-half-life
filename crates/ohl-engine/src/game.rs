@@ -367,6 +367,30 @@ impl Game {
         self.systems.debug_show_viewmodel_and_sprite(model_slot);
     }
 
+    /// Test-only hook: spawns a live projectile directly, the same call
+    /// `crate::ai`'s own monster ranged-attack mapping makes through
+    /// `Systems::spawn_projectile` (`docs/m79-design.md` §8 P3's seam).
+    /// Used by the `SECTION_PROJECTILES` (M7.9 P4b) save round-trip tests,
+    /// since nothing in this tree yet drives a monster's projectile attack
+    /// or a weapon's `WeaponAction::SpawnProjectile` end to end (a known
+    /// gap between P1/P2/P3's independent packages, out of this section's
+    /// scope).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn debug_spawn_projectile(
+        &mut self,
+        kind: ohl_combat::ProjectileKind,
+        origin: [f32; 3],
+        velocity: [f32; 3],
+    ) -> Option<ohl_combat::ProjectileId> {
+        self.systems.spawn_projectile(
+            &mut self.level,
+            kind,
+            None,
+            Vec3::from_array(origin),
+            Vec3::from_array(velocity),
+        )
+    }
+
     /// The player's weapons, ammo, HEV suit and long-jump ownership.
     ///
     /// A freshly built value each call (see `crate::combat`'s module docs
@@ -484,6 +508,34 @@ impl Game {
     #[must_use]
     pub fn followers(&self) -> &[ohl_game::hecs::Entity] {
         self.systems.ai().followers().members()
+    }
+
+    /// How many times the player has actually fired a weapon since this
+    /// level was loaded. Data, never a log line.
+    #[must_use]
+    pub fn weapon_fired_count(&self) -> u64 {
+        self.systems.weapon_fired_count()
+    }
+
+    /// How many of those shots have landed on an entity. Data, never a log
+    /// line.
+    #[must_use]
+    pub fn shot_hit_count(&self) -> u64 {
+        self.systems.shot_hit_count()
+    }
+
+    /// How many pickups have actually been taken since this level was
+    /// loaded. Data, never a log line.
+    #[must_use]
+    pub fn pickup_count(&self) -> u64 {
+        self.systems.pickup_count()
+    }
+
+    /// How many times damage aimed at the player has actually been applied
+    /// since this level was loaded. Data, never a log line.
+    #[must_use]
+    pub fn player_damage_event_count(&self) -> u64 {
+        self.systems.player_damage_event_count()
     }
 
     /// The per-step configuration this game simulates with.
@@ -821,7 +873,27 @@ impl Game {
                 elapsed: self.elapsed,
             },
             view: ViewState {
-                position: self.camera.position,
+                // The player's feet-level physics origin, not
+                // `self.camera.position` (the *eye* position, `origin +`
+                // the stance's eye offset): `Self::restore` reconstructs a
+                // fresh `PlayerController` from this value via `spawn_at`,
+                // which treats its argument as the origin. Saving the eye
+                // position there used to teleport the reloaded player
+                // upward by the eye offset, only settling back down (via a
+                // real, physics-simulated fall) once ticking resumed —
+                // harmless for the byte-identical save round trip (nothing
+                // ticks in between), but it meant a save/load boundary was
+                // never actually a no-op for the physics state, which
+                // broke exact continuation (`Game::ai_state_hash` includes
+                // the player's own `Actor`, moved by this same physics).
+                // A map with no collision hulls has no `PlayerController`
+                // origin/eye distinction at all, so it keeps using the
+                // free-fly camera's own position.
+                position: if self.level.collision.is_some() {
+                    self.controller.state.origin.to_array()
+                } else {
+                    self.camera.position
+                },
                 yaw: self.camera.yaw,
                 pitch: self.camera.pitch,
             },
@@ -974,7 +1046,6 @@ impl Game {
         self.globals = save.globals.clone();
         self.carry.restore(&save.player);
         self.elapsed = save.header.elapsed;
-        self.camera.position = save.view.position;
         self.camera.yaw = save.view.yaw;
         self.camera.pitch = save.view.pitch;
         self.controller = PlayerController::spawn_at(
@@ -982,11 +1053,28 @@ impl Game {
             save.view.yaw,
             save.view.pitch,
         );
+        // `save.view.position` is the physics origin (see `Self::to_save`'s
+        // doc comment); the camera itself always tracks the *eye* position,
+        // derived from that origin the same way a normal tick would.
+        self.camera.position = if self.level.collision.is_some() {
+            self.controller.eye_position().to_array()
+        } else {
+            save.view.position
+        };
         self.difficulty = save.difficulty();
         self.clock = TickClock::new();
-        self.systems.reset();
-        self.systems
-            .attach_level(&mut self.level, self.difficulty, &self.skill);
+        // `Self::load_with` (this game's own constructor, just above in
+        // `from_save`) already built a fresh `Systems` and called
+        // `attach_level` exactly once, with this same `save.difficulty()`
+        // and this level's own skill table. Calling `reset`/`attach_level`
+        // again here used to re-run `attach_monsters` a second time against
+        // the same (already-populated) `Registry::entities`, silently
+        // double-spawning every `monster_*` the map declares on every
+        // `Game::from_save`/`load_bytes` — harmless for a save with no
+        // monsters (which is why the pre-M7.9-P4b save round-trip test
+        // never caught it), but exactly the bug M7.9 P4b's own
+        // `SECTION_ENTITY_COMBAT`/`SECTION_AI` restore (below) would then
+        // silently zip against the wrong, doubled entity list.
         // `save.player` genuinely round-trips health, armor, owned
         // weapons, per-weapon clips, reserve ammo, the HEV suit and the
         // long jump module: `GameSave` (and so `PlayerCarryState`,

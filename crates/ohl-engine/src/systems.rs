@@ -266,6 +266,10 @@ pub struct Systems {
     /// The last player-move step's physics report, produced in phase 2 and
     /// consumed by phase 3.
     physics_output: ohl_player::PhysicsOutput,
+    /// How many times damage aimed at the player has actually been applied
+    /// since this level was attached. Media-derived: data, never a log
+    /// line from this crate.
+    player_damage_events: u64,
 }
 
 impl Systems {
@@ -295,7 +299,38 @@ impl Systems {
             player_events: Vec::new(),
             physics_output: ohl_player::PhysicsOutput::default(),
             hitboxes: HitboxIndex::new(ohl_combat::HitboxLimits::default()),
+            player_damage_events: 0,
         }
+    }
+
+    /// How many times the player has actually fired a weapon since this
+    /// level was attached. Media-derived: data, never a log line from this
+    /// crate.
+    #[must_use]
+    pub fn weapon_fired_count(&self) -> u64 {
+        self.combat.fired_count()
+    }
+
+    /// How many of those shots have landed on an entity. Media-derived:
+    /// data, never a log line from this crate.
+    #[must_use]
+    pub fn shot_hit_count(&self) -> u64 {
+        self.combat.hit_count()
+    }
+
+    /// How many pickups have actually been taken since this level was
+    /// attached. Media-derived: data, never a log line from this crate.
+    #[must_use]
+    pub fn pickup_count(&self) -> u64 {
+        self.pickups.taken_count()
+    }
+
+    /// How many times damage aimed at the player has actually been applied
+    /// since this level was attached. Media-derived: data, never a log
+    /// line from this crate.
+    #[must_use]
+    pub fn player_damage_event_count(&self) -> u64 {
+        self.player_damage_events
     }
 
     /// The AI world this step list drives.
@@ -380,11 +415,12 @@ impl Systems {
     }
 
     /// `SECTION_ENTITY_COMBAT` (24): one entry per `level.registry.entities`
-    /// slot, in spawn order.
+    /// slot, in spawn order; `None` for an entity no longer present in the
+    /// world at all (see `crate::save_state::snapshot_entity_combat`).
     #[must_use]
     pub(crate) fn snapshot_entity_combat(
         level: &Level,
-    ) -> Vec<crate::save_state::EntityCombatSnapshot> {
+    ) -> Vec<Option<crate::save_state::EntityCombatSnapshot>> {
         level
             .registry
             .entities
@@ -397,14 +433,18 @@ impl Systems {
     /// Restores `SECTION_ENTITY_COMBAT` (24), zipped against
     /// `level.registry.entities` in spawn order; a save with more or fewer
     /// entries than the reloaded level currently has simply stops applying
-    /// once either list runs out.
+    /// once either list runs out. A `None` entry despawns the freshly
+    /// attach-level-spawned entity at that slot, so a monster the save
+    /// recorded as gone (gibbed, `world.despawn`ed before the save) stays
+    /// gone after the load instead of a fresh level load's own
+    /// `attach_monsters` silently resurrecting it.
     pub(crate) fn restore_entity_combat(
         level: &mut Level,
-        snapshots: &[crate::save_state::EntityCombatSnapshot],
+        snapshots: &[Option<crate::save_state::EntityCombatSnapshot>],
     ) {
         let entities = level.registry.entities.clone();
         for (entity, snapshot) in entities.iter().zip(snapshots) {
-            crate::save_state::restore_entity_combat(level, *entity, snapshot);
+            crate::save_state::restore_entity_combat(level, *entity, snapshot.as_ref());
         }
     }
 
@@ -458,10 +498,14 @@ impl Systems {
     #[must_use]
     pub(crate) fn snapshot_rng(&self) -> crate::save_state::RngSnapshot {
         let (state, increment) = self.rng.snapshot();
+        let (ai_state, ai_increment) = self.ai.rng_snapshot();
         crate::save_state::RngSnapshot {
             state,
             increment,
             substep_counter: self.substep_counter,
+            ai_state,
+            ai_increment,
+            ai_tick_count: self.ai.tick_count(),
         }
     }
 
@@ -469,6 +513,10 @@ impl Systems {
     pub(crate) fn restore_rng(&mut self, snapshot: crate::save_state::RngSnapshot) {
         self.rng = ohl_ai::Pcg32::from_snapshot((snapshot.state, snapshot.increment));
         self.substep_counter = snapshot.substep_counter;
+        self.ai.restore_rng(
+            (snapshot.ai_state, snapshot.ai_increment),
+            snapshot.ai_tick_count,
+        );
     }
 
     /// The configuration this step list runs with.
@@ -780,6 +828,7 @@ impl Systems {
             &mut self.hud,
             &mut self.presentation,
             &mut self.player_events,
+            &mut self.player_damage_events,
         );
     }
 

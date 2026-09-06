@@ -14,6 +14,13 @@
 //! `xtask/smoke-scenarios/`) and pass/fail buckets only. Logging policy
 //! is the same as everywhere else in this project: no media-derived
 //! string, count or size ever reaches the summary.
+//!
+//! Each [`Scenario`] names its own expected present/absent milestone-line
+//! sets rather than one fixed pair for every scenario, so a later scenario
+//! that does expect one of the six M7.9 P4b lines (weapon-fired/shot-hit/
+//! monster-damage/monster-died/pickup/player-damage) can move it from its
+//! own `absent` set to its own `present` one without touching the others;
+//! see [`scenarios`]'s own doc comment for why none of the three today do.
 
 use std::fmt;
 use std::io::Read as _;
@@ -49,47 +56,27 @@ struct Args {
 }
 
 /// One scenario: its project-authored name, the scripted-input file under
-/// `xtask/smoke-scenarios/`, and the map it runs over (a literal from
+/// `xtask/smoke-scenarios/`, the map it runs over (a literal from
 /// `ohl_campaign`'s own sourced table; see that crate's module
-/// documentation for the citations).
+/// documentation for the citations), and which of the eight fixed
+/// milestone lines (`docs/m79-design.md` §7) this scenario's script is
+/// expected to make present versus absent.
 struct Scenario {
     name: &'static str,
     file: &'static str,
     map: &'static str,
+    present: &'static [&'static str],
+    absent: &'static [&'static str],
 }
 
-/// The scenarios this command runs, in order. Map names come only from
-/// `ohl_campaign`'s cited table: `ohl_campaign::TRAINMAP` for the training
-/// start, `ohl_campaign::STARTMAP` for the first chapter's start, and
-/// `"c1a1"` (Unforeseen Consequences, `ohl_campaign::CHAPTERS`'s second
-/// chapter's first map) for the first monster encounter.
-fn scenarios() -> [Scenario; 3] {
-    [
-        Scenario {
-            name: "walk forward in the training start",
-            file: "training_start.txt",
-            map: ohl_campaign::TRAINMAP,
-        },
-        Scenario {
-            name: "look around in the first chapter start",
-            file: "first_chapter_start.txt",
-            map: ohl_campaign::STARTMAP,
-        },
-        Scenario {
-            name: "approach the first monster encounter",
-            file: "approach_first_monster.txt",
-            map: "c1a1",
-        },
-    ]
-}
+/// The two lines every scenario's `--script-log` run always emits: the
+/// script loaded and finished markers.
+const BASE_PRESENT: [&str; 2] = ["Scripted input loaded.", "Scripted input finished."];
 
-/// The eight fixed milestone lines `docs/m79-design.md` §7 documents.
-/// Every scenario in this tree expects exactly the same two present and
-/// six absent, because none of the six needs (weapon firing, hitscan,
-/// pickups, player damage) exists on this branch yet — M7.9 P1 (PR #70)
-/// is not merged; see `crates/ohl-app/src/script_log.rs`.
-const ALWAYS_PRESENT: [&str; 2] = ["Scripted input loaded.", "Scripted input finished."];
-const ALWAYS_ABSENT: [&str; 6] = [
+/// The six milestone lines a scenario that never fires, hits, damages or
+/// picks up anything is expected never to log. A scenario that does expect
+/// one of these present removes it from its own `absent` list instead.
+const BASE_ABSENT: [&str; 6] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
     "A monster took damage.",
@@ -97,6 +84,53 @@ const ALWAYS_ABSENT: [&str; 6] = [
     "A pickup was collected.",
     "The player took damage.",
 ];
+
+/// The scenarios this command runs, in order. Map names come only from
+/// `ohl_campaign`'s cited table: `ohl_campaign::TRAINMAP` for the training
+/// start, `ohl_campaign::STARTMAP` for the first chapter's start, and
+/// `"c1a1"` (Unforeseen Consequences, `ohl_campaign::CHAPTERS`'s second
+/// chapter's first map) for the first monster encounter.
+///
+/// `TODO(P4b-followup)`: M7.9 P4b wires "The player fired a weapon."/"A
+/// shot hit an entity." end to end (`crates/ohl-app/src/script_log.rs`),
+/// but adding a scenario that actually reaches those lines needs a script
+/// that walks the real training course to an actual weapon pickup first.
+/// `ohl_campaign::HAZARD_COURSE_MAPS` names the training course's own map
+/// sequence, but which one first offers a weapon, and from where, is not
+/// something this package's own tests can determine without inspecting
+/// payload content this crate treats as read-only (`docs/CLEAN_ROOM.md`
+/// rule 6/7); a few short scripted attempts against a real imported
+/// payload during this package's own development did not reach one within
+/// `t0a0`/`t0a0a` alone. `crates/ohl-engine/tests/save_sections.rs`
+/// exercises the same fired/hit counters end to end today, against this
+/// package's own synthetic fixture, so the milestone lines themselves are
+/// covered; only *this* harness's own real-payload scenario is not yet
+/// added.
+fn scenarios() -> [Scenario; 3] {
+    [
+        Scenario {
+            name: "walk forward in the training start",
+            file: "training_start.txt",
+            map: ohl_campaign::TRAINMAP,
+            present: &BASE_PRESENT,
+            absent: &BASE_ABSENT,
+        },
+        Scenario {
+            name: "look around in the first chapter start",
+            file: "first_chapter_start.txt",
+            map: ohl_campaign::STARTMAP,
+            present: &BASE_PRESENT,
+            absent: &BASE_ABSENT,
+        },
+        Scenario {
+            name: "approach the first monster encounter",
+            file: "approach_first_monster.txt",
+            map: "c1a1",
+            present: &BASE_PRESENT,
+            absent: &BASE_ABSENT,
+        },
+    ]
+}
 
 /// One scenario's classification.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -265,8 +299,14 @@ fn run_one(
         .rfind(|line| line.starts_with("[error]"))
         .map(ToString::to_string);
 
-    let lines_as_expected = ALWAYS_PRESENT.iter().all(|line| stderr_text.contains(line))
-        && ALWAYS_ABSENT.iter().all(|line| !stderr_text.contains(line));
+    let lines_as_expected = scenario
+        .present
+        .iter()
+        .all(|line| stderr_text.contains(line))
+        && scenario
+            .absent
+            .iter()
+            .all(|line| !stderr_text.contains(line));
 
     let outcome = RunOutcome {
         timed_out: status.is_none() && Instant::now() >= deadline,
