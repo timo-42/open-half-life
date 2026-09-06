@@ -471,9 +471,47 @@ pub fn categorize_position(model: &CollisionModel, state: &mut PlayerState, conf
         if state.velocity.z < 0.0 {
             state.velocity.z = 0.0;
         }
+        unstick_from_ground(model, state);
     } else {
         state.on_ground = false;
         state.ground_normal = Vec3::ZERO;
+    }
+}
+
+/// How far [`unstick_from_ground`] tries nudging the player upward, in
+/// one-unit steps, to recover a landing whose own ground-probe trace still
+/// reports the hull embedded in solid. A hard-enough closing velocity can
+/// resolve [`categorize_position`]'s short probe to a surface the full
+/// standing/crouched hull still overlaps by a hair (the probe trace backs
+/// off only [`crate::hull::DIST_EPSILON`] short of the plane, not the
+/// hull's own bounding box), which otherwise leaves the player permanently
+/// embedded rather than resting on top. Bounded rather than searched
+/// until success, so a landing spot that is genuinely solid all the way
+/// through (a mapper's own error) gives up instead of looping.
+const UNSTICK_MAX_NUDGE: f32 = 34.0;
+
+/// The step [`unstick_from_ground`] nudges by on each attempt.
+const UNSTICK_STEP: f32 = 1.0;
+
+/// If `state.origin` is embedded in solid (checked with a zero-length trace
+/// in the player's own hull, the same test a fresh landing already used),
+/// nudges it straight up in [`UNSTICK_STEP`] increments, up to
+/// [`UNSTICK_MAX_NUDGE`] units, and keeps the first offset that is not
+/// embedded. Leaves `state` untouched if no such offset is found within the
+/// bound: a stuck player is no better off, but no worse either.
+fn unstick_from_ground(model: &CollisionModel, state: &mut PlayerState) {
+    let hull = state.hull();
+    if !model.trace(hull, state.origin, state.origin).start_solid {
+        return;
+    }
+    let mut offset = UNSTICK_STEP;
+    while offset <= UNSTICK_MAX_NUDGE {
+        let candidate = state.origin + Vec3::Z * offset;
+        if !model.trace(hull, candidate, candidate).start_solid {
+            state.origin = candidate;
+            return;
+        }
+        offset += UNSTICK_STEP;
     }
 }
 
