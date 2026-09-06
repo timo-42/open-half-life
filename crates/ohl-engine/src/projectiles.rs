@@ -505,7 +505,6 @@ fn blast_targets(level: &Level) -> Vec<BlastTarget> {
     targets
 }
 
-
 /// Pushes a transient sprite at `position`, when the level has published at
 /// least one sprite asset to draw it with (see `crate::sprites`'s module
 /// doc). A map with none simply draws nothing for this event.
@@ -581,7 +580,13 @@ mod tests {
         );
 
         for _ in 0..30 {
-            system.tick(&mut level, &empty_hitboxes(), 1.0 / 30.0, &mut damage, &mut sprites);
+            system.tick(
+                &mut level,
+                &empty_hitboxes(),
+                1.0 / 30.0,
+                &mut damage,
+                &mut sprites,
+            );
         }
 
         // Whatever is left in flight (a grenade bounces, so it may still be
@@ -659,14 +664,26 @@ mod tests {
         let mut sprites = TransientSprites::new();
         // Just under the arming delay: the beam must not be live yet.
         for _ in 0..(2 * 30) {
-            system.tick(&mut level, &empty_hitboxes(), 1.0 / 30.0, &mut damage, &mut sprites);
+            system.tick(
+                &mut level,
+                &empty_hitboxes(),
+                1.0 / 30.0,
+                &mut damage,
+                &mut sprites,
+            );
         }
         assert_eq!(system.deployables.tripmines().len(), 1);
         assert!(!system.deployables.tripmines()[0].armed);
 
         // Past the published three seconds: it must be armed now.
         for _ in 0..(2 * 30) {
-            system.tick(&mut level, &empty_hitboxes(), 1.0 / 30.0, &mut damage, &mut sprites);
+            system.tick(
+                &mut level,
+                &empty_hitboxes(),
+                1.0 / 30.0,
+                &mut damage,
+                &mut sprites,
+            );
         }
         assert!(system.deployables.tripmines()[0].armed);
     }
