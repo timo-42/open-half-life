@@ -373,3 +373,94 @@ pub fn monster_entities(game: &crate::Game) -> Vec<ohl_game::hecs::Entity> {
     entities.sort_unstable_by_key(|entity: &ohl_game::hecs::Entity| entity.id());
     entities
 }
+
+// --- M7.11: a scripted-sequence room -------------------------------------
+
+/// The map name the scripted-sequence fixture is published under.
+pub const SCRIPT_MAP: &str = "ohlscriptsynth";
+
+/// The same flat, closed room [`ai_room_bsp`] builds, published under its
+/// own name so a scripting test's fixture never collides with an AI one.
+///
+/// Project-authored geometry and entity text; no bytes here come from any
+/// game installation.
+#[must_use]
+pub fn script_room_bsp(entities: &str) -> Vec<u8> {
+    ai_room_bsp(entities, false)
+}
+
+/// A `worldspawn` plus an `info_player_start` at `player_origin`, followed
+/// by whatever entity blocks a test adds.
+#[must_use]
+pub fn script_room_entities(player_origin: [f32; 3], extra: &str) -> String {
+    format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\
+         \"origin\" \"{} {} {}\"\n\"angle\" \"0\"\n}}\n\
+         {extra}",
+        player_origin[0], player_origin[1], player_origin[2]
+    )
+}
+
+/// One entity block: `classname`, `origin`, `angle`, then `keys` verbatim.
+///
+/// Every key a test passes is a published `scripted_sequence`,
+/// `scripted_sentence` or `monster_*` keyvalue; see
+/// `docs/FORMAT_SOURCES.md`, "Scripted sequences and talk monsters".
+#[must_use]
+pub fn entity_block(classname: &str, origin: [f32; 3], yaw: f32, keys: &[(&str, &str)]) -> String {
+    let mut block = format!(
+        "{{\n\"classname\" \"{classname}\"\n\
+         \"origin\" \"{} {} {}\"\n\"angle\" \"{yaw}\"\n",
+        origin[0], origin[1], origin[2]
+    );
+    for (key, value) in keys {
+        use std::fmt::Write as _;
+        let _ = writeln!(block, "\"{key}\" \"{value}\"");
+    }
+    block.push_str("}\n");
+    block
+}
+
+/// Builds a [`crate::Game`] over [`script_room_bsp`] with `entities`.
+#[must_use]
+pub fn script_game(entities: &str) -> crate::Game {
+    let bytes = script_room_bsp(entities);
+    let mut assets = crate::MemoryAssets::new();
+    assets.insert(&format!("maps/{SCRIPT_MAP}.bsp"), bytes.clone());
+    crate::Game::from_map_bytes(&assets, SCRIPT_MAP, &bytes).expect("the script room loads")
+}
+
+/// The world position of `entity`, as the AI sees it.
+#[must_use]
+pub fn actor_origin(game: &crate::Game, entity: ohl_game::hecs::Entity) -> ohl_ai::Vec3 {
+    game.registry()
+        .world
+        .get::<&ohl_ai::Actor>(entity)
+        .map(|actor| actor.origin)
+        .unwrap_or_default()
+}
+
+/// The first entity whose `classname` is `classname`, in spawn order.
+#[must_use]
+pub fn entity_of_classname(game: &crate::Game, classname: &str) -> Option<ohl_game::hecs::Entity> {
+    let mut found: Vec<ohl_game::hecs::Entity> = game
+        .registry()
+        .world
+        .query::<(ohl_game::hecs::Entity, &ohl_game::registry::ClassName)>()
+        .iter()
+        .filter(|(_, name)| name.0 == classname)
+        .map(|(entity, _)| entity)
+        .collect();
+    found.sort_unstable_by_key(|entity: &ohl_game::hecs::Entity| entity.id());
+    found.first().copied()
+}
+
+/// An [`crate::Input`] with the `use` edge pressed.
+#[must_use]
+pub fn use_input() -> crate::Input {
+    crate::Input {
+        use_pressed: true,
+        ..crate::Input::default()
+    }
+}

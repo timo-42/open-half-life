@@ -89,10 +89,10 @@ pub use monsters::{
 };
 pub use movement::{MoveResult, Route, StuckDetector, move_toward};
 pub use rng::Pcg32;
-pub use scripts::{ScriptAction, ScriptHold, ScriptPhase, ScriptRunner, ScriptSense, ScriptStep};
 pub use schedule::{
     Activity, Brain, RunOutcome, Schedule, ScheduleRunner, Task, TaskExecutor, TaskStatus,
 };
+pub use scripts::{ScriptAction, ScriptHold, ScriptPhase, ScriptRunner, ScriptSense, ScriptStep};
 pub use senses::{
     Candidate, EnemyMemory, ListenResult, LookResult, Senses, SightContext, Sighting, SoundEvent,
     SoundKind, SoundList, Viewer, listen, look,

@@ -12,8 +12,8 @@ use glam::Vec3;
 use hecs::Entity;
 
 use crate::registry::{
-    Button, ChangeLevel, Door, Message, MoverState, MultiManager, Platform, Registry, Transform,
-    Trigger,
+    AutoTrigger, Button, ChangeLevel, Door, Message, MoverState, MultiManager, Platform, Registry,
+    Target, Transform, Trigger,
 };
 use crate::track_train::TrackTrainState;
 
@@ -188,6 +188,7 @@ impl Simulation {
     /// act on (currently only [`Event::LevelChange`]).
     pub fn tick(&mut self, registry: &mut Registry, dt: f32) -> Vec<Event> {
         let mut events = Vec::new();
+        self.fire_auto_triggers(registry);
         self.advance_queue(registry, dt, &mut events);
         Self::advance_doors(registry, dt);
         self.advance_buttons(registry, dt, &mut events);
@@ -197,6 +198,40 @@ impl Simulation {
             state.cooldown = (state.cooldown - dt).max(0.0);
         }
         events
+    }
+
+    /// Fires every `trigger_auto` that has not fired yet, in ascending
+    /// entity order, and removes the ones whose `Remove On fire` spawnflag
+    /// is set. Runs before the queue, so a zero-delay auto trigger is
+    /// dispatched by the same tick that armed it.
+    fn fire_auto_triggers(&mut self, registry: &mut Registry) {
+        let mut ready: Vec<(Entity, String, f32, bool)> = registry
+            .world
+            .query::<(Entity, &AutoTrigger, &Target)>()
+            .iter()
+            .filter(|(_, auto, _)| !auto.fired)
+            .map(|(entity, auto, target)| {
+                (
+                    entity,
+                    target.0.clone(),
+                    auto.delay.max(0.0),
+                    auto.remove_on_fire,
+                )
+            })
+            .collect();
+        if ready.is_empty() {
+            return;
+        }
+        ready.sort_unstable_by_key(|(entity, _, _, _)| entity.id());
+        for (entity, target, delay, remove) in ready {
+            if let Ok(auto) = registry.world.query_one_mut::<&mut AutoTrigger>(entity) {
+                auto.fired = true;
+            }
+            self.fire(target, Some(entity), delay);
+            if remove {
+                registry.world.despawn(entity).ok();
+            }
+        }
     }
 
     fn advance_queue(&mut self, registry: &mut Registry, dt: f32, events: &mut Vec<Event>) {

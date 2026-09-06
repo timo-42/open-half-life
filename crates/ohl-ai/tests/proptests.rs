@@ -416,3 +416,142 @@ proptest! {
         prop_assert!(next.is_finite(), "non-finite output: {next:?}");
     }
 }
+
+// --- M7.11: the scripting entities ---------------------------------------
+
+/// Text a map could put in any keyvalue: plausible values, awkward numbers
+/// and outright junk.
+fn keyvalue_text() -> impl Strategy<Value = String> {
+    prop_oneof![
+        4 => "[-0-9.eE+]{0,12}",
+        2 => "[a-z_]{0,16}",
+        1 => Just(String::new()),
+        1 => prop_oneof![
+            Just("nan".to_string()),
+            Just("inf".to_string()),
+            Just("-inf".to_string()),
+            Just("99999999999999999999".to_string()),
+            Just("4294967296".to_string()),
+            Just("-1".to_string()),
+        ],
+        1 => "\\PC{0,24}",
+    ]
+}
+
+/// A `ScriptSense` built from arbitrary numbers and flags.
+fn script_sense() -> impl Strategy<Value = ohl_ai::ScriptSense> {
+    (
+        coordinate(),
+        any::<bool>(),
+        any::<bool>(),
+        any::<bool>(),
+        any::<bool>(),
+    )
+        .prop_map(|(dt, at_mark, facing_mark, sequence_finished, disturbed)| {
+            ohl_ai::ScriptSense {
+                dt,
+                at_mark,
+                facing_mark,
+                sequence_finished,
+                disturbed,
+            }
+        })
+}
+
+/// Turns `(key, value)` pairs into a parsed `EntityDef` under `classname`.
+fn script_def(classname: &str, pairs: &[(String, String)]) -> ohl_game::EntityDef {
+    let raw: ohl_formats::bsp30::Entity =
+        std::iter::once(("classname".to_string(), classname.to_string()))
+            .chain(pairs.iter().cloned())
+            .collect();
+    ohl_game::keyvalues::parse_entity(&raw, &ohl_game::KeyvalueLimits::default())
+}
+
+/// Every published key of the two scripting entities, so a generated case
+/// hits the fields the parser actually reads rather than only junk keys.
+const SCRIPT_KEYS: [&str; 10] = [
+    "m_iszEntity",
+    "m_iszPlay",
+    "m_iszIdle",
+    "m_flRadius",
+    "m_flRepeat",
+    "m_fMoveTo",
+    "target",
+    "delay",
+    "killtarget",
+    "spawnflags",
+];
+
+/// The published `scripted_sentence` keys.
+const SENTENCE_KEYS: [&str; 10] = [
+    "sentence",
+    "entity",
+    "listener",
+    "radius",
+    "duration",
+    "refire",
+    "delay",
+    "volume",
+    "attenuation",
+    "spawnflags",
+];
+
+fn keyed(keys: &'static [&'static str]) -> impl Strategy<Value = Vec<(String, String)>> {
+    proptest::collection::vec(
+        (0..keys.len(), keyvalue_text())
+            .prop_map(move |(index, value)| (keys[index].to_string(), value)),
+        0..12,
+    )
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// Arbitrary keyvalues on a `scripted_sequence`/`aiscripted_sequence`
+    /// parse without panicking, and the state machine they build survives
+    /// arbitrary sensing — including non-finite time steps — with finite
+    /// state throughout.
+    #[test]
+    fn script_keyvalues_and_the_state_machine_are_total(
+        ai_script in any::<bool>(),
+        pairs in keyed(&SCRIPT_KEYS),
+        senses in proptest::collection::vec(script_sense(), 1..24),
+        triggers in proptest::collection::vec(any::<bool>(), 1..24),
+    ) {
+        let classname = if ai_script {
+            "aiscripted_sequence"
+        } else {
+            "scripted_sequence"
+        };
+        let def = script_def(classname, &pairs);
+        let parsed = ohl_game::scripts::ScriptDef::from_def(&def)
+            .expect("a scripting classname always parses");
+        prop_assert!(parsed.radius.is_finite() && parsed.radius >= 0.0);
+        prop_assert!(parsed.repeat.is_finite() && parsed.repeat >= 0.0);
+        prop_assert!(parsed.delay.is_finite() && parsed.delay >= 0.0);
+
+        let mut runner = ohl_ai::ScriptRunner::new(parsed);
+        for (index, sense) in senses.iter().enumerate() {
+            if triggers[index % triggers.len()] {
+                let _ = runner.trigger();
+            }
+            let _ = runner.update(sense);
+            prop_assert!(runner.timer().is_finite(), "the repeat timer stayed finite");
+        }
+    }
+
+    /// The same for `scripted_sentence`: arbitrary keyvalues parse into
+    /// bounded, finite values.
+    #[test]
+    fn sentence_keyvalues_are_total(pairs in keyed(&SENTENCE_KEYS)) {
+        let def = script_def("scripted_sentence", &pairs);
+        let parsed = ohl_game::scripts::SentenceDef::from_def(&def)
+            .expect("a scripted_sentence always parses");
+        prop_assert!(parsed.radius.is_finite() && parsed.radius >= 0.0);
+        prop_assert!(parsed.duration.is_finite() && parsed.duration >= 0.0);
+        prop_assert!(parsed.refire.is_finite() && parsed.refire >= 0.0);
+        prop_assert!(parsed.delay.is_finite() && parsed.delay >= 0.0);
+        prop_assert!((0.0..=10.0).contains(&parsed.volume));
+        prop_assert!(parsed.attenuation <= 3);
+    }
+}

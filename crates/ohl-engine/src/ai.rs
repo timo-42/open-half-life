@@ -52,16 +52,16 @@
 use std::collections::BTreeMap;
 
 use glam::Vec3;
+use ohl_ai::follow::{FollowChange, FollowRoster, Follower};
 use ohl_ai::monsters::spec_for;
 use ohl_ai::monsters::table::Difficulty as AiDifficulty;
+use ohl_ai::scripts::{ScriptAction, ScriptHold, ScriptRunner, ScriptSense};
 use ohl_ai::{
     Actor, AiEvent, AiEventKind, AiWorld, AttackKind, BrainId, Classification, Conditions,
     CorpseDecision, DamageEvent, DamageQueue, DamageSink, MonsterAi, MonsterBrain, MonsterKind,
     MonsterSpawn, MonsterSpawnRules, MonsterSpec, MonsterTrigger, SightContext, TriggerCondition,
     TriggerContext, attach_monsters,
 };
-use ohl_ai::follow::{FollowChange, FollowRoster, Follower};
-use ohl_ai::scripts::{ScriptAction, ScriptHold, ScriptRunner, ScriptSense};
 use ohl_combat::{DamageType, HitboxIndex, HitboxLimits, TraceFilter, TraceMask};
 use ohl_game::hecs::Entity;
 use ohl_game::keyvalues::EntityDef;
@@ -1272,7 +1272,8 @@ impl AiState {
             let Some(entity) = level.registry.entities.get(index).copied() else {
                 break;
             };
-            if !spawned.contains(&entity) || !TALK_MONSTER_CLASSNAMES.contains(&def.classname.as_str())
+            if !spawned.contains(&entity)
+                || !TALK_MONSTER_CLASSNAMES.contains(&def.classname.as_str())
             {
                 continue;
             }
@@ -1310,7 +1311,10 @@ impl AiState {
             // radius will follow the sequence".
             script.actor = find_script_actor(level, script.runner.def());
         }
-        let Some(actor) = script.actor.filter(|actor| level.registry.world.contains(*actor)) else {
+        let Some(actor) = script
+            .actor
+            .filter(|actor| level.registry.world.contains(*actor))
+        else {
             if activated {
                 // Nothing to possess yet: the activation is dropped rather
                 // than queued, so a script cannot bank triggers.
@@ -1318,14 +1322,14 @@ impl AiState {
             return;
         };
 
-        if activated && self.may_possess(level, script, actor) && script.runner.trigger() {
+        if activated && Self::may_possess(level, script, actor) && script.runner.trigger() {
             self.script_starts += 1;
             script.played = 0.0;
         }
 
-        let sense = self.sense_script(level, script, actor, dt);
+        let sense = Self::sense_script(level, script, actor, dt);
         let step = script.runner.update(&sense);
-        self.apply_script_step(level, script, actor, &step, dt);
+        self.apply_script_step(level, script, actor, step, dt);
     }
 
     /// Whether `script` may take `actor` over right now.
@@ -1334,7 +1338,7 @@ impl AiState {
     /// possess its target even when the monster is in the combat state at
     /// the moment of the call". Without it, a monster already in combat is
     /// left alone.
-    fn may_possess(&self, level: &Level, script: &ActiveScript, actor: Entity) -> bool {
+    fn may_possess(level: &Level, script: &ActiveScript, actor: Entity) -> bool {
         if script.runner.def().overrides_ai() {
             return true;
         }
@@ -1347,13 +1351,7 @@ impl AiState {
     }
 
     /// Reads what the script's state machine needs to know about `actor`.
-    fn sense_script(
-        &self,
-        level: &Level,
-        script: &ActiveScript,
-        actor: Entity,
-        dt: f32,
-    ) -> ScriptSense {
+    fn sense_script(level: &Level, script: &ActiveScript, actor: Entity, dt: f32) -> ScriptSense {
         let def = script.runner.def();
         let (origin, yaw) = level
             .registry
@@ -1374,13 +1372,13 @@ impl AiState {
             at_mark: flat.length() <= SCRIPT_ARRIVE_RADIUS,
             facing_mark: ohl_ai::movement::normalize_yaw(def.yaw - yaw).abs()
                 <= SCRIPT_FACING_TOLERANCE_DEGREES,
-            sequence_finished: script.played >= self.action_seconds(level, script, actor),
+            sequence_finished: script.played >= Self::action_seconds(level, script, actor),
             disturbed,
         }
     }
 
     /// How long `script`'s action animation lasts for `actor`.
-    fn action_seconds(&self, level: &Level, script: &ActiveScript, actor: Entity) -> f32 {
+    fn action_seconds(level: &Level, script: &ActiveScript, actor: Entity) -> f32 {
         let Some(name) = script.runner.def().play_sequence() else {
             // "the Action Animation is not specified": the target fires as
             // soon as the monster has moved to the script.
@@ -1394,7 +1392,10 @@ impl AiState {
             .and_then(|anim| {
                 let model = level.studio_models.get(anim.model)?;
                 let index = model.sequence_by_name(name)?;
-                model.sequences.get(index).map(ohl_world::StudioSequence::duration)
+                model
+                    .sequences
+                    .get(index)
+                    .map(ohl_world::StudioSequence::duration)
             });
         match resolved {
             Some(duration) if duration > 0.0 => duration,
@@ -1408,7 +1409,7 @@ impl AiState {
         level: &mut Level,
         script: &mut ActiveScript,
         actor: Entity,
-        step: &ohl_ai::ScriptStep,
+        step: ohl_ai::ScriptStep,
         dt: f32,
     ) {
         let def = script.runner.def().clone();
@@ -1424,7 +1425,11 @@ impl AiState {
                 }
             }
             ScriptAction::Approach { run } => {
-                let speed = if run { SCRIPT_RUN_SPEED } else { SCRIPT_WALK_SPEED };
+                let speed = if run {
+                    SCRIPT_RUN_SPEED
+                } else {
+                    SCRIPT_WALK_SPEED
+                };
                 if let Ok(mut ai) = level.registry.world.get::<&mut MonsterAi>(actor) {
                     if ai.route.is_finished() || ai.route.needs_refresh(def.origin) {
                         ai.route = ohl_ai::Route::straight_line(def.origin);
@@ -1680,32 +1685,26 @@ fn nearest_by_classname(
     origin: Vec3,
     radius: f32,
 ) -> Option<Entity> {
-    let mut best: Option<(Entity, f32)> = None;
-    for (entity, name, actor) in level
-        .registry
-        .world
-        .query::<(Entity, &ClassName, &Actor)>()
-        .iter()
-    {
+    let mut candidates: Vec<(f32, u32, Entity)> = Vec::new();
+    for (entity, name, actor) in &mut level.registry.world.query::<(Entity, &ClassName, &Actor)>() {
         if name.0 != classname || !actor.alive {
             continue;
         }
         let distance = actor.origin.distance(origin);
-        if radius > 0.0 && distance > radius {
+        if !distance.is_finite() || (radius > 0.0 && distance > radius) {
             continue;
         }
-        let better = match best {
-            None => true,
-            Some((best_entity, best_distance)) => {
-                distance < best_distance
-                    || (distance == best_distance && entity.id() < best_entity.id())
-            }
-        };
-        if better {
-            best = Some((entity, distance));
-        }
+        candidates.push((distance, entity.id(), entity));
     }
-    best.map(|(entity, _)| entity)
+    closest(&mut candidates)
+}
+
+/// The nearest of `candidates`, ties broken by entity id so the choice
+/// never depends on iteration order.
+fn closest(candidates: &mut [(f32, u32, Entity)]) -> Option<Entity> {
+    candidates
+        .sort_unstable_by(|left, right| left.0.total_cmp(&right.0).then(left.1.cmp(&right.1)));
+    candidates.first().map(|(_, _, entity)| *entity)
 }
 
 /// The entity a `scripted_sentence`'s `entity` keyvalue names.
@@ -1730,32 +1729,18 @@ fn find_speaker(level: &Level, def: &SentenceDef, origin: Vec3) -> Option<Entity
 
 /// The nearest talk monster to `position` that is close enough to `use`.
 fn nearest_follower(level: &Level, position: Vec3) -> Option<Entity> {
-    let mut best: Option<(Entity, f32)> = None;
-    for (entity, actor, _) in level
-        .registry
-        .world
-        .query::<(Entity, &Actor, &Follower)>()
-        .iter()
-    {
+    let mut candidates: Vec<(f32, u32, Entity)> = Vec::new();
+    for (entity, actor, _) in &mut level.registry.world.query::<(Entity, &Actor, &Follower)>() {
         if !actor.alive {
             continue;
         }
         let distance = actor.origin.distance(position);
-        if distance > TALK_USE_RADIUS {
+        if !distance.is_finite() || distance > TALK_USE_RADIUS {
             continue;
         }
-        let better = match best {
-            None => true,
-            Some((best_entity, best_distance)) => {
-                distance < best_distance
-                    || (distance == best_distance && entity.id() < best_entity.id())
-            }
-        };
-        if better {
-            best = Some((entity, distance));
-        }
+        candidates.push((distance, entity.id(), entity));
     }
-    best.map(|(entity, _)| entity)
+    closest(&mut candidates)
 }
 
 #[cfg(test)]

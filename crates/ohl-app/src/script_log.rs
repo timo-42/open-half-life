@@ -42,6 +42,10 @@ use ohl_engine::Game;
 
 /// Tracks which milestone lines have already fired this run.
 #[derive(Debug)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "one latch per milestone line, plus one edge detector"
+)]
 pub struct ScriptLog {
     monster_damaged: bool,
     monster_died: bool,
