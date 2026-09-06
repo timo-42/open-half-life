@@ -37,9 +37,10 @@ use ohl_physics::MoveConfig;
 use ohl_world::StudioPose;
 
 use crate::components::{Owner, StudioAnim};
-use crate::ids::entity_id;
+use crate::ids::{entity_id, entity_of};
 use crate::level::Level;
 use crate::sprites::{TransientSprite, TransientSprites};
+use crate::systems::QueuedDamage;
 
 /// Which studio-model slot (into `Level::studio_models`) draws each
 /// projectile kind, when one has been configured. A flat, linearly-scanned
@@ -214,7 +215,7 @@ impl ProjectileSystem {
     pub(crate) fn detonate_all_satchels(
         &mut self,
         level: &Level,
-        damage_queue: &mut Vec<DamageInfo>,
+        damage_queue: &mut Vec<QueuedDamage>,
         sprites: &mut TransientSprites,
     ) -> usize {
         let mut events = Vec::new();
@@ -256,7 +257,7 @@ impl ProjectileSystem {
         &mut self,
         level: &mut Level,
         dt: f32,
-        damage_queue: &mut Vec<DamageInfo>,
+        damage_queue: &mut Vec<QueuedDamage>,
         sprites: &mut TransientSprites,
     ) {
         if level.collision.is_none() {
@@ -305,7 +306,7 @@ impl ProjectileSystem {
         &mut self,
         level: &Level,
         event: ProjectileEvent,
-        damage_queue: &mut Vec<DamageInfo>,
+        damage_queue: &mut Vec<QueuedDamage>,
         sprites: &mut TransientSprites,
     ) {
         match event {
@@ -323,17 +324,20 @@ impl ProjectileSystem {
                     IMPACT_SPRITE_SECONDS,
                     IMPACT_SPRITE_SCALE,
                 );
-                if let (Some(_target), Some((amount, damage_kind))) =
-                    (entity, direct_impact_damage(kind))
+                if let (Some(target), Some((amount, damage_kind))) =
+                    (entity.and_then(entity_of), direct_impact_damage(kind))
                 {
                     let attacker = self.projectiles.get(id).and_then(|p| p.owner);
-                    damage_queue.push(DamageInfo {
-                        attacker,
-                        inflictor: attacker,
-                        amount,
-                        kind: damage_kind,
-                        origin: position,
-                        direction: Vec3::ZERO,
+                    damage_queue.push(QueuedDamage {
+                        target,
+                        info: DamageInfo {
+                            attacker,
+                            inflictor: attacker,
+                            amount,
+                            kind: damage_kind,
+                            origin: position,
+                            direction: Vec3::ZERO,
+                        },
                     });
                 }
             }
@@ -371,7 +375,7 @@ impl ProjectileSystem {
         &mut self,
         level: &Level,
         event: DeployableEvent,
-        damage_queue: &mut Vec<DamageInfo>,
+        damage_queue: &mut Vec<QueuedDamage>,
         sprites: &mut TransientSprites,
     ) {
         if let DeployableEvent::Detonated {
@@ -446,7 +450,7 @@ fn resolve_blast(
     kind: DamageType,
     attacker: Option<CombatEntityId>,
     rule: &ExplosionRule,
-    damage_queue: &mut Vec<DamageInfo>,
+    damage_queue: &mut Vec<QueuedDamage>,
 ) {
     let Some(collision) = level.collision.as_ref() else {
         return;
@@ -462,7 +466,12 @@ fn resolve_blast(
         collision,
         rule,
     );
-    damage_queue.extend(hits.into_iter().map(|hit| hit.damage));
+    damage_queue.extend(hits.into_iter().filter_map(|hit| {
+        entity_of(hit.target).map(|target| QueuedDamage {
+            target,
+            info: hit.damage,
+        })
+    }));
 }
 
 /// Every entity a blast may hurt: everything carrying `Health`, positioned
@@ -689,7 +698,7 @@ mod tests {
         assert!(
             damage_queue
                 .iter()
-                .any(|info| info.attacker == Some(owner_id) && info.amount > 0.0),
+                .any(|queued| queued.info.attacker == Some(owner_id) && queued.info.amount > 0.0),
             "the owner must be among the blast's own hits"
         );
     }
