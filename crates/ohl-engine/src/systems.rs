@@ -362,3 +362,131 @@ impl Default for Systems {
         Self::new(SystemsConfig::default())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Input, PendingEdges, Systems};
+
+    fn systems() -> Systems {
+        Systems::default()
+    }
+
+    fn pressed() -> Input {
+        Input {
+            use_pressed: true,
+            reload: true,
+            flashlight_pressed: true,
+            select_slot: Some(3),
+            ..Input::default()
+        }
+    }
+
+    /// An edge is handed to exactly one step. A second latch inside the same
+    /// frame — which is what a frame long enough to release several steps
+    /// does — sees nothing, so one press cannot fire a phase ten times.
+    #[test]
+    fn an_edge_is_consumed_by_exactly_one_latch() {
+        let mut systems = systems();
+        systems.begin_frame(&pressed());
+
+        let first = systems.latch_input();
+        assert!(first.use_pressed);
+        assert!(first.reload_pressed);
+        assert!(first.flashlight_pressed);
+        assert_eq!(first.select_slot, Some(3));
+
+        let second = systems.latch_input();
+        assert!(!second.use_pressed);
+        assert!(!second.reload_pressed);
+        assert!(!second.flashlight_pressed);
+        assert_eq!(second.select_slot, None);
+    }
+
+    /// Edges survive frames that release no step. A host rendering faster
+    /// than the tick rate delivers most presses on such frames; dropping
+    /// them would silently break "use" above 100 fps.
+    #[test]
+    fn edges_accumulate_across_frames_that_never_latch() {
+        let mut systems = systems();
+        systems.begin_frame(&pressed());
+        // Three more frames, none of them carrying any press, and none of
+        // them releasing a step.
+        for _ in 0..3 {
+            systems.begin_frame(&Input::default());
+        }
+
+        let latched = systems.latch_input();
+        assert!(latched.use_pressed, "the press was not dropped");
+        assert!(latched.reload_pressed);
+        assert!(latched.flashlight_pressed);
+        assert_eq!(latched.select_slot, Some(3));
+    }
+
+    /// Two presses that land before a step runs are still one activation:
+    /// the set is a set, not a counter.
+    #[test]
+    fn repeated_edges_before_a_latch_collapse_to_one() {
+        let mut systems = systems();
+        systems.begin_frame(&pressed());
+        systems.begin_frame(&pressed());
+
+        assert!(systems.latch_input().use_pressed);
+        assert!(
+            !systems.latch_input().use_pressed,
+            "two presses before a step are one activation, not two"
+        );
+    }
+
+    /// Only one weapon can be selected, so a later slot press supersedes an
+    /// earlier one — but a frame that selects nothing must not erase a
+    /// selection still waiting for a step.
+    #[test]
+    fn the_most_recent_slot_wins_and_no_selection_erases_nothing() {
+        let mut edges = PendingEdges::default();
+        edges.accumulate(&Input {
+            select_slot: Some(1),
+            ..Input::default()
+        });
+        edges.accumulate(&Input {
+            select_slot: None,
+            ..Input::default()
+        });
+        assert_eq!(
+            edges.select_slot,
+            Some(1),
+            "a frame with no selection leaves the pending one alone"
+        );
+
+        edges.accumulate(&Input {
+            select_slot: Some(4),
+            ..Input::default()
+        });
+        assert_eq!(edges.select_slot, Some(4), "a later press supersedes");
+    }
+
+    /// Held axes describe *now*, so they are replaced rather than
+    /// accumulated: releasing a key stops the player on the next frame.
+    #[test]
+    fn held_axes_are_replaced_rather_than_accumulated() {
+        let mut systems = systems();
+        systems.begin_frame(&Input {
+            forward: 1,
+            jump: true,
+            ..Input::default()
+        });
+        systems.begin_frame(&Input::default());
+
+        let latched = systems.latch_input();
+        assert_eq!(latched.forward, 0, "a released axis does not linger");
+        assert!(!latched.jump);
+    }
+
+    /// A level change or a save load must not carry a press across.
+    #[test]
+    fn a_reset_drops_pending_edges() {
+        let mut systems = systems();
+        systems.begin_frame(&pressed());
+        systems.reset();
+        assert!(!systems.latch_input().use_pressed);
+    }
+}
