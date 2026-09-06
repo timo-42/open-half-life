@@ -101,6 +101,9 @@ pub struct GameArgs<'a> {
     /// Enables the scripted-input milestone log lines. Ignored without
     /// `script`.
     pub script_log: bool,
+    /// The lightmap ramp's overbright multiplier (`--overbright`); see
+    /// `ohl_engine::GameConfig::overbright`.
+    pub overbright: f32,
 }
 
 /// The save directory this run reads and writes slots in, or `None` when the
@@ -128,6 +131,7 @@ pub fn run(args: &GameArgs<'_>) -> Result<(), &'static str> {
     let source = AssetFsSource::new(asset_fs);
     let config = GameConfig {
         difficulty: args.difficulty,
+        overbright: args.overbright,
     };
     let mut game = match args.load_slot {
         Some(name) => {

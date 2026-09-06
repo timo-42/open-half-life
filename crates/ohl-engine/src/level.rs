@@ -10,8 +10,8 @@ use ohl_game::registry::{ClassName, Landmark, TargetName, Transform};
 use ohl_game::{Registry, Simulation};
 use ohl_physics::CollisionModel;
 use ohl_world::{
-    PlayerSpawn, SKY_FACE_SUFFIXES, SkyboxAsset, StudioLimits, StudioModel, WorldBuildOptions,
-    WorldModel,
+    LightRamp, PlayerSpawn, SKY_FACE_SUFFIXES, SkyboxAsset, StudioLimits, StudioModel,
+    WorldBuildOptions, WorldModel,
 };
 
 use crate::assets::AssetSource;
@@ -246,7 +246,8 @@ fn spawn_player(registry: &mut Registry, spawn: Option<PlayerSpawn>) -> Entity {
 }
 
 impl Level {
-    /// Loads `map` (a bare name such as `c0a0`) through `source`.
+    /// Loads `map` (a bare name such as `c0a0`) through `source`, applying
+    /// the documented [`LightRamp`] defaults.
     ///
     /// # Errors
     /// [`EngineError::MapNotFound`] when the payload has no such map,
@@ -254,17 +255,41 @@ impl Level {
     /// [`EngineError::WorldUnbuildable`] when the parsed map cannot be
     /// turned into renderable geometry.
     pub fn load(source: &dyn AssetSource, map: &str) -> Result<Self> {
+        Self::load_with_ramp(source, map, LightRamp::default())
+    }
+
+    /// As [`Self::load`], with a caller-chosen [`LightRamp`] (for example
+    /// one with a non-default `overbright`; see `--overbright` in
+    /// `ohl-app`).
+    ///
+    /// # Errors
+    /// As [`Self::load`].
+    pub fn load_with_ramp(source: &dyn AssetSource, map: &str, ramp: LightRamp) -> Result<Self> {
         let bytes = source
             .read(&format!("maps/{map}.bsp"))
             .ok_or(EngineError::MapNotFound)?;
-        Self::from_bytes(source, map, &bytes)
+        Self::from_bytes_with_ramp(source, map, &bytes, ramp)
     }
 
-    /// Builds a level from map bytes the caller already holds.
+    /// Builds a level from map bytes the caller already holds, applying the
+    /// documented [`LightRamp`] defaults.
     ///
     /// # Errors
     /// As [`Self::load`], minus [`EngineError::MapNotFound`].
     pub fn from_bytes(source: &dyn AssetSource, map: &str, bytes: &[u8]) -> Result<Self> {
+        Self::from_bytes_with_ramp(source, map, bytes, LightRamp::default())
+    }
+
+    /// As [`Self::from_bytes`], with a caller-chosen [`LightRamp`].
+    ///
+    /// # Errors
+    /// As [`Self::from_bytes`].
+    pub fn from_bytes_with_ramp(
+        source: &dyn AssetSource,
+        map: &str,
+        bytes: &[u8],
+        ramp: LightRamp,
+    ) -> Result<Self> {
         let limits = BspLimits::default();
         let bsp = Bsp::parse(bytes, &limits).map_err(|_| EngineError::MapUnreadable)?;
         let entities = bsp.entities(&limits).unwrap_or_default();
@@ -281,7 +306,7 @@ impl Level {
         let options = WorldBuildOptions {
             wads: &wad_slices,
             limits,
-            ..WorldBuildOptions::default()
+            ramp,
         };
 
         let world = WorldModel::build(&bsp, &options).map_err(|_| EngineError::WorldUnbuildable)?;

@@ -7,6 +7,7 @@ use ohl_campaign::{Difficulty, SkillTable};
 use ohl_game::Event;
 use ohl_physics::PlayerController;
 use ohl_render::{FreeFlyCamera, GpuContext, LightStyles};
+use ohl_world::LightRamp;
 
 use crate::assets::AssetSource;
 use crate::error::{EngineError, Result};
@@ -57,17 +58,43 @@ pub enum GameEvent {
 
 /// How a [`Game`] is started: everything the host chooses rather than the
 /// map.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GameConfig {
     /// The campaign difficulty, selecting which `skill.cfg` cvar suffix
     /// [`Game::skill_table`] lookups read.
     pub difficulty: Difficulty,
+    /// The lightmap ramp's overbright multiplier (see
+    /// `ohl_world::LightRamp::overbright`). Defaults to `1.0`, the
+    /// documented `LightRamp` default (no multiplier); a fidelity
+    /// investigation (round 4, finding E5) measured public reference
+    /// screenshots at roughly 1.7x this project's mean luma at that
+    /// default, and found a real, publicly documented GoldSrc/Quake-family
+    /// "overbright" lightmap convention that doubles brightness, but no
+    /// public source pins a specific default multiplier value for this
+    /// project to adopt (GoldSrc's own `gl_overbright` cvar in fact
+    /// defaults *off*; see `docs/FORMAT_SOURCES.md`, "Rendering
+    /// conventions"). This field exposes the multiplier as a user choice
+    /// (`--overbright` in `ohl-app`) instead of hard-coding a fitted value.
+    pub overbright: f32,
 }
 
 impl Default for GameConfig {
     fn default() -> Self {
         Self {
             difficulty: Difficulty::Medium,
+            overbright: LightRamp::default().overbright,
+        }
+    }
+}
+
+impl GameConfig {
+    /// The [`LightRamp`] this config selects: the documented defaults with
+    /// [`Self::overbright`] substituted for the ramp's own `overbright`.
+    #[must_use]
+    fn light_ramp(self) -> LightRamp {
+        LightRamp {
+            overbright: self.overbright,
+            ..LightRamp::default()
         }
     }
 }
@@ -81,6 +108,10 @@ pub struct Game {
     renderers: Option<Renderers>,
     elapsed: f32,
     difficulty: Difficulty,
+    /// The [`GameConfig::overbright`] this game was loaded with, reapplied
+    /// to every subsequent [`Self::apply_transition`] so a level change
+    /// does not silently reset it to the ramp default.
+    overbright: f32,
     skill: SkillTable,
     titles: TitleLibrary,
     sentences: SentenceLookup,
@@ -110,7 +141,11 @@ impl Game {
     /// # Errors
     /// As [`crate::level::Level::load`].
     pub fn load_with(source: &dyn AssetSource, map: &str, config: &GameConfig) -> Result<Self> {
-        Ok(Self::from_level(Level::load(source, map)?, source, *config))
+        Ok(Self::from_level(
+            Level::load_with_ramp(source, map, config.light_ramp())?,
+            source,
+            *config,
+        ))
     }
 
     /// Loads a level from map bytes the caller already holds.
@@ -148,6 +183,7 @@ impl Game {
             renderers: None,
             elapsed: 0.0,
             difficulty: config.difficulty,
+            overbright: config.overbright,
             skill,
             titles: TitleLibrary::load(source),
             sentences,
@@ -672,7 +708,11 @@ impl Game {
         map: &str,
         transition: &TransitionState,
     ) -> Result<()> {
-        let mut next = Level::load(source, map)?;
+        let ramp = LightRamp {
+            overbright: self.overbright,
+            ..LightRamp::default()
+        };
+        let mut next = Level::load_with_ramp(source, map, ramp)?;
         let newunit = next
             .registry
             .worldspawn
@@ -806,6 +846,7 @@ impl Game {
     pub fn from_save(source: &dyn AssetSource, save: &GameSave) -> Result<Self> {
         let config = GameConfig {
             difficulty: save.difficulty(),
+            ..GameConfig::default()
         };
         let mut game = Self::load_with(source, &save.header.map, &config)?;
         game.restore(save);

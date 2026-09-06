@@ -155,6 +155,26 @@ struct Cli {
     #[arg(long, value_name = "LEVEL", default_value = "medium")]
     difficulty: DifficultyArg,
 
+    /// The lightmap ramp's overbright multiplier.
+    ///
+    /// `ohl_world::lightmap::LightRamp::default()`'s `overbright` (`1.0`,
+    /// i.e. no multiplier) is left unchanged by default. A fidelity
+    /// investigation (round 4, finding E5) measured this project's mean
+    /// scene luma at roughly 1.7x below public reference screenshots
+    /// across six clean viewpoints, and found that GoldSrc's OpenGL
+    /// renderer does implement a real, documented lightmap "overbright"
+    /// convention (inherited from the wider Quake engine family) that
+    /// doubles brightness beyond the ordinary 0..=1 range — but that
+    /// convention ships *disabled* by default in stock Half-Life
+    /// (`gl_overbright 0`), so no public source pins a specific non-default
+    /// multiplier as this project's own documented default. This flag lets
+    /// a caller opt into the researched 2x convention (`--overbright 2.0`)
+    /// or the round 4 measured ratio (`--overbright 1.7`) without this
+    /// project fitting either value into the shipped default; see
+    /// `docs/FORMAT_SOURCES.md`, "Rendering conventions".
+    #[arg(long, value_name = "MULTIPLIER", default_value_t = 1.0)]
+    overbright: f32,
+
     /// Render offscreen and write a PNG here instead of opening a window.
     #[arg(long, value_name = "PATH")]
     headless_screenshot: Option<PathBuf>,
@@ -495,6 +515,7 @@ fn run_game_flow(cli: &Cli) -> ExitCode {
         spawn_offset: cli.spawn_offset,
         script: cli.script.as_deref(),
         script_log: cli.script_log,
+        overbright: cli.overbright,
     }) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {

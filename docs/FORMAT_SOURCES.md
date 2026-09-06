@@ -505,6 +505,61 @@ render modes, light styles, and sprite billboarding/timing.
   documented "`a` dark / `m` normal / `z` double" intensity scale being a
   brightness multiplier rather than an intensity one.
 
+- `LightRamp::overbright`'s default (fidelity round 4, finding E5,
+  `.plan/fidelity-round-4.md`): a black-box brightness review measured this
+  project's rendering at roughly 1.7x below public reference screenshots
+  across six clean viewpoints and asked whether GoldSrc documents a
+  lightmap "overbright" scale that would explain a deficit of that
+  magnitude. It does, but the same sources also document that convention
+  as disabled by default in stock Half-Life, so this project's own
+  `overbright` default stays unchanged (`1.0`) rather than adopting a
+  fitted or half-remembered value. Sources:
+  - Valve Developer Community, "GoldSrc"
+    (<https://developer.valvesoftware.com/wiki/GoldSrc>): documents
+    `gl_overbright 1` as a real renderer feature ("maximum brightness
+    mode") that increases lit-surface brightness and avoids chromatic
+    aberration on brightly lit lightmaps, states it was frequently
+    non-functional for years due to an unrelated OpenGL multitexturing-
+    detection bug (texture units enabled for detail textures disabled
+    overbright as a side effect), and that Half-Life's 25th Anniversary
+    Update replaced it with a shader-level equivalent (`gl_use_shaders`).
+  - Community Half-Life console-command references consulted for
+    `gl_overbright`'s default cvar value, consistently giving it as `0`
+    (off) in unmodified retail Half-Life: the Steam Community "List of
+    console commands" guide
+    (<https://steamcommunity.com/sharedfiles/filedetails/?id=123119241>)
+    and the GAMERCONFIG command reference
+    (<https://www.gamerconfig.eu/command/half-life/gl_overbright/>), both
+    describing a value of `1` as enabling "maximum brightness mode" /
+    "brighter & more vivid textures" and implying `0` (disabled) as the
+    shipped default.
+  - Quaddicted, "Software vs GLQuake: Overbright lighting"
+    (<https://www.quaddicted.com/software-vs-glquake/software-vs-glquake-overbright-lighting/>):
+    documents the wider Quake-engine-family convention this project asked
+    about directly — the original software renderer let compiled lightmap
+    brightness reach up to 200% ("overbright"), GLQuake's original OpenGL
+    renderer flattened anything above 100%, losing that headroom, and
+    later hardware renderers (for example Fitzquake) restored it via a
+    `gl_overbright`-style cvar that doubles brightness through a gamma-ramp
+    trick. This confirms the "scale lit surfaces by roughly 2x beyond the
+    ordinary range" mechanism GoldSrc's own `gl_overbright` inherits, but,
+    like the GoldSrc sources above, does not publish a single canonical
+    multiplier constant (200%/2x is the historical software-renderer
+    ceiling, not a fixed compiled-in gain) this project could cite as more
+    than "approximately double".
+
+  No source above documents `gl_overbright`'s (or the general Quake-family
+  overbright convention's) default *state* as anything but disabled for
+  stock, unmodified gameplay, so `LightRamp::default().overbright` stays
+  `1.0` (no multiplier) rather than being changed to `2.0` or to the round
+  4 measured `~1.7`. `ohl-app`'s `--overbright <MULTIPLIER>` flag
+  (`crates/ohl-app/src/main.rs`) exposes the documented convention (or the
+  round 4 measured ratio) as a user choice instead of a shipped default;
+  `crates/ohl-world/src/lightmap.rs`'s
+  `overbright_two_matches_the_documented_full_bright_convention_at_code_128`
+  test pins the documented "code 128 is the overbright reference point,
+  doubling it saturates to white" behaviour for a caller who does opt in.
+
 All sky, liquid, render-mode, light-style and sprite tests in
 `crates/ohl-world` and `crates/ohl-render` (including the
 `OHL_RENDER_GPU_TEST`-gated offscreen sky/water tests) run only against

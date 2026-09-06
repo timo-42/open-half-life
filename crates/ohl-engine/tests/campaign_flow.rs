@@ -369,8 +369,15 @@ fn the_skill_table_is_read_at_the_selected_difficulty() {
         (Difficulty::Medium, "20"),
         (Difficulty::Hard, "30"),
     ] {
-        let game =
-            Game::load_with(&assets, "ohl_a", &GameConfig { difficulty }).expect("map A loads");
+        let game = Game::load_with(
+            &assets,
+            "ohl_a",
+            &GameConfig {
+                difficulty,
+                ..GameConfig::default()
+            },
+        )
+        .expect("map A loads");
         assert_eq!(game.skill("sk_ohl_probe_health"), Some(expected));
         assert_eq!(game.difficulty(), difficulty);
     }

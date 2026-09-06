@@ -70,6 +70,36 @@ impl LightmapExtents {
 /// At the documented defaults the composition reduces to `l ^ (1 /
 /// texgamma)`, a ~2.1x lift on mid-tone luxels and the identity at both
 /// endpoints; `brightness`/`overbright` are the only stages that clip.
+///
+/// ## `overbright`'s default (fidelity round 4, finding E5)
+///
+/// A black-box fidelity review (`.plan/fidelity-round-4.md`, "E5") measured
+/// this project's mean scene luma at roughly 1.7x below public reference
+/// screenshots across six clean viewpoints and no code path in this ramp
+/// changed between rounds, so the review asked whether the wider deficit
+/// has a documented, non-fitted explanation. GoldSrc's OpenGL renderer does
+/// implement a real lightmap "overbright" convention, inherited from the
+/// wider Quake engine family: the Valve Developer Community's "GoldSrc"
+/// article and public gameplay/modding references (`gl_overbright`, a
+/// client cvar toggling "maximum brightness mode") describe it as doubling
+/// lit-surface brightness beyond the ordinary compiled range, matching
+/// Quake's own documented software-renderer overbright behaviour (up to
+/// 200% lightmap brightness) that GLQuake's original hardware renderer
+/// dropped and later `gl_overbright`-style hardware renderers restored via
+/// a gamma-ramp doubling trick. Critically, though, every source found also
+/// documents `gl_overbright` as **disabled by default** in stock,
+/// unmodified Half-Life (community console-command references consistently
+/// give its default cvar value as `0`; the VDC article separately notes it
+/// was frequently non-functional in practice due to an unrelated
+/// multitexturing-detection bug until the 25th Anniversary Update). No
+/// source found pins a specific default multiplier this project should
+/// adopt as its own shipped default — adopting one would be exactly the
+/// screenshot-fitting this project's rules forbid. `LightRamp::default()`
+/// therefore keeps `overbright` at `1.0` (unchanged); `ohl-app`'s
+/// `--overbright` flag exposes the documented 2x convention (or the round
+/// 4 measured 1.7x ratio) as a user choice instead. See
+/// `docs/FORMAT_SOURCES.md`, "Rendering conventions", for the full source
+/// list.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LightRamp {
     /// The documented `texgamma` cvar (default `2.2`): the gamma space the
@@ -392,6 +422,36 @@ mod tests {
         for code in 0..=255u8 {
             assert_eq!(identity.apply(code), code);
         }
+    }
+
+    #[test]
+    fn default_ramp_leaves_overbright_at_one() {
+        // Fidelity round 4 (E5) found a real, publicly documented GoldSrc
+        // "overbright" lightmap convention but no source pinning a default
+        // multiplier value; the documented `LightRamp` default must stay
+        // unchanged (`1.0`, i.e. no multiplier) so this stays a user
+        // choice (`--overbright`), not a fitted default.
+        assert!((LightRamp::default().overbright - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn overbright_two_matches_the_documented_full_bright_convention_at_code_128() {
+        // The documented Quake-family overbright convention treats a
+        // compiled lightmap value of 128 (of 255) as the "fully lit"
+        // reference point and doubles it, saturating to the maximum
+        // representable output (see `LightRamp`'s doc comment, "E5"). A
+        // caller who opts into that convention via `overbright: 2.0` must
+        // see exactly that saturation at code value 128.
+        let table = LightRamp {
+            overbright: 2.0,
+            ..LightRamp::default()
+        }
+        .table();
+        assert_eq!(
+            table.apply(128),
+            255,
+            "overbright 2.0 must saturate the documented full-bright code 128 to white"
+        );
     }
 
     #[test]
