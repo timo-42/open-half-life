@@ -310,30 +310,65 @@ fn place_viewpoint_near_nearest_monster(game: &mut Game, distance: f32) {
         tracing::info!("No monster found for the capture viewpoint.");
         return;
     };
-
-    // Approach from whichever horizontal side the map's own player start
-    // sits on, so the placement is deterministic (never an arbitrary
-    // direction) without needing a caller-chosen angle.
-    let mut away = from - monster_eye;
-    away.z = 0.0;
-    let away = if away.length_squared() > 1e-6 {
-        away.normalize()
-    } else {
-        Vec3::X
-    };
     let distance = if distance.is_finite() {
         distance.max(1.0)
     } else {
         1.0
     };
-    let eye = Vec3::new(
-        monster_eye.x + away.x * distance,
-        monster_eye.y + away.y * distance,
-        monster_eye.z,
-    );
-    let facing = -away;
-    let yaw = facing.y.atan2(facing.x).to_degrees();
-    game.set_viewpoint(eye.to_array(), 0.0, yaw);
+
+    // Try a handful of horizontal directions and keep the first one that
+    // does not land the eye inside solid geometry: whichever side the
+    // map's own player start sits on first (the direction a player would
+    // actually have approached the monster from, so it is the likeliest
+    // to be open space), then its opposite, then the four horizontal
+    // axes, so the placement is deterministic (never a caller-chosen
+    // angle) while still trying to land somewhere a frame is worth
+    // capturing. Falls back to the first candidate if every one of them
+    // is solid, since some placement is still owed to the caller and
+    // `--headless-screenshot`'s own solid-geometry warning already covers
+    // that case.
+    let mut spawnward = from - monster_eye;
+    spawnward.z = 0.0;
+    let spawnward = if spawnward.length_squared() > 1e-6 {
+        spawnward.normalize()
+    } else {
+        Vec3::X
+    };
+    let candidates = [
+        spawnward,
+        -spawnward,
+        Vec3::X,
+        Vec3::NEG_X,
+        Vec3::Y,
+        Vec3::NEG_Y,
+    ];
+
+    let mut fallback = None;
+    let mut placed = false;
+    for direction in candidates {
+        let eye = Vec3::new(
+            monster_eye.x + direction.x * distance,
+            monster_eye.y + direction.y * distance,
+            monster_eye.z,
+        );
+        let facing = -direction;
+        let yaw = facing.y.atan2(facing.x).to_degrees();
+        game.set_viewpoint(eye.to_array(), 0.0, yaw);
+        fallback.get_or_insert((eye, yaw));
+        if !game.eye_is_in_solid() {
+            placed = true;
+            break;
+        }
+    }
+    if !placed {
+        // Every candidate was solid; `candidates` is non-empty, so
+        // `fallback` is always set by the loop above. Re-apply it: the
+        // last iteration already left the *last* candidate active, not
+        // necessarily the first.
+        if let Some((eye, yaw)) = fallback {
+            game.set_viewpoint(eye.to_array(), 0.0, yaw);
+        }
+    }
     tracing::info!("Capture viewpoint placed near a monster.");
 }
 

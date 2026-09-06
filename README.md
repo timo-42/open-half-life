@@ -140,6 +140,26 @@ Usable with or without `--headless-screenshot`; without one, the scripted
 ticks still run headlessly with no GPU needed at all. `--script-log`
 enables the fixed scripted-sequence milestone log lines.
 
+By default, a `trigger_changelevel` fired during a headless or scripted
+run is not followed: the run logs a fixed line and keeps rendering the
+map it started on. Add `--follow-level-change` to instead call the same
+level-change path the interactive window uses and keep ticking on the
+destination map — useful for a capture or script that needs to land on
+whatever map a level transition leads to.
+
+Development-only builds (`--features dev-tools`) add
+`--viewpoint-at-nearest-monster DISTANCE`, which places the headless
+capture eye `DISTANCE` units from whichever spawned monster is nearest to
+the map's player start, at its eye height, facing it, in noclip, instead
+of at the player start or a caller-chosen `--viewpoint`/`--spawn-offset`:
+
+```sh
+cargo run --release -p ohl-app --features dev-tools -- \
+  --payload-root /path/to/payload --map c1a1 \
+  --headless-screenshot /path/to/shot.png --frames 60 \
+  --viewpoint-at-nearest-monster 160
+```
+
 **Smoke tests**, each of which builds (or accepts a prebuilt)
 `open-half-life` and drives it against an already-imported payload:
 
