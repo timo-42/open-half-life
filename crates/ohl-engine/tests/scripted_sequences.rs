@@ -390,3 +390,158 @@ fn scripting_stays_deterministic() {
         "a repeatable script with a repeat rate runs again on its own"
     );
 }
+
+/// The regression guard for the review's blocker: an **untriggered**
+/// `scripted_sequence` that names a monster must leave that monster
+/// entirely alone. A recruited scientist with a dormant script pointed at
+/// it travels the same distance as an identical scientist with no script in
+/// the map at all.
+#[test]
+fn a_dormant_script_does_not_immobilise_the_monster_it_names() {
+    let room = |with_script: bool| {
+        let mut extra = entity_block(
+            "monster_scientist",
+            [32.0, 0.0, 36.0],
+            180.0,
+            &[("targetname", "ohl_doc")],
+        );
+        if with_script {
+            // A script that names the scientist and is never triggered:
+            // no `trigger_auto`, nothing pointing at it.
+            extra.push_str(&entity_block(
+                "scripted_sequence",
+                [-200.0, -200.0, 36.0],
+                0.0,
+                &[
+                    ("targetname", "ohl_never_fired"),
+                    ("m_iszEntity", "ohl_doc"),
+                    ("m_iszPlay", "ohl_action"),
+                    ("m_iszIdle", "ohl_wait"),
+                    ("m_fMoveTo", "1"),
+                ],
+            ));
+        }
+        script_room_entities([0.0, 0.0, 36.0], &extra)
+    };
+
+    let travelled = |with_script: bool| {
+        let mut game = script_game(&room(with_script));
+        let doc = entity_of_classname(&game, "monster_scientist").expect("it spawned");
+        // Recruit it, then walk the player away so the follower has
+        // somewhere to go.
+        game.tick(TICK_SECONDS, &use_input());
+        tick(&mut game, 2);
+        assert_eq!(game.followers(), &[doc], "the scientist joined");
+        game.set_viewpoint([-224.0, 0.0, 36.0], 0.0, 0.0);
+        let before = actor_origin(&game, doc);
+        tick(&mut game, 600);
+        (actor_origin(&game, doc) - before).length()
+    };
+
+    let control = travelled(false);
+    let scripted = travelled(true);
+    assert!(
+        control > 32.0,
+        "the control scientist actually followed the player ({control})"
+    );
+    assert!(
+        (scripted - control).abs() < 1.0,
+        "a dormant script must not slow its monster down \
+         (control {control}, scripted {scripted})"
+    );
+}
+
+/// A monster whose script was interrupted mid-sequence is handed back to
+/// its own brain and moves again.
+#[test]
+fn an_interrupted_monster_can_move_again_afterwards() {
+    let entities = script_room_entities(
+        [0.0, 0.0, 36.0],
+        &format!(
+            "{}{}{}",
+            entity_block(
+                "monster_scientist",
+                [32.0, 0.0, 36.0],
+                180.0,
+                &[("targetname", "ohl_doc")],
+            ),
+            entity_block(
+                "scripted_sequence",
+                [200.0, 0.0, 36.0],
+                0.0,
+                &[
+                    ("targetname", "ohl_script"),
+                    ("m_iszEntity", "ohl_doc"),
+                    ("m_iszPlay", "ohl_action"),
+                    ("m_fMoveTo", "1"),
+                ],
+            ),
+            trigger_auto("ohl_script"),
+        ),
+    );
+    let mut game = script_game(&entities);
+    let doc = entity_of_classname(&game, "monster_scientist").expect("it spawned");
+
+    game.tick(TICK_SECONDS, &use_input());
+    tick(&mut game, 10);
+    assert_eq!(game.followers().len(), 1, "the scientist joined");
+    assert_eq!(game.active_script_count(), 1, "the script took the doctor");
+
+    ohl_engine::test_support::queue_monster_damage(&mut game, doc, None, 1.0);
+    tick(&mut game, 5);
+    assert_eq!(game.active_script_count(), 0, "the damage interrupted it");
+
+    game.set_viewpoint([-224.0, 0.0, 36.0], 0.0, 0.0);
+    let before = actor_origin(&game, doc);
+    tick(&mut game, 600);
+    let travelled = (actor_origin(&game, doc) - before).length();
+    assert!(
+        travelled > 32.0,
+        "an interrupted monster moves again ({travelled})"
+    );
+}
+
+/// The player's group does not survive a level change: the entities in it
+/// belong to the level that was unloaded.
+#[test]
+fn the_player_group_is_cleared_by_a_level_change() {
+    let here = script_room_entities(
+        [0.0, 0.0, 36.0],
+        &format!(
+            "{}{}",
+            entity_block("monster_scientist", [32.0, 0.0, 36.0], 180.0, &[]),
+            entity_block(
+                "info_landmark",
+                [0.0, 0.0, 0.0],
+                0.0,
+                &[("targetname", "ohl_landmark")],
+            ),
+        ),
+    );
+    let there = script_room_entities(
+        [0.0, 0.0, 36.0],
+        &entity_block(
+            "info_landmark",
+            [0.0, 0.0, 0.0],
+            0.0,
+            &[("targetname", "ohl_landmark")],
+        ),
+    );
+    let mut assets = ohl_engine::MemoryAssets::new();
+    assets.insert(&format!("maps/{SCRIPT_MAP}.bsp"), script_room_bsp(&here));
+    assets.insert("maps/ohlscriptsynth2.bsp", script_room_bsp(&there));
+
+    let mut game = Game::load(&assets, SCRIPT_MAP).expect("the script room loads");
+    game.tick(TICK_SECONDS, &use_input());
+    tick(&mut game, 2);
+    assert_eq!(game.followers().len(), 1, "the scientist joined");
+
+    game.change_level(&assets, "ohlscriptsynth2", "ohl_landmark")
+        .expect("the destination map loads");
+    assert!(
+        game.followers().is_empty(),
+        "a level change empties the player's group"
+    );
+    tick(&mut game, 10);
+    assert!(game.followers().is_empty());
+}

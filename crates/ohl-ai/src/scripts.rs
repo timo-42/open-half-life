@@ -79,10 +79,18 @@ impl ScriptPhase {
 /// What the script wants done with its monster this tick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ScriptAction {
-    /// Nothing at all: the script does not own the monster.
+    /// Nothing at all.
+    ///
+    /// A script that is dormant, counting `m_flRepeat` down, finished, or
+    /// has just let go of a monster produces this, and the engine must not
+    /// touch the monster for it: a script only owns an actor while it is
+    /// *holding* it, and a monster whose script is merely waiting is an
+    /// ordinary monster that walks, follows and fights as usual.
     #[default]
     None,
     /// Play the idle animation, if the map named one, and stand still.
+    ///
+    /// Only ever produced while the script is holding its monster.
     Idle,
     /// Route to the mark and follow it; `run` picks the running speed.
     Approach {
@@ -215,15 +223,16 @@ impl ScriptRunner {
     /// Abandons a running script without completing it.
     ///
     /// The monster is released and the script becomes dormant again, so a
-    /// later trigger replays it from the beginning — including its idle
-    /// animation, which is the documented behaviour of an interrupted
-    /// script that is triggered again.
+    /// later trigger replays it from the beginning, which is the documented
+    /// behaviour of an interrupted script that is triggered again. The
+    /// monster is handed back to its own brain intact — a dormant script
+    /// neither moves it nor animates it.
     fn abandon(&mut self) -> ScriptStep {
         self.phase = ScriptPhase::Dormant;
         self.timer = 0.0;
         self.warped = false;
         ScriptStep {
-            action: ScriptAction::Idle,
+            action: ScriptAction::None,
             released: true,
             interrupted: true,
             ..ScriptStep::default()
@@ -242,11 +251,7 @@ impl ScriptRunner {
             return self.abandon();
         }
         match self.phase {
-            ScriptPhase::Dormant => ScriptStep {
-                action: ScriptAction::Idle,
-                ..ScriptStep::default()
-            },
-            ScriptPhase::Done => ScriptStep::default(),
+            ScriptPhase::Dormant | ScriptPhase::Done => ScriptStep::default(),
             ScriptPhase::Repeating => {
                 self.timer -= dt;
                 if self.timer <= 0.0 {
@@ -257,10 +262,7 @@ impl ScriptRunner {
                         ..ScriptStep::default()
                     };
                 }
-                ScriptStep {
-                    action: ScriptAction::Idle,
-                    ..ScriptStep::default()
-                }
+                ScriptStep::default()
             }
             ScriptPhase::Moving => self.tick_moving(*sense),
             ScriptPhase::Playing => self.tick_playing(*sense),
@@ -331,11 +333,9 @@ impl ScriptRunner {
         self.timer = timer;
         self.warped = false;
         ScriptStep {
-            action: if phase == ScriptPhase::Done {
-                ScriptAction::None
-            } else {
-                ScriptAction::Idle
-            },
+            // The monster is handed straight back: whatever it does next is
+            // its own brain's business, not this script's.
+            action: ScriptAction::None,
             released: true,
             completed: true,
             ..ScriptStep::default()
@@ -367,13 +367,72 @@ mod tests {
         }
     }
 
+    /// A dormant script must be inert. This is the regression guard for
+    /// the whole "an untriggered script must not immobilise its monster"
+    /// contract: anything other than [`ScriptAction::None`] here would let
+    /// the engine reach into an actor the script does not hold.
     #[test]
-    fn a_dormant_script_asks_only_for_its_idle_animation() {
-        let mut runner = script(&[("m_iszIdle", "ohl_idle")]);
-        let step = runner.update(&sense());
-        assert_eq!(step.action, ScriptAction::Idle);
-        assert!(!step.started && !step.completed);
+    fn a_dormant_script_never_touches_its_monster() {
+        let mut runner = script(&[("m_iszIdle", "ohl_idle"), ("m_fMoveTo", "1")]);
+        for _ in 0..16 {
+            let step = runner.update(&sense());
+            assert_eq!(step.action, ScriptAction::None);
+            assert!(!step.started && !step.completed && !step.released);
+        }
         assert_eq!(runner.phase(), ScriptPhase::Dormant);
+    }
+
+    /// The same for a script that has finished for good, and for one that
+    /// is counting `m_flRepeat` down between runs.
+    #[test]
+    fn a_finished_or_repeating_script_never_touches_its_monster() {
+        let mut spent = script(&[("m_fMoveTo", "0")]);
+        assert!(spent.trigger());
+        let _ = spent.update(&sense());
+        let finished = ScriptSense {
+            sequence_finished: true,
+            ..sense()
+        };
+        assert!(spent.update(&finished).completed);
+        assert_eq!(spent.phase(), ScriptPhase::Done);
+        assert_eq!(spent.update(&sense()).action, ScriptAction::None);
+
+        let mut repeating = script(&[
+            ("m_fMoveTo", "0"),
+            ("spawnflags", "4"),
+            ("m_flRepeat", "10"),
+        ]);
+        assert!(repeating.trigger());
+        let _ = repeating.update(&sense());
+        assert!(repeating.update(&finished).completed);
+        assert_eq!(repeating.phase(), ScriptPhase::Repeating);
+        assert_eq!(repeating.update(&sense()).action, ScriptAction::None);
+    }
+
+    /// Completing and abandoning both hand the monster straight back,
+    /// asking for nothing further.
+    #[test]
+    fn releasing_a_monster_asks_for_no_further_action() {
+        let mut runner = script(&[("m_fMoveTo", "0")]);
+        assert!(runner.trigger());
+        let _ = runner.update(&sense());
+        let finished = ScriptSense {
+            sequence_finished: true,
+            ..sense()
+        };
+        let step = runner.update(&finished);
+        assert!(step.released && step.completed);
+        assert_eq!(step.action, ScriptAction::None);
+
+        let mut interrupted = script(&[("m_fMoveTo", "1")]);
+        assert!(interrupted.trigger());
+        let _ = interrupted.update(&sense());
+        let step = interrupted.update(&ScriptSense {
+            disturbed: true,
+            ..sense()
+        });
+        assert!(step.released && step.interrupted);
+        assert_eq!(step.action, ScriptAction::None);
     }
 
     #[test]
@@ -493,9 +552,11 @@ mod tests {
         };
         assert!(runner.update(&finished).completed);
         assert_eq!(runner.phase(), ScriptPhase::Repeating);
-        // 0.25s at 0.1s a tick: two ticks still waiting, the third restarts.
-        assert_eq!(runner.update(&sense()).action, ScriptAction::Idle);
-        assert_eq!(runner.update(&sense()).action, ScriptAction::Idle);
+        // 0.25s at 0.1s a tick: two ticks still waiting, the third
+        // restarts. A waiting script asks for nothing, so the monster is
+        // free to move under its own brain in between runs.
+        assert_eq!(runner.update(&sense()).action, ScriptAction::None);
+        assert_eq!(runner.update(&sense()).action, ScriptAction::None);
         let step = runner.update(&sense());
         assert!(step.started);
         assert_eq!(runner.phase(), ScriptPhase::Moving);
