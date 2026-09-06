@@ -1,0 +1,19 @@
+# M7.9 P4a scripted-input scenario: "approach the first monster
+# encounter".
+#
+# Project-authored; no bytes here come from any game installation (see
+# docs/CLEAN_ROOM.md). Run against "c1a1" (Unforeseen Consequences, the
+# first map in ohl_campaign::CHAPTERS with a monster encounter) by
+# xtask/src/combat_smoke.rs.
+#
+# Expected fixed log lines (see docs/m79-design.md §7), asserted by the
+# harness rather than parsed from this file:
+#   present: "Scripted input loaded.", "Scripted input finished."
+#   absent:  every other fixed line — in particular "A monster took
+#            damage." and "A monster died." cannot fire either, since
+#            nothing on this branch can damage a monster without a weapon
+#            (M7.9 P1, PR #70, is not merged yet; see
+#            crates/ohl-app/src/script_log.rs)
+
+150 forward
+30 wait

@@ -335,6 +335,13 @@ impl Game {
         self.systems.ai().death_count()
     }
 
+    /// How many monster damage events have been applied since this level
+    /// was loaded. Counts events, not monsters. Data, never a log line.
+    #[must_use]
+    pub fn monster_damage_event_count(&self) -> u64 {
+        self.systems.ai().damage_event_count()
+    }
+
     /// The per-step configuration this game simulates with.
     #[must_use]
     pub fn systems_config(&self) -> SystemsConfig {

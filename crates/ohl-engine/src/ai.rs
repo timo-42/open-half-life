@@ -259,6 +259,12 @@ pub struct AiState {
     triggers: Vec<DeclaredTrigger>,
     /// How many monsters have died since this level was attached.
     deaths: u64,
+    /// How many monster damage events have been applied since this level
+    /// was attached. Counts events, not monsters: a monster hit twice in
+    /// one step counts twice. Used only by the scripted-input smoke's
+    /// "A monster took damage." milestone line (`ohl-app`); never logged
+    /// from here, per this crate's logging policy.
+    damage_events: u64,
     /// How many children every `monstermaker` in this level has created
     /// between them, against [`MAX_MAKER_CHILDREN_PER_LEVEL`].
     maker_children: u32,
@@ -291,6 +297,7 @@ impl AiState {
             damage: DamageQueue::new(),
             triggers: Vec::new(),
             deaths: 0,
+            damage_events: 0,
             maker_children: 0,
             difficulty: AiDifficulty::default(),
             hitboxes: HitboxIndex::new(HitboxLimits::default()),
@@ -312,6 +319,13 @@ impl AiState {
     #[must_use]
     pub fn death_count(&self) -> u64 {
         self.deaths
+    }
+
+    /// How many monster damage events have been applied since this level
+    /// was attached. Media-derived: data, never a log line.
+    #[must_use]
+    pub fn damage_event_count(&self) -> u64 {
+        self.damage_events
     }
 
     /// The AI world, for a caller that needs to read its state.
@@ -348,6 +362,7 @@ impl AiState {
         self.triggers.clear();
         self.damage.clear();
         self.deaths = 0;
+        self.damage_events = 0;
         self.maker_children = 0;
         self.world.detach_navigator();
         self.difficulty = ai_difficulty(difficulty);
@@ -706,6 +721,7 @@ impl AiState {
             .iter()
             .map(|event| event.target)
             .collect();
+        self.damage_events += hurt.len() as u64;
         self.damage.clear();
 
         self.deaths += events
@@ -748,6 +764,13 @@ impl AiState {
                 .get::<&MonsterAi>(queued.target)
                 .is_err()
             {
+                // TODO(P1): a hit aimed at a non-monster target (the player
+                // included) is discarded here rather than applied, because
+                // phase 9 (damage resolution, `Systems::resolve_damage`) is
+                // still an empty hook. Until M7.9 P1 lands that phase, "the
+                // player took damage" is not an observable engine event, so
+                // the scripted-input smoke's milestone line for it is not
+                // wired; see `ohl-app/src/script_log.rs`.
                 continue;
             }
             let attacker = queued.info.attacker.and_then(crate::ids::entity_of);

@@ -2284,6 +2284,7 @@ dependencies = [
  "ohl-vfs",
  "ohl-wise",
  "ohl-world",
+ "proptest",
  "tempfile",
  "tracing",
  "tracing-subscriber",
