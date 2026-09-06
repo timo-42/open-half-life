@@ -2779,46 +2779,63 @@ This section cites what changed to fix both: `set_model_for` is now called
 from `ProjectileSystem::configure_models`, and the exclusion moved from the
 shared index to a per-trace ignore list.
 
-- TWHL wiki, "monster_tripmine" (reviewed 2026-09-06 through search-engine
-  result summaries, since the page itself answers automated requests with
-  HTTP 403): the tripmine entity carries one point of health, so it "can be
-  killed by conventional means" (gunfire, an explosion), and killing it
-  starts a short delay before it detonates. This is the published behaviour
-  `crates/ohl-engine/src/projectiles.rs`'s `DEPLOYABLE_HEALTH` and
-  `ProjectileSystem::resolve_deployable_damage` implement: a placed
-  tripmine's model-backed stand-in entity carries an
-  `ohl_combat::Health` of 1, and a hit that brings it to zero calls
-  `ohl_combat::DeployableSet::detonate` by handle in the step right after
-  damage resolves. No source this project may use publishes a distinct
-  health value for a placed satchel charge, so the same constant is reused
-  for it as an explicit, unverified choice, not a claim specific to the
-  satchel.
-- Combine OverWiki, "Snark" (already cited above, "Weapons and firing
-  (M7.2)"): a snark itself has 2 published health, alongside its 10-damage
-  bite — independent confirmation that a model-backed, weapon-spawned
-  entity being directly damageable (not just its target) is a documented
-  Half-Life mechanic, not an invention specific to the tripmine.
-- GoldSrc modding-community filename references (none of them Valve's
-  released engine/SDK source; see `docs/CLEAN_ROOM.md`) for the conventional
-  retail asset paths named in `crates/ohl-engine/src/projectiles.rs`'s
-  `default_projectile_model_path`/`default_deployable_model_path`:
-  `models/rpgrocket.mdl` (RPG rocket) and `models/hornet.mdl` (hornet), each
-  independently named by both a Half-Life HD modelpack's Steam Workshop
-  listing and a "HALF-LIFE OVERHAUL PACK" credits document;
-  `models/crossbow_bolt.mdl` (crossbow bolt), named the same way; and
-  `models/w_tripmine.mdl` (placed tripmine), named by a single corroborating
-  source (a SnarkPit forum thread describing a community model pack that
-  added the missing world model, compiled from the official SDK's
-  `v_tripmine.mdl` reference geometry) rather than two, so it is a weaker
-  attribution than the other three and is recorded as such. This project
-  found no corroborated filename at all for the satchel charge's *placed,
-  world* model (its carried/view models are attested, its dropped-charge
-  model is not), so `DeployableKind::Satchel` is left without an automatic
-  default. Naming a path here loads nothing new — see
-  `Level::studio_model_paths`'s doc — it only lets an already-loaded model
-  (one the map's own entities reference) be recognised by its conventional
-  filename; a map that never loads that exact path leaves the kind undrawn,
-  exactly as before this change.
+A follow-up PR #84 review found that the first version of this section
+cited its four model-path literals only descriptively ("a Steam Workshop
+listing", "a forum thread"), with no URL a later reviewer could re-check,
+and that one of the four (`models/w_tripmine.mdl`) was additionally wrong:
+the project's own already-cited authority for entity-to-model mappings
+(the `MonsterKind::default_model_path` table below) lists `monster_tripmine`
+against `models/v_tripmine.mdl`, not `w_tripmine.mdl`, and the discarded
+citation's own text routed attribution through "the official SDK's
+reference geometry" — a provenance chain this project does not accept (see
+`docs/CLEAN_ROOM.md`). This revision replaces all four with per-literal URL
+citations, in the same table format as `MonsterKind::default_model_path`'s;
+anything this project could not cite that way is `None` and marked
+`TODO(black-box)` in source instead of guessed.
+
+**Model paths.** `crates/ohl-engine/src/projectiles.rs`'s
+`default_projectile_model_path`/`default_deployable_model_path` name a
+kind's model path only when this project found that literal, verbatim, on
+TWHL's "Reference: Entities and their models"
+(<https://twhl.info/wiki/page/Reference:_Entities_and_their_models>, reached
+via a text-extraction proxy since `twhl.info` returns HTTP 403 to direct
+automated fetches — the same limitation recorded above for that page's
+`MonsterKind` table). That page has no row for an RPG rocket, a crossbow
+bolt or a hornet, so all six `ProjectileKind` variants are `None`; it does
+have rows for both `DeployableKind` variants:
+
+| `DeployableKind` | cited page's row | `models/*.mdl` |
+| --- | --- | --- |
+| `Tripmine` | `monster_tripmine` | `v_tripmine.mdl` |
+| `Satchel` | `monster_satchel` | `w_satchel.mdl` |
+
+Naming a path here loads nothing new — see `Level::studio_model_paths`'s
+doc — it only lets an already-loaded model (one the map's own entities
+reference) be recognised by its conventional filename; a map that never
+loads that exact path leaves the kind undrawn, same as before this pass.
+
+**Tripmine health and blast damage.** TWHL, "monster_tripmine"
+(<https://twhl.info/wiki/page/monster_tripmine>, same proxy caveat as
+above): its keyvalue/property table publishes, verbatim, "Health | 1" and
+"Explosive damage | 150". `crates/ohl-engine/src/projectiles.rs`'s
+`DEPLOYABLE_HEALTH` (`1.0`) and `DEPLOYABLE_BLAST_DAMAGE` (`150.0`) are
+exactly these two published fields — the previous revision of this section
+paraphrased the first as "can be killed by conventional means", a phrase
+that does not appear on the page; this revision quotes the published field
+name instead and draws no conclusion beyond it. No source this project may
+use publishes a distinct health or blast-damage number for a placed
+satchel charge, so both tripmine numbers are reused for it as an explicit,
+unverified choice, not a claim specific to the satchel; the M7.2 weapon
+table's own, separately cited 150 damage for the Satchel Charge *weapon*
+(`weapons::spec`) happens to match the reused `DEPLOYABLE_BLAST_DAMAGE`,
+which is a coincidence this project noticed, not a claim that the two are
+the same published fact.
+
+Combine OverWiki, "Snark" (already cited above, "Weapons and firing
+(M7.2)"): a snark itself has 2 published health, alongside its 10-damage
+bite — independent confirmation that a model-backed, weapon-spawned entity
+being directly damageable (not just its target) is a documented Half-Life
+mechanic, not an invention specific to the tripmine.
 
 Project behaviour, not itself a claim about the original engine: keeping a
 model-backed projectile and every placed deployable in the same shared
@@ -2829,4 +2846,9 @@ against, and instead giving `ohl_combat::Projectile` a `self_id` field
 `TraceFilter` that ignores just those two entities, via
 `TraceFilter::ignoring`'s two-slot `ignore` list. This is this project's own
 architectural choice about *where* a self-hit exclusion belongs (per trace,
-not per index); nothing about it is a published fact.
+not per index); nothing about it is a published fact. Likewise,
+`crate::systems::Systems::reap_deployables`' fixpoint loop (resolving a
+whole chain of deployable detonations within one step, rather than
+spreading it across several) is this project's own choice about *when* a
+chain reaction resolves; nothing in any cited source says whether the
+original engine did the same within a frame or across several.

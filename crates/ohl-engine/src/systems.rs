@@ -843,12 +843,34 @@ impl Systems {
     /// zero health (the player's hitscan, or another explosive's blast)
     /// detonates this same step; see
     /// `crate::projectiles::ProjectileSystem::resolve_deployable_damage`.
+    ///
+    /// A detonation's own blast can kill *another* deployable's stand-in
+    /// (`resolve_deployable_damage`'s doc): a satchel chain reaction. That
+    /// freshly queued damage must not reach phase 10 — its `lifecycle`
+    /// drain (`ohl_ai`'s `drain_engine_damage`) only ever looks at
+    /// `MonsterAi` targets and silently discards everything else, which
+    /// would otherwise throw away the player's own share of the blast too.
+    /// So this loops: resolve whatever `resolve_deployable_damage` just
+    /// queued through the exact same `resolve_damage` phase 9 already ran,
+    /// then check again for anything that blast just killed, until nothing
+    /// detonates. `DeployableSet` only shrinks (`detonate` removes by
+    /// handle), so this is bounded by the number of deployables placed and
+    /// always terminates. The result: a whole chain resolves within this
+    /// one step, with no per-link tick of latency — not because it was
+    /// deferred to next step's phase 9, but because this loop *is* that
+    /// resolution, run early.
     fn reap_deployables(&mut self, level: &mut Level) {
-        self.projectiles.resolve_deployable_damage(
-            level,
-            &mut self.damage_queue,
-            &mut self.transient_sprites,
-        );
+        loop {
+            let detonated = self.projectiles.resolve_deployable_damage(
+                level,
+                &mut self.damage_queue,
+                &mut self.transient_sprites,
+            );
+            if detonated == 0 {
+                break;
+            }
+            self.resolve_damage(level);
+        }
     }
 
     /// Phase 10 — lifecycle: deaths, corpses, gibs and `monstermaker`.
@@ -1051,5 +1073,132 @@ mod tests {
         systems.begin_frame(&pressed());
         systems.reset();
         assert!(!systems.latch_input().use_pressed);
+    }
+
+    /// The PR #84 review's blocking finding: `resolve_deployable_damage`
+    /// (phase 9b) used to run once, after phase 9, and leave whatever fresh
+    /// blast damage it queued (against the player, or against another
+    /// deployable's stand-in) for phase 10 to see — but phase 10's
+    /// `lifecycle` drain only resolves `MonsterAi` targets and silently
+    /// discards everything else, so a satchel chain reaction's second hit
+    /// never landed. This test drives the actual `Game::tick` (and so the
+    /// real `Systems::step` phase order), not hand-called phase functions
+    /// in isolation, specifically so a regression of that ordering bug
+    /// would fail it — the version of this test that predates the fix
+    /// hand-called `resolve_damage`/`resolve_deployable_damage` once each
+    /// and passed regardless of the bug.
+    #[test]
+    fn a_satchel_chain_reaction_resolves_through_the_real_step_order() {
+        // A remote-detonated satchel, plus two placed tripmines standing in
+        // for "any other deployable a blast might reach" — tripmines,
+        // specifically, because `ohl_combat::DeployableSet::detonate_all_satchels`
+        // (deliberately) detonates *every* placed satchel at once, which
+        // would have set all three off together and defeated the whole
+        // point of a chain: only the satchel is remote-detonated here, so
+        // both tripmines start this step alive and can only die from blast
+        // damage, one hop at a time.
+        //
+        // Spacing: the satchel's own blast (radius 200,
+        // `DeployableTuning::satchel_radius`'s default) reaches the first
+        // tripmine (100 units away) but not the second (280 away, outside
+        // the radius); only the first tripmine's *own* detonation, in
+        // turn, reaches the second (180 away from it). A single,
+        // non-looping call to `resolve_deployable_damage` after phase 9
+        // would kill the first tripmine (phase 9 itself already resolves
+        // the satchel's blast, queued before this tick even starts) but
+        // its own freshly queued blast against the second tripmine would
+        // then sit in the queue for phase 10 to silently discard — exactly
+        // the regression this test is written to catch.
+        let bytes = crate::test_support::synthetic_map_bsp();
+        let mut assets = crate::assets::MemoryAssets::new();
+        assets.insert("maps/ohlsynth.bsp", bytes.clone());
+        let mut game = crate::game::Game::from_map_bytes(&assets, "ohlsynth", &bytes)
+            .expect("the synthetic map loads");
+
+        let (level, systems) = game.level_and_systems_mut();
+        systems
+            .projectiles
+            .set_model_for_deployable(ohl_combat::DeployableKind::Satchel, Some(0));
+        systems
+            .projectiles
+            .set_model_for_deployable(ohl_combat::DeployableKind::Tripmine, Some(0));
+        systems
+            .projectiles
+            .place_satchel(level, None, glam::Vec3::new(-140.0, 100.0, 40.0))
+            .expect("the set has room");
+        // Both mines are placed by a straight-down trace from just above
+        // the floor, well within `DeployableTuning::place_range`'s default
+        // 64-unit reach, so each ends up sitting on the floor at `z = 0`
+        // directly below where it was aimed.
+        let first_mine = systems
+            .projectiles
+            .place_tripmine(
+                level,
+                None,
+                glam::Vec3::new(-40.0, 100.0, 40.0),
+                glam::Vec3::new(0.0, 0.0, -1.0),
+            )
+            .expect("the placement trace finds the floor");
+        let second_mine = systems
+            .projectiles
+            .place_tripmine(
+                level,
+                None,
+                glam::Vec3::new(140.0, 100.0, 40.0),
+                glam::Vec3::new(0.0, 0.0, -1.0),
+            )
+            .expect("the placement trace finds the floor");
+        let first_mine_entity = systems
+            .projectiles
+            .deployable_entity(first_mine)
+            .expect("a configured model spawns the stand-in entity");
+        let second_mine_entity = systems
+            .projectiles
+            .deployable_entity(second_mine)
+            .expect("a configured model spawns the stand-in entity");
+        // The remote detonator itself is outside the per-step phase list
+        // (`docs/FORMAT_SOURCES.md`'s deployables section: satchels are
+        // player-triggered, not phase-driven), so it is still called
+        // directly here; everything downstream of it — the two-hop chain
+        // this test is actually about — runs through `Game::tick` only.
+        systems.projectiles.detonate_all_satchels(
+            level,
+            &mut systems.damage_queue,
+            &mut systems.transient_sprites,
+        );
+
+        // One real tick is enough: `Systems::reap_deployables` resolves a
+        // whole chain to a fixpoint within a single step (see its doc), so
+        // this does not need to wait several ticks for the second mine to
+        // notice it was killed.
+        let input = Input::default();
+        game.tick(crate::tick::TICK_SECONDS, &input);
+
+        assert!(
+            game.registry()
+                .world
+                .get::<&ohl_combat::Health>(first_mine_entity)
+                .is_err(),
+            "the first tripmine's stand-in must be despawned: it is well \
+             within the satchel's own blast radius"
+        );
+        assert!(
+            game.registry()
+                .world
+                .get::<&ohl_combat::Health>(second_mine_entity)
+                .is_err(),
+            "the second tripmine's stand-in must be despawned too: its \
+             blast damage comes from the *first* tripmine's detonation, \
+             queued inside phase 9b itself, and must reach it through the \
+             real step order rather than being silently discarded by \
+             phase 10's monster-only drain"
+        );
+        assert_eq!(
+            game.projectile_count(),
+            0,
+            "the satchel and both tripmines must all be gone within the \
+             same step: the satchel by its own detonation, the two \
+             tripmines each killed by the previous explosive's blast"
+        );
     }
 }
