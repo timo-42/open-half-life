@@ -459,6 +459,19 @@ impl Game {
         &mut self.systems
     }
 
+    /// As [`Self::systems_mut`], but also hands back the level: a test that
+    /// needs to place a projectile or a deployable directly (bypassing the
+    /// weapon wiring that does not exist yet) needs both at once, and
+    /// `&mut self` cannot be borrowed twice to get them separately. Only
+    /// this crate's own unit tests use it today (unlike
+    /// [`Self::systems_mut`], nothing in `crate::test_support` calls it),
+    /// so it is gated on `cfg(test)` alone rather than also on
+    /// `feature = "test-support"`.
+    #[cfg(test)]
+    pub(crate) fn level_and_systems_mut(&mut self) -> (&mut Level, &mut Systems) {
+        (&mut self.level, &mut self.systems)
+    }
+
     /// How many monsters have died since this level was loaded. Data,
     /// never a log line.
     #[must_use]

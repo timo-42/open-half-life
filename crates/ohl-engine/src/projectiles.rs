@@ -39,11 +39,28 @@
 //! rather than its *firing*). [`BlastSpec`] and [`ImpactDamage`] hold this
 //! module's own placeholder constants, each marked `// TODO(black-box)`.
 //! [`default_projectile_model_path`] and [`default_deployable_model_path`]
-//! name the conventional GoldSrc asset path for each kind, cited on the
-//! function itself; a map that has not loaded that exact model (this
-//! project loads none by that path itself — see `Level::studio_models`'s
-//! doc) simply leaves the kind model-less, drawn as a sprite or not drawn
-//! at all, never a missing-asset error.
+//! name a kind's asset path only when this project found that exact
+//! literal published on a specific, linkable page (cited on the function
+//! itself and in `docs/FORMAT_SOURCES.md`); a map that has not loaded that
+//! exact model (this project loads none by that path itself — see
+//! `Level::studio_models`'s doc) simply leaves the kind model-less, drawn
+//! as a sprite or not drawn at all, never a missing-asset error.
+//!
+//! # Not yet persisted
+//!
+//! Neither [`ohl_combat::Projectile::self_id`] nor a deployable's
+//! stand-in `hecs` entity (tracked in [`ProjectileSystem::models`] and
+//! [`ProjectileSystem::deployable_models`]) is written by `ohl-engine`'s
+//! save/restore path (PR #80's five additive save sections). A restored
+//! `DeployableSet` today would come back with no stand-ins at all —
+//! simulated but undrawn and, worse, undamageable again, exactly the
+//! regression this module exists to fix — and a restored, still-in-flight
+//! projectile would come back with `self_id: None`. Whoever picks up a
+//! save-format follow-up for projectiles/deployables should re-run
+//! [`ProjectileSystem::configure_models`] and re-spawn every stand-in from
+//! the restored `ProjectileSet`/`DeployableSet` on load, rather than trying
+//! to serialise a `hecs::Entity` handle across a save (`hecs` gives no
+//! stability guarantee for those across a process, let alone a save file).
 
 use std::collections::BTreeMap;
 
@@ -74,59 +91,70 @@ type ModelTable = Vec<(ProjectileKind, usize)>;
 /// As [`ModelTable`], for [`DeployableKind`] (two variants today).
 type DeployableModelTable = Vec<(DeployableKind, usize)>;
 
-/// The conventional GoldSrc asset path for `kind`'s in-flight model, when
-/// this project is confident enough in the filename to name it, or `None`
-/// for a kind this project does not attempt to auto-resolve (see
-/// [`ProjectileSystem::configure_models`]). A caller may still name any
-/// slot directly with [`ProjectileSystem::set_model_for`]; this is only the
-/// automatic default.
+/// The asset path `kind`'s in-flight model loads under, when this project
+/// found that exact literal published on a specific, linkable page, or
+/// `None` for a kind it did not (see [`ProjectileSystem::configure_models`]
+/// — a caller may still name any slot directly with
+/// [`ProjectileSystem::set_model_for`], this is only the automatic
+/// default). Per `docs/CLEAN_ROOM.md`'s per-literal citation rule, no path
+/// is named here unless it is cited by URL in `docs/FORMAT_SOURCES.md`,
+/// "Deployable damageability and per-trace hitbox exclusion" — none of the
+/// six [`ProjectileKind`] variants has a model path this project found
+/// published on a page it could re-check by URL (the page this project
+/// already trusts for entity-to-model mappings, TWHL's "Reference: Entities
+/// and their models", has no row for any of them), so every variant is
+/// `None`.
 ///
-/// Filenames, each independently corroborated by more than one GoldSrc
-/// modding-community source (not Valve's released engine/SDK source; see
-/// `docs/CLEAN_ROOM.md`) rather than derived from any single page:
-/// `models/rpgrocket.mdl`, `models/crossbow_bolt.mdl` and `models/hornet.mdl`
-/// (see `docs/FORMAT_SOURCES.md`, "Deployable damageability and per-trace
-/// hitbox exclusion", for the citations). The hand grenade, the MP5
-/// grenade and the snark have no filename this project found corroborated
-/// by more than one independent source, so they are left `None` rather than
-/// guessed.
-const fn default_projectile_model_path(kind: ProjectileKind) -> Option<&'static str> {
-    match kind {
-        ProjectileKind::Rocket => Some("models/rpgrocket.mdl"),
-        ProjectileKind::CrossbowBolt => Some("models/crossbow_bolt.mdl"),
-        ProjectileKind::Hornet => Some("models/hornet.mdl"),
-        ProjectileKind::HandGrenade | ProjectileKind::Mp5Grenade | ProjectileKind::Snark => None,
-    }
+/// TODO(black-box): a rocket, a bolt and a hornet plausibly do have a
+/// published in-flight model somewhere; this project simply did not find a
+/// citable one. Revisit if one turns up.
+const fn default_projectile_model_path(_kind: ProjectileKind) -> Option<&'static str> {
+    None
 }
 
-/// As [`default_projectile_model_path`], for a placed deployable.
+/// As [`default_projectile_model_path`], for a placed deployable. Unlike
+/// that function, both of [`DeployableKind`]'s two variants have a citable
+/// path today, so this returns one unconditionally rather than an
+/// `Option` — see `docs/FORMAT_SOURCES.md`'s citation table for this
+/// function for both.
 ///
-/// `models/w_tripmine.mdl` has one corroborating source (see
-/// `docs/FORMAT_SOURCES.md`), weaker than the other three paths' two each;
-/// this project found no corroborated filename at all for the satchel's
-/// *placed, world* model (as
-/// opposed to its carried/view models), so [`DeployableKind::Satchel`] is
-/// left `None` rather than guessed. A satchel therefore stays a simulated
-/// [`ohl_combat::deployables::Satchel`] with no drawn or damageable
-/// stand-in until a caller names a slot explicitly.
-const fn default_deployable_model_path(kind: DeployableKind) -> Option<&'static str> {
+/// `models/v_tripmine.mdl` ([`DeployableKind::Tripmine`]) and
+/// `models/w_satchel.mdl` ([`DeployableKind::Satchel`]) are cited, by URL
+/// and verbatim table row, in that table — the same TWHL "Reference:
+/// Entities and their models" page `MonsterKind::default_model_path`
+/// already cites for monster model paths, which also carries a
+/// `monster_tripmine` and a `monster_satchel` row.
+const fn default_deployable_model_path(kind: DeployableKind) -> &'static str {
     match kind {
-        DeployableKind::Tripmine => Some("models/w_tripmine.mdl"),
-        DeployableKind::Satchel => None,
+        DeployableKind::Tripmine => "models/v_tripmine.mdl",
+        DeployableKind::Satchel => "models/w_satchel.mdl",
     }
 }
 
 /// The [`Health`] a model-backed deployable's stand-in entity spawns with.
 ///
-/// Published for the tripmine (TWHL, "monster_tripmine": one point of
-/// health, so it "can be killed by conventional means", after which it
-/// detonates on a short delay — reviewed 2026-09-06 through search-engine
-/// result summaries, since the page itself answers automated requests with
-/// HTTP 403; see `docs/FORMAT_SOURCES.md`). No source publishes a distinct
-/// number for a placed satchel; this project uses the same one for
-/// consistency (any single hit kills either), an explicit, unverified
-/// choice rather than a claim about the satchel specifically.
+/// Published for the tripmine: TWHL, "monster_tripmine"
+/// (<https://twhl.info/wiki/page/monster_tripmine>, reached via a
+/// text-extraction proxy since `twhl.info` returns HTTP 403 to direct
+/// automated fetches — the same limitation recorded elsewhere in this file
+/// for other TWHL pages), whose keyvalue/property table publishes
+/// "Health | 1". No source publishes a distinct number for a placed
+/// satchel; this project uses the same one for consistency (any single hit
+/// kills either), an explicit, unverified choice rather than a claim about
+/// the satchel specifically.
 const DEPLOYABLE_HEALTH: f32 = 1.0;
+
+/// The blast damage a detonating placed deployable applies.
+///
+/// Published for the tripmine, on the same page and table cited on
+/// [`DEPLOYABLE_HEALTH`]: "Explosive damage | 150". This project applies
+/// the same number to a satchel's detonation too — `weapons::spec`'s own
+/// M7.2 table already cites a separate, matching 150 for the Satchel
+/// Charge weapon itself (`docs/FORMAT_SOURCES.md`, "Weapons and firing
+/// (M7.2)"), so this is not a guess for the satchel, only reused here
+/// rather than re-derived from `weapons::spec` by kind (that lookup is not
+/// wired to a deployable's *detonation* yet, only its *firing*).
+const DEPLOYABLE_BLAST_DAMAGE: f32 = 150.0;
 
 /// This module's own placeholder blast parameters, per detonating kind.
 ///
@@ -287,9 +315,7 @@ impl ProjectileSystem {
             if self.deployable_model_for(kind).is_some() {
                 continue;
             }
-            if let Some(path) = default_deployable_model_path(kind)
-                && let Some(index) = find_model_path(level, path)
-            {
+            if let Some(index) = find_model_path(level, default_deployable_model_path(kind)) {
                 self.set_model_for_deployable(kind, Some(index));
             }
         }
@@ -604,15 +630,11 @@ impl ProjectileSystem {
                 EXPLOSION_SPRITE_SECONDS,
                 EXPLOSION_SPRITE_SCALE,
             );
-            // TODO(black-box): the deployables' own published damage
-            // (150, `ohl_combat::deployables`' module doc) is a per-weapon
-            // spec value this package does not yet look up by kind; a
-            // project-chosen 150 stands in until that wiring lands.
             resolve_blast(
                 level,
                 position,
                 radius,
-                150.0,
+                DEPLOYABLE_BLAST_DAMAGE,
                 DamageType::BLAST,
                 owner,
                 &self.explosion_rule,
@@ -632,20 +654,25 @@ impl ProjectileSystem {
     /// entity's [`Health`] was just brought to zero or below (the player's
     /// hitscan, or another explosive's blast, resolved by
     /// `crate::combat::resolve_damage` immediately before this runs) is
-    /// killed, in the published sense the TWHL citation on
-    /// [`DEPLOYABLE_HEALTH`] describes: it detonates, via
-    /// [`ohl_combat::DeployableSet::detonate`] by handle, exactly like any
-    /// other detonation.
+    /// killed, per the published health cited on [`DEPLOYABLE_HEALTH`]: it
+    /// detonates, via [`ohl_combat::DeployableSet::detonate`] by handle,
+    /// exactly like any other detonation.
     ///
     /// Must run after damage resolution, in the same step, so a placed
     /// charge that dies this step detonates this step rather than one step
-    /// late.
+    /// late. Returns how many detonated, so a caller
+    /// (`crate::systems::Systems::reap_deployables`) knows whether this
+    /// call just queued fresh blast damage of its own (against the player,
+    /// or against another deployable's stand-in) that itself needs
+    /// resolving before phase 10 runs — a detonation's blast is not
+    /// self-resolving, and phase 10's monster-only drain silently discards
+    /// anything else left in the queue.
     pub(crate) fn resolve_deployable_damage(
         &mut self,
         level: &mut Level,
         damage_queue: &mut Vec<QueuedDamage>,
         sprites: &mut TransientSprites,
-    ) {
+    ) -> usize {
         let mut dead = Vec::new();
         for (&id, &entity) in &self.deployable_models {
             if let Ok(health) = level.registry.world.get::<&Health>(entity)
@@ -654,17 +681,20 @@ impl ProjectileSystem {
                 dead.push(id);
             }
         }
+        let mut detonated = 0;
         for id in dead {
             let mut events = Vec::new();
             if self
                 .deployables
                 .detonate(id, &self.deployable_tuning, &mut events)
             {
+                detonated += 1;
                 for event in events {
                     self.apply_deployable_event(level, event, damage_queue, sprites);
                 }
             }
         }
+        detonated
     }
 
     /// Captures `SECTION_PROJECTILES` (26): every live projectile and
@@ -1224,6 +1254,14 @@ mod tests {
     /// ordinary [`ohl_combat::Health`]-carrying [`BlastTarget`]s, per
     /// `blast_targets`'s doc), which brings the second one to zero health
     /// and detonates it in turn — a chain reaction, not a special case.
+    ///
+    /// This hand-calls `resolve_damage`/`resolve_deployable_damage` once
+    /// each, at this module's own level, as a fast, isolated check of the
+    /// detonation mechanism; it does not drive `Systems::step`, so it
+    /// cannot by itself guard the *phase ordering* this mechanism depends
+    /// on (`crate::systems::Systems::reap_deployables`'s doc). That guard
+    /// is `crate::systems::tests::a_satchel_chain_reaction_resolves_through_the_real_step_order`,
+    /// which does drive a real tick.
     #[test]
     fn a_satchel_is_detonated_by_another_satchels_explosion() {
         let mut level = synthetic_level();
