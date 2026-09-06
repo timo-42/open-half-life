@@ -45,4 +45,9 @@ mod viewmodel;
 pub use bridge::{DEFAULT_QUEUE_CAPACITY, GameplayBridge, PICKUP_MESSAGE_SECONDS};
 pub use entities::classify_entity;
 pub use sounds::{SoundCue, charger_sound_path, pickup_sound_path, weapon_sound_path};
+
+/// Re-exported so a caller can name a [`SoundCue`]'s channel class without
+/// taking its own `ohl-audio` dependency, matching how this crate already
+/// re-exports the rest of a cue's vocabulary.
+pub use ohl_audio::ChannelClass;
 pub use viewmodel::{ViewModelAction, WeaponCue, from_weapon_action};

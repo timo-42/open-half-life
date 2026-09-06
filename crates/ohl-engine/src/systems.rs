@@ -488,7 +488,7 @@ impl Systems {
         self.resolve_damage(level); // 9
         self.lifecycle(level, dt); // 10
         self.pickups(level, input, dt); // 11
-        Self::triggers_and_movers(level, camera, input, dt, events); // 12
+        self.triggers_and_movers(level, camera, input, dt, events); // 12
         self.presentation(level, dt); // 13
     }
 
@@ -698,6 +698,7 @@ impl Systems {
     /// Phase 12 — triggers and movers, last so everything else has already
     /// settled.
     fn triggers_and_movers(
+        &mut self,
         level: &mut Level,
         camera: &FreeFlyCamera,
         input: LatchedInput,
@@ -710,6 +711,10 @@ impl Systems {
                 level
                     .simulation
                     .use_entity(&mut level.registry, entity, None, events);
+            } else {
+                // Nothing usable in reach: the press is offered to a talk
+                // monster instead, by the next step's phase 8.
+                self.ai.queue_use(position);
             }
         }
         events.extend(level.simulation.tick(&mut level.registry, dt));

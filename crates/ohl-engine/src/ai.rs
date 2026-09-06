@@ -60,16 +60,20 @@ use ohl_ai::{
     MonsterSpawn, MonsterSpawnRules, MonsterSpec, MonsterTrigger, SightContext, TriggerCondition,
     TriggerContext, attach_monsters,
 };
+use ohl_ai::follow::{FollowChange, FollowRoster, Follower};
+use ohl_ai::scripts::{ScriptAction, ScriptHold, ScriptRunner, ScriptSense};
 use ohl_combat::{DamageType, HitboxIndex, HitboxLimits, TraceFilter, TraceMask};
 use ohl_game::hecs::Entity;
 use ohl_game::keyvalues::EntityDef;
 use ohl_game::registry::{ClassName, Transform};
+use ohl_game::scripts::{ScriptActivation, ScriptDef, SentenceDef};
 
 use crate::components::{Corpse, MonsterMaker, Owner, StudioAnim};
 use crate::ids::entity_id;
 use crate::level::Level;
 use crate::nav;
 use crate::systems::QueuedDamage;
+use crate::text::SentenceLookup;
 
 /// How long a corpse whose species fades stays in the world, in seconds.
 ///
@@ -275,6 +279,32 @@ pub struct AiState {
     /// world-occlusion trace. M7.9 P1 owns the populated index.
     hitboxes: HitboxIndex,
     projectiles: Box<dyn ProjectileSpawner>,
+    /// This level's `scripted_sequence`/`aiscripted_sequence` entities, in
+    /// spawn order.
+    scripts: Vec<ActiveScript>,
+    /// This level's `scripted_sentence` entities, in spawn order.
+    sentences: Vec<ActiveSentence>,
+    /// Who is following the player, oldest first.
+    followers: FollowRoster,
+    /// The `sentences.txt` lookup a `scripted_sentence` resolves against.
+    /// Never logged; see [`AiState::speak`].
+    sentence_lookup: SentenceLookup,
+    /// A player `use` this step's phase 8 has not consumed yet, at the
+    /// position it was pressed from.
+    pending_use: Option<Vec3>,
+    /// How many scripted sequences have started since this level was
+    /// attached. Data, never a log line from this crate.
+    script_starts: u64,
+    /// How many scripted sequences have completed their action animation
+    /// since this level was attached.
+    script_completions: u64,
+    /// How many sentence word slots have been resolved. The words
+    /// themselves name assets and never leave this function; see
+    /// [`AiState::speak`].
+    sentence_words: u64,
+    /// Sound cues produced by `scripted_sentence`, drained by
+    /// [`crate::Game::tick`].
+    sound_cues: Vec<ohl_gameplay::SoundCue>,
 }
 
 impl core::fmt::Debug for AiState {
@@ -302,6 +332,15 @@ impl AiState {
             difficulty: AiDifficulty::default(),
             hitboxes: HitboxIndex::new(HitboxLimits::default()),
             projectiles: Box::new(NoProjectiles),
+            scripts: Vec::new(),
+            sentences: Vec::new(),
+            followers: FollowRoster::new(),
+            sentence_lookup: SentenceLookup::default(),
+            pending_use: None,
+            script_starts: 0,
+            script_completions: 0,
+            sentence_words: 0,
+            sound_cues: Vec::new(),
         }
     }
 
@@ -364,6 +403,14 @@ impl AiState {
         self.deaths = 0;
         self.damage_events = 0;
         self.maker_children = 0;
+        self.scripts.clear();
+        self.sentences.clear();
+        self.followers.clear();
+        self.pending_use = None;
+        self.script_starts = 0;
+        self.script_completions = 0;
+        self.sentence_words = 0;
+        self.sound_cues.clear();
         self.world.detach_navigator();
         self.difficulty = ai_difficulty(difficulty);
 
@@ -398,6 +445,8 @@ impl AiState {
         }
 
         self.collect_triggers(level, &spawned);
+        self.attach_scripts(level);
+        Self::attach_followers(level, &spawned);
         Self::attach_makers(level);
         Self::attach_player_actor(level);
 
@@ -562,6 +611,13 @@ impl AiState {
     /// The navigator, when this map has one, is already attached, so path
     /// following happens inside `AiWorld::tick`.
     pub fn think(&mut self, level: &mut Level, dt: f32, damage: &mut Vec<QueuedDamage>) {
+        // Scripts and followers decide before the brains do: both work by
+        // setting up the very same route, move target and pending
+        // conditions `AiWorld::tick` is about to read, so a scripted or
+        // following monster is driven by the existing think step rather
+        // than beside it.
+        self.update_scripts(level, dt);
+        self.update_followers(level);
         let events = {
             let context = SightContext {
                 collision: level.collision.as_ref(),
@@ -743,6 +799,8 @@ impl AiState {
         }
         Self::age_corpses(level, dt);
         self.tick_makers(level, dt);
+        self.retire_followers(&died);
+        self.speak(level, dt);
     }
 
     /// Moves whatever the damage phase left in the engine's queue into the
@@ -1048,6 +1106,656 @@ fn select_sequence(level: &mut Level, entity: Entity, name: &str) {
         .and_then(|model| model.sequence_by_name(name))
         .unwrap_or(0);
     anim.play(sequence);
+}
+
+// --- M7.11: scripted sequences, talk monsters and sentences -----------------
+
+/// How close to a script's mark counts as having arrived, in world units.
+///
+/// **`TODO(black-box)`**: no public page states an arrival tolerance.
+pub const SCRIPT_ARRIVE_RADIUS: f32 = 24.0;
+
+/// How close a monster's yaw must be to a script's before "Turn to Face"
+/// is satisfied, in degrees.
+///
+/// **`TODO(black-box)`**: project-authored, like every other AI tolerance.
+pub const SCRIPT_FACING_TOLERANCE_DEGREES: f32 = 5.0;
+
+/// How fast a scripted monster turns toward the script's facing, in degrees
+/// per second.
+///
+/// **`TODO(black-box)`**: project-authored.
+pub const SCRIPT_TURN_RATE_DEGREES: f32 = 360.0;
+
+/// How long an action animation this project cannot resolve is assumed to
+/// last, in seconds.
+///
+/// A script whose `m_iszPlay` names no sequence the monster's model
+/// publishes — or whose monster has no model loaded at all — still has to
+/// finish, or its `target` would never fire. **`TODO(black-box)`**:
+/// project-authored, and only ever used when the real duration is unknown.
+pub const SCRIPT_FALLBACK_ACTION_SECONDS: f32 = 1.0;
+
+/// How far from the player a talk monster may be and still be brought into
+/// the player's group with `use`, in world units.
+///
+/// **`TODO(black-box)`**: no public page states a use range for a talk
+/// monster; this matches the engine's own [`crate::systems::USE_RADIUS`]
+/// for doors and buttons so one press cannot mean two different reaches.
+pub const TALK_USE_RADIUS: f32 = crate::USE_RADIUS;
+
+/// The published talk-monster classnames that can be asked to follow.
+pub const TALK_MONSTER_CLASSNAMES: [&str; 2] = ["monster_barney", "monster_scientist"];
+
+/// One `scripted_sequence`/`aiscripted_sequence` in the current level.
+struct ActiveScript {
+    /// The script entity itself.
+    entity: Entity,
+    /// Its state machine.
+    runner: ScriptRunner,
+    /// The monster it has chosen, once one exists.
+    actor: Option<Entity>,
+    /// Seconds the action animation has been playing.
+    played: f32,
+    /// Where the action animation started, for `No Script Movement`.
+    play_origin: Vec3,
+}
+
+/// One `scripted_sentence` in the current level.
+struct ActiveSentence {
+    /// The sentence entity.
+    entity: Entity,
+    /// Its published keyvalues.
+    def: SentenceDef,
+    /// Seconds before the speaker may be asked again.
+    cooldown: f32,
+    /// Whether a `Fire Once` sentence has already played.
+    spent: bool,
+}
+
+impl AiState {
+    /// Installs the `sentences.txt` lookup a `scripted_sentence` resolves
+    /// against. Called by [`crate::Game`], which owns the loaded file.
+    pub fn set_sentence_lookup(&mut self, lookup: SentenceLookup) {
+        self.sentence_lookup = lookup;
+    }
+
+    /// How many scripted sequences currently possess a monster.
+    #[must_use]
+    pub fn active_script_count(&self) -> usize {
+        self.scripts
+            .iter()
+            .filter(|script| script.runner.is_active())
+            .count()
+    }
+
+    /// How many scripted sequences have started since this level was
+    /// attached. Data, never a log line.
+    #[must_use]
+    pub fn script_start_count(&self) -> u64 {
+        self.script_starts
+    }
+
+    /// How many scripted sequences have finished their action animation
+    /// since this level was attached. Data, never a log line.
+    #[must_use]
+    pub fn script_completion_count(&self) -> u64 {
+        self.script_completions
+    }
+
+    /// How many `sentences.txt` word slots a `scripted_sentence` has
+    /// resolved. A count, never the words: they name assets.
+    #[must_use]
+    pub fn spoken_word_count(&self) -> u64 {
+        self.sentence_words
+    }
+
+    /// Who is following the player, oldest first.
+    #[must_use]
+    pub fn followers(&self) -> &FollowRoster {
+        &self.followers
+    }
+
+    /// Records a player `use` pressed from `position`, for the next phase 8
+    /// to offer to a nearby talk monster.
+    pub fn queue_use(&mut self, position: Vec3) {
+        self.pending_use = Some(position);
+    }
+
+    /// Takes the sound cues `scripted_sentence` produced since the last
+    /// call.
+    pub fn drain_sound_cues(&mut self) -> Vec<ohl_gameplay::SoundCue> {
+        std::mem::take(&mut self.sound_cues)
+    }
+
+    /// Reads every `scripted_sequence`, `aiscripted_sequence` and
+    /// `scripted_sentence` this map declared and gives each the
+    /// [`ScriptActivation`] counter the map-logic simulation bumps.
+    fn attach_scripts(&mut self, level: &mut Level) {
+        for (index, def) in level.defs.iter().enumerate() {
+            let Some(entity) = level.registry.entities.get(index).copied() else {
+                break;
+            };
+            if let Some(script) = ScriptDef::from_def(def) {
+                level
+                    .registry
+                    .world
+                    .insert_one(entity, ScriptActivation::default())
+                    .ok();
+                self.scripts.push(ActiveScript {
+                    entity,
+                    runner: ScriptRunner::new(script),
+                    actor: None,
+                    played: 0.0,
+                    play_origin: Vec3::ZERO,
+                });
+            } else if let Some(sentence) = SentenceDef::from_def(def) {
+                level
+                    .registry
+                    .world
+                    .insert_one(entity, ScriptActivation::default())
+                    .ok();
+                self.sentences.push(ActiveSentence {
+                    entity,
+                    def: sentence,
+                    cooldown: 0.0,
+                    spent: false,
+                });
+            }
+        }
+    }
+
+    /// Gives every talk monster this map spawned its [`Follower`] state,
+    /// reading the published `Pre-Disaster` spawnflag out of its definition.
+    fn attach_followers(level: &mut Level, spawned: &[Entity]) {
+        for (index, def) in level.defs.iter().enumerate() {
+            let Some(entity) = level.registry.entities.get(index).copied() else {
+                break;
+            };
+            if !spawned.contains(&entity) || !TALK_MONSTER_CLASSNAMES.contains(&def.classname.as_str())
+            {
+                continue;
+            }
+            level
+                .registry
+                .world
+                .insert_one(entity, Follower::from_spawnflags(def.spawnflags))
+                .ok();
+        }
+    }
+
+    /// Advances every script by one step, part of phase 8.
+    fn update_scripts(&mut self, level: &mut Level, dt: f32) {
+        let mut scripts = std::mem::take(&mut self.scripts);
+        for script in &mut scripts {
+            self.update_one_script(level, script, dt);
+        }
+        self.scripts = scripts;
+    }
+
+    fn update_one_script(&mut self, level: &mut Level, script: &mut ActiveScript, dt: f32) {
+        let mut activated = false;
+        if let Ok(activation) = level
+            .registry
+            .world
+            .query_one_mut::<&mut ScriptActivation>(script.entity)
+        {
+            while activation.take() {
+                activated = true;
+            }
+        }
+        if script.actor.is_none() {
+            // A classname search that finds nothing simply runs again next
+            // step, which is the published "the first monster to enter the
+            // radius will follow the sequence".
+            script.actor = find_script_actor(level, script.runner.def());
+        }
+        let Some(actor) = script.actor.filter(|actor| level.registry.world.contains(*actor)) else {
+            if activated {
+                // Nothing to possess yet: the activation is dropped rather
+                // than queued, so a script cannot bank triggers.
+            }
+            return;
+        };
+
+        if activated && self.may_possess(level, script, actor) && script.runner.trigger() {
+            self.script_starts += 1;
+            script.played = 0.0;
+        }
+
+        let sense = self.sense_script(level, script, actor, dt);
+        let step = script.runner.update(&sense);
+        self.apply_script_step(level, script, actor, &step, dt);
+    }
+
+    /// Whether `script` may take `actor` over right now.
+    ///
+    /// Published: `Override AI` (and every `aiscripted_sequence`) "will
+    /// possess its target even when the monster is in the combat state at
+    /// the moment of the call". Without it, a monster already in combat is
+    /// left alone.
+    fn may_possess(&self, level: &Level, script: &ActiveScript, actor: Entity) -> bool {
+        if script.runner.def().overrides_ai() {
+            return true;
+        }
+        level
+            .registry
+            .world
+            .get::<&MonsterAi>(actor)
+            .is_ok_and(|ai| ai.state != ohl_ai::MonsterState::Combat)
+            || level.registry.world.get::<&MonsterAi>(actor).is_err()
+    }
+
+    /// Reads what the script's state machine needs to know about `actor`.
+    fn sense_script(
+        &self,
+        level: &Level,
+        script: &ActiveScript,
+        actor: Entity,
+        dt: f32,
+    ) -> ScriptSense {
+        let def = script.runner.def();
+        let (origin, yaw) = level
+            .registry
+            .world
+            .get::<&Actor>(actor)
+            .map_or((Vec3::ZERO, 0.0), |a| (a.origin, a.yaw));
+        let flat = Vec3::new(origin.x - def.origin.x, origin.y - def.origin.y, 0.0);
+        let disturbed = level
+            .registry
+            .world
+            .get::<&MonsterAi>(actor)
+            .is_ok_and(|ai| {
+                ai.conditions
+                    .intersects(Conditions::ALL_DAMAGE.union(Conditions::NEW_ENEMY))
+            });
+        ScriptSense {
+            dt,
+            at_mark: flat.length() <= SCRIPT_ARRIVE_RADIUS,
+            facing_mark: ohl_ai::movement::normalize_yaw(def.yaw - yaw).abs()
+                <= SCRIPT_FACING_TOLERANCE_DEGREES,
+            sequence_finished: script.played >= self.action_seconds(level, script, actor),
+            disturbed,
+        }
+    }
+
+    /// How long `script`'s action animation lasts for `actor`.
+    fn action_seconds(&self, level: &Level, script: &ActiveScript, actor: Entity) -> f32 {
+        let Some(name) = script.runner.def().play_sequence() else {
+            // "the Action Animation is not specified": the target fires as
+            // soon as the monster has moved to the script.
+            return 0.0;
+        };
+        let resolved = level
+            .registry
+            .world
+            .get::<&StudioAnim>(actor)
+            .ok()
+            .and_then(|anim| {
+                let model = level.studio_models.get(anim.model)?;
+                let index = model.sequence_by_name(name)?;
+                model.sequences.get(index).map(ohl_world::StudioSequence::duration)
+            });
+        match resolved {
+            Some(duration) if duration > 0.0 => duration,
+            _ => SCRIPT_FALLBACK_ACTION_SECONDS,
+        }
+    }
+
+    /// Carries out what the script decided.
+    fn apply_script_step(
+        &mut self,
+        level: &mut Level,
+        script: &mut ActiveScript,
+        actor: Entity,
+        step: &ohl_ai::ScriptStep,
+        dt: f32,
+    ) {
+        let def = script.runner.def().clone();
+        if script.runner.is_active() {
+            level.registry.world.insert_one(actor, ScriptHold).ok();
+        }
+        match step.action {
+            ScriptAction::None => {}
+            ScriptAction::Idle => {
+                stop_scripted_movement(level, actor);
+                if let Some(idle) = def.idle_sequence() {
+                    select_sequence(level, actor, idle);
+                }
+            }
+            ScriptAction::Approach { run } => {
+                let speed = if run { SCRIPT_RUN_SPEED } else { SCRIPT_WALK_SPEED };
+                if let Ok(mut ai) = level.registry.world.get::<&mut MonsterAi>(actor) {
+                    if ai.route.is_finished() || ai.route.needs_refresh(def.origin) {
+                        ai.route = ohl_ai::Route::straight_line(def.origin);
+                        ai.stuck.reset();
+                    }
+                    ai.move_target = Some(def.origin);
+                    ai.move_speed = speed;
+                }
+                if let Some(idle) = def.idle_sequence() {
+                    select_sequence(level, actor, idle);
+                }
+            }
+            ScriptAction::Teleport => {
+                stop_scripted_movement(level, actor);
+                place(level, actor, def.origin, def.yaw);
+                if let Some(idle) = def.idle_sequence() {
+                    select_sequence(level, actor, idle);
+                }
+            }
+            ScriptAction::Face => {
+                stop_scripted_movement(level, actor);
+                if let Ok(mut a) = level.registry.world.get::<&mut Actor>(actor) {
+                    let (yaw, _) = ohl_ai::movement::turn_toward(
+                        a.yaw,
+                        def.yaw,
+                        SCRIPT_TURN_RATE_DEGREES * dt,
+                    );
+                    a.yaw = yaw;
+                }
+                if let Some(idle) = def.idle_sequence() {
+                    select_sequence(level, actor, idle);
+                }
+            }
+            ScriptAction::Play => {
+                stop_scripted_movement(level, actor);
+                if script.played <= 0.0 {
+                    script.play_origin = level
+                        .registry
+                        .world
+                        .get::<&Actor>(actor)
+                        .map_or(Vec3::ZERO, |a| a.origin);
+                    if let Some(name) = def.play_sequence() {
+                        select_sequence(level, actor, name);
+                    }
+                }
+                script.played += dt.max(0.0);
+            }
+        }
+
+        if step.completed {
+            self.script_completions += 1;
+            if def.no_script_movement() {
+                let origin = script.play_origin;
+                place(level, actor, origin, def.yaw);
+            }
+            if !def.target.is_empty() {
+                level
+                    .simulation
+                    .fire(def.target.clone(), Some(actor), def.delay);
+            }
+            if !def.kill_target.is_empty() {
+                let doomed: Vec<Entity> = level.registry.find(&def.kill_target).to_vec();
+                for entity in doomed {
+                    level.registry.world.despawn(entity).ok();
+                }
+            }
+        }
+        if step.released {
+            script.played = 0.0;
+            level.registry.world.remove_one::<ScriptHold>(actor).ok();
+            stop_scripted_movement(level, actor);
+            if def.leaves_corpse()
+                && let Ok(mut corpse) = level.registry.world.get::<&mut Corpse>(actor)
+            {
+                corpse.seconds_left = f32::INFINITY;
+            }
+        }
+    }
+
+    /// Offers a queued player `use` to the nearest talk monster and keeps
+    /// every follower pointed at the player. Part of phase 8.
+    fn update_followers(&mut self, level: &mut Level) {
+        if let Some(position) = self.pending_use.take()
+            && let Some(entity) = nearest_follower(level, position)
+        {
+            let mut follower = level
+                .registry
+                .world
+                .get::<&Follower>(entity)
+                .map(|f| *f)
+                .unwrap_or_default();
+            let change = self.followers.toggle(entity, &mut follower);
+            if let Ok(mut slot) = level.registry.world.get::<&mut Follower>(entity) {
+                *slot = follower;
+            }
+            if let FollowChange::Started {
+                evicted: Some(evicted),
+            } = change
+                && let Ok(mut slot) = level.registry.world.get::<&mut Follower>(evicted)
+            {
+                slot.following = false;
+            }
+        }
+
+        let player = level.player;
+        let Ok(origin) = level
+            .registry
+            .world
+            .get::<&Actor>(player)
+            .map(|actor| actor.origin)
+        else {
+            return;
+        };
+        for entity in self.followers.members().to_vec() {
+            if let Ok(mut ai) = level.registry.world.get::<&mut MonsterAi>(entity) {
+                // `SPECIAL2` plus a move target is exactly what
+                // `ohl_ai::monsters::brains::FOLLOW_PLAYER` — the schedule
+                // Barney and the scientist already select — reads.
+                ai.pending_conditions |= Conditions::SPECIAL2;
+                ai.move_target = Some(origin);
+            }
+        }
+    }
+
+    /// Drops dead or despawned allies out of the player's group. Part of
+    /// phase 10.
+    fn retire_followers(&mut self, died: &[Entity]) {
+        for entity in died {
+            self.followers.remove(*entity);
+        }
+    }
+
+    /// Advances every `scripted_sentence`. Part of phase 10.
+    ///
+    /// The resolved word list names sound assets; per `docs/CLEAN_ROOM.md`
+    /// rule 7 no such path may enter this project's source, a cue or a
+    /// diagnostic, so only its *length* is kept and the cue's path is
+    /// always `None` — the same policy `ohl_gameplay::sounds` already
+    /// applies to every other sound this engine asks for. An empty group
+    /// and a resolved one therefore produce the same cue.
+    fn speak(&mut self, level: &mut Level, dt: f32) {
+        let mut sentences = std::mem::take(&mut self.sentences);
+        for sentence in &mut sentences {
+            sentence.cooldown = (sentence.cooldown - dt).max(0.0);
+            let mut activated = false;
+            if let Ok(activation) = level
+                .registry
+                .world
+                .query_one_mut::<&mut ScriptActivation>(sentence.entity)
+            {
+                while activation.take() {
+                    activated = true;
+                }
+            }
+            if !activated || sentence.spent || sentence.cooldown > 0.0 {
+                continue;
+            }
+            let origin = level
+                .registry
+                .world
+                .get::<&Transform>(sentence.entity)
+                .map_or(Vec3::ZERO, |transform| transform.origin);
+            let Some(speaker) = find_speaker(level, &sentence.def, origin) else {
+                // Published: `refire` is the delay before trying to find
+                // the speaker again.
+                sentence.cooldown = sentence.def.refire;
+                continue;
+            };
+            if sentence.def.followers_only() && !self.followers.is_following(speaker) {
+                sentence.cooldown = sentence.def.refire;
+                continue;
+            }
+            let words = self.sentence_lookup.words(&sentence.def.sentence);
+            self.sentence_words += words.len() as u64;
+            #[allow(clippy::cast_possible_truncation)]
+            self.sound_cues.push(ohl_gameplay::SoundCue {
+                entity: entity_id(speaker).0 as u32,
+                class: ohl_gameplay::ChannelClass::Voice,
+                path: None,
+            });
+            sentence.cooldown = sentence.def.duration;
+            sentence.spent = sentence.def.fire_once();
+            if !sentence.def.target.is_empty() {
+                level.simulation.fire(
+                    sentence.def.target.clone(),
+                    Some(speaker),
+                    sentence.def.delay,
+                );
+            }
+        }
+        self.sentences = sentences;
+    }
+}
+
+/// How fast a scripted monster walks and runs to its mark, in units per
+/// second.
+///
+/// **`TODO(black-box)`**: the same provisional pair `ohl_ai::Brain::speeds`
+/// publishes, reused so a scripted walk and an unscripted one move alike.
+pub const SCRIPT_WALK_SPEED: f32 = 40.0;
+
+/// See [`SCRIPT_WALK_SPEED`].
+pub const SCRIPT_RUN_SPEED: f32 = 160.0;
+
+/// Stops whatever route a scripted monster was following.
+fn stop_scripted_movement(level: &mut Level, actor: Entity) {
+    if let Ok(mut ai) = level.registry.world.get::<&mut MonsterAi>(actor) {
+        ai.move_speed = 0.0;
+        ai.route = ohl_ai::Route::new();
+        ai.stuck.reset();
+    }
+}
+
+/// Puts `actor` at `origin`, facing `yaw`, in both the transform the
+/// renderer reads and the actor the AI reads.
+fn place(level: &mut Level, actor: Entity, origin: Vec3, yaw: f32) {
+    if let Ok(mut transform) = level.registry.world.get::<&mut Transform>(actor) {
+        transform.origin = origin;
+        transform.angles.y = yaw;
+    }
+    if let Ok(mut a) = level.registry.world.get::<&mut Actor>(actor) {
+        a.origin = origin;
+        a.yaw = yaw;
+    }
+}
+
+/// The monster a script's `m_iszEntity` names: a `targetname` first, then
+/// the nearest live actor of that classname inside `m_flRadius`.
+///
+/// Ties are broken by entity id, so which monster a script picks never
+/// depends on iteration order.
+fn find_script_actor(level: &Level, def: &ScriptDef) -> Option<Entity> {
+    if def.target_monster.is_empty() {
+        return None;
+    }
+    if let Some(named) = level
+        .registry
+        .find(&def.target_monster)
+        .iter()
+        .copied()
+        .find(|entity| level.registry.world.get::<&Actor>(*entity).is_ok())
+    {
+        return Some(named);
+    }
+    nearest_by_classname(level, &def.target_monster, def.origin, def.radius)
+}
+
+/// The nearest live actor whose classname is `classname` and that is within
+/// `radius` of `origin` (any distance when `radius` is zero).
+fn nearest_by_classname(
+    level: &Level,
+    classname: &str,
+    origin: Vec3,
+    radius: f32,
+) -> Option<Entity> {
+    let mut best: Option<(Entity, f32)> = None;
+    for (entity, name, actor) in level
+        .registry
+        .world
+        .query::<(Entity, &ClassName, &Actor)>()
+        .iter()
+    {
+        if name.0 != classname || !actor.alive {
+            continue;
+        }
+        let distance = actor.origin.distance(origin);
+        if radius > 0.0 && distance > radius {
+            continue;
+        }
+        let better = match best {
+            None => true,
+            Some((best_entity, best_distance)) => {
+                distance < best_distance
+                    || (distance == best_distance && entity.id() < best_entity.id())
+            }
+        };
+        if better {
+            best = Some((entity, distance));
+        }
+    }
+    best.map(|(entity, _)| entity)
+}
+
+/// The entity a `scripted_sentence`'s `entity` keyvalue names.
+///
+/// Published: a `targetname` matches at any distance, a classname only
+/// inside `radius`, measured from the `scripted_sentence` itself.
+fn find_speaker(level: &Level, def: &SentenceDef, origin: Vec3) -> Option<Entity> {
+    if def.speaker.is_empty() {
+        return None;
+    }
+    if let Some(named) = level
+        .registry
+        .find(&def.speaker)
+        .iter()
+        .copied()
+        .find(|entity| level.registry.world.get::<&Actor>(*entity).is_ok())
+    {
+        return Some(named);
+    }
+    nearest_by_classname(level, &def.speaker, origin, def.radius)
+}
+
+/// The nearest talk monster to `position` that is close enough to `use`.
+fn nearest_follower(level: &Level, position: Vec3) -> Option<Entity> {
+    let mut best: Option<(Entity, f32)> = None;
+    for (entity, actor, _) in level
+        .registry
+        .world
+        .query::<(Entity, &Actor, &Follower)>()
+        .iter()
+    {
+        if !actor.alive {
+            continue;
+        }
+        let distance = actor.origin.distance(position);
+        if distance > TALK_USE_RADIUS {
+            continue;
+        }
+        let better = match best {
+            None => true,
+            Some((best_entity, best_distance)) => {
+                distance < best_distance
+                    || (distance == best_distance && entity.id() < best_entity.id())
+            }
+        };
+        if better {
+            best = Some((entity, distance));
+        }
+    }
+    best.map(|(entity, _)| entity)
 }
 
 #[cfg(test)]

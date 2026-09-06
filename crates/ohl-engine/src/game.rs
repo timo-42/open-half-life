@@ -136,7 +136,9 @@ impl Game {
         globals.seed_from(&level.registry);
         let pending = chapter_title_event(&level.name).into_iter().collect();
         let skill = load_skill_table(source);
+        let sentences = SentenceLookup::load(source);
         let mut systems = Systems::new(SystemsConfig::default());
+        systems.ai_mut().set_sentence_lookup(sentences.clone());
         systems.attach_level(&mut level, config.difficulty, &skill);
         Self {
             level,
@@ -148,7 +150,7 @@ impl Game {
             difficulty: config.difficulty,
             skill,
             titles: TitleLibrary::load(source),
-            sentences: SentenceLookup::load(source),
+            sentences,
             globals,
             carry: Box::new(DefaultPlayerCarry::default()),
             systems,
@@ -402,6 +404,27 @@ impl Game {
         self.systems.ai().damage_event_count()
     }
 
+    /// How many `scripted_sequence`/`aiscripted_sequence` entities are
+    /// currently possessing a monster. Data, never a log line.
+    #[must_use]
+    pub fn active_script_count(&self) -> usize {
+        self.systems.ai().active_script_count()
+    }
+
+    /// How many scripted sequences have started since this level was
+    /// loaded. Data, never a log line.
+    #[must_use]
+    pub fn script_start_count(&self) -> u64 {
+        self.systems.ai().script_start_count()
+    }
+
+    /// How many scripted sequences have finished their action animation
+    /// since this level was loaded. Data, never a log line.
+    #[must_use]
+    pub fn script_completion_count(&self) -> u64 {
+        self.systems.ai().script_completion_count()
+    }
+
     /// The per-step configuration this game simulates with.
     #[must_use]
     pub fn systems_config(&self) -> SystemsConfig {
@@ -560,6 +583,13 @@ impl Game {
                 block: self.titles.resolve(&message),
             },
         }));
+        out.extend(
+            self.systems
+                .ai_mut()
+                .drain_sound_cues()
+                .into_iter()
+                .map(GameEvent::Sound),
+        );
         out.extend(
             self.systems
                 .drain_presentation_events()

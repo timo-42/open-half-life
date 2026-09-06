@@ -281,6 +281,16 @@ impl Simulation {
             events.push(Event::Message(message));
             return;
         }
+        if let Ok(activation) = registry
+            .world
+            .query_one_mut::<&mut crate::scripts::ScriptActivation>(entity)
+        {
+            // `scripted_sequence`/`aiscripted_sequence`/`scripted_sentence`
+            // ride the same activation path everything else does; the
+            // engine's AI phase drains the counter.
+            activation.activate();
+            return;
+        }
         if registry.world.get::<&Trigger>(entity).is_ok() {
             self.activate_trigger(registry, entity, activator);
         }
