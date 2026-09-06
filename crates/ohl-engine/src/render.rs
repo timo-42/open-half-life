@@ -10,7 +10,7 @@ use glam::Vec3;
 use ohl_game::registry::{Door, MoverState};
 use ohl_game::{TrackTrain, TrackTrainState};
 use ohl_render::{
-    FreeFlyCamera, GpuContext, LightStyles, ModelInstance, RenderMode, RenderProps, SkyRenderer,
+    FreeFlyCamera, GpuContext, LightStyles, ModelInstance, RenderProps, SkyRenderer,
     SpriteInstance, StudioRenderer, SubmodelInstance, WorldRenderer, placement, wgpu,
 };
 use ohl_world::StudioPose;
