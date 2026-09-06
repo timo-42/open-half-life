@@ -1,0 +1,15 @@
+# M7.9 P4a scripted-input scenario: "walk forward in the training start".
+#
+# Project-authored; no bytes here come from any game installation (see
+# docs/CLEAN_ROOM.md). Run against ohl_campaign::TRAINMAP ("t0a0") by
+# xtask/src/combat_smoke.rs.
+#
+# Expected fixed log lines (see docs/m79-design.md §7), asserted by the
+# harness rather than parsed from this file:
+#   present: "Scripted input loaded.", "Scripted input finished."
+#   absent:  every other fixed line (no weapon, pickup or player-damage
+#            path exists on this branch yet; see crates/ohl-app/src/
+#            script_log.rs)
+
+90 forward
+30 wait

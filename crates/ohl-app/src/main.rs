@@ -34,6 +34,8 @@ mod dev_bsp;
 #[cfg(feature = "dev-tools")]
 mod dev_mdl;
 mod game_run;
+mod script;
+mod script_log;
 
 /// The integration tests' synthetic fixtures, shared rather than duplicated:
 /// a binary crate's unit tests cannot `use` its own `tests/` modules, so they
@@ -187,6 +189,19 @@ struct Cli {
     /// Path to a Half-Life installation ISO (positional form).
     #[arg(value_name = "PATH")]
     path: Option<PathBuf>,
+
+    /// Runs deterministic scripted input instead of the interactive window
+    /// or the frame-count headless capture loop. Usable with or without
+    /// `--headless-screenshot`: without one, the scripted ticks still run
+    /// (headlessly, with no GPU needed), just with no PNG written at the
+    /// end. See `crate::script` for the grammar.
+    #[arg(long, value_name = "PATH")]
+    script: Option<PathBuf>,
+
+    /// Enables the scripted-input milestone log lines documented in
+    /// `docs/m79-design.md` §7. Ignored without `--script`.
+    #[arg(long, requires = "script")]
+    script_log: bool,
 
     /// Development only: load a studio model (MDL v10) straight off disk and
     /// open a renderer window showing it animating (`[` and `]` cycle the
@@ -436,6 +451,7 @@ fn run(cli: Cli) -> ExitCode {
         || cli.map.is_some()
         || cli.load.is_some()
         || cli.headless_screenshot.is_some()
+        || cli.script.is_some()
     {
         return run_game_flow(&cli);
     }
@@ -477,6 +493,8 @@ fn run_game_flow(cli: &Cli) -> ExitCode {
         frames: cli.frames,
         viewpoint: cli.viewpoint,
         spawn_offset: cli.spawn_offset,
+        script: cli.script.as_deref(),
+        script_log: cli.script_log,
     }) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {

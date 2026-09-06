@@ -196,11 +196,21 @@ fn a_save_slot_and_a_start_map_are_mutually_exclusive() {
 }
 
 #[test]
+fn script_log_requires_a_script() {
+    let output = run(&["--script-log", "--map", "ohlsynth"]);
+    assert!(
+        !output.status.success(),
+        "--script-log without --script is a usage error"
+    );
+}
+
+#[test]
 fn the_help_text_lists_the_campaign_flow_flags() {
     let output = run(&["--help"]);
     assert!(output.status.success(), "--help succeeds");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("--load"), "--load is documented");
+    assert!(stdout.contains("--script"), "--script is documented");
     assert!(
         stdout.contains("--difficulty"),
         "--difficulty is documented"

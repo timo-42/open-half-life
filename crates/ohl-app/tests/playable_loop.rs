@@ -87,6 +87,46 @@ fn run() {
     );
 }
 
+/// `--script` runs headlessly, with no graphics adapter needed, and
+/// `--script-log` emits the two fixed milestone lines this run always
+/// prints (see `crate::script_log` in `ohl-app`; the four combat lines are
+/// TODO(P1) hooks and never fire on this branch).
+#[test]
+fn scripted_input_runs_headlessly_and_logs_its_fixed_milestone_lines() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let root = directory.path().join("payload");
+    stage_payload(&root);
+    let script_path = directory.path().join("script.txt");
+    std::fs::write(&script_path, "5 forward\n2 look 0 -10\n3 wait\n")
+        .expect("write the scripted-input file");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_open-half-life"))
+        .arg("--payload-root")
+        .arg(&root)
+        .arg("--map")
+        .arg(SYNTHETIC_MAP)
+        .arg("--script")
+        .arg(&script_path)
+        .arg("--script-log")
+        .output()
+        .expect("spawn open-half-life");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "the scripted run failed: {stderr}");
+    assert!(stderr.contains("Scripted input loaded."), "{stderr}");
+    assert!(stderr.contains("Scripted input finished."), "{stderr}");
+    // None of the four P1-only lines can fire without a weapon, pickup or
+    // player-damage path in this tree.
+    for absent in [
+        "The player fired a weapon.",
+        "A shot hit an entity.",
+        "A pickup was collected.",
+        "The player took damage.",
+    ] {
+        assert!(!stderr.contains(absent), "unexpectedly logged: {absent}");
+    }
+}
+
 #[test]
 fn an_empty_payload_root_is_a_reported_failure_not_a_panic() {
     let directory = tempfile::tempdir().expect("temporary directory");

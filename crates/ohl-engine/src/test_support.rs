@@ -346,6 +346,19 @@ pub fn queue_monster_damage(
     game.systems_mut().ai_mut().queue_damage(event);
 }
 
+/// Runs `game` for `inputs.len()` ticks, one input per tick, at the fixed
+/// step (`crate::TICK_SECONDS`).
+///
+/// This is what `ohl-app`'s `--script` loop does over a parsed scripted
+/// input file (see that crate's `script.rs`), pulled down into this crate
+/// so a determinism test can drive the same sequence without a CLI, a
+/// script file, or a GPU.
+pub fn run_script(game: &mut crate::Game, inputs: &[crate::Input]) {
+    for input in inputs {
+        game.tick(crate::TICK_SECONDS, input);
+    }
+}
+
 /// Every entity in the current level that is a thinking monster, in
 /// ascending entity-id order.
 #[must_use]

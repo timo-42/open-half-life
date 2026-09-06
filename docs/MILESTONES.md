@@ -1942,6 +1942,49 @@ level transitions keep their behaviour.
   `docs/FORMAT_SOURCES.md`, "Projectiles, explosions and deployables
   (M7.3)").
 
+- **M7.9 P4a: deterministic scripted input and the combat smoke harness.**
+  `crates/ohl-app/src/script.rs` parses a tiny, bounded, project-owned
+  scripted-input format (`<ticks> <token> [args]`, a closed token set,
+  4,096 lines/100,000 ticks/8 tokens-per-line caps, fixed parse-error
+  messages, never panics on arbitrary bytes) into a `Vec<ohl_engine::Input>`;
+  `--script <PATH>` and `--script-log` (`crates/ohl-app/src/main.rs`'s
+  `Cli`, `game_run.rs`'s `GameArgs`) run it for `script.len()` ticks at the
+  existing `CAPTURE_STEP`, with no GPU context created unless
+  `--headless-screenshot` is also given, so the scripted loop runs
+  headlessly. `crates/ohl-app/src/script_log.rs` emits "Scripted input
+  loaded."/"Scripted input finished." around the loop and observes two new
+  `ohl-engine` data counters — `Game::monster_damage_event_count` (new;
+  `ai::AiState::damage_events`) and the existing `Game::monster_death_count`
+  — to emit "A monster took damage."/"A monster died." at most once each;
+  per this milestone's logging policy, `ohl-engine` itself still never
+  logs. "The player fired a weapon.", "A shot hit an entity.", "A pickup
+  was collected." and "The player took damage." are documented TODO(P1)
+  hooks, not wired: their sources (weapon firing, hitscan, pickups, and
+  phase 9 damage resolution) do not exist on this branch (M7.9 P1 is not
+  merged), and damage aimed at a non-monster target — the player included
+  — is currently discarded rather than applied
+  (`ai::AiState::drain_engine_damage`). `ohl_engine::test_support::run_script`
+  drives a `Game` from a fixed `Input` slice for a determinism test outside
+  any CLI or GPU. `xtask/src/combat_smoke.rs` (`cargo xtask combat-smoke`)
+  runs the release binary once per project-authored scenario under the new
+  `assets/smoke-scenarios/*.txt` (map names only from `ohl_campaign`'s
+  cited table: `TRAINMAP`, `STARTMAP`, and `"c1a1"`), asserts the exact
+  fixed lines are present/absent per scenario, and reports scenario names
+  and pass/fail buckets only, reusing `campaign_smoke.rs`'s
+  `Category`/`sanitize_error_code` shape. Verified: parser unit tests for
+  the documented grammar and every bounded-rejection path, plus a proptest
+  that it never panics on arbitrary bytes; an integration test that two
+  fresh `Game`s built from the same bytes and default seed, ticked with the
+  same scripted sequence, produce identical `ai_state_hash` after every
+  tick; a CLI test that `--script`/`--script-log` runs headlessly (no
+  graphics adapter) and logs exactly the two milestone lines this branch
+  can produce; and a unit test that `combat-smoke`'s summary names no
+  payload path or pixel statistic.
+
+  Not yet done: M7.9 P4b (the five additive save sections in
+  `ohl-engine::save`/`save_state`) and, once M7.9 P1 lands, wiring the four
+  TODO(P1) milestone lines above.
+
 ## M9 (Rust): packaging
 
 Status: in progress. `cargo xtask dist` builds the release `open-half-life`

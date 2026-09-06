@@ -95,6 +95,12 @@ pub struct GameArgs<'a> {
     pub load_slot: Option<&'a str>,
     /// The campaign difficulty.
     pub difficulty: ohl_campaign::Difficulty,
+    /// A deterministic scripted-input file (`crate::script`), run instead
+    /// of the interactive window or the frame-count capture loop.
+    pub script: Option<&'a Path>,
+    /// Enables the scripted-input milestone log lines. Ignored without
+    /// `script`.
+    pub script_log: bool,
 }
 
 /// The save directory this run reads and writes slots in, or `None` when the
@@ -146,10 +152,99 @@ pub fn run(args: &GameArgs<'_>) -> Result<(), &'static str> {
         tracing::warn!("The map has no usable collision hulls; the camera flies instead.");
     }
 
+    if let Some(script_path) = args.script {
+        return run_scripted(&mut game, args, script_path);
+    }
+
     match args.screenshot {
         Some(path) => capture(&mut game, args, path),
         None => windowed(game, &source),
     }
+}
+
+/// Runs a deterministic scripted-input file: `script.len()` ticks at
+/// [`CAPTURE_STEP`], with no GPU context created unless `args.screenshot`
+/// is also given. See `crate::script` for the grammar and
+/// `crate::script_log` for the milestone log lines.
+fn run_scripted(
+    game: &mut Game,
+    args: &GameArgs<'_>,
+    script_path: &Path,
+) -> Result<(), &'static str> {
+    let bytes = std::fs::read(script_path).map_err(|_| "the script file could not be read")?;
+    let script =
+        crate::script::Script::parse(&bytes).map_err(|_| "the script file could not be parsed")?;
+
+    if args.script_log {
+        tracing::info!("Scripted input loaded.");
+    }
+
+    if let Some(viewpoint) = args.viewpoint {
+        game.set_viewpoint(viewpoint.position, viewpoint.pitch, viewpoint.yaw);
+    } else if let Some(offset) = args.spawn_offset {
+        let camera = game.camera();
+        let position = [
+            camera.position[0] + offset.position[0],
+            camera.position[1] + offset.position[1],
+            camera.position[2] + offset.position[2],
+        ];
+        let (pitch, yaw) = (camera.pitch + offset.pitch, camera.yaw + offset.yaw);
+        game.set_viewpoint(position, pitch, yaw);
+    }
+
+    let mut log = crate::script_log::ScriptLog::new(game);
+    for input in script.inputs() {
+        for event in game.tick(CAPTURE_STEP, input) {
+            if let GameEvent::LevelChange { .. } = event {
+                tracing::info!("A level change fired during capture; it was not followed.");
+            }
+        }
+        if args.script_log {
+            log.observe(game);
+        }
+    }
+
+    if args.script_log {
+        tracing::info!("Scripted input finished.");
+    }
+
+    match args.screenshot {
+        Some(path) => write_screenshot(game, path),
+        None => Ok(()),
+    }
+}
+
+/// Renders exactly one frame and writes it as a PNG. Shared by
+/// [`run_scripted`]; [`capture`] renders once per advanced frame instead,
+/// since a capture without a script advances the world's own animation one
+/// tick at a time between renders.
+fn write_screenshot(game: &mut Game, path: &Path) -> Result<(), &'static str> {
+    let context = GpuContext::headless().map_err(|_| "no usable graphics adapter is available")?;
+    let (width, height) = CAPTURE_SIZE;
+    let target = OffscreenTarget::new(&context, width, height)
+        .map_err(|_| "no offscreen target could be created")?;
+    game.render(
+        &context,
+        RenderTarget {
+            view: target.view(),
+            width,
+            height,
+            format: OFFSCREEN_FORMAT,
+        },
+    )
+    .map_err(|_| "the frame could not be rendered")?;
+    context.wait();
+
+    let pixels = target
+        .read_rgba(&context)
+        .map_err(|_| "the frame could not be read back")?;
+    let image = image::RgbaImage::from_raw(width, height, pixels)
+        .ok_or("the frame did not fill the capture buffer")?;
+    image
+        .save_with_format(path, image::ImageFormat::Png)
+        .map_err(|_| "the capture could not be written")?;
+    tracing::info!("Screenshot written.");
+    Ok(())
 }
 
 /// The directory inside a published payload that holds the mod directories.

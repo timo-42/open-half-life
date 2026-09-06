@@ -12,6 +12,7 @@
 //!   folder plus a `.tar.gz`/`.zip` archive under `target/dist/`.
 
 mod campaign_smoke;
+mod combat_smoke;
 mod dist;
 mod graph;
 mod policy;
@@ -92,8 +93,14 @@ fn main() -> ExitCode {
             let rest: Vec<String> = std::env::args().skip(2).collect();
             campaign_smoke::run(&root, &rest)
         }
+        Some("combat-smoke") => {
+            let rest: Vec<String> = std::env::args().skip(2).collect();
+            combat_smoke::run(&root, &rest)
+        }
         other => {
-            eprintln!("usage: cargo xtask <policy|graph|worker-image|dist|campaign-smoke>");
+            eprintln!(
+                "usage: cargo xtask <policy|graph|worker-image|dist|campaign-smoke|combat-smoke>"
+            );
             if let Some(other) = other {
                 eprintln!("unknown subcommand: {other}");
             }
