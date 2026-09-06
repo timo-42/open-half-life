@@ -2524,3 +2524,120 @@ Open follow-ups, in no particular priority order:
   scripted-navigation budget, and stayed undone rather than added as a
   flaky smoke scenario (see `.plan/fidelity-round-7.md`, which is
   git-ignored and local-only, for what blocked it).
+
+## Status as of 2026-09-07
+
+This section is a snapshot, not a replacement for the package-by-package
+history above or the previous "Status as of 2026-09-06" snapshot; it lists
+what merged since that snapshot and does not repeat unaffected detail from
+it.
+
+Merged since 2026-09-06, by milestone:
+
+- **M6 (fidelity F3).** [PR #78](https://github.com/timo-42/open-half-life/pull/78)
+  makes monster models load from the payload: most `monster_*` entities
+  carry no `model` keyvalue in the map's own entity lump (GoldSrc hardcodes
+  it in `Spawn`/`Precache`), so `ohl_ai::MonsterKind::default_model_path`
+  now supplies each defined kind's default `models/*.mdl` path and
+  `ohl_engine::level::load_studio_models` falls back to it.
+- **M7.9 P4b (save sections).** [PR #80](https://github.com/timo-42/open-half-life/pull/80)
+  adds save sections 23-27 (inventory, entity combat state, AI state,
+  projectiles/deployables, RNG stream), closing the "Save sections P4b (in
+  progress)" follow-up above.
+- **M7.9 P1/P3 follow-up.** [PR #84](https://github.com/timo-42/open-half-life/pull/84)
+  wires per-trace hitbox exclusion for projectiles so a model-backed
+  projectile or placed deployable (tripmine, satchel) stays shootable
+  instead of being excluded from the shared hitbox index; what a
+  projectile's own movement trace must not hit (its own model, its owner)
+  is now excluded per trace instead.
+- **M7.9 P4b follow-up (save restore).** [PR #88](https://github.com/timo-42/open-half-life/pull/88)
+  re-creates deployable stand-in entities and a restored projectile's
+  `self_id` on load, so a save taken mid-fight draws and re-damages those
+  entities correctly after a reload instead of coming back undrawn and
+  undamageable.
+- **M7.11 follow-up.** [PR #82](https://github.com/timo-42/open-half-life/pull/82)
+  stops a scripted sequence from holding its target monster forever.
+- **M7.12 (trigger_camera).** [PR #86](https://github.com/timo-42/open-half-life/pull/86)
+  adds `trigger_camera` view sequences (see the M7.12 entry above).
+- **Touch triggers.** [PR #90](https://github.com/timo-42/open-half-life/pull/90)
+  fires touch triggers from the player's own movement, not only from
+  `use` — the last gap between a mapper-authored trigger volume and this
+  project's own trigger-firing path.
+- **Brush-entity collision.** [PR #91](https://github.com/timo-42/open-half-life/pull/91)
+  collides the player against solid brush entities (doors, moving
+  platforms, and similar), not only worldspawn geometry.
+- **Combat smoke.** [PR #87](https://github.com/timo-42/open-half-life/pull/87)
+  adds a scripted scenario that picks up and fires a weapon
+  (`xtask/smoke-scenarios/pick_up_and_fire_a_weapon.txt`), reaching two of
+  the six scripted milestone lines M7.9 P4a introduced.
+- **Headless capture.** [PR #89](https://github.com/timo-42/open-half-life/pull/89)
+  adds `--follow-level-change` (calls the same `Game::change_level` path
+  the interactive window uses when a `trigger_changelevel` fires, instead
+  of only logging that it was not followed) and, behind `dev-tools`,
+  `--viewpoint-at-nearest-monster DISTANCE`.
+- **M9.3 (release packaging polish).** [PR #83](https://github.com/timo-42/open-half-life/pull/83)
+  makes `cargo xtask dist` a proper `clap` subcommand with `--help`/
+  `--out-dir`/`--print-target`, strips and LTOs the release profile, and
+  wires `publish-release` to attach archives to a GitHub Release on a `v*`
+  tag push.
+- **Overbright default.** [PR #85](https://github.com/timo-42/open-half-life/pull/85)
+  defaults the app's `--overbright` multiplier to `1.7` (a calibrated
+  display default, not a claimed engine fact); `LightRamp`/`GameConfig`
+  keep their raw, unmultiplied `1.0` default.
+- **Docs.** [PR #78](https://github.com/timo-42/open-half-life/pull/78)
+  through [PR #91](https://github.com/timo-42/open-half-life/pull/91) are
+  covered above; a further docs-only refresh is this section itself.
+
+As of this snapshot, [PR #92](https://github.com/timo-42/open-half-life/pull/92)
+("Fire trigger_changelevel on player touch") is open and merging: it makes a
+`trigger_changelevel` fire from the player's own touch, the same way
+[PR #90](https://github.com/timo-42/open-half-life/pull/90) already did for
+ordinary touch triggers, rather than requiring a `use`. Treat it as
+in-flight, not yet landed, until it shows as merged.
+
+Remaining follow-ups, in no particular priority order (superseding the
+equivalent bullets in the 2026-09-06 snapshot above where they overlap):
+
+- **Brush collision follow-ups (in flight).** A PR building on
+  [PR #91](https://github.com/timo-42/open-half-life/pull/91)'s brush-entity
+  collision is in progress; the current landed behavior collides the
+  player against a brush entity's solid shape, but does not yet cover
+  every mover interaction (see the mover-riders and submodel-contents
+  bullets below).
+- **Per-chapter walk scenarios (in flight).** A scripted-navigation smoke
+  covering a walk through each of the 18 story chapters (beyond the
+  existing single-map `campaign-smoke` render check and the Hazard Course
+  combat scenario) is in progress; round 7's attempted `t0a0` → `t0a0a`
+  Hazard Course transition (see above) is the closest existing precedent
+  and was not reached within its scripted-navigation budget.
+- **`func_water`/`func_ladder` submodel contents.** Brush-entity collision
+  (PR #91) treats every solid brush entity as ordinary solid geometry; it
+  does not yet special-case a submodel's `CONTENTS_WATER`/`CONTENTS_LADDER`
+  volume, so swimming and ladder-climbing brush entities do not yet behave
+  distinctly from a solid brush.
+- **Brush `angles`.** A brush entity's own `angles` keyvalue (a rotated
+  door or platform) is not yet applied to its collision shape.
+- **Mover riders.** An entity standing on a moving brush entity (a lift, a
+  moving platform) does not yet ride along with it; only the mover's own
+  motion and the player's direct collision against its current shape are
+  modelled.
+- **`trigger_camera`/track-train persistence.** Neither `TriggerCameraState`
+  nor `TrackTrainState` is part of any save section yet (`SECTION_SIMULATION`
+  is `postcard`-encoded and not self-describing, so an additive field
+  cannot be added without breaking old saves); a save taken mid-sequence or
+  mid-route resumes with that state dormant instead.
+- **`monstermaker` `targetname` activation** (unchanged from the
+  2026-09-06 snapshot): still not toggleable at runtime by `use` or
+  `trigger`.
+- **`m_iszIdle` pre-trigger idle animation** (unchanged from the
+  2026-09-06 snapshot): a dormant `scripted_sequence` target's pre-trigger
+  idle loop is still not modelled.
+- **Linux audio backend decision** (unchanged from the 2026-09-06
+  snapshot): `ohl-audio` still always uses a `NullSink` on Linux; whether
+  to relax the "no FFI" rule for a system audio library, adopt a pure-Rust
+  ALSA/PipeWire backend if one appears, or leave Linux silent by design
+  remains open.
+- **First tagged release.** No `v*` tag has been pushed yet, so
+  `publish-release` (PR #83) has never run against a real tag; the next
+  actual tag push will be its first real exercise, and the first entry in
+  this project's GitHub Releases.

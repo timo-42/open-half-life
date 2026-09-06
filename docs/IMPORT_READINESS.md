@@ -96,6 +96,20 @@ over the new back ends, and no independent architecture, security, reliability,
 release, or product review. The "production end-to-end qualification" column
 below therefore stays "absent" for every tuple, Linux x86-64 included.
 
+Since this section was written, two more automated smokes have started
+running against a real imported payload on Linux x86-64: `cargo xtask
+campaign-smoke` headless-renders all 93 campaign maps (18 story chapters
+plus the Hazard Course), and `cargo xtask combat-smoke` drives scripted
+combat scenarios (including picking up and firing a weapon) end to end.
+Both are useful implementation-correctness evidence — they exercise the
+payload the import path actually produced, not a synthetic stand-in — but
+neither is release-evidence toward any gate below: both smokes still run
+against the same single real ISO layout this project has ever exercised,
+so they say nothing about any other layout, package variant, or platform
+tuple, and neither substitutes for the installed-package inventory,
+crash/restart, sanitizer/fuzz, or independent-review gates that remain
+unmet.
+
 Every other tuple is unavailable for a simpler reason: containment is
 source-selected for Linux x86-64 only, and everywhere else the unsupported
 backend refuses to launch a worker, so no import can begin.
@@ -179,7 +193,7 @@ every other crate keeps `forbid(unsafe_code)`. See
 
 | Platform | Build | App preflight and metadata-only cache | Isolated-worker containment | Payload import implemented | Production end-to-end qualification |
 | --- | --- | --- | --- | --- | --- |
-| Linux x86-64 | Implemented. Existing Linux build evidence is not a production import tuple. | Implemented; no payload extraction. | Implemented as a source-selected native backend with project-authored synthetic tests. The installed static worker hosts exact OWP/1 hello/ready/shutdown on fd 3 under the compile-fixed identity and native confinement. Its dispatcher decodes Wise, MS-CAB and IS3 Z containers for real (R4.7b), and the process-session owner, runtime selection and staging/publication are composed with it. | Implemented end to end (R4.7b): Wise overlay, MS-CAB and IS3 Z containers enumerate and stream through the confined worker, and a published payload is rediscovered at runtime. Local synthetic and manual evidence only. | Absent; implemented but unqualified — no release-evidence gate below is met. |
+| Linux x86-64 | Implemented. Existing Linux build evidence is not a production import tuple. | Implemented; no payload extraction. | Implemented as a source-selected native backend with project-authored synthetic tests. The installed static worker hosts exact OWP/1 hello/ready/shutdown on fd 3 under the compile-fixed identity and native confinement. Its dispatcher decodes Wise, MS-CAB and IS3 Z containers for real (R4.7b), and the process-session owner, runtime selection and staging/publication are composed with it. | Implemented end to end (R4.7b): Wise overlay, MS-CAB and IS3 Z containers enumerate and stream through the confined worker, and a published payload is rediscovered at runtime. Local synthetic and manual evidence only, all against the same one real ISO layout; `cargo xtask campaign-smoke` (93/93 campaign maps) and `cargo xtask combat-smoke` (scripted combat scenarios) now also run headless against that imported payload, which is useful implementation-correctness evidence but not release evidence for any other layout or tuple. | Absent; implemented but unqualified — no release-evidence gate below is met. |
 | Linux other architectures | Unevidenced and unqualified as import tuples. | Code path exists where the build is available; no payload extraction. | Unsupported; CMake selects the unsupported backend. | Absent; containment selects the unsupported backend, so no worker launches. | Absent; import unavailable. |
 | Windows x64 | Exact documented build/preflight tuple. | Implemented in hosted evidence; no payload extraction. | Unsupported; CMake selects the unsupported backend. | Absent; containment selects the unsupported backend, so no worker launches. | Absent; import unavailable. |
 | Windows other architectures | Unevidenced and unqualified. | Unevidenced for release qualification. | Unsupported; CMake selects the unsupported backend. | Absent; containment selects the unsupported backend, so no worker launches. | Absent; import unavailable. |

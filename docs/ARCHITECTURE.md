@@ -856,7 +856,14 @@ everything else has already agreed on). The current phase order is:
 
 1. latch input (edges apply to the frame's first step only, held axes to
    every step)
-2. player movement (`ohl-physics`' `PlayerController`)
+2. player movement (`ohl-physics`' `PlayerController`). Before tracing
+   moves, `Level::sync_brush_collision` first pulls every solid brush
+   entity's current position into the collision model (`ohl_physics::hull`'s
+   `BrushPart`/`CollisionModel::attach_brush`), so a door, platform, or
+   train the previous step's phase 12 moved is collided against where it
+   now is, not where the map was compiled — the player collides against
+   brush entities the same way it collides against worldspawn, not only
+   against the static world.
 3. player systems (`ohl-player`: health/armor, fall damage, drowning, the
    HEV suit, flashlight, long jump)
 4. actor sync (camera/controller state written back onto the entity world)
@@ -872,7 +879,14 @@ everything else has already agreed on). The current phase order is:
     `TriggerCondition`/`TriggerTarget` firing, `monstermaker` ticking)
 11. pickups and chargers
 12. triggers and movers (map-logic `Simulation::fire`, doors, buttons,
-    `func_train`/`func_tracktrain`, `multi_manager`)
+    `func_train`/`func_tracktrain`, `multi_manager`). This is also where
+    `ohl_game::logic::Simulation::touch_triggers` runs: it tests the
+    player's own standing-hull bounding box (not just a single point)
+    against every `trigger_once`/`trigger_multiple` volume, so walking
+    into a touch trigger fires it the same way a real touch trigger tests
+    brush-against-brush, without needing a `use` press. The crouched hull
+    is not yet threaded through this phase, so a crouching player is still
+    tested against the standing box.
 13. presentation (`ohl-gameplay::GameplayBridge` turning combat/pickup
     events into HUD state and sound cues)
 
@@ -903,15 +917,33 @@ tag as unknown rather than failing to open the file:
 | 20 | `SECTION_GLOBAL_STATE` | the `globalname`/`env_global` state table |
 | 21 | `SECTION_LIGHT_STYLE_TIME` | the time the light-style animation is evaluated at |
 | 22 | `SECTION_VIEW` | the camera/player pose, so a load resumes exactly where the save was taken |
+| 23 | `SECTION_INVENTORY` | owned weapons, clips, ammo reserves, selection, the drawn weapon's firing summary (M7.9 P4b) |
+| 24 | `SECTION_ENTITY_COMBAT` | one `EntityCombatSnapshot` per registry entity, in spawn order (M7.9 P4b) |
+| 25 | `SECTION_AI` | one optional `AiSnapshot` per registry entity, in spawn order (M7.9 P4b) |
+| 26 | `SECTION_PROJECTILES` | live projectiles and placed deployables (satchels, tripmines) (M7.9 P4b) |
+| 27 | `SECTION_RNG` | the shared random stream and the substep counter (M7.9 P4b) |
+| 32 | *(reserved, `ohl-player`)* | a `PlayerSnapshot`, written through `Player::snapshot()` once a later package wires it; not produced by any current build |
 
 Serialization goes through `postcard` via `ohl_save::SaveWriter::
 add_section_serde`, which is deterministic: the same game state and header
 always produce byte-identical files (asserted by the save -> load -> save
-round-trip test). `docs/MILESTONES.md`'s M7.9 P4b note tracks the one known
-gap: weapon *inventory* (owned weapons, clips, reserve ammo) currently rides
-inside `SECTION_PLAYER_CARRY`'s ad hoc byte encoding rather than its own
-section, which still round-trips correctly today but is not yet
-self-describing independent of that carry state's shape.
+round-trip test). Tags 23-27 (M7.9 P4b) are read as `None`/a default when
+absent, so a save written before that package still loads; a section that
+is present but fails to decode fails the whole read closed
+(`EngineError::SaveUnreadable`), same as every other section. Restoring
+tags 26/27 does not by itself bring back a deployable's or a model-backed
+projectile's drawn stand-in entity or `hecs::Entity` handle (neither is
+serializable): `ProjectileSystem::restore_snapshot` re-spawns a fresh stand-in
+for every restored satchel, tripmine, or in-flight model-backed projectile
+so it draws and stays damageable again after a load. `docs/MILESTONES.md`'s
+M7.9 P4b note tracks the one known gap: weapon *inventory* (owned weapons,
+clips, reserve ammo) currently rides inside `SECTION_PLAYER_CARRY`'s ad hoc
+byte encoding rather than its own section, which still round-trips
+correctly today but is not yet self-describing independent of that carry
+state's shape. Neither `TriggerCameraState` nor `TrackTrainState` is part
+of any save section yet, for the same self-describing-format reason: a
+save taken mid-camera-sequence or mid-route resumes with that state
+dormant instead of where it left off.
 
 ## The asset layer and PAK precedence
 
@@ -967,6 +999,21 @@ scripted sequence started."); nothing map-derived is ever interpolated into
 them. `cargo xtask combat-smoke` drives this path over
 `xtask/smoke-scenarios/*.txt` and checks each run's stderr against those
 exact fixed lines.
+
+By default, neither capture path follows a `trigger_changelevel`: a headless
+or scripted run just logs a fixed "not followed" line and keeps rendering
+the map it started on, so an ordinary capture never silently jumps to a
+different map. `--follow-level-change` opts into calling the same
+`Game::change_level` path the interactive window uses instead, and keeps
+ticking (or capturing) on whatever destination map the transition leads
+to; `crate::game_run`'s two capture paths share one `handle_level_change`
+helper for this. Behind `--features dev-tools`,
+`--viewpoint-at-nearest-monster DISTANCE` places a headless capture's eye
+`DISTANCE` units from the spawned monster nearest the map's player start,
+at its eye height, facing it, in noclip, backed by an additive
+`Game::nearest_monster_position` (data only, never logged) — useful for
+confirming a monster actually rendered without hand-computing a
+`--viewpoint`.
 
 ## Hosted qualification history
 
