@@ -2482,3 +2482,21 @@ Open follow-ups, in no particular priority order:
   its own drawn model again. The save wire format is unchanged; a save
   from before this fix still loads and simply gets its stand-ins back
   where it would previously have come back undrawn and undamageable.
+- **Headless capture can follow a level change; a dev viewpoint near the
+  nearest monster (fidelity round 6/7 follow-up).** `--follow-level-change`
+  makes a headless (`--headless-screenshot`) or scripted (`--script`) run
+  call the same `Game::change_level` the windowed loop uses when a
+  `trigger_changelevel` fires, instead of only logging that it was not
+  followed (the unchanged default); `crate::game_run`'s two capture paths
+  share one `handle_level_change` helper for this. Separately, an additive
+  `Game::nearest_monster_position(from: Vec3) -> Option<Vec3>` (data only,
+  never logged) backs a new `--viewpoint-at-nearest-monster DISTANCE`
+  (`dev-tools` feature only, like `--dev-mdl`), which places a headless
+  capture's eye at a spawned monster's eye height, facing it, in noclip.
+  Round 7 (closing round 6's finding I2) used the flag to confirm a level
+  transition end to end against a synthetic two-map fixture (an `ohl-app`
+  integration test); a real-payload Hazard Course transition (`t0a0` →
+  `t0a0a`) was attempted but not reached within a bounded
+  scripted-navigation budget, and stayed undone rather than added as a
+  flaky smoke scenario (see `.plan/fidelity-round-7.md`, which is
+  git-ignored and local-only, for what blocked it).
