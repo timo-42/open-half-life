@@ -620,28 +620,33 @@ impl CombatState {
 }
 
 /// Phase 5 — rebuilds `hitboxes` from every entity carrying a
-/// [`StudioAnim`] (and so a pose to sample) except those named in
-/// `exclude`, cleared and refilled each step. A monster or prop with no
-/// loaded model, or whose sequence fails to sample, contributes nothing —
-/// never a panic.
+/// [`StudioAnim`] (and so a pose to sample), cleared and refilled each
+/// step. A monster or prop whose `anim.model` names no loaded slot
+/// contributes nothing — never a panic; one whose sequence fails to
+/// *sample* still contributes, but at its model's bind pose
+/// ([`StudioPose::bind`]) rather than the requested frame, so a hitbox is
+/// still there to be hit, just not posed the way the sequence would have
+/// left it.
 ///
 /// A free function, and `hitboxes` is owned by `crate::systems::Systems`
 /// directly (not nested in `CombatState`), so a later package's own attack
 /// resolution (monster attacks, projectiles) traces against the exact same
-/// index this phase built, instead of rebuilding its own. `exclude` is
-/// `crate::projectiles::ProjectileSystem`'s own model-backed entities (a
-/// flying rocket, say), so a projectile's own drawn model cannot stop its
-/// own sweep.
-pub(crate) fn rebuild_hitbox_index(hitboxes: &mut HitboxIndex, level: &Level, exclude: &[Entity]) {
+/// index this phase built, instead of rebuilding its own. Every
+/// model-backed entity is included, deliberately: this project keeps a
+/// projectile's own drawn model (a flying rocket) and a placed
+/// deployable's (a tripmine, a satchel) in the shared index rather than
+/// excluding either from it, because a deployable must stay shootable and
+/// damageable by anyone else's trace. What a projectile's own movement
+/// trace must not hit — itself, and its owner — is instead ignored per
+/// trace, in `ohl_combat::ProjectileSet::tick` itself (see
+/// `crate::projectiles`' module doc), not by narrowing this index.
+pub(crate) fn rebuild_hitbox_index(hitboxes: &mut HitboxIndex, level: &Level) {
     hitboxes.clear();
     for (entity, anim, transform) in &mut level
         .registry
         .world
         .query::<(Entity, &StudioAnim, &Transform)>()
     {
-        if exclude.contains(&entity) {
-            continue;
-        }
         let Some(model) = level.studio_models.get(anim.model) else {
             continue;
         };

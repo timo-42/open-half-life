@@ -172,6 +172,11 @@ pub struct Level {
     pub skybox: Option<SkyboxAsset>,
     /// Studio models referenced by this map's entities, in load order.
     pub studio_models: Vec<StudioModel>,
+    /// Each loaded studio model's asset path (lower-cased), index-aligned
+    /// with [`Self::studio_models`]. Lets `crate::projectiles` name an
+    /// already-loaded model by its published GoldSrc filename (a rocket's,
+    /// a bolt's, ...) without this crate loading any new asset.
+    pub studio_model_paths: Vec<String>,
     /// Where each loaded studio model stands.
     pub props: Vec<PropPlacement>,
     /// How many referenced studio models were not published in the payload.
@@ -390,6 +395,7 @@ impl Level {
             collision,
             skybox,
             studio_models: studio.models,
+            studio_model_paths: studio.paths,
             props: studio.props,
             missing_models: studio.missing,
             sprite_assets,
@@ -471,6 +477,12 @@ fn load_skybox(source: &dyn AssetSource, skyname: &str) -> Option<SkyboxAsset> {
 struct StudioLoad {
     /// The distinct models that loaded, in load order.
     models: Vec<StudioModel>,
+    /// Each loaded model's asset path (lower-cased), index-aligned with
+    /// `models`. Kept alongside the models themselves so a later lookup
+    /// (`crate::projectiles`' per-`ProjectileKind` default model paths) can
+    /// name an already-loaded model by its published GoldSrc filename
+    /// instead of duplicating the load.
+    paths: Vec<String>,
     /// One placement per model-carrying entity definition.
     props: Vec<PropPlacement>,
     /// The index in `defs` each placement came from, so the placement can
@@ -501,6 +513,7 @@ fn load_studio_models(source: &dyn AssetSource, defs: &[EntityDef]) -> StudioLoa
     let studio_limits = StudioLimits::default();
     let mut by_path: BTreeMap<String, Option<usize>> = BTreeMap::new();
     let mut models = Vec::new();
+    let mut paths = Vec::new();
     let mut props = Vec::new();
     let mut def_indices = Vec::new();
     let mut missing = 0usize;
@@ -554,6 +567,7 @@ fn load_studio_models(source: &dyn AssetSource, defs: &[EntityDef]) -> StudioLoa
                     })
                     .map(|model| {
                         models.push(model);
+                        paths.push(key.clone());
                         models.len() - 1
                     })
             };
@@ -591,6 +605,7 @@ fn load_studio_models(source: &dyn AssetSource, defs: &[EntityDef]) -> StudioLoa
 
     StudioLoad {
         models,
+        paths,
         props,
         def_indices,
         missing,

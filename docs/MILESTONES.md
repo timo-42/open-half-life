@@ -2414,3 +2414,15 @@ Open follow-ups, in no particular priority order:
   `ohl_world::lightmap::LightRamp::default()` and
   `ohl_engine::GameConfig::default()` stay unchanged at the documented raw
   `1.0`; see `docs/FORMAT_SOURCES.md`, "Rendering conventions".
+- **Per-trace hitbox exclusion for projectiles; deployables stay shootable
+  (M7.9 P1/P3 follow-up).** `ProjectileSystem::set_model_for` is now wired
+  (`ProjectileSystem::configure_models`, called on level attach) and a
+  model-backed projectile or placed deployable stays *in* the shared
+  `Systems::hitboxes` index rather than being excluded from it — a placed
+  tripmine or satchel is damageable by the player's hitscan and by another
+  explosive's blast, per the published behaviour cited in
+  `docs/FORMAT_SOURCES.md`, "Deployable damageability and per-trace hitbox
+  exclusion". What a projectile's own movement trace must not hit — its own
+  drawn model, its owner — is ignored per trace instead
+  (`ohl_combat::Projectile::self_id`/`owner`, `TraceFilter::ignoring`), never
+  by narrowing the index everyone else traces against.

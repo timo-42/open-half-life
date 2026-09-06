@@ -609,6 +609,11 @@ impl Systems {
     ) {
         self.damage_queue.clear();
         self.ai.attach_level(level, difficulty, skill);
+        // Auto-wires a model-backed projectile/deployable kind to whichever
+        // of this map's own loaded studio models matches its conventional
+        // path (`crate::projectiles::ProjectileSystem::configure_models`'s
+        // doc); harmless when none match, which is the ordinary case.
+        self.projectiles.configure_models(level);
     }
 
     /// Latches one frame's input. Called once per [`crate::Game::tick`],
@@ -646,6 +651,7 @@ impl Systems {
         self.projectiles(level, dt); // 7
         self.ai_think(level, dt); // 8
         self.resolve_damage(level); // 9
+        self.reap_deployables(level); // 9b
         self.lifecycle(level, dt); // 10
         self.pickups(level, input, dt); // 11
         self.triggers_and_movers(level, camera, input, dt, events); // 12
@@ -766,12 +772,13 @@ impl Systems {
 
     /// Phase 5 — hitbox index: rebuilt each step from every entity carrying
     /// a pose and an actor, so a trace hits where the model is drawn.
-    /// Model-backed projectiles/deployables (a flying rocket, a placed
-    /// tripmine) are excluded, so a projectile's own drawn model cannot
-    /// stop its own sweep in phase 7.
+    /// Model-backed projectiles and deployables (a flying rocket, a placed
+    /// tripmine) are kept in this index like anything else — a tripmine or
+    /// satchel must stay shootable — and instead ignored per trace by
+    /// whichever trace must not hit itself (`crate::projectiles`' module
+    /// doc; `ohl_combat::Projectile::self_id`/`owner`).
     fn rebuild_hitbox_index(&mut self, level: &mut Level) {
-        let exclude: Vec<Entity> = self.projectiles.model_entities().collect();
-        crate::combat::rebuild_hitbox_index(&mut self.hitboxes, level, &exclude);
+        crate::combat::rebuild_hitbox_index(&mut self.hitboxes, level);
     }
 
     /// Phase 6 — weapons: the firing state machine, its hitscan traces and
@@ -829,6 +836,18 @@ impl Systems {
             &mut self.presentation,
             &mut self.player_events,
             &mut self.player_damage_events,
+        );
+    }
+
+    /// Phase 9b — a placed satchel or tripmine that phase 9 just brought to
+    /// zero health (the player's hitscan, or another explosive's blast)
+    /// detonates this same step; see
+    /// `crate::projectiles::ProjectileSystem::resolve_deployable_damage`.
+    fn reap_deployables(&mut self, level: &mut Level) {
+        self.projectiles.resolve_deployable_damage(
+            level,
+            &mut self.damage_queue,
+            &mut self.transient_sprites,
         );
     }
 
