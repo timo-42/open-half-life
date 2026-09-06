@@ -282,6 +282,21 @@ impl Game {
 
     /// Moves the camera (and the walking player) to an explicit viewpoint,
     /// for headless captures at a chosen position.
+    ///
+    /// This intentionally enables noclip and leaves it on: a caller-chosen
+    /// viewpoint is arbitrary map-relative debug coordinates, not a
+    /// documented spawn point, so it is not guaranteed to sit in open
+    /// space the way an `info_player_start` is. Ordinary spawn placement
+    /// keeps collision active and lets the walking player's normal
+    /// resolution push them clear of an accidental overlap on the first
+    /// tick; this path has no such recovery by design, since a free-fly
+    /// debug/capture camera must be able to move to a coordinate the
+    /// mapper never intended a player to occupy (looking from outside a
+    /// wall, from inside machinery, etc.) without collision fighting it.
+    /// A caller that lands here at a coordinate that turns out to be
+    /// inside solid geometry (see [`Self::eye_is_in_solid`]) should treat
+    /// that as a sign the requested viewpoint needs adjusting, not as a
+    /// bug in this method.
     pub fn set_viewpoint(&mut self, position: [f32; 3], pitch: f32, yaw: f32) {
         self.camera.position = position;
         self.camera.pitch = pitch;
@@ -292,6 +307,28 @@ impl Game {
         // A caller-chosen viewpoint is a free camera, not a spawn: keep the
         // physics controller from immediately dragging it back to the floor.
         self.controller.set_noclip(true);
+    }
+
+    /// Whether the camera's current eye position sits inside solid
+    /// collision geometry, checked with the same point-in-hull query the
+    /// walking player's [`ohl_physics::PlayerController`] already uses.
+    /// `false` when this level has no usable collision hulls (see
+    /// [`Self::has_collision`]), since there is then nothing to check the
+    /// point against.
+    ///
+    /// [`Self::set_viewpoint`] runs with noclip on and so cannot recover
+    /// from landing inside solid geometry the way ordinary spawn placement
+    /// does; a host driving a capture/debug viewpoint should call this
+    /// after [`Self::set_viewpoint`] and warn when it returns `true`,
+    /// since the resulting frame is not a meaningful capture.
+    #[must_use]
+    pub fn eye_is_in_solid(&self) -> bool {
+        self.level.collision.as_ref().is_some_and(|collision| {
+            ohl_physics::contents::is_solid(ohl_physics::point_contents(
+                collision,
+                Vec3::from_array(self.camera.position),
+            ))
+        })
     }
 
     /// Advances the frame by `dt` seconds and returns the events the host

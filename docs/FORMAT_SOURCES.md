@@ -1251,6 +1251,26 @@ fixtures built by `ohl_formats::test_support`.
   `angles` alongside a real `angle` is the failure mode this project's
   fidelity review actually observed (see `.plan/fidelity-round-1.md`,
   finding D3), not a rule copied from any single source.
+- [Valve Developer Community: Entity keyvalues (angles)](https://developer.valvesoftware.com/wiki/Angles)
+  (public GoldSrc/Source mapping documentation; consulted via search-engine
+  result summaries, same access caveat as above): documents that a scalar
+  `angle`/pitch keyvalue of `-1` means "straight up" and `-2` means
+  "straight down", overriding the ordinary yaw-in-degrees reading of that
+  field entirely — this is the source for `find_player_start`'s
+  `pitch_yaw_from_scalar_angle` sentinel handling (`.plan/fidelity-round-2.md`
+  finding E4). No public source found documents a defined yaw for either
+  sentinel, so this project records `0` for both, a documented choice
+  rather than a confirmed engine constant.
+- [TWHL wiki: info_player_start](https://twhl.info/wiki/page/info_player_start)
+  (same access caveat as above): its coverage of maps with more than one
+  `info_player_start` states the engine starts the player at the first one
+  it finds; no primary Valve SDK source describing the exact selection rule
+  among several placed entities was fetchable from this environment (the
+  page itself returns HTTP 403 to automated fetches, the same failure mode
+  recorded throughout this document), so `find_player_start`'s "first
+  entity in lump order wins" is recorded as `TODO(black-box)` in its own
+  doc comment: a defensible reading of that summary, not a byte-for-byte
+  confirmed engine behaviour.
 - [TWHL wiki: monster_generic](https://twhl.info/wiki/page/monster_generic)
   (disambiguated at
   [monster_generic (Half-Life)](https://twhl.info/wiki/page/monster_generic_(Half-Life)/514)),

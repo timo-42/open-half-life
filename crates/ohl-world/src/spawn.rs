@@ -40,7 +40,32 @@ fn parse_angle(value: &str) -> Option<f32> {
     angle.is_finite().then_some(angle)
 }
 
-/// Finds the first `info_player_start` and reads its origin and facing.
+/// The documented `angle` sentinel meaning "face straight up" (see the
+/// "Player spawn facing" citation in `docs/FORMAT_SOURCES.md`).
+const ANGLE_UP: f32 = -1.0;
+
+/// The documented `angle` sentinel meaning "face straight down".
+const ANGLE_DOWN: f32 = -2.0;
+
+/// Resolves a raw scalar `angle` keyvalue into `(pitch, yaw)`, honouring
+/// the two documented sentinels: `-1` (straight up) and `-2` (straight
+/// down) each override the field to a fixed pitch with no meaningful yaw
+/// (recorded as `0`, since the public docs describing these sentinels do
+/// not assign one); any other value is an ordinary yaw in degrees at
+/// pitch `0`, matching every other `info_player_start` in this crate's
+/// tests. See `docs/FORMAT_SOURCES.md`, "Player spawn facing".
+#[allow(clippy::float_cmp)]
+fn pitch_yaw_from_scalar_angle(angle: f32) -> (f32, f32) {
+    if angle == ANGLE_UP {
+        (-90.0, 0.0)
+    } else if angle == ANGLE_DOWN {
+        (90.0, 0.0)
+    } else {
+        (0.0, angle)
+    }
+}
+
+/// Finds the player start and reads its origin and facing.
 ///
 /// GoldSrc entities carry facing either as a scalar `angle` (the legacy yaw
 /// key; see the Valve Developer Community `angle` page) or as an `angles`
@@ -49,8 +74,22 @@ fn parse_angle(value: &str) -> Option<f32> {
 /// `"0 0 0"` and the real facing only in `angle`. Per the TWHL/VDC keyvalue
 /// docs, when both are present the non-zero/more specific value wins, so
 /// this reads `angles` only when it parses *and* at least one component is
-/// non-zero; otherwise it falls back to `angle`, and finally to the
-/// zero-yaw, zero-pitch default.
+/// non-zero; otherwise it falls back to `angle` (resolving its `-1`/`-2`
+/// "face up"/"face down" sentinels through [`pitch_yaw_from_scalar_angle`]),
+/// and finally to the zero-yaw, zero-pitch default.
+///
+/// When a map places more than one `info_player_start`, the first one in
+/// entity-lump order is used. Per TWHL's coverage of multiple player
+/// starts, the engine is documented to start the player at the first
+/// `info_player_start` it encounters (all other placed starts are only
+/// used by mods/logic that explicitly relocate the player, e.g. team
+/// spawn selection, which this project does not implement).
+/// TODO(black-box): no primary Valve source was fetchable to confirm the
+/// exact tie-break beyond "first in the entity lump" (the public pages
+/// describing this returned HTTP 403 to automated fetches from this
+/// environment, the same failure mode already recorded elsewhere in
+/// `docs/FORMAT_SOURCES.md`); this is a defensible, documented choice,
+/// not a confirmed engine constant.
 #[must_use]
 pub fn find_player_start(entities: &[Entity]) -> Option<PlayerSpawn> {
     let entity = entities
@@ -66,13 +105,10 @@ pub fn find_player_start(entities: &[Entity]) -> Option<PlayerSpawn> {
         .filter(|angles| angles.iter().any(|component| *component != 0.0));
     let (pitch, yaw) = match angles {
         Some(angles) => (angles[0], angles[1]),
-        None => (
-            0.0,
-            entity
-                .get("angle")
-                .and_then(|value| parse_angle(value))
-                .unwrap_or(0.0),
-        ),
+        None => entity
+            .get("angle")
+            .and_then(|value| parse_angle(value))
+            .map_or((0.0, 0.0), pitch_yaw_from_scalar_angle),
     };
     Some(PlayerSpawn { origin, yaw, pitch })
 }
@@ -145,5 +181,65 @@ mod tests {
         ])];
         let spawn = find_player_start(&entities).expect("found");
         assert_eq!(spawn.origin, [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn angle_sentinel_minus_one_faces_straight_up() {
+        let entities = vec![entity(&[
+            ("classname", "info_player_start"),
+            ("angle", "-1"),
+        ])];
+        let spawn = find_player_start(&entities).expect("found");
+        assert!((spawn.pitch - -90.0).abs() < f32::EPSILON);
+        assert!(spawn.yaw.abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn angle_sentinel_minus_two_faces_straight_down() {
+        let entities = vec![entity(&[
+            ("classname", "info_player_start"),
+            ("angle", "-2"),
+        ])];
+        let spawn = find_player_start(&entities).expect("found");
+        assert!((spawn.pitch - 90.0).abs() < f32::EPSILON);
+        assert!(spawn.yaw.abs() < f32::EPSILON);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn ordinary_negative_yaw_below_the_sentinels_is_not_mistaken_for_one() {
+        // -3 is an ordinary (if unusual) yaw, not a documented sentinel;
+        // it must be read as a literal angle, not fall through to the
+        // up/down special cases.
+        let entities = vec![entity(&[
+            ("classname", "info_player_start"),
+            ("angle", "-3"),
+        ])];
+        let spawn = find_player_start(&entities).expect("found");
+        assert_eq!(spawn.yaw, -3.0);
+        assert_eq!(spawn.pitch, 0.0);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn first_info_player_start_in_lump_order_wins() {
+        // TODO(black-box): see `find_player_start`'s doc comment — this
+        // pins "first in entity-lump order" as the tested contract.
+        let entities = vec![
+            entity(&[("classname", "worldspawn")]),
+            entity(&[
+                ("classname", "info_player_start"),
+                ("origin", "1 2 3"),
+                ("angle", "45"),
+            ]),
+            entity(&[
+                ("classname", "info_player_start"),
+                ("origin", "100 200 300"),
+                ("angle", "180"),
+            ]),
+        ];
+        let spawn = find_player_start(&entities).expect("found");
+        assert_eq!(spawn.origin, [1.0, 2.0, 3.0]);
+        assert!((spawn.yaw - 45.0).abs() < f32::EPSILON);
     }
 }

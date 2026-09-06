@@ -238,12 +238,25 @@ fn ambient_at(level: &Level, origin: [f32; 3]) -> [f32; 3] {
 /// A `func_train`/`func_tracktrain`'s current placement, read from the
 /// `ohl-game`-side [`TrackTrainState`] the map logic simulation advances
 /// each tick (see `crates/ohl-game/src/track_train.rs`): a world-space
-/// offset from the brush entity's own (conventionally `0 0 0`) origin, and,
-/// for a `func_tracktrain` (which the public documentation says turns to
-/// face the next `path_track`), the yaw to face instead of the entity's own
-/// spawned `angles`. Returns `(Vec3::ZERO, None)` for any entity that is not
-/// a train with a resolved path (falling back to the door/static placement
-/// path above).
+/// *delta* offset from wherever the brush geometry was authored/built
+/// ([`TrackTrainState::built_origin`], not the entity's own `origin`
+/// keyvalue), and, for a `func_tracktrain` (which the public documentation
+/// says turns to face the next `path_track`), the yaw to face instead of
+/// the entity's own spawned `angles`. Returns `(Vec3::ZERO, None)` for any
+/// entity that is not a train with a resolved path (falling back to the
+/// door/static placement path above).
+///
+/// This mirrors [`door_offset`]'s convention exactly: the brush's vertices
+/// are already baked in world space at [`TrackTrainState::built_origin`],
+/// so the value returned here must be how far the train has moved *since*
+/// that built position (zero at spawn, since [`TrackTrainState::spawn`]
+/// starts a train sitting exactly on its first node), not the train's
+/// absolute polyline coordinate — subtracting the entity's `origin`
+/// keyvalue instead (which is conventionally `0 0 0` for a brush entity)
+/// would leave that absolute coordinate un-cancelled and double-apply it on
+/// top of the already-in-world-space geometry, displacing the rendered
+/// model away from the track. See `docs/CLEAN_ROOM.md`-governed
+/// `.plan/fidelity-round-2.md` finding E1.
 fn track_train_transform(level: &Level, instance: &ohl_game::ModelInstance) -> (Vec3, Option<f32>) {
     let Ok(state) = level
         .registry
@@ -256,7 +269,7 @@ fn track_train_transform(level: &Level, instance: &ohl_game::ModelInstance) -> (
         return (Vec3::ZERO, None);
     };
     (
-        state.position() - instance.origin,
+        state.position() - state.built_origin(),
         state.yaw_degrees(&train),
     )
 }

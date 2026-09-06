@@ -200,6 +200,15 @@ fn capture(game: &mut Game, args: &GameArgs<'_>, path: &Path) -> Result<(), &'st
         game.set_viewpoint(position, pitch, yaw);
     }
 
+    // `set_viewpoint` runs with noclip on (see its doc comment) so it
+    // cannot push the camera clear of an accidental overlap the way
+    // ordinary spawn placement does; surface that as a warning rather than
+    // silently writing a meaningless frame. The message is a fixed string
+    // with no map-derived data, per this module's logging policy.
+    if (args.viewpoint.is_some() || args.spawn_offset.is_some()) && game.eye_is_in_solid() {
+        tracing::warn!("Capture viewpoint starts inside solid geometry.");
+    }
+
     for _ in 0..args.frames.max(1) {
         // The capture stands still: only the world's own animation (doors,
         // light styles, liquid turbulence, model sequences) advances.
