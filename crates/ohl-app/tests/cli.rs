@@ -187,6 +187,20 @@ fn the_difficulty_flag_only_accepts_the_three_documented_levels() {
 }
 
 #[test]
+fn the_overbright_flag_rejects_a_value_outside_its_documented_bounds() {
+    let output = run(&["--overbright=-5", "--play"]);
+    assert!(
+        !output.status.success(),
+        "a negative overbright multiplier is rejected"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("expected a finite number greater than 0 and at most 8.0"),
+        "the usage error is the fixed overbright message, got: {stderr}"
+    );
+}
+
+#[test]
 fn a_save_slot_and_a_start_map_are_mutually_exclusive() {
     let output = run(&["--load", "quicksave", "--map", "ohlsynth"]);
     assert!(

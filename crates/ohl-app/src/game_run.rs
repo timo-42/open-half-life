@@ -138,7 +138,7 @@ pub fn run(args: &GameArgs<'_>) -> Result<(), &'static str> {
             let slot = save_slot_dir().ok_or("no per-user save directory is available")?;
             // Neither the slot name nor the saved map name is logged: one is
             // user-supplied, the other media-derived.
-            Game::load_slot(&source, &slot, name)
+            Game::load_slot_with(&source, &slot, name, &config)
                 .map_err(|_| "the save slot could not be loaded")?
         }
         None => Game::load_with(&source, args.map, &config).map_err(|_| {

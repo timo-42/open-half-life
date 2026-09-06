@@ -279,6 +279,36 @@ fn save_load_save_is_byte_identical() {
 }
 
 #[test]
+fn overbright_is_a_display_setting_not_save_state() {
+    let assets = campaign(false);
+    let game = Game::load(&assets, "ohl_a").expect("map A loads");
+    let bytes = game.save_bytes(1_700_000_000).expect("the save is written");
+
+    // Plain `load_bytes` is not told about any `--overbright` choice, so it
+    // keeps the ramp default: the multiplier is not save state and
+    // `GameSave` carries no such field.
+    let reloaded = Game::load_bytes(&assets, &bytes).expect("the save is read back");
+    assert!(
+        (reloaded.overbright() - GameConfig::default().overbright).abs() < 1e-6,
+        "load_bytes without a config keeps the ramp default"
+    );
+
+    // `load_bytes_with` carries an explicit override across the save/load,
+    // exactly like a `--overbright` command-line choice should survive
+    // `--load`.
+    let config = GameConfig {
+        overbright: 2.0,
+        ..GameConfig::default()
+    };
+    let reloaded_with = Game::load_bytes_with(&assets, &bytes, &config)
+        .expect("the save is read back with a config");
+    assert!(
+        (reloaded_with.overbright() - 2.0).abs() < 1e-6,
+        "load_bytes_with carries the caller's overbright override"
+    );
+}
+
+#[test]
 fn a_save_slot_round_trips_through_the_filesystem() {
     let assets = campaign(false);
     let game = Game::load(&assets, "ohl_a").expect("map A loads");

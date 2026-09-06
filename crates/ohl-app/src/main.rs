@@ -75,6 +75,28 @@ impl From<DifficultyArg> for ohl_campaign::Difficulty {
     }
 }
 
+/// The largest `--overbright` multiplier accepted: a generous bound above
+/// the documented 2x Quake-family overbright convention this project found
+/// (see `docs/FORMAT_SOURCES.md`, "Rendering conventions"), high enough for
+/// experimentation but low enough to reject an obvious typo (`--overbright
+/// 800` rather than `8.0`) with a fixed, actionable error instead of
+/// silently producing a blown-out capture.
+const MAX_OVERBRIGHT: f32 = 8.0;
+
+/// Parses `--overbright`: rejects anything that is not finite, not
+/// strictly positive, or above [`MAX_OVERBRIGHT`], with one fixed message
+/// regardless of which rule failed, so a caller sees the same actionable
+/// text for `nan`, a negative value, or an oversized one.
+fn parse_overbright(value: &str) -> Result<f32, String> {
+    const MESSAGE: &str = "expected a finite number greater than 0 and at most 8.0";
+    let parsed: f32 = value.parse().map_err(|_| MESSAGE.to_string())?;
+    if parsed.is_finite() && parsed > 0.0 && parsed <= MAX_OVERBRIGHT {
+        Ok(parsed)
+    } else {
+        Err(MESSAGE.to_string())
+    }
+}
+
 /// `Open Half-Life <version>` command line.
 #[derive(Debug, Parser)]
 #[command(name = "Open Half-Life", version = VERSION, about = None, long_about = None)]
@@ -171,8 +193,15 @@ struct Cli {
     /// a caller opt into the researched 2x convention (`--overbright 2.0`)
     /// or the round 4 measured ratio (`--overbright 1.7`) without this
     /// project fitting either value into the shipped default; see
-    /// `docs/FORMAT_SOURCES.md`, "Rendering conventions".
-    #[arg(long, value_name = "MULTIPLIER", default_value_t = 1.0)]
+    /// `docs/FORMAT_SOURCES.md`, "Rendering conventions". Must be a finite
+    /// number greater than `0` and no more than `8.0` (see
+    /// [`parse_overbright`]).
+    #[arg(
+        long,
+        value_name = "MULTIPLIER",
+        default_value_t = 1.0,
+        value_parser = parse_overbright
+    )]
     overbright: f32,
 
     /// Render offscreen and write a PNG here instead of opening a window.
