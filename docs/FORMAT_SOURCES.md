@@ -1802,3 +1802,82 @@ table was consulted. (The squad-blast-bonus formula and the heal
 cooldown/threshold/range/amount are *not* in this bucket — their numbers are
 cited in the table above; only the fact that they run as a `Task`-based
 schedule at all is project-authored.)
+## Track trains and paths
+
+- [TWHL wiki: func_tracktrain](https://twhl.info/wiki/page/func_tracktrain),
+  [func_train](https://twhl.info/wiki/page/func_train),
+  [path_track](https://twhl.info/wiki/page/path_track),
+  [path_corner](https://twhl.info/wiki/page/path_corner), and the
+  [TWHL "Tutorial: Trains"](https://twhl.info/wiki/page/Vlatitude:_Func_train_Tutorial)
+  (also cross-checked against
+  [Valve Developer Community: Func_tracktrain (GoldSrc)](https://developer.valvesoftware.com/wiki/Func_tracktrain_(GoldSrc))
+  and [Valve Developer Community: Path_track](https://developer.valvesoftware.com/wiki/Path_track)).
+  Every one of these pages returns HTTP 403 to automated fetches from this
+  environment, matching the precedent already recorded above for the other
+  entity pages, so the facts below were consulted via search-engine result
+  summaries of those exact pages rather than a direct fetch.
+  - `func_tracktrain`'s documented keyvalues: `target` (the first
+    `path_track`), `speed` (cruise speed, reassigned by a node's own `speed`
+    override as the train passes it), `height` ("height above the
+    path_track that the train will ride, based on the location of the
+    train's origin brush"), `wheels` ("distance to the train's front wheels
+    ... calculated forwards from the train's origin", which "determines the
+    heading, or the angle the trains face when turning corners"), `startspeed`
+    (the speed, and by its sign the direction, the train starts at), `bank`
+    (bank angle on turns), and `dmg` (damage dealt when the train's movement
+    is blocked). The "No User Control" spawnflag prevents a player from
+    steering/accelerating a train they are standing on.
+  - `func_train`'s documented keyvalues: `target` (the `path_corner` it
+    starts at) and `speed` (units/second, "defaulting to 100 if left blank
+    or zero"). The same tutorial and wiki pages describe `func_tracktrain`
+    as turning to face the next `path_track` as it travels, "similar to how
+    real world trains behave", and describe plain `func_train` without that
+    behaviour, which is why this project turns a `func_tracktrain` to face
+    its active segment but leaves a `func_train` at its spawned `angles`.
+  - `path_track`/`path_corner`'s documented keyvalues: `target` (the next
+    node), `wait` (seconds the follower pauses at this node before
+    auto-continuing), and `path_track`'s own `speed` ("New Train Speed": "as
+    the train passes this point, this speed will be assigned to it"). A
+    `path_track`/`path_corner` with no `target` (or whose `target` cannot be
+    resolved) is documented as a dead end.
+  - `path_track`'s documented "Wait for retrigger" spawnflag: the train
+    stops at that node and does not continue until it is triggered again,
+    rather than resuming automatically after `wait` seconds. The exact bit
+    value (`1`) is corroborated by a Sven Co-op entity-guide mirror of the
+    same GoldSrc `path_corner`/`path_track` semantics
+    ([svenmanor.com: path_corner](https://www.svenmanor.com/entity-guide/path_corner)),
+    not a directly fetchable primary Half-Life 1 SDK source; see the
+    `TODO(black-box)` on `ohl_game::track_train::PATH_TRACK_STOP_FLAG` for
+    that caveat. The same source is the basis for the "No User Control"
+    spawnflag's bit value (`2`) recorded on
+    `ohl_game::track_train::TrackTrain::no_user_control_from_flags`.
+  - `path_track`'s documented `altpath` (branch path) and `message`/`netname`
+    (fire-on-pass/fire-on-dead-end) keyvalues exist in the public
+    documentation but are **not implemented**; see the `TODO(black-box)` on
+    `ohl_game::track_train::PathChain` (branching) — a train instead simply
+    follows the single `target` chain.
+
+Everything not directly stated by the pages above is marked
+`TODO(black-box)` at its point of use in `crates/ohl-game/src/track_train.rs`
+rather than guessed at silently: a negative `startspeed` meaning "start
+moving in reverse" is this project's own reading of "the speed the train
+starts at" (chosen for consistency with every other triggered mover in this
+crate, which does not move until activated); `bank`, `dmg` and `wheels` are
+recorded on `TrackTrain` but not applied to the placed transform or to any
+collision/damage model, since no public source documents the exact
+roll-vs-turn, crush-detection, or wheel-offset-heading-lag formulas, and
+guessing one would silently misrender or misbehave rather than fail loudly.
+No SDK source or decompiled logic was consulted for any of the above.
+
+Project behaviour supported: `crates/ohl-game/src/track_train.rs` resolves a
+`func_train`/`func_tracktrain`'s `target` into a bounded `PathChain` of
+`path_corner`/`path_track` nodes (their positions, `wait`, `speed` override
+and "Wait for retrigger" stop flag), places the train on the first node
+(height-adjusted, facing the second node for a `func_tracktrain`), and
+advances a `TrackTrainState` each fixed timestep along that chain — honouring
+node `wait` pauses, "Wait for retrigger" stops, `speed` overrides, and a
+closed loop's wrap-around instead of a dead end — with `toggle`/`turn_on`/
+`turn_off`/`reverse` wired through the existing `Simulation::activate` "use"
+path shared with doors, buttons and platforms. `ohl-engine`'s `render.rs`
+reads the resolved position/yaw each frame the same way it already reads a
+door's timer, via `track_train_transform`.
