@@ -25,6 +25,7 @@
 //! Nothing here logs; see the crate-level note.
 
 use glam::Vec3;
+use ohl_game::hecs::Entity;
 use ohl_game::registry::Transform;
 use ohl_game::{Event, find_usable_within};
 use ohl_physics::{ControllerInput, PlayerController};
@@ -34,6 +35,9 @@ use crate::USE_RADIUS;
 use crate::components::StudioAnim;
 use crate::input::Input;
 use crate::level::Level;
+use crate::projectiles::ProjectileSystem;
+use crate::sprites::TransientSprites;
+use crate::viewmodel::ViewModel;
 
 /// The project's default random seed.
 ///
@@ -43,16 +47,35 @@ use crate::level::Level;
 pub const DEFAULT_RNG_SEED: u64 = 0x4F48_4C5F_5039_0001;
 
 /// Everything about the step list a host chooses rather than the map.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SystemsConfig {
     /// Seeds the single random stream the simulation phases share.
     pub rng_seed: u64,
+    /// The view model's own vertical field of view, in degrees, independent
+    /// of the world camera's.
+    ///
+    /// TODO(black-box): Half-Life's viewmodel FOV (and whether/how it
+    /// differs from the world FOV) is not published; see
+    /// `crate::viewmodel`'s module doc.
+    pub view_model_fov: f32,
+    /// The view model's placement offset from the camera's eye, read as
+    /// `(forward, left, up)` camera-relative world units (`crate::viewmodel::placement`).
+    ///
+    /// TODO(black-box): the offset (and any weapon bob) is not published.
+    pub view_model_offset: [f32; 3],
 }
 
 impl Default for SystemsConfig {
     fn default() -> Self {
         Self {
             rng_seed: DEFAULT_RNG_SEED,
+            // TODO(black-box): matches the world camera's own default FOV
+            // (`ohl_render::FreeFlyCamera::default`) until observed
+            // otherwise.
+            view_model_fov: 75.0,
+            // TODO(black-box): a small forward-and-down offset, low enough
+            // to sit in the lower part of the frame without covering it.
+            view_model_offset: [8.0, 0.0, -6.0],
         }
     }
 }
@@ -159,6 +182,20 @@ pub struct Systems {
     /// The HUD the host draws. Written by the presentation phase; a default
     /// until the gameplay bridge is wired in.
     hud: ohl_ui::hud::HudState,
+    /// Phase 9's queue: every [`ohl_combat::DamageInfo`] a weapon
+    /// (phase 6), a projectile or blast (phase 7) or an AI attack
+    /// (phase 8) produced this step, drained once damage resolution runs.
+    /// This is the shared field `docs/m79-design.md` §8 asks P1 and P3 to
+    /// agree on by name and type; P3 (this package) is the first to create
+    /// it, since it lands without P1 in this tree.
+    pub(crate) damage_queue: Vec<ohl_combat::DamageInfo>,
+    /// Phase 7's own state: live projectiles and placed deployables.
+    projectiles: ProjectileSystem,
+    /// The bounded transient-sprite list phase 7 (and, later, phase 6's
+    /// muzzle flashes) fills; phase 13 ages it.
+    transient_sprites: TransientSprites,
+    /// The first-person view model's animation state.
+    view_model: ViewModel,
 }
 
 impl Systems {
@@ -170,6 +207,10 @@ impl Systems {
             frame_input: Input::default(),
             pending_edges: PendingEdges::default(),
             hud: ohl_ui::hud::HudState::default(),
+            damage_queue: Vec::new(),
+            projectiles: ProjectileSystem::new(config.rng_seed),
+            transient_sprites: TransientSprites::new(),
+            view_model: ViewModel::new(),
         }
     }
 
@@ -188,6 +229,60 @@ impl Systems {
     #[must_use]
     pub fn hud(&self) -> &ohl_ui::hud::HudState {
         &self.hud
+    }
+
+    /// How many projectiles and placed deployables are currently live.
+    #[must_use]
+    pub fn projectile_count(&self) -> usize {
+        self.projectiles.count()
+    }
+
+    /// Whether this frame draws a view model.
+    #[must_use]
+    pub fn viewmodel_visible(&self) -> bool {
+        self.view_model.is_visible()
+    }
+
+    /// Test-only hook backing [`crate::Game::debug_show_viewmodel_and_sprite`].
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn debug_show_viewmodel_and_sprite(&mut self, model_slot: usize) {
+        self.view_model.set_model(Some(model_slot));
+        self.transient_sprites
+            .push(crate::sprites::TransientSprite {
+                asset: 0,
+                origin: [0.0, 0.0, 40.0],
+                scale: 4.0,
+                render: ohl_render::RenderProps::from_entity(5, 255, [255, 255, 255], 0),
+                seconds_left: 5.0,
+                age: 0.0,
+            });
+    }
+
+    /// The transient sprites [`crate::render`] appends to the sprite pass.
+    pub(crate) fn transient_sprites(&self) -> &TransientSprites {
+        &self.transient_sprites
+    }
+
+    /// The view model's current animation state, for [`crate::render`].
+    pub(crate) fn view_model(&self) -> &ViewModel {
+        &self.view_model
+    }
+
+    /// Spawns a projectile owned by `owner` (or unowned, for e.g. a scripted
+    /// hazard). This is the seam `docs/m79-design.md` §8 P3 documents so a
+    /// later package's monster ranged attacks (`ohl-ai`'s
+    /// `AiEventKind::Attack`) can spawn one without this crate depending on
+    /// `ohl-ai`: that package calls this from its own phase-8 hook.
+    #[allow(dead_code)]
+    pub(crate) fn spawn_projectile(
+        &mut self,
+        level: &mut Level,
+        kind: ohl_combat::ProjectileKind,
+        owner: Option<Entity>,
+        origin: Vec3,
+        velocity: Vec3,
+    ) -> Option<ohl_combat::ProjectileId> {
+        self.projectiles.spawn(level, kind, owner, origin, velocity)
     }
 
     /// Clears everything a level change or a save load invalidates, keeping
@@ -224,7 +319,7 @@ impl Systems {
         Self::actor_sync(level, camera, controller, dt); // 4
         self.rebuild_hitbox_index(level); // 5
         self.weapons(dt); // 6
-        self.projectiles(dt); // 7
+        self.projectiles(level, dt); // 7
         self.ai_think(level, dt); // 8
         self.resolve_damage(); // 9
         self.lifecycle(dt); // 10
@@ -309,9 +404,22 @@ impl Systems {
     fn weapons(&mut self, _dt: f32) {}
 
     /// Phase 7 — projectiles and deployables, and the radius damage they
-    /// queue.
-    #[allow(clippy::unused_self)]
-    fn projectiles(&mut self, _dt: f32) {}
+    /// queue. See `crate::projectiles`. Also ages the transient-sprite list
+    /// and the view model's animation cursor: neither phase 6 (weapons,
+    /// still an empty hook) nor phase 13 (presentation, likewise) has
+    /// landed a body yet in this tree, and both are this package's own
+    /// state, so ageing them here rather than leaving them frozen keeps
+    /// `Game::viewmodel_visible` and the sprite cap meaningful standalone.
+    fn projectiles(&mut self, level: &mut Level, dt: f32) {
+        self.projectiles.tick(
+            level,
+            dt,
+            &mut self.damage_queue,
+            &mut self.transient_sprites,
+        );
+        self.transient_sprites.tick(dt);
+        self.view_model.tick(dt);
+    }
 
     /// Phase 8 — AI think and navigation. Runs before damage resolution on
     /// purpose: see the module note.

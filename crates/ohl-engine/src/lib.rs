@@ -27,7 +27,10 @@ mod error;
 mod game;
 mod input;
 mod level;
+mod projectiles;
 mod render;
+mod sprites;
+mod viewmodel;
 
 // M7.9 P0 (engine spine): the fixed timestep, the entity components the
 // engine itself owns, the `hecs` <-> `ohl-combat` id mapping and the

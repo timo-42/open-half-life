@@ -262,6 +262,30 @@ impl Game {
         self.systems.hud()
     }
 
+    /// How many projectiles and placed deployables (satchels, tripmines)
+    /// are currently live. See `crate::projectiles`.
+    #[must_use]
+    pub fn projectile_count(&self) -> usize {
+        self.systems.projectile_count()
+    }
+
+    /// Whether this frame draws a first-person view model. See
+    /// `crate::viewmodel`.
+    #[must_use]
+    pub fn viewmodel_visible(&self) -> bool {
+        self.systems.viewmodel_visible()
+    }
+
+    /// Test-only hook: points the view model at `model_slot` (an index into
+    /// this level's already-loaded `Level::studio_models`) and pushes one
+    /// transient sprite, so a headless render test can compare a frame that
+    /// draws them against one that does not, without a weapon-selection
+    /// package (P1) landed in this tree to drive either normally.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn debug_show_viewmodel_and_sprite(&mut self, model_slot: usize) {
+        self.systems.debug_show_viewmodel_and_sprite(model_slot);
+    }
+
     /// The single client entity, carrying [`crate::components::PlayerTag`].
     ///
     /// It is a real entity in the same world every other entity lives in,
@@ -694,6 +718,12 @@ impl Game {
         let Some(renderers) = self.renderers.as_mut() else {
             return Err(EngineError::Renderer);
         };
+        let view_model = crate::viewmodel::build_frame(
+            &self.level,
+            &self.camera,
+            self.systems.config(),
+            self.systems.view_model(),
+        );
         renderers.draw(
             context,
             &self.level,
@@ -701,6 +731,8 @@ impl Game {
             &self.light_styles,
             self.elapsed,
             target,
+            view_model.as_ref(),
+            self.systems.transient_sprites().as_slice(),
         );
         Ok(())
     }

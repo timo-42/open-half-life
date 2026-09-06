@@ -1863,8 +1863,48 @@ level transitions keep their behaviour.
 
   Not yet done: P1 (weapons, inventory, pickups, damage routing, HUD/audio),
   P2 (AI and navigation wiring, and the `MonsterMaker` component that needs
-  `ohl-ai`), P3 (projectiles, view model, sprites) and P4 (save sections and
-  the scripted-input smoke).
+  `ohl-ai`) and P4 (save sections and the scripted-input smoke).
+
+- **M7.9 P3: projectiles, deployables, view model and transient sprites.**
+  `ohl-engine::projectiles` fills phase 7: `ProjectileSystem` owns an
+  `ohl_combat::ProjectileSet` and `DeployableSet`, rebuilds a `HitboxIndex`
+  each step from every entity carrying a `StudioAnim` (sampling its posed
+  hitboxes with `ohl_world::StudioPose::hitbox_bounds`), and sweeps both
+  through the level's collision so a grenade or a bolt never tunnels.
+  `ProjectileEvent`/`DeployableEvent` map to `ohl_combat::radius_damage`
+  calls (queued into `Systems::damage_queue`, created here since P1 has not
+  landed in this tree yet) and to bounded transient sprites; model-backed
+  kinds get a real `hecs` entity carrying `StudioAnim`, tracked in a
+  `BTreeMap<ProjectileId, Entity>` so the existing entity-driven render path
+  draws them for free. `Systems::spawn_projectile` is the seam a later
+  package's monster ranged attacks use without this crate depending on
+  `ohl-ai`. `ohl-engine::sprites` is the bounded (64, oldest-dropped-and-
+  counted) transient-sprite list; `ohl-engine::viewmodel` builds the view
+  model's placement from the camera's basis (forward/left/up, pitch
+  included) plus the new `SystemsConfig::{view_model_fov, view_model_offset}`,
+  and reproduces `ohl_gameplay::ViewModelAction`'s five variants locally
+  (that crate is not yet a dependency of `ohl-engine`) so unifying the two
+  is a type substitution once P1 lands. `render.rs` gains two additive
+  calls: the view model, drawn last with its depth manually reset to the
+  far plane (so it is never clipped by world geometry) but the frame's
+  colour kept; and the transient sprites, appended to the existing sprite
+  instance list. `Game` gains `projectile_count()` and `viewmodel_visible()`.
+  Verified: a grenade fired at a wall inside a synthetic room never tunnels
+  through it under a swept trace; `ohl_combat::radius_damage` falls off
+  monotonically with distance and a target behind a wall takes nothing; a
+  placed tripmine arms only after the published three seconds; a satchel
+  set off by its own owner is among the blast's own hits; a proptest that
+  arbitrary spawn velocities and tick lengths never panic and keep a
+  projectile finite and within the room's bounds or resolved; a GPU-gated
+  (`#[ignore]`, `OHL_RENDER_GPU_TEST=1`) test that a frame with a view model
+  and a transient sprite differs from the same frame without them.
+
+  Not yet done: no package in this tree yet selects a weapon or a view
+  model (that lands with the inventory/`ohl-gameplay` wiring); per-kind
+  blast radius, direct-impact damage, transient-sprite duration/scale and
+  viewmodel FOV/offset are `TODO(black-box)` placeholders (see
+  `docs/FORMAT_SOURCES.md`, "Projectiles, explosions and deployables
+  (M7.3)").
 
 ## M9 (Rust): packaging
 

@@ -19,6 +19,8 @@ use ohl_world::StudioPose;
 use crate::components::StudioAnim;
 use crate::error::{EngineError, Result};
 use crate::level::{Level, PropPlacement};
+use crate::sprites::TransientSprite;
+use crate::viewmodel::{self, ViewModelFrame};
 
 /// The colour target one [`crate::Game::render`] call draws into.
 #[derive(Clone, Copy)]
@@ -86,6 +88,7 @@ impl Renderers {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw(
         &mut self,
         context: &GpuContext,
@@ -94,6 +97,8 @@ impl Renderers {
         light_styles: &LightStyles,
         elapsed: f32,
         target: RenderTarget<'_>,
+        view_model: Option<&ViewModelFrame>,
+        transient_sprites: &[TransientSprite],
     ) {
         let (width, height) = (target.width.max(1), target.height.max(1));
 
@@ -117,10 +122,76 @@ impl Renderers {
         self.world
             .render_liquid(context, camera, target.view, width, height, elapsed, 1.0);
 
-        self.draw_sprites(context, level, camera, elapsed, target);
+        self.draw_sprites(context, level, camera, elapsed, target, transient_sprites);
+
+        // M7.9 P3: the view model, drawn last, after everything else. Its
+        // depth is reset first (a manual depth-only clear, since
+        // `StudioRenderer::render`'s two modes are "load both" or "clear
+        // both" and clearing colour here would erase the whole frame just
+        // drawn), so a weapon pressed against a wall is never clipped by
+        // world geometry — but it can still occlude nothing after it, since
+        // nothing else draws this frame.
+        if let (Some(frame), Some(depth)) = (view_model, depth.as_ref()) {
+            self.draw_view_model(context, level, frame, depth, target);
+        }
     }
 
-    /// Draws every placed `env_sprite`/`env_glow`/`cycler_sprite` entity.
+    /// Resets `depth` to the far plane without touching whatever colour is
+    /// already in `target`, then draws `frame`'s model into both.
+    fn draw_view_model(
+        &mut self,
+        context: &GpuContext,
+        level: &Level,
+        frame: &ViewModelFrame,
+        depth: &wgpu::TextureView,
+        target: RenderTarget<'_>,
+    ) {
+        let Some(renderer) = self.studio.get_mut(frame.model_slot) else {
+            return;
+        };
+        let Some(model) = level.studio_models.get(frame.model_slot) else {
+            return;
+        };
+        let mut encoder = context
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("ohl viewmodel depth reset"),
+            });
+        {
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ohl viewmodel depth reset pass"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+        }
+        context.queue.submit(std::iter::once(encoder.finish()));
+
+        let instances = [viewmodel::instance(frame.transform, &frame.pose, KEY_LIGHT)];
+        renderer.render(
+            context,
+            model,
+            &frame.camera,
+            &instances,
+            target.view,
+            target.width.max(1),
+            target.height.max(1),
+            Some(depth),
+        );
+    }
+
+    /// Draws every placed `env_sprite`/`env_glow`/`cycler_sprite` entity,
+    /// plus this frame's transient sprites (muzzle flashes, impacts,
+    /// explosions — `crate::sprites`), appended to the same instance list.
     fn draw_sprites(
         &mut self,
         context: &GpuContext,
@@ -128,8 +199,9 @@ impl Renderers {
         camera: &FreeFlyCamera,
         elapsed: f32,
         target: RenderTarget<'_>,
+        transient_sprites: &[TransientSprite],
     ) {
-        let instances: Vec<SpriteInstance<'_>> = level
+        let mut instances: Vec<SpriteInstance<'_>> = level
             .sprites
             .iter()
             .filter_map(|sprite| {
@@ -143,6 +215,16 @@ impl Renderers {
                 })
             })
             .collect();
+        instances.extend(transient_sprites.iter().filter_map(|sprite| {
+            let asset = level.sprite_assets.get(sprite.asset)?;
+            Some(SpriteInstance {
+                asset,
+                origin: sprite.origin,
+                scale: sprite.scale,
+                render_props: sprite.render,
+                frame_time: sprite.age,
+            })
+        }));
         self.world.draw_sprites(
             context,
             &instances,
