@@ -722,8 +722,13 @@ impl Systems {
     fn presentation(&mut self, level: &mut Level, dt: f32) {
         crate::combat::sync_player_components(level, &self.player);
         let events = std::mem::take(&mut self.player_events);
-        self.presentation
-            .tick(dt, &mut self.hud, &self.player, events, &mut self.view_model);
+        self.presentation.tick(
+            dt,
+            &mut self.hud,
+            &self.player,
+            events,
+            &mut self.view_model,
+        );
         self.transient_sprites.tick(dt);
         self.view_model.tick(dt);
     }
