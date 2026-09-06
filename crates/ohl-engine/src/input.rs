@@ -19,6 +19,18 @@ pub struct Input {
     pub duck: bool,
     /// Set for exactly the frame "use" was pressed, not while it is held.
     pub use_pressed: bool,
+    /// Whether primary fire is held. Held, not an edge: a fully automatic
+    /// weapon fires for as long as it is down, and the firing state machine
+    /// decides the cadence.
+    pub attack: bool,
+    /// Whether secondary fire is held.
+    pub attack2: bool,
+    /// Set for exactly the frame reload was pressed.
+    pub reload: bool,
+    /// The HUD weapon slot selected this frame, when one was.
+    pub select_slot: Option<u8>,
+    /// Set for exactly the frame the flashlight was toggled.
+    pub flashlight_pressed: bool,
     /// Relative mouse motion since the last tick, in device pixels.
     pub mouse_delta: (f32, f32),
 }

@@ -4,9 +4,9 @@
 
 use glam::Vec3;
 use ohl_campaign::{Difficulty, SkillTable};
-use ohl_game::{Event, find_usable_within};
-use ohl_physics::{ControllerInput, PlayerController};
-use ohl_render::{FreeFlyCamera, GpuContext, LightStyles, MoveInput};
+use ohl_game::Event;
+use ohl_physics::PlayerController;
+use ohl_render::{FreeFlyCamera, GpuContext, LightStyles};
 
 use crate::assets::AssetSource;
 use crate::error::{EngineError, Result};
@@ -14,11 +14,13 @@ use crate::input::Input;
 use crate::level::Level;
 use crate::render::{RenderTarget, Renderers};
 use crate::save::{EngineHeader, GameSave, ViewState};
+use crate::systems::{Systems, SystemsConfig};
 use crate::text::{MessageBlock, SentenceLookup, TitleLibrary, load_skill_table};
+use crate::tick::{TICK_SECONDS, TickClock};
 use crate::transition::{
     DefaultPlayerCarry, EntitySnapshot, GlobalStateTable, PlayerCarry, TransitionState,
 };
-use crate::{MAX_TICK_SECONDS, MOUSE_SENSITIVITY, USE_RADIUS};
+use crate::{MAX_TICK_SECONDS, MOUSE_SENSITIVITY};
 
 /// Something the simulation produced that only the host can act on.
 #[derive(Debug, Clone, PartialEq)]
@@ -74,6 +76,10 @@ pub struct Game {
     sentences: SentenceLookup,
     globals: GlobalStateTable,
     carry: Box<dyn PlayerCarry>,
+    /// The per-step system list; see [`crate::systems`].
+    systems: Systems,
+    /// Turns a variable frame time into whole fixed steps.
+    clock: TickClock,
     /// Events produced outside [`Self::tick`] (a chapter title on load),
     /// drained by the next tick so a host has exactly one event path.
     pending: Vec<GameEvent>,
@@ -132,6 +138,8 @@ impl Game {
             sentences: SentenceLookup::load(source),
             globals,
             carry: Box::new(DefaultPlayerCarry::default()),
+            systems: Systems::new(SystemsConfig::default()),
+            clock: TickClock::new(),
             pending,
         }
     }
@@ -183,6 +191,26 @@ impl Game {
         self.level.submodels.len()
     }
 
+    /// How many studio-model placements this level published at load. Every
+    /// one of them is an entity carrying a
+    /// [`crate::components::StudioAnim`], which is what
+    /// [`Self::render`] draws.
+    #[must_use]
+    pub fn prop_count(&self) -> usize {
+        self.level.props.len()
+    }
+
+    /// This map's parsed entity definitions, in the order the entity lump
+    /// declared them and index-aligned with
+    /// [`ohl_game::Registry::entities`].
+    ///
+    /// Media-derived: the values here are map-authored, so they are handed
+    /// back as data and never written to a log line.
+    #[must_use]
+    pub fn entity_defs(&self) -> &[ohl_game::keyvalues::EntityDef] {
+        &self.level.defs
+    }
+
     /// The entity registry this level is running, for a host that needs to
     /// read entity state (a HUD, a debug overlay, a test).
     #[must_use]
@@ -222,6 +250,39 @@ impl Game {
     #[must_use]
     pub fn elapsed(&self) -> f32 {
         self.elapsed
+    }
+
+    /// The HUD the host draws this frame.
+    ///
+    /// It is state, not a stream: the presentation phase rewrites it every
+    /// step, so a save/load or a headless replay reproduces it without
+    /// having to replay an event log.
+    #[must_use]
+    pub fn hud(&self) -> &ohl_ui::hud::HudState {
+        self.systems.hud()
+    }
+
+    /// The single client entity, carrying [`crate::components::PlayerTag`].
+    ///
+    /// It is a real entity in the same world every other entity lives in,
+    /// which is what lets a monster target the player through the code path
+    /// it uses for anything else, and what gives an attack trace something
+    /// to ignore.
+    #[must_use]
+    pub fn player_entity(&self) -> ohl_game::hecs::Entity {
+        self.level.player
+    }
+
+    /// The per-step configuration this game simulates with.
+    #[must_use]
+    pub fn systems_config(&self) -> SystemsConfig {
+        self.systems.config()
+    }
+
+    /// Replaces the per-step configuration, e.g. to run a determinism test
+    /// from a chosen seed. Takes effect on the next step.
+    pub fn set_systems_config(&mut self, config: SystemsConfig) {
+        self.systems.set_config(config);
     }
 
     /// The campaign difficulty this game runs at.
@@ -333,59 +394,32 @@ impl Game {
 
     /// Advances the frame by `dt` seconds and returns the events the host
     /// must act on.
+    ///
+    /// This is a frame loop, not a simulation step: `dt` is clamped, the
+    /// view is turned once (aiming is a frame-rate concern, not a
+    /// simulation one), and the simulation is then advanced by however many
+    /// whole [`crate::tick::TICK_SECONDS`] steps the clock releases. A frame
+    /// that releases no step still returns the events queued outside the
+    /// loop, and banks its time for the next one.
     pub fn tick(&mut self, dt: f32, input: &Input) -> Vec<GameEvent> {
         let dt = if dt.is_finite() {
             dt.clamp(0.0, MAX_TICK_SECONDS)
         } else {
             0.0
         };
-        self.elapsed += dt;
 
         let (delta_x, delta_y) = input.mouse_delta;
-        if delta_x != 0.0 || delta_y != 0.0 {
+        if delta_x.is_finite() && delta_y.is_finite() && (delta_x != 0.0 || delta_y != 0.0) {
             self.camera.apply_mouse_delta(delta_x, delta_y);
             self.controller
                 .apply_mouse_delta(delta_x, delta_y, MOUSE_SENSITIVITY);
         }
 
-        if let Some(collision) = self.level.collision.as_ref() {
-            self.controller.yaw = self.camera.yaw;
-            self.controller.pitch = self.camera.pitch;
-            let controller_input = ControllerInput {
-                forward: input.forward,
-                right: input.right,
-                up: input.up,
-                jump: input.jump,
-                duck: input.duck,
-            };
-            self.controller.advance(collision, &controller_input, dt);
-            self.camera.position = self.controller.eye_position().to_array();
-        } else {
-            self.camera.update(
-                MoveInput {
-                    forward: input.forward,
-                    right: input.right,
-                    up: input.up,
-                    fast: false,
-                }
-                .clamped(),
-                dt,
-            );
-        }
-
+        self.systems.begin_frame(input);
         let mut events = Vec::new();
-        if input.use_pressed {
-            let position = Vec3::from_array(self.camera.position);
-            if let Some(entity) = find_usable_within(&self.level.registry, position, USE_RADIUS) {
-                self.level.simulation.use_entity(
-                    &mut self.level.registry,
-                    entity,
-                    None,
-                    &mut events,
-                );
-            }
+        for _ in 0..self.clock.steps(dt) {
+            self.step(&mut events);
         }
-        events.extend(self.level.simulation.tick(&mut self.level.registry, dt));
 
         let mut out = std::mem::take(&mut self.pending);
         out.extend(events.into_iter().map(|event| match event {
@@ -398,6 +432,20 @@ impl Game {
             },
         }));
         out
+    }
+
+    /// One fixed simulation step. Every subsystem sees the same
+    /// [`crate::tick::TICK_SECONDS`], so what the simulation does never
+    /// depends on how fast the host renders it.
+    fn step(&mut self, events: &mut Vec<Event>) {
+        self.systems.step(
+            &mut self.level,
+            &mut self.camera,
+            &mut self.controller,
+            TICK_SECONDS,
+            events,
+        );
+        self.elapsed += TICK_SECONDS;
     }
 
     /// Captures everything that travels through `landmark` out of the
@@ -472,6 +520,8 @@ impl Game {
         // `render` rebuilds against whatever target it is handed.
         self.renderers = None;
         self.elapsed = 0.0;
+        self.clock = TickClock::new();
+        self.systems.reset();
         self.globals = globals;
         self.carry.restore(&transition.player);
 
@@ -624,6 +674,8 @@ impl Game {
             save.view.pitch,
         );
         self.difficulty = save.difficulty();
+        self.clock = TickClock::new();
+        self.systems.reset();
         // A load is a map load: the chapter title is announced again.
         self.pending.clear();
         self.pending.extend(chapter_title_event(&self.level.name));

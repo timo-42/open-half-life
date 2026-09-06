@@ -176,6 +176,10 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
             // into `ohl-save`'s container, which stays a pure container
             // crate and never learns about game state.
             "ohl-save",
+            // M7.9 P0 (engine spine): health, armour, the entity-id
+            // vocabulary and the pickup/charger types the engine's own
+            // components wrap.
+            "ohl-combat",
         ],
     ),
     // M7.4's HUD/audio/viewmodel bridge: consumes `ohl-combat`'s

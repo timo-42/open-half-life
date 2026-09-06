@@ -4,8 +4,9 @@ use std::collections::BTreeMap;
 
 use glam::Vec3;
 use ohl_formats::bsp30::{Bsp, Limits as BspLimits};
+use ohl_game::hecs::Entity;
 use ohl_game::keyvalues::{self, EntityDef, Limits as KeyvalueLimits, ModelRef};
-use ohl_game::registry::{Landmark, TargetName, Transform};
+use ohl_game::registry::{ClassName, Landmark, TargetName, Transform};
 use ohl_game::{Registry, Simulation};
 use ohl_physics::CollisionModel;
 use ohl_world::{
@@ -14,6 +15,7 @@ use ohl_world::{
 };
 
 use crate::assets::AssetSource;
+use crate::components::{PlayerTag, StudioAnim};
 use crate::error::{EngineError, Result};
 
 /// The largest number of distinct studio models one level loads, so a map
@@ -64,6 +66,8 @@ pub struct PropPlacement {
     pub body: u32,
     /// The `skin` keyvalue; `0` when absent or unparsable.
     pub skin: usize,
+    /// How far into the sequence this instance stands, in seconds.
+    pub cycle: f32,
 }
 
 /// The largest number of distinct sprite assets one level loads, mirroring
@@ -184,6 +188,46 @@ pub struct Level {
     pub unbuildable_submodels: usize,
     /// The `info_player_start` this map spawns the player at.
     pub spawn: Option<PlayerSpawn>,
+    /// The parsed entity lump, kept so the systems that spawn monsters,
+    /// pickups and navigation seeds can read the same definitions the
+    /// registry was built from.
+    pub defs: Vec<EntityDef>,
+    /// The single client entity, carrying [`PlayerTag`]. It is deliberately
+    /// *not* in [`Registry::entities`]: that list is index-aligned with
+    /// `defs`, and a save references entities by their index in it.
+    pub player: Entity,
+}
+
+/// The classname the engine's own player entity carries. Project-authored:
+/// the entity has no definition in any map's entity lump.
+pub const PLAYER_CLASSNAME: &str = "player";
+
+/// The player's published maximum health (`docs/FORMAT_SOURCES.md`,
+/// "Combat and damage").
+pub const PLAYER_MAX_HEALTH: f32 = 100.0;
+
+/// The player's published maximum armour, i.e. a full HEV suit.
+pub const PLAYER_MAX_ARMOR: f32 = 100.0;
+
+/// Spawns the client entity, so monsters can see, target and shoot the
+/// player through the same components they use for each other, and so the
+/// player has an id an attack trace can be told to ignore.
+///
+/// The suit starts empty: armour is picked up, not spawned with.
+fn spawn_player(registry: &mut Registry, spawn: Option<PlayerSpawn>) -> Entity {
+    let (origin, yaw, pitch) = spawn.map_or((Vec3::ZERO, 0.0, 0.0), |spawn| {
+        (Vec3::from_array(spawn.origin), spawn.yaw, spawn.pitch)
+    });
+    registry.world.spawn((
+        PlayerTag,
+        ClassName(PLAYER_CLASSNAME.to_string()),
+        Transform {
+            origin,
+            angles: Vec3::new(pitch, yaw, 0.0),
+        },
+        ohl_combat::Health::new(PLAYER_MAX_HEALTH),
+        ohl_combat::Armor::empty(PLAYER_MAX_ARMOR),
+    ))
 }
 
 impl Level {
@@ -228,7 +272,7 @@ impl Level {
         let world = WorldModel::build(&bsp, &options).map_err(|_| EngineError::WorldUnbuildable)?;
 
         let model_bounds = submodel_bounds(&bsp, &limits);
-        let registry = Registry::build(&defs, &model_bounds, &kv_limits);
+        let mut registry = Registry::build(&defs, &model_bounds, &kv_limits);
 
         // Only the submodels an entity actually references are built: a map
         // publishes one per brush entity and nothing else draws them.
@@ -261,8 +305,34 @@ impl Level {
             .map(|worldspawn| worldspawn.skyname.as_str())
             .filter(|name| !name.is_empty())
             .and_then(|name| load_skybox(source, name));
-        let (studio_models, props, missing_models) = load_studio_models(source, &defs);
+        let studio = load_studio_models(source, &defs);
         let (sprite_assets, sprites, missing_sprites) = load_sprites(source, &defs);
+
+        // Every prop placement becomes a drawable entity: the renderer
+        // sources its studio instances from the registry, so a monster the
+        // AI moves and a static prop the map placed take the same path.
+        // `Registry::entities` is index-aligned with `defs`, which is what
+        // lets a placement find the entity its definition produced.
+        for (def_index, prop) in studio.def_indices.iter().zip(&studio.props) {
+            let Some(entity) = registry.entities.get(*def_index) else {
+                continue;
+            };
+            registry
+                .world
+                .insert_one(
+                    *entity,
+                    StudioAnim {
+                        model: prop.model,
+                        sequence: prop.sequence,
+                        cycle: prop.cycle,
+                        frame_rate: 1.0,
+                        body: prop.body,
+                        skin: prop.skin,
+                    },
+                )
+                .ok();
+        }
+        let player = spawn_player(&mut registry, world.spawn);
 
         Ok(Self {
             name: map.to_string(),
@@ -273,13 +343,15 @@ impl Level {
             simulation: Simulation::new(),
             collision,
             skybox,
-            studio_models,
-            props,
-            missing_models,
+            studio_models: studio.models,
+            props: studio.props,
+            missing_models: studio.missing,
             sprite_assets,
             sprites,
             missing_sprites,
             unbuildable_submodels,
+            defs,
+            player,
         })
     }
 
@@ -348,19 +420,30 @@ fn load_skybox(source: &dyn AssetSource, skyname: &str) -> Option<SkyboxAsset> {
     SkyboxAsset::build(borrowed).ok()
 }
 
+/// What [`load_studio_models`] resolved out of one map's entity lump.
+struct StudioLoad {
+    /// The distinct models that loaded, in load order.
+    models: Vec<StudioModel>,
+    /// One placement per model-carrying entity definition.
+    props: Vec<PropPlacement>,
+    /// The index in `defs` each placement came from, so the placement can
+    /// be attached to the registry entity that definition produced.
+    def_indices: Vec<usize>,
+    /// How many referenced models the payload does not publish.
+    missing: usize,
+}
+
 /// Loads the studio models this map's monster and prop entities reference,
 /// skipping (and counting) the ones the payload does not publish.
-fn load_studio_models(
-    source: &dyn AssetSource,
-    defs: &[EntityDef],
-) -> (Vec<StudioModel>, Vec<PropPlacement>, usize) {
+fn load_studio_models(source: &dyn AssetSource, defs: &[EntityDef]) -> StudioLoad {
     let studio_limits = StudioLimits::default();
     let mut by_path: BTreeMap<String, Option<usize>> = BTreeMap::new();
     let mut models = Vec::new();
     let mut props = Vec::new();
+    let mut def_indices = Vec::new();
     let mut missing = 0usize;
 
-    for def in defs {
+    for (def_index, def) in defs.iter().enumerate() {
         if !wants_studio_model(&def.classname) {
             continue;
         }
@@ -395,6 +478,7 @@ fn load_studio_models(
             slot
         };
         if let Some(model) = slot {
+            def_indices.push(def_index);
             props.push(PropPlacement {
                 model,
                 origin: def.origin,
@@ -414,11 +498,17 @@ fn load_studio_models(
                     .get("skin")
                     .and_then(|value| value.trim().parse::<usize>().ok())
                     .unwrap_or(0),
+                cycle: 0.0,
             });
         }
     }
 
-    (models, props, missing)
+    StudioLoad {
+        models,
+        props,
+        def_indices,
+        missing,
+    }
 }
 
 #[cfg(test)]
