@@ -2106,6 +2106,39 @@ cross-compilation (the `--target` flag is wired but only exercised as a
 best-effort passthrough, not proven against an actual cross toolchain in
 CI).
 
+## M9.1 (Rust): fuzz targets for untrusted inputs
+
+Status: done. Four more `cargo fuzz` packages/targets cover the remaining
+untrusted-input decoders, all run by `.github/workflows/fuzz.yml`'s
+dynamic discovery (30s each, four at a time; the job timeout was raised
+from 15 to 25 minutes because the total is now 19 targets and the
+`ohl-engine`/`ohl-app` packages each build the full renderer chain first).
+
+- `crates/ohl-save/fuzz`: `open_fuzz` now also reads every table entry
+  back through `section` after a successful `open`; `roundtrip_fuzz` is
+  rebuilt on an `Arbitrary`-derived input that writes random sections
+  through `SaveWriter`, asserts the untouched output reopens with every
+  section intact, then flips random bytes and asserts the mutated bytes
+  never panic `SaveReader::open`.
+- `crates/ohl-engine/fuzz`: `decode_fuzz` (`GameSave::from_bytes` over raw
+  bytes) and `sections_fuzz` (an `Arbitrary` list of `(tag, bytes)` pairs
+  written into a correctly framed container so the per-section `postcard`
+  decoders for tags 16 through 22 see adversarial payloads).
+- `crates/ohl-app/fuzz`: `script_parse` (`Script::parse` over raw bytes,
+  asserting the parsed input count never exceeds `MAX_TOTAL_TICKS`). The
+  parser is reached through a new minimal `[lib]` target in `ohl-app`
+  (`src/lib.rs`, which only re-exposes `script`); the binary is unchanged.
+- `crates/ohl-ai/fuzz`: `entity_defs_spawn` (an `Arbitrary` list of
+  entities with random keyvalues, built into a `Registry`, spawned through
+  `attach_monsters` with an always-spawn rule, and ticked ten times with no
+  collision model or navigator).
+
+Seed corpora are hand-authored synthetic bytes only (empty input, a
+truncated prefix, a documented-grammar example, a bad magic), force-added
+under each package's otherwise git-ignored `corpus/` so fuzzer-grown
+entries never land in the tree. Every target was run locally for 60s on
+top of the CI smoke; no panics were found in the code under test.
+
 ## Later milestones
 
 - M3: BSP rendering (Rust first light in progress, see above)

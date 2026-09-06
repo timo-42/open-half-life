@@ -1,0 +1,33 @@
+# Standalone fuzzing package for `ohl-app`'s scripted-input parser.
+#
+# Deliberately excluded from the main workspace: `cargo fuzz` needs a nightly
+# toolchain and a `libfuzzer-sys` dependency the pinned stable build must not
+# acquire. Run explicitly:
+#
+#     cargo +nightly fuzz run script_parse
+
+[workspace]
+members = ["."]
+
+[package]
+name = "ohl-app-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.ohl-app]
+path = ".."
+
+[[bin]]
+name = "script_parse"
+path = "fuzz_targets/script_parse.rs"
+test = false
+doc = false
+bench = false

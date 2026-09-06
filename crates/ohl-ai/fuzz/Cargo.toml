@@ -1,17 +1,16 @@
-# Standalone fuzzing package for `ohl-save`.
+# Standalone fuzzing package for `ohl-ai`'s monster-spawn path.
 #
 # Deliberately excluded from the main workspace: `cargo fuzz` needs a nightly
 # toolchain and a `libfuzzer-sys` dependency the pinned stable build must not
 # acquire. Run explicitly:
 #
-#     cargo +nightly fuzz run open_fuzz
-#     cargo +nightly fuzz run roundtrip_fuzz
+#     cargo +nightly fuzz run entity_defs_spawn
 
 [workspace]
 members = ["."]
 
 [package]
-name = "ohl-save-fuzz"
+name = "ohl-ai-fuzz"
 version = "0.0.0"
 edition = "2024"
 license = "MIT"
@@ -27,19 +26,15 @@ libfuzzer-sys = "0.4"
 # it is pinned again here).
 arbitrary = { version = "=1.4.2", features = ["derive"] }
 
-[dependencies.ohl-save]
+[dependencies.ohl-ai]
 path = ".."
 
-[[bin]]
-name = "open_fuzz"
-path = "fuzz_targets/open_fuzz.rs"
-test = false
-doc = false
-bench = false
+[dependencies.ohl-game]
+path = "../../ohl-game"
 
 [[bin]]
-name = "roundtrip_fuzz"
-path = "fuzz_targets/roundtrip_fuzz.rs"
+name = "entity_defs_spawn"
+path = "fuzz_targets/entity_defs_spawn.rs"
 test = false
 doc = false
 bench = false
