@@ -2188,3 +2188,67 @@ top of the CI smoke; no panics were found in the code under test.
   keyvalues on all three entities never panic and never produce non-finite
   state. See `docs/FORMAT_SOURCES.md`, "Scripted sequences and talk
   monsters", for sources and the nineteen `TODO(black-box)` items.
+
+## Status as of 2026-09-06
+
+This section is a snapshot, not a replacement for the package-by-package
+history above; each "Not yet done" note under a given package describes
+that package's own gaps at the time it landed, and most of those gaps have
+since been closed by a later package documented further down this file.
+
+What works today, end to end: real payload import on Linux x86-64
+(`ohl-parser-backends` over the Wise/MS-CAB/InstallShield-3-Z back ends,
+composed by `ohl_import::pipeline`); all 93 campaign maps (18 story
+chapters plus the Hazard Course) loading and rendering headless
+(`cargo xtask campaign-smoke`, M8.3); combat, monster AI, navigation,
+player systems, projectiles, `func_train`/`func_tracktrain` movers, and
+scripted sequences/talk monsters, all implemented and covered by unit,
+integration and property tests (M7.x, M7.9 P0-P4a); campaign flow (level
+transitions, chapter titles, difficulty) and save/load over the
+project-owned `ohl-save` container (M8); and 19 `cargo fuzz` targets across
+every crate that parses untrusted bytes (M9.1). None of the combat/AI/
+scripted-sequence work has been play-tested end to end on a real display
+by a person; it is exercised only by the automated test suites and the
+headless smokes.
+
+Open follow-ups, in no particular priority order:
+
+- **Per-trace hitbox exclusion seam (M7.9 P1/P3).** `trace_attack_filtered`
+  currently has one hardcoded exclusion (the player entity is always
+  ignored so nothing can shoot itself with a hitscan weapon); there is no
+  general per-trace exclusion list yet, so a monster's own attack cannot
+  yet exclude itself the same way. Filling this in is a small seam, not a
+  design change.
+- **`trigger_camera`/`trigger_auto`-driven intro views (fidelity finding
+  F2).** `trigger_auto` itself is implemented (M7.11 wires it into the
+  scripted-sequence "use"/target-firing path), but `trigger_camera` — the
+  entity that actually takes over the view for a scripted intro shot — has
+  no implementation yet.
+- **`func_tracktrain` `altpath` branching.** The `path_track` chain builder
+  (M7.10, "track trains") resolves a `func_train`/`func_tracktrain`'s
+  `target` into a bounded `PathChain`, but `path_track`'s documented
+  `altpath` (branch path) keyvalue is recorded, not yet applied; a
+  tracktrain always follows its primary chain.
+- **`monstermaker` `targetname` activation.** `monstercount`,
+  `m_imaxlivechildren` and `Start On` are respected (M7.9 P2), but a
+  `monstermaker` cannot yet be turned on or off at runtime by a `use` or a
+  `trigger` aimed at its own `targetname`.
+- **`m_iszIdle` pre-trigger idle animation.** A `scripted_sequence` only
+  animates its target monster while actually holding it; the published
+  looping idle animation a dormant, waiting script's target is supposed to
+  play before the script triggers is not yet modelled (see
+  `docs/FORMAT_SOURCES.md`, "Scripted sequences and talk monsters", item 21,
+  for the exact ambiguity this is deferred behind).
+- **Save sections P4b (in progress).** Weapon inventory (owned weapons,
+  clips, reserve ammo) currently round-trips inside `SECTION_PLAYER_CARRY`'s
+  ad hoc byte encoding rather than its own `SECTION_INVENTORY`; the data
+  survives save/load correctly today, but is not yet self-describing
+  independent of that carry-state's shape.
+- **Linux audio backend decision.** `ohl-audio` always uses a `NullSink` on
+  Linux today (see `crates/ohl-audio/src/device.rs`): `cpal`'s only Linux
+  backend links `libasound` through `alsa-sys`'s build-time `pkg-config`
+  lookup, which the project's "No FFI" rule forbids as written. Whether to
+  relax that rule for a system audio library specifically, adopt a
+  pure-Rust ALSA/PipeWire backend if one becomes available, or leave Linux
+  silent by design remains an open decision; `cpal` already covers
+  macOS (CoreAudio) and Windows (WASAPI) with no FFI concern.

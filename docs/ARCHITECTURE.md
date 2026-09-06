@@ -25,19 +25,28 @@ acyclic and matches the table below, which restates
 | `ohl-world`, `ohl-physics`, `ohl-game`, `ohl-ui` | world state, GoldSrc hulls, rules, egui HUD | std |
 | `ohl-combat` | damage model, attack traces against hulls and studio hitboxes, combat events | std |
 | `ohl-ai` | monster conditions, senses, schedules, squads, movement glue | std |
+| `ohl-nav` | node-graph navigation: A* plus local steering, independent of the entity layer | std |
+| `ohl-player` | non-motion player systems: health/HEV armor, fall damage, drowning, flashlight, long jump, HUD/save projection | std |
+| `ohl-gameplay` | bridges `ohl-combat` events into `ohl-ui::HudState`, sound cues and viewmodel actions | std |
+| `ohl-campaign` | sourced chapter/map sequence, difficulty enum, `skill.cfg` table | `no_std` + `alloc` |
+| `ohl-save` | project-owned versioned save-file container (not the GoldSrc `.sav` format) | std |
+| `ohl-assets` | GoldSrc-style asset filesystem over an imported payload tree (loose files plus Quake `PACK` archives) | std |
+| `ohl-engine` | composes the crates above into one `Game`: fixed-tick simulation, save wiring, headless/scripted-input support | std |
+| `ohl-parser-backends` | the parser worker's container back ends: joins `ohl-wise`/`ohl-mscab`/`ohl-isz` to the OWP/1 dispatcher | `no_std` + `alloc` |
+| `ohl-wise` | clean-room reader for Wise Installation System packages (PE/NE overlay) | `no_std` + `alloc` |
+| `ohl-mscab` | clean-room, bounds-checked reader for the Microsoft Cabinet (MS-CAB) container | `no_std` + `alloc` |
+| `ohl-isz` | clean-room decoder for InstallShield 3 "Z" archives and PKWARE "imploded" streams | `no_std` + `alloc` |
+| `ohl-test-worker` | development-only support for the freestanding Linux isolated-worker test image | std |
 | `ohl-app` | composition root binary (`open-half-life`) | std |
-| `xtask` | policy check, worker image build, packaging | std |
+| `xtask` | policy check, worker image build, packaging, campaign/combat smokes | std |
 
-`ohl-core`, `ohl-parser-protocol`, `ohl-media-archive`, `ohl-iso9660`,
-`ohl-udf`, `ohl-platform`, `ohl-vfs`, `ohl-media`, `ohl-formats`, `ohl-app`,
-and `xtask` exist today. `ohl-parser-worker-service`, `ohl-parser-worker`,
-`ohl-cabinet-format`, `ohl-cabinet`, `ohl-import`, and the render/audio/
-input/world/physics/game/ui crates are still ahead; see
-`docs/MILESTONES.md` for current status. New crates must add their
-dependency-edge row to `xtask/src/graph.rs`'s `ALLOWED_EDGES` table before
-`cargo xtask graph` passes, and must keep the workspace-wide
-`unsafe_code = "forbid"` lint unless they are one of the two exempt crates
-below.
+All 36 crates above exist today (verify with `cargo xtask graph`, which
+checks every crate's dependency edges against `xtask/src/graph.rs`'s
+`ALLOWED_EDGES` table and reports the count it validated). New crates must
+add their dependency-edge row to that table before `cargo xtask graph`
+passes, and must keep the workspace-wide `unsafe_code = "forbid"` lint
+unless they are one of the two exempt crates below. See `docs/MILESTONES.md`
+for what each package built and what remains open per milestone.
 
 The allowed direct intra-workspace dependency edges are:
 
@@ -63,6 +72,24 @@ There is deliberately no `ohl-vfs -> ohl-media` edge, so a container reader
 can never reach the provenance cache or fingerprinting logic; the two cabinet
 crates isolate a licensed MIT-derived translation (~3,200 lines) from
 clean-room code and run only inside the sandboxed parser worker.
+
+The block above restates the original migration architecture's package-level
+edges and is not exhaustive: `cargo xtask graph`'s `ALLOWED_EDGES` table in
+`xtask/src/graph.rs` is the current source of truth and also covers the
+gameplay/campaign/engine crates added since (`ohl-nav`, `ohl-player`,
+`ohl-gameplay`, `ohl-campaign`, `ohl-save`, `ohl-assets`, `ohl-engine`,
+`ohl-parser-backends`, `ohl-wise`, `ohl-mscab`, `ohl-isz`,
+`ohl-test-worker`). In broad strokes, `ohl-engine` depends on the whole gameplay stack
+(`ohl-world`, `ohl-physics`, `ohl-game`, `ohl-combat`, `ohl-ai`, `ohl-nav`,
+`ohl-player`, `ohl-gameplay`, `ohl-campaign`, `ohl-save`, `ohl-assets`,
+`ohl-render`, `ohl-ui`) and exposes one composed `Game` type with exactly two
+verbs (`tick`, `render`); `ohl-app` is the composition root and depends on
+`ohl-engine` directly, but also depends directly on several of the same
+gameplay crates (`ohl-game`, `ohl-campaign`, `ohl-save`, `ohl-assets`,
+`ohl-render`, `ohl-world`, `ohl-physics`) for its own CLI wiring (headless
+capture, save-slot handling, asset mounting), plus the whole import/media
+stack (`ohl-import`, `ohl-payload`, `ohl-media`, `ohl-vfs`, `ohl-iso9660`,
+`ohl-udf`, `ohl-media-archive`, `ohl-platform`) for the import path.
 
 ## `unsafe` inventory
 
@@ -805,9 +832,140 @@ default per-user save directory resolved through `directories`,
 `delete()`, and write-to-temp-then-rename publication (documented per-target
 guarantee in `crates/ohl-save/src/slot.rs`; unlike
 `ohl_platform::atomic_directory`'s create-only primitive, a slot write is
-meant to replace its previous contents). No section tags are defined by any
-other crate yet: wiring `ohl-save` into `ohl-game`/`ohl-app` to actually
-serialize and restore world/entity state is later work.
+meant to replace its previous contents). `ohl-engine` is now the one crate
+that defines section tags and actually serializes/restores world and entity
+state through this container; see "The engine's save container" below for
+the tag map it wires in.
+
+## The fixed-tick engine loop
+
+`ohl-engine::Game` is the composition of every gameplay crate into one
+type with exactly two verbs: `Game::tick` advances one frame from an
+`Input` snapshot (banking any leftover time and running zero or more fixed
+steps of `ohl_engine::tick::TICK_SECONDS`, so simulation results never
+depend on the host's frame rate) and `Game::render` draws the current
+frame into a caller-supplied target. `ohl_engine::systems::Systems::step`
+is the fixed step's body and its order is normative, not incidental — two
+rules from its own module docs are worth restating here because they
+constrain how new phases must be added: damage is resolved *after* AI
+thinks, not before (so a monster shot this step reacts on the next one
+rather than the think phase mutating health it just read), and movers run
+*last* (so a door blocked or damaged this step resolves against positions
+everything else has already agreed on). The current phase order is:
+
+1. latch input (edges apply to the frame's first step only, held axes to
+   every step)
+2. player movement (`ohl-physics`' `PlayerController`)
+3. player systems (`ohl-player`: health/armor, fall damage, drowning, the
+   HEV suit, flashlight, long jump)
+4. actor sync (camera/controller state written back onto the entity world)
+5. rebuild the combat hitbox index (`ohl_combat::HitboxIndex`, from every
+   entity carrying a `StudioAnim`)
+6. weapons (firing state, hitscan/melee/beam resolution against the
+   rebuilt hitbox index, ammo bank)
+7. projectiles
+8. AI think (`ohl-ai`'s senses/schedules over an `ohl_ai::SightContext`
+   built this step; `ohl-nav`'s node graph and A* drive movement)
+9. resolve queued damage (the one place health/armor actually change)
+10. lifecycle (corpse/gib decisions, corpse fade, monster
+    `TriggerCondition`/`TriggerTarget` firing, `monstermaker` ticking)
+11. pickups and chargers
+12. triggers and movers (map-logic `Simulation::fire`, doors, buttons,
+    `func_train`/`func_tracktrain`, `multi_manager`)
+13. presentation (`ohl-gameplay::GameplayBridge` turning combat/pickup
+    events into HUD state and sound cues)
+
+Determinism follows from two properties: no phase reads a wall clock or
+iterates a hash map, and there is exactly one root random stream (seeded
+from `SystemsConfig::rng_seed`, itself a fixed constant unless a caller
+overrides it, never the environment or a clock) that every other generator
+in the simulation is seeded *from* rather than re-seeded with the same
+number. Two games built from the same map bytes, the same seed and the
+same input sequence therefore reach the same `ai_state_hash` and the same
+save bytes.
+
+## The engine's save container
+
+`ohl-engine::save::GameSave` is what actually goes into an `ohl-save`
+container (see "Save files" above for the container format itself); it is
+still a from-scratch, project-designed layout, not the GoldSrc `.sav`/
+`.hl1` format. One tag per subsystem, so a later milestone can add a
+section without renumbering, and an older build reports an unrecognized
+tag as unknown rather than failing to open the file:
+
+| tag | section | contents |
+| --- | --- | --- |
+| 16 | `SECTION_ENGINE_HEADER` | map name, resolved chapter title, difficulty, elapsed simulated time |
+| 17 | `SECTION_PLAYER_CARRY` | the `PlayerCarry` cross-level-transition hook's state |
+| 18 | `SECTION_ENTITY_REGISTRY` | one `EntitySnapshot` per registry entity, in spawn order |
+| 19 | `SECTION_SIMULATION` | the map-logic simulation's scheduled events and trigger cooldowns |
+| 20 | `SECTION_GLOBAL_STATE` | the `globalname`/`env_global` state table |
+| 21 | `SECTION_LIGHT_STYLE_TIME` | the time the light-style animation is evaluated at |
+| 22 | `SECTION_VIEW` | the camera/player pose, so a load resumes exactly where the save was taken |
+
+Serialization goes through `postcard` via `ohl_save::SaveWriter::
+add_section_serde`, which is deterministic: the same game state and header
+always produce byte-identical files (asserted by the save -> load -> save
+round-trip test). `docs/MILESTONES.md`'s M7.9 P4b note tracks the one known
+gap: weapon *inventory* (owned weapons, clips, reserve ammo) currently rides
+inside `SECTION_PLAYER_CARRY`'s ad hoc byte encoding rather than its own
+section, which still round-trips correctly today but is not yet
+self-describing independent of that carry state's shape.
+
+## The asset layer and PAK precedence
+
+`ohl-assets::AssetFs` is the one surface every gameplay crate resolves a
+game-relative path (`maps/<name>.bsp`, `sprites/…`, `models/…`, `sound/…`,
+`gfx/…`) through, over an imported payload tree's `files/` directory.
+`AssetFs::mount` walks a list of mod directories in GoldSrc's own
+search-path order (the mod actually being played first, `valve` last as
+the shared base content), and for each one discovers `pak0.pak`,
+`pak1.pak`, ... (a contiguous ascending run) plus any other `*.pak` file,
+reading only each archive's header and directory bytes, then walks loose
+files bounded by `Limits::max_depth`/`Limits::max_indexed_files`. Everything
+merges into one case-insensitive index under a strict, deterministic
+precedence: a loose file always beats a PAK entry of the same name, an
+earlier PAK beats a later one, and an earlier mod directory beats a later
+one. `AssetFs::open` resolves a path against that index and returns a
+`Read + Seek` handle over either a whole loose file or a bounded byte range
+inside a PAK; `AssetFs::resolve_wads` resolves a worldspawn `wad` key's
+semicolon-separated, mapper-authored absolute paths by basename only, the
+same way GoldSrc does. No path this crate resolves (the caller's asset
+path, a worldspawn `wad` value, a loose filesystem path, a PAK member name)
+ever reaches a log line or an error variant.
+
+## Headless capture and scripted input
+
+`crates/ohl-app/src/game_run.rs` is the one production playable loop; it
+resolves every asset through `ohl_assets::AssetFs` over a published payload
+tree (never straight off disk the way the `dev-tools`-gated `--dev-bsp`
+path does) and composes the whole frame through `ohl_engine::Game`.
+`--headless-screenshot PATH` renders offscreen instead of opening a window,
+advancing the simulation a fixed `CAPTURE_STEP` (`1/60`\ s) per tick for
+`--frames` steps so a capture is reproducible regardless of host speed,
+then writes one 1280x720 PNG. `--viewpoint X,Y,Z,PITCH,YAW` captures from an
+explicit camera pose and `--spawn-offset DX,DY,DZ,DPITCH,DYAW` from one
+relative to the map's own `info_player_start`; without either, the capture
+stands at the player start directly. This offscreen path needs a Vulkan
+(or Metal) adapter but not a display server, which is what makes
+`cargo xtask campaign-smoke` viable on a headless CI runner; a machine with
+no real GPU can still exercise it under a software Vulkan implementation by
+setting `OHL_RENDER_GPU_TEST=1` (see `docs/RENDER_DEPENDENCIES.md`).
+
+`crates/ohl-app/src/script.rs` defines a project-owned, project-authored
+(no published source needed) deterministic scripted-input format consumed
+by `--script PATH`: plain text, one `<ticks> <token> [args]...` line per
+action, driving the same `ohl_engine::Input` fields the real input path
+sets (movement/look axes, held buttons, edges, weapon-slot selection),
+bounded to 4,096 non-comment lines and 100,000 total ticks. A scripted run
+works with or without `--headless-screenshot`: without one, the ticks still
+run headlessly with no GPU needed at all, just with no PNG written at the
+end. `--script-log` (only meaningful with `--script`) enables the fixed
+milestone log lines documented in `docs/m79-design.md` §7 (for example "A
+scripted sequence started."); nothing map-derived is ever interpolated into
+them. `cargo xtask combat-smoke` drives this path over
+`xtask/smoke-scenarios/*.txt` and checks each run's stderr against those
+exact fixed lines.
 
 ## Hosted qualification history
 

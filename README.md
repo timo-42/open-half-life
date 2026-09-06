@@ -75,6 +75,99 @@ record alongside the extracted payload. See
 [docs/IMPORT_READINESS.md](docs/IMPORT_READINESS.md) for the current
 production-readiness matrix and release-evidence gates.
 
+## Running
+
+These are the exact commands for each step; see
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the pieces underneath
+them fit together and [docs/MEDIA_IMPORT.md](docs/MEDIA_IMPORT.md) /
+[docs/IMPORT_READINESS.md](docs/IMPORT_READINESS.md) for the import path's
+design and current readiness.
+
+**Import your own media** from an ISO, publishing the payload under an
+explicit cache and payload root instead of the platform defaults:
+
+```sh
+cargo run --release -p ohl-app -- \
+  --iso /path/to/owned-media.iso --cache /path/to/cache --payload-root /path/to/payload
+```
+
+**Play** an already-imported payload:
+
+```sh
+cargo run --release -p ohl-app -- --play --payload-root /path/to/payload
+```
+
+`--map NAME` picks a map by its bare name (default: the campaign's
+documented start map); `--training` starts the Hazard Course instead;
+`--load SLOT` resumes a save slot rather than starting a map fresh (mutually
+exclusive with `--map`/`--training`); `--difficulty easy|medium|hard`
+selects which `skill.cfg` values the game reads (default `medium`); and
+`--overbright MULTIPLIER` scales the lightmap ramp above its default `1.0`
+(no multiplier) — see `--help` for the fidelity-investigation background,
+which found GoldSrc's overbright convention shipped disabled by default with
+no public source pinning a specific non-default value.
+
+**Headless screenshots**, for a machine with no display server (a GPU
+adapter is still required):
+
+```sh
+cargo run --release -p ohl-app -- \
+  --payload-root /path/to/payload \
+  --headless-screenshot /path/to/shot.png --frames 30
+```
+
+`--frames N` advances the simulation a fixed step N times before the
+1280x720 PNG is written; `--spawn-offset DX,DY,DZ,DPITCH,DYAW` captures from
+a pose relative to the map's player start instead of standing exactly on it.
+On a machine with no real GPU, `OHL_RENDER_GPU_TEST=1` opts into exercising
+this path against a software Vulkan implementation (for example
+`lavapipe`/`llvmpipe`) instead of skipping it; see
+[docs/RENDER_DEPENDENCIES.md](docs/RENDER_DEPENDENCIES.md).
+
+**Scripted input**, for deterministic automated runs (see `crate::script`'s
+grammar in `crates/ohl-app/src/script.rs`):
+
+```sh
+cargo run --release -p ohl-app -- \
+  --payload-root /path/to/payload --script /path/to/script.txt --script-log
+```
+
+Usable with or without `--headless-screenshot`; without one, the scripted
+ticks still run headlessly with no GPU needed at all. `--script-log`
+enables the fixed scripted-sequence milestone log lines.
+
+**Smoke tests**, each of which builds (or accepts a prebuilt)
+`open-half-life` and drives it against an already-imported payload:
+
+```sh
+cargo xtask campaign-smoke --payload-root /path/to/payload   # every campaign map, headless-screenshotted
+cargo xtask combat-smoke --payload-root /path/to/payload     # every xtask/smoke-scenarios/*.txt scripted scenario
+```
+
+**Other `cargo xtask` subcommands:**
+
+```sh
+cargo xtask dist      # builds the release binary/worker image and packages a versioned archive
+cargo xtask policy    # tracked-file policy check (private paths, extensions, size, magic bytes)
+cargo xtask graph     # validates the crate dependency graph against xtask/src/graph.rs's ALLOWED_EDGES
+```
+
+### Platform notes
+
+- **Audio**: on Linux, `ohl-audio` always uses a null output sink today —
+  `cpal`'s only Linux backend links `libasound` through a build-time
+  `pkg-config` lookup, which the project's "No FFI" rule forbids as
+  written, so there is currently no real Linux audio backend (decision
+  still open; see `docs/MILESTONES.md`, "Status as of 2026-09-06"). On
+  macOS and Windows, `cpal` reaches the OS's own audio API (CoreAudio,
+  WASAPI) with no such concern.
+- **Linux import worker sandbox**: the isolated media-parser worker's
+  native containment backend (resource limits, no-new-privileges,
+  Landlock, seccomp, pidfd-backed lifecycle) is implemented and qualified
+  only for Linux x86-64; every other platform/architecture tuple selects
+  an unsupported backend, so import cannot begin there yet. See
+  [docs/IMPORT_READINESS.md](docs/IMPORT_READINESS.md) for the exact gates.
+
 ## Release builds
 
 `cargo xtask dist` builds the release binary (and, on a Linux x86-64 host
@@ -108,17 +201,35 @@ published to GitHub Releases yet.
 
 ## Status
 
-M0 (build and logging foundation) and M1 (media preflight, mount, and
-provenance cache) parity has been achieved in Rust; the earlier C++
-implementation has been removed. M2 (parser worker, cabinet/staging pipeline)
-is in progress: the OWP/1 protocol, media archive traits, the ISO 9660/UDF
-readers, the VFS mount facade, and the fingerprint/cache crates have already
-landed. M3 (wgpu/winit first light) is in progress, and its playable loop now runs a
-map out of an imported payload (see M3.3 in the milestones). See
-[docs/MILESTONES.md](docs/MILESTONES.md) for current progress,
-[docs/IMPORT_READINESS.md](docs/IMPORT_READINESS.md) for production import
-readiness, and [docs/CLEAN_ROOM.md](docs/CLEAN_ROOM.md) before contributing
-compatibility work.
+Plainly: import is verified end to end on Linux x86-64 against one real
+ISO layout (see [docs/IMPORT_READINESS.md](docs/IMPORT_READINESS.md) for
+the production-readiness gates that are *not* yet met on any platform,
+Linux included). All 93 campaign maps (18 story chapters plus the Hazard
+Course) load and render successfully headless
+(`cargo xtask campaign-smoke`). Combat, monster AI, navigation, player
+systems, projectiles, track trains and scripted sequences/talk monsters are
+implemented and covered by automated tests, but have not yet been
+play-tested end to end on a real display by a person. Save/load works over
+the project-owned `ohl-save` container (not the GoldSrc `.sav` format).
+Known fidelity gaps: scene lighting reads dimmer than public reference
+screenshots unless `--overbright` is set (see `--help` and
+`docs/FORMAT_SOURCES.md`, "Rendering conventions"); the Hazard Course
+training spawn view has not been verified against a reference; and monster
+models loading from the payload is implemented but not yet merged to `main`
+([PR #78](https://github.com/timo-42/open-half-life/pull/78)). See
+[docs/MILESTONES.md](docs/MILESTONES.md) for the full package-by-package
+history and its closing "Status as of 2026-09-06" summary, and
+[docs/CLEAN_ROOM.md](docs/CLEAN_ROOM.md) before contributing compatibility
+work.
+
+M0-M1 (build/logging foundation, media preflight/mount/provenance cache)
+are complete in Rust; the earlier C++ implementation has been removed. M2
+(import pipeline) is functionally complete on Linux x86-64 and still
+tracked for the remaining platform tuples and release-evidence gates. M3-M9
+(rendering, movement, entities, models/animation, combat/AI, campaign
+save/load, UI shell, packaging, fuzz targets) are each in progress or done
+per crate; see the milestones file for exactly which package covers which
+slice.
 
 Run with `cargo run -p ohl-app -- --iso /path/to/owned-media.iso`; no
 installer or media binary is executed.

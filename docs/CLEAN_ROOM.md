@@ -5,6 +5,17 @@ from lawful, public documentation and behavior observed by running legally
 obtained software. This project must not contain Valve source code, code
 derived from decompilation, or proprietary game content.
 
+Source code of other game engines or engine reimplementations — including
+other open-source GoldSrc/Source/Quake-family reimplementations, and
+regardless of their own license — is never an allowed source for this
+project: reading such code to learn a format or a behavior, adapting its
+structure, or copying any of its text is out of scope for "independently
+authored from lawful, public documentation." Any asset, model, or map name
+literal (a texture, sound, sprite, or entity-data string) requires its own
+per-literal public citation recorded before it enters source, tests,
+documentation, or fixtures, and must never be derived from a listing of a
+user's own payload, however that listing was obtained.
+
 Contributors must follow these rules:
 
 1. Do not decompile, disassemble, or copy from the original engine.
