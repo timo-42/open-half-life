@@ -10,7 +10,7 @@ use glam::Vec3;
 use hecs::Entity;
 
 use crate::keyvalues::RenderProps;
-use crate::registry::{BrushModel, Registry, Transform};
+use crate::registry::{BrushModel, ClassName, Registry, Transform};
 
 /// One brush-model entity's placement: which submodel to draw, and where.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -32,16 +32,34 @@ pub struct ModelInstance {
     pub render: RenderProps,
 }
 
-/// Collects one [`ModelInstance`] per entity that has both a [`BrushModel`]
-/// and a [`Transform`], in registry spawn order.
+/// Whether `classname` names a brush entity GoldSrc never draws client-side,
+/// regardless of its `rendermode`/texture: every `trigger_*` entity (see
+/// `docs/FORMAT_SOURCES.md`, "Entity keyvalues and map logic") is a
+/// collision-only volume, and `func_ladder` is documented (TWHL wiki,
+/// "func_ladder") as "creat[ing] an invisible brush which, when touched by
+/// the player, allows them to climb". A map can and does place one of these
+/// (for example a `trigger_transition` at a level's exit) so that it
+/// encloses the player, and rendering it as ordinary opaque geometry means
+/// the camera ends up embedded in it from the very first frame.
+fn is_never_rendered(classname: &str) -> bool {
+    classname.starts_with("trigger_") || classname == "func_ladder"
+}
+
+/// Collects one [`ModelInstance`] per entity that has a [`BrushModel`], a
+/// [`Transform`] and a classname GoldSrc actually draws (excluding
+/// collision-only volumes; see [`is_never_rendered`]), in registry spawn
+/// order.
 #[must_use]
 pub fn model_instances(registry: &Registry) -> Vec<ModelInstance> {
     let mut out = Vec::new();
-    for (entity, model, transform, render) in
+    for (entity, model, transform, render, classname) in
         &mut registry
             .world
-            .query::<(Entity, &BrushModel, &Transform, &RenderProps)>()
+            .query::<(Entity, &BrushModel, &Transform, &RenderProps, &ClassName)>()
     {
+        if is_never_rendered(&classname.0) {
+            continue;
+        }
         out.push(ModelInstance {
             entity,
             model_index: model.0,
@@ -79,5 +97,36 @@ mod tests {
         let instances = model_instances(&registry);
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].model_index, 2);
+    }
+
+    /// A `trigger_transition` (or any other `trigger_*`) volume is a
+    /// collision-only brush GoldSrc never draws client-side; a map can
+    /// legitimately place one so that it encloses the player (a level's
+    /// `trigger_transition` commonly sits right at the exit the player
+    /// walks up to, exactly where a capture's camera ends up standing).
+    /// `model_instances` must exclude it while still leaving its
+    /// `BrushModel`/bounds available to `ohl-engine`'s transition logic.
+    #[test]
+    fn excludes_trigger_volumes_that_carry_a_brush_model() {
+        let entities = vec![
+            raw(&[("classname", "trigger_transition"), ("model", "*3")]),
+            raw(&[("classname", "trigger_multiple"), ("model", "*4")]),
+            raw(&[("classname", "func_wall"), ("model", "*5")]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let instances = model_instances(&registry);
+        assert_eq!(instances.len(), 1);
+        assert_eq!(instances[0].model_index, 5);
+    }
+
+    /// `func_ladder` is documented as an invisible climb volume (TWHL wiki,
+    /// "func_ladder"); it must not be drawn either.
+    #[test]
+    fn excludes_func_ladder() {
+        let entities = vec![raw(&[("classname", "func_ladder"), ("model", "*6")])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        assert!(model_instances(&registry).is_empty());
     }
 }
