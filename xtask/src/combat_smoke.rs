@@ -85,28 +85,44 @@ const BASE_ABSENT: [&str; 6] = [
     "The player took damage.",
 ];
 
+/// The fixed lines a scenario that does pick up and fire a weapon expects
+/// present, beyond [`BASE_PRESENT`].
+const FIRE_AND_PICKUP_PRESENT: [&str; 4] = [
+    "Scripted input loaded.",
+    "Scripted input finished.",
+    "A pickup was collected.",
+    "The player fired a weapon.",
+];
+
+/// [`BASE_ABSENT`] minus the two lines [`FIRE_AND_PICKUP_PRESENT`] moves to
+/// its own present set: nothing in this scenario's swing has anything to
+/// hit, damage or kill, and nothing in it can damage the player either.
+const FIRE_AND_PICKUP_ABSENT: [&str; 4] = [
+    "A shot hit an entity.",
+    "A monster took damage.",
+    "A monster died.",
+    "The player took damage.",
+];
+
 /// The scenarios this command runs, in order. Map names come only from
 /// `ohl_campaign`'s cited table: `ohl_campaign::TRAINMAP` for the training
-/// start, `ohl_campaign::STARTMAP` for the first chapter's start, and
+/// start, `ohl_campaign::STARTMAP` for the first chapter's start,
 /// `"c1a1"` (Unforeseen Consequences, `ohl_campaign::CHAPTERS`'s second
-/// chapter's first map) for the first monster encounter.
+/// chapter's first map) for the first monster encounter, and `"t0a0b1"`
+/// (one of `ohl_campaign::HAZARD_COURSE_MAPS`'s own cited map names) for
+/// picking up and firing a weapon.
 ///
-/// `TODO(P4b-followup)`: M7.9 P4b wires "The player fired a weapon."/"A
-/// shot hit an entity." end to end (`crates/ohl-app/src/script_log.rs`),
-/// but adding a scenario that actually reaches those lines needs a script
-/// that walks the real training course to an actual weapon pickup first.
-/// `ohl_campaign::HAZARD_COURSE_MAPS` names the training course's own map
-/// sequence, but which one first offers a weapon, and from where, is not
-/// something this package's own tests can determine without inspecting
-/// payload content this crate treats as read-only (`docs/CLEAN_ROOM.md`
-/// rule 6/7); a few short scripted attempts against a real imported
-/// payload during this package's own development did not reach one within
-/// `t0a0`/`t0a0a` alone. `crates/ohl-engine/tests/save_sections.rs`
-/// exercises the same fired/hit counters end to end today, against this
-/// package's own synthetic fixture, so the milestone lines themselves are
-/// covered; only *this* harness's own real-payload scenario is not yet
-/// added.
-fn scenarios() -> [Scenario; 3] {
+/// M7.9 P4b wired "The player fired a weapon."/"A shot hit an entity." end
+/// to end (`crates/ohl-app/src/script_log.rs`), and the fourth scenario
+/// below (`xtask/smoke-scenarios/pick_up_and_fire_a_weapon.txt`) is the
+/// scripted walk to an actual weapon pickup on that map that reaches the
+/// first of those two lines through this harness's own real-payload path
+/// (a crowbar swing routes through the same melee branch a hitscan shot
+/// does; see that file's own header for why "A shot hit an entity." still
+/// is not reached). `crates/ohl-engine/tests/save_sections.rs` continues to
+/// exercise the same counters end to end against this package's own
+/// synthetic fixture.
+fn scenarios() -> [Scenario; 4] {
     [
         Scenario {
             name: "walk forward in the training start",
@@ -128,6 +144,13 @@ fn scenarios() -> [Scenario; 3] {
             map: "c1a1",
             present: &BASE_PRESENT,
             absent: &BASE_ABSENT,
+        },
+        Scenario {
+            name: "pick up and fire a weapon in the hazard course",
+            file: "pick_up_and_fire_a_weapon.txt",
+            map: "t0a0b1",
+            present: &FIRE_AND_PICKUP_PRESENT,
+            absent: &FIRE_AND_PICKUP_ABSENT,
         },
     ]
 }

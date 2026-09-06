@@ -2114,13 +2114,15 @@ level transitions keep their behaviour.
   `xtask/src/combat_smoke.rs`'s `Scenario` now carries its own
   present/absent milestone-line set (rather than one fixed pair for every
   scenario), so a later scenario that does reach one of the six can move
-  it from `absent` to `present` without touching the others.
-  `TODO(P4b-followup)`: no scenario added here reaches one yet — doing so
-  needs a script that walks the real training course to an actual weapon
-  pickup, and a few short scripted attempts against a real imported
-  payload during this package's own development did not reach one within
-  `t0a0`/`t0a0a` alone; see `xtask/src/combat_smoke.rs`'s `scenarios` doc
-  comment.
+  it from `absent` to `present` without touching the others. A fourth
+  scenario, `xtask/smoke-scenarios/pick_up_and_fire_a_weapon.txt` (run
+  against `"t0a0b1"`, one of `ohl_campaign::HAZARD_COURSE_MAPS`'s own
+  cited maps), now does reach two of the six: a scripted walk to that
+  map's own first weapon pickup, a HUD slot select and a swing reaches
+  both "A pickup was collected." and "The player fired a weapon." — a
+  crowbar swing routes through the same melee branch a hitscan shot does
+  (`crates/ohl-engine/src/combat.rs`'s `CombatState::weapons`), so it
+  counts as firing too; see that scenario file's own header.
 
   Verified: unit round trips for the AI/inventory/projectile/RNG snapshot
   conversions and the new `ohl-ai`/`ohl-combat` additive methods;

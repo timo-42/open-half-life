@@ -1,0 +1,35 @@
+# M7.9 P4b scripted-input scenario: "pick up and fire a weapon in the
+# hazard course".
+#
+# Project-authored; no bytes here come from any game installation (see
+# docs/CLEAN_ROOM.md). Run against "t0a0b1" (one of
+# ohl_campaign::HAZARD_COURSE_MAPS's own cited map names) by
+# xtask/src/combat_smoke.rs.
+#
+# The turn/walk numbers below were tuned, during this scenario's own
+# development, against a real imported payload's player-start-relative
+# geometry for this one map only (never against any other map's, and
+# never recorded here beyond these ticks/degrees) so the player reaches
+# and picks up this map's own first weapon pickup, selects it (HUD slot
+# 1, the first weapon slot in `ohl_combat::inventory::hud_slot`), and
+# swings it. A crowbar swing routes through the same
+# `ohl_engine::CombatState::weapons` melee branch as any hitscan shot
+# (see `crates/ohl-engine/src/combat.rs`'s `WeaponAction::Melee` arm), so
+# it increments `Game::weapon_fired_count` exactly like a gun's shot
+# would.
+#
+# Expected fixed log lines (see docs/m79-design.md §7), asserted by the
+# harness rather than parsed from this file:
+#   present: "Scripted input loaded.", "Scripted input finished.",
+#            "A pickup was collected.", "The player fired a weapon."
+#   absent:  every other fixed line — there is nothing in the swing's
+#            reach to hit, damage or die, and nothing here can damage the
+#            player
+
+30 look 0 123
+90 forward
+10 wait
+1 slot 1
+10 wait
+5 attack
+20 wait
