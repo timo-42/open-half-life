@@ -8,6 +8,7 @@
 
 use glam::Vec3;
 use ohl_game::registry::{Door, MoverState};
+use ohl_game::{TrackTrain, TrackTrainState};
 use ohl_render::{
     FreeFlyCamera, GpuContext, LightStyles, ModelInstance, RenderMode, RenderProps, SkyRenderer,
     SpriteInstance, StudioRenderer, SubmodelInstance, WorldRenderer, placement, wgpu,
@@ -203,13 +204,15 @@ impl Renderers {
             let Some(model) = level.submodels.get(&instance.model_index) else {
                 continue;
             };
-            let offset = door_offset(level, &instance);
+            let (train_offset, yaw_override) = track_train_transform(level, &instance);
+            let offset = door_offset(level, &instance) + train_offset;
             let origin = instance.origin + offset;
+            let yaw = yaw_override.unwrap_or(instance.angles.y);
             self.world.draw_world_submodel(
                 context,
                 SubmodelInstance {
                     model,
-                    transform: placement(origin.to_array(), instance.angles.y),
+                    transform: placement(origin.to_array(), yaw),
                 },
                 render_props(instance.render),
                 camera,
@@ -230,6 +233,32 @@ fn ambient_at(level: &Level, origin: [f32; 3]) -> [f32; 3] {
     } else {
         sampled
     }
+}
+
+/// A `func_train`/`func_tracktrain`'s current placement, read from the
+/// `ohl-game`-side [`TrackTrainState`] the map logic simulation advances
+/// each tick (see `crates/ohl-game/src/track_train.rs`): a world-space
+/// offset from the brush entity's own (conventionally `0 0 0`) origin, and,
+/// for a `func_tracktrain` (which the public documentation says turns to
+/// face the next `path_track`), the yaw to face instead of the entity's own
+/// spawned `angles`. Returns `(Vec3::ZERO, None)` for any entity that is not
+/// a train with a resolved path (falling back to the door/static placement
+/// path above).
+fn track_train_transform(level: &Level, instance: &ohl_game::ModelInstance) -> (Vec3, Option<f32>) {
+    let Ok(state) = level
+        .registry
+        .world
+        .get::<&TrackTrainState>(instance.entity)
+    else {
+        return (Vec3::ZERO, None);
+    };
+    let Ok(train) = level.registry.world.get::<&TrackTrain>(instance.entity) else {
+        return (Vec3::ZERO, None);
+    };
+    (
+        state.position() - instance.origin,
+        state.yaw_degrees(&train),
+    )
 }
 
 /// How far a door has slid along its move direction, from the state machine

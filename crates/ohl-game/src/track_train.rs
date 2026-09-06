@@ -132,8 +132,7 @@ impl PathChain {
             let position = registry
                 .world
                 .get::<&Transform>(entity)
-                .map(|transform| transform.origin)
-                .unwrap_or(Vec3::ZERO)
+                .map_or(Vec3::ZERO, |transform| transform.origin)
                 + Vec3::Z * height;
             let next = registry
                 .world
@@ -153,7 +152,11 @@ impl PathChain {
             }
         }
 
-        if nodes.is_empty() { None } else { Some(Self { nodes, looped }) }
+        if nodes.is_empty() {
+            None
+        } else {
+            Some(Self { nodes, looped })
+        }
     }
 
     /// The node index a train moving forward from `index` would reach next,
@@ -336,7 +339,8 @@ impl TrackTrainState {
             return None;
         }
         let other = self.other_index()?;
-        let direction = self.chain.nodes[other].position - self.chain.nodes[self.node_index].position;
+        let direction =
+            self.chain.nodes[other].position - self.chain.nodes[self.node_index].position;
         if direction.x.abs() < f32::EPSILON && direction.y.abs() < f32::EPSILON {
             return None;
         }
@@ -458,6 +462,11 @@ mod tests {
     use ohl_formats::bsp30::Entity as RawEntity;
     use proptest::prelude::*;
     use std::collections::BTreeMap;
+
+    /// Bounding-box tolerance for the polyline-containment proptest, to
+    /// absorb ordinary `f32` accumulation over many fixed-timestep
+    /// advances rather than requiring bit-exact containment.
+    const POLYLINE_SLACK: f32 = 1e-2;
 
     fn raw(pairs: &[(&str, &str)]) -> RawEntity {
         pairs
@@ -773,14 +782,19 @@ mod tests {
                 moving: true,
                 wait_timer: 0.0,
             };
-            const SLACK: f32 = 1e-2;
             for dt in steps {
                 state.advance(dt);
                 let position = state.position();
                 prop_assert!(position.is_finite());
-                prop_assert!(position.x >= min.x - SLACK && position.x <= max.x + SLACK);
-                prop_assert!(position.y >= min.y - SLACK && position.y <= max.y + SLACK);
-                prop_assert!(position.z >= min.z - SLACK && position.z <= max.z + SLACK);
+                prop_assert!(
+                    position.x >= min.x - POLYLINE_SLACK && position.x <= max.x + POLYLINE_SLACK
+                );
+                prop_assert!(
+                    position.y >= min.y - POLYLINE_SLACK && position.y <= max.y + POLYLINE_SLACK
+                );
+                prop_assert!(
+                    position.z >= min.z - POLYLINE_SLACK && position.z <= max.z + POLYLINE_SLACK
+                );
             }
         }
     }
