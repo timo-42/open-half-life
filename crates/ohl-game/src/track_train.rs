@@ -326,6 +326,23 @@ impl TrackTrainState {
         }
     }
 
+    /// The world-space position the train's brush model was authored at:
+    /// the chain's first node (`height`-adjusted), matching real map
+    /// convention that a `func_train`/`func_tracktrain` brush is drawn
+    /// sitting on the track at its starting node. This is the reference
+    /// point [`crate::registry::Transform::origin`]'s keyvalue is
+    /// documented (see the module doc comment) to be moved onto at spawn,
+    /// and is what `ohl-engine`'s `track_train_transform` subtracts
+    /// [`Self::position`] from to get a *delta* offset (mirroring
+    /// `door_offset`'s convention of returning zero movement from an
+    /// already-baked resting position), rather than the absolute polyline
+    /// coordinate that offset would otherwise double-apply on top of the
+    /// already-in-world-space brush geometry.
+    #[must_use]
+    pub fn built_origin(&self) -> Vec3 {
+        self.chain.nodes[0].position
+    }
+
     /// The train's yaw, in degrees (matching [`crate::registry::movedir_from_angles`]'s
     /// convention: counter-clockwise around `+Z` from `+X`), facing along
     /// the active segment toward the node it is heading for; `None` when
@@ -552,6 +569,46 @@ mod tests {
         let train = train_component(&registry);
         assert_eq!(state.position(), Vec3::ZERO);
         assert_eq!(state.yaw_degrees(&train), Some(0.0));
+    }
+
+    /// Regression for fidelity round 2 finding E1: `ohl-engine`'s
+    /// `track_train_transform` must return a *delta* from the train's
+    /// built (authored) position, mirroring `door_offset`'s convention of
+    /// `Vec3::ZERO` for an unmoved mover, not the train's absolute
+    /// polyline coordinate (which a prior version returned by subtracting
+    /// the entity's `origin` keyvalue instead of the built origin — a
+    /// no-op when that keyvalue is the conventional `0 0 0`, silently
+    /// re-displacing the already-world-space brush geometry by its own
+    /// resting coordinate).
+    #[test]
+    fn built_origin_is_the_first_node_and_offset_is_zero_at_spawn() {
+        let entities = three_node_track(&[]);
+        let registry = build_registry(&entities);
+        let state = train_state(&registry);
+        assert_eq!(state.built_origin(), Vec3::ZERO);
+        assert_eq!(
+            state.position() - state.built_origin(),
+            Vec3::ZERO,
+            "a train that has not moved must render with no offset from its built geometry"
+        );
+    }
+
+    #[test]
+    fn built_origin_stays_fixed_while_offset_tracks_travel() {
+        let entities = three_node_track(&[("speed", "50")]);
+        let registry = build_registry(&entities);
+        let mut state = train_state(&registry);
+        state.turn_on();
+        // Halfway from node1 (0,0,0) to node2 (100,0,0): 50 units at
+        // 50 units/sec = 1s.
+        for _ in 0..100 {
+            state.advance(0.01);
+        }
+        assert_close(state.built_origin(), Vec3::ZERO);
+        assert_close(
+            state.position() - state.built_origin(),
+            Vec3::new(50.0, 0.0, 0.0),
+        );
     }
 
     #[test]
