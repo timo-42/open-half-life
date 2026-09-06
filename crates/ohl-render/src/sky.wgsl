@@ -54,6 +54,20 @@ fn vertex_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     let position = POSITIONS[vertex_index % 36u];
     var output: VertexOutput;
     output.clip_position = camera.view_projection * vec4<f32>(position * HALF_EXTENT, 1.0);
+    // Force the post-divide depth to exactly `1.0` (the far plane, matching
+    // this project's depth-clear value), regardless of `HALF_EXTENT`'s
+    // arbitrary geometric size. Without this, the sky cube's own clip-space
+    // depth reflects its ~64-unit distance from the camera, which is
+    // *nearer* than any opaque geometry farther than that — and the sky
+    // pass's `LessEqual` depth test then lets the sky win and overpaint
+    // real, correctly depth-written occluding geometry beyond that
+    // distance (fidelity finding F1). Setting `z = w` is the standard
+    // "sky at infinity" trick: after the perspective divide (`z / w`), the
+    // depth is `1.0` no matter how far along the ray that division
+    // happened, so the sky only ever draws where the depth buffer still
+    // holds the cleared far value, i.e. exactly "nothing else was drawn
+    // here", independent of `HALF_EXTENT`.
+    output.clip_position.z = output.clip_position.w;
     output.direction = position;
     return output;
 }

@@ -202,6 +202,14 @@ impl SkyRenderer {
                 format: DEPTH_FORMAT,
                 // Never writes depth, and only draws where the opaque
                 // passes left the cleared far value: "world occludes sky".
+                // This only holds because `sky.wgsl`'s vertex shader pins
+                // every vertex's post-divide depth to exactly `1.0`
+                // (`clip_position.z = clip_position.w`) regardless of the
+                // sky cube's own arbitrary `HALF_EXTENT` size — without
+                // that, opaque geometry farther from the camera than
+                // `HALF_EXTENT` has a *larger* depth than the sky cube and
+                // this `LessEqual` test would let the sky wrongly draw over
+                // it (fidelity finding F1).
                 depth_write_enabled: Some(false),
                 depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: wgpu::StencilState::default(),
