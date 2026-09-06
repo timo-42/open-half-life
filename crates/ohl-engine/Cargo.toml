@@ -27,6 +27,10 @@ ohl-game = { path = "../ohl-game", version = "=0.1.0", features = ["serde"] }
 # M7.9 P0: the engine owns the health/armour components and the entity-id
 # vocabulary every attack trace speaks, so it composes `ohl-combat` directly.
 ohl-combat = { path = "../ohl-combat", version = "=0.1.0" }
+# M7.9 P2: the monster AI world, its brains and the `monstermaker` spawner,
+# plus the node graph the AI's navigator paths over.
+ohl-ai = { path = "../ohl-ai", version = "=0.1.0" }
+ohl-nav = { path = "../ohl-nav", version = "=0.1.0" }
 # The HUD the host draws is state this crate writes, not an event stream.
 ohl-ui = { path = "../ohl-ui", version = "=0.1.0" }
 ohl-save = { path = "../ohl-save", version = "=0.1.0" }
@@ -53,6 +57,7 @@ ohl-save = { path = "../ohl-save", version = "=0.1.0" }
 ohl-campaign = { path = "../ohl-campaign", version = "=0.1.0" }
 ohl-game = { path = "../ohl-game", version = "=0.1.0", features = ["serde"] }
 ohl-combat = { path = "../ohl-combat", version = "=0.1.0" }
+ohl-ai = { path = "../ohl-ai", version = "=0.1.0" }
 ohl-formats = { path = "../ohl-formats", version = "=0.1.0", features = [
     "std",
     "test-support",

@@ -206,3 +206,157 @@ pub fn synthetic_map_bsp_with_entities(entities: &str) -> Vec<u8> {
 
     b.build()
 }
+
+// --- M7.9 P2: an AI room -------------------------------------------------
+
+/// The map name the AI fixture is published under.
+pub const AI_MAP: &str = "ohlaisynth";
+
+/// Builds a plain, flat, closed room with a caller-authored entity block and
+/// an optional interior wall.
+///
+/// Unlike [`synthetic_map_bsp_with_entities`], the collision hulls here are
+/// nothing but the six faces of a box (plus, optionally, one solid slab on
+/// the `x = 0` plane): no steps, no ramps and no door leaf, so a test about
+/// *who can see whom* is not also a test about walking up a ledge. The wall
+/// spans the room's full width and height, so a monster on one side of it
+/// has no line of sight to anything on the other.
+///
+/// Project-authored geometry; no bytes here come from any game
+/// installation.
+#[must_use]
+pub fn ai_room_bsp(entities: &str, interior_wall: bool) -> Vec<u8> {
+    const HALF: f32 = 256.0;
+    const HEIGHT: f32 = 256.0;
+
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(entities);
+
+    b.push_plane([0.0, 0.0, 1.0], 0.0, 2);
+    b.push_plane([1.0, 0.0, 0.0], 0.0, 0);
+    let split_plane = 1u32;
+    b.push_edge(0, 0);
+
+    b.add_embedded_texture("ohlfloor", 64, 64, 210);
+
+    // One quad: the room's floor. Nothing else needs to be drawable for an
+    // AI test, and a smaller face list keeps the fixture easy to read.
+    let floor: [[f32; 3]; 4] = [
+        [-HALF, -HALF, 0.0],
+        [HALF, -HALF, 0.0],
+        [HALF, HALF, 0.0],
+        [-HALF, HALF, 0.0],
+    ];
+    for corner in floor {
+        b.push_vertex(corner);
+    }
+    for corner in 0..4u16 {
+        b.push_edge(corner, (corner + 1) % 4);
+    }
+    for step in 0..4 {
+        b.push_surfedge(1 + step);
+    }
+    b.push_texinfo([1.0, 0.0, 0.0], 0.0, [0.0, 1.0, 0.0], 0.0, 0, 0);
+    let offset = i32::try_from(b.lighting.len()).expect("fits");
+    for sample in 0..900 {
+        let level = 96 + u8::try_from((sample * 7) % 128).unwrap_or(0);
+        b.push_lighting_rgb(level, level, level);
+    }
+    b.push_face(0, 0, 0, 4, 0, [0, 0xFF, 0xFF, 0xFF], offset);
+    b.push_marksurface(0);
+
+    b.visibility.push(0b0000_0011);
+    b.visibility.push(0b0000_0011);
+
+    let extent: i16 = 256;
+    let height: i16 = 256;
+    b.push_leaf(-2, -1, [0, 0, 0], [0, 0, 0], 0, 0, [0, 0, 0, 0]);
+    b.push_leaf(
+        -1,
+        0,
+        [-extent, -extent, 0],
+        [extent, extent, height],
+        0,
+        1,
+        [0, 0, 0, 0],
+    );
+    b.push_leaf(
+        -1,
+        0,
+        [-extent, -extent, 0],
+        [extent, extent, height],
+        0,
+        1,
+        [0, 0, 0, 0],
+    );
+    b.push_node(
+        split_plane,
+        -2,
+        -3,
+        [-extent, -extent, 0],
+        [extent, extent, height],
+        0,
+        2,
+    );
+
+    let mut brushes = vec![
+        CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+        CollisionBrush::half_space([0.0, 0.0, -1.0], -HEIGHT),
+        CollisionBrush::half_space([-1.0, 0.0, 0.0], -HALF),
+        CollisionBrush::half_space([1.0, 0.0, 0.0], -HALF),
+        CollisionBrush::half_space([0.0, -1.0, 0.0], -HALF),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], -HALF),
+    ];
+    if interior_wall {
+        brushes.push(CollisionBrush::box_brush(
+            [-16.0, -HALF, 0.0],
+            [16.0, HALF, HEIGHT],
+        ));
+    }
+    let head_nodes = b.push_collision_hulls(&brushes);
+
+    b.push_model(
+        [-HALF, -HALF, 0.0],
+        [HALF, HALF, HEIGHT],
+        [0.0, 0.0, 0.0],
+        head_nodes,
+        1,
+        0,
+        1,
+    );
+
+    b.build()
+}
+
+/// Queues `amount` points of damage against `target`, as if a weapon had
+/// hit it, so a test can kill a monster without a weapon existing yet.
+///
+/// Applied by the next step's lifecycle phase, exactly like any other hit.
+pub fn queue_monster_damage(
+    game: &mut crate::Game,
+    target: ohl_game::hecs::Entity,
+    attacker: Option<ohl_game::hecs::Entity>,
+    amount: f32,
+) {
+    let origin = ohl_ai::Vec3::ZERO;
+    let event = match attacker {
+        Some(attacker) => ohl_ai::DamageEvent::new(target, attacker, amount, origin),
+        None => ohl_ai::DamageEvent::environmental(target, amount, origin),
+    };
+    game.systems_mut().ai_mut().queue_damage(event);
+}
+
+/// Every entity in the current level that is a thinking monster, in
+/// ascending entity-id order.
+#[must_use]
+pub fn monster_entities(game: &crate::Game) -> Vec<ohl_game::hecs::Entity> {
+    let mut entities: Vec<ohl_game::hecs::Entity> = game
+        .registry()
+        .world
+        .query::<(ohl_game::hecs::Entity, &ohl_ai::MonsterAi)>()
+        .iter()
+        .map(|(entity, _)| entity)
+        .collect();
+    entities.sort_unstable_by_key(|entity: &ohl_game::hecs::Entity| entity.id());
+    entities
+}

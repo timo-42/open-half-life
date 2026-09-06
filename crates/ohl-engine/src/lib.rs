@@ -40,6 +40,11 @@ pub mod ids;
 pub mod systems;
 pub mod tick;
 
+// M7.9 P2 (AI and navigation wiring): the AI world, its brains and the
+// attack/lifecycle mapping, plus the map's navigation graph.
+pub mod ai;
+pub mod nav;
+
 // Campaign flow (M8.2): level transitions, save/load, chapter titles and
 // difficulty. See `docs/FORMAT_SOURCES.md` ("Campaign flow") for the public
 // documentation these semantics were implemented from.
@@ -50,8 +55,9 @@ pub mod transition;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
+pub use ai::{AiState, AttackShape, NoProjectiles, ProjectileRequest, ProjectileSpawner};
 pub use assets::{AssetFsSource, AssetSource, MemoryAssets};
-pub use components::{Charger, Corpse, Owner, Pickup, PlayerTag, StudioAnim};
+pub use components::{Charger, Corpse, MonsterMaker, Owner, Pickup, PlayerTag, StudioAnim};
 pub use error::{EngineError, Result};
 pub use game::{Game, GameConfig, GameEvent};
 pub use ids::{entity_id, entity_of};
@@ -59,7 +65,7 @@ pub use input::Input;
 pub use level::{PLAYER_MAX_ARMOR, PLAYER_MAX_HEALTH, SpritePlacement};
 pub use render::RenderTarget;
 pub use save::GameSave;
-pub use systems::{Systems, SystemsConfig};
+pub use systems::{QueuedDamage, Systems, SystemsConfig};
 pub use text::{AssetPath, MessageBlock, SentenceLookup, TitleLibrary};
 pub use tick::{MAX_TICKS_PER_FRAME, TICK_SECONDS, TickClock};
 pub use transition::{

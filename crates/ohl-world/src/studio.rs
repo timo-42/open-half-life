@@ -281,6 +281,15 @@ pub struct StudioModel {
     pub attachments: Vec<StudioAttachment>,
     /// The sequences, in file order.
     pub sequences: Vec<StudioSequence>,
+    /// Each sequence's authored label, in the same order as
+    /// [`Self::sequences`], lower-cased and with its trailing NUL padding
+    /// removed.
+    ///
+    /// The labels are model-authored data, not a project table: they exist
+    /// so a caller can resolve an animation *intent* it names itself
+    /// against whatever the loaded model actually publishes. Media-derived,
+    /// so they are handed back as data and never logged.
+    pub sequence_names: Vec<String>,
     /// The model-space bounding box (`bbmin`/`bbmax` from the header).
     pub bounds_min: [f32; 3],
     /// The model-space bounding box maximum.
@@ -296,7 +305,37 @@ pub struct StudioModel {
     limits: Limits,
 }
 
+/// Decodes one fixed-length, NUL-padded MDL short-name field (a bone or
+/// sequence label) into a lower-cased owned string.
+///
+/// Bytes that are not valid UTF-8 are replaced rather than rejected: a
+/// label is a lookup key, never a diagnostic, so an odd one must degrade
+/// into a key that simply matches nothing.
+fn short_name(field: &[u8]) -> String {
+    let end = field
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(field.len());
+    String::from_utf8_lossy(&field[..end])
+        .trim()
+        .to_ascii_lowercase()
+}
+
 impl StudioModel {
+    /// The index of the sequence whose authored label is `name`, compared
+    /// case-insensitively, or `None` when the model publishes no such
+    /// sequence.
+    ///
+    /// This is the whole of the engine's activity-to-sequence resolution:
+    /// the *name* comes from the caller's own animation vocabulary and the
+    /// *match* is against model data, so no sequence name is baked into
+    /// this project.
+    #[must_use]
+    pub fn sequence_by_name(&self, name: &str) -> Option<usize> {
+        let name = name.trim().to_ascii_lowercase();
+        self.sequence_names.iter().position(|label| *label == name)
+    }
+
     /// Builds an owned model from a parsed [`Mdl`].
     ///
     /// `data` must be the same buffer `mdl` borrows; it is retained so
@@ -453,6 +492,10 @@ impl StudioModel {
             .collect();
 
         let raw_sequences = mdl.sequences(limits)?;
+        let sequence_names = raw_sequences
+            .iter()
+            .map(|sequence| short_name(&sequence.label))
+            .collect();
         let sequences = raw_sequences
             .iter()
             .map(|sequence| StudioSequence {
@@ -473,6 +516,7 @@ impl StudioModel {
             hitboxes,
             attachments,
             sequences,
+            sequence_names,
             bounds_min: [
                 header.bbmin[0].get(),
                 header.bbmin[1].get(),
