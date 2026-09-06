@@ -44,6 +44,13 @@ pub(crate) struct Renderers {
     world: WorldRenderer,
     sky: Option<SkyRenderer>,
     studio: Vec<StudioRenderer>,
+    /// This frame's studio instances, kept across frames so a per-frame
+    /// rebuild reuses the allocation instead of asking the allocator for
+    /// one every frame.
+    props: Vec<PropPlacement>,
+    /// Scratch for sorting `props` into a stable order; pooled for the same
+    /// reason.
+    prop_order: Vec<(u64, PropPlacement)>,
 }
 
 impl Renderers {
@@ -70,7 +77,13 @@ impl Renderers {
             };
             studio.push(renderer);
         }
-        Ok(Self { world, sky, studio })
+        Ok(Self {
+            world,
+            sky,
+            studio,
+            props: Vec::new(),
+            prop_order: Vec::new(),
+        })
     }
 
     pub(crate) fn draw(
@@ -92,8 +105,8 @@ impl Renderers {
             .render(context, &level.world, camera, target.view, width, height);
 
         let depth = self.world.depth_view().cloned();
-        let props = studio_instances(level);
-        self.draw_props(context, level, camera, &props, depth.as_ref(), target);
+        self.collect_studio_instances(level);
+        self.draw_props(context, level, camera, depth.as_ref(), target);
 
         if let (Some(sky), Some(depth)) = (self.sky.as_ref(), depth.as_ref()) {
             sky.render(context, camera, target.view, depth, width, height);
@@ -140,18 +153,48 @@ impl Renderers {
         );
     }
 
+    /// Rebuilds [`Self::props`], this frame's studio instance list, from the
+    /// entities carrying a [`StudioAnim`] rather than from the level's static
+    /// placement list.
+    ///
+    /// The result is sorted by entity, so the order a frame draws in does not
+    /// depend on how the world happens to have laid out its archetypes. Both
+    /// buffers are reused across frames.
+    fn collect_studio_instances(&mut self, level: &Level) {
+        self.prop_order.clear();
+        for (entity, anim, transform) in &mut level
+            .registry
+            .world
+            .query::<(Entity, &StudioAnim, &Transform)>()
+        {
+            self.prop_order.push((
+                entity.to_bits().get(),
+                PropPlacement {
+                    model: anim.model,
+                    origin: transform.origin.to_array(),
+                    yaw: transform.angles.y,
+                    sequence: anim.sequence,
+                    body: anim.body,
+                    skin: anim.skin,
+                    cycle: anim.cycle,
+                },
+            ));
+        }
+        self.prop_order.sort_unstable_by_key(|(bits, _)| *bits);
+        self.props.clear();
+        self.props
+            .extend(self.prop_order.iter().map(|(_, prop)| *prop));
+    }
+
     /// Draws every studio instance at its sampled pose.
     ///
-    /// `props` is this frame's instance list, sourced from the registry by
-    /// [`studio_instances`]; each instance carries its own animation cursor,
-    /// so a monster the AI moved and a static prop the map placed take the
-    /// same path.
+    /// Each instance carries its own animation cursor, so a monster the AI
+    /// moved and a static prop the map placed take the same path.
     fn draw_props(
         &mut self,
         context: &GpuContext,
         level: &Level,
         camera: &FreeFlyCamera,
-        props: &[PropPlacement],
         depth: Option<&wgpu::TextureView>,
         target: RenderTarget<'_>,
     ) {
@@ -161,7 +204,7 @@ impl Renderers {
             };
             let mut poses = Vec::new();
             let mut placements = Vec::new();
-            for prop in props.iter().filter(|prop| prop.model == slot) {
+            for prop in self.props.iter().filter(|prop| prop.model == slot) {
                 let Ok(pose) = StudioPose::sample(model, prop.sequence, prop.cycle) else {
                     continue;
                 };
@@ -230,35 +273,6 @@ impl Renderers {
             );
         }
     }
-}
-
-/// This frame's studio instances, sourced from the entities carrying a
-/// [`StudioAnim`] rather than from the level's static placement list.
-///
-/// The result is sorted by entity, so the instance order a frame draws in
-/// does not depend on how the world happens to have laid out its archetypes.
-fn studio_instances(level: &Level) -> Vec<PropPlacement> {
-    let mut instances: Vec<(u64, PropPlacement)> = Vec::new();
-    for (entity, anim, transform) in &mut level
-        .registry
-        .world
-        .query::<(Entity, &StudioAnim, &Transform)>()
-    {
-        instances.push((
-            entity.to_bits().get(),
-            PropPlacement {
-                model: anim.model,
-                origin: transform.origin.to_array(),
-                yaw: transform.angles.y,
-                sequence: anim.sequence,
-                body: anim.body,
-                skin: anim.skin,
-                cycle: anim.cycle,
-            },
-        ));
-    }
-    instances.sort_by_key(|(bits, _)| *bits);
-    instances.into_iter().map(|(_, prop)| prop).collect()
 }
 
 /// The lighting a model standing at `origin` picks up, falling back to a

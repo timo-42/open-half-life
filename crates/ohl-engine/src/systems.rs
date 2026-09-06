@@ -79,6 +79,35 @@ pub(crate) struct LatchedInput {
     pub(crate) select_slot: Option<u8>,
 }
 
+/// The edges (presses, not holds) a frame delivered that no step has taken
+/// yet.
+///
+/// Edges are sticky: a frame too short to release a step still records its
+/// presses, and the next step that runs consumes them. Without this a press
+/// delivered on a sub-step frame — every frame, on a host rendering faster
+/// than the tick rate — would be dropped entirely.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct PendingEdges {
+    use_pressed: bool,
+    reload: bool,
+    flashlight: bool,
+    /// The most recent slot selection; a later press supersedes an earlier
+    /// one, since only one weapon can be selected.
+    select_slot: Option<u8>,
+}
+
+impl PendingEdges {
+    /// Records `input`'s edges alongside anything not yet consumed.
+    fn accumulate(&mut self, input: &Input) {
+        self.use_pressed |= input.use_pressed;
+        self.reload |= input.reload;
+        self.flashlight |= input.flashlight_pressed;
+        if input.select_slot.is_some() {
+            self.select_slot = input.select_slot;
+        }
+    }
+}
+
 impl LatchedInput {
     /// The held state of `input`, with every edge cleared.
     fn held(input: &Input) -> Self {
@@ -97,13 +126,13 @@ impl LatchedInput {
         }
     }
 
-    /// The held state of `input` plus the edges it carries.
-    fn with_edges(input: &Input) -> Self {
+    /// The held state of `input` plus the edges no step has taken yet.
+    fn with_edges(input: &Input, edges: PendingEdges) -> Self {
         Self {
-            use_pressed: input.use_pressed,
-            reload_pressed: input.reload,
-            flashlight_pressed: input.flashlight_pressed,
-            select_slot: input.select_slot,
+            use_pressed: edges.use_pressed,
+            reload_pressed: edges.reload,
+            flashlight_pressed: edges.flashlight,
+            select_slot: edges.select_slot,
             ..Self::held(input)
         }
     }
@@ -122,10 +151,11 @@ impl LatchedInput {
 /// The systems one [`crate::Game`] steps, and the state they share.
 pub struct Systems {
     config: SystemsConfig,
-    /// The frame's input, latched by [`Systems::begin_frame`].
+    /// The frame's held input, latched by [`Systems::begin_frame`].
     frame_input: Input,
-    /// Whether the current frame's edges are still unconsumed.
-    edges_pending: bool,
+    /// Edges delivered but not yet handed to a step. Sticky across frames
+    /// that release no step, so a press on a short frame is not lost.
+    pending_edges: PendingEdges,
     /// The HUD the host draws. Written by the presentation phase; a default
     /// until the gameplay bridge is wired in.
     hud: ohl_ui::hud::HudState,
@@ -138,7 +168,7 @@ impl Systems {
         Self {
             config,
             frame_input: Input::default(),
-            edges_pending: false,
+            pending_edges: PendingEdges::default(),
             hud: ohl_ui::hud::HudState::default(),
         }
     }
@@ -169,9 +199,13 @@ impl Systems {
 
     /// Latches one frame's input. Called once per [`crate::Game::tick`],
     /// before any step runs.
+    ///
+    /// Held axes are replaced (they describe *now*); edges are accumulated
+    /// (they describe something that happened, and must survive until a
+    /// step can act on it).
     pub(crate) fn begin_frame(&mut self, input: &Input) {
         self.frame_input = *input;
-        self.edges_pending = true;
+        self.pending_edges.accumulate(input);
     }
 
     /// Runs one fixed simulation step. The phase numbers match this
@@ -200,13 +234,11 @@ impl Systems {
     }
 
     /// Phase 1 — input latch. Axes hold for every step of the frame; edges
-    /// are handed to the first step only.
+    /// are handed to the first step that runs after they arrived, and only
+    /// to that one, so a single press cannot fire a phase ten times in one
+    /// long frame nor be dropped by a frame too short to step at all.
     fn latch_input(&mut self) -> LatchedInput {
-        if std::mem::take(&mut self.edges_pending) {
-            LatchedInput::with_edges(&self.frame_input)
-        } else {
-            LatchedInput::held(&self.frame_input)
-        }
+        LatchedInput::with_edges(&self.frame_input, std::mem::take(&mut self.pending_edges))
     }
 
     /// Phase 2 — player move. The walking path runs the collision
