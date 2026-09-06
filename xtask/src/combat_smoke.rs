@@ -73,16 +73,79 @@ struct Scenario {
 /// script loaded and finished markers.
 const BASE_PRESENT: [&str; 2] = ["Scripted input loaded.", "Scripted input finished."];
 
-/// The six milestone lines a scenario that never fires, hits, damages or
-/// picks up anything is expected never to log. A scenario that does expect
-/// one of these present removes it from its own `absent` list instead.
-const BASE_ABSENT: [&str; 6] = [
+/// The seven milestone lines a scenario that never fires, hits, damages or
+/// picks up anything, and that never leaves the player embedded in solid
+/// geometry, is expected never to log. A scenario that does expect one of
+/// these present removes it from its own `absent` list instead.
+///
+/// "The player is inside solid geometry." joined this list (M9) so that
+/// every scenario in this file — not only the chapter-walk ones added
+/// alongside it — asserts the PR #91 class of bug (the player falling
+/// through a brush entity's floor and coming to rest embedded in solid
+/// geometry) absent.
+const BASE_ABSENT: [&str; 7] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
     "A monster took damage.",
     "A monster died.",
     "A pickup was collected.",
     "The player took damage.",
+    "The player is inside solid geometry.",
+];
+
+/// The fixed line every M9 chapter-walk scenario expects present beyond
+/// [`BASE_PRESENT`]: the player's eye position actually left its spawn
+/// point (`crates/ohl-app/src/script_log.rs`). This is the scenario set's
+/// own evidence that the scripted walk moved the player rather than just
+/// idling — a static capture or a stuck-at-spawn walk would not show it.
+const WALK_PRESENT: [&str; 3] = [
+    "Scripted input loaded.",
+    "Scripted input finished.",
+    "The player moved from the spawn point.",
+];
+
+/// [`WALK_PRESENT`] plus the two lines this scenario's own walk (in
+/// "Power Up") happens to reach: a monster in the crowbar's swing path
+/// took damage and died. See `xtask/smoke-scenarios/walk_power_up.txt`'s
+/// own header for why.
+const WALK_PRESENT_MONSTER_ENCOUNTER: [&str; 5] = [
+    "Scripted input loaded.",
+    "Scripted input finished.",
+    "The player moved from the spawn point.",
+    "A monster took damage.",
+    "A monster died.",
+];
+
+/// [`BASE_ABSENT`] minus the two lines [`WALK_PRESENT_MONSTER_ENCOUNTER`]
+/// moves to its own present set.
+const WALK_ABSENT_MONSTER_ENCOUNTER: [&str; 5] = [
+    "The player fired a weapon.",
+    "A shot hit an entity.",
+    "A pickup was collected.",
+    "The player took damage.",
+    "The player is inside solid geometry.",
+];
+
+/// [`WALK_PRESENT`] plus the line this scenario's own walk (in
+/// "Questionable Ethics") happens to reach: a source of player damage.
+/// See `xtask/smoke-scenarios/walk_questionable_ethics.txt`'s own header
+/// for why.
+const WALK_PRESENT_PLAYER_DAMAGED: [&str; 4] = [
+    "Scripted input loaded.",
+    "Scripted input finished.",
+    "The player moved from the spawn point.",
+    "The player took damage.",
+];
+
+/// [`BASE_ABSENT`] minus the one line [`WALK_PRESENT_PLAYER_DAMAGED`]
+/// moves to its own present set.
+const WALK_ABSENT_PLAYER_DAMAGED: [&str; 6] = [
+    "The player fired a weapon.",
+    "A shot hit an entity.",
+    "A monster took damage.",
+    "A monster died.",
+    "A pickup was collected.",
+    "The player is inside solid geometry.",
 ];
 
 /// The fixed lines a scenario that does pick up and fire a weapon expects
@@ -105,11 +168,14 @@ const FIRE_AND_PICKUP_PRESENT: [&str; 5] = [
 /// [`BASE_ABSENT`] minus the three lines [`FIRE_AND_PICKUP_PRESENT`] moves
 /// to its own present set: the swing lands, but nothing in this scenario
 /// takes enough damage to report a monster hurt or killed, and nothing in
-/// it can damage the player either.
-const FIRE_AND_PICKUP_ABSENT: [&str; 3] = [
+/// it can damage the player either. Still includes "The player is inside
+/// solid geometry.": this scenario's own regression guard for the PR #91
+/// class of bug, same as every other scenario in this file.
+const FIRE_AND_PICKUP_ABSENT: [&str; 4] = [
     "A monster took damage.",
     "A monster died.",
     "The player took damage.",
+    "The player is inside solid geometry.",
 ];
 
 /// The scenarios this command runs, in order. Map names come only from
@@ -130,7 +196,32 @@ const FIRE_AND_PICKUP_ABSENT: [&str; 3] = [
 /// is not reached). `crates/ohl-engine/tests/save_sections.rs` continues to
 /// exercise the same counters end to end against this package's own
 /// synthetic fixture.
-fn scenarios() -> [Scenario; 4] {
+///
+/// The remaining nineteen scenarios (M9) are a moving-player walk for each
+/// of the 18 story chapters in `ohl_campaign::CHAPTERS` whose first map is
+/// confirmed (every chapter except Interloper, whose starting map prefix
+/// is deliberately left unverified; see that constant's own module
+/// documentation), plus one for the Hazard Course
+/// (`ohl_campaign::TRAINMAP`). Each walks forward with short steps and
+/// periodic turns for roughly 20-40 simulated seconds — the technique that
+/// exposed the PR #90 (touch triggers never firing from movement) and PR
+/// #91 (the player falling through a brush entity's floor) regressions
+/// that static captures and load smokes had missed for days. Three of the
+/// nineteen (`xtask/smoke-scenarios/walk_power_up.txt`,
+/// `walk_forget_about_freeman.txt`, `walk_xen.txt`) turn before or instead
+/// of advancing straight ahead: each file's own header explains why (a
+/// dead-end player start, a solid corner in the walk's path, or a nearby
+/// platform edge), tuned only against that one map's own player-start-
+/// relative geometry and never recorded here beyond a turn/walk
+/// technique. All 23 scenarios in this file — the four pre-existing ones
+/// included — assert "The player is inside solid geometry." absent: this
+/// scenario set's own regression guard for the PR #91 class of bug.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one Scenario literal per M9 chapter-walk scenario, plus the four \
+              pre-existing ones; splitting the list would only add indirection"
+)]
+fn scenarios() -> [Scenario; 23] {
     [
         Scenario {
             name: "walk forward in the training start",
@@ -159,6 +250,139 @@ fn scenarios() -> [Scenario; 4] {
             map: "t0a0b1",
             present: &FIRE_AND_PICKUP_PRESENT,
             absent: &FIRE_AND_PICKUP_ABSENT,
+        },
+        Scenario {
+            name: "walk from spawn in Black Mesa Inbound",
+            file: "walk_black_mesa_inbound.txt",
+            map: "c0a0",
+            present: &WALK_PRESENT,
+            absent: &BASE_ABSENT,
+        },
+        Scenario {
+            name: "walk from spawn in Anomalous Materials",
+            file: "walk_anomalous_materials.txt",
+            map: "c1a0",
+            present: &WALK_PRESENT,
+            absent: &BASE_ABSENT,
+        },
+        Scenario {
+            name: "walk from spawn in Unforeseen Consequences",
+            file: "walk_unforeseen_consequences.txt",
+            map: "c1a1",
+            present: &WALK_PRESENT,
+            absent: &BASE_ABSENT,
+        },
+        Scenario {
+            name: "walk from spawn in Office Complex",
+            file: "walk_office_complex.txt",
+            map: "c1a2",
+            present: &WALK_PRESENT,
+            absent: &BASE_ABSENT,
+        },
+        Scenario {
+            name: "walk from spawn in \"We've Got Hostiles!\"",
+            file: "walk_hostiles.txt",
+            map: "c1a3",
+            present: &WALK_PRESENT,
+            absent: &BASE_ABSENT,
+        },
+        Scenario {
+            name: "walk from spawn in Blast Pit",
+            file: "walk_blast_pit.txt",
+            map: "c1a4",
+            present: &WALK_PRESENT,
+            absent: &BASE_ABSENT,
+        },
+        Scenario {
+            name: "walk from spawn in Power Up",
+            file: "walk_power_up.txt",
+            map: "c2a1",
+            present: &WALK_PRESENT_MONSTER_ENCOUNTER,
+            absent: &WALK_ABSENT_MONSTER_ENCOUNTER,
+        },
+        Scenario {
+            name: "walk from spawn in On A Rail",
+            file: "walk_on_a_rail.txt",
+            map: "c2a2",
+            present: &WALK_PRESENT,
+            absent: &BASE_ABSENT,
+        },
+        Scenario {
+            name: "walk from spawn in Apprehension",
+            file: "walk_apprehension.txt",
+            map: "c2a3",
+            present: &WALK_PRESENT,
+            absent: &BASE_ABSENT,
+        },
+        Scenario {
+            name: "walk from spawn in Residue Processing",
+            file: "walk_residue_processing.txt",
+            map: "c2a4",
+            present: &WALK_PRESENT,
+            absent: &BASE_ABSENT,
+        },
+        Scenario {
+            name: "walk from spawn in Questionable Ethics",
+            file: "walk_questionable_ethics.txt",
+            map: "c2a4d",
+            present: &WALK_PRESENT_PLAYER_DAMAGED,
+            absent: &WALK_ABSENT_PLAYER_DAMAGED,
+        },
+        Scenario {
+            name: "walk from spawn in Surface Tension",
+            file: "walk_surface_tension.txt",
+            map: "c2a5",
+            present: &WALK_PRESENT,
+            absent: &BASE_ABSENT,
+        },
+        Scenario {
+            name: "walk from spawn in \"Forget About Freeman!\"",
+            file: "walk_forget_about_freeman.txt",
+            map: "c3a1",
+            present: &WALK_PRESENT,
+            absent: &BASE_ABSENT,
+        },
+        Scenario {
+            name: "walk from spawn in Lambda Core",
+            file: "walk_lambda_core.txt",
+            map: "c3a2",
+            present: &WALK_PRESENT,
+            absent: &BASE_ABSENT,
+        },
+        Scenario {
+            name: "walk from spawn in Xen",
+            file: "walk_xen.txt",
+            map: "c4a1",
+            present: &WALK_PRESENT,
+            absent: &BASE_ABSENT,
+        },
+        Scenario {
+            name: "walk from spawn in Gonarch's Lair",
+            file: "walk_gonarchs_lair.txt",
+            map: "c4a2",
+            present: &WALK_PRESENT,
+            absent: &BASE_ABSENT,
+        },
+        Scenario {
+            name: "walk from spawn in Nihilanth",
+            file: "walk_nihilanth.txt",
+            map: "c4a3",
+            present: &WALK_PRESENT,
+            absent: &BASE_ABSENT,
+        },
+        Scenario {
+            name: "walk from spawn in Endgame",
+            file: "walk_endgame.txt",
+            map: "c5a1",
+            present: &WALK_PRESENT,
+            absent: &BASE_ABSENT,
+        },
+        Scenario {
+            name: "walk from spawn in the Hazard Course",
+            file: "walk_hazard_course.txt",
+            map: ohl_campaign::TRAINMAP,
+            present: &WALK_PRESENT,
+            absent: &BASE_ABSENT,
         },
     ]
 }

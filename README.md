@@ -272,7 +272,10 @@ it interactively on a real screen.
   (`trigger_changelevel`) or by `use`.
 - **Combat and AI**: weapons, pickups, damage, monster AI, and navigation
   are implemented and exercised by a scripted combat scenario that picks up
-  and fires a weapon (`cargo xtask combat-smoke`).
+  and fires a weapon (`cargo xtask combat-smoke`), which also runs a
+  moving-player walk scenario through each of the 18 story chapters plus
+  the Hazard Course as its own regression guard against the player falling
+  through the world or a touch trigger never firing from movement.
 - **Save/load** works over the project-owned `ohl-save` container (not the
   GoldSrc `.sav` format), with typed sections covering the engine header,
   entity registry, map-logic simulation, global state, light-style time,

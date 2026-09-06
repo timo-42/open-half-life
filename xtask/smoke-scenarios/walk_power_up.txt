@@ -1,0 +1,79 @@
+# M9 scripted-input scenario: a moving-player walk in Power Up.
+#
+# Project-authored; no bytes here come from any game installation (see
+# docs/CLEAN_ROOM.md). Run against "c2a1" (Power Up, per
+# ohl_campaign::CHAPTERS's own cited table) by xtask/src/combat_smoke.rs.
+#
+# A ~20-40s scripted walk forward with short steps and periodic turns,
+# the technique used to expose the M7.9-era brush-entity floor/touch-
+# trigger regressions (PR #90, PR #91) that static captures missed.
+#
+# The walk turns to face back into the level before advancing: the map's
+# own player start faces a dead end, and any forward walk from it (in any
+# direction) never moves more than the spawn-move threshold. Turning
+# around first was tuned against this one map's own player-start-relative
+# geometry, never recorded here beyond this turn/walk technique.
+#
+# This walk's own reach happens to put a monster in the crowbar's way,
+# so "A monster took damage."/"A monster died." move to this scenario's
+# own present set instead of its absent one.
+#
+# Expected fixed log lines, asserted by the harness rather than parsed
+# from this file:
+#   present: "Scripted input loaded.", "Scripted input finished.",
+#            "The player moved from the spawn point.",
+#            "A monster took damage.", "A monster died."
+#   absent:  "The player is inside solid geometry." (this scenario's own
+#            regression guard for the PR #91 class of bug)
+#            plus every other fixed line except:
+#            "A monster took damage.", "A monster died."
+20 look 0 180
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 forward
+8 look 0 20
+60 forward
+8 look 0 -20
+60 wait
