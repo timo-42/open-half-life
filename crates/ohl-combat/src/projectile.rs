@@ -30,7 +30,7 @@
 use glam::Vec3;
 use ohl_physics::{CollisionModel, MoveConfig};
 
-use crate::trace::{EntityId, HitboxIndex, TraceMask, trace_attack};
+use crate::trace::{EntityId, HitboxIndex, TraceFilter, TraceMask, trace_attack_filtered};
 use crate::weapons::BlackBox;
 
 /// The hand grenade's fuse, in seconds.
@@ -261,11 +261,20 @@ pub struct Projectile {
     pub id: ProjectileId,
     /// What kind it is.
     pub kind: ProjectileKind,
-    /// Who fired it, for damage attribution. The caller is responsible for
-    /// leaving the owner out of the [`HitboxIndex`] it passes to
-    /// [`ProjectileSet::tick`]; this crate never dereferences the handle and
-    /// so cannot filter by it.
+    /// Who fired it, for damage attribution, and ignored by this
+    /// projectile's own movement trace (see [`Self::self_id`]) so it can
+    /// never hit its owner. This crate never dereferences the handle
+    /// beyond that ignore check.
     pub owner: Option<EntityId>,
+    /// This projectile's own entry in the [`HitboxIndex`] the caller
+    /// passes to [`ProjectileSet::tick`], when the projectile is
+    /// model-backed and so has one (a flying rocket's drawn model, say).
+    /// Ignored by this projectile's own movement trace, the same way
+    /// `owner` is: the index itself keeps every model-backed entity so
+    /// *other* traces (a player's hitscan against a placed tripmine, one
+    /// satchel's blast against another) still see it. `None` for a kind
+    /// with no backing entity, or before the caller has set one.
+    pub self_id: Option<EntityId>,
     /// World-space position.
     pub position: Vec3,
     /// World-space velocity, units per second.
@@ -318,7 +327,13 @@ pub struct ProjectileWorld<'a> {
     /// The map's collision hulls; projectiles sweep hull 0 through it.
     pub collision: &'a CollisionModel,
     /// The entities a projectile may hit, rebuilt by the caller each tick.
-    /// Callers omit the projectile's own owner.
+    /// A projectile's own model-backed entity and its owner may both be
+    /// present here — [`ProjectileSet::tick`] ignores them per trace (via
+    /// [`Projectile::self_id`] and [`Projectile::owner`]) rather than
+    /// requiring the caller to omit them from the shared index, so the
+    /// same index stays usable for anyone else's trace this tick (a
+    /// player's hitscan against a placed tripmine, one satchel's blast
+    /// against another).
     pub entities: &'a HitboxIndex,
     /// Where gravity comes from, shared with player movement.
     pub movement: &'a MoveConfig,
@@ -484,6 +499,7 @@ impl ProjectileSet {
             attack_cooldown: 0.0,
             hop_cooldown: 0.0,
             resting: false,
+            self_id: None,
         });
         Some(id)
     }
@@ -606,6 +622,26 @@ impl ProjectileSet {
         events: &mut Vec<ProjectileEvent>,
     ) -> bool {
         let tuning = world.tuning;
+        // Ignore this projectile's own model-backed entity and its owner
+        // during hitbox refinement, per trace: the shared index otherwise
+        // keeps both (see `ProjectileWorld::entities`'s doc), so a rocket
+        // cannot detonate on its own drawn model or its firer, but a
+        // player's hitscan or another projectile's blast still sees them.
+        let mut ignore = [None, None];
+        let mut next = 0usize;
+        if let Some(id) = projectile.self_id {
+            ignore[next] = Some(id);
+            next += 1;
+        }
+        if let Some(id) = projectile.owner
+            && next < ignore.len()
+        {
+            ignore[next] = Some(id);
+        }
+        let filter = TraceFilter {
+            ignore,
+            mask: TraceMask::SHOT,
+        };
         let mut remaining = step;
         for _ in 0..tuning.max_bumps.max(1) {
             if remaining <= 0.0 || !projectile.velocity.is_finite() {
@@ -613,7 +649,7 @@ impl ProjectileSet {
             }
             let start = projectile.position;
             let end = start + projectile.velocity * remaining;
-            let trace = trace_attack(world.collision, world.entities, start, end, TraceMask::SHOT);
+            let trace = trace_attack_filtered(world.collision, world.entities, start, end, filter);
             if !trace.hit() {
                 projectile.position = end;
                 return false;

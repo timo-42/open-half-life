@@ -89,6 +89,25 @@ pub struct PlayerTag;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Owner(pub Entity);
 
+/// Marks a `hecs` entity as `crate::projectiles::ProjectileSystem`'s own
+/// model-backed rendering of one placed satchel charge or tripmine, so a
+/// generic hit against it (the player's hitscan, another explosive's blast)
+/// can be routed back to the [`ohl_combat::DeployableId`] that actually
+/// tracks its state. Carries an [`ohl_combat::Health`] too (see
+/// `ProjectileSystem::place_satchel`/`place_tripmine`), so it drains
+/// through the same `resolve_damage` path as anything else with a health
+/// bar; reaching zero is what makes it damageable at all, per the
+/// documented behaviour cited in `docs/FORMAT_SOURCES.md` — a tripmine is
+/// shootable and a satchel can be killed by another explosion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeployableRef {
+    /// The placed charge this entity stands in for.
+    pub id: ohl_combat::DeployableId,
+    /// Which kind, so the caller need not guess which of
+    /// [`ohl_combat::DeployableSet`]'s two lists to search.
+    pub kind: ohl_combat::DeployableKind,
+}
+
 /// A `weapon_*` / `ammo_*` / `item_*` entity that has not been taken yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pickup {

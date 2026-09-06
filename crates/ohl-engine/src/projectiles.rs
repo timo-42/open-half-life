@@ -4,17 +4,31 @@
 //! owns `ohl_combat`'s [`ProjectileSet`] and [`DeployableSet`], builds the
 //! [`ProjectileWorld`] they sweep through from the level's collision hulls
 //! and phase 5's [`HitboxIndex`] (`crate::combat::rebuild_hitbox_index`,
-//! owned by `crate::systems::Systems` and already excluding this module's
-//! own model-backed entities — see [`ProjectileSystem::model_entities`] —
-//! so a rocket cannot detonate on its own drawn model), and turns their
-//! events into either a queued
-//! [`DamageInfo`] (direct hits and blast damage, by calling
+//! owned by `crate::systems::Systems`), and turns their events into either
+//! a queued [`DamageInfo`] (direct hits and blast damage, by calling
 //! [`ohl_combat::radius_damage`]) or a [`TransientSprite`] (impacts,
 //! detonations). Model-backed projectile kinds (a rocket, a bolt, a
-//! hornet, a snark) each get a real `hecs` entity carrying [`StudioAnim`]
+//! hornet, a snark) and model-backed deployables (a placed satchel, a
+//! placed tripmine) each get a real `hecs` entity carrying [`StudioAnim`]
 //! so the existing entity-driven render path
 //! (`crates/ohl-engine/src/render.rs`) draws them for free; the
-//! [`ProjectileId`] <-> [`Entity`] mapping is this module's own.
+//! [`ProjectileId`]/[`DeployableId`] <-> [`Entity`] mappings are this
+//! module's own.
+//!
+//! # A shared index, never a global exclusion
+//!
+//! Every model-backed entity this module owns stays *in* phase 5's shared
+//! [`HitboxIndex`] — a placed tripmine or satchel must stay damageable by
+//! the player's hitscan and by another explosive's blast (see
+//! `docs/FORMAT_SOURCES.md`, "Deployable damageability and per-trace hitbox
+//! exclusion"), and a global exclusion would hide it from those traces too,
+//! not just from its own. What must not happen is a projectile detonating
+//! on its own drawn model or hitting its own owner mid-flight; that is
+//! handled per trace instead, by [`ohl_combat::Projectile::self_id`] and
+//! `owner` (set on spawn, here, from this module's own `models` map) making
+//! [`ProjectileSet::tick`] ignore exactly those two entities in its own
+//! sweep (`ohl_combat` ticket #57's `TraceFilter::ignoring`), leaving the
+//! index itself untouched for everyone else's trace this same tick.
 //!
 //! # Numbers this module invents
 //!
@@ -24,20 +38,27 @@
 //! table (`ohl_combat::weapons`, not yet wired to a projectile's *impact*
 //! rather than its *firing*). [`BlastSpec`] and [`ImpactDamage`] hold this
 //! module's own placeholder constants, each marked `// TODO(black-box)`.
+//! [`default_projectile_model_path`] and [`default_deployable_model_path`]
+//! name the conventional GoldSrc asset path for each kind, cited on the
+//! function itself; a map that has not loaded that exact model (this
+//! project loads none by that path itself — see `Level::studio_models`'s
+//! doc) simply leaves the kind model-less, drawn as a sprite or not drawn
+//! at all, never a missing-asset error.
 
 use std::collections::BTreeMap;
 
 use glam::Vec3;
 use ohl_combat::{
-    BlastTarget, DamageInfo, DamageType, DeployableEvent, DeployableId, DeployableSet,
-    DeployableTuning, EntityId as CombatEntityId, ExplosionRule, HitboxIndex, ProjectileEvent,
-    ProjectileId, ProjectileKind, ProjectileSet, ProjectileTuning, ProjectileWorld, radius_damage,
+    BlastTarget, DamageInfo, DamageType, DeployableEvent, DeployableId, DeployableKind,
+    DeployableSet, DeployableTuning, EntityId as CombatEntityId, ExplosionRule, Health,
+    HitboxIndex, ProjectileEvent, ProjectileId, ProjectileKind, ProjectileSet, ProjectileTuning,
+    ProjectileWorld, radius_damage,
 };
 use ohl_game::hecs::Entity;
 use ohl_game::registry::Transform;
 use ohl_physics::MoveConfig;
 
-use crate::components::{Owner, StudioAnim};
+use crate::components::{DeployableRef, Owner, StudioAnim};
 use crate::ids::{entity_id, entity_of};
 use crate::level::Level;
 use crate::sprites::{TransientSprite, TransientSprites};
@@ -49,6 +70,63 @@ use crate::systems::QueuedDamage;
 /// [`ProjectileKind`] variant (six, today), so a scan costs nothing and
 /// stays deterministic without needing `Hash`/`Ord` on the key.
 type ModelTable = Vec<(ProjectileKind, usize)>;
+
+/// As [`ModelTable`], for [`DeployableKind`] (two variants today).
+type DeployableModelTable = Vec<(DeployableKind, usize)>;
+
+/// The conventional GoldSrc asset path for `kind`'s in-flight model, when
+/// this project is confident enough in the filename to name it, or `None`
+/// for a kind this project does not attempt to auto-resolve (see
+/// [`ProjectileSystem::configure_models`]). A caller may still name any
+/// slot directly with [`ProjectileSystem::set_model_for`]; this is only the
+/// automatic default.
+///
+/// Filenames, each independently corroborated by more than one GoldSrc
+/// modding-community source (not Valve's released engine/SDK source; see
+/// `docs/CLEAN_ROOM.md`) rather than derived from any single page:
+/// `models/rpgrocket.mdl`, `models/crossbow_bolt.mdl` and `models/hornet.mdl`
+/// (see `docs/FORMAT_SOURCES.md`, "Deployable damageability and per-trace
+/// hitbox exclusion", for the citations). The hand grenade, the MP5
+/// grenade and the snark have no filename this project found corroborated
+/// by more than one independent source, so they are left `None` rather than
+/// guessed.
+const fn default_projectile_model_path(kind: ProjectileKind) -> Option<&'static str> {
+    match kind {
+        ProjectileKind::Rocket => Some("models/rpgrocket.mdl"),
+        ProjectileKind::CrossbowBolt => Some("models/crossbow_bolt.mdl"),
+        ProjectileKind::Hornet => Some("models/hornet.mdl"),
+        ProjectileKind::HandGrenade | ProjectileKind::Mp5Grenade | ProjectileKind::Snark => None,
+    }
+}
+
+/// As [`default_projectile_model_path`], for a placed deployable.
+///
+/// `models/w_tripmine.mdl` has one corroborating source (see
+/// `docs/FORMAT_SOURCES.md`), weaker than the other three paths' two each;
+/// this project found no corroborated filename at all for the satchel's
+/// *placed, world* model (as
+/// opposed to its carried/view models), so [`DeployableKind::Satchel`] is
+/// left `None` rather than guessed. A satchel therefore stays a simulated
+/// [`ohl_combat::deployables::Satchel`] with no drawn or damageable
+/// stand-in until a caller names a slot explicitly.
+const fn default_deployable_model_path(kind: DeployableKind) -> Option<&'static str> {
+    match kind {
+        DeployableKind::Tripmine => Some("models/w_tripmine.mdl"),
+        DeployableKind::Satchel => None,
+    }
+}
+
+/// The [`Health`] a model-backed deployable's stand-in entity spawns with.
+///
+/// Published for the tripmine (TWHL, "monster_tripmine": one point of
+/// health, so it "can be killed by conventional means", after which it
+/// detonates on a short delay — reviewed 2026-09-06 through search-engine
+/// result summaries, since the page itself answers automated requests with
+/// HTTP 403; see `docs/FORMAT_SOURCES.md`). No source publishes a distinct
+/// number for a placed satchel; this project uses the same one for
+/// consistency (any single hit kills either), an explicit, unverified
+/// choice rather than a claim about the satchel specifically.
+const DEPLOYABLE_HEALTH: f32 = 1.0;
 
 /// This module's own placeholder blast parameters, per detonating kind.
 ///
@@ -110,6 +188,8 @@ pub(crate) struct ProjectileSystem {
     movement: MoveConfig,
     models: BTreeMap<ProjectileId, Entity>,
     model_table: ModelTable,
+    deployable_models: BTreeMap<DeployableId, Entity>,
+    deployable_model_table: DeployableModelTable,
 }
 
 impl ProjectileSystem {
@@ -125,6 +205,8 @@ impl ProjectileSystem {
             movement: MoveConfig::default(),
             models: BTreeMap::new(),
             model_table: ModelTable::new(),
+            deployable_models: BTreeMap::new(),
+            deployable_model_table: DeployableModelTable::new(),
         }
     }
 
@@ -136,20 +218,11 @@ impl ProjectileSystem {
             + self.deployables.tripmines().len()
     }
 
-    /// The model-backed entities this system owns (a flying rocket, a
-    /// placed tripmine, ...), for phase 5's hitbox rebuild
-    /// (`crate::combat::rebuild_hitbox_index`) to exclude: a projectile's
-    /// own drawn model must not be able to stop its own sweep in phase 7.
-    pub(crate) fn model_entities(&self) -> impl Iterator<Item = Entity> + '_ {
-        self.models.values().copied()
-    }
-
     /// Points `kind`'s model-backed rendering at one of
     /// `Level::studio_models`'s slots. `None` removes any mapping, so the
     /// kind is drawn as a transient sprite (or not at all) instead. See the
     /// module doc: no new asset is loaded here, only an existing slot is
     /// named.
-    #[allow(dead_code)]
     pub(crate) fn set_model_for(&mut self, kind: ProjectileKind, model: Option<usize>) {
         self.model_table.retain(|(entry, _)| *entry != kind);
         if let Some(model) = model {
@@ -164,9 +237,78 @@ impl ProjectileSystem {
             .map(|(_, model)| *model)
     }
 
+    /// As [`Self::set_model_for`], for a placed deployable kind.
+    pub(crate) fn set_model_for_deployable(&mut self, kind: DeployableKind, model: Option<usize>) {
+        self.deployable_model_table
+            .retain(|(entry, _)| *entry != kind);
+        if let Some(model) = model {
+            self.deployable_model_table.push((kind, model));
+        }
+    }
+
+    fn deployable_model_for(&self, kind: DeployableKind) -> Option<usize> {
+        self.deployable_model_table
+            .iter()
+            .find(|(entry, _)| *entry == kind)
+            .map(|(_, model)| *model)
+    }
+
+    /// Auto-wires [`Self::set_model_for`]/[`Self::set_model_for_deployable`]
+    /// for whichever kinds have a conventional model path
+    /// ([`default_projectile_model_path`], [`default_deployable_model_path`])
+    /// that happens to match one of `level.studio_model_paths` — i.e. that
+    /// this map already loaded, for its own map-placed entities, under
+    /// that exact path. Leaves an already-configured kind alone, so a
+    /// caller's explicit [`Self::set_model_for`] is never overwritten by a
+    /// later level attach.
+    ///
+    /// This is the one place `set_model_for`/`set_model_for_deployable` are
+    /// called from today; a later package (a monster's own ranged attack,
+    /// say) may call either directly instead.
+    pub(crate) fn configure_models(&mut self, level: &Level) {
+        for kind in [
+            ProjectileKind::Rocket,
+            ProjectileKind::CrossbowBolt,
+            ProjectileKind::HandGrenade,
+            ProjectileKind::Mp5Grenade,
+            ProjectileKind::Hornet,
+            ProjectileKind::Snark,
+        ] {
+            if self.model_for(kind).is_some() {
+                continue;
+            }
+            if let Some(path) = default_projectile_model_path(kind)
+                && let Some(index) = find_model_path(level, path)
+            {
+                self.set_model_for(kind, Some(index));
+            }
+        }
+        for kind in [DeployableKind::Satchel, DeployableKind::Tripmine] {
+            if self.deployable_model_for(kind).is_some() {
+                continue;
+            }
+            if let Some(path) = default_deployable_model_path(kind)
+                && let Some(index) = find_model_path(level, path)
+            {
+                self.set_model_for_deployable(kind, Some(index));
+            }
+        }
+    }
+
+    /// The `hecs` entity standing in for a placed deployable's model, when
+    /// it has one, for a caller that needs to key off it directly (tests,
+    /// and any later render-side lookup).
+    #[allow(dead_code)]
+    pub(crate) fn deployable_entity(&self, id: DeployableId) -> Option<Entity> {
+        self.deployable_models.get(&id).copied()
+    }
+
     /// Spawns one projectile, and — when `kind` has a configured model — a
     /// backing `hecs` entity carrying [`StudioAnim`] so the ordinary
-    /// entity-driven render path draws it.
+    /// entity-driven render path draws it. That entity's id becomes the
+    /// spawned [`ohl_combat::Projectile::self_id`], so its *own* movement
+    /// trace ignores it (see the module doc) without excluding it from
+    /// anyone else's.
     ///
     /// This is the hook `docs/m79-design.md` §8 P3 asks for so a monster's
     /// ranged attack (a later package) can spawn a projectile without a new
@@ -200,20 +342,31 @@ impl ProjectileSystem {
                 let _ = level.registry.world.insert_one(entity, Owner(owner));
             }
             self.models.insert(id, entity);
+            if let Some(projectile) = self.projectiles.get_mut(id) {
+                projectile.self_id = Some(entity_id(entity));
+            }
         }
         Some(id)
     }
 
     /// Places a satchel charge; see [`ohl_combat::DeployableSet::place_satchel`].
+    /// When [`DeployableKind::Satchel`] has a configured model, also spawns
+    /// the backing `hecs` entity ([`StudioAnim`], [`Health`] and
+    /// [`DeployableRef`]) that makes the placed charge damageable — see the
+    /// module doc.
     #[allow(dead_code)]
     pub(crate) fn place_satchel(
         &mut self,
+        level: &mut Level,
         owner: Option<Entity>,
         position: Vec3,
     ) -> Option<DeployableId> {
         let mut events = Vec::new();
-        self.deployables
-            .place_satchel(owner.map(entity_id), position, &mut events)
+        let id = self
+            .deployables
+            .place_satchel(owner.map(entity_id), position, &mut events)?;
+        self.spawn_deployable_model(level, DeployableKind::Satchel, id, position, owner);
+        Some(id)
     }
 
     /// Sets off every satchel this owner (or, when `owner` is `None`, every
@@ -223,7 +376,7 @@ impl ProjectileSystem {
     #[allow(dead_code)]
     pub(crate) fn detonate_all_satchels(
         &mut self,
-        level: &Level,
+        level: &mut Level,
         damage_queue: &mut Vec<QueuedDamage>,
         sprites: &mut TransientSprites,
     ) -> usize {
@@ -239,34 +392,78 @@ impl ProjectileSystem {
 
     /// Places a tripmine on whatever `from -> from + direction * place_range`
     /// runs into. `None` when the level has no collision hulls or the
-    /// underlying placement trace fails.
+    /// underlying placement trace fails. As [`Self::place_satchel`], also
+    /// spawns the model-backed stand-in entity when
+    /// [`DeployableKind::Tripmine`] has a configured model.
     #[allow(dead_code)]
     pub(crate) fn place_tripmine(
         &mut self,
-        level: &Level,
+        level: &mut Level,
         owner: Option<Entity>,
         from: Vec3,
         direction: Vec3,
     ) -> Option<DeployableId> {
         let collision = level.collision.as_ref()?;
         let mut events = Vec::new();
-        self.deployables.place_tripmine(
+        let id = self.deployables.place_tripmine(
             owner.map(entity_id),
             from,
             direction,
             collision,
             &self.deployable_tuning,
             &mut events,
-        )
+        )?;
+        // The placement trace's own hit point (`events`' `Placed` position),
+        // not `from`, is where the mine actually stuck.
+        let position = events
+            .iter()
+            .find_map(|event| match event {
+                DeployableEvent::Placed { position, .. } => Some(*position),
+                _ => None,
+            })
+            .unwrap_or(from);
+        self.spawn_deployable_model(level, DeployableKind::Tripmine, id, position, owner);
+        Some(id)
+    }
+
+    /// Spawns the `hecs` entity standing in for one placed deployable's
+    /// model, when `kind` has a configured slot; a no-op otherwise (the
+    /// deployable stays simulated but undrawn and undamageable, as before
+    /// this module tracked a model for it at all).
+    fn spawn_deployable_model(
+        &mut self,
+        level: &mut Level,
+        kind: DeployableKind,
+        id: DeployableId,
+        position: Vec3,
+        owner: Option<Entity>,
+    ) {
+        let Some(model) = self.deployable_model_for(kind) else {
+            return;
+        };
+        let entity = level.registry.world.spawn((
+            Transform {
+                origin: position,
+                angles: Vec3::ZERO,
+            },
+            StudioAnim::new(model, 0),
+            Health::new(DEPLOYABLE_HEALTH),
+            DeployableRef { id, kind },
+        ));
+        if let Some(owner) = owner {
+            let _ = level.registry.world.insert_one(entity, Owner(owner));
+        }
+        self.deployable_models.insert(id, entity);
     }
 
     /// Advances every projectile and deployable by `dt` seconds, queuing
     /// the damage and transient sprites their events imply.
     ///
     /// `hitboxes` is phase 5's rebuild (`crate::combat::rebuild_hitbox_index`,
-    /// owned by `crate::systems::Systems`), already excluding this system's
-    /// own model-backed entities (see [`Self::model_entities`]) — this
-    /// system traces against it rather than rebuilding its own index.
+    /// owned by `crate::systems::Systems`), which keeps this system's own
+    /// model-backed entities in it (see the module doc) — this system
+    /// traces against it rather than rebuilding its own index, and each
+    /// projectile ignores only its own entity and owner per trace.
     pub(crate) fn tick(
         &mut self,
         level: &mut Level,
@@ -387,12 +584,13 @@ impl ProjectileSystem {
 
     fn apply_deployable_event(
         &mut self,
-        level: &Level,
+        level: &mut Level,
         event: DeployableEvent,
         damage_queue: &mut Vec<QueuedDamage>,
         sprites: &mut TransientSprites,
     ) {
         if let DeployableEvent::Detonated {
+            id,
             position,
             owner,
             radius,
@@ -420,6 +618,52 @@ impl ProjectileSystem {
                 &self.explosion_rule,
                 damage_queue,
             );
+            // The charge is gone: whatever model-backed stand-in it had
+            // (see `spawn_deployable_model`) goes with it, so a shot or
+            // blast that killed it does not leave a dead, undamageable
+            // husk still sitting in the hitbox index next step.
+            if let Some(entity) = self.deployable_models.remove(&id) {
+                let _ = level.registry.world.despawn(entity);
+            }
+        }
+    }
+
+    /// Phase 9's follow-up: a placed satchel or tripmine whose stand-in
+    /// entity's [`Health`] was just brought to zero or below (the player's
+    /// hitscan, or another explosive's blast, resolved by
+    /// `crate::combat::resolve_damage` immediately before this runs) is
+    /// killed, in the published sense the TWHL citation on
+    /// [`DEPLOYABLE_HEALTH`] describes: it detonates, via
+    /// [`ohl_combat::DeployableSet::detonate`] by handle, exactly like any
+    /// other detonation.
+    ///
+    /// Must run after damage resolution, in the same step, so a placed
+    /// charge that dies this step detonates this step rather than one step
+    /// late.
+    pub(crate) fn resolve_deployable_damage(
+        &mut self,
+        level: &mut Level,
+        damage_queue: &mut Vec<QueuedDamage>,
+        sprites: &mut TransientSprites,
+    ) {
+        let mut dead = Vec::new();
+        for (&id, &entity) in &self.deployable_models {
+            if let Ok(health) = level.registry.world.get::<&Health>(entity)
+                && health.is_dead()
+            {
+                dead.push(id);
+            }
+        }
+        for id in dead {
+            let mut events = Vec::new();
+            if self
+                .deployables
+                .detonate(id, &self.deployable_tuning, &mut events)
+            {
+                for event in events {
+                    self.apply_deployable_event(level, event, damage_queue, sprites);
+                }
+            }
         }
     }
 
@@ -679,6 +923,20 @@ fn push_sprite(
     });
 }
 
+/// The index of `path` (case-insensitively) in `level.studio_model_paths`,
+/// for [`ProjectileSystem::configure_models`]. `None` when the map never
+/// loaded that exact model — the ordinary case for every path in
+/// [`default_projectile_model_path`]/[`default_deployable_model_path`],
+/// since none of them is a path this project's own map loader fetches on
+/// its own (see `Level::studio_model_paths`'s doc).
+fn find_model_path(level: &Level, path: &str) -> Option<usize> {
+    let needle = path.to_ascii_lowercase();
+    level
+        .studio_model_paths
+        .iter()
+        .position(|candidate| *candidate == needle)
+}
+
 #[cfg(test)]
 mod tests {
     use ohl_combat::{
@@ -692,6 +950,7 @@ mod tests {
     use crate::ids::entity_id;
     use crate::level::Level;
     use crate::sprites::TransientSprites;
+    use crate::systems::QueuedDamage;
     use crate::test_support::synthetic_map_bsp;
     use ohl_combat::{HitboxIndex, HitboxLimits};
 
@@ -804,7 +1063,7 @@ mod tests {
         let mut system = ProjectileSystem::new(0);
         // Place a mine against the floor, right under the player start.
         let placed = system.place_tripmine(
-            &level,
+            &mut level,
             None,
             glam::Vec3::new(0.0, 0.0, 40.0),
             glam::Vec3::new(0.0, 0.0, -1.0),
@@ -851,11 +1110,11 @@ mod tests {
         ));
 
         let mut system = ProjectileSystem::new(0);
-        system.place_satchel(Some(owner), glam::Vec3::new(0.0, 0.0, 40.0));
+        system.place_satchel(&mut level, Some(owner), glam::Vec3::new(0.0, 0.0, 40.0));
 
         let mut damage_queue = Vec::new();
         let mut sprites = TransientSprites::new();
-        system.detonate_all_satchels(&level, &mut damage_queue, &mut sprites);
+        system.detonate_all_satchels(&mut level, &mut damage_queue, &mut sprites);
 
         let owner_id = entity_id(owner);
         assert!(
@@ -863,6 +1122,158 @@ mod tests {
                 .iter()
                 .any(|queued| queued.info.attacker == Some(owner_id) && queued.info.amount > 0.0),
             "the owner must be among the blast's own hits"
+        );
+    }
+
+    /// A placed tripmine given a model stays *in* the shared hitbox index
+    /// (never excluded, per the module doc) and is therefore reachable by
+    /// the player's own hitscan, which brings its published one point of
+    /// health (see [`DEPLOYABLE_HEALTH`]'s doc) to zero and detonates it —
+    /// `Systems::resolve_deployable_damage`'s job, exercised here directly
+    /// against a hand-built `HitboxIndex` the way
+    /// `crate::combat`'s own weapon-wiring tests do, rather than through a
+    /// full firing state machine.
+    #[test]
+    fn the_players_hitscan_can_hit_and_detonate_a_placed_tripmine() {
+        let mut level = synthetic_level();
+        let mut system = ProjectileSystem::new(0);
+        system.set_model_for_deployable(ohl_combat::DeployableKind::Tripmine, Some(0));
+
+        let placed = system
+            .place_tripmine(
+                &mut level,
+                None,
+                glam::Vec3::new(0.0, 0.0, 40.0),
+                glam::Vec3::new(0.0, 0.0, -1.0),
+            )
+            .expect("the placement trace finds the floor");
+        let mine_entity = system
+            .deployable_entity(placed)
+            .expect("a configured model spawns the stand-in entity");
+
+        // The stand-in entity's own hitbox, as phase 5's real rebuild would
+        // have produced from a posed studio model — built by hand here so
+        // the test does not depend on a real `.mdl` asset's hitboxes.
+        let mut hitboxes = HitboxIndex::new(HitboxLimits::default());
+        let mut entry = ohl_combat::EntityHitboxes::new(
+            entity_id(mine_entity),
+            glam::Vec3::new(0.0, 0.0, 40.0),
+        );
+        entry.push_box(
+            0,
+            glam::Vec3::splat(-4.0),
+            glam::Vec3::splat(4.0),
+            ohl_combat::HitGroup::Generic,
+        );
+        hitboxes.push(entry);
+
+        // The trace itself proves the mine is not excluded from the index.
+        let collision = level.collision.as_ref().expect("the fixture has hulls");
+        let trace = ohl_combat::trace_attack(
+            collision,
+            &hitboxes,
+            glam::Vec3::new(-64.0, 0.0, 40.0),
+            glam::Vec3::new(64.0, 0.0, 40.0),
+            ohl_combat::TraceMask::SHOT,
+        );
+        assert_eq!(
+            trace.entity,
+            Some(entity_id(mine_entity)),
+            "the player's hitscan must be able to hit the placed tripmine"
+        );
+
+        // Queue and resolve the hit exactly as `Systems::weapons`/
+        // `resolve_damage` would, then let the follow-up phase detonate it.
+        let mut damage_queue = vec![QueuedDamage {
+            target: mine_entity,
+            info: ohl_combat::DamageInfo::new(50.0, ohl_combat::DamageType::BULLET),
+        }];
+        let mut player = ohl_player::Player::new(ohl_player::PlayerConfig::default());
+        let mut hud = ohl_ui::hud::HudState::default();
+        let mut presentation = crate::presentation::Presentation::new();
+        let mut player_events = Vec::new();
+        let player_id = level.player;
+        crate::combat::resolve_damage(
+            &mut damage_queue,
+            &mut level,
+            &mut player,
+            player_id,
+            &mut hud,
+            &mut presentation,
+            &mut player_events,
+        );
+
+        let mut sprites = TransientSprites::new();
+        system.resolve_deployable_damage(&mut level, &mut damage_queue, &mut sprites);
+
+        assert!(
+            system.deployables.tripmines().is_empty(),
+            "a killed tripmine must detonate and be removed"
+        );
+        assert!(
+            level
+                .registry
+                .world
+                .get::<&ohl_combat::Health>(mine_entity)
+                .is_err(),
+            "the stand-in entity must be despawned once it detonates"
+        );
+    }
+
+    /// One satchel's blast damages another's stand-in entity (both are
+    /// ordinary [`ohl_combat::Health`]-carrying [`BlastTarget`]s, per
+    /// `blast_targets`'s doc), which brings the second one to zero health
+    /// and detonates it in turn — a chain reaction, not a special case.
+    #[test]
+    fn a_satchel_is_detonated_by_another_satchels_explosion() {
+        let mut level = synthetic_level();
+        let mut system = ProjectileSystem::new(0);
+        system.set_model_for_deployable(ohl_combat::DeployableKind::Satchel, Some(0));
+
+        system
+            .place_satchel(&mut level, None, glam::Vec3::new(0.0, 0.0, 40.0))
+            .expect("the set has room");
+        let second = system
+            .place_satchel(&mut level, None, glam::Vec3::new(20.0, 0.0, 40.0))
+            .expect("the set has room");
+        let second_entity = system
+            .deployable_entity(second)
+            .expect("a configured model spawns the stand-in entity");
+
+        let mut damage_queue = Vec::new();
+        let mut sprites = TransientSprites::new();
+        // Sets off every placed satchel, `first` included; `second` sits
+        // well inside a satchel's blast radius (`DeployableTuning`'s
+        // default 200 units) and has line of sight, so it must take damage
+        // from `first`'s detonation queued here.
+        system.detonate_all_satchels(&mut level, &mut damage_queue, &mut sprites);
+        assert!(
+            damage_queue
+                .iter()
+                .any(|queued| queued.target == second_entity && queued.info.amount > 0.0),
+            "the second satchel must be among the first satchel's blast hits"
+        );
+
+        let mut player = ohl_player::Player::new(ohl_player::PlayerConfig::default());
+        let mut hud = ohl_ui::hud::HudState::default();
+        let mut presentation = crate::presentation::Presentation::new();
+        let mut player_events = Vec::new();
+        let player_id = level.player;
+        crate::combat::resolve_damage(
+            &mut damage_queue,
+            &mut level,
+            &mut player,
+            player_id,
+            &mut hud,
+            &mut presentation,
+            &mut player_events,
+        );
+        system.resolve_deployable_damage(&mut level, &mut damage_queue, &mut sprites);
+
+        assert!(
+            system.deployables.satchels().is_empty(),
+            "both satchels must be gone: the first by its own detonation, \
+             the second killed by the first's blast"
         );
     }
 

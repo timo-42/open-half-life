@@ -2765,3 +2765,68 @@ marked `TODO(black-box)` in the code rather than guessed:
     integration test, which strips `MonsterAi` from a bound monster
     entirely (the worst case of "cannot reach the mark") and asserts the
     script still lets go within the bound.
+
+## Deployable damageability and per-trace hitbox exclusion (M7.9 follow-up)
+
+A PR #70/#69 review found that `crates/ohl-engine/src/projectiles.rs`'s
+`ProjectileSystem::set_model_for` was never called (an "inert seam"), and
+that the exclusion mechanism it would have fed — removing a projectile's
+own model-backed entity from phase 5's shared `Systems::hitboxes` index —
+was architecturally wrong even once wired: it would have hidden a placed
+tripmine or satchel from *every* trace that tick, including the player's
+own hitscan, when the published behaviour is that both are damageable.
+This section cites what changed to fix both: `set_model_for` is now called
+from `ProjectileSystem::configure_models`, and the exclusion moved from the
+shared index to a per-trace ignore list.
+
+- TWHL wiki, "monster_tripmine" (reviewed 2026-09-06 through search-engine
+  result summaries, since the page itself answers automated requests with
+  HTTP 403): the tripmine entity carries one point of health, so it "can be
+  killed by conventional means" (gunfire, an explosion), and killing it
+  starts a short delay before it detonates. This is the published behaviour
+  `crates/ohl-engine/src/projectiles.rs`'s `DEPLOYABLE_HEALTH` and
+  `ProjectileSystem::resolve_deployable_damage` implement: a placed
+  tripmine's model-backed stand-in entity carries an
+  `ohl_combat::Health` of 1, and a hit that brings it to zero calls
+  `ohl_combat::DeployableSet::detonate` by handle in the step right after
+  damage resolves. No source this project may use publishes a distinct
+  health value for a placed satchel charge, so the same constant is reused
+  for it as an explicit, unverified choice, not a claim specific to the
+  satchel.
+- Combine OverWiki, "Snark" (already cited above, "Weapons and firing
+  (M7.2)"): a snark itself has 2 published health, alongside its 10-damage
+  bite — independent confirmation that a model-backed, weapon-spawned
+  entity being directly damageable (not just its target) is a documented
+  Half-Life mechanic, not an invention specific to the tripmine.
+- GoldSrc modding-community filename references (none of them Valve's
+  released engine/SDK source; see `docs/CLEAN_ROOM.md`) for the conventional
+  retail asset paths named in `crates/ohl-engine/src/projectiles.rs`'s
+  `default_projectile_model_path`/`default_deployable_model_path`:
+  `models/rpgrocket.mdl` (RPG rocket) and `models/hornet.mdl` (hornet), each
+  independently named by both a Half-Life HD modelpack's Steam Workshop
+  listing and a "HALF-LIFE OVERHAUL PACK" credits document;
+  `models/crossbow_bolt.mdl` (crossbow bolt), named the same way; and
+  `models/w_tripmine.mdl` (placed tripmine), named by a single corroborating
+  source (a SnarkPit forum thread describing a community model pack that
+  added the missing world model, compiled from the official SDK's
+  `v_tripmine.mdl` reference geometry) rather than two, so it is a weaker
+  attribution than the other three and is recorded as such. This project
+  found no corroborated filename at all for the satchel charge's *placed,
+  world* model (its carried/view models are attested, its dropped-charge
+  model is not), so `DeployableKind::Satchel` is left without an automatic
+  default. Naming a path here loads nothing new — see
+  `Level::studio_model_paths`'s doc — it only lets an already-loaded model
+  (one the map's own entities reference) be recognised by its conventional
+  filename; a map that never loads that exact path leaves the kind undrawn,
+  exactly as before this change.
+
+Project behaviour, not itself a claim about the original engine: keeping a
+model-backed projectile and every placed deployable in the same shared
+`HitboxIndex` phase 6's hitscan and phase 7's blast resolution both trace
+against, and instead giving `ohl_combat::Projectile` a `self_id` field
+(alongside its existing `owner`) so its own movement sweep
+(`ohl_combat::projectile::ProjectileSet::tick`'s `sweep`) builds a
+`TraceFilter` that ignores just those two entities, via
+`TraceFilter::ignoring`'s two-slot `ignore` list. This is this project's own
+architectural choice about *where* a self-hit exclusion belongs (per trace,
+not per index); nothing about it is a published fact.

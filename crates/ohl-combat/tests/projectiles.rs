@@ -507,3 +507,98 @@ fn the_same_seed_and_inputs_produce_the_same_events() {
         "a different seed sends the wandering snark somewhere else"
     );
 }
+
+/// The per-trace exclusion this crate uses instead of asking a caller to
+/// leave a projectile's own model and its owner out of the shared
+/// `HitboxIndex` (see `Projectile::self_id`/`owner`'s doc and
+/// `crate::trace::TraceFilter::ignoring`'s): a caller may put both in the
+/// index — because something else's trace this same tick still needs to
+/// hit them, e.g. a placed tripmine's model — and this projectile's own
+/// sweep must still ignore exactly those two, and nothing else.
+#[test]
+fn a_rockets_own_model_and_owner_do_not_block_its_own_flight_trace() {
+    let world = room();
+    let movement = MoveConfig::default();
+    let tuning = ProjectileTuning::default();
+
+    let self_id = EntityId(101);
+    let owner_id = EntityId(202);
+    // Both boxes sit squarely on the rocket's straight-line path, close
+    // enough that an unfiltered trace would stop it on the very first
+    // substep.
+    let entities = index_of(vec![
+        cube_entity(self_id.0, Vec3::new(10.0, 0.0, 40.0)),
+        cube_entity(owner_id.0, Vec3::new(20.0, 0.0, 40.0)),
+    ]);
+    let context = ProjectileWorld {
+        collision: &world,
+        entities: &entities,
+        movement: &movement,
+        tuning: &tuning,
+    };
+
+    let mut set = ProjectileSet::new(ProjectileLimits::default(), 0);
+    let id = set
+        .spawn(
+            ProjectileKind::Rocket,
+            Some(owner_id),
+            Vec3::new(0.0, 0.0, 40.0),
+            Vec3::new(500.0, 0.0, 0.0),
+            &tuning,
+        )
+        .expect("the set has room for one rocket");
+    set.get_mut(id).expect("just spawned").self_id = Some(self_id);
+
+    let events = run(&mut set, &context, 0.2);
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, ProjectileEvent::Detonate { .. })),
+        "the rocket must not detonate on its own model or its owner: {events:?}"
+    );
+    let flown = set.get(id).map_or(0.0, |projectile| projectile.position.x);
+    assert!(
+        flown > 20.0,
+        "the rocket must fly past both ignored boxes, got x={flown}"
+    );
+}
+
+/// The same scene, minus the ignore list: an unrelated entity's box on the
+/// same path still stops the rocket, so the fix above is a targeted
+/// exclusion and not a blanket "projectiles hit nothing" regression.
+#[test]
+fn a_projectile_still_hits_an_unrelated_entity_in_its_path() {
+    let world = room();
+    let movement = MoveConfig::default();
+    let tuning = ProjectileTuning::default();
+
+    let bystander_id = EntityId(303);
+    let entities = index_of(vec![cube_entity(
+        bystander_id.0,
+        Vec3::new(10.0, 0.0, 40.0),
+    )]);
+    let context = ProjectileWorld {
+        collision: &world,
+        entities: &entities,
+        movement: &movement,
+        tuning: &tuning,
+    };
+
+    let mut set = ProjectileSet::new(ProjectileLimits::default(), 0);
+    set.spawn(
+        ProjectileKind::Rocket,
+        None,
+        Vec3::new(0.0, 0.0, 40.0),
+        Vec3::new(500.0, 0.0, 0.0),
+        &tuning,
+    )
+    .expect("the set has room for one rocket");
+
+    let events = run(&mut set, &context, 0.2);
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, ProjectileEvent::Detonate { .. })),
+        "an unrelated entity in the flight path must still stop the rocket: {events:?}"
+    );
+}
