@@ -6,7 +6,9 @@ use ohl_formats::test_support::{
     build_collision_slope_bsp,
 };
 use ohl_physics::controller::TICK_SECONDS;
-use ohl_physics::test_support::{build_flat_floor_bsp, collision_model_from};
+use ohl_physics::test_support::{
+    build_flat_floor_bsp, build_xen_overhang_bsp, collision_model_from,
+};
 use ohl_physics::{
     CollisionModel, ControllerInput, MoveConfig, MoveInput, PlayerController, PlayerState, Vec3,
     WaterLevel, contents, player_move, point_contents,
@@ -489,5 +491,52 @@ fn a_terminal_velocity_drop_lands_on_the_floor_rather_than_inside_it() {
     assert!(
         !contents::is_solid(point_contents(&model, eye)),
         "the eye position is embedded in solid at the landing spot"
+    );
+}
+
+/// The flat-floor fixture above can never actually disagree between the
+/// standing hull and hull 0 (`ohl-physics` builds every hull from the same
+/// brush list; see `expand_plane` in `crates/ohl-physics/src/movement.rs`),
+/// so it would pass this same landing-embedded assertion even with
+/// `unstick_from_ground` removed entirely. This test uses
+/// `build_xen_overhang_bsp` instead: a floor plus a low ledge that only
+/// hull 0 knows about (the player hulls' clip trees never get it), which
+/// is exactly the PR #96 Xen-fall failure mode — the standing hull's own
+/// landing check reads clear, but the eye position against hull 0 does
+/// not, until `unstick_from_ground` nudges the origin clear of it.
+///
+/// Confirmed to fail without the fix: temporarily removing the
+/// `unstick_from_ground` call from `categorize_position` (restored
+/// immediately after) makes this test's own eye-position assertion below
+/// fail with the eye still inside the ledge, `(60.0..=66.0)`.
+#[test]
+fn a_landing_under_a_hull0_only_overhang_gets_unstuck_from_it() {
+    let model = collision_model_from(&build_xen_overhang_bsp());
+    let config = MoveConfig::default();
+    let mut state = PlayerState::at(Vec3::new(0.0, 0.0, 200.0));
+    simulate(&model, &mut state, &MoveInput::default(), &config, 2.0);
+
+    assert!(state.on_ground, "the player never found the floor");
+    assert!(
+        (state.origin.z - FLOOR_ORIGIN_Z).abs() < 6.0,
+        "settled at {} rather than resting near the floor at {FLOOR_ORIGIN_Z}",
+        state.origin.z
+    );
+
+    // The standing hull's own zero-length trace was always going to read
+    // clear here: the whole point of this fixture is that only hull 0
+    // knows about the overhang.
+    let hull_trace = model.trace(state.hull(), state.origin, state.origin);
+    assert!(
+        !hull_trace.start_solid,
+        "the standing hull unexpectedly saw the hull-0-only overhang"
+    );
+
+    // This is the assertion that actually exercises the recovery: without
+    // `unstick_from_ground`, the eye position stays inside the ledge.
+    let eye = state.eye_position(&config);
+    assert!(
+        !contents::is_solid(point_contents(&model, eye)),
+        "the eye position is embedded in the hull-0-only overhang: {eye:?}"
     );
 }

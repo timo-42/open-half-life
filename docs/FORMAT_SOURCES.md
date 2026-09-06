@@ -1023,6 +1023,37 @@ the real game before this project may claim movement parity.
   community-documented; this crate accepts them, treats `CONTENTS_CLIP` as
   blocking for players and every other non-solid value as passable, and
   rejects any contents value outside `-16..=-1` as malformed input.
+- Ground detection (`movement::categorize_position`'s short trace straight
+  down from the player's origin, accepted as standing on the ground once it
+  hits a surface within the walkable-slope limit) follows the
+  widely-reported general shape of this family of movement code — every
+  derivative re-checks the ground each step rather than trusting cached
+  state — but no source reviewed for this crate (including the jwchong
+  reference above) specifies the exact probe distance (`2.0` units) or that
+  it is a fresh hull trace rather than, say, a cached contact. Both are
+  recorded here as **project-owned, TODO(black-box)**: they must be
+  verified against the real game.
+- `movement::unstick_from_ground` (added for
+  [PR #96](https://github.com/timo-42/open-half-life/pull/96), the Xen
+  fall-landing report) has no public source at all: no document reviewed
+  for this crate describes a recovery step for a landing whose own
+  ground-probe trace still leaves the player's hull — or, checked
+  separately, the eye position against hull 0 — reading as embedded in
+  solid, which a fast enough fall's landing tick can otherwise produce (the
+  probe backs off only `DIST_EPSILON` short of the plane it hit, not clear
+  of the hull's own bounding box, and hull 0's exact geometry can disagree
+  with the standing hull's clip tree at an overhang). This is a
+  **project-owned, TODO(black-box) conservative rule**: nudge the origin
+  straight up in fixed 1-unit steps, re-checking both ways at each
+  candidate rather than solving for the exact clearance analytically, up
+  to a bounded 34-unit ceiling (`UNSTICK_MAX_NUDGE`), so a landing spot
+  that is genuinely solid all the way through gives up instead of looping
+  or overshooting past a thin ledge just above the real floor. Gated on
+  the airborne-to-grounded transition only (not every tick already
+  standing), so it runs once per landing rather than fighting a player
+  who is deliberately standing somewhere snug. Must be verified against
+  the real game once a black-box method for observing an equivalent
+  recovery, if the retail engine has one, is found.
 
 Every collision fixture used by the tests is synthesized in-process by this
 project's own writers in `crates/ohl-formats/src/test_support.rs` (a box room
