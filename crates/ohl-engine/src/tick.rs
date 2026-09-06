@@ -40,9 +40,12 @@ impl TickClock {
     /// How many whole steps `dt` releases, banking the remainder.
     ///
     /// A non-finite or non-positive `dt` releases nothing and changes
-    /// nothing. When the count would exceed [`MAX_TICKS_PER_FRAME`] the
-    /// backlog is dropped rather than banked, so a long stall costs one
-    /// clamped frame instead of an ever-growing catch-up.
+    /// nothing. A frame that releases the full [`MAX_TICKS_PER_FRAME`]
+    /// burst discards whatever is left over instead of banking it, so a
+    /// long stall costs one clamped frame instead of an ever-growing
+    /// catch-up. That also means a frame landing exactly on the clamp
+    /// drops its sub-step remainder, which is the price of not having to
+    /// distinguish "clamped" from "exactly full" here.
     pub fn steps(&mut self, dt: f32) -> u32 {
         if !dt.is_finite() || dt <= 0.0 {
             return 0;
@@ -58,8 +61,12 @@ impl TickClock {
             steps += 1;
         }
         if steps == MAX_TICKS_PER_FRAME {
-            // Drop the backlog instead of catching up forever, matching
-            // `ohl_physics::PlayerController::advance`.
+            // The loop stopped because it hit the burst limit, so whatever
+            // is still banked is a backlog this frame refused to run:
+            // discard it rather than catch up forever, matching
+            // `ohl_physics::PlayerController::advance`. A frame that
+            // happened to land exactly on the limit loses only a remainder
+            // shorter than one step.
             self.leftover = 0.0;
         }
         steps

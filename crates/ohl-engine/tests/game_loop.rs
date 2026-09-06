@@ -107,6 +107,67 @@ fn pressing_use_opens_the_door_in_front_of_the_player() {
     );
 }
 
+/// A host rendering faster than the tick rate delivers most presses on
+/// frames too short to release a step. The edge must survive until a step
+/// runs, or "use" silently stops working above 100 fps.
+#[test]
+fn a_use_press_on_a_sub_step_frame_still_opens_the_door() {
+    const FAST_STEP: f32 = 1.0 / 144.0;
+
+    let assets = assets();
+    let mut game = game(&assets);
+    assert_eq!(door_state(&game), MoverState::Closed);
+
+    // The very first frame is shorter than one simulation step, so it
+    // releases none: the press has nowhere to go yet.
+    game.tick(
+        FAST_STEP,
+        &Input {
+            use_pressed: true,
+            ..Input::default()
+        },
+    );
+    assert!(
+        game.elapsed() < ohl_engine::TICK_SECONDS,
+        "the first frame is too short to release a step"
+    );
+
+    // Subsequent frames carry no press at all; the banked edge is what has
+    // to open the door.
+    for _ in 0..4 {
+        game.tick(FAST_STEP, &Input::default());
+    }
+    assert_ne!(
+        door_state(&game),
+        MoverState::Closed,
+        "a press delivered on a sub-step frame is not dropped"
+    );
+}
+
+/// The other half of the rule: one press is one activation, however many
+/// steps the frame it arrived on releases.
+#[test]
+fn a_single_use_press_is_consumed_by_exactly_one_step() {
+    let assets = assets();
+    let mut game = game(&assets);
+
+    // A frame long enough to release the full burst of steps.
+    game.tick(
+        ohl_engine::MAX_TICK_SECONDS,
+        &Input {
+            use_pressed: true,
+            ..Input::default()
+        },
+    );
+    let opened = door_state(&game);
+    assert_ne!(opened, MoverState::Closed, "the press reached the door");
+
+    // If the edge were re-latched by every step, the door would have been
+    // re-used nine more times within that one frame; the fixture's door
+    // toggles, so that would have left it closed again.
+    assert!(matches!(opened, MoverState::Opening | MoverState::Open));
+}
+
 #[test]
 fn a_change_level_event_reaches_the_host() {
     let assets = assets();
