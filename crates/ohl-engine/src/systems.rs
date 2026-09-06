@@ -9,6 +9,14 @@
 //!   health it just read.
 //! - **Movers run last.** A door blocked or damaged this step resolves
 //!   against positions everything else has already agreed on.
+//! - **A `trigger_camera` sequence overrides the view after movers, not
+//!   before.** Phase 12.5 (`crate::camera::apply_override`) runs right
+//!   after phase 12's `Simulation::tick`, so a sequence that activates or
+//!   completes this very step already shows up in the frame this step
+//!   produces, even though the "Freeze Player" input gating phase 1/2 apply
+//!   still lags one tick behind (the same lag `ohl_game::scripts::
+//!   ScriptActivation` already has between a trigger firing and its being
+//!   drained).
 //!
 //! Phases this package does not fill yet are present as empty hooks with the
 //! signature the phase needs, so a later package adds a body rather than
@@ -195,6 +203,29 @@ impl LatchedInput {
             flashlight_pressed: edges.flashlight,
             select_slot: edges.select_slot,
             ..Self::held(input)
+        }
+    }
+
+    /// This input with movement and attack axes zeroed, for a
+    /// `trigger_camera` sequence's documented "Freeze Player" spawnflag —
+    /// "Stop the player from moving while camera is in action" — which
+    /// leaves mouse look untouched (that is handled entirely outside this
+    /// struct, in `Game::tick`'s own per-frame mouse-delta application, so
+    /// there is nothing here to preserve for it). `use`/`reload`/
+    /// `flashlight`/weapon-select edges are left alone: the published
+    /// behaviour only names movement and (per this project's own reading,
+    /// since no page enumerates it) attack.
+    #[must_use]
+    const fn frozen(self) -> Self {
+        Self {
+            forward: 0,
+            right: 0,
+            up: 0,
+            jump: false,
+            duck: false,
+            attack: false,
+            attack2: false,
+            ..self
         }
     }
 
@@ -638,6 +669,15 @@ impl Systems {
         events: &mut Vec<Event>,
     ) {
         let input = self.latch_input(); // 1
+        // A `trigger_camera` sequence's documented "Freeze Player" flag, as
+        // it stood at the start of this step (before phase 12 below may
+        // activate or complete one); see `crate::camera`'s module doc for
+        // why this one-tick lag mirrors `ScriptActivation`'s own.
+        let input = if crate::camera::freeze_active(level) {
+            input.frozen()
+        } else {
+            input
+        };
         Self::player_move(level, camera, controller, input, dt); // 2
         self.physics_output = ohl_player::PhysicsOutput::from_move(
             &controller.state,
@@ -655,6 +695,7 @@ impl Systems {
         self.lifecycle(level, dt); // 10
         self.pickups(level, input, dt); // 11
         self.triggers_and_movers(level, camera, input, dt, events); // 12
+        crate::camera::apply_override(level, camera); // 12.5
         self.presentation(level, dt); // 13
         self.substep_counter = self.substep_counter.wrapping_add(1);
     }

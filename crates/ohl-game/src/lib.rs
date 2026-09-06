@@ -17,6 +17,7 @@
 #![forbid(unsafe_code)]
 
 pub mod brush;
+pub mod camera;
 pub mod keyvalues;
 pub mod logic;
 pub mod registry;
@@ -29,10 +30,11 @@ pub mod track_train;
 pub use hecs;
 
 pub use brush::ModelInstance;
+pub use camera::TriggerCameraState;
 pub use keyvalues::{EntityDef, Limits as KeyvalueLimits, ModelRef};
 pub use logic::{
     Event, LevelChange, PendingFire, Simulation, SimulationState, TriggerSnapshot,
     find_usable_within,
 };
-pub use registry::{Ladder, Registry, TRIGGER_HURT_INTERVAL_SECONDS, TriggerHurt};
+pub use registry::{Ladder, Registry, TRIGGER_HURT_INTERVAL_SECONDS, TriggerCamera, TriggerHurt};
 pub use track_train::{PathChain, PathNode, TrackTrain, TrackTrainState};

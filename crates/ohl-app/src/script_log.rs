@@ -26,6 +26,10 @@
 //!   `ohl_engine::Game::active_script_count` rising above zero and, having
 //!   done so, returning to it. Both are fixed strings: no script, monster
 //!   or sequence name is ever interpolated (design §10).
+//! - "A camera sequence started." / "A camera sequence finished." — the
+//!   same rising-then-falling edge, over
+//!   `ohl_engine::Game::camera_sequence_active` (M7.12, `trigger_camera`).
+//!   Also fixed strings: no camera or `target` name is ever interpolated.
 
 use ohl_engine::Game;
 
@@ -45,6 +49,9 @@ pub struct ScriptLog {
     script_started: bool,
     script_finished: bool,
     script_was_active: bool,
+    camera_started: bool,
+    camera_finished: bool,
+    camera_was_active: bool,
     baseline_fired: u64,
     baseline_hit: u64,
     baseline_damage_events: u64,
@@ -69,6 +76,9 @@ impl ScriptLog {
             script_started: false,
             script_finished: false,
             script_was_active: game.active_script_count() > 0,
+            camera_started: false,
+            camera_finished: false,
+            camera_was_active: game.camera_sequence_active(),
             baseline_fired: game.weapon_fired_count(),
             baseline_hit: game.shot_hit_count(),
             baseline_damage_events: game.monster_damage_event_count(),
@@ -118,5 +128,16 @@ impl ScriptLog {
             tracing::info!("A scripted sequence finished.");
         }
         self.script_was_active = active;
+
+        let camera_active = game.camera_sequence_active();
+        if camera_active && !self.camera_started {
+            self.camera_started = true;
+            tracing::info!("A camera sequence started.");
+        }
+        if !camera_active && self.camera_was_active && !self.camera_finished {
+            self.camera_finished = true;
+            tracing::info!("A camera sequence finished.");
+        }
+        self.camera_was_active = camera_active;
     }
 }

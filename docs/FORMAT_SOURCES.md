@@ -2852,3 +2852,97 @@ whole chain of deployable detonations within one step, rather than
 spreading it across several) is this project's own choice about *when* a
 chain reaction resolves; nothing in any cited source says whether the
 original engine did the same within a frame or across several.
+
+## Camera sequences (`trigger_camera`)
+
+- [TWHL wiki: trigger_camera](https://twhl.info/wiki/page/trigger_camera) and
+  [TWHL "Tutorial: trigger_camera"](https://twhl.info/wiki/page/Tutorial:_trigger_camera).
+  Both pages return HTTP 403 to automated fetches from this environment,
+  matching the precedent already recorded above ("Track trains and paths")
+  for the other TWHL entity pages, so the facts below were consulted through
+  a text-extraction proxy of the same exact URLs rather than a direct fetch,
+  the same accommodation already used for the `path_track`/`func_tracktrain`
+  pages.
+  - `trigger_camera`'s documented keyvalues: `target` ("The entity that this
+    camera will be looking at" — the same generic `target` keyvalue this
+    project's registry already turns into a `Target` component for every
+    other entity, so it does double duty here as both the look-at entity
+    and, per the documented "When the player's view is released,
+    trigger_camera fires its Target" behaviour, the ordinary
+    activate-on-completion target every other trigger fires), `wait` ("Time
+    to keep the camera going" — the documented total hold duration, "how
+    long ... your camera will last for before reverting back to Gordon"),
+    `moveto` ("The first path_corner to aim for" — resolved into a
+    `path_corner` chain the same way `func_train`/`func_tracktrain` already
+    do; see "Track trains and paths" above), `speed` ("The speed to start
+    at"), `acceleration` and `deceleration` (`units/sec^2`, published as
+    field labels with no formula given for how they combine with `speed`
+    over a segment).
+  - The documented spawnflags: `1` "Start At Player" ("Begin with the
+    player's view"), `2` "Follow Player" ("Use the player as the focal
+    point" — the Tutorial page: with this flag set "the camera will be
+    'looking' at Gordon" instead of at `target`), `4` "Freeze Player" ("Stop
+    the player from moving while camera is in action" — the same proxied
+    fetch states this flag "only prevents player movement. The player can
+    still look around").
+  - The Tutorial page states `trigger_camera` "is essentially a func_train.
+    It has to follow a set of path_corners, has options for speed", and
+    that a `path_corner`'s own "New train speed" ("When the camera gets to
+    this point you can set it to go faster or slower. '0' means no speed
+    change") and "Wait here (secs)" fields apply the same way they do to a
+    train — the basis for reusing `ohl_game::track_train::PathChain`/`Path`
+    unchanged rather than inventing a parallel path type.
+  - **Retriggering**: "An active camera can be stopped by triggering it
+    again." Neither proxied page states whether a second, non-stopping
+    activation resumes a stopped sequence from where it left off or restarts
+    it; see the `TODO(black-box)` on `ohl_game::camera::TriggerCameraState::trigger`.
+  - The `wait`/`moveto`/`speed`/`acceleration`/`deceleration` keyvalue *default
+    values* (`10`, `""`, `0`, `500`, `500`) are not shown verbatim on either
+    proxied TWHL page; they were corroborated only through a search-engine
+    summary of the published Half-Life FGD entity definition for
+    `trigger_camera`, not a directly fetchable primary source. Treat these
+    specific numbers the same defensive way this project already treats
+    `ohl_game::track_train::PATH_TRACK_STOP_FLAG`'s bit value: a defensible
+    best-public-source default, not a confirmed engine constant; see the
+    `TODO(black-box)` on `ohl_game::registry::TriggerCamera`.
+
+Everything not directly stated by the pages above is marked `TODO(black-box)`
+at its point of use in `crates/ohl-game/src/camera.rs` and
+`crates/ohl-engine/src/camera.rs` rather than guessed at silently, in
+particular: the exact `acceleration`/`deceleration` curve (no public source
+gives a formula, so this project's camera travels its path at a constant
+`speed`, exactly like `ohl_game::track_train::TrackTrainState` already does
+for `bank`/`wheels` — the two fields are recorded on `TriggerCamera` but not
+applied to motion); whether reaching a non-looped path's dead end ends the
+whole sequence immediately or merely stops the camera moving until `wait`
+separately elapses (this project ends the sequence at whichever happens
+first, since the task-level design note for this feature explicitly reads
+the documented behaviour as "for `wait` seconds ... or until the path
+ends"); whether a `path_corner`'s own "Wait for retrigger" spawnflag mid-path
+ends the sequence the same way a dead end does or actually waits
+indefinitely for an explicit re-trigger the way a `func_tracktrain` does
+(this project takes the former reading, since the latter would silently
+strand the player's view forever on a map that relies on the default
+`wait`-based ending instead); how "Start At Player" and `moveto` combine
+when both are set (this project only applies "Start At Player" to a
+`trigger_camera` with no `moveto` path; a `moveto` path's own authored first
+node position is used unconditionally otherwise); and how "Follow Player"
+and an explicit `target` combine when both are set (this project prefers
+"Follow Player", since it is the documented override of the plain `target`
+look-at). No SDK source or decompiled logic was consulted for any of the
+above.
+
+Project behaviour supported: `crates/ohl-game/src/camera.rs` resolves a
+`trigger_camera`'s `moveto` into the same bounded `PathChain` type
+`ohl_game::track_train` already builds, and advances a
+`TriggerCameraState` each fixed timestep alongside the existing
+door/button/platform/train state machines in
+`ohl_game::logic::Simulation::tick`, triggered and re-triggered through the
+same `Simulation::activate` "use" path every other entity in this crate
+already shares (including `trigger_auto`, unchanged from PR #75).
+`ohl-engine`'s `crates/ohl-engine/src/camera.rs` reads the resolved
+position/look-at direction each frame the same way `render.rs` already reads
+a door's timer or a track train's position, overriding the world camera
+`ohl-engine::Game` renders from and reports through `Game::eye_position()`
+while a sequence is active, and gates player movement/attack input (but not
+mouse look) while the active sequence's "Freeze Player" flag is set.

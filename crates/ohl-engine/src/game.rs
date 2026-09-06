@@ -486,6 +486,20 @@ impl Game {
         self.systems.ai().damage_event_count()
     }
 
+    /// Whether a `trigger_camera` sequence is currently overriding the
+    /// player's view (see `crate::camera`). Data, never a log line; used by
+    /// `ohl-app`'s `--script-log` milestone lines the same way
+    /// [`Self::active_script_count`] already is.
+    #[must_use]
+    pub fn camera_sequence_active(&self) -> bool {
+        self.level
+            .registry
+            .world
+            .query::<&ohl_game::TriggerCameraState>()
+            .iter()
+            .any(ohl_game::TriggerCameraState::is_active)
+    }
+
     /// How many `scripted_sequence`/`aiscripted_sequence` entities are
     /// currently possessing a monster. Data, never a log line.
     #[must_use]

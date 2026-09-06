@@ -2331,6 +2331,46 @@ cross-compilation.
   state. See `docs/FORMAT_SOURCES.md`, "Scripted sequences and talk
   monsters", for sources and the nineteen `TODO(black-box)` items.
 
+- **M7.12: trigger_camera.** `ohl-game::registry::TriggerCamera` reads the
+  published `trigger_camera` keyvalues (`wait`, `moveto`, `speed`,
+  `acceleration`, `deceleration`, `target`) and its three documented
+  spawnflags (`Start At Player`, `Follow Player`, `Freeze Player`);
+  `ohl-game::camera::TriggerCameraState` resolves `moveto` into the same
+  `PathChain` type `func_train`/`func_tracktrain` already builds (M7.10) and
+  rides the same `Simulation::activate` "use"/target-firing path every
+  other entity here shares, including `trigger_auto` unchanged from #75 —
+  re-triggering an active sequence stops it (per the published behaviour)
+  without firing its completion `target`; only a natural completion (the
+  `wait` hold elapsing, or a non-looped path's dead end, whichever comes
+  first) does. `ohl-engine::camera` reads the resolved state each frame the
+  same way `render.rs` already reads a track train's position: it overrides
+  the world camera `Game::eye_position`/`Game::render` use while a sequence
+  is active (position from the path or the entity's own placed origin,
+  aimed at `target`'s entity, at the player under `Follow Player`, or along
+  the path's own heading otherwise), and gates player movement/attack input
+  (never mouse look) while `Freeze Player` is set — landing one tick behind
+  the view override itself, the same lag `ScriptActivation` already has
+  between a trigger firing and its being drained. Behind `--script-log`,
+  `ohl-app` emits the two fixed lines "A camera sequence started." and "A
+  camera sequence finished."; nothing map-derived is ever interpolated.
+  `TriggerCameraState` is not part of any save section: `SECTION_SIMULATION`
+  is `postcard`-encoded, which is not self-describing, so an additive field
+  (even with `#[serde(default)]`) fails to decode any save file written
+  before it existed — confirmed with a standalone reproduction — so a save
+  taken mid-sequence resumes with it dormant instead, the same known gap
+  `TrackTrainState` already has for a `func_train` mid-route. Covered by
+  `ohl-game` unit tests over the state machine (hold duration, path
+  traversal and its own node `wait`, the dead-end-completes-early reading,
+  re-trigger semantics, completion firing exactly once, and a `proptest`
+  over arbitrary chains/speeds/possibly-non-finite `dt`) and `ohl-engine`
+  integration tests over a `trigger_auto`-driven synthetic room (the eye
+  position matching the camera's own origin during the hold and reverting
+  afterward, `Freeze Player` ignoring forward input for the whole hold and
+  releasing it afterward, plain input still moving the player without that
+  flag, and a delayed second `trigger_auto` stopping an active sequence
+  without firing its target). See `docs/FORMAT_SOURCES.md`, "Camera
+  sequences", for sources and every `TODO(black-box)` item.
+
 ## Status as of 2026-09-06
 
 This section is a snapshot, not a replacement for the package-by-package
@@ -2362,10 +2402,13 @@ Open follow-ups, in no particular priority order:
   yet exclude itself the same way. Filling this in is a small seam, not a
   design change.
 - **`trigger_camera`/`trigger_auto`-driven intro views (fidelity finding
-  F2).** `trigger_auto` itself is implemented (M7.11 wires it into the
-  scripted-sequence "use"/target-firing path), but `trigger_camera` — the
-  entity that actually takes over the view for a scripted intro shot — has
-  no implementation yet.
+  F2) — implemented (M7.12), training-start view unconfirmed.**
+  `trigger_camera` now takes over the view the same way `trigger_auto`
+  already fired other targets (M7.11); see M7.12 above. Whether this
+  actually explains fidelity round 4/5's `t0a0` spawn-framing finding (F2/E4)
+  is still open: that specific map's own entity data has not yet been
+  black-box confirmed to contain a `trigger_camera` at all, only that no
+  other candidate cause survived rounds 4 and 5's investigation.
 - **`func_tracktrain` `altpath` branching.** The `path_track` chain builder
   (M7.10, "track trains") resolves a `func_train`/`func_tracktrain`'s
   `target` into a bounded `PathChain`, but `path_track`'s documented

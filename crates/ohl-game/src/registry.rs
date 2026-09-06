@@ -410,6 +410,72 @@ pub struct AutoTrigger {
     pub fired: bool,
 }
 
+/// `trigger_camera`'s documented "Start At Player" spawnflag: the sequence's
+/// camera begins at the player's own current view instead of the entity's
+/// placed `origin`/`angles`, when it has no `moveto` path (see
+/// `docs/FORMAT_SOURCES.md`, "Camera sequences").
+pub const SPAWNFLAG_CAMERA_START_AT_PLAYER: u32 = 1;
+
+/// `trigger_camera`'s documented "Follow Player" spawnflag: the camera aims
+/// at the player instead of at `target`.
+pub const SPAWNFLAG_CAMERA_FOLLOW_PLAYER: u32 = 2;
+
+/// `trigger_camera`'s documented "Freeze Player" spawnflag: player movement
+/// is disabled while the sequence is active (documented as not affecting
+/// mouse look).
+pub const SPAWNFLAG_CAMERA_FREEZE_PLAYER: u32 = 4;
+
+/// `trigger_camera`: a scripted view-override sequence, optionally moving
+/// along a `path_corner`/`path_track` chain named by `moveto`.
+///
+/// Published behaviour and every keyvalue/spawnflag below are recorded in
+/// `docs/FORMAT_SOURCES.md` ("Camera sequences"); the entity's own `target`
+/// keyvalue (already a generic [`Target`] component every entity gets) does
+/// double duty as the look-at entity and the completion target, per that
+/// section.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct TriggerCamera {
+    /// `wait`: total seconds the sequence holds the player's view before
+    /// reverting, regardless of path progress.
+    ///
+    /// **`TODO(black-box)`**: the default (`10.0`) is corroborated only by a
+    /// search-engine summary of the published FGD, not a directly fetchable
+    /// primary source; see `docs/FORMAT_SOURCES.md`.
+    pub hold_seconds: f32,
+    /// `moveto`: the first `path_corner`/`path_track` name, or empty for a
+    /// stationary camera.
+    pub move_to: String,
+    /// `speed`: initial travel speed, units/second.
+    pub speed: f32,
+    /// `acceleration`: recorded but not applied; no public source documents
+    /// how it combines with `speed` over a segment, so this project travels
+    /// the path at a constant `speed`, the same choice already made for
+    /// `func_tracktrain`'s undocumented `bank`/`wheels` formulas.
+    pub acceleration: f32,
+    /// `deceleration`: recorded but not applied; see [`Self::acceleration`].
+    pub deceleration: f32,
+    /// The documented "Start At Player" spawnflag.
+    pub start_at_player: bool,
+    /// The documented "Follow Player" spawnflag.
+    pub follow_player: bool,
+    /// The documented "Freeze Player" spawnflag.
+    pub freeze_player: bool,
+}
+
+impl TriggerCamera {
+    /// Reads the three documented spawnflags out of a raw `spawnflags`
+    /// bitmask.
+    #[must_use]
+    pub const fn flags_from_raw(spawnflags: u32) -> (bool, bool, bool) {
+        (
+            spawnflags & SPAWNFLAG_CAMERA_START_AT_PLAYER != 0,
+            spawnflags & SPAWNFLAG_CAMERA_FOLLOW_PLAYER != 0,
+            spawnflags & SPAWNFLAG_CAMERA_FREEZE_PLAYER != 0,
+        )
+    }
+}
+
 /// Any classname not otherwise recognised.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -819,6 +885,21 @@ impl Registry {
                     };
                     world.insert_one(entity, hurt).ok();
                 }
+                "trigger_camera" => {
+                    let (start_at_player, follow_player, freeze_player) =
+                        TriggerCamera::flags_from_raw(def.spawnflags);
+                    let camera = TriggerCamera {
+                        hold_seconds: numeric(def, "wait", 10.0),
+                        move_to: text_field(def, "moveto"),
+                        speed: numeric(def, "speed", 0.0),
+                        acceleration: numeric(def, "acceleration", 500.0),
+                        deceleration: numeric(def, "deceleration", 500.0),
+                        start_at_player,
+                        follow_player,
+                        freeze_player,
+                    };
+                    world.insert_one(entity, camera).ok();
+                }
                 name if name.starts_with("trigger_") => {
                     let trigger = Trigger {
                         once: name == "trigger_once",
@@ -843,6 +924,7 @@ impl Registry {
         // commonly appears later in the entities lump than the train
         // itself, so the whole `targetname` index must exist first.
         crate::track_train::spawn_all(&mut registry);
+        crate::camera::spawn_all(&mut registry);
         registry
     }
 
@@ -889,6 +971,14 @@ fn optional_numeric(def: &EntityDef, key: &str) -> Option<f32> {
         .get(key)
         .and_then(|value| value.trim().parse::<f32>().ok())
         .filter(|value| value.is_finite())
+}
+
+/// `key`'s trimmed text, or `""`.
+fn text_field(def: &EntityDef, key: &str) -> String {
+    def.keyvalues
+        .get(key)
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default()
 }
 
 fn numeric(def: &EntityDef, key: &str, default: f32) -> f32 {

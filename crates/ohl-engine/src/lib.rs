@@ -23,6 +23,7 @@
 #![forbid(unsafe_code)]
 
 mod assets;
+mod camera;
 mod error;
 mod game;
 mod input;
