@@ -85,6 +85,16 @@ pub const SPAWNFLAG_MONSTERMAKER_START_ON: u32 = 1;
 /// The published `monstermaker` `Cyclic` spawnflag bit.
 pub const SPAWNFLAG_MONSTERMAKER_CYCLIC: u32 = 4;
 
+/// The most children every `monstermaker` in one level may create between
+/// them, however many of them declare an unlimited `monstercount`.
+///
+/// **Project-owned, not a published number.** A map may legitimately ask a
+/// maker for an unlimited supply; the engine still has to keep one level's
+/// entity count bounded, so the whole level shares one ceiling. Reaching it
+/// stops further spawns rather than failing, in the same "degrade, don't
+/// break" style as the rest of this project's limits.
+pub const MAX_MAKER_CHILDREN_PER_LEVEL: u32 = 256;
+
 /// The `monstermaker` classname, whose keyvalues become an
 /// [`ohl_ai::Spawner`].
 pub const MONSTERMAKER_CLASSNAME: &str = "monstermaker";
@@ -249,6 +259,9 @@ pub struct AiState {
     triggers: Vec<DeclaredTrigger>,
     /// How many monsters have died since this level was attached.
     deaths: u64,
+    /// How many children every `monstermaker` in this level has created
+    /// between them, against [`MAX_MAKER_CHILDREN_PER_LEVEL`].
+    maker_children: u32,
     /// The difficulty this level's damage tables are read at.
     difficulty: AiDifficulty,
     /// Empty, and deliberately so: a monster attack resolves against the
@@ -278,6 +291,7 @@ impl AiState {
             damage: DamageQueue::new(),
             triggers: Vec::new(),
             deaths: 0,
+            maker_children: 0,
             difficulty: AiDifficulty::default(),
             hitboxes: HitboxIndex::new(HitboxLimits::default()),
             projectiles: Box::new(NoProjectiles),
@@ -334,6 +348,7 @@ impl AiState {
         self.triggers.clear();
         self.damage.clear();
         self.deaths = 0;
+        self.maker_children = 0;
         self.world.detach_navigator();
         self.difficulty = ai_difficulty(difficulty);
 
@@ -347,6 +362,25 @@ impl AiState {
         let defs = std::mem::take(&mut level.defs);
         let spawned = attach_monsters(&mut level.registry, &defs, &rules);
         level.defs = defs;
+        // Record the health each monster spawned with, so a later
+        // `health_fraction` (and anything M7.9 P1 resolves damage against)
+        // reads the value the skill table actually produced rather than
+        // re-deriving it from the species table.
+        for entity in &spawned {
+            let Ok(health) = level
+                .registry
+                .world
+                .get::<&Actor>(*entity)
+                .map(|actor| actor.health)
+            else {
+                continue;
+            };
+            level
+                .registry
+                .world
+                .insert_one(*entity, ohl_combat::Health::new(health))
+                .ok();
+        }
 
         self.collect_triggers(level, &spawned);
         Self::attach_makers(level);
@@ -674,9 +708,6 @@ impl AiState {
             .collect();
         self.damage.clear();
 
-        for (entity, decision) in &corpses {
-            self.retire(level, *entity, *decision);
-        }
         self.deaths += events
             .iter()
             .filter(|event| event.kind == AiEventKind::Died)
@@ -687,7 +718,13 @@ impl AiState {
             .map(|event| event.entity)
             .collect();
 
+        // Triggers fire *before* the remains are dealt with: a gibbed
+        // monster is despawned outright, and a despawned entity has no
+        // state left for `TriggerCondition::Death` to read.
         self.fire_triggers(level, &hurt, &died);
+        for (entity, decision) in &corpses {
+            self.retire(level, *entity, *decision);
+        }
         Self::age_corpses(level, dt);
         self.tick_makers(level, dt);
     }
@@ -764,11 +801,20 @@ impl AiState {
                 .world
                 .get::<&MonsterAi>(entity)
                 .map_or(Conditions::EMPTY, |ai| ai.conditions);
-            let max_health = self
-                .spec_of(level, entity)
-                .map_or(actor.health, |(_, spec)| {
-                    spec.health[self.difficulty.index()]
-                });
+            // The health this monster actually spawned with, skill-table
+            // override included; the species table is only a fallback for
+            // an entity that somehow has no `Health` of its own.
+            let max_health = level
+                .registry
+                .world
+                .get::<&ohl_combat::Health>(entity)
+                .map(|health| health.max)
+                .ok()
+                .or_else(|| {
+                    self.spec_of(level, entity)
+                        .map(|(_, spec)| spec.health[self.difficulty.index()])
+                })
+                .unwrap_or(actor.health);
             let context = TriggerContext {
                 sees_player: conditions.contains(Conditions::SEE_CLIENT),
                 hostile_to_player: sees_player(level, entity),
@@ -822,6 +868,9 @@ impl AiState {
         makers.sort_unstable_by_key(|entity: &Entity| entity.id());
 
         for maker in makers {
+            if self.maker_children >= MAX_MAKER_CHILDREN_PER_LEVEL {
+                return;
+            }
             let (wants_spawn, classname, origin, yaw) = {
                 let alive = |entity: Entity| {
                     level
@@ -854,6 +903,7 @@ impl AiState {
             let Some(child) = self.spawn_child(level, maker, &classname, origin, yaw) else {
                 continue;
             };
+            self.maker_children += 1;
             if let Ok(mut component) = level.registry.world.get::<&mut MonsterMaker>(maker) {
                 component.0.note_spawned(child);
             }

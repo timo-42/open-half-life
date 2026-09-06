@@ -27,10 +27,40 @@ fn monster(classname: &str, origin: [f32; 3], yaw: f32, extra: &str) -> String {
 }
 
 fn game_from(entities: &str, interior_wall: bool) -> Game {
+    game_from_with_skill(entities, interior_wall, None)
+}
+
+/// The same room, optionally with a `skill.cfg` in the payload.
+fn game_from_with_skill(entities: &str, interior_wall: bool, skill: Option<&str>) -> Game {
     let bytes = ai_room_bsp(entities, interior_wall);
     let mut assets = MemoryAssets::new();
     assets.insert(&format!("maps/{AI_MAP}.bsp"), bytes.clone());
+    if let Some(skill) = skill {
+        assets.insert("skill.cfg", skill.as_bytes().to_vec());
+    }
     Game::from_map_bytes(&assets, AI_MAP, &bytes).expect("the AI room loads")
+}
+
+/// A `trigger_changelevel` a monster's `TriggerTarget` can name; firing it
+/// is visible to the host as a `GameEvent::LevelChange`.
+fn exit_trigger() -> &'static str {
+    "{\n\"classname\" \"trigger_changelevel\"\n\"targetname\" \"ohl_exit\"\n\
+     \"map\" \"ohlelsewhere\"\n\"landmark\" \"ohl_landmark\"\n}\n"
+}
+
+/// Steps `game` and reports whether any step announced a level change,
+/// which is how a fired `TriggerTarget` is observed.
+fn tick_until_level_change(game: &mut Game, ticks: usize) -> bool {
+    let input = Input::default();
+    let mut fired = false;
+    for _ in 0..ticks {
+        for event in game.tick(ohl_engine::TICK_SECONDS, &input) {
+            if matches!(event, ohl_engine::GameEvent::LevelChange { .. }) {
+                fired = true;
+            }
+        }
+    }
+    fired
 }
 
 fn tick(game: &mut Game, ticks: usize) {
@@ -379,4 +409,99 @@ mod properties {
             prop_assert_eq!(hash.len(), 32);
         }
     }
+}
+
+/// A monster gibbed by an overkill still fires its `TriggerCondition`
+/// death target: the trigger is evaluated before the remains are removed.
+#[test]
+fn a_gibbed_monster_still_fires_its_death_target() {
+    let block = entities(&format!(
+        "{}{}",
+        exit_trigger(),
+        monster(
+            "monster_headcrab",
+            [96.0, 0.0, 36.0],
+            180.0,
+            "\"TriggerCondition\" \"4\"\n\"TriggerTarget\" \"ohl_exit\"\n",
+        ),
+    ));
+    let mut game = game_from(&block, false);
+    let monster = monster_entities(&game)[0];
+
+    queue_monster_damage(&mut game, monster, None, 500.0);
+    let fired = tick_until_level_change(&mut game, 8);
+    assert!(
+        !game.registry().world.contains(monster),
+        "the overkill gibbed the monster"
+    );
+    assert!(fired, "a gibbed monster still fires its death target");
+}
+
+/// `TriggerCondition::HalfHealthRemaining` is measured against the health
+/// the monster actually spawned with, `skill.cfg` override included, not
+/// against the species table's own value.
+#[test]
+fn half_health_is_measured_against_the_skill_overridden_maximum() {
+    let block = entities(&format!(
+        "{}{}",
+        exit_trigger(),
+        monster(
+            "monster_headcrab",
+            [96.0, 0.0, 36.0],
+            180.0,
+            "\"TriggerCondition\" \"3\"\n\"TriggerTarget\" \"ohl_exit\"\n",
+        ),
+    ));
+    // The species table gives this kind 10 health at medium difficulty; the
+    // override makes it 200, so 150 points of damage leaves it at a quarter
+    // of its real maximum — under half, and so firing — while a reading
+    // taken against the table's 10 would clamp to a full bar and never
+    // fire.
+    let mut game = game_from_with_skill(&block, false, Some("sk_headcrab_health2 \"200\"\n"));
+    let monster = monster_entities(&game)[0];
+    let spawned_health = game
+        .registry()
+        .world
+        .get::<&ohl_ai::Actor>(monster)
+        .expect("the monster has an actor")
+        .health;
+    assert!(
+        (spawned_health - 200.0).abs() < f32::EPSILON,
+        "the skill table decided the monster's health"
+    );
+
+    queue_monster_damage(&mut game, monster, None, 150.0);
+    assert!(
+        tick_until_level_change(&mut game, 8),
+        "a quarter of the overridden maximum is under half"
+    );
+}
+
+/// A `monstermaker` with an unlimited `monstercount` still stops at the
+/// project's own per-level ceiling.
+#[test]
+fn an_unlimited_monstermaker_stops_at_the_project_ceiling() {
+    let block = entities(
+        "{\n\"classname\" \"monstermaker\"\n\
+         \"origin\" \"0 96 36\"\n\"monstertype\" \"monster_headcrab\"\n\
+         \"monstercount\" \"-1\"\n\"delay\" \"0\"\n\
+         \"m_imaxlivechildren\" \"0\"\n\"spawnflags\" \"1\"\n}\n",
+    );
+    let mut game = game_from(&block, false);
+    let cap = usize::try_from(ohl_engine::ai::MAX_MAKER_CHILDREN_PER_LEVEL).expect("fits");
+
+    // One spawn per step at a zero delay, so a handful of steps past the
+    // ceiling is enough to reach and then sit on it.
+    tick(&mut game, cap + 8);
+    assert!(
+        game.monster_count() <= cap,
+        "an unlimited maker is still bounded by the per-level ceiling"
+    );
+    let after_cap = game.monster_count();
+    tick(&mut game, 8);
+    assert_eq!(
+        game.monster_count(),
+        after_cap,
+        "nothing more spawns once the ceiling is reached"
+    );
 }

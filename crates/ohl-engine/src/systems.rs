@@ -16,9 +16,13 @@
 //!
 //! # Determinism
 //!
-//! No phase reads a wall clock, and no phase iterates a `HashMap`. The one
-//! random stream the later phases share is seeded from
-//! [`SystemsConfig::rng_seed`], never from the environment.
+//! No phase reads a wall clock, and no phase iterates a `HashMap`. There is
+//! exactly one root random stream, seeded from [`SystemsConfig::rng_seed`]
+//! and never from the environment: [`Systems::rng`] *is* that stream, and
+//! every other generator in the simulation — the AI world's included — is
+//! seeded from a draw off it rather than from the configured seed a second
+//! time. Two generators seeded with the same number would otherwise produce
+//! the same sequence, which is a correlation nothing here wants.
 //!
 //! # Logging
 //!
@@ -222,14 +226,18 @@ impl Systems {
     /// The step list with `config`'s seed and an empty HUD.
     #[must_use]
     pub fn new(config: SystemsConfig) -> Self {
+        let mut rng = ohl_ai::Pcg32::new(config.rng_seed);
+        // One root stream: the AI world's generator is seeded from a draw
+        // off this one, so the two never run in lockstep.
+        let ai_seed = (u64::from(rng.next_u32()) << 32) | u64::from(rng.next_u32());
         Self {
             config,
             frame_input: Input::default(),
             pending_edges: PendingEdges::default(),
             hud: ohl_ui::hud::HudState::default(),
-            rng: ohl_ai::Pcg32::new(config.rng_seed),
+            rng,
             damage_queue: Vec::new(),
-            ai: AiState::new(config.rng_seed),
+            ai: AiState::new(ai_seed),
             projectiles: ProjectileSystem::new(config.rng_seed),
             transient_sprites: TransientSprites::new(),
             view_model: ViewModel::new(),
