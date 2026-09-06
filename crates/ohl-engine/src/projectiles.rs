@@ -807,6 +807,17 @@ impl ProjectileSystem {
                         .max(0.0),
                     hop_cooldown: crate::save_state::sanitize_f32(entry.hop_cooldown, 0.0).max(0.0),
                     resting: entry.resting,
+                    // Not persisted (see this method's own doc and
+                    // `crate::projectiles`' module doc's "Not yet
+                    // persisted" note): a restored projectile has no
+                    // model-backed stand-in entity yet, so it has nothing
+                    // to name here either. `sync_model_entities` never
+                    // populates `self.models` for a restored id, so this
+                    // stays `None` until a future save-format revision
+                    // re-spawns stand-ins on restore (see that note for
+                    // why a *later* respawn must also set this, or a
+                    // restored rocket could detonate on its own model).
+                    self_id: None,
                 })
             })
             .collect();
@@ -1222,6 +1233,7 @@ mod tests {
         let mut hud = ohl_ui::hud::HudState::default();
         let mut presentation = crate::presentation::Presentation::new();
         let mut player_events = Vec::new();
+        let mut player_damage_events = 0u64;
         let player_id = level.player;
         crate::combat::resolve_damage(
             &mut damage_queue,
@@ -1231,6 +1243,7 @@ mod tests {
             &mut hud,
             &mut presentation,
             &mut player_events,
+            &mut player_damage_events,
         );
 
         let mut sprites = TransientSprites::new();
@@ -1296,6 +1309,7 @@ mod tests {
         let mut hud = ohl_ui::hud::HudState::default();
         let mut presentation = crate::presentation::Presentation::new();
         let mut player_events = Vec::new();
+        let mut player_damage_events = 0u64;
         let player_id = level.player;
         crate::combat::resolve_damage(
             &mut damage_queue,
@@ -1305,6 +1319,7 @@ mod tests {
             &mut hud,
             &mut presentation,
             &mut player_events,
+            &mut player_damage_events,
         );
         system.resolve_deployable_damage(&mut level, &mut damage_queue, &mut sprites);
 

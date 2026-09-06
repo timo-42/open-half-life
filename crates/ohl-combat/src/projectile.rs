@@ -923,6 +923,7 @@ mod restore_tests {
             attack_cooldown: 0.0,
             hop_cooldown: 0.0,
             resting: false,
+            self_id: None,
         }
     }
 
