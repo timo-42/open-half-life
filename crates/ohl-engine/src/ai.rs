@@ -731,10 +731,12 @@ impl AiState {
             .map(crate::save_state::array_vec3)
             .collect();
         // Bounded by the restored (already-truncated) waypoint list itself,
-        // so a corrupt or stale `route_current` cannot point past its end;
-        // `.max(1)` keeps the divisor sound for an empty route (`current`
-        // then clamps to `0`).
-        let route_current = (snapshot.route_current as usize).min(waypoints.len().max(1) - 1);
+        // so a corrupt or stale `route_current` cannot point past its end.
+        // `current == waypoints.len()` is `Route`'s own valid "finished"
+        // state (`Route::is_finished`), not an out-of-range value, so the
+        // clamp allows exactly that index rather than rewinding a
+        // completed route onto its last waypoint.
+        let route_current = (snapshot.route_current as usize).min(waypoints.len());
         let route = Route {
             waypoints,
             current: route_current,
