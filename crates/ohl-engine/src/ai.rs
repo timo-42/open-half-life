@@ -640,6 +640,36 @@ impl AiState {
         level.registry.world.query::<&MonsterAi>().iter().count()
     }
 
+    /// The eye position of whichever spawned, living monster (an entity
+    /// carrying both [`MonsterAi`] and [`Actor`]) sits closest to `from`,
+    /// or `None` when this level has none.
+    ///
+    /// Additive and data-only: like [`Self::monster_count`], this returns a
+    /// position for a caller to act on and never logs a classname, entity
+    /// id or coordinate itself. Ties (equal distance) are broken by
+    /// ascending [`hecs::Entity::id`], matching this module's usual
+    /// deterministic entity ordering, so the result never depends on
+    /// query iteration order.
+    #[must_use]
+    pub fn nearest_monster_position(&self, level: &Level, from: Vec3) -> Option<Vec3> {
+        level
+            .registry
+            .world
+            .query::<(Entity, &Actor, &MonsterAi)>()
+            .iter()
+            .filter(|(_, actor, _)| actor.alive)
+            .map(|(entity, actor, _)| (entity, actor.eye()))
+            .min_by(|(entity_a, position_a), (entity_b, position_b)| {
+                let distance_a = position_a.distance_squared(from);
+                let distance_b = position_b.distance_squared(from);
+                distance_a
+                    .partial_cmp(&distance_b)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| entity_a.id().cmp(&entity_b.id()))
+            })
+            .map(|(_, position)| position)
+    }
+
     /// A digest of the whole AI simulation, for determinism tests.
     #[must_use]
     pub fn state_hash(&self, level: &Level) -> [u8; 32] {
