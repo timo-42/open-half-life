@@ -340,8 +340,28 @@ impl StudioModel {
     ///
     /// `data` must be the same buffer `mdl` borrows; it is retained so
     /// animation channels can be re-sampled later.
-    #[allow(clippy::too_many_lines)]
     pub fn build(mdl: &Mdl<'_>, data: &[u8], limits: &Limits) -> Result<Self> {
+        Self::build_with_texture_source(mdl, data, None, limits)
+    }
+
+    /// Builds an owned model from a parsed [`Mdl`], sourcing its textures
+    /// and skin-family table from `texture_mdl` when given instead of from
+    /// `mdl` itself.
+    ///
+    /// A GoldSrc studio model whose textures are stored in a separate
+    /// companion file (see [`Self::parse_with_external_texture`]) publishes
+    /// zero textures, skin references and skin families of its own; the
+    /// companion file publishes all three, under the same header layout
+    /// (`docs/FORMAT_SOURCES.md`, "GoldSrc MDL v10 and SPR"). `texture_mdl`
+    /// is only consulted when `mdl` itself has no embedded textures, so
+    /// passing one for an ordinary, self-contained model is harmless.
+    #[allow(clippy::too_many_lines)]
+    fn build_with_texture_source(
+        mdl: &Mdl<'_>,
+        data: &[u8],
+        texture_mdl: Option<&Mdl<'_>>,
+        limits: &Limits,
+    ) -> Result<Self> {
         let raw_bones = mdl.bones(limits)?;
         if raw_bones.len() > MAX_BONES {
             return Err(WorldError::LimitExceeded);
@@ -370,11 +390,19 @@ impl StudioModel {
             })
             .collect();
 
-        let raw_textures = mdl.textures(limits)?;
+        let own_textures = mdl.textures(limits)?;
+        let (texture_source, raw_textures) = if own_textures.is_empty() {
+            match texture_mdl {
+                Some(external) => (external, external.textures(limits)?),
+                None => (mdl, own_textures),
+            }
+        } else {
+            (mdl, own_textures)
+        };
         let mut textures = Vec::with_capacity(raw_textures.len());
         for texture in raw_textures {
             let flags = texture.flags.get();
-            let image = decode_texture(mdl, texture, limits, flags)
+            let image = decode_texture(texture_source, texture, limits, flags)
                 .unwrap_or_else(|_| TextureImage::placeholder());
             textures.push(StudioTexture { image, flags });
         }
@@ -385,11 +413,11 @@ impl StudioModel {
             });
         }
 
-        let header = mdl.header();
+        let header = texture_source.header();
         let skin_ref_count = header.num_skin_ref.get() as usize;
         let family_count = header.num_skin_families.get() as usize;
         let mut skin_families = Vec::with_capacity(family_count);
-        if let Ok(table) = mdl.skin_families(limits) {
+        if let Ok(table) = texture_source.skin_families(limits) {
             for family in 0..family_count {
                 let mut row = Vec::with_capacity(skin_ref_count);
                 for slot in 0..skin_ref_count {
@@ -539,6 +567,26 @@ impl StudioModel {
     pub fn parse(data: &[u8], limits: &Limits) -> Result<Self> {
         let mdl = Mdl::parse(data, limits)?;
         Self::build(&mdl, data, limits)
+    }
+
+    /// Parses `data` and builds a model from it, sourcing textures and the
+    /// skin-family table from `texture_data` (a companion external-texture
+    /// file's bytes) when `data` itself publishes no embedded textures.
+    ///
+    /// `texture_data` is ignored (and never treated as an error) when
+    /// `data` already has its own textures, when it is `None`, or when it
+    /// fails to parse as a studio-model-header file — a monster whose
+    /// texture file is missing or unreadable still gets its geometry and
+    /// animation, just with the placeholder texture [`Self::build`] always
+    /// falls back to.
+    pub fn parse_with_external_texture(
+        data: &[u8],
+        texture_data: Option<&[u8]>,
+        limits: &Limits,
+    ) -> Result<Self> {
+        let mdl = Mdl::parse(data, limits)?;
+        let texture_mdl = texture_data.and_then(|bytes| Mdl::parse(bytes, limits).ok());
+        Self::build_with_texture_source(&mdl, data, texture_mdl.as_ref(), limits)
     }
 
     /// Resolves a mesh's `skin_slot` through skin `family`, falling back to

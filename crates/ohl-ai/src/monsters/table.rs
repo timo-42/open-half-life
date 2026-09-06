@@ -381,6 +381,52 @@ impl MonsterKind {
         }
     }
 
+    /// The `models/<name>.mdl` path GoldSrc's own monster class hardcodes
+    /// as its default studio model (`None` for [`Self::Unknown`]).
+    ///
+    /// Unlike every other keyvalue this project loads, a `monster_*`
+    /// entity's model is **not** authored in the map's entity lump for the
+    /// fifteen defined kinds below (`monster_generic`/`monster_furniture`
+    /// are the documented exception, and already carry an explicit `model`
+    /// keyvalue the caller reads directly — see
+    /// `ohl_engine::level::wants_studio_model`'s doc comment). The
+    /// monster's own `Spawn`/`Precache` code picks the model instead, so a
+    /// clean-room engine that only reads the map's `model` keyvalue never
+    /// finds one for these classnames and never draws them, even though
+    /// they are simulated normally. This table is this project's
+    /// replacement for that hardcoded choice: one path per kind. Every path
+    /// is transcribed from a single public page, TWHL's "Reference:
+    /// Entities and their models"; see `docs/FORMAT_SOURCES.md`, "Monster
+    /// definitions" for the full per-kind citation table, the exact URL,
+    /// and an explicit statement that none of these names came from a
+    /// payload listing.
+    #[must_use]
+    pub fn default_model_path(&self) -> Option<&'static str> {
+        Some(match self {
+            Self::Headcrab => "models/headcrab.mdl",
+            Self::Zombie => "models/zombie.mdl",
+            Self::Houndeye => "models/houndeye.mdl",
+            Self::Bullsquid => "models/bullsquid.mdl",
+            Self::AlienSlave => "models/islave.mdl",
+            Self::AlienGrunt => "models/agrunt.mdl",
+            Self::HumanGrunt => "models/hgrunt.mdl",
+            Self::Barney => "models/barney.mdl",
+            Self::Scientist => "models/scientist.mdl",
+            Self::Turret => "models/turret.mdl",
+            Self::MiniTurret => "models/miniturret.mdl",
+            Self::Sentry => "models/sentry.mdl",
+            // `skill_subject`'s stem for this kind is `"ichthyosaur"`,
+            // which does not double as this filename; see the cited table.
+            Self::Ichthyosaur => "models/icky.mdl",
+            Self::Leech => "models/leech.mdl",
+            Self::Gargantua => "models/garg.mdl",
+            // `skill_subject`'s stem for this kind is `"tentacle"`, which
+            // does not double as this filename; see the cited table.
+            Self::Tentacle => "models/tentacle2.mdl",
+            Self::Unknown(_) => return None,
+        })
+    }
+
     /// Every defined kind (not [`Self::Unknown`]), in table order.
     #[must_use]
     pub fn defined() -> &'static [MonsterKind] {
@@ -792,6 +838,29 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Every defined kind must publish a `models/*.mdl` default path so a
+    /// map's own `monster_*` entity (which usually carries no `model`
+    /// keyvalue at all) can still be drawn; [`MonsterKind::Unknown`] must
+    /// not, since this project has no table row to guess a path from.
+    #[test]
+    fn every_defined_kind_has_a_default_model_and_unknown_does_not() {
+        for kind in MonsterKind::defined() {
+            let path = kind
+                .default_model_path()
+                .unwrap_or_else(|| panic!("{kind:?} has a default model path"));
+            assert!(path.starts_with("models/"));
+            assert!(
+                std::path::Path::new(path)
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("mdl"))
+            );
+        }
+        assert_eq!(
+            MonsterKind::Unknown("monster_not_in_the_table".to_string()).default_model_path(),
+            None
+        );
     }
 
     /// The published primary melee/ranged attack-damage tables, transcribed

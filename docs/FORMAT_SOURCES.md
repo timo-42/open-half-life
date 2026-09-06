@@ -297,6 +297,57 @@ write-ups instead.
   is recorded here as a community-sourced value, not one restated from any
   Valve header this project has read.
 
+- **Mesh trivert command-stream header size** (fidelity F3): the reviewed
+  malortie/assimp page documents that each mesh's trivert list is divided
+  into strip/fan sequences, each starting with a count `N` that is
+  positive for a strip and negative for a fan, and gives the 8-byte,
+  four-field (`vertindex`/`normindex`/`s`/`t`) `short` layout of each
+  trivert record. By its own account it does not separately state `N`'s
+  own byte size in prose, and a further search of other public MDL v10
+  write-ups (TWHL, the303.org, and general file-format reference sites)
+  found none that do either. This project's original implementation read
+  `N` as a 32-bit `i32`, which black-box observation against real,
+  legally obtained retail studio models — one of this project's own
+  explicitly acceptable source categories per `CONTRIBUTING.md`
+  ("independently authored public documentation, and minimal black-box
+  behavioral observations"; see `docs/CLEAN_ROOM.md` rule 1: behavior
+  observed by running lawfully owned software, no decompilation, no bytes
+  committed) — showed to be wrong: every mesh with more than one strip/fan
+  run decoded garbage past the first run, which this project's
+  `StudioModel`/`Level` loading layers then reported as an unparsable
+  ("missing") model. That same observation is this project's basis for
+  reading `N` as 16-bit instead: `Mdl::decode_mesh_commands` now reads a
+  signed 16-bit run header (positive: strip; negative: fan; zero: end of
+  stream) followed by that many trivert records, each the 8-byte, four
+  16-bit-field layout the malortie/assimp page already documents. The
+  same observation also showed `mesh.num_tris` is not a trivert-record
+  budget as the page's prose implies, but the mesh's post-triangulation
+  *triangle* count (a strip or fan of `N` triverts yields `N - 2`
+  triangles); `Mdl::decode_mesh_commands` no longer uses it as a loop
+  bound at all. `limits.max_triverts` (already documented, unchanged) now
+  bounds the cumulative trivert-record count consumed instead.
+- **External texture file composition** (fidelity F3): the reviewed
+  malortie/assimp page states a model's `numtextures` is `0` in the main
+  file when its textures are stored in a separate file, but does not name
+  that file's naming convention. The303's "GoldSrc MDL Troubleshooting
+  List" (<https://the303.org/tutorials/gold_mdl_fix.htm>) directly and
+  independently documents that convention: its entries on the obsolete
+  `$externaltextures` QC command describe a model whose textures were
+  compiled into a separate `"t.mdl"` file (the model's own base name plus
+  a trailing `T`). TWHL's "Beginner's Guide to Changing Textures in
+  GoldSource MDL Files" (reached via search-result snippets, since
+  `twhl.info` returns HTTP 403 to automated fetches from this environment,
+  the same limitation recorded elsewhere in this file) states the same
+  convention, and the `wootguy/modelguy` tool's public documentation of a
+  "merge" command that folds an external-texture (and external
+  sequence-group) file back into one output model independently
+  corroborates it. `ohl_world::StudioModel::parse_with_external_texture`
+  and `ohl_engine::level`'s `external_texture_path` helper implement that
+  convention; `Mdl`/`StudioModel` themselves still parse each file
+  independently, matching the unchanged claim below — only the caller now
+  optionally supplies a second, already-parsed `Mdl` as the texture/skin-
+  family source when the main file's own is empty.
+
 Two further rendering decisions in these modules are this project's own
 engineering choices rather than claims made by any reviewed page, and are
 documented as such in `docs/MILESTONES.md`:
@@ -323,6 +374,14 @@ explicitly so a caller controls which file's bytes are used. All test
 fixtures are synthesized in-process by this project's own writers in
 `crates/ohl-formats/src/test_support.rs`; no bytes, names, or other content
 from any game installation are used or committed.
+
+Composing an external texture file's already-parsed `Mdl` with the main
+file's own textures and skin-family table (fidelity F3, see the
+external-texture-file bullet above) is a `crates/ohl-world` concern, not
+an `ohl-formats` one: `ohl-formats` itself still never reads more than one
+file at a time, and `StudioModel::parse_with_external_texture` is simply
+the caller that now parses two files and hands both `Mdl`s to
+`StudioModel::build`.
 
 ## PE/COFF executable layout
 
@@ -2132,6 +2191,51 @@ logic" and "Monster AI behaviour" above).
   GameBanana upload, gamebanana.com/scripts/raw/7885, whose own duplicate
   cvar sections disagreed with each other — so no `skill.cfg` mirror was
   used as a source.)
+- **Default studio model per kind** (`MonsterKind::default_model_path`,
+  fidelity F3): most `monster_*` entities carry no `model` keyvalue in the
+  map's own entity lump at all — GoldSrc's monster class hardcodes its
+  model in `Spawn`/`Precache`, not in map data — so this project needs its
+  own table of the fifteen defined kinds' default `models/*.mdl` paths (the
+  sixteenth, `Unknown`, has none by definition) to draw them at all. Every
+  one of the sixteen paths is cited to a single public page, TWHL's
+  "Reference: Entities and their models"
+  (<https://twhl.info/wiki/page/Reference:_Entities_and_their_models>), a
+  reference table built for `scripted_sequence` authors that lists every
+  monster (and item) entity's classname against the model path it uses,
+  reached via a text-extraction proxy since `twhl.info` returns HTTP 403 to
+  direct automated fetches from this environment (the same limitation
+  recorded elsewhere in this file for other TWHL pages). None of these
+  sixteen names were taken from, or checked against, any imported payload
+  or file listing derived from game data; the only payload-derived signal
+  this fix's verification used at all was the aggregate
+  `Game::missing_model_count()` reported by a running capture (a bounded
+  count, already published through `Game`), never a name or path. The
+  table below is this project's own
+  transcription of that page's `monster_*` rows, restricted to the sixteen
+  classnames `MonsterKind` already defines (`monster_bullsquid` in
+  particular resolves to the page's `monster_bullchicken` row by asset
+  name, since GoldSrc's own internal classname for this monster is
+  `bullchicken`; `MonsterKind::Bullsquid::classname` already used
+  `monster_bullsquid` before this pass and is unchanged here):
+
+  | `MonsterKind` | cited page's row | `models/*.mdl` |
+  | --- | --- | --- |
+  | `Headcrab` | `monster_headcrab` | `headcrab.mdl` |
+  | `Zombie` | `monster_zombie` | `zombie.mdl` |
+  | `Houndeye` | `monster_houndeye` | `houndeye.mdl` |
+  | `Bullsquid` | `monster_bullchicken` | `bullsquid.mdl` |
+  | `AlienSlave` | `monster_alien_slave` | `islave.mdl` |
+  | `AlienGrunt` | `monster_alien_grunt` | `agrunt.mdl` |
+  | `HumanGrunt` | `monster_human_grunt` | `hgrunt.mdl` |
+  | `Barney` | `monster_barney` | `barney.mdl` |
+  | `Scientist` | `monster_scientist` | `scientist.mdl` |
+  | `Turret` | `monster_turret` | `turret.mdl` |
+  | `MiniTurret` | `monster_miniturret` | `miniturret.mdl` |
+  | `Sentry` | `monster_sentry` | `sentry.mdl` |
+  | `Ichthyosaur` | `monster_ichthyosaur` | `icky.mdl` |
+  | `Leech` | `monster_leech` | `leech.mdl` |
+  | `Gargantua` | `monster_gargantua` | `garg.mdl` |
+  | `Tentacle` | `monster_tentacle` | `tentacle2.mdl` |
 - Blood color per monster family (red for humans/allies, yellow for
   headcrab/zombie, green for most other aliens, none for machines) is widely
   documented modding/mapping convention (the `BloodColor` FGD field on
