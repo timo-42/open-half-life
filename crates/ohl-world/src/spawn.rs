@@ -89,7 +89,16 @@ fn pitch_yaw_from_scalar_angle(angle: f32) -> (f32, f32) {
 /// describing this returned HTTP 403 to automated fetches from this
 /// environment, the same failure mode already recorded elsewhere in
 /// `docs/FORMAT_SOURCES.md`); this is a defensible, documented choice,
-/// not a confirmed engine constant.
+/// not a confirmed engine constant. See `docs/FORMAT_SOURCES.md`, "Player
+/// spawn facing", for a second search pass (2026-09-06) that also came up
+/// empty: GoldSrc's only *documented* multi-spawn tie-break mechanism
+/// (`info_player_deathmatch`'s `master`/`game_team_master` keyvalue) is
+/// explicitly multiplayer-only and has no `info_player_start` equivalent,
+/// so this project does not have a citable basis to pick anything other
+/// than "first in entity-lump order" for single-player. [`count_player_starts`]
+/// exists so a map with more than one `info_player_start` — the leading
+/// suspect for a wrong-tie-break framing bug — is at least visible as a
+/// number instead of only inferable from a screenshot.
 #[must_use]
 pub fn find_player_start(entities: &[Entity]) -> Option<PlayerSpawn> {
     let entity = entities
@@ -113,9 +122,25 @@ pub fn find_player_start(entities: &[Entity]) -> Option<PlayerSpawn> {
     Some(PlayerSpawn { origin, yaw, pitch })
 }
 
+/// How many `info_player_start` entities `entities` declares.
+///
+/// [`find_player_start`] always resolves to the first one (see its doc
+/// comment for the citation gap around that tie-break); a value greater
+/// than `1` here is the cheapest possible signal that a map's spawn framing
+/// bug, if any, may be a tie-break issue rather than a parsing one — a
+/// caller can log or assert on this count without ever handling (or
+/// exposing) the entities' own coordinates.
+#[must_use]
+pub fn count_player_starts(entities: &[Entity]) -> usize {
+    entities
+        .iter()
+        .filter(|entity| entity.get("classname").map(String::as_str) == Some("info_player_start"))
+        .count()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::find_player_start;
+    use super::{count_player_starts, find_player_start};
     use ohl_formats::bsp30::Entity;
 
     fn entity(pairs: &[(&str, &str)]) -> Entity {
@@ -241,5 +266,34 @@ mod tests {
         let spawn = find_player_start(&entities).expect("found");
         assert_eq!(spawn.origin, [1.0, 2.0, 3.0]);
         assert!((spawn.yaw - 45.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn counts_every_info_player_start_regardless_of_which_one_wins() {
+        assert_eq!(count_player_starts(&[]), 0);
+        let one = vec![
+            entity(&[("classname", "worldspawn")]),
+            entity(&[("classname", "info_player_start")]),
+        ];
+        assert_eq!(count_player_starts(&one), 1);
+        let two = vec![
+            entity(&[("classname", "worldspawn")]),
+            entity(&[
+                ("classname", "info_player_start"),
+                ("origin", "1 2 3"),
+                ("angle", "45"),
+            ]),
+            entity(&[
+                ("classname", "info_player_start"),
+                ("origin", "100 200 300"),
+                ("angle", "180"),
+            ]),
+            entity(&[("classname", "info_player_deathmatch")]),
+        ];
+        assert_eq!(
+            count_player_starts(&two),
+            2,
+            "a sibling classname like info_player_deathmatch must not be counted"
+        );
     }
 }

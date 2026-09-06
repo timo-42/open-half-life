@@ -44,7 +44,7 @@ pub use model::{
     WorldBuildOptions, WorldModel,
 };
 pub use sky::{SKY_FACE_SUFFIXES, SkyboxAsset, is_sky_texture};
-pub use spawn::{PlayerSpawn, find_player_start};
+pub use spawn::{PlayerSpawn, count_player_starts, find_player_start};
 pub use sprite::{MAX_SPRITE_FRAMERATE, SpriteAsset};
 pub use studio::{
     BoneMatrix, MAX_BONES, MAX_STUDIO_VERTICES, STUDIO_LOOPING, STUDIO_NF_ADDITIVE,

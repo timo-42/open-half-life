@@ -1286,6 +1286,28 @@ fixtures built by `ohl_formats::test_support`.
   entity in lump order wins" is recorded as `TODO(black-box)` in its own
   doc comment: a defensible reading of that summary, not a byte-for-byte
   confirmed engine behaviour.
+- [TWHL wiki: info_player_deathmatch](https://twhl.info/wiki/page/info_player_deathmatch)
+  and [TWHL wiki: VERC: Half-Life Teamplay](https://twhl.info/wiki/page/VERC:_Half-Life_Teamplay)
+  (consulted via search-engine result summaries, same access caveat as
+  above; fidelity finding F2, `.plan/fidelity-round-3.md`): a second search
+  pass (2026-09-06), specifically looking for a documented tie-break among
+  multiple `info_player_start` entities as a candidate root cause for a
+  training-map spawn facing the wrong way, found only that GoldSrc's *one*
+  documented multi-spawn selection mechanism — `info_player_deathmatch`'s
+  `master`/`game_team_master` keyvalue, used to restrict a spawn point to a
+  team in multiplayer — is explicitly a multiplayer entity concern with no
+  stated `info_player_start` equivalent; `info_player_start` itself is
+  documented only as multiplayer's *fallback* when no
+  `info_player_deathmatch` exists, not as ever selecting among several by
+  team or any other criterion. This does not newly confirm "first in
+  entity-lump order" as engine-accurate (that remains `TODO(black-box)` per
+  the entry above), but it does rule out the specific alternative this pass
+  went looking for: there is no public, citable single-player
+  `info_player_start` tie-break rule to switch to instead, so
+  `find_player_start`'s existing behaviour is left unchanged and
+  [`ohl_world::count_player_starts`] is added as a diagnostic instead of a
+  speculative behaviour change (see its doc comment and
+  `ohl_engine::Game::player_start_count`).
 - [TWHL wiki: monster_generic](https://twhl.info/wiki/page/monster_generic)
   (disambiguated at
   [monster_generic (Half-Life)](https://twhl.info/wiki/page/monster_generic_(Half-Life)/514)),
