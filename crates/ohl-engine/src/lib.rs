@@ -29,6 +29,14 @@ mod input;
 mod level;
 mod render;
 
+// M7.9 P0 (engine spine): the fixed timestep, the entity components the
+// engine itself owns, the `hecs` <-> `ohl-combat` id mapping and the
+// per-step system list every later package fills a phase of.
+pub mod components;
+pub mod ids;
+pub mod systems;
+pub mod tick;
+
 // Campaign flow (M8.2): level transitions, save/load, chapter titles and
 // difficulty. See `docs/FORMAT_SOURCES.md` ("Campaign flow") for the public
 // documentation these semantics were implemented from.
@@ -42,8 +50,12 @@ pub mod test_support;
 pub use assets::{AssetFsSource, AssetSource, MemoryAssets};
 pub use error::{EngineError, Result};
 pub use game::{Game, GameConfig, GameEvent};
+pub use components::{Charger, Corpse, Owner, Pickup, PlayerTag, StudioAnim};
+pub use ids::{entity_id, entity_of};
 pub use input::Input;
-pub use level::SpritePlacement;
+pub use level::{PLAYER_MAX_ARMOR, PLAYER_MAX_HEALTH, SpritePlacement};
+pub use systems::{Systems, SystemsConfig};
+pub use tick::{MAX_TICKS_PER_FRAME, TICK_SECONDS, TickClock};
 pub use render::RenderTarget;
 pub use save::GameSave;
 pub use text::{AssetPath, MessageBlock, SentenceLookup, TitleLibrary};
@@ -61,4 +73,8 @@ pub const USE_RADIUS: f32 = 64.0;
 
 /// The largest simulation step a single [`Game::tick`] applies, so a stalled
 /// frame cannot tunnel the player through the world.
+///
+/// It is also the most time [`tick::MAX_TICKS_PER_FRAME`] whole
+/// [`tick::TICK_SECONDS`] steps can cover, so the clamp and the step clamp
+/// agree rather than one silently shadowing the other.
 pub const MAX_TICK_SECONDS: f32 = 0.1;

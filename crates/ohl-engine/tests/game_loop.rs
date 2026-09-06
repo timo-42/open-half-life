@@ -46,9 +46,17 @@ fn a_tick_advances_the_simulation_clock() {
     for _ in 0..10 {
         assert!(game.tick(STEP, &Input::default()).is_empty());
     }
+    // The simulation runs at a fixed step (M7.9 P0), so `elapsed` is a whole
+    // multiple of it and the frame time that has not yet released a step is
+    // banked rather than counted. Ten frames of 1/60 s therefore land within
+    // one step of ten frames' worth of time, not within an arbitrary epsilon.
     assert!(
-        (game.elapsed() - 10.0 * STEP).abs() < 1e-3,
-        "ten steps advance ten steps of simulated time"
+        (game.elapsed() - 10.0 * STEP).abs() <= ohl_engine::TICK_SECONDS,
+        "ten frames advance ten frames' worth of whole steps"
+    );
+    assert!(
+        game.elapsed() > 0.0,
+        "a frame longer than one step advances the clock"
     );
 }
 
