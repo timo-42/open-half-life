@@ -407,6 +407,41 @@ impl ProjectileSet {
         self.projectiles.clear();
     }
 
+    /// This set's own restart bookkeeping — the next id to hand out and the
+    /// snark-hop generator's raw state — for a save file. Additive, for
+    /// `.plan/m79-design.md` §6/§8 P4b's `SECTION_PROJECTILES`; paired with
+    /// [`Self::restore_from_parts`].
+    #[must_use]
+    pub fn next_id_and_rng_state(&self) -> (u32, u64) {
+        (self.next_id, self.rng.state)
+    }
+
+    /// Rebuilds a set from exactly the state [`Self::projectiles`],
+    /// [`Self::next_id_and_rng_state`] and the caller's own `limits`
+    /// describe, so a restored projectile keeps its original
+    /// [`ProjectileId`] and every subsequent spawn continues the same id and
+    /// random sequence a continuously-run set would have produced. Additive,
+    /// for save-file restore.
+    ///
+    /// `projectiles` beyond `limits.max_projectiles` are dropped from the
+    /// tail (bounded, like every other list this crate accepts from a save).
+    #[must_use]
+    pub fn restore_from_parts(
+        projectiles: Vec<Projectile>,
+        limits: ProjectileLimits,
+        next_id: u32,
+        rng_state: u64,
+    ) -> Self {
+        let mut projectiles = projectiles;
+        projectiles.truncate(limits.max_projectiles);
+        Self {
+            projectiles,
+            limits,
+            next_id,
+            rng: Rng { state: rng_state },
+        }
+    }
+
     /// Spawns a projectile at `position` travelling at `velocity`.
     ///
     /// Returns `None` when the set is full or either vector is not finite,

@@ -63,6 +63,28 @@ impl Activity {
             Self::Die => 11,
         }
     }
+
+    /// The activity a previous [`Self::tag`] named, or `None` for a tag
+    /// this build does not recognise. Additive, for save-file restore:
+    /// `.plan/m79-design.md` §6/§8 P4b.
+    #[must_use]
+    pub const fn from_tag(tag: u8) -> Option<Self> {
+        Some(match tag {
+            0 => Self::Idle,
+            1 => Self::Alert,
+            2 => Self::Walk,
+            3 => Self::Run,
+            4 => Self::Crouch,
+            5 => Self::Threat,
+            6 => Self::Melee,
+            7 => Self::Range,
+            8 => Self::Reload,
+            9 => Self::Flinch,
+            10 => Self::Cover,
+            11 => Self::Die,
+            _ => return None,
+        })
+    }
 }
 
 /// One step of a schedule.
@@ -344,12 +366,47 @@ impl ScheduleRunner {
         self.schedule.is_some()
     }
 
+    /// Whether the running task has already been started (its one-shot
+    /// entry action has run). `false` outside a schedule.
+    #[must_use]
+    pub fn started(&self) -> bool {
+        self.started
+    }
+
     /// Starts `schedule` from its first task, discarding any previous one.
     pub fn start(&mut self, schedule: &'static Schedule) {
         self.schedule = Some(schedule);
         self.task_index = 0;
         self.started = false;
         self.timer = 0.0;
+    }
+
+    /// Rebuilds a runner from a previously saved schedule *name* (resolved
+    /// through [`crate::schedule_by_name`], the same lookup
+    /// [`crate::resolve_schedule`] performs), task index, started flag and
+    /// timer — additive, for save-file restore
+    /// (`.plan/m79-design.md` §6/§8 P4b): schedule identity is a stable
+    /// string precisely so this restore never depends on a schedule's
+    /// registration order.
+    ///
+    /// An empty name, or one this build no longer registers (an old save
+    /// naming a retired schedule), restores a cleared runner rather than
+    /// failing: the monster simply re-selects a schedule on its next think.
+    /// `task_index` is clamped to the resolved schedule's own task count so
+    /// a corrupt or out-of-range save value cannot leave the runner pointing
+    /// past the end of `tasks`.
+    #[must_use]
+    pub fn restore(name: &str, task_index: usize, started: bool, timer: f32) -> Self {
+        let Some(schedule) = crate::brain::schedule_by_name(name) else {
+            return Self::default();
+        };
+        let task_index = task_index.min(schedule.tasks.len().saturating_sub(1));
+        Self {
+            schedule: Some(schedule),
+            task_index,
+            started,
+            timer: if timer.is_finite() { timer.max(0.0) } else { 0.0 },
+        }
     }
 
     /// Abandons the running schedule.

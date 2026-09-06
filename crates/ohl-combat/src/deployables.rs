@@ -204,6 +204,38 @@ impl DeployableSet {
         self.tripmines.clear();
     }
 
+    /// This set's own next-handle counter, for a save file. Additive, for
+    /// `.plan/m79-design.md` §6/§8 P4b's `SECTION_PROJECTILES`; paired with
+    /// [`Self::restore_from_parts`].
+    #[must_use]
+    pub fn next_id(&self) -> u32 {
+        self.next_id
+    }
+
+    /// Rebuilds a set from exactly the state [`Self::satchels`],
+    /// [`Self::tripmines`] and [`Self::next_id`] describe, so a restored
+    /// deployable keeps its original [`DeployableId`] and the next one
+    /// placed continues the same sequence a continuously-run set would
+    /// have produced. Additive, for save-file restore.
+    ///
+    /// Bounded to [`MAX_SATCHELS`]/[`MAX_TRIPMINES`], dropping from the
+    /// tail, the same as [`Self::place_satchel`]/[`Self::place_tripmine`]
+    /// refusing past that point.
+    #[must_use]
+    pub fn restore_from_parts(
+        mut satchels: Vec<Satchel>,
+        mut tripmines: Vec<Tripmine>,
+        next_id: u32,
+    ) -> Self {
+        satchels.truncate(MAX_SATCHELS);
+        tripmines.truncate(MAX_TRIPMINES);
+        Self {
+            satchels,
+            tripmines,
+            next_id,
+        }
+    }
+
     /// The next handle.
     fn allocate(&mut self) -> DeployableId {
         let id = DeployableId(self.next_id);

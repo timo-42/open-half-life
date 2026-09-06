@@ -2384,6 +2384,7 @@ dependencies = [
  "ohl-save",
  "ohl-ui",
  "ohl-world",
+ "postcard",
  "proptest",
  "serde",
  "tempfile",

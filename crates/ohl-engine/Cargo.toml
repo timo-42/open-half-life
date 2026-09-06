@@ -44,6 +44,11 @@ ohl-campaign = { path = "../ohl-campaign", version = "=0.1.0" }
 # Exact-pinned to match `ohl-save`'s and `ohl-game`'s own pins: the save
 # sections this crate writes are serialized with all three in the same tree.
 serde = { version = "=1.0.229", features = ["derive"] }
+# M7.9 P4b: decodes an optional save section directly (`crate::save`'s
+# `optional_section`), so a section missing entirely (an old save) can be
+# told apart from one present but corrupt, which `ohl_save::SaveReader`'s
+# own `deserialize` does not expose.
+postcard = { workspace = true }
 ohl-assets = { path = "../ohl-assets", version = "=0.1.0" }
 # Pinned exact to match `ohl-game`'s and `ohl-physics`'s own pins: the
 # vector type crosses all three boundaries.

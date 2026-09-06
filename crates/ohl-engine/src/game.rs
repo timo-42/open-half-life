@@ -836,6 +836,11 @@ impl Game {
             simulation: self.level.simulation.snapshot(),
             globals: self.globals.clone(),
             light_style_time: self.elapsed,
+            inventory: Some(self.systems.snapshot_inventory()),
+            entity_combat: Some(Systems::snapshot_entity_combat(&self.level)),
+            ai: Some(Systems::snapshot_ai(&self.level)),
+            projectiles: Some(self.systems.snapshot_projectiles(&self.level)),
+            rng: Some(self.systems.snapshot_rng()),
         }
     }
 
@@ -993,6 +998,34 @@ impl Game {
         // save's inventory section is self-describing independent of
         // `PlayerCarryState`'s shape.
         self.systems.restore_carry(&save.player);
+        // `SECTION_INVENTORY` (23, M7.9 P4b): when a newer save's typed
+        // section is present it overlays the legacy blob above with the
+        // exact same data (a save this build writes always agrees with
+        // itself), and additionally restores the drawn weapon's firing
+        // summary and the exact selection, neither of which the legacy
+        // blob alone could carry.
+        if let Some(inventory) = &save.inventory {
+            self.systems.restore_inventory(inventory);
+        }
+        // `SECTION_ENTITY_COMBAT`/`SECTION_AI` (24/25, M7.9 P4b): applied
+        // after `attach_level` has rebuilt this level's monsters fresh, so
+        // these snapshots overlay the exact health/AI state the save
+        // recorded onto entities `attach_level` just spawned in the same
+        // deterministic spawn order.
+        if let Some(entity_combat) = &save.entity_combat {
+            Systems::restore_entity_combat(&mut self.level, entity_combat);
+        }
+        if let Some(ai) = &save.ai {
+            Systems::restore_ai(&mut self.level, ai);
+        }
+        // `SECTION_PROJECTILES` (26, M7.9 P4b).
+        if let Some(projectiles) = &save.projectiles {
+            self.systems.restore_projectiles(&self.level, projectiles);
+        }
+        // `SECTION_RNG` (27, M7.9 P4b).
+        if let Some(rng) = &save.rng {
+            self.systems.restore_rng(*rng);
+        }
         // A load is a map load: the chapter title is announced again.
         self.pending.clear();
         self.pending.extend(chapter_title_event(&self.level.name));

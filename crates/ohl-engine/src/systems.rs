@@ -222,6 +222,12 @@ pub struct Systems {
     /// The one random stream every simulation phase shares, seeded from
     /// [`SystemsConfig::rng_seed`] and never from the environment.
     rng: ohl_ai::Pcg32,
+    /// How many fixed steps have run since [`Self::attach_level`] (a level
+    /// load or a save restore) last reset it. Saved as part of
+    /// `SECTION_RNG` (27) alongside [`Self::rng`]'s own state, purely as a
+    /// determinism cross-check a test can compare across a save/load
+    /// boundary; nothing in the step list reads it back.
+    substep_counter: u64,
     /// Every hit a weapon (phase 6), a projectile or blast (phase 7) or an
     /// AI attack (phase 8) produced this step, paired with its target.
     /// Phase 9 drains everything aimed at the player or at a non-monster
@@ -276,6 +282,7 @@ impl Systems {
             pending_edges: PendingEdges::default(),
             hud: ohl_ui::hud::HudState::default(),
             rng,
+            substep_counter: 0,
             damage_queue: Vec::new(),
             ai: AiState::new(ai_seed),
             projectiles: ProjectileSystem::new(config.rng_seed),
@@ -357,6 +364,111 @@ impl Systems {
     /// Takes every presentation event collected since the last call.
     pub(crate) fn drain_presentation_events(&mut self) -> Vec<PresentationEvent> {
         self.presentation.drain_events()
+    }
+
+    /// `SECTION_INVENTORY` (23): the typed inventory/firing snapshot.
+    #[must_use]
+    pub(crate) fn snapshot_inventory(&self) -> crate::save_state::InventorySnapshot {
+        self.combat.snapshot()
+    }
+
+    /// Restores `SECTION_INVENTORY` (23), overlaying whatever
+    /// [`Self::restore_carry`]'s legacy blob already applied with the typed
+    /// fields (which a save written by this package always agrees with).
+    pub(crate) fn restore_inventory(&mut self, snapshot: &crate::save_state::InventorySnapshot) {
+        self.combat.restore_snapshot(snapshot, &mut self.player);
+    }
+
+    /// `SECTION_ENTITY_COMBAT` (24): one entry per `level.registry.entities`
+    /// slot, in spawn order.
+    #[must_use]
+    pub(crate) fn snapshot_entity_combat(
+        level: &Level,
+    ) -> Vec<crate::save_state::EntityCombatSnapshot> {
+        level
+            .registry
+            .entities
+            .iter()
+            .take(crate::save_state::MAX_SNAPSHOT_ENTITIES)
+            .map(|entity| crate::save_state::snapshot_entity_combat(level, *entity))
+            .collect()
+    }
+
+    /// Restores `SECTION_ENTITY_COMBAT` (24), zipped against
+    /// `level.registry.entities` in spawn order; a save with more or fewer
+    /// entries than the reloaded level currently has simply stops applying
+    /// once either list runs out.
+    pub(crate) fn restore_entity_combat(
+        level: &mut Level,
+        snapshots: &[crate::save_state::EntityCombatSnapshot],
+    ) {
+        let entities = level.registry.entities.clone();
+        for (entity, snapshot) in entities.iter().zip(snapshots) {
+            crate::save_state::restore_entity_combat(level, *entity, snapshot);
+        }
+    }
+
+    /// `SECTION_AI` (25): one entry per `level.registry.entities` slot, in
+    /// spawn order; `None` for an entity with no [`ohl_ai::MonsterAi`].
+    #[must_use]
+    pub(crate) fn snapshot_ai(level: &Level) -> Vec<Option<crate::save_state::AiSnapshot>> {
+        level
+            .registry
+            .entities
+            .iter()
+            .take(crate::save_state::MAX_SNAPSHOT_ENTITIES)
+            .map(|entity| crate::ai::AiState::snapshot_entity(level, *entity))
+            .collect()
+    }
+
+    /// Restores `SECTION_AI` (25), zipped against `level.registry.entities`
+    /// the same way [`Self::restore_entity_combat`] is.
+    pub(crate) fn restore_ai(
+        level: &mut Level,
+        snapshots: &[Option<crate::save_state::AiSnapshot>],
+    ) {
+        let entities = level.registry.entities.clone();
+        for (entity, snapshot) in entities.iter().zip(snapshots) {
+            if let Some(snapshot) = snapshot {
+                crate::ai::AiState::restore_entity(level, *entity, snapshot);
+            }
+        }
+    }
+
+    /// `SECTION_PROJECTILES` (26): live projectiles and placed deployables.
+    #[must_use]
+    pub(crate) fn snapshot_projectiles(
+        &self,
+        level: &Level,
+    ) -> crate::save_state::ProjectilesSnapshot {
+        self.projectiles.snapshot(level)
+    }
+
+    /// Restores `SECTION_PROJECTILES` (26).
+    pub(crate) fn restore_projectiles(
+        &mut self,
+        level: &Level,
+        snapshot: &crate::save_state::ProjectilesSnapshot,
+    ) {
+        self.projectiles.restore_snapshot(level, snapshot);
+    }
+
+    /// `SECTION_RNG` (27): the shared random stream's state and the substep
+    /// counter.
+    #[must_use]
+    pub(crate) fn snapshot_rng(&self) -> crate::save_state::RngSnapshot {
+        let (state, increment) = self.rng.snapshot();
+        crate::save_state::RngSnapshot {
+            state,
+            increment,
+            substep_counter: self.substep_counter,
+        }
+    }
+
+    /// Restores `SECTION_RNG` (27).
+    pub(crate) fn restore_rng(&mut self, snapshot: crate::save_state::RngSnapshot) {
+        self.rng = ohl_ai::Pcg32::from_snapshot((snapshot.state, snapshot.increment));
+        self.substep_counter = snapshot.substep_counter;
     }
 
     /// The configuration this step list runs with.
@@ -490,6 +602,7 @@ impl Systems {
         self.pickups(level, input, dt); // 11
         self.triggers_and_movers(level, camera, input, dt, events); // 12
         self.presentation(level, dt); // 13
+        self.substep_counter = self.substep_counter.wrapping_add(1);
     }
 
     /// Phase 1 — input latch. Axes hold for every step of the frame; edges

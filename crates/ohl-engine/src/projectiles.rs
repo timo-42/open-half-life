@@ -423,6 +423,150 @@ impl ProjectileSystem {
         }
     }
 
+    /// Captures `SECTION_PROJECTILES` (26): every live projectile and
+    /// placed deployable, plus the id/rng restart bookkeeping
+    /// [`Self::restore_snapshot`] needs to continue exactly where this
+    /// snapshot left off.
+    #[must_use]
+    pub(crate) fn snapshot(&self, level: &Level) -> crate::save_state::ProjectilesSnapshot {
+        let (projectile_next_id, projectile_rng_state) =
+            self.projectiles.next_id_and_rng_state();
+        let projectiles = self
+            .projectiles
+            .projectiles()
+            .iter()
+            .map(|projectile| crate::save_state::ProjectileSnapshot {
+                id: projectile.id.0,
+                kind_tag: crate::save_state::projectile_kind_tag(projectile.kind),
+                owner: projectile
+                    .owner
+                    .and_then(|owner| crate::save_state::spawn_index_of_combat_id(level, owner)),
+                position: crate::save_state::vec3_array(projectile.position),
+                velocity: crate::save_state::vec3_array(projectile.velocity),
+                age: projectile.age,
+                fuse: projectile.fuse,
+                guide_point: projectile.guide_point.map(crate::save_state::vec3_array),
+                target: projectile
+                    .target
+                    .and_then(|target| crate::save_state::spawn_index_of_combat_id(level, target)),
+                attack_cooldown: projectile.attack_cooldown,
+                hop_cooldown: projectile.hop_cooldown,
+                resting: projectile.resting,
+            })
+            .collect();
+        let satchels = self
+            .deployables
+            .satchels()
+            .iter()
+            .map(|satchel| crate::save_state::SatchelSnapshot {
+                id: satchel.id.0,
+                owner: satchel
+                    .owner
+                    .and_then(|owner| crate::save_state::spawn_index_of_combat_id(level, owner)),
+                position: crate::save_state::vec3_array(satchel.position),
+                age: satchel.age,
+            })
+            .collect();
+        let tripmines = self
+            .deployables
+            .tripmines()
+            .iter()
+            .map(|tripmine| crate::save_state::TripmineSnapshot {
+                id: tripmine.id.0,
+                owner: tripmine
+                    .owner
+                    .and_then(|owner| crate::save_state::spawn_index_of_combat_id(level, owner)),
+                position: crate::save_state::vec3_array(tripmine.position),
+                normal: crate::save_state::vec3_array(tripmine.normal),
+                age: tripmine.age,
+                armed: tripmine.armed,
+            })
+            .collect();
+        crate::save_state::ProjectilesSnapshot {
+            projectiles,
+            projectile_next_id,
+            projectile_rng_state,
+            satchels,
+            tripmines,
+            deployable_next_id: self.deployables.next_id(),
+        }
+    }
+
+    /// Restores everything [`Self::snapshot`] captured, replacing whatever
+    /// this system currently holds. Model-backed rendering entities are not
+    /// recreated (see `crate::save_state`'s module doc): the restored
+    /// projectiles simulate identically but draw as nothing until they
+    /// resolve.
+    pub(crate) fn restore_snapshot(
+        &mut self,
+        level: &Level,
+        snapshot: &crate::save_state::ProjectilesSnapshot,
+    ) {
+        self.models.clear();
+        let projectiles = snapshot
+            .projectiles
+            .iter()
+            .filter_map(|entry| {
+                let kind = crate::save_state::projectile_kind_from_tag(entry.kind_tag)?;
+                Some(ohl_combat::Projectile {
+                    id: ProjectileId(entry.id),
+                    kind,
+                    owner: entry
+                        .owner
+                        .and_then(|index| crate::save_state::combat_id_at_spawn_index(level, index)),
+                    position: crate::save_state::array_vec3(entry.position),
+                    velocity: crate::save_state::array_vec3(entry.velocity),
+                    age: entry.age,
+                    fuse: entry.fuse,
+                    guide_point: entry.guide_point.map(crate::save_state::array_vec3),
+                    target: entry
+                        .target
+                        .and_then(|index| crate::save_state::combat_id_at_spawn_index(level, index)),
+                    attack_cooldown: entry.attack_cooldown,
+                    hop_cooldown: entry.hop_cooldown,
+                    resting: entry.resting,
+                })
+            })
+            .collect();
+        self.projectiles = ProjectileSet::restore_from_parts(
+            projectiles,
+            ohl_combat::ProjectileLimits::default(),
+            snapshot.projectile_next_id,
+            snapshot.projectile_rng_state,
+        );
+        let satchels = snapshot
+            .satchels
+            .iter()
+            .map(|entry| ohl_combat::Satchel {
+                id: DeployableId(entry.id),
+                owner: entry
+                    .owner
+                    .and_then(|index| crate::save_state::combat_id_at_spawn_index(level, index)),
+                position: crate::save_state::array_vec3(entry.position),
+                age: entry.age,
+            })
+            .collect();
+        let tripmines = snapshot
+            .tripmines
+            .iter()
+            .map(|entry| ohl_combat::Tripmine {
+                id: DeployableId(entry.id),
+                owner: entry
+                    .owner
+                    .and_then(|index| crate::save_state::combat_id_at_spawn_index(level, index)),
+                position: crate::save_state::array_vec3(entry.position),
+                normal: crate::save_state::array_vec3(entry.normal),
+                age: entry.age,
+                armed: entry.armed,
+            })
+            .collect();
+        self.deployables = DeployableSet::restore_from_parts(
+            satchels,
+            tripmines,
+            snapshot.deployable_next_id,
+        );
+    }
+
     /// Keeps each model-backed projectile's entity in step with its
     /// simulated position, and removes the ones that no longer exist.
     fn sync_model_entities(&mut self, level: &mut Level) {

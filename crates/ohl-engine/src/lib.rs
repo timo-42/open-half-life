@@ -59,6 +59,7 @@ mod presentation;
 // difficulty. See `docs/FORMAT_SOURCES.md` ("Campaign flow") for the public
 // documentation these semantics were implemented from.
 pub mod save;
+pub mod save_state;
 pub mod text;
 pub mod transition;
 
