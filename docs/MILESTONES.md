@@ -2603,12 +2603,8 @@ equivalent bullets in the 2026-09-06 snapshot above where they overlap):
   player against a brush entity's solid shape, but does not yet cover
   every mover interaction (see the mover-riders and submodel-contents
   bullets below).
-- **Per-chapter walk scenarios (in flight).** A scripted-navigation smoke
-  covering a walk through each of the 18 story chapters (beyond the
-  existing single-map `campaign-smoke` render check and the Hazard Course
-  combat scenario) is in progress; round 7's attempted `t0a0` → `t0a0a`
-  Hazard Course transition (see above) is the closest existing precedent
-  and was not reached within its scripted-navigation budget.
+- **Per-chapter walk scenarios.** Closed; see "M9: chapter-walk combat
+  smoke" below.
 - **`func_water`/`func_ladder` submodel contents.** Brush-entity collision
   (PR #91) treats every solid brush entity as ordinary solid geometry; it
   does not yet special-case a submodel's `CONTENTS_WATER`/`CONTENTS_LADDER`
@@ -2661,3 +2657,35 @@ equivalent bullets in the 2026-09-06 snapshot above where they overlap):
   its own small footprint, so folding it into `in_open` previously
   overstated how much of a trace was genuinely open once brushes were
   attached).
+
+## M9: chapter-walk combat smoke
+
+`cargo xtask combat-smoke` (`xtask/src/combat_smoke.rs`) gains nineteen new
+scripted-input scenarios (`xtask/smoke-scenarios/walk_*.txt`): one moving-
+player walk for each of the 18 story chapters whose starting map is
+confirmed in `ohl_campaign::CHAPTERS` (every chapter except Interloper,
+whose starting map prefix is deliberately left unverified), plus one for
+the Hazard Course — 23 scenarios in total alongside the four pre-existing
+ones. Each walks forward with short steps and periodic turns for roughly
+20-40 simulated seconds, the technique that had exposed the PR #90 (touch
+triggers never firing from movement) and PR #91 (the player falling
+through a brush entity's floor) regressions that static captures and load
+smokes had missed for days.
+
+Two new fixed `--script-log` lines back these scenarios
+(`crates/ohl-app/src/script_log.rs`): "The player moved from the spawn
+point." (the player's eye position has moved more than a project constant,
+64 units, from where it stood at the scenario's start — asserted present
+in every walk scenario as evidence the scripted walk actually moved the
+player) and "The player is inside solid geometry." (`Game::eye_is_in_solid`
+has read `true` for a cumulative total of more than one second during the
+run — asserted absent in every scenario, including the four pre-existing
+ones, as this scenario set's own regression guard for the PR #91 class of
+bug). Three of the nineteen walks (Power Up, "Forget About Freeman!", Xen)
+turn before or instead of advancing straight ahead, tuned only against
+that one map's own player-start-relative geometry (a dead-end player
+start, a solid corner in the walk's path, and — for Xen — a player start
+at the edge of a small platform where advancing much past half a second
+sends the player over the edge into a long fall); each scenario file's own
+header explains why. All 23 scenarios pass against a real imported
+payload.
