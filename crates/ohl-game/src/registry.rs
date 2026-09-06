@@ -378,6 +378,30 @@ pub const TRIGGER_HURT_INTERVAL_SECONDS: f32 = 0.5;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ladder;
 
+/// The published `Remove On fire` spawnflag bit of `trigger_auto`.
+pub const SPAWNFLAG_TRIGGER_AUTO_REMOVE_ON_FIRE: u32 = 1;
+
+/// `trigger_auto`: "automatically fires its targets on map spawn".
+///
+/// Published behaviour (see `docs/FORMAT_SOURCES.md`, "Scripted sequences
+/// and talk monsters"): it fires its `target` as soon as the map has
+/// loaded, `delay` seconds later, and the `Remove On fire` spawnflag
+/// removes the entity afterwards.
+///
+/// **`TODO(black-box)`**: the published `globalstate` key — "or as soon as
+/// the specified global state becomes active" — is not modelled; a
+/// `trigger_auto` here always fires on load.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct AutoTrigger {
+    /// Seconds between map load and firing `target`.
+    pub delay: f32,
+    /// Whether the entity is removed once it has fired.
+    pub remove_on_fire: bool,
+    /// Whether it has already fired.
+    pub fired: bool,
+}
+
 /// Any classname not otherwise recognised.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -751,6 +775,20 @@ impl Registry {
                 }
                 "func_ladder" => {
                     world.insert_one(entity, Ladder).ok();
+                }
+                "trigger_auto" => {
+                    world
+                        .insert_one(
+                            entity,
+                            AutoTrigger {
+                                delay: numeric(def, "delay", 0.0),
+                                remove_on_fire: def.spawnflags
+                                    & SPAWNFLAG_TRIGGER_AUTO_REMOVE_ON_FIRE
+                                    != 0,
+                                fired: false,
+                            },
+                        )
+                        .ok();
                 }
                 "trigger_hurt" => {
                     world

@@ -175,6 +175,18 @@ fn number(def: &EntityDef, key: &str, default: f32) -> f32 {
         .unwrap_or(default)
 }
 
+/// The published `attenuation` choice, clamped to the documented `0`-`3`
+/// range.
+fn attenuation(def: &EntityDef) -> u8 {
+    def.keyvalues
+        .get("attenuation")
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .unwrap_or(0)
+        .clamp(0, 3)
+        .try_into()
+        .unwrap_or(0)
+}
+
 /// `key`'s trimmed text, or `""`.
 fn text(def: &EntityDef, key: &str) -> String {
     def.keyvalues
@@ -313,7 +325,7 @@ impl SentenceDef {
             refire: number(def, "refire", 0.0).max(0.0),
             delay: number(def, "delay", 0.0).max(0.0),
             volume: number(def, "volume", 0.0).clamp(0.0, 10.0),
-            attenuation: number(def, "attenuation", 0.0).clamp(0.0, 3.0) as u8,
+            attenuation: attenuation(def),
             target: def.target.clone().unwrap_or_default(),
             spawnflags: def.spawnflags,
         })
@@ -372,8 +384,8 @@ impl ScriptActivation {
 #[cfg(test)]
 mod tests {
     use super::{
-        MoveTo, SCRIPTED_SEQUENCE_CLASSNAME, ScriptActivation, ScriptDef, SentenceDef,
-        SPAWNFLAG_SCRIPT_NO_INTERRUPTIONS,
+        MoveTo, SCRIPTED_SEQUENCE_CLASSNAME, SPAWNFLAG_SCRIPT_NO_INTERRUPTIONS, ScriptActivation,
+        ScriptDef, SentenceDef,
     };
     use crate::keyvalues::{EntityDef, Limits, parse_entity};
     use ohl_formats::bsp30::Entity as RawEntity;
@@ -422,12 +434,12 @@ mod tests {
         assert_eq!(script.target_monster, "ohl_actor");
         assert_eq!(script.play_sequence(), Some("ohl_play"));
         assert_eq!(script.idle_sequence(), Some("ohl_idle"));
-        assert_eq!(script.radius, 256.0);
-        assert_eq!(script.repeat, 2.0);
+        assert!((script.radius - 256.0).abs() < f32::EPSILON);
+        assert!((script.repeat - 2.0).abs() < f32::EPSILON);
         assert_eq!(script.move_to, MoveTo::Walk);
         assert_eq!(script.target, "ohl_after");
-        assert_eq!(script.delay, 3.0);
-        assert_eq!(script.yaw, 90.0);
+        assert!((script.delay - 3.0).abs() < f32::EPSILON);
+        assert!((script.yaw - 90.0).abs() < f32::EPSILON);
         assert!(script.no_interruptions());
         assert!(!script.repeatable());
         assert!(!script.ai_script);
@@ -471,10 +483,13 @@ mod tests {
         assert_eq!(sentence.sentence, "OHL_GROUP");
         assert_eq!(sentence.speaker, "ohl_speaker");
         assert_eq!(sentence.listener, "player");
-        assert_eq!(sentence.radius, 512.0);
-        assert_eq!(sentence.duration, 4.0);
-        assert_eq!(sentence.refire, 8.0);
-        assert_eq!(sentence.volume, 10.0, "the published range is 0-10");
+        assert!((sentence.radius - 512.0).abs() < f32::EPSILON);
+        assert!((sentence.duration - 4.0).abs() < f32::EPSILON);
+        assert!((sentence.refire - 8.0).abs() < f32::EPSILON);
+        assert!(
+            (sentence.volume - 10.0).abs() < f32::EPSILON,
+            "the published range is 0-10"
+        );
         assert_eq!(sentence.attenuation, 2);
         assert!(sentence.fire_once());
     }

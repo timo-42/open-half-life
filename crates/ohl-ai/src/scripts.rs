@@ -99,6 +99,10 @@ pub enum ScriptAction {
 
 /// What the engine observed about the monster this tick.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "one field per independent thing the engine observed"
+)]
 pub struct ScriptSense {
     /// Seconds since the last update.
     pub dt: f32,
@@ -115,6 +119,10 @@ pub struct ScriptSense {
 
 /// What one [`ScriptRunner::update`] decided.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "one field per independent thing the step decided"
+)]
 pub struct ScriptStep {
     /// What to do with the monster.
     pub action: ScriptAction,
@@ -254,8 +262,8 @@ impl ScriptRunner {
                     ..ScriptStep::default()
                 }
             }
-            ScriptPhase::Moving => self.tick_moving(sense),
-            ScriptPhase::Playing => self.tick_playing(sense),
+            ScriptPhase::Moving => self.tick_moving(*sense),
+            ScriptPhase::Playing => self.tick_playing(*sense),
         }
     }
 
@@ -270,7 +278,7 @@ impl ScriptRunner {
         }
     }
 
-    fn tick_moving(&mut self, sense: &ScriptSense) -> ScriptStep {
+    fn tick_moving(&mut self, sense: ScriptSense) -> ScriptStep {
         let arrived = match self.def.move_to {
             // "The monster will not move or turn": nothing to wait for.
             MoveTo::No => true,
@@ -301,7 +309,7 @@ impl ScriptRunner {
         }
     }
 
-    fn tick_playing(&mut self, sense: &ScriptSense) -> ScriptStep {
+    fn tick_playing(&mut self, sense: ScriptSense) -> ScriptStep {
         if !sense.sequence_finished {
             return ScriptStep {
                 action: ScriptAction::Play,
@@ -559,11 +567,7 @@ mod tests {
 
     #[test]
     fn a_non_finite_step_never_advances_a_repeat_timer() {
-        let mut runner = script(&[
-            ("m_fMoveTo", "0"),
-            ("spawnflags", "4"),
-            ("m_flRepeat", "1"),
-        ]);
+        let mut runner = script(&[("m_fMoveTo", "0"), ("spawnflags", "4"), ("m_flRepeat", "1")]);
         assert!(runner.trigger());
         let _ = runner.update(&sense());
         let finished = ScriptSense {
@@ -578,6 +582,6 @@ mod tests {
             });
             assert!(!step.started);
         }
-        assert_eq!(runner.timer(), 1.0);
+        assert!((runner.timer() - 1.0).abs() < f32::EPSILON);
     }
 }

@@ -425,6 +425,13 @@ impl Game {
         self.systems.ai().script_completion_count()
     }
 
+    /// The allies currently following the player, oldest first. Data, never
+    /// a log line.
+    #[must_use]
+    pub fn followers(&self) -> &[ohl_game::hecs::Entity] {
+        self.systems.ai().followers().members()
+    }
+
     /// The per-step configuration this game simulates with.
     #[must_use]
     pub fn systems_config(&self) -> SystemsConfig {
