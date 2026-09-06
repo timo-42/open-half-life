@@ -437,23 +437,27 @@ pub(crate) fn restore_entity_combat(
         let _ = level.registry.world.despawn(entity);
         return;
     };
+    // Non-finite health/armor values are sanitized to `0.0` the same way
+    // `array_vec3` sanitizes a position, so a corrupt or adversarial save
+    // cannot hand the simulation a `NaN` health.
     if let Some((current, _)) = snapshot.health
         && let Ok(mut actor) = level.registry.world.get::<&mut ohl_ai::Actor>(entity)
     {
+        let current = sanitize_f32(current, 0.0);
         actor.health = current;
         actor.alive = current > 0.0;
     }
     if let Some((current, max)) = snapshot.health
         && let Ok(mut health) = level.registry.world.get::<&mut ohl_combat::Health>(entity)
     {
-        health.current = current;
-        health.max = max;
+        health.current = sanitize_f32(current, 0.0);
+        health.max = sanitize_f32(max, 0.0);
     }
     if let Some((current, max)) = snapshot.armor
         && let Ok(mut armor) = level.registry.world.get::<&mut ohl_combat::Armor>(entity)
     {
-        armor.current = current;
-        armor.max = max;
+        armor.current = sanitize_f32(current, 0.0);
+        armor.max = sanitize_f32(max, 0.0);
     }
 }
 
@@ -478,9 +482,33 @@ pub(crate) fn array_vec3(value: [f32; 3]) -> Vec3 {
     Vec3::new(sanitize(value[0]), sanitize(value[1]), sanitize(value[2]))
 }
 
+/// A previously stored scalar, sanitized the same way [`array_vec3`]
+/// sanitizes each of its components: a non-finite value (a corrupt or
+/// adversarial save) falls back to `default` rather than propagating a
+/// `NaN`/`inf` into the simulation.
+#[must_use]
+pub(crate) fn sanitize_f32(value: f32, default: f32) -> f32 {
+    if value.is_finite() { value } else { default }
+}
+
+/// The `ohl_ai::Conditions` a previous [`ohl_ai::Conditions::bits`] named,
+/// masked down to the bits this build actually defines
+/// (`ohl_ai::Conditions::NAMED`), so an out-of-range bit in a corrupt or
+/// forward-written save cannot set a condition this build has no name for.
+#[must_use]
+pub(crate) fn masked_conditions(bits: u32) -> ohl_ai::Conditions {
+    let mask = ohl_ai::Conditions::NAMED
+        .iter()
+        .fold(0u32, |mask, (_, bit)| mask | bit.bits());
+    ohl_ai::Conditions::from_bits(bits & mask)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{array_vec3, projectile_kind_from_tag, projectile_kind_tag, vec3_array};
+    use super::{
+        array_vec3, masked_conditions, projectile_kind_from_tag, projectile_kind_tag, sanitize_f32,
+        vec3_array,
+    };
     use ohl_combat::ProjectileKind;
 
     const ALL_KINDS: [ProjectileKind; 6] = [
@@ -517,6 +545,34 @@ mod tests {
     fn a_non_finite_component_is_sanitized_to_zero() {
         let restored = array_vec3([f32::NAN, f32::INFINITY, 4.0]);
         assert_eq!(restored, glam::Vec3::new(0.0, 0.0, 4.0));
+    }
+
+    #[test]
+    fn sanitize_f32_passes_through_a_finite_value() {
+        assert!((sanitize_f32(3.5, 0.0) - 3.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sanitize_f32_falls_back_on_non_finite_input() {
+        assert!((sanitize_f32(f32::NAN, 7.0) - 7.0).abs() < f32::EPSILON);
+        assert!((sanitize_f32(f32::INFINITY, 7.0) - 7.0).abs() < f32::EPSILON);
+        assert!((sanitize_f32(f32::NEG_INFINITY, 7.0) - 7.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn masked_conditions_drops_bits_this_build_does_not_name() {
+        let all_named = ohl_ai::Conditions::NAMED
+            .iter()
+            .fold(0u32, |mask, (_, bit)| mask | bit.bits());
+        assert_eq!(masked_conditions(u32::MAX).bits(), all_named);
+        assert_eq!(masked_conditions(0).bits(), 0);
+    }
+
+    #[test]
+    fn masked_conditions_keeps_every_named_bit() {
+        for (_, bit) in ohl_ai::Conditions::NAMED {
+            assert_eq!(masked_conditions(bit.bits()), *bit);
+        }
     }
 }
 

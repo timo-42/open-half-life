@@ -723,35 +723,47 @@ impl AiState {
             snapshot.schedule_started,
             snapshot.schedule_timer,
         );
+        let waypoints: Vec<Vec3> = snapshot
+            .route_waypoints
+            .iter()
+            .take(ohl_ai::movement::MAX_WAYPOINTS)
+            .copied()
+            .map(crate::save_state::array_vec3)
+            .collect();
+        // Bounded by the restored (already-truncated) waypoint list itself,
+        // so a corrupt or stale `route_current` cannot point past its end;
+        // `.max(1)` keeps the divisor sound for an empty route (`current`
+        // then clamps to `0`).
+        let route_current = (snapshot.route_current as usize).min(waypoints.len().max(1) - 1);
         let route = Route {
-            waypoints: snapshot
-                .route_waypoints
-                .iter()
-                .take(ohl_ai::movement::MAX_WAYPOINTS)
-                .copied()
-                .map(crate::save_state::array_vec3)
-                .collect(),
-            current: snapshot.route_current as usize,
+            waypoints,
+            current: route_current,
             goal: crate::save_state::array_vec3(snapshot.route_goal),
         };
         if let Ok(mut ai) = level.registry.world.get::<&mut MonsterAi>(entity) {
             ai.state = MonsterState::from_tag(snapshot.state_tag).unwrap_or_default();
-            ai.conditions = Conditions::from_bits(snapshot.conditions);
-            ai.pending_conditions = Conditions::from_bits(snapshot.pending_conditions);
+            ai.conditions = crate::save_state::masked_conditions(snapshot.conditions);
+            ai.pending_conditions =
+                crate::save_state::masked_conditions(snapshot.pending_conditions);
             ai.runner = runner;
             ai.memory = enemy.map(|(entity, memory)| EnemyMemory {
                 entity,
                 last_known_position: crate::save_state::array_vec3(memory.last_known_position),
-                time_since_seen: memory.time_since_seen,
+                time_since_seen: crate::save_state::sanitize_f32(memory.time_since_seen, 0.0)
+                    .max(0.0),
                 occluded: memory.occluded,
-                last_known_distance: memory.last_known_distance,
+                last_known_distance: crate::save_state::sanitize_f32(
+                    memory.last_known_distance,
+                    0.0,
+                )
+                .max(0.0),
             });
             ai.route = route;
             ai.move_target = snapshot.move_target.map(crate::save_state::array_vec3);
             ai.cover = snapshot.cover.map(crate::save_state::array_vec3);
             ai.activity = Activity::from_tag(snapshot.activity_tag).unwrap_or_default();
-            ai.move_speed = snapshot.move_speed;
-            ai.ideal_yaw = snapshot.ideal_yaw;
+            ai.move_speed = crate::save_state::sanitize_f32(snapshot.move_speed, 0.0).max(0.0);
+            ai.ideal_yaw = crate::save_state::sanitize_f32(snapshot.ideal_yaw, 0.0);
             ai.stuck = StuckDetector::from_ticks(snapshot.stuck_ticks);
         }
         if let Some(squad) = &snapshot.squad {

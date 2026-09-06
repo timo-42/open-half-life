@@ -1067,14 +1067,12 @@ impl Game {
         // `from_save`) already built a fresh `Systems` and called
         // `attach_level` exactly once, with this same `save.difficulty()`
         // and this level's own skill table. Calling `reset`/`attach_level`
-        // again here used to re-run `attach_monsters` a second time against
-        // the same (already-populated) `Registry::entities`, silently
-        // double-spawning every `monster_*` the map declares on every
-        // `Game::from_save`/`load_bytes` — harmless for a save with no
-        // monsters (which is why the pre-M7.9-P4b save round-trip test
-        // never caught it), but exactly the bug M7.9 P4b's own
-        // `SECTION_ENTITY_COMBAT`/`SECTION_AI` restore (below) would then
-        // silently zip against the wrong, doubled entity list.
+        // again here was a redundant re-attach, now removed:
+        // `ohl_ai::attach_monsters` only inserts components onto the
+        // entities `Registry::build` already spawned rather than spawning
+        // new ones, so this never produced duplicate monster entities; the
+        // second call was simply doing the same brain-registration and
+        // component-insertion work twice for no reason.
         // `save.player` genuinely round-trips health, armor, owned
         // weapons, per-weapon clips, reserve ammo, the HEV suit and the
         // long jump module: `GameSave` (and so `PlayerCarryState`,

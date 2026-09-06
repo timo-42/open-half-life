@@ -6,6 +6,7 @@
 #
 #     cargo +nightly fuzz run decode_fuzz
 #     cargo +nightly fuzz run sections_fuzz
+#     cargo +nightly fuzz run restore_fuzz
 
 [workspace]
 members = ["."]
@@ -29,6 +30,10 @@ arbitrary = { version = "=1.4.2", features = ["derive"] }
 
 [dependencies.ohl-engine]
 path = ".."
+# `restore_fuzz` builds a real base save over this crate's own synthetic map
+# fixture (`ohl_engine::test_support`), so it needs the feature that exposes
+# it (which in turn enables `ohl-formats`'/`ohl-world`'s own `test-support`).
+features = ["test-support"]
 
 [dependencies.ohl-save]
 path = "../../ohl-save"
@@ -43,6 +48,13 @@ bench = false
 [[bin]]
 name = "sections_fuzz"
 path = "fuzz_targets/sections_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "restore_fuzz"
+path = "fuzz_targets/restore_fuzz.rs"
 test = false
 doc = false
 bench = false
