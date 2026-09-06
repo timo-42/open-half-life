@@ -323,6 +323,7 @@ impl Game {
 
     /// The step list this game runs, mutably, so an in-crate caller can
     /// reach a phase's own state (the AI world, the damage queue).
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn systems_mut(&mut self) -> &mut Systems {
         &mut self.systems
     }
