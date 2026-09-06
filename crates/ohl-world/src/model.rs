@@ -11,7 +11,7 @@ use crate::lightmap::{
     lightmap_extents,
 };
 use crate::sky::is_sky_texture;
-use crate::spawn::{PlayerSpawn, find_player_start};
+use crate::spawn::{PlayerSpawn, count_player_starts, find_player_start};
 use crate::texture::{TextureImage, resolve, trimmed};
 use crate::vis::VisibilitySet;
 use crate::water::is_liquid_texture;
@@ -123,11 +123,31 @@ pub struct WorldModel {
     pub bounds: Aabb,
     /// The map's `info_player_start`, when it has one.
     pub spawn: Option<PlayerSpawn>,
+    /// How many `info_player_start` entities this map's entity lump
+    /// declares (`0` when it has none, `1` for the ordinary case). See
+    /// [`crate::spawn::count_player_starts`].
+    pub player_start_count: usize,
     /// Whether any face of this model uses the special-cased `sky` texture
     /// (see [`crate::is_sky_texture`]); such faces are excluded from
     /// [`Self::indices`] entirely; a renderer instead draws its own skybox
     /// pass whenever this (or, per frame, [`DrawList::sky_visible`]) is set.
     pub has_sky: bool,
+    /// How many of this model's faces were dropped while building: either
+    /// degenerate (fewer than 3 vertices survived its edge walk) or carrying
+    /// non-finite texture-space coordinates (a malformed `texinfo` vector
+    /// applied to legitimate, finite vertex positions). Earlier this
+    /// project's `build_at` treated a non-finite face as fatal for the
+    /// *whole* model — one bad face in a large brush entity (a `func_wall`
+    /// making up an indoor hall's structure, say) silently took the entire
+    /// entity down with it (counted only as one more
+    /// `Level::unbuildable_submodels`), leaving nothing to occlude any real
+    /// sky faces behind it. Dropping just the offending face and continuing
+    /// keeps the rest of the model's geometry (and its occluding power)
+    /// intact; this field is how a caller notices the drop happened at all,
+    /// the same diagnostic-instead-of-silent-loss pattern
+    /// `Level::unbuildable_submodels` already established for whole
+    /// submodels.
+    pub dropped_faces: usize,
     nodes: Vec<WorldNode>,
     planes: Vec<WorldPlane>,
     /// `leaf_faces[leaf]` is a `(start, count)` slice of `leaf_face_list`.
@@ -333,6 +353,7 @@ impl WorldModel {
         let mut bsp_face_is_sky = vec![false; faces.len()];
         let mut light_tiles: Vec<LightTile> = Vec::new();
         let mut total_vertices = 0usize;
+        let mut dropped_faces = 0usize;
 
         for bsp_face in first_face..face_end {
             let face = &faces[bsp_face];
@@ -376,6 +397,12 @@ impl WorldModel {
                 ]);
             }
             if positions.len() < 3 {
+                // A degenerate face (its edge walk produced fewer than the
+                // 3 vertices a polygon needs) carries no geometry to draw;
+                // count it rather than either drawing garbage or, as
+                // `surface_coordinates` below now also avoids, taking the
+                // whole model down over one bad face.
+                dropped_faces += 1;
                 continue;
             }
             total_vertices = total_vertices
@@ -385,7 +412,19 @@ impl WorldModel {
                 return Err(WorldError::LimitExceeded);
             }
 
-            let (st, bounds) = surface_coordinates(&positions, texinfo)?;
+            // A single face with a malformed `texinfo` (an overflow-inducing
+            // texture vector/shift applied to otherwise perfectly finite,
+            // valid vertex positions) used to fail this whole model's build
+            // via `?`. That is fatal in a way this map's data does not
+            // warrant: the vertices themselves are fine, only this one
+            // face's texture-space projection is not, so only this face's
+            // geometry (not the rest of the model's, e.g. a large occluding
+            // brush entity's walls) needs to be dropped. See
+            // `Self::dropped_faces`.
+            let Ok((st, bounds)) = surface_coordinates(&positions, texinfo) else {
+                dropped_faces += 1;
+                continue;
+            };
             let (min_s, max_s, min_t, max_t) = st_bounds(&st);
             let lit = face.lightmap_offset.get() >= 0
                 && face.styles[0] != STYLE_NONE
@@ -548,10 +587,18 @@ impl WorldModel {
             })
             .collect();
 
-        let spawn = bsp
-            .entities(limits)
-            .ok()
-            .and_then(|entities| find_player_start(&entities));
+        let parsed_entities = bsp.entities(limits).ok();
+        let spawn = parsed_entities
+            .as_ref()
+            .and_then(|entities| find_player_start(entities));
+        // See `find_player_start`'s doc comment: no public source pins a
+        // tie-break rule beyond "first in entity-lump order" when a map
+        // places more than one `info_player_start`, so this count is
+        // published as a diagnostic (never the entities' own names or
+        // coordinates) instead of guessing at a different rule.
+        let player_start_count = parsed_entities
+            .as_ref()
+            .map_or(0, |entities| count_player_starts(entities));
 
         Ok(Self {
             vertices: mesh_vertices,
@@ -563,7 +610,9 @@ impl WorldModel {
             lightmap_atlas: atlas,
             bounds: model_bounds,
             spawn,
+            player_start_count,
             has_sky,
+            dropped_faces,
             nodes,
             planes,
             leaf_faces,

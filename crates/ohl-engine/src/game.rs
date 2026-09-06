@@ -185,6 +185,27 @@ impl Game {
         self.level.unbuildable_submodels
     }
 
+    /// How many individual world/submodel faces this level dropped while
+    /// building (see [`ohl_world::WorldModel::dropped_faces`]), summed
+    /// across every model the level built. Media-derived: report it as
+    /// data, never in a log line. A non-zero count here means some faces —
+    /// potentially including geometry that should occlude something else,
+    /// e.g. a sky face — did not make it into the drawn mesh.
+    #[must_use]
+    pub fn dropped_face_count(&self) -> usize {
+        self.level.dropped_faces
+    }
+
+    /// How many `info_player_start` entities this level declares. Media-
+    /// derived: report it as data, never in a log line. A value greater
+    /// than `1` is the leading suspect for a level whose spawn faces the
+    /// wrong direction, since [`ohl_world::find_player_start`] always picks
+    /// the first one in entity-lump order (see its doc comment).
+    #[must_use]
+    pub fn player_start_count(&self) -> usize {
+        self.level.player_start_count
+    }
+
     /// Whether this level has usable collision hulls, i.e. whether the
     /// player walks rather than flies.
     #[must_use]

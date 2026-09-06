@@ -186,8 +186,23 @@ pub struct Level {
     /// built. Published, rather than silently dropped, so an entity that
     /// should be visible cannot disappear without a number to point at.
     pub unbuildable_submodels: usize,
+    /// How many individual faces, summed across [`Self::world`] and every
+    /// model in [`Self::submodels`], were dropped while building (see
+    /// [`ohl_world::WorldModel::dropped_faces`]) rather than causing their
+    /// whole model to fail. A non-zero count here is exactly the kind of
+    /// occluder loss a fidelity pass could previously only spot by noticing
+    /// a hole in a screenshot.
+    pub dropped_faces: usize,
     /// The `info_player_start` this map spawns the player at.
     pub spawn: Option<PlayerSpawn>,
+    /// How many `info_player_start` entities this map declares (see
+    /// [`ohl_world::WorldModel::player_start_count`]). Greater than `1`
+    /// means [`Self::spawn`] was chosen by a tie-break this project cannot
+    /// currently justify against any public source beyond "first in
+    /// entity-lump order" (see `ohl_world::spawn::find_player_start`'s doc
+    /// comment) — published as a diagnostic so a wrong-framing report has a
+    /// number to point at instead of only a screenshot.
+    pub player_start_count: usize,
     /// The parsed entity lump, kept so the systems that spawn monsters,
     /// pickups and navigation seeds can read the same definitions the
     /// registry was built from.
@@ -333,10 +348,16 @@ impl Level {
                 .ok();
         }
         let player = spawn_player(&mut registry, world.spawn);
+        let dropped_faces = world.dropped_faces
+            + submodels
+                .values()
+                .map(|model| model.dropped_faces)
+                .sum::<usize>();
 
         Ok(Self {
             name: map.to_string(),
             spawn: world.spawn,
+            player_start_count: world.player_start_count,
             world,
             submodels,
             registry,
@@ -350,6 +371,7 @@ impl Level {
             sprites,
             missing_sprites,
             unbuildable_submodels,
+            dropped_faces,
             defs,
             player,
         })

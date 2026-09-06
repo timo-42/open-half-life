@@ -124,6 +124,10 @@ fn player_start_is_parsed() {
     let spawn = model.spawn.expect("the room has an info_player_start");
     assert!((spawn.origin[2] - 32.0).abs() < 1e-3);
     assert!((spawn.yaw - 90.0).abs() < 1e-3);
+    assert_eq!(
+        model.player_start_count, 1,
+        "the synthetic room places exactly one info_player_start"
+    );
 }
 
 #[test]
@@ -275,4 +279,147 @@ fn build_submodels_reports_failures_instead_of_dropping_them() {
     assert_eq!(set.failure_count(), 1);
     assert_eq!(set.failures[0].0, count + 7);
     assert_eq!(set.failures[0].1, ohl_world::WorldError::SubmodelOutOfRange);
+}
+
+/// A synthetic map with four worldspawn faces: one ordinary occluder, one
+/// `sky`-textured face, one face whose `texinfo` produces a non-finite
+/// texture-space coordinate (a malformed `s_shift`, over otherwise
+/// perfectly finite vertex positions), and one degenerate face (its edge
+/// walk yields only 2 vertices, not the 3 a polygon needs).
+///
+/// This reproduces the fidelity finding behind
+/// [`ohl_world::WorldModel::dropped_faces`] (see that field's doc comment):
+/// earlier, a single face like the third one here took the *whole* model's
+/// build down via `?`, which for a real map means one bad face in a large
+/// brush entity (an indoor hall's wall, say) could silently remove all of
+/// that entity's geometry — including whatever it was occluding a real sky
+/// face behind. Building must now succeed, keep the good faces (including
+/// the sky one), and count the two bad faces instead.
+fn map_with_a_bad_face_alongside_a_sky_face() -> Vec<u8> {
+    use ohl_formats::test_support::Bsp30Builder;
+
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text("{\n\"classname\" \"worldspawn\"\n}\n\0");
+
+    // One dummy leaf referencing the sky face's marksurface, so `has_sky`
+    // (derived from each leaf's marksurface list, not the raw per-face
+    // scan) picks it up; nothing else about this leaf is geometrically
+    // meaningful, since this fixture does not exercise PVS or the BSP walk.
+    b.push_marksurface(1);
+    b.push_leaf(-2, -1, [0, 0, 0], [0, 0, 0], 0, 1, [0, 0, 0, 0]);
+
+    // Edge 0 is conventionally unused (matches `synthetic_room_bsp`).
+    b.push_edge(0, 0);
+
+    // Four quads, 4 vertices/edges/surfedges each, laid out contiguously so
+    // quad `i`'s surfedges start at slot `i * 4` (edge `i * 4 + 1`).
+    let quads: [[[f32; 3]; 4]; 4] = [
+        // Quad 0: the good occluder.
+        [
+            [-8.0, -8.0, 0.0],
+            [8.0, -8.0, 0.0],
+            [8.0, 8.0, 0.0],
+            [-8.0, 8.0, 0.0],
+        ],
+        // Quad 1: the sky face.
+        [
+            [-8.0, -8.0, 64.0],
+            [8.0, -8.0, 64.0],
+            [8.0, 8.0, 64.0],
+            [-8.0, 8.0, 64.0],
+        ],
+        // Quad 2: finite vertices, but paired with a non-finite `texinfo`.
+        [
+            [-8.0, -8.0, 128.0],
+            [8.0, -8.0, 128.0],
+            [8.0, 8.0, 128.0],
+            [-8.0, 8.0, 128.0],
+        ],
+        // Quad 3: only its first 2 vertices are referenced (see `push_face`
+        // below), producing a degenerate 2-vertex "polygon".
+        [
+            [-8.0, -8.0, 192.0],
+            [8.0, -8.0, 192.0],
+            [8.0, 8.0, 192.0],
+            [-8.0, 8.0, 192.0],
+        ],
+    ];
+    for (index, quad) in quads.iter().enumerate() {
+        let base = u16::try_from(index * 4).expect("four quads fit u16");
+        for corner in quad {
+            b.push_vertex(*corner);
+        }
+        for corner in 0..4u16 {
+            let next = (corner + 1) % 4;
+            b.push_edge(base + corner, base + next);
+        }
+        let first_edge = i32::try_from(index * 4 + 1).expect("four quads fit i32");
+        for step in 0..4 {
+            b.push_surfedge(first_edge + step);
+        }
+    }
+
+    // texinfo 0: the good occluder's, finite.
+    b.push_texinfo([1.0, 0.0, 0.0], 0.0, [0.0, 1.0, 0.0], 0.0, 0, 0);
+    // texinfo 1: the sky face's, finite, pointing at the sky texture slot.
+    b.push_texinfo([1.0, 0.0, 0.0], 0.0, [0.0, 1.0, 0.0], 0.0, 1, 0);
+    // texinfo 2: a malformed `s_shift` (non-finite) over quad 2's otherwise
+    // perfectly ordinary, finite vertex positions.
+    b.push_texinfo([1.0, 0.0, 0.0], f32::INFINITY, [0.0, 1.0, 0.0], 0.0, 0, 0);
+    // texinfo 3: finite; quad 3 is dropped for its vertex count, not this.
+    b.push_texinfo([1.0, 0.0, 0.0], 0.0, [0.0, 1.0, 0.0], 0.0, 0, 0);
+
+    // Every face is unlit (`lightmap_offset < 0`), so this fixture needs no
+    // lighting lump at all.
+    let unlit_styles = [0xFF, 0xFF, 0xFF, 0xFF];
+    b.push_face(0, 0, 1, 4, 0, unlit_styles, -1); // face 0: good occluder
+    b.push_face(0, 0, 5, 4, 1, unlit_styles, -1); // face 1: sky
+    b.push_face(0, 0, 9, 4, 2, unlit_styles, -1); // face 2: non-finite texinfo
+    b.push_face(0, 0, 13, 2, 3, unlit_styles, -1); // face 3: degenerate (2 edges)
+
+    b.push_model(
+        [-8.0, -8.0, 0.0],
+        [8.0, 8.0, 192.0],
+        [0.0, 0.0, 0.0],
+        [0, 0, 0, 0],
+        0,
+        0,
+        4,
+    );
+
+    b.add_embedded_texture("ohlfloor", 4, 4, 128);
+    b.add_embedded_texture("sky", 4, 4, 128);
+
+    b.build()
+}
+
+#[test]
+fn a_non_finite_or_degenerate_face_is_dropped_and_counted_instead_of_failing_the_whole_model() {
+    let bytes = map_with_a_bad_face_alongside_a_sky_face();
+    let limits = BspLimits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("the fixture parses");
+    let model = WorldModel::build(
+        &bsp,
+        &WorldBuildOptions {
+            wads: &[],
+            limits,
+            ..WorldBuildOptions::default()
+        },
+    )
+    .expect("one bad face must not fail the whole model's build");
+
+    // The sky face is real and correctly detected; the good occluder is the
+    // only face left in the drawable mesh (the sky face is excluded from
+    // `faces` by design, and the two bad faces are dropped, not drawn).
+    assert!(model.has_sky, "the sky face must still be recognised");
+    assert_eq!(
+        model.faces.len(),
+        1,
+        "only the one good, non-sky face should end up in the drawable mesh"
+    );
+    assert_eq!(
+        model.dropped_faces, 2,
+        "the non-finite-texinfo face and the degenerate 2-vertex face are \
+         both counted, not silently discarded with no diagnostic"
+    );
 }
