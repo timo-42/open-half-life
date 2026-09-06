@@ -10,38 +10,88 @@ mod licenses;
 mod target;
 mod version;
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
+
+use clap::Parser;
 
 use target::Platform;
 
 const BINARY_CRATE_NAME: &str = "ohl-app";
 const BINARY_NAME: &str = "open-half-life";
 
-/// `cargo xtask dist [--target <triple>]`.
+/// The default `--out-dir`, relative to the workspace root.
+const DEFAULT_OUT_DIR: &str = "target/dist";
+
+/// `cargo xtask dist [--target <triple>] [--out-dir <dir>] [--print-target]`.
+#[derive(Debug, Parser)]
+#[command(
+    name = "dist",
+    about = "Builds a versioned, self-contained release archive"
+)]
 struct Args {
-    /// `None` means "build for the host".
+    /// Target triple to build the release binary for. Defaults to the host
+    /// triple (`rustc -vV`'s own `host:` line).
+    #[arg(long, value_name = "TRIPLE")]
     target: Option<String>,
+
+    /// Directory the release folder and archive are written under. Created
+    /// if it does not already exist. Must not resolve under this
+    /// workspace's `assets/`, `cache/`, or `imported/` directories (the
+    /// same untracked payload/cache locations `cargo xtask policy` keeps
+    /// off limits to tracked files).
+    #[arg(long, value_name = "DIR", default_value = DEFAULT_OUT_DIR)]
+    out_dir: PathBuf,
+
+    /// Print the resolved target triple this invocation would build for,
+    /// then exit without building or packaging anything.
+    #[arg(long)]
+    print_target: bool,
 }
 
-fn parse_args(raw: &[String]) -> Result<Args, String> {
-    let mut target = None;
-    let mut iter = raw.iter();
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "--target" => {
-                let value = iter
-                    .next()
-                    .ok_or_else(|| "--target requires a value".to_owned())?;
-                target = Some(value.clone());
+/// Removes `.`/`..` components from `path` purely lexically (no filesystem
+/// access), so a not-yet-created `--out-dir` can still be checked against
+/// [`crate::policy::PROHIBITED_PREFIXES`] before `create_dir_all` runs.
+fn lexically_normalize(path: &Path) -> PathBuf {
+    let mut result = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !result.pop() {
+                    result.push(component);
+                }
             }
-            other if other.starts_with("--target=") => {
-                target = Some(other["--target=".len()..].to_owned());
-            }
-            other => return Err(format!("unrecognised argument `{other}`")),
+            other => result.push(other),
         }
     }
-    Ok(Args { target })
+    result
+}
+
+/// Resolves `out_dir` (as given on the command line, absolute or relative
+/// to `root`) to an absolute, lexically normalized path, rejecting one that
+/// falls under this workspace's payload/cache directories
+/// ([`crate::policy::PROHIBITED_PREFIXES`]: `assets/`, `cache/`,
+/// `imported/`) — a release archive has no business living where imported
+/// media or provenance-sensitive local state does.
+fn resolve_out_dir(root: &Path, out_dir: &Path) -> Result<PathBuf, String> {
+    let absolute = if out_dir.is_absolute() {
+        out_dir.to_path_buf()
+    } else {
+        root.join(out_dir)
+    };
+    let normalized = lexically_normalize(&absolute);
+
+    for prefix in crate::policy::PROHIBITED_PREFIXES {
+        let forbidden = lexically_normalize(&root.join(prefix.trim_end_matches('/')));
+        if normalized == forbidden || normalized.starts_with(&forbidden) {
+            return Err(format!(
+                "--out-dir must not resolve under `{prefix}` (this project keeps payload/cache data there); got {}",
+                normalized.display()
+            ));
+        }
+    }
+    Ok(normalized)
 }
 
 /// The Cargo `target/` directory a given `--target` build's artefacts land
@@ -105,7 +155,21 @@ fn registry_src_root() -> Result<PathBuf, String> {
 
 /// Runs the whole `cargo xtask dist` pipeline.
 pub fn run(root: &Path, raw_args: &[String]) -> ExitCode {
-    match run_inner(root, raw_args) {
+    let args = match Args::try_parse_from(
+        std::iter::once("dist".to_string()).chain(raw_args.iter().cloned()),
+    ) {
+        Ok(args) => args,
+        Err(error) => {
+            let _ = error.print();
+            // clap uses exit code 0 for `--help`/`--version` and 2 for a
+            // genuine usage error; honour whichever it picked rather than
+            // always failing (the M9.3 task requires `--help`/`-h` to exit
+            // 0, matching every other well-behaved CLI).
+            return ExitCode::from(u8::try_from(error.exit_code()).unwrap_or(1));
+        }
+    };
+
+    match run_inner(root, &args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
             eprintln!("error: {message}");
@@ -114,13 +178,26 @@ pub fn run(root: &Path, raw_args: &[String]) -> ExitCode {
     }
 }
 
-fn run_inner(root: &Path, raw_args: &[String]) -> Result<(), String> {
-    let args = parse_args(raw_args)?;
-    let version = version::resolve();
+fn run_inner(root: &Path, args: &Args) -> Result<(), String> {
     let target_triple = match &args.target {
         Some(triple) => triple.clone(),
         None => target::host_triple().map_err(|error| error.to_string())?,
     };
+
+    if args.print_target {
+        println!("{target_triple}");
+        return Ok(());
+    }
+
+    let dist_output_root = resolve_out_dir(root, &args.out_dir)?;
+    std::fs::create_dir_all(&dist_output_root).map_err(|error| {
+        format!(
+            "could not create --out-dir {}: {error}",
+            dist_output_root.display()
+        )
+    })?;
+
+    let version = version::resolve();
     let platform = target::classify(&target_triple);
     let host_is_linux_x86_64 = cfg!(all(target_os = "linux", target_arch = "x86_64"));
     let building_for_host = args.target.is_none();
@@ -173,7 +250,6 @@ fn run_inner(root: &Path, raw_args: &[String]) -> Result<(), String> {
         target_triple: &target_triple,
     };
 
-    let dist_output_root = root.join("target").join("dist");
     println!("Assembling the release layout...");
     let dist_dir =
         layout::assemble(&inputs, &dist_output_root).map_err(|error| error.to_string())?;
@@ -199,4 +275,99 @@ fn run_inner(root: &Path, raw_args: &[String]) -> Result<(), String> {
     println!("Done: {}", dist_dir.display());
     println!("Archive: {}", archive_path.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use clap::Parser as _;
+
+    use super::{Args, lexically_normalize, resolve_out_dir};
+
+    #[test]
+    fn help_flag_exits_zero() {
+        let error = Args::try_parse_from(["dist", "--help"]).unwrap_err();
+        assert_eq!(error.exit_code(), 0);
+    }
+
+    #[test]
+    fn short_help_flag_exits_zero() {
+        let error = Args::try_parse_from(["dist", "-h"]).unwrap_err();
+        assert_eq!(error.exit_code(), 0);
+    }
+
+    #[test]
+    fn unknown_flag_is_still_a_usage_error() {
+        let error = Args::try_parse_from(["dist", "--bogus"]).unwrap_err();
+        assert_eq!(error.exit_code(), 2);
+    }
+
+    #[test]
+    fn out_dir_defaults_to_target_dist() {
+        let args = Args::try_parse_from(["dist"]).unwrap();
+        assert_eq!(args.out_dir, Path::new("target/dist"));
+    }
+
+    #[test]
+    fn existing_target_flag_still_parses() {
+        let args = Args::try_parse_from(["dist", "--target", "x86_64-unknown-linux-gnu"])
+            .expect("--target must keep working");
+        assert_eq!(args.target.as_deref(), Some("x86_64-unknown-linux-gnu"));
+    }
+
+    #[test]
+    fn print_target_flag_parses() {
+        let args = Args::try_parse_from(["dist", "--print-target"]).unwrap();
+        assert!(args.print_target);
+    }
+
+    #[test]
+    fn lexically_normalize_collapses_parent_components() {
+        assert_eq!(
+            lexically_normalize(Path::new("/a/b/../c/./d")),
+            Path::new("/a/c/d")
+        );
+    }
+
+    #[test]
+    fn resolve_out_dir_accepts_a_plain_relative_directory() {
+        let root = Path::new("/repo");
+        assert_eq!(
+            resolve_out_dir(root, Path::new("target/dist")).unwrap(),
+            Path::new("/repo/target/dist")
+        );
+    }
+
+    #[test]
+    fn resolve_out_dir_rejects_assets() {
+        let root = Path::new("/repo");
+        let error = resolve_out_dir(root, Path::new("assets/dist")).unwrap_err();
+        assert!(error.contains("assets/"), "unexpected message: {error}");
+    }
+
+    #[test]
+    fn resolve_out_dir_rejects_cache_via_dotdot_traversal() {
+        let root = Path::new("/repo");
+        // `target/../cache/dist` normalizes to `/repo/cache/dist`, which
+        // must be caught even though the literal string starts with
+        // `target/`.
+        let error = resolve_out_dir(root, Path::new("target/../cache/dist")).unwrap_err();
+        assert!(error.contains("cache/"), "unexpected message: {error}");
+    }
+
+    #[test]
+    fn resolve_out_dir_rejects_imported() {
+        let root = Path::new("/repo");
+        assert!(resolve_out_dir(root, Path::new("imported")).is_err());
+    }
+
+    #[test]
+    fn resolve_out_dir_accepts_an_absolute_path_outside_the_workspace() {
+        let root = Path::new("/repo");
+        assert_eq!(
+            resolve_out_dir(root, Path::new("/tmp/ohl-dist")).unwrap(),
+            Path::new("/tmp/ohl-dist")
+        );
+    }
 }

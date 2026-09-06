@@ -185,19 +185,39 @@ README-dist.md
 SHA256SUMS
 ```
 
-and archives it as a `.tar.gz` (Linux/macOS) or `.zip` (Windows) next to it.
+and archives it as a `.tar.gz` (Linux/macOS) or `.zip` (Windows) next to it,
+by default under `target/dist/` (pass `--out-dir <DIR>` for another
+location; it is created if missing and refused if it would resolve under
+this workspace's own `assets/`, `cache/`, or `imported/` directories).
 `OHL_VERSION` (falling back to `CARGO_PKG_VERSION`) selects the version, the
 same as the binary's own `--version` output. Pass `--target <triple>` to
-package for another target; cross-compiling the binary itself is best
-effort (it depends on your toolchain having that target installed) and the
-worker image, being Linux x86-64-only, is only ever bundled for a Linux
-x86-64 host building for Linux. No game data is ever included in the
-archive.
+package for another target (`--print-target` prints the triple an
+otherwise-identical invocation would resolve to, without building or
+packaging anything); cross-compiling the binary itself is best effort (it
+depends on your toolchain having that target installed) and the worker
+image, being Linux x86-64-only, is only ever bundled for a Linux x86-64
+host building for Linux. `cargo xtask dist --help` documents every flag.
+No game data is ever included in the archive. Release binaries are built
+with `[profile.release]` `strip = "symbols"`, `codegen-units = 1`, and thin
+LTO (see the root `Cargo.toml`) for a meaningfully smaller download; this
+does not change `panic` behaviour.
 
-CI runs `cargo xtask dist` on Linux, Windows and macOS runners for a `v*` tag
-push or a manual dispatch and uploads each archive as a workflow artifact
-(see the `release` job in `.github/workflows/build.yml`); nothing is
-published to GitHub Releases yet.
+## Releases
+
+Pushing an annotated tag matching `v*` (e.g. `git tag -a v0.1.0 -m "Open
+Half-Life v0.1.0" && git push origin v0.1.0`) triggers CI's `release` job
+on Linux, Windows and macOS runners, each running `cargo xtask dist`
+natively for its own host triple, then a `publish-release` job that
+downloads all three archives, writes a top-level `SHA256SUMS` covering
+them, and creates (or updates, if the tag's release already exists) a
+GitHub Release named after the tag with those three archives plus
+`SHA256SUMS` attached as assets. Release notes are generated from this
+file's own `docs/MILESTONES.md`, "Status as of" section — no text derived
+from game media ever appears there. A manual `workflow_dispatch` run of
+the same workflow still builds and uploads workflow artifacts for
+inspection, but never touches GitHub Releases (there is no tag to attach
+one to). See the `release` and `publish-release` jobs in
+`.github/workflows/build.yml` for the exact mechanics.
 
 ## Status
 
