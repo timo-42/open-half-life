@@ -1,7 +1,7 @@
 //! `cargo xtask combat-smoke`: the headless scripted-input smoke.
 //!
 //! Runs the built `open-half-life` binary once per scripted scenario under
-//! `assets/smoke-scenarios/*.txt` (see `docs/m79-design.md` §7-8, package
+//! `xtask/smoke-scenarios/*.txt` (see `docs/m79-design.md` §7-8, package
 //! P4a), against an already-imported payload tree, with `--script-log`.
 //! Each run's stderr is checked against the exact fixed milestone lines
 //! documented there, and classified pass/fail. No screenshot is taken and
@@ -11,7 +11,7 @@
 //! Classification and reporting shapes are shared with
 //! `campaign_smoke.rs` (`Category`, `sanitize_error_code`); this command's
 //! own summary reports scenario names (project-authored, from
-//! `assets/smoke-scenarios/`) and pass/fail buckets only. Logging policy
+//! `xtask/smoke-scenarios/`) and pass/fail buckets only. Logging policy
 //! is the same as everywhere else in this project: no media-derived
 //! string, count or size ever reaches the summary.
 
@@ -49,7 +49,7 @@ struct Args {
 }
 
 /// One scenario: its project-authored name, the scripted-input file under
-/// `assets/smoke-scenarios/`, and the map it runs over (a literal from
+/// `xtask/smoke-scenarios/`, and the map it runs over (a literal from
 /// `ohl_campaign`'s own sourced table; see that crate's module
 /// documentation for the citations).
 struct Scenario {
@@ -392,7 +392,7 @@ pub fn run(root: &Path, raw_args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let scenarios_dir = root.join("assets").join("smoke-scenarios");
+    let scenarios_dir = root.join("xtask").join("smoke-scenarios");
     let timeout = Duration::from_secs(args.timeout);
     let scenario_list = scenarios();
     println!(
@@ -539,11 +539,11 @@ mod tests {
     }
 
     #[test]
-    fn every_scenario_file_is_present_under_assets_smoke_scenarios() {
+    fn every_scenario_file_is_present_under_xtask_smoke_scenarios() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("xtask lives one directory below the workspace root");
-        let scenarios_dir = root.join("assets").join("smoke-scenarios");
+        let scenarios_dir = root.join("xtask").join("smoke-scenarios");
         for scenario in scenarios() {
             assert!(
                 scenarios_dir.join(scenario.file).is_file(),

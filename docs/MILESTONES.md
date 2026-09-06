@@ -1967,7 +1967,7 @@ level transitions keep their behaviour.
   drives a `Game` from a fixed `Input` slice for a determinism test outside
   any CLI or GPU. `xtask/src/combat_smoke.rs` (`cargo xtask combat-smoke`)
   runs the release binary once per project-authored scenario under the new
-  `assets/smoke-scenarios/*.txt` (map names only from `ohl_campaign`'s
+  `xtask/smoke-scenarios/*.txt` (map names only from `ohl_campaign`'s
   cited table: `TRAINMAP`, `STARTMAP`, and `"c1a1"`), asserts the exact
   fixed lines are present/absent per scenario, and reports scenario names
   and pass/fail buckets only, reusing `campaign_smoke.rs`'s

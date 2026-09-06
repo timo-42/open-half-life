@@ -1,10 +1,6 @@
 # User-provided game media must never enter source control.
 assets/*
 !assets/README.md
-# M7.9 P4a: project-authored scripted-input scenarios for `cargo xtask
-# combat-smoke`. No game media; see docs/m79-design.md §7-8.
-!assets/smoke-scenarios/
-!assets/smoke-scenarios/*.txt
 *.[iI][sS][oO]
 *.[bB][iI][nN]
 *.[cC][uU][eE]
