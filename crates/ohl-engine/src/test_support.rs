@@ -488,6 +488,40 @@ pub fn door_behind_touch_trigger_entities() -> String {
     )
 }
 
+/// The map name the touch-`trigger_changelevel` fixture is published under.
+pub const TOUCH_CHANGELEVEL_MAP: &str = "ohltouchchangelevelsynth";
+
+/// A `worldspawn` plus an `info_player_start` at `(-96, 0, 36)` and a
+/// `trigger_changelevel` volume (submodel `*2`, the same touch-trigger box
+/// [`door_behind_touch_trigger_bsp`] already provides) between the start
+/// and where the gated door would be, naming `next_map`/[`LANDMARK`] —
+/// reproducing a level-exit volume a player reaches by walking, not by
+/// `use`. Submodel `*1` (the door bounding box) is left unclaimed by any
+/// entity here.
+#[must_use]
+pub fn touch_changelevel_entities(next_map: &str) -> String {
+    format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"-96 0 36\"\n\"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"trigger_changelevel\"\n\"model\" \"*2\"\n\
+         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n"
+    )
+}
+
+/// As [`touch_changelevel_entities`], but with the "USE Only" spawnflag
+/// (`2`; see `ohl_game::registry::SPAWNFLAG_CHANGELEVEL_USE_ONLY`) set, so
+/// a test can assert that walking into the same volume does *not* fire it.
+#[must_use]
+pub fn touch_changelevel_use_only_entities(next_map: &str) -> String {
+    format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"-96 0 36\"\n\"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"trigger_changelevel\"\n\"model\" \"*2\"\n\
+         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n\
+         \"spawnflags\" \"2\"\n}}\n"
+    )
+}
+
 /// Queues `amount` points of damage against `target`, as if a weapon had
 /// hit it, so a test can kill a monster without a weapon existing yet.
 ///

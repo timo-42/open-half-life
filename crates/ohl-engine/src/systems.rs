@@ -1022,9 +1022,13 @@ impl Systems {
         let player_origin = self.physics_output.origin;
         let player_mins = player_origin + Vec3::from_array(hull_mins);
         let player_maxs = player_origin + Vec3::from_array(hull_maxs);
-        level
-            .simulation
-            .touch_triggers(&mut level.registry, player_mins, player_maxs, None);
+        level.simulation.touch_triggers(
+            &mut level.registry,
+            player_mins,
+            player_maxs,
+            None,
+            events,
+        );
         events.extend(level.simulation.tick(&mut level.registry, dt));
     }
 

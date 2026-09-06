@@ -381,6 +381,13 @@ pub struct Ladder;
 /// The published `Remove On fire` spawnflag bit of `trigger_auto`.
 pub const SPAWNFLAG_TRIGGER_AUTO_REMOVE_ON_FIRE: u32 = 1;
 
+/// The published "USE Only" spawnflag bit of `trigger_changelevel`: per the
+/// TWHL wiki page ("USE Only (2) - Entity can only be triggered by another
+/// event"), when set the volume never fires from a player simply touching
+/// it and only responds to `use`/being targeted; see
+/// `docs/FORMAT_SOURCES.md` ("Entity keyvalues and map logic").
+pub const SPAWNFLAG_CHANGELEVEL_USE_ONLY: u32 = 2;
+
 /// `trigger_auto`: "automatically fires its targets on map spawn".
 ///
 /// Published behaviour (see `docs/FORMAT_SOURCES.md`, "Scripted sequences
@@ -764,6 +771,27 @@ impl Registry {
                         landmark: def.keyvalues.get("landmark").cloned().unwrap_or_default(),
                     };
                     world.insert_one(entity, change).ok();
+                    // Also touch-capable, exactly like the generic
+                    // `trigger_*` arm below, unless "USE Only" is set (see
+                    // `SPAWNFLAG_CHANGELEVEL_USE_ONLY`): the fields on this
+                    // `Trigger` are not read by
+                    // `Simulation::touch_changelevel_triggers` (which does
+                    // its own edge-triggered one-shot bookkeeping), only
+                    // its presence, so `wait`/`delay` are recorded for
+                    // documentation purposes even though nothing consumes
+                    // them today.
+                    if def.spawnflags & SPAWNFLAG_CHANGELEVEL_USE_ONLY == 0 {
+                        world
+                            .insert_one(
+                                entity,
+                                Trigger {
+                                    once: false,
+                                    wait: numeric(def, "wait", 0.2),
+                                    delay: numeric(def, "delay", 0.0),
+                                },
+                            )
+                            .ok();
+                    }
                 }
                 "trigger_transition" => {
                     world.insert_one(entity, TransitionVolume).ok();
