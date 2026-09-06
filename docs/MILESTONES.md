@@ -2689,3 +2689,22 @@ at the edge of a small platform where advancing much past half a second
 sends the player over the edge into a long fall); each scenario file's own
 header explains why. All 23 scenarios pass against a real imported
 payload.
+
+- **Follow-up: the Xen walk's fall, unstuck.** [PR #96](https://github.com/timo-42/open-half-life/pull/96)
+  found that extending the Xen scenario's own cautious ~0.6-second forward
+  window to a longer walk let the player go over the platform edge after
+  all, and land embedded in solid geometry rather than on top of it. The
+  fall itself was already correctly lethal (`ohl_player::fall_damage`
+  brings health to zero on that landing, per the documented fall-damage
+  rules), but two gaps hid it: a fast enough landing's own ground-probe
+  trace could resolve to an origin that still read as embedded (see
+  `docs/FORMAT_SOURCES.md`'s "Collision hulls and player movement" for the
+  new `unstick_from_ground` nudge this adds), and neither
+  `ohl_engine::Systems::step` nor `ohl-app`'s scripted/headless run path
+  (`run_scripted`, what `cargo xtask combat-smoke` drives) did anything
+  with the player's own death: `step` kept simulating a dead player's
+  movement indefinitely, and `run_scripted` dropped `GameEvent::PlayerDied`
+  entirely instead of logging the same "The player died." line the
+  windowed loop already does. All 23 `combat-smoke` scenarios, including
+  the Xen one, still pass unchanged — the standard scenario's own cautious
+  window still never reaches the fall.

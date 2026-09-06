@@ -317,3 +317,93 @@ pub fn build_flat_floor_bsp() -> Vec<u8> {
         &[],
     )
 }
+
+/// Builds a BSP30 file whose hull 0 (the exact node tree; what
+/// `point_contents`/`Game::eye_is_in_solid` check) and hulls 1-3 (the
+/// player's own clip-node trees) describe *different* solids, standing in
+/// for the way a real map compiler's clip-node simplification can lose a
+/// thin feature hull 0's exact tree still has (`docs/FORMAT_SOURCES.md`,
+/// "Collision hulls and player movement", the `unstick_from_ground` entry
+/// added for [PR #96](https://github.com/timo-42/open-half-life/pull/96)).
+///
+/// `hull0_solid` is what hull 0 sees; `player_hull_solid` is what every one
+/// of hulls 1-3 sees instead. `ohl-physics` itself never produces this kind
+/// of disagreement on its own (every hull it builds from real map data
+/// comes from the *same* brush list, expanded per hull by
+/// `crate::movement`'s own `expand_plane`-equivalent step): this fixture
+/// exists only to give a test a landing spot the standing hull's own
+/// zero-length trace clears but hull 0's point query at the eye position
+/// does not, the failure mode `unstick_from_ground` recovers from.
+#[must_use]
+pub fn build_hull_mismatch_bsp(
+    entities: &str,
+    hull0_solid: &[CollisionBrush],
+    player_hull_solid: &[CollisionBrush],
+) -> Vec<u8> {
+    let mut builder = Bsp30Builder::new();
+    builder.set_entities_text(entities);
+    // Leaf 0 is the shared solid leaf and leaf 1 the empty leaf, matching
+    // `build_contents_bsp`'s own convention; this fixture never needs a
+    // third (non-solid, non-empty) contents value.
+    builder.push_leaf(contents::SOLID, -1, [-4096; 3], [4096; 3], 0, 0, [0; 4]);
+    builder.push_leaf(contents::EMPTY, -1, [-4096; 3], [4096; 3], 0, 0, [0; 4]);
+
+    let mut heads = [0i32; 4];
+    for (hull, (mins, maxs)) in FIXTURE_HULL_SIZES.iter().enumerate() {
+        let (solid, kind, empty, solid_child) = if hull == 0 {
+            (
+                hull0_solid,
+                TreeKind::Nodes,
+                EMPTY_LEAF_CHILD,
+                SOLID_LEAF_CHILD,
+            )
+        } else {
+            (
+                player_hull_solid,
+                TreeKind::Clipnodes,
+                EMPTY_CLIPNODE_CHILD,
+                SOLID_CLIPNODE_CHILD,
+            )
+        };
+        let mut emitter = Emitter {
+            builder: &mut builder,
+            kind,
+            links: Vec::new(),
+        };
+        heads[hull] = i32::from(emitter.emit_union(solid, *mins, *maxs, solid_child, empty));
+    }
+
+    builder.push_model(
+        [-4096.0, -4096.0, -4096.0],
+        [4096.0, 4096.0, 4096.0],
+        [0.0, 0.0, 0.0],
+        heads,
+        i32::try_from(builder.leaves.len() / LEAF_BYTES).expect("fixture leaf count fits"),
+        0,
+        0,
+    );
+    builder.build()
+}
+
+/// The bottom and top of [`build_xen_overhang_bsp`]'s low ledge, positioned
+/// to straddle a standing player's eye height (`FLOOR_ORIGIN_Z` (36) +
+/// `MoveConfig::default().view_height_standing` (28) = 64) resting on the
+/// flat floor at `z = 0` below it.
+pub const OVERHANG_BOTTOM_Z: f32 = 60.0;
+pub const OVERHANG_TOP_Z: f32 = 66.0;
+
+/// A flat floor at `z = 0`, plus a low ledge from [`OVERHANG_BOTTOM_Z`] to
+/// [`OVERHANG_TOP_Z`] that only hull 0 (the player hulls' clip trees never
+/// get it) knows about — see [`build_hull_mismatch_bsp`]. A player who
+/// lands standing on the floor clears the standing hull's own check (the
+/// ledge is not in that tree at all) but not hull 0's point query at their
+/// eye position, which sits inside the ledge until nudged clear.
+#[must_use]
+pub fn build_xen_overhang_bsp() -> Vec<u8> {
+    let floor = CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0);
+    let ledge = CollisionBrush::box_brush(
+        [-256.0, -256.0, OVERHANG_BOTTOM_Z],
+        [256.0, 256.0, OVERHANG_TOP_Z],
+    );
+    build_hull_mismatch_bsp(WORLDSPAWN_ONLY, &[floor.clone(), ledge], &[floor])
+}

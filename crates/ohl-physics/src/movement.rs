@@ -438,6 +438,13 @@ fn is_near_ledge(model: &CollisionModel, state: &PlayerState, config: &MoveConfi
 /// Refreshes [`PlayerState::on_ground`], [`PlayerState::ground_normal`],
 /// [`PlayerState::water_level`] and [`PlayerState::liquid`].
 pub fn categorize_position(model: &CollisionModel, state: &mut PlayerState, config: &MoveConfig) {
+    // Captured before anything below overwrites it: `unstick_from_ground`
+    // only runs on the tick a fall actually lands (`false` here, `true`
+    // once this call resolves), not on every later tick spent standing
+    // still — a player deliberately parked somewhere snug should not have
+    // this function fight them back out of it.
+    let was_on_ground = state.on_ground;
+
     let (level, liquid) = categorize_liquid(model, state, config);
     state.water_level = level;
     state.liquid = liquid;
@@ -471,7 +478,9 @@ pub fn categorize_position(model: &CollisionModel, state: &mut PlayerState, conf
         if state.velocity.z < 0.0 {
             state.velocity.z = 0.0;
         }
-        unstick_from_ground(model, state, config);
+        if !was_on_ground {
+            unstick_from_ground(model, state, config);
+        }
     } else {
         state.on_ground = false;
         state.ground_normal = Vec3::ZERO;
@@ -479,18 +488,32 @@ pub fn categorize_position(model: &CollisionModel, state: &mut PlayerState, conf
 }
 
 /// How far [`unstick_from_ground`] tries nudging the player upward, in
-/// one-unit steps, to recover a landing whose own ground-probe trace still
-/// reports the hull embedded in solid. A hard-enough closing velocity can
-/// resolve [`categorize_position`]'s short probe to a surface the full
+/// [`UNSTICK_STEP`]-unit steps, to recover a landing whose own ground-probe
+/// trace still reports the hull (or the eye point against hull 0) embedded
+/// in solid. A hard-enough closing velocity can resolve
+/// [`categorize_position`]'s short probe to a surface the full
 /// standing/crouched hull still overlaps by a hair (the probe trace backs
 /// off only [`crate::hull::DIST_EPSILON`] short of the plane, not the
-/// hull's own bounding box), which otherwise leaves the player permanently
-/// embedded rather than resting on top. Bounded rather than searched
-/// until success, so a landing spot that is genuinely solid all the way
-/// through (a mapper's own error) gives up instead of looping.
+/// hull's own bounding box), or land under an overhang hull 0's exact
+/// geometry disagrees with the standing hull's clip tree about, which
+/// otherwise leaves the player permanently embedded rather than resting on
+/// top. Bounded rather than searched until success, so a landing spot that
+/// is genuinely solid all the way through (a mapper's own error) gives up
+/// instead of looping. Neither this bound nor the recovery step itself is
+/// documented anywhere public; see `docs/FORMAT_SOURCES.md`'s "Collision
+/// hulls and player movement" section for why both are recorded as a
+/// project-owned, `TODO(black-box)` conservative rule.
 const UNSTICK_MAX_NUDGE: f32 = 34.0;
 
-/// The step [`unstick_from_ground`] nudges by on each attempt.
+/// The step [`unstick_from_ground`] nudges by on each attempt: a fixed,
+/// discrete candidate offset re-checked with [`origin_is_stuck`] each time,
+/// rather than solving for the exact clearance analytically (there is no
+/// single plane to solve against once the standing hull and hull 0 can
+/// disagree about where the obstruction even is). One unit is small enough
+/// that the player is never nudged conspicuously far past the first clear
+/// offset, at the cost of up to [`UNSTICK_MAX_NUDGE`] trace pairs on the
+/// rare tick this runs at all (once per landing; see
+/// [`categorize_position`]'s own gating).
 const UNSTICK_STEP: f32 = 1.0;
 
 /// Whether `origin` is embedded in solid, checked both the way a fresh
