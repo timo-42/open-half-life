@@ -22,7 +22,7 @@
 //! | 19 | [`SECTION_SIMULATION`] | [`SimulationState`]: the map-logic simulation's scheduled events and trigger cooldowns |
 //! | 20 | [`SECTION_GLOBAL_STATE`] | [`GlobalStateTable`]: the `globalname`/`env_global` state table |
 //! | 21 | [`SECTION_LIGHT_STYLE_TIME`] | `f32`: the time the light-style animation is evaluated at |
-//! | 22 | [`SECTION_VIEW`] | [`ViewState`]: the camera/player pose |
+//! | 22 | [`SECTION_VIEW`] | [`ViewState`]: the camera/player pose (`position` is the physics origin as of M7.9 P4b, not the eye position earlier builds wrote — see that struct's own doc comment) |
 //! | 23 | [`SECTION_INVENTORY`] | [`InventorySnapshot`]: owned weapons, clips, ammo reserves, selection, the drawn weapon's firing summary (M7.9 P4b) |
 //! | 24 | [`SECTION_ENTITY_COMBAT`] | `Vec<`[`EntityCombatSnapshot`]`>`, one per registry entity, in spawn order (M7.9 P4b) |
 //! | 25 | [`SECTION_AI`] | `Vec<Option<`[`AiSnapshot`]`>>`, one per registry entity, in spawn order (M7.9 P4b) |
@@ -98,9 +98,27 @@ pub struct EngineHeader {
 }
 
 /// The camera/player pose section's contents.
+///
+/// `position`'s meaning changed with M7.9 P4b: earlier builds wrote and read
+/// [`crate::game::Game`]'s own *eye* position here directly, which
+/// `Game::restore` then handed to [`ohl_physics::PlayerController::spawn_at`]
+/// as the player's *feet* origin — a save/load round trip that displaced the
+/// player upward by the stance's eye offset (28 world units, standing)
+/// before the next physics step settled it back down. This build writes and
+/// expects the feet-level physics origin instead (see the comment at
+/// [`crate::game::Game::to_save`]'s own construction of this field), so a
+/// save written by an older build still loads (the field's *shape* never
+/// changed), but the player spawns slightly high — by that same eye
+/// offset — until the first tick's gravity resolves it. Accepted and
+/// documented rather than fixed further: an older save already carries no
+/// way to tell which convention wrote it, and the visible effect is one
+/// frame of settling, not a lost or corrupted position.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ViewState {
-    /// Eye position in world space.
+    /// The player's feet-level physics origin when a `PlayerController` is
+    /// in use (the map has collision hulls), else the free-fly camera's own
+    /// position. See this struct's own doc comment for the M7.9 P4b change
+    /// in what this field holds.
     pub position: [f32; 3],
     /// Yaw in degrees.
     pub yaw: f32,

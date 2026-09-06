@@ -502,9 +502,15 @@ impl ProjectileSystem {
         snapshot: &crate::save_state::ProjectilesSnapshot,
     ) {
         self.models.clear();
+        // Bounded before any allocation grows from it, not just by
+        // `ProjectileSet`/`DeployableSet::restore_from_parts`'s own
+        // truncation afterward: a corrupt or adversarial save naming an
+        // enormous section must not make this crate build an enormous
+        // `Vec` just to throw most of it away.
         let projectiles = snapshot
             .projectiles
             .iter()
+            .take(crate::save_state::MAX_SNAPSHOT_PROJECTILES)
             .filter_map(|entry| {
                 let kind = crate::save_state::projectile_kind_from_tag(entry.kind_tag)?;
                 Some(ohl_combat::Projectile {
@@ -515,14 +521,17 @@ impl ProjectileSystem {
                     }),
                     position: crate::save_state::array_vec3(entry.position),
                     velocity: crate::save_state::array_vec3(entry.velocity),
-                    age: entry.age,
-                    fuse: entry.fuse,
+                    age: crate::save_state::sanitize_f32(entry.age, 0.0).max(0.0),
+                    fuse: entry
+                        .fuse
+                        .map(|fuse| crate::save_state::sanitize_f32(fuse, 0.0).max(0.0)),
                     guide_point: entry.guide_point.map(crate::save_state::array_vec3),
                     target: entry.target.and_then(|index| {
                         crate::save_state::combat_id_at_spawn_index(level, index)
                     }),
-                    attack_cooldown: entry.attack_cooldown,
-                    hop_cooldown: entry.hop_cooldown,
+                    attack_cooldown: crate::save_state::sanitize_f32(entry.attack_cooldown, 0.0)
+                        .max(0.0),
+                    hop_cooldown: crate::save_state::sanitize_f32(entry.hop_cooldown, 0.0).max(0.0),
                     resting: entry.resting,
                 })
             })
@@ -536,18 +545,20 @@ impl ProjectileSystem {
         let satchels = snapshot
             .satchels
             .iter()
+            .take(crate::save_state::MAX_SNAPSHOT_DEPLOYABLES)
             .map(|entry| ohl_combat::Satchel {
                 id: DeployableId(entry.id),
                 owner: entry
                     .owner
                     .and_then(|index| crate::save_state::combat_id_at_spawn_index(level, index)),
                 position: crate::save_state::array_vec3(entry.position),
-                age: entry.age,
+                age: crate::save_state::sanitize_f32(entry.age, 0.0).max(0.0),
             })
             .collect();
         let tripmines = snapshot
             .tripmines
             .iter()
+            .take(crate::save_state::MAX_SNAPSHOT_DEPLOYABLES)
             .map(|entry| ohl_combat::Tripmine {
                 id: DeployableId(entry.id),
                 owner: entry
@@ -555,7 +566,7 @@ impl ProjectileSystem {
                     .and_then(|index| crate::save_state::combat_id_at_spawn_index(level, index)),
                 position: crate::save_state::array_vec3(entry.position),
                 normal: crate::save_state::array_vec3(entry.normal),
-                age: entry.age,
+                age: crate::save_state::sanitize_f32(entry.age, 0.0).max(0.0),
                 armed: entry.armed,
             })
             .collect();
