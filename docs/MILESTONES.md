@@ -2252,3 +2252,14 @@ Open follow-ups, in no particular priority order:
   pure-Rust ALSA/PipeWire backend if one becomes available, or leave Linux
   silent by design remains an open decision; `cpal` already covers
   macOS (CoreAudio) and Windows (WASAPI) with no FFI concern.
+- **`cargo xtask campaign-smoke`'s default `--jobs` lowered; `monster_
+  bullchicken` accepted.** The smoke's default parallelism (previously the
+  host's full `available_parallelism`) made lavapipe's software renderer
+  self-contend for CPU cores badly enough to time out 26 of 93 maps that
+  all pass serially, so `default_job_count` now defaults to a quarter of
+  the host's parallelism (clamped to `[1, 4]`), still overridable via
+  `--jobs`. Separately, `ohl_ai::MonsterKind::from_classname` now also
+  accepts `monster_bullchicken` (GoldSrc's own internal classname for the
+  bullsquid asset, per TWHL's "Reference: Entities and their models"; see
+  `docs/FORMAT_SOURCES.md`, "Monster definitions") as an alias for
+  `monster_bullsquid`.
