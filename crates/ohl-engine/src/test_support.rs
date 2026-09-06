@@ -328,6 +328,166 @@ pub fn ai_room_bsp(entities: &str, interior_wall: bool) -> Vec<u8> {
     b.build()
 }
 
+/// The map name the touch-trigger fixture is published under.
+pub const TOUCH_DOOR_MAP: &str = "ohltouchdoorsynth";
+
+/// The `targetname` both the gating `trigger_multiple` and the door it
+/// targets use to find each other.
+pub const TOUCH_TRIGGER_NAME: &str = "ohl_touch_trigger";
+
+/// The `targetname` of the door the touch trigger targets. Nothing in this
+/// fixture lets the player `use` the door directly: it only opens by
+/// walking through the trigger volume, reproducing the reported training-map
+/// bug (a `func_door` gated by an adjoining touch trigger that never opened
+/// for a walking player).
+pub const TOUCH_DOOR_NAME: &str = "ohl_touch_door";
+
+/// [`ai_room_bsp`]'s flat, collidable floor plus two extra brush
+/// submodels that carry no faces of their own (only a bounding box, which
+/// is all `ohl_game::registry::Registry` reads for a mover or a trigger
+/// volume): submodel 1 is the gated door, submodel 2 is the touch trigger
+/// standing between the player start and the door. Project-authored
+/// geometry; no bytes here come from any game installation.
+#[must_use]
+#[allow(clippy::too_many_lines)]
+pub fn door_behind_touch_trigger_bsp(entities: &str) -> Vec<u8> {
+    const HALF: f32 = 256.0;
+    const HEIGHT: f32 = 256.0;
+
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(entities);
+
+    b.push_plane([0.0, 0.0, 1.0], 0.0, 2);
+    b.push_plane([1.0, 0.0, 0.0], 0.0, 0);
+    let split_plane = 1u32;
+    b.push_edge(0, 0);
+
+    b.add_embedded_texture("ohlfloor", 64, 64, 210);
+
+    let floor: [[f32; 3]; 4] = [
+        [-HALF, -HALF, 0.0],
+        [HALF, -HALF, 0.0],
+        [HALF, HALF, 0.0],
+        [-HALF, HALF, 0.0],
+    ];
+    for corner in floor {
+        b.push_vertex(corner);
+    }
+    for corner in 0..4u16 {
+        b.push_edge(corner, (corner + 1) % 4);
+    }
+    for step in 0..4 {
+        b.push_surfedge(1 + step);
+    }
+    b.push_texinfo([1.0, 0.0, 0.0], 0.0, [0.0, 1.0, 0.0], 0.0, 0, 0);
+    let offset = i32::try_from(b.lighting.len()).expect("fits");
+    for sample in 0..900 {
+        let level = 96 + u8::try_from((sample * 7) % 128).unwrap_or(0);
+        b.push_lighting_rgb(level, level, level);
+    }
+    b.push_face(0, 0, 0, 4, 0, [0, 0xFF, 0xFF, 0xFF], offset);
+    b.push_marksurface(0);
+
+    b.visibility.push(0b0000_0011);
+    b.visibility.push(0b0000_0011);
+
+    let extent: i16 = 256;
+    let height: i16 = 256;
+    b.push_leaf(-2, -1, [0, 0, 0], [0, 0, 0], 0, 0, [0, 0, 0, 0]);
+    b.push_leaf(
+        -1,
+        0,
+        [-extent, -extent, 0],
+        [extent, extent, height],
+        0,
+        1,
+        [0, 0, 0, 0],
+    );
+    b.push_leaf(
+        -1,
+        0,
+        [-extent, -extent, 0],
+        [extent, extent, height],
+        0,
+        1,
+        [0, 0, 0, 0],
+    );
+    b.push_node(
+        split_plane,
+        -2,
+        -3,
+        [-extent, -extent, 0],
+        [extent, extent, height],
+        0,
+        2,
+    );
+
+    let brushes = vec![
+        CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+        CollisionBrush::half_space([0.0, 0.0, -1.0], -HEIGHT),
+        CollisionBrush::half_space([-1.0, 0.0, 0.0], -HALF),
+        CollisionBrush::half_space([1.0, 0.0, 0.0], -HALF),
+        CollisionBrush::half_space([0.0, -1.0, 0.0], -HALF),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], -HALF),
+    ];
+    let head_nodes = b.push_collision_hulls(&brushes);
+
+    b.push_model(
+        [-HALF, -HALF, 0.0],
+        [HALF, HALF, HEIGHT],
+        [0.0, 0.0, 0.0],
+        head_nodes,
+        1,
+        0,
+        1,
+    );
+    // Submodel 1: the door, well ahead of the player start (x = 200), with
+    // no faces or collision of its own — only its bounding box matters
+    // here, since this fixture tests the map-logic state machine, not
+    // rendering or being physically blocked by the leaf.
+    b.push_model(
+        [168.0, -32.0, 0.0],
+        [232.0, 32.0, 96.0],
+        [0.0, 0.0, 0.0],
+        [-1, -1, -1, -1],
+        0,
+        0,
+        0,
+    );
+    // Submodel 2: the touch trigger, standing between the player start
+    // (x = -96) and the door (x = 200).
+    b.push_model(
+        [64.0, -48.0, 0.0],
+        [128.0, 48.0, 96.0],
+        [0.0, 0.0, 0.0],
+        [-1, -1, -1, -1],
+        0,
+        0,
+        0,
+    );
+
+    b.build()
+}
+
+/// A `worldspawn` plus an `info_player_start` at `(-96, 0, 36)`, a
+/// `func_door` (submodel `*1`, targetname [`TOUCH_DOOR_NAME`]) that stays
+/// open once triggered, and a `trigger_multiple` (submodel `*2`, targetname
+/// [`TOUCH_TRIGGER_NAME`]) targeting it — the training-map shape this
+/// fixture reproduces: a closed door with no direct `use` path, gated by an
+/// adjoining touch trigger.
+#[must_use]
+pub fn door_behind_touch_trigger_entities() -> String {
+    format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"-96 0 36\"\n\"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"func_door\"\n\"targetname\" \"{TOUCH_DOOR_NAME}\"\n\
+         \"model\" \"*1\"\n\"speed\" \"100\"\n\"wait\" \"-1\"\n\"angle\" \"90\"\n\
+         \"origin\" \"0 0 0\"\n}}\n\
+         {{\n\"classname\" \"trigger_multiple\"\n\"targetname\" \"{TOUCH_TRIGGER_NAME}\"\n\
+         \"target\" \"{TOUCH_DOOR_NAME}\"\n\"model\" \"*2\"\n\"origin\" \"0 0 0\"\n}}\n"
+    )
+}
+
 /// Queues `amount` points of damage against `target`, as if a weapon had
 /// hit it, so a test can kill a monster without a weapon existing yet.
 ///

@@ -12,8 +12,8 @@ use glam::Vec3;
 use hecs::Entity;
 
 use crate::registry::{
-    AutoTrigger, Button, ChangeLevel, Door, Message, MoverState, MultiManager, Platform, Registry,
-    Target, Transform, Trigger,
+    AutoTrigger, BrushBounds, Button, ChangeLevel, Door, Message, MoverState, MultiManager,
+    Platform, Registry, Target, Transform, Trigger, TriggerHurt,
 };
 use crate::track_train::TrackTrainState;
 
@@ -181,6 +181,41 @@ impl Simulation {
         events: &mut Vec<Event>,
     ) {
         self.activate(registry, entity, activator, events);
+    }
+
+    /// Fires every `trigger_once`/`trigger_multiple` whose brush volume
+    /// overlaps the box `[player_mins, player_maxs]` (world space), the way
+    /// a real touch trigger tests brush-against-brush rather than a single
+    /// point — see `docs/FORMAT_SOURCES.md` ("Entity keyvalues and map
+    /// logic", touch triggers). `trigger_hurt` shares the same [`Trigger`]
+    /// component but is excluded here: it is polled on its own radius-based
+    /// path (`ohl-engine`'s player-systems phase) and firing its `target`
+    /// through this path too is unimplemented/out of scope.
+    ///
+    /// Entities are visited in ascending id order so which trigger fires
+    /// first (when several volumes overlap on the same step) is
+    /// deterministic.
+    pub fn touch_triggers(
+        &mut self,
+        registry: &mut Registry,
+        player_mins: Vec3,
+        player_maxs: Vec3,
+        activator: Option<Entity>,
+    ) {
+        let mut touched: Vec<Entity> = registry
+            .world
+            .query::<(Entity, &Trigger, &BrushBounds)>()
+            .without::<&TriggerHurt>()
+            .iter()
+            .filter(|(_, _, bounds)| {
+                aabb_overlaps(player_mins, player_maxs, bounds.mins, bounds.maxs)
+            })
+            .map(|(entity, _, _)| entity)
+            .collect();
+        touched.sort_unstable_by_key(|entity| entity.id());
+        for entity in touched {
+            self.activate_trigger(registry, entity, activator);
+        }
     }
 
     /// Advances every scheduled event and state machine by `dt` seconds
@@ -563,6 +598,13 @@ impl Simulation {
     }
 }
 
+/// Whether the axis-aligned boxes `[a_mins, a_maxs]` and `[b_mins, b_maxs]`
+/// overlap (touching exactly at a face counts, matching
+/// [`BrushBounds::contains`]'s inclusive edges).
+fn aabb_overlaps(a_mins: Vec3, a_maxs: Vec3, b_mins: Vec3, b_maxs: Vec3) -> bool {
+    a_mins.cmple(b_maxs).all() && a_maxs.cmpge(b_mins).all()
+}
+
 fn travel_time(distance: f32, speed: f32) -> f32 {
     if speed <= 0.0 {
         0.0
@@ -811,5 +853,106 @@ mod tests {
         let found = find_usable_within(&registry, Vec3::new(5.0, 5.0, 5.0), 64.0);
         assert_eq!(found, Some(registry.find("near_door")[0]));
         assert!(find_usable_within(&registry, Vec3::new(500.0, 5.0, 5.0), 10.0).is_none());
+    }
+
+    /// Reproduces the training-map fixture: a closed `func_door` gated by an
+    /// adjoining `trigger_multiple` touch volume, wired only through
+    /// `target`/`targetname` the way a real map does — no direct `use` on
+    /// the door itself. Walking the player's bounding box into the volume
+    /// (not merely moving its origin near the door) must open the door;
+    /// before `touch_triggers` existed nothing ever activated a touch
+    /// trigger from player movement at all.
+    #[test]
+    fn touch_trigger_opens_gated_door_from_player_bounding_box() {
+        let entities = vec![
+            raw(&[
+                ("classname", "trigger_multiple"),
+                ("targetname", "startdoor_trigger"),
+                ("target", "startdoor"),
+                ("model", "*1"),
+            ]),
+            raw(&[
+                ("classname", "func_door"),
+                ("targetname", "startdoor"),
+                ("speed", "100"),
+                ("wait", "-1"),
+            ]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut bounds = BTreeMap::new();
+        // The trigger volume sits well ahead of the origin, the way a
+        // touch trigger in front of a door does.
+        bounds.insert(1u32, ([100.0, -32.0, 0.0], [164.0, 32.0, 72.0]));
+        let mut registry = Registry::build(&defs, &bounds, &Limits::default());
+        let mut sim = Simulation::new();
+        let door = registry.find("startdoor")[0];
+
+        // The player's origin (a standing-hull-sized box) has not yet
+        // reached the volume: no touch, door stays closed.
+        sim.touch_triggers(
+            &mut registry,
+            Vec3::new(-16.0, -16.0, -36.0),
+            Vec3::new(16.0, 16.0, 36.0),
+            None,
+        );
+        sim.tick(&mut registry, 0.05);
+        assert_eq!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Closed
+        );
+
+        // Walking forward, the player's bounding box now overlaps the
+        // trigger volume even though its origin (0,0,0 + 120 = still short
+        // of centre) has not reached the volume's own centre.
+        sim.touch_triggers(
+            &mut registry,
+            Vec3::new(84.0, -16.0, -36.0),
+            Vec3::new(116.0, 16.0, 36.0),
+            None,
+        );
+        sim.tick(&mut registry, 0.05);
+        assert_eq!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Open
+        );
+    }
+
+    #[test]
+    fn touch_triggers_ignore_trigger_hurt_targets() {
+        // `trigger_hurt` shares the `Trigger` component but its touch path
+        // is handled elsewhere (a radius test against the player's
+        // origin in `ohl-engine`'s player-systems phase); it must not also
+        // fire its `target` through the bounding-box touch path.
+        let entities = vec![
+            raw(&[
+                ("classname", "trigger_hurt"),
+                ("targetname", "hurt1"),
+                ("target", "door1"),
+                ("model", "*1"),
+                ("dmg", "5"),
+            ]),
+            raw(&[
+                ("classname", "func_door"),
+                ("targetname", "door1"),
+                ("wait", "-1"),
+            ]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut bounds = BTreeMap::new();
+        bounds.insert(1u32, ([0.0, 0.0, 0.0], [64.0, 64.0, 64.0]));
+        let mut registry = Registry::build(&defs, &bounds, &Limits::default());
+        let mut sim = Simulation::new();
+        let door = registry.find("door1")[0];
+        sim.touch_triggers(
+            &mut registry,
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 1.0, 1.0),
+            None,
+        );
+        sim.tick(&mut registry, 0.05);
+        assert_eq!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Closed
+        );
     }
 }
