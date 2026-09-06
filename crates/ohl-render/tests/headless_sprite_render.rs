@@ -130,8 +130,15 @@ fn run_additive_sprite_test() {
     let bytes = backdrop_bsp();
     let limits = BspLimits::default();
     let bsp = Bsp::parse(&bytes, &limits).expect("synthetic backdrop parses");
-    let model = WorldModel::build(&bsp, &WorldBuildOptions { wads: &[], limits })
-        .expect("synthetic backdrop builds");
+    let model = WorldModel::build(
+        &bsp,
+        &WorldBuildOptions {
+            wads: &[],
+            limits,
+            ..Default::default()
+        },
+    )
+    .expect("synthetic backdrop builds");
     assert!(model.batches.is_empty(), "there is no opaque geometry");
 
     let sprite_bytes = additive_sprite_bytes(255);
