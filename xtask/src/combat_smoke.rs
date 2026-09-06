@@ -219,6 +219,11 @@ const FIRE_AND_PICKUP_ABSENT: [&str; 3] = [
 /// technique. Every one of the nineteen asserts "The player is inside
 /// solid geometry." absent: this scenario set's own regression guard for
 /// the PR #91 class of bug.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one Scenario literal per M9 chapter-walk scenario, plus the four \
+              pre-existing ones; splitting the list would only add indirection"
+)]
 fn scenarios() -> [Scenario; 23] {
     [
         Scenario {
