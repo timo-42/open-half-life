@@ -2787,3 +2787,49 @@ payload.
   now tracks its `Actor` (it visibly diverged before this fix), and a
   monster's `Actor::origin` matches its `Transform::origin` immediately
   after a save/load boundary rather than silently reverting to spawn.
+- **`func_ladder`/`func_water` submodels now attach their own contents.**
+  Closes the gap `docs/FORMAT_SOURCES.md`'s "brush-collision follow-ups"
+  item 23 recorded: `ohl_physics::hull::CollisionModel::
+  attach_contents_brush` attaches a `func_ladder`/`func_water` submodel as
+  a non-solid *contents volume* (`ContentsKind::Ladder`/`Water`/`Slime`/
+  `Lava`, the latter three read from `func_water`'s documented `skin`
+  keyvalue) alongside the existing solid-brush attachment, so
+  `contents_at`/`point_contents` report the right contents inside the
+  volume while a trace still passes through it — implemented as a
+  query-time remap of the submodel's own compiled "inside the brush"
+  leaf, since nothing in the BSP format lets a brush entity declare
+  special leaf contents at compile time (see `ContentsKind`'s doc
+  comment). `ohl_game::brush::contents_model_instances` (plus a new
+  `Water`/`Liquid` registry component) classifies which entities qualify;
+  `ohl-engine`'s `attach_brush_collision` (renamed from
+  `attach_solid_brushes`) attaches both kinds into the same
+  `Vec<(Entity, BrushId)>` `Level::sync_brush_collision` already moves
+  every step, so a `func_water` mover (documented as sharing `func_door`'s
+  move/trigger behaviour) is kept at its current origin with no new code
+  path. `ohl-player`/`ohl-physics`'s existing ladder-climb and
+  water-swim/no-fall-damage logic already reads probed contents, so
+  neither needed a change. `Game::player_on_ladder`/`player_in_water` and
+  two new fixed `--script-log` lines, "The player is on a ladder."/"The
+  player is in water." (a 0.5-second hold, like the existing in-solid
+  guard), back a scripted-walk assertion the same way the PR #91 guard
+  does. Tested with synthetic entity-attached ladder/water fixtures
+  (`ohl_physics::test_support::build_ladder_entity_room_bsp`/
+  `build_water_entity_room_bsp`, compiled the way a real brush entity
+  actually compiles — an ordinary solid-shaped submodel, not
+  world-baked special contents) across `ohl-physics`'s unit, player-
+  systems and proptest suites, plus `ohl-game` classification tests and
+  an `ohl-engine` wiring test exercising `attach_brush_collision`
+  directly. All 23 pre-existing `combat-smoke` scenarios still pass.
+  **Real-payload verdict:** every one of the Hazard Course's seven maps
+  was probed for `func_ladder`/`func_water` entities directly from the
+  imported payload's own compiled BSP data (no `func_water` entity exists
+  on any of them — the course's water section is world-baked liquid,
+  already working before this change); reaching one of the several
+  `func_ladder`s within a bounded scripted walk was attempted extensively
+  (entity/trigger-level analysis, a purpose-built collision-based
+  waypoint search against this crate's own `CollisionModel::trace`, and
+  dozens of scripted-walk iterations) but not completed — the course's
+  early rooms are gated by sequential doors, trigger strips and a static
+  hologram guide that the project's existing forward/turn scripted-walk
+  technique could not reliably clear within a bounded budget. This is
+  left as a follow-up rather than recorded as a passing scenario.
