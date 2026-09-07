@@ -1460,6 +1460,30 @@ named. `ohl-render` does not yet draw the resulting brush-model instances
   fires by itself, so a fresh map load requires leaving and re-entering
   before it can fire again) is recorded at the point of use in
   `ohl_game::logic::Simulation::touch_changelevel_triggers`.
+- [TWHL wiki: game_playerspawn](https://twhl.info/wiki/page/game_playerspawn)
+  (consulted via a search-engine result summary of the page, same 403
+  caveat as the rest of this section): "If you give an entity the name
+  (targetname) game_playerspawn, it will be triggered every time a player
+  spawns, by the spawning player" — i.e. `game_playerspawn` is a special
+  `targetname` convention the engine recognizes on whatever entity carries
+  it (any classname; commonly a `multi_manager` or `trigger_relay`), fired
+  directly rather than looked up as another entity's `target`. Corroborated
+  by the Sven Co-op wiki's "Mapping/Game Triggering System" page (fetched
+  directly), which documents `game_playerspawn` as one of a fixed set of
+  such special targetnames "triggered with use-type Toggle" whenever the
+  corresponding player event occurs, firing on "a player spawns or
+  respawns" with that player as both activator and caller.
+  `ohl_game::logic::Simulation::fire_player_spawn` activates every entity
+  named this way, once, the first time the simulation ticks (this project
+  has no separate "player enters the world" moment before that). Before
+  this existed, nothing in this crate ever looked up that name at all: a
+  map whose intro sequence used this convention instead of `trigger_auto`
+  — as the campaign start map's tram appears to, since it has no other
+  activation path in this project's currently-implemented entity set —
+  never activated anything. **`TODO(black-box)`**: the exact fire order
+  relative to `trigger_auto` within the same tick is not confirmed by a
+  fetchable primary source; both fire on the same tick regardless, which
+  only matters for a map that names the same relay from both mechanisms.
 
 ## Navigation
 

@@ -147,12 +147,27 @@ pub struct SimulationState {
     pub triggers: Vec<TriggerSnapshot>,
 }
 
+/// GoldSrc's documented special-`targetname` convention: any entity (of
+/// any classname) whose own `targetname` equals this string is activated
+/// directly — the same way a player's `use` key or another entity's fire
+/// chain would activate it by name — the first time a player spawns into
+/// the map, rather than being looked up as *another* entity's `target`.
+/// See `docs/FORMAT_SOURCES.md` ("Entity keyvalues and map logic",
+/// "game_playerspawn") for the public source and its caveats.
+const GAME_PLAYER_SPAWN_TARGETNAME: &str = "game_playerspawn";
+
 /// The map logic simulation: an event queue plus per-tick state-machine
 /// advancement.
 #[derive(Debug, Default)]
 pub struct Simulation {
     pending: Vec<Fire>,
     trigger_state: std::collections::BTreeMap<Entity, TriggerState>,
+    /// Whether [`Self::fire_player_spawn`] has already run. Not carried in
+    /// [`SimulationState`]: matches this project's existing convention for
+    /// `trigger_auto`'s own one-shot `fired` flag (an ECS component field,
+    /// also not persisted across a save/restore today), so a loaded save
+    /// does not re-fire either one.
+    player_spawn_fired: bool,
 }
 
 impl Simulation {
@@ -291,6 +306,7 @@ impl Simulation {
     /// act on (currently only [`Event::LevelChange`]).
     pub fn tick(&mut self, registry: &mut Registry, dt: f32) -> Vec<Event> {
         let mut events = Vec::new();
+        self.fire_player_spawn(registry, &mut events);
         self.fire_auto_triggers(registry);
         self.advance_queue(registry, dt, &mut events);
         Self::advance_doors(registry, dt);
@@ -302,6 +318,40 @@ impl Simulation {
             state.cooldown = (state.cooldown - dt).max(0.0);
         }
         events
+    }
+
+    /// Activates every entity named [`GAME_PLAYER_SPAWN_TARGETNAME`], once,
+    /// the first time this simulation ticks (this project has no separate
+    /// "player enters the world" moment from "the level starts ticking":
+    /// the player's own state is constructed before the first
+    /// [`Self::tick`] call, so that first tick *is* the spawn). Unlike
+    /// [`Self::fire_auto_triggers`] (which fires the *target* a
+    /// `trigger_auto` names), this activates the matching entity itself
+    /// directly — `game_playerspawn` is documented as a special
+    /// `targetname` the engine recognizes on whatever entity carries it
+    /// (any classname, commonly a `multi_manager` or `trigger_relay`), not
+    /// a classname of its own. Before this method existed, a map whose
+    /// intro sequence relied on this convention rather than on
+    /// `trigger_auto` never activated at all: nothing in this crate ever
+    /// looked up that name.
+    ///
+    /// TODO(black-box): the exact fire order relative to
+    /// [`Self::fire_auto_triggers`] within the same tick is not confirmed
+    /// by a fetchable primary source (see the citation in
+    /// `docs/FORMAT_SOURCES.md`); both still fire on the same tick either
+    /// way, so this only matters for a map that names the same entity from
+    /// both a `trigger_auto` and a `game_playerspawn`-named relay, which is
+    /// not the shape this fix targets.
+    fn fire_player_spawn(&mut self, registry: &mut Registry, events: &mut Vec<Event>) {
+        if self.player_spawn_fired {
+            return;
+        }
+        self.player_spawn_fired = true;
+        let mut targets: Vec<Entity> = registry.find(GAME_PLAYER_SPAWN_TARGETNAME).to_vec();
+        targets.sort_unstable_by_key(|entity| entity.id());
+        for entity in targets {
+            self.activate(registry, entity, None, events);
+        }
     }
 
     /// Fires every `trigger_auto` that has not fired yet, in ascending
@@ -775,6 +825,107 @@ mod tests {
         tick_for(&mut sim, &mut registry, 1.0, 0.05);
         let door_component = registry.world.get::<&Door>(door).unwrap();
         assert_eq!(door_component.state, MoverState::Open);
+    }
+
+    /// Regression for the campaign start map's intro tram: a
+    /// `func_tracktrain` with `startspeed 0` (so it does not move on its
+    /// own) whose only activation path is a `multi_manager` reached
+    /// through the documented `game_playerspawn` special `targetname` —
+    /// no `trigger_auto` anywhere in the map. Before [`Simulation::fire_player_spawn`]
+    /// existed, nothing in this crate ever looked up that name, so this
+    /// train never moved and the scenario in
+    /// `docs/FORMAT_SOURCES.md` ("Entity keyvalues and map logic",
+    /// "game_playerspawn") reproduced exactly: idling for many ticks left
+    /// the train parked at its first node.
+    #[test]
+    fn game_playerspawn_activates_a_relay_that_starts_a_parked_tram() {
+        let entities = vec![
+            raw(&[
+                ("classname", "multi_manager"),
+                ("targetname", "game_playerspawn"),
+                ("tram", "0.0"),
+            ]),
+            raw(&[
+                ("classname", "func_tracktrain"),
+                ("targetname", "tram"),
+                ("target", "node1"),
+                ("speed", "50"),
+                ("startspeed", "0"),
+                ("height", "0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "node1"),
+                ("target", "node2"),
+                ("origin", "0 0 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "node2"),
+                ("origin", "100 0 0"),
+            ]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let mut sim = Simulation::new();
+        let tram = registry.find("tram")[0];
+        {
+            let state = registry.world.get::<&TrackTrainState>(tram).unwrap();
+            assert_eq!(state.position(), Vec3::ZERO, "parked at its first node");
+        }
+        // A 40-second idle run at a typical fixed step: matches the review
+        // window this regression is drawn from. No `use_entity` call and
+        // no `trigger_auto` anywhere in this fixture — only ordinary
+        // `tick`s, exactly like a player standing still after map load.
+        tick_for(&mut sim, &mut registry, 40.0, 0.05);
+        let state = registry.world.get::<&TrackTrainState>(tram).unwrap();
+        assert!(
+            state.position().x > 0.0,
+            "game_playerspawn must have started the tram moving toward node2, got {:?}",
+            state.position()
+        );
+    }
+
+    /// A second call to [`Simulation::tick`] must not re-activate a
+    /// `game_playerspawn`-named relay: it is a one-shot "player entered
+    /// the world" event, not a per-tick poll (mirroring `trigger_auto`'s
+    /// own already-established one-shot `fired` behaviour).
+    #[test]
+    fn game_playerspawn_fires_only_once() {
+        let entities = vec![
+            raw(&[
+                ("classname", "func_button"),
+                ("targetname", "game_playerspawn"),
+                ("target", "door1"),
+                ("wait", "0"),
+                ("delay", "0"),
+            ]),
+            raw(&[
+                ("classname", "func_door"),
+                ("targetname", "door1"),
+                ("speed", "100"),
+                ("wait", "-1"),
+            ]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let mut sim = Simulation::new();
+        let door = registry.find("door1")[0];
+        tick_for(&mut sim, &mut registry, 1.0, 0.05);
+        {
+            let door_component = registry.world.get::<&Door>(door).unwrap();
+            assert_eq!(door_component.state, MoverState::Open);
+        }
+        // Close it back down by hand and confirm further ticks (i.e. more
+        // simulated time passing, not a second spawn) never reopen it.
+        {
+            let mut door_component = registry.world.get::<&mut Door>(door).unwrap();
+            door_component.state = MoverState::Closed;
+            door_component.timer = 0.0;
+        }
+        tick_for(&mut sim, &mut registry, 1.0, 0.05);
+        let door_component = registry.world.get::<&Door>(door).unwrap();
+        assert_eq!(door_component.state, MoverState::Closed);
     }
 
     #[test]
