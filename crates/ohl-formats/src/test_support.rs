@@ -522,8 +522,26 @@ pub struct MinimalMdl10Layout {
 /// Every byte here is authored by this project for testing only; see
 /// `docs/CLEAN_ROOM.md`.
 #[must_use]
-#[allow(clippy::too_many_lines)]
 pub fn build_minimal_mdl10() -> (Vec<u8>, MinimalMdl10Layout) {
+    build_minimal_mdl10_with_sequences(&["idle"])
+}
+
+/// [`build_minimal_mdl10`], generalized to `names.len()` sequences instead
+/// of exactly one.
+///
+/// Every sequence after the first is otherwise identical to the first
+/// (same fps, frame count and anim/event data, all pointing at the same
+/// bind-pose-plus-one-real-channel animation blob `build_minimal_mdl10`
+/// already documents) — only the 32-byte name field differs, which is all
+/// a caller needs to give `ohl_world::StudioModel::sequence_by_name` two
+/// distinct, independently resolvable sequences to tell apart by index.
+/// `names` must not be empty.
+///
+/// Every byte here is authored by this project for testing only; see
+/// `docs/CLEAN_ROOM.md`.
+#[must_use]
+#[allow(clippy::too_many_lines)]
+pub fn build_minimal_mdl10_with_sequences(names: &[&str]) -> (Vec<u8>, MinimalMdl10Layout) {
     const HEADER_SIZE: usize = 244;
     const BONE_SIZE: usize = 112;
     const TEXTURE_SIZE: usize = 80;
@@ -533,6 +551,8 @@ pub fn build_minimal_mdl10() -> (Vec<u8>, MinimalMdl10Layout) {
     const MESH_SIZE: usize = 20;
     const VEC3_SIZE: usize = 12;
     const TRIVERT_SIZE: usize = 8;
+
+    assert!(!names.is_empty(), "at least one sequence is required");
 
     let tex_width = 16u32;
     let tex_height = 16u32;
@@ -547,7 +567,7 @@ pub fn build_minimal_mdl10() -> (Vec<u8>, MinimalMdl10Layout) {
     let skin_refs_offset = texture_data_offset + texture_data_size;
     let skin_refs_size = 2; // 1 family * 1 ref * 2 bytes
     let sequences_offset = skin_refs_offset + skin_refs_size;
-    let body_parts_offset = sequences_offset + SEQUENCE_SIZE;
+    let body_parts_offset = sequences_offset + SEQUENCE_SIZE * names.len();
     let models_offset = body_parts_offset + BODYPART_SIZE;
     let meshes_offset = models_offset + MODEL_SIZE;
     let verts_offset = meshes_offset + MESH_SIZE;
@@ -589,7 +609,7 @@ pub fn build_minimal_mdl10() -> (Vec<u8>, MinimalMdl10Layout) {
     push_u32(&mut out, u32::try_from(textures_offset).unwrap()); // bone_controller_index (count 0, any in-bounds value)
     push_u32(&mut out, 0); // num_hitboxes
     push_u32(&mut out, u32::try_from(textures_offset).unwrap()); // hitbox_index
-    push_u32(&mut out, 1); // num_seq
+    push_u32(&mut out, u32::try_from(names.len()).unwrap()); // num_seq
     push_u32(&mut out, u32::try_from(sequences_offset).unwrap());
     push_u32(&mut out, 0); // num_seq_groups
     push_u32(&mut out, u32::try_from(sequences_offset).unwrap()); // seq_group_index
@@ -659,41 +679,43 @@ pub fn build_minimal_mdl10() -> (Vec<u8>, MinimalMdl10Layout) {
     push_i16(&mut out, 0);
     assert_eq!(out.len(), sequences_offset);
 
-    // --- Sequence ---
-    out.extend_from_slice(&fixed_name_sized::<32>("idle"));
-    push_f32(&mut out, 10.0); // fps
-    push_i32(&mut out, 0); // flags
-    push_i32(&mut out, 0); // activity
-    push_i32(&mut out, 0); // actweight
-    push_u32(&mut out, 0); // num_events
-    push_u32(&mut out, u32::try_from(anim_data_offset).unwrap()); // event_index
-    push_u32(&mut out, 2); // num_frames
-    push_i32(&mut out, 0); // num_pivots
-    push_i32(&mut out, 0); // pivot_index
-    push_i32(&mut out, 0); // motion_type
-    push_i32(&mut out, 0); // motion_bone
-    for _ in 0..3 {
-        push_f32(&mut out, 0.0); // linear_movement
+    // --- Sequences (one per `names` entry; all otherwise identical) ---
+    for name in names {
+        out.extend_from_slice(&fixed_name_sized::<32>(name));
+        push_f32(&mut out, 10.0); // fps
+        push_i32(&mut out, 0); // flags
+        push_i32(&mut out, 0); // activity
+        push_i32(&mut out, 0); // actweight
+        push_u32(&mut out, 0); // num_events
+        push_u32(&mut out, u32::try_from(anim_data_offset).unwrap()); // event_index
+        push_u32(&mut out, 2); // num_frames
+        push_i32(&mut out, 0); // num_pivots
+        push_i32(&mut out, 0); // pivot_index
+        push_i32(&mut out, 0); // motion_type
+        push_i32(&mut out, 0); // motion_bone
+        for _ in 0..3 {
+            push_f32(&mut out, 0.0); // linear_movement
+        }
+        push_i32(&mut out, 0); // automove_pos_index
+        push_i32(&mut out, 0); // automove_angle_index
+        for _ in 0..6 {
+            push_f32(&mut out, 0.0); // bbmin, bbmax
+        }
+        push_u32(&mut out, 1); // num_blends
+        push_u32(&mut out, u32::try_from(anim_data_offset).unwrap()); // anim_index
+        push_i32(&mut out, 0);
+        push_i32(&mut out, 0); // blend_type[2]
+        push_f32(&mut out, 0.0);
+        push_f32(&mut out, 0.0); // blend_start[2]
+        push_f32(&mut out, 0.0);
+        push_f32(&mut out, 0.0); // blend_end[2]
+        push_i32(&mut out, 0); // blend_parent
+        push_i32(&mut out, 0); // seq_group
+        push_i32(&mut out, 1); // entry_node
+        push_i32(&mut out, 1); // exit_node
+        push_i32(&mut out, 0); // node_flags
+        push_i32(&mut out, 0); // next_seq
     }
-    push_i32(&mut out, 0); // automove_pos_index
-    push_i32(&mut out, 0); // automove_angle_index
-    for _ in 0..6 {
-        push_f32(&mut out, 0.0); // bbmin, bbmax
-    }
-    push_u32(&mut out, 1); // num_blends
-    push_u32(&mut out, u32::try_from(anim_data_offset).unwrap()); // anim_index
-    push_i32(&mut out, 0);
-    push_i32(&mut out, 0); // blend_type[2]
-    push_f32(&mut out, 0.0);
-    push_f32(&mut out, 0.0); // blend_start[2]
-    push_f32(&mut out, 0.0);
-    push_f32(&mut out, 0.0); // blend_end[2]
-    push_i32(&mut out, 0); // blend_parent
-    push_i32(&mut out, 0); // seq_group
-    push_i32(&mut out, 1); // entry_node
-    push_i32(&mut out, 1); // exit_node
-    push_i32(&mut out, 0); // node_flags
-    push_i32(&mut out, 0); // next_seq
     assert_eq!(out.len(), body_parts_offset);
 
     // --- Body part ---
