@@ -2838,12 +2838,13 @@ payload.
   once triggered by name, riding the same `target`-firing path
   `scripted_sequence`'s `ScriptActivation` already uses
   (`ohl_game::registry::MakerActivation`, drained by `ohl_engine::ai`'s
-  `Spawner::trigger`); a second trigger on an active non-cyclic maker
-  toggles it off, and a `Cyclic` maker spawns exactly one child per trigger
-  rather than a continuous batch, both still bounded by `monstercount`/
-  `m_imaxlivechildren` — a product decision recorded beside
-  `ohl_ai::Spawner::trigger`'s own doc comment, since no public source
-  states the exact retrigger rule. A new save section,
+  `Spawner::trigger`); a second trigger on an active maker toggles it off
+  (a product decision, applied uniformly to `Cyclic` and non-`Cyclic`
+  makers alike, recorded beside `ohl_ai::Spawner::trigger`'s own doc
+  comment and in `docs/FORMAT_SOURCES.md`'s "Monster definitions", since no
+  public source states the exact retrigger rule), and one trigger (or
+  `Start On`) starts a continuous, `delay`-paced spawn loop, still bounded
+  by `monstercount`/`m_imaxlivechildren`. A new save section,
   `SECTION_MOVER_STATE` (tag 28, additive, following tags 23-27's own
   `optional_section`/spawn-index/float-sanitizing conventions exactly),
   closes three previously documented mid-sequence save/load gaps at once:
@@ -2858,3 +2859,41 @@ payload.
   this fix: without it, every `trigger_auto` on a map replays on load and
   silently re-toggles (stopping) any train/camera the rest of this section
   had just restored to an active state.
+
+- **Review follow-up: `monstermaker`'s `Cyclic` flag reconciled with its
+  own cited source, `MakerActivation::pending` also carried by tag 28, and
+  a decode-time size cap.** [PR #98](https://github.com/timo-42/open-half-life/pull/98)'s
+  review found the `Cyclic` implementation above had drifted from
+  `docs/FORMAT_SOURCES.md`'s own recorded citation for it ("keep spawning
+  rather than stopping after one quota"): an earlier draft made one trigger
+  worth exactly one child, an untimed, discrete step that ignored `delay`
+  and stopped a `Cyclic` maker's production far short of `monstercount`
+  from a single trigger — the opposite of the cited phrase. `Spawner`'s
+  `Cyclic` path now runs the same continuous, `delay`-paced loop a
+  non-`Cyclic` maker's own trigger/`Start On` already runs (so `Start On` +
+  `Cyclic` together also start that loop immediately, with no trigger
+  needed), still hard-capped by `monstercount` either way; see the new
+  `docs/FORMAT_SOURCES.md` addendum (appended, not rewriting the original
+  citation) and `spawner.rs`'s own module doc for the exact, honestly
+  `TODO(black-box)`-flagged reading. The review also found that
+  `MakerActivation::pending` (bumped by phase 12's `Simulation::activate`,
+  drained by phase 10 the *next* tick) was not itself part of tag 28: a
+  save taken in that one-tick window lost a trigger that had fired but not
+  yet reached the `Spawner`; it is now part of the maker's own
+  `SECTION_MOVER_STATE` entry and restored before phase 10 next runs. The
+  now-unused `MakerActivation::take()` (superseded by draining the whole
+  counter at once) was removed. Tag 28's own decode
+  (`crates/ohl-engine/src/save.rs`) now goes through a bounded
+  `Vec<Option<T>>` visitor (`crate::save_state::MAX_SNAPSHOT_MOVERS`) that
+  caps the element count — and so the allocation — *before* trusting a
+  section's own claimed length, rather than letting `postcard` pre-allocate
+  from an untrusted length prefix first; tags 24/25 share the same
+  large-allocation-before-validation shape and were left unchanged here (a
+  pre-existing, non-regressed pattern, not part of this fix). A redundant
+  second `Vec` allocation in `Systems::restore_mover_state` was also
+  collapsed into one, and the review's finding that a `Remove On fire`
+  `trigger_auto` already fired before a save has no live `AutoTrigger` for
+  tag 28 to read was checked end to end: that entity is despawned again on
+  load anyway, by `SECTION_ENTITY_COMBAT` (tag 24)'s own pre-existing
+  despawn-if-not-live rule, so it does not refire — confirmed with a
+  dedicated test, not merely asserted in a doc comment.

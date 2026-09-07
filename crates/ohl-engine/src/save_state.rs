@@ -44,7 +44,7 @@
 use glam::Vec3;
 use ohl_combat::{EntityId as CombatEntityId, ProjectileKind};
 use ohl_game::hecs::Entity;
-use ohl_game::registry::AutoTrigger;
+use ohl_game::registry::{AutoTrigger, MakerActivation};
 use ohl_game::{TrackTrainState, TriggerCameraState};
 use serde::{Deserialize, Serialize};
 
@@ -526,6 +526,42 @@ pub(crate) fn masked_conditions(bits: u32) -> ohl_ai::Conditions {
 // section had just finished restoring to an active state. This section
 // fixes all five at once, additively, with its own new tag rather than
 // touching any of tags 16-27.
+//
+// # A `trigger_auto` removed on fire — verified, not just asserted
+//
+// `AutoTrigger::fired` above is only ever read off a *live* entity: one
+// with the published `Remove On fire` spawnflag set
+// (`ohl_game::registry::SPAWNFLAG_TRIGGER_AUTO_REMOVE_ON_FIRE`) is
+// `world.despawn`ed by `ohl_game::logic::Simulation::fire_auto_triggers`
+// the moment it fires, so `snapshot_movers` below finds no `AutoTrigger`
+// component at that spawn index (`.get::<&AutoTrigger>` fails) and records
+// `auto_trigger_fired: None` for it. This does **not** leave a replay gap,
+// though, and this was checked against the actual restore-order code
+// rather than assumed: `crate::save_state::restore_entity_combat`
+// (`SECTION_ENTITY_COMBAT`, tag 24, already existing, unrelated to this
+// section) despawns *any* spawn-index entity — not only a monster — whose
+// slot's `EntityCombatSnapshot` is `None`, and `snapshot_entity_combat`
+// records exactly that `None` for any entity `level.registry.world.
+// contains` reports gone at save time, a `Remove On fire`-despawned
+// `trigger_auto` included. So although `attach_level` does unconditionally
+// recreate that entity fresh on load (with a new `AutoTrigger { fired:
+// false, .. }`), tag 24's restore (applied earlier in `Game::restore`,
+// before this section's own) despawns it right back before this section's
+// `auto_trigger_fired: None` is even consulted — a `Remove On fire`
+// `trigger_auto` that had already fired before the save stays gone, and
+// does not refire, exactly like every other despawned entity a save
+// records. Confirmed with a dedicated integration test
+// (`crates/ohl-engine/tests/save_sections.rs`,
+// `a_remove_on_fire_trigger_auto_that_already_fired_does_not_refire_after_a_load`).
+//
+// # `MonsterMakerSnapshot::pending_activation`
+//
+// A `monstermaker`'s own `MakerActivation::pending` counter (bumped by
+// `ohl_game::logic::Simulation::activate` in phase 12, drained by
+// `crate::ai::AiState::tick_makers` in phase 10 the *following* tick) is
+// carried too, for the same reason `auto_trigger_fired` is: a save taken
+// in that one-tick window would otherwise lose a trigger that had already
+// fired but not yet reached the `Spawner`.
 
 /// The most entities one `SECTION_MOVER_STATE` section records, matching
 /// [`MAX_SNAPSHOT_ENTITIES`].
@@ -608,7 +644,17 @@ pub struct ScriptRunnerSnapshot {
 /// `ohl_ai::Spawner::restore_counters`'s parameters, plus
 /// [`ohl_ai::Spawner::live_children`] for information (see that method's
 /// own doc comment for why the live-child *entity list* itself is not, and
-/// cannot yet be, restored).
+/// cannot yet be, restored) and `pending_activation`, the maker's own
+/// `MakerActivation::pending` counter.
+///
+/// `pending_activation` closes a one-tick window a review of this section
+/// found: `ohl_game::logic::Simulation::activate` (phase 12, the last
+/// phase of a tick) bumps `MakerActivation::pending`, but
+/// `crate::ai::AiState::tick_makers` (phase 10) only drains it the
+/// *following* tick — so a save taken in between (after a trigger fired
+/// this tick, before the next tick's phase 10 has run) would otherwise
+/// lose that trigger on load, exactly like `SECTION_MOVER_STATE`'s own
+/// `auto_trigger_fired` fixes the analogous `trigger_auto` gap.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct MonsterMakerSnapshot {
     /// `ohl_ai::Spawner::spawned_total`.
@@ -618,10 +664,11 @@ pub struct MonsterMakerSnapshot {
     pub live_children: u32,
     /// `ohl_ai::Spawner::is_active`.
     pub active: bool,
-    /// `ohl_ai::Spawner::cyclic_pending`.
-    pub cyclic_pending: u32,
     /// `ohl_ai::Spawner::timer`.
     pub timer: f32,
+    /// `ohl_game::registry::MakerActivation::pending` — see this struct's
+    /// own doc comment.
+    pub pending_activation: u32,
 }
 
 /// `SECTION_MOVER_STATE` (28): one optional entry per `Registry::entities`
@@ -718,12 +765,19 @@ pub(crate) fn snapshot_movers(level: &Level) -> Vec<Option<MoverSnapshot>> {
                 .world
                 .get::<&MonsterMaker>(*entity)
                 .ok()
-                .map(|maker| MonsterMakerSnapshot {
-                    spawned_total: maker.0.spawned_total(),
-                    live_children: u32::try_from(maker.0.live_children()).unwrap_or(u32::MAX),
-                    active: maker.0.is_active(),
-                    cyclic_pending: maker.0.cyclic_pending(),
-                    timer: maker.0.timer(),
+                .map(|maker| {
+                    let pending_activation = level
+                        .registry
+                        .world
+                        .get::<&MakerActivation>(*entity)
+                        .map_or(0, |activation| activation.pending);
+                    MonsterMakerSnapshot {
+                        spawned_total: maker.0.spawned_total(),
+                        live_children: u32::try_from(maker.0.live_children()).unwrap_or(u32::MAX),
+                        active: maker.0.is_active(),
+                        timer: maker.0.timer(),
+                        pending_activation,
+                    }
                 });
             let auto_trigger_fired = level
                 .registry
@@ -775,15 +829,15 @@ pub(crate) fn restore_movers(level: &mut Level, snapshots: &[Option<MoverSnapsho
                 camera.hold_remaining,
             );
         }
-        if let Some(maker) = &snapshot.maker
-            && let Ok(mut component) = level.registry.world.get::<&mut MonsterMaker>(*entity)
-        {
-            component.0.restore_counters(
-                maker.spawned_total,
-                maker.active,
-                maker.cyclic_pending,
-                maker.timer,
-            );
+        if let Some(maker) = &snapshot.maker {
+            if let Ok(mut component) = level.registry.world.get::<&mut MonsterMaker>(*entity) {
+                component
+                    .0
+                    .restore_counters(maker.spawned_total, maker.active, maker.timer);
+            }
+            if let Ok(mut activation) = level.registry.world.get::<&mut MakerActivation>(*entity) {
+                activation.pending = maker.pending_activation.min(MakerActivation::MAX_PENDING);
+            }
         }
         if let Some(fired) = snapshot.auto_trigger_fired
             && let Ok(mut auto) = level.registry.world.get::<&mut AutoTrigger>(*entity)

@@ -969,7 +969,15 @@ now all survive a save/load. It also carries `AutoTrigger::fired` (a
 `trigger_auto`'s own one-shot flag), since replaying a `trigger_auto` on
 every load would otherwise re-toggle — and so silently stop — any
 train/camera the rest of this same section had just finished restoring to
-an active state. One separate, still-open gap: a `monstermaker`'s
+an active state. This only covers a `trigger_auto` still live in the world
+at save time: one with the published `Remove On fire` spawnflag set is
+despawned the instant it fires, so `SECTION_MOVER_STATE` has no live
+`AutoTrigger` component left to read `fired` off by the time a save is
+taken — but that case was already handled correctly before tag 28 existed,
+by `SECTION_ENTITY_COMBAT` (tag 24)'s own pre-existing rule that a
+spawn-index entity absent from the world at save time is despawned again
+on load, so a `Remove On fire` `trigger_auto` that had already fired stays
+gone and does not refire either way. One separate, still-open gap: a `monstermaker`'s
 already-spawned children are not themselves indexed by
 `Registry::entities` (see `ohl_engine::save_state`'s own module doc,
 "Monstermaker children are not saved"), so only the maker's own counters

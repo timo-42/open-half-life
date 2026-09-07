@@ -2436,6 +2436,26 @@ logic" and "Monster AI behaviour" above).
   directly, shows a modified/forked version — different spawnflag bits, and
   the entity marked obsolete there — which is explicitly *not* used as a
   source for vanilla behaviour here.)
+- **M7.13 addendum — `monstermaker` activation by `targetname`, and what is
+  and is not sourced about it.** Neither of the two pages cited just above
+  states what firing `target` at an already-active `monstermaker` does (a
+  *re*trigger, as opposed to the first one), for a `Cyclic` maker or a
+  plain one. `crates/ohl-ai/src/spawner.rs`'s `Spawner::trigger` toggling an
+  active maker off is therefore recorded there, and here, as this project's
+  own decision, not attributed to either source page. The one fact the
+  cited "Cyclic" bit *does* give — "keep spawning rather than stopping
+  after one quota" — is modeled as: one trigger (or `Start On`) starts a
+  continuous, `delay`-paced spawn loop that keeps producing children rather
+  than stopping after a single one, for as long as `monstercount`/
+  `m_imaxlivechildren` allow; `monstercount` is still an absolute lifetime
+  cap for a `Cyclic` maker exactly as it is for a plain one, since no
+  reachable page states an unbounded, looped-past-`monstercount` spawn
+  count for `Cyclic` specifically, and this project prefers not to build an
+  unbounded spawn path on a guess. Under this reading, `Spawner`'s `Cyclic`
+  and non-`Cyclic` code paths are currently mechanically identical (the
+  `cyclic` field is still stored and still reported); `TODO(black-box)` if
+  a public source is later found describing an actual behavioural
+  difference beyond the one phrase above.
 
 Everything else under `crates/ohl-ai/src/monsters` — `MonsterBrain`'s
 schedule selection per kind, the new schedules themselves (houndeye pack
