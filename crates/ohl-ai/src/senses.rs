@@ -527,6 +527,12 @@ pub fn listen(ears: Vec3, senses: &Senses, sounds: &SoundList) -> ListenResult {
     } else {
         0.0
     };
+    if sensitivity <= 0.0 {
+        // A non-positive sensitivity means deaf: nothing is audible, not
+        // even an event sitting exactly at the listener's position (where
+        // the zero-radius threshold would otherwise be met on the nose).
+        return result;
+    }
 
     let mut best_distance = f32::INFINITY;
     let mut best_is_danger = false;

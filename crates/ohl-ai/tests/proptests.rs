@@ -386,6 +386,25 @@ proptest! {
     }
 }
 
+/// Regression for a `listen_is_total` proptest failure: a sound event
+/// sitting exactly at the listener's own position was audible even at
+/// `sensitivity = 0.0`, because the audible check (`distance <= radius *
+/// sensitivity`) is satisfied on the boundary when both sides are zero.
+/// A non-positive sensitivity must mean deaf, full stop.
+#[test]
+fn listen_is_deaf_at_zero_sensitivity_even_at_zero_distance() {
+    let ears = ohl_ai::Vec3::ZERO;
+    let mut sounds = ohl_ai::SoundList::new();
+    sounds.push(SoundEvent::new(SoundKind::Combat, ears, 1.0));
+    let senses = Senses {
+        hearing_sensitivity: 0.0,
+        ..Senses::default()
+    };
+    let result = listen(ears, &senses, &sounds);
+    assert!(result.conditions.is_empty());
+    assert!(result.best.is_none());
+}
+
 proptest! {
     // The graph build cost is shared work, not per-case work, but is still
     // paid once per case here (proptest reruns the whole body); a smaller
