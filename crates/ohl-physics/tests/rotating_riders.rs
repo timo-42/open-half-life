@@ -54,6 +54,24 @@ fn any_vec3() -> impl Strategy<Value = Vec3> {
     (any_finite(), any_finite(), any_finite()).prop_map(|(x, y, z)| Vec3::new(x, y, z))
 }
 
+/// An angular velocity in radians per second, bounded well above anything a
+/// map's own `speed` keyvalue produces (32 rad/s is over 1,800 degrees per
+/// second) while staying in a range where the float bounds below stay
+/// meaningful.
+fn any_angular_velocity() -> impl Strategy<Value = Vec3> {
+    let rate = -32.0f32..32.0;
+    (rate.clone(), rate.clone(), rate).prop_map(|(x, y, z)| Vec3::new(x, y, z))
+}
+
+/// The absolute error `omega x (point - pivot)` can carry purely from
+/// evaluating `point - pivot` in `f32` at world coordinates: the
+/// subtraction's own rounding is proportional to the magnitudes involved,
+/// and the cross product then scales it by the rate. Used where the exact
+/// answer is zero, so no relative bound is available.
+fn cancellation_tolerance(pivot: Vec3, omega: Vec3, along: f32) -> f32 {
+    32.0 * f32::EPSILON * omega.length() * (pivot.length() + along.abs()) + 1e-3
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(512))]
 
@@ -64,7 +82,7 @@ proptest! {
     #[test]
     fn the_tangential_velocity_is_the_rigid_body_relation(
         pivot in any_vec3(),
-        omega in any_vec3(),
+        omega in any_angular_velocity(),
         point in any_vec3(),
     ) {
         let velocity = rotational_ride_velocity(pivot, omega, point);
@@ -98,15 +116,13 @@ proptest! {
     #[test]
     fn a_point_on_the_axis_never_moves_and_reversing_the_spin_reverses_the_ride(
         pivot in any_vec3(),
-        omega in any_vec3(),
+        omega in any_angular_velocity(),
         along in any_finite(),
         point in any_vec3(),
     ) {
         let on_axis = pivot + omega.normalize_or_zero() * along;
         let velocity = rotational_ride_velocity(pivot, omega, on_axis);
-        // The only error here is the floating-point residue of computing
-        // `omega x (axis * along)`, which scales with both factors.
-        let tolerance = 1e-4 * omega.length() * along.abs() + 1e-3;
+        let tolerance = cancellation_tolerance(pivot, omega, along);
         prop_assert!(
             velocity.length() <= tolerance,
             "a point on the axis moved at {velocity:?}"
