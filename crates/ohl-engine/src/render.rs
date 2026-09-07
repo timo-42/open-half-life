@@ -396,10 +396,20 @@ fn ambient_at(level: &Level, origin: [f32; 3]) -> [f32; 3] {
 /// E1 (returning the raw polyline coordinate, which the caller then adds
 /// the `origin` keyvalue to and so double-applies it) stays fixed: the
 /// `origin` keyvalue is subtracted here precisely so the sum cancels to
-/// the absolute position exactly once. Subtracting
-/// [`TrackTrainState::built_origin`] instead — the previous behaviour —
-/// cancelled to a zero offset at spawn and so left the train frozen at
-/// wherever it was compiled, however far from its own track that is.
+/// the absolute position exactly once. Subtracting the chain's first node
+/// instead — the previous behaviour — cancelled to a zero offset at spawn
+/// and so left the train frozen at wherever it was compiled, however far
+/// from its own track that is.
+///
+/// The cancellation is exact only for a train that has an origin brush,
+/// which is the only shape the documentation describes (`height` is
+/// defined against that brush) and the shape a compiler leaves the
+/// geometry in: vertices stored relative to the brush, its world position
+/// in the `origin` keyvalue. A train authored *without* one has a `0 0 0`
+/// keyvalue and world-baked vertices, so nothing cancels and it is placed
+/// at the absolute polyline coordinate — the same thing an engine that
+/// simply assigns the entity's origin from the path does, and a map shape
+/// the documentation gives no other meaning to.
 pub(crate) fn track_train_transform(
     registry: &ohl_game::Registry,
     entity: Entity,

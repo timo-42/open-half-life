@@ -2954,8 +2954,9 @@ payload.
   `func_tracktrain` is now placed *on the first node of its own path* at
   spawn, rather than left wherever its brushes were compiled.
   `ohl-engine`'s `track_train_transform` previously measured the train's
-  travel from `TrackTrainState::built_origin` (the first node), which
-  makes the spawn offset identically zero — so a map that authors the
+  travel from the chain's first node (the since-removed
+  `TrackTrainState::built_origin`), which makes the spawn offset
+  identically zero — so a map that authors the
   train's brushes away from its track, tied to the world only through the
   origin-brush position the compiler writes into the entity's `origin`
   keyvalue, never moved its train onto the track at all. The offset is
@@ -2969,7 +2970,8 @@ payload.
   brush: `height` is "the height above the path_track that the train will
   ride, based on the location of the train's origin brush"
   (`docs/FORMAT_SOURCES.md`, "Track trains and paths").
-  `Level::attach_solid_brushes` now attaches every brush hull at that same
+  `Level::attach_brush_collision` now attaches every brush hull — solid
+  and `func_ladder`/`func_water` contents alike — at that same
   already-placed position too, so a train is on its track for the level's
   very first tick rather than one tick later — which is the tick a player
   the map spawned standing inside it is first traced against.
