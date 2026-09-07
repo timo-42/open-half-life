@@ -7,7 +7,7 @@ use ohl_engine::transition::{
     CarriedEntity, EntitySnapshot, GlobalStateTable, MoverSnapshot, PlayerCarryState,
     TransitionState,
 };
-use ohl_game::registry::{Door, GlobalStateValue, MoverState, Transform};
+use ohl_game::registry::{Door, GlobalStateValue, MoverState, Rotator, Transform};
 use proptest::prelude::*;
 
 /// The application section tag the round trip stores the state under; any
@@ -69,15 +69,33 @@ prop_compose! {
 }
 
 prop_compose! {
+    fn rotator()(
+        axis in (finite(), finite(), finite()),
+        speed in finite(),
+        spinning in any::<bool>(),
+        angle_deg in finite(),
+    ) -> Rotator {
+        Rotator {
+            axis: glam::Vec3::new(axis.0, axis.1, axis.2),
+            speed,
+            spinning,
+            angle_deg,
+        }
+    }
+}
+
+prop_compose! {
     fn snapshot()(
         spawnflags in proptest::option::of(any::<u32>()),
         door in proptest::option::of(door()),
+        rotator in proptest::option::of(rotator()),
         origin in (finite(), finite(), finite()),
         angles in (finite(), finite(), finite()),
     ) -> EntitySnapshot {
         EntitySnapshot {
             spawnflags,
             door,
+            rotator,
             transform: Some(Transform {
                 origin: glam::Vec3::new(origin.0, origin.1, origin.2),
                 angles: glam::Vec3::new(angles.0, angles.1, angles.2),
@@ -166,4 +184,64 @@ proptest! {
         let decoded: TransitionState = reader.deserialize(TAG).expect("the state deserializes");
         prop_assert_eq!(decoded, state);
     }
+}
+
+/// A `func_rotating` the player switched on travels across a level
+/// transition: `EntitySnapshot` carries its `spinning`/`angle_deg` (the
+/// gap `docs/FORMAT_SOURCES.md`'s item 24 recorded, where only the save
+/// container's own mover-state section carried it), and
+/// `is_modified_mover` recognises a spinning rotator as worth carrying at
+/// all.
+#[test]
+fn a_spinning_rotator_travels_through_an_entity_snapshot() {
+    use std::collections::BTreeMap;
+
+    use ohl_game::keyvalues::{Limits, parse_entities};
+    use ohl_game::registry::Registry;
+
+    let entity_text: ohl_formats::bsp30::Entity = [
+        ("classname".to_string(), "func_rotating".to_string()),
+        ("targetname".to_string(), "spinner".to_string()),
+        ("speed".to_string(), "90".to_string()),
+    ]
+    .into_iter()
+    .collect();
+    let defs = parse_entities(&[entity_text], &Limits::default());
+    let source = Registry::build(&defs, &BTreeMap::default(), &Limits::default());
+    let entity = source.find("spinner")[0];
+    {
+        let mut rotator = source
+            .world
+            .get::<&mut Rotator>(entity)
+            .expect("a func_rotating carries a Rotator");
+        rotator.spinning = true;
+        rotator.angle_deg = 123.5;
+    }
+
+    let snapshot = EntitySnapshot::capture(&source, entity);
+    let carried = snapshot.rotator.expect("the rotator is captured");
+    assert!(carried.spinning);
+    assert!((carried.angle_deg - 123.5).abs() < 1e-4);
+    assert!(
+        snapshot.is_modified_mover(),
+        "a spinning rotator is a modified mover"
+    );
+
+    // Apply it onto a fresh copy of the same map, whose rotator is idle.
+    let mut destination = Registry::build(&defs, &BTreeMap::default(), &Limits::default());
+    let destination_entity = destination.find("spinner")[0];
+    assert!(
+        !destination
+            .world
+            .get::<&Rotator>(destination_entity)
+            .expect("a func_rotating carries a Rotator")
+            .spinning
+    );
+    snapshot.apply(&mut destination, destination_entity);
+    let restored = destination
+        .world
+        .get::<&Rotator>(destination_entity)
+        .expect("a func_rotating carries a Rotator");
+    assert!(restored.spinning);
+    assert!((restored.angle_deg - 123.5).abs() < 1e-4);
 }

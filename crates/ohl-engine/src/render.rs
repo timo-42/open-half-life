@@ -8,8 +8,7 @@
 
 use glam::{Mat4, Quat, Vec3};
 use ohl_game::hecs::Entity;
-use ohl_game::registry::{Door, MoverState, Platform, Rotator, Transform};
-use ohl_game::{TrackTrain, TrackTrainState};
+use ohl_game::registry::Transform;
 use ohl_render::{
     FreeFlyCamera, GpuContext, LightStyles, ModelInstance, RenderProps, SkyRenderer,
     SpriteInstance, StudioRenderer, SubmodelInstance, WorldRenderer, math, placement, wgpu,
@@ -381,155 +380,12 @@ fn ambient_at(level: &Level, origin: [f32; 3]) -> [f32; 3] {
     }
 }
 
-/// A `func_train`/`func_tracktrain`'s current placement, read from the
-/// `ohl-game`-side [`TrackTrainState`] the map logic simulation advances
-/// each tick (see `crates/ohl-game/src/track_train.rs`): a world-space
-/// *delta* offset from the entity's own `origin` keyvalue, and, for a
-/// `func_tracktrain` (which the public documentation says turns to face
-/// the next `path_track`), the yaw to face instead of the entity's own
-/// spawned `angles`. Returns `(Vec3::ZERO, None)` for any entity that is
-/// not a train with a resolved path (falling back to the door/static
-/// placement path above).
-///
-/// Every caller adds this to the entity's `origin` keyvalue (the renderer
-/// through `ModelInstance::origin`, the collision model through
-/// `Level::sync_brush_collision`), so returning `position() - origin`
-/// places the train *at* [`TrackTrainState::position`] — which is what the
-/// public documentation describes: a train rides the path with its origin
-/// brush on it, the compiler writes that origin brush's position into the
-/// entity's `origin` keyvalue and stores the submodel's geometry relative
-/// to it, and `height` is documented as the offset "above the path_track
-/// that the train will ride, **based on the location of the train's origin
-/// brush**" (`docs/FORMAT_SOURCES.md`, "Track trains and paths"). A train
-/// is therefore drawn and collided wherever its path currently puts it,
-/// not wherever its brushes happened to be built — a map may author the
-/// brush anywhere and let the first `path_track` place it at spawn.
-///
-/// The `docs/CLEAN_ROOM.md`-governed `.plan/fidelity-round-2.md` finding
-/// E1 (returning the raw polyline coordinate, which the caller then adds
-/// the `origin` keyvalue to and so double-applies it) stays fixed: the
-/// `origin` keyvalue is subtracted here precisely so the sum cancels to
-/// the absolute position exactly once. Subtracting the chain's first node
-/// instead — the previous behaviour — cancelled to a zero offset at spawn
-/// and so left the train frozen at wherever it was compiled, however far
-/// from its own track that is.
-///
-/// The cancellation is exact only for a train that has an origin brush,
-/// which is the only shape the documentation describes (`height` is
-/// defined against that brush) and the shape a compiler leaves the
-/// geometry in: vertices stored relative to the brush, its world position
-/// in the `origin` keyvalue. A train authored *without* one has a `0 0 0`
-/// keyvalue and world-baked vertices, so nothing cancels and it is placed
-/// at the absolute polyline coordinate — the same thing an engine that
-/// simply assigns the entity's origin from the path does, and a map shape
-/// the documentation gives no other meaning to.
-pub(crate) fn track_train_transform(
-    registry: &ohl_game::Registry,
-    entity: Entity,
-) -> (Vec3, Option<f32>) {
-    let Ok(state) = registry.world.get::<&TrackTrainState>(entity) else {
-        return (Vec3::ZERO, None);
-    };
-    let Ok(train) = registry.world.get::<&TrackTrain>(entity) else {
-        return (Vec3::ZERO, None);
-    };
-    let authored = registry
-        .world
-        .get::<&Transform>(entity)
-        .map_or(Vec3::ZERO, |transform| transform.origin);
-    (state.position() - authored, state.yaw_degrees(&train))
-}
-
-/// How far a door has slid along its move direction, from the state machine
-/// `ohl-game` advances.
-///
-/// `ohl-game` models a door as a timed state machine rather than a moving
-/// transform, so the visual offset is derived here: the timer counts the
-/// remaining travel, which maps onto a `0..=1` fraction of the door's own
-/// `travel_distance`.
-/// How far a translating brush mover has slid along its move direction,
-/// from `speed`/`travel_distance`/`movedir` and its own current
-/// `state`/`timer` (the shape [`Door`] and [`Platform`] both carry
-/// identically; see `docs/FORMAT_SOURCES.md`, "Entity keyvalues and map
-/// logic"). Shared by [`door_offset`] and [`platform_offset`] so the two
-/// staying in lock-step is a compile-time fact, not a doc comment claiming
-/// they mirror each other.
-fn mover_offset(
-    speed: f32,
-    travel_distance: f32,
-    movedir: Vec3,
-    state: MoverState,
-    timer: f32,
-) -> Vec3 {
-    movedir * travel_distance * mover_fraction(speed, travel_distance, state, timer)
-}
-
-/// The `0.0..=1.0` progress fraction [`mover_offset`] (a translating
-/// door/platform) and [`door_rotation_degrees`] (a rotating one) both scale
-/// their travel distance by, factored out so the two stay in lock-step by
-/// construction rather than by two doc comments claiming they mirror each
-/// other.
-fn mover_fraction(speed: f32, travel_distance: f32, state: MoverState, timer: f32) -> f32 {
-    let travel_seconds = if speed > 0.0 {
-        travel_distance / speed
-    } else {
-        0.0
-    };
-    if travel_seconds <= 0.0 {
-        // An instantly-travelling mover has no intermediate position to
-        // show; it is either where it started or fully open.
-        return f32::from(u8::from(state == MoverState::Open));
-    }
-    let progress = (timer / travel_seconds).clamp(0.0, 1.0);
-    match state {
-        MoverState::Closed => 0.0,
-        MoverState::Open => 1.0,
-        MoverState::Opening => 1.0 - progress,
-        MoverState::Closing => progress,
-    }
-}
-
-/// How far a `func_door_rotating` has swung, in degrees, from the same
-/// shared [`Door`] `state`/`timer` [`mover_offset`] reads for a translating
-/// door — see [`mover_fraction`]. `Vec3::ZERO`/`0.0` for a `Door` with no
-/// [`Door::rotation_axis`] (an ordinary translating `func_door`).
-pub(crate) fn door_rotation_degrees(registry: &ohl_game::Registry, entity: Entity) -> (Vec3, f32) {
-    let Ok(door) = registry.world.get::<&Door>(entity) else {
-        return (Vec3::ZERO, 0.0);
-    };
-    let Some(axis) = door.rotation_axis else {
-        return (Vec3::ZERO, 0.0);
-    };
-    let fraction = mover_fraction(door.speed, door.travel_distance, door.state, door.timer);
-    (axis, door.travel_distance * fraction)
-}
-
-/// How far a `func_rotating` has spun, in degrees, from its own
-/// continuously-accumulated [`Rotator::angle_deg`] (no open/close timer to
-/// derive a fraction from; see `ohl_game::logic::Simulation::
-/// advance_rotators`). `Vec3::ZERO`/`0.0` for any entity without a
-/// [`Rotator`].
-pub(crate) fn rotator_degrees(registry: &ohl_game::Registry, entity: Entity) -> (Vec3, f32) {
-    registry
-        .world
-        .get::<&Rotator>(entity)
-        .map_or((Vec3::ZERO, 0.0), |rotator| {
-            (rotator.axis, rotator.angle_deg)
-        })
-}
-
-/// The signed rotation axis and current angle (degrees) a rotating brush
-/// mover — `func_door_rotating` or `func_rotating`, mutually exclusive
-/// components on any one entity — is currently posed at. `Vec3::ZERO`/`0.0`
-/// (no rotation) for every other brush entity, so a caller can branch on
-/// `axis != Vec3::ZERO` to tell a rotating mover from a translating one.
-pub(crate) fn mover_rotation(registry: &ohl_game::Registry, entity: Entity) -> (Vec3, f32) {
-    let (axis, degrees) = door_rotation_degrees(registry, entity);
-    if axis != Vec3::ZERO {
-        return (axis, degrees);
-    }
-    rotator_degrees(registry, entity)
-}
+/// The brush-mover pose helpers, re-exported from `ohl-game` so the
+/// renderer, the collision attachment in `crate::level`, and the `use`
+/// proximity check in `ohl_game::find_usable_within` all read one
+/// implementation of "where is this brush entity right now" rather than
+/// three. See `ohl_game::pose` for the placement rule they share.
+pub(crate) use ohl_game::pose::{brush_offset, mover_rotation, track_train_transform};
 
 /// A world-space placement matrix for a rotating brush entity: rotate the
 /// submodel's own compiled vertices by `angle_degrees` about `axis`, then
@@ -564,49 +420,6 @@ pub(crate) fn rotated_placement(origin: Vec3, axis: Vec3, angle_degrees: f32) ->
     let rotation = Quat::from_axis_angle(axis.normalize(), angle_degrees.to_radians());
     let matrix = Mat4::from_translation(origin) * Mat4::from_quat(rotation);
     matrix.to_cols_array()
-}
-
-pub(crate) fn door_offset(registry: &ohl_game::Registry, entity: Entity) -> Vec3 {
-    let Ok(door) = registry.world.get::<&Door>(entity) else {
-        return Vec3::ZERO;
-    };
-    mover_offset(
-        door.speed,
-        door.travel_distance,
-        door.movedir,
-        door.state,
-        door.timer,
-    )
-}
-
-/// How far a `func_plat`/`func_platform` has slid along its move direction,
-/// from the state machine `ohl-game` advances.
-///
-/// Without this a `func_plat`'s `Platform` component advances its own
-/// state machine but the brush never visibly (or collidably) moves at all.
-pub(crate) fn platform_offset(registry: &ohl_game::Registry, entity: Entity) -> Vec3 {
-    let Ok(platform) = registry.world.get::<&Platform>(entity) else {
-        return Vec3::ZERO;
-    };
-    mover_offset(
-        platform.speed,
-        platform.travel_distance,
-        platform.movedir,
-        platform.state,
-        platform.timer,
-    )
-}
-
-/// How far a brush entity has moved from where its geometry was compiled.
-///
-/// The same value the renderer offsets the submodel by, so the brush the
-/// player collides with is exactly the brush that is drawn: a door or
-/// platform caught mid-slide blocks where it looks like it is, not where it
-/// was authored.
-pub(crate) fn brush_offset(registry: &ohl_game::Registry, entity: Entity) -> Vec3 {
-    door_offset(registry, entity)
-        + platform_offset(registry, entity)
-        + track_train_transform(registry, entity).0
 }
 
 /// Maps `ohl-game`'s raw `rendermode`/`renderamt`/`rendercolor` keyvalues

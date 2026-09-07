@@ -13,23 +13,19 @@
 //! for why the fixture is sized this generously relative to the standing
 //! hull.
 //!
-//! This does not drive the open through a `use` press and
-//! `ohl_engine::USE_RADIUS` proximity: `ohl_game::registry::BrushCenter`
-//! (what `find_usable_within` targets) is computed from a submodel's raw
-//! compiled bounding box with no origin-keyvalue offset added, which is
-//! only correct for a brush entity compiled without an origin brush.
-//! `rotating_door_bsp`'s door — like a real map's own `func_door_rotating`
-//! — compiles relative to its origin brush (see its own doc comment), so
-//! its `BrushCenter` lands nowhere near its true world position; that gap
-//! is `docs/FORMAT_SOURCES.md`'s `TODO(black-box)` item 25, discovered
-//! while writing this test, and is out of this package's scope to fix.
-//! `logic.rs`'s `func_door_rotating_opens_and_closes_through_the_shared_door_timer`
-//! already proves `Simulation::use_entity` opens a rotating door when
-//! targeted directly (by entity, not by proximity); this test instead
-//! forces the door open the same way `level.rs`'s own
-//! `render_and_collision_agree_on_a_rotated_door_pose` unit test does, so
-//! it stays focused on rendering/colliding a rotating brush through a real
-//! `Game`/`Input` tick loop.
+//! The open is driven the way a player drives it: the scripted `Input`
+//! below presses `use` from where the player spawns, and the engine's own
+//! `ohl_game::find_usable_within`/`ohl_engine::USE_RADIUS` proximity check
+//! has to find the door for anything to happen. That is only possible
+//! because a brush entity's proximity point is now its *placed* centre
+//! (`ohl_game::pose::brush_center`: compiled bounds midpoint, plus the
+//! `origin` keyvalue, plus its current mover displacement). This fixture's
+//! door — like a real map's own `func_door_rotating` — compiles relative
+//! to its origin brush (see `rotating_door_bsp`'s own doc comment), so
+//! before that fix its proximity point landed near the map's `(0, 0, 0)`
+//! and no press from anywhere a player could stand ever reached it; that
+//! was `docs/FORMAT_SOURCES.md`'s `TODO(black-box)` item 25, and this test
+//! is its regression guard.
 //!
 //! No bytes here come from any game installation; see `docs/CLEAN_ROOM.md`.
 
@@ -90,31 +86,30 @@ fn a_closed_rotating_door_blocks_the_corridor() {
     );
 }
 
-/// A door opened 90 degrees (TWHL wiki `func_door_rotating`'s
-/// `distance`/`speed`, `docs/FORMAT_SOURCES.md`) swings clear of the
-/// corridor, and the same forward walk that was blocked above now carries
-/// the player through the doorway and past it.
+/// A door opened by a `use` press from the player's own spawn — through
+/// the real proximity path, nothing forced — swings clear of the corridor,
+/// and the same forward walk that was blocked above now carries the player
+/// through the doorway and past it.
 #[test]
 fn an_open_door_lets_the_player_walk_through() {
     let mut game = game();
+    assert_eq!(door_state(&game), MoverState::Closed);
 
-    {
-        let registry = game.registry();
-        let entity = *registry
-            .find(ROTATING_DOOR_NAME)
-            .first()
-            .expect("the fixture declares one named rotating door");
-        // Force it straight to `Open` (see this module's doc comment for
-        // why a `use` press is not driven through proximity here); `Open`
-        // is the same terminal pose `MoverState::Open` always reports
-        // (`ohl_engine::render::mover_fraction`) regardless of `timer`.
-        let mut door = registry
-            .world
-            .get::<&mut Door>(entity)
-            .expect("the named entity is a door");
-        door.state = MoverState::Open;
-        door.timer = door.wait;
-    }
+    let use_press = Input {
+        use_pressed: true,
+        ..Input::default()
+    };
+    game.tick(STEP, &use_press);
+    assert_ne!(
+        door_state(&game),
+        MoverState::Closed,
+        "a `use` press from the spawn point did not reach the door"
+    );
+
+    // `wait = -1`, so once it is open it stays open; let the quarter turn
+    // finish before walking into the doorway.
+    let idle = Input::default();
+    tick_n(&mut game, 60, &idle);
     assert_eq!(door_state(&game), MoverState::Open);
 
     let forward = Input {
@@ -129,4 +124,24 @@ fn an_open_door_lets_the_player_walk_through() {
         "the open door still blocked the player: eye x = {x}, door ends at x = {}",
         ROTATING_DOOR_MAXS[0]
     );
+}
+
+/// The counter behind the scripted-input milestone line ("The player
+/// opened a door.", `crates/ohl-app/src/script_log.rs`) counts that same
+/// press, and counts nothing when the press happens out of reach.
+#[test]
+fn a_use_press_that_opens_a_door_is_counted() {
+    let mut game = game();
+    assert_eq!(game.doors_opened_by_use_count(), 0);
+
+    let use_press = Input {
+        use_pressed: true,
+        ..Input::default()
+    };
+    game.tick(STEP, &use_press);
+    assert_eq!(game.doors_opened_by_use_count(), 1);
+
+    // A second press on an already-open door is not a second opening.
+    game.tick(STEP, &use_press);
+    assert_eq!(game.doors_opened_by_use_count(), 1);
 }

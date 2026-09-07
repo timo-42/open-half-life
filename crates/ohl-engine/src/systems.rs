@@ -38,7 +38,7 @@
 
 use glam::Vec3;
 use ohl_game::hecs::Entity;
-use ohl_game::registry::Transform;
+use ohl_game::registry::{Door, MoverState, Transform};
 use ohl_game::{Event, find_usable_within};
 use ohl_physics::{ControllerInput, HULL_SIZES, Hull, PlayerController};
 use ohl_player::PlayerSystems;
@@ -119,6 +119,19 @@ impl Default for SystemsConfig {
             view_model_offset: [8.0, 0.0, -6.0],
         }
     }
+}
+
+/// A brush mover's current open/closed state, when `entity` is a door.
+///
+/// Only used to notice the edge a `use` press just produced; nothing in
+/// the step list branches on it.
+fn door_state(level: &Level, entity: ohl_game::hecs::Entity) -> Option<MoverState> {
+    level
+        .registry
+        .world
+        .get::<&Door>(entity)
+        .ok()
+        .map(|door| door.state)
 }
 
 /// One frame's intent, latched for the steps that frame runs.
@@ -301,6 +314,12 @@ pub struct Systems {
     /// since this level was attached. Media-derived: data, never a log
     /// line from this crate.
     player_damage_events: u64,
+    /// How many times a `use` press found a closed door in reach and
+    /// opened it, i.e. the whole proximity path — `ohl_game::pose::
+    /// brush_center` placing the door, [`crate::USE_RADIUS`] reaching it,
+    /// and `Simulation::use_entity` acting on it — worked end to end.
+    /// Media-derived: data, never a log line from this crate.
+    doors_opened_by_use: u64,
 }
 
 impl Systems {
@@ -331,6 +350,7 @@ impl Systems {
             physics_output: ohl_player::PhysicsOutput::default(),
             hitboxes: HitboxIndex::new(ohl_combat::HitboxLimits::default()),
             player_damage_events: 0,
+            doors_opened_by_use: 0,
         }
     }
 
@@ -354,6 +374,13 @@ impl Systems {
     #[must_use]
     pub fn pickup_count(&self) -> u64 {
         self.pickups.taken_count()
+    }
+
+    /// How many closed doors a `use` press has opened since this level was
+    /// attached. Media-derived: data, never a log line from this crate.
+    #[must_use]
+    pub fn doors_opened_by_use_count(&self) -> u64 {
+        self.doors_opened_by_use
     }
 
     /// How many times damage aimed at the player has actually been applied
@@ -1151,9 +1178,18 @@ impl Systems {
         if input.use_pressed {
             let position = Vec3::from_array(camera.position);
             if let Some(entity) = find_usable_within(&level.registry, position, USE_RADIUS) {
+                let was_closed = door_state(level, entity) == Some(MoverState::Closed);
                 level
                     .simulation
                     .use_entity(&mut level.registry, entity, None, events);
+                if was_closed
+                    && matches!(
+                        door_state(level, entity),
+                        Some(MoverState::Opening | MoverState::Open)
+                    )
+                {
+                    self.doors_opened_by_use += 1;
+                }
             } else {
                 // Nothing usable in reach: the press is offered to a talk
                 // monster instead, by the next step's phase 8.

@@ -30,9 +30,9 @@ use std::collections::BTreeMap;
 use glam::Vec3;
 use ohl_game::hecs::Entity;
 use ohl_game::registry::{
-    BrushBounds, BrushCenter, Button, ClassName, Door, EnvGlobal, GlobalName, GlobalStateValue,
-    Landmark, Light, Message, MoverState, Platform, Registry, RenderPropsComponent, SpawnFlags,
-    Target, TargetName, Transform, TransitionVolume, Trigger,
+    BrushBounds, Button, ClassName, Door, EnvGlobal, GlobalName, GlobalStateValue, Landmark, Light,
+    Message, MoverState, Platform, Registry, RenderPropsComponent, Rotator, SpawnFlags, Target,
+    TargetName, Transform, TransitionVolume, Trigger,
 };
 use serde::{Deserialize, Serialize};
 
@@ -140,6 +140,12 @@ pub struct EntitySnapshot {
     pub button: Option<Button>,
     /// `func_plat` state.
     pub platform: Option<Platform>,
+    /// `func_rotating` state (`spinning`/`angle_deg`), so a rotator the
+    /// player switched on keeps spinning, at its accumulated angle, in the
+    /// next map rather than reverting to its spawnflag default. Doors,
+    /// buttons and platforms above carry their own state machines the same
+    /// way.
+    pub rotator: Option<Rotator>,
     /// Light brightness/colour/style.
     pub light: Option<Light>,
     /// Trigger keys.
@@ -160,6 +166,7 @@ impl EntitySnapshot {
             door: world.get::<&Door>(entity).ok().map(|c| *c),
             button: world.get::<&Button>(entity).ok().map(|c| *c),
             platform: world.get::<&Platform>(entity).ok().map(|c| *c),
+            rotator: world.get::<&Rotator>(entity).ok().map(|c| *c),
             light: world.get::<&Light>(entity).ok().map(|c| *c),
             trigger: world.get::<&Trigger>(entity).ok().map(|c| *c),
             message: world
@@ -191,6 +198,9 @@ impl EntitySnapshot {
         if let Some(value) = self.platform {
             world.insert_one(entity, value).ok();
         }
+        if let Some(value) = self.rotator {
+            world.insert_one(entity, value).ok();
+        }
         if let Some(value) = self.light {
             world.insert_one(entity, value).ok();
         }
@@ -214,6 +224,12 @@ impl EntitySnapshot {
             || self
                 .platform
                 .is_some_and(|platform| moved(platform.state, platform.timer))
+            // A `func_rotating` has no open/closed state machine: "moved"
+            // for one means it is spinning, or has accumulated an angle it
+            // would otherwise snap back from.
+            || self
+                .rotator
+                .is_some_and(|rotator| rotator.spinning || rotator.angle_deg != 0.0)
     }
 }
 
@@ -351,11 +367,15 @@ fn is_structural(registry: &Registry, entity: Entity, classname: &str) -> bool {
         )
 }
 
-/// An entity's world-space position, preferring a brush entity's bounding
-/// box centre over its (conventionally zero) `origin`.
+/// An entity's world-space position, preferring a brush entity's own
+/// placed bounding-box centre (`ohl_game::pose::brush_center`: the
+/// compiled bounds' midpoint, plus the `origin` keyvalue, plus however far
+/// its state machine has since moved it) over its `Transform::origin`,
+/// which for a brush entity compiled in absolute world space is
+/// conventionally zero.
 fn entity_position(registry: &Registry, entity: Entity) -> Option<Vec3> {
-    if let Ok(center) = registry.world.get::<&BrushCenter>(entity) {
-        return Some(center.0);
+    if let Some(center) = ohl_game::pose::brush_center(registry, entity) {
+        return Some(center);
     }
     registry
         .world

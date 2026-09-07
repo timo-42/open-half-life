@@ -58,6 +58,15 @@
 //! - "The player is in water." — [`ohl_engine::Game::player_in_water`] has
 //!   read `true` for the same threshold; likewise true for either a
 //!   world-compiled liquid volume or a real `func_water` entity.
+//! - "The player opened a door." —
+//!   [`ohl_engine::Game::doors_opened_by_use_count`] increasing: a `use`
+//!   press found a closed door within `ohl_engine::USE_RADIUS` of the
+//!   player and opened it. A fixed string: no door, map or `targetname` is
+//!   ever interpolated. This is the end-to-end evidence that a brush
+//!   entity's `use`-proximity point agrees with where its geometry is
+//!   actually placed (`ohl_game::pose::brush_center`), which for an entity
+//!   built around an origin brush — a rotating door, say — it previously
+//!   did not.
 
 use ohl_engine::Game;
 
@@ -117,12 +126,14 @@ pub struct ScriptLog {
     riding_mover: bool,
     on_ladder: bool,
     in_water: bool,
+    door_opened: bool,
     baseline_fired: u64,
     baseline_hit: u64,
     baseline_damage_events: u64,
     baseline_deaths: u64,
     baseline_pickups: u64,
     baseline_player_damage: u64,
+    baseline_doors_opened: u64,
     spawn_position: [f32; 3],
     in_solid_seconds: f32,
     riding_mover_seconds: f32,
@@ -154,12 +165,14 @@ impl ScriptLog {
             riding_mover: false,
             on_ladder: false,
             in_water: false,
+            door_opened: false,
             baseline_fired: game.weapon_fired_count(),
             baseline_hit: game.shot_hit_count(),
             baseline_damage_events: game.monster_damage_event_count(),
             baseline_deaths: game.monster_death_count(),
             baseline_pickups: game.pickup_count(),
             baseline_player_damage: game.player_damage_event_count(),
+            baseline_doors_opened: game.doors_opened_by_use_count(),
             spawn_position: game.eye_position(),
             in_solid_seconds: 0.0,
             riding_mover_seconds: 0.0,
@@ -172,6 +185,13 @@ impl ScriptLog {
     /// `dt` the tick just advanced by. Emits any milestone line that just
     /// became true; never emits the same line twice.
     pub fn observe(&mut self, game: &Game, dt: f32) {
+        self.observe_counters(game);
+        self.observe_states(game, dt);
+    }
+
+    /// The milestone lines driven by a monotonic counter rising above the
+    /// baseline this log started from.
+    fn observe_counters(&mut self, game: &Game) {
         if !self.weapon_fired && game.weapon_fired_count() > self.baseline_fired {
             self.weapon_fired = true;
             tracing::info!("The player fired a weapon.");
@@ -197,7 +217,16 @@ impl ScriptLog {
             self.player_damaged = true;
             tracing::info!("The player took damage.");
         }
+        if !self.door_opened && game.doors_opened_by_use_count() > self.baseline_doors_opened {
+            self.door_opened = true;
+            tracing::info!("The player opened a door.");
+        }
+    }
 
+    /// The milestone lines driven by a state the engine reports every tick:
+    /// a rising/falling edge, a distance from spawn, or a cumulative
+    /// dwell time past one of this module's thresholds.
+    fn observe_states(&mut self, game: &Game, dt: f32) {
         let active = game.active_script_count() > 0;
         if active && !self.script_started {
             self.script_started = true;

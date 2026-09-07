@@ -20,6 +20,7 @@ pub mod brush;
 pub mod camera;
 pub mod keyvalues;
 pub mod logic;
+pub mod pose;
 pub mod registry;
 pub mod scripts;
 pub mod track_train;
