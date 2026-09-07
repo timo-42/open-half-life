@@ -3001,3 +3001,38 @@ payload.
   `crates/ohl-physics/tests/hull_trace.rs` case pinning that the
   bare-contents head-link skip is per hull, and so was never what removed
   the tram's floor.
+
+- **Probe ladders with the player hull, not a point.** PR #100 review
+  follow-up: `ohl_physics::movement::in_ladder_volume`/`ladder_normal`
+  tested only `PlayerState::origin`, so a player whose standing/crouched
+  hull box overlapped a `func_ladder` volume (world-compiled or, since PR
+  #100, an attached brush-entity contents volume) but whose origin point
+  sat just outside it never attached. Both functions now probe a bounded,
+  project-owned sample set (`ladder_hull_samples`: the hull box's eight
+  corners, six face centres, and the origin) against
+  `CollisionModel::contents_at`; `ladder_normal` derives its escape
+  direction from whichever sample actually touched the volume (the origin
+  when it did, otherwise the first hull sample that did, in a fixed
+  order), radiating outward the same four-direction/twelve-step probe this
+  crate already used, nudged `DIST_EPSILON` past each grid step so a probe
+  landing exactly on a compiled brush face is not misread as an opening
+  next to a wall built flush against the ladder. PR #59's attach/detach
+  hysteresis (`ladder_lockout`) is unchanged. New synthetic fixtures/tests
+  (`ohl_physics::test_support::build_thin_ladder_room_bsp`, a free-standing
+  8-unit-thick volume) prove a hull-overlap-only attach, a climb from that
+  position, and detaching once the whole hull clears the volume's top; a
+  512-case proptest across both the entity-attached and thin-ladder
+  fixtures asserts the probe never panics for an arbitrary hull placement
+  and that its normal is always finite, at most unit length, and zero
+  exactly when not attached. **Real-payload verdict:** unlike PR #100's
+  attempt to reach a `func_ladder` by progressing through the Hazard
+  Course's hub map (`t0a0`) — which did not complete within a bounded
+  scripted-walk budget — this change instead loads one of the course's
+  own sub-maps, "t0a0a", directly (`--map`, the same technique the M9
+  chapter-walk scenarios already use to start mid-campaign), whose own
+  player start faces close enough to a `func_ladder` that a short,
+  turn-then-walk script (well under 60 simulated seconds) reaches it: "The
+  player is on a ladder." fires. Added as a 24th `combat-smoke` scenario
+  (`xtask/smoke-scenarios/ladder_t0a0a.txt`, "reach and climb a ladder in
+  the Hazard Course"); all 24 scenarios pass against the real imported
+  payload.

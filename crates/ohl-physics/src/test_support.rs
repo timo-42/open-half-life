@@ -288,6 +288,30 @@ pub fn build_ladder_room_bsp() -> Vec<u8> {
     )
 }
 
+/// A room with a floor at `z = 0` and a free-standing, 8-unit-thick
+/// `func_ladder` volume (`CONTENTS_LADDER`) spanning `x` 40..48, `y`
+/// -64..64 and `z` 0..256 — no wall behind it, unlike
+/// [`build_ladder_room_bsp`].
+///
+/// A standing player's hull is 32 units wide (`x` ±16 of the origin), so a
+/// player at `(26, 0, 36)` has an origin outside the volume (`x = 26 < 40`)
+/// while their hull still reaches to `x = 42`, inside it. This is the
+/// fixture the hull-aware ladder probe needs: the point-only probe this
+/// crate used before [`crate::movement::in_ladder_volume`] became
+/// hull-aware would report this player as not on a ladder at all.
+#[must_use]
+pub fn build_thin_ladder_room_bsp() -> Vec<u8> {
+    build_contents_bsp(
+        WORLDSPAWN_ONLY,
+        &[CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0)],
+        &[ContentsVolume::box_volume(
+            [40.0, -64.0, 0.0],
+            [48.0, 64.0, 256.0],
+            contents::LADDER,
+        )],
+    )
+}
+
 /// The surface height of [`build_liquid_room_bsp`]'s pool. It is deep
 /// enough that a standing player (origin 36 above their feet, eye 28 above
 /// the origin) can occupy every one of the four documented water levels

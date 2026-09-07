@@ -18,7 +18,7 @@
 
 use glam::Vec3;
 
-use crate::hull::{BrushId, CollisionModel, Hull, Trace, contents};
+use crate::hull::{BrushId, CollisionModel, DIST_EPSILON, Hull, Trace, contents};
 
 /// How deep in a liquid the player is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -622,6 +622,10 @@ const LADDER_PROBE_DIRECTIONS: [Vec3; 4] = [
 const LADDER_PROBE_STEP: f32 = 4.0;
 const LADDER_PROBE_STEPS: u8 = 12;
 
+/// The number of points [`ladder_hull_samples`] returns: the player hull
+/// box's eight corners, its six face centres, and its origin.
+const LADDER_HULL_SAMPLE_COUNT: usize = 15;
+
 /// Whether `point` is inside a climbable volume (`CONTENTS_LADDER`, the
 /// contents a `func_ladder` brush is compiled with).
 #[must_use]
@@ -629,28 +633,129 @@ pub fn is_ladder_contents(value: i32) -> bool {
     value == contents::LADDER
 }
 
-/// Whether the player's origin is inside a climbable volume.
+/// The bounded set of points this project tests for ladder contents against
+/// the player's *hull box*, not just their origin: the box's eight corners,
+/// the centres of its six faces, and the origin itself.
+///
+/// The public documentation this project follows for `func_ladder`
+/// (`docs/FORMAT_SOURCES.md`, "Player systems": ladders; the TWHL and Valve
+/// Developer Community `func_ladder` pages already cited there) says a
+/// player attaches to a ladder volume by touching it with their bounding
+/// box, the same as any other brush touch, but does not specify how an
+/// implementation should test that short of a full box-vs-brush overlap.
+/// This project's own rule, chosen for this port: sample corners and face
+/// centres rather than sweep the whole box, which is enough to catch any
+/// `func_ladder` slab thin enough to pass between a point at the origin and
+/// the hull's edge, while staying a fixed, bounded cost per query.
+/// TODO(black-box): the exact sample set is not verified against the real
+/// game; only that it attaches whenever the hull box in fact overlaps the
+/// volume.
+#[must_use]
+fn ladder_hull_samples(state: &PlayerState) -> [Vec3; LADDER_HULL_SAMPLE_COUNT] {
+    let (mins, maxs) = state.hull().bounds();
+    let mid = (mins + maxs) * 0.5;
+    let xs = [mins.x, maxs.x];
+    let ys = [mins.y, maxs.y];
+    let zs = [mins.z, maxs.z];
+    let mut offsets = [Vec3::ZERO; LADDER_HULL_SAMPLE_COUNT];
+    let mut index = 0;
+    for &x in &xs {
+        for &y in &ys {
+            for &z in &zs {
+                offsets[index] = Vec3::new(x, y, z);
+                index += 1;
+            }
+        }
+    }
+    offsets[index] = Vec3::new(mins.x, mid.y, mid.z);
+    offsets[index + 1] = Vec3::new(maxs.x, mid.y, mid.z);
+    offsets[index + 2] = Vec3::new(mid.x, mins.y, mid.z);
+    offsets[index + 3] = Vec3::new(mid.x, maxs.y, mid.z);
+    offsets[index + 4] = Vec3::new(mid.x, mid.y, mins.z);
+    offsets[index + 5] = Vec3::new(mid.x, mid.y, maxs.z);
+    offsets[index + 6] = Vec3::ZERO;
+    let mut samples = offsets;
+    for sample in &mut samples {
+        *sample += state.origin;
+    }
+    samples
+}
+
+/// The point [`ladder_normal`] and [`in_ladder_volume`] probe from: the
+/// player's origin when that alone already reads as ladder contents (the
+/// common case, and exactly what this crate tested before this hull-aware
+/// probe), otherwise the first point of [`ladder_hull_samples`] that does.
+/// Trying the origin first keeps every existing origin-inside behaviour,
+/// including the exact outward-normal choice already covered by this
+/// crate's fixtures, bit-for-bit unchanged; only a player whose origin sits
+/// outside the volume while their hull still overlaps it falls through to a
+/// hull sample.
+///
+/// `None` when neither the origin nor any hull sample is inside a
+/// climbable volume: the player's hull does not touch a ladder at all.
+#[must_use]
+fn ladder_probe_anchor(model: &CollisionModel, state: &PlayerState) -> Option<Vec3> {
+    if is_ladder_contents(model.contents_at(Hull::Point, state.origin)) {
+        return Some(state.origin);
+    }
+    ladder_hull_samples(state)
+        .into_iter()
+        .find(|&point| is_ladder_contents(model.contents_at(Hull::Point, point)))
+}
+
+/// Whether the player's hull box overlaps a climbable volume, tested at the
+/// bounded sample set [`ladder_hull_samples`] describes (by way of
+/// [`ladder_probe_anchor`]).
 #[must_use]
 pub fn in_ladder_volume(model: &CollisionModel, state: &PlayerState) -> bool {
-    is_ladder_contents(model.point_contents(state.origin))
+    ladder_probe_anchor(model, state).is_some()
 }
 
 /// The outward normal of the ladder face the player is on: the horizontal
 /// direction in which the ladder volume ends soonest without running into
-/// solid world. Zero when the player is not in a ladder volume, or when no
-/// open face was found (a fully embedded volume), which the caller treats
-/// as "not climbable".
+/// solid world, probed from [`ladder_probe_anchor`] (the player's origin
+/// when it is itself inside the volume, otherwise whichever hull sample
+/// point touches it). Zero when the player's hull is not in a ladder
+/// volume, or when no open face was found from the anchor (a fully
+/// embedded volume), which the caller treats as "not climbable".
+///
+/// Per the cited public `func_ladder` pages, a climbable volume is a brush
+/// with a facing: the player climbs by pushing into the wall it is mounted
+/// against. This project has no query that reports a `func_ladder` brush's
+/// own bounds back from a contents query (a world-compiled ladder volume is
+/// merged into the shared BSP tree with no per-brush record at all, and
+/// even a brush-entity ladder's submodel bounds are in the entity's own,
+/// pre-move frame), so the facing is instead approximated geometrically:
+/// radiating outward from the anchor point in the four horizontal axis
+/// directions and keeping the shortest direction+distance that reaches
+/// open (non-solid, non-ladder) space. That shortest escape is, by
+/// construction, across the volume's thinnest axis on the side nearest
+/// wherever the player's hull actually touches it, which is this project's
+/// own stand-in for "the brush's bounds: the thinnest axis and the side the
+/// player is on". TODO(black-box): unverified against the real game's own
+/// facing rule.
 #[must_use]
 pub fn ladder_normal(model: &CollisionModel, state: &PlayerState) -> Vec3 {
-    if !in_ladder_volume(model, state) {
+    let Some(anchor) = ladder_probe_anchor(model, state) else {
         return Vec3::ZERO;
-    }
+    };
     let mut best = Vec3::ZERO;
     let mut best_distance = f32::INFINITY;
     for direction in LADDER_PROBE_DIRECTIONS {
         for step in 1..=LADDER_PROBE_STEPS {
             let distance = LADDER_PROBE_STEP * f32::from(step);
-            let sample = model.point_contents(state.origin + direction * distance);
+            // Nudged `DIST_EPSILON` past the exact grid step: a probe step
+            // can land exactly on a compiled brush face (this is an
+            // axis-aligned grid walk over axis-aligned brushes), and at
+            // that exact plane this crate's own hull-tree convention reads
+            // *both* the ladder volume and a wall built flush against it as
+            // "outside" (see `CollisionModel::walk`'s `< 0.0` side test).
+            // Sampling a hair further out resolves that tie the same way a
+            // trace landing on the plane would: into whichever brush
+            // actually claims the space just past it, so a wall built
+            // flush against the ladder is not mistaken for an opening.
+            let sample =
+                model.contents_at(Hull::Point, anchor + direction * (distance + DIST_EPSILON));
             if is_ladder_contents(sample) {
                 continue;
             }

@@ -2,10 +2,11 @@
 //! landing report, all against this project's own synthetic fixtures.
 
 use ohl_formats::bsp30::{Bsp, Limits};
-use ohl_physics::movement::{ladder_normal, player_move_events};
+use ohl_physics::movement::{in_ladder_volume, ladder_normal, player_move_events};
 use ohl_physics::test_support::{
     LIQUID_SURFACE_Z, build_flat_floor_bsp, build_ladder_entity_room_bsp, build_ladder_room_bsp,
-    build_liquid_room_bsp, build_water_entity_room_bsp, collision_model_from,
+    build_liquid_room_bsp, build_thin_ladder_room_bsp, build_water_entity_room_bsp,
+    collision_model_from,
 };
 use ohl_physics::{
     CollisionModel, ContentsKind, LiquidKind, MoveConfig, MoveInput, PlayerState, Vec3, WaterLevel,
@@ -17,6 +18,16 @@ const TICK: f32 = 1.0 / 100.0;
 fn ladder_room() -> CollisionModel {
     collision_model_from(&build_ladder_room_bsp())
 }
+
+fn thin_ladder_room() -> CollisionModel {
+    collision_model_from(&build_thin_ladder_room_bsp())
+}
+
+/// The origin of a player standing beside [`build_thin_ladder_room_bsp`]'s
+/// ladder with their *origin* outside the volume (`x = 26 < 40`) but their
+/// standing hull (`x` ±16) overlapping it (up to `x = 42`, inside the
+/// volume's `x` 40..48).
+const BESIDE_THIN_LADDER: Vec3 = Vec3::new(26.0, 0.0, 36.0);
 
 /// The origin of a player standing inside the ladder fixture's volume.
 const IN_LADDER: Vec3 = Vec3::new(72.0, 0.0, 36.0);
@@ -463,4 +474,73 @@ fn landing_in_a_func_water_entity_pool_reports_no_fall_damage_impact() {
             break;
         }
     }
+}
+
+#[test]
+fn a_hull_overlapping_a_ladder_attaches_even_though_the_origin_is_outside_it() {
+    let model = thin_ladder_room();
+    // The origin alone reads as ordinary open space, not `CONTENTS_LADDER`:
+    // proves this test's premise before checking the hull-aware result.
+    assert_eq!(model.point_contents(BESIDE_THIN_LADDER), contents::EMPTY);
+
+    let state = PlayerState::at(BESIDE_THIN_LADDER);
+    assert!(
+        in_ladder_volume(&model, &state),
+        "a hull overlapping the ladder volume must attach even with the \
+         origin outside it"
+    );
+    assert_ne!(ladder_normal(&model, &state), Vec3::ZERO);
+}
+
+#[test]
+fn a_hull_beside_a_thin_ladder_climbs_it_with_forward_input() {
+    let model = thin_ladder_room();
+    let config = MoveConfig::default();
+    let mut state = PlayerState::at(BESIDE_THIN_LADDER);
+    // Wishing toward +X presses into the ladder (the open room is toward
+    // -X, where the player's origin already is), which climbs.
+    let input = walk(Vec3::X);
+
+    let events = player_move_events(&model, &mut state, &input, &config, TICK);
+    assert!(events.ladder_attached);
+    assert!(state.on_ladder);
+
+    let start_z = state.origin.z;
+    for _ in 0..100 {
+        player_move_events(&model, &mut state, &input, &config, TICK);
+    }
+    let climbed = state.origin.z - start_z;
+    assert!(
+        climbed > config.ladder_speed * 0.9,
+        "one second of climbing rose only {climbed} units"
+    );
+}
+
+#[test]
+fn climbing_past_the_top_of_the_ladder_volume_detaches() {
+    let model = ladder_room();
+    let config = MoveConfig::default();
+    // The fixture's ladder spans z 0..256; starting near the top and
+    // climbing up must eventually take the whole hull clear of it.
+    let mut state = PlayerState::at(Vec3::new(72.0, 0.0, 240.0));
+    let input = walk(Vec3::X);
+
+    let mut detached = false;
+    for _ in 0..600 {
+        let events = player_move_events(&model, &mut state, &input, &config, TICK);
+        if events.ladder_detached {
+            detached = true;
+            break;
+        }
+    }
+    assert!(
+        detached,
+        "the player never left the ladder volume climbing up; ended at \
+         {:?}",
+        state.origin
+    );
+    assert!(!state.on_ladder);
+    // Detaching at the top must not leave the player wedged in solid.
+    let trace = model.trace(state.hull(), state.origin, state.origin);
+    assert!(!trace.start_solid, "stuck in solid at {:?}", state.origin);
 }
