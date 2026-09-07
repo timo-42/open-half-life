@@ -1018,3 +1018,118 @@ pub fn rotating_platform_entities() -> String {
          \"origin\" \"0 0 0\"\n}}\n"
     )
 }
+
+// ---------------------------------------------------------------------
+// A `func_rot_button` pressed through the real `use_pressed` input path
+// ---------------------------------------------------------------------
+
+/// The map name the `func_rot_button` fixture is published under.
+pub const ROT_BUTTON_MAP: &str = "ohlrotbuttonsynth";
+
+/// The `targetname` of the fixture's `func_rot_button`.
+pub const ROT_BUTTON_NAME: &str = "ohl_rot_button";
+
+/// The `targetname` of the `func_door` the button targets.
+pub const ROT_BUTTON_DOOR_NAME: &str = "ohl_rot_button_door";
+
+/// A `worldspawn`-only flat floor (collision only, matching
+/// [`door_behind_touch_trigger_bsp`]'s own floor) plus one real brush
+/// submodel — submodel 1, the button — placed with its own compiled bounds
+/// centred on [`ROT_BUTTON_CENTER`].
+///
+/// `ohl_game::registry::BrushCenter` is the compiled bounds' midpoint
+/// *plus* the entity's `origin` keyvalue, unconditionally (`docs/
+/// FORMAT_SOURCES.md`'s `TODO(black-box)` item 25 is resolved: a
+/// proximity-based `use` press already agrees with a brush entity's real
+/// placed position, whether its `origin` is zero or not — see
+/// `ohl_game::pose::brush_center`, which this fixture's own integration
+/// test drives through the real `use_pressed` path
+/// (`ohl_game::logic::find_usable_within`), the same mechanism
+/// `rotating_door_bsp`'s own (nonzero-`origin`) door now uses too). This
+/// fixture's `origin` keyvalue of `0 0 0` is simply a simplification — a
+/// zero `origin` adds nothing on top of the compiled bounds, so the
+/// button's box can be placed directly at [`ROT_BUTTON_CENTER`] without
+/// also working out a compile-relative-to-pivot offset — not a workaround
+/// for a gap that still needs one.
+#[must_use]
+pub fn rot_button_bsp(entities: &str) -> Vec<u8> {
+    const HALF: f32 = 256.0;
+    const HEIGHT: f32 = 256.0;
+    const BUTTON_HALF: f32 = 16.0;
+
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(entities);
+
+    let world_heads = b.push_collision_hulls(&[
+        CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+        CollisionBrush::half_space([0.0, 0.0, -1.0], -HEIGHT),
+        CollisionBrush::half_space([-1.0, 0.0, 0.0], -HALF),
+        CollisionBrush::half_space([1.0, 0.0, 0.0], -HALF),
+        CollisionBrush::half_space([0.0, -1.0, 0.0], -HALF),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], -HALF),
+    ]);
+    b.push_model(
+        [-HALF, -HALF, 0.0],
+        [HALF, HALF, HEIGHT],
+        [0.0; 3],
+        world_heads,
+        2,
+        0,
+        0,
+    );
+    // Submodel 1: the button itself — no faces or collision of its own
+    // (only its bounding box, matching `door_behind_touch_trigger_bsp`'s
+    // own door/trigger submodels), centred on [`ROT_BUTTON_CENTER`] (chosen
+    // to sit close to a standing player's own eye height, not world `(0, 0,
+    // 0)`, so a real `use_pressed` proximity search — measured from the
+    // *eye*, `origin.z` plus `MoveConfig::view_height_standing` (28) —
+    // reaches it; see [`rot_button_entities`]'s own doc comment for the
+    // spawn point this was measured against).
+    b.push_model(
+        [
+            ROT_BUTTON_CENTER[0] - BUTTON_HALF,
+            ROT_BUTTON_CENTER[1] - BUTTON_HALF,
+            ROT_BUTTON_CENTER[2] - BUTTON_HALF,
+        ],
+        [
+            ROT_BUTTON_CENTER[0] + BUTTON_HALF,
+            ROT_BUTTON_CENTER[1] + BUTTON_HALF,
+            ROT_BUTTON_CENTER[2] + BUTTON_HALF,
+        ],
+        [0.0; 3],
+        [-1, -1, -1, -1],
+        0,
+        0,
+        0,
+    );
+    b.build()
+}
+
+/// The world-space centre [`rot_button_bsp`] compiles the button's bounding
+/// box around; see that function's own doc comment.
+pub const ROT_BUTTON_CENTER: [f32; 3] = [0.0, 0.0, 64.0];
+
+/// A `worldspawn` plus an `info_player_start` (`0 -24 40`; a standing
+/// player's eye — `origin.z` plus the published `view_height_standing`, 28
+/// — sits at `(0, -24, 68)`, about 24 units from [`ROT_BUTTON_CENTER`] and
+/// well inside `ohl_engine::USE_RADIUS`), a `func_rot_button` (submodel
+/// `*1`, targetname [`ROT_BUTTON_NAME`], `origin 0 0 0`) rotating 90
+/// degrees at 360 degrees/second (a quarter turn in a quarter second) about
+/// the default `Z` axis with `wait = -1` (stays pressed once opened),
+/// targeting a `func_door` ([`ROT_BUTTON_DOOR_NAME`], also `wait = -1`) so a
+/// real `use_pressed` press can be observed opening it end to end. No bytes
+/// here come from any game installation; see `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn rot_button_entities() -> String {
+    format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"0 -24 40\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"func_rot_button\"\n\"targetname\" \"{ROT_BUTTON_NAME}\"\n\
+         \"target\" \"{ROT_BUTTON_DOOR_NAME}\"\n\
+         \"model\" \"*1\"\n\"speed\" \"360\"\n\"distance\" \"90\"\n\"wait\" \"-1\"\n\
+         \"origin\" \"0 0 0\"\n}}\n\
+         {{\n\"classname\" \"func_door\"\n\"targetname\" \"{ROT_BUTTON_DOOR_NAME}\"\n\
+         \"speed\" \"200\"\n\"wait\" \"-1\"\n}}\n"
+    )
+}

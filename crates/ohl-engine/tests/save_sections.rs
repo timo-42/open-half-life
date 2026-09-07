@@ -17,10 +17,11 @@
 
 use ohl_combat::{ProjectileKind, WeaponId, hud_slot};
 use ohl_engine::test_support::{
-    AI_MAP, SCRIPT_MAP, actor_origin, ai_room_bsp, entity_block, entity_of_classname,
-    monster_entities, queue_monster_damage, script_game, script_room_bsp, script_room_entities,
+    AI_MAP, ROTATING_DOOR_MAP, SCRIPT_MAP, actor_origin, ai_room_bsp, entity_block,
+    entity_of_classname, monster_entities, queue_monster_damage, rotating_door_bsp,
+    rotating_door_entities, script_game, script_room_bsp, script_room_entities,
 };
-use ohl_engine::{EngineError, Game, GameEvent, Input, MemoryAssets, TICK_SECONDS};
+use ohl_engine::{AssetSource, EngineError, Game, GameEvent, Input, MemoryAssets, TICK_SECONDS};
 use ohl_formats::test_support::build_minimal_mdl10;
 
 /// A room with a player start, a weapon and its ammo within pickup range of
@@ -1119,6 +1120,244 @@ fn a_rotating_doors_chosen_swing_side_survives_a_save_load() {
         door.rotation_axis,
         Some(-glam::Vec3::Z),
         "the reloaded door reverted to its spawnflag-chosen swing side"
+    );
+}
+
+/// A `func_rot_button` mid-press round-trips its `RotButton` state through
+/// `SECTION_ROTATING_MOVER_STATE` (tag 30, not `Door`/`Rotator`'s own tag
+/// 28 — see `ohl_engine::save_state::MoverSnapshot`'s own doc comment for
+/// why): pressed through the real `use_pressed` input path (see
+/// `crates/ohl-engine/tests/rot_button.rs` for the same path proving the
+/// button unblocks its target), saved partway through its swing, the
+/// reloaded button is still `Opening` at the same timer, not reset to
+/// `Closed`.
+#[test]
+fn a_pressed_rot_button_round_trips_its_press_state_and_continues() {
+    // The button sits at the player's own spawn point (no brush model, so
+    // no collision to embed in) — well inside `ohl_engine::USE_RADIUS`
+    // regardless of the eye-height offset `find_usable_within` measures
+    // from.
+    let spawn = [-192.0, -192.0, 36.0];
+    let entities = script_room_entities(
+        spawn,
+        &entity_block(
+            "func_rot_button",
+            spawn,
+            0.0,
+            &[
+                ("targetname", "btn1"),
+                ("speed", "45"),
+                ("distance", "90"),
+                ("wait", "5"),
+            ],
+        ),
+    );
+    let mut game = script_game(&entities);
+    let entity = entity_of_classname(&game, "func_rot_button").expect("the button spawned");
+
+    game.tick(
+        TICK_SECONDS,
+        &Input {
+            use_pressed: true,
+            ..Input::default()
+        },
+    );
+    // 90 degrees at 45 degrees/second takes 2 seconds; tick 1 more second
+    // so it is saved mid-`Opening`, not yet `Open`.
+    script_tick(&mut game, 60);
+    let (state_before_save, timer_before_save) = {
+        let button = game
+            .registry()
+            .world
+            .get::<&ohl_game::registry::RotButton>(entity)
+            .expect("the button carries a RotButton");
+        (button.state, button.timer)
+    };
+    assert_eq!(state_before_save, ohl_game::registry::MoverState::Opening);
+
+    let bytes = game.save_bytes(1_700_000_000).expect("the save is written");
+    let assets = script_game_assets(&entities);
+    let reloaded = Game::load_bytes(&assets, &bytes).expect("the save loads");
+    let reloaded_entity =
+        entity_of_classname(&reloaded, "func_rot_button").expect("the button reloads");
+    let button = reloaded
+        .registry()
+        .world
+        .get::<&ohl_game::registry::RotButton>(reloaded_entity)
+        .expect("the reloaded button still carries a RotButton");
+    assert_eq!(button.state, state_before_save);
+    assert!(
+        (button.timer - timer_before_save).abs() < 1e-6,
+        "timer was {} but must round-trip the mid-press value {timer_before_save}",
+        button.timer
+    );
+}
+
+/// A `momentary_rot_button` held partway (through the real `use_held` input
+/// path) round-trips its `fraction`, not resetting to `0.0` on reload.
+#[test]
+fn a_held_momentary_rot_button_round_trips_its_fraction() {
+    let spawn = [-192.0, -192.0, 36.0];
+    let entities = script_room_entities(
+        spawn,
+        &entity_block(
+            "momentary_rot_button",
+            spawn,
+            0.0,
+            &[
+                ("targetname", "valve1"),
+                ("speed", "45"),
+                ("distance", "90"),
+            ],
+        ),
+    );
+    let mut game = script_game(&entities);
+    let entity = entity_of_classname(&game, "momentary_rot_button").expect("the valve spawned");
+
+    let held = Input {
+        use_held: true,
+        ..Input::default()
+    };
+    for _ in 0..30 {
+        game.tick(TICK_SECONDS, &held);
+    }
+    let fraction_before_save = game
+        .registry()
+        .world
+        .get::<&ohl_game::registry::MomentaryRotButton>(entity)
+        .expect("the valve carries a MomentaryRotButton")
+        .fraction;
+    assert!(
+        fraction_before_save > 0.0 && fraction_before_save < 1.0,
+        "fraction was {fraction_before_save}, expected partway through the sweep"
+    );
+
+    let bytes = game.save_bytes(1_700_000_000).expect("the save is written");
+    let assets = script_game_assets(&entities);
+    let reloaded = Game::load_bytes(&assets, &bytes).expect("the save loads");
+    let reloaded_entity =
+        entity_of_classname(&reloaded, "momentary_rot_button").expect("the valve reloads");
+    let fraction_after_load = reloaded
+        .registry()
+        .world
+        .get::<&ohl_game::registry::MomentaryRotButton>(reloaded_entity)
+        .expect("the reloaded valve still carries a MomentaryRotButton")
+        .fraction;
+    assert!(
+        (fraction_after_load - fraction_before_save).abs() < 1e-6,
+        "fraction was {fraction_after_load} but must round-trip {fraction_before_save}, \
+         not reset to 0.0"
+    );
+}
+
+/// A `func_pendulum` mid-swing round-trips its `angle_deg`/`elapsed`, not
+/// resetting to rest on reload.
+#[test]
+fn a_swinging_pendulum_round_trips_its_pose_and_continues() {
+    let entities = script_room_entities(
+        [-192.0, -192.0, 36.0],
+        &entity_block(
+            "func_pendulum",
+            [96.0, -96.0, 36.0],
+            0.0,
+            &[
+                ("targetname", "swing1"),
+                ("distance", "30"),
+                ("speed", "180"),
+                ("spawnflags", "1"), // "Start ON": docs/FORMAT_SOURCES.md, "Entity keyvalues and map logic".
+            ],
+        ),
+    );
+    let mut game = script_game(&entities);
+    let entity = entity_of_classname(&game, "func_pendulum").expect("the pendulum spawned");
+    assert!(
+        game.registry()
+            .world
+            .get::<&ohl_game::registry::Pendulum>(entity)
+            .expect("the pendulum carries a Pendulum")
+            .swinging,
+        "'Start ON' must have it swinging already"
+    );
+    script_tick(&mut game, 10);
+    let angle_before_save = game
+        .registry()
+        .world
+        .get::<&ohl_game::registry::Pendulum>(entity)
+        .expect("the pendulum carries a Pendulum")
+        .angle_deg;
+    assert!(
+        angle_before_save.abs() > 0.0,
+        "the pendulum should have moved off rest"
+    );
+
+    let bytes = game.save_bytes(1_700_000_000).expect("the save is written");
+    let assets = script_game_assets(&entities);
+    let reloaded = Game::load_bytes(&assets, &bytes).expect("the save loads");
+    let reloaded_entity =
+        entity_of_classname(&reloaded, "func_pendulum").expect("the pendulum reloads");
+    let pendulum = reloaded
+        .registry()
+        .world
+        .get::<&ohl_game::registry::Pendulum>(reloaded_entity)
+        .expect("the reloaded pendulum still carries a Pendulum");
+    assert!(pendulum.swinging);
+    assert!(
+        (pendulum.angle_deg - angle_before_save).abs() < 1e-6,
+        "angle_deg was {} but must round-trip the mid-swing value {angle_before_save}",
+        pendulum.angle_deg
+    );
+}
+
+/// The exact regression `SECTION_ROTATING_MOVER_STATE` (30) exists to rule
+/// out: a save written by a build before this section existed (tag 30
+/// simply absent — the pre-PR writer's own shape, reproduced here by
+/// clearing `GameSave::rotating_movers` before encoding, the same
+/// technique [`a_pre_tag_28_save_still_loads`]/
+/// [`a_pre_tag_29_save_still_loads_without_its_maker_children`] already use
+/// for their own tags) must still load. Built on
+/// `ohl_engine::test_support::rotating_door_bsp` — a real, solid rotating
+/// brush mover, not a bare point entity — precisely because that fixture
+/// is what the M9.6 review found broken: adding fields to `EntitySnapshot`
+/// (tag 18, required) and `SimulationState` (tag 19, required) made a
+/// save built from this exact fixture at `origin/main` (`424ac85`) fail
+/// to load at that revision's head with `EngineError::SaveUnreadable`.
+#[test]
+fn a_save_from_before_section_30_existed_still_loads() {
+    let bytes = rotating_door_bsp(&rotating_door_entities());
+    let mut assets = MemoryAssets::new();
+    assets.insert(&format!("maps/{ROTATING_DOOR_MAP}.bsp"), bytes);
+    let game =
+        Game::load(&assets as &dyn AssetSource, ROTATING_DOOR_MAP).expect("the fixture loads");
+
+    let mut save = game.to_save(1_700_000_000);
+    // Simulate a save written by a build before M9.6: tag 30 simply never
+    // existed, exactly like `EntitySnapshot`/`SimulationState` never
+    // carried this state on `main` either.
+    save.rotating_movers = None;
+    let bytes = save
+        .to_bytes()
+        .expect("a save missing SECTION_ROTATING_MOVER_STATE still encodes");
+
+    // The regression this guards: at the review revision, this exact
+    // fixture failed here with `EngineError::SaveUnreadable`, because
+    // `EntitySnapshot` (tag 18, required) and `SimulationState` (tag 19,
+    // required) had gained fields no pre-existing save's bytes carry —
+    // `postcard` is not self-describing, so those two required sections
+    // fail closed rather than defaulting. Tag 18/19 carry no new fields on
+    // this revision, so this must succeed regardless of tag 30's presence.
+    let reloaded = Game::load_bytes(&assets, &bytes).expect("a pre-tag-30 save still loads");
+    let entity = *reloaded
+        .registry()
+        .find(ohl_engine::test_support::ROTATING_DOOR_NAME)
+        .first()
+        .expect("the door reloads");
+    assert!(
+        reloaded
+            .registry()
+            .world
+            .get::<&ohl_game::registry::Door>(entity)
+            .is_ok(),
+        "the reloaded fixture is a live Game, not a placeholder"
     );
 }
 

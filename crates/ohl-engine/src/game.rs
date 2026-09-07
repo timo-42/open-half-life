@@ -1062,6 +1062,10 @@ impl Game {
             rng: Some(self.systems.snapshot_rng()),
             mover_state: Some(self.systems.snapshot_mover_state(&self.level)),
             maker_children: Some(crate::save_state::snapshot_maker_children(&self.level)),
+            rotating_movers: Some(crate::save::RotatingMoverStateSnapshot {
+                movers: crate::save_state::snapshot_rotating_movers(&self.level),
+                rot_button_touch: self.level.simulation.rot_button_touch_snapshot(),
+            }),
         }
     }
 
@@ -1305,6 +1309,16 @@ impl Game {
         if let Some(mover_state) = &save.mover_state {
             self.systems
                 .restore_mover_state(&mut self.level, mover_state);
+        }
+        // `SECTION_ROTATING_MOVER_STATE` (30, M9.6): the same
+        // spawn-order-zipped overlay `SECTION_MOVER_STATE` above applies,
+        // for the three entities that ride their own tag instead (see
+        // `crate::save_state::MoverSnapshot`'s own doc comment for why).
+        if let Some(rotating_movers) = &save.rotating_movers {
+            crate::save_state::restore_rotating_movers(&mut self.level, &rotating_movers.movers);
+            self.level
+                .simulation
+                .restore_rot_button_touch(&rotating_movers.rot_button_touch);
         }
         // A load is a map load: the chapter title is announced again.
         self.pending.clear();

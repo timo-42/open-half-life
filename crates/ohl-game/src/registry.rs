@@ -306,6 +306,144 @@ pub struct Rotator {
     pub angle_deg: f32,
 }
 
+/// `func_rot_button`: a rotating button sharing `func_button`'s "press,
+/// fire `target`, optionally auto-reset" shape (TWHL wiki `func_rot_button`,
+/// `docs/FORMAT_SOURCES.md`, "Entity keyvalues and map logic") but swinging
+/// about an origin-keyvalue pivot like [`Door::rotation_axis`]/[`Rotator`]
+/// instead of sliding. Kept as its own component rather than folding into
+/// [`Door`] or [`Button`]: unlike a plain [`Door`] it fires `target` on
+/// reaching its pressed pose, and unlike a plain [`Button`] it can be
+/// toggled back and forth (`toggle`) instead of only auto-returning.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RotButton {
+    /// Signed unit axis; the "Reverse direction" spawnflag bakes into its
+    /// sign, the same convention as [`Door::rotation_axis`]/[`Rotator::axis`].
+    pub axis: Vec3,
+    /// Degrees per second.
+    pub speed: f32,
+    /// `distance`: degrees to rotate before firing `target`.
+    pub distance: f32,
+    /// `wait`: seconds before auto-resetting; `< 0` stays pressed
+    /// (documented as "-1 makes it stay set").
+    pub wait: f32,
+    /// Hit points before the button responds to damage; `0` means it does
+    /// not respond to damage at all (only `use`/touch). **`TODO(black-box)`**:
+    /// parsed and stored, but nothing reads it — a `health > 0` button is
+    /// still only `use`/touch-pressable in this crate, so the "Touch
+    /// activates" spawnflag's own documented "(or by being shot, if Health
+    /// is > 0)" half is unimplemented; the same latent gap already exists
+    /// for [`Button::health`], which this field mirrors.
+    pub health: f32,
+    /// Seconds between activation and starting to rotate.
+    pub delay: f32,
+    /// `sounds` index into the built-in button sound table.
+    pub sound: u8,
+    /// The documented "Toggle" spawnflag: using the button while it is
+    /// pressed rotates it back (firing `target` again) instead of only ever
+    /// auto-returning. This project's own reading (not itself stated by the
+    /// cited wording) is that Toggle also suppresses the ordinary `wait`
+    /// auto-return entirely: a toggle button only ever returns on a second
+    /// `use`/touch, never on a timer — see `Simulation::advance_rot_buttons`'s
+    /// `Open` arm.
+    pub toggle: bool,
+    /// The documented "Touch activates" spawnflag: the button also presses
+    /// when a player's hull touches its brush, not only on `use`.
+    pub touch: bool,
+    /// Current animation state, the same shape [`Door`]/[`Button`] share.
+    pub state: MoverState,
+    /// Seconds remaining in the current state's motion or wait.
+    pub timer: f32,
+}
+
+/// `momentary_rot_button`: a rotating valve/wheel that turns while `use` is
+/// held and reports a `0.0..=1.0` fraction of its own `distance` sweep (TWHL
+/// wiki `momentary_rot_button`, `docs/FORMAT_SOURCES.md`, "Entity keyvalues
+/// and map logic"). Its documented `target` is normally a `momentary_door`,
+/// which this crate does not implement (see that module section's own
+/// `TODO(black-box)`); [`Self::fraction`] is exposed for a future consumer
+/// but nothing here currently reads it back out through `target`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[allow(clippy::struct_excessive_bools)]
+pub struct MomentaryRotButton {
+    /// Signed unit axis (magnitude 1); this entity has no documented
+    /// "Reverse direction" spawnflag, so nothing bakes a sign into it beyond
+    /// the plain axis-selection spawnflags.
+    pub axis: Vec3,
+    /// `speed`: degrees per second while `use` is held.
+    pub speed: f32,
+    /// `distance`: total degrees of the sweep from `fraction = 0` to
+    /// `fraction = 1`.
+    pub distance: f32,
+    /// `returnspeed`: degrees per second for the documented "Auto return"
+    /// spawnflag's automatic return to `fraction = 0`.
+    pub return_speed: f32,
+    /// The documented "Auto return" spawnflag (16).
+    pub auto_return: bool,
+    /// The documented "Door Hack" spawnflag (1): "makes this entity solid,
+    /// but un-USE-able"; such a button only ever moves because a paired
+    /// `momentary_rot_button` sharing its `momentary_door` target moved
+    /// it — a linkage this crate does not model (see [`Self`]'s own doc
+    /// comment) — so this project's own reading is that a "Door Hack"
+    /// button is simply excluded from `use`-proximity search
+    /// ([`crate::logic::find_usable_within`]) while still occupying its
+    /// brush's collision, exactly as documented.
+    pub door_hack: bool,
+    /// Current position, `0.0` (rest) to `1.0` (fully turned).
+    pub fraction: f32,
+    /// Whether the next `use`-hold turn moves toward `fraction = 1.0`
+    /// (`true`) or back toward `0.0` (`false`); flips whenever an endpoint
+    /// is reached, matching the documented "flip-flops between opening and
+    /// closing when it reaches its endpoints" behaviour.
+    pub moving_forward: bool,
+    /// Whether the "Auto return" spawnflag's return-to-zero animation is
+    /// currently running (set the moment `use` stops being held while
+    /// [`Self::auto_return`] is set and [`Self::fraction`] is not already
+    /// zero).
+    pub returning: bool,
+}
+
+/// `func_pendulum`: a brush that swings continuously about an origin-keyvalue
+/// pivot like a physical pendulum (TWHL wiki `func_pendulum`,
+/// `docs/FORMAT_SOURCES.md`, "Entity keyvalues and map logic"): `distance`
+/// (degrees of swing), `speed`, an optional `damping` that narrows the swing
+/// until it settles in the middle, and an "Auto Return"/"Start On" pair of
+/// spawnflags. No public source states the exact trigonometric law GoldSrc
+/// integrates each step; this project implements a plain damped sinusoid and
+/// records that choice at the point of use (`crate::logic::Simulation::
+/// advance_pendulums`), per this milestone's own instruction to document
+/// rather than guess at an uncited motion law.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Pendulum {
+    /// Signed unit axis.
+    pub axis: Vec3,
+    /// `distance`: peak swing amplitude, in degrees, from the rest pose.
+    pub distance: f32,
+    /// `speed`: this project's own mapping is the peak angular speed at the
+    /// rest crossing, in degrees/second (see `advance_pendulums`).
+    pub speed: f32,
+    /// `damping`: the documented `0..1000` raw keyvalue.
+    pub damping: f32,
+    /// The documented "Auto Return" spawnflag (16): toggling the pendulum
+    /// off animates it back to the rest pose instead of freezing in place.
+    pub auto_return: bool,
+    /// Whether the pendulum is currently swinging; toggled by `use`/trigger.
+    /// Starts `true` when the documented "Start ON" spawnflag
+    /// ([`SPAWNFLAG_PENDULUM_START_ON`]) is set.
+    pub swinging: bool,
+    /// Seconds of swing time accumulated while [`Self::swinging`]; frozen
+    /// while paused so resuming continues the same sinusoid rather than
+    /// restarting it.
+    pub elapsed: f32,
+    /// Whether [`Self::auto_return`]'s return-to-rest animation is
+    /// currently running.
+    pub returning: bool,
+    /// Current pose, in degrees from rest.
+    pub angle_deg: f32,
+}
+
 /// `light`/`light_spot`/`light_environment`: brightness, colour, style and
 /// (for spot/environment lights) an aim.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -777,6 +915,68 @@ pub const SPAWNFLAG_ROTATING_X_AXIS: u32 = 4;
 /// [`SPAWNFLAG_ROTATING_X_AXIS`] set means the documented default, `Z`.
 pub const SPAWNFLAG_ROTATING_Y_AXIS: u32 = 8;
 
+/// `func_rot_button`'s "Reverse direction" spawnflag: reverses the sign of
+/// [`RotButton::axis`]. TWHL wiki `func_rot_button` (`docs/
+/// FORMAT_SOURCES.md`, "Entity keyvalues and map logic"; search-summary
+/// citation, same HTTP 403 caveat as the other TWHL citations in this
+/// crate).
+pub const SPAWNFLAG_ROT_BUTTON_REVERSE: u32 = 2;
+/// `func_rot_button`'s "Toggle" spawnflag: "Allows button to be toggled.
+/// Using the button toggles it between 'on' and 'off', each time
+/// retriggering its target."
+pub const SPAWNFLAG_ROT_BUTTON_TOGGLE: u32 = 32;
+/// `func_rot_button`'s "X axis" spawnflag.
+pub const SPAWNFLAG_ROT_BUTTON_X_AXIS: u32 = 64;
+/// `func_rot_button`'s "Y axis" spawnflag. Neither this nor
+/// [`SPAWNFLAG_ROT_BUTTON_X_AXIS`] set means the documented default, `Z`.
+pub const SPAWNFLAG_ROT_BUTTON_Y_AXIS: u32 = 128;
+/// `func_rot_button`'s "Touch activates" spawnflag: "The button can only be
+/// activated by the player bumping into it (or by being shot, if Health is
+/// > 0)."
+pub const SPAWNFLAG_ROT_BUTTON_TOUCH: u32 = 256;
+
+/// `momentary_rot_button`'s "Door Hack" spawnflag: see [`MomentaryRotButton::
+/// door_hack`]'s own doc comment for this project's reading of its
+/// documented "makes this entity solid, but un-USE-able" text. TWHL wiki
+/// `momentary_rot_button` (`docs/FORMAT_SOURCES.md`, "Entity keyvalues and
+/// map logic"; same search-summary/403 caveat).
+pub const SPAWNFLAG_MOMENTARY_DOOR_HACK: u32 = 1;
+/// `momentary_rot_button`'s "Auto return" spawnflag: "Button returns to its
+/// starting position automatically after use at the speed set in Auto-return
+/// speed (returnspeed)."
+pub const SPAWNFLAG_MOMENTARY_AUTO_RETURN: u32 = 16;
+/// `momentary_rot_button`'s "X axis" spawnflag.
+pub const SPAWNFLAG_MOMENTARY_X_AXIS: u32 = 64;
+/// `momentary_rot_button`'s "Y axis" spawnflag. Neither this nor
+/// [`SPAWNFLAG_MOMENTARY_X_AXIS`] set means the documented default, `Z`.
+pub const SPAWNFLAG_MOMENTARY_Y_AXIS: u32 = 128;
+
+/// `func_pendulum`'s "Start ON" spawnflag, directly documented (unlike
+/// [`SPAWNFLAG_ROTATING_START_ON`], which is only this project's own
+/// FGD-convention reading): TWHL wiki `func_pendulum` (`docs/
+/// FORMAT_SOURCES.md`, "Entity keyvalues and map logic"; search-summary
+/// citation, same HTTP 403 caveat as the other TWHL citations in this
+/// crate) lists the entity's spawnflags as "1 for 'Start ON', 8 for
+/// 'Passable', 16 for 'Auto-return', and 64 for 'X Axis'"; see
+/// [`Pendulum::swinging`]'s own doc comment.
+pub const SPAWNFLAG_PENDULUM_START_ON: u32 = 1;
+/// `func_pendulum`'s "Auto return" spawnflag: "if this is enabled it will
+/// cause the pendulum to return to its start position when triggered".
+pub const SPAWNFLAG_PENDULUM_AUTO_RETURN: u32 = 16;
+/// `func_pendulum`'s "X Axis" spawnflag.
+pub const SPAWNFLAG_PENDULUM_X_AXIS: u32 = 64;
+/// `func_pendulum`'s "Y Axis" spawnflag: "the Y-axis flag causes the swing
+/// to be in the Y axis. The swing defaults to the Z axis if neither of the
+/// axis flags is enabled." That quotation names the flag but not a bit
+/// value for it; `128` is this project's own inference (the next bit after
+/// [`SPAWNFLAG_PENDULUM_X_AXIS`]'s `64`, matching the `X`/`Y` pairing
+/// already documented with actual numbers for `func_door_rotating`/
+/// `func_rotating`/`momentary_rot_button`), the same kind of
+/// not-independently-cited reading already recorded for
+/// [`SPAWNFLAG_ROTATING_START_ON`]. Neither this nor
+/// [`SPAWNFLAG_PENDULUM_X_AXIS`] set means the documented default, `Z`.
+pub const SPAWNFLAG_PENDULUM_Y_AXIS: u32 = 128;
+
 /// The signed unit rotation axis a `func_door_rotating`/`func_rotating`
 /// spawnflag selection and a `reverse` bit describe: `x_axis`/`y_axis`
 /// choose which world axis (`Z` when neither is set, the documented
@@ -1086,6 +1286,75 @@ impl Registry {
                         angle_deg: 0.0,
                     };
                     world.insert_one(entity, rotator).ok();
+                }
+                // `func_rot_button`: TWHL wiki `func_rot_button` (`docs/
+                // FORMAT_SOURCES.md`, "Entity keyvalues and map logic").
+                // Shares `func_button`'s press/fire-target/auto-reset shape
+                // (`wait`, `health`, `delay`, `sounds`) but rotates about an
+                // origin-keyvalue pivot, so it gets its own `RotButton`
+                // component instead of reusing `Button` (which has no
+                // rotation axis) or `Door` (which never fires `target`).
+                "func_rot_button" => {
+                    let flags = def.spawnflags;
+                    let reverse = flags & SPAWNFLAG_ROT_BUTTON_REVERSE != 0;
+                    let x_axis = flags & SPAWNFLAG_ROT_BUTTON_X_AXIS != 0;
+                    let y_axis = flags & SPAWNFLAG_ROT_BUTTON_Y_AXIS != 0;
+                    let button = RotButton {
+                        axis: rotation_axis(x_axis, y_axis, reverse),
+                        speed: numeric(def, "speed", 100.0).abs(),
+                        distance: numeric(def, "distance", 90.0).abs(),
+                        wait: numeric(def, "wait", 1.0),
+                        health: numeric(def, "health", 0.0),
+                        delay: numeric(def, "delay", 0.0),
+                        sound: clamp_u8(numeric(def, "sounds", 0.0)),
+                        toggle: flags & SPAWNFLAG_ROT_BUTTON_TOGGLE != 0,
+                        touch: flags & SPAWNFLAG_ROT_BUTTON_TOUCH != 0,
+                        state: MoverState::Closed,
+                        timer: 0.0,
+                    };
+                    world.insert_one(entity, button).ok();
+                }
+                // `momentary_rot_button`: TWHL wiki `momentary_rot_button`
+                // (`docs/FORMAT_SOURCES.md`, "Entity keyvalues and map
+                // logic"). No documented "Reverse direction" spawnflag (see
+                // `MomentaryRotButton::axis`'s own doc comment), so only the
+                // axis-selection flags feed `rotation_axis`.
+                "momentary_rot_button" => {
+                    let flags = def.spawnflags;
+                    let x_axis = flags & SPAWNFLAG_MOMENTARY_X_AXIS != 0;
+                    let y_axis = flags & SPAWNFLAG_MOMENTARY_Y_AXIS != 0;
+                    let button = MomentaryRotButton {
+                        axis: rotation_axis(x_axis, y_axis, false),
+                        speed: numeric(def, "speed", 100.0).abs(),
+                        distance: numeric(def, "distance", 90.0).abs().max(1.0),
+                        return_speed: numeric(def, "returnspeed", 100.0).abs(),
+                        auto_return: flags & SPAWNFLAG_MOMENTARY_AUTO_RETURN != 0,
+                        door_hack: flags & SPAWNFLAG_MOMENTARY_DOOR_HACK != 0,
+                        fraction: 0.0,
+                        moving_forward: true,
+                        returning: false,
+                    };
+                    world.insert_one(entity, button).ok();
+                }
+                // `func_pendulum`: TWHL wiki `func_pendulum` (`docs/
+                // FORMAT_SOURCES.md`, "Entity keyvalues and map logic").
+                "func_pendulum" => {
+                    let flags = def.spawnflags;
+                    let x_axis = flags & SPAWNFLAG_PENDULUM_X_AXIS != 0;
+                    let y_axis = flags & SPAWNFLAG_PENDULUM_Y_AXIS != 0;
+                    let start_on = flags & SPAWNFLAG_PENDULUM_START_ON != 0;
+                    let pendulum = Pendulum {
+                        axis: rotation_axis(x_axis, y_axis, false),
+                        distance: numeric(def, "distance", 90.0).abs(),
+                        speed: numeric(def, "speed", 100.0).abs(),
+                        damping: numeric(def, "damping", 0.0).clamp(0.0, 1000.0),
+                        auto_return: flags & SPAWNFLAG_PENDULUM_AUTO_RETURN != 0,
+                        swinging: start_on,
+                        elapsed: 0.0,
+                        returning: false,
+                        angle_deg: 0.0,
+                    };
+                    world.insert_one(entity, pendulum).ok();
                 }
                 "func_button" => {
                     let button = Button {
@@ -1628,6 +1897,159 @@ mod tests {
             .expect("rotator");
         assert!(rotator.spinning);
         assert_eq!(rotator.axis, -Vec3::Z);
+    }
+
+    #[test]
+    fn func_rot_button_reads_distance_speed_wait_and_defaults_to_z_axis() {
+        let entities = vec![raw(&[
+            ("classname", "func_rot_button"),
+            ("targetname", "btn1"),
+            ("distance", "60"),
+            ("speed", "90"),
+            ("wait", "2"),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let button = registry
+            .world
+            .get::<&RotButton>(registry.find("btn1")[0])
+            .expect("rot button");
+        assert_eq!(button.axis, Vec3::Z);
+        assert!((button.distance - 60.0).abs() < f32::EPSILON);
+        assert!((button.speed - 90.0).abs() < f32::EPSILON);
+        assert!((button.wait - 2.0).abs() < f32::EPSILON);
+        assert!(!button.toggle);
+        assert!(!button.touch);
+        assert_eq!(button.state, MoverState::Closed);
+    }
+
+    #[test]
+    fn func_rot_button_reverse_and_toggle_and_touch_spawnflags() {
+        let entities = vec![raw(&[
+            ("classname", "func_rot_button"),
+            ("targetname", "btn1"),
+            (
+                "spawnflags",
+                &(SPAWNFLAG_ROT_BUTTON_REVERSE
+                    | SPAWNFLAG_ROT_BUTTON_TOGGLE
+                    | SPAWNFLAG_ROT_BUTTON_TOUCH)
+                    .to_string(),
+            ),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let button = registry
+            .world
+            .get::<&RotButton>(registry.find("btn1")[0])
+            .expect("rot button");
+        assert_eq!(button.axis, -Vec3::Z);
+        assert!(button.toggle);
+        assert!(button.touch);
+    }
+
+    #[test]
+    fn func_rot_button_x_axis_spawnflag_selects_x() {
+        let entities = vec![raw(&[
+            ("classname", "func_rot_button"),
+            ("targetname", "btn1"),
+            ("spawnflags", &SPAWNFLAG_ROT_BUTTON_X_AXIS.to_string()),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let button = registry
+            .world
+            .get::<&RotButton>(registry.find("btn1")[0])
+            .expect("rot button");
+        assert_eq!(button.axis, Vec3::X);
+    }
+
+    #[test]
+    fn momentary_rot_button_reads_distance_speed_returnspeed_and_flags() {
+        let entities = vec![raw(&[
+            ("classname", "momentary_rot_button"),
+            ("targetname", "valve1"),
+            ("distance", "120"),
+            ("speed", "40"),
+            ("returnspeed", "80"),
+            (
+                "spawnflags",
+                &(SPAWNFLAG_MOMENTARY_AUTO_RETURN | SPAWNFLAG_MOMENTARY_Y_AXIS).to_string(),
+            ),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let button = registry
+            .world
+            .get::<&MomentaryRotButton>(registry.find("valve1")[0])
+            .expect("momentary rot button");
+        assert_eq!(button.axis, Vec3::Y);
+        assert!((button.distance - 120.0).abs() < f32::EPSILON);
+        assert!((button.speed - 40.0).abs() < f32::EPSILON);
+        assert!((button.return_speed - 80.0).abs() < f32::EPSILON);
+        assert!(button.auto_return);
+        assert!(!button.door_hack);
+        assert!((button.fraction - 0.0).abs() < f32::EPSILON);
+        assert!(button.moving_forward);
+    }
+
+    #[test]
+    fn momentary_rot_button_door_hack_spawnflag() {
+        let entities = vec![raw(&[
+            ("classname", "momentary_rot_button"),
+            ("targetname", "valve1"),
+            ("spawnflags", &SPAWNFLAG_MOMENTARY_DOOR_HACK.to_string()),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let button = registry
+            .world
+            .get::<&MomentaryRotButton>(registry.find("valve1")[0])
+            .expect("momentary rot button");
+        assert!(button.door_hack);
+    }
+
+    #[test]
+    fn func_pendulum_reads_distance_speed_damping_and_defaults_to_off() {
+        let entities = vec![raw(&[
+            ("classname", "func_pendulum"),
+            ("targetname", "swing1"),
+            ("distance", "45"),
+            ("speed", "30"),
+            ("damping", "200"),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let pendulum = registry
+            .world
+            .get::<&Pendulum>(registry.find("swing1")[0])
+            .expect("pendulum");
+        assert_eq!(pendulum.axis, Vec3::Z);
+        assert!((pendulum.distance - 45.0).abs() < f32::EPSILON);
+        assert!((pendulum.speed - 30.0).abs() < f32::EPSILON);
+        assert!((pendulum.damping - 200.0).abs() < f32::EPSILON);
+        assert!(!pendulum.swinging);
+        assert!(!pendulum.auto_return);
+        assert!((pendulum.angle_deg - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn func_pendulum_start_on_spawnflag_swings_immediately() {
+        let entities = vec![raw(&[
+            ("classname", "func_pendulum"),
+            ("targetname", "swing1"),
+            (
+                "spawnflags",
+                &(SPAWNFLAG_PENDULUM_START_ON | SPAWNFLAG_PENDULUM_X_AXIS).to_string(),
+            ),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let pendulum = registry
+            .world
+            .get::<&Pendulum>(registry.find("swing1")[0])
+            .expect("pendulum");
+        assert!(pendulum.swinging);
+        assert_eq!(pendulum.axis, Vec3::X);
     }
 
     #[test]

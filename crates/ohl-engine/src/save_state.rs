@@ -70,7 +70,10 @@
 use glam::Vec3;
 use ohl_combat::{EntityId as CombatEntityId, ProjectileKind};
 use ohl_game::hecs::Entity;
-use ohl_game::registry::{AutoTrigger, ClassName, MakerActivation, Rotator};
+use ohl_game::registry::{
+    AutoTrigger, ClassName, MakerActivation, MomentaryRotButton, MoverState, Pendulum, RotButton,
+    Rotator,
+};
 use ohl_game::{TrackTrainState, TriggerCameraState};
 use serde::{Deserialize, Serialize};
 
@@ -719,6 +722,18 @@ pub struct RotatorSnapshot {
 /// otherwise reconstruct about a mover, camera sequence, running script,
 /// `monstermaker`, or `trigger_auto`. `None` for an entity with none of the
 /// five.
+///
+/// `func_rot_button`/`momentary_rot_button`/`func_pendulum` deliberately do
+/// **not** live here, even though they are movers in the same sense: this
+/// is a *required* section (`crate::save::GameSave::mover_state` is written
+/// unconditionally whenever it is `Some`, and every save this crate writes
+/// sets it), so a `postcard` field added to [`MoverSnapshot`] fails every
+/// save written before that field existed, the same non-self-describing-
+/// wire-format hazard [`crate::save`]'s own module doc records for the
+/// truly required tags (16-22). Those three entities' state instead rides
+/// `SECTION_ROTATING_MOVER_STATE` (tag 30, see [`RotatingMoverSnapshot`]),
+/// an *optional* section that costs an absent-tag `None` rather than a
+/// decode failure when it is missing.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct MoverSnapshot {
     /// This entity's `func_train`/`func_tracktrain` state, when it has one.
@@ -757,6 +772,79 @@ impl MoverSnapshot {
     }
 }
 
+/// A `func_rot_button`'s press/return state:
+/// `ohl_game::registry::RotButton::state`/`timer`. `axis`/`speed`/`distance`
+/// etc. are fixed at spawn (`attach_level` always rebuilds them identically),
+/// so only the state a player's `use`/touch can flip needs to round-trip —
+/// the same reasoning already recorded for [`RotatorSnapshot`]. Part of
+/// [`RotatingMoverSnapshot`] (`SECTION_ROTATING_MOVER_STATE`, tag 30).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RotButtonSnapshot {
+    /// `ohl_game::registry::RotButton::state`.
+    pub state: MoverState,
+    /// `ohl_game::registry::RotButton::timer`.
+    pub timer: f32,
+}
+
+/// A `momentary_rot_button`'s turn state:
+/// `ohl_game::registry::MomentaryRotButton::fraction`/`moving_forward`/
+/// `returning`. Part of [`RotatingMoverSnapshot`]
+/// (`SECTION_ROTATING_MOVER_STATE`, tag 30).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MomentaryRotButtonSnapshot {
+    /// `ohl_game::registry::MomentaryRotButton::fraction`.
+    pub fraction: f32,
+    /// `ohl_game::registry::MomentaryRotButton::moving_forward`.
+    pub moving_forward: bool,
+    /// `ohl_game::registry::MomentaryRotButton::returning`.
+    pub returning: bool,
+}
+
+/// A `func_pendulum`'s swing state:
+/// `ohl_game::registry::Pendulum::swinging`/`elapsed`/`returning`/
+/// `angle_deg`. Part of [`RotatingMoverSnapshot`]
+/// (`SECTION_ROTATING_MOVER_STATE`, tag 30).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PendulumSnapshot {
+    /// `ohl_game::registry::Pendulum::swinging`.
+    pub swinging: bool,
+    /// `ohl_game::registry::Pendulum::elapsed`.
+    pub elapsed: f32,
+    /// `ohl_game::registry::Pendulum::returning`.
+    pub returning: bool,
+    /// `ohl_game::registry::Pendulum::angle_deg`.
+    pub angle_deg: f32,
+}
+
+/// `SECTION_ROTATING_MOVER_STATE` (30): one optional entry per
+/// `Registry::entities` slot, in spawn order, covering
+/// `func_rot_button`/`momentary_rot_button`/`func_pendulum` runtime state.
+/// `None` for an entity with none of the three.
+///
+/// A new tag, not a `MoverSnapshot` (tag 28) addition: see that struct's
+/// own doc comment for why. `crate::save::RotatingMoverStateSnapshot` pairs
+/// a `Vec<Option<Self>>` (this) with the separate
+/// `ohl_game::logic::Simulation::rot_button_touch_snapshot` bookkeeping
+/// under the same tag.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct RotatingMoverSnapshot {
+    /// This entity's `func_rot_button` press state, when it has one.
+    pub rot_button: Option<RotButtonSnapshot>,
+    /// This entity's `momentary_rot_button` turn state, when it has one.
+    pub momentary_rot_button: Option<MomentaryRotButtonSnapshot>,
+    /// This entity's `func_pendulum` swing state, when it has one.
+    pub pendulum: Option<PendulumSnapshot>,
+}
+
+impl RotatingMoverSnapshot {
+    /// Whether every field is `None`, so a caller can collapse an entry to
+    /// `None` instead of storing an empty struct.
+    #[must_use]
+    fn is_empty(&self) -> bool {
+        self.rot_button.is_none() && self.momentary_rot_button.is_none() && self.pendulum.is_none()
+    }
+}
+
 /// `SECTION_MOVER_STATE` (28)'s track-train/camera/`monstermaker`/
 /// `trigger_auto` portion — everything readable straight off a `hecs`
 /// component without needing
@@ -765,6 +853,7 @@ impl MoverSnapshot {
 /// `script` field of each entry) to build the section this crate actually
 /// writes.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub(crate) fn snapshot_movers(level: &Level) -> Vec<Option<MoverSnapshot>> {
     level
         .registry
@@ -905,6 +994,100 @@ pub(crate) fn restore_movers(level: &mut Level, snapshots: &[Option<MoverSnapsho
             && let Ok(mut auto) = level.registry.world.get::<&mut AutoTrigger>(*entity)
         {
             auto.fired = fired;
+        }
+    }
+}
+
+// --- `SECTION_ROTATING_MOVER_STATE` (30) ----------------------------------
+
+/// The most entities one `SECTION_ROTATING_MOVER_STATE` section records,
+/// matching [`MAX_SNAPSHOT_ENTITIES`] — the same per-registry-slot cap
+/// every other index-keyed section already uses.
+pub const MAX_SNAPSHOT_ROTATING_MOVERS: usize = MAX_SNAPSHOT_ENTITIES;
+
+/// `SECTION_ROTATING_MOVER_STATE` (30)'s entity-indexed portion: one
+/// optional [`RotatingMoverSnapshot`] per `Registry::entities` slot, in
+/// spawn order. `crate::save::RotatingMoverStateSnapshot` (the whole
+/// section's payload) pairs this with the separate
+/// `ohl_game::logic::Simulation::rot_button_touch_snapshot` bookkeeping,
+/// which has no entity-indexed shape to share this `Vec`'s slots with.
+#[must_use]
+pub(crate) fn snapshot_rotating_movers(level: &Level) -> Vec<Option<RotatingMoverSnapshot>> {
+    level
+        .registry
+        .entities
+        .iter()
+        .take(MAX_SNAPSHOT_ROTATING_MOVERS)
+        .map(|entity| {
+            let rot_button = level
+                .registry
+                .world
+                .get::<&RotButton>(*entity)
+                .ok()
+                .map(|button| RotButtonSnapshot {
+                    state: button.state,
+                    timer: button.timer,
+                });
+            let momentary_rot_button = level
+                .registry
+                .world
+                .get::<&MomentaryRotButton>(*entity)
+                .ok()
+                .map(|button| MomentaryRotButtonSnapshot {
+                    fraction: button.fraction,
+                    moving_forward: button.moving_forward,
+                    returning: button.returning,
+                });
+            let pendulum = level
+                .registry
+                .world
+                .get::<&Pendulum>(*entity)
+                .ok()
+                .map(|pendulum| PendulumSnapshot {
+                    swinging: pendulum.swinging,
+                    elapsed: pendulum.elapsed,
+                    returning: pendulum.returning,
+                    angle_deg: pendulum.angle_deg,
+                });
+            let snapshot = RotatingMoverSnapshot {
+                rot_button,
+                momentary_rot_button,
+                pendulum,
+            };
+            (!snapshot.is_empty()).then_some(snapshot)
+        })
+        .collect()
+}
+
+/// Restores [`snapshot_rotating_movers`], zipped against
+/// `level.registry.entities` in spawn order.
+pub(crate) fn restore_rotating_movers(
+    level: &mut Level,
+    snapshots: &[Option<RotatingMoverSnapshot>],
+) {
+    let entities = level.registry.entities.clone();
+    for (entity, snapshot) in entities.iter().zip(snapshots) {
+        let Some(snapshot) = snapshot else { continue };
+        if let Some(button) = &snapshot.rot_button
+            && let Ok(mut component) = level.registry.world.get::<&mut RotButton>(*entity)
+        {
+            component.state = button.state;
+            component.timer = button.timer;
+        }
+        if let Some(button) = &snapshot.momentary_rot_button
+            && let Ok(mut component) = level.registry.world.get::<&mut MomentaryRotButton>(*entity)
+        {
+            component.fraction = button.fraction;
+            component.moving_forward = button.moving_forward;
+            component.returning = button.returning;
+        }
+        if let Some(pendulum) = &snapshot.pendulum
+            && let Ok(mut component) = level.registry.world.get::<&mut Pendulum>(*entity)
+        {
+            component.swinging = pendulum.swinging;
+            component.elapsed = pendulum.elapsed;
+            component.returning = pendulum.returning;
+            component.angle_deg = pendulum.angle_deg;
         }
     }
 }

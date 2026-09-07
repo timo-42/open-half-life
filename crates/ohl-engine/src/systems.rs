@@ -39,7 +39,7 @@
 use glam::Vec3;
 use ohl_game::hecs::Entity;
 use ohl_game::registry::{Door, MoverState, Transform};
-use ohl_game::{Event, find_usable_within};
+use ohl_game::{Event, Simulation, find_momentary_rot_button_within, find_usable_within};
 use ohl_physics::{ControllerInput, HULL_SIZES, Hull, PlayerController};
 use ohl_player::PlayerSystems;
 use ohl_render::{FreeFlyCamera, MoveInput};
@@ -1210,6 +1210,25 @@ impl Systems {
                 self.ai.queue_use(position);
             }
         }
+        // `momentary_rot_button` turns every tick `use` is held near it —
+        // not only on the press edge, unlike every other usable entity
+        // above — reporting a `0.0..=1.0` fraction of its own `distance`
+        // sweep (TWHL wiki `momentary_rot_button`, `docs/FORMAT_SOURCES.md`,
+        // "Entity keyvalues and map logic"). A button with no held entity
+        // in reach still gets a `None` "held" pass, so its own documented
+        // "Auto return" spawnflag keeps animating back toward `fraction =
+        // 0.0`.
+        let held_momentary = input
+            .use_held
+            .then(|| {
+                find_momentary_rot_button_within(
+                    &level.registry,
+                    Vec3::from_array(camera.position),
+                    USE_RADIUS,
+                )
+            })
+            .flatten();
+        Simulation::drive_momentary_rot_button(&mut level.registry, held_momentary, dt);
         // `trigger_once`/`trigger_multiple` fire when the player's own
         // bounding box touches their brush volume, not just when a single
         // point does; using the standing hull here (see

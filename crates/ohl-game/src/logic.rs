@@ -12,17 +12,19 @@ use glam::Vec3;
 use hecs::Entity;
 
 use crate::registry::{
-    AutoTrigger, BrushBounds, Button, ChangeLevel, Door, Message, MoverState, MultiManager,
-    Platform, Registry, RotatingDoorSwing, Rotator, Target, Transform, Trigger, TriggerHurt,
+    AutoTrigger, BrushBounds, Button, ChangeLevel, Door, Message, MomentaryRotButton, MoverState,
+    MultiManager, Pendulum, Platform, Registry, RotButton, RotatingDoorSwing, Rotator, Target,
+    Transform, Trigger, TriggerHurt,
 };
 use crate::track_train::TrackTrainState;
 
-/// Finds the closest `func_door` or `func_button` within `radius` units of
-/// `position`, measured against a brush entity's own currently-placed
-/// bounding-box centre ([`crate::pose::brush_center`]) rather than its
-/// `Transform::origin`, and falling back to `Transform::origin` only for an
-/// entity that has no brush submodel to measure at all (a point entity, or
-/// one whose submodel bounds were unavailable at load).
+/// Finds the closest `func_door`, `func_button`, or `use`-activated
+/// `func_rot_button` within `radius` units of `position`, measured against
+/// a brush entity's own currently-placed bounding-box centre
+/// ([`crate::pose::brush_center`]) rather than its `Transform::origin`, and
+/// falling back to `Transform::origin` only for an entity that has no
+/// brush submodel to measure at all (a point entity, or one whose submodel
+/// bounds were unavailable at load).
 ///
 /// Going through [`crate::pose::brush_center`] is what makes this agree
 /// with where the entity is drawn and collided: it is the same placed pose
@@ -33,6 +35,15 @@ use crate::track_train::TrackTrainState;
 /// compiles its geometry relative to that brush rather than in absolute
 /// world space, so measuring against the raw compiled bounds instead would
 /// search near the map's `(0, 0, 0)` and never find it.
+///
+/// A `func_rot_button` with the documented "Touch activates" spawnflag
+/// ([`crate::registry::SPAWNFLAG_ROT_BUTTON_TOUCH`]) is excluded: TWHL wiki
+/// `func_rot_button` (`docs/FORMAT_SOURCES.md`, "Entity keyvalues and map
+/// logic") documents that flag as making the button respond only to the
+/// player's hull touching its brush (see [`Simulation::touch_rot_buttons`]),
+/// not to a proximity `use` press. A `momentary_rot_button` is never
+/// returned here at all — it is driven every tick `use` is *held*
+/// ([`Simulation::drive_momentary_rot_button`]), not by a single press.
 ///
 /// Intended for a "use the nearest usable thing" input binding.
 #[must_use]
@@ -58,6 +69,44 @@ pub fn find_usable_within(registry: &Registry, position: Vec3, radius: f32) -> O
         .with::<&Button>()
     {
         consider(entity, transform);
+    }
+    for (entity, transform, button) in
+        &mut registry.world.query::<(Entity, &Transform, &RotButton)>()
+    {
+        if !button.touch {
+            consider(entity, transform);
+        }
+    }
+    best.map(|(entity, _)| entity)
+}
+
+/// Finds the closest `momentary_rot_button` within `radius` units of
+/// `position` whose documented "Door Hack" spawnflag
+/// ([`crate::registry::SPAWNFLAG_MOMENTARY_DOOR_HACK`]) is *not* set — see
+/// [`crate::registry::MomentaryRotButton::door_hack`]'s own doc comment for
+/// why such a button is excluded from proximity `use`. Intended to be
+/// called every tick `use` is held (not only on the press edge, unlike
+/// [`find_usable_within`]) so [`Simulation::drive_momentary_rot_button`] has
+/// something to drive.
+#[must_use]
+pub fn find_momentary_rot_button_within(
+    registry: &Registry,
+    position: Vec3,
+    radius: f32,
+) -> Option<Entity> {
+    let mut best: Option<(Entity, f32)> = None;
+    for (entity, transform, button) in &mut registry
+        .world
+        .query::<(Entity, &Transform, &MomentaryRotButton)>()
+    {
+        if button.door_hack {
+            continue;
+        }
+        let center = crate::pose::brush_center(registry, entity).unwrap_or(transform.origin);
+        let distance = center.distance(position);
+        if distance <= radius && best.is_none_or(|(_, best_distance)| distance < best_distance) {
+            best = Some((entity, distance));
+        }
     }
     best.map(|(entity, _)| entity)
 }
@@ -172,6 +221,11 @@ const GAME_PLAYER_SPAWN_TARGETNAME: &str = "game_playerspawn";
 pub struct Simulation {
     pending: Vec<Fire>,
     trigger_state: std::collections::BTreeMap<Entity, TriggerState>,
+    /// Per-`func_rot_button` last-observed touch state, for
+    /// [`Self::touch_rot_buttons`]'s edge trigger — the same shape as
+    /// [`TriggerState::changelevel_touching`], kept in its own map since a
+    /// `RotButton` is not a [`Trigger`].
+    rot_button_touch: std::collections::BTreeMap<Entity, bool>,
     /// Whether [`Self::fire_player_spawn`] has already run. Not carried in
     /// [`SimulationState`]: matches this project's existing convention for
     /// `trigger_auto`'s own one-shot `fired` flag (an ECS component field,
@@ -278,6 +332,7 @@ impl Simulation {
             self.activate_trigger(registry, entity, activator);
         }
         self.touch_changelevel_triggers(registry, player_mins, player_maxs, events);
+        self.touch_rot_buttons(registry, player_mins, player_maxs);
     }
 
     /// Fires a `trigger_changelevel` (not "USE Only"; see
@@ -342,8 +397,10 @@ impl Simulation {
         self.advance_queue(registry, dt, &mut events);
         Self::advance_doors(registry, dt);
         self.advance_buttons(registry, dt, &mut events);
+        self.advance_rot_buttons(registry, dt);
         Self::advance_platforms(registry, dt);
         Self::advance_rotators(registry, dt);
+        Self::advance_pendulums(registry, dt);
         Self::advance_trains(registry, dt);
         self.advance_cameras(registry, dt);
         for state in self.trigger_state.values_mut() {
@@ -438,6 +495,7 @@ impl Simulation {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn activate(
         &mut self,
         registry: &mut Registry,
@@ -474,6 +532,33 @@ impl Simulation {
             if button.state == MoverState::Closed {
                 button.state = MoverState::Opening;
                 button.timer = button.delay;
+            }
+            return;
+        }
+        if let Ok(button) = registry.world.query_one_mut::<&mut RotButton>(entity) {
+            match button.state {
+                MoverState::Closed => {
+                    button.state = MoverState::Opening;
+                    button.timer = button.delay + travel_time(button.distance, button.speed);
+                }
+                // The documented "Toggle" spawnflag: using an already-open
+                // button rotates it back, firing `target` again — see
+                // `advance_rot_buttons`'s own `Closing -> Closed` arm for
+                // where that second fire happens.
+                MoverState::Open if button.toggle => {
+                    button.state = MoverState::Closing;
+                    button.timer = travel_time(button.distance, button.speed);
+                }
+                _ => {}
+            }
+            return;
+        }
+        if let Ok(pendulum) = registry.world.query_one_mut::<&mut Pendulum>(entity) {
+            pendulum.swinging = !pendulum.swinging;
+            if pendulum.swinging {
+                pendulum.returning = false;
+            } else if pendulum.auto_return {
+                pendulum.returning = true;
             }
             return;
         }
@@ -588,6 +673,38 @@ impl Simulation {
                 })
                 .collect(),
         }
+    }
+
+    /// Per-`func_rot_button` touch-edge state
+    /// ([`Self::rot_button_touch`]), as `(entity bit pattern, touching)`
+    /// pairs — kept out of [`SimulationState`]/[`Self::snapshot`] on
+    /// purpose: `SimulationState` backs `SECTION_SIMULATION`
+    /// (`ohl_engine`'s save tag 19), a *required* section written for
+    /// every save, and — per that crate's own `save.rs` module doc — every
+    /// section is `postcard`-encoded, which is not self-describing, so
+    /// adding a field to a required section's type makes every save
+    /// written before that field existed fail to decode. A caller that
+    /// wants this state to survive a save/load restores it separately,
+    /// through [`Self::restore_rot_button_touch`], into whatever optional
+    /// section it chooses to carry it in.
+    #[must_use]
+    pub fn rot_button_touch_snapshot(&self) -> Vec<(u64, bool)> {
+        self.rot_button_touch
+            .iter()
+            .map(|(entity, touching)| (entity.to_bits().get(), *touching))
+            .collect()
+    }
+
+    /// Replaces [`Self::rot_button_touch`] with `entries`, the mirror of
+    /// [`Self::rot_button_touch_snapshot`]. See that method's own doc
+    /// comment for why this is separate from [`Self::restore`].
+    pub fn restore_rot_button_touch(&mut self, entries: &[(u64, bool)]) {
+        self.rot_button_touch = entries
+            .iter()
+            .filter_map(|(bits, touching)| {
+                Entity::from_bits(*bits).map(|entity| (entity, *touching))
+            })
+            .collect();
     }
 
     /// Replaces this simulation's bookkeeping with `state`, dropping
@@ -746,6 +863,168 @@ impl Simulation {
         let _ = events;
     }
 
+    /// Advances every `func_rot_button`'s press/return timer, mirroring
+    /// [`Self::advance_buttons`]'s shape but firing `target` on *both*
+    /// directions when the documented "Toggle" spawnflag
+    /// ([`crate::registry::SPAWNFLAG_ROT_BUTTON_TOGGLE`]) is set (each
+    /// press-or-release "retriggering its target", per TWHL wiki
+    /// `func_rot_button`), and only auto-returning (`Open -> Closing`) for
+    /// a non-toggle button, honouring `wait < 0` ("stays set") exactly like
+    /// [`Door`]'s own `Open` arm.
+    fn advance_rot_buttons(&mut self, registry: &mut Registry, dt: f32) {
+        let mut to_fire = Vec::new();
+        for (entity, button) in registry.world.query_mut::<(Entity, &mut RotButton)>() {
+            match button.state {
+                MoverState::Closed => {}
+                MoverState::Opening => {
+                    // `timer` here counts down the shared `delay +
+                    // travel_time` window `Simulation::activate` armed it
+                    // with, exactly like `Door`'s own `Opening` arm — so
+                    // `ohl-engine`'s `render::mover_fraction` (which reads
+                    // the same `speed`/`distance`/`state`/`timer` shape)
+                    // animates the press instead of snapping instantly.
+                    if button.timer > 0.0 {
+                        button.timer -= dt;
+                    } else {
+                        to_fire.push(entity);
+                        button.state = MoverState::Open;
+                        button.timer = button.wait;
+                    }
+                }
+                MoverState::Open => {
+                    if button.toggle || button.wait < 0.0 {
+                        // Toggle buttons wait indefinitely for a re-press
+                        // (`Simulation::activate`'s own `Open`-with-toggle
+                        // arm); a non-toggle button with `wait < 0` "stays
+                        // set" the same way a `Door` does.
+                    } else if button.timer > 0.0 {
+                        button.timer -= dt;
+                    } else {
+                        button.state = MoverState::Closing;
+                        button.timer = travel_time(button.distance, button.speed);
+                    }
+                }
+                MoverState::Closing => {
+                    if button.timer > 0.0 {
+                        button.timer -= dt;
+                    } else {
+                        if button.toggle {
+                            to_fire.push(entity);
+                        }
+                        button.state = MoverState::Closed;
+                    }
+                }
+            }
+        }
+        for entity in to_fire {
+            if let Ok(target) = registry.world.get::<&Target>(entity) {
+                let target = target.0.clone();
+                self.fire(target, Some(entity), 0.0);
+            }
+        }
+    }
+
+    /// Fires every `func_rot_button` whose documented "Touch activates"
+    /// spawnflag ([`crate::registry::SPAWNFLAG_ROT_BUTTON_TOUCH`]) is set
+    /// and whose brush volume overlaps `[player_mins, player_maxs]`,
+    /// mirroring [`Self::touch_triggers`]'s brush-vs-brush overlap test
+    /// (not a single point). Edge-triggered like
+    /// [`Self::touch_changelevel_triggers`], so a player standing on the
+    /// button across many fixed steps only presses it once per approach —
+    /// otherwise a toggle button standing in reach of its own touch volume
+    /// would immediately re-trigger itself back closed the moment it
+    /// reopened.
+    pub fn touch_rot_buttons(
+        &mut self,
+        registry: &mut Registry,
+        player_mins: Vec3,
+        player_maxs: Vec3,
+    ) {
+        let mut candidates: Vec<(Entity, bool)> = registry
+            .world
+            .query::<(Entity, &RotButton, &BrushBounds)>()
+            .iter()
+            .filter(|(_, button, _)| button.touch)
+            .map(|(entity, _, bounds)| {
+                (
+                    entity,
+                    aabb_overlaps(player_mins, player_maxs, bounds.mins, bounds.maxs),
+                )
+            })
+            .collect();
+        candidates.sort_unstable_by_key(|(entity, _)| entity.id());
+        for (entity, overlapping) in candidates {
+            let state = self.rot_button_touch.entry(entity).or_default();
+            let rising_edge = overlapping && !*state;
+            *state = overlapping;
+            if rising_edge {
+                self.activate(registry, entity, None, &mut Vec::new());
+            }
+        }
+    }
+
+    /// Drives the `momentary_rot_button` currently found by proximity while
+    /// `use` is held (`held_entity`, from a caller-run
+    /// [`find_usable_within`]-style search that also matches this
+    /// component — this crate does not do that search itself, since
+    /// "currently held" is a per-frame input state a host owns, not
+    /// simulation-scheduled activation like every other entity
+    /// [`Self::activate`] handles) toward `fraction = 1.0`
+    /// (or back toward `0.0`, flipping at either endpoint — the documented
+    /// "flip-flops between opening and closing when it reaches its
+    /// endpoints" behaviour). Every *other* `momentary_rot_button` with the
+    /// documented "Auto return" spawnflag continues animating back toward
+    /// `fraction = 0.0` while not held, matching TWHL wiki
+    /// `momentary_rot_button`'s documented auto-return behaviour.
+    pub fn drive_momentary_rot_button(
+        registry: &mut Registry,
+        held_entity: Option<Entity>,
+        dt: f32,
+    ) {
+        for (entity, button) in registry
+            .world
+            .query_mut::<(Entity, &mut MomentaryRotButton)>()
+        {
+            if Some(entity) == held_entity && !button.door_hack {
+                button.returning = false;
+                let step = if button.distance > 0.0 {
+                    button.speed * dt / button.distance
+                } else {
+                    0.0
+                };
+                if button.moving_forward {
+                    button.fraction += step;
+                    if button.fraction >= 1.0 {
+                        button.fraction = 1.0;
+                        button.moving_forward = false;
+                    }
+                } else {
+                    button.fraction -= step;
+                    if button.fraction <= 0.0 {
+                        button.fraction = 0.0;
+                        button.moving_forward = true;
+                    }
+                }
+                continue;
+            }
+            if button.fraction > 0.0
+                && (button.returning || (button.auto_return && Some(entity) != held_entity))
+            {
+                button.returning = true;
+                let step = if button.distance > 0.0 {
+                    button.return_speed * dt / button.distance
+                } else {
+                    0.0
+                };
+                button.fraction = (button.fraction - step).max(0.0);
+                if button.fraction <= 0.0 {
+                    button.returning = false;
+                    button.moving_forward = true;
+                }
+            }
+        }
+    }
+
     /// Advances every `func_rotating`'s accumulated angle while it is
     /// spinning. Unlike [`Self::advance_doors`]/[`Self::advance_platforms`]
     /// there is no open/close cycle to time: TWHL wiki `func_rotating`
@@ -762,6 +1041,76 @@ impl Simulation {
                 continue;
             }
             rotator.angle_deg = (rotator.angle_deg + rotator.speed * dt).rem_euclid(360.0);
+        }
+    }
+
+    /// The project-chosen decay rate a `damping` of `1000` (the documented
+    /// maximum) applies, in `1/second`; see [`Self::advance_pendulums`]'s
+    /// own doc comment for why no public source gives an exact formula.
+    const PENDULUM_MAX_DAMPING_RATE: f32 = 1.0;
+
+    /// The amplitude, in degrees, below which a damped `func_pendulum` is
+    /// considered to have settled — TWHL wiki `func_pendulum` (`docs/
+    /// FORMAT_SOURCES.md`, "Entity keyvalues and map logic") documents
+    /// damping as narrowing the swing "until it stops moving ... in the
+    /// middle of its swing".
+    const PENDULUM_SETTLE_EPSILON_DEGREES: f32 = 0.05;
+
+    /// Advances every `func_pendulum`'s swing.
+    ///
+    /// No public source states GoldSrc's exact per-step trigonometric
+    /// integration; this project implements a plain damped sinusoid instead
+    /// of guessing at an uncited formula (this milestone's own instruction):
+    /// `angle = amplitude(elapsed) * sin(omega * elapsed)`, with `omega`
+    /// (radians/second) chosen so `distance` (the documented swing amplitude)
+    /// and `speed` (the documented "Speed of movement") combine into the
+    /// peak angular speed at the rest crossing —
+    /// `omega = speed.to_radians() / distance.max(1.0)` — and the damped
+    /// amplitude an exponential decay whose rate scales linearly with the
+    /// documented `damping` `0..1000` keyvalue up to
+    /// [`Self::PENDULUM_MAX_DAMPING_RATE`] per second, both project-chosen
+    /// constants recorded here rather than in `docs/FORMAT_SOURCES.md`
+    /// prose, per that document's own citation policy for an uncited
+    /// numeric law. Once the damped amplitude falls under
+    /// [`Self::PENDULUM_SETTLE_EPSILON_DEGREES`] the pendulum settles at
+    /// the rest pose and stops spending CPU integrating an imperceptible
+    /// wobble, matching the cited "stops ... in the middle" behaviour.
+    ///
+    /// The documented "Auto Return" spawnflag instead animates linearly back
+    /// to the rest pose at `speed` degrees/second once toggled off
+    /// ([`Simulation::activate`]'s `Pendulum` arm sets
+    /// [`crate::registry::Pendulum::returning`]); a plain toggle-off with no
+    /// "Auto Return" simply freezes [`crate::registry::Pendulum::angle_deg`]
+    /// wherever it was (`elapsed` stays frozen too, so resuming continues
+    /// the same sinusoid instead of restarting it).
+    fn advance_pendulums(registry: &mut Registry, dt: f32) {
+        for pendulum in registry.world.query_mut::<&mut Pendulum>() {
+            if pendulum.returning {
+                let step = pendulum.speed.max(1.0) * dt;
+                if pendulum.angle_deg.abs() <= step {
+                    pendulum.angle_deg = 0.0;
+                    pendulum.returning = false;
+                    pendulum.elapsed = 0.0;
+                } else {
+                    pendulum.angle_deg -= step * pendulum.angle_deg.signum();
+                }
+                continue;
+            }
+            if !pendulum.swinging {
+                continue;
+            }
+            pendulum.elapsed += dt;
+            let rate =
+                (pendulum.damping / 1000.0).clamp(0.0, 1.0) * Self::PENDULUM_MAX_DAMPING_RATE;
+            let amplitude = pendulum.distance * (-rate * pendulum.elapsed).exp();
+            if amplitude < Self::PENDULUM_SETTLE_EPSILON_DEGREES {
+                pendulum.angle_deg = 0.0;
+                pendulum.swinging = false;
+                pendulum.elapsed = 0.0;
+                continue;
+            }
+            let omega = pendulum.speed.to_radians() / pendulum.distance.max(1.0);
+            pendulum.angle_deg = amplitude * (omega * pendulum.elapsed).sin();
         }
     }
 
@@ -1054,6 +1403,311 @@ mod tests {
         let rotator = registry.world.get::<&Rotator>(entity).unwrap();
         assert!(!rotator.spinning);
         assert!((rotator.angle_deg - 90.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn func_rot_button_presses_fires_target_and_auto_returns() {
+        let entities = vec![
+            raw(&[
+                ("classname", "func_rot_button"),
+                ("targetname", "btn1"),
+                ("target", "door1"),
+                ("speed", "90"),
+                ("distance", "45"),
+                ("wait", "1"),
+            ]),
+            raw(&[
+                ("classname", "func_door"),
+                ("targetname", "door1"),
+                ("speed", "100"),
+                ("wait", "-1"),
+            ]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let mut sim = Simulation::new();
+        let button_entity = registry.find("btn1")[0];
+        let door_entity = registry.find("door1")[0];
+        let mut events = Vec::new();
+        assert_eq!(
+            registry
+                .world
+                .get::<&RotButton>(button_entity)
+                .unwrap()
+                .state,
+            MoverState::Closed
+        );
+        sim.use_entity(&mut registry, button_entity, None, &mut events);
+        // 45 degrees at 90 degrees/second takes half a second to reach Open,
+        // firing the target on the same tick it gets there.
+        tick_for(&mut sim, &mut registry, 0.6, 0.05);
+        assert_eq!(
+            registry
+                .world
+                .get::<&RotButton>(button_entity)
+                .unwrap()
+                .state,
+            MoverState::Open
+        );
+        assert_eq!(
+            registry.world.get::<&Door>(door_entity).unwrap().state,
+            MoverState::Open
+        );
+        // `wait = 1`: the button auto-returns and reports Closed again.
+        tick_for(&mut sim, &mut registry, 2.5, 0.05);
+        assert_eq!(
+            registry
+                .world
+                .get::<&RotButton>(button_entity)
+                .unwrap()
+                .state,
+            MoverState::Closed
+        );
+    }
+
+    #[test]
+    fn func_rot_button_toggle_retriggers_target_both_ways() {
+        let entities = vec![
+            raw(&[
+                ("classname", "func_rot_button"),
+                ("targetname", "btn1"),
+                ("target", "counter1"),
+                ("speed", "360"),
+                ("distance", "90"),
+                (
+                    "spawnflags",
+                    &crate::registry::SPAWNFLAG_ROT_BUTTON_TOGGLE.to_string(),
+                ),
+            ]),
+            raw(&[("classname", "trigger_relay"), ("targetname", "counter1")]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let mut sim = Simulation::new();
+        let button_entity = registry.find("btn1")[0];
+        let mut events = Vec::new();
+        sim.use_entity(&mut registry, button_entity, None, &mut events);
+        tick_for(&mut sim, &mut registry, 0.5, 0.05);
+        assert_eq!(
+            registry
+                .world
+                .get::<&RotButton>(button_entity)
+                .unwrap()
+                .state,
+            MoverState::Open
+        );
+        // Toggle buttons stay pressed until used again, unlike a plain
+        // rot_button's auto-return.
+        tick_for(&mut sim, &mut registry, 5.0, 0.05);
+        assert_eq!(
+            registry
+                .world
+                .get::<&RotButton>(button_entity)
+                .unwrap()
+                .state,
+            MoverState::Open
+        );
+        sim.use_entity(&mut registry, button_entity, None, &mut events);
+        tick_for(&mut sim, &mut registry, 0.5, 0.05);
+        assert_eq!(
+            registry
+                .world
+                .get::<&RotButton>(button_entity)
+                .unwrap()
+                .state,
+            MoverState::Closed
+        );
+    }
+
+    #[test]
+    fn func_rot_button_touch_activates_from_player_bounding_box() {
+        let entities = vec![raw(&[
+            ("classname", "func_rot_button"),
+            ("targetname", "btn1"),
+            ("speed", "360"),
+            ("distance", "90"),
+            ("model", "*1"),
+            (
+                "spawnflags",
+                &crate::registry::SPAWNFLAG_ROT_BUTTON_TOUCH.to_string(),
+            ),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut bounds = BTreeMap::new();
+        bounds.insert(1u32, ([-8.0, -8.0, -8.0], [8.0, 8.0, 8.0]));
+        let mut registry = Registry::build(&defs, &bounds, &Limits::default());
+        let mut sim = Simulation::new();
+        let button_entity = registry.find("btn1")[0];
+        assert_eq!(
+            registry
+                .world
+                .get::<&RotButton>(button_entity)
+                .unwrap()
+                .state,
+            MoverState::Closed
+        );
+        sim.touch_rot_buttons(
+            &mut registry,
+            Vec3::new(-4.0, -4.0, -4.0),
+            Vec3::new(4.0, 4.0, 4.0),
+        );
+        sim.tick(&mut registry, 0.05);
+        assert_eq!(
+            registry
+                .world
+                .get::<&RotButton>(button_entity)
+                .unwrap()
+                .state,
+            MoverState::Opening
+        );
+        // Standing on it does not re-fire every step (edge-triggered).
+        for _ in 0..10 {
+            sim.touch_rot_buttons(
+                &mut registry,
+                Vec3::new(-4.0, -4.0, -4.0),
+                Vec3::new(4.0, 4.0, 4.0),
+            );
+        }
+        tick_for(&mut sim, &mut registry, 1.0, 0.05);
+        assert_eq!(
+            registry
+                .world
+                .get::<&RotButton>(button_entity)
+                .unwrap()
+                .state,
+            MoverState::Open
+        );
+    }
+
+    #[test]
+    fn momentary_rot_button_turns_while_held_and_flips_at_endpoints() {
+        let entities = vec![raw(&[
+            ("classname", "momentary_rot_button"),
+            ("targetname", "valve1"),
+            ("speed", "90"),
+            ("distance", "90"),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let entity = registry.find("valve1")[0];
+        // Held for a full second: 90 degrees/second over 90 degrees reaches
+        // fraction 1.0 in exactly one second and flips direction.
+        for _ in 0..20 {
+            Simulation::drive_momentary_rot_button(&mut registry, Some(entity), 0.05);
+        }
+        {
+            let button = registry.world.get::<&MomentaryRotButton>(entity).unwrap();
+            assert!((button.fraction - 1.0).abs() < 1e-3, "{}", button.fraction);
+            assert!(!button.moving_forward);
+        }
+        // Released: with no Auto Return, it stays at fraction 1.0.
+        Simulation::drive_momentary_rot_button(&mut registry, None, 0.05);
+        let button = registry.world.get::<&MomentaryRotButton>(entity).unwrap();
+        assert!((button.fraction - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn momentary_rot_button_auto_return_animates_back_to_zero_once_released() {
+        let entities = vec![raw(&[
+            ("classname", "momentary_rot_button"),
+            ("targetname", "valve1"),
+            ("speed", "90"),
+            ("distance", "90"),
+            ("returnspeed", "180"),
+            (
+                "spawnflags",
+                &crate::registry::SPAWNFLAG_MOMENTARY_AUTO_RETURN.to_string(),
+            ),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let entity = registry.find("valve1")[0];
+        Simulation::drive_momentary_rot_button(&mut registry, Some(entity), 0.5);
+        let fraction = registry
+            .world
+            .get::<&MomentaryRotButton>(entity)
+            .unwrap()
+            .fraction;
+        assert!((fraction - 0.5).abs() < 1e-3, "{fraction}");
+        for _ in 0..10 {
+            Simulation::drive_momentary_rot_button(&mut registry, None, 0.05);
+        }
+        let button = registry.world.get::<&MomentaryRotButton>(entity).unwrap();
+        assert!((button.fraction - 0.0).abs() < 1e-3, "{}", button.fraction);
+        assert!(!button.returning);
+    }
+
+    #[test]
+    fn func_pendulum_swings_and_toggles_off_freezing_the_pose() {
+        let entities = vec![raw(&[
+            ("classname", "func_pendulum"),
+            ("targetname", "swing1"),
+            ("distance", "30"),
+            ("speed", "180"),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let mut sim = Simulation::new();
+        let entity = registry.find("swing1")[0];
+        assert!(!registry.world.get::<&Pendulum>(entity).unwrap().swinging);
+
+        let mut events = Vec::new();
+        sim.use_entity(&mut registry, entity, None, &mut events);
+        assert!(registry.world.get::<&Pendulum>(entity).unwrap().swinging);
+        sim.tick(&mut registry, 0.1);
+        let angle_while_swinging = registry.world.get::<&Pendulum>(entity).unwrap().angle_deg;
+        assert!(
+            angle_while_swinging.abs() > 0.0,
+            "the pendulum should have moved off rest"
+        );
+
+        // Toggling off with no Auto Return freezes the pose in place.
+        sim.use_entity(&mut registry, entity, None, &mut events);
+        assert!(!registry.world.get::<&Pendulum>(entity).unwrap().swinging);
+        sim.tick(&mut registry, 1.0);
+        let angle_after_stop = registry.world.get::<&Pendulum>(entity).unwrap().angle_deg;
+        assert!((angle_after_stop - angle_while_swinging).abs() < 1e-6);
+    }
+
+    #[test]
+    fn func_pendulum_auto_return_animates_back_to_rest_when_toggled_off() {
+        let entities = vec![raw(&[
+            ("classname", "func_pendulum"),
+            ("targetname", "swing1"),
+            ("distance", "30"),
+            ("speed", "180"),
+            (
+                "spawnflags",
+                &crate::registry::SPAWNFLAG_PENDULUM_AUTO_RETURN.to_string(),
+            ),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let mut sim = Simulation::new();
+        let entity = registry.find("swing1")[0];
+        let mut events = Vec::new();
+        sim.use_entity(&mut registry, entity, None, &mut events);
+        sim.tick(&mut registry, 0.1);
+        assert!(
+            registry
+                .world
+                .get::<&Pendulum>(entity)
+                .unwrap()
+                .angle_deg
+                .abs()
+                > 0.0
+        );
+
+        sim.use_entity(&mut registry, entity, None, &mut events);
+        assert!(registry.world.get::<&Pendulum>(entity).unwrap().returning);
+        tick_for(&mut sim, &mut registry, 2.0, 0.05);
+        let pendulum = registry.world.get::<&Pendulum>(entity).unwrap();
+        assert!(
+            (pendulum.angle_deg - 0.0).abs() < 1e-3,
+            "{}",
+            pendulum.angle_deg
+        );
+        assert!(!pendulum.returning);
     }
 
     #[test]
