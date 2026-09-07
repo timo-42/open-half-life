@@ -78,6 +78,82 @@ impl std::str::FromStr for Viewpoint {
     }
 }
 
+/// How a headless/scripted capture's camera is placed for each frame it
+/// renders.
+///
+/// `--viewpoint` (and `--viewpoint-at-nearest-monster`) freeze the camera
+/// in world space, in noclip: [`Game::set_viewpoint`] is called once, and
+/// every subsequent frame renders from wherever that landed, regardless of
+/// what the rest of the level does around it. `--spawn-offset` instead
+/// rides with the player: no noclip is ever enabled, so the walking
+/// player keeps colliding and moving normally (including riding a mover),
+/// and each frame's render eye is recomputed as that player's *current*
+/// eye position plus the caller's fixed offset (see [`rider_pose`]).
+enum CapturePose {
+    /// Neither flag was given: render from the map's own player start,
+    /// unmodified.
+    None,
+    /// `--viewpoint`/`--viewpoint-at-nearest-monster`: already applied to
+    /// the game's tracked camera via [`Game::set_viewpoint`]; every frame
+    /// renders from there as-is.
+    Frozen,
+    /// `--spawn-offset`: recomputed fresh from the player's current eye
+    /// position every time a frame is rendered or a solid-geometry check
+    /// is made.
+    Rider(Viewpoint),
+}
+
+/// The camera pose a `--spawn-offset` rider capture uses right now: the
+/// player's current physics eye position plus the caller's offset, so the
+/// camera keeps riding along with the player (a moving `func_train`, the
+/// tram) instead of freezing in world space the way `--viewpoint` does.
+fn rider_pose(game: &Game, offset: Viewpoint) -> Viewpoint {
+    let eye = game.eye_position();
+    let camera = game.camera();
+    Viewpoint {
+        position: [
+            eye[0] + offset.position[0],
+            eye[1] + offset.position[1],
+            eye[2] + offset.position[2],
+        ],
+        pitch: camera.pitch + offset.pitch,
+        yaw: camera.yaw + offset.yaw,
+    }
+}
+
+/// Whether `pose`'s current position sits inside solid collision geometry
+/// right now, checked once per call (a rider pose is recomputed each time,
+/// since the player may have moved since the last check).
+fn pose_is_in_solid(game: &Game, pose: &CapturePose) -> bool {
+    match pose {
+        CapturePose::None => false,
+        CapturePose::Frozen => game.eye_is_in_solid(),
+        CapturePose::Rider(offset) => game.position_is_in_solid(rider_pose(game, *offset).position),
+    }
+}
+
+/// Renders one frame per `pose`: [`CapturePose::None`]/[`CapturePose::Frozen`]
+/// draw from the game's own tracked camera (already set to the frozen
+/// world-space pose, if any, by the caller); [`CapturePose::Rider`] draws
+/// from the player's current eye position plus the offset via
+/// [`Game::render_from`], leaving the tracked camera untouched so the next
+/// [`Game::tick`] keeps simulating the walking player normally.
+fn render_capture(
+    game: &mut Game,
+    context: &GpuContext,
+    target: RenderTarget<'_>,
+    pose: &CapturePose,
+) -> Result<(), &'static str> {
+    match pose {
+        CapturePose::Rider(offset) => {
+            let rider = rider_pose(game, *offset);
+            game.render_from(context, target, rider.position, rider.pitch, rider.yaw)
+        }
+        CapturePose::Frozen | CapturePose::None => game.render(context, target),
+    }
+    .map_err(|_| "the frame could not be rendered")
+}
+
 /// Everything the playable loop needs from the command line.
 pub struct GameArgs<'a> {
     /// The published payload's `files/` directory.
@@ -221,17 +297,40 @@ fn run_scripted(
         tracing::info!("Scripted input loaded.");
     }
 
-    if let Some(viewpoint) = args.viewpoint {
+    // `--viewpoint-at-nearest-monster` is applied once, right here, before
+    // the script's own ticks run — the same "place once, then let the
+    // world go" shape `--viewpoint` and `--spawn-offset` already have. A
+    // scripted capture is exactly where a motion capture from a chosen
+    // vantage point is most useful, so this flag is wired in rather than
+    // silently ignored under `--script` (J4).
+    #[cfg(feature = "dev-tools")]
+    let placed_at_monster = if let Some(distance) = args.viewpoint_at_nearest_monster {
+        place_viewpoint_near_nearest_monster(game, distance);
+        true
+    } else {
+        false
+    };
+    #[cfg(not(feature = "dev-tools"))]
+    let placed_at_monster = false;
+
+    let pose = if placed_at_monster {
+        CapturePose::Frozen
+    } else if let Some(viewpoint) = args.viewpoint {
         game.set_viewpoint(viewpoint.position, viewpoint.pitch, viewpoint.yaw);
+        CapturePose::Frozen
     } else if let Some(offset) = args.spawn_offset {
-        let camera = game.camera();
-        let position = [
-            camera.position[0] + offset.position[0],
-            camera.position[1] + offset.position[1],
-            camera.position[2] + offset.position[2],
-        ];
-        let (pitch, yaw) = (camera.pitch + offset.pitch, camera.yaw + offset.yaw);
-        game.set_viewpoint(position, pitch, yaw);
+        CapturePose::Rider(offset)
+    } else {
+        CapturePose::None
+    };
+
+    // See `capture`'s own identical check: a frozen (`--viewpoint`/
+    // `--viewpoint-at-nearest-monster`) pose can start inside solid
+    // geometry, and a rider (`--spawn-offset`) pose can end up there once
+    // the player has moved (see J1). Checked again after the script's own
+    // ticks run, below.
+    if !matches!(pose, CapturePose::None) && pose_is_in_solid(game, &pose) {
+        tracing::warn!("Capture viewpoint starts inside solid geometry.");
     }
 
     let mut log = crate::script_log::ScriptLog::new(game);
@@ -272,8 +371,12 @@ fn run_scripted(
         tracing::info!("Scripted input finished.");
     }
 
+    if !matches!(pose, CapturePose::None) && pose_is_in_solid(game, &pose) {
+        tracing::warn!("Capture viewpoint ends inside solid geometry.");
+    }
+
     match args.screenshot {
-        Some(path) => write_screenshot(game, path),
+        Some(path) => write_screenshot(game, path, &pose),
         None => Ok(()),
     }
 }
@@ -282,12 +385,13 @@ fn run_scripted(
 /// [`run_scripted`]; [`capture`] renders once per advanced frame instead,
 /// since a capture without a script advances the world's own animation one
 /// tick at a time between renders.
-fn write_screenshot(game: &mut Game, path: &Path) -> Result<(), &'static str> {
+fn write_screenshot(game: &mut Game, path: &Path, pose: &CapturePose) -> Result<(), &'static str> {
     let context = GpuContext::headless().map_err(|_| "no usable graphics adapter is available")?;
     let (width, height) = CAPTURE_SIZE;
     let target = OffscreenTarget::new(&context, width, height)
         .map_err(|_| "no offscreen target could be created")?;
-    game.render(
+    render_capture(
+        game,
         &context,
         RenderTarget {
             view: target.view(),
@@ -295,8 +399,8 @@ fn write_screenshot(game: &mut Game, path: &Path) -> Result<(), &'static str> {
             height,
             format: OFFSCREEN_FORMAT,
         },
-    )
-    .map_err(|_| "the frame could not be rendered")?;
+        pose,
+    )?;
     context.wait();
 
     let pixels = target
@@ -434,42 +538,46 @@ fn capture(
     #[cfg(not(feature = "dev-tools"))]
     let placed_at_monster = false;
 
-    if placed_at_monster {
+    let pose = if placed_at_monster {
         // Handled above; the ordinary viewpoint/spawn-offset chain below is
         // mutually exclusive with it (clap's own `requires` wiring already
         // keeps `--viewpoint`/`--spawn-offset` and
         // `--viewpoint-at-nearest-monster` from making sense together, so
         // this just documents that this branch takes priority).
+        CapturePose::Frozen
     } else if let Some(viewpoint) = args.viewpoint {
         game.set_viewpoint(viewpoint.position, viewpoint.pitch, viewpoint.yaw);
+        CapturePose::Frozen
     } else if let Some(offset) = args.spawn_offset {
         // Relative to wherever the map's own player start put the camera,
         // so a capture can be aimed without anyone having to know (or
-        // record) a map's coordinates.
-        let camera = game.camera();
-        let position = [
-            camera.position[0] + offset.position[0],
-            camera.position[1] + offset.position[1],
-            camera.position[2] + offset.position[2],
-        ];
-        let (pitch, yaw) = (camera.pitch + offset.pitch, camera.yaw + offset.yaw);
-        game.set_viewpoint(position, pitch, yaw);
-    }
+        // record) a map's coordinates. Unlike `--viewpoint` this never
+        // enables noclip: the player spawns and moves normally (falling,
+        // colliding, riding a mover), and `render_capture` recomputes the
+        // render eye from the player's *current* position plus this
+        // offset every frame, rather than freezing it in world space at
+        // whatever the map's player start happened to be at tick 0 (J1).
+        CapturePose::Rider(offset)
+    } else {
+        CapturePose::None
+    };
 
-    // `set_viewpoint` runs with noclip on (see its doc comment) so it
-    // cannot push the camera clear of an accidental overlap the way
-    // ordinary spawn placement does; surface that as a warning rather than
-    // silently writing a meaningless frame. The message is a fixed string
-    // with no map-derived data, per this module's logging policy.
-    if (args.viewpoint.is_some() || args.spawn_offset.is_some() || placed_at_monster)
-        && game.eye_is_in_solid()
-    {
+    // A frozen (`--viewpoint`/`--viewpoint-at-nearest-monster`) pose runs
+    // in noclip and so cannot push the camera clear of an accidental
+    // overlap the way ordinary spawn placement does; a rider
+    // (`--spawn-offset`) pose can start clear but end up inside geometry
+    // the player has since moved through or a mover has vacated. Surface
+    // both as a warning rather than silently writing a meaningless frame.
+    // The message is a fixed string with no map-derived data, per this
+    // module's logging policy. Checked again after the last frame, below.
+    if !matches!(pose, CapturePose::None) && pose_is_in_solid(game, &pose) {
         tracing::warn!("Capture viewpoint starts inside solid geometry.");
     }
 
     for _ in 0..args.frames.max(1) {
-        // The capture stands still: only the world's own animation (doors,
-        // light styles, liquid turbulence, model sequences) advances.
+        // The capture stands still (aside from a rider pose following the
+        // player): only the world's own animation (doors, light styles,
+        // liquid turbulence, model sequences) advances.
         let events = game.tick(CAPTURE_STEP, &Input::default());
         for event in events {
             match event {
@@ -496,7 +604,8 @@ fn capture(
                 }
             }
         }
-        game.render(
+        render_capture(
+            game,
             &context,
             RenderTarget {
                 view: target.view(),
@@ -504,10 +613,14 @@ fn capture(
                 height,
                 format: OFFSCREEN_FORMAT,
             },
-        )
-        .map_err(|_| "the frame could not be rendered")?;
+            &pose,
+        )?;
     }
     context.wait();
+
+    if !matches!(pose, CapturePose::None) && pose_is_in_solid(game, &pose) {
+        tracing::warn!("Capture viewpoint ends inside solid geometry.");
+    }
 
     let pixels = target
         .read_rgba(&context)
@@ -907,5 +1020,146 @@ impl ApplicationHandler for App<'_> {
         if let Some(active) = self.state.as_ref() {
             active.window.request_redraw();
         }
+    }
+}
+
+/// Unit tests for the rider-offset math (`--spawn-offset`) and the
+/// solid-geometry checks that gate its warnings, against `ohl-engine`'s
+/// own synthetic fixtures (`test-support`, a dev-dependency). No GPU is
+/// needed: none of these call `Game::render`/`render_from`, only `tick`
+/// and the pure position math.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ohl_engine::test_support::{
+        MOVER_MAP, MOVER_SEGMENT_LENGTH, MOVER_SPEED, SYNTHETIC_MAP, mover_train_bsp,
+        synthetic_map_bsp,
+    };
+    use ohl_engine::{AssetSource, MemoryAssets};
+
+    fn load(map: &str, bsp: Vec<u8>) -> Game {
+        let mut assets = MemoryAssets::new();
+        assets.insert(&format!("maps/{map}.bsp"), bsp);
+        Game::load(&assets as &dyn AssetSource, map).expect("the synthetic map loads")
+    }
+
+    fn settle(game: &mut Game, ticks: u32) {
+        for _ in 0..ticks {
+            game.tick(CAPTURE_STEP, &Input::default());
+        }
+    }
+
+    /// Ticks for the mover fixture to finish its one-segment ride, plus a
+    /// little slack.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn ride_ticks() -> u32 {
+        ((MOVER_SEGMENT_LENGTH / MOVER_SPEED) / CAPTURE_STEP) as u32
+    }
+
+    fn assert_positions_close(actual: [f32; 3], expected: [f32; 3]) {
+        for axis in 0..3 {
+            assert!(
+                (actual[axis] - expected[axis]).abs() < 1e-3,
+                "expected {expected:?}, got {actual:?}"
+            );
+        }
+    }
+
+    /// The core J1 fix: the rider pose is not a snapshot taken once at
+    /// spawn, it is recomputed from wherever the player's eye actually is
+    /// right now — so once the player has ridden a mover well away from
+    /// their spawn point, the rider pose moves with them.
+    #[test]
+    fn rider_pose_tracks_the_players_current_eye_position_plus_the_offset() {
+        let mut game = load(MOVER_MAP, mover_train_bsp());
+        // Let the player settle onto the train before it has covered any
+        // ground, then ride along for most of its one-segment travel.
+        settle(&mut game, 3);
+        settle(&mut game, ride_ticks());
+
+        let offset = Viewpoint {
+            position: [0.0, 0.0, 32.0],
+            pitch: -5.0,
+            yaw: 10.0,
+        };
+        let pose = rider_pose(&game, offset);
+        let eye = game.eye_position();
+        let camera = game.camera();
+        assert_positions_close(
+            pose.position,
+            [
+                eye[0] + offset.position[0],
+                eye[1] + offset.position[1],
+                eye[2] + offset.position[2],
+            ],
+        );
+        assert!((pose.pitch - (camera.pitch + offset.pitch)).abs() < 1e-6);
+        assert!((pose.yaw - (camera.yaw + offset.yaw)).abs() < 1e-6);
+
+        // And the player must actually have moved with the train by now
+        // (not frozen at spawn) — otherwise this test would trivially
+        // pass by never exercising the rider behaviour at all.
+        assert!(
+            eye[0] > MOVER_SEGMENT_LENGTH * 0.5,
+            "the player did not ride the train: eye={eye:?}"
+        );
+    }
+
+    /// The scenario J1 found broken on the real tram map: freezing the
+    /// camera in world space at spawn ends the capture embedded in
+    /// geometry the mover has since vacated. A rider pose, sampled
+    /// throughout the whole ride, must never do that.
+    #[test]
+    fn rider_pose_never_ends_up_in_solid_geometry_the_train_has_left() {
+        let mut game = load(MOVER_MAP, mover_train_bsp());
+        settle(&mut game, 3);
+        // An offset that keeps the eye at ordinary player height above the
+        // train's own deck, matching how a real capture would frame it.
+        let offset = Viewpoint {
+            position: [0.0, 0.0, 0.0],
+            pitch: 0.0,
+            yaw: 0.0,
+        };
+        for tick in 0..ride_ticks() + 60 {
+            game.tick(CAPTURE_STEP, &Input::default());
+            if tick % 10 == 0 {
+                assert!(
+                    !game.position_is_in_solid(rider_pose(&game, offset).position),
+                    "rider pose landed in solid geometry at tick {tick}"
+                );
+            }
+        }
+    }
+
+    /// On a map with no mover, the player's eye stops changing once
+    /// gravity settles them onto the floor, so a rider pose sampled at any
+    /// later frame is the same value the old frozen-at-spawn behaviour
+    /// would already have produced. This is the "identical on static
+    /// maps" property the fix must keep for the seven standard viewpoints.
+    #[test]
+    fn a_static_maps_rider_pose_does_not_drift_once_the_player_has_settled() {
+        let mut game = load(SYNTHETIC_MAP, synthetic_map_bsp());
+        settle(&mut game, 30);
+        let offset = Viewpoint {
+            position: [10.0, -5.0, 2.0],
+            pitch: 3.0,
+            yaw: -8.0,
+        };
+        let first = rider_pose(&game, offset);
+        settle(&mut game, 60);
+        let later = rider_pose(&game, offset);
+        assert_positions_close(first.position, later.position);
+        assert!((first.pitch - later.pitch).abs() < 1e-6);
+        assert!((first.yaw - later.yaw).abs() < 1e-6);
+    }
+
+    #[test]
+    fn pose_is_in_solid_matches_the_capture_pose() {
+        let game = load(SYNTHETIC_MAP, synthetic_map_bsp());
+        assert!(!pose_is_in_solid(&game, &CapturePose::None));
+        assert_eq!(
+            pose_is_in_solid(&game, &CapturePose::Frozen),
+            game.eye_is_in_solid()
+        );
     }
 }

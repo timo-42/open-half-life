@@ -743,10 +743,20 @@ impl Game {
     /// since the resulting frame is not a meaningful capture.
     #[must_use]
     pub fn eye_is_in_solid(&self) -> bool {
+        self.position_is_in_solid(self.camera.position)
+    }
+
+    /// As [`Self::eye_is_in_solid`], but against an arbitrary world-space
+    /// point instead of the camera's own tracked position — for a host
+    /// that renders from a position it computed itself (see
+    /// [`Self::render_from`]) rather than one it handed to
+    /// [`Self::set_viewpoint`].
+    #[must_use]
+    pub fn position_is_in_solid(&self, position: [f32; 3]) -> bool {
         self.level.collision.as_ref().is_some_and(|collision| {
             ohl_physics::contents::is_solid(ohl_physics::point_contents(
                 collision,
-                Vec3::from_array(self.camera.position),
+                Vec3::from_array(position),
             ))
         })
     }
@@ -1316,6 +1326,37 @@ impl Game {
             self.systems.transient_sprites().as_slice(),
         );
         Ok(())
+    }
+
+    /// As [`Self::render`], but drawn from `position`/`pitch`/`yaw` instead
+    /// of this game's own tracked camera, for exactly this one frame.
+    ///
+    /// Unlike [`Self::set_viewpoint`] this never touches the physics
+    /// controller or noclip: the tracked camera is saved, swapped in for
+    /// the draw call, and restored before returning, so the walking
+    /// player's own position keeps advancing normally on every following
+    /// [`Self::tick`] (riding a mover, gravity, collision, all unaffected).
+    /// Intended for a headless capture that wants the render eye to follow
+    /// the player at a fixed offset (`--spawn-offset`) rather than freeze
+    /// in world space.
+    ///
+    /// # Errors
+    /// As [`Self::render`].
+    pub fn render_from(
+        &mut self,
+        context: &GpuContext,
+        target: RenderTarget<'_>,
+        position: [f32; 3],
+        pitch: f32,
+        yaw: f32,
+    ) -> Result<()> {
+        let saved = self.camera;
+        self.camera.position = position;
+        self.camera.pitch = pitch;
+        self.camera.yaw = yaw;
+        let result = self.render(context, target);
+        self.camera = saved;
+        result
     }
 }
 
