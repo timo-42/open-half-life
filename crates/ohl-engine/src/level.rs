@@ -292,24 +292,21 @@ fn attach_brush_collision(
             // `"*0"` is the worldspawn model, which `model` already holds.
             continue;
         }
-        let (axis, angle_degrees) = crate::render::mover_rotation(registry, instance.entity);
-        let origin = if axis == Vec3::ZERO {
-            instance.origin + crate::render::brush_offset(registry, instance.entity)
-        } else {
-            // A rotating mover's compiled geometry already sits at its
-            // pivot's own world position, exactly as `crate::render`'s
-            // `rotated_placement` assumes for drawing it (its own doc
-            // comment): TWHL wiki `func_door_rotating` documents the
-            // entity's `origin` keyvalue as coming from a required "origin
-            // brush" placed where the geometry already is, not a
-            // translation to apply on top of it. So it is attached at zero
-            // translation here, and only `set_brush_pose` below — never a
-            // plain translation — moves it.
-            Vec3::ZERO
-        };
+        let origin = instance.origin + crate::render::brush_offset(registry, instance.entity);
         if let Ok(id) = model.attach_brush(bsp, limits, index, origin) {
+            let (axis, angle_degrees) = crate::render::mover_rotation(registry, instance.entity);
             if axis != Vec3::ZERO {
-                model.set_brush_pose(id, Vec3::ZERO, instance.origin, axis, angle_degrees);
+                // A rotating mover's compiled geometry is stored relative
+                // to its own origin brush, exactly like a `func_train`'s
+                // (`crate::render::track_train_transform`'s own doc
+                // comment: "the compiler writes that origin brush's
+                // position into the entity's `origin` keyvalue and stores
+                // the submodel's geometry relative to it") — so the
+                // pivot to rotate about is the *local* origin the geometry
+                // is already centred on, `Vec3::ZERO`, not the world-space
+                // `origin` keyvalue `attach_brush` already translated by
+                // above.
+                model.set_brush_pose(id, origin, Vec3::ZERO, axis, angle_degrees);
             }
             attached.push((instance.entity, id));
         }
@@ -581,28 +578,30 @@ impl Level {
                 brush_velocity.remove(brush);
                 return false;
             };
+            let offset = crate::render::brush_offset(registry, *entity);
+            let new_origin = transform.origin + offset;
+            let displacement = new_origin - model.brush_origin(*brush);
+            let velocity = if dt.is_finite() && dt > 0.0 && displacement.is_finite() {
+                displacement / dt
+            } else {
+                Vec3::ZERO
+            };
+            // `Level::brush_velocity`'s "Riding movers" mechanism is
+            // TODO(black-box) for the *rotational* component of a rotating
+            // mover's motion — a rotating door's own translation (always
+            // zero; see `crate::render::brush_offset`'s doc comment) still
+            // reports a velocity above like any other brush, but nothing
+            // yet derives a rider's push from the rotation itself.
+            brush_velocity.insert(*brush, velocity);
             let (axis, angle_degrees) = crate::render::mover_rotation(registry, *entity);
             if axis == Vec3::ZERO {
-                let offset = crate::render::brush_offset(registry, *entity);
-                let new_origin = transform.origin + offset;
-                let displacement = new_origin - model.brush_origin(*brush);
-                let velocity = if dt.is_finite() && dt > 0.0 && displacement.is_finite() {
-                    displacement / dt
-                } else {
-                    Vec3::ZERO
-                };
-                brush_velocity.insert(*brush, velocity);
                 model.set_brush_origin(*brush, new_origin);
             } else {
-                // A rotating mover never also translates (see
-                // `attach_brush_collision`'s matching branch): its own
-                // pivot ([`Transform::origin`]) does not move, so there is
-                // no displacement to turn into a rider-carrying velocity —
-                // `Level::brush_velocity`'s "Riding movers" mechanism is
-                // TODO(black-box) for a rotating brush, same as the crush
-                // detection already recorded for a blocked mover above.
-                brush_velocity.insert(*brush, Vec3::ZERO);
-                model.set_brush_pose(*brush, Vec3::ZERO, transform.origin, axis, angle_degrees);
+                // See `attach_brush_collision`'s matching branch: the pivot
+                // to rotate about is the *local* origin the compiled
+                // geometry is already centred on, not the world-space
+                // translation `new_origin` already carries.
+                model.set_brush_pose(*brush, new_origin, Vec3::ZERO, axis, angle_degrees);
             }
             true
         });
@@ -1086,24 +1085,35 @@ mod tests {
         }
         level.sync_brush_collision(1.0 / 60.0);
 
-        let pivot = ohl_physics::Vec3::new(192.0, -88.0, 0.0);
+        let pivot = ohl_physics::Vec3::new(
+            crate::test_support::ROTATING_DOOR_PIVOT[0],
+            crate::test_support::ROTATING_DOOR_PIVOT[1],
+            crate::test_support::ROTATING_DOOR_PIVOT[2],
+        );
         let axis = ohl_physics::Vec3::Z;
         let angle_degrees = 90.0;
+        // `origin` here (in the sense `rotated_placement` and
+        // `set_brush_pose` both use it): the compiled submodel's own
+        // local `(0, 0, 0)` sits at this world point (see
+        // `rotating_door_bsp`'s doc comment), so it is what render's
+        // rotate-then-translate composes with, unchanged from a plain
+        // translating mover's `origin` keyvalue.
         let transform = crate::render::rotated_placement(pivot, axis, angle_degrees);
 
-        // A point just inside the door leaf's own compiled shape (offset
-        // 2 units in from its pivot edge, well inside every other face),
-        // carried into world space through the render matrix.
+        // A point just inside the door leaf's own compiled (local, pivot-
+        // relative) shape — offset 2 units in from its pivot edge, well
+        // inside every other face — carried into world space through the
+        // render matrix exactly as the renderer would place that vertex.
         let local_point_inside_the_leaf = ohl_physics::Vec3::new(
             f32::midpoint(
                 crate::test_support::ROTATING_DOOR_MINS[0],
                 crate::test_support::ROTATING_DOOR_MAXS[0],
-            ),
-            crate::test_support::ROTATING_DOOR_MINS[1] + 2.0,
+            ) - pivot.x,
+            crate::test_support::ROTATING_DOOR_MINS[1] + 2.0 - pivot.y,
             f32::midpoint(
                 crate::test_support::ROTATING_DOOR_MINS[2],
                 crate::test_support::ROTATING_DOOR_MAXS[2],
-            ),
+            ) - pivot.z,
         );
         let world_point = apply_placement(&transform, local_point_inside_the_leaf);
 
@@ -1118,7 +1128,7 @@ mod tests {
         // The corridor's own centreline, where the door started (and,
         // correctly rotated, must no longer reach), stays empty under the
         // same pose.
-        let centerline = ohl_physics::Vec3::new(192.0, 0.0, 40.0);
+        let centerline = ohl_physics::Vec3::new(pivot.x, 0.0, 40.0);
         assert_eq!(model.point_contents(centerline), contents::EMPTY);
     }
 }

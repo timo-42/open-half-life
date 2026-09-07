@@ -346,14 +346,15 @@ impl Renderers {
                 let yaw = yaw_override.unwrap_or(instance.angles.y);
                 placement(origin.to_array(), yaw)
             } else {
-                // A rotating mover's pivot is its own origin keyvalue (see
-                // `rotated_placement`'s doc comment); it never also carries
-                // a translating `brush_offset` (`Door::movedir` is left
-                // `Vec3::ZERO` for a `func_door_rotating`, and
-                // `func_rotating` has no offset source at all — see
-                // `mover_rotation`'s doc comment), so the entity's own
-                // authored `angles` yaw is not reapplied here either: only
-                // the live simulation-driven rotation state matters.
+                // A rotating mover's compiled geometry is stored relative
+                // to its own origin keyvalue (see `rotated_placement`'s
+                // doc comment); it never also carries a translating
+                // `brush_offset` (`Door::movedir` is left `Vec3::ZERO` for
+                // a `func_door_rotating`, and `func_rotating` has no
+                // offset source at all — see `mover_rotation`'s doc
+                // comment), so the entity's own authored `angles` yaw is
+                // not reapplied here either: only the live
+                // simulation-driven rotation state matters.
                 rotated_placement(instance.origin, rotation_axis, rotation_degrees)
             };
             self.world.draw_world_submodel(
@@ -530,22 +531,35 @@ pub(crate) fn mover_rotation(registry: &ohl_game::Registry, entity: Entity) -> (
     rotator_degrees(registry, entity)
 }
 
-/// A world-space placement matrix that rotates a brush's already
-/// world-baked vertices by `angle_degrees` about `axis`, pivoting at
-/// `pivot` — the origin keyvalue TWHL's `func_door_rotating` page documents
-/// as coming from a required "origin brush" giving "the axis to rotate on"
-/// (`docs/FORMAT_SOURCES.md`, "Entity keyvalues and map logic"). Returns
-/// the identity matrix for a zero axis or a zero angle, so composing this
-/// unconditionally would be a no-op — though every caller still branches on
-/// [`mover_rotation`] first rather than relying on that, since a rotating
-/// mover never also carries a translating [`brush_offset`] to add in.
-pub(crate) fn rotated_placement(pivot: Vec3, axis: Vec3, angle_degrees: f32) -> math::Mat4 {
+/// A world-space placement matrix for a rotating brush entity: rotate the
+/// submodel's own compiled vertices by `angle_degrees` about `axis`, then
+/// translate by `origin`.
+///
+/// Unlike an ordinary brush entity's geometry (baked in world space, so
+/// [`placement`] only ever has to add a translation on top of it), a
+/// `func_door_rotating`/`func_rotating` *requires* an origin brush (TWHL
+/// wiki `func_door_rotating`: it "gives it the axis to rotate on";
+/// `docs/FORMAT_SOURCES.md`, "Entity keyvalues and map logic"), and the
+/// compiler responds by storing that submodel's geometry relative to the
+/// origin brush's own position rather than in absolute world space — the
+/// same convention `track_train_transform`'s doc comment already records
+/// for `func_train`'s origin keyvalue ("the compiler writes that origin
+/// brush's position into the entity's `origin` keyvalue and stores the
+/// submodel's geometry relative to it"). So the pivot to rotate about is
+/// simply the submodel's own local origin (`Vec3::ZERO`, no separate pivot
+/// parameter needed), and `origin` is added *after* rotating, exactly the
+/// same "rotate, then translate" order [`placement`] already uses for a
+/// yaw-only rotation. Returns the identity matrix for a zero axis or a
+/// zero angle, so composing this unconditionally would be a no-op — though
+/// every caller still branches on [`mover_rotation`] first rather than
+/// relying on that, since a rotating mover never also carries a
+/// translating [`brush_offset`] to add in.
+pub(crate) fn rotated_placement(origin: Vec3, axis: Vec3, angle_degrees: f32) -> math::Mat4 {
     if axis == Vec3::ZERO || angle_degrees == 0.0 {
         return math::identity();
     }
     let rotation = Quat::from_axis_angle(axis.normalize(), angle_degrees.to_radians());
-    let matrix =
-        Mat4::from_translation(pivot) * Mat4::from_quat(rotation) * Mat4::from_translation(-pivot);
+    let matrix = Mat4::from_translation(origin) * Mat4::from_quat(rotation);
     matrix.to_cols_array()
 }
 
