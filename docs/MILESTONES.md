@@ -3387,3 +3387,55 @@ documented before this package updated it to assert the fix instead.
   up to a real `func_door_rotating` and opens it, asserting the new fixed
   milestone line "The player opened a door."; the other 24 scenarios assert
   that line absent.
+
+- **M9.6 (rotating movers: activator-relative doors and riders).** Closes
+  two of the three gaps M9.4 left open (`docs/FORMAT_SOURCES.md`
+  `TODO(black-box)` item 26). A `func_door_rotating` now swings *away* from
+  whoever opened it unless its documented "One Way" spawnflag is set: a new
+  spawn-time `ohl_game::registry::RotatingDoorSwing` component carries the
+  spawnflag-chosen axis, the "One Way" bit, and the direction the door
+  leaf's centre first moves in under a positive rotation, and
+  `Simulation::activate` picks the sign of `Door::rotation_axis` from which
+  side of that hinge plane the activator stands on — on the closed ->
+  opening edge only, so a part-open leaf can never be mirrored mid-swing.
+  Because the choice lives in `rotation_axis`'s own sign, it persists
+  through the per-entity `Door` snapshot both a save (tag 18) and a level
+  transition already carry, with no new save state. The player is not a
+  `hecs` entity in this project, so `Simulation::set_activator_origin` (a
+  per-tick scratch value, not persisted) hands the simulation the player's
+  position for `use` presses and touch triggers.
+  Riders: `ohl_physics::rotational_ride_velocity` computes the rigid-body
+  `v = omega x r`, `Level::brush_rotation` records each attached rotating
+  brush's pivot and angular velocity per step (shortest signed arc, so a
+  `func_rotating`'s 360-degree wrap does not read as a backwards
+  revolution), and `Level::brush_ride_velocity` sums it with the existing
+  translation velocity at the player's own origin — feeding the same
+  `PlayerController::base_velocity` and `push_from_mover` paths a
+  translating mover already used, so a spinning platform carries a standing
+  player and a swinging brush pushes rather than traps one.
+  `Game::ground_mover_speed` (the dev-tools "riding a mover" line) measures
+  the same combined ride. A property test caught a real bug on the way: a
+  player resting on a rotating brush sits exactly on its pre-expanded hull
+  plane, and the pose's inverse rotation put that point a rounding step
+  inside solid on some steps, so the ground probe intermittently reported
+  them embedded and dropped them off a floor they had not left;
+  `ohl_physics::movement`'s `ground_probe` now retries the trace from one
+  unit up and uses the retry only when it comes back clean.
+  Tests: `crates/ohl-game/src/logic.rs` unit tests (both activator sides,
+  "One Way", and no mirroring mid-cycle); `crates/ohl-physics/tests/
+  rotating_riders.rs` property tests (the tangential-velocity relation, a
+  point on the axis, and a hull resting on a slowly rotating disc staying on
+  it and out of solid for every tick of a ride);
+  `crates/ohl-engine/tests/rotating_riders.rs` (a `func_rotating` turntable
+  in a void carries a standing player around its axis, and stops carrying
+  when stopped) and `crates/ohl-engine/tests/rotating_door.rs` (a door
+  opened by the player through a touch trigger flips its swing away from
+  them and never leaves them in solid); `crates/ohl-engine/tests/
+  save_sections.rs` (the chosen swing side survives a save/load).
+  **Still open:** the player's *view* is not yawed with a rotating platform
+  they ride (a view change no public source describes; deliberately not
+  approximated), and rotating movers' `dmg`/blocking is still not wired
+  into `Level::movers_blocked`. No combat-smoke scenario was added for the
+  *rider* path: a local probe found no rotating brush entity near the
+  player start of any campaign map the existing scenarios visit, so a
+  scenario would have to navigate a real map's corridors to reach one.

@@ -872,7 +872,52 @@ pub fn rotating_door_bsp(entities: &str) -> Vec<u8> {
     let door_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(local_mins, local_maxs)]);
     b.push_model([-4096.0; 3], [4096.0; 3], [0.0; 3], world_heads, 2, 0, 0);
     b.push_model(local_mins, local_maxs, [0.0; 3], door_heads, 2, 0, 0);
+    // Submodel 2: a *non-solid* volume around the player start, carrying
+    // only a bounding box (bare hull heads, like
+    // `door_behind_touch_trigger_bsp`'s own trigger submodel), for a
+    // fixture that wants the door opened by walking rather than by forcing
+    // its state. Entity texts that never reference `"*2"` — including
+    // [`rotating_door_entities`] — simply leave it unused.
+    let trigger_heads = b.push_collision_hulls(&[]);
+    b.push_model(
+        ROTATING_DOOR_TRIGGER_MINS,
+        ROTATING_DOOR_TRIGGER_MAXS,
+        [0.0; 3],
+        trigger_heads,
+        2,
+        0,
+        0,
+    );
     b.build()
+}
+
+/// The touch volume [`rotating_door_trigger_entities`]'s
+/// `trigger_multiple` occupies: a slab of the corridor around the
+/// `info_player_start`, so a player who does nothing at all is already
+/// standing in it on the first tick.
+pub const ROTATING_DOOR_TRIGGER_MINS: [f32; 3] = [120.0, -96.0, 0.0];
+/// See [`ROTATING_DOOR_TRIGGER_MINS`].
+pub const ROTATING_DOOR_TRIGGER_MAXS: [f32; 3] = [175.0, 96.0, 96.0];
+
+/// The `targetname` of [`rotating_door_trigger_entities`]'s trigger.
+pub const ROTATING_DOOR_TRIGGER_NAME: &str = "ohl_rot_door_trigger";
+
+/// [`rotating_door_entities`], plus a `trigger_multiple` (submodel `*2`)
+/// covering the player start and targeting the door — so the door is
+/// opened by the *player*, through the engine's own touch-trigger phase,
+/// with the player as the activator whose side of the hinge plane decides
+/// which way it swings (`ohl_game::registry::RotatingDoorSwing`,
+/// `docs/FORMAT_SOURCES.md` item 26). No bytes here come from any game
+/// installation; see `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn rotating_door_trigger_entities() -> String {
+    format!(
+        "{}{{\n\"classname\" \"trigger_multiple\"\n\
+         \"targetname\" \"{ROTATING_DOOR_TRIGGER_NAME}\"\n\
+         \"target\" \"{ROTATING_DOOR_NAME}\"\n\"model\" \"*2\"\n\
+         \"wait\" \"10\"\n\"origin\" \"0 0 0\"\n}}\n",
+        rotating_door_entities(),
+    )
 }
 
 /// A `worldspawn` plus an `info_player_start` short of the door (`x =
@@ -895,5 +940,81 @@ pub fn rotating_door_entities() -> String {
          \"model\" \"*1\"\n\"speed\" \"360\"\n\"distance\" \"90\"\n\"wait\" \"-1\"\n\
          \"origin\" \"{} {} {}\"\n}}\n",
         ROTATING_DOOR_PIVOT[0], ROTATING_DOOR_PIVOT[1], ROTATING_DOOR_PIVOT[2],
+    )
+}
+
+// ---------------------------------------------------------------------
+// A `func_rotating` turntable the player stands on
+// ---------------------------------------------------------------------
+
+/// The map name the rotating-platform fixture is published under.
+pub const ROTATING_PLATFORM_MAP: &str = "ohlrotplatsynth";
+
+/// The `targetname` of the fixture's `func_rotating`.
+pub const ROTATING_PLATFORM_NAME: &str = "ohl_rot_platform";
+
+/// The turntable's half extent on `X` and `Y`; its top surface is at
+/// `z = 0` and it is 16 units thick. Large enough that a rider standing at
+/// [`ROTATING_PLATFORM_SPAWN_RADIUS`] stays well inside the disc inscribed
+/// in it for a full revolution.
+pub const ROTATING_PLATFORM_HALF_EXTENT: f32 = 192.0;
+
+/// How far from the turntable's axis the fixture's `info_player_start`
+/// stands: far enough out that the tangential ride is unmistakable (tens
+/// of units per second at the fixture's own `speed`), well inside the
+/// disc inscribed in [`ROTATING_PLATFORM_HALF_EXTENT`].
+pub const ROTATING_PLATFORM_SPAWN_RADIUS: f32 = 96.0;
+
+/// Degrees per second the fixture's `func_rotating` spins at (its `speed`
+/// keyvalue; TWHL wiki `func_rotating`, `docs/FORMAT_SOURCES.md`).
+pub const ROTATING_PLATFORM_SPEED: f32 = 45.0;
+
+/// A world with *no floor at all* (an open void) whose only solid is a
+/// turntable compiled as submodel `*1`, relative to its own origin brush
+/// at the world origin — the same convention [`rotating_door_bsp`] uses
+/// and that `docs/FORMAT_SOURCES.md` item 24 records for a real rotating
+/// brush entity.
+///
+/// The void world is the point: a player who is not carried by, or who
+/// falls through, the turntable has nothing else to stand on, so either
+/// failure shows up immediately as a fall instead of hiding behind the
+/// worldspawn floor a less pointed fixture would have.
+#[must_use]
+pub fn rotating_platform_bsp(entities: &str) -> Vec<u8> {
+    let mins = [
+        -ROTATING_PLATFORM_HALF_EXTENT,
+        -ROTATING_PLATFORM_HALF_EXTENT,
+        -16.0,
+    ];
+    let maxs = [
+        ROTATING_PLATFORM_HALF_EXTENT,
+        ROTATING_PLATFORM_HALF_EXTENT,
+        0.0,
+    ];
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(entities);
+    let world_heads = b.push_collision_hulls(&[]);
+    b.push_model([-4096.0; 3], [4096.0; 3], [0.0; 3], world_heads, 2, 0, 0);
+    let slab_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(mins, maxs)]);
+    b.push_model(mins, maxs, [0.0; 3], slab_heads, 2, 0, 0);
+    b.build()
+}
+
+/// A `worldspawn`, an `info_player_start` standing on the turntable at
+/// [`ROTATING_PLATFORM_SPAWN_RADIUS`], and a `func_rotating` (submodel
+/// `*1`) spinning about the documented default `Z` axis at
+/// [`ROTATING_PLATFORM_SPEED`] degrees per second, already on at map load
+/// (`spawnflags` bit 1, "Start On";
+/// `ohl_game::registry::SPAWNFLAG_ROTATING_START_ON`). No bytes here come
+/// from any game installation; see `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn rotating_platform_entities() -> String {
+    format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\
+         \"origin\" \"{ROTATING_PLATFORM_SPAWN_RADIUS} 0 40\"\n\"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"func_rotating\"\n\"targetname\" \"{ROTATING_PLATFORM_NAME}\"\n\
+         \"model\" \"*1\"\n\"speed\" \"{ROTATING_PLATFORM_SPEED}\"\n\"spawnflags\" \"1\"\n\
+         \"origin\" \"0 0 0\"\n}}\n"
     )
 }

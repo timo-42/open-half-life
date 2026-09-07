@@ -3416,3 +3416,128 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
     (`crates/ohl-app/src/script_log.rs`, backed by
     `ohl_engine::Game::doors_opened_by_use_count`); every other
     combat-smoke scenario asserts that same line absent.
+
+### `TODO(black-box)` items, continued (rotating-mover follow-ups)
+
+26. **Activator-relative opening direction, and riders on rotating movers
+    (M9.6).** Resolves two of the three gaps item 24 above left open.
+
+    Citations (no new source; the same TWHL wiki `func_door_rotating` and
+    `func_rotating` pages item 24 already records, with the identical
+    search-summary/HTTP 403 caveat, reviewed 2026-09-07):
+    `func_door_rotating`'s "One Way" spawnflag (16), "door only opens in
+    the direction set in Distance", and the default it disables — "the
+    door will always open away from the player".
+
+    Project behaviour — **direction.** `ohl_game::registry::
+    RotatingDoorSwing` is a new spawn-time-only component on every
+    `func_door_rotating`: the signed axis its spawnflags and `distance`
+    keyvalue alone selected (`base_axis`), the "One Way" bit, and a
+    `hinge_normal` — the unit direction the door leaf's own centre first
+    moves in under a small *positive* rotation about that axis, computed
+    as `base_axis x leaf`, where `leaf` is the midpoint of the submodel's
+    raw compiled bounds (already the offset from the pivot to the leaf,
+    because a rotating brush entity's geometry is compiled relative to its
+    origin brush; item 24). `ohl_game::logic::Simulation::activate` reads
+    it on the closed -> opening edge only and, unless "One Way" is set,
+    replaces `Door::rotation_axis` with `+base_axis` or `-base_axis` so
+    the leaf sweeps *away* from the activator: the sign of
+    `(activator - pivot) . hinge_normal` picks the side. The activator's
+    position comes from the activating entity's own `Transform` when it
+    has one, else from `Simulation::set_activator_origin`, a per-tick
+    scratch value `ohl-engine`'s phase 12 refreshes from the player's
+    position (this project's player is not a `hecs` entity, so a `use`
+    press or a touch trigger has no activator entity to read).
+
+    Which side counts as "away" is fixed by the formula above; two cases
+    no public source decides are this project's own, and are recorded here
+    as project behaviour rather than guessed at repeatedly: an activator
+    standing *exactly* on the hinge plane (`dot == 0`), and a door whose
+    leaf centre sits on the rotation axis itself (`hinge_normal` zero,
+    e.g. a symmetric double leaf), both keep whatever direction the
+    spawnflags/`distance` already chose. The choice is re-made on every
+    open, and is applied only while the door is closed (its rendered and
+    collided angle is zero there, so flipping the sign cannot teleport a
+    part-open leaf). It persists with no new save state at all: the sign
+    lives in `Door::rotation_axis`, which the per-entity `Door` snapshot
+    in `SECTION_ENTITY_REGISTRY` (tag 18) and `crate::transition::
+    EntitySnapshot` already carry verbatim, so a save/load or a level
+    transition reopens the door the way it was last opened. Nothing was
+    added to `SECTION_MOVER_STATE` (28): everything else
+    `RotatingDoorSwing` holds is derived from the map at load and is
+    rebuilt identically by every `attach_level`.
+
+    Project behaviour — **riders.** `ohl_physics::
+    rotational_ride_velocity(pivot, angular_velocity, point)` is the
+    elementary rigid-body relation `v = omega x r`; it is not a
+    reimplementation of anything, and no public source describes a
+    *rotating* GoldSrc platform's carry distinctly from a translating
+    one, so applying it is recorded here as this project's own behaviour.
+    `ohl-engine`'s `Level::brush_rotation` records each attached rotating
+    brush's pivot and angular velocity per step (the shortest signed arc
+    between last step's and this step's posed angle, divided by `dt`, so a
+    `func_rotating`'s own wrap through 360 degrees reports the small rate
+    it actually turned at), exactly mirroring how `Level::brush_velocity`
+    already differences a translating mover's origin.
+    `Level::brush_ride_velocity(brush, point)` sums the two, and
+    `Systems::player_move` feeds that sum — evaluated at the player's own
+    origin — into the same `PlayerController::base_velocity` a translating
+    mover already used, and into the same `ohl_physics::push_from_mover`
+    call that pushes a player a closing door has walked into. So a player
+    standing on a spinning `func_rotating` is carried at the tangential
+    speed of the point under their feet (nothing on the axis, fastest at
+    the rim), and a rotating brush sweeping into them pushes rather than
+    traps them. `Game::ground_mover_speed` (what the dev-tools script log's
+    "The player is riding a mover." line reads) now measures the same
+    combined ride, so a rotating floor counts as one.
+
+    A rotating floor also exposed a numerical gap in the ground probe,
+    fixed here and recorded as project behaviour: a player resting on a
+    rotating brush sits exactly on that brush's own pre-expanded hull
+    plane, and the pose's inverse rotation can place that resting point a
+    rounding step on either side of it from one step to the next, so
+    `ohl_physics::movement::categorize_position`'s downward probe
+    intermittently reported the player embedded (`start_solid`) rather
+    than standing — dropping the rider off a floor they had not left.
+    `movement.rs`'s `ground_probe` now retries that trace from one unit
+    above the origin and uses the retry only when it comes back clean, so
+    a player genuinely inside solid still reports embedded and a player
+    over nothing still finds nothing. One unit is the same discrete step
+    `unstick_from_ground` already recovers a stuck landing in, and far
+    less than a step up, so the retry can never lift a player onto
+    something they were not already standing on. Found by the new
+    property test in `crates/ohl-physics/tests/rotating_riders.rs`, not by
+    inspection.
+
+    **`TODO(black-box)`**: the player is *not* yawed with a rotating
+    platform they ride — a turntable carries their position but not their
+    facing. That is cheap to add mechanically (the same `omega * dt` about
+    the platform's axis, applied to the view yaw) but it is a *view*
+    change, and no public source states whether the real game turns the
+    player's view with a rotating platform, turns only their velocity, or
+    does neither; guessing would silently fight the mouse look every host
+    already drives. Left unimplemented, and deliberately not approximated.
+    Also still open from item 24: neither rotating classname's
+    `dmg`/blocking behaviour is wired into `Level::movers_blocked` (the
+    same pre-existing gap item 9 records for a translating mover's `dmg`),
+    `func_rotating`'s "Start On" spawnflag bit value (1) remains this
+    project's FGD-convention reading rather than a citable passage. This
+    package's own engine test drives the direction decision through a
+    touch trigger rather than a `use` press — both paths feed the same
+    activator origin, and the trigger one is independent of the proximity
+    rule item 25 above (fixed separately, in parallel with this package)
+    now supplies.
+
+    No combat-smoke scenario was added for the rider path. A local probe of
+    the campaign maps the existing scenarios already visit (map names from
+    `ohl_campaign`'s own sourced tables) found no rotating brush entity
+    anywhere near any of those maps' player starts — the nearest is many
+    hundreds of units away, none of them a floor a player would be standing
+    on — so a scenario asserting a rotating ride would have to navigate a
+    real map's corridors to reach one, the same thing item 24's own
+    real-payload probe already found a blind scripted walk cannot do. The
+    mechanism is covered by the property tests in
+    `crates/ohl-physics/tests/rotating_riders.rs` and the integration tests
+    in `crates/ohl-engine/tests/rotating_riders.rs`/`rotating_door.rs`
+    instead, and every existing scenario continues to assert "The player is
+    inside solid geometry." absent.

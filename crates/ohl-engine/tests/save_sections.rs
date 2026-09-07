@@ -1065,6 +1065,63 @@ fn a_spinning_rotator_round_trips_its_spin_state_and_continues() {
     );
 }
 
+/// The side a `func_door_rotating` chose to swing away from its activator
+/// survives a save/load: the choice is written into `Door::rotation_axis`'s
+/// own sign (`ohl_game::registry::RotatingDoorSwing`,
+/// `docs/FORMAT_SOURCES.md` item 26), and that field already round-trips
+/// with the rest of the `Door` component in `SECTION_ENTITY_REGISTRY`'s
+/// per-entity snapshot — so a reloaded door keeps opening the way it was
+/// opened, rather than reverting to its spawnflag-chosen direction.
+#[test]
+fn a_rotating_doors_chosen_swing_side_survives_a_save_load() {
+    let entities = script_room_entities(
+        [-192.0, -192.0, 36.0],
+        &entity_block(
+            "func_door_rotating",
+            [96.0, -96.0, 36.0],
+            0.0,
+            &[
+                ("targetname", "rotdoor1"),
+                ("speed", "90"),
+                ("distance", "90"),
+                ("wait", "-1"),
+            ],
+        ),
+    );
+
+    let mut game = script_game(&entities);
+    let entity = entity_of_classname(&game, "func_door_rotating").expect("the door spawned");
+    {
+        let mut door = game
+            .registry()
+            .world
+            .get::<&mut ohl_game::registry::Door>(entity)
+            .expect("the door carries a Door");
+        // The spawnflags alone chose `+Z`; an activator standing on that
+        // side is what flips it (unit-tested in `ohl_game::logic`), and
+        // this is the state that has to survive the save.
+        assert_eq!(door.rotation_axis, Some(glam::Vec3::Z));
+        door.rotation_axis = Some(-glam::Vec3::Z);
+    }
+    script_tick(&mut game, 10);
+
+    let bytes = game.save_bytes(1_700_000_000).expect("the save is written");
+    let assets = script_game_assets(&entities);
+    let reloaded = Game::load_bytes(&assets, &bytes).expect("the save loads");
+    let reloaded_entity =
+        entity_of_classname(&reloaded, "func_door_rotating").expect("the door reloads");
+    let door = *reloaded
+        .registry()
+        .world
+        .get::<&ohl_game::registry::Door>(reloaded_entity)
+        .expect("the reloaded door still carries a Door");
+    assert_eq!(
+        door.rotation_axis,
+        Some(-glam::Vec3::Z),
+        "the reloaded door reverted to its spawnflag-chosen swing side"
+    );
+}
+
 /// A save written before `SECTION_MOVER_STATE` (28) existed (no tag 28 at
 /// all) still loads, with every mover/camera/script/maker defaulting to
 /// fresh/inactive state.

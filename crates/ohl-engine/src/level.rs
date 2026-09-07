@@ -154,6 +154,59 @@ fn load_sprites(
     (assets, placements, missing)
 }
 
+/// The angular velocity (radians per second about the *signed* `axis`) a
+/// brush posed at `previous` degrees last step and `current` degrees this
+/// step is turning at.
+///
+/// The difference is taken as the shortest signed arc, so a
+/// `func_rotating`'s own angle wrapping from just under 360 back to just
+/// over 0 (`ohl_game::logic::Simulation::advance_rotators` wraps it into
+/// `0.0..360.0` so it cannot grow without bound) reports the small positive
+/// rate it actually turned at rather than a full backwards revolution. A
+/// brush seen for the first time, a non-positive or non-finite `dt`, and a
+/// zero axis all report no rotation, matching how `Level::brush_velocity`
+/// treats the same cases for a translating mover.
+fn angular_velocity(axis: Vec3, previous: Option<f32>, current: f32, dt: f32) -> Vec3 {
+    let Some(previous) = previous else {
+        return Vec3::ZERO;
+    };
+    if !dt.is_finite() || dt <= 0.0 || !previous.is_finite() || !current.is_finite() {
+        return Vec3::ZERO;
+    }
+    let delta = (current - previous + 180.0).rem_euclid(360.0) - 180.0;
+    let rate = delta.to_radians() / dt;
+    if rate.is_finite() {
+        axis.normalize_or_zero() * rate
+    } else {
+        Vec3::ZERO
+    }
+}
+
+/// One attached brush entity's live rotation, recorded by
+/// [`Level::sync_brush_collision`] for [`Level::brush_rotation`].
+///
+/// The pose itself is set on the collision model by
+/// [`ohl_physics::CollisionModel::set_brush_pose`]; this is the *rate* that
+/// pose is changing at, which is what a rider needs and what a pose alone
+/// cannot answer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BrushRotation {
+    /// The world-space point the brush rotates about — the same pivot
+    /// `set_brush_pose` was given, in world space (a rotating mover's
+    /// submodel geometry is compiled relative to its origin brush, so that
+    /// is its `origin` keyvalue; see `docs/FORMAT_SOURCES.md` item 24).
+    pub pivot: Vec3,
+    /// Radians per second about the signed rotation axis: the angle this
+    /// brush turned through since the previous step, divided by that
+    /// step's `dt`. Zero for a brush whose angle did not change.
+    pub angular_velocity: Vec3,
+    /// The angle (degrees, about the signed axis) this brush was posed at
+    /// when the entry was written, so the next step can difference against
+    /// it. Kept here rather than in a second map so the two can never fall
+    /// out of step.
+    pub angle_degrees: f32,
+}
+
 /// Everything one map contributes to the running game.
 pub struct Level {
     /// The map's own name (`c0a0`), as the host asked for it.
@@ -184,6 +237,17 @@ pub struct Level {
     /// `docs/FORMAT_SOURCES.md`). Missing an entry (or holding zero) means
     /// that brush did not move this step.
     pub brush_velocity: BTreeMap<BrushId, Vec3>,
+    /// Each attached *rotating* brush's pivot and angular velocity as of
+    /// the last [`Self::sync_brush_collision`] call. A rotating mover's
+    /// own [`Self::brush_velocity`] entry is (and stays) zero — it never
+    /// translates — so this is the only thing that can carry a player
+    /// standing on a `func_rotating` disc or a swinging
+    /// `func_door_rotating`: the player-move phase turns it into a
+    /// per-point ride velocity with
+    /// [`ohl_physics::rotational_ride_velocity`] and adds that to the same
+    /// `ohl_physics::PlayerController::base_velocity` a translating mover
+    /// already feeds. Missing an entry means that brush is not rotating.
+    pub brush_rotation: BTreeMap<BrushId, BrushRotation>,
     /// Which attached brushes the player-move phase could not fully push
     /// the player clear of this step (a mover whose leading face is moving
     /// into the player faster than the bounded push trace can carry them
@@ -520,6 +584,7 @@ impl Level {
             collision,
             brush_collision,
             brush_velocity: BTreeMap::new(),
+            brush_rotation: BTreeMap::new(),
             movers_blocked: Vec::new(),
             skybox,
             studio_models: studio.models,
@@ -567,6 +632,7 @@ impl Level {
             collision,
             brush_collision,
             brush_velocity,
+            brush_rotation,
             ..
         } = self;
         let Some(model) = collision.as_mut() else {
@@ -576,6 +642,7 @@ impl Level {
             let Ok(transform) = registry.world.get::<&Transform>(*entity) else {
                 model.detach_brush(*brush);
                 brush_velocity.remove(brush);
+                brush_rotation.remove(brush);
                 return false;
             };
             let offset = crate::render::brush_offset(registry, *entity);
@@ -586,17 +653,34 @@ impl Level {
             } else {
                 Vec3::ZERO
             };
-            // `Level::brush_velocity`'s "Riding movers" mechanism is
-            // TODO(black-box) for the *rotational* component of a rotating
-            // mover's motion — a rotating door's own translation (always
-            // zero; see `crate::render::brush_offset`'s doc comment) still
-            // reports a velocity above like any other brush, but nothing
-            // yet derives a rider's push from the rotation itself.
+            // A rotating mover's own *translation* (always zero; see
+            // `crate::render::brush_offset`'s doc comment) reports a
+            // velocity above like any other brush; the rotational half of
+            // its motion — the only half that can carry a rider standing
+            // on a `func_rotating`/`func_door_rotating` — is recorded
+            // separately in `brush_rotation` just below.
             brush_velocity.insert(*brush, velocity);
             let (axis, angle_degrees) = crate::render::mover_rotation(registry, *entity);
             if axis == Vec3::ZERO {
+                brush_rotation.remove(brush);
                 model.set_brush_origin(*brush, new_origin);
             } else {
+                let previous = brush_rotation
+                    .get(brush)
+                    .map(|rotation| rotation.angle_degrees);
+                let angular_velocity = angular_velocity(axis, previous, angle_degrees, dt);
+                brush_rotation.insert(
+                    *brush,
+                    BrushRotation {
+                        // The pivot handed to `set_brush_pose` below is the
+                        // submodel's own local `(0, 0, 0)`, which
+                        // `new_origin` then translates: in world space that
+                        // is `new_origin` itself.
+                        pivot: new_origin,
+                        angular_velocity,
+                        angle_degrees,
+                    },
+                );
                 // See `attach_brush_collision`'s matching branch: the pivot
                 // to rotate about is the *local* origin the compiled
                 // geometry is already centred on, not the world-space
@@ -605,6 +689,40 @@ impl Level {
             }
             true
         });
+    }
+
+    /// How fast an attached brush entity is moving *at the world-space
+    /// point* `point`: its whole-body translation
+    /// ([`Self::brush_velocity`]) plus, for a rotating mover, the
+    /// tangential velocity its current spin gives that particular point
+    /// ([`Self::brush_rotation`], through
+    /// [`ohl_physics::rotational_ride_velocity`]).
+    ///
+    /// This is what "riding a mover" means for a rotating brush: every
+    /// point of a translating `func_train`/`func_plat` moves alike, so its
+    /// velocity alone is the ride, but a `func_rotating` disc carries a
+    /// player standing near its rim far faster than one standing on its
+    /// axis, and a swinging `func_door_rotating` sweeps its outer edge
+    /// fastest of all. Zero for a brush this level has never synced, one
+    /// that is not moving, and one whose id has been detached.
+    #[must_use]
+    pub fn brush_ride_velocity(&self, brush: BrushId, point: Vec3) -> Vec3 {
+        let translation = self
+            .brush_velocity
+            .get(&brush)
+            .copied()
+            .unwrap_or(Vec3::ZERO);
+        let rotation = self
+            .brush_rotation
+            .get(&brush)
+            .map_or(Vec3::ZERO, |rotation| {
+                ohl_physics::rotational_ride_velocity(
+                    rotation.pivot,
+                    rotation.angular_velocity,
+                    point,
+                )
+            });
+        translation + rotation
     }
 
     /// The world-space origin of the landmark named `landmark`, when this
