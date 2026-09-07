@@ -253,6 +253,9 @@ impl ScriptLog {
                 }
             } else {
                 self.riding_mover_seconds = 0.0;
+            }
+        }
+
         if !self.on_ladder {
             if game.player_on_ladder() {
                 self.on_ladder_seconds += dt;
