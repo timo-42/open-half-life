@@ -344,15 +344,31 @@ impl<'a> SaveReader<'a> {
         self.bytes.get(start..end).ok_or(SaveError::TableInvalid)
     }
 
-    /// Decodes the section tagged `tag` with `postcard`.
+    /// Decodes the section tagged `tag` with `postcard`, requiring the
+    /// section's bytes to be consumed *exactly*.
+    ///
+    /// The exactness matters: `postcard` is not self-describing, so a
+    /// section is decoded as one fixed wire shape, field for field. A
+    /// reader whose type is one field shorter than the writer's would
+    /// otherwise decode such a section happily — misassigning every field
+    /// after the missing one and simply leaving the surplus bytes unread —
+    /// which turns a version mismatch into silently wrong state instead of
+    /// a rejected file. `postcard::from_bytes` does not check this on its
+    /// own (it discards any unused tail), so this uses
+    /// [`postcard::take_from_bytes`] and rejects a non-empty remainder.
     ///
     /// # Errors
     ///
     /// As [`SaveReader::section`], plus [`SaveError::Codec`] if `postcard`
-    /// decoding fails.
+    /// decoding fails or does not consume the section in full.
     pub fn deserialize<T: DeserializeOwned>(&self, tag: u32) -> Result<T> {
         let bytes = self.section(tag)?;
-        postcard::from_bytes(bytes).map_err(|_| SaveError::Codec)
+        let (value, rest) = postcard::take_from_bytes(bytes).map_err(|_| SaveError::Codec)?;
+        if rest.is_empty() {
+            Ok(value)
+        } else {
+            Err(SaveError::Codec)
+        }
     }
 }
 
@@ -388,6 +404,47 @@ mod tests {
         );
         assert_eq!(reader.unknown_section_count(), 0);
         assert_eq!(reader.sections().len(), 2);
+    }
+
+    /// A section whose bytes decode but are not consumed in full is
+    /// rejected, not silently accepted with the tail ignored. `postcard`
+    /// is not self-describing, so unconsumed input means the writer's shape
+    /// and the reader's differ — which, left unchecked, misassigns fields
+    /// rather than failing (see [`SaveReader::deserialize`]'s own doc
+    /// comment).
+    #[test]
+    fn a_section_with_unconsumed_trailing_bytes_is_refused() {
+        let mut payload = postcard::to_allocvec(&(1u32, "value".to_string())).unwrap();
+        payload.push(0);
+
+        let mut writer = SaveWriter::begin(header());
+        writer.add_section(17, &payload).unwrap();
+        let bytes = writer.finish(&Limits::default()).unwrap();
+
+        let reader = SaveReader::open(&bytes, &Limits::default()).unwrap();
+        assert_eq!(
+            reader.deserialize::<(u32, String)>(17).unwrap_err(),
+            SaveError::Codec
+        );
+    }
+
+    /// The same shape mismatch as above, expressed the way it actually
+    /// arises: a payload written as a three-field record, read back as a
+    /// two-field one. Every field decodes, and the surplus field is what is
+    /// left over.
+    #[test]
+    fn a_section_written_by_a_longer_writer_is_refused() {
+        let payload = postcard::to_allocvec(&(1u32, "value".to_string(), 9u32)).unwrap();
+
+        let mut writer = SaveWriter::begin(header());
+        writer.add_section(17, &payload).unwrap();
+        let bytes = writer.finish(&Limits::default()).unwrap();
+
+        let reader = SaveReader::open(&bytes, &Limits::default()).unwrap();
+        assert_eq!(
+            reader.deserialize::<(u32, String)>(17).unwrap_err(),
+            SaveError::Codec
+        );
     }
 
     #[test]

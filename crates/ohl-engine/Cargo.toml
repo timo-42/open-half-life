@@ -47,7 +47,9 @@ serde = { version = "=1.0.229", features = ["derive"] }
 # M7.9 P4b: decodes an optional save section directly (`crate::save`'s
 # `optional_section`), so a section missing entirely (an old save) can be
 # told apart from one present but corrupt, which `ohl_save::SaveReader`'s
-# own `deserialize` does not expose.
+# own `deserialize` does not expose. No `alloc` feature: this crate only
+# ever *decodes* with `postcard` (`from_bytes`/`take_from_bytes`), which
+# needs none; encoding goes through `ohl_save::SaveWriter`.
 postcard = { workspace = true }
 ohl-assets = { path = "../ohl-assets", version = "=0.1.0" }
 # Pinned exact to match `ohl-game`'s and `ohl-physics`'s own pins: the
@@ -59,6 +61,15 @@ glam = { version = "=0.33.6", default-features = false, features = [
 
 [dev-dependencies]
 ohl-engine = { path = ".", features = ["test-support"] }
+# `tests/save_format_frozen.rs` encodes and decodes save sections directly,
+# at the same pins the library itself uses, to pin their wire shapes.
+# `alloc` is for `to_allocvec`, which only the tests need.
+postcard = { workspace = true, features = ["alloc"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+glam = { version = "=0.33.6", default-features = false, features = [
+    "std",
+    "serde",
+] }
 tempfile = { workspace = true }
 proptest = { workspace = true }
 # The integration tests name these crates' types directly (a save slot, a

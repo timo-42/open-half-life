@@ -3809,3 +3809,106 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
     degrees at that elapsed time, not \u{2248}30) before being restored to
     assert the fixed value, so it discriminates the bug rather than merely
     exercising the code path.
+
+### Save-format items, continued (M9.7: the compatibility floor, measured)
+
+28. **What actually sets the save-file compatibility floor, and the
+    fail-open hole that hid a mismatch (M9.7).** Append-only correction to
+    item 24's "PR #107 review follow-up" paragraph, which reported
+    `Rotator`'s addition to save section 28 without noting what it cost.
+
+    No new external source: this item records a project-internal format
+    decision, measured against real files, not a claim about the original
+    engine.
+
+    **The floor is `6090676`, and tag 18 sets it — not tag 28.** Measured
+    by building a save with each historic writer (a
+    `door_behind_touch_trigger_bsp` map plus a `trigger_auto`, so section 28
+    is non-empty) and loading each one back:
+
+    | save written at | loads at `f64ccfc` | loads at this package's head |
+    | --- | --- | --- |
+    | `8bc2eec` (pre-tag-28) | rejected | rejected |
+    | `9ea7029` (tag 28 v1) | rejected | rejected |
+    | `6090676` | loads | loads, `auto_trigger fired = Some(true)` |
+    | `f64ccfc` | loads | loads, `auto_trigger fired = Some(true)` |
+
+    `ohl_engine::transition::EntitySnapshot` (section 18, *required*) gained
+    `rotator` at `6090676`, inserted between `platform` and `light`, and the
+    `ohl_game::registry::Door` it reaches gained `rotation_axis` at
+    `9ea7029`, between `travel_distance` and `state`. Either change alone
+    rejects every older file, because `postcard` is not self-describing: a
+    section is decoded as one fixed wire shape, field for field. Section
+    28's own history — it gained `rotator` at `83f968c`, which is what item
+    24 recorded — sits inside that window and therefore moves nothing.
+    Section 19 is genuinely unmoved: `ohl_game::logic::SimulationState`,
+    `PendingFire`, `TriggerSnapshot` and `MoverState` are the shapes they
+    had well before the floor.
+
+    **`MoverSnapshot::rotator` stays, and is documented as redundant.** It
+    duplicates state section 18 already persists for the same entity in the
+    same spawn order (proved by
+    `a_spinning_rotator_is_carried_by_the_entity_registry_section`, which
+    drops section 28 from the file entirely and still restores the mid-spin
+    angle), so on the merits it should never have been added. Removing it
+    now would be strictly worse: it would rescue no file that is not already
+    lost to tag 18's own moves, while moving section 28's shape a second
+    time — and the field immediately after it is `auto_trigger_fired`, so a
+    reader without it reads a fired `trigger_auto` back as *unfired* and
+    replays it on load, silently re-toggling whatever train or camera the
+    same section had just restored. That is the exact bug
+    `auto_trigger_fired` exists to prevent. The wire shape is frozen as it
+    stands; the redundancy is recorded on `MoverSnapshot::rotator` itself,
+    with section 18 and section 28 unable to disagree in practice (both are
+    captured from the same component in the same snapshot) and section 28
+    applied last if they ever did.
+
+    **A shape mismatch must fail closed, and did not.** Neither
+    `postcard::from_bytes` (which discards an unused tail) nor a hand-driven
+    `postcard::Deserializer` (the bounded-vector path sections 28 and 29
+    use, which simply stops once its sequence is complete) checks that its
+    input was consumed in full. So a reader one field shorter than the
+    writer decoded such a section *successfully*, misassigning every field
+    after the missing one — the difference between "this save is too old"
+    and "this save loads with the wrong state in it". All three decode
+    paths now require exact consumption:
+    `ohl_save::SaveReader::deserialize` for a required section, and
+    `ohl_engine::save`'s own `optional_section` and
+    `optional_bounded_vec_section`. Covered by
+    `a_bounded_vec_section_with_trailing_bytes_fails_closed` and
+    `a_section_written_by_a_longer_writer_is_rejected_not_misread`
+    (`crates/ohl-engine/tests/save_format_frozen.rs`), plus two unit tests
+    in `ohl_save::container`; all four fail without the fix.
+
+    **The rule, now tested.** New persisted state gets a *new optional tag*,
+    written only when populated and read back as absent by an older build,
+    never a new field on an existing tag's type or on any type it reaches
+    transitively. This is stated in `ohl_engine::save`'s module doc
+    ("Frozen section shapes, the compatibility floor, and the rule") and on
+    `MoverSnapshot` itself. `crates/ohl-engine/tests/save_format_frozen.rs`
+    commits golden byte arrays for sections 16, 17, 18, 19, 20, 21, 22 and
+    28 at the shapes `f64ccfc` writes, re-encodes the same values with
+    today's types, and decodes the committed bytes with today's reader; a
+    field added to any of those types fails those tests rather than shipping
+    a save-breaking build (confirmed by temporarily adding one to each of
+    `MoverSnapshot`, `EntitySnapshot` and `SimulationState`).
+    `a_save_whose_tag_28_predates_the_rotator_field_fails_closed` drives a
+    section-28-at-`9ea7029`-shape file end to end through
+    `Game::load_bytes` and requires `EngineError::SaveUnreadable`.
+
+    Also from the same review, unrelated to the wire shape: section 30's
+    `rot_button_touch` half — the `func_rot_button` touch-edge bookkeeping —
+    had no discriminating test, so no-oping its restore left the suite
+    green. `a_rot_button_the_player_is_standing_in_does_not_re_fire_after_
+    a_load` (`save_sections.rs`) closes that: a "Toggle" + "Touch activates"
+    `func_rot_button` whose brush volume overlaps the player's standing hull
+    at the spawn point is pressed by touch, saved while the player is still
+    inside it, and must *not* see a fresh rising edge on the first tick after
+    the load. Without the restore, that spurious edge toggles the pressed
+    button straight back to `Closing`, which the test asserts against.
+
+    **`TODO(black-box)`**: nothing new. Sections 23-27, 29 and 30 are frozen
+    by the same rule but are not yet pinned by goldens of their own — a
+    coverage gap, not a known defect. Moving the floor above `6090676`
+    (abandoning every existing save file) remains a decision to take
+    deliberately and record here, never a side effect of adding a field.

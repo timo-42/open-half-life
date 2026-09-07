@@ -4,9 +4,12 @@
 //!
 //! M7.13 adds `SECTION_MOVER_STATE` (28): a `func_tracktrain`'s mid-route
 //! position, an active `trigger_camera` sequence, a `scripted_sequence` mid
-//! possession, a `monstermaker`'s spawn counters, and (PR #107 review
-//! follow-up) a `func_rotating`'s spin state, tested at the bottom of this
-//! file.
+//! possession and a `monstermaker`'s spawn counters, tested at the bottom
+//! of this file, plus a `func_rotating`'s spin state — which
+//! `SECTION_ENTITY_REGISTRY` (18) also carries, redundantly, as part of the
+//! whole `Rotator` component. Tag 28's wire shape (including that
+//! redundant copy, which is frozen in place) is pinned by
+//! `crates/ohl-engine/tests/save_format_frozen.rs`.
 //!
 //! No bytes here come from any game installation; see `docs/CLEAN_ROOM.md`.
 
@@ -17,9 +20,10 @@
 
 use ohl_combat::{ProjectileKind, WeaponId, hud_slot};
 use ohl_engine::test_support::{
-    AI_MAP, ROTATING_DOOR_MAP, SCRIPT_MAP, actor_origin, ai_room_bsp, entity_block,
-    entity_of_classname, monster_entities, queue_monster_damage, rotating_door_bsp,
-    rotating_door_entities, script_game, script_room_bsp, script_room_entities,
+    AI_MAP, ROT_BUTTON_MAP, ROT_BUTTON_NAME, ROTATING_DOOR_MAP, SCRIPT_MAP, actor_origin,
+    ai_room_bsp, entity_block, entity_of_classname, monster_entities, queue_monster_damage,
+    rot_button_bsp, rotating_door_bsp, rotating_door_entities, script_game, script_room_bsp,
+    script_room_entities,
 };
 use ohl_engine::{AssetSource, EngineError, Game, GameEvent, Input, MemoryAssets, TICK_SECONDS};
 use ohl_formats::test_support::build_minimal_mdl10;
@@ -979,9 +983,17 @@ fn a_pre_tag_29_save_still_loads_without_its_maker_children() {
 }
 
 /// A `func_rotating`'s spin state (`spinning`/`angle_deg`) round trips
-/// through a save/load, exactly like `func_tracktrain`/`trigger_camera`/
-/// `monstermaker` state above: without `RotatorSnapshot`
-/// (`crate::save_state`), a spinning `func_rotating` would revert to its
+/// through a save/load. Two sections carry it: `SECTION_MOVER_STATE`
+/// (28)'s `RotatorSnapshot`, and — redundantly, and in fact first —
+/// `SECTION_ENTITY_REGISTRY` (18), whose
+/// `ohl_engine::transition::EntitySnapshot` captures and re-applies the
+/// whole `ohl_game::registry::Rotator` component in spawn order, the same
+/// mechanism that carries a `func_door`'s or `func_button`'s own state
+/// machine. The duplication is a frozen wire shape being honoured rather
+/// than a design (`docs/FORMAT_SOURCES.md` `TODO(black-box)` item 28); that
+/// tag 18 alone suffices is shown by
+/// `a_spinning_rotator_is_carried_by_the_entity_registry_section` below.
+/// Without either, a spinning `func_rotating` would revert to its
 /// spawnflag default (spinning per "Start On", `angle_deg: 0.0`) on load.
 /// "Start On" is set so `spinning` alone cannot distinguish a correct
 /// restore from a reset to the spawn default — only `angle_deg` can, so
@@ -1066,6 +1078,63 @@ fn a_spinning_rotator_round_trips_its_spin_state_and_continues() {
     );
 }
 
+/// `SECTION_ENTITY_REGISTRY` (18) carries a `func_rotating`'s spin state on
+/// its own: the same mid-spin save as the test above, with
+/// `SECTION_MOVER_STATE` (28) dropped from the file entirely, still restores
+/// the accumulated angle. That is what makes tag 28's own `RotatorSnapshot`
+/// redundant — it is kept only because tag 28's wire shape is frozen with it
+/// in place, never because a restore needs it (`docs/FORMAT_SOURCES.md`
+/// `TODO(black-box)` item 28).
+#[test]
+fn a_spinning_rotator_is_carried_by_the_entity_registry_section() {
+    let entities = script_room_entities(
+        [-192.0, -192.0, 36.0],
+        &entity_block(
+            "func_rotating",
+            [96.0, -96.0, 36.0],
+            0.0,
+            &[
+                ("targetname", "fan1"),
+                ("speed", "180"),
+                ("spawnflags", "1"), // "Start On": see docs/FORMAT_SOURCES.md, "Entity keyvalues and map logic".
+            ],
+        ),
+    );
+
+    let mut game = script_game(&entities);
+    script_tick(&mut game, 50);
+    let entity = entity_of_classname(&game, "func_rotating").expect("the fan spawned");
+    let angle_before_save = game
+        .registry()
+        .world
+        .get::<&ohl_game::registry::Rotator>(entity)
+        .expect("the fan carries a Rotator")
+        .angle_deg;
+    assert!(angle_before_save > 1.0, "the fan must have spun measurably");
+
+    let mut save = game.to_save(1_700_000_000);
+    save.mover_state = None;
+    let bytes = save
+        .to_bytes()
+        .expect("a save missing SECTION_MOVER_STATE still encodes");
+
+    let assets = script_game_assets(&entities);
+    let reloaded = Game::load_bytes(&assets, &bytes).expect("the save loads");
+    let reloaded_entity = entity_of_classname(&reloaded, "func_rotating").expect("the fan reloads");
+    let rotator = reloaded
+        .registry()
+        .world
+        .get::<&ohl_game::registry::Rotator>(reloaded_entity)
+        .expect("the reloaded fan still carries a Rotator");
+    assert!(rotator.spinning);
+    assert!(
+        (rotator.angle_deg - angle_before_save).abs() < 1e-6,
+        "angle_deg was {} but tag 18 alone must round-trip the mid-spin \
+         value {angle_before_save}",
+        rotator.angle_deg
+    );
+}
+
 /// The side a `func_door_rotating` chose to swing away from its activator
 /// survives a save/load: the choice is written into `Door::rotation_axis`'s
 /// own sign (`ohl_game::registry::RotatingDoorSwing`,
@@ -1120,6 +1189,86 @@ fn a_rotating_doors_chosen_swing_side_survives_a_save_load() {
         door.rotation_axis,
         Some(-glam::Vec3::Z),
         "the reloaded door reverted to its spawnflag-chosen swing side"
+    );
+}
+
+/// The other half of `SECTION_ROTATING_MOVER_STATE` (tag 30): the
+/// `func_rot_button` *touch-edge* bookkeeping
+/// (`ohl_game::logic::Simulation::rot_button_touch_snapshot`), which is
+/// keyed by entity bit pattern rather than spawn index and so rides
+/// alongside the section's entity-indexed `movers` vector.
+///
+/// The fixture is a "Toggle" + "Touch activates" `func_rot_button` whose
+/// brush volume overlaps the player's own standing hull at the spawn point,
+/// so the player is *still standing in it* when the save is taken. Touching
+/// is edge-triggered (`Simulation::touch_rot_buttons` only activates on the
+/// not-overlapping -> overlapping transition), so the restored map either
+/// remembers that the player was already inside — and leaves the button
+/// alone — or forgets, sees a fresh rising edge on the very first tick after
+/// the load, and toggles the pressed button straight back closed. That is
+/// what makes this test discriminating: no-oping `Game::restore`'s
+/// `restore_rot_button_touch` call fails the final assertion, rather than
+/// leaving the suite green.
+#[test]
+fn a_rot_button_the_player_is_standing_in_does_not_re_fire_after_a_load() {
+    // `spawnflags`: 32 ("Toggle") | 256 ("Touch activates"), the documented
+    // bits `ohl_game::registry::SPAWNFLAG_ROT_BUTTON_TOGGLE`/`_TOUCH` name.
+    let entities = format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"0 -24 40\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"func_rot_button\"\n\"targetname\" \"{ROT_BUTTON_NAME}\"\n\
+         \"model\" \"*1\"\n\"speed\" \"360\"\n\"distance\" \"90\"\n\"wait\" \"-1\"\n\
+         \"spawnflags\" \"288\"\n\"origin\" \"0 0 0\"\n}}\n"
+    );
+    let mut assets = MemoryAssets::new();
+    assets.insert(
+        &format!("maps/{ROT_BUTTON_MAP}.bsp"),
+        rot_button_bsp(&entities),
+    );
+    let mut game =
+        Game::load(&assets as &dyn AssetSource, ROT_BUTTON_MAP).expect("the fixture loads");
+
+    let button_state = |game: &Game| {
+        let registry = game.registry();
+        let entity = *registry
+            .find(ROT_BUTTON_NAME)
+            .first()
+            .expect("the fixture declares one named rot button");
+        *registry
+            .world
+            .get::<&ohl_game::registry::RotButton>(entity)
+            .expect("the named entity is a rot button")
+    };
+
+    // The player spawns inside the button's volume, so the first tick is the
+    // rising edge that presses it; a quarter turn at 360 deg/s takes a
+    // quarter second, and "Toggle" then holds it open indefinitely.
+    script_tick(&mut game, 30);
+    assert_eq!(
+        button_state(&game).state,
+        ohl_game::registry::MoverState::Open,
+        "the touch press must have completed before the save"
+    );
+
+    let bytes = game.save_bytes(1_700_000_000).expect("the save is written");
+    let mut reloaded = Game::load_bytes(&assets, &bytes).expect("the save loads");
+    assert_eq!(
+        button_state(&reloaded).state,
+        ohl_game::registry::MoverState::Open,
+        "tag 30's entity-indexed half must restore the pressed button itself"
+    );
+
+    // The load put the player back inside the button's volume. With the
+    // touch-edge state restored there is no rising edge, so nothing happens;
+    // without it, this tick toggles the button back to `Closing`.
+    script_tick(&mut reloaded, 1);
+    assert_eq!(
+        button_state(&reloaded).state,
+        ohl_game::registry::MoverState::Open,
+        "the reloaded map saw a spurious touch rising edge and toggled the \
+         button back: SECTION_ROTATING_MOVER_STATE's rot_button_touch half \
+         did not restore"
     );
 }
 
