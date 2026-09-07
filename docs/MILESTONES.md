@@ -2762,3 +2762,28 @@ payload.
   for a player standing in both; and `door_offset`/`platform_offset` now
   share one `mover_offset` helper instead of two independently
   hand-copied implementations.
+- **Follow-up: monster `Transform` was never synced from `Actor`.** A
+  read-only investigation on main found that `ohl_ai::AiWorld::tick`
+  writes a monster's walking/chasing/fleeing move to `Actor::origin`/
+  `yaw` alone: nothing in `ohl-engine` copied that back onto the
+  monster's `Transform`, so a moving monster's rendered model — and the
+  hitbox index `crate::combat::rebuild_hitbox_index` rebuilds from
+  `Transform` each step — stayed pinned at wherever it last stood while
+  the AI itself kept walking, sensing and attacking correctly underneath.
+  A second, related gap: `Game::restore` (save/load) already restored
+  every monster's `Transform` from the save, but never touched `Actor`,
+  which stayed at `ohl_ai::attach_monsters`'s spawn-time default — so a
+  reloaded monster's very next think step sensed, navigated and attacked
+  from the map's spawn point rather than from where the save actually
+  left it. Fixed with two small, additive syncs: a new phase 8b
+  (`crate::systems::Systems::sync_monster_transforms`, right after phase
+  8's AI think) copies `Actor` onto `Transform` for every monster not
+  currently possessed by a `scripted_sequence` (`ohl_ai::ScriptHold`
+  absent — a possessed monster's `Transform` stays whatever `crate::ai`'s
+  own `place` last set), and `Systems::sync_actor_from_transforms`, run
+  once at the end of `Game::restore` after tags 18/24/25 apply, copies
+  the reverse direction. `crates/ohl-engine/tests/
+  monster_transform_sync.rs` asserts both: a walking monster's `Transform`
+  now tracks its `Actor` (it visibly diverged before this fix), and a
+  monster's `Actor::origin` matches its `Transform::origin` immediately
+  after a save/load boundary rather than silently reverting to spawn.
