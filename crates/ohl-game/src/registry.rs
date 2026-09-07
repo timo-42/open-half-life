@@ -86,21 +86,30 @@ pub enum MoverState {
     Closing,
 }
 
-/// `func_door` (and the same keys on `func_door_rotating`'s translating
-/// cousins): `speed`, `wait`, `lip`, a movement direction derived from
-/// `angles`/`angle`, `dmg`, `health`, `delay` and the `movesnd`/`stopsnd`
-/// sound indices.
+/// `func_door` (and the shared timer/state-machine keys on
+/// `func_door_rotating`, whose own axis/distance are carried separately in
+/// [`Self::rotation_axis`]/[`Self::travel_distance`]): `speed`, `wait`,
+/// `lip`, a movement direction derived from `angles`/`angle`, `dmg`,
+/// `health`, `delay` and the `movesnd`/`stopsnd` sound indices.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Door {
-    /// Units per second.
+    /// Units per second for a translating door; degrees per second for a
+    /// rotating one ([`Self::rotation_axis`]) — the same `speed` keyvalue,
+    /// interpreted in whichever unit `travel_distance` is currently in.
     pub speed: f32,
     /// Seconds the door stays open before auto-closing; `<= 0` means it
     /// stays open once opened.
     pub wait: f32,
-    /// Units subtracted from the travel distance.
+    /// Units subtracted from the travel distance. Unused
+    /// (`func_door_rotating`'s `lip` keyvalue is documented as "Not used";
+    /// TWHL wiki `func_door_rotating`, see `docs/FORMAT_SOURCES.md`,
+    /// "Entity keyvalues and map logic") when [`Self::rotation_axis`] is
+    /// `Some`.
     pub lip: f32,
-    /// Unit vector the door travels along when opening.
+    /// Unit vector the door travels along when opening. Unused (left
+    /// `Vec3::ZERO`) when [`Self::rotation_axis`] is `Some`: a rotating
+    /// door swings about its pivot instead of sliding.
     pub movedir: Vec3,
     /// Damage dealt to anything blocking the door.
     pub dmg: f32,
@@ -111,11 +120,25 @@ pub struct Door {
     pub delay: f32,
     /// `movesnd`/`stopsnd` indices into the built-in door sound tables.
     pub sounds: (u8, u8),
-    /// The distance travelled when opening, precomputed from the brush
-    /// model's bounding box (`maxs - mins`, projected onto `movedir`) minus
-    /// `lip`, since the map logic simulation never touches BSP data
-    /// directly.
+    /// The distance travelled when opening: for a translating door,
+    /// precomputed from the brush model's bounding box (`maxs - mins`,
+    /// projected onto `movedir`) minus `lip`, since the map logic
+    /// simulation never touches BSP data directly. For a rotating door
+    /// ([`Self::rotation_axis`]), this is instead the `distance` keyvalue
+    /// itself, in degrees (TWHL wiki `func_door_rotating`: "Distance in
+    /// degrees to rotate"); always non-negative — direction lives in
+    /// [`Self::rotation_axis`]'s sign, not here, so `ohl_game::logic`'s
+    /// shared `distance / speed` timing math (which does not otherwise
+    /// special-case a rotating door at all) stays meaningful for either
+    /// kind.
     pub travel_distance: f32,
+    /// `Some(axis)` for `func_door_rotating`: the signed unit axis
+    /// (magnitude 1; sign carries the "Reverse Direction" spawnflag and a
+    /// negative `distance` keyvalue, both documented as reversing which
+    /// way the door swings) this door rotates about its origin-keyvalue
+    /// pivot instead of sliding along [`Self::movedir`]. `None` for an
+    /// ordinary translating `func_door`.
+    pub rotation_axis: Option<Vec3>,
     /// Current animation state.
     pub state: MoverState,
     /// Seconds remaining in the current state's motion or wait.
@@ -169,6 +192,32 @@ pub struct Platform {
     pub state: MoverState,
     /// Seconds remaining in the current state's motion or wait.
     pub timer: f32,
+}
+
+/// `func_rotating`: a brush that spins continuously about a fixed axis
+/// through its origin keyvalue, rather than opening/closing between two
+/// resting poses like [`Door`]. TWHL wiki `func_rotating` (`docs/
+/// FORMAT_SOURCES.md`, "Entity keyvalues and map logic"): `speed` in
+/// degrees per second, and spawnflags selecting the rotation axis, initial
+/// on/off state, and direction.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Rotator {
+    /// Signed unit axis (magnitude 1); the "Reverse Direction" spawnflag
+    /// bakes into its sign, the same convention as
+    /// [`Door::rotation_axis`].
+    pub axis: Vec3,
+    /// Degrees per second; always non-negative (direction is [`Self::axis`]'s
+    /// sign, not this).
+    pub speed: f32,
+    /// Whether the brush is currently spinning; toggled by `use`/trigger
+    /// (`ohl_game::logic::Simulation::activate`). Starts `true` when the
+    /// "Start On" spawnflag is set.
+    pub spinning: bool,
+    /// The accumulated rotation angle, degrees, wrapped into `0.0..360.0`
+    /// every step so it never grows without bound over a long play
+    /// session.
+    pub angle_deg: f32,
 }
 
 /// `light`/`light_spot`/`light_environment`: brightness, colour, style and
@@ -601,6 +650,60 @@ pub fn movedir_from_angles(angles: Vec3) -> Vec3 {
     }
 }
 
+/// `func_door_rotating`'s "Reverse Direction" spawnflag: reverses the sign
+/// of [`Door::rotation_axis`]. TWHL wiki `func_door_rotating`
+/// (`docs/FORMAT_SOURCES.md`, "Entity keyvalues and map logic";
+/// search-summary citation, reviewed 2026-09-07, same HTTP 403 caveat as
+/// the other TWHL citations in this crate).
+pub const SPAWNFLAG_DOOR_ROTATING_REVERSE: u32 = 2;
+/// `func_door_rotating`'s "One Way" spawnflag: the same TWHL page documents
+/// it as "door only opens in the direction set in Distance", i.e. it
+/// disables an activator-relative opening direction this crate does not
+/// compute at all (see the `TODO(black-box)` on `Registry::build`'s
+/// `func_door_rotating` arm) — so it changes nothing this implementation
+/// does today, and is only named here so that unimplemented direction has
+/// a documented bit to gate on later.
+pub const SPAWNFLAG_DOOR_ROTATING_ONE_WAY: u32 = 16;
+/// `func_door_rotating`'s "X Axis" spawnflag.
+pub const SPAWNFLAG_DOOR_ROTATING_X_AXIS: u32 = 64;
+/// `func_door_rotating`'s "Y Axis" spawnflag. Neither this nor
+/// [`SPAWNFLAG_DOOR_ROTATING_X_AXIS`] set means the documented default,
+/// `Z`.
+pub const SPAWNFLAG_DOOR_ROTATING_Y_AXIS: u32 = 128;
+/// `func_door_rotating`'s "Starts Open" spawnflag: the door spawns already
+/// fully open (and swings *closed* on its first trigger) instead of
+/// closed.
+pub const SPAWNFLAG_DOOR_ROTATING_STARTS_OPEN: u32 = 1;
+
+/// `func_rotating`'s "Start On" spawnflag: the brush is already spinning at
+/// map spawn. TWHL wiki `func_rotating` (`docs/FORMAT_SOURCES.md`, "Entity
+/// keyvalues and map logic"; same search-summary/403 caveat).
+pub const SPAWNFLAG_ROTATING_START_ON: u32 = 1;
+/// `func_rotating`'s "Reverse Direction" spawnflag: reverses the sign of
+/// [`Rotator::axis`].
+pub const SPAWNFLAG_ROTATING_REVERSE: u32 = 2;
+/// `func_rotating`'s "X Axis" spawnflag.
+pub const SPAWNFLAG_ROTATING_X_AXIS: u32 = 4;
+/// `func_rotating`'s "Y Axis" spawnflag. Neither this nor
+/// [`SPAWNFLAG_ROTATING_X_AXIS`] set means the documented default, `Z`.
+pub const SPAWNFLAG_ROTATING_Y_AXIS: u32 = 8;
+
+/// The signed unit rotation axis a `func_door_rotating`/`func_rotating`
+/// spawnflag selection and a `reverse` bit describe: `x_axis`/`y_axis`
+/// choose which world axis (`Z` when neither is set, the documented
+/// default for both entities), and `reverse` negates it.
+#[must_use]
+fn rotation_axis(x_axis: bool, y_axis: bool, reverse: bool) -> Vec3 {
+    let unit = if x_axis {
+        Vec3::X
+    } else if y_axis {
+        Vec3::Y
+    } else {
+        Vec3::Z
+    };
+    if reverse { -unit } else { unit }
+}
+
 /// Clamps a float keyvalue field into `0..=255` for storage as a `u8`
 /// (colour channels, style/sound indices), rounding towards zero the same
 /// way GoldSrc's own integer keyvalue fields do.
@@ -749,7 +852,7 @@ impl Registry {
                             .is_some_and(|value| value.trim() != "0" && !value.trim().is_empty()),
                     });
                 }
-                "func_door" | "func_door_rotating" => {
+                "func_door" => {
                     let lip = def
                         .keyvalues
                         .get("lip")
@@ -770,10 +873,85 @@ impl Registry {
                             clamp_u8(numeric(def, "stopsnd", 0.0)),
                         ),
                         travel_distance: travel,
+                        rotation_axis: None,
                         state: MoverState::Closed,
                         timer: 0.0,
                     };
                     world.insert_one(entity, door).ok();
+                }
+                // `func_door_rotating`: TWHL wiki `func_door_rotating`
+                // (`docs/FORMAT_SOURCES.md`, "Entity keyvalues and map
+                // logic"). Shares `Door`'s timer/state machine (`speed`,
+                // `wait`, `dmg`, `health`, `delay`, sounds) with `func_door`
+                // above, but swings about its origin-keyvalue pivot instead
+                // of sliding: `travel_distance` holds the `distance`
+                // keyvalue itself (degrees, not units; `lip` is documented
+                // "Not used" and so is left unread here), and
+                // `rotation_axis` is `Some`, its sign carrying both a
+                // negative `distance` and the "Reverse Direction"
+                // spawnflag.
+                //
+                // **`TODO(black-box)`**: without "One Way" (see
+                // `SPAWNFLAG_DOOR_ROTATING_ONE_WAY`'s own doc comment), the
+                // same page documents the door as opening "away from the
+                // player" — an activator-relative direction this arm does
+                // not compute; every rotating door here always swings the
+                // same fixed, spawnflag/keyvalue-determined way regardless
+                // of which side it was triggered from, until that is
+                // verified against the real game.
+                "func_door_rotating" => {
+                    let flags = def.spawnflags;
+                    let reverse = flags & SPAWNFLAG_DOOR_ROTATING_REVERSE != 0;
+                    let x_axis = flags & SPAWNFLAG_DOOR_ROTATING_X_AXIS != 0;
+                    let y_axis = flags & SPAWNFLAG_DOOR_ROTATING_Y_AXIS != 0;
+                    let starts_open = flags & SPAWNFLAG_DOOR_ROTATING_STARTS_OPEN != 0;
+                    let distance = numeric(def, "distance", 90.0);
+                    let axis = rotation_axis(x_axis, y_axis, reverse != (distance < 0.0));
+                    let speed = numeric(def, "speed", 100.0);
+                    let wait = numeric(def, "wait", 4.0);
+                    let travel = distance.abs();
+                    let (state, timer) = if starts_open {
+                        (MoverState::Open, if wait < 0.0 { 0.0 } else { wait })
+                    } else {
+                        (MoverState::Closed, 0.0)
+                    };
+                    let door = Door {
+                        speed,
+                        wait,
+                        lip: 0.0,
+                        movedir: Vec3::ZERO,
+                        dmg: numeric(def, "dmg", 0.0),
+                        health: numeric(def, "health", 0.0),
+                        delay: numeric(def, "delay", 0.0),
+                        sounds: (
+                            clamp_u8(numeric(def, "movesnd", 0.0)),
+                            clamp_u8(numeric(def, "stopsnd", 0.0)),
+                        ),
+                        travel_distance: travel,
+                        rotation_axis: Some(axis),
+                        state,
+                        timer,
+                    };
+                    world.insert_one(entity, door).ok();
+                }
+                // `func_rotating`: TWHL wiki `func_rotating` (`docs/
+                // FORMAT_SOURCES.md`, "Entity keyvalues and map logic"): a
+                // continuous spin rather than an open/close cycle, so it
+                // gets its own `Rotator` component/state instead of reusing
+                // `Door`.
+                "func_rotating" => {
+                    let flags = def.spawnflags;
+                    let reverse = flags & SPAWNFLAG_ROTATING_REVERSE != 0;
+                    let x_axis = flags & SPAWNFLAG_ROTATING_X_AXIS != 0;
+                    let y_axis = flags & SPAWNFLAG_ROTATING_Y_AXIS != 0;
+                    let start_on = flags & SPAWNFLAG_ROTATING_START_ON != 0;
+                    let rotator = Rotator {
+                        axis: rotation_axis(x_axis, y_axis, reverse),
+                        speed: numeric(def, "speed", 100.0).abs(),
+                        spinning: start_on,
+                        angle_deg: 0.0,
+                    };
+                    world.insert_one(entity, rotator).ok();
                 }
                 "func_button" => {
                     let button = Button {
@@ -1136,6 +1314,124 @@ mod tests {
     fn movedir_handles_up_and_down_sentinels() {
         assert_eq!(movedir_from_angles(Vec3::new(0.0, -1.0, 0.0)), Vec3::Z);
         assert_eq!(movedir_from_angles(Vec3::new(0.0, -2.0, 0.0)), -Vec3::Z);
+    }
+
+    #[test]
+    fn func_door_rotating_defaults_to_the_z_axis_and_carries_distance_in_degrees() {
+        let entities = vec![raw(&[
+            ("classname", "func_door_rotating"),
+            ("targetname", "door1"),
+            ("distance", "90"),
+            ("speed", "120"),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let door = registry
+            .world
+            .get::<&Door>(registry.find("door1")[0])
+            .expect("door");
+        assert_eq!(door.rotation_axis, Some(Vec3::Z));
+        assert!((door.travel_distance - 90.0).abs() < f32::EPSILON);
+        assert!((door.speed - 120.0).abs() < f32::EPSILON);
+        assert_eq!(door.movedir, Vec3::ZERO);
+        assert_eq!(door.state, MoverState::Closed);
+    }
+
+    #[test]
+    fn func_door_rotating_x_axis_spawnflag_selects_x() {
+        let entities = vec![raw(&[
+            ("classname", "func_door_rotating"),
+            ("targetname", "door1"),
+            ("spawnflags", &SPAWNFLAG_DOOR_ROTATING_X_AXIS.to_string()),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let door = registry
+            .world
+            .get::<&Door>(registry.find("door1")[0])
+            .expect("door");
+        assert_eq!(door.rotation_axis, Some(Vec3::X));
+    }
+
+    #[test]
+    fn func_door_rotating_reverse_spawnflag_and_negative_distance_cancel_out() {
+        let entities = vec![raw(&[
+            ("classname", "func_door_rotating"),
+            ("targetname", "door1"),
+            ("distance", "-90"),
+            ("spawnflags", &SPAWNFLAG_DOOR_ROTATING_REVERSE.to_string()),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let door = registry
+            .world
+            .get::<&Door>(registry.find("door1")[0])
+            .expect("door");
+        // A negative `distance` and the Reverse spawnflag each flip the
+        // sign once, so together they cancel back to the un-reversed axis.
+        assert_eq!(door.rotation_axis, Some(Vec3::Z));
+        assert!((door.travel_distance - 90.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn func_door_rotating_starts_open_spawns_open() {
+        let entities = vec![raw(&[
+            ("classname", "func_door_rotating"),
+            ("targetname", "door1"),
+            ("wait", "3"),
+            (
+                "spawnflags",
+                &SPAWNFLAG_DOOR_ROTATING_STARTS_OPEN.to_string(),
+            ),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let door = registry
+            .world
+            .get::<&Door>(registry.find("door1")[0])
+            .expect("door");
+        assert_eq!(door.state, MoverState::Open);
+        assert!((door.timer - 3.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn func_rotating_defaults_to_off_and_reads_axis_speed() {
+        let entities = vec![raw(&[
+            ("classname", "func_rotating"),
+            ("targetname", "fan1"),
+            ("speed", "180"),
+            ("spawnflags", &SPAWNFLAG_ROTATING_Y_AXIS.to_string()),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let rotator = registry
+            .world
+            .get::<&Rotator>(registry.find("fan1")[0])
+            .expect("rotator");
+        assert!(!rotator.spinning);
+        assert_eq!(rotator.axis, Vec3::Y);
+        assert!((rotator.speed - 180.0).abs() < f32::EPSILON);
+        assert!((rotator.angle_deg - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn func_rotating_start_on_spawnflag_spins_immediately() {
+        let entities = vec![raw(&[
+            ("classname", "func_rotating"),
+            ("targetname", "fan1"),
+            (
+                "spawnflags",
+                &(SPAWNFLAG_ROTATING_START_ON | SPAWNFLAG_ROTATING_REVERSE).to_string(),
+            ),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let rotator = registry
+            .world
+            .get::<&Rotator>(registry.find("fan1")[0])
+            .expect("rotator");
+        assert!(rotator.spinning);
+        assert_eq!(rotator.axis, -Vec3::Z);
     }
 
     #[test]

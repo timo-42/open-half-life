@@ -13,7 +13,7 @@ use hecs::Entity;
 
 use crate::registry::{
     AutoTrigger, BrushBounds, Button, ChangeLevel, Door, Message, MoverState, MultiManager,
-    Platform, Registry, Target, Transform, Trigger, TriggerHurt,
+    Platform, Registry, Rotator, Target, Transform, Trigger, TriggerHurt,
 };
 use crate::track_train::TrackTrainState;
 
@@ -312,6 +312,7 @@ impl Simulation {
         Self::advance_doors(registry, dt);
         self.advance_buttons(registry, dt, &mut events);
         Self::advance_platforms(registry, dt);
+        Self::advance_rotators(registry, dt);
         Self::advance_trains(registry, dt);
         self.advance_cameras(registry, dt);
         for state in self.trigger_state.values_mut() {
@@ -436,6 +437,10 @@ impl Simulation {
         }
         if let Ok(train) = registry.world.query_one_mut::<&mut TrackTrainState>(entity) {
             train.toggle();
+            return;
+        }
+        if let Ok(rotator) = registry.world.query_one_mut::<&mut Rotator>(entity) {
+            rotator.spinning = !rotator.spinning;
             return;
         }
         if let Ok((state, camera)) = registry.world.query_one_mut::<(
@@ -665,6 +670,25 @@ impl Simulation {
         let _ = events;
     }
 
+    /// Advances every `func_rotating`'s accumulated angle while it is
+    /// spinning. Unlike [`Self::advance_doors`]/[`Self::advance_platforms`]
+    /// there is no open/close cycle to time: TWHL wiki `func_rotating`
+    /// (`docs/FORMAT_SOURCES.md`, "Entity keyvalues and map logic")
+    /// documents `speed` as a continuous degrees-per-second rate while the
+    /// brush is on, so this simply integrates it and wraps the result into
+    /// `0.0..360.0` so the stored angle never grows without bound over a
+    /// long play session (the wrap is arithmetic, not a documented
+    /// constant: a wrapped angle and its unwrapped equivalent describe the
+    /// identical pose).
+    fn advance_rotators(registry: &mut Registry, dt: f32) {
+        for rotator in registry.world.query_mut::<&mut Rotator>() {
+            if !rotator.spinning {
+                continue;
+            }
+            rotator.angle_deg = (rotator.angle_deg + rotator.speed * dt).rem_euclid(360.0);
+        }
+    }
+
     fn advance_platforms(registry: &mut Registry, dt: f32) {
         for platform in registry.world.query_mut::<&mut Platform>() {
             match platform.state {
@@ -795,6 +819,71 @@ mod tests {
         tick_for(&mut sim, &mut registry, 2.0, 0.05);
         let door = registry.world.get::<&Door>(door_entity).unwrap();
         assert_eq!(door.state, MoverState::Closed);
+    }
+
+    #[test]
+    fn func_door_rotating_opens_and_closes_through_the_shared_door_timer() {
+        let entities = vec![raw(&[
+            ("classname", "func_door_rotating"),
+            ("targetname", "door1"),
+            ("speed", "90"),
+            ("distance", "90"),
+            ("wait", "1"),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let mut sim = Simulation::new();
+        let door_entity = registry.find("door1")[0];
+        assert_eq!(
+            registry
+                .world
+                .get::<&Door>(door_entity)
+                .unwrap()
+                .rotation_axis,
+            Some(Vec3::Z)
+        );
+        let mut events = Vec::new();
+        sim.use_entity(&mut registry, door_entity, None, &mut events);
+        // 90 degrees at 90 degrees/second takes exactly one second to
+        // finish opening.
+        tick_for(&mut sim, &mut registry, 1.1, 0.05);
+        {
+            let door = registry.world.get::<&Door>(door_entity).unwrap();
+            assert_eq!(door.state, MoverState::Open);
+        }
+        tick_for(&mut sim, &mut registry, 2.5, 0.05);
+        let door = registry.world.get::<&Door>(door_entity).unwrap();
+        assert_eq!(door.state, MoverState::Closed);
+    }
+
+    #[test]
+    fn func_rotating_use_toggles_spinning_and_advance_accumulates_angle() {
+        let entities = vec![raw(&[
+            ("classname", "func_rotating"),
+            ("targetname", "fan1"),
+            ("speed", "180"),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let mut sim = Simulation::new();
+        let entity = registry.find("fan1")[0];
+        assert!(!registry.world.get::<&Rotator>(entity).unwrap().spinning);
+
+        let mut events = Vec::new();
+        sim.use_entity(&mut registry, entity, None, &mut events);
+        assert!(registry.world.get::<&Rotator>(entity).unwrap().spinning);
+
+        sim.tick(&mut registry, 0.5);
+        // 180 degrees/second for half a second is 90 degrees.
+        let angle = registry.world.get::<&Rotator>(entity).unwrap().angle_deg;
+        assert!((angle - 90.0).abs() < 1e-3, "angle was {angle}");
+
+        // A second `use` stops it; the angle stays where it was.
+        sim.use_entity(&mut registry, entity, None, &mut events);
+        sim.tick(&mut registry, 0.5);
+        let rotator = registry.world.get::<&Rotator>(entity).unwrap();
+        assert!(!rotator.spinning);
+        assert!((rotator.angle_deg - 90.0).abs() < 1e-3);
     }
 
     #[test]

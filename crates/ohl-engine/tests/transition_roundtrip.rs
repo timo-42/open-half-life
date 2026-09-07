@@ -49,6 +49,7 @@ prop_compose! {
         movesnd in any::<u8>(),
         stopsnd in any::<u8>(),
         movedir in (finite(), finite(), finite()),
+        rotation_axis in proptest::option::of((finite(), finite(), finite())),
     ) -> Door {
         Door {
             speed,
@@ -60,6 +61,7 @@ prop_compose! {
             delay,
             sounds: (movesnd, stopsnd),
             travel_distance,
+            rotation_axis: rotation_axis.map(|(x, y, z)| glam::Vec3::new(x, y, z)),
             state,
             timer,
         }

@@ -80,6 +80,28 @@ fn thin_ladder_room() -> CollisionModel {
     CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable hulls")
 }
 
+/// As [`brush_with_and_without_broad_phase`], but the attached brush also
+/// carries a live rotation (set with [`CollisionModel::set_brush_pose`])
+/// about its own compiled origin, so the broad-phase invariant is checked
+/// for a rotated brush's necessarily-larger conservative AABB, not only a
+/// translated one.
+fn rotated_brush_with_and_without_broad_phase(
+    axis: Vec3,
+    angle_degrees: f32,
+) -> (CollisionModel, CollisionModel) {
+    let bytes = build_brush_entity_floor_bsp("func_wall");
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+    let mut narrow = CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable hulls");
+    let brush = narrow
+        .attach_brush(&bsp, &limits, 1, Vec3::ZERO)
+        .expect("the fixture declares submodel 1");
+    narrow.set_brush_pose(brush, Vec3::ZERO, Vec3::ZERO, axis, angle_degrees);
+    let mut wide = narrow.clone();
+    wide.widen_brush_bounds_for_test(brush);
+    (narrow, wide)
+}
+
 prop_compose! {
     fn any_point()(
         x in -1000.0f32..1000.0,
@@ -197,6 +219,30 @@ proptest! {
         hull_index in 0usize..4,
     ) {
         let (narrow, wide) = brush_with_and_without_broad_phase();
+        let hull = Hull::from_index(hull_index).expect("0..4 is always a valid hull index");
+        prop_assert_eq!(narrow.contents_at(hull, point), wide.contents_at(hull, point));
+    }
+
+    #[test]
+    fn the_broad_phase_never_changes_a_rotated_trace(
+        start in any_point(),
+        end in any_point(),
+        hull_index in 0usize..4,
+        angle in -180.0f32..180.0,
+    ) {
+        let (narrow, wide) = rotated_brush_with_and_without_broad_phase(Vec3::Z, angle);
+        let with_broad_phase = trace_hull(&narrow, hull_index, start, end);
+        let without_broad_phase = trace_hull(&wide, hull_index, start, end);
+        prop_assert_eq!(with_broad_phase, without_broad_phase);
+    }
+
+    #[test]
+    fn the_broad_phase_never_changes_a_rotated_contents_query(
+        point in any_point(),
+        hull_index in 0usize..4,
+        angle in -180.0f32..180.0,
+    ) {
+        let (narrow, wide) = rotated_brush_with_and_without_broad_phase(Vec3::X, angle);
         let hull = Hull::from_index(hull_index).expect("0..4 is always a valid hull index");
         prop_assert_eq!(narrow.contents_at(hull, point), wide.contents_at(hull, point));
     }

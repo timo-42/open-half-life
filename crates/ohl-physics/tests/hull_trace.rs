@@ -708,3 +708,148 @@ fn a_submodel_with_a_bare_hull_one_head_is_solid_only_to_the_point_hull() {
         "the same brush's real hull-0 tree did not stop the point hull"
     );
 }
+
+// ---------------------------------------------------------------------
+// Rotated brush poses (`CollisionModel::set_brush_pose`)
+// ---------------------------------------------------------------------
+
+/// A single 20x20x20 solid box brush (half-extent 10, centred at the world
+/// origin, matching where [`CollisionModel::set_brush_pose`]'s `pivot`
+/// defaults for these tests) attached as submodel 1, alongside an empty
+/// world model.
+fn build_rotatable_box_bsp() -> Vec<u8> {
+    let mut builder = Bsp30Builder::new();
+    builder.set_entities_text("{\n\"classname\" \"worldspawn\"\n}\n");
+    let world_heads = builder.push_collision_hulls(&[]);
+    let box_heads = builder.push_collision_hulls(&[CollisionBrush::box_brush(
+        [-10.0, -10.0, -10.0],
+        [10.0, 10.0, 10.0],
+    )]);
+    builder.push_model([-4096.0; 3], [4096.0; 3], [0.0; 3], world_heads, 1, 0, 0);
+    builder.push_model(
+        [-10.0, -10.0, -10.0],
+        [10.0, 10.0, 10.0],
+        [0.0; 3],
+        box_heads,
+        1,
+        0,
+        0,
+    );
+    builder.build()
+}
+
+/// A trace approaching a box brush along `+X` (through a `y` offset chosen
+/// to transect one rotated face cleanly, away from the ambiguous vertex a
+/// diagonal trace would land on) hits the face at the rotated distance, not
+/// the brush's original axis-aligned one, and the reported normal is
+/// rotated with it: TWHL's `func_door_rotating` page (`docs/
+/// FORMAT_SOURCES.md`, "Entity keyvalues and map logic") documents the
+/// entity as rotating about its origin-brush pivot, which is exactly what
+/// [`CollisionModel::set_brush_pose`] implements.
+///
+/// A square of half-extent `h` rotated 45 degrees about `Z` becomes a
+/// diamond whose vertices sit at `(0, ±h*sqrt(2))`/`(±h*sqrt(2), 0)`, so a
+/// trace at `y = 3` (inside the diamond's face, not at a vertex) along `-X`
+/// crosses the rotated face nearer the origin than the vertex distance —
+/// this pins the whole rotated-hit path (local trace, hit position rotated
+/// back to world, normal rotated back to world) against that analytic
+/// geometry rather than only checking "something changed".
+#[test]
+fn a_rotated_brush_is_hit_at_its_rotated_face_with_a_rotated_normal() {
+    let bytes = build_rotatable_box_bsp();
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+    let mut model = CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable hulls");
+    let brush = model
+        .attach_brush(&bsp, &limits, 1, Vec3::ZERO)
+        .expect("the fixture declares submodel 1");
+
+    // Unrotated: a point-hull trace along -X at y=3 stops at the face
+    // x=10.
+    let unrotated = model.trace(
+        Hull::Point,
+        Vec3::new(100.0, 3.0, 0.0),
+        Vec3::new(-100.0, 3.0, 0.0),
+    );
+    assert!((unrotated.end_pos.x - 10.0).abs() < 0.1, "{unrotated:?}");
+    assert!((unrotated.plane_normal - Vec3::X).length() < 1e-3);
+
+    model.set_brush_pose(brush, Vec3::ZERO, Vec3::ZERO, Vec3::Z, 45.0);
+
+    let rotated = model.trace(
+        Hull::Point,
+        Vec3::new(100.0, 3.0, 0.0),
+        Vec3::new(-100.0, 3.0, 0.0),
+    );
+    assert!(
+        rotated.fraction < 1.0,
+        "the rotated diamond no longer reaches y=3 at all: {rotated:?}"
+    );
+    // The face through which this trace now passes is the one whose
+    // (rotated) outward normal points into the ++X+Y quadrant at 45
+    // degrees: the unrotated +X face's normal, rotated 45 degrees about Z.
+    let expected_normal = Vec3::new(
+        core::f32::consts::FRAC_1_SQRT_2,
+        core::f32::consts::FRAC_1_SQRT_2,
+        0.0,
+    );
+    assert!(
+        (rotated.plane_normal - expected_normal).length() < 1e-2,
+        "normal {:?} is not the rotated face normal {expected_normal:?}",
+        rotated.plane_normal
+    );
+    // The hit x is nearer the origin than the unrotated face (10) and no
+    // further than the diamond's vertex distance (10*sqrt(2)): this trace
+    // crosses the rotated face itself, not its unrotated position.
+    assert!(rotated.end_pos.x > 0.0 && rotated.end_pos.x < 10.0 * core::f32::consts::SQRT_2);
+    assert!((rotated.end_pos.x - unrotated.end_pos.x).abs() > 1.0);
+}
+
+/// A point outside the brush's original axis-aligned box, but inside the
+/// diamond its 45-degree rotation sweeps out, is solid once
+/// [`CollisionModel::set_brush_pose`] applies that rotation — the same
+/// "standing inside a closed door" contents rule `CollisionModel::
+/// contents_at` already documents, now exercised for a rotated pose.
+#[test]
+fn a_point_outside_the_original_box_is_solid_inside_its_rotated_sweep() {
+    let bytes = build_rotatable_box_bsp();
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+    let mut model = CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable hulls");
+    let brush = model
+        .attach_brush(&bsp, &limits, 1, Vec3::ZERO)
+        .expect("the fixture declares submodel 1");
+
+    // (12, 0, 0) is outside the unrotated 10-half-extent box.
+    let probe = Vec3::new(12.0, 0.0, 0.0);
+    assert_eq!(model.point_contents(probe), contents::EMPTY);
+
+    model.set_brush_pose(brush, Vec3::ZERO, Vec3::ZERO, Vec3::Z, 45.0);
+
+    // The 45-degree diamond reaches out to 10*sqrt(2) ~= 14.14 along both
+    // axes, so the same point is now inside it.
+    assert_eq!(model.point_contents(probe), contents::SOLID);
+}
+
+/// A zero rotation angle (the default every attached brush starts at, and
+/// what a closed `func_door_rotating` sits at) traces identically to a
+/// plain, never-posed brush: [`CollisionModel::set_brush_pose`] with
+/// `angle_degrees = 0.0` must be a genuine no-op, not merely "close to" the
+/// unrotated trace.
+#[test]
+fn a_zero_angle_pose_traces_exactly_like_no_pose_at_all() {
+    let bytes = build_rotatable_box_bsp();
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+    let mut model = CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable hulls");
+    let brush = model
+        .attach_brush(&bsp, &limits, 1, Vec3::ZERO)
+        .expect("the fixture declares submodel 1");
+
+    let start = Vec3::new(100.0, 3.0, 0.0);
+    let end = Vec3::new(-100.0, 3.0, 0.0);
+    let before = model.trace(Hull::Point, start, end);
+    model.set_brush_pose(brush, Vec3::ZERO, Vec3::new(5.0, -5.0, 5.0), Vec3::Z, 0.0);
+    let after = model.trace(Hull::Point, start, end);
+    assert_eq!(before, after);
+}
