@@ -2910,13 +2910,20 @@ payload.
     seconds after load, matching a deliberate pre-departure pause — this
     was not the blocker.
   - `func_tracktrain`/`func_train` spawn placement and its render/collision
-    offset (`crates/ohl-game/src/track_train.rs`'s `built_origin`/
-    `position` delta, `ohl-engine`'s `track_train_transform`/
-    `brush_offset`) were re-checked against the documented "brush moved to
-    its first `path_track`" convention and confirmed already correct (a
-    train authored at its first node renders and collides with zero
-    offset; one authored elsewhere gets exactly the delta it has
-    travelled) — also not the blocker.
+    offset (`crates/ohl-game/src/track_train.rs`, `ohl-engine`'s
+    `track_train_transform`/`brush_offset`) **was** the blocker, and this
+    entry's original claim that it was "confirmed already correct" was
+    wrong. The offset was measured from the chain's first node, which
+    cancels to exactly zero at spawn — so a train whose brushes are
+    authored away from its own track (which the start map's tram is, tied
+    to the world only through the origin-brush position the compiler
+    writes into its `origin` keyvalue) never moved onto that track at all,
+    and there was nothing under the player's spawn to stand on. Only a
+    train a map happens to author sitting on its first node placed
+    correctly, which is why reading the code without instrumenting it
+    looked right. Fixed in the "Track-train spawn placement" entry below
+    — reverting only that fix makes both start-map smoke scenarios fail
+    again, which is the check this bullet originally lacked.
   - A real, separate gap: GoldSrc's documented `game_playerspawn` special
     `targetname` convention (an entity named this way is activated once
     per player spawn, independent of `trigger_auto`; see
@@ -2938,5 +2945,56 @@ payload.
   (PR #97, "Carry the player on moving brush entities," merged after
   branching): the start map's intro depends on the player being
   physically carried by/resting on the tram over what is otherwise open
-  space. No activation-chain or spawn-placement fix in this project could
-  substitute for that mechanic landing.
+  space. That mechanic landing was necessary but not sufficient — with it
+  in, the fall persisted, because the tram itself was still parked where
+  its brushes were compiled rather than on its track; see the corrected
+  placement bullet above and the entry below.
+
+- **Track-train spawn placement (start-map tram).** A `func_train`/
+  `func_tracktrain` is now placed *on the first node of its own path* at
+  spawn, rather than left wherever its brushes were compiled.
+  `ohl-engine`'s `track_train_transform` previously measured the train's
+  travel from `TrackTrainState::built_origin` (the first node), which
+  makes the spawn offset identically zero — so a map that authors the
+  train's brushes away from its track, tied to the world only through the
+  origin-brush position the compiler writes into the entity's `origin`
+  keyvalue, never moved its train onto the track at all. The offset is
+  now measured from that `origin` keyvalue, so the sum every caller
+  already forms (`origin` + offset, in both the renderer and
+  `Level::sync_brush_collision`) cancels to the absolute path position
+  exactly once — which keeps `.plan/fidelity-round-2.md` finding E1
+  (returning the raw polyline coordinate, which the caller then
+  double-applies the keyvalue to) fixed. This follows the public
+  documentation's description of a train riding its path on its origin
+  brush: `height` is "the height above the path_track that the train will
+  ride, based on the location of the train's origin brush"
+  (`docs/FORMAT_SOURCES.md`, "Track trains and paths").
+  `Level::attach_solid_brushes` now attaches every brush hull at that same
+  already-placed position too, so a train is on its track for the level's
+  very first tick rather than one tick later — which is the tick a player
+  the map spawned standing inside it is first traced against.
+  Verified against the real payload with local, since-reverted
+  instrumentation (aggregates and spawn-relative values only, per
+  `docs/CLEAN_ROOM.md`): before the fix a standing-hull trace 256 units
+  straight down from the campaign start map's player spawn hit nothing at
+  all; after it, that trace stops on an attached brush a few tens of units
+  down. This closes both gaps recorded on the M7 mover-riders entry above:
+  the map's trains *are* started by its own trigger chain a few seconds
+  in, and the player *is* standing on one at spawn. A 40-second scripted
+  idle run on that map now logs "The player is riding a mover." (and "The
+  player moved from the spawn point.", from the ride alone), with no
+  movement key pressed and no "inside solid geometry" line; a headless
+  capture over the same window shows the view riding out of the start
+  area, through the hazard-striped tunnel portal and on down the rock
+  tunnel past a lamp-lit side ledge.
+  `xtask/smoke-scenarios/first_chapter_start.txt` asserts the riding line
+  present accordingly, and its tick counts were corrected: a script line's
+  leading number is a count of ticks (`CAPTURE_STEP`, 1/60 s), not
+  seconds, so the previous counts covered under two seconds of simulation
+  and never reached the ride. Regression tests:
+  `crates/ohl-engine/tests/train_spawn_placement.rs` (a synthetic train
+  compiled far from its own track, with the player start authored inside
+  the car at the first node) and a new
+  `crates/ohl-physics/tests/hull_trace.rs` case pinning that the
+  bare-contents head-link skip is per hull, and so was never what removed
+  the tram's floor.

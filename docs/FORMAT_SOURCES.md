@@ -2608,7 +2608,12 @@ closed loop's wrap-around instead of a dead end — with `toggle`/`turn_on`/
 `turn_off`/`reverse` wired through the existing `Simulation::activate` "use"
 path shared with doors, buttons and platforms. `ohl-engine`'s `render.rs`
 reads the resolved position/yaw each frame the same way it already reads a
-door's timer, via `track_train_transform`.
+door's timer, via `track_train_transform`. That placement is measured from
+the entity's own `origin` keyvalue — the origin-brush position the compiler
+writes there, and the reference point the `height` keyvalue above is
+documented against — so a train is drawn and collided wherever its path
+currently puts it, including at spawn, rather than wherever its brushes
+happened to be compiled.
 
 ## Scripted sequences and talk monsters
 
