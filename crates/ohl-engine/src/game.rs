@@ -1264,15 +1264,19 @@ impl Game {
 
         // The snapshots just applied above may have moved a mover entity
         // (its `Transform`) far from where this restore's fresh `Level`
-        // attached its collision brushes (at their *compiled* origins, in
-        // `attach_solid_brushes`); a cold map load never has this gap,
-        // since the very first `sync_brush_collision` call is what seeds
-        // it. Left alone, next step's own `sync_brush_collision` would see
-        // that whole restore displacement as one step's motion and divide
-        // it by `dt`, synthesizing a large `brush_velocity` out of nothing
-        // — safe for the ride path (a restored `PlayerState::ground_brush`
-        // is never trusted; `categorize_position` recomputes it fresh on
-        // the first tick), but the push path added alongside mover riders
+        // attached its collision brushes — at each brush's *spawn-time
+        // placed* position, in `attach_brush_collision`, which is the
+        // entity's `origin` keyvalue plus its map logic's own spawn offset
+        // (a train's, for instance, puts it on the first node of its
+        // path), not the save's restored one. A cold map load never has
+        // this gap, since that same attach is already the position the
+        // simulation starts from. Left alone, next step's own
+        // `sync_brush_collision` would see that whole restore displacement
+        // as one step's motion and divide it by `dt`, synthesizing a large
+        // `brush_velocity` out of nothing — safe for the ride path (a
+        // restored `PlayerState::ground_brush` is never trusted;
+        // `categorize_position` recomputes it fresh on the first tick),
+        // but the push path added alongside mover riders
         // reads `brush_velocity` unconditionally and would shove a player
         // who happens to be standing inside a restored mover's hull by the
         // full restore displacement. Syncing once here, with a

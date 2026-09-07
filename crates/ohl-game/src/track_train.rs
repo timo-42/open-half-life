@@ -333,29 +333,6 @@ impl TrackTrainState {
         }
     }
 
-    /// Where this train is placed at spawn: the chain's first node
-    /// (`height`-adjusted). The public documentation describes a train as
-    /// riding its path with its *origin brush* on it — `height` is "the
-    /// height above the path_track that the train will ride, based on the
-    /// location of the train's origin brush" (see the module doc comment)
-    /// — so at spawn the entity's origin brush, and with it the whole
-    /// submodel the compiler stored relative to that brush, is moved onto
-    /// this node from wherever the map authored it.
-    ///
-    /// This is deliberately *not* what `ohl-engine`'s
-    /// `track_train_transform` subtracts from [`Self::position`]: that
-    /// subtracts the entity's own `origin` keyvalue, because a map is free
-    /// to build the train's brushes anywhere and let the first node place
-    /// them. Subtracting this instead would make the spawn offset
-    /// identically zero and freeze the train wherever it was compiled.
-    /// Kept as a published reference point (the start of the ride, and the
-    /// value a caller can compare [`Self::position`] against to see how far
-    /// along the chain a train has travelled from its start).
-    #[must_use]
-    pub fn built_origin(&self) -> Vec3 {
-        self.chain.nodes[0].position
-    }
-
     /// The train's yaw, in degrees (matching [`crate::registry::movedir_from_angles`]'s
     /// convention: counter-clockwise around `+Z` from `+X`), facing along
     /// the active segment toward the node it is heading for; `None` when
@@ -639,30 +616,33 @@ mod tests {
         assert_eq!(state.yaw_degrees(&train), Some(0.0));
     }
 
-    /// Regression for fidelity round 2 finding E1: `ohl-engine`'s
-    /// `track_train_transform` must return a *delta* from the train's
-    /// built (authored) position, mirroring `door_offset`'s convention of
-    /// `Vec3::ZERO` for an unmoved mover, not the train's absolute
-    /// polyline coordinate (which a prior version returned by subtracting
-    /// the entity's `origin` keyvalue instead of the built origin — a
-    /// no-op when that keyvalue is the conventional `0 0 0`, silently
-    /// re-displacing the already-world-space brush geometry by its own
-    /// resting coordinate).
+    /// A train is placed on the *first node of its own path* at spawn:
+    /// [`TrackTrainState::position`] is that node, whatever the map
+    /// authored the train's brushes at. `ohl-engine`'s
+    /// `track_train_transform` turns that into a placement offset by
+    /// subtracting the entity's own `origin` keyvalue — the origin-brush
+    /// position the compiler wrote there, and the frame the submodel's
+    /// geometry is stored relative to — so the sum every caller already
+    /// forms (`origin` + offset) cancels to this absolute position exactly
+    /// once.
+    ///
+    /// This also keeps fidelity round 2 finding E1 fixed: the raw polyline
+    /// coordinate must never be returned as an offset, since the caller
+    /// would then add the `origin` keyvalue to it a second time.
     #[test]
-    fn built_origin_is_the_first_node_and_offset_is_zero_at_spawn() {
+    fn a_train_is_placed_on_its_first_node_at_spawn() {
         let entities = three_node_track(&[]);
         let registry = build_registry(&entities);
         let state = train_state(&registry);
-        assert_eq!(state.built_origin(), Vec3::ZERO);
         assert_eq!(
-            state.position() - state.built_origin(),
+            state.position(),
             Vec3::ZERO,
-            "a train that has not moved must render with no offset from its built geometry"
+            "a train that has not moved must sit on the first node of its own path"
         );
     }
 
     #[test]
-    fn built_origin_stays_fixed_while_offset_tracks_travel() {
+    fn position_tracks_travel_along_the_chain() {
         let entities = three_node_track(&[("speed", "50")]);
         let registry = build_registry(&entities);
         let mut state = train_state(&registry);
@@ -672,11 +652,7 @@ mod tests {
         for _ in 0..100 {
             state.advance(0.01);
         }
-        assert_close(state.built_origin(), Vec3::ZERO);
-        assert_close(
-            state.position() - state.built_origin(),
-            Vec3::new(50.0, 0.0, 0.0),
-        );
+        assert_close(state.position(), Vec3::new(50.0, 0.0, 0.0));
     }
 
     #[test]
