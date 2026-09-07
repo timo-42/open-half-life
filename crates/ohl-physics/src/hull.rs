@@ -219,8 +219,12 @@ pub struct Trace {
     /// Which attached brush entity's hull tree produced the nearest hit
     /// ([`combine`] keeps the smaller fraction), so a caller can tell a
     /// world surface from a `func_train`/`func_plat`/`func_door` the player
-    /// is standing on or was stopped by. `None` when the move ended on the
-    /// world tree, or hit nothing at all.
+    /// is standing on or was stopped by. Also set when the segment started
+    /// embedded in an attached brush's solid, even if the world tree is
+    /// *also* `start_solid` (a fraction tie [`combine`] cannot otherwise
+    /// break) — see [`combine`]'s own doc for why that tie is resolved in
+    /// the brush's favour. `None` when the move ended on the world tree
+    /// alone, or hit nothing at all.
     pub brush_index: Option<BrushId>,
 }
 
@@ -969,13 +973,24 @@ impl CollisionModel {
 /// field doc on [`Trace`] for why that would be wrong, and left to whatever
 /// the world tree's own trace already set. A start inside *any* solid
 /// (world or brush) stops the move outright. `brush` names which attached
-/// brush produced `hit`, recorded on [`Trace::brush_index`] only when `hit`
-/// wins.
+/// brush produced `hit`, recorded on [`Trace::brush_index`] when `hit`
+/// wins the fraction comparison outright, and also — even without winning
+/// that comparison — the first time a brush is the one whose segment
+/// started inside solid: a `start_solid` hit's own `fraction` is already
+/// forced to `0.0` (see [`CollisionModel::trace_tree`]), so a brush that
+/// reports it can only ever *tie* the fraction comparison against a world
+/// trace that is start-solid too, never win it outright, and a caller that
+/// needs to know "is the player embedded in an attached brush at all" (a
+/// mover push, say) must not have that answer silently lost to a tie.
+/// [`Option::get_or_insert`] means only the *first* such brush is recorded
+/// when more than one embeds the segment, a deterministic but otherwise
+/// arbitrary choice among ties.
 fn combine(best: &mut Trace, hit: &Trace, brush: BrushId) {
     best.in_water |= hit.in_water;
     best.all_solid |= hit.all_solid;
     if hit.start_solid {
         best.start_solid = true;
+        best.brush_index.get_or_insert(brush);
     }
     if hit.fraction < best.fraction {
         best.fraction = hit.fraction;

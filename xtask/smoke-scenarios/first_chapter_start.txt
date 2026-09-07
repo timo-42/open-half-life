@@ -8,18 +8,25 @@
 # Expected fixed log lines (see docs/m79-design.md §7), asserted by the
 # harness rather than parsed from this file:
 #   present: "Scripted input loaded.", "Scripted input finished."
-#   absent:  every other fixed line (no weapon, pickup or player-damage
-#            path exists on this branch yet; see crates/ohl-app/src/
-#            script_log.rs)
+#   absent:  every other fixed line except "The player is riding a
+#            mover.", which xtask/src/combat_smoke.rs deliberately leaves
+#            unasserted for this one scenario; see
+#            FIRST_CHAPTER_START_ABSENT's own doc comment there.
 #
 # The 90 seconds this script waits through comfortably covers the map's
-# opening tram sequence. Verified against the real payload (M7's
-# mover-riders package): "The player is riding a mover." does not appear.
-# That sequence is implemented in this project (M7.12) as a
-# trigger_camera-driven view override, which moves the free camera
-# directly rather than the player's own collision body, so today it does
-# not exercise ground_mover_speed()/PlayerState::ground_brush; see
-# xtask/src/combat_smoke.rs's BASE_ABSENT doc comment.
+# opening tram sequence, but does not currently trip "The player is
+# riding a mover.". Verified against the real payload (M7's mover-riders
+# package, corrected after PR #97's review): TODO, two open gaps, not a
+# camera override —
+#   1. no func_tracktrain on this map is ever started (every one has
+#      start_speed 0, and nothing this project's map logic does fires one
+#      another way within this script's window);
+#   2. the player is not standing on any brush entity at spawn even if a
+#      train were moving (PlayerState::ground_brush reads None for the
+#      whole run; the player instead falls several hundred units onto
+#      ordinary world geometry).
+# In the real game the player physically rides the tram, so once both
+# gaps are fixed this scenario should start asserting the line present.
 
 15 look 0 90
 15 look 0 90

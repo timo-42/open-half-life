@@ -804,10 +804,19 @@ fn wish_direction(input: &MoveInput) -> (Vec3, f32) {
 /// ground probe to catch up to it: a platform rising faster than that probe
 /// reaches in one tick would otherwise leave the player behind (falling
 /// through it), and a descending one would leave the player standing in
-/// mid-air, weightless, until gravity resumed. The move is still bounded by
-/// a hull trace, exactly like every other player movement, so a mover can
-/// never push the player through a ceiling or another solid this way — see
-/// "Riding movers" in `docs/FORMAT_SOURCES.md`.
+/// mid-air, weightless, until gravity resumed. See "Riding movers" in
+/// `docs/FORMAT_SOURCES.md`.
+///
+/// This checks the *destination*, not the swept path: when the destination
+/// is clear, that is the only trace run (see below for why), so a solid
+/// thinner than one tick's `displacement_z` between the old and new origin
+/// is never tested against. At the platform speeds
+/// `docs/FORMAT_SOURCES.md`'s "Entity keyvalues and map logic" records as
+/// documented defaults this is on the order of one or two world units per
+/// tick, so it is not expected to be reachable on a real map, but it is a
+/// real gap, not a rounding error: **`TODO(black-box)`**, needs either a
+/// swept-path trace or real-game verification that this is unreachable in
+/// practice before it can be called safe outright.
 fn ride_vertical_mover(model: &CollisionModel, state: &mut PlayerState, displacement_z: f32) {
     let candidate = state.origin + Vec3::Z * displacement_z;
     // A rising mover's own move this step already carried its solid up
@@ -817,16 +826,23 @@ fn ride_vertical_mover(model: &CollisionModel, state: &mut PlayerState, displace
     // the platform's new geometry — reporting `start_solid` immediately,
     // with a zero fraction, never a distance to travel. That is exactly
     // the case this function exists to resolve, so it is deliberately not
-    // treated as "blocked": the destination is checked directly instead,
-    // and only a candidate that is *itself* still stuck (a mover pushing
-    // the player into a ceiling or another solid) falls back to a bounded
-    // trace from the old position, which stops at the nearest obstruction
-    // rather than embedding them any further.
+    // treated as "blocked": the destination is checked directly instead.
     let clear = model.trace(state.hull(), candidate, candidate);
     if !clear.start_solid {
         state.origin = candidate;
         return;
     }
+    // The destination is itself stuck (a mover pushing the player into a
+    // ceiling or another solid): fall back to a bounded trace from the old
+    // position. This only actually moves the player in the case the old
+    // position was free and only the destination was not — a mover simply
+    // sliding a rising platform's own leading face into the player (the
+    // case this function exists for, per its own doc above) starts this
+    // trace already embedded too, so `trace.start_solid` is true and the
+    // player is left exactly where they started rather than at "the
+    // nearest obstruction" this comment might otherwise suggest; `origin`
+    // is not written at all in that case, which is a safe no-op, not a
+    // silent push through anything.
     let trace = model.trace(state.hull(), state.origin, candidate);
     if !trace.start_solid {
         state.origin = trace.end_pos;
@@ -1121,6 +1137,21 @@ fn walk_or_air_move(
             }
             state.on_ground = false;
             state.ground_normal = Vec3::ZERO;
+            // TODO(black-box): jumping off a moving mover loses its
+            // horizontal ride outright, rather than launching with it.
+            // Clearing `ground_brush` here means the very next tick's
+            // `base_velocity` (looked up from it by the host) is zero, and
+            // the ground branch above has already stopped adding
+            // `base_horizontal` to `state.velocity` by the time this jump
+            // runs, so nothing carries into the air. This matches what
+            // "Riding movers" in `docs/FORMAT_SOURCES.md` already says
+            // ("added for the duration of one move and removed
+            // afterwards, so the ride never accumulates into the player's
+            // own velocity") and is not a regression, but it is a known
+            // divergence from the real game, where jumping off a moving
+            // tram carries the jump's launch velocity with it. Needs
+            // verification against the real game before this crate can
+            // claim parity either way.
             state.ground_brush = None;
         }
         state.jump_held = true;

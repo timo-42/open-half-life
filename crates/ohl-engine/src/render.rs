@@ -413,61 +413,70 @@ pub(crate) fn track_train_transform(
 /// transform, so the visual offset is derived here: the timer counts the
 /// remaining travel, which maps onto a `0..=1` fraction of the door's own
 /// `travel_distance`.
-pub(crate) fn door_offset(registry: &ohl_game::Registry, entity: Entity) -> Vec3 {
-    let Ok(door) = registry.world.get::<&Door>(entity) else {
-        return Vec3::ZERO;
-    };
-    let travel_seconds = if door.speed > 0.0 {
-        door.travel_distance / door.speed
+/// How far a translating brush mover has slid along its move direction,
+/// from `speed`/`travel_distance`/`movedir` and its own current
+/// `state`/`timer` (the shape [`Door`] and [`Platform`] both carry
+/// identically; see `docs/FORMAT_SOURCES.md`, "Entity keyvalues and map
+/// logic"). Shared by [`door_offset`] and [`platform_offset`] so the two
+/// staying in lock-step is a compile-time fact, not a doc comment claiming
+/// they mirror each other.
+fn mover_offset(
+    speed: f32,
+    travel_distance: f32,
+    movedir: Vec3,
+    state: MoverState,
+    timer: f32,
+) -> Vec3 {
+    let travel_seconds = if speed > 0.0 {
+        travel_distance / speed
     } else {
         0.0
     };
     if travel_seconds <= 0.0 {
-        // An instantly-travelling door has no intermediate position to
+        // An instantly-travelling mover has no intermediate position to
         // show; it is either where it started or fully open.
-        let fraction = f32::from(u8::from(door.state == MoverState::Open));
-        return door.movedir * door.travel_distance * fraction;
+        let fraction = f32::from(u8::from(state == MoverState::Open));
+        return movedir * travel_distance * fraction;
     }
-    let progress = (door.timer / travel_seconds).clamp(0.0, 1.0);
-    let fraction = match door.state {
+    let progress = (timer / travel_seconds).clamp(0.0, 1.0);
+    let fraction = match state {
         MoverState::Closed => 0.0,
         MoverState::Open => 1.0,
         MoverState::Opening => 1.0 - progress,
         MoverState::Closing => progress,
     };
-    door.movedir * door.travel_distance * fraction
+    movedir * travel_distance * fraction
+}
+
+pub(crate) fn door_offset(registry: &ohl_game::Registry, entity: Entity) -> Vec3 {
+    let Ok(door) = registry.world.get::<&Door>(entity) else {
+        return Vec3::ZERO;
+    };
+    mover_offset(
+        door.speed,
+        door.travel_distance,
+        door.movedir,
+        door.state,
+        door.timer,
+    )
 }
 
 /// How far a `func_plat`/`func_platform` has slid along its move direction,
 /// from the state machine `ohl-game` advances.
 ///
-/// Mirrors [`door_offset`] exactly: [`Platform`] carries the identical
-/// `speed`/`movedir`/`travel_distance`/`state`/`timer` shape as [`Door`]
-/// (see `docs/FORMAT_SOURCES.md`, "Entity keyvalues and map logic"), so the
-/// same timer-to-fraction mapping applies. Without this a `func_plat`'s
-/// `Platform` component advances its own state machine but the brush never
-/// visibly (or collidably) moves at all.
+/// Without this a `func_plat`'s `Platform` component advances its own
+/// state machine but the brush never visibly (or collidably) moves at all.
 pub(crate) fn platform_offset(registry: &ohl_game::Registry, entity: Entity) -> Vec3 {
     let Ok(platform) = registry.world.get::<&Platform>(entity) else {
         return Vec3::ZERO;
     };
-    let travel_seconds = if platform.speed > 0.0 {
-        platform.travel_distance / platform.speed
-    } else {
-        0.0
-    };
-    if travel_seconds <= 0.0 {
-        let fraction = f32::from(u8::from(platform.state == MoverState::Open));
-        return platform.movedir * platform.travel_distance * fraction;
-    }
-    let progress = (platform.timer / travel_seconds).clamp(0.0, 1.0);
-    let fraction = match platform.state {
-        MoverState::Closed => 0.0,
-        MoverState::Open => 1.0,
-        MoverState::Opening => 1.0 - progress,
-        MoverState::Closing => progress,
-    };
-    platform.movedir * platform.travel_distance * fraction
+    mover_offset(
+        platform.speed,
+        platform.travel_distance,
+        platform.movedir,
+        platform.state,
+        platform.timer,
+    )
 }
 
 /// How far a brush entity has moved from where its geometry was compiled.
