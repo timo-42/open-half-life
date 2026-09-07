@@ -870,3 +870,129 @@ fn a_corrupted_mover_state_section_fails_closed() {
     let result = Game::load_bytes(&game_assets(), &corrupted);
     assert!(matches!(result, Err(EngineError::SaveUnreadable)));
 }
+
+/// A trigger that has fired but not yet reached the `Spawner` — the
+/// one-tick window between `Simulation::activate` (phase 12, the last
+/// phase of a tick) bumping `MakerActivation::pending` and
+/// `AiState::tick_makers` (phase 10) draining it the *following* tick —
+/// still survives a save taken right in that window, and the maker still
+/// spawns once the reloaded game resumes ticking.
+#[test]
+fn a_pending_maker_activation_at_the_phase_boundary_survives_a_save_load() {
+    let entities = script_room_entities(
+        [-192.0, -192.0, 36.0],
+        &format!(
+            "{}{}",
+            trigger_auto("maker1"),
+            entity_block(
+                "monstermaker",
+                [96.0, -96.0, 36.0],
+                0.0,
+                &[
+                    ("targetname", "maker1"),
+                    ("monstertype", "monster_headcrab"),
+                    ("monstercount", "1"),
+                    ("delay", "0"),
+                ],
+            ),
+        ),
+    );
+    let mut game = script_game(&entities);
+    // Exactly one tick: phase 12's `Simulation::tick` fires the
+    // `trigger_auto` and bumps `MakerActivation::pending` to 1, but this
+    // same tick's own phase 10 already ran *before* phase 12, so the
+    // activation is still sitting unspent right here.
+    script_tick(&mut game, 1);
+    assert_eq!(
+        game.monster_count(),
+        0,
+        "the trigger has fired but not yet reached the Spawner"
+    );
+
+    let bytes = game
+        .save_bytes(1_700_000_000)
+        .expect("the phase-boundary save is written");
+    let assets = script_game_assets(&entities);
+    let mut reloaded = Game::load_bytes(&assets, &bytes).expect("the phase-boundary save loads");
+
+    script_tick(&mut reloaded, 5);
+    assert_eq!(
+        reloaded.monster_count(),
+        1,
+        "the pending activation must have survived the save and still \
+         reach the Spawner, or the maker never spawns at all"
+    );
+}
+
+/// Confirms, against the actual restore-order code (not just asserted),
+/// what happens to a `trigger_auto` with the published `Remove On fire`
+/// spawnflag set once it has already fired (and so despawned itself, per
+/// `ohl_game::logic::Simulation::fire_auto_triggers`) before a save: it
+/// has no live `AutoTrigger` component left for `SECTION_MOVER_STATE`'s
+/// `auto_trigger_fired` to read `fired` off at all (`snapshot_movers`
+/// records `None` for that slot), but the entity does **not** come back
+/// after a load either — `SECTION_ENTITY_COMBAT` (tag 24, pre-existing,
+/// unrelated to this section) already despawns any spawn-index entity
+/// that was not live in the world at save time, a `Remove On fire`
+/// `trigger_auto` included, before this section's own restore ever runs.
+/// It therefore does not, and cannot, refire after the load.
+#[test]
+fn a_remove_on_fire_trigger_auto_that_already_fired_does_not_refire_after_a_load() {
+    const SPAWNFLAG_REMOVE_ON_FIRE: u32 = 1;
+    let entities = script_room_entities(
+        [-192.0, -192.0, 36.0],
+        &format!(
+            "{}{}",
+            entity_block(
+                "trigger_auto",
+                [0.0, 0.0, 0.0],
+                0.0,
+                &[
+                    ("target", "after"),
+                    ("spawnflags", &SPAWNFLAG_REMOVE_ON_FIRE.to_string()),
+                ],
+            ),
+            exit_trigger("after"),
+        ),
+    );
+    let mut game = script_game(&entities);
+    let mut fired = 0usize;
+    for _ in 0..5 {
+        for event in game.tick(TICK_SECONDS, &Input::default()) {
+            if matches!(event, GameEvent::LevelChange { .. }) {
+                fired += 1;
+            }
+        }
+    }
+    assert_eq!(
+        fired, 1,
+        "the auto trigger must have fired exactly once already"
+    );
+
+    let bytes = game
+        .save_bytes(1_700_000_000)
+        .expect("the post-fire save is written");
+    let assets = script_game_assets(&entities);
+    let mut reloaded = Game::load_bytes(&assets, &bytes).expect("the post-fire save loads");
+
+    let mut refired = 0usize;
+    for _ in 0..5 {
+        for event in reloaded.tick(TICK_SECONDS, &Input::default()) {
+            if matches!(event, GameEvent::LevelChange { .. }) {
+                refired += 1;
+            }
+        }
+    }
+    assert_eq!(
+        refired, 0,
+        "a Remove-On-fire trigger_auto that had already fired and despawned \
+         itself before the save must stay gone after the load (via \
+         SECTION_ENTITY_COMBAT's own despawn-if-not-live rule), not fire \
+         again"
+    );
+    let entity_after_load = entity_of_classname(&reloaded, "trigger_auto");
+    assert!(
+        entity_after_load.is_none(),
+        "the entity itself must stay despawned, confirming *why* it cannot refire"
+    );
+}

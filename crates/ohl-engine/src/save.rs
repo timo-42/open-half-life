@@ -276,7 +276,11 @@ impl GameSave {
             ai: optional_section(&reader, SECTION_AI)?,
             projectiles: optional_section(&reader, SECTION_PROJECTILES)?,
             rng: optional_section(&reader, SECTION_RNG)?,
-            mover_state: optional_section(&reader, SECTION_MOVER_STATE)?,
+            mover_state: optional_bounded_vec_section(
+                &reader,
+                SECTION_MOVER_STATE,
+                crate::save_state::MAX_SNAPSHOT_MOVERS,
+            )?,
         })
     }
 }
@@ -310,5 +314,79 @@ fn optional_section<T: serde::de::DeserializeOwned>(
             .map_err(|_| crate::EngineError::SaveUnreadable),
         Err(ohl_save::SaveError::SectionNotFound) => Ok(None),
         Err(_) => Err(crate::EngineError::SaveUnreadable),
+    }
+}
+
+/// Like [`optional_section`], but for a section whose payload is a bare
+/// `Vec<Option<T>>` (`SECTION_MOVER_STATE`/tag 28 today), decoded through
+/// [`bounded_vec::deserialize_bounded_vec`] instead of a plain
+/// `postcard::from_bytes::<Vec<Option<T>>>` so a corrupt or adversarial
+/// section's own length prefix — a handful of bytes, wire-cheap to write —
+/// cannot itself request a `Vec::with_capacity` far past `max_len` before a
+/// single element has actually been validated. `ohl_save::Limits`' own
+/// section-byte-count cap already bounds the section as a whole; this
+/// additionally bounds the *allocation* the decode attempts, independent of
+/// how large a length prefix the bytes claim.
+fn optional_bounded_vec_section<T: serde::de::DeserializeOwned>(
+    reader: &ohl_save::SaveReader<'_>,
+    tag: u32,
+    max_len: usize,
+) -> crate::Result<Option<Vec<Option<T>>>> {
+    match reader.section(tag) {
+        Ok(bytes) => bounded_vec::deserialize_bounded_vec(bytes, max_len)
+            .map(Some)
+            .map_err(|_| crate::EngineError::SaveUnreadable),
+        Err(ohl_save::SaveError::SectionNotFound) => Ok(None),
+        Err(_) => Err(crate::EngineError::SaveUnreadable),
+    }
+}
+
+/// A `postcard`-backed `Vec<Option<T>>` decoder that never allocates more
+/// than a caller-chosen element cap, regardless of what the wire's own
+/// sequence-length prefix claims.
+mod bounded_vec {
+    use serde::de::{Deserializer as _, SeqAccess, Visitor};
+
+    /// Decodes `bytes` as `Vec<Option<T>>`, capping both the up-front
+    /// allocation and the total element count at `max_len`: a claimed
+    /// length longer than `max_len` is rejected as soon as the
+    /// `(max_len + 1)`th element would be read, before any element beyond
+    /// that point is ever decoded or pushed.
+    pub(super) fn deserialize_bounded_vec<'de, T: serde::de::Deserialize<'de>>(
+        bytes: &'de [u8],
+        max_len: usize,
+    ) -> postcard::Result<Vec<Option<T>>> {
+        let mut deserializer = postcard::Deserializer::from_bytes(bytes);
+        deserializer.deserialize_seq(BoundedVecVisitor {
+            max_len,
+            marker: std::marker::PhantomData,
+        })
+    }
+
+    struct BoundedVecVisitor<T> {
+        max_len: usize,
+        marker: std::marker::PhantomData<T>,
+    }
+
+    impl<'de, T: serde::de::Deserialize<'de>> Visitor<'de> for BoundedVecVisitor<T> {
+        type Value = Vec<Option<T>>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(formatter, "a sequence of at most {} elements", self.max_len)
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            // The claimed size hint is untrusted wire data; only ever use
+            // it to cap (never to exceed) `self.max_len`'s own allocation.
+            let capacity = seq.size_hint().unwrap_or(0).min(self.max_len);
+            let mut values = Vec::with_capacity(capacity);
+            while let Some(value) = seq.next_element::<Option<T>>()? {
+                if values.len() >= self.max_len {
+                    return Err(serde::de::Error::invalid_length(values.len() + 1, &self));
+                }
+                values.push(value);
+            }
+            Ok(values)
+        }
     }
 }

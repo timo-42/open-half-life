@@ -614,11 +614,7 @@ impl Systems {
         snapshots: &[Option<crate::save_state::MoverSnapshot>],
     ) {
         crate::save_state::restore_movers(level, snapshots);
-        let scripts: Vec<Option<crate::save_state::ScriptRunnerSnapshot>> = snapshots
-            .iter()
-            .map(|snapshot| snapshot.as_ref().and_then(|snapshot| snapshot.script))
-            .collect();
-        self.ai.restore_scripts(level, &scripts);
+        self.ai.restore_scripts(level, snapshots);
     }
 
     /// The configuration this step list runs with.

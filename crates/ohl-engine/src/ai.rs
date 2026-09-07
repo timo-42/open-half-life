@@ -858,15 +858,24 @@ impl AiState {
     }
 
     /// Restores [`Self::snapshot_scripts`]'s entries, zipped against
-    /// `level.registry.entities` in spawn order.
+    /// `level.registry.entities` in spawn order. Takes the whole
+    /// [`crate::save_state::MoverSnapshot`] slice `crate::systems::Systems::
+    /// restore_mover_state` already has (rather than a separately
+    /// collected `Vec` of just the script fields), so restoring tag 28
+    /// allocates one `Vec` of that shape, not two.
     pub(crate) fn restore_scripts(
         &mut self,
         level: &Level,
-        snapshots: &[Option<crate::save_state::ScriptRunnerSnapshot>],
+        snapshots: &[Option<crate::save_state::MoverSnapshot>],
     ) {
         let entities = level.registry.entities.clone();
         for (entity, snapshot) in entities.iter().zip(snapshots) {
-            let Some(snapshot) = snapshot else { continue };
+            let Some(snapshot) = snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.script.as_ref())
+            else {
+                continue;
+            };
             let Some(script) = self
                 .scripts
                 .iter_mut()
@@ -1250,7 +1259,12 @@ impl AiState {
                 // exactly like a script's `ScriptActivation`) into
                 // `Spawner::trigger` calls before ticking it, so a save's
                 // worth of queued triggers and this frame's tick see the
-                // same, up-to-date `active`/`cyclic_pending` state.
+                // same, up-to-date `active` state. `MakerActivation::pending`
+                // itself is also part of `SECTION_MOVER_STATE` (tag 28,
+                // `crate::save_state::MonsterMakerSnapshot::pending_activation`),
+                // so a save taken between this drain (phase 10) and the
+                // next `Simulation::activate` bump (phase 12) does not lose
+                // a trigger that landed in that one-tick gap.
                 let pending = level
                     .registry
                     .world

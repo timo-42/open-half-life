@@ -378,15 +378,6 @@ impl MakerActivation {
             self.pending += 1;
         }
     }
-
-    /// Consumes one activation, reporting whether there was one.
-    pub const fn take(&mut self) -> bool {
-        if self.pending == 0 {
-            return false;
-        }
-        self.pending -= 1;
-        true
-    }
 }
 
 /// `trigger_hurt`: a volume that damages whatever is inside it.
