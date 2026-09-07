@@ -2897,23 +2897,46 @@ payload.
   load anyway, by `SECTION_ENTITY_COMBAT` (tag 24)'s own pre-existing
   despawn-if-not-live rule, so it does not refire — confirmed with a
   dedicated test, not merely asserted in a doc comment.
-- **Follow-up: the campaign start map's tram never moved.** A 40-second
-  idle review over the start map (PR #97's review) found every
-  `func_tracktrain` there parked at `startspeed 0` with nothing ever
-  triggering one, so the player fell from spawn onto world geometry
-  instead of landing on the tram. `func_tracktrain`/`func_train` spawn
-  placement and its render/collision offset (`crates/ohl-game/src/track_train.rs`'s
-  `built_origin`/`position` delta, `ohl-engine`'s `track_train_transform`/
-  `brush_offset`) were re-checked against the documented "brush moved to
-  its first `path_track`" convention and confirmed already correct (a
-  train authored at its first node renders and collides with zero offset;
-  one authored elsewhere gets exactly the delta it has travelled) — not
-  the bug. The actual gap: `game_playerspawn`, GoldSrc's documented
-  special `targetname` convention that activates whatever entity carries
-  that name once per player spawn (see `docs/FORMAT_SOURCES.md`, "Entity
-  keyvalues and map logic"), was never implemented — this crate never
-  looked up that name at all, so a map whose intro sequence used it
-  instead of `trigger_auto` had no activation path in this project.
-  `ohl_game::logic::Simulation::fire_player_spawn` now activates every
-  `game_playerspawn`-named entity once, the first tick after load,
-  alongside the existing `trigger_auto` handling.
+- **Follow-up: investigating why the campaign start map's tram sequence
+  drops the player.** PR #97's review reported every `func_tracktrain` on
+  the start map parked at `startspeed 0` for a 40-second idle run, with
+  the player falling from spawn onto world geometry rather than landing on
+  the tram. Re-investigating against the real payload (classname/aggregate
+  facts only, per `docs/CLEAN_ROOM.md`) found two of the three suspected
+  causes were already fine and one real, independent gap:
+  - The activation chain (`trigger_auto` → `multi_manager` →
+    `func_tracktrain`) is present on the real map and already works:
+    instrumented locally, the train's own `moving` flag turns on a few
+    seconds after load, matching a deliberate pre-departure pause — this
+    was not the blocker.
+  - `func_tracktrain`/`func_train` spawn placement and its render/collision
+    offset (`crates/ohl-game/src/track_train.rs`'s `built_origin`/
+    `position` delta, `ohl-engine`'s `track_train_transform`/
+    `brush_offset`) were re-checked against the documented "brush moved to
+    its first `path_track`" convention and confirmed already correct (a
+    train authored at its first node renders and collides with zero
+    offset; one authored elsewhere gets exactly the delta it has
+    travelled) — also not the blocker.
+  - A real, separate gap: GoldSrc's documented `game_playerspawn` special
+    `targetname` convention (an entity named this way is activated once
+    per player spawn, independent of `trigger_auto`; see
+    `docs/FORMAT_SOURCES.md`, "Entity keyvalues and map logic") was never
+    implemented at all — confirmed by grep, zero prior references in this
+    crate. `ohl_game::logic::Simulation::fire_player_spawn` now activates
+    every `game_playerspawn`-named entity once, the first tick after load.
+    This is a genuine, independently useful engine capability, but the
+    start map's own tram does not use this convention (confirmed absent
+    from its entity lump), so this fix alone does not change its
+    behaviour.
+
+  The start map's actual fall was root-caused by direct instrumentation:
+  the player is in unbroken free-fall from the very first tick (never
+  touching anything, health steady at 100 until lethal impact well under
+  a second later), which happens regardless of whether the tram has
+  started moving yet. This traces back to the same gap the "Mover riders"
+  entry above closed on `main` while this investigation was in progress
+  (PR #97, "Carry the player on moving brush entities," merged after
+  branching): the start map's intro depends on the player being
+  physically carried by/resting on the tram over what is otherwise open
+  space. No activation-chain or spawn-placement fix in this project could
+  substitute for that mechanic landing.
