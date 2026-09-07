@@ -2979,6 +2979,41 @@ marked `TODO(black-box)` in the code rather than guessed:
     entirely (the worst case of "cannot reach the mark") and asserts the
     script still lets go within the bound.
 
+### Item 21 resolution note: the pre-trigger idle (append-only)
+
+Item 21 above previously recorded the published looping idle as "only
+partially modelled": a dormant script never touched its monster at all, so
+`m_iszIdle`'s "on a loop until the scripted_sequence is triggered" (VDC
+`scripted_sequence`, quoted in full where item 21 was first written) never
+played before the first trigger. This project now plays it, resolving the
+part of item 21 that was still open — what happens to a monster whose own
+brain is "still driving" it while a dormant script is also named at it —
+in a direction chosen to keep the PR #75/#82 rule intact ("a script only
+owns an actor while it is holding it", i.e. `ScriptHold` present): a
+dormant script never becomes `ScriptHold`, so it never suspends the
+monster's own brain, senses, schedule or movement. It only ever writes one
+thing, `crate::components::StudioAnim::sequence`, and only under a
+project-authored precedence rule this project could not find published
+anywhere: **a dormant script's idle animation wins the sequence-slot tie
+only while the monster's own AI reports it is idle (`MonsterState::Idle`
+and `Activity::Idle` both, this project's own read of "idle" — no page
+states which of the two, or both, "idle" ought to mean here), and loses to
+whatever the monster's own brain is doing otherwise** (walking, alert,
+fighting, following, or anything else `ohl_ai::Activity` names). A monster
+with no `MonsterAi` component at all is treated as not eligible either,
+since there is then no AI state to confirm as idle in the first place —
+still `TODO(black-box)`, since no page addresses that case specifically.
+
+Implemented as `ohl_ai::scripts::ScriptRunner::pretrigger_idle_sequence`
+(the eligibility rule: `Dormant` phase plus a working `m_iszIdle`, tested
+in `ohl-ai::scripts::tests`) and `ohl_engine::ai::AiState::
+apply_pretrigger_idles` (the precedence rule: applied last in `AiState::
+think`, after the monster's own `AiWorld::tick` and its `ActivityChanged`
+handling have already run, so the script's idle is what a viewer actually
+sees whenever the tie applies). Covered end to end by `ohl-engine`'s
+`a_dormant_scripts_idle_animation_plays_while_its_monster_is_idle_and_yields_otherwise`
+integration test.
+
 ## Deployable damageability and per-trace hitbox exclusion (M7.9 follow-up)
 
 A PR #70/#69 review found that `crates/ohl-engine/src/projectiles.rs`'s

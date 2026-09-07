@@ -7,10 +7,10 @@
 //! `docs/FORMAT_SOURCES.md`, "Scripted sequences and talk monsters".
 
 use ohl_engine::test_support::{
-    SCRIPT_MAP, actor_origin, entity_block, entity_of_classname, script_game, script_room_bsp,
-    script_room_entities, strip_monster_ai, use_input,
+    SCRIPT_MAP, actor_origin, entity_block, entity_of_classname, queue_monster_damage, script_game,
+    script_room_bsp, script_room_entities, strip_monster_ai, use_input,
 };
-use ohl_engine::{Game, GameEvent, Input, TICK_SECONDS};
+use ohl_engine::{Game, GameEvent, Input, MemoryAssets, StudioAnim, TICK_SECONDS};
 
 /// A `trigger_auto` that fires `target` as soon as the map has loaded.
 fn trigger_auto(target: &str) -> String {
@@ -629,5 +629,129 @@ fn a_walk_script_bound_to_an_inert_monster_does_not_stall_forever() {
     assert!(
         (actor_origin(&game, guard) - spawn).length() < 8.0,
         "an inert monster never walked toward the mark on its own"
+    );
+}
+
+/// The M7.11 review's item 21 follow-up: a dormant `scripted_sequence`'s
+/// `m_iszIdle` plays on its named monster while that monster's own AI is
+/// idle, without ever possessing it; it steps aside the moment the AI
+/// itself has something else to do; and once triggered, the ordinary
+/// possessed path still takes over and hands the guard back to its own
+/// idle afterwards — exactly the precedence `docs/FORMAT_SOURCES.md`'s
+/// `TODO(black-box)` item 21 documents.
+///
+/// The monster's model publishes two sequences: `"idle"` (index 0) is what
+/// `ohl_ai::Activity::Idle` resolves to under this crate's own vocabulary
+/// name — the sequence the guard's own AI would pick with no script
+/// involved at all — and `"ohl_wait"` (index 1) is the script's own
+/// `m_iszIdle`. Asserting the *index* is what tells the two apart: a
+/// single-sequence fixture could not distinguish "the AI's own idle
+/// happened to land on the same slot" from "the script's idle actually
+/// won".
+#[test]
+fn a_dormant_scripts_idle_animation_plays_while_its_monster_is_idle_and_yields_otherwise() {
+    const IDLE_SEQUENCE: usize = 0;
+    const SCRIPT_IDLE_SEQUENCE: usize = 1;
+
+    let build_entities = |with_trigger: bool| {
+        let mut extra = format!(
+            "{}{}",
+            entity_block(
+                "monster_barney",
+                [0.0, 0.0, 36.0],
+                0.0,
+                &[("targetname", "ohl_guard")],
+            ),
+            entity_block(
+                "scripted_sequence",
+                [160.0, 0.0, 36.0],
+                90.0,
+                &[
+                    ("targetname", "ohl_script"),
+                    ("m_iszEntity", "ohl_guard"),
+                    ("m_iszPlay", "ohl_action"),
+                    ("m_iszIdle", "ohl_wait"),
+                    ("m_fMoveTo", "1"),
+                    ("target", "ohl_after"),
+                ],
+            ),
+        );
+        if with_trigger {
+            extra.push_str(&trigger_auto("ohl_script"));
+            extra.push_str(&exit_trigger("ohl_after"));
+        }
+        script_room_entities([-192.0, -192.0, 36.0], &extra)
+    };
+
+    let build_game = |with_trigger: bool| {
+        let entities = build_entities(with_trigger);
+        let bytes = script_room_bsp(&entities);
+        let (mdl_bytes, _layout) =
+            ohl_formats::test_support::build_minimal_mdl10_with_sequences(&["idle", "ohl_wait"]);
+        let mut assets = MemoryAssets::new();
+        assets.insert(&format!("maps/{SCRIPT_MAP}.bsp"), bytes.clone());
+        assets.insert("models/barney.mdl", mdl_bytes);
+        Game::from_map_bytes(&assets, SCRIPT_MAP, &bytes).expect("the room loads")
+    };
+
+    let sequence_of = |game: &Game, entity: ohl_game::hecs::Entity| -> usize {
+        game.registry()
+            .world
+            .get::<&StudioAnim>(entity)
+            .expect("the guard drew a model")
+            .sequence
+    };
+
+    // --- Dormant: the pre-trigger idle plays, without possession. ---
+    let mut game = build_game(false);
+    let guard = entity_of_classname(&game, "monster_barney").expect("the guard spawned");
+    let spawn = actor_origin(&game, guard);
+
+    // Untriggered and idle: the script's idle plays, and the guard never
+    // moves — the same "a dormant script never touches its monster's
+    // movement" contract the other dormant-script test in this file
+    // covers, checked again here alongside the animation.
+    tick(&mut game, 10);
+    assert_eq!(game.active_script_count(), 0, "the script never took over");
+    assert_eq!(game.script_start_count(), 0);
+    assert_eq!(
+        sequence_of(&game, guard),
+        SCRIPT_IDLE_SEQUENCE,
+        "the pre-trigger idle plays while the guard's own AI is idle"
+    );
+    assert!(
+        (actor_origin(&game, guard) - spawn).length() < 1.0,
+        "the dormant script never moved the guard"
+    );
+
+    // Give the guard an enemy: its own AI stops being idle, so the
+    // script's pre-trigger idle must step aside rather than fight the
+    // AI's own activity selection for the sequence slot.
+    let player = game.player_entity();
+    queue_monster_damage(&mut game, guard, Some(player), 5.0);
+    tick(&mut game, 5);
+    assert_ne!(
+        sequence_of(&game, guard),
+        SCRIPT_IDLE_SEQUENCE,
+        "an idle monster's own AI wins once it is no longer idle"
+    );
+    assert_eq!(
+        game.active_script_count(),
+        0,
+        "the script still never took over: only its idle animation is shared"
+    );
+
+    // --- Triggered: the ordinary possessed path still takes over, and the
+    // --- guard settles back on its own idle once the script is done. ---
+    let mut game = build_game(true);
+    let guard = entity_of_classname(&game, "monster_barney").expect("the guard spawned");
+    let fired = tick_counting_level_changes(&mut game, 1_200);
+    assert_eq!(fired, 1, "a triggered script still fires its target once");
+    assert_eq!(game.script_completion_count(), 1);
+    assert_eq!(game.active_script_count(), 0, "the script let the guard go");
+    assert_eq!(
+        sequence_of(&game, guard),
+        IDLE_SEQUENCE,
+        "released back to its own brain, the guard settles back on its own idle"
     );
 }

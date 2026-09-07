@@ -3036,3 +3036,35 @@ payload.
   (`xtask/smoke-scenarios/ladder_t0a0a.txt`, "reach and climb a ladder in
   the Hazard Course"); all 24 scenarios pass against the real imported
   payload.
+
+- **M7.11 follow-up: the pre-trigger idle.** `docs/FORMAT_SOURCES.md`'s
+  `TODO(black-box)` item 21 previously left `m_iszIdle`'s published
+  "on a loop until the scripted_sequence is triggered" behaviour only
+  partially modelled: a dormant script never touched its monster at all,
+  so the idle animation never played before the first trigger.
+  `ohl_ai::scripts::ScriptRunner::pretrigger_idle_sequence` now reports
+  that idle by name whenever the script is `Dormant` and named a working
+  `m_iszIdle`, without becoming a `ScriptAction` and without the script
+  holding the monster — `ScriptHold` is still only ever inserted for a
+  `Moving`/`Playing` script, so the "a script only owns an actor while it
+  is holding it" contract from PR #75/#82 is unchanged. `ohl_engine::ai`'s
+  `AiState::apply_pretrigger_idles` applies it last in `think`, after the
+  monster's own `AiWorld::tick` has already resolved its own activity
+  into a sequence, and only when that monster's own `MonsterAi` reports
+  `MonsterState::Idle` and `Activity::Idle` — the project-authored
+  precedence rule item 21 now records: the script's idle wins the tie
+  only while the monster's own AI is idle, and loses to anything else the
+  monster's own brain is doing (walking, alert, fighting, following). A
+  monster with no `MonsterAi` at all is treated as not eligible, since
+  there is no AI state to confirm as idle. Covered by `ohl-ai` unit tests
+  over the eligibility rule itself (dormant with/without a name, excluded
+  on `aiscripted_sequence`, absent while moving/playing/repeating/done,
+  and reachable again once interruption or `Repeatable` returns the
+  script to `Dormant`) and by an `ohl-engine` integration test
+  (`a_dormant_scripts_idle_animation_plays_while_its_monster_is_idle_and_yields_otherwise`)
+  over a two-sequence synthetic model that tells the AI's own idle and
+  the script's `m_iszIdle` apart by sequence index: the script's idle
+  plays while the guard is idle and untouched in position, steps aside
+  the moment the guard acquires an enemy, and the ordinary triggered path
+  still takes over and hands the guard back to its own idle once the
+  script completes.

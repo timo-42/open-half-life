@@ -920,6 +920,14 @@ impl AiState {
             self.world.tick(&mut level.registry.world, &context, dt)
         };
         self.consume_events(level, &events, damage);
+        // Last, so it wins the precedence tie `docs/FORMAT_SOURCES.md`'s
+        // `TODO(black-box)` item 21 documents: `consume_events` just applied
+        // whatever `ActivityChanged` the AI's own tick produced for this
+        // step (an `Idle` monster among them, looked up under this crate's
+        // own "idle" vocabulary name, not the map's `m_iszIdle`), and a
+        // dormant script whose monster is idle now overwrites that specific
+        // case — and only that case; see `apply_pretrigger_idles`.
+        self.apply_pretrigger_idles(level);
     }
 
     /// Turns this step's [`AiEvent`]s into animation, damage and projectile
@@ -1917,6 +1925,50 @@ impl AiState {
             .map(std::string::ToString::to_string);
         if let Some(idle) = idle {
             select_sequence(level, actor, &idle);
+        }
+    }
+
+    /// Applies every dormant script's pre-trigger idle animation
+    /// (`ScriptRunner::pretrigger_idle_sequence`) to its named monster,
+    /// without possessing it.
+    ///
+    /// Called once per [`Self::think`], after the monster's own AI has
+    /// already ticked and applied whatever sequence its own activity change
+    /// asked for. This is deliberately the *last* write to
+    /// [`StudioAnim::sequence`] this step, and deliberately narrow: it only
+    /// overwrites the case `docs/FORMAT_SOURCES.md`'s `TODO(black-box)`
+    /// item 21 resolves — the monster's own [`MonsterAi`] reporting
+    /// [`MonsterState::Idle`] and [`Activity::Idle`], i.e. "nothing of
+    /// interest perceived" and "standing around" (this project's project-
+    /// authored idle-eligibility rule, since no page states one). Anything
+    /// else the monster's own brain is doing — walking, alert, fighting,
+    /// following — is left completely alone, matching the module-level
+    /// contract that a dormant script never touches the actor it names.
+    ///
+    /// A monster with no [`MonsterAi`] at all (so no state or activity to
+    /// read) is treated as **not** eligible: this method can only apply the
+    /// documented idle *while the monster's own AI is idle*, and an inert
+    /// monster has no AI to be idle. `ScriptAction::Idle` — produced only
+    /// while a script *holds* an active monster, e.g. approaching a
+    /// `MoveTo::No` mark — remains the published idle for a monster with no
+    /// brain of its own to fight over the sequence slot.
+    fn apply_pretrigger_idles(&self, level: &mut Level) {
+        for script in &self.scripts {
+            let Some(actor) = script.actor else { continue };
+            if !level.registry.world.contains(actor) {
+                continue;
+            }
+            let Some(idle) = script.runner.pretrigger_idle_sequence() else {
+                continue;
+            };
+            let eligible = level
+                .registry
+                .world
+                .get::<&MonsterAi>(actor)
+                .is_ok_and(|ai| ai.state == MonsterState::Idle && ai.activity == Activity::Idle);
+            if eligible {
+                select_sequence(level, actor, idle);
+            }
         }
     }
 

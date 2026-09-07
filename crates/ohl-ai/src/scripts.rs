@@ -257,6 +257,45 @@ impl ScriptRunner {
         self.moving_elapsed
     }
 
+    /// The animation to loop on this script's named monster while the
+    /// script is dormant and waiting for its first (or next) trigger, if
+    /// the map named a working `m_iszIdle`.
+    ///
+    /// Published as an animation the target monster performs "on a loop
+    /// until the scripted_sequence is triggered" (VDC `scripted_sequence`,
+    /// quoted in full at [`ScriptDef::idle_sequence`]'s call site,
+    /// `docs/FORMAT_SOURCES.md`'s "Scripted sequences and talk monsters").
+    /// This is deliberately **not** a [`ScriptAction`]: every `ScriptAction`
+    /// variant is "only ever produced while the script is holding its
+    /// monster" (see that enum's docs), and a dormant script never holds
+    /// anything — that is the whole point of [`ScriptPhase::Dormant`] and
+    /// the module docs' suspension contract. A dormant script's monster is
+    /// still an ordinary monster whose own brain is fully in charge; this
+    /// method only reports what the *idle* animation would be, and it is
+    /// the caller's job (`ohl-engine`'s `ai` module) to apply it — and only
+    /// while that ordinary monster's own AI is *also* idle, so the two
+    /// never fight over the same sequence slot. See
+    /// `docs/FORMAT_SOURCES.md`, `TODO(black-box)` item 21: the precedence
+    /// rule ("a dormant script's idle animation wins over the monster's own
+    /// idle activity, but never over anything else the monster's own brain
+    /// is doing") is this project's own, undocumented on every page this
+    /// project may use.
+    ///
+    /// `None` outside [`ScriptPhase::Dormant`] — a script that is moving,
+    /// playing, counting a repeat timer down, or finished neither asks for
+    /// this nor is eligible for it — and `None` when
+    /// [`ScriptDef::idle_sequence`] itself is `None` (no `m_iszIdle`, or an
+    /// `aiscripted_sequence`, on which the key is documented as
+    /// non-functional).
+    #[must_use]
+    pub fn pretrigger_idle_sequence(&self) -> Option<&str> {
+        if self.phase == ScriptPhase::Dormant {
+            self.def.idle_sequence()
+        } else {
+            None
+        }
+    }
+
     /// Restores this runner's dynamic fields from a save, leaving `def`
     /// (this level's own freshly parsed keyvalues, rebuilt fresh at attach
     /// time) untouched. An unrecognised `phase_tag` falls back to
@@ -897,5 +936,139 @@ mod tests {
             assert!(!step.timed_out);
             assert_eq!(step.action, ScriptAction::Play);
         }
+    }
+
+    // --- `pretrigger_idle_sequence`: the idle-eligibility rule ------------
+
+    /// A freshly built, never-triggered script reports its `m_iszIdle` name
+    /// as the pre-trigger idle. This is the regression guard for item 21:
+    /// the published looping idle must be *reachable* even though this
+    /// project deliberately does not hold the monster to play it.
+    #[test]
+    fn a_dormant_script_with_an_idle_name_reports_it_as_the_pretrigger_idle() {
+        let runner = script(&[("m_iszIdle", "ohl_wait")]);
+        assert_eq!(runner.phase(), ScriptPhase::Dormant);
+        assert_eq!(runner.pretrigger_idle_sequence(), Some("ohl_wait"));
+    }
+
+    /// A dormant script that named no `m_iszIdle` reports no pre-trigger
+    /// idle, matching [`ScriptDef::idle_sequence`] itself.
+    #[test]
+    fn a_dormant_script_without_an_idle_name_reports_none() {
+        let runner = script(&[]);
+        assert_eq!(runner.phase(), ScriptPhase::Dormant);
+        assert_eq!(runner.pretrigger_idle_sequence(), None);
+    }
+
+    /// `m_iszIdle` is documented as non-functional on `aiscripted_sequence`
+    /// (see [`ScriptDef::idle_sequence`]'s doc comment); a dormant
+    /// `aiscripted_sequence` must not report a pre-trigger idle either, the
+    /// same exclusion the holding-script path already honours.
+    #[test]
+    fn a_dormant_aiscripted_sequence_never_reports_a_pretrigger_idle() {
+        let raw: ohl_formats::bsp30::Entity = [
+            ("classname", "aiscripted_sequence"),
+            ("m_iszIdle", "ohl_wait"),
+        ]
+        .iter()
+        .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+        .collect();
+        let def = parse_entity(&raw, &Limits::default());
+        let runner = ScriptRunner::new(ScriptDef::from_def(&def).expect("an aiscript"));
+        assert_eq!(runner.phase(), ScriptPhase::Dormant);
+        assert_eq!(runner.pretrigger_idle_sequence(), None);
+    }
+
+    /// Once triggered — moving, playing, repeating, or done — a script
+    /// reports no pre-trigger idle any more, however its `m_iszIdle` reads:
+    /// the published loop is "until the scripted_sequence is triggered",
+    /// and `ScriptAction::Idle` (produced only while the script *holds* the
+    /// monster, e.g. `MoveTo::No`'s approach step) is the published idle
+    /// once it is running, not this one.
+    #[test]
+    fn a_running_or_finished_script_reports_no_pretrigger_idle() {
+        let mut runner = script(&[("m_fMoveTo", "0"), ("m_iszIdle", "ohl_wait")]);
+        assert!(runner.trigger());
+        assert_eq!(runner.phase(), ScriptPhase::Moving);
+        assert_eq!(runner.pretrigger_idle_sequence(), None, "moving");
+
+        let _ = runner.update(&sense());
+        assert_eq!(runner.phase(), ScriptPhase::Playing);
+        assert_eq!(runner.pretrigger_idle_sequence(), None, "playing");
+
+        let finished = ScriptSense {
+            sequence_finished: true,
+            ..sense()
+        };
+        assert!(runner.update(&finished).completed);
+        assert_eq!(runner.phase(), ScriptPhase::Done);
+        assert_eq!(runner.pretrigger_idle_sequence(), None, "done");
+    }
+
+    /// A repeatable script counting `m_flRepeat` down between runs is not
+    /// dormant either, so it reports no pre-trigger idle while waiting —
+    /// only once it falls back to `Dormant` (no repeat rate) does the idle
+    /// return.
+    #[test]
+    fn a_repeating_script_reports_no_pretrigger_idle_until_dormant_again() {
+        let mut runner = script(&[
+            ("m_fMoveTo", "0"),
+            ("m_iszIdle", "ohl_wait"),
+            ("spawnflags", "4"),
+            ("m_flRepeat", "10"),
+        ]);
+        assert!(runner.trigger());
+        let _ = runner.update(&sense());
+        let finished = ScriptSense {
+            sequence_finished: true,
+            ..sense()
+        };
+        assert!(runner.update(&finished).completed);
+        assert_eq!(runner.phase(), ScriptPhase::Repeating);
+        assert_eq!(runner.pretrigger_idle_sequence(), None, "repeating");
+
+        let mut waits_for_retrigger = script(&[
+            ("m_fMoveTo", "0"),
+            ("m_iszIdle", "ohl_wait"),
+            ("spawnflags", "4"),
+        ]);
+        assert!(waits_for_retrigger.trigger());
+        let _ = waits_for_retrigger.update(&sense());
+        assert!(waits_for_retrigger.update(&finished).completed);
+        assert_eq!(waits_for_retrigger.phase(), ScriptPhase::Dormant);
+        assert_eq!(
+            waits_for_retrigger.pretrigger_idle_sequence(),
+            Some("ohl_wait"),
+            "back to dormant, the idle is reachable again"
+        );
+    }
+
+    /// An interrupted or timed-out script is released back to `Dormant`,
+    /// which is exactly the transition that makes its pre-trigger idle
+    /// reachable again — the same "an interrupted script replays from the
+    /// beginning" contract [`Self::abandon`]'s doc comment already states.
+    #[test]
+    fn an_interrupted_script_s_pretrigger_idle_returns_once_dormant_again() {
+        let mut runner = script(&[("m_fMoveTo", "1"), ("m_iszIdle", "ohl_wait")]);
+        assert!(runner.trigger());
+        let _ = runner.update(&sense());
+        assert_eq!(
+            runner.pretrigger_idle_sequence(),
+            None,
+            "moving, not dormant"
+        );
+
+        let hurt = ScriptSense {
+            disturbed: true,
+            ..sense()
+        };
+        let step = runner.update(&hurt);
+        assert!(step.interrupted && step.released);
+        assert_eq!(runner.phase(), ScriptPhase::Dormant);
+        assert_eq!(
+            runner.pretrigger_idle_sequence(),
+            Some("ohl_wait"),
+            "dormant again, the idle is reachable"
+        );
     }
 }
