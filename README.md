@@ -65,9 +65,11 @@ cargo run --release -p ohl-app -- \
 ```
 
 That advances `--frames` frames and writes one 1280x720 PNG, then exits 0.
-`--viewpoint X,Y,Z,PITCH,YAW` captures from an explicit position and
-`--spawn-offset DX,DY,DZ,DPITCH,DYAW` from one relative to the map's player
-start.
+`--viewpoint X,Y,Z,PITCH,YAW` captures from an explicit, fixed world-space
+position and `--spawn-offset DX,DY,DZ,DPITCH,DYAW` rides along with the
+player instead: the render eye is the player's own current position plus
+this offset, recomputed every frame, so it keeps following the player
+(including riding a mover) rather than freezing in place.
 
 The import path fingerprints the validated ISO 9660/Joliet or UDF image,
 mounts it read-only, and publishes (or reuses) a metadata-only provenance
@@ -122,10 +124,21 @@ cargo run --release -p ohl-app -- \
 
 `--frames N` advances the simulation a fixed step N times before the
 1280x720 PNG is written; `--spawn-offset DX,DY,DZ,DPITCH,DYAW` captures from
-a pose relative to the map's player start instead of standing exactly on it.
-On a machine with no real GPU, `OHL_RENDER_GPU_TEST=1` opts into exercising
-this path against a software Vulkan implementation (for example
-`lavapipe`/`llvmpipe`) instead of skipping it; see
+a pose relative to the player instead of standing exactly on it.
+Unlike `--viewpoint` (an explicit, fixed world-space pose applied once,
+under noclip), `--spawn-offset` never enables noclip: the player spawns
+and moves normally — falling, colliding, riding a mover — and every frame
+the render eye is recomputed as the player's *current* position plus this
+offset, so a capture on a map with a moving `func_train`/`func_tracktrain`/
+`func_plat`/lift `func_door` keeps riding along with the player instead of
+being left behind in whatever geometry the mover has since vacated. Either
+flag's placement is checked for landing inside solid collision geometry
+both at the first frame and, since a rider offset can end up somewhere
+different than where it started, at the last frame too; each check logs
+its own fixed warning line at most once. On a machine with no real GPU,
+`OHL_RENDER_GPU_TEST=1` opts into exercising this path against a software
+Vulkan implementation (for example `lavapipe`/`llvmpipe`) instead of
+skipping it; see
 [docs/RENDER_DEPENDENCIES.md](docs/RENDER_DEPENDENCIES.md).
 
 **Scripted input**, for deterministic automated runs (see `crate::script`'s
@@ -151,7 +164,11 @@ Development-only builds (`--features dev-tools`) add
 `--viewpoint-at-nearest-monster DISTANCE`, which places the headless
 capture eye `DISTANCE` units from whichever spawned monster is nearest to
 the map's player start, at its eye height, facing it, in noclip, instead
-of at the player start or a caller-chosen `--viewpoint`/`--spawn-offset`:
+of at the player start or a caller-chosen `--viewpoint`/`--spawn-offset`.
+It also combines with `--script`: the placement is applied once, right
+after the map loads and before the scripted input runs, so a motion
+capture can start already facing the nearest monster instead of the
+ordinary player start:
 
 ```sh
 cargo run --release -p ohl-app --features dev-tools -- \
