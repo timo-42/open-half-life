@@ -3182,3 +3182,39 @@ where they overlap):
 - **First tagged release.** No `v*` tag has been pushed yet; the next
   actual tag push will be `publish-release`'s (PR #83) first real exercise
   and the first entry in this project's GitHub Releases.
+- **Headless capture: spawn offsets ride with the player; dev viewpoint
+  works with scripts.** Fidelity round 8 (`.plan/fidelity-round-8.md`, J1)
+  found `--spawn-offset` broken by the tram fix above: it was applied once
+  via `Game::set_viewpoint` (noclip) right after the map loaded and never
+  touched again, so on a mover map the player kept riding away while the
+  frozen camera stayed behind, ending the capture embedded in geometry the
+  mover had vacated. `--spawn-offset` no longer calls `set_viewpoint` or
+  enables noclip at all: the player spawns and moves normally (falling,
+  colliding, riding a mover), and each rendered frame recomputes the eye
+  as the player's *current* position plus the offset
+  (`ohl_engine::Game::render_from`, new — swaps the tracked camera in for
+  one draw call and restores it, so the next tick's physics is untouched).
+  `--viewpoint` keeps the old frozen-in-world-space/noclip behaviour,
+  unchanged, since it is documented as an absolute pose. The
+  "starts inside solid geometry" warning is now also checked at the final
+  frame ("ends inside solid geometry", printed once) for both the frozen
+  and rider modes. Separately (J4), `--viewpoint-at-nearest-monster` was a
+  silent no-op under `--script` (`run_scripted` never called the
+  placement helper `capture` did); it is now applied once, right after the
+  map loads and before the script's own ticks run, in both paths.
+  Regression tests: `crates/ohl-app/src/game_run.rs` unit tests against a
+  new `ohl_engine::test_support::mover_train_bsp` fixture (a rider pose
+  tracks the player's live eye position across a full mover ride, never
+  lands in solid geometry while riding, and is unchanged frame-to-frame on
+  a static map once the player has settled); `crates/ohl-app/tests/
+  spawn_offset_follows_the_rider.rs` and `crates/ohl-app/tests/
+  viewpoint_at_nearest_monster_under_script.rs` (dev-tools only) exercise
+  the same properties through the built binary. **Real-payload verdict:**
+  re-ran round 8's own broken `c0a0` "forward"/"left" `--spawn-offset`
+  captures at 60 and 900 frames against the real imported payload — no
+  "inside solid geometry" warning at either frame count on either
+  viewpoint (previously frame 900 landed on an indistinct, blown-out,
+  heavily-clipped close surface); the 900-frame "forward" capture instead
+  shows the camera riding well down the tunnel, past the rail bed, a
+  curving wall and a strip ceiling light, matching round 8's own
+  `--script`-based tram-ride description at the same simulated time.

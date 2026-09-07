@@ -233,12 +233,20 @@ number greater than 0 and no more than 8.0."
     frames: u32,
 
     /// Stand at `x,y,z,pitch,yaw` for a headless capture instead of at the
-    /// map's player start.
+    /// map's player start: an absolute world pose, applied once with
+    /// noclip and left frozen there in world space for every frame the
+    /// capture renders, regardless of what the level does around it (a
+    /// mover keeps moving without the camera).
     #[arg(long, value_name = "X,Y,Z,PITCH,YAW", requires = "headless_screenshot")]
     viewpoint: Option<game_run::Viewpoint>,
 
     /// Stand `dx,dy,dz,dpitch,dyaw` away from the map's player start for a
-    /// headless capture. Ignored when `--viewpoint` is given.
+    /// headless capture. Ignored when `--viewpoint` is given. Unlike
+    /// `--viewpoint` this never enables noclip: the player spawns and
+    /// moves normally (falling, colliding, riding a mover), and the
+    /// offset rides along with them — every rendered frame is the
+    /// player's *current* eye position plus this fixed offset, not a
+    /// pose frozen at tick 0.
     #[arg(
         long,
         value_name = "DX,DY,DZ,DPITCH,DYAW",
@@ -282,7 +290,10 @@ number greater than 0 and no more than 8.0."
     /// facing it, in noclip, instead of at the map's player start or a
     /// caller-chosen `--viewpoint`/`--spawn-offset`. Never logs a position
     /// or classname (see `ohl_engine::Game::nearest_monster_position`).
-    /// Like `--dev-mdl` this is compiled in solely by the non-default
+    /// Combines with `--script`: the placement is applied once, right
+    /// after the map loads, before the scripted input runs — so a motion
+    /// capture can start already facing the nearest monster. Like
+    /// `--dev-mdl` this is compiled in solely by the non-default
     /// `dev-tools` cargo feature.
     #[cfg(feature = "dev-tools")]
     #[arg(long, value_name = "DISTANCE", requires = "headless_screenshot")]

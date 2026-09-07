@@ -706,3 +706,82 @@ pub fn killable_brush_floor_bsp(entities: &str) -> Vec<u8> {
     b.push_model(slab_mins, slab_maxs, [0.0; 3], slab_heads, 2, 0, 0);
     b.build()
 }
+
+/// The map name the mover fixture is published under.
+pub const MOVER_MAP: &str = "ohlmoversynth";
+
+/// Half-extent of the mover's brush on X and Y, and its height above/below
+/// its own origin — an arbitrary, project-authored box big enough for a
+/// standing player to rest on.
+const MOVER_HALF: f32 = 32.0;
+const MOVER_TOP_Z: f32 = 8.0;
+const MOVER_BOTTOM_Z: f32 = -8.0;
+
+/// How far apart the two `path_corner` nodes are, along `+X`.
+pub const MOVER_SEGMENT_LENGTH: f32 = 150.0;
+
+/// The `func_train`'s `speed`/`startspeed`, units/second — non-zero
+/// `startspeed` starts it moving immediately at map load, without needing
+/// a trigger.
+pub const MOVER_SPEED: f32 = 50.0;
+
+/// The `info_player_start`'s height above the mover's own origin, resting
+/// on top of its brush.
+pub const MOVER_PLAYER_START_Z: f32 = MOVER_TOP_Z + 36.0;
+
+/// A void world (submodel `*0`, no collision at all) with a single solid
+/// box (submodel `*1`) resting at the world origin, referenced by a
+/// `func_train` riding a two-node `path_corner` chain along `+X`. An
+/// `info_player_start` sits on top of the train's brush at its resting
+/// position. The same shape `ohl-engine`'s own `tests/mover_riders.rs`
+/// tests directly; published here so a headless-capture CLI test can ride
+/// it too. Every keyvalue and coordinate here is authored for this
+/// project; nothing is derived from any payload.
+#[must_use]
+pub fn mover_train_bsp() -> Vec<u8> {
+    let mut b = Bsp30Builder::new();
+    let player_z = MOVER_PLAYER_START_Z;
+    let speed = MOVER_SPEED;
+    let segment = MOVER_SEGMENT_LENGTH;
+    b.set_entities_text(&format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\
+         \"origin\" \"0 0 {player_z}\"\n\"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"func_train\"\n\"model\" \"*1\"\n\
+         \"target\" \"ohl_node1\"\n\"speed\" \"{speed}\"\n\
+         \"startspeed\" \"{speed}\"\n\"height\" \"0\"\n\
+         \"origin\" \"0 0 0\"\n}}\n\
+         {{\n\"classname\" \"path_corner\"\n\"targetname\" \"ohl_node1\"\n\
+         \"target\" \"ohl_node2\"\n\"origin\" \"0 0 0\"\n}}\n\
+         {{\n\"classname\" \"path_corner\"\n\"targetname\" \"ohl_node2\"\n\
+         \"origin\" \"{segment} 0 0\"\n}}\n"
+    ));
+
+    // Submodel 0: the worldspawn model, with no solids of its own — the
+    // train's own brush is the only thing the player can stand on.
+    let world_heads = b.push_collision_hulls(&[]);
+    b.push_model(
+        [-4096.0, -4096.0, -4096.0],
+        [4096.0, 4096.0, 4096.0],
+        [0.0, 0.0, 0.0],
+        world_heads,
+        2,
+        0,
+        0,
+    );
+    // Submodel 1: the train's own brush, resting at its first node.
+    let train_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(
+        [-MOVER_HALF, -MOVER_HALF, MOVER_BOTTOM_Z],
+        [MOVER_HALF, MOVER_HALF, MOVER_TOP_Z],
+    )]);
+    b.push_model(
+        [-MOVER_HALF, -MOVER_HALF, MOVER_BOTTOM_Z],
+        [MOVER_HALF, MOVER_HALF, MOVER_TOP_Z],
+        [0.0, 0.0, 0.0],
+        train_heads,
+        2,
+        0,
+        0,
+    );
+    b.build()
+}
