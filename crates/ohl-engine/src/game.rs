@@ -1035,6 +1035,7 @@ impl Game {
             ai: Some(Systems::snapshot_ai(&self.level)),
             projectiles: Some(self.systems.snapshot_projectiles(&self.level)),
             rng: Some(self.systems.snapshot_rng()),
+            mover_state: Some(self.systems.snapshot_mover_state(&self.level)),
         }
     }
 
@@ -1243,6 +1244,19 @@ impl Game {
         // `SECTION_RNG` (27, M7.9 P4b).
         if let Some(rng) = &save.rng {
             self.systems.restore_rng(*rng);
+        }
+        // `SECTION_MOVER_STATE` (28, M7.13): applied last, after
+        // `attach_level` has rebuilt every `func_train`/`func_tracktrain`,
+        // `trigger_camera`, `scripted_sequence` and `monstermaker` fresh,
+        // so this overlays the exact runtime progress the save recorded
+        // (a train's position mid-route, a camera sequence mid-hold, a
+        // script mid-`Moving`, a maker's spawn counters) onto entities
+        // `attach_level` just spawned in the same deterministic spawn
+        // order — the same pattern `SECTION_ENTITY_COMBAT`/`SECTION_AI`
+        // already use above.
+        if let Some(mover_state) = &save.mover_state {
+            self.systems
+                .restore_mover_state(&mut self.level, mover_state);
         }
         // A load is a map load: the chapter title is announced again.
         self.pending.clear();

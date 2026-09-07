@@ -1,19 +1,23 @@
-//! `cargo fuzz` target for M7.9 P4b's restore path: `Game::load_bytes`
-//! (`GameSave::from_bytes` followed by `Game::from_save`/`Game::restore`)
-//! must never panic, even when `SECTION_INVENTORY`/`SECTION_ENTITY_COMBAT`/
-//! `SECTION_AI`/`SECTION_PROJECTILES`/`SECTION_RNG` (tags 23-27) decode into
-//! adversarial values `sections_fuzz` cannot reach: that target only checks
-//! `GameSave::from_bytes` itself, so it never runs `restore()`'s own logic
-//! (spawn-index lookups, `ohl_ai::ScheduleRunner::restore`,
-//! `ohl_combat::FiringState::restore`, `ProjectileSet`/`DeployableSet::
-//! restore_from_parts`, the entity-despawn path for a `None`
-//! `SECTION_ENTITY_COMBAT` slot, ...) against anything.
+//! `cargo fuzz` target for M7.9 P4b's (and M7.13's) restore path:
+//! `Game::load_bytes` (`GameSave::from_bytes` followed by
+//! `Game::from_save`/`Game::restore`) must never panic, even when
+//! `SECTION_INVENTORY`/`SECTION_ENTITY_COMBAT`/`SECTION_AI`/
+//! `SECTION_PROJECTILES`/`SECTION_RNG`/`SECTION_MOVER_STATE` (tags 23-28)
+//! decode into adversarial values `sections_fuzz` cannot reach: that target
+//! only checks `GameSave::from_bytes` itself, so it never runs
+//! `restore()`'s own logic (spawn-index lookups, `ohl_ai::ScheduleRunner::
+//! restore`, `ohl_combat::FiringState::restore`, `ProjectileSet`/
+//! `DeployableSet::restore_from_parts`, `ohl_game::TrackTrainState::
+//! restore_dynamic_state`, `ohl_game::TriggerCameraState::
+//! restore_dynamic_state`, `ohl_ai::Spawner::restore_counters`, the
+//! entity-despawn path for a `None` `SECTION_ENTITY_COMBAT` slot, ...)
+//! against anything.
 //!
 //! Tags 16-22 are always the real bytes a valid `Game::to_save` produced
 //! over this crate's own synthetic map fixture, so decoding those never
-//! fails and every input reaches `Game::from_save`; only tags 23-27 are
+//! fails and every input reaches `Game::from_save`; only tags 23-28 are
 //! arbitrary (and bounded), so the fuzzer's coverage feedback concentrates
-//! on the restore path this package added rather than rediscovering
+//! on the restore path these packages added rather than rediscovering
 //! `sections_fuzz`'s own truncation/corruption coverage of the pre-existing
 //! sections. A successful load also ticks the reloaded `Game` a few steps,
 //! cheaply exercising the simulation phases against whatever state
@@ -25,8 +29,8 @@ use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 use ohl_engine::save::{
     SECTION_AI, SECTION_ENGINE_HEADER, SECTION_ENTITY_COMBAT, SECTION_ENTITY_REGISTRY,
-    SECTION_GLOBAL_STATE, SECTION_INVENTORY, SECTION_LIGHT_STYLE_TIME, SECTION_PLAYER_CARRY,
-    SECTION_PROJECTILES, SECTION_RNG, SECTION_SIMULATION, SECTION_VIEW,
+    SECTION_GLOBAL_STATE, SECTION_INVENTORY, SECTION_LIGHT_STYLE_TIME, SECTION_MOVER_STATE,
+    SECTION_PLAYER_CARRY, SECTION_PROJECTILES, SECTION_RNG, SECTION_SIMULATION, SECTION_VIEW,
 };
 use ohl_engine::{Game, MemoryAssets};
 use ohl_save::{Header, Limits, SaveWriter};
@@ -42,6 +46,7 @@ struct FuzzInput {
     ai: Vec<u8>,
     projectiles: Vec<u8>,
     rng: Vec<u8>,
+    mover_state: Vec<u8>,
 }
 
 fuzz_target!(|input: FuzzInput| {
@@ -98,14 +103,14 @@ fuzz_target!(|input: FuzzInput| {
         return;
     }
 
-    // The five sections this package added, with arbitrary (bounded) bytes.
-    // Most inputs fail to decode as the documented DTO: `GameSave::
+    // The six sections these packages added, with arbitrary (bounded)
+    // bytes. Most inputs fail to decode as the documented DTO: `GameSave::
     // from_bytes` (via `crate::save::optional_section`) then reports the
     // whole read as `EngineError::SaveUnreadable` rather than substituting a
     // default — a section present but corrupt fails the load closed, the
     // same as every other section; only a section absent from the
     // container entirely reads back as `None`/a default, which none of
-    // these five ever are here (each is always written, just with
+    // these six ever are here (each is always written, just with
     // arbitrary bytes). Coverage feedback still finds the inputs that *do*
     // decode as the documented DTO, which is what actually exercises
     // `restore()`'s own logic on adversarial-but-well-typed values.
@@ -115,6 +120,7 @@ fuzz_target!(|input: FuzzInput| {
         (SECTION_AI, &input.ai),
         (SECTION_PROJECTILES, &input.projectiles),
         (SECTION_RNG, &input.rng),
+        (SECTION_MOVER_STATE, &input.mover_state),
     ] {
         let end = raw.len().min(MAX_SECTION_BYTES);
         let _ = writer.add_section(tag, &raw[..end]);

@@ -36,10 +36,9 @@ const MAX_TRANSITIONS_PER_TICK: usize = 64;
 /// the player's view, how much of its `wait` hold remains, and (when it has
 /// a `moveto` path) how far along that path it has travelled.
 ///
-/// Not (de)serializable, matching
-/// [`crate::track_train::TrackTrainState`]'s own choice: see
-/// `docs/FORMAT_SOURCES.md` ("Camera sequences") for why this project does
-/// not currently carry it across a save/load.
+/// Not itself `Serialize`/`Deserialize` (its `chain` field is not, and does
+/// not need to be: a save only needs [`Self::dynamic_state`]'s plain
+/// fields, which `ohl-engine`'s `SECTION_MOVER_STATE`, tag 28, carries).
 #[derive(Debug, Clone, PartialEq)]
 pub struct TriggerCameraState {
     chain: Option<PathChain>,
@@ -135,6 +134,70 @@ impl TriggerCameraState {
         self.speed = camera.speed.max(0.0);
         self.hold_remaining = if camera.hold_seconds.is_finite() {
             camera.hold_seconds.max(0.0)
+        } else {
+            0.0
+        };
+    }
+
+    /// This sequence's own runtime fields — everything but [`Self::chain`],
+    /// which the level rebuilds fresh from the `moveto` keyvalue at attach
+    /// time — as a save-friendly tuple:
+    /// `(node_index, t, speed, wait_timer, active, hold_remaining)`. Used
+    /// only by `ohl-engine`'s `SECTION_MOVER_STATE` (tag 28); see that
+    /// crate's `save_state::TriggerCameraSnapshot`. This is the fix for
+    /// the gap this struct's own doc comment used to describe (a save/load
+    /// mid-sequence resuming dormant); see `crates/ohl-engine/src/camera.rs`'s
+    /// "Save/load" section for the encoding chosen instead of widening
+    /// `SECTION_SIMULATION`.
+    #[must_use]
+    pub fn dynamic_state(&self) -> (usize, f32, f32, f32, bool, f32) {
+        (
+            self.node_index,
+            self.t,
+            self.speed,
+            self.wait_timer,
+            self.active,
+            self.hold_remaining,
+        )
+    }
+
+    /// Restores fields captured by [`Self::dynamic_state`] onto this
+    /// (freshly attach-level-spawned) sequence. `node_index` is clamped
+    /// into the rebuilt chain's own bounds (or forced to `0` for a
+    /// stationary camera with no `moveto` chain at all) and every float is
+    /// sanitized, matching
+    /// [`crate::track_train::TrackTrainState::restore_dynamic_state`]'s own
+    /// rules.
+    pub fn restore_dynamic_state(
+        &mut self,
+        node_index: usize,
+        t: f32,
+        speed: f32,
+        wait_timer: f32,
+        active: bool,
+        hold_remaining: f32,
+    ) {
+        self.node_index = self.chain.as_ref().map_or(0, |chain| {
+            node_index.min(chain.nodes.len().saturating_sub(1))
+        });
+        self.t = if t.is_finite() {
+            t.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        self.speed = if speed.is_finite() {
+            speed.max(0.0)
+        } else {
+            0.0
+        };
+        self.wait_timer = if wait_timer.is_finite() {
+            wait_timer.max(0.0)
+        } else {
+            0.0
+        };
+        self.active = active;
+        self.hold_remaining = if hold_remaining.is_finite() {
+            hold_remaining.max(0.0)
         } else {
             0.0
         };
@@ -494,6 +557,57 @@ mod tests {
         let registry = build_registry(&entities);
         let entity = registry.find("cam1")[0];
         assert_eq!(completion_target(&registry, entity), None);
+    }
+
+    #[test]
+    fn dynamic_state_round_trips_an_active_sequence() {
+        let entities = vec![raw(&[
+            ("classname", "trigger_camera"),
+            ("targetname", "cam1"),
+            ("target", "after"),
+            ("wait", "3"),
+        ])];
+        let registry = build_registry(&entities);
+        let camera = camera_component(&registry, "cam1");
+        let mut state = camera_state(&registry, "cam1");
+        state.trigger(&camera);
+        state.advance(0.5);
+        let captured = state.dynamic_state();
+
+        let mut restored = camera_state(&registry, "cam1");
+        restored.restore_dynamic_state(
+            captured.0, captured.1, captured.2, captured.3, captured.4, captured.5,
+        );
+        assert_eq!(restored.dynamic_state(), captured);
+        assert!(restored.is_active());
+    }
+
+    #[test]
+    fn restore_dynamic_state_forces_a_stationary_camera_back_to_node_zero() {
+        let entities = vec![raw(&[
+            ("classname", "trigger_camera"),
+            ("targetname", "cam1"),
+        ])];
+        let registry = build_registry(&entities);
+        let mut state = camera_state(&registry, "cam1");
+        state.restore_dynamic_state(50, 0.5, 10.0, 0.0, true, 2.0);
+        assert_eq!(state.node_index, 0, "no `moveto` chain means node 0 always");
+    }
+
+    #[test]
+    fn restore_dynamic_state_sanitizes_non_finite_input() {
+        let entities = vec![raw(&[
+            ("classname", "trigger_camera"),
+            ("targetname", "cam1"),
+        ])];
+        let registry = build_registry(&entities);
+        let mut state = camera_state(&registry, "cam1");
+        state.restore_dynamic_state(0, f32::NAN, f32::NAN, f32::NAN, true, f32::NAN);
+        let (_, t, speed, wait_timer, _, hold_remaining) = state.dynamic_state();
+        assert_eq!(t.to_bits(), 0.0f32.to_bits());
+        assert_eq!(speed.to_bits(), 0.0f32.to_bits());
+        assert_eq!(wait_timer.to_bits(), 0.0f32.to_bits());
+        assert_eq!(hold_remaining.to_bits(), 0.0f32.to_bits());
     }
 
     proptest! {

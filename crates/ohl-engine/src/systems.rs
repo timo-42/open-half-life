@@ -579,6 +579,48 @@ impl Systems {
         );
     }
 
+    /// `SECTION_MOVER_STATE` (28): every `func_train`/`func_tracktrain`,
+    /// `trigger_camera` sequence, running script and `monstermaker`'s
+    /// runtime state, one optional entry per `level.registry.entities`
+    /// slot in spawn order. Merges `crate::save_state::snapshot_movers`'s
+    /// train/camera/maker/auto-trigger portion with [`crate::ai::AiState::snapshot_scripts`]'s
+    /// script portion, since the latter needs [`Self::ai`]'s own bookkeeping
+    /// (a running script is not a `hecs` component) while the former reads
+    /// straight off the world.
+    #[must_use]
+    pub(crate) fn snapshot_mover_state(
+        &self,
+        level: &Level,
+    ) -> Vec<Option<crate::save_state::MoverSnapshot>> {
+        let mut movers = crate::save_state::snapshot_movers(level);
+        let scripts = self.ai.snapshot_scripts(level);
+        for (mover, script) in movers.iter_mut().zip(scripts) {
+            if script.is_some() {
+                mover
+                    .get_or_insert_with(crate::save_state::MoverSnapshot::default)
+                    .script = script;
+            }
+        }
+        movers
+    }
+
+    /// Restores `SECTION_MOVER_STATE` (28), the mirror of
+    /// [`Self::snapshot_mover_state`]: the train/camera/maker/auto-trigger portion goes
+    /// straight onto their `hecs` components, and the script portion goes to
+    /// [`crate::ai::AiState::restore_scripts`].
+    pub(crate) fn restore_mover_state(
+        &mut self,
+        level: &mut Level,
+        snapshots: &[Option<crate::save_state::MoverSnapshot>],
+    ) {
+        crate::save_state::restore_movers(level, snapshots);
+        let scripts: Vec<Option<crate::save_state::ScriptRunnerSnapshot>> = snapshots
+            .iter()
+            .map(|snapshot| snapshot.as_ref().and_then(|snapshot| snapshot.script))
+            .collect();
+        self.ai.restore_scripts(level, &scripts);
+    }
+
     /// The configuration this step list runs with.
     #[must_use]
     pub fn config(&self) -> SystemsConfig {

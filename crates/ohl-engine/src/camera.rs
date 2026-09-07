@@ -15,22 +15,20 @@
 //!
 //! # Save/load
 //!
-//! `TriggerCameraState` is not part of any save section (see its own doc
-//! comment): a save/load taken mid-sequence loses the active/hold/path
-//! progress and resumes with the sequence dormant, the same known gap
-//! `ohl_game::track_train::TrackTrainState` already has for a `func_train`
-//! mid-route. Adding it to `ohl_game::logic::SimulationState`
-//! (`SECTION_SIMULATION`) was investigated for this change and rejected:
-//! that section is encoded with `postcard`, which is not a self-describing
-//! format, so a struct field added even with `#[serde(default)]` fails to
-//! decode any save file written before the field existed (confirmed with a
-//! standalone reproduction: `postcard::from_bytes` returns
-//! `DeserializeUnexpectedEnd` for exactly this case) rather than filling in
-//! the default the attribute names. A real fix needs either a version-
-//! tagged sub-encoding for this section or a self-describing replacement,
-//! which is out of scope here; `TODO(black-box)` (really
-//! `TODO(follow-up)`, tracked for whoever next touches `SECTION_SIMULATION`
-//! or `SimulationState`'s own encoding).
+//! M7.13's `SECTION_MOVER_STATE` (tag 28, `crate::save_state::MoverSnapshot`)
+//! now carries `TriggerCameraState`'s active/hold/path progress (and
+//! `ohl_game::track_train::TrackTrainState`'s own mid-route position, a
+//! running `scripted_sequence`'s phase, and a `monstermaker`'s spawn
+//! counters), fixing the gap this section used to describe. It is a *new*
+//! section rather than an addition to `ohl_game::logic::SimulationState`
+//! (`SECTION_SIMULATION`, tag 19): that section is encoded with `postcard`,
+//! which is not a self-describing format, so a struct field added even
+//! with `#[serde(default)]` fails to decode any save file written before
+//! the field existed (confirmed with a standalone reproduction:
+//! `postcard::from_bytes` returns `DeserializeUnexpectedEnd` for exactly
+//! this case) rather than filling in the default the attribute names — the
+//! same reason every other additive save section in this crate (tags
+//! 23-28) is its own tag instead of a field bolted onto an existing one.
 
 use glam::Vec3;
 use ohl_game::hecs::Entity;

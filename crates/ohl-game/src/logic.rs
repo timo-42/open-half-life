@@ -438,6 +438,17 @@ impl Simulation {
             activation.activate();
             return;
         }
+        if let Ok(activation) = registry
+            .world
+            .query_one_mut::<&mut crate::registry::MakerActivation>(entity)
+        {
+            // `monstermaker` rides the same activation path too; the
+            // engine's AI phase drains the counter and calls
+            // `ohl_ai::Spawner::trigger`, since the `Spawner` itself lives
+            // in an `ohl-engine` component this crate cannot see.
+            activation.activate();
+            return;
+        }
         if registry.world.get::<&Trigger>(entity).is_ok() {
             self.activate_trigger(registry, entity, activator);
         }

@@ -44,8 +44,11 @@
 use glam::Vec3;
 use ohl_combat::{EntityId as CombatEntityId, ProjectileKind};
 use ohl_game::hecs::Entity;
+use ohl_game::registry::AutoTrigger;
+use ohl_game::{TrackTrainState, TriggerCameraState};
 use serde::{Deserialize, Serialize};
 
+use crate::components::MonsterMaker;
 use crate::ids::{entity_id, entity_of};
 use crate::level::Level;
 
@@ -501,6 +504,293 @@ pub(crate) fn masked_conditions(bits: u32) -> ohl_ai::Conditions {
         .iter()
         .fold(0u32, |mask, (_, bit)| mask | bit.bits());
     ohl_ai::Conditions::from_bits(bits & mask)
+}
+
+// --- `SECTION_MOVER_STATE` (28) -------------------------------------------
+//
+// A `func_train`/`func_tracktrain`'s mid-route position, a `trigger_camera`
+// sequence's active/hold/path progress, a `scripted_sequence`'s possession
+// state, a `monstermaker`'s spawn counters, and a `trigger_auto`'s one-shot
+// `fired` flag were, before this section, each a documented gap:
+// `ohl_game::track_train::TrackTrainState` and
+// `ohl_game::camera::TriggerCameraState` are hecs components with no save
+// entry at all (see `crate::camera`'s "Save/load" module section for why
+// widening `SECTION_SIMULATION` was rejected — postcard is not
+// self-describing, so an added field fails a save written before it
+// existed rather than filling in a default), a running script's state
+// lived only in `crate::ai::AiState::scripts`/`sentences`, a
+// `monstermaker`'s counters were reset by every reload, and
+// `ohl_game::registry::AutoTrigger::fired` (see that field's own "Save/load
+// note" doc comment) being unsaved meant every `trigger_auto` replayed on
+// load — silently re-toggling, and so stopping, any train/camera this very
+// section had just finished restoring to an active state. This section
+// fixes all five at once, additively, with its own new tag rather than
+// touching any of tags 16-27.
+
+/// The most entities one `SECTION_MOVER_STATE` section records, matching
+/// [`MAX_SNAPSHOT_ENTITIES`].
+pub const MAX_SNAPSHOT_MOVERS: usize = MAX_SNAPSHOT_ENTITIES;
+
+/// A `func_train`/`func_tracktrain`'s runtime position, part of
+/// [`MoverSnapshot`]. Mirrors
+/// [`ohl_game::TrackTrainState::dynamic_state`]'s tuple fields one for one.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TrackTrainSnapshot {
+    /// The node the train last departed from (or rests at).
+    pub node_index: u32,
+    /// Progress toward the other end of the active segment, in `0..=1`.
+    pub t: f32,
+    /// `1.0` toward the chain's next node, `-1.0` toward its previous one.
+    pub direction: f32,
+    /// Current speed magnitude, units/second.
+    pub speed: f32,
+    /// Whether the train is currently moving.
+    pub moving: bool,
+    /// Seconds remaining in a `path_track`'s `wait` pause.
+    pub wait_timer: f32,
+}
+
+/// A `trigger_camera` sequence's runtime progress, part of
+/// [`MoverSnapshot`]. Mirrors
+/// [`ohl_game::TriggerCameraState::dynamic_state`]'s tuple fields one for
+/// one.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TriggerCameraSnapshot {
+    /// The node this sequence last departed from (or rests at), meaningless
+    /// for a stationary camera with no `moveto` chain.
+    pub node_index: u32,
+    /// Progress toward the next node, in `0..=1`.
+    pub t: f32,
+    /// Current travel speed, units/second.
+    pub speed: f32,
+    /// Seconds remaining in a `path_corner`'s own `wait` pause.
+    pub wait_timer: f32,
+    /// Whether this sequence is currently overriding the player's view.
+    pub active: bool,
+    /// Seconds remaining before this sequence reverts the player's view.
+    pub hold_remaining: f32,
+}
+
+/// A `scripted_sequence`/`aiscripted_sequence`'s possession state, part of
+/// [`MoverSnapshot`]. Mirrors `ohl_ai::scripts::ScriptRunner`'s own dynamic
+/// fields, plus the engine-side `ActiveScript` bookkeeping
+/// (`crate::ai::AiState::scripts`) that decides which monster it holds.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ScriptRunnerSnapshot {
+    /// `ohl_ai::scripts::ScriptPhase::tag`.
+    pub phase_tag: u8,
+    /// `ohl_ai::scripts::ScriptRunner::timer`.
+    pub timer: f32,
+    /// `ohl_ai::scripts::ScriptRunner::completions`.
+    pub completions: u32,
+    /// `ohl_ai::scripts::ScriptRunner::warped`.
+    pub warped: bool,
+    /// `ohl_ai::scripts::ScriptRunner::moving_elapsed`.
+    pub moving_elapsed: f32,
+    /// The monster this script currently possesses, as a spawn index.
+    /// `None` when the script has not (yet) bound one — the common case
+    /// for a `monstermaker`-spawned target, which carries no spawn index
+    /// at all (see this module's own "Monstermaker children are not
+    /// saved" note); such a script simply searches again after the load,
+    /// exactly as it does after any other spawn.
+    pub actor: Option<u32>,
+    /// `ActiveScript::pending_trigger`.
+    pub pending_trigger: bool,
+    /// `ActiveScript::was_active`.
+    pub was_active: bool,
+    /// `ActiveScript::played`.
+    pub played: f32,
+    /// `ActiveScript::play_origin`.
+    pub play_origin: [f32; 3],
+}
+
+/// A `monstermaker`'s spawn counters, part of [`MoverSnapshot`]. Mirrors
+/// `ohl_ai::Spawner::restore_counters`'s parameters, plus
+/// [`ohl_ai::Spawner::live_children`] for information (see that method's
+/// own doc comment for why the live-child *entity list* itself is not, and
+/// cannot yet be, restored).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MonsterMakerSnapshot {
+    /// `ohl_ai::Spawner::spawned_total`.
+    pub spawned_total: u32,
+    /// `ohl_ai::Spawner::live_children`, informational only — see this
+    /// struct's own doc comment.
+    pub live_children: u32,
+    /// `ohl_ai::Spawner::is_active`.
+    pub active: bool,
+    /// `ohl_ai::Spawner::cyclic_pending`.
+    pub cyclic_pending: u32,
+    /// `ohl_ai::Spawner::timer`.
+    pub timer: f32,
+}
+
+/// `SECTION_MOVER_STATE` (28): one optional entry per `Registry::entities`
+/// slot, in spawn order, covering everything a fresh `attach_level` cannot
+/// otherwise reconstruct about a mover, camera sequence, running script,
+/// `monstermaker`, or `trigger_auto`. `None` for an entity with none of the
+/// five.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct MoverSnapshot {
+    /// This entity's `func_train`/`func_tracktrain` state, when it has one.
+    pub track_train: Option<TrackTrainSnapshot>,
+    /// This entity's `trigger_camera` state, when it has one.
+    pub camera: Option<TriggerCameraSnapshot>,
+    /// This entity's running-script state, when it is a
+    /// `scripted_sequence`/`aiscripted_sequence`.
+    pub script: Option<ScriptRunnerSnapshot>,
+    /// This entity's `monstermaker` counters, when it is one.
+    pub maker: Option<MonsterMakerSnapshot>,
+    /// `ohl_game::registry::AutoTrigger::fired`, when this entity is a
+    /// `trigger_auto`. Not itself a mover/camera/script/maker, but carried
+    /// in the same section on that struct's own explicit invitation (see
+    /// its "Save/load note for M7.9 P4b" doc comment): without this, every
+    /// `trigger_auto` on the map replays on every load, since
+    /// `attach_level` always rebuilds it fresh with `fired: false`, which
+    /// would otherwise re-toggle (and so silently stop) any camera/train
+    /// this section just finished restoring to an active state.
+    pub auto_trigger_fired: Option<bool>,
+}
+
+impl MoverSnapshot {
+    /// Whether every field is `None`, so a caller can collapse an entry to
+    /// `None` instead of storing an empty struct.
+    #[must_use]
+    fn is_empty(&self) -> bool {
+        self.track_train.is_none()
+            && self.camera.is_none()
+            && self.script.is_none()
+            && self.maker.is_none()
+            && self.auto_trigger_fired.is_none()
+    }
+}
+
+/// `SECTION_MOVER_STATE` (28)'s track-train/camera/`monstermaker`/
+/// `trigger_auto` portion — everything readable straight off a `hecs`
+/// component without needing
+/// `crate::ai::AiState`'s own script bookkeeping. `crate::systems::Systems`
+/// merges [`crate::ai::AiState::snapshot_scripts`] into the result (the
+/// `script` field of each entry) to build the section this crate actually
+/// writes.
+#[must_use]
+pub(crate) fn snapshot_movers(level: &Level) -> Vec<Option<MoverSnapshot>> {
+    level
+        .registry
+        .entities
+        .iter()
+        .take(MAX_SNAPSHOT_MOVERS)
+        .map(|entity| {
+            let track_train = level
+                .registry
+                .world
+                .get::<&TrackTrainState>(*entity)
+                .ok()
+                .map(|state| {
+                    let (node_index, t, direction, speed, moving, wait_timer) =
+                        state.dynamic_state();
+                    TrackTrainSnapshot {
+                        node_index: u32::try_from(node_index).unwrap_or(u32::MAX),
+                        t,
+                        direction,
+                        speed,
+                        moving,
+                        wait_timer,
+                    }
+                });
+            let camera = level
+                .registry
+                .world
+                .get::<&TriggerCameraState>(*entity)
+                .ok()
+                .map(|state| {
+                    let (node_index, t, speed, wait_timer, active, hold_remaining) =
+                        state.dynamic_state();
+                    TriggerCameraSnapshot {
+                        node_index: u32::try_from(node_index).unwrap_or(u32::MAX),
+                        t,
+                        speed,
+                        wait_timer,
+                        active,
+                        hold_remaining,
+                    }
+                });
+            let maker = level
+                .registry
+                .world
+                .get::<&MonsterMaker>(*entity)
+                .ok()
+                .map(|maker| MonsterMakerSnapshot {
+                    spawned_total: maker.0.spawned_total(),
+                    live_children: u32::try_from(maker.0.live_children()).unwrap_or(u32::MAX),
+                    active: maker.0.is_active(),
+                    cyclic_pending: maker.0.cyclic_pending(),
+                    timer: maker.0.timer(),
+                });
+            let auto_trigger_fired = level
+                .registry
+                .world
+                .get::<&AutoTrigger>(*entity)
+                .ok()
+                .map(|auto| auto.fired);
+            let snapshot = MoverSnapshot {
+                track_train,
+                camera,
+                script: None,
+                maker,
+                auto_trigger_fired,
+            };
+            (!snapshot.is_empty()).then_some(snapshot)
+        })
+        .collect()
+}
+
+/// Restores [`snapshot_movers`]'s track-train/camera/`monstermaker`/`trigger_auto` portion,
+/// zipped against `level.registry.entities` in spawn order. The `script`
+/// field of each entry is restored separately, by
+/// `crate::ai::AiState::restore_scripts`.
+pub(crate) fn restore_movers(level: &mut Level, snapshots: &[Option<MoverSnapshot>]) {
+    let entities = level.registry.entities.clone();
+    for (entity, snapshot) in entities.iter().zip(snapshots) {
+        let Some(snapshot) = snapshot else { continue };
+        if let Some(train) = &snapshot.track_train
+            && let Ok(mut state) = level.registry.world.get::<&mut TrackTrainState>(*entity)
+        {
+            state.restore_dynamic_state(
+                usize::try_from(train.node_index).unwrap_or(usize::MAX),
+                train.t,
+                train.direction,
+                train.speed,
+                train.moving,
+                train.wait_timer,
+            );
+        }
+        if let Some(camera) = &snapshot.camera
+            && let Ok(mut state) = level.registry.world.get::<&mut TriggerCameraState>(*entity)
+        {
+            state.restore_dynamic_state(
+                usize::try_from(camera.node_index).unwrap_or(usize::MAX),
+                camera.t,
+                camera.speed,
+                camera.wait_timer,
+                camera.active,
+                camera.hold_remaining,
+            );
+        }
+        if let Some(maker) = &snapshot.maker
+            && let Ok(mut component) = level.registry.world.get::<&mut MonsterMaker>(*entity)
+        {
+            component.0.restore_counters(
+                maker.spawned_total,
+                maker.active,
+                maker.cyclic_pending,
+                maker.timer,
+            );
+        }
+        if let Some(fired) = snapshot.auto_trigger_fired
+            && let Ok(mut auto) = level.registry.world.get::<&mut AutoTrigger>(*entity)
+        {
+            auto.fired = fired;
+        }
+    }
 }
 
 #[cfg(test)]

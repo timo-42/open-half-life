@@ -933,37 +933,47 @@ tag as unknown rather than failing to open the file:
 | 25 | `SECTION_AI` | one optional `AiSnapshot` per registry entity, in spawn order (M7.9 P4b) |
 | 26 | `SECTION_PROJECTILES` | live projectiles and placed deployables (satchels, tripmines) (M7.9 P4b) |
 | 27 | `SECTION_RNG` | the shared random stream and the substep counter (M7.9 P4b) |
+| 28 | `SECTION_MOVER_STATE` | one optional `MoverSnapshot` per registry entity, in spawn order: `func_train`/`func_tracktrain` position, `trigger_camera` sequence progress, running-script phase, `monstermaker` counters, and a `trigger_auto`'s one-shot `fired` flag (M7.13) |
 | 32 | *(reserved, `ohl-player`)* | a `PlayerSnapshot`, written through `Player::snapshot()` once a later package wires it; not produced by any current build |
 
 Serialization goes through `postcard` via `ohl_save::SaveWriter::
 add_section_serde`, which is deterministic: the same game state and header
 always produce byte-identical files (asserted by the save -> load -> save
-round-trip test). Tags 23-27 (M7.9 P4b) are read as `None`/a default when
-absent, so a save written before that package still loads; a section that
-is present but fails to decode fails the whole read closed
-(`EngineError::SaveUnreadable`), same as every other section. Restoring
-tags 26/27 does not by itself bring back a deployable's or a model-backed
-projectile's drawn stand-in entity or `hecs::Entity` handle (neither is
-serializable): `ProjectileSystem::restore_snapshot` re-spawns a fresh stand-in
-for every restored satchel, tripmine, or in-flight model-backed projectile
-so it draws and stays damageable again after a load. Tags 18/24/25 restore
-every monster's `Transform` (from `EntitySnapshot`) and `MonsterAi` state,
-but not `ohl_ai::Actor` — `Game::restore` closes that gap itself, once,
-right after those sections apply: `Systems::sync_actor_from_transforms`
-copies the just-restored `Transform::origin`/`angles.y` onto
-`Actor::origin`/`yaw` for every monster, so sensing, navigation and
-attacks resume from the save's own position rather than from
-`ohl_ai::attach_monsters`'s spawn-time default (the same drift phase 8b
-above prevents step to step, closed once more at the load boundary).
-`docs/MILESTONES.md`'s
-M7.9 P4b note tracks the one known gap: weapon *inventory* (owned weapons,
-clips, reserve ammo) currently rides inside `SECTION_PLAYER_CARRY`'s ad hoc
-byte encoding rather than its own section, which still round-trips
-correctly today but is not yet self-describing independent of that carry
-state's shape. Neither `TriggerCameraState` nor `TrackTrainState` is part
-of any save section yet, for the same self-describing-format reason: a
-save taken mid-camera-sequence or mid-route resumes with that state
-dormant instead of where it left off.
+round-trip test). Tags 23-28 (23-27 from M7.9 P4b, 28 from M7.13) are read
+as `None`/a default when absent, so a save written before either package
+still loads; a section that is present but fails to decode fails the whole
+read closed (`EngineError::SaveUnreadable`), same as every other section.
+Restoring tags 26/27 does not by itself bring back a deployable's or a
+model-backed projectile's drawn stand-in entity or `hecs::Entity` handle
+(neither is serializable): `ProjectileSystem::restore_snapshot` re-spawns a
+fresh stand-in for every restored satchel, tripmine, or in-flight
+model-backed projectile so it draws and stays damageable again after a
+load. Tags 18/24/25 restore every monster's `Transform` (from
+`EntitySnapshot`) and `MonsterAi` state, but not `ohl_ai::Actor` —
+`Game::restore` closes that gap itself, once, right after those sections
+apply: `Systems::sync_actor_from_transforms` copies the just-restored
+`Transform::origin`/`angles.y` onto `Actor::origin`/`yaw` for every
+monster, so sensing, navigation and attacks resume from the save's own
+position rather than from `ohl_ai::attach_monsters`'s spawn-time default
+(the same drift phase 8b above prevents step to step, closed once more at
+the load boundary). `docs/MILESTONES.md`'s M7.9 P4b note tracks the one
+known gap: weapon *inventory* (owned weapons, clips, reserve ammo)
+currently rides inside `SECTION_PLAYER_CARRY`'s ad hoc byte encoding
+rather than its own section, which still round-trips correctly today but
+is not yet self-describing independent of that carry state's shape.
+M7.13's `SECTION_MOVER_STATE` (tag 28) closes the `TriggerCameraState`/
+`TrackTrainState`-are-not-saved gap this section used to describe here: a
+`func_train`'s mid-route position, an active `trigger_camera` sequence, a
+running `scripted_sequence`'s phase and a `monstermaker`'s spawn counters
+now all survive a save/load. It also carries `AutoTrigger::fired` (a
+`trigger_auto`'s own one-shot flag), since replaying a `trigger_auto` on
+every load would otherwise re-toggle — and so silently stop — any
+train/camera the rest of this same section had just finished restoring to
+an active state. One separate, still-open gap: a `monstermaker`'s
+already-spawned children are not themselves indexed by
+`Registry::entities` (see `ohl_engine::save_state`'s own module doc,
+"Monstermaker children are not saved"), so only the maker's own counters
+— not its live children — round-trip; tag 28 does not change that.
 
 ## The asset layer and PAK precedence
 

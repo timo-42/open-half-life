@@ -404,6 +404,61 @@ impl TrackTrainState {
         self.direction = -self.direction;
     }
 
+    /// This train's own runtime fields — everything but [`Self::chain`],
+    /// which the level rebuilds fresh from the map's own `path_track`
+    /// chain at attach time — as a save-friendly tuple:
+    /// `(node_index, t, direction, speed, moving, wait_timer)`. Used only
+    /// by `ohl-engine`'s `SECTION_MOVER_STATE` (tag 28); see that crate's
+    /// `save_state::TrackTrainSnapshot`.
+    #[must_use]
+    pub fn dynamic_state(&self) -> (usize, f32, f32, f32, bool, f32) {
+        (
+            self.node_index,
+            self.t,
+            self.direction,
+            self.speed,
+            self.moving,
+            self.wait_timer,
+        )
+    }
+
+    /// Restores fields captured by [`Self::dynamic_state`] onto this
+    /// (freshly attach-level-spawned) train. `node_index` is clamped into
+    /// the rebuilt chain's own bounds and every float is sanitized (a
+    /// non-finite value falls back to a safe default, `direction` is
+    /// forced to exactly `1.0`/`-1.0`), so a corrupt save or one taken
+    /// against a different map's chain length cannot hand this train an
+    /// out-of-range index or a `NaN`/`inf` timer.
+    pub fn restore_dynamic_state(
+        &mut self,
+        node_index: usize,
+        t: f32,
+        direction: f32,
+        speed: f32,
+        moving: bool,
+        wait_timer: f32,
+    ) {
+        let last = self.chain.nodes.len().saturating_sub(1);
+        self.node_index = node_index.min(last);
+        self.t = if t.is_finite() {
+            t.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        self.direction = if direction < 0.0 { -1.0 } else { 1.0 };
+        self.speed = if speed.is_finite() {
+            speed.max(0.0)
+        } else {
+            0.0
+        };
+        self.moving = moving;
+        self.wait_timer = if wait_timer.is_finite() {
+            wait_timer.max(0.0)
+        } else {
+            0.0
+        };
+    }
+
     /// Advances this train by `dt` seconds: moves it along the chain at its
     /// current speed, applying a `path_track`'s `speed` override, `wait`
     /// pause, or "Wait for retrigger" stop as each node is passed, and
@@ -799,6 +854,46 @@ mod tests {
     fn no_user_control_flag_is_recorded() {
         assert!(TrackTrain::no_user_control_from_flags(2));
         assert!(!TrackTrain::no_user_control_from_flags(0));
+    }
+
+    #[test]
+    fn dynamic_state_round_trips_mid_segment() {
+        let entities = three_node_track(&[("speed", "100")]);
+        let registry = build_registry(&entities);
+        let mut state = train_state(&registry);
+        state.turn_on();
+        state.advance(0.4);
+        let captured = state.dynamic_state();
+
+        // A fresh state, as a load would rebuild before restoring.
+        let mut restored = train_state(&registry);
+        restored.restore_dynamic_state(
+            captured.0, captured.1, captured.2, captured.3, captured.4, captured.5,
+        );
+        assert_eq!(restored.dynamic_state(), captured);
+        assert_eq!(restored.position(), state.position());
+    }
+
+    #[test]
+    fn restore_dynamic_state_clamps_a_node_index_past_the_rebuilt_chain() {
+        let entities = three_node_track(&[]);
+        let registry = build_registry(&entities);
+        let mut state = train_state(&registry);
+        state.restore_dynamic_state(9_999, 0.5, 1.0, 50.0, true, 0.0);
+        assert!(state.node_index < state.chain.nodes.len());
+    }
+
+    #[test]
+    fn restore_dynamic_state_sanitizes_non_finite_input() {
+        let entities = three_node_track(&[]);
+        let registry = build_registry(&entities);
+        let mut state = train_state(&registry);
+        state.restore_dynamic_state(0, f32::NAN, f32::NAN, f32::NAN, true, f32::NAN);
+        let (_, t, direction, speed, _, wait_timer) = state.dynamic_state();
+        assert_eq!(t.to_bits(), 0.0f32.to_bits());
+        assert!((direction - 1.0).abs() < f32::EPSILON);
+        assert_eq!(speed.to_bits(), 0.0f32.to_bits());
+        assert_eq!(wait_timer.to_bits(), 0.0f32.to_bits());
     }
 
     proptest! {
