@@ -2736,8 +2736,29 @@ payload.
   with zero player input) and a synthetic `ohl-engine` test riding a real
   `func_train`/`path_corner` chain through `Simulation`. Verified against
   the real payload: the campaign start map's opening tram sequence does
-  *not* trip the new "The player is riding a mover." script-log line,
-  because that sequence is implemented in this project (M7.12) as a
-  `trigger_camera` view override rather than the player's own collision
-  body standing on a mover; `cargo xtask combat-smoke`'s `BASE_ABSENT` set
-  now asserts the line absent on all 23 scenarios as a regression guard.
+  *not* trip the new "The player is riding a mover." script-log line —
+  not because of any camera override (this map has no `trigger_camera`
+  entity at all), but for two independent, open reasons: no
+  `func_tracktrain` there is ever started (every one has `start_speed`
+  `0`, and nothing this project's map logic does within a 40-second
+  scripted run fires one another way), and the player is not standing on
+  the tram's collision brush at spawn either way (`ground_brush` reads
+  `None` for the whole run; the player instead falls several hundred
+  units onto ordinary world geometry). `cargo xtask combat-smoke`'s
+  `BASE_ABSENT` set asserts the line absent on 22 of the 23 scenarios as a
+  regression guard; the start-map scenario is carved out into its own
+  `FIRST_CHAPTER_START_ABSENT` (documenting both gaps) rather than also
+  asserting absent there, since the correct expectation once both gaps
+  are fixed is *present*, not absent.
+  [PR #97](https://github.com/timo-42/open-half-life/pull/97)'s review
+  caught the original (incorrect) camera-override attribution via a
+  real-payload instrumentation pass; also from that review:
+  `Game::restore` now syncs brush collision with a zero `dt` at the end of
+  restore, so a mover saved mid-move does not have its whole restore
+  displacement counted as one step's velocity by the next tick's mover
+  push; `hull::combine` now records `Trace::brush_index` when a brush's
+  segment starts embedded even on a fraction tie against a
+  likewise-embedded world trace, so the push path is not silently skipped
+  for a player standing in both; and `door_offset`/`platform_offset` now
+  share one `mover_offset` helper instead of two independently
+  hand-copied implementations.

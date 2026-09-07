@@ -1219,6 +1219,25 @@ impl Game {
         // A load is a map load: the chapter title is announced again.
         self.pending.clear();
         self.pending.extend(chapter_title_event(&self.level.name));
+
+        // The snapshots just applied above may have moved a mover entity
+        // (its `Transform`) far from where this restore's fresh `Level`
+        // attached its collision brushes (at their *compiled* origins, in
+        // `attach_solid_brushes`); a cold map load never has this gap,
+        // since the very first `sync_brush_collision` call is what seeds
+        // it. Left alone, next step's own `sync_brush_collision` would see
+        // that whole restore displacement as one step's motion and divide
+        // it by `dt`, synthesizing a large `brush_velocity` out of nothing
+        // — safe for the ride path (a restored `PlayerState::ground_brush`
+        // is never trusted; `categorize_position` recomputes it fresh on
+        // the first tick), but the push path added alongside mover riders
+        // reads `brush_velocity` unconditionally and would shove a player
+        // who happens to be standing inside a restored mover's hull by the
+        // full restore displacement. Syncing once here, with a
+        // non-positive `dt`, moves every brush to its restored position
+        // and records zero velocity for all of them — exactly the seed a
+        // cold load already gets for free.
+        self.level.sync_brush_collision(0.0);
     }
 
     /// Draws the current frame into `target`, creating the GPU resources
