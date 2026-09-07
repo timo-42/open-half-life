@@ -292,9 +292,25 @@ fn attach_brush_collision(
             // `"*0"` is the worldspawn model, which `model` already holds.
             continue;
         }
-        let origin = instance.origin + crate::render::brush_offset(registry, instance.entity);
+        let (axis, angle_degrees) = crate::render::mover_rotation(registry, instance.entity);
+        let origin = if axis == Vec3::ZERO {
+            instance.origin + crate::render::brush_offset(registry, instance.entity)
+        } else {
+            // A rotating mover's compiled geometry already sits at its
+            // pivot's own world position, exactly as `crate::render`'s
+            // `rotated_placement` assumes for drawing it (its own doc
+            // comment): TWHL wiki `func_door_rotating` documents the
+            // entity's `origin` keyvalue as coming from a required "origin
+            // brush" placed where the geometry already is, not a
+            // translation to apply on top of it. So it is attached at zero
+            // translation here, and only `set_brush_pose` below — never a
+            // plain translation — moves it.
+            Vec3::ZERO
+        };
         if let Ok(id) = model.attach_brush(bsp, limits, index, origin) {
-            apply_brush_rotation(model, id, registry, instance.entity, instance.origin);
+            if axis != Vec3::ZERO {
+                model.set_brush_pose(id, Vec3::ZERO, instance.origin, axis, angle_degrees);
+            }
             attached.push((instance.entity, id));
         }
     }
@@ -319,31 +335,6 @@ fn attach_brush_collision(
         }
     }
     attached
-}
-
-/// Applies `entity`'s current [`crate::render::mover_rotation`] (a
-/// `func_door_rotating`/`func_rotating`'s live rotation state) to `id` in
-/// `model`, mirroring exactly the same rotation `crate::render`'s
-/// `draw_brush_entities` composes into the submodel's draw transform, so a
-/// rotating door blocks and pushes the player at the pose it is drawn at —
-/// the same "collide where it looks like it is" invariant `docs/
-/// FORMAT_SOURCES.md` already documents for a translating mover's
-/// `brush_offset` (see `attach_brush_collision`'s own doc comment). A
-/// no-op for any brush entity that is not currently rotating (`axis ==
-/// Vec3::ZERO`), which is every brush entity except those two — leaving
-/// `model.attach_brush`'s plain translation-only pose untouched for them.
-fn apply_brush_rotation(
-    model: &mut CollisionModel,
-    id: BrushId,
-    registry: &Registry,
-    entity: Entity,
-    pivot: Vec3,
-) {
-    let (axis, angle_degrees) = crate::render::mover_rotation(registry, entity);
-    if axis == Vec3::ZERO {
-        return;
-    }
-    model.set_brush_pose(id, pivot, pivot, axis, angle_degrees);
 }
 
 /// The classname the engine's own player entity carries. Project-authored:
@@ -590,17 +581,29 @@ impl Level {
                 brush_velocity.remove(brush);
                 return false;
             };
-            let offset = crate::render::brush_offset(registry, *entity);
-            let new_origin = transform.origin + offset;
-            let displacement = new_origin - model.brush_origin(*brush);
-            let velocity = if dt.is_finite() && dt > 0.0 && displacement.is_finite() {
-                displacement / dt
+            let (axis, angle_degrees) = crate::render::mover_rotation(registry, *entity);
+            if axis == Vec3::ZERO {
+                let offset = crate::render::brush_offset(registry, *entity);
+                let new_origin = transform.origin + offset;
+                let displacement = new_origin - model.brush_origin(*brush);
+                let velocity = if dt.is_finite() && dt > 0.0 && displacement.is_finite() {
+                    displacement / dt
+                } else {
+                    Vec3::ZERO
+                };
+                brush_velocity.insert(*brush, velocity);
+                model.set_brush_origin(*brush, new_origin);
             } else {
-                Vec3::ZERO
-            };
-            brush_velocity.insert(*brush, velocity);
-            model.set_brush_origin(*brush, new_origin);
-            apply_brush_rotation(model, *brush, registry, *entity, new_origin);
+                // A rotating mover never also translates (see
+                // `attach_brush_collision`'s matching branch): its own
+                // pivot ([`Transform::origin`]) does not move, so there is
+                // no displacement to turn into a rider-carrying velocity —
+                // `Level::brush_velocity`'s "Riding movers" mechanism is
+                // TODO(black-box) for a rotating brush, same as the crush
+                // detection already recorded for a blocked mover above.
+                brush_velocity.insert(*brush, Vec3::ZERO);
+                model.set_brush_pose(*brush, Vec3::ZERO, transform.origin, axis, angle_degrees);
+            }
             true
         });
     }
@@ -1028,5 +1031,94 @@ mod tests {
         assert!((cycler.origin[1] - 8.0).abs() < f32::EPSILON);
         assert!((cycler.origin[2] - 9.0).abs() < f32::EPSILON);
         assert!((cycler.scale - 1.0).abs() < f32::EPSILON);
+    }
+
+    /// Applies a column-major [`crate::render`] placement matrix to a
+    /// point, exactly as the renderer's own vertex shader would (see
+    /// `ohl_render::math`'s module doc comment for the `m[column * 4 +
+    /// row]` layout).
+    fn apply_placement(matrix: &[f32; 16], point: ohl_physics::Vec3) -> ohl_physics::Vec3 {
+        ohl_physics::Vec3::new(
+            matrix[0] * point.x + matrix[4] * point.y + matrix[8] * point.z + matrix[12],
+            matrix[1] * point.x + matrix[5] * point.y + matrix[9] * point.z + matrix[13],
+            matrix[2] * point.x + matrix[6] * point.y + matrix[10] * point.z + matrix[14],
+        )
+    }
+
+    /// Render and collision must agree on where a rotating brush's pose
+    /// actually puts its geometry: `crate::render::rotated_placement`
+    /// builds the matrix `draw_brush_entities` draws the submodel with,
+    /// and `attach_brush_collision`/`Level::sync_brush_collision` set the
+    /// exact same `(pivot, axis, angle_degrees)` on the attached collision
+    /// brush via `ohl_physics::CollisionModel::set_brush_pose` — this
+    /// pins that shared expression down concretely rather than trusting
+    /// the two call sites to keep using the same three numbers by
+    /// construction alone. A point taken from just inside the door leaf's
+    /// own local shape, carried through `rotated_placement` into world
+    /// space exactly as the renderer would place that vertex, must be
+    /// reported solid by the collision model that
+    /// `Level::sync_brush_collision` posed with the identical
+    /// `crate::render::mover_rotation` triple.
+    #[test]
+    fn render_and_collision_agree_on_a_rotated_door_pose() {
+        let bytes =
+            crate::test_support::rotating_door_bsp(&crate::test_support::rotating_door_entities());
+        let assets = MemoryAssets::new();
+        let mut level = Level::from_bytes(&assets, "ohlrotdoorsynth", &bytes)
+            .expect("the rotating-door fixture loads");
+
+        let entity = *level
+            .registry
+            .find(crate::test_support::ROTATING_DOOR_NAME)
+            .first()
+            .expect("the fixture declares one named rotating door");
+        {
+            let mut door = level
+                .registry
+                .world
+                .get::<&mut ohl_game::registry::Door>(entity)
+                .expect("the named entity is a door");
+            // Force it straight to fully open, the same terminal pose
+            // `MoverState::Open` always reports (see `render::
+            // mover_fraction`), without ticking a whole `Simulation`.
+            door.state = ohl_game::registry::MoverState::Open;
+            door.timer = door.wait;
+        }
+        level.sync_brush_collision(1.0 / 60.0);
+
+        let pivot = ohl_physics::Vec3::new(192.0, -88.0, 0.0);
+        let axis = ohl_physics::Vec3::Z;
+        let angle_degrees = 90.0;
+        let transform = crate::render::rotated_placement(pivot, axis, angle_degrees);
+
+        // A point just inside the door leaf's own compiled shape (offset
+        // 2 units in from its pivot edge, well inside every other face),
+        // carried into world space through the render matrix.
+        let local_point_inside_the_leaf = ohl_physics::Vec3::new(
+            f32::midpoint(
+                crate::test_support::ROTATING_DOOR_MINS[0],
+                crate::test_support::ROTATING_DOOR_MAXS[0],
+            ),
+            crate::test_support::ROTATING_DOOR_MINS[1] + 2.0,
+            f32::midpoint(
+                crate::test_support::ROTATING_DOOR_MINS[2],
+                crate::test_support::ROTATING_DOOR_MAXS[2],
+            ),
+        );
+        let world_point = apply_placement(&transform, local_point_inside_the_leaf);
+
+        let model = level.collision.as_ref().expect("the fixture has collision");
+        assert_eq!(
+            model.point_contents(world_point),
+            contents::SOLID,
+            "collision does not agree the open door's render pose puts \
+             solid geometry at {world_point:?}"
+        );
+
+        // The corridor's own centreline, where the door started (and,
+        // correctly rotated, must no longer reach), stays empty under the
+        // same pose.
+        let centerline = ohl_physics::Vec3::new(192.0, 0.0, 40.0);
+        assert_eq!(model.point_contents(centerline), contents::EMPTY);
     }
 }

@@ -539,7 +539,7 @@ pub(crate) fn mover_rotation(registry: &ohl_game::Registry, entity: Entity) -> (
 /// unconditionally would be a no-op — though every caller still branches on
 /// [`mover_rotation`] first rather than relying on that, since a rotating
 /// mover never also carries a translating [`brush_offset`] to add in.
-fn rotated_placement(pivot: Vec3, axis: Vec3, angle_degrees: f32) -> math::Mat4 {
+pub(crate) fn rotated_placement(pivot: Vec3, axis: Vec3, angle_degrees: f32) -> math::Mat4 {
     if axis == Vec3::ZERO || angle_degrees == 0.0 {
         return math::identity();
     }

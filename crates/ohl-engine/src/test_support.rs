@@ -785,3 +785,92 @@ pub fn mover_train_bsp() -> Vec<u8> {
     );
     b.build()
 }
+
+// ---------------------------------------------------------------------
+// A `func_door_rotating` blocking a corridor
+// ---------------------------------------------------------------------
+
+/// The map name the rotating-door fixture is published under.
+pub const ROTATING_DOOR_MAP: &str = "ohlrotdoorsynth";
+
+/// The `targetname` of the fixture's `func_door_rotating`.
+pub const ROTATING_DOOR_NAME: &str = "ohl_rot_door";
+
+/// The rotating door leaf's compiled (closed) world-space box: 16 units
+/// thick along `X`, spanning `y` from `-88` to `88` (176 units — leaving
+/// only an 8-unit gap to each of the corridor's own walls at `y = +/-96`,
+/// too narrow for the 32-unit-wide standing hull to slip through), full
+/// height. Sized generously relative to the standing hull's own 32x32
+/// footprint: a hull's clip-tree planes are pre-expanded outward by half
+/// its own box (see `ohl_formats::test_support::Bsp30Builder::
+/// push_collision_hulls`'s `expand_plane`) *before* this package's rotation
+/// is applied to them, so a door leaf sized only a little larger than the
+/// hull swings out a pre-expanded footprint comparable in size to the
+/// corridor itself and never really clears it — this fixture's numbers
+/// were chosen empirically (a standalone probe against
+/// `ohl_physics::CollisionModel::set_brush_pose`) to leave the open door's
+/// full pre-expanded sweep entirely outside the corridor's own walkable
+/// width, the same margin a real map's mapper leaves by building a door
+/// frame and a wall recess substantially bigger than the player.
+pub const ROTATING_DOOR_MINS: [f32; 3] = [184.0, -88.0, 0.0];
+/// See [`ROTATING_DOOR_MINS`].
+pub const ROTATING_DOOR_MAXS: [f32; 3] = [200.0, 88.0, 96.0];
+
+/// A `worldspawn`-only, faceless world (collision only; nothing here draws
+/// anything, exactly like [`killable_brush_floor_bsp`]) shaped as a
+/// corridor 192 units wide (`y` in `-96..96`, unbounded along `x`) plus a
+/// *real* solid submodel 1 ([`ROTATING_DOOR_MINS`]/[`ROTATING_DOOR_MAXS`])
+/// for the door leaf — unlike `door_behind_touch_trigger_bsp`'s door, whose
+/// submodel carries no collision hulls of its own (bare `-1` heads) because
+/// that fixture only exercises the map-logic state machine. This one needs
+/// a door that actually blocks and unblocks the corridor, so its hulls are
+/// pushed the same way [`killable_brush_floor_bsp`]'s floor slab's are.
+#[must_use]
+pub fn rotating_door_bsp(entities: &str) -> Vec<u8> {
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(entities);
+    // The world: a floor at z=0 plus two side walls forming the corridor.
+    let world_heads = b.push_collision_hulls(&[
+        CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+        CollisionBrush::half_space([0.0, -1.0, 0.0], -96.0),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], -96.0),
+    ]);
+    let door_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(
+        ROTATING_DOOR_MINS,
+        ROTATING_DOOR_MAXS,
+    )]);
+    b.push_model([-4096.0; 3], [4096.0; 3], [0.0; 3], world_heads, 2, 0, 0);
+    b.push_model(
+        ROTATING_DOOR_MINS,
+        ROTATING_DOOR_MAXS,
+        [0.0; 3],
+        door_heads,
+        2,
+        0,
+        0,
+    );
+    b.build()
+}
+
+/// A `worldspawn` plus an `info_player_start` short of the door (`x =
+/// 150`, facing `+x`, the corridor's own length — close enough for a
+/// `use` press to reach the door's brush-centre, `ohl_engine::USE_RADIUS`
+/// being 64 units, but still short of its closed leaf at `x = 184`), and a
+/// `func_door_rotating` (submodel `*1`, targetname [`ROTATING_DOOR_NAME`])
+/// pivoting about `(192, -88, 0)` — [`ROTATING_DOOR_MINS`]'s own `y = -88`
+/// edge — through 90 degrees at 360 degrees/second (a quarter turn in a
+/// quarter second) about the default `Z` axis, and `wait = -1` so it never
+/// auto-closes once opened (a test can walk through it without racing a
+/// timer). No bytes here come from any game installation; see
+/// `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn rotating_door_entities() -> String {
+    format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"150 0 40\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"func_door_rotating\"\n\"targetname\" \"{ROTATING_DOOR_NAME}\"\n\
+         \"model\" \"*1\"\n\"speed\" \"360\"\n\"distance\" \"90\"\n\"wait\" \"-1\"\n\
+         \"origin\" \"192 -88 0\"\n}}\n"
+    )
+}
