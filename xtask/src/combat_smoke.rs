@@ -147,7 +147,6 @@ const FIRST_CHAPTER_START_ABSENT: [&str; 7] = [
     "The player is inside solid geometry.",
 ];
 
-
 /// The fixed line every M9 chapter-walk scenario expects present beyond
 /// [`BASE_PRESENT`]: the player's eye position actually left its spawn
 /// point (`crates/ohl-app/src/script_log.rs`). This is the scenario set's

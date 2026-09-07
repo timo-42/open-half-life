@@ -1003,4 +1003,3 @@ mod tests {
         assert!((cycler.scale - 1.0).abs() < f32::EPSILON);
     }
 }
-
