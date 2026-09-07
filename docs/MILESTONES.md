@@ -2987,8 +2987,9 @@ payload.
   capture over the same window shows the view riding out of the start
   area, through the hazard-striped tunnel portal and on down the rock
   tunnel past a lamp-lit side ledge.
-  `xtask/smoke-scenarios/first_chapter_start.txt` asserts the riding line
-  present accordingly, and its tick counts were corrected: a script line's
+  Both `cargo xtask combat-smoke` scenarios that run on that map
+  (`first_chapter_start.txt` and `walk_black_mesa_inbound.txt`) assert the
+  riding line present accordingly, and its tick counts were corrected: a script line's
   leading number is a count of ticks (`CAPTURE_STEP`, 1/60 s), not
   seconds, so the previous counts covered under two seconds of simulation
   and never reached the ride. Regression tests:
