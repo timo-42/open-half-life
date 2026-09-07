@@ -874,6 +874,36 @@ impl CollisionModel {
             .map_or(Vec3::ZERO, |part| part.origin)
     }
 
+    /// Whether `brush` currently carries a live rotation set by
+    /// [`Self::set_brush_pose`] ([`BrushPart::has_rotation`]) rather than a
+    /// plain translation (or no pose at all, for an out-of-range
+    /// `BrushId`). Lets a caller distinguish a rider on a spinning
+    /// `func_rotating`/`func_door_rotating` from one on a static floor or a
+    /// translating `func_train`/`func_plat`/lift `func_door`, which is
+    /// exactly the case [`crate::movement::ground_probe`]'s one-unit retry
+    /// exists for.
+    ///
+    /// `has_rotation()` is not a proxy for that ambiguity, it is exactly
+    /// the condition that creates it: it is the same predicate
+    /// [`BrushPart::local_point`] tests to choose its inverse-rotation
+    /// branch (`self.rotation().inverse() * (world - self.origin -
+    /// self.pivot) + self.pivot`) over the bit-identical, rounding-free
+    /// `world - self.origin` translation. So this is true exactly when a
+    /// trace
+    /// against `brush` goes through that rotation arithmetic — a
+    /// `func_rotating` parked at a nonzero angle still has it (its planes
+    /// are inverse-rotated on every trace even while not turning, so it
+    /// still needs the retry), while a spin that happens to wrap through
+    /// exactly `0.0` degrees, or a closed `func_door_rotating`, does not
+    /// (its pose is the identity for that one tick, with no rounding to
+    /// recover from, so excluding it costs nothing).
+    #[must_use]
+    pub fn brush_is_rotating(&self, brush: BrushId) -> bool {
+        self.brushes
+            .get(brush.0)
+            .is_some_and(BrushPart::has_rotation)
+    }
+
     /// Detaches an attached brush entity, so a map-logic despawn (a
     /// `func_wall` floor removed by a scripted `killtarget`, for example)
     /// stops blocking the player instead of leaving a solid the collision

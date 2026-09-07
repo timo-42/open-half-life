@@ -931,6 +931,7 @@ fn load_studio_models(source: &dyn AssetSource, defs: &[EntityDef]) -> StudioLoa
 
 #[cfg(test)]
 mod tests {
+    use glam::Vec3;
     use ohl_formats::bsp30::{Bsp, Limits as BspLimits};
     use ohl_formats::test_support::{build_minimal_mdl10, build_minimal_spr};
     use ohl_game::keyvalues::{self, Limits as KeyvalueLimits};
@@ -938,9 +939,50 @@ mod tests {
     use ohl_physics::test_support::{build_ladder_entity_room_bsp, build_water_entity_room_bsp};
     use ohl_physics::{CollisionModel, contents};
 
-    use super::{Level, attach_brush_collision};
+    use super::{Level, angular_velocity, attach_brush_collision};
     use crate::assets::MemoryAssets;
     use crate::test_support::synthetic_map_bsp_with_extra_entity;
+
+    /// A rotator advancing across the 359 degree -> 1 degree wrap
+    /// (`Simulation::advance_rotators` keeps `angle_degrees` in `0.0..360.0`,
+    /// so a `func_rotating` turning forward crosses this boundary exactly
+    /// the way a real ride does) must report the small *positive* rate it
+    /// actually turned at, not a near-full backwards revolution. Plain
+    /// `current - previous` gives `1.0 - 359.0 == -358.0` degrees, i.e. a
+    /// large negative rate turning the wrong way; the shortest-signed-arc
+    /// differencing in `angular_velocity` must instead see this as `+2.0`
+    /// degrees over the step. This is the gap PR #110's review flagged as
+    /// "load-bearing but untested" (only a 12 s manual ride caught it,
+    /// where the committed suite's 2.2 s engine test and the physics
+    /// proptest's constant-`omega` fixture both stayed clear of the wrap).
+    #[test]
+    fn angular_velocity_reports_the_short_way_across_the_360_degree_wrap() {
+        let axis = Vec3::Z;
+        let dt = 1.0 / 30.0;
+        let velocity = angular_velocity(axis, Some(359.0), 1.0, dt);
+
+        // +2 degrees/step forward, not -358: a plain `current - previous`
+        // would instead report a large *negative* rate (turning backwards).
+        let expected_rate = 2.0_f32.to_radians() / dt;
+        assert!(
+            velocity.z > 0.0,
+            "the wrap must report a small positive rate, got {velocity:?}"
+        );
+        assert!(
+            (velocity.z - expected_rate).abs() < 1e-3,
+            "expected the shortest +2 degree arc ({expected_rate} rad/s), got {velocity:?}"
+        );
+
+        // A plain difference would report roughly -358 degrees of rotation
+        // over the step; make sure we are nowhere near that magnitude or
+        // sign, in case some other bug produced a coincidentally-small
+        // positive number.
+        let plain_difference_rate = (1.0_f32 - 359.0).to_radians() / dt;
+        assert!(
+            (velocity.z - plain_difference_rate).abs() > 1.0,
+            "must not match the plain-difference (non-wrapped) rate"
+        );
+    }
 
     /// `attach_brush_collision` is what turns a `func_ladder`/`func_water`
     /// entity in the registry into an attached, non-solid contents volume
