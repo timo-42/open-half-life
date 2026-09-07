@@ -44,7 +44,7 @@
 use glam::Vec3;
 use ohl_combat::{EntityId as CombatEntityId, ProjectileKind};
 use ohl_game::hecs::Entity;
-use ohl_game::registry::{AutoTrigger, MakerActivation};
+use ohl_game::registry::{AutoTrigger, MakerActivation, Rotator};
 use ohl_game::{TrackTrainState, TriggerCameraState};
 use serde::{Deserialize, Serialize};
 
@@ -671,6 +671,23 @@ pub struct MonsterMakerSnapshot {
     pub pending_activation: u32,
 }
 
+/// A `func_rotating`'s mutable spin state: `ohl_game::registry::Rotator::
+/// spinning`/`angle_deg`. `axis`/`speed` are fixed at spawn from keyvalues
+/// and spawnflags (`attach_level` always rebuilds them identically), so
+/// only the state a player's `use`/trigger can flip, or that accumulates
+/// while spinning, needs to round-trip. Without this a `func_rotating`
+/// toggled on reverts to its spawnflag default (`spinning: start_on`,
+/// `angle_deg: 0.0`) across a save/load or level transition, exactly the
+/// gap noted alongside `Rotator`'s introduction in `docs/FORMAT_SOURCES.md`
+/// `TODO(black-box)` item 24.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RotatorSnapshot {
+    /// `ohl_game::registry::Rotator::spinning`.
+    pub spinning: bool,
+    /// `ohl_game::registry::Rotator::angle_deg`.
+    pub angle_deg: f32,
+}
+
 /// `SECTION_MOVER_STATE` (28): one optional entry per `Registry::entities`
 /// slot, in spawn order, covering everything a fresh `attach_level` cannot
 /// otherwise reconstruct about a mover, camera sequence, running script,
@@ -687,6 +704,8 @@ pub struct MoverSnapshot {
     pub script: Option<ScriptRunnerSnapshot>,
     /// This entity's `monstermaker` counters, when it is one.
     pub maker: Option<MonsterMakerSnapshot>,
+    /// This entity's `func_rotating` spin state, when it has one.
+    pub rotator: Option<RotatorSnapshot>,
     /// `ohl_game::registry::AutoTrigger::fired`, when this entity is a
     /// `trigger_auto`. Not itself a mover/camera/script/maker, but carried
     /// in the same section on that struct's own explicit invitation (see
@@ -707,6 +726,7 @@ impl MoverSnapshot {
             && self.camera.is_none()
             && self.script.is_none()
             && self.maker.is_none()
+            && self.rotator.is_none()
             && self.auto_trigger_fired.is_none()
     }
 }
@@ -779,6 +799,15 @@ pub(crate) fn snapshot_movers(level: &Level) -> Vec<Option<MoverSnapshot>> {
                         pending_activation,
                     }
                 });
+            let rotator = level
+                .registry
+                .world
+                .get::<&Rotator>(*entity)
+                .ok()
+                .map(|rotator| RotatorSnapshot {
+                    spinning: rotator.spinning,
+                    angle_deg: rotator.angle_deg,
+                });
             let auto_trigger_fired = level
                 .registry
                 .world
@@ -790,6 +819,7 @@ pub(crate) fn snapshot_movers(level: &Level) -> Vec<Option<MoverSnapshot>> {
                 camera,
                 script: None,
                 maker,
+                rotator,
                 auto_trigger_fired,
             };
             (!snapshot.is_empty()).then_some(snapshot)
@@ -838,6 +868,12 @@ pub(crate) fn restore_movers(level: &mut Level, snapshots: &[Option<MoverSnapsho
             if let Ok(mut activation) = level.registry.world.get::<&mut MakerActivation>(*entity) {
                 activation.pending = maker.pending_activation.min(MakerActivation::MAX_PENDING);
             }
+        }
+        if let Some(rotator) = &snapshot.rotator
+            && let Ok(mut component) = level.registry.world.get::<&mut Rotator>(*entity)
+        {
+            component.spinning = rotator.spinning;
+            component.angle_deg = rotator.angle_deg;
         }
         if let Some(fired) = snapshot.auto_trigger_fired
             && let Ok(mut auto) = level.registry.world.get::<&mut AutoTrigger>(*entity)

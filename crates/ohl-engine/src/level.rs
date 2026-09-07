@@ -1058,8 +1058,21 @@ mod tests {
     /// reported solid by the collision model that
     /// `Level::sync_brush_collision` posed with the identical
     /// `crate::render::mover_rotation` triple.
-    #[test]
-    fn render_and_collision_agree_on_a_rotated_door_pose() {
+    /// Runs the render/collision pose-agreement check for one
+    /// [`ohl_game::registry::MoverState`], forced directly (no ticking a
+    /// whole `Simulation`) and compared against the angle
+    /// `render::door_rotation_degrees` reports for that same state:
+    /// `MoverState::Closed` (`fraction == 0.0`, angle `0.0`) is the spawn
+    /// state of every `func_door_rotating` that does not start open, and
+    /// is exactly the zero-angle path the blocking bug in
+    /// `render::rotated_placement` used to drop the `origin` translation
+    /// on; `MoverState::Open` (`fraction == 1.0`, the door's configured
+    /// `distance`) is the terminal pose after a full open swing.
+    fn assert_render_and_collision_agree_on_door_pose(
+        state: ohl_game::registry::MoverState,
+        angle_degrees: f32,
+        leaf_should_be_solid_at_centerline: bool,
+    ) {
         let bytes =
             crate::test_support::rotating_door_bsp(&crate::test_support::rotating_door_entities());
         let assets = MemoryAssets::new();
@@ -1077,11 +1090,8 @@ mod tests {
                 .world
                 .get::<&mut ohl_game::registry::Door>(entity)
                 .expect("the named entity is a door");
-            // Force it straight to fully open, the same terminal pose
-            // `MoverState::Open` always reports (see `render::
-            // mover_fraction`), without ticking a whole `Simulation`.
-            door.state = ohl_game::registry::MoverState::Open;
-            door.timer = door.wait;
+            door.state = state;
+            door.timer = 0.0;
         }
         level.sync_brush_collision(1.0 / 60.0);
 
@@ -1091,7 +1101,6 @@ mod tests {
             crate::test_support::ROTATING_DOOR_PIVOT[2],
         );
         let axis = ohl_physics::Vec3::Z;
-        let angle_degrees = 90.0;
         // `origin` here (in the sense `rotated_placement` and
         // `set_brush_pose` both use it): the compiled submodel's own
         // local `(0, 0, 0)` sits at this world point (see
@@ -1121,14 +1130,43 @@ mod tests {
         assert_eq!(
             model.point_contents(world_point),
             contents::SOLID,
-            "collision does not agree the open door's render pose puts \
-             solid geometry at {world_point:?}"
+            "collision does not agree the door's render pose at {angle_degrees} \
+             degrees puts solid geometry at {world_point:?}"
         );
 
-        // The corridor's own centreline, where the door started (and,
-        // correctly rotated, must no longer reach), stays empty under the
-        // same pose.
+        // The corridor's own centreline: solid while the closed door still
+        // blocks it (angle 0), empty once a full open swing has rotated
+        // the leaf out of the way (angle 90).
         let centerline = ohl_physics::Vec3::new(pivot.x, 0.0, 40.0);
-        assert_eq!(model.point_contents(centerline), contents::EMPTY);
+        let expected = if leaf_should_be_solid_at_centerline {
+            contents::SOLID
+        } else {
+            contents::EMPTY
+        };
+        assert_eq!(model.point_contents(centerline), expected);
+    }
+
+    #[test]
+    fn render_and_collision_agree_on_a_rotated_door_pose() {
+        assert_render_and_collision_agree_on_door_pose(
+            ohl_game::registry::MoverState::Open,
+            90.0,
+            false,
+        );
+    }
+
+    /// The zero-angle counterpart of the above: this is the state every
+    /// `func_door_rotating` spawns in unless it starts open, and it is
+    /// exactly the path the blocking `rotated_placement` bug hit — an
+    /// early return for `angle_degrees == 0.0` dropped the `origin`
+    /// translation and drew/collided the closed door at world `(0, 0,
+    /// 0)`. See the PR #107 review comment.
+    #[test]
+    fn render_and_collision_agree_on_a_closed_rotated_door_pose() {
+        assert_render_and_collision_agree_on_door_pose(
+            ohl_game::registry::MoverState::Closed,
+            0.0,
+            true,
+        );
     }
 }

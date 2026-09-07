@@ -803,6 +803,17 @@ fn a_rotated_brush_is_hit_at_its_rotated_face_with_a_rotated_normal() {
     // crosses the rotated face itself, not its unrotated position.
     assert!(rotated.end_pos.x > 0.0 && rotated.end_pos.x < 10.0 * core::f32::consts::SQRT_2);
     assert!((rotated.end_pos.x - unrotated.end_pos.x).abs() > 1.0);
+    // `plane_dist` is the exact closed form (`d + n_world·(origin+pivot) -
+    // n_local·pivot`), not an approximation read back off the (deliberately
+    // `DIST_EPSILON`-backed-off) hit position: with `origin == pivot ==
+    // Vec3::ZERO` here, rotation does not move the +X face's distance from
+    // the world origin at all, so it stays exactly the unrotated `10.0`,
+    // not `10.0` minus an epsilon-sized error from `end_pos`.
+    assert!(
+        (rotated.plane_dist - 10.0).abs() < 1e-4,
+        "plane_dist {} is not the exact rotated-face distance 10.0",
+        rotated.plane_dist
+    );
 }
 
 /// A point outside the brush's original axis-aligned box, but inside the
