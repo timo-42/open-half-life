@@ -66,7 +66,7 @@ use ohl_ai::{
 use ohl_combat::{DamageType, HitboxIndex, HitboxLimits, TraceFilter, TraceMask};
 use ohl_game::hecs::Entity;
 use ohl_game::keyvalues::EntityDef;
-use ohl_game::registry::{ClassName, Transform};
+use ohl_game::registry::{ClassName, MakerActivation, Transform};
 use ohl_game::scripts::{ScriptActivation, ScriptDef, SentenceDef};
 
 use crate::components::{Corpse, MonsterMaker, Owner, StudioAnim};
@@ -609,6 +609,14 @@ impl AiState {
                 .world
                 .insert_one(entity, MonsterMaker(spawner))
                 .ok();
+            // `monstermaker` rides the same `target`-firing path every
+            // other logic entity uses; `ohl-game`'s `Simulation::activate`
+            // bumps this counter, and `Self::tick_makers` below drains it.
+            level
+                .registry
+                .world
+                .insert_one(entity, MakerActivation::default())
+                .ok();
         }
     }
 
@@ -808,6 +816,78 @@ impl AiState {
             );
         } else {
             let _ = level.registry.world.remove_one::<SquadTag>(entity);
+        }
+    }
+
+    /// `SECTION_MOVER_STATE` (28)'s script portion: one optional
+    /// [`crate::save_state::ScriptRunnerSnapshot`] per
+    /// `level.registry.entities` slot, in spawn order, `None` for an entity
+    /// that is not a `scripted_sequence`/`aiscripted_sequence`.
+    /// `crate::systems::Systems::snapshot_mover_state` folds this into
+    /// [`crate::save_state::snapshot_movers`]'s own result.
+    #[must_use]
+    pub(crate) fn snapshot_scripts(
+        &self,
+        level: &Level,
+    ) -> Vec<Option<crate::save_state::ScriptRunnerSnapshot>> {
+        level
+            .registry
+            .entities
+            .iter()
+            .take(crate::save_state::MAX_SNAPSHOT_MOVERS)
+            .map(|entity| {
+                self.scripts
+                    .iter()
+                    .find(|script| script.entity == *entity)
+                    .map(|script| crate::save_state::ScriptRunnerSnapshot {
+                        phase_tag: script.runner.phase().tag(),
+                        timer: script.runner.timer(),
+                        completions: script.runner.completions(),
+                        warped: script.runner.warped(),
+                        moving_elapsed: script.runner.moving_elapsed(),
+                        actor: script
+                            .actor
+                            .and_then(|actor| crate::save_state::spawn_index_of(level, actor)),
+                        pending_trigger: script.pending_trigger,
+                        was_active: script.was_active,
+                        played: script.played,
+                        play_origin: crate::save_state::vec3_array(script.play_origin),
+                    })
+            })
+            .collect()
+    }
+
+    /// Restores [`Self::snapshot_scripts`]'s entries, zipped against
+    /// `level.registry.entities` in spawn order.
+    pub(crate) fn restore_scripts(
+        &mut self,
+        level: &Level,
+        snapshots: &[Option<crate::save_state::ScriptRunnerSnapshot>],
+    ) {
+        let entities = level.registry.entities.clone();
+        for (entity, snapshot) in entities.iter().zip(snapshots) {
+            let Some(snapshot) = snapshot else { continue };
+            let Some(script) = self
+                .scripts
+                .iter_mut()
+                .find(|script| script.entity == *entity)
+            else {
+                continue;
+            };
+            script.runner.restore(
+                snapshot.phase_tag,
+                snapshot.timer,
+                snapshot.completions,
+                snapshot.warped,
+                snapshot.moving_elapsed,
+            );
+            script.actor = snapshot
+                .actor
+                .and_then(|index| crate::save_state::entity_at_spawn_index(level, index));
+            script.pending_trigger = snapshot.pending_trigger;
+            script.was_active = snapshot.was_active;
+            script.played = crate::save_state::sanitize_f32(snapshot.played, 0.0).max(0.0);
+            script.play_origin = crate::save_state::array_vec3(snapshot.play_origin);
         }
     }
 
@@ -1165,9 +1245,24 @@ impl AiState {
                         .get::<&Actor>(entity)
                         .is_ok_and(|actor| actor.alive)
                 };
+                // Drain this maker's pending `target`-firing activations
+                // (routed here by `ohl-game`'s `Simulation::activate`,
+                // exactly like a script's `ScriptActivation`) into
+                // `Spawner::trigger` calls before ticking it, so a save's
+                // worth of queued triggers and this frame's tick see the
+                // same, up-to-date `active`/`cyclic_pending` state.
+                let pending = level
+                    .registry
+                    .world
+                    .get::<&mut MakerActivation>(maker)
+                    .ok()
+                    .map_or(0, |mut activation| std::mem::take(&mut activation.pending));
                 let Ok(mut component) = level.registry.world.get::<&mut MonsterMaker>(maker) else {
                     continue;
                 };
+                for _ in 0..pending {
+                    component.0.trigger();
+                }
                 let wants = component.0.tick(dt, &alive);
                 let transform = level
                     .registry

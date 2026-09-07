@@ -74,6 +74,21 @@ impl ScriptPhase {
             Self::Done => 4,
         }
     }
+
+    /// The [`ScriptPhase`] a previous [`Self::tag`] named, or `None` for a
+    /// tag this build does not recognise (a corrupt or forward-written
+    /// save).
+    #[must_use]
+    pub const fn from_tag(tag: u8) -> Option<Self> {
+        Some(match tag {
+            0 => Self::Dormant,
+            1 => Self::Moving,
+            2 => Self::Playing,
+            3 => Self::Repeating,
+            4 => Self::Done,
+            _ => return None,
+        })
+    }
 }
 
 /// What the script wants done with its monster this tick.
@@ -224,6 +239,52 @@ impl ScriptRunner {
     #[must_use]
     pub const fn timer(&self) -> f32 {
         self.timer
+    }
+
+    /// Whether [`ScriptAction::Teleport`] has already placed the monster
+    /// this run. Save-file bookkeeping (`ohl-engine`'s
+    /// `SECTION_MOVER_STATE`, tag 28); see [`Self::restore`].
+    #[must_use]
+    pub const fn warped(&self) -> bool {
+        self.warped
+    }
+
+    /// Seconds accumulated in the current [`ScriptPhase::Moving`] spell
+    /// without the mark condition becoming true. Save-file bookkeeping; see
+    /// [`Self::restore`].
+    #[must_use]
+    pub const fn moving_elapsed(&self) -> f32 {
+        self.moving_elapsed
+    }
+
+    /// Restores this runner's dynamic fields from a save, leaving `def`
+    /// (this level's own freshly parsed keyvalues, rebuilt fresh at attach
+    /// time) untouched. An unrecognised `phase_tag` falls back to
+    /// [`ScriptPhase::Dormant`] rather than panicking or guessing, so a
+    /// corrupt save cannot desync [`Self::is_active`]; non-finite timers
+    /// sanitize to `0.0`, matching every other save section's float
+    /// handling in this project.
+    pub fn restore(
+        &mut self,
+        phase_tag: u8,
+        timer: f32,
+        completions: u32,
+        warped: bool,
+        moving_elapsed: f32,
+    ) {
+        self.phase = ScriptPhase::from_tag(phase_tag).unwrap_or_default();
+        self.timer = if timer.is_finite() {
+            timer.max(0.0)
+        } else {
+            0.0
+        };
+        self.completions = completions;
+        self.warped = warped;
+        self.moving_elapsed = if moving_elapsed.is_finite() {
+            moving_elapsed.max(0.0)
+        } else {
+            0.0
+        };
     }
 
     /// Handles one activation from the map logic, reporting whether it

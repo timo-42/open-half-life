@@ -350,6 +350,45 @@ pub struct Trigger {
     pub delay: f32,
 }
 
+/// How many times the map logic has activated a `monstermaker` that has
+/// not been consumed yet.
+///
+/// Mirrors [`crate::scripts::ScriptActivation`]'s role for scripting
+/// entities: [`crate::logic::Simulation::activate`] bumps this counter
+/// exactly like it opens a door, and `ohl-engine`'s AI phase (which owns
+/// the `ohl_ai::Spawner` a `monstermaker` cannot see from this crate)
+/// drains it and calls `Spawner::trigger` once per activation. No parallel
+/// trigger system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct MakerActivation {
+    /// Activations not yet consumed.
+    pub pending: u32,
+}
+
+impl MakerActivation {
+    /// The most activations kept between two AI phases, so a pathological
+    /// `multi_manager` chain cannot grow this without bound. Project-owned,
+    /// matching [`crate::scripts::ScriptActivation::MAX_PENDING`].
+    pub const MAX_PENDING: u32 = 64;
+
+    /// Records one activation, saturating at [`Self::MAX_PENDING`].
+    pub const fn activate(&mut self) {
+        if self.pending < Self::MAX_PENDING {
+            self.pending += 1;
+        }
+    }
+
+    /// Consumes one activation, reporting whether there was one.
+    pub const fn take(&mut self) -> bool {
+        if self.pending == 0 {
+            return false;
+        }
+        self.pending -= 1;
+        true
+    }
+}
+
 /// `trigger_hurt`: a volume that damages whatever is inside it.
 ///
 /// The published behaviour (TWHL's `trigger_hurt` page, see
@@ -441,13 +480,17 @@ pub const SPAWNFLAG_CHANGELEVEL_USE_ONLY: u32 = 2;
 /// the specified global state becomes active" — is not modelled; a
 /// `trigger_auto` here always fires on load.
 ///
-/// **Save/load note for M7.9 P4b**: [`Self::fired`] is one-shot state that
-/// lives only in the entity world, so a save taken after a `trigger_auto`
-/// has fired must persist it — otherwise restoring that save re-fires every
-/// auto trigger on the map, replaying whatever they started. Whoever wires
-/// the additive save sections in `ohl-engine`'s `save` module should carry
-/// this flag alongside `ohl_game::logic::SimulationState`'s own trigger
-/// cooldowns, which already travel in a save for exactly the same reason.
+/// **Save/load note**: [`Self::fired`] is one-shot state that lives only in
+/// the entity world, so a save taken after a `trigger_auto` has fired must
+/// persist it — otherwise restoring that save re-fires every auto trigger
+/// on the map, replaying whatever they started (in particular, silently
+/// re-toggling — and so stopping — any `func_train`/`trigger_camera` a
+/// `trigger_auto` had started, exactly when a save section for *that*
+/// state was about to make it resume correctly). `ohl-engine`'s M7.13
+/// `SECTION_MOVER_STATE` (tag 28) now carries this flag, on this doc
+/// comment's own invitation, alongside `ohl_game::logic::SimulationState`'s
+/// own trigger cooldowns which already travel in a save for exactly the
+/// same reason.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AutoTrigger {

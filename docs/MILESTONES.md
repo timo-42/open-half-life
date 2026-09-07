@@ -2833,3 +2833,28 @@ payload.
   hologram guide that the project's existing forward/turn scripted-walk
   technique could not reliably clear within a bounded budget. This is
   left as a follow-up rather than recorded as a passing scenario.
+- **M7.13: `monstermaker` activation by `targetname`, and `SECTION_MOVER_STATE`
+  (tag 28).** A `monstermaker` without `Start On` now begins spawning only
+  once triggered by name, riding the same `target`-firing path
+  `scripted_sequence`'s `ScriptActivation` already uses
+  (`ohl_game::registry::MakerActivation`, drained by `ohl_engine::ai`'s
+  `Spawner::trigger`); a second trigger on an active non-cyclic maker
+  toggles it off, and a `Cyclic` maker spawns exactly one child per trigger
+  rather than a continuous batch, both still bounded by `monstercount`/
+  `m_imaxlivechildren` — a product decision recorded beside
+  `ohl_ai::Spawner::trigger`'s own doc comment, since no public source
+  states the exact retrigger rule. A new save section,
+  `SECTION_MOVER_STATE` (tag 28, additive, following tags 23-27's own
+  `optional_section`/spawn-index/float-sanitizing conventions exactly),
+  closes three previously documented mid-sequence save/load gaps at once:
+  `ohl_game::track_train::TrackTrainState` and
+  `ohl_game::camera::TriggerCameraState` (neither serializable before this)
+  now carry their position/hold/active state across a save, a running
+  `scripted_sequence`'s phase/timers/bound-monster now resume instead of
+  resetting to dormant, and a `monstermaker`'s spawn counters (not its
+  already-spawned children — still a separate, documented gap) survive a
+  reload. The same section also carries `AutoTrigger::fired`, on that
+  field's own long-standing "Save/load note" doc comment inviting exactly
+  this fix: without it, every `trigger_auto` on a map replays on load and
+  silently re-toggles (stopping) any train/camera the rest of this section
+  had just restored to an active state.

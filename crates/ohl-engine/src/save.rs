@@ -28,19 +28,22 @@
 //! | 25 | [`SECTION_AI`] | `Vec<Option<`[`AiSnapshot`]`>>`, one per registry entity, in spawn order (M7.9 P4b) |
 //! | 26 | [`SECTION_PROJECTILES`] | [`ProjectilesSnapshot`]: live projectiles and placed deployables (M7.9 P4b) |
 //! | 27 | [`SECTION_RNG`] | [`RngSnapshot`]: the shared random stream and the substep counter (M7.9 P4b) |
+//! | 28 | [`SECTION_MOVER_STATE`] | `Vec<Option<`[`MoverSnapshot`]`>>`, one per registry entity, in spawn order: `func_train`/`func_tracktrain` position, `trigger_camera` sequence progress, running-script phase and `monstermaker` counters (M7.13) |
 //! | 32 | *(reserved, `ohl-player`)* | `PlayerSnapshot`, written through `Player::snapshot()` when a later package wires it |
 //!
-//! Tags 23-27 are read as `None`/a default when absent, so a save written
-//! before M7.9 P4b still loads (`.plan/m79-design.md` §6); a section that is
-//! present but fails to decode fails the whole read closed
-//! ([`crate::EngineError::SaveUnreadable`]), same as every other section.
+//! Tags 23-28 are read as `None`/a default when absent, so a save written
+//! before M7.9 P4b (tags 23-27) or M7.13 (tag 28) still loads
+//! (`.plan/m79-design.md` §6); a section that is present but fails to
+//! decode fails the whole read closed ([`crate::EngineError::SaveUnreadable`]),
+//! same as every other section.
 
 use ohl_campaign::Difficulty;
 use ohl_game::SimulationState;
 use serde::{Deserialize, Serialize};
 
 use crate::save_state::{
-    AiSnapshot, EntityCombatSnapshot, InventorySnapshot, ProjectilesSnapshot, RngSnapshot,
+    AiSnapshot, EntityCombatSnapshot, InventorySnapshot, MoverSnapshot, ProjectilesSnapshot,
+    RngSnapshot,
 };
 use crate::transition::{EntitySnapshot, GlobalStateTable, PlayerCarryState};
 
@@ -82,6 +85,10 @@ pub const SECTION_PROJECTILES: u32 = 26;
 
 /// The shared random stream and the substep counter (M7.9 P4b).
 pub const SECTION_RNG: u32 = 27;
+
+/// Mover/camera/script/`monstermaker` runtime state, in spawn order
+/// (M7.13).
+pub const SECTION_MOVER_STATE: u32 = 28;
 
 /// The engine header section's contents.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -173,6 +180,11 @@ pub struct GameSave {
     /// The shared random stream and the substep counter (M7.9 P4b). `None`
     /// for a save missing tag 27.
     pub rng: Option<RngSnapshot>,
+    /// Mover/camera/script/`monstermaker` runtime state, one optional entry
+    /// per registry entity, in spawn order, zipped against `entities`
+    /// (M7.13). `None` (rather than an empty `Vec`) for a save missing tag
+    /// 28.
+    pub mover_state: Option<Vec<Option<MoverSnapshot>>>,
 }
 
 impl GameSave {
@@ -230,6 +242,9 @@ impl GameSave {
             if let Some(rng) = &self.rng {
                 writer.add_section_serde(SECTION_RNG, rng)?;
             }
+            if let Some(mover_state) = &self.mover_state {
+                writer.add_section_serde(SECTION_MOVER_STATE, mover_state)?;
+            }
             Ok(())
         };
         write(&mut writer).map_err(|_| crate::EngineError::SaveUnwritable)?;
@@ -261,6 +276,7 @@ impl GameSave {
             ai: optional_section(&reader, SECTION_AI)?,
             projectiles: optional_section(&reader, SECTION_PROJECTILES)?,
             rng: optional_section(&reader, SECTION_RNG)?,
+            mover_state: optional_section(&reader, SECTION_MOVER_STATE)?,
         })
     }
 }
@@ -277,13 +293,13 @@ fn section<T: serde::de::DeserializeOwned>(
         .map_err(|_| crate::EngineError::SaveUnreadable)
 }
 
-/// Deserializes one optional section (tags 23-27, M7.9 P4b): `Ok(None)`
-/// when the tag is simply absent (a save written before this package
-/// existed), [`crate::EngineError::SaveUnreadable`] when it is present but
-/// fails to decode. This is the one place this module distinguishes
-/// "missing" from "corrupt" — `.plan/m79-design.md` §8 P4b's rule that a
-/// missing section loads as a default while a present-but-broken one fails
-/// closed.
+/// Deserializes one optional section (tags 23-27, M7.9 P4b, and tag 28,
+/// M7.13): `Ok(None)` when the tag is simply absent (a save written before
+/// this package existed), [`crate::EngineError::SaveUnreadable`] when it is
+/// present but fails to decode. This is the one place this module
+/// distinguishes "missing" from "corrupt" — `.plan/m79-design.md` §8 P4b's
+/// rule (extended unchanged to tag 28) that a missing section loads as a
+/// default while a present-but-broken one fails closed.
 fn optional_section<T: serde::de::DeserializeOwned>(
     reader: &ohl_save::SaveReader<'_>,
     tag: u32,
