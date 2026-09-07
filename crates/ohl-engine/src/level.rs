@@ -294,6 +294,7 @@ fn attach_brush_collision(
         }
         let origin = instance.origin + crate::render::brush_offset(registry, instance.entity);
         if let Ok(id) = model.attach_brush(bsp, limits, index, origin) {
+            apply_brush_rotation(model, id, registry, instance.entity, instance.origin);
             attached.push((instance.entity, id));
         }
     }
@@ -318,6 +319,31 @@ fn attach_brush_collision(
         }
     }
     attached
+}
+
+/// Applies `entity`'s current [`crate::render::mover_rotation`] (a
+/// `func_door_rotating`/`func_rotating`'s live rotation state) to `id` in
+/// `model`, mirroring exactly the same rotation `crate::render`'s
+/// `draw_brush_entities` composes into the submodel's draw transform, so a
+/// rotating door blocks and pushes the player at the pose it is drawn at —
+/// the same "collide where it looks like it is" invariant `docs/
+/// FORMAT_SOURCES.md` already documents for a translating mover's
+/// `brush_offset` (see `attach_brush_collision`'s own doc comment). A
+/// no-op for any brush entity that is not currently rotating (`axis ==
+/// Vec3::ZERO`), which is every brush entity except those two — leaving
+/// `model.attach_brush`'s plain translation-only pose untouched for them.
+fn apply_brush_rotation(
+    model: &mut CollisionModel,
+    id: BrushId,
+    registry: &Registry,
+    entity: Entity,
+    pivot: Vec3,
+) {
+    let (axis, angle_degrees) = crate::render::mover_rotation(registry, entity);
+    if axis == Vec3::ZERO {
+        return;
+    }
+    model.set_brush_pose(id, pivot, pivot, axis, angle_degrees);
 }
 
 /// The classname the engine's own player entity carries. Project-authored:
@@ -574,6 +600,7 @@ impl Level {
             };
             brush_velocity.insert(*brush, velocity);
             model.set_brush_origin(*brush, new_origin);
+            apply_brush_rotation(model, *brush, registry, *entity, new_origin);
             true
         });
     }

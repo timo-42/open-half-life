@@ -6,13 +6,13 @@
 //! written, then the translucent passes — brush-entity submodels and
 //! liquids — which read depth without clearing it.
 
-use glam::Vec3;
+use glam::{Mat4, Quat, Vec3};
 use ohl_game::hecs::Entity;
-use ohl_game::registry::{Door, MoverState, Platform, Transform};
+use ohl_game::registry::{Door, MoverState, Platform, Rotator, Transform};
 use ohl_game::{TrackTrain, TrackTrainState};
 use ohl_render::{
     FreeFlyCamera, GpuContext, LightStyles, ModelInstance, RenderProps, SkyRenderer,
-    SpriteInstance, StudioRenderer, SubmodelInstance, WorldRenderer, placement, wgpu,
+    SpriteInstance, StudioRenderer, SubmodelInstance, WorldRenderer, math, placement, wgpu,
 };
 use ohl_world::StudioPose;
 
@@ -337,16 +337,28 @@ impl Renderers {
             let Some(model) = level.submodels.get(&instance.model_index) else {
                 continue;
             };
-            let (_, yaw_override) = track_train_transform(&level.registry, instance.entity);
-            let offset = brush_offset(&level.registry, instance.entity);
-            let origin = instance.origin + offset;
-            let yaw = yaw_override.unwrap_or(instance.angles.y);
+            let (rotation_axis, rotation_degrees) =
+                mover_rotation(&level.registry, instance.entity);
+            let transform = if rotation_axis == Vec3::ZERO {
+                let (_, yaw_override) = track_train_transform(&level.registry, instance.entity);
+                let offset = brush_offset(&level.registry, instance.entity);
+                let origin = instance.origin + offset;
+                let yaw = yaw_override.unwrap_or(instance.angles.y);
+                placement(origin.to_array(), yaw)
+            } else {
+                // A rotating mover's pivot is its own origin keyvalue (see
+                // `rotated_placement`'s doc comment); it never also carries
+                // a translating `brush_offset` (`Door::movedir` is left
+                // `Vec3::ZERO` for a `func_door_rotating`, and
+                // `func_rotating` has no offset source at all — see
+                // `mover_rotation`'s doc comment), so the entity's own
+                // authored `angles` yaw is not reapplied here either: only
+                // the live simulation-driven rotation state matters.
+                rotated_placement(instance.origin, rotation_axis, rotation_degrees)
+            };
             self.world.draw_world_submodel(
                 context,
-                SubmodelInstance {
-                    model,
-                    transform: placement(origin.to_array(), yaw),
-                },
+                SubmodelInstance { model, transform },
                 render_props(instance.render),
                 camera,
                 target.view,
@@ -448,6 +460,15 @@ fn mover_offset(
     state: MoverState,
     timer: f32,
 ) -> Vec3 {
+    movedir * travel_distance * mover_fraction(speed, travel_distance, state, timer)
+}
+
+/// The `0.0..=1.0` progress fraction [`mover_offset`] (a translating
+/// door/platform) and [`door_rotation_degrees`] (a rotating one) both scale
+/// their travel distance by, factored out so the two stay in lock-step by
+/// construction rather than by two doc comments claiming they mirror each
+/// other.
+fn mover_fraction(speed: f32, travel_distance: f32, state: MoverState, timer: f32) -> f32 {
     let travel_seconds = if speed > 0.0 {
         travel_distance / speed
     } else {
@@ -456,17 +477,76 @@ fn mover_offset(
     if travel_seconds <= 0.0 {
         // An instantly-travelling mover has no intermediate position to
         // show; it is either where it started or fully open.
-        let fraction = f32::from(u8::from(state == MoverState::Open));
-        return movedir * travel_distance * fraction;
+        return f32::from(u8::from(state == MoverState::Open));
     }
     let progress = (timer / travel_seconds).clamp(0.0, 1.0);
-    let fraction = match state {
+    match state {
         MoverState::Closed => 0.0,
         MoverState::Open => 1.0,
         MoverState::Opening => 1.0 - progress,
         MoverState::Closing => progress,
+    }
+}
+
+/// How far a `func_door_rotating` has swung, in degrees, from the same
+/// shared [`Door`] `state`/`timer` [`mover_offset`] reads for a translating
+/// door — see [`mover_fraction`]. `Vec3::ZERO`/`0.0` for a `Door` with no
+/// [`Door::rotation_axis`] (an ordinary translating `func_door`).
+pub(crate) fn door_rotation_degrees(registry: &ohl_game::Registry, entity: Entity) -> (Vec3, f32) {
+    let Ok(door) = registry.world.get::<&Door>(entity) else {
+        return (Vec3::ZERO, 0.0);
     };
-    movedir * travel_distance * fraction
+    let Some(axis) = door.rotation_axis else {
+        return (Vec3::ZERO, 0.0);
+    };
+    let fraction = mover_fraction(door.speed, door.travel_distance, door.state, door.timer);
+    (axis, door.travel_distance * fraction)
+}
+
+/// How far a `func_rotating` has spun, in degrees, from its own
+/// continuously-accumulated [`Rotator::angle_deg`] (no open/close timer to
+/// derive a fraction from; see `ohl_game::logic::Simulation::
+/// advance_rotators`). `Vec3::ZERO`/`0.0` for any entity without a
+/// [`Rotator`].
+pub(crate) fn rotator_degrees(registry: &ohl_game::Registry, entity: Entity) -> (Vec3, f32) {
+    registry
+        .world
+        .get::<&Rotator>(entity)
+        .map_or((Vec3::ZERO, 0.0), |rotator| {
+            (rotator.axis, rotator.angle_deg)
+        })
+}
+
+/// The signed rotation axis and current angle (degrees) a rotating brush
+/// mover — `func_door_rotating` or `func_rotating`, mutually exclusive
+/// components on any one entity — is currently posed at. `Vec3::ZERO`/`0.0`
+/// (no rotation) for every other brush entity, so a caller can branch on
+/// `axis != Vec3::ZERO` to tell a rotating mover from a translating one.
+pub(crate) fn mover_rotation(registry: &ohl_game::Registry, entity: Entity) -> (Vec3, f32) {
+    let (axis, degrees) = door_rotation_degrees(registry, entity);
+    if axis != Vec3::ZERO {
+        return (axis, degrees);
+    }
+    rotator_degrees(registry, entity)
+}
+
+/// A world-space placement matrix that rotates a brush's already
+/// world-baked vertices by `angle_degrees` about `axis`, pivoting at
+/// `pivot` — the origin keyvalue TWHL's `func_door_rotating` page documents
+/// as coming from a required "origin brush" giving "the axis to rotate on"
+/// (`docs/FORMAT_SOURCES.md`, "Entity keyvalues and map logic"). Returns
+/// the identity matrix for a zero axis or a zero angle, so composing this
+/// unconditionally would be a no-op — though every caller still branches on
+/// [`mover_rotation`] first rather than relying on that, since a rotating
+/// mover never also carries a translating [`brush_offset`] to add in.
+fn rotated_placement(pivot: Vec3, axis: Vec3, angle_degrees: f32) -> math::Mat4 {
+    if axis == Vec3::ZERO || angle_degrees == 0.0 {
+        return math::identity();
+    }
+    let rotation = Quat::from_axis_angle(axis.normalize(), angle_degrees.to_radians());
+    let matrix =
+        Mat4::from_translation(pivot) * Mat4::from_quat(rotation) * Mat4::from_translation(-pivot);
+    matrix.to_cols_array()
 }
 
 pub(crate) fn door_offset(registry: &ohl_game::Registry, entity: Entity) -> Vec3 {

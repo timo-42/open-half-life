@@ -20,7 +20,7 @@
 
 use alloc::vec::Vec;
 
-use glam::Vec3;
+use glam::{Quat, Vec3};
 use ohl_core::SanitizedError;
 use ohl_formats::bsp30::{Bsp, Limits};
 
@@ -356,12 +356,30 @@ enum BrushKind {
 #[derive(Debug, Clone, Copy)]
 struct BrushPart {
     heads: [i32; 4],
+    /// World-space translation offset from where the submodel was compiled,
+    /// as moved by [`CollisionModel::set_brush_origin`]/
+    /// [`CollisionModel::set_brush_pose`]. A translating mover
+    /// (`func_door`/`func_plat`/`func_train`) only ever sets this; a purely
+    /// rotating one ([`Self::has_rotation`]) leaves it at `Vec3::ZERO`.
     origin: Vec3,
+    /// World-space point a rotation happens about. TWHL wiki
+    /// `func_door_rotating` (see `docs/FORMAT_SOURCES.md`, "Entity
+    /// keyvalues and map logic"): the entity "requires an origin brush ...
+    /// which gives it the axis to rotate on", i.e. the compiled `origin`
+    /// keyvalue is the pivot, not a translation. Unused (any value is
+    /// equivalent) while [`Self::has_rotation`] is false.
+    pivot: Vec3,
+    /// The rotation axis, or `Vec3::ZERO` for no rotation. Need not be
+    /// normalized; [`Self::has_rotation`] and [`Self::rotation`] treat a
+    /// zero axis as "no rotation" regardless of `angle_deg`.
+    axis: Vec3,
+    /// The current rotation angle about [`Self::axis`], in degrees.
+    angle_deg: f32,
     kind: BrushKind,
     /// The submodel's own compiled bounding box (`BSPMODEL::mins/maxs`),
     /// relative to the same frame [`Self::heads`]'s trees are in (i.e.
-    /// before [`Self::origin`] is added). Used only for the broad-phase
-    /// check in [`CollisionModel::trace`] and
+    /// before [`Self::origin`]/[`Self::pivot`]/[`Self::axis`] are applied).
+    /// Used only for the broad-phase check in [`CollisionModel::trace`] and
     /// [`CollisionModel::contents_at`]; it plays no part in what is
     /// actually solid, which is decided by walking the hull tree.
     mins: Vec3,
@@ -380,16 +398,108 @@ impl BrushPart {
         self.heads.iter().all(|&head| head < 0)
     }
 
+    /// Whether this brush currently carries a live rotation: a zero axis or
+    /// a zero angle both mean "no rotation", the same translation-only
+    /// pose every brush had before [`CollisionModel::set_brush_pose`]
+    /// existed.
+    fn has_rotation(&self) -> bool {
+        self.angle_deg != 0.0 && self.axis != Vec3::ZERO
+    }
+
+    /// The unit quaternion this brush's current pose rotates by. Only
+    /// meaningful when [`Self::has_rotation`] is true.
+    fn rotation(&self) -> Quat {
+        Quat::from_axis_angle(self.axis.normalize(), self.angle_deg.to_radians())
+    }
+
+    /// Converts a world-space point into this brush's compiled (local)
+    /// frame: subtract the translation offset, then undo the rotation about
+    /// [`Self::pivot`]. Bit-identical to the pre-rotation `point -
+    /// self.origin` whenever [`Self::has_rotation`] is false, so every
+    /// existing translation-only trace is unaffected.
+    fn local_point(&self, world: Vec3) -> Vec3 {
+        if self.has_rotation() {
+            self.rotation().inverse() * (world - self.origin - self.pivot) + self.pivot
+        } else {
+            world - self.origin
+        }
+    }
+
+    /// The inverse of [`Self::local_point`].
+    fn world_point(&self, local: Vec3) -> Vec3 {
+        if self.has_rotation() {
+            self.rotation() * (local - self.pivot) + self.pivot + self.origin
+        } else {
+            local + self.origin
+        }
+    }
+
+    /// Rotates a direction (a plane normal) from the compiled frame into
+    /// world space; a translation does not change a normal, so this is the
+    /// identity whenever [`Self::has_rotation`] is false.
+    fn normal_to_world(&self, local_normal: Vec3) -> Vec3 {
+        if self.has_rotation() {
+            self.rotation() * local_normal
+        } else {
+            local_normal
+        }
+    }
+
     /// This brush's world-space bounding box, expanded by `hull`'s box, so
     /// a segment or point that falls entirely outside it cannot reach the
     /// brush's hull tree at all (the Minkowski sum of the hull box with the
     /// brush's own bounds).
+    ///
+    /// A rotated brush's own box is first re-derived as the axis-aligned
+    /// box enclosing its (rotated) corners — necessarily larger than the
+    /// unrotated box unless the rotation is axis-aligned with it — so the
+    /// broad phase stays conservative (never rules out a hit) exactly as
+    /// the translation-only case already was.
     fn broad_bounds(&self, hull: Hull) -> (Vec3, Vec3) {
         let (hull_mins, hull_maxs) = hull.bounds();
-        (
-            self.origin + self.mins + hull_mins,
-            self.origin + self.maxs + hull_maxs,
-        )
+        if self.has_rotation() {
+            let (mins, maxs) = self.rotated_world_bounds();
+            (mins + hull_mins, maxs + hull_maxs)
+        } else {
+            (
+                self.origin + self.mins + hull_mins,
+                self.origin + self.maxs + hull_maxs,
+            )
+        }
+    }
+
+    /// The axis-aligned box enclosing every corner of the compiled
+    /// `(mins, maxs)` box after this brush's current rotation and
+    /// translation are applied.
+    fn rotated_world_bounds(&self) -> (Vec3, Vec3) {
+        if !self.mins.is_finite() || !self.maxs.is_finite() {
+            // `CollisionModel::widen_brush_bounds_for_test` sets these to
+            // +/- infinity so a test can force the broad phase to always
+            // pass; rotating an infinite corner produces NaN (infinity
+            // times a near-zero sine/cosine component), which would make
+            // every `boxes_overlap` comparison false — the opposite of
+            // "always overlap". Skip the rotation and hand the already
+            // all-covering box straight through.
+            return (self.mins, self.maxs);
+        }
+        let corners = [
+            Vec3::new(self.mins.x, self.mins.y, self.mins.z),
+            Vec3::new(self.mins.x, self.mins.y, self.maxs.z),
+            Vec3::new(self.mins.x, self.maxs.y, self.mins.z),
+            Vec3::new(self.mins.x, self.maxs.y, self.maxs.z),
+            Vec3::new(self.maxs.x, self.mins.y, self.mins.z),
+            Vec3::new(self.maxs.x, self.mins.y, self.maxs.z),
+            Vec3::new(self.maxs.x, self.maxs.y, self.mins.z),
+            Vec3::new(self.maxs.x, self.maxs.y, self.maxs.z),
+        ];
+        let mut out_min = Vec3::splat(f32::INFINITY);
+        let mut out_max = Vec3::splat(f32::NEG_INFINITY);
+        for corner in corners {
+            let world = self.world_point(corner);
+            out_min = out_min.min(world);
+            out_max = out_max.max(world);
+        }
+        (out_min, out_max)
     }
 }
 
@@ -688,6 +798,9 @@ impl CollisionModel {
         self.brushes.push(BrushPart {
             heads,
             origin,
+            pivot: Vec3::ZERO,
+            axis: Vec3::ZERO,
+            angle_deg: 0.0,
             kind,
             mins,
             maxs,
@@ -698,13 +811,50 @@ impl CollisionModel {
     /// Moves an attached brush entity to `origin` (its offset from where it
     /// was compiled), so a door or platform collides where it currently is.
     /// A non-finite `origin` is ignored rather than poisoning every later
-    /// trace.
+    /// trace. Does not touch any rotation set by [`Self::set_brush_pose`];
+    /// a brush entity that only ever translates (every mover except
+    /// `func_door_rotating`/`func_rotating`) never has one to touch.
     pub fn set_brush_origin(&mut self, brush: BrushId, origin: Vec3) {
         if !origin.is_finite() {
             return;
         }
         if let Some(part) = self.brushes.get_mut(brush.0) {
             part.origin = origin;
+        }
+    }
+
+    /// Moves and/or rotates an attached brush entity: `origin` is a
+    /// translation offset exactly as [`Self::set_brush_origin`]'s, and
+    /// `pivot`/`axis`/`angle_degrees` describe a rotation about a fixed
+    /// world point — a `func_door_rotating`/`func_rotating` entity's origin
+    /// keyvalue, which TWHL's wiki documents as coming from a required
+    /// "origin brush" giving "the axis to rotate on" (see
+    /// `docs/FORMAT_SOURCES.md`, "Entity keyvalues and map logic"). `axis`
+    /// need not be normalized; a zero `axis` or a zero `angle_degrees`
+    /// means no rotation, identical to a plain [`Self::set_brush_origin`]
+    /// call. A non-finite argument leaves the brush's pose unchanged rather
+    /// than poisoning every later trace, exactly as
+    /// [`Self::set_brush_origin`] already does for `origin`.
+    pub fn set_brush_pose(
+        &mut self,
+        brush: BrushId,
+        origin: Vec3,
+        pivot: Vec3,
+        axis: Vec3,
+        angle_degrees: f32,
+    ) {
+        if !origin.is_finite()
+            || !pivot.is_finite()
+            || !axis.is_finite()
+            || !angle_degrees.is_finite()
+        {
+            return;
+        }
+        if let Some(part) = self.brushes.get_mut(brush.0) {
+            part.origin = origin;
+            part.pivot = pivot;
+            part.axis = axis;
+            part.angle_deg = angle_degrees;
         }
     }
 
@@ -839,7 +989,7 @@ impl CollisionModel {
         if !boxes_overlap(point, point, mins, maxs) {
             return None;
         }
-        Some(self.walk(self.nodes_of(hull), head, point - brush.origin))
+        Some(self.walk(self.nodes_of(hull), head, brush.local_point(point)))
     }
 
     /// Walks `link`'s tree down to the contents value at `point`.
@@ -889,7 +1039,7 @@ impl CollisionModel {
         let mut trace = self.trace_tree(
             hull,
             self.heads[hull.index()],
-            Vec3::ZERO,
+            None,
             start,
             end,
             BrushKind::Solid,
@@ -922,7 +1072,7 @@ impl CollisionModel {
             // ever ride along in `combine`'s `in_water` union, never move
             // `trace.fraction` or set `start_solid`/`all_solid` — the
             // invariant a proptest checks directly.
-            let hit = self.trace_tree(hull, head, brush.origin, start, end, brush.kind);
+            let hit = self.trace_tree(hull, head, Some(brush), start, end, brush.kind);
             combine(&mut trace, &hit, BrushId(index));
         }
 
@@ -939,21 +1089,36 @@ impl CollisionModel {
     }
 
     /// Traces `start -> end` through the single tree rooted at `head`,
-    /// which sits `offset` away from where it was compiled.
+    /// which sits at `pose`'s current translation (and, for a rotating
+    /// brush, rotation) away from where it was compiled. `pose` is `None`
+    /// for the world tree, which never moves.
     ///
     /// The segment is moved into the tree's own frame, traced there, and the
     /// result moved back: a hull tree is a set of planes, so translating the
     /// query is the same as translating the tree and costs nothing per node.
+    /// A rotating `pose` ([`BrushPart::has_rotation`]) instead inverse-
+    /// rotates the query about the brush's pivot before the walk and
+    /// rotates the hit position/normal back afterwards; every other case
+    /// (`pose` absent, or present but not currently rotating) uses the
+    /// original translation-only arithmetic unchanged, so no existing
+    /// (non-rotating) trace's result changes by so much as a rounding bit.
     fn trace_tree(
         &self,
         hull: Hull,
         head: i32,
-        offset: Vec3,
+        pose: Option<&BrushPart>,
         start: Vec3,
         end: Vec3,
         kind: BrushKind,
     ) -> Trace {
-        let (local_start, local_end) = (start - offset, end - offset);
+        let rotating = pose.is_some_and(BrushPart::has_rotation);
+        let offset = pose.map_or(Vec3::ZERO, |part| part.origin);
+        let (local_start, local_end) = if rotating {
+            let part = pose.expect("rotating implies pose is Some");
+            (part.local_point(start), part.local_point(end))
+        } else {
+            (start - offset, end - offset)
+        };
         let mut trace = Trace::miss(local_end);
         trace.all_solid = true;
         self.recurse(
@@ -974,10 +1139,22 @@ impl CollisionModel {
             trace.fraction = 0.0;
             trace.end_pos = local_start;
         }
-        trace.end_pos += offset;
-        // A plane's normal is unchanged by a translation; only its distance
-        // from the origin moves with it.
-        trace.plane_dist += trace.plane_normal.dot(offset);
+        if rotating {
+            let part = pose.expect("rotating implies pose is Some");
+            trace.end_pos = part.world_point(trace.end_pos);
+            trace.plane_normal = part.normal_to_world(trace.plane_normal);
+            // Unlike a translation, a rotation does not move a plane's
+            // distance from the origin by a value independent of where the
+            // hit landed, so it is recomputed directly from the (already
+            // rotated) normal and the (already rotated) hit position rather
+            // than adjusted incrementally.
+            trace.plane_dist = trace.plane_normal.dot(trace.end_pos);
+        } else {
+            trace.end_pos += offset;
+            // A plane's normal is unchanged by a translation; only its
+            // distance from the origin moves with it.
+            trace.plane_dist += trace.plane_normal.dot(offset);
+        }
         trace
     }
 
