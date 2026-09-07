@@ -8,7 +8,7 @@ use ohl_game::hecs::Entity;
 use ohl_game::keyvalues::{self, EntityDef, Limits as KeyvalueLimits, ModelRef};
 use ohl_game::registry::{ClassName, Landmark, TargetName, Transform};
 use ohl_game::{Registry, Simulation};
-use ohl_physics::{BrushId, CollisionModel};
+use ohl_physics::{BrushId, CollisionModel, ContentsKind};
 use ohl_world::{
     LightRamp, PlayerSpawn, SKY_FACE_SUFFIXES, SkyboxAsset, StudioLimits, StudioModel,
     WorldBuildOptions, WorldModel,
@@ -245,14 +245,28 @@ pub struct Level {
     pub player: Entity,
 }
 
-/// Attaches every solid brush entity's collision hulls to `model`, and
-/// reports which attached hull belongs to which entity.
+/// Attaches every solid brush entity's collision hulls to `model`, plus
+/// every `func_ladder`/`func_water` entity's as a non-solid contents
+/// volume, and reports which attached hull belongs to which entity.
 ///
 /// The worldspawn hulls alone are not what a player walks on: the compiler
 /// moves every brush entity into its own submodel, so a `func_wall` floor
 /// slab or a closed `func_door` is missing from model 0 entirely. Without
 /// this the player falls through any floor a mapper built as an entity.
-fn attach_solid_brushes(
+/// Likewise a `func_ladder`/`func_water` submodel needs its *own* attach
+/// call (`ohl_physics::CollisionModel::attach_contents_brush`, distinct
+/// from the solid one) or a player standing inside one finds only whatever
+/// the world tree alone reports there — see `docs/FORMAT_SOURCES.md`,
+/// "Player systems", `func_ladder`/`func_water`.
+///
+/// Both kinds share one `Vec<(Entity, BrushId)>` and one
+/// [`Level::sync_brush_collision`] pass: `BrushId` and
+/// `CollisionModel::set_brush_origin` do not care which attach call
+/// produced an id, so a `func_water` mover (documented as sharing
+/// `func_door`'s move/trigger behaviour) is kept at its current origin
+/// exactly as any other brush entity already is, with no separate code
+/// path.
+fn attach_brush_collision(
     model: &mut CollisionModel,
     bsp: &Bsp<'_>,
     limits: &BspLimits,
@@ -268,6 +282,25 @@ fn attach_solid_brushes(
             continue;
         }
         if let Ok(id) = model.attach_brush(bsp, limits, index, instance.origin) {
+            attached.push((instance.entity, id));
+        }
+    }
+    for (instance, kind) in ohl_game::brush::contents_model_instances(registry) {
+        let Ok(index) = usize::try_from(instance.model_index) else {
+            continue;
+        };
+        if index == 0 {
+            continue;
+        }
+        let kind = match kind {
+            ohl_game::brush::ContentsVolumeKind::Ladder => ContentsKind::Ladder,
+            ohl_game::brush::ContentsVolumeKind::Water(liquid) => match liquid {
+                ohl_game::Liquid::Water => ContentsKind::Water,
+                ohl_game::Liquid::Slime => ContentsKind::Slime,
+                ohl_game::Liquid::Lava => ContentsKind::Lava,
+            },
+        };
+        if let Ok(id) = model.attach_contents_brush(bsp, limits, index, instance.origin, kind) {
             attached.push((instance.entity, id));
         }
     }
@@ -407,7 +440,7 @@ impl Level {
         let mut collision = CollisionModel::from_bsp(&bsp, &limits).ok();
         let brush_collision = collision
             .as_mut()
-            .map(|model| attach_solid_brushes(model, &bsp, &limits, &registry))
+            .map(|model| attach_brush_collision(model, &bsp, &limits, &registry))
             .unwrap_or_default();
         let skybox = registry
             .worldspawn
@@ -738,11 +771,61 @@ fn load_studio_models(source: &dyn AssetSource, defs: &[EntityDef]) -> StudioLoa
 
 #[cfg(test)]
 mod tests {
+    use ohl_formats::bsp30::{Bsp, Limits as BspLimits};
     use ohl_formats::test_support::{build_minimal_mdl10, build_minimal_spr};
+    use ohl_game::keyvalues::{self, Limits as KeyvalueLimits};
+    use ohl_game::registry::Registry;
+    use ohl_physics::test_support::{build_ladder_entity_room_bsp, build_water_entity_room_bsp};
+    use ohl_physics::{CollisionModel, contents};
 
-    use super::Level;
+    use super::{Level, attach_brush_collision};
     use crate::assets::MemoryAssets;
     use crate::test_support::synthetic_map_bsp_with_extra_entity;
+
+    /// `attach_brush_collision` is what turns a `func_ladder`/`func_water`
+    /// entity in the registry into an attached, non-solid contents volume
+    /// on the collision model — the glue this milestone adds between
+    /// `ohl-game`'s classification (`Registry`/`ohl_game::brush::
+    /// contents_model_instances`) and `ohl-physics`'s `ContentsKind`. This
+    /// exercises it directly against `ohl-physics`'s own
+    /// `build_ladder_entity_room_bsp`/`build_water_entity_room_bsp`
+    /// fixtures (a submodel compiled the way a real brush entity actually
+    /// compiles), reusing their entity text rather than `Level::from_bytes`
+    /// so the test does not also depend on the fixture having renderable
+    /// faces.
+    fn attached_contents_model(bytes: &[u8]) -> (CollisionModel, usize) {
+        let bsp_limits = BspLimits::default();
+        let bsp = Bsp::parse(bytes, &bsp_limits).expect("fixture parses as BSP v30");
+        let raw_entities = bsp.entities(&bsp_limits).unwrap_or_default();
+        let kv_limits = KeyvalueLimits::default();
+        let defs = keyvalues::parse_entities(&raw_entities, &kv_limits);
+        let registry = Registry::build(&defs, &std::collections::BTreeMap::new(), &kv_limits);
+
+        let mut model =
+            CollisionModel::from_bsp(&bsp, &bsp_limits).expect("fixture has usable hulls");
+        let attached = attach_brush_collision(&mut model, &bsp, &bsp_limits, &registry);
+        (model, attached.len())
+    }
+
+    #[test]
+    fn a_func_ladder_entity_is_attached_as_a_ladder_contents_volume() {
+        let (model, count) = attached_contents_model(&build_ladder_entity_room_bsp());
+        assert_eq!(count, 1, "the fixture's single func_ladder was attached");
+        assert_eq!(
+            model.point_contents(ohl_physics::Vec3::new(72.0, 0.0, 36.0)),
+            contents::LADDER
+        );
+    }
+
+    #[test]
+    fn a_func_water_entity_is_attached_with_its_skin_keyvalue_liquid() {
+        let (model, count) = attached_contents_model(&build_water_entity_room_bsp());
+        assert_eq!(count, 1, "the fixture's single func_water was attached");
+        assert_eq!(
+            model.point_contents(ohl_physics::Vec3::new(0.0, 0.0, 100.0)),
+            contents::WATER
+        );
+    }
 
     /// A `monster_generic`-style entity (outside the old four-prefix
     /// allowlist) whose `model` keyvalue names a `.mdl` asset, plus

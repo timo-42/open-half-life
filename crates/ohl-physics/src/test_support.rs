@@ -310,6 +310,86 @@ pub fn build_liquid_room_bsp(liquid: i32) -> Vec<u8> {
     )
 }
 
+/// A room with a floor at `z = 0`, a wall filling `x >= 96` (worldspawn,
+/// submodel 0), and a **separate submodel** (index 1) covering the exact
+/// volume [`build_ladder_room_bsp`] instead bakes straight into the world
+/// tree: `x` 56..96, `y` -32..32, `z` 0..256.
+///
+/// Submodel 1 is compiled with `ohl_formats::test_support::Bsp30Builder::
+/// push_collision_hulls`, i.e. as an ordinary solid-shaped brush ("inside"
+/// is `CONTENTS_SOLID`) — exactly how any brush *entity*, including a real
+/// `func_ladder`, actually compiles (see `ohl_physics::hull::ContentsKind`'s
+/// doc comment for why: nothing in the BSP format lets a brush entity
+/// declare special leaf contents at compile time). A caller that attaches
+/// submodel 1 with `CollisionModel::attach_brush` therefore gets an
+/// ordinary solid wall slab, and one that attaches it with
+/// `CollisionModel::attach_contents_brush(.., ContentsKind::Ladder)`
+/// instead gets a climbable, non-blocking ladder volume in the same place
+/// — proving the entity-attach path itself, not a world-baked
+/// `CONTENTS_LADDER` leaf.
+#[must_use]
+pub fn build_ladder_entity_room_bsp() -> Vec<u8> {
+    let mut builder = Bsp30Builder::new();
+    builder.set_entities_text(
+        "{\n\"classname\" \"worldspawn\"\n}\n\
+         {\n\"classname\" \"func_ladder\"\n\"model\" \"*1\"\n}\n",
+    );
+    let world_heads = builder.push_collision_hulls(&[
+        CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+        CollisionBrush::half_space([-1.0, 0.0, 0.0], -96.0),
+    ]);
+    builder.push_model(
+        [-4096.0, -4096.0, -4096.0],
+        [4096.0, 4096.0, 4096.0],
+        [0.0, 0.0, 0.0],
+        world_heads,
+        2,
+        0,
+        0,
+    );
+    let mins = [56.0, -32.0, 0.0];
+    let maxs = [96.0, 32.0, 256.0];
+    let heads = builder.push_collision_hulls(&[CollisionBrush::box_brush(mins, maxs)]);
+    builder.push_model(mins, maxs, [0.0, 0.0, 0.0], heads, 2, 0, 0);
+    builder.build()
+}
+
+/// A room with a floor at `z = 0` (worldspawn, submodel 0) and a
+/// **separate submodel** (index 1) covering the exact pool volume
+/// [`build_liquid_room_bsp`] instead bakes straight into the world tree:
+/// `0 < z <= `[`LIQUID_SURFACE_Z`].
+///
+/// As with [`build_ladder_entity_room_bsp`], submodel 1 is compiled as an
+/// ordinary solid-shaped brush; a caller attaches it with
+/// `CollisionModel::attach_contents_brush` and one of
+/// `ContentsKind::{Water, Slime, Lava}` to prove the entity-attach path
+/// makes a `func_water` pool swimmable, rather than relying on the world
+/// tree already having `CONTENTS_WATER` baked in.
+#[must_use]
+pub fn build_water_entity_room_bsp() -> Vec<u8> {
+    let mut builder = Bsp30Builder::new();
+    builder.set_entities_text(
+        "{\n\"classname\" \"worldspawn\"\n}\n\
+         {\n\"classname\" \"func_water\"\n\"model\" \"*1\"\n\"skin\" \"-3\"\n}\n",
+    );
+    let world_heads =
+        builder.push_collision_hulls(&[CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0)]);
+    builder.push_model(
+        [-4096.0, -4096.0, -4096.0],
+        [4096.0, 4096.0, 4096.0],
+        [0.0, 0.0, 0.0],
+        world_heads,
+        2,
+        0,
+        0,
+    );
+    let mins = [-256.0, -256.0, 0.0];
+    let maxs = [256.0, 256.0, LIQUID_SURFACE_Z];
+    let heads = builder.push_collision_hulls(&[CollisionBrush::box_brush(mins, maxs)]);
+    builder.push_model(mins, maxs, [0.0, 0.0, 0.0], heads, 2, 0, 0);
+    builder.build()
+}
+
 /// A flat floor at `z = 0` with nothing else in it, for fall-damage and
 /// platform-ride tests.
 #[must_use]

@@ -73,6 +73,9 @@ ohl-formats = { path = "../ohl-formats", version = "=0.1.0", features = [
     "std",
     "test-support",
 ] }
+ohl-physics = { path = "../ohl-physics", version = "=0.1.0", features = [
+    "test-support",
+] }
 
 [lints]
 workspace = true

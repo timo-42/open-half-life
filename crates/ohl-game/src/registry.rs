@@ -372,11 +372,53 @@ pub struct TriggerHurt {
 pub const TRIGGER_HURT_INTERVAL_SECONDS: f32 = 0.5;
 
 /// Marks a `func_ladder`: an invisible brush the player can climb. The
-/// brush itself is compiled with `CONTENTS_LADDER`, which is what
-/// `ohl-physics` actually tests against; this component only records that
-/// the entity exists so a host can list, disable or move one.
+/// entity's own submodel is what a host must attach as a non-solid
+/// `CONTENTS_LADDER` volume (`ohl_physics::CollisionModel::
+/// attach_contents_brush`, `ohl_physics::ContentsKind::Ladder`) for that
+/// climbing to actually work; this component only records that the entity
+/// exists so a host can find it (see `crate::brush::contents_model_instances`)
+/// or list/disable/move one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ladder;
+
+/// Which of the three documented liquids a `func_water`'s `Contents (skin)`
+/// keyvalue selects. TWHL wiki `func_water` (consulted via a search-engine
+/// result summary of the page, same HTTP 403 caveat recorded elsewhere in
+/// `docs/FORMAT_SOURCES.md`; reviewed 2026-09-07): the keyvalue's choices
+/// are the raw `CONTENTS_*` enum values, `-3` water, `-4` slime, `-5` lava;
+/// this project defaults to [`Self::Water`] when `skin` is absent or does
+/// not parse to one of those three, since `-3` (water) is also the
+/// documented default value of the underlying `skin` keyvalue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Liquid {
+    /// `skin` `-3` (or absent).
+    Water,
+    /// `skin` `-4`.
+    Slime,
+    /// `skin` `-5`.
+    Lava,
+}
+
+impl Liquid {
+    /// Reads the `skin` keyvalue the way `func_water` documents it (see
+    /// [`Self`]'s doc comment).
+    #[must_use]
+    fn from_skin_keyvalue(def: &EntityDef) -> Self {
+        match def.keyvalues.get("skin").map(|value| value.trim()) {
+            Some("-4") => Self::Slime,
+            Some("-5") => Self::Lava,
+            _ => Self::Water,
+        }
+    }
+}
+
+/// Marks a `func_water`: a swimmable liquid volume, carrying which of the
+/// three documented liquids it is (see [`Liquid`]). As with [`Ladder`], the
+/// entity's own submodel is what a host must attach as a non-solid contents
+/// volume (`ohl_physics::CollisionModel::attach_contents_brush`) for
+/// swimming to actually work; see `crate::brush::contents_model_instances`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Water(pub Liquid);
 
 /// The published `Remove On fire` spawnflag bit of `trigger_auto`.
 pub const SPAWNFLAG_TRIGGER_AUTO_REMOVE_ON_FIRE: u32 = 1;
@@ -878,6 +920,11 @@ impl Registry {
                 "func_ladder" => {
                     world.insert_one(entity, Ladder).ok();
                 }
+                "func_water" => {
+                    world
+                        .insert_one(entity, Water(Liquid::from_skin_keyvalue(def)))
+                        .ok();
+                }
                 "trigger_auto" => {
                     world
                         .insert_one(
@@ -1103,6 +1150,43 @@ mod tests {
         let entity = registry.find("ladder1")[0];
         assert!(registry.world.get::<&Ladder>(entity).is_ok());
         assert!(registry.world.get::<&Unknown>(entity).is_err());
+    }
+
+    #[test]
+    fn func_water_gets_a_water_marker_with_the_default_liquid() {
+        let entities = vec![raw(&[
+            ("classname", "func_water"),
+            ("targetname", "pool1"),
+            ("model", "*4"),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let entity = registry.find("pool1")[0];
+        let water = registry.world.get::<&Water>(entity).expect("func_water");
+        assert_eq!(water.0, Liquid::Water);
+        assert!(registry.world.get::<&Unknown>(entity).is_err());
+    }
+
+    #[test]
+    fn func_water_reads_its_liquid_from_the_skin_keyvalue() {
+        for (skin, expected) in [
+            ("-3", Liquid::Water),
+            ("-4", Liquid::Slime),
+            ("-5", Liquid::Lava),
+            ("bogus", Liquid::Water),
+        ] {
+            let entities = vec![raw(&[
+                ("classname", "func_water"),
+                ("targetname", "pool1"),
+                ("model", "*4"),
+                ("skin", skin),
+            ])];
+            let defs = parse_entities(&entities, &Limits::default());
+            let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+            let entity = registry.find("pool1")[0];
+            let water = registry.world.get::<&Water>(entity).expect("func_water");
+            assert_eq!(water.0, expected, "skin {skin}");
+        }
     }
 
     #[test]

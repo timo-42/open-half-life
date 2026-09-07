@@ -64,6 +64,19 @@ pub mod contents {
     /// The most negative contents value this crate accepts from a map.
     pub const MIN: i32 = LADDER;
 
+    /// Whether `value` is anything other than open space. Used to decide
+    /// whether a point falls *inside* a non-solid contents-volume brush
+    /// (`func_ladder`/`func_water`; see [`super::ContentsKind`]): such a
+    /// brush's own compiled hull tree has no special contents of its own
+    /// (only [`SOLID`] "inside the brush shape" and [`EMPTY`] "outside
+    /// it", the same as any ordinary brush), so a query into its tree is
+    /// remapped from "solid" to the volume's declared kind rather than
+    /// read literally.
+    #[must_use]
+    pub const fn is_present(value: i32) -> bool {
+        value != EMPTY
+    }
+
     /// Whether `value` blocks player movement. `CLIP` blocks players even
     /// though it is invisible; everything else that is not `SOLID` does not.
     #[must_use]
@@ -267,19 +280,84 @@ struct HullPlane {
     dist: f32,
 }
 
-/// Identifies one solid brush entity attached to a [`CollisionModel`] with
-/// [`CollisionModel::attach_brush`], so its origin can be updated as the
-/// map logic moves it.
+/// Identifies one brush entity (solid or a non-solid contents volume)
+/// attached to a [`CollisionModel`] with [`CollisionModel::attach_brush`] or
+/// [`CollisionModel::attach_contents_brush`], so its origin can be updated
+/// as the map logic moves it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BrushId(usize);
 
-/// One solid brush entity's hulls: the head links of its `BSPMODEL` plus
-/// the world-space offset the map logic has moved it by since the map was
+/// The non-solid contents a brush entity attached with
+/// [`CollisionModel::attach_contents_brush`] reports wherever a query lands
+/// inside its submodel's shape.
+///
+/// TWHL wiki `func_ladder` (already cited in `docs/FORMAT_SOURCES.md` under
+/// "Player systems"): a brush entity's `skin` keyvalue set to `-16`
+/// (`CONTENTS_LADDER`) makes it climbable the same way a world ladder
+/// volume is. TWHL wiki `func_water` (consulted via a search-engine result
+/// summary of the page, same HTTP 403 caveat already recorded for other
+/// TWHL citations; reviewed 2026-09-07): its "Contents (skin)" keyvalue
+/// selects which of the three documented liquids the volume is, using the
+/// raw `CONTENTS_*` enum values directly as the keyvalue's choices (`-3`
+/// water, `-4` slime, `-5` lava) — the same values [`contents::WATER`],
+/// [`contents::SLIME`] and [`contents::LAVA`] already name. `func_water`
+/// shares its move/trigger behaviour with `func_door` (same search-summary
+/// source), which is why this crate does not special-case its origin:
+/// [`CollisionModel::set_brush_origin`] already moves any attached brush,
+/// solid or contents volume alike, to wherever the caller's map-logic step
+/// currently has it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContentsKind {
+    /// `func_ladder`, or any brush entity documented as climbable.
+    Ladder,
+    /// `func_water` with `skin` `-3` (or absent, the documented default).
+    Water,
+    /// `func_water` with `skin` `-4`.
+    Slime,
+    /// `func_water` with `skin` `-5`.
+    Lava,
+}
+
+impl ContentsKind {
+    /// The contents value this kind reports.
+    #[must_use]
+    const fn contents_value(self) -> i32 {
+        match self {
+            Self::Ladder => contents::LADDER,
+            Self::Water => contents::WATER,
+            Self::Slime => contents::SLIME,
+            Self::Lava => contents::LAVA,
+        }
+    }
+}
+
+/// What kind of brush a [`BrushPart`] is, deciding how
+/// [`CollisionModel::contents_at`] and [`CollisionModel::trace`] treat it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrushKind {
+    /// Blocks movement; [`CollisionModel::attach_brush`]. Reads its
+    /// contents straight from the submodel's own compiled tree, exactly as
+    /// the world does.
+    Solid,
+    /// Never blocks movement; [`CollisionModel::attach_contents_brush`].
+    /// The submodel's own tree only ever distinguishes "inside the brush
+    /// shape" from "outside" (it was compiled as an ordinary, solid-shaped
+    /// brush; nothing in the BSP format lets a brush *entity* declare
+    /// special leaf contents at compile time) — this crate remaps "inside"
+    /// to the carried [`ContentsKind`] and never treats it as solid,
+    /// implementing the documented `skin`-keyvalue override at query time
+    /// instead of at compile time.
+    Contents(ContentsKind),
+}
+
+/// One brush entity's hulls: the head links of its `BSPMODEL` plus the
+/// world-space offset the map logic has moved it by since the map was
 /// compiled.
 #[derive(Debug, Clone, Copy)]
 struct BrushPart {
     heads: [i32; 4],
     origin: Vec3,
+    kind: BrushKind,
     /// The submodel's own compiled bounding box (`BSPMODEL::mins/maxs`),
     /// relative to the same frame [`Self::heads`]'s trees are in (i.e.
     /// before [`Self::origin`] is added). Used only for the broad-phase
@@ -496,9 +574,12 @@ impl CollisionModel {
     /// (`1..`); `0` is the worldspawn model this type already holds and is
     /// rejected so a caller cannot double-count the world.
     ///
-    /// The caller decides *which* entities are solid: `trigger_*` volumes,
-    /// `func_illusionary` and `func_ladder` are documented as non-solid and
-    /// must not be attached (see `ohl_game::brush::is_solid_brush`).
+    /// The caller decides *which* entities are solid: `trigger_*` volumes
+    /// and `func_illusionary` are documented as non-solid and must not be
+    /// attached at all (see `ohl_game::brush::is_solid_brush`); `func_ladder`
+    /// and `func_water` are documented as non-solid too but still mark
+    /// space with their own contents (climbable, or a swimmable liquid) and
+    /// should be attached with [`Self::attach_contents_brush`] instead.
     ///
     /// Refuses once [`MAX_ATTACHED_BRUSHES`] are already attached, so a
     /// pathological map cannot make every later trace arbitrarily
@@ -511,6 +592,42 @@ impl CollisionModel {
         limits: &Limits,
         model_index: usize,
         origin: Vec3,
+    ) -> Result<BrushId, SanitizedError> {
+        self.attach_brush_kind(bsp, limits, model_index, origin, BrushKind::Solid)
+    }
+
+    /// Attaches brush-entity submodel `model_index` as a non-solid contents
+    /// volume reporting `kind` wherever a query lands inside its shape —
+    /// `func_ladder` (`kind = `[`ContentsKind::Ladder`]) or `func_water`
+    /// (`kind` from its `skin` keyvalue; see [`ContentsKind`]).
+    ///
+    /// Unlike [`Self::attach_brush`] this never blocks a trace: the
+    /// submodel's boundary only changes what [`Self::contents_at`] (and,
+    /// through it, [`Self::point_contents`]) reports at a point inside it,
+    /// the same way a world-compiled water/slime/lava/ladder volume already
+    /// does. A player therefore climbs or swims through the volume exactly
+    /// as through a world one, while a solid brush entity or the world
+    /// itself still blocks movement as before. See [`BrushKind::Contents`]
+    /// for why this is implemented as a query-time remap rather than by
+    /// reading the submodel's compiled contents literally.
+    pub fn attach_contents_brush(
+        &mut self,
+        bsp: &Bsp<'_>,
+        limits: &Limits,
+        model_index: usize,
+        origin: Vec3,
+        kind: ContentsKind,
+    ) -> Result<BrushId, SanitizedError> {
+        self.attach_brush_kind(bsp, limits, model_index, origin, BrushKind::Contents(kind))
+    }
+
+    fn attach_brush_kind(
+        &mut self,
+        bsp: &Bsp<'_>,
+        limits: &Limits,
+        model_index: usize,
+        origin: Vec3,
+        kind: BrushKind,
     ) -> Result<BrushId, SanitizedError> {
         if model_index == 0 {
             return Err(SanitizedError::InvalidInput);
@@ -571,6 +688,7 @@ impl CollisionModel {
         self.brushes.push(BrushPart {
             heads,
             origin,
+            kind,
             mins,
             maxs,
         });
@@ -668,32 +786,60 @@ impl CollisionModel {
 
     /// The contents value `point` falls in, as seen by `hull`.
     ///
-    /// An attached solid brush entity wins over the world: standing inside
-    /// a closed `func_door` is solid even where the worldspawn tree says
-    /// the space is empty. A brush that does *not* contain the point
-    /// contributes nothing, so it can never turn world water or a ladder
-    /// volume back into plain empty space.
+    /// Precedence, nearest-wins-first within each tier: an attached solid
+    /// brush entity wins over everything else (standing inside a closed
+    /// `func_door` is solid even where the worldspawn tree says the space
+    /// is empty); failing that, an attached contents volume
+    /// (`func_ladder`/`func_water`; [`Self::attach_contents_brush`]) wins
+    /// over the world (a `func_water` pool built over ordinary dry floor
+    /// still swims); failing that, the world tree's own contents apply
+    /// unchanged, so a world-compiled water/slime/lava/ladder volume works
+    /// exactly as before this method knew about attached brushes at all. A
+    /// brush that does not contain the point contributes nothing at any
+    /// tier, so it can never turn water or a ladder volume back into plain
+    /// empty space.
     #[must_use]
     pub fn contents_at(&self, hull: Hull, point: Vec3) -> i32 {
         for brush in &self.brushes {
-            let head = brush.heads[hull.index()];
-            if head < 0 {
-                // A bare contents value, not a tree: see `trace`.
+            if brush.kind != BrushKind::Solid {
                 continue;
             }
-            // Broad phase: a point outside this brush's own (hull-expanded)
-            // bounds cannot be inside its tree, so the walk below can only
-            // ever answer "empty" for it — skip straight to that answer.
-            let (mins, maxs) = brush.broad_bounds(hull);
-            if !boxes_overlap(point, point, mins, maxs) {
-                continue;
-            }
-            let link = self.walk(self.nodes_of(hull), head, point - brush.origin);
-            if contents::is_solid(link) {
+            if let Some(link) = self.brush_link(brush, hull, point)
+                && contents::is_solid(link)
+            {
                 return link;
             }
         }
+        for brush in &self.brushes {
+            let BrushKind::Contents(kind) = brush.kind else {
+                continue;
+            };
+            if let Some(link) = self.brush_link(brush, hull, point)
+                && contents::is_present(link)
+            {
+                return kind.contents_value();
+            }
+        }
         self.walk(self.nodes_of(hull), self.heads[hull.index()], point)
+    }
+
+    /// The raw contents value `hull` sees inside `brush`'s own tree at
+    /// `point`, or `None` when the brush cannot possibly contain it (a bare,
+    /// boundary-less submodel, or a point outside its broad-phase bounds).
+    fn brush_link(&self, brush: &BrushPart, hull: Hull, point: Vec3) -> Option<i32> {
+        let head = brush.heads[hull.index()];
+        if head < 0 {
+            // A bare contents value, not a tree: see `trace`.
+            return None;
+        }
+        // Broad phase: a point outside this brush's own (hull-expanded)
+        // bounds cannot be inside its tree, so the walk below can only ever
+        // answer "empty" for it — skip straight to that answer.
+        let (mins, maxs) = brush.broad_bounds(hull);
+        if !boxes_overlap(point, point, mins, maxs) {
+            return None;
+        }
+        Some(self.walk(self.nodes_of(hull), head, point - brush.origin))
     }
 
     /// Walks `link`'s tree down to the contents value at `point`.
@@ -740,7 +886,14 @@ impl CollisionModel {
             return trace;
         }
 
-        let mut trace = self.trace_tree(hull, self.heads[hull.index()], Vec3::ZERO, start, end);
+        let mut trace = self.trace_tree(
+            hull,
+            self.heads[hull.index()],
+            Vec3::ZERO,
+            start,
+            end,
+            BrushKind::Solid,
+        );
         for (index, brush) in self.brushes.iter().enumerate() {
             let head = brush.heads[hull.index()];
             if head < 0 {
@@ -762,7 +915,14 @@ impl CollisionModel {
             if !boxes_overlap(seg_mins, seg_maxs, mins, maxs) {
                 continue;
             }
-            let hit = self.trace_tree(hull, head, brush.origin, start, end);
+            // `brush.kind` decides whether this walk can ever report a
+            // solid crossing at all: a `BrushKind::Contents` brush's raw
+            // "inside the shape" leaf is remapped away from solid before
+            // `recurse` ever tests it (see [`remap_leaf`]), so it can only
+            // ever ride along in `combine`'s `in_water` union, never move
+            // `trace.fraction` or set `start_solid`/`all_solid` — the
+            // invariant a proptest checks directly.
+            let hit = self.trace_tree(hull, head, brush.origin, start, end, brush.kind);
             combine(&mut trace, &hit, BrushId(index));
         }
 
@@ -784,7 +944,15 @@ impl CollisionModel {
     /// The segment is moved into the tree's own frame, traced there, and the
     /// result moved back: a hull tree is a set of planes, so translating the
     /// query is the same as translating the tree and costs nothing per node.
-    fn trace_tree(&self, hull: Hull, head: i32, offset: Vec3, start: Vec3, end: Vec3) -> Trace {
+    fn trace_tree(
+        &self,
+        hull: Hull,
+        head: i32,
+        offset: Vec3,
+        start: Vec3,
+        end: Vec3,
+        kind: BrushKind,
+    ) -> Trace {
         let (local_start, local_end) = (start - offset, end - offset);
         let mut trace = Trace::miss(local_end);
         trace.all_solid = true;
@@ -796,6 +964,7 @@ impl CollisionModel {
             local_start,
             local_end,
             MAX_TRACE_DEPTH,
+            kind,
             &mut trace,
         );
         if trace.all_solid {
@@ -815,10 +984,24 @@ impl CollisionModel {
     /// The recursive segment-versus-hull test.
     ///
     /// `p1`/`p2` are the endpoints of the sub-segment still being clipped and
-    /// `p1f`/`p2f` their positions along the original segment. Returns
-    /// `false` once the first solid crossing has been recorded, which
-    /// unwinds the recursion without disturbing the result.
+    /// `p1f`/`p2f` their positions along the original segment. `kind`
+    /// decides how a leaf's raw contents value is interpreted before it is
+    /// tested for solidity (see [`remap_leaf`]): `BrushKind::Contents`
+    /// makes every "inside the brush" leaf report its carried
+    /// [`ContentsKind`] instead of the raw `SOLID` the submodel actually
+    /// compiled to, which is never solid, so a contents-volume tree can
+    /// never record a blocking crossing — only ride along in
+    /// [`Trace::in_water`]. Returns `false` once the first solid crossing
+    /// has been recorded, which unwinds the recursion without disturbing
+    /// the result.
     #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "threading `kind` through every recursive call and remapping \
+                  each leaf read is what makes a contents-volume brush never \
+                  block; splitting it would only add indirection between \
+                  call sites that must stay in lock-step"
+    )]
     fn recurse(
         &self,
         nodes: &[HullNode],
@@ -828,16 +1011,18 @@ impl CollisionModel {
         p1: Vec3,
         p2: Vec3,
         depth: u32,
+        kind: BrushKind,
         trace: &mut Trace,
     ) -> bool {
         if link < 0 {
             // A leaf: record what kind of space this stretch of the segment
             // passed through.
-            if contents::is_solid(link) {
+            let mapped = remap_leaf(link, kind);
+            if contents::is_solid(mapped) {
                 trace.start_solid = true;
             } else {
                 trace.all_solid = false;
-                if link == contents::EMPTY {
+                if mapped == contents::EMPTY {
                     trace.in_open = true;
                 } else {
                     trace.in_water = true;
@@ -854,11 +1039,21 @@ impl CollisionModel {
         let node = &nodes[link.cast_unsigned() as usize];
         let d1 = self.plane_distance(node, p1);
         let d2 = self.plane_distance(node, p2);
-        if d1 >= 0.0 && d2 >= 0.0 {
-            return self.recurse(nodes, node.children[0], p1f, p2f, p1, p2, depth - 1, trace);
-        }
-        if d1 < 0.0 && d2 < 0.0 {
-            return self.recurse(nodes, node.children[1], p1f, p2f, p1, p2, depth - 1, trace);
+        if (d1 >= 0.0 && d2 >= 0.0) || (d1 < 0.0 && d2 < 0.0) {
+            // The segment stays on one side of this plane: no crossing to
+            // split, just recurse into that side's own subtree.
+            let side = usize::from(d1 < 0.0);
+            return self.recurse(
+                nodes,
+                node.children[side],
+                p1f,
+                p2f,
+                p1,
+                p2,
+                depth - 1,
+                kind,
+                trace,
+            );
         }
 
         // The segment crosses this plane. Split it, keeping the crossing
@@ -889,11 +1084,16 @@ impl CollisionModel {
             p1,
             mid,
             depth - 1,
+            kind,
             trace,
         ) {
             return false;
         }
-        if !contents::is_solid(self.contents_link(nodes, node.children[far], mid, depth - 1)) {
+        let far_contents = remap_leaf(
+            self.contents_link(nodes, node.children[far], mid, depth - 1),
+            kind,
+        );
+        if !contents::is_solid(far_contents) {
             return self.recurse(
                 nodes,
                 node.children[far],
@@ -902,6 +1102,7 @@ impl CollisionModel {
                 mid,
                 p2,
                 depth - 1,
+                kind,
                 trace,
             );
         }
@@ -927,7 +1128,10 @@ impl CollisionModel {
         let mut end_fraction = mid_f;
         let mut end_point = mid;
         let mut backoff = mid_fraction;
-        while contents::is_solid(self.contents_link(nodes, link, end_point, depth)) {
+        while contents::is_solid(remap_leaf(
+            self.contents_link(nodes, link, end_point, depth),
+            kind,
+        )) {
             backoff -= 0.1;
             if backoff < 0.0 {
                 trace.fraction = p1f;
@@ -960,28 +1164,54 @@ impl CollisionModel {
     }
 }
 
+/// Wherever `kind` is [`BrushKind::Contents`], remaps a raw leaf contents
+/// value `link` away from whatever the submodel actually compiled to
+/// ("inside the shape" is ordinarily `SOLID`, "outside" `EMPTY`) to the
+/// carried [`ContentsKind`]'s value — implementing the documented
+/// `skin`-keyvalue override (see [`ContentsKind`]'s doc comment) at query
+/// time. [`BrushKind::Solid`] and the world tree (which never has a `kind`
+/// to remap) pass `link` through unchanged. `EMPTY` is never remapped
+/// either way: a point strictly outside the brush's shape stays empty
+/// regardless of what kind of brush it is.
+fn remap_leaf(link: i32, kind: BrushKind) -> i32 {
+    match kind {
+        BrushKind::Solid => link,
+        BrushKind::Contents(volume) => {
+            if link == contents::EMPTY {
+                link
+            } else {
+                volume.contents_value()
+            }
+        }
+    }
+}
+
 /// Folds one attached brush's trace into the running best, which starts as
 /// the world tree's own trace.
 ///
 /// "Best" is the hit nearest the start: a move is stopped by whichever
 /// solid it reaches first, so the smaller fraction (and its plane) wins.
 /// `in_water` is a union — a segment that passed through open space in the
-/// world and through a brush's liquid did both, and a solid brush entity's
-/// hull tree never reports a liquid contents anyway (only the world's
-/// water/slime/lava volumes do), so this never fires from an attached
-/// brush in practice. `in_open` is deliberately *not* unioned in: see its
-/// field doc on [`Trace`] for why that would be wrong, and left to whatever
-/// the world tree's own trace already set. A start inside *any* solid
-/// (world or brush) stops the move outright. `brush` names which attached
-/// brush produced `hit`, recorded on [`Trace::brush_index`] when `hit`
-/// wins the fraction comparison outright, and also — even without winning
-/// that comparison — the first time a brush is the one whose segment
-/// started inside solid: a `start_solid` hit's own `fraction` is already
-/// forced to `0.0` (see [`CollisionModel::trace_tree`]), so a brush that
-/// reports it can only ever *tie* the fraction comparison against a world
-/// trace that is start-solid too, never win it outright, and a caller that
-/// needs to know "is the player embedded in an attached brush at all" (a
-/// mover push, say) must not have that answer silently lost to a tie.
+/// world and through a brush's liquid did both. A solid brush entity's hull
+/// tree never reports a liquid contents itself (only the world's own
+/// water/slime/lava volumes, and an attached *contents* volume, do); a
+/// contents volume's own trace (see [`remap_leaf`]) can set `in_water` but,
+/// by construction, never `start_solid`/`all_solid` and never lowers
+/// `fraction` — [`CollisionModel::trace`]'s per-brush doc comment states
+/// this as the invariant a proptest checks. `in_open` is deliberately *not*
+/// unioned in: see its field doc on [`Trace`] for why that would be wrong,
+/// and left to whatever the world tree's own trace already set. A start
+/// inside any *solid* (world or brush) stops the move outright. `brush`
+/// names which attached brush produced `hit`, recorded on
+/// [`Trace::brush_index`] when `hit` wins the fraction comparison outright,
+/// and also — even without winning that comparison — the first time a
+/// brush is the one whose segment started inside solid: a `start_solid`
+/// hit's own `fraction` is already forced to `0.0` (see
+/// [`CollisionModel::trace_tree`]), so a brush that reports it can only
+/// ever *tie* the fraction comparison against a world trace that is
+/// start-solid too, never win it outright, and a caller that needs to know
+/// "is the player embedded in an attached brush at all" (a mover push,
+/// say) must not have that answer silently lost to a tie.
 /// [`Option::get_or_insert`] means only the *first* such brush is recorded
 /// when more than one embeds the segment, a deterministic but otherwise
 /// arbitrary choice among ties.

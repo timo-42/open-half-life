@@ -48,6 +48,16 @@
 //!   fire it). Verifies mover-riders (M7's "carry the player on moving
 //!   brush entities"): the campaign start map's intro tram ride is
 //!   expected to trip this line.
+//! - "The player is on a ladder." — [`ohl_engine::Game::player_on_ladder`]
+//!   has read `true` for a cumulative total of more than
+//!   [`LADDER_OR_WATER_LOG_THRESHOLD_SECS`] seconds. Attaching to either a
+//!   world-compiled `CONTENTS_LADDER` volume or a real `func_ladder`
+//!   entity (`ohl_physics::CollisionModel::attach_contents_brush`, added
+//!   for the func_ladder/func_water contents milestone) both report this
+//!   the same way, since both attach through the same probed contents.
+//! - "The player is in water." — [`ohl_engine::Game::player_in_water`] has
+//!   read `true` for the same threshold; likewise true for either a
+//!   world-compiled liquid volume or a real `func_water` entity.
 
 use ohl_engine::Game;
 
@@ -74,6 +84,14 @@ pub const IN_SOLID_LOG_THRESHOLD_SECS: f32 = 1.0;
 /// `func_train`/`func_tracktrain`/`func_plat`/lift `func_door` stays on it
 /// far longer than one second.
 pub const RIDING_MOVER_LOG_THRESHOLD_SECS: f32 = 1.0;
+/// How many cumulative seconds [`ohl_engine::Game::player_on_ladder`]/
+/// [`ohl_engine::Game::player_in_water`] must read `true` during one
+/// scripted run before [`ScriptLog::observe`] logs "The player is on a
+/// ladder."/"The player is in water." A single-tick overlap (brushing past
+/// a volume's edge while walking by) should not fire either line; a player
+/// who actually climbed or swam stays in that state far longer than half a
+/// second.
+pub const LADDER_OR_WATER_LOG_THRESHOLD_SECS: f32 = 0.5;
 
 /// Tracks which milestone lines have already fired this run.
 #[allow(
@@ -97,6 +115,8 @@ pub struct ScriptLog {
     moved_from_spawn: bool,
     in_solid: bool,
     riding_mover: bool,
+    on_ladder: bool,
+    in_water: bool,
     baseline_fired: u64,
     baseline_hit: u64,
     baseline_damage_events: u64,
@@ -106,6 +126,8 @@ pub struct ScriptLog {
     spawn_position: [f32; 3],
     in_solid_seconds: f32,
     riding_mover_seconds: f32,
+    on_ladder_seconds: f32,
+    in_water_seconds: f32,
 }
 
 impl ScriptLog {
@@ -130,6 +152,8 @@ impl ScriptLog {
             moved_from_spawn: false,
             in_solid: false,
             riding_mover: false,
+            on_ladder: false,
+            in_water: false,
             baseline_fired: game.weapon_fired_count(),
             baseline_hit: game.shot_hit_count(),
             baseline_damage_events: game.monster_damage_event_count(),
@@ -139,6 +163,8 @@ impl ScriptLog {
             spawn_position: game.eye_position(),
             in_solid_seconds: 0.0,
             riding_mover_seconds: 0.0,
+            on_ladder_seconds: 0.0,
+            in_water_seconds: 0.0,
         }
     }
 
@@ -227,6 +253,27 @@ impl ScriptLog {
                 }
             } else {
                 self.riding_mover_seconds = 0.0;
+        if !self.on_ladder {
+            if game.player_on_ladder() {
+                self.on_ladder_seconds += dt;
+                if self.on_ladder_seconds > LADDER_OR_WATER_LOG_THRESHOLD_SECS {
+                    self.on_ladder = true;
+                    tracing::info!("The player is on a ladder.");
+                }
+            } else {
+                self.on_ladder_seconds = 0.0;
+            }
+        }
+
+        if !self.in_water {
+            if game.player_in_water() {
+                self.in_water_seconds += dt;
+                if self.in_water_seconds > LADDER_OR_WATER_LOG_THRESHOLD_SECS {
+                    self.in_water = true;
+                    tracing::info!("The player is in water.");
+                }
+            } else {
+                self.in_water_seconds = 0.0;
             }
         }
     }

@@ -1,13 +1,15 @@
 //! Ladders, liquid categorisation, riding a mover, the long jump and the
 //! landing report, all against this project's own synthetic fixtures.
 
+use ohl_formats::bsp30::{Bsp, Limits};
 use ohl_physics::movement::{ladder_normal, player_move_events};
 use ohl_physics::test_support::{
-    LIQUID_SURFACE_Z, build_flat_floor_bsp, build_ladder_room_bsp, build_liquid_room_bsp,
-    collision_model_from,
+    LIQUID_SURFACE_Z, build_flat_floor_bsp, build_ladder_entity_room_bsp, build_ladder_room_bsp,
+    build_liquid_room_bsp, build_water_entity_room_bsp, collision_model_from,
 };
 use ohl_physics::{
-    CollisionModel, LiquidKind, MoveConfig, MoveInput, PlayerState, Vec3, WaterLevel, contents,
+    CollisionModel, ContentsKind, LiquidKind, MoveConfig, MoveInput, PlayerState, Vec3, WaterLevel,
+    contents,
 };
 
 const TICK: f32 = 1.0 / 100.0;
@@ -317,6 +319,141 @@ fn landing_reports_the_impact_speed_for_a_fall_but_not_for_a_step() {
 #[test]
 fn landing_in_a_liquid_reports_no_impact() {
     let model = collision_model_from(&build_liquid_room_bsp(contents::WATER));
+    let config = MoveConfig::default();
+    let mut state = PlayerState::at(Vec3::new(0.0, 0.0, 600.0));
+    for _ in 0..800 {
+        let events = player_move_events(&model, &mut state, &MoveInput::default(), &config, TICK);
+        assert_eq!(events.landed_speed, None, "at {:?}", state.origin);
+        if state.on_ground {
+            break;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// `func_ladder`/`func_water` attached as entity contents volumes.
+//
+// Every test above this point uses a fixture with `CONTENTS_LADDER`/
+// `CONTENTS_WATER` baked directly into the *world* tree — the case that
+// worked before this milestone. These fixtures instead attach the exact
+// same-shaped volume as submodel 1 with
+// `CollisionModel::attach_contents_brush`, the way a real map's
+// `func_ladder`/`func_water` brush entity actually arrives (see
+// `docs/FORMAT_SOURCES.md`, "Player systems"), to prove the entity path
+// itself makes climbing/swimming work — with no change to this crate's own
+// movement code, since it only ever reads probed contents.
+// ---------------------------------------------------------------------
+
+fn ladder_entity_room() -> CollisionModel {
+    let bytes = build_ladder_entity_room_bsp();
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+    let mut model = CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable hulls");
+    model
+        .attach_contents_brush(&bsp, &limits, 1, Vec3::ZERO, ContentsKind::Ladder)
+        .expect("the fixture declares submodel 1");
+    model
+}
+
+fn water_entity_room() -> CollisionModel {
+    let bytes = build_water_entity_room_bsp();
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+    let mut model = CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable hulls");
+    model
+        .attach_contents_brush(&bsp, &limits, 1, Vec3::ZERO, ContentsKind::Water)
+        .expect("the fixture declares submodel 1");
+    model
+}
+
+#[test]
+fn a_func_ladder_entity_volume_attaches_and_climbs_with_forward_input() {
+    // Same volume, same origin (`IN_LADDER`) and the same assertions as
+    // `pressing_into_a_ladder_climbs_it_and_releasing_holds_position`
+    // above, but against the brush-entity-attached model: proves a real
+    // `func_ladder`'s own submodel, not just a world-baked
+    // `CONTENTS_LADDER` leaf, makes the player attach and climb.
+    let model = ladder_entity_room();
+    let config = MoveConfig::default();
+    let mut state = PlayerState::at(IN_LADDER);
+    let input = walk(Vec3::X);
+
+    let events = player_move_events(&model, &mut state, &input, &config, TICK);
+    assert!(
+        events.ladder_attached,
+        "the entity-attached volume did not attach the player"
+    );
+    assert!(state.on_ladder);
+
+    let start_z = state.origin.z;
+    for _ in 0..100 {
+        player_move_events(&model, &mut state, &input, &config, TICK);
+    }
+    let climbed = state.origin.z - start_z;
+    assert!(
+        climbed > config.ladder_speed * 0.9,
+        "one second of climbing rose only {climbed} units"
+    );
+    assert!(state.on_ladder);
+}
+
+#[test]
+fn a_func_water_entity_pool_steps_through_every_water_level_and_swims() {
+    // Same pool geometry and surface height as `build_liquid_room_bsp`
+    // (`LIQUID_SURFACE_Z`), attached as submodel 1 instead of baked into
+    // the world tree: proves a real `func_water`'s own submodel makes the
+    // pool swimmable.
+    let model = water_entity_room();
+    let config = MoveConfig::default();
+    let mut state = PlayerState::at(Vec3::new(0.0, 0.0, 400.0));
+
+    ohl_physics::movement::categorize_position(&model, &mut state, &config);
+    assert_eq!(state.water_level, WaterLevel::Dry);
+    assert_eq!(state.water_level.as_index(), 0);
+
+    state.origin.z = LIQUID_SURFACE_Z + 28.0;
+    ohl_physics::movement::categorize_position(&model, &mut state, &config);
+    assert_eq!(state.water_level, WaterLevel::Feet);
+    assert_eq!(state.liquid, LiquidKind::Water);
+    assert_eq!(state.water_level.as_index(), 1);
+
+    state.origin.z = LIQUID_SURFACE_Z - 10.0;
+    ohl_physics::movement::categorize_position(&model, &mut state, &config);
+    assert_eq!(state.water_level, WaterLevel::Waist);
+    assert_eq!(state.water_level.as_index(), 2);
+    assert!(state.is_swimming());
+
+    state.origin.z = 100.0;
+    ohl_physics::movement::categorize_position(&model, &mut state, &config);
+    assert_eq!(state.water_level, WaterLevel::Eyes);
+    assert_eq!(state.water_level.as_index(), 3);
+
+    // Fully submerged and swimming: holding jump (the documented "swim up"
+    // input) rises.
+    let swim_up = MoveInput {
+        jump: true,
+        ..MoveInput::default()
+    };
+    let start_z = state.origin.z;
+    for _ in 0..100 {
+        player_move_events(&model, &mut state, &swim_up, &config, TICK);
+    }
+    assert!(
+        state.origin.z > start_z,
+        "swimming up did not rise: {} -> {}",
+        start_z,
+        state.origin.z
+    );
+}
+
+#[test]
+fn landing_in_a_func_water_entity_pool_reports_no_fall_damage_impact() {
+    // The same rule `landing_in_a_liquid_reports_no_impact` checks above
+    // (SourceRuns "Landing methods", already cited in
+    // `docs/FORMAT_SOURCES.md`: "landing in puddles of water, no matter how
+    // shallow, will always break your fall"), against the entity-attached
+    // pool.
+    let model = water_entity_room();
     let config = MoveConfig::default();
     let mut state = PlayerState::at(Vec3::new(0.0, 0.0, 600.0));
     for _ in 0..800 {

@@ -4,8 +4,10 @@
 use ohl_formats::bsp30::{Bsp, Limits};
 use ohl_formats::test_support::{build_brush_entity_floor_bsp, build_collision_room_bsp};
 use ohl_physics::controller::TICK_SECONDS;
+use ohl_physics::test_support::build_ladder_entity_room_bsp;
 use ohl_physics::{
-    CollisionModel, Hull, MoveConfig, MoveInput, PlayerState, Vec3, player_move, trace_hull,
+    CollisionModel, ContentsKind, Hull, MoveConfig, MoveInput, PlayerState, Vec3, player_move,
+    trace_hull,
 };
 use proptest::prelude::*;
 
@@ -34,6 +36,35 @@ fn brush_with_and_without_broad_phase() -> (CollisionModel, CollisionModel) {
     let mut wide = narrow.clone();
     wide.widen_brush_bounds_for_test(brush);
     (narrow, wide)
+}
+
+/// [`build_ladder_entity_room_bsp`]'s submodel 1, attached as a
+/// `ContentsKind::Ladder` contents volume rather than solid — the fixture
+/// this crate's own doc comments point to as "the submodel any brush
+/// entity actually compiles to" (an ordinary solid-shaped brush); this
+/// model additionally still has the world's own floor and backing wall
+/// attached, so a proptest against arbitrary segments still has real solid
+/// geometry to hit *outside* the volume.
+fn ladder_contents_room() -> CollisionModel {
+    let bytes = build_ladder_entity_room_bsp();
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+    let mut model = CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable hulls");
+    model
+        .attach_contents_brush(&bsp, &limits, 1, Vec3::ZERO, ContentsKind::Ladder)
+        .expect("the fixture declares submodel 1");
+    model
+}
+
+/// The same fixture's world geometry alone, with submodel 1 never
+/// attached at all — the baseline [`ladder_contents_room`] is compared
+/// against to isolate exactly what attaching the ladder as a contents
+/// volume changes about a trace.
+fn ladder_room_world_only() -> CollisionModel {
+    let bytes = build_ladder_entity_room_bsp();
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+    CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable hulls")
 }
 
 prop_compose! {
@@ -155,5 +186,43 @@ proptest! {
         let (narrow, wide) = brush_with_and_without_broad_phase();
         let hull = Hull::from_index(hull_index).expect("0..4 is always a valid hull index");
         prop_assert_eq!(narrow.contents_at(hull, point), wide.contents_at(hull, point));
+    }
+
+    /// The invariant `CollisionModel::attach_contents_brush`'s doc comment
+    /// states directly: attaching a `func_ladder`/`func_water` submodel as
+    /// a contents volume can never make a trace more blocked than the same
+    /// world geometry without it. Comparing against the model with
+    /// submodel 1 never attached at all isolates exactly that: every field
+    /// that decides whether/where a move was stopped
+    /// (`fraction`/`end_pos`/`start_solid`/`all_solid`/`plane_normal`/
+    /// `plane_dist`) must come out identical, whatever the world's own
+    /// solid geometry (the fixture's floor and backing wall) independently
+    /// does. `in_water`/`in_open`/`contents` are deliberately excluded:
+    /// those are exactly what the contents volume is supposed to change.
+    /// The comparisons are deliberately *exact*: both traces run the same
+    /// deterministic floating-point arithmetic over the same world
+    /// geometry, differing only by whether a brush loop iteration that can
+    /// never change the outcome ran at all, so bit-for-bit equality (not an
+    /// epsilon compare) is the correct check.
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn a_contents_ladder_volume_never_blocks_more_than_the_bare_world(
+        start in any_point(),
+        end in any_point(),
+        hull_index in 0usize..4,
+    ) {
+        let with_ladder = ladder_contents_room();
+        let world_only = ladder_room_world_only();
+        let hull = Hull::from_index(hull_index).expect("0..4 is always a valid hull index");
+
+        let attached = with_ladder.trace(hull, start, end);
+        let bare = world_only.trace(hull, start, end);
+
+        prop_assert_eq!(attached.fraction, bare.fraction);
+        prop_assert_eq!(attached.end_pos, bare.end_pos);
+        prop_assert_eq!(attached.start_solid, bare.start_solid);
+        prop_assert_eq!(attached.all_solid, bare.all_solid);
+        prop_assert_eq!(attached.plane_normal, bare.plane_normal);
+        prop_assert_eq!(attached.plane_dist, bare.plane_dist);
     }
 }

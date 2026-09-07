@@ -36,5 +36,7 @@ pub use logic::{
     Event, LevelChange, PendingFire, Simulation, SimulationState, TriggerSnapshot,
     find_usable_within,
 };
-pub use registry::{Ladder, Registry, TRIGGER_HURT_INTERVAL_SECONDS, TriggerCamera, TriggerHurt};
+pub use registry::{
+    Ladder, Liquid, Registry, TRIGGER_HURT_INTERVAL_SECONDS, TriggerCamera, TriggerHurt, Water,
+};
 pub use track_train::{PathChain, PathNode, TrackTrain, TrackTrainState};

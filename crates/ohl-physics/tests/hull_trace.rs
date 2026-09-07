@@ -4,8 +4,10 @@ use ohl_formats::bsp30::{Bsp, Limits};
 use ohl_formats::test_support::{
     Bsp30Builder, build_brush_entity_floor_bsp, build_collision_room_bsp, build_collision_slope_bsp,
 };
+use ohl_physics::test_support::{build_ladder_entity_room_bsp, build_water_entity_room_bsp};
 use ohl_physics::{
-    CollisionModel, Hull, MAX_ATTACHED_BRUSHES, Trace, Vec3, contents, point_contents, trace_hull,
+    CollisionModel, ContentsKind, Hull, MAX_ATTACHED_BRUSHES, Trace, Vec3, contents,
+    point_contents, trace_hull,
 };
 
 fn model_from(bytes: &[u8]) -> CollisionModel {
@@ -479,5 +481,170 @@ fn a_fall_that_never_reaches_a_far_off_brush_is_unaffected_by_the_broad_phase() 
     assert!(
         (trace.fraction - 1.0).abs() < f32::EPSILON,
         "a segment nowhere near the slab was blocked"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Non-solid contents volumes (`func_ladder`/`func_water`)
+//
+// `build_ladder_entity_room_bsp`/`build_water_entity_room_bsp` compile
+// submodel 1 as an ordinary solid-shaped brush, the same way any brush
+// entity (including a real `func_ladder`/`func_water`) actually compiles;
+// `attach_contents_brush` is what turns that into a non-blocking, specially
+// contented volume at query time.
+// ---------------------------------------------------------------------
+
+/// [`build_ladder_entity_room_bsp`]'s submodel 1, attached both ways: as an
+/// ordinary solid brush (`solid`) and as a `ContentsKind::Ladder` contents
+/// volume (`ladder`). Comparing the two against the same geometry is how
+/// these tests isolate what `attach_contents_brush` itself changes.
+/// [`CollisionModel`] owns its data (no lifetime tied to the parsed
+/// `Bsp<'_>`), so the two models can safely outlive this function's local
+/// `bytes`/`bsp`.
+fn ladder_entity_room() -> (CollisionModel, CollisionModel) {
+    let bytes = build_ladder_entity_room_bsp();
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+    let mut solid = CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable hulls");
+    solid
+        .attach_brush(&bsp, &limits, 1, Vec3::ZERO)
+        .expect("the fixture declares submodel 1");
+    let mut ladder = CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable hulls");
+    ladder
+        .attach_contents_brush(&bsp, &limits, 1, Vec3::ZERO, ContentsKind::Ladder)
+        .expect("the fixture declares submodel 1");
+    (solid, ladder)
+}
+
+#[test]
+fn a_contents_ladder_brush_reports_ladder_contents_inside_its_shape() {
+    let (_, ladder) = ladder_entity_room();
+    // Inside the volume (`x` 56..96, `y` -32..32, `z` 0..256).
+    assert_eq!(
+        point_contents(&ladder, Vec3::new(72.0, 0.0, 36.0)),
+        contents::LADDER
+    );
+    // Outside it (in the open room to its -X side).
+    assert_eq!(
+        point_contents(&ladder, Vec3::new(0.0, 0.0, 36.0)),
+        contents::EMPTY
+    );
+}
+
+#[test]
+fn the_same_submodel_attached_as_solid_instead_blocks_the_player() {
+    // The point that reads `CONTENTS_LADDER` above is `CONTENTS_SOLID`
+    // (and blocks a trace) when the identical submodel is attached with
+    // `attach_brush` instead — the two attach calls are the only thing
+    // that differs.
+    let (solid, _) = ladder_entity_room();
+    assert_eq!(
+        point_contents(&solid, Vec3::new(72.0, 0.0, 36.0)),
+        contents::SOLID
+    );
+    let trace = solid.trace(
+        Hull::Standing,
+        Vec3::new(30.0, 0.0, 36.0),
+        Vec3::new(90.0, 0.0, 36.0),
+    );
+    assert!(trace.blocked(), "a solid-attached brush must still block");
+}
+
+#[test]
+fn a_contents_ladder_brush_never_blocks_a_trace_through_it() {
+    // Traced *vertically* through the ladder volume (`z` 0..256), so the
+    // fixture's own backing wall (`x >= 96`, mounted behind the ladder like
+    // a real one) never enters into it: a block here can only come from
+    // the ladder brush's own remapped tree.
+    let (_, ladder) = ladder_entity_room();
+    let start = Vec3::new(72.0, 0.0, 50.0);
+    let end = Vec3::new(72.0, 0.0, 300.0);
+    let trace = ladder.trace(Hull::Standing, start, end);
+    assert!(
+        !trace.blocked(),
+        "a contents volume must never block a trace: {trace:?}"
+    );
+    assert_eq!(trace.end_pos, end);
+    assert!(trace.in_water, "the segment passed through the volume");
+}
+
+#[test]
+fn a_contents_ladder_brush_does_not_turn_a_zero_length_trace_solid() {
+    let (_, ladder) = ladder_entity_room();
+    let point = Vec3::new(72.0, 0.0, 36.0);
+    let trace = ladder.trace(Hull::Standing, point, point);
+    assert!(!trace.start_solid && !trace.all_solid);
+}
+
+#[test]
+fn a_contents_water_brush_reports_water_and_never_blocks() {
+    let bytes = build_water_entity_room_bsp();
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+    let mut model = CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable hulls");
+    model
+        .attach_contents_brush(&bsp, &limits, 1, Vec3::ZERO, ContentsKind::Water)
+        .expect("the fixture declares submodel 1");
+
+    assert_eq!(
+        point_contents(&model, Vec3::new(0.0, 0.0, 100.0)),
+        contents::WATER
+    );
+    let trace = model.trace(
+        Hull::Standing,
+        Vec3::new(0.0, 0.0, 50.0),
+        Vec3::new(0.0, 0.0, 150.0),
+    );
+    assert!(!trace.blocked());
+    assert!(trace.in_water);
+}
+
+#[test]
+fn a_moved_contents_water_brush_is_traced_at_its_new_origin() {
+    // `func_water` shares its move/trigger behaviour with `func_door`
+    // (`docs/FORMAT_SOURCES.md`, "Player systems"); `set_brush_origin` is
+    // the same call `ohl-engine`'s `sync_brush_collision` makes every
+    // step, regardless of which attach call produced the `BrushId`.
+    let bytes = build_water_entity_room_bsp();
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+    let mut model = CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable hulls");
+    let brush = model
+        .attach_contents_brush(&bsp, &limits, 1, Vec3::ZERO, ContentsKind::Water)
+        .expect("the fixture declares submodel 1");
+
+    let point = Vec3::new(0.0, 0.0, 100.0);
+    assert_eq!(point_contents(&model, point), contents::WATER);
+
+    // Move the pool 1000 units away on X; the old position dries up and
+    // the new one becomes water.
+    model.set_brush_origin(brush, Vec3::new(1000.0, 0.0, 0.0));
+    assert_eq!(point_contents(&model, point), contents::EMPTY);
+    assert_eq!(
+        point_contents(&model, point + Vec3::new(1000.0, 0.0, 0.0)),
+        contents::WATER
+    );
+}
+
+#[test]
+fn an_attached_solid_brush_still_wins_over_an_overlapping_contents_volume() {
+    // Two submodels covering the same space: submodel 1 attached solid,
+    // submodel 2 attached as a ladder contents volume. The documented
+    // precedence (`CollisionModel::contents_at`) is solid-wins-over-all,
+    // so a closed door built directly on top of a ladder still blocks.
+    let bytes = build_ladder_entity_room_bsp();
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+    let mut model = CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable hulls");
+    model
+        .attach_brush(&bsp, &limits, 1, Vec3::ZERO)
+        .expect("the fixture declares submodel 1");
+    model
+        .attach_contents_brush(&bsp, &limits, 1, Vec3::ZERO, ContentsKind::Ladder)
+        .expect("the fixture declares submodel 1");
+
+    assert_eq!(
+        point_contents(&model, Vec3::new(72.0, 0.0, 36.0)),
+        contents::SOLID
     );
 }
