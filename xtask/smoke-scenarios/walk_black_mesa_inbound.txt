@@ -11,7 +11,10 @@
 # Expected fixed log lines, asserted by the harness rather than parsed
 # from this file:
 #   present: "Scripted input loaded.", "Scripted input finished.",
-#            "The player moved from the spawn point."
+#            "The player moved from the spawn point.",
+#            "The player is riding a mover." (the player spawns standing
+#            inside this map's opening tram and is carried by it,
+#            whatever this script presses)
 #   absent:  "The player is inside solid geometry." (this scenario's own
 #            regression guard for the PR #91 class of bug)
 #            plus every other fixed line (no weapon, pickup, monster or

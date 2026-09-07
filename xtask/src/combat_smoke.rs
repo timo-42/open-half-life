@@ -97,7 +97,7 @@ const BASE_PRESENT: [&str; 2] = ["Scripted input loaded.", "Scripted input finis
 /// "look around in the first chapter start" (`ohl_campaign::STARTMAP`,
 /// `"c0a0"`) does *not* use this constant: the player rides that map's
 /// opening tram, so it asserts that line *present* instead. See
-/// [`FIRST_CHAPTER_START_PRESENT`]'s own doc comment.
+/// [`START_MAP_PRESENT`]'s own doc comment.
 const BASE_ABSENT: [&str; 8] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
@@ -109,8 +109,9 @@ const BASE_ABSENT: [&str; 8] = [
     "The player is riding a mover.",
 ];
 
-/// The fixed lines "look around in the first chapter start" expects
-/// present, beyond [`BASE_PRESENT`].
+/// The fixed lines both scenarios that run on `ohl_campaign::STARTMAP`
+/// ("look around in the first chapter start" and "walk from spawn in
+/// Black Mesa Inbound") expect present, beyond [`BASE_PRESENT`].
 ///
 /// In the real game the player starts standing inside the map's opening
 /// tram and rides it, and this project now reproduces that: a
@@ -124,11 +125,13 @@ const BASE_ABSENT: [&str; 8] = [
 /// therefore fire from the ride alone.
 ///
 /// This replaces the `TODO` that used to sit on
-/// `FIRST_CHAPTER_START_ABSENT`, which carved "The player is riding a
+/// `START_MAP_ABSENT`, which carved "The player is riding a
 /// mover." out of the absent set rather than codify a known-broken intro
 /// as expected behaviour. The two gaps it recorded are closed: the map's
-/// trains do start, and the player does stand on one at spawn.
-const FIRST_CHAPTER_START_PRESENT: [&str; 4] = [
+/// trains do start, and the player does stand on one at spawn. The walk
+/// scenario on the same map is carried by the same tram, whatever its
+/// script presses, so it uses these sets too.
+const START_MAP_PRESENT: [&str; 4] = [
     "Scripted input loaded.",
     "Scripted input finished.",
     "The player moved from the spawn point.",
@@ -136,8 +139,8 @@ const FIRST_CHAPTER_START_PRESENT: [&str; 4] = [
 ];
 
 /// [`BASE_ABSENT`], minus "The player is riding a mover.", which
-/// [`FIRST_CHAPTER_START_PRESENT`] asserts present instead.
-const FIRST_CHAPTER_START_ABSENT: [&str; 7] = [
+/// [`START_MAP_PRESENT`] asserts present instead.
+const START_MAP_ABSENT: [&str; 7] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
     "A monster took damage.",
@@ -273,12 +276,12 @@ const FIRE_AND_PICKUP_ABSENT: [&str; 5] = [
 /// relative geometry and never recorded here beyond a turn/walk
 /// technique. All 23 scenarios in this file — the four pre-existing ones
 /// included — assert "The player is inside solid geometry." absent: this
-/// scenario set's own regression guard for the PR #91 class of bug. 22 of
+/// scenario set's own regression guard for the PR #91 class of bug. 21 of
 /// the 23 also assert "The player is riding a mover." absent, since none
-/// of them stands on a moving brush entity; "look around in the first
-/// chapter start" is the one that asserts it *present*, because the
+/// of them stands on a moving brush entity; the two that run on
+/// `ohl_campaign::STARTMAP` assert it *present* instead, because the
 /// player spawns inside that map's opening tram and rides it (see
-/// [`FIRST_CHAPTER_START_PRESENT`]'s own doc comment).
+/// [`START_MAP_PRESENT`]'s own doc comment).
 #[allow(
     clippy::too_many_lines,
     reason = "one Scenario literal per M9 chapter-walk scenario, plus the four \
@@ -297,8 +300,8 @@ fn scenarios() -> [Scenario; 23] {
             name: "look around in the first chapter start",
             file: "first_chapter_start.txt",
             map: ohl_campaign::STARTMAP,
-            present: &FIRST_CHAPTER_START_PRESENT,
-            absent: &FIRST_CHAPTER_START_ABSENT,
+            present: &START_MAP_PRESENT,
+            absent: &START_MAP_ABSENT,
         },
         Scenario {
             name: "approach the first monster encounter",
@@ -318,8 +321,8 @@ fn scenarios() -> [Scenario; 23] {
             name: "walk from spawn in Black Mesa Inbound",
             file: "walk_black_mesa_inbound.txt",
             map: "c0a0",
-            present: &WALK_PRESENT,
-            absent: &BASE_ABSENT,
+            present: &START_MAP_PRESENT,
+            absent: &START_MAP_ABSENT,
         },
         Scenario {
             name: "walk from spawn in Anomalous Materials",
