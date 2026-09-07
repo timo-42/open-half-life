@@ -2897,3 +2897,23 @@ payload.
   load anyway, by `SECTION_ENTITY_COMBAT` (tag 24)'s own pre-existing
   despawn-if-not-live rule, so it does not refire — confirmed with a
   dedicated test, not merely asserted in a doc comment.
+- **Follow-up: the campaign start map's tram never moved.** A 40-second
+  idle review over the start map (PR #97's review) found every
+  `func_tracktrain` there parked at `startspeed 0` with nothing ever
+  triggering one, so the player fell from spawn onto world geometry
+  instead of landing on the tram. `func_tracktrain`/`func_train` spawn
+  placement and its render/collision offset (`crates/ohl-game/src/track_train.rs`'s
+  `built_origin`/`position` delta, `ohl-engine`'s `track_train_transform`/
+  `brush_offset`) were re-checked against the documented "brush moved to
+  its first `path_track`" convention and confirmed already correct (a
+  train authored at its first node renders and collides with zero offset;
+  one authored elsewhere gets exactly the delta it has travelled) — not
+  the bug. The actual gap: `game_playerspawn`, GoldSrc's documented
+  special `targetname` convention that activates whatever entity carries
+  that name once per player spawn (see `docs/FORMAT_SOURCES.md`, "Entity
+  keyvalues and map logic"), was never implemented — this crate never
+  looked up that name at all, so a map whose intro sequence used it
+  instead of `trigger_auto` had no activation path in this project.
+  `ohl_game::logic::Simulation::fire_player_spawn` now activates every
+  `game_playerspawn`-named entity once, the first tick after load,
+  alongside the existing `trigger_auto` handling.
