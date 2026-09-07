@@ -18,18 +18,28 @@ use crate::registry::{
 use crate::track_train::TrackTrainState;
 
 /// Finds the closest `func_door` or `func_button` within `radius` units of
-/// `position`, preferring a brush entity's precomputed bounding-box centre
-/// (see [`crate::registry::BrushCenter`]) over its `Transform::origin` when
-/// both exist, since brush entities conventionally leave `origin` at
-/// `0 0 0`. Intended for a "use the nearest usable thing" input binding.
+/// `position`, measured against a brush entity's own currently-placed
+/// bounding-box centre ([`crate::pose::brush_center`]) rather than its
+/// `Transform::origin`, and falling back to `Transform::origin` only for an
+/// entity that has no brush submodel to measure at all (a point entity, or
+/// one whose submodel bounds were unavailable at load).
+///
+/// Going through [`crate::pose::brush_center`] is what makes this agree
+/// with where the entity is drawn and collided: it is the same placed pose
+/// — compiled geometry, rotated about its pivot, translated by the `origin`
+/// keyvalue, plus however far its state machine has moved it — that
+/// `ohl-engine` builds its render transform and collision brush from. A
+/// brush entity built around an "origin brush" (a rotating door, a train)
+/// compiles its geometry relative to that brush rather than in absolute
+/// world space, so measuring against the raw compiled bounds instead would
+/// search near the map's `(0, 0, 0)` and never find it.
+///
+/// Intended for a "use the nearest usable thing" input binding.
 #[must_use]
 pub fn find_usable_within(registry: &Registry, position: Vec3, radius: f32) -> Option<Entity> {
     let mut best: Option<(Entity, f32)> = None;
     let mut consider = |entity: Entity, transform: &Transform| {
-        let center = registry
-            .world
-            .get::<&crate::registry::BrushCenter>(entity)
-            .map_or(transform.origin, |c| c.0);
+        let center = crate::pose::brush_center(registry, entity).unwrap_or(transform.origin);
         let distance = center.distance(position);
         if distance <= radius && best.is_none_or(|(_, best_distance)| distance < best_distance) {
             best = Some((entity, distance));

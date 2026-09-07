@@ -3280,3 +3280,33 @@ where they overlap):
   fixture tests (`crates/ohl-engine/tests/rotating_door.rs`) built on the
   corrected convention do demonstrate a rotating door blocking while closed
   and letting the player through once open.
+- **M9.5 (a brush entity's `use` proximity point follows its placed
+  pose).** `docs/FORMAT_SOURCES.md`'s `TODO(black-box)` item 25 is fixed: a
+  `use` press now measures against where a brush entity's geometry actually
+  is, so a `func_door_rotating` on a real map can be opened by a player for
+  the first time. The placement rule every consumer shares — compiled
+  geometry, rotated about the submodel's own local `(0, 0, 0)` for a
+  rotating mover, translated by the `origin` keyvalue, plus the mover's
+  current displacement — is now stated once in the new `ohl_game::pose`
+  module; `ohl-engine`'s renderer and brush-collision attachment re-export
+  those helpers instead of keeping their own copy of the arithmetic, and
+  `ohl_game::logic::find_usable_within` and the level transition's
+  `entity_position` read the same function. `BrushCenter`/`BrushBounds` are
+  now the entity's *placed* centre and box (compiled values plus `origin`,
+  unconditionally); a survey of the campaign map set (93 map names, 92
+  parsed) justified making it unconditional rather than classname-gated:
+  527 of 8,622 brush entities carry a non-zero `origin` across 78 maps, and
+  two of them are ordinary translating `func_door`s, which the collision
+  model and renderer already placed by `origin` regardless. PR #107's two
+  review follow-ups landed alongside: `func_rotating`'s state now also
+  travels through a level transition (`transition::EntitySnapshot::
+  rotator`, with `is_modified_mover` recognising a spinning rotator), and
+  item 24's two misstatements about which save section carries a `Door` are
+  struck and corrected. `crates/ohl-engine/tests/rotating_door.rs` now
+  opens its door through the real `use`-proximity path rather than forcing
+  the state, and a new combat-smoke scenario
+  (`xtask/smoke-scenarios/use_rotating_door_anomalous_materials.txt`, run
+  against `"c1a0"` from `ohl_campaign::CHAPTERS`'s own cited table) walks
+  up to a real `func_door_rotating` and opens it, asserting the new fixed
+  milestone line "The player opened a door."; the other 24 scenarios assert
+  that line absent.

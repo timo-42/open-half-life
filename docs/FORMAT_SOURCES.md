@@ -3295,11 +3295,35 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
     RotatorSnapshot`, alongside the existing track-train/camera/
     `monstermaker`/`trigger_auto` entries in that section — so a
     `func_rotating` toggled on by the player keeps spinning, at its
-    accumulated angle, across a save/load or level transition rather than
-    reverting to its spawnflag default. `Door::rotation_axis`'s own
-    open/close state already round-tripped through the pre-existing
-    `Door` state machine fields that section carries; only the new
-    `Rotator` component itself had lacked an entry.
+    accumulated angle, across a save/load ~~or level transition~~ rather
+    than reverting to its spawnflag default. ~~`Door::rotation_axis`'s own
+    open/close state already round-tripped through the pre-existing `Door`
+    state machine fields that section carries; only the new `Rotator`
+    component itself had lacked an entry.~~
+
+    **Correction (PR #107 review, landed with item 25's fix below).** Two
+    statements in the paragraph above were wrong, and are struck rather
+    than rewritten in place:
+
+    - A `Door`'s own state machine is **not** carried by
+      `SECTION_MOVER_STATE` (28). It is persisted by `SECTION_ENTITY_
+      REGISTRY` (18), as `ohl_engine::transition::EntitySnapshot::door` —
+      the same per-entity component snapshot that carries `Button`,
+      `Platform`, `Light`, `Trigger` and `Message`. Section 28 carries the
+      states that have no component of their own to save: track-train
+      position, camera sequence progress, running-script phase,
+      `monstermaker` counters, and (since PR #107) `Rotator`.
+    - Adding `Rotator` to section 28 did **not** make it survive a *level
+      transition*. A `changelevel` carries `EntitySnapshot`s, not save
+      sections, and `Rotator` had no `EntitySnapshot` field — so a
+      `func_rotating` the player switched on stopped at the map boundary.
+      That gap is now closed too: `EntitySnapshot::rotator` carries it, and
+      `EntitySnapshot::is_modified_mover` counts a spinning (or
+      non-zero-angle) rotator as a mover worth carrying, so the entity is
+      selected for transfer at all. See
+      `crates/ohl-engine/tests/transition_roundtrip.rs`'s
+      `a_spinning_rotator_travels_through_an_entity_snapshot`, and that
+      file's property test, which now generates a `Rotator` too.
 
     **`TODO(black-box)`**: without "One Way", TWHL documents
     `func_door_rotating` as opening away from whichever side activated it;
@@ -3322,29 +3346,73 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
     describes that mechanic for a *rotating* platform distinctly from a
     translating one, so this is left unimplemented rather than guessed at.
 
-25. **`ohl_game::registry::BrushCenter` is wrong for any origin-brush
-    entity (discovered verifying item 24 against the real payload).**
-    `Registry::build` computes `BrushCenter` as the midpoint of a
-    submodel's raw compiled `mins`/`maxs` with no `origin`-keyvalue offset
-    added — correct for an ordinary brush entity (compiled in absolute
-    world space, no origin brush), but wrong for one that has an origin
-    brush (`func_train`/`func_tracktrain`, and now
-    `func_door_rotating`/`func_rotating`; see item 24's "Project
-    behaviour"), whose compiled bounds sit near the submodel's own local
-    `(0, 0, 0)` instead. `ohl_game::logic::find_usable_within` — what a
-    proximity-based `use` press targets — "prefers a brush entity's
-    precomputed bounding-box centre ... over its `Transform::origin`", so
-    for any origin-brush entity it now searches near the wrong point
-    entirely, rather than merely being imprecise. **`TODO(black-box)`**:
-    not fixed by this milestone (out of the rotating-brush package's
-    scope; `crates/ohl-engine/tests/rotating_door.rs`'s own doc comment
-    records the same gap and works around it by forcing state directly
-    instead of relying on proximity). The correct fix is presumably to add
-    the entity's `origin` keyvalue to `BrushCenter` for any submodel whose
-    compiled bounds do not already contain world-space coordinates near
-    `Transform::origin`, or (simpler, if always safe) unconditionally —
-    but that needs verifying against a real map's own translating
-    `func_door`/`func_plat` first, since those are never known to carry an
-    origin brush in practice and this project has not confirmed their
-    `BrushCenter` is not *also* silently already-correct only by
-    coincidence.
+25. ~~**`ohl_game::registry::BrushCenter` is wrong for any origin-brush
+    entity (discovered verifying item 24 against the real payload).**~~
+    **Fixed.** The original finding stands as recorded: `Registry::build`
+    computed `BrushCenter` as the midpoint of a submodel's raw compiled
+    `mins`/`maxs` with no `origin`-keyvalue offset added — correct for a
+    brush entity compiled in absolute world space, but wrong for one built
+    around an origin brush (`func_train`/`func_tracktrain`, and per item 24
+    `func_door_rotating`/`func_rotating`), whose compiled bounds sit near
+    the submodel's own local `(0, 0, 0)` instead. Since
+    `ohl_game::logic::find_usable_within` — what a proximity-based `use`
+    press targets — measured against that point, a `use` press searched
+    near the wrong place entirely for any such entity. A `docs/
+    CLEAN_ROOM.md`-governed fidelity review (round 9, finding L1) then
+    confirmed against real compiled data that the wrong point is not merely
+    imprecise: for the rotating door it probed, it sits inside solid
+    worldspawn geometry across a 100-unit vertical span, so no walking
+    player position could ever satisfy the 64-unit proximity check.
+
+    **Shipped rule: a brush entity's placed pose is its compiled geometry,
+    rotated about the submodel's own local `(0, 0, 0)` when it is a
+    rotating mover, translated by its `origin` keyvalue, plus however far
+    its state machine has since moved it — unconditionally, for every brush
+    entity.** That is now stated once, in `ohl_game::pose`, and every
+    consumer reads it from there: the renderer's draw transform, the
+    collision model's attached brush pose (`ohl-engine`'s
+    `attach_brush_collision`/`Level::sync_brush_collision`, which
+    re-export `ohl_game::pose`'s helpers rather than deriving a second copy
+    of the same arithmetic), `find_usable_within`'s proximity point
+    (`ohl_game::pose::brush_center`), and the level-transition snapshot's
+    `entity_position`. `BrushCenter` itself is now the entity's *resting*
+    placed centre (compiled midpoint plus `origin`), and `BrushBounds` is
+    offset the same way, so the centre remains exactly the box's midpoint.
+    `brush_center` adds the current mover displacement on top, so the
+    proximity point follows an opening door instead of staying where it was
+    authored.
+
+    The rule is unconditional rather than gated on "is this an origin-brush
+    classname" because the `origin` keyvalue is already added
+    unconditionally by the collision attachment and the draw transform: any
+    entity for which `BrushCenter` skipped it would disagree with its own
+    collision brush. That is not hypothetical. A survey of the campaign map
+    set (93 map names from `ohl_campaign`'s own cited tables; 92 parsed
+    from the payload, 1 absent) found 527 of 8,622 brush entities carrying
+    a non-zero `origin` keyvalue, spread over 78 of those maps — and while
+    that total is dominated by exactly the classnames item 24 already
+    documents as requiring an origin brush (every surveyed
+    `func_rotating`, all but four `func_door_rotating`, and most
+    `func_train`/`func_tracktrain`), it also includes **two ordinary
+    translating `func_door`s** (out of 521 surveyed). So the "translating doors never carry an origin
+    brush, so gate on classname" shortcut this item originally proposed
+    verifying is simply false, and the unconditional rule is the one that
+    keeps `use`, collision and render in agreement for every entity.
+    (`func_button`: 0 of 223 carry one; no `func_plat` appears in the
+    surveyed set at all.)
+
+    Regression cover: `ohl_game::registry`'s
+    `brush_center_of_an_origin_brush_entity_is_its_placed_centre` and
+    `brush_center_of_a_world_compiled_entity_is_unchanged`,
+    `ohl_game::pose`'s own three placed-pose tests, and — end to end
+    through a real `Game`/`Input` tick loop —
+    `crates/ohl-engine/tests/rotating_door.rs`, whose door is now opened by
+    an actual `use` press through `find_usable_within` rather than by
+    forcing its state (the workaround that test's doc comment used to
+    record is gone). On real payload data,
+    `xtask/smoke-scenarios/use_rotating_door_anomalous_materials.txt` walks
+    up to a real `func_door_rotating` and opens it with a `use` press,
+    asserting the fixed line "The player opened a door."
+    (`crates/ohl-app/src/script_log.rs`, backed by
+    `ohl_engine::Game::doors_opened_by_use_count`); every other
+    combat-smoke scenario asserts that same line absent.

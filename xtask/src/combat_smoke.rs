@@ -73,9 +73,10 @@ struct Scenario {
 /// script loaded and finished markers.
 const BASE_PRESENT: [&str; 2] = ["Scripted input loaded.", "Scripted input finished."];
 
-/// The eight milestone lines a scenario that never fires, hits, damages or
-/// picks up anything, and that never leaves the player embedded in solid
-/// geometry or riding a mover, is expected never to log. A scenario that
+/// The nine milestone lines a scenario that never fires, hits, damages or
+/// picks up anything, that opens no door with a `use` press, and that never
+/// leaves the player embedded in solid geometry or riding a mover, is
+/// expected never to log. A scenario that
 /// does expect one of these present removes it from its own `absent` list
 /// instead.
 ///
@@ -84,6 +85,11 @@ const BASE_PRESENT: [&str; 2] = ["Scripted input loaded.", "Scripted input finis
 /// alongside it — asserts the PR #91 class of bug (the player falling
 /// through a brush entity's floor and coming to rest embedded in solid
 /// geometry) absent.
+///
+/// "The player opened a door." joined this list (M9, `TODO(black-box)`
+/// item 25) alongside the scenario that asserts it *present*: exactly one
+/// scenario in this file presses `use` at all, so every other one must
+/// never report a door opened by proximity.
 ///
 /// "The player is riding a mover." joined this list once mover-riders
 /// (`crates/ohl-physics`'s `PlayerState::ground_brush`,
@@ -98,7 +104,7 @@ const BASE_PRESENT: [&str; 2] = ["Scripted input loaded.", "Scripted input finis
 /// `"c0a0"`) does *not* use this constant: the player rides that map's
 /// opening tram, so it asserts that line *present* instead. See
 /// [`START_MAP_PRESENT`]'s own doc comment.
-const BASE_ABSENT: [&str; 8] = [
+const BASE_ABSENT: [&str; 9] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
     "A monster took damage.",
@@ -107,6 +113,7 @@ const BASE_ABSENT: [&str; 8] = [
     "The player took damage.",
     "The player is inside solid geometry.",
     "The player is riding a mover.",
+    "The player opened a door.",
 ];
 
 /// The fixed lines both scenarios that run on `ohl_campaign::STARTMAP`
@@ -140,7 +147,7 @@ const START_MAP_PRESENT: [&str; 4] = [
 
 /// [`BASE_ABSENT`], minus "The player is riding a mover.", which
 /// [`START_MAP_PRESENT`] asserts present instead.
-const START_MAP_ABSENT: [&str; 7] = [
+const START_MAP_ABSENT: [&str; 8] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
     "A monster took damage.",
@@ -148,6 +155,7 @@ const START_MAP_ABSENT: [&str; 7] = [
     "A pickup was collected.",
     "The player took damage.",
     "The player is inside solid geometry.",
+    "The player opened a door.",
 ];
 
 /// The fixed line every M9 chapter-walk scenario expects present beyond
@@ -175,13 +183,14 @@ const WALK_PRESENT_MONSTER_ENCOUNTER: [&str; 5] = [
 
 /// [`BASE_ABSENT`] minus the two lines [`WALK_PRESENT_MONSTER_ENCOUNTER`]
 /// moves to its own present set.
-const WALK_ABSENT_MONSTER_ENCOUNTER: [&str; 6] = [
+const WALK_ABSENT_MONSTER_ENCOUNTER: [&str; 7] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
     "A pickup was collected.",
     "The player took damage.",
     "The player is inside solid geometry.",
     "The player is riding a mover.",
+    "The player opened a door.",
 ];
 
 /// [`WALK_PRESENT`] plus the line this scenario's own walk (in
@@ -197,7 +206,7 @@ const WALK_PRESENT_PLAYER_DAMAGED: [&str; 4] = [
 
 /// [`BASE_ABSENT`] minus the one line [`WALK_PRESENT_PLAYER_DAMAGED`]
 /// moves to its own present set.
-const WALK_ABSENT_PLAYER_DAMAGED: [&str; 7] = [
+const WALK_ABSENT_PLAYER_DAMAGED: [&str; 8] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
     "A monster took damage.",
@@ -205,6 +214,7 @@ const WALK_ABSENT_PLAYER_DAMAGED: [&str; 7] = [
     "A pickup was collected.",
     "The player is inside solid geometry.",
     "The player is riding a mover.",
+    "The player opened a door.",
 ];
 
 /// The fixed lines a scenario that does pick up and fire a weapon expects
@@ -234,6 +244,34 @@ const WALK_PRESENT_LADDER: [&str; 4] = [
     "The player is on a ladder.",
 ];
 
+/// [`WALK_PRESENT`] plus the line this scenario's own walk-and-press (in
+/// `xtask/smoke-scenarios/use_rotating_door_anomalous_materials.txt`)
+/// reaches: a `func_door_rotating` opened by a `use` press through the
+/// engine's own proximity path. That path only finds an "origin brush"
+/// entity at all once its proximity point is computed from the same placed
+/// pose the renderer and the collision model use
+/// (`ohl_game::pose::brush_center`); see `docs/FORMAT_SOURCES.md`'s
+/// `TODO(black-box)` item 25 and that scenario file's own header.
+const WALK_PRESENT_DOOR_OPENED: [&str; 4] = [
+    "Scripted input loaded.",
+    "Scripted input finished.",
+    "The player moved from the spawn point.",
+    "The player opened a door.",
+];
+
+/// [`BASE_ABSENT`] minus the one line [`WALK_PRESENT_DOOR_OPENED`] moves to
+/// its own present set.
+const WALK_ABSENT_DOOR_OPENED: [&str; 8] = [
+    "The player fired a weapon.",
+    "A shot hit an entity.",
+    "A monster took damage.",
+    "A monster died.",
+    "A pickup was collected.",
+    "The player took damage.",
+    "The player is inside solid geometry.",
+    "The player is riding a mover.",
+];
+
 /// [`BASE_ABSENT`] minus the three lines [`FIRE_AND_PICKUP_PRESENT`] moves
 /// to its own present set: the swing lands, but nothing in this scenario
 /// takes enough damage to report a monster hurt or killed, and nothing in
@@ -241,12 +279,13 @@ const WALK_PRESENT_LADDER: [&str; 4] = [
 /// solid geometry." and "The player is riding a mover.": this scenario's
 /// own regression guard for the PR #91 class of bug and for mover-riders,
 /// same as every other scenario in this file.
-const FIRE_AND_PICKUP_ABSENT: [&str; 5] = [
+const FIRE_AND_PICKUP_ABSENT: [&str; 6] = [
     "A monster took damage.",
     "A monster died.",
     "The player took damage.",
     "The player is inside solid geometry.",
     "The player is riding a mover.",
+    "The player opened a door.",
 ];
 
 /// The scenarios this command runs, in order. Map names come only from
@@ -291,9 +330,17 @@ const FIRE_AND_PICKUP_ABSENT: [&str; 5] = [
 /// `xtask/smoke-scenarios/ladder_t0a0a.txt`'s own header), the real-payload
 /// counterpart to that PR's synthetic hull-overlap fixtures.
 ///
-/// All 24 scenarios in this file — the four pre-existing ones included —
+/// One further scenario (the `TODO(black-box)` item 25 fix) walks up to a
+/// real `func_door_rotating` on "c1a0" and opens it with a `use` press,
+/// through the engine's own `ohl_game::find_usable_within` proximity path
+/// — the real-payload counterpart of
+/// `crates/ohl-engine/tests/rotating_door.rs`'s synthetic fixture. It is
+/// the only scenario in this file that presses `use` at all, which is why
+/// every other one asserts "The player opened a door." absent.
+///
+/// All 25 scenarios in this file — the four pre-existing ones included —
 /// assert "The player is inside solid geometry." absent: this scenario
-/// set's own regression guard for the PR #91 class of bug. 22 of the 24
+/// set's own regression guard for the PR #91 class of bug. 23 of the 25
 /// also assert "The player is riding a mover." absent, since none of them
 /// stands on a moving brush entity; the two that run on
 /// `ohl_campaign::STARTMAP` assert it *present* instead, because the
@@ -304,7 +351,7 @@ const FIRE_AND_PICKUP_ABSENT: [&str; 5] = [
     reason = "one Scenario literal per M9 chapter-walk scenario, plus the four \
               pre-existing ones; splitting the list would only add indirection"
 )]
-fn scenarios() -> [Scenario; 24] {
+fn scenarios() -> [Scenario; 25] {
     [
         Scenario {
             name: "walk forward in the training start",
@@ -340,6 +387,13 @@ fn scenarios() -> [Scenario; 24] {
             map: "c0a0",
             present: &START_MAP_PRESENT,
             absent: &START_MAP_ABSENT,
+        },
+        Scenario {
+            name: "open a rotating door with use in Anomalous Materials",
+            file: "use_rotating_door_anomalous_materials.txt",
+            map: "c1a0",
+            present: &WALK_PRESENT_DOOR_OPENED,
+            absent: &WALK_ABSENT_DOOR_OPENED,
         },
         Scenario {
             name: "walk from spawn in Anomalous Materials",

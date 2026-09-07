@@ -40,12 +40,27 @@ pub struct Transform {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BrushModel(pub u32);
 
-/// The world-space centre of a brush entity's submodel bounding box, when
-/// `model_bounds` was supplied for its `BrushModel` index. Brush entities'
-/// own `origin` keyvalue is conventionally `0 0 0` (their placement is baked
-/// into the compiled brush geometry, unlike a point entity), so proximity
-/// checks such as "use the nearest door" should prefer this over
-/// [`Transform::origin`] when it is present.
+/// The world-space centre of a brush entity's placed submodel bounding
+/// box, when `model_bounds` was supplied for its `BrushModel` index: the
+/// compiled bounds' midpoint *plus* the entity's `origin` keyvalue.
+///
+/// Adding `origin` is what makes this a world-space point for every kind of
+/// brush entity rather than only for the common one. A brush entity whose
+/// geometry was compiled in absolute world space leaves `origin` at
+/// `0 0 0`, so the sum is just the midpoint; one built around an "origin
+/// brush" has its geometry compiled *relative to* that brush instead, and
+/// the compiler writes the brush's own position into `origin` — so without
+/// this addition its centre would land near the map's `(0, 0, 0)` rather
+/// than anywhere the entity actually is. The same unconditional addition is
+/// what `ohl-engine` already applies when it attaches the submodel to the
+/// collision model and when it draws it, so this centre and the brush a
+/// player collides with agree by construction (see [`crate::pose`]).
+///
+/// This is the entity's *resting* centre: a mover that has since travelled
+/// or swung is at [`crate::pose::brush_center`] instead, which adds its
+/// current state-machine displacement on top of this. Proximity checks such
+/// as "use the nearest door" go through that function rather than reading
+/// this component directly.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BrushCenter(pub Vec3);
@@ -268,9 +283,12 @@ pub struct ChangeLevel {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GlobalName(pub String);
 
-/// A brush entity's submodel bounding box, copied from the BSP model lump
-/// when `model_bounds` supplied it. Kept alongside [`BrushCenter`] because a
-/// `trigger_transition` volume needs the full box, not just its middle.
+/// A brush entity's placed submodel bounding box: the box copied from the
+/// BSP model lump when `model_bounds` supplied it, offset by the entity's
+/// `origin` keyvalue the same unconditional way [`BrushCenter`] is, so the
+/// two always agree ([`BrushCenter`] is exactly this box's midpoint). Kept
+/// alongside [`BrushCenter`] because a `trigger_transition` volume needs
+/// the full box, not just its middle.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BrushBounds {
@@ -811,18 +829,23 @@ impl Registry {
             if let Some(ModelRef::Brush(index)) = &def.model {
                 world.insert_one(entity, BrushModel(*index)).ok();
                 if let Some((mins, maxs)) = model_bounds.get(index) {
+                    // Plus the `origin` keyvalue, unconditionally: see
+                    // `BrushCenter`'s own doc comment for why that is
+                    // right for a submodel compiled in absolute world
+                    // space as well as for one compiled relative to an
+                    // origin brush.
                     let center = Vec3::new(
                         f32::midpoint(mins[0], maxs[0]),
                         f32::midpoint(mins[1], maxs[1]),
                         f32::midpoint(mins[2], maxs[2]),
-                    );
+                    ) + Vec3::from_array(def.origin);
                     world.insert_one(entity, BrushCenter(center)).ok();
                     world
                         .insert_one(
                             entity,
                             BrushBounds {
-                                mins: Vec3::from_array(*mins),
-                                maxs: Vec3::from_array(*maxs),
+                                mins: Vec3::from_array(*mins) + Vec3::from_array(def.origin),
+                                maxs: Vec3::from_array(*maxs) + Vec3::from_array(def.origin),
                             },
                         )
                         .ok();
@@ -1308,6 +1331,68 @@ mod tests {
         assert!((door.wait - 2.0).abs() < f32::EPSILON);
         assert!((door.lip - 8.0).abs() < f32::EPSILON);
         assert!((door.movedir - Vec3::new(0.0, 1.0, 0.0)).length() < 1e-4);
+    }
+
+    /// A brush entity built around an "origin brush" has its geometry
+    /// compiled relative to that brush and the brush's own world position
+    /// written into its `origin` keyvalue, so its raw compiled bounds sit
+    /// around the submodel's local `(0, 0, 0)`. `BrushCenter` has to add
+    /// `origin` back, or a proximity check against it searches near the
+    /// map's world origin instead of near the entity — the bug
+    /// `docs/FORMAT_SOURCES.md`'s `TODO(black-box)` item 25 recorded.
+    #[test]
+    fn brush_center_of_an_origin_brush_entity_is_its_placed_centre() {
+        let entities = vec![raw(&[
+            ("classname", "func_door_rotating"),
+            ("targetname", "door1"),
+            ("model", "*1"),
+            ("origin", "1000 -500 64"),
+            ("distance", "90"),
+            ("speed", "120"),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut bounds = BTreeMap::new();
+        // Compiled relative to the origin brush: a 16x64x96 leaf hanging
+        // off the local origin, nowhere near the entity's real position.
+        bounds.insert(1u32, ([-8.0, 0.0, -48.0], [8.0, 64.0, 48.0]));
+        let registry = Registry::build(&defs, &bounds, &Limits::default());
+        let entity = registry.find("door1")[0];
+
+        let center = registry
+            .world
+            .get::<&BrushCenter>(entity)
+            .expect("a brush entity with known bounds has a centre");
+        assert_eq!(center.0, Vec3::new(1000.0, -468.0, 64.0));
+
+        // The bounds travel with it, and stay consistent with the centre.
+        let box_ = registry
+            .world
+            .get::<&BrushBounds>(entity)
+            .expect("a brush entity with known bounds has a box");
+        assert_eq!(box_.mins, Vec3::new(992.0, -500.0, 16.0));
+        assert_eq!(box_.maxs, Vec3::new(1008.0, -436.0, 112.0));
+        assert_eq!((box_.mins + box_.maxs) * 0.5, center.0);
+    }
+
+    /// The ordinary case stays exactly as it was: a brush entity compiled
+    /// in absolute world space leaves `origin` at `0 0 0`, so adding it
+    /// unconditionally changes nothing for it.
+    #[test]
+    fn brush_center_of_a_world_compiled_entity_is_unchanged() {
+        let entities = vec![raw(&[
+            ("classname", "func_door"),
+            ("targetname", "door1"),
+            ("model", "*2"),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut bounds = BTreeMap::new();
+        bounds.insert(2u32, ([100.0, 200.0, 0.0], [140.0, 240.0, 80.0]));
+        let registry = Registry::build(&defs, &bounds, &Limits::default());
+        let center = registry
+            .world
+            .get::<&BrushCenter>(registry.find("door1")[0])
+            .expect("a brush entity with known bounds has a centre");
+        assert_eq!(center.0, Vec3::new(120.0, 220.0, 40.0));
     }
 
     #[test]
