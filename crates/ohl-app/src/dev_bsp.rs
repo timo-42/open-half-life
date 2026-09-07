@@ -339,6 +339,10 @@ impl Viewer {
         if self.use_pressed {
             self.use_pressed = false;
             let position = Vec3::from_array(self.camera.position);
+            // See `ohl_engine`'s own phase 12: a rotating door opens away
+            // from whoever opened it, and the activator here is a camera
+            // position rather than a `hecs` entity.
+            self.simulation.set_activator_origin(Some(position));
             if let Some(entity) = find_usable_within(&self.registry, position, USE_RADIUS) {
                 let mut events = Vec::new();
                 self.simulation

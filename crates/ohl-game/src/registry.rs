@@ -160,6 +160,77 @@ pub struct Door {
     pub timer: f32,
 }
 
+/// `func_door_rotating`'s activator-relative swing data: everything the
+/// "opens away from whoever opened it" rule needs that is fixed at spawn
+/// and so never has to be saved (`ohl-engine` rebuilds it identically from
+/// the map every load, exactly as it already does for
+/// [`Rotator::axis`]/[`Rotator::speed`]).
+///
+/// TWHL wiki `func_door_rotating` (`docs/FORMAT_SOURCES.md`, "Entity
+/// keyvalues and map logic", item 24; search-summary citation, reviewed
+/// 2026-09-07, same HTTP 403 caveat as the other TWHL citations in this
+/// crate): "the door will always open away from the player" unless the
+/// "One Way" spawnflag ([`SPAWNFLAG_DOOR_ROTATING_ONE_WAY`], "door only
+/// opens in the direction set in Distance") is set. *Which* side counts as
+/// "away", and what a door whose activator stands exactly on its hinge
+/// plane does, are not stated by any public source; both are this
+/// project's own bounded reading, recorded as project behaviour in
+/// `docs/FORMAT_SOURCES.md` item 26 and implemented by
+/// [`Self::opening_axis`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RotatingDoorSwing {
+    /// The signed unit axis the spawnflags and `distance` keyvalue alone
+    /// select — what [`Door::rotation_axis`] is initialised to, kept
+    /// separately because that field's own sign is what
+    /// [`Self::opening_axis`] overwrites on each open.
+    pub base_axis: Vec3,
+    /// A unit vector perpendicular to both [`Self::base_axis`] and the
+    /// door leaf, pointing the way the leaf's centre first moves when the
+    /// door swings by a small *positive* angle about [`Self::base_axis`]
+    /// (the rigid-body relation `v = axis x r`, evaluated at the leaf's
+    /// own compiled centre). `Vec3::ZERO` when the leaf's centre sits on
+    /// the rotation axis itself — a symmetric double leaf, or a submodel
+    /// with no bounds recorded — leaving no side to prefer.
+    pub hinge_normal: Vec3,
+    /// The "One Way" spawnflag ([`SPAWNFLAG_DOOR_ROTATING_ONE_WAY`]): the
+    /// door ignores the activator entirely and always swings the way its
+    /// spawnflags/`distance` chose.
+    pub one_way: bool,
+}
+
+impl RotatingDoorSwing {
+    /// Which signed axis this door should swing about to move *away* from
+    /// an activator standing at `activator`, given the door pivots about
+    /// `pivot` (its `origin` keyvalue). `None` means "keep whatever sign
+    /// the door already has": a "One Way" door, a door with no leaf
+    /// direction to reason about ([`Self::hinge_normal`] zero), an
+    /// activator whose position is unknown or not finite, or an activator
+    /// standing exactly on the hinge plane (`side == 0.0`), where "away"
+    /// is genuinely undefined and this project deliberately falls back to
+    /// the spawnflag/keyvalue direction rather than guessing.
+    #[must_use]
+    pub fn opening_axis(&self, pivot: Vec3, activator: Option<Vec3>) -> Option<Vec3> {
+        if self.one_way || self.hinge_normal == Vec3::ZERO {
+            return None;
+        }
+        let activator = activator?;
+        if !activator.is_finite() || !pivot.is_finite() {
+            return None;
+        }
+        let side = (activator - pivot).dot(self.hinge_normal);
+        if side > 0.0 {
+            // The activator stands on the side the leaf would sweep into
+            // under a positive rotation, so swing the other way.
+            Some(-self.base_axis)
+        } else if side < 0.0 {
+            Some(self.base_axis)
+        } else {
+            None
+        }
+    }
+}
+
 /// `func_button`: `speed`, `wait`, `health`, `delay` and a `sounds` index.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -676,11 +747,11 @@ pub fn movedir_from_angles(angles: Vec3) -> Vec3 {
 pub const SPAWNFLAG_DOOR_ROTATING_REVERSE: u32 = 2;
 /// `func_door_rotating`'s "One Way" spawnflag: the same TWHL page documents
 /// it as "door only opens in the direction set in Distance", i.e. it
-/// disables an activator-relative opening direction this crate does not
-/// compute at all (see the `TODO(black-box)` on `Registry::build`'s
-/// `func_door_rotating` arm) — so it changes nothing this implementation
-/// does today, and is only named here so that unimplemented direction has
-/// a documented bit to gate on later.
+/// disables the activator-relative opening direction the same page
+/// documents ("the door will always open away from the player") as the
+/// default. Carried into [`RotatingDoorSwing::one_way`], which is what
+/// `ohl_game::logic::Simulation::activate` gates the direction decision
+/// on.
 pub const SPAWNFLAG_DOOR_ROTATING_ONE_WAY: u32 = 16;
 /// `func_door_rotating`'s "X Axis" spawnflag.
 pub const SPAWNFLAG_DOOR_ROTATING_X_AXIS: u32 = 64;
@@ -720,6 +791,35 @@ fn rotation_axis(x_axis: bool, y_axis: bool, reverse: bool) -> Vec3 {
         Vec3::Z
     };
     if reverse { -unit } else { unit }
+}
+
+/// The [`RotatingDoorSwing::hinge_normal`] for a `func_door_rotating` whose
+/// signed spawn axis is `base_axis` and whose submodel's compiled bounding
+/// box is `model_bounds`' entry for its `*N` model index.
+///
+/// A rotating door's geometry is compiled *relative to its own origin
+/// brush* — the pivot — rather than in absolute world space
+/// (`docs/FORMAT_SOURCES.md` item 24, verified there against a real map's
+/// `BSPMODEL::mins/maxs`), so the midpoint of those raw compiled bounds is
+/// already the offset from the pivot to the door leaf's centre. The
+/// direction that leaf first moves in under a small positive rotation is
+/// then the rigid-body `v = axis x r`, normalized; a leaf centred on the
+/// axis itself (a symmetric double leaf) leaves no side to prefer and
+/// yields `Vec3::ZERO`.
+#[must_use]
+fn hinge_normal(
+    def: &EntityDef,
+    base_axis: Vec3,
+    model_bounds: &BTreeMap<u32, ([f32; 3], [f32; 3])>,
+) -> Vec3 {
+    let Some(ModelRef::Brush(index)) = &def.model else {
+        return Vec3::ZERO;
+    };
+    let Some((mins, maxs)) = model_bounds.get(index) else {
+        return Vec3::ZERO;
+    };
+    let leaf = (Vec3::from_array(*mins) + Vec3::from_array(*maxs)) * 0.5;
+    base_axis.cross(leaf).normalize_or_zero()
 }
 
 /// Clamps a float keyvalue field into `0..=255` for storage as a `u8`
@@ -914,14 +1014,15 @@ impl Registry {
                 // negative `distance` and the "Reverse Direction"
                 // spawnflag.
                 //
-                // **`TODO(black-box)`**: without "One Way" (see
-                // `SPAWNFLAG_DOOR_ROTATING_ONE_WAY`'s own doc comment), the
+                // Without "One Way" (see
+                // `SPAWNFLAG_DOOR_ROTATING_ONE_WAY`'s own doc comment) the
                 // same page documents the door as opening "away from the
-                // player" — an activator-relative direction this arm does
-                // not compute; every rotating door here always swings the
-                // same fixed, spawnflag/keyvalue-determined way regardless
-                // of which side it was triggered from, until that is
-                // verified against the real game.
+                // player", so this arm also records a `RotatingDoorSwing`:
+                // the spawnflag-chosen axis, the door leaf's own swing
+                // normal, and the "One Way" bit. `ohl_game::logic::
+                // Simulation::activate` flips `Door::rotation_axis`'s sign
+                // from those on each open, which is also how the choice
+                // persists (see `RotatingDoorSwing`'s own doc comment).
                 "func_door_rotating" => {
                     let flags = def.spawnflags;
                     let reverse = flags & SPAWNFLAG_DOOR_ROTATING_REVERSE != 0;
@@ -956,6 +1057,16 @@ impl Registry {
                         timer,
                     };
                     world.insert_one(entity, door).ok();
+                    world
+                        .insert_one(
+                            entity,
+                            RotatingDoorSwing {
+                                base_axis: axis,
+                                hinge_normal: hinge_normal(def, axis, model_bounds),
+                                one_way: flags & SPAWNFLAG_DOOR_ROTATING_ONE_WAY != 0,
+                            },
+                        )
+                        .ok();
                 }
                 // `func_rotating`: TWHL wiki `func_rotating` (`docs/
                 // FORMAT_SOURCES.md`, "Entity keyvalues and map logic"): a

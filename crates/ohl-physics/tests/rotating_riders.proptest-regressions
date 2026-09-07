@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 160924199f00afa0f851eaa4e9445896c1491048814de1e205a1698345fa00b9 # shrinks to degrees_per_second = 5.0, clockwise = false, radius = 24.0
+cc 4a4881e5e52fd2eb54da1ba6c84456f03c3606586fcdcd00edd17494c2c79df0 # shrinks to pivot = Vec3(0.0, -2270.4446, 0.0), omega = Vec3(0.0, -633.6775, -1512.0397), along = 7.8597956, point = Vec3(0.0, 0.0, 0.0)
+cc 61f6fb66b38e30192ba2866d71e4cf4509011582101e4f03af4686741956791e # shrinks to degrees_per_second = 17.39962, clockwise = false, radius = 24.0

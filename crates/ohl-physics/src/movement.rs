@@ -478,8 +478,7 @@ pub fn categorize_position(model: &CollisionModel, state: &mut PlayerState, conf
         return;
     }
 
-    let below = state.origin - Vec3::Z * 2.0;
-    let trace = model.trace(state.hull(), state.origin, below);
+    let trace = ground_probe(model, state);
     if trace.fraction < 1.0 && !trace.all_solid && trace.plane_normal.z >= config.slope_limit {
         state.on_ground = true;
         state.ground_normal = trace.plane_normal;
@@ -503,6 +502,55 @@ pub fn categorize_position(model: &CollisionModel, state: &mut PlayerState, conf
         state.ground_normal = Vec3::ZERO;
         state.ground_brush = None;
     }
+}
+
+/// How far above the player's own origin [`ground_probe`] re-runs its
+/// downward trace from when the trace from the origin itself reports the
+/// player already embedded. One unit, the same discrete step
+/// [`UNSTICK_STEP`] recovers a stuck landing in, and far less than a step
+/// up ([`MoveConfig::step_size`]), so this can never lift a player onto
+/// something they were not already standing on.
+const GROUND_PROBE_LIFT: f32 = 1.0;
+
+/// The short downward trace [`categorize_position`] decides "is the player
+/// standing on something" from.
+///
+/// Ordinarily this is one trace from the player's origin two units down.
+/// The retry exists for a *rotating* ground brush
+/// (`func_rotating`/`func_door_rotating`, whose pose
+/// `crate::hull::CollisionModel::set_brush_pose` re-derives every step):
+/// a player resting exactly on such a brush's surface sits exactly on the
+/// expanded hull plane, and the pose's own inverse rotation can place that
+/// same resting point a fraction of a unit on either side of it from one
+/// step to the next, so the trace intermittently reports the player
+/// embedded (`start_solid`) instead of standing. Left alone, that single
+/// tick drops the rider off the mover — the ground branch below never
+/// runs, `ground_brush` clears, and the player takes the air branch and
+/// falls off a floor they never actually left.
+///
+/// The retry re-traces from [`GROUND_PROBE_LIFT`] above the origin and is
+/// used only when it comes back clean (not embedded, and still hitting
+/// something within the probe's own reach), so a player genuinely inside
+/// solid — a mover that has actually crushed them into a wall — still
+/// reports embedded and is handled by the caller's own paths, and a player
+/// standing over nothing still finds nothing. Not a documented rule: it is
+/// this project's own bounded numerical-robustness step, recorded as
+/// project behaviour in `docs/FORMAT_SOURCES.md` item 26.
+fn ground_probe(model: &CollisionModel, state: &PlayerState) -> Trace {
+    let below = state.origin - Vec3::Z * 2.0;
+    let trace = model.trace(state.hull(), state.origin, below);
+    if !trace.start_solid && !trace.all_solid {
+        return trace;
+    }
+    let lifted = model.trace(
+        state.hull(),
+        state.origin + Vec3::Z * GROUND_PROBE_LIFT,
+        below,
+    );
+    if lifted.start_solid || lifted.all_solid || lifted.fraction >= 1.0 {
+        return trace;
+    }
+    lifted
 }
 
 /// How far [`unstick_from_ground`] tries nudging the player upward, in
@@ -1351,6 +1399,42 @@ fn water_move(
         dt,
     );
     slide_move(model, state, config, dt);
+}
+
+/// The world-space velocity of the point `point` on a rigid body that is
+/// rotating at `angular_velocity` (radians per second; its direction is the
+/// right-handed rotation axis, its length the rate) about the fixed point
+/// `pivot` — the standard rigid-body relation `v = omega x r`, with
+/// `r = point - pivot`.
+///
+/// This is what carries a player standing on a rotating brush entity
+/// (`func_rotating`, a swinging `func_door_rotating`): the translating
+/// movers already handled by [`MoveInput::base_velocity`] move every point
+/// of the brush alike, while a rotating one moves the point under the
+/// player's feet at a speed that grows with their distance from the axis
+/// and vanishes on it. A host adds this to whatever translation velocity
+/// the same brush reports and feeds the sum in as
+/// [`MoveInput::base_velocity`], so the ride is blended through the
+/// ordinary move and removed again afterwards exactly like any other
+/// mover's (see "Riding movers", `docs/FORMAT_SOURCES.md`).
+///
+/// No public source states this for a *rotating* GoldSrc platform
+/// specifically; the formula itself is elementary rigid-body kinematics,
+/// not a reimplementation of anything, and this project records the choice
+/// to apply it as project behaviour in `docs/FORMAT_SOURCES.md` item 26.
+/// A non-finite input yields [`Vec3::ZERO`] rather than propagating NaN
+/// into the player's velocity.
+#[must_use]
+pub fn rotational_ride_velocity(pivot: Vec3, angular_velocity: Vec3, point: Vec3) -> Vec3 {
+    if !pivot.is_finite() || !angular_velocity.is_finite() || !point.is_finite() {
+        return Vec3::ZERO;
+    }
+    let velocity = angular_velocity.cross(point - pivot);
+    if velocity.is_finite() {
+        velocity
+    } else {
+        Vec3::ZERO
+    }
 }
 
 /// Traces the player's current hull straight down by `distance`, the query

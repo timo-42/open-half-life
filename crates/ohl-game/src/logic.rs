@@ -13,7 +13,7 @@ use hecs::Entity;
 
 use crate::registry::{
     AutoTrigger, BrushBounds, Button, ChangeLevel, Door, Message, MoverState, MultiManager,
-    Platform, Registry, Rotator, Target, Transform, Trigger, TriggerHurt,
+    Platform, Registry, RotatingDoorSwing, Rotator, Target, Transform, Trigger, TriggerHurt,
 };
 use crate::track_train::TrackTrainState;
 
@@ -178,6 +178,18 @@ pub struct Simulation {
     /// also not persisted across a save/restore today), so a loaded save
     /// does not re-fire either one.
     player_spawn_fired: bool,
+    /// Where the player is standing, refreshed by the host every tick
+    /// through [`Self::set_activator_origin`] and read only by
+    /// [`Self::activate`] to decide which way a `func_door_rotating`
+    /// swings ("away from the player"; see
+    /// [`crate::registry::RotatingDoorSwing`]). The player is not a `hecs`
+    /// entity in this project, so a `use` press or touch trigger has no
+    /// activator [`Entity`] to read a [`Transform`] off; this scratch
+    /// field stands in for one. Not persisted in [`SimulationState`]: it
+    /// is overwritten before it is read on every tick a host drives, and a
+    /// host that never sets it simply leaves every rotating door swinging
+    /// its spawnflag-chosen way, exactly as before this rule existed.
+    activator_origin: Option<Vec3>,
 }
 
 impl Simulation {
@@ -185,6 +197,15 @@ impl Simulation {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Records where the activating player currently stands, for the one
+    /// decision that needs it: which way a `func_door_rotating` opens (see
+    /// [`Self::activator_origin`] and
+    /// [`crate::registry::RotatingDoorSwing`]). A non-finite origin is
+    /// stored as `None` rather than propagated into the dot product below.
+    pub fn set_activator_origin(&mut self, origin: Option<Vec3>) {
+        self.activator_origin = origin.filter(|origin| origin.is_finite());
     }
 
     /// Schedules `target` to be activated in `delay` seconds (`0` fires on
@@ -424,8 +445,26 @@ impl Simulation {
         activator: Option<Entity>,
         events: &mut Vec<Event>,
     ) {
+        // Decided before the `&mut Door` borrow below, since it reads two
+        // other components off the same registry: which way a
+        // `func_door_rotating` should swing for *this* activator. `None`
+        // for every other kind of door, and for the cases
+        // `RotatingDoorSwing::opening_axis` itself declines to decide.
+        let swing_axis = self.rotating_door_open_axis(registry, entity, activator);
         if let Ok(door) = registry.world.query_one_mut::<&mut Door>(entity) {
             if door.state == MoverState::Closed {
+                // Only ever applied on the closed -> opening edge, where
+                // the door's own rendered/collided angle is zero: flipping
+                // the axis at any other point in the cycle would teleport
+                // a part-open leaf to the mirrored pose. Writing it into
+                // `Door::rotation_axis` is also what makes the choice
+                // survive a save/load and a level transition — that field
+                // already round-trips through the entity snapshot every
+                // save section and `crate::transition` carry — with no new
+                // state to persist.
+                if let Some(axis) = swing_axis {
+                    door.rotation_axis = Some(axis);
+                }
                 door.state = MoverState::Opening;
                 door.timer = door.delay + travel_time(door.travel_distance, door.speed);
             }
@@ -601,6 +640,33 @@ impl Simulation {
         if let Ok(target) = registry.world.get::<&crate::registry::Target>(entity) {
             self.fire(target.0.clone(), activator, trigger.delay);
         }
+    }
+
+    /// The signed rotation axis `entity` — when it is a
+    /// `func_door_rotating` with a [`RotatingDoorSwing`] — should open
+    /// about so that its leaf swings away from `activator` (an entity with
+    /// a [`Transform`], else the host-supplied
+    /// [`Self::activator_origin`]). `None` whenever the direction is not
+    /// this rule's to decide; see
+    /// [`RotatingDoorSwing::opening_axis`].
+    fn rotating_door_open_axis(
+        &self,
+        registry: &Registry,
+        entity: Entity,
+        activator: Option<Entity>,
+    ) -> Option<Vec3> {
+        let swing = *registry.world.get::<&RotatingDoorSwing>(entity).ok()?;
+        let pivot = registry.world.get::<&Transform>(entity).ok()?.origin;
+        let activator_origin = activator
+            .and_then(|activator| {
+                registry
+                    .world
+                    .get::<&Transform>(activator)
+                    .ok()
+                    .map(|transform| transform.origin)
+            })
+            .or(self.activator_origin);
+        swing.opening_axis(pivot, activator_origin)
     }
 
     fn advance_doors(registry: &mut Registry, dt: f32) {
@@ -864,6 +930,100 @@ mod tests {
         tick_for(&mut sim, &mut registry, 2.5, 0.05);
         let door = registry.world.get::<&Door>(door_entity).unwrap();
         assert_eq!(door.state, MoverState::Closed);
+    }
+
+    /// A `func_door_rotating` with a leaf compiled along `+y` from its
+    /// pivot, spawning with the default `+Z` axis: a positive rotation
+    /// sweeps that leaf toward `-x` (`Z x (+y) = -x`), so the door must
+    /// keep `+Z` for an activator standing at `+x` and flip to `-Z` for
+    /// one standing at `-x`. TWHL wiki `func_door_rotating`, "the door
+    /// will always open away from the player" (`docs/FORMAT_SOURCES.md`
+    /// items 24 and 26).
+    fn rotating_door_registry(extra: &[(&str, &str)]) -> (Registry, Entity) {
+        let mut pairs = vec![
+            ("classname", "func_door_rotating"),
+            ("targetname", "door1"),
+            ("model", "*1"),
+            ("origin", "0 0 0"),
+            ("speed", "90"),
+            ("distance", "90"),
+            ("wait", "1"),
+        ];
+        pairs.extend_from_slice(extra);
+        let defs = parse_entities(&[raw(&pairs)], &Limits::default());
+        // The leaf's compiled bounds sit on the `+y` side of the pivot,
+        // the convention `docs/FORMAT_SOURCES.md` item 24 recorded for an
+        // origin-brush entity (geometry relative to the origin brush).
+        let mut bounds = BTreeMap::new();
+        bounds.insert(1u32, ([-4.0, 0.0, -32.0], [4.0, 64.0, 32.0]));
+        let registry = Registry::build(&defs, &bounds, &Limits::default());
+        let entity = registry.find("door1")[0];
+        (registry, entity)
+    }
+
+    fn open_and_read_axis(registry: &mut Registry, entity: Entity, activator: Vec3) -> Vec3 {
+        let mut sim = Simulation::new();
+        sim.set_activator_origin(Some(activator));
+        let mut events = Vec::new();
+        sim.use_entity(registry, entity, None, &mut events);
+        registry
+            .world
+            .get::<&Door>(entity)
+            .unwrap()
+            .rotation_axis
+            .expect("a func_door_rotating always has a rotation axis")
+    }
+
+    #[test]
+    fn a_rotating_door_swings_away_from_an_activator_on_either_side() {
+        let (mut registry, entity) = rotating_door_registry(&[]);
+        assert_eq!(
+            open_and_read_axis(&mut registry, entity, Vec3::new(64.0, 32.0, 0.0)),
+            Vec3::Z,
+            "an activator on the +x side must not be swept into"
+        );
+
+        let (mut registry, entity) = rotating_door_registry(&[]);
+        assert_eq!(
+            open_and_read_axis(&mut registry, entity, Vec3::new(-64.0, 32.0, 0.0)),
+            -Vec3::Z,
+            "an activator on the -x side must not be swept into"
+        );
+    }
+
+    #[test]
+    fn a_one_way_rotating_door_ignores_the_activator() {
+        let (mut registry, entity) = rotating_door_registry(&[("spawnflags", "16")]);
+        assert!(
+            registry
+                .world
+                .get::<&RotatingDoorSwing>(entity)
+                .unwrap()
+                .one_way
+        );
+        // The same activator position that flipped the axis above leaves
+        // a "One Way" door on its spawnflag-chosen direction.
+        assert_eq!(
+            open_and_read_axis(&mut registry, entity, Vec3::new(-64.0, 32.0, 0.0)),
+            Vec3::Z
+        );
+    }
+
+    #[test]
+    fn a_rotating_door_keeps_its_chosen_side_for_the_rest_of_the_cycle() {
+        let (mut registry, entity) = rotating_door_registry(&[]);
+        let mut sim = Simulation::new();
+        sim.set_activator_origin(Some(Vec3::new(-64.0, 32.0, 0.0)));
+        let mut events = Vec::new();
+        sim.use_entity(&mut registry, entity, None, &mut events);
+        // Mid-swing the activator walks around to the other side; the
+        // door must not mirror itself part-way through its own motion.
+        sim.set_activator_origin(Some(Vec3::new(64.0, 32.0, 0.0)));
+        tick_for(&mut sim, &mut registry, 0.5, 0.05);
+        sim.use_entity(&mut registry, entity, None, &mut events);
+        let door = registry.world.get::<&Door>(entity).unwrap();
+        assert_eq!(door.rotation_axis, Some(-Vec3::Z));
+        assert_eq!(door.state, MoverState::Opening);
     }
 
     #[test]

@@ -883,11 +883,12 @@ impl Systems {
             if probe.start_solid
                 && let Some(brush) = probe.brush_index
             {
-                let velocity = level
-                    .brush_velocity
-                    .get(&brush)
-                    .copied()
-                    .unwrap_or(Vec3::ZERO);
+                // A rotating brush sweeping into the player counts here
+                // exactly like a translating one closing on them: the
+                // velocity of the brush *at the player's own position* is
+                // what has to push them clear, which for a rotation grows
+                // with their distance from its axis.
+                let velocity = level.brush_ride_velocity(brush, controller.state.origin);
                 if velocity != Vec3::ZERO
                     && !ohl_physics::push_from_mover(
                         collision,
@@ -906,11 +907,14 @@ impl Systems {
             // `base_velocity` so a moving `func_train`/`func_tracktrain`/
             // `func_plat`/lift `func_door` carries the player riding it.
             // See "Riding movers" in `docs/FORMAT_SOURCES.md`.
-            controller.base_velocity = controller
-                .state
-                .ground_brush
-                .and_then(|brush| level.brush_velocity.get(&brush).copied())
-                .unwrap_or(Vec3::ZERO);
+            // The ride includes a rotating ground brush's tangential
+            // velocity at the player's own feet (`omega x r`, see
+            // `Level::brush_ride_velocity`), so standing on a spinning
+            // `func_rotating` disc or a swinging `func_door_rotating`
+            // carries the player the same way a `func_train` already does.
+            controller.base_velocity = controller.state.ground_brush.map_or(Vec3::ZERO, |brush| {
+                level.brush_ride_velocity(brush, controller.state.origin)
+            });
             controller.advance(collision, &input.controller_input(), dt);
             camera.position = controller.eye_position().to_array();
         } else {
@@ -1175,6 +1179,16 @@ impl Systems {
         dt: f32,
         events: &mut Vec<Event>,
     ) {
+        // Which side of a `func_door_rotating`'s hinge plane the player is
+        // on decides which way it swings ("away from the player"; see
+        // `ohl_game::registry::RotatingDoorSwing` and
+        // `docs/FORMAT_SOURCES.md` item 26). The player is not a `hecs`
+        // entity here, so the simulation has no activator `Transform` to
+        // read and is handed the position directly, refreshed every step
+        // before anything in this phase can activate a door.
+        level
+            .simulation
+            .set_activator_origin(Some(Vec3::from_array(camera.position)));
         if input.use_pressed {
             let position = Vec3::from_array(camera.position);
             if let Some(entity) = find_usable_within(&level.registry, position, USE_RADIUS) {

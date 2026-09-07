@@ -879,6 +879,16 @@ everything else has already agreed on). The current phase order is:
    vertical mover additionally moves the player's origin directly, bounded
    by the same hull trace, since a ground probe that only looks a couple
    of units down cannot reliably catch a fast-moving platform in one tick.
+   A *rotating* mover (`func_rotating`, a swinging `func_door_rotating`)
+   carries a rider the same way, but per point rather than per brush: its
+   pivot and angular velocity are recorded in `Level::brush_rotation` each
+   step, and `Level::brush_ride_velocity` adds the tangential velocity that
+   spin gives the player's own position (`ohl_physics::
+   rotational_ride_velocity`, `v = omega x r` — nothing on the axis,
+   fastest at the rim) to the translation velocity above, feeding the same
+   `base_velocity` and the same bounded `push_from_mover` a closing door
+   already used. The player's *view* is deliberately not yawed with a
+   rotating platform; see `docs/FORMAT_SOURCES.md` item 26.
    `CollisionModel::detach_brush` removes a despawned or component-
    stripped entity's brush from the model (reducing it to the same bare-
    contents no-op state an empty submodel already has), so a brush entity

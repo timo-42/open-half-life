@@ -31,7 +31,7 @@
 
 use ohl_engine::test_support::{
     ROTATING_DOOR_MAP, ROTATING_DOOR_MAXS, ROTATING_DOOR_MINS, ROTATING_DOOR_NAME,
-    rotating_door_bsp, rotating_door_entities,
+    rotating_door_bsp, rotating_door_entities, rotating_door_trigger_entities,
 };
 use ohl_engine::{AssetSource, Game, Input, MemoryAssets};
 use ohl_game::registry::{Door, MoverState};
@@ -144,4 +144,67 @@ fn a_use_press_that_opens_a_door_is_counted() {
     // A second press on an already-open door is not a second opening.
     game.tick(STEP, &use_press);
     assert_eq!(game.doors_opened_by_use_count(), 1);
+}
+
+/// A rotating door opened by the player swings *away* from them.
+///
+/// TWHL wiki `func_door_rotating` (`docs/FORMAT_SOURCES.md` items 24 and
+/// 26): "the door will always open away from the player" unless the "One
+/// Way" spawnflag is set. The fixture's door pivots about its `y = -88`
+/// edge with the default `+Z` axis and a positive `distance`, which alone
+/// would sweep its leaf across the corridor *toward* the player standing
+/// at `x = 150`; opened through the engine's own touch-trigger phase — the
+/// only path that also feeds the player's position in as the activator
+/// origin — it must instead flip to `-Z` and swing the other way, leaving
+/// the player where they stood and never inside solid geometry.
+#[test]
+fn a_rotating_door_opened_by_the_player_swings_away_from_them() {
+    let bytes = rotating_door_bsp(&rotating_door_trigger_entities());
+    let mut assets = MemoryAssets::new();
+    assets.insert(&format!("maps/{ROTATING_DOOR_MAP}.bsp"), bytes);
+    let mut game =
+        Game::load(&assets as &dyn AssetSource, ROTATING_DOOR_MAP).expect("the fixture loads");
+
+    let start = game.eye_position();
+    // The door needs a quarter second to swing (90 degrees at 360
+    // degrees/second); ride out a full second of standing still, checking
+    // on every step that the swing never leaves the player in solid.
+    for step in 0..100 {
+        game.tick(STEP, &Input::default());
+        assert!(
+            !game.eye_is_in_solid(),
+            "step {step}: the opening door left the player inside solid geometry at {:?}",
+            game.eye_position()
+        );
+    }
+
+    let entity = *game
+        .registry()
+        .find(ROTATING_DOOR_NAME)
+        .first()
+        .expect("the fixture declares one named rotating door");
+    let door = *game
+        .registry()
+        .world
+        .get::<&Door>(entity)
+        .expect("the named entity is a door");
+    assert_eq!(
+        door.state,
+        MoverState::Open,
+        "the touch trigger did not open the door"
+    );
+    assert_eq!(
+        door.rotation_axis,
+        Some(-glam::Vec3::Z),
+        "the door did not flip its swing away from the activator"
+    );
+
+    // Untouched by the swing: a door opening away from the player neither
+    // pushes them back down the corridor nor drags them along with it.
+    let end = game.eye_position();
+    let moved = ((end[0] - start[0]).powi(2) + (end[1] - start[1]).powi(2)).sqrt();
+    assert!(
+        moved < 8.0,
+        "the opening door displaced the player: {start:?} -> {end:?}"
+    );
 }
