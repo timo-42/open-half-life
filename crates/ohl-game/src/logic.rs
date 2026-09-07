@@ -1061,11 +1061,29 @@ impl Simulation {
     /// No public source states GoldSrc's exact per-step trigonometric
     /// integration; this project implements a plain damped sinusoid instead
     /// of guessing at an uncited formula (this milestone's own instruction):
-    /// `angle = amplitude(elapsed) * sin(omega * elapsed)`, with `omega`
-    /// (radians/second) chosen so `distance` (the documented swing amplitude)
-    /// and `speed` (the documented "Speed of movement") combine into the
-    /// peak angular speed at the rest crossing —
-    /// `omega = speed.to_radians() / distance.max(1.0)` — and the damped
+    /// `angle_deg = amplitude(elapsed) * sin(omega * elapsed)`, with
+    /// `angle_deg`/`amplitude`/`distance` all in the same unit ("degrees",
+    /// the keyvalue's own documented unit) and `omega` a plain `1/second`
+    /// scalar — **not itself a degrees- or radians-denominated rate** —
+    /// chosen so `distance` (the documented swing amplitude) and `speed`
+    /// (the documented "Speed of movement", in degrees/second) combine into
+    /// the peak angular speed at the rest crossing:
+    /// `d(angle_deg)/dt` at `elapsed = 0` is `amplitude * omega`, so setting
+    /// `omega = speed / distance.max(1.0)` (both operands left in degrees,
+    /// so they cancel to the dimensionless-but-1/second `omega` that
+    /// `f32::sin`'s own always-radians argument convention needs) makes
+    /// that peak rate come out to exactly `speed` degrees/second, matching
+    /// this doc comment's own stated intent. **Corrected in this revision**:
+    /// an earlier version of this formula wrote
+    /// `speed.to_radians() / distance.max(1.0)`, converting only `speed`
+    /// (not `distance`) to radians before the divide; since the two
+    /// operands no longer shared a unit, the peak rate came out to
+    /// `speed.to_radians()` degrees/second instead of `speed` degrees/
+    /// second — about `180/π` (≈57.3x) slower than intended for every
+    /// `func_pendulum` this project simulates (see
+    /// `docs/FORMAT_SOURCES.md` item 27's append for the discovery and
+    /// `pendulum_reaches_near_amplitude_within_the_documented_quarter_period`
+    /// below for the regression test). — and the damped
     /// amplitude an exponential decay whose rate scales linearly with the
     /// documented `damping` `0..1000` keyvalue up to
     /// [`Self::PENDULUM_MAX_DAMPING_RATE`] per second, both project-chosen
@@ -1109,7 +1127,7 @@ impl Simulation {
                 pendulum.elapsed = 0.0;
                 continue;
             }
-            let omega = pendulum.speed.to_radians() / pendulum.distance.max(1.0);
+            let omega = pendulum.speed / pendulum.distance.max(1.0);
             pendulum.angle_deg = amplitude * (omega * pendulum.elapsed).sin();
         }
     }
@@ -1708,6 +1726,54 @@ mod tests {
             pendulum.angle_deg
         );
         assert!(!pendulum.returning);
+    }
+
+    /// Regression for the `omega` unit-conversion bug this milestone found
+    /// via real-map fidelity testing (see `docs/FORMAT_SOURCES.md` item
+    /// 27's append and `Simulation::advance_pendulums`'s own doc comment):
+    /// an earlier revision computed
+    /// `omega = pendulum.speed.to_radians() / pendulum.distance.max(1.0)`,
+    /// converting only `speed` to radians while leaving `distance`
+    /// unconverted, which made the true peak angular rate come out to
+    /// `speed.to_radians()` degrees/second instead of `speed`
+    /// degrees/second — about `180/π` (\u{2248}57.3x) slower than the
+    /// doc comment's own stated intent. Undamped (`damping = 0`), the doc
+    /// comment's formula predicts the swing reaches its first peak
+    /// (`amplitude`, i.e. `distance`, since nothing has decayed yet) at
+    /// `elapsed = (pi/2) / omega = (pi/2) * distance / speed`; for this
+    /// test's `speed = 180`\u{b0}/s, `distance = 30`\u{b0}, that is
+    /// `elapsed \u{2248} 0.2618s`. This test discriminates the bug: run
+    /// against the buggy formula above, the same elapsed time produces an
+    /// angle of well under 1\u{b0} (confirmed locally by temporarily
+    /// reverting the fix and re-running this test, which then fails), not
+    /// the near-`distance` value asserted below.
+    #[test]
+    fn pendulum_reaches_near_amplitude_within_the_documented_quarter_period() {
+        let speed = 180.0_f32;
+        let distance = 30.0_f32;
+        let entities = vec![raw(&[
+            ("classname", "func_pendulum"),
+            ("targetname", "swing1"),
+            ("distance", "30"),
+            ("speed", "180"),
+            ("damping", "0"),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let mut sim = Simulation::new();
+        let entity = registry.find("swing1")[0];
+        let mut events = Vec::new();
+        sim.use_entity(&mut registry, entity, None, &mut events);
+
+        let quarter_period = (std::f32::consts::FRAC_PI_2) * distance / speed;
+        tick_for(&mut sim, &mut registry, quarter_period, 0.001);
+
+        let angle = registry.world.get::<&Pendulum>(entity).unwrap().angle_deg;
+        assert!(
+            (angle - distance).abs() < 0.5,
+            "expected the pendulum within 0.5 degrees of its {distance} degree amplitude \
+             after {quarter_period}s (a quarter of its documented swing period), got {angle}"
+        );
     }
 
     #[test]
