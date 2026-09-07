@@ -1015,11 +1015,31 @@ taken — but that case was already handled correctly before tag 28 existed,
 by `SECTION_ENTITY_COMBAT` (tag 24)'s own pre-existing rule that a
 spawn-index entity absent from the world at save time is despawned again
 on load, so a `Remove On fire` `trigger_auto` that had already fired stays
-gone and does not refire either way. One separate, still-open gap: a `monstermaker`'s
-already-spawned children are not themselves indexed by
-`Registry::entities` (see `ohl_engine::save_state`'s own module doc,
-"Monstermaker children are not saved"), so only the maker's own counters
-— not its live children — round-trip; tag 28 does not change that.
+gone and does not refire either way. The separate gap this paragraph used
+to describe here — a `monstermaker`'s already-spawned children were not
+themselves indexed by `Registry::entities`, so only the maker's own
+counters round-tripped, not its live children — is closed at M9.5:
+`ohl_ai::AiState::spawn_child` now pushes every child onto
+`Registry::entities` the instant it spawns, so it is covered by every
+index-keyed section (18/24/25) automatically, and the new
+`SECTION_MAKER_CHILDREN` (tag 29) records just enough (which maker, and
+the spawned classname) for `AiState::restore_maker_children` to recreate
+the entity itself on load, ahead of those sections' own restore; see
+`ohl_engine::save_state`'s own module doc, "Monstermaker children are now
+saved", for the full mechanism and its one remaining edge: a child already
+gibbed or corpse-faded before the save has no classname left to recover,
+so it is not recreated (mirroring `SECTION_ENTITY_COMBAT`'s pre-existing
+rule for any other already-gone entity). Level transitions
+(`transition.rs`) do not carry maker children across a
+`trigger_changelevel` either way, unchanged by this package:
+`TransitionState::capture` only carries an entity with a `targetname` or a
+`globalname` (`crate::transition::TransitionState::capture`'s own
+eligibility test), and `AiState::spawn_child` gives a maker child neither
+— it is spawned from a `monstermaker`'s `monstertype`/keyvalues alone,
+with no name of its own — so a live maker child left behind at a level
+exit simply does not follow the player into the next map, exactly as
+before this package (it was excluded by the same name test even before
+maker children had a spawn index at all).
 
 ## The asset layer and PAK precedence
 

@@ -1318,6 +1318,17 @@ impl AiState {
 
     /// Spawns one `monstermaker` child, or `None` when this map registered
     /// no brain for its `monstertype`.
+    ///
+    /// Pushes the new entity onto `Registry::entities` too, so it gets a
+    /// spawn index exactly like a map-declared monster and is covered by
+    /// every index-keyed save section (`SECTION_ENTITY_REGISTRY` 18,
+    /// `SECTION_ENTITY_COMBAT` 24, `SECTION_AI` 25) for free — this is what
+    /// closes the "monstermaker children are not saved" gap
+    /// `crate::save_state`'s module doc used to record; see that doc's
+    /// current "Monstermaker children are now saved" section, and
+    /// [`Self::restore_maker_children`] for the load-side half (recreating
+    /// the entity itself, which a fresh `attach_level` never does for a
+    /// maker's own children).
     fn spawn_child(
         &self,
         level: &mut Level,
@@ -1333,7 +1344,7 @@ impl AiState {
         let mut actor = Actor::new(spec.classification, origin).with_health(health);
         actor.yaw = yaw;
         actor.hull = spec.hull;
-        Some(level.registry.world.spawn((
+        let entity = level.registry.world.spawn((
             ClassName(classname.to_string()),
             Transform {
                 origin,
@@ -1343,7 +1354,138 @@ impl AiState {
             MonsterAi::new(brain),
             ohl_combat::Health::new(health),
             Owner(maker),
-        )))
+        ));
+        level.registry.entities.push(entity);
+        Some(entity)
+    }
+
+    /// Recreates every `monstermaker` child `snapshots` recorded
+    /// (`SECTION_MAKER_CHILDREN`, 29), so their spawn index lines up with
+    /// `SECTION_ENTITY_REGISTRY`/`SECTION_ENTITY_COMBAT`/`SECTION_AI`
+    /// (18/24/25)'s own zip-against-`Registry::entities` restore.
+    ///
+    /// **Must run before those sections' restore** (`crate::game::Game::
+    /// restore`, right at the top): `level.registry.entities` still holds
+    /// only the entities this load's `attach_level` just spawned fresh —
+    /// never a maker's own dynamically-created children, which a map does
+    /// not declare — so every slot this call appends is exactly the gap
+    /// those later, index-keyed restores would otherwise silently skip
+    /// (their own `.zip(entities)` simply stops at the shorter list).
+    ///
+    /// A `Some` slot recreates a fresh placeholder monster of the recorded
+    /// classname (via [`Self::spawn_child`]), at the maker's own current
+    /// transform — a throwaway starting pose, since tag 18's restore
+    /// overlays the save's exact transform onto it moments later, same as
+    /// it already does for every attach_level-spawned monster. A slot this
+    /// build cannot recreate — no brain registered for the recorded
+    /// classname (a save from a build with a different monster table), or
+    /// `None` because no record survived the child's own death before the
+    /// save (see `crate::save_state`'s module doc) — gets an inert,
+    /// component-less placeholder instead, purely to keep every later
+    /// slot's index aligned; nothing ever queries it again. Recreation
+    /// stops (falling back to placeholders for the remaining tail) once
+    /// [`MAX_MAKER_CHILDREN_PER_LEVEL`] real children exist, the same cap
+    /// [`Self::tick_makers`] enforces at runtime, so a corrupt or
+    /// adversarial save cannot use this path to spawn unbounded monsters.
+    ///
+    /// Returns the `(maker, child)` pairs for every real (non-placeholder)
+    /// child recreated, for [`Self::finalize_maker_children`] to link back
+    /// onto each maker's own live-child list once health/AI state has
+    /// actually been restored onto them.
+    pub(crate) fn restore_maker_children(
+        &mut self,
+        level: &mut Level,
+        snapshots: Option<&[Option<crate::save_state::MonsterMakerChildSnapshot>]>,
+    ) -> Vec<(Entity, Entity)> {
+        let Some(snapshots) = snapshots else {
+            return Vec::new();
+        };
+        let base = level.registry.entities.len();
+        let mut pairs = Vec::new();
+        for snapshot in snapshots.iter().skip(base) {
+            let recreated = snapshot.as_ref().and_then(|child| {
+                if self.maker_children >= MAX_MAKER_CHILDREN_PER_LEVEL {
+                    return None;
+                }
+                let maker = crate::save_state::entity_at_spawn_index(level, child.maker)?;
+                let (origin, yaw) = level
+                    .registry
+                    .world
+                    .get::<&Transform>(maker)
+                    .map_or((Vec3::ZERO, 0.0), |transform| {
+                        (transform.origin, transform.angles.y)
+                    });
+                let spawned = self.spawn_child(level, maker, &child.classname, origin, yaw)?;
+                self.maker_children += 1;
+                Some((maker, spawned))
+            });
+            if let Some((maker, spawned)) = recreated {
+                pairs.push((maker, spawned));
+            } else {
+                let placeholder = level.registry.world.spawn(());
+                level.registry.entities.push(placeholder);
+            }
+        }
+        pairs
+    }
+
+    /// Finishes [`Self::restore_maker_children`]: links each recreated
+    /// child back onto its maker's own [`ohl_ai::Spawner`] live-child list
+    /// (`ohl_ai::Spawner::restore_child`), then prunes any that are
+    /// already dead — the same `is_alive` check [`Self::tick_makers`]'s own
+    /// pruning uses — so `live_children`/`has_room` count correctly right
+    /// after a load, matching what they would report mid-session.
+    ///
+    /// Run this **after** `SECTION_ENTITY_COMBAT`/`SECTION_AI` (24/25) and
+    /// `Systems::sync_actor_from_transforms` have all applied: only then
+    /// does each recreated child's `Actor::alive` reflect the save's own
+    /// health, rather than [`Self::spawn_child`]'s full-health placeholder
+    /// default.
+    pub(crate) fn finalize_maker_children(level: &mut Level, pairs: &[(Entity, Entity)]) {
+        // A child the save recorded as already dead (a corpse still
+        // carrying `Owner`/`ClassName` — `Self::retire` only ever removes
+        // `MonsterAi`, never the whole entity, for a `CorpseDecision::
+        // Corpse`) still gets a fresh `MonsterAi` from `Self::spawn_child`
+        // above, since that is the only way this method knows to recreate
+        // *any* child. Strip it back off once `Actor::alive` (just set by
+        // `SECTION_ENTITY_COMBAT`'s restore, above this call) says the
+        // child did not survive, so `Game::monster_count` (which counts
+        // `MonsterAi`) does not resurrect a corpse into a thinking monster.
+        for &(_, child) in pairs {
+            let alive = level
+                .registry
+                .world
+                .get::<&Actor>(child)
+                .is_ok_and(|actor| actor.alive);
+            if !alive {
+                level.registry.world.remove_one::<MonsterAi>(child).ok();
+            }
+        }
+        for &(maker, child) in pairs {
+            if let Ok(mut component) = level.registry.world.get::<&mut MonsterMaker>(maker) {
+                component.0.restore_child(child);
+            }
+        }
+        let mut makers: Vec<Entity> = level
+            .registry
+            .world
+            .query::<(Entity, &MonsterMaker)>()
+            .iter()
+            .map(|(entity, _)| entity)
+            .collect();
+        makers.sort_unstable_by_key(|entity: &Entity| entity.id());
+        for maker in makers {
+            let is_alive = |entity: Entity| {
+                level
+                    .registry
+                    .world
+                    .get::<&Actor>(entity)
+                    .is_ok_and(|actor| actor.alive)
+            };
+            if let Ok(mut component) = level.registry.world.get::<&mut MonsterMaker>(maker) {
+                component.0.prune_dead(&is_alive);
+            }
+        }
     }
 }
 

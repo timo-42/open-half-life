@@ -29,11 +29,12 @@
 //! | 26 | [`SECTION_PROJECTILES`] | [`ProjectilesSnapshot`]: live projectiles and placed deployables (M7.9 P4b) |
 //! | 27 | [`SECTION_RNG`] | [`RngSnapshot`]: the shared random stream and the substep counter (M7.9 P4b) |
 //! | 28 | [`SECTION_MOVER_STATE`] | `Vec<Option<`[`MoverSnapshot`]`>>`, one per registry entity, in spawn order: `func_train`/`func_tracktrain` position, `trigger_camera` sequence progress, running-script phase and `monstermaker` counters (M7.13) |
+//! | 29 | [`SECTION_MAKER_CHILDREN`] | `Vec<Option<`[`MonsterMakerChildSnapshot`]`>>`, one per registry entity, in spawn order: which `monstermaker` spawned this entity, and its classname (M9.5) |
 //! | 32 | *(reserved, `ohl-player`)* | `PlayerSnapshot`, written through `Player::snapshot()` when a later package wires it |
 //!
-//! Tags 23-28 are read as `None`/a default when absent, so a save written
-//! before M7.9 P4b (tags 23-27) or M7.13 (tag 28) still loads
-//! (`.plan/m79-design.md` §6); a section that is present but fails to
+//! Tags 23-29 are read as `None`/a default when absent, so a save written
+//! before M7.9 P4b (tags 23-27), M7.13 (tag 28), or M9.5 (tag 29) still
+//! loads (`.plan/m79-design.md` §6); a section that is present but fails to
 //! decode fails the whole read closed ([`crate::EngineError::SaveUnreadable`]),
 //! same as every other section.
 
@@ -42,8 +43,8 @@ use ohl_game::SimulationState;
 use serde::{Deserialize, Serialize};
 
 use crate::save_state::{
-    AiSnapshot, EntityCombatSnapshot, InventorySnapshot, MoverSnapshot, ProjectilesSnapshot,
-    RngSnapshot,
+    AiSnapshot, EntityCombatSnapshot, InventorySnapshot, MonsterMakerChildSnapshot, MoverSnapshot,
+    ProjectilesSnapshot, RngSnapshot,
 };
 use crate::transition::{EntitySnapshot, GlobalStateTable, PlayerCarryState};
 
@@ -89,6 +90,10 @@ pub const SECTION_RNG: u32 = 27;
 /// Mover/camera/script/`monstermaker` runtime state, in spawn order
 /// (M7.13).
 pub const SECTION_MOVER_STATE: u32 = 28;
+
+/// Which `monstermaker` spawned each registry entity, and its classname, in
+/// spawn order (M9.5).
+pub const SECTION_MAKER_CHILDREN: u32 = 29;
 
 /// The engine header section's contents.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -185,6 +190,12 @@ pub struct GameSave {
     /// (M7.13). `None` (rather than an empty `Vec`) for a save missing tag
     /// 28.
     pub mover_state: Option<Vec<Option<MoverSnapshot>>>,
+    /// Which `monstermaker` spawned each registry entity, and its
+    /// classname, one optional entry per registry entity, in spawn order
+    /// (M9.5). `None` (rather than an empty `Vec`) for a save missing tag
+    /// 29 — an older save simply has no maker children to recreate, the
+    /// pre-existing documented gap this section fixes.
+    pub maker_children: Option<Vec<Option<MonsterMakerChildSnapshot>>>,
 }
 
 impl GameSave {
@@ -245,6 +256,9 @@ impl GameSave {
             if let Some(mover_state) = &self.mover_state {
                 writer.add_section_serde(SECTION_MOVER_STATE, mover_state)?;
             }
+            if let Some(maker_children) = &self.maker_children {
+                writer.add_section_serde(SECTION_MAKER_CHILDREN, maker_children)?;
+            }
             Ok(())
         };
         write(&mut writer).map_err(|_| crate::EngineError::SaveUnwritable)?;
@@ -280,6 +294,11 @@ impl GameSave {
                 &reader,
                 SECTION_MOVER_STATE,
                 crate::save_state::MAX_SNAPSHOT_MOVERS,
+            )?,
+            maker_children: optional_bounded_vec_section(
+                &reader,
+                SECTION_MAKER_CHILDREN,
+                crate::save_state::MAX_SNAPSHOT_MAKER_CHILDREN,
             )?,
         })
     }

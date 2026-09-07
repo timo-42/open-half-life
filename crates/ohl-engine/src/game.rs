@@ -1056,6 +1056,7 @@ impl Game {
             projectiles: Some(self.systems.snapshot_projectiles(&self.level)),
             rng: Some(self.systems.snapshot_rng()),
             mover_state: Some(self.systems.snapshot_mover_state(&self.level)),
+            maker_children: Some(crate::save_state::snapshot_maker_children(&self.level)),
         }
     }
 
@@ -1175,6 +1176,20 @@ impl Game {
 
     /// Applies a save payload onto this (already map-matched) game.
     fn restore(&mut self, save: &GameSave) {
+        // `SECTION_MAKER_CHILDREN` (29, M9.5): recreates every
+        // `monstermaker` child the save recorded, before any of the
+        // index-keyed sections below (`entities`/18, `entity_combat`/24,
+        // `ai`/25) are zipped against `self.level.registry.entities` — a
+        // fresh `attach_level` (already run by `Self::load_with`, this
+        // method's caller) only ever spawns the map's own declared
+        // entities, never a maker's dynamically-created children, so
+        // without this step those sections' own zip would simply stop
+        // short of every maker child the save described. See
+        // `crate::ai::AiState::restore_maker_children`'s own doc comment.
+        let maker_children_pairs = self
+            .systems
+            .ai
+            .restore_maker_children(&mut self.level, save.maker_children.as_deref());
         for (entity, snapshot) in self
             .level
             .registry
@@ -1256,6 +1271,14 @@ impl Game {
         // rather than from the map's spawn point; see
         // `Systems::sync_actor_from_transforms`'s doc.
         Systems::sync_actor_from_transforms(&mut self.level);
+        // `SECTION_MAKER_CHILDREN` (29, M9.5), part two: links each child
+        // `Self::restore_maker_children` recreated above back onto its
+        // maker's own live-child list, now that its restored health/AI
+        // state (and so `ohl_ai::Actor::alive`) is actually known — see
+        // `crate::ai::AiState::finalize_maker_children`'s own doc comment
+        // for why this must run after entity_combat/ai/actor-sync rather
+        // than immediately alongside the recreation above.
+        crate::ai::AiState::finalize_maker_children(&mut self.level, &maker_children_pairs);
         // `SECTION_PROJECTILES` (26, M7.9 P4b).
         if let Some(projectiles) = &save.projectiles {
             self.systems

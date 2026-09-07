@@ -739,10 +739,12 @@ fn a_script_mid_moving_round_trips_and_still_completes_exactly_once() {
     assert_eq!(reloaded.script_completion_count(), 1);
 }
 
-/// A `monstermaker`'s spawn counters — not the (separately, pre-existingly
-/// unsaved) live child entity itself — survive a save/load round trip: the
-/// quota it already spent before the save is not forgotten, so it can only
-/// ever spawn up to `monstercount` in total, across the load.
+/// A `monstermaker`'s spawn counters, and (as of M9.5,
+/// `SECTION_MAKER_CHILDREN`, tag 29) the already-spawned live child entity
+/// itself, both survive a save/load round trip: the quota it already spent
+/// before the save is not forgotten, so it can only ever spawn up to
+/// `monstercount` in total, across the load, and the child that already
+/// existed is not lost either.
 #[test]
 fn a_monstermakers_counters_survive_a_save_load_round_trip() {
     let entities = script_room_entities(
@@ -772,24 +774,206 @@ fn a_monstermakers_counters_survive_a_save_load_round_trip() {
     let bytes = game.save_bytes(1_700_000_000).expect("the save is written");
     let assets = script_game_assets(&entities);
     let mut reloaded = Game::load_bytes(&assets, &bytes).expect("the save loads");
-    // The already-spawned child itself is the pre-existing, documented
-    // `monstermaker`-children-are-not-indexed gap (`crate::save_state`'s
-    // module doc, "Monstermaker children are not saved") — this section
-    // does not change that, only the maker's own counters.
+    // `SECTION_MAKER_CHILDREN` (29, M9.5) recreates the already-spawned
+    // child, ahead of the entity/combat/AI sections that go on to restore
+    // its exact transform/health/AI state.
     assert_eq!(
         reloaded.monster_count(),
-        0,
-        "the already-spawned child is not itself restored (documented gap); \
-         only the maker's counters are this test's subject"
+        1,
+        "the already-spawned child is itself restored (SECTION_MAKER_CHILDREN, tag 29)"
     );
 
     script_tick(&mut reloaded, 400);
     assert_eq!(
         reloaded.monster_count(),
-        1,
+        2,
         "monstercount=2 total, and one was already spent before the save: \
-         only one more may ever spawn. A reset spawned_total would let two \
-         more spawn instead of one"
+         only one more may ever spawn, on top of the one already restored. \
+         A reset spawned_total would let two more spawn instead of one, \
+         reaching 3"
+    );
+}
+
+/// A `monstermaker` with `m_imaxlivechildren=1` (only one live child
+/// allowed at a time) that has already spawned its one allowed child before
+/// the save must still respect that cap after a load: this is what tells a
+/// correct restore — which relinks the recreated child onto
+/// `ohl_ai::Spawner::children` (`ohl_ai::Spawner::restore_child`,
+/// `crate::ai::AiState::finalize_maker_children`) — apart from one that
+/// recreates the child entity but forgets to relink it, which would let a
+/// second child spawn immediately after the load despite the live one
+/// still being alive.
+#[test]
+fn a_makers_live_child_cap_is_still_respected_after_a_load() {
+    let entities = script_room_entities(
+        [-192.0, -192.0, 36.0],
+        &entity_block(
+            "monstermaker",
+            [96.0, -96.0, 36.0],
+            0.0,
+            &[
+                ("monstertype", "monster_headcrab"),
+                ("monstercount", "3"),
+                ("m_imaxlivechildren", "1"),
+                ("delay", "0.05"),
+                ("spawnflags", "1"), // "Start On".
+            ],
+        ),
+    );
+
+    let mut game = script_game(&entities);
+    script_tick(&mut game, 1);
+    assert_eq!(
+        game.monster_count(),
+        1,
+        "the one allowed live child must have spawned"
+    );
+
+    let bytes = game.save_bytes(1_700_000_000).expect("the save is written");
+    let assets = script_game_assets(&entities);
+    let mut reloaded = Game::load_bytes(&assets, &bytes).expect("the save loads");
+    assert_eq!(
+        reloaded.monster_count(),
+        1,
+        "the already-spawned child is restored"
+    );
+
+    // Enough ticks for many `delay` intervals to elapse. If the restored
+    // child were not relinked onto the maker's own live-child list, the
+    // maker would (wrongly) believe it has room and spawn a second child
+    // immediately, growing the count past 1 even though the first child is
+    // still alive and `m_imaxlivechildren` is 1.
+    script_tick(&mut reloaded, 400);
+    assert_eq!(
+        reloaded.monster_count(),
+        1,
+        "m_imaxlivechildren=1 and the restored child is still alive: no \
+         second child may spawn until it dies"
+    );
+}
+
+/// A `monstermaker` that has spawned two children, one of them already
+/// dead (a corpse, not gibbed) by save time, round-trips both correctly:
+/// the live one keeps existing (and thinking — it still carries
+/// `ohl_ai::MonsterAi`) at its saved health, and the dead one does not
+/// come back as a second thinking monster (matching `Self::retire`'s own
+/// rule that a corpse loses its `MonsterAi` but not the rest of the
+/// entity).
+#[test]
+fn a_makers_two_children_one_dead_round_trip_correctly() {
+    let entities = script_room_entities(
+        [-192.0, -192.0, 36.0],
+        &entity_block(
+            "monstermaker",
+            [96.0, -96.0, 36.0],
+            0.0,
+            &[
+                ("monstertype", "monster_headcrab"),
+                ("monstercount", "2"),
+                ("m_imaxlivechildren", "2"),
+                ("delay", "0.05"),
+                ("spawnflags", "1"), // "Start On".
+            ],
+        ),
+    );
+
+    let mut game = script_game(&entities);
+    // `delay=0.05` and `TICK_SECONDS` (see `crate::TICK_SECONDS`) together
+    // need a handful of ticks for both children to spawn; `m_imaxlivechildren=2`
+    // lets both exist at once.
+    script_tick(&mut game, 20);
+    assert_eq!(
+        game.monster_count(),
+        2,
+        "monstercount=2, m_imaxlivechildren=2: both children must have spawned"
+    );
+
+    let children = monster_entities(&game);
+    assert_eq!(children.len(), 2);
+    queue_monster_damage(&mut game, children[0], None, 1_000.0);
+    // One more tick applies the queued damage and runs `AiState::retire`,
+    // turning the killed child into a corpse (its `MonsterAi` removed, the
+    // rest of the entity — including `Owner`/`ClassName`, which is what
+    // `SECTION_MAKER_CHILDREN` keys off — left alone).
+    script_tick(&mut game, 1);
+    assert_eq!(
+        game.monster_count(),
+        1,
+        "the killed child is now a corpse: it no longer carries MonsterAi"
+    );
+
+    let bytes = game.save_bytes(1_700_000_000).expect("the save is written");
+    let assets = script_game_assets(&entities);
+    let mut reloaded = Game::load_bytes(&assets, &bytes).expect("the save loads");
+    assert_eq!(
+        reloaded.monster_count(),
+        1,
+        "only the still-alive child round-trips as a thinking monster; the \
+         corpse does not come back as a second one"
+    );
+
+    // The maker's own quota (`monstercount=2`) was already exhausted
+    // before the save (both children were ever spawned), so ticking a lot
+    // more must not create a third monster no matter how the corpse round
+    // trips.
+    script_tick(&mut reloaded, 400);
+    assert_eq!(
+        reloaded.monster_count(),
+        1,
+        "monstercount=2 is already exhausted; no further child may spawn"
+    );
+}
+
+/// A save written before `SECTION_MAKER_CHILDREN` (29, M9.5) existed —
+/// tags up to 28 only — still loads, with the pre-M9.5 behaviour: the
+/// maker's own counters restore (tag 28 already covered those), but its
+/// already-spawned child is not recreated, since no record of it exists in
+/// a save this old.
+#[test]
+fn a_pre_tag_29_save_still_loads_without_its_maker_children() {
+    let entities = script_room_entities(
+        [-192.0, -192.0, 36.0],
+        &entity_block(
+            "monstermaker",
+            [96.0, -96.0, 36.0],
+            0.0,
+            &[
+                ("monstertype", "monster_headcrab"),
+                ("monstercount", "2"),
+                ("delay", "0.05"),
+                ("spawnflags", "1"), // "Start On".
+            ],
+        ),
+    );
+
+    let mut game = script_game(&entities);
+    script_tick(&mut game, 1);
+    assert_eq!(game.monster_count(), 1);
+
+    let mut save = game.to_save(1_700_000_000);
+    // Simulate a save written by a build before M9.5: tag 29 simply never
+    // existed.
+    save.maker_children = None;
+    let bytes = save.to_bytes().expect("the save is written");
+
+    let assets = script_game_assets(&entities);
+    let mut reloaded = Game::load_bytes(&assets, &bytes).expect("the save loads");
+    assert_eq!(
+        reloaded.monster_count(),
+        0,
+        "no SECTION_MAKER_CHILDREN section at all: the pre-M9.5 behaviour, \
+         the child is not recreated, exactly like `a_save_missing_the_new_sections_still_loads` \
+         exercises for tags 23-27"
+    );
+
+    // The maker's own counters (tag 28, pre-existing) still restore
+    // correctly on top of this, so the quota is still respected.
+    script_tick(&mut reloaded, 400);
+    assert_eq!(
+        reloaded.monster_count(),
+        1,
+        "monstercount=2 total, one already spent before the save: only one \
+         more may ever spawn"
     );
 }
 
