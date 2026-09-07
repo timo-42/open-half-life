@@ -1,0 +1,17 @@
+# PR #103 (ladder hull probe) real-payload scenario: reach and climb a
+# func_ladder in the Hazard Course.
+#
+# Project-authored; no bytes here come from any game installation (see
+# docs/CLEAN_ROOM.md). Run against "t0a0a" (one of
+# ohl_campaign::HAZARD_COURSE_MAPS's own cited map names) by
+# xtask/src/combat_smoke.rs.
+#
+# This map's own player start faces away from its nearest func_ladder, so
+# the walk turns 180 degrees before advancing — tuned only against this
+# one map's own player-start-relative geometry, never recorded here beyond
+# this turn/walk technique (the same convention xtask/smoke-scenarios/
+# walk_power_up.txt already uses). A short forward walk then reaches and
+# climbs the ladder well within this scenario's timeout.
+30 look 0 180
+120 forward
+120 up

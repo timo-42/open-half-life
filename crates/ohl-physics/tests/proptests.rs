@@ -4,7 +4,8 @@
 use ohl_formats::bsp30::{Bsp, Limits};
 use ohl_formats::test_support::{build_brush_entity_floor_bsp, build_collision_room_bsp};
 use ohl_physics::controller::TICK_SECONDS;
-use ohl_physics::test_support::build_ladder_entity_room_bsp;
+use ohl_physics::movement::{in_ladder_volume, ladder_normal};
+use ohl_physics::test_support::{build_ladder_entity_room_bsp, build_thin_ladder_room_bsp};
 use ohl_physics::{
     CollisionModel, ContentsKind, Hull, MoveConfig, MoveInput, PlayerState, Vec3, player_move,
     trace_hull,
@@ -62,6 +63,18 @@ fn ladder_contents_room() -> CollisionModel {
 /// volume changes about a trace.
 fn ladder_room_world_only() -> CollisionModel {
     let bytes = build_ladder_entity_room_bsp();
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+    CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable hulls")
+}
+
+/// [`build_thin_ladder_room_bsp`]'s free-standing, 8-unit-thick ladder
+/// slab: thin enough that a hull placed almost anywhere near it either
+/// misses it entirely or straddles both of its faces at once, which is
+/// exactly the geometry that should stress
+/// [`ohl_physics::movement::ladder_normal`]'s hull-sample probe.
+fn thin_ladder_room() -> CollisionModel {
+    let bytes = build_thin_ladder_room_bsp();
     let limits = Limits::default();
     let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
     CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable hulls")
@@ -224,5 +237,36 @@ proptest! {
         prop_assert_eq!(attached.all_solid, bare.all_solid);
         prop_assert_eq!(attached.plane_normal, bare.plane_normal);
         prop_assert_eq!(attached.plane_dist, bare.plane_dist);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(512))]
+
+    /// The hull-aware ladder probe ([`ohl_physics::movement::in_ladder_volume`]
+    /// / [`ohl_physics::movement::ladder_normal`], PR #100 review follow-up)
+    /// must never panic for an arbitrary hull placement — including origins
+    /// far outside the map's own coordinate bounds, exactly on a brush
+    /// face, or straddling the ladder volume's thin axis — and must always
+    /// report a normal that is finite, at most unit length, and zero
+    /// exactly when the hull was not found to be in a ladder volume at all.
+    #[test]
+    fn the_ladder_probe_never_panics_for_an_arbitrary_hull_placement(
+        point in any_point(),
+        ducked in any::<bool>(),
+        thin in any::<bool>(),
+    ) {
+        let model = if thin { thin_ladder_room() } else { ladder_contents_room() };
+        let mut state = PlayerState::at(point);
+        state.ducked = ducked;
+
+        let inside = in_ladder_volume(&model, &state);
+        let normal = ladder_normal(&model, &state);
+
+        prop_assert!(normal.is_finite());
+        prop_assert!(normal.length() <= 1.0 + 1e-4, "normal {normal:?}");
+        if !inside {
+            prop_assert_eq!(normal, Vec3::ZERO);
+        }
     }
 }

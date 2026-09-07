@@ -224,6 +224,16 @@ const FIRE_AND_PICKUP_PRESENT: [&str; 5] = [
     "A shot hit an entity.",
 ];
 
+/// [`WALK_PRESENT`] plus the line this scenario's own walk (in
+/// `xtask/smoke-scenarios/ladder_t0a0a.txt`) reaches: attaching to a
+/// `func_ladder`. See that file's own header for the technique.
+const WALK_PRESENT_LADDER: [&str; 4] = [
+    "Scripted input loaded.",
+    "Scripted input finished.",
+    "The player moved from the spawn point.",
+    "The player is on a ladder.",
+];
+
 /// [`BASE_ABSENT`] minus the three lines [`FIRE_AND_PICKUP_PRESENT`] moves
 /// to its own present set: the swing lands, but nothing in this scenario
 /// takes enough damage to report a monster hurt or killed, and nothing in
@@ -274,11 +284,18 @@ const FIRE_AND_PICKUP_ABSENT: [&str; 5] = [
 /// dead-end player start, a solid corner in the walk's path, or a nearby
 /// platform edge), tuned only against that one map's own player-start-
 /// relative geometry and never recorded here beyond a turn/walk
-/// technique. All 23 scenarios in this file — the four pre-existing ones
-/// included — assert "The player is inside solid geometry." absent: this
-/// scenario set's own regression guard for the PR #91 class of bug. 21 of
-/// the 23 also assert "The player is riding a mover." absent, since none
-/// of them stands on a moving brush entity; the two that run on
+/// technique.
+///
+/// The last scenario (PR #103, the ladder hull probe) reaches and climbs
+/// an actual `func_ladder` on the Hazard Course's "t0a0a" map (see
+/// `xtask/smoke-scenarios/ladder_t0a0a.txt`'s own header), the real-payload
+/// counterpart to that PR's synthetic hull-overlap fixtures.
+///
+/// All 24 scenarios in this file — the four pre-existing ones included —
+/// assert "The player is inside solid geometry." absent: this scenario
+/// set's own regression guard for the PR #91 class of bug. 22 of the 24
+/// also assert "The player is riding a mover." absent, since none of them
+/// stands on a moving brush entity; the two that run on
 /// `ohl_campaign::STARTMAP` assert it *present* instead, because the
 /// player spawns inside that map's opening tram and rides it (see
 /// [`START_MAP_PRESENT`]'s own doc comment).
@@ -287,7 +304,7 @@ const FIRE_AND_PICKUP_ABSENT: [&str; 5] = [
     reason = "one Scenario literal per M9 chapter-walk scenario, plus the four \
               pre-existing ones; splitting the list would only add indirection"
 )]
-fn scenarios() -> [Scenario; 23] {
+fn scenarios() -> [Scenario; 24] {
     [
         Scenario {
             name: "walk forward in the training start",
@@ -448,6 +465,13 @@ fn scenarios() -> [Scenario; 23] {
             file: "walk_hazard_course.txt",
             map: ohl_campaign::TRAINMAP,
             present: &WALK_PRESENT,
+            absent: &BASE_ABSENT,
+        },
+        Scenario {
+            name: "reach and climb a ladder in the Hazard Course",
+            file: "ladder_t0a0a.txt",
+            map: "t0a0a",
+            present: &WALK_PRESENT_LADDER,
             absent: &BASE_ABSENT,
         },
     ]
