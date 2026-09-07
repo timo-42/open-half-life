@@ -174,6 +174,27 @@ pub struct Level {
     /// can be followed as the map logic advances it. Empty when the map has
     /// no usable collision hulls.
     pub brush_collision: Vec<(Entity, BrushId)>,
+    /// Each attached brush's velocity as of the last [`Self::sync_brush_collision`]
+    /// call: this step's displacement (its new origin minus its previous
+    /// one) divided by that step's `dt`. Read by the player-move phase and
+    /// fed back in as [`ohl_physics::PlayerController::base_velocity`] when
+    /// the player's ground is that brush, so standing on a moving
+    /// `func_train`/`func_tracktrain`/`func_plat`/lift `func_door` carries
+    /// the player along with it (see "Riding movers",
+    /// `docs/FORMAT_SOURCES.md`). Missing an entry (or holding zero) means
+    /// that brush did not move this step.
+    pub brush_velocity: BTreeMap<BrushId, Vec3>,
+    /// Which attached brushes the player-move phase could not fully push
+    /// the player clear of this step (a mover whose leading face is moving
+    /// into the player faster than the bounded push trace can carry them
+    /// out of its way). Refreshed every step; empty when nothing is
+    /// blocked. Published as a signal for a mover's own state machine to
+    /// react to; nothing yet consumes it to halt, reverse, or apply a
+    /// door's `dmg` keyvalue to the player — see the `TODO(black-box)` on
+    /// `ohl_physics::push_from_mover` — so today a blocked mover still
+    /// finishes its planned move on schedule, just with the player pushed
+    /// as far out of its way as the bounded trace allowed.
+    pub movers_blocked: Vec<BrushId>,
     /// The `skyname` skybox, when the payload publishes its six faces.
     pub skybox: Option<SkyboxAsset>,
     /// Studio models referenced by this map's entities, in load order.
@@ -324,6 +345,11 @@ impl Level {
     ///
     /// # Errors
     /// As [`Self::from_bytes`].
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one field per Self{} literal member; splitting the constructor \
+                  would only add indirection"
+    )]
     pub fn from_bytes_with_ramp(
         source: &dyn AssetSource,
         map: &str,
@@ -433,6 +459,8 @@ impl Level {
             simulation: Simulation::new(),
             collision,
             brush_collision,
+            brush_velocity: BTreeMap::new(),
+            movers_blocked: Vec::new(),
             skybox,
             studio_models: studio.models,
             studio_model_paths: studio.paths,
@@ -448,11 +476,15 @@ impl Level {
         })
     }
 
-    /// Moves every attached brush hull to where its entity currently is.
+    /// Moves every attached brush hull to where its entity currently is,
+    /// and records each one's velocity for [`Self::brush_velocity`].
     ///
     /// Call once per simulation step *before* the player moves, so a door
     /// or train blocks (and carries) at the position it is drawn at rather
-    /// than at the position it was compiled at.
+    /// than at the position it was compiled at. `dt` is the step length
+    /// used to turn this step's displacement into a velocity; a
+    /// non-positive or non-finite `dt` reports zero velocity for every
+    /// brush rather than dividing by it.
     ///
     /// An entry whose entity has since despawned (a `func_wall` removed by
     /// a scripted `killtarget`, for example — see `ai.rs`'s
@@ -460,12 +492,13 @@ impl Level {
     /// of skipped: without that, a brush the map logic removed keeps
     /// blocking the player forever, since the collision model has no other
     /// way to learn an attached brush is gone. The stale entry is then
-    /// dropped from `brush_collision` so later calls do not pay to look it
-    /// up again. This is a single pass over `brush_collision` with no
-    /// per-call allocation: each entry already names its own `BrushId`
+    /// dropped from `brush_collision` (and its velocity entry, if any) so
+    /// later calls do not pay to look it up again. This is a single pass
+    /// over `brush_collision` with no per-call allocation beyond the
+    /// velocity map update: each entry already names its own `BrushId`
     /// (recorded once, at attach time), so there is no per-step name or
     /// entity search to do.
-    pub fn sync_brush_collision(&mut self) {
+    pub fn sync_brush_collision(&mut self, dt: f32) {
         if self.brush_collision.is_empty() {
             return;
         }
@@ -473,6 +506,7 @@ impl Level {
             registry,
             collision,
             brush_collision,
+            brush_velocity,
             ..
         } = self;
         let Some(model) = collision.as_mut() else {
@@ -481,10 +515,19 @@ impl Level {
         brush_collision.retain(|(entity, brush)| {
             let Ok(transform) = registry.world.get::<&Transform>(*entity) else {
                 model.detach_brush(*brush);
+                brush_velocity.remove(brush);
                 return false;
             };
             let offset = crate::render::brush_offset(registry, *entity);
-            model.set_brush_origin(*brush, transform.origin + offset);
+            let new_origin = transform.origin + offset;
+            let displacement = new_origin - model.brush_origin(*brush);
+            let velocity = if dt.is_finite() && dt > 0.0 && displacement.is_finite() {
+                displacement / dt
+            } else {
+                Vec3::ZERO
+            };
+            brush_velocity.insert(*brush, velocity);
+            model.set_brush_origin(*brush, new_origin);
             true
         });
     }

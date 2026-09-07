@@ -11,6 +11,15 @@
 #   absent:  every other fixed line (no weapon, pickup or player-damage
 #            path exists on this branch yet; see crates/ohl-app/src/
 #            script_log.rs)
+#
+# The 90 seconds this script waits through comfortably covers the map's
+# opening tram sequence. Verified against the real payload (M7's
+# mover-riders package): "The player is riding a mover." does not appear.
+# That sequence is implemented in this project (M7.12) as a
+# trigger_camera-driven view override, which moves the free camera
+# directly rather than the player's own collision body, so today it does
+# not exercise ground_mover_speed()/PlayerState::ground_brush; see
+# xtask/src/combat_smoke.rs's BASE_ABSENT doc comment.
 
 15 look 0 90
 15 look 0 90

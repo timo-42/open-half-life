@@ -14,10 +14,13 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+use glam::Vec3;
 use ohl_formats::bsp30::{Bsp, Limits};
-use ohl_formats::test_support::{Bsp30Builder, CollisionBrush, FIXTURE_HULL_SIZES, HullPlane};
+use ohl_formats::test_support::{
+    Bsp30Builder, CollisionBrush, FIXTURE_HULL_SIZES, HullPlane, build_brush_entity_floor_bsp,
+};
 
-use crate::hull::{CollisionModel, contents};
+use crate::hull::{BrushId, CollisionModel, contents};
 
 /// The on-disk size of one `BSPLEAF`, used to turn the builder's raw leaf
 /// lump length back into a leaf index.
@@ -406,4 +409,38 @@ pub fn build_xen_overhang_bsp() -> Vec<u8> {
         [256.0, 256.0, OVERHANG_TOP_Z],
     );
     build_hull_mismatch_bsp(WORLDSPAWN_ONLY, &[floor.clone(), ledge], &[floor])
+}
+
+/// A void worldspawn (submodel `*0`) with a single movable slab attached as
+/// submodel `*1` — a mover-riding test's platform — starting at world
+/// origin (the same shape [`ohl_formats::test_support::build_brush_entity_floor_bsp`]
+/// already builds for the brush-entity-floor tests, reused here rather than
+/// authored twice; only its classname differs, which the collision model
+/// never reads).
+///
+/// The returned [`BrushId`] can be driven with
+/// [`CollisionModel::set_brush_origin`] to stand in for a `func_plat`/
+/// `func_train`/`func_door` the map logic moves each tick: attaching it,
+/// rather than baking a second copy of its geometry straight into the
+/// world model, is what makes [`crate::movement::categorize_position`]
+/// populate [`crate::movement::PlayerState::ground_brush`] when a player
+/// stands on it, exactly as `ohl-engine`'s own `sync_brush_collision` does
+/// for a real map's brush entities.
+///
+/// # Panics
+///
+/// If the fixture this function itself just built does not round-trip as a
+/// BSP v30 file with an attachable submodel `*1` — a bug in this test
+/// support module, never in caller code.
+#[must_use]
+pub fn build_platform_room() -> (CollisionModel, BrushId) {
+    let bytes = build_brush_entity_floor_bsp("func_plat");
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+    let mut model =
+        CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable world hulls");
+    let brush = model
+        .attach_brush(&bsp, &limits, 1, Vec3::ZERO)
+        .expect("fixture's platform submodel attaches");
+    (model, brush)
 }

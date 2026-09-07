@@ -751,6 +751,25 @@ impl Game {
         })
     }
 
+    /// The speed of the attached brush entity the player is currently
+    /// standing on (a moving `func_train`/`func_tracktrain`/`func_plat`/
+    /// lift `func_door`), or `0.0` while airborne, standing on worldspawn
+    /// geometry, or standing on a mover that is not currently moving.
+    ///
+    /// Reads exactly the two pieces `Systems::player_move`'s own
+    /// `base_velocity` lookup does — [`ohl_physics::PlayerState::ground_brush`]
+    /// and [`crate::level::Level::brush_velocity`] — so a host (or a
+    /// script log) can report "the player is riding a mover" from the same
+    /// data the physics step already computed, without re-deriving it.
+    #[must_use]
+    pub fn ground_mover_speed(&self) -> f32 {
+        self.controller
+            .state
+            .ground_brush
+            .and_then(|brush| self.level.brush_velocity.get(&brush))
+            .map_or(0.0, |velocity| velocity.length())
+    }
+
     /// Advances the frame by `dt` seconds and returns the events the host
     /// must act on.
     ///
