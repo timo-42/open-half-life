@@ -1207,6 +1207,15 @@ impl Game {
         if let Some(ai) = &save.ai {
             Systems::restore_ai(&mut self.level, ai);
         }
+        // The entity snapshots and 24/25 above just restored every
+        // monster's `Transform` from the save; `ohl_ai::Actor` (sensing,
+        // navigation, attacks) still holds this level's fresh spawn
+        // position from `attach_level`'s own `attach_monsters` call.
+        // Carrying `Transform` onto `Actor` here, once, is what makes a
+        // reloaded monster think from where the save actually left it
+        // rather than from the map's spawn point; see
+        // `Systems::sync_actor_from_transforms`'s doc.
+        Systems::sync_actor_from_transforms(&mut self.level);
         // `SECTION_PROJECTILES` (26, M7.9 P4b).
         if let Some(projectiles) = &save.projectiles {
             self.systems

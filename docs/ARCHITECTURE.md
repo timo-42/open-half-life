@@ -874,6 +874,17 @@ everything else has already agreed on). The current phase order is:
 7. projectiles
 8. AI think (`ohl-ai`'s senses/schedules over an `ohl_ai::SightContext`
    built this step; `ohl-nav`'s node graph and A* drive movement)
+8b. monster transform sync: phase 8 moves every `ohl_ai::Actor` (walking,
+    chasing, fleeing) but never touches `Transform`, so this phase copies
+    `Actor::origin`/`yaw` onto `Transform` for every monster (`MonsterAi`
+    present) that a `scripted_sequence` is not currently possessing
+    (`ohl_ai::ScriptHold` absent — a possessed monster's `Transform` stays
+    whatever `crate::ai`'s own `place` last set). Run after phase 8 rather
+    than folded into phase 4 (before phase 5's hitbox rebuild) so
+    `Transform` always reflects the step that just produced it; phase 5's
+    hitbox rebuild for *this* step already ran against the previous step's
+    pose, so a monster hit this step is hit where it stood a step ago —
+    phase 5 catches up the following step.
 9. resolve queued damage (the one place health/armor actually change)
 10. lifecycle (corpse/gib decisions, corpse fade, monster
     `TriggerCondition`/`TriggerTarget` firing, `monstermaker` ticking)
@@ -935,7 +946,16 @@ tags 26/27 does not by itself bring back a deployable's or a model-backed
 projectile's drawn stand-in entity or `hecs::Entity` handle (neither is
 serializable): `ProjectileSystem::restore_snapshot` re-spawns a fresh stand-in
 for every restored satchel, tripmine, or in-flight model-backed projectile
-so it draws and stays damageable again after a load. `docs/MILESTONES.md`'s
+so it draws and stays damageable again after a load. Tags 18/24/25 restore
+every monster's `Transform` (from `EntitySnapshot`) and `MonsterAi` state,
+but not `ohl_ai::Actor` — `Game::restore` closes that gap itself, once,
+right after those sections apply: `Systems::sync_actor_from_transforms`
+copies the just-restored `Transform::origin`/`angles.y` onto
+`Actor::origin`/`yaw` for every monster, so sensing, navigation and
+attacks resume from the save's own position rather than from
+`ohl_ai::attach_monsters`'s spawn-time default (the same drift phase 8b
+above prevents step to step, closed once more at the load boundary).
+`docs/MILESTONES.md`'s
 M7.9 P4b note tracks the one known gap: weapon *inventory* (owned weapons,
 clips, reserve ammo) currently rides inside `SECTION_PLAYER_CARRY`'s ad hoc
 byte encoding rather than its own section, which still round-trips

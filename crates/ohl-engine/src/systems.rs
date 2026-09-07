@@ -506,6 +506,31 @@ impl Systems {
         }
     }
 
+    /// After a save loads (`entities`/24/25 all applied): every monster's
+    /// [`Transform`] just came back from the save, but its
+    /// [`ohl_ai::Actor`] did not — `crate::transition::EntitySnapshot` has
+    /// no `Actor` field, and neither `Self::restore_entity_combat` nor
+    /// `Self::restore_ai` touches `Actor::origin`/`yaw` — so it is still
+    /// wherever `ohl_ai::attach_monsters` put it when this level was first
+    /// built for this load (the map's own spawn point), not where the save
+    /// says the monster actually was. Sensing, navigation and attacks all
+    /// read `Actor`, so the reverse of [`Self::sync_monster_transforms`]
+    /// belongs here, once, right after the load has settled: copy the
+    /// just-restored `Transform` onto `Actor` for every monster, so a
+    /// monster's *next* think step starts from the save's position rather
+    /// than the map's.
+    pub(crate) fn sync_actor_from_transforms(level: &mut Level) {
+        for (transform, actor) in &mut level
+            .registry
+            .world
+            .query::<(&Transform, &mut ohl_ai::Actor)>()
+            .with::<&ohl_ai::MonsterAi>()
+        {
+            actor.origin = transform.origin;
+            actor.yaw = transform.angles.y;
+        }
+    }
+
     /// `SECTION_PROJECTILES` (26): live projectiles and placed deployables.
     #[must_use]
     pub(crate) fn snapshot_projectiles(
@@ -744,6 +769,7 @@ impl Systems {
         self.weapons(level, controller, dt, input); // 6
         self.projectiles(level, dt); // 7
         self.ai_think(level, dt); // 8
+        Self::sync_monster_transforms(level); // 8b
         self.resolve_damage(level); // 9
         self.reap_deployables(level); // 9b
         self.lifecycle(level, dt); // 10
@@ -961,6 +987,42 @@ impl Systems {
     /// purpose: see the module note.
     fn ai_think(&mut self, level: &mut Level, dt: f32) {
         self.ai.think(level, dt, &mut self.damage_queue);
+    }
+
+    /// Phase 8b — monster transform sync: phase 8 just moved every
+    /// [`ohl_ai::Actor`] (walking, chasing, fleeing), but only `Actor`'s own
+    /// fields — nothing about the AI world touches [`Transform`]. Without
+    /// this phase a monster's rendered model, and the pose phase 5 already
+    /// baked into [`Self::hitboxes`] for *this* step, both stay pinned to
+    /// wherever the monster last stood, even while it walks — a route that
+    /// visibly finishes with the model still at its start.
+    ///
+    /// Placed right after phase 8 rather than folded into phase 4 (which
+    /// runs before AI thinks): copying here means [`Transform`] always
+    /// reflects the freshest `Actor` position for the step that just
+    /// produced it, at the cost of phase 5's hitbox rebuild for *this* step
+    /// having already run against the previous step's pose — a monster hit
+    /// this step is hit where it stood a step ago, exactly as it already
+    /// was before this phase existed. Phase 5 catches up the following
+    /// step, once this phase has run.
+    ///
+    /// A monster a `scripted_sequence` currently holds
+    /// ([`ohl_ai::ScriptHold`] present) is left alone: `crate::ai`'s
+    /// `place` is what moves a possessed monster's [`Transform`], and it is
+    /// meant to stay authoritative over whatever route `AiWorld::tick` ran
+    /// for that same monster while held, rather than have this phase
+    /// immediately overwrite it.
+    fn sync_monster_transforms(level: &mut Level) {
+        for (actor, transform) in &mut level
+            .registry
+            .world
+            .query::<(&ohl_ai::Actor, &mut Transform)>()
+            .with::<&ohl_ai::MonsterAi>()
+            .without::<&ohl_ai::ScriptHold>()
+        {
+            transform.origin = actor.origin;
+            transform.angles.y = actor.yaw;
+        }
     }
 
     /// Phase 9 — damage resolution: the queue is drained once, in insertion
