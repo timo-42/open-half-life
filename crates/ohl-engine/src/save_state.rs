@@ -723,6 +723,23 @@ pub struct RotatorSnapshot {
 /// `monstermaker`, or `trigger_auto`. `None` for an entity with none of the
 /// five.
 ///
+/// **This struct's shape is frozen.** Tag 28 is written by every save this
+/// crate produces and decoded as one fixed, non-self-describing `postcard`
+/// shape, so any field added to it — or to one of the five snapshot types
+/// it holds — makes every previously written save whose tag 28 is
+/// non-empty (a map with one `trigger_auto` is enough) fail to decode.
+/// [`Self::rotator`] is the cautionary case: it was added here after tag 28
+/// already shipped, and it duplicates state `SECTION_ENTITY_REGISTRY` (tag
+/// 18) already persists for the same entity in the same spawn order,
+/// through `crate::transition::EntitySnapshot::rotator`. It stays anyway,
+/// because removing it would move the wire shape a second time and misread
+/// every save written since — see [`crate::save`]'s "Frozen section shapes"
+/// doc and `docs/FORMAT_SOURCES.md` `TODO(black-box)` item 28. The two
+/// copies cannot disagree in practice (both are captured from the same
+/// component in the same snapshot); if they ever did, this one is applied
+/// last and would win. `crates/ohl-engine/tests/save_format_frozen.rs`
+/// pins this shape with golden bytes.
+///
 /// `func_rot_button`/`momentary_rot_button`/`func_pendulum` deliberately do
 /// **not** live here, even though they are movers in the same sense: this
 /// is a *required* section (`crate::save::GameSave::mover_state` is written
@@ -746,6 +763,9 @@ pub struct MoverSnapshot {
     /// This entity's `monstermaker` counters, when it is one.
     pub maker: Option<MonsterMakerSnapshot>,
     /// This entity's `func_rotating` spin state, when it has one.
+    /// Redundant with `crate::transition::EntitySnapshot::rotator` (tag
+    /// 18), and kept only because tag 28's wire shape is frozen with it in
+    /// place: see this struct's own doc comment.
     pub rotator: Option<RotatorSnapshot>,
     /// `ohl_game::registry::AutoTrigger::fired`, when this entity is a
     /// `trigger_auto`. Not itself a mover/camera/script/maker, but carried

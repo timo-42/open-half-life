@@ -34,10 +34,78 @@
 //! | 32 | *(reserved, `ohl-player`)* | `PlayerSnapshot`, written through `Player::snapshot()` when a later package wires it |
 //!
 //! Tags 23-30 are read as `None`/a default when absent, so a save written
-//! before M7.9 P4b (tags 23-27), M7.13 (tag 28), M9.5 (tag 29), or M9.6
+//! before M7.9 P4b (tags 23-27), M7.13 (tag 28), M9.5 (tag 29) or M9.6
 //! (tag 30) still loads (`.plan/m79-design.md` §6); a section that is
 //! present but fails to decode fails the whole read closed
 //! ([`crate::EngineError::SaveUnreadable`]), same as every other section.
+//!
+//! # Frozen section shapes, the compatibility floor, and the rule
+//!
+//! `postcard` is not self-describing: a section is decoded as one fixed
+//! wire shape, field for field. *Adding or removing a field* on a type any
+//! existing tag serializes therefore does not extend the format — it
+//! invalidates every save file already written whose section for that tag
+//! is non-empty. An optional tag's "missing loads as a default" rule does
+//! not help: the tag is present, it just no longer matches.
+//!
+//! **Every tag listed above is frozen at the shape this build writes**,
+//! and that includes the types each one reaches transitively — tag 18's
+//! [`EntitySnapshot`] and every component it holds (a field added to
+//! `ohl_game::registry::Door` moves tag 18), tag 19's [`SimulationState`],
+//! tag 28's [`MoverSnapshot`] and the five snapshot structs it holds.
+//! Tags 16-22 are additionally *required*, so for them a shape change is
+//! unconditionally fatal; the optional tags are no safer once a save that
+//! carries them exists.
+//!
+//! ## The compatibility floor
+//!
+//! **A save file written by a build at commit `6090676` or later opens;
+//! anything older does not.** Tag 18 is what sets that, not tag 28:
+//! [`EntitySnapshot`] gained `rotator` at `6090676` (inserted between
+//! `platform` and `light`), and the `ohl_game::registry::Door` it reaches
+//! gained `rotation_axis` at `9ea7029` (between `travel_distance` and
+//! `state`). Tag 18 is required, so either change alone is enough to
+//! reject every older file. Tag 28's own history — it gained `rotator` at
+//! `83f968c` — is inside that window and so changes nothing about the
+//! floor; a `MoverSnapshot` without that field would rescue no file that
+//! is not already lost, while breaking every file written since. Tag 19 is
+//! genuinely unmoved: [`SimulationState`] and the types it reaches are the
+//! same shape they were well before the floor.
+//!
+//! From `f64ccfc` on, that floor is meant to hold. Moving it again means
+//! abandoning every existing save file, which is a decision to take
+//! deliberately and write down here — not a side effect of adding a field.
+//!
+//! ## A mismatch must fail closed
+//!
+//! It is not enough for a stale save to be *wrong*; it has to be
+//! *rejected*. Neither `postcard::from_bytes` nor a hand-driven
+//! `postcard::Deserializer` checks that its input was consumed in full, so
+//! a reader one field shorter than the writer used to decode such a
+//! section happily — misassigning every field after the missing one and
+//! ignoring the surplus bytes. On tag 28 that reads a fired `trigger_auto`
+//! back as unfired, replaying it on load: precisely the bug
+//! [`MoverSnapshot::auto_trigger_fired`] exists to prevent. A review of
+//! this module found that hole; all three decode paths
+//! ([`ohl_save::SaveReader::deserialize`] for a required section, this
+//! module's own `optional_section`, and `optional_bounded_vec_section`)
+//! now require their bytes to be consumed exactly.
+//!
+//! ## The rule
+//!
+//! **New persisted state gets a new optional tag**, written only when
+//! populated and read through `optional_section` (or
+//! `optional_bounded_vec_section`), so an older save simply reports it
+//! absent. Tag 30 exists for exactly this reason: its state was first
+//! added as fields on tags 18/19/28 and had to be moved out before it
+//! shipped (`docs/FORMAT_SOURCES.md` `TODO(black-box)` item 27; item 28
+//! records the rest of this section's own history).
+//!
+//! `crates/ohl-engine/tests/save_format_frozen.rs` pins tags 16, 17, 18,
+//! 19, 20, 21, 22 and 28 with committed golden bytes, decoded by the
+//! current reader, and proves the fail-closed behaviour above: a field
+//! added to any of them fails those tests rather than shipping a
+//! save-breaking build.
 
 use ohl_campaign::Difficulty;
 use ohl_game::SimulationState;
@@ -369,9 +437,14 @@ fn optional_section<T: serde::de::DeserializeOwned>(
     tag: u32,
 ) -> crate::Result<Option<T>> {
     match reader.section(tag) {
-        Ok(bytes) => postcard::from_bytes(bytes)
-            .map(Some)
-            .map_err(|_| crate::EngineError::SaveUnreadable),
+        // `take_from_bytes` plus an empty-remainder check, not
+        // `postcard::from_bytes`, which discards an unused tail: see
+        // `ohl_save::SaveReader::deserialize`'s own doc comment for why a
+        // partially consumed section must fail rather than decode.
+        Ok(bytes) => match postcard::take_from_bytes(bytes) {
+            Ok((value, [])) => Ok(Some(value)),
+            _ => Err(crate::EngineError::SaveUnreadable),
+        },
         Err(ohl_save::SaveError::SectionNotFound) => Ok(None),
         Err(_) => Err(crate::EngineError::SaveUnreadable),
     }
@@ -412,15 +485,39 @@ mod bounded_vec {
     /// length longer than `max_len` is rejected as soon as the
     /// `(max_len + 1)`th element would be read, before any element beyond
     /// that point is ever decoded or pushed.
+    ///
+    /// Every byte of `bytes` must be consumed. Driving a
+    /// [`postcard::Deserializer`] by hand, unlike calling
+    /// [`postcard::from_bytes`], does not check that on its own — it simply
+    /// stops once the sequence it was asked for is complete — so this
+    /// finalizes the deserializer and rejects a non-empty remainder. That
+    /// check is what makes a *shape* change on one of these sections fail
+    /// the way [`super`]'s "Frozen section shapes" doc says every section
+    /// fails: loudly. Without it, a reader whose element type is one field
+    /// *shorter* than the bytes were written with decodes the section
+    /// happily, misassigning every field after the missing one and leaving
+    /// the surplus bytes unread — silent corruption instead of
+    /// [`crate::EngineError::SaveUnreadable`]. A review of this module found
+    /// exactly that hole; `crates/ohl-engine/tests/save_format_frozen.rs`'s
+    /// `a_bounded_vec_section_with_trailing_bytes_fails_closed` pins the
+    /// fix.
     pub(super) fn deserialize_bounded_vec<'de, T: serde::de::Deserialize<'de>>(
         bytes: &'de [u8],
         max_len: usize,
     ) -> postcard::Result<Vec<Option<T>>> {
         let mut deserializer = postcard::Deserializer::from_bytes(bytes);
-        deserializer.deserialize_seq(BoundedVecVisitor {
+        let values = deserializer.deserialize_seq(BoundedVecVisitor {
             max_len,
             marker: std::marker::PhantomData,
-        })
+        })?;
+        if deserializer.finalize()?.is_empty() {
+            Ok(values)
+        } else {
+            // `postcard` has no "trailing bytes" error of its own; the
+            // caller collapses every failure onto
+            // `crate::EngineError::SaveUnreadable` regardless.
+            Err(postcard::Error::SerdeDeCustom)
+        }
     }
 
     struct BoundedVecVisitor<T> {
