@@ -1633,6 +1633,29 @@ at the end of this section.
   `ohl-physics` keys climbing off the leaf contents at the player's origin
   rather than off an entity list, and why the crate offers climbing *up,
   down and sideways* against the ladder's outward face.
+  `ohl_physics::hull::CollisionModel::attach_contents_brush` (added for the
+  func_ladder/func_water contents milestone) is what turns a `func_ladder`
+  entity's own submodel into that same `CONTENTS_LADDER` query result at
+  runtime, since nothing in the compiled BSP format lets a brush *entity*
+  declare special leaf contents at compile time — only a world brush can.
+- [TWHL wiki: func_water](https://twhl.info/wiki/page/func_water)
+  (consulted 2026-09-07 via a search-engine result summary of the page,
+  same HTTP 403 caveat): its "Contents (skin)" keyvalue is described as
+  "Contents (skin) values include: -3 = water, -4 = slime, and -5 = lava"
+  — the raw `CONTENTS_*` enum values `ohl_physics::hull::contents::WATER`/
+  `SLIME`/`LAVA` already name, so no separate mapping table was invented;
+  `ohl_game::registry::Liquid::from_skin_keyvalue` reads exactly those
+  three values (defaulting to water) and `ohl_physics::ContentsKind::{
+  Water, Slime, Lava}` carries the choice through to
+  `attach_contents_brush`. The same search pass ("func_water" CBaseDoor
+  mover): "func_water shares its exact same codebase as func_door, which
+  allows it to move (for flooding effects) ... any func_water is
+  technically a func_door, and if you give it a name and trigger it, it
+  will open and close just like any normal door entity" — `func_water`'s
+  own submodel is therefore kept at its current origin the same generic
+  way any other brush entity's `Transform` already is
+  (`Level::sync_brush_collision`); no `func_water`-specific move logic was
+  added.
 - [TWHL wiki: trigger_hurt](https://twhl.info/wiki/page/trigger_hurt) (same
   403/search-summary caveat): `dmg` is "the amount of damage to deal out per
   second", `damagetype` selects the kind of damage and its values add up ("a
@@ -3090,15 +3113,20 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
 
 ### `TODO(black-box)` items, continued (brush-collision follow-ups)
 
-23. **`func_water`/`func_ladder` submodels contribute no contents yet.**
-    `ohl_physics::hull::CollisionModel` only ever attaches a brush entity's
-    submodel as *solid* (`CollisionModel::attach_brush`, called from
-    `ohl_game::brush::is_solid_brush`'s solid set); `func_water` and
-    `func_ladder` are both excluded from that set (documented as non-solid;
-    see `NEVER_SOLID` in `crates/ohl-game/src/brush.rs`) and so are never
-    attached at all, meaning neither one's own submodel currently marks any
-    space as `CONTENTS_WATER` or `CONTENTS_LADDER` — only a world-brush
-    volume compiled with those contents does. A `func_water`/`func_ladder`
-    built as its own brush entity therefore does not yet swim or climb
-    where a mapper placed it; this is unmeasured against any public source
-    and is a gap, not a documented design choice.
+23. ~~**`func_water`/`func_ladder` submodels contribute no contents
+    yet.**~~ **Fixed.** `ohl_physics::hull::CollisionModel::
+    attach_contents_brush` now attaches a `func_ladder`/`func_water`
+    submodel as a non-solid *contents volume* (`ohl_physics::ContentsKind`)
+    alongside the existing solid-brush attachment
+    (`CollisionModel::attach_brush`); see "Player systems" below for the
+    citations (`func_ladder`'s `skin` override, already recorded there, and
+    `func_water`'s `-3`/`-4`/`-5` water/slime/lava mapping, added there) and
+    `ohl_game::brush::contents_model_instances` for how `ohl-engine`
+    classifies which entities get which kind. `ohl-engine`'s
+    `attach_brush_collision` (`crates/ohl-engine/src/level.rs`, formerly
+    `attach_solid_brushes`) now calls both attach functions and keeps every
+    attached brush — solid or contents volume — in the same
+    `Vec<(Entity, BrushId)>` `Level::sync_brush_collision` already moved
+    each step, so a `func_water` mover (documented as sharing `func_door`'s
+    move/trigger behaviour) is kept at its current origin the same way any
+    other brush entity already is.

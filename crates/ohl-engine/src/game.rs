@@ -770,6 +770,25 @@ impl Game {
             .map_or(0.0, |velocity| velocity.length())
     }
 
+    /// Whether the walking player is currently attached to a ladder
+    /// (`ohl_physics::PlayerState::on_ladder`) — the same state
+    /// `ohl-physics`'s ladder-climb step reads and sets, and the same one
+    /// a real `func_ladder`/world `CONTENTS_LADDER` volume both attach
+    /// through (`docs/FORMAT_SOURCES.md`, "Player systems").
+    #[must_use]
+    pub fn player_on_ladder(&self) -> bool {
+        self.controller.state.on_ladder
+    }
+
+    /// Whether the walking player is at all submerged in a liquid: any
+    /// [`ohl_physics::WaterLevel`] above [`ohl_physics::WaterLevel::Dry`]
+    /// (feet, waist or eyes), the same state a real `func_water`/world
+    /// liquid volume both categorise through.
+    #[must_use]
+    pub fn player_in_water(&self) -> bool {
+        self.controller.state.water_level != ohl_physics::WaterLevel::Dry
+    }
+
     /// Advances the frame by `dt` seconds and returns the events the host
     /// must act on.
     ///

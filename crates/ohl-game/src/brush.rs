@@ -10,7 +10,7 @@ use glam::Vec3;
 use hecs::Entity;
 
 use crate::keyvalues::RenderProps;
-use crate::registry::{BrushModel, ClassName, Registry, Transform};
+use crate::registry::{BrushModel, ClassName, Liquid, Registry, Transform, Water};
 
 /// One brush-model entity's placement: which submodel to draw, and where.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -46,15 +46,18 @@ fn is_never_rendered(classname: &str) -> bool {
 }
 
 /// Brush-entity classnames that are documented as *not* solid to the
-/// player, and so must never be attached to the collision model.
+/// player, and so must never be attached to the collision model with
+/// [`solid_model_instances`]/`ohl_physics::CollisionModel::attach_brush`.
 ///
 /// - `func_illusionary`: TWHL wiki, "func_illusionary" — a brush that is
 ///   drawn but has no collision, the standard way to build a non-solid
-///   decoration.
+///   decoration. Contributes no contents at all.
 /// - `func_ladder`: TWHL wiki, "func_ladder" — an invisible brush the
-///   player climbs rather than collides with.
-/// - `func_water`: a swimmable liquid volume, not a wall; its contents are
-///   what the movement code's water handling reads.
+///   player climbs rather than collides with. Still marks its own space
+///   climbable; see [`contents_model_instances`].
+/// - `func_water`: a swimmable liquid volume, not a wall. Still marks its
+///   own space with the liquid its `skin` keyvalue selects; see
+///   [`contents_model_instances`].
 /// - every `trigger_*`: collision-only *volumes* that fire map logic when
 ///   the player is inside them, which is impossible if they push the
 ///   player out (see [`is_never_rendered`]).
@@ -103,6 +106,61 @@ pub fn solid_model_instances(registry: &Registry) -> Vec<ModelInstance> {
     out
 }
 
+/// The non-solid contents a `func_ladder`/`func_water` submodel
+/// contributes to the collision model. Maps directly onto
+/// `ohl_physics::hull::ContentsKind`; kept as this crate's own type (rather
+/// than depending on `ohl-physics`) so `ohl-game` stays engine-agnostic —
+/// see `ohl-engine`'s `level.rs` for the mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContentsVolumeKind {
+    /// `func_ladder`.
+    Ladder,
+    /// `func_water`, carrying which liquid its `skin` keyvalue selected.
+    Water(Liquid),
+}
+
+/// Collects one ([`ModelInstance`], [`ContentsVolumeKind`]) pair per
+/// `func_ladder`/`func_water` entity that carries a [`BrushModel`], in
+/// registry spawn order.
+///
+/// This is the non-solid counterpart of [`solid_model_instances`]: neither
+/// classname is solid (see [`NEVER_SOLID`]), but both still mark the space
+/// their submodel occupies with their own contents (climbable, or a
+/// swimmable liquid) once a host attaches them with
+/// `ohl_physics::CollisionModel::attach_contents_brush`.
+#[must_use]
+pub fn contents_model_instances(registry: &Registry) -> Vec<(ModelInstance, ContentsVolumeKind)> {
+    let mut out = Vec::new();
+    for (entity, model, transform, render, classname) in
+        &mut registry
+            .world
+            .query::<(Entity, &BrushModel, &Transform, &RenderProps, &ClassName)>()
+    {
+        let kind = match classname.0.as_str() {
+            "func_ladder" => ContentsVolumeKind::Ladder,
+            "func_water" => {
+                let liquid = registry
+                    .world
+                    .get::<&Water>(entity)
+                    .map_or(Liquid::Water, |water| water.0);
+                ContentsVolumeKind::Water(liquid)
+            }
+            _ => continue,
+        };
+        out.push((
+            ModelInstance {
+                entity,
+                model_index: model.0,
+                origin: transform.origin,
+                angles: transform.angles,
+                render: *render,
+            },
+            kind,
+        ));
+    }
+    out
+}
+
 /// Collects one [`ModelInstance`] per entity that has a [`BrushModel`], a
 /// [`Transform`] and a classname GoldSrc actually draws (excluding
 /// collision-only volumes; see [`is_never_rendered`]), in registry spawn
@@ -131,9 +189,9 @@ pub fn model_instances(registry: &Registry) -> Vec<ModelInstance> {
 
 #[cfg(test)]
 mod tests {
-    use super::model_instances;
+    use super::{ContentsVolumeKind, contents_model_instances, model_instances};
     use crate::keyvalues::{Limits, parse_entities};
-    use crate::registry::Registry;
+    use crate::registry::{Liquid, Registry};
     use ohl_formats::bsp30::Entity as RawEntity;
     use std::collections::BTreeMap;
 
@@ -186,5 +244,25 @@ mod tests {
         let defs = parse_entities(&entities, &Limits::default());
         let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
         assert!(model_instances(&registry).is_empty());
+    }
+
+    #[test]
+    fn contents_model_instances_collects_ladder_and_water_with_their_kind() {
+        let entities = vec![
+            raw(&[("classname", "func_ladder"), ("model", "*2")]),
+            raw(&[("classname", "func_water"), ("model", "*3"), ("skin", "-5")]),
+            raw(&[("classname", "func_wall"), ("model", "*4")]),
+            raw(&[("classname", "trigger_once"), ("model", "*5")]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let mut instances = contents_model_instances(&registry);
+        instances.sort_by_key(|(instance, _)| instance.model_index);
+
+        assert_eq!(instances.len(), 2, "only the ladder and the pool qualify");
+        assert_eq!(instances[0].0.model_index, 2);
+        assert_eq!(instances[0].1, ContentsVolumeKind::Ladder);
+        assert_eq!(instances[1].0.model_index, 3);
+        assert_eq!(instances[1].1, ContentsVolumeKind::Water(Liquid::Lava));
     }
 }
