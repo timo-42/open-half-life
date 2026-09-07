@@ -266,6 +266,17 @@ pub struct Level {
 /// `func_door`'s move/trigger behaviour) is kept at its current origin
 /// exactly as any other brush entity already is, with no separate code
 /// path.
+///
+/// Either kind is attached at the placement its map logic *already* puts
+/// it at, not at its raw `origin` keyvalue: the same
+/// `crate::render::brush_offset` [`Level::sync_brush_collision`] applies
+/// every step is applied once here too, symmetrically for both loops. A
+/// `func_train`/`func_tracktrain` is placed on the first node of its path
+/// at spawn (see `crate::render::track_train_transform`), so without this
+/// its hull would spend the level's very first tick — the tick the
+/// player's own spawn position is resolved against — back wherever the map
+/// compiled it, leaving nothing under a player the map authored standing
+/// inside it.
 fn attach_brush_collision(
     model: &mut CollisionModel,
     bsp: &Bsp<'_>,
@@ -281,7 +292,8 @@ fn attach_brush_collision(
             // `"*0"` is the worldspawn model, which `model` already holds.
             continue;
         }
-        if let Ok(id) = model.attach_brush(bsp, limits, index, instance.origin) {
+        let origin = instance.origin + crate::render::brush_offset(registry, instance.entity);
+        if let Ok(id) = model.attach_brush(bsp, limits, index, origin) {
             attached.push((instance.entity, id));
         }
     }
@@ -300,7 +312,8 @@ fn attach_brush_collision(
                 ohl_game::Liquid::Lava => ContentsKind::Lava,
             },
         };
-        if let Ok(id) = model.attach_contents_brush(bsp, limits, index, instance.origin, kind) {
+        let origin = instance.origin + crate::render::brush_offset(registry, instance.entity);
+        if let Ok(id) = model.attach_contents_brush(bsp, limits, index, origin, kind) {
             attached.push((instance.entity, id));
         }
     }
@@ -990,3 +1003,4 @@ mod tests {
         assert!((cycler.scale - 1.0).abs() < f32::EPSILON);
     }
 }
+

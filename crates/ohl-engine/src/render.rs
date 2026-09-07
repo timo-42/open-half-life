@@ -371,25 +371,35 @@ fn ambient_at(level: &Level, origin: [f32; 3]) -> [f32; 3] {
 /// A `func_train`/`func_tracktrain`'s current placement, read from the
 /// `ohl-game`-side [`TrackTrainState`] the map logic simulation advances
 /// each tick (see `crates/ohl-game/src/track_train.rs`): a world-space
-/// *delta* offset from wherever the brush geometry was authored/built
-/// ([`TrackTrainState::built_origin`], not the entity's own `origin`
-/// keyvalue), and, for a `func_tracktrain` (which the public documentation
-/// says turns to face the next `path_track`), the yaw to face instead of
-/// the entity's own spawned `angles`. Returns `(Vec3::ZERO, None)` for any
-/// entity that is not a train with a resolved path (falling back to the
-/// door/static placement path above).
+/// *delta* offset from the entity's own `origin` keyvalue, and, for a
+/// `func_tracktrain` (which the public documentation says turns to face
+/// the next `path_track`), the yaw to face instead of the entity's own
+/// spawned `angles`. Returns `(Vec3::ZERO, None)` for any entity that is
+/// not a train with a resolved path (falling back to the door/static
+/// placement path above).
 ///
-/// This mirrors [`door_offset`]'s convention exactly: the brush's vertices
-/// are already baked in world space at [`TrackTrainState::built_origin`],
-/// so the value returned here must be how far the train has moved *since*
-/// that built position (zero at spawn, since [`TrackTrainState::spawn`]
-/// starts a train sitting exactly on its first node), not the train's
-/// absolute polyline coordinate — subtracting the entity's `origin`
-/// keyvalue instead (which is conventionally `0 0 0` for a brush entity)
-/// would leave that absolute coordinate un-cancelled and double-apply it on
-/// top of the already-in-world-space geometry, displacing the rendered
-/// model away from the track. See `docs/CLEAN_ROOM.md`-governed
-/// `.plan/fidelity-round-2.md` finding E1.
+/// Every caller adds this to the entity's `origin` keyvalue (the renderer
+/// through `ModelInstance::origin`, the collision model through
+/// `Level::sync_brush_collision`), so returning `position() - origin`
+/// places the train *at* [`TrackTrainState::position`] — which is what the
+/// public documentation describes: a train rides the path with its origin
+/// brush on it, the compiler writes that origin brush's position into the
+/// entity's `origin` keyvalue and stores the submodel's geometry relative
+/// to it, and `height` is documented as the offset "above the path_track
+/// that the train will ride, **based on the location of the train's origin
+/// brush**" (`docs/FORMAT_SOURCES.md`, "Track trains and paths"). A train
+/// is therefore drawn and collided wherever its path currently puts it,
+/// not wherever its brushes happened to be built — a map may author the
+/// brush anywhere and let the first `path_track` place it at spawn.
+///
+/// The `docs/CLEAN_ROOM.md`-governed `.plan/fidelity-round-2.md` finding
+/// E1 (returning the raw polyline coordinate, which the caller then adds
+/// the `origin` keyvalue to and so double-applies it) stays fixed: the
+/// `origin` keyvalue is subtracted here precisely so the sum cancels to
+/// the absolute position exactly once. Subtracting
+/// [`TrackTrainState::built_origin`] instead — the previous behaviour —
+/// cancelled to a zero offset at spawn and so left the train frozen at
+/// wherever it was compiled, however far from its own track that is.
 pub(crate) fn track_train_transform(
     registry: &ohl_game::Registry,
     entity: Entity,
@@ -400,10 +410,11 @@ pub(crate) fn track_train_transform(
     let Ok(train) = registry.world.get::<&TrackTrain>(entity) else {
         return (Vec3::ZERO, None);
     };
-    (
-        state.position() - state.built_origin(),
-        state.yaw_degrees(&train),
-    )
+    let authored = registry
+        .world
+        .get::<&Transform>(entity)
+        .map_or(Vec3::ZERO, |transform| transform.origin);
+    (state.position() - authored, state.yaw_degrees(&train))
 }
 
 /// How far a door has slid along its move direction, from the state machine
