@@ -333,18 +333,24 @@ impl TrackTrainState {
         }
     }
 
-    /// The world-space position the train's brush model was authored at:
-    /// the chain's first node (`height`-adjusted), matching real map
-    /// convention that a `func_train`/`func_tracktrain` brush is drawn
-    /// sitting on the track at its starting node. This is the reference
-    /// point [`crate::registry::Transform::origin`]'s keyvalue is
-    /// documented (see the module doc comment) to be moved onto at spawn,
-    /// and is what `ohl-engine`'s `track_train_transform` subtracts
-    /// [`Self::position`] from to get a *delta* offset (mirroring
-    /// `door_offset`'s convention of returning zero movement from an
-    /// already-baked resting position), rather than the absolute polyline
-    /// coordinate that offset would otherwise double-apply on top of the
-    /// already-in-world-space brush geometry.
+    /// Where this train is placed at spawn: the chain's first node
+    /// (`height`-adjusted). The public documentation describes a train as
+    /// riding its path with its *origin brush* on it — `height` is "the
+    /// height above the path_track that the train will ride, based on the
+    /// location of the train's origin brush" (see the module doc comment)
+    /// — so at spawn the entity's origin brush, and with it the whole
+    /// submodel the compiler stored relative to that brush, is moved onto
+    /// this node from wherever the map authored it.
+    ///
+    /// This is deliberately *not* what `ohl-engine`'s
+    /// `track_train_transform` subtracts from [`Self::position`]: that
+    /// subtracts the entity's own `origin` keyvalue, because a map is free
+    /// to build the train's brushes anywhere and let the first node place
+    /// them. Subtracting this instead would make the spawn offset
+    /// identically zero and freeze the train wherever it was compiled.
+    /// Kept as a published reference point (the start of the ride, and the
+    /// value a caller can compare [`Self::position`] against to see how far
+    /// along the chain a train has travelled from its start).
     #[must_use]
     pub fn built_origin(&self) -> Vec3 {
         self.chain.nodes[0].position

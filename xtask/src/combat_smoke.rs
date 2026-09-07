@@ -87,16 +87,17 @@ const BASE_PRESENT: [&str; 2] = ["Scripted input loaded.", "Scripted input finis
 ///
 /// "The player is riding a mover." joined this list once mover-riders
 /// (`crates/ohl-physics`'s `PlayerState::ground_brush`,
-/// `crates/ohl-engine`'s `Level::brush_velocity`) landed: none of these
-/// scenarios stands on a moving `func_train`/`func_tracktrain`/`func_plat`/
-/// lift `func_door`, so none should log it. See
-/// `crates/ohl-physics/tests/mover_riders.rs` and
+/// `crates/ohl-engine`'s `Level::brush_velocity`) landed: none of the
+/// scenarios that use this constant stands on a moving
+/// `func_train`/`func_tracktrain`/`func_plat`/lift `func_door`, so none
+/// should log it. See `crates/ohl-physics/tests/mover_riders.rs` and
 /// `crates/ohl-engine/tests/mover_riders.rs` for the mechanism exercised
 /// against a real (synthetic) `func_train` instead.
 ///
 /// "look around in the first chapter start" (`ohl_campaign::STARTMAP`,
-/// `"c0a0"`) does *not* use this constant for that line, deliberately: see
-/// [`FIRST_CHAPTER_START_ABSENT`]'s own doc comment for why.
+/// `"c0a0"`) does *not* use this constant: the player rides that map's
+/// opening tram, so it asserts that line *present* instead. See
+/// [`FIRST_CHAPTER_START_PRESENT`]'s own doc comment.
 const BASE_ABSENT: [&str; 8] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
@@ -108,35 +109,34 @@ const BASE_ABSENT: [&str; 8] = [
     "The player is riding a mover.",
 ];
 
-/// [`BASE_ABSENT`], minus "The player is riding a mover.", for "look
-/// around in the first chapter start" only.
+/// The fixed lines "look around in the first chapter start" expects
+/// present, beyond [`BASE_PRESENT`].
 ///
-/// **`TODO`**: in the real game the player physically rides the map's
-/// opening tram, so once this project's map logic actually carries it, the
-/// correct assertion for this scenario becomes *present*, not merely "not
-/// in `BASE_ABSENT`". It is carved out here rather than left asserting
-/// *absent* because that would codify a known-broken intro as the expected
-/// behaviour — the day the two gaps below are fixed, an `absent` assertion
-/// here would (correctly) start failing for the right reason, and a
-/// developer fixing gap 1 or 2 below has no reason to also know to touch
-/// this file. Confirmed against the real payload with a local,
-/// since-reverted instrumentation pass (aggregates only; see
-/// `docs/CLEAN_ROOM.md`) that the map's opening tram sequence today does
-/// not carry the player, for two independent reasons, both open:
-/// 1. No `func_tracktrain` on this map is ever started: every one has
-///    `start_speed` `0`, and nothing in this project's map logic (no
-///    `multi_manager`, no other trigger) fires within the scripted run's
-///    window to start one another way.
-/// 2. Even if a train were moving, the player is not standing on its
-///    collision brush at spawn: `PlayerState::ground_brush` reads `None`
-///    for the whole run, and the player instead falls several hundred
-///    world units onto ordinary world geometry before the run ends.
+/// In the real game the player starts standing inside the map's opening
+/// tram and rides it, and this project now reproduces that: a
+/// `func_tracktrain` is placed on the first node of its own path at spawn
+/// rather than left wherever its brushes were compiled (see
+/// `crates/ohl-engine/src/render.rs`'s `track_train_transform` and
+/// `crates/ohl-engine/tests/train_spawn_placement.rs`), so the tram's
+/// collision brush is under the player's spawn, the map's own trigger
+/// chain starts it, and the player is carried along without this
+/// scenario's script pressing a single movement key. Both lines below
+/// therefore fire from the ride alone.
 ///
-/// Neither gap is a camera override, and this project has no
-/// `trigger_camera` entity on this map at all (an earlier draft of this
-/// comment wrongly attributed the missing ride to one; see
-/// [PR #97](https://github.com/timo-42/open-half-life/pull/97)'s review
-/// for the real-payload instrumentation that corrected it).
+/// This replaces the `TODO` that used to sit on
+/// `FIRST_CHAPTER_START_ABSENT`, which carved "The player is riding a
+/// mover." out of the absent set rather than codify a known-broken intro
+/// as expected behaviour. The two gaps it recorded are closed: the map's
+/// trains do start, and the player does stand on one at spawn.
+const FIRST_CHAPTER_START_PRESENT: [&str; 4] = [
+    "Scripted input loaded.",
+    "Scripted input finished.",
+    "The player moved from the spawn point.",
+    "The player is riding a mover.",
+];
+
+/// [`BASE_ABSENT`], minus "The player is riding a mover.", which
+/// [`FIRST_CHAPTER_START_PRESENT`] asserts present instead.
 const FIRST_CHAPTER_START_ABSENT: [&str; 7] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
@@ -146,6 +146,7 @@ const FIRST_CHAPTER_START_ABSENT: [&str; 7] = [
     "The player took damage.",
     "The player is inside solid geometry.",
 ];
+
 
 /// The fixed line every M9 chapter-walk scenario expects present beyond
 /// [`BASE_PRESENT`]: the player's eye position actually left its spawn
@@ -275,10 +276,10 @@ const FIRE_AND_PICKUP_ABSENT: [&str; 5] = [
 /// included — assert "The player is inside solid geometry." absent: this
 /// scenario set's own regression guard for the PR #91 class of bug. 22 of
 /// the 23 also assert "The player is riding a mover." absent, since none
-/// of them stands on a moving brush entity today; "look around in the
-/// first chapter start" leaves that one line unasserted instead (see
-/// [`FIRST_CHAPTER_START_ABSENT`]'s own doc comment for the two open gaps
-/// that keep its own intro-tram wait from tripping it either way).
+/// of them stands on a moving brush entity; "look around in the first
+/// chapter start" is the one that asserts it *present*, because the
+/// player spawns inside that map's opening tram and rides it (see
+/// [`FIRST_CHAPTER_START_PRESENT`]'s own doc comment).
 #[allow(
     clippy::too_many_lines,
     reason = "one Scenario literal per M9 chapter-walk scenario, plus the four \
@@ -297,7 +298,7 @@ fn scenarios() -> [Scenario; 23] {
             name: "look around in the first chapter start",
             file: "first_chapter_start.txt",
             map: ohl_campaign::STARTMAP,
-            present: &BASE_PRESENT,
+            present: &FIRST_CHAPTER_START_PRESENT,
             absent: &FIRST_CHAPTER_START_ABSENT,
         },
         Scenario {

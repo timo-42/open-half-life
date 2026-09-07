@@ -2,7 +2,8 @@
 
 use ohl_formats::bsp30::{Bsp, Limits};
 use ohl_formats::test_support::{
-    Bsp30Builder, build_brush_entity_floor_bsp, build_collision_room_bsp, build_collision_slope_bsp,
+    Bsp30Builder, CollisionBrush, build_brush_entity_floor_bsp, build_collision_room_bsp,
+    build_collision_slope_bsp,
 };
 use ohl_physics::test_support::{build_ladder_entity_room_bsp, build_water_entity_room_bsp};
 use ohl_physics::{
@@ -646,5 +647,64 @@ fn an_attached_solid_brush_still_wins_over_an_overlapping_contents_volume() {
     assert_eq!(
         point_contents(&model, Vec3::new(72.0, 0.0, 36.0)),
         contents::SOLID
+    );
+}
+
+/// A submodel that carries a real hull-0 tree but whose hull-1 head is a
+/// bare `CONTENTS_EMPTY` — what a compiler emits for a brush too thin to
+/// survive being expanded to the standing hull's size — is a no-op for the
+/// standing hull and still solid for the point hull.
+///
+/// This pins the answer to a question raised while chasing a map's opening
+/// tram not being there to stand on (`crates/ohl-engine/tests/
+/// train_spawn_placement.rs`): the "skip a head link that is a bare
+/// contents value" rule `CollisionModel::trace` documents is *per hull*,
+/// so it cannot silently remove a brush's floor from the hull the player
+/// actually walks with while leaving the others intact — it removes
+/// exactly the hull the compiler already decided bounds no volume. A brush
+/// whose hull-1 tree really is a tree keeps its floor, which is why that
+/// rule was not the cause there.
+#[test]
+fn a_submodel_with_a_bare_hull_one_head_is_solid_only_to_the_point_hull() {
+    let mut builder = Bsp30Builder::new();
+    builder.set_entities_text("{\n\"classname\" \"worldspawn\"\n}\n");
+    let world_heads = builder.push_collision_hulls(&[]);
+    let mut slab_heads = builder.push_collision_hulls(&[CollisionBrush::box_brush(
+        [-64.0, -64.0, -2.0],
+        [64.0, 64.0, 2.0],
+    )]);
+    // Hulls 1-3 degenerate to "empty everywhere, no plane".
+    for head in &mut slab_heads[1..] {
+        *head = contents::EMPTY;
+    }
+    builder.push_model([-4096.0; 3], [4096.0; 3], [0.0; 3], world_heads, 1, 0, 0);
+    builder.push_model(
+        [-64.0, -64.0, -2.0],
+        [64.0, 64.0, 2.0],
+        [0.0; 3],
+        slab_heads,
+        1,
+        0,
+        0,
+    );
+    let bytes = builder.build();
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+    let mut model = CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable hulls");
+    model
+        .attach_brush(&bsp, &limits, 1, Vec3::ZERO)
+        .expect("the fixture declares submodel 1");
+
+    let start = Vec3::new(0.0, 0.0, 100.0);
+    let end = Vec3::new(0.0, 0.0, -100.0);
+    let standing = model.trace(Hull::Standing, start, end);
+    assert!(
+        (standing.fraction - 1.0).abs() < f32::EPSILON,
+        "a degenerate hull-1 tree still stopped the standing hull"
+    );
+    let point = model.trace(Hull::Point, start, end);
+    assert!(
+        point.fraction < 1.0 && point.brush_index.is_some(),
+        "the same brush's real hull-0 tree did not stop the point hull"
     );
 }
