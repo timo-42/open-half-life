@@ -963,8 +963,58 @@ the real game before this project may claim movement parity.
   (a swimmable volume) and every `trigger_*` volume, so
   `ohl_game::brush::is_solid_brush` excludes exactly those.
   TODO(black-box): a brush entity's `angles` are not applied to its
-  collision hulls (only its translation is), and a mover does not yet carry
-  a player standing on it; both need verification against the real game.
+  collision hulls (only its translation is); needs verification against the
+  real game. A mover *does* now carry a player standing on it; see "Riding
+  movers" under "Player systems" above for the mechanism, and the addition
+  below for the ground trace's `Trace::brush_index` and the push/block path
+  this needed.
+- Mover riders (`Trace::brush_index`, `CollisionModel::brush_origin`,
+  `ohl_physics::movement::push_from_mover`, `ohl-engine`'s
+  `Level::brush_velocity`/`Level::movers_blocked`, and
+  `ohl-engine::render::platform_offset`): structural additions built on the
+  brush-attachment mechanism documented just above, not a new public
+  source. `CollisionModel::trace` already picked the nearest hit across the
+  world tree and every attached brush (see above); `Trace::brush_index`
+  only records *which* attached brush (if any) produced that nearest hit,
+  so a caller can tell a world surface from a `func_train`/`func_tracktrain`/
+  `func_plat`/lift `func_door` the player is standing on. `Level::brush_velocity`
+  is each attached brush's displacement since the previous step (its new
+  origin, read back with the new `CollisionModel::brush_origin` getter,
+  minus its old one) divided by that step's `dt` — arithmetic, not a
+  documented constant. `Systems::player_move` feeds a standing player's
+  ground brush's velocity back in as `PlayerController::base_velocity`,
+  the "Riding movers" mechanism from "Player systems" above, which was
+  already implemented (PR #59) but never fed from anywhere until this
+  addition. `ohl_physics::movement`'s `player_move_events` additionally
+  moves the player's origin directly by a *vertical* ground mover's
+  per-step displacement (rather than only through `base_velocity`'s
+  ordinary velocity blend): no public source states this explicitly, but
+  it is required by the same structural fact already cited above — a
+  ground probe that only looks 2 units down cannot be expected to catch a
+  platform moving faster than that per step, and `base_velocity` alone
+  (integrated through the ordinary gravity/step-up move) does not close
+  that gap for a `func_plat`/lift `func_door` moving at documented default
+  speeds over one fixed tick. This is a bounded, hull-traced adjustment
+  (see `ohl_physics::movement`'s `ride_vertical_mover`), not a bypass of
+  collision. Separately, `ohl_physics::movement::push_from_mover` pushes a
+  player a moving brush's own displacement has walked into, bounded by the
+  same hull trace as any other move; TWHL's `func_door`/`func_tracktrain`
+  pages (cited above and under "Track trains and paths") document a `dmg`
+  keyvalue as "damage dealt to anything blocking the door" / "the train's
+  movement", which only makes sense if "blocked" is itself a documented
+  mover state, so a push that cannot fully clear the player is reported to
+  `Level::movers_blocked`. **TODO(black-box)**: nothing yet consumes that
+  signal to halt, reverse, or apply a blocking mover's `dmg` to the player —
+  matching the crush-detection gap already recorded for `TrackTrain::dmg`
+  under "Track trains and paths" below, this needs the same real-game
+  observation before a formula is guessed at. Finally,
+  `ohl-engine::render::platform_offset` was added alongside this package
+  because `func_plat`/`func_platform` had a `Platform` component and its
+  own advancing `MoverState`/timer (see "Entity keyvalues and map logic"
+  below) but no code translating that into a visual or collision offset —
+  `door_offset`'s existing timer-to-fraction mapping applies unchanged,
+  since `Platform` carries the identical `speed`/`movedir`/
+  `travel_distance`/`state`/`timer` shape as `Door`.
 - Half-Life Physics Reference, Chong Jiang Wei, chapter 5 "Ducking and
   jumping" (<https://www.jwchong.com/hl/duckjump.html>, reviewed 2026-09-05):
   "the difference in vertical player position (measured at the centre point

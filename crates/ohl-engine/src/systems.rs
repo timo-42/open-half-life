@@ -774,10 +774,52 @@ impl Systems {
     ) {
         // Doors, platforms and trains moved by last step's map logic must
         // collide where they now are, not where they were compiled.
-        level.sync_brush_collision();
+        level.sync_brush_collision(dt);
+        level.movers_blocked.clear();
         if let Some(collision) = level.collision.as_ref() {
+            // A mover that moved into the player this step (a closing
+            // `func_door`, a rising `func_plat`) must push them clear
+            // rather than leave them embedded in its new solid; this is
+            // separate from riding one, which the `base_velocity` lookup
+            // below handles. Cheap in the common case: it costs one
+            // zero-length trace and does nothing further unless that trace
+            // finds the player already standing inside an attached brush.
+            let probe = collision.trace(
+                controller.state.hull(),
+                controller.state.origin,
+                controller.state.origin,
+            );
+            if probe.start_solid
+                && let Some(brush) = probe.brush_index
+            {
+                let velocity = level
+                    .brush_velocity
+                    .get(&brush)
+                    .copied()
+                    .unwrap_or(Vec3::ZERO);
+                if velocity != Vec3::ZERO
+                    && !ohl_physics::push_from_mover(
+                        collision,
+                        &mut controller.state,
+                        velocity * dt,
+                    )
+                {
+                    level.movers_blocked.push(brush);
+                }
+            }
             controller.yaw = camera.yaw;
             controller.pitch = camera.pitch;
+            // Last step's `categorize_position` (inside the `advance` call
+            // below) recorded which attached brush, if any, the player was
+            // standing on; look its velocity up now and feed it back in as
+            // `base_velocity` so a moving `func_train`/`func_tracktrain`/
+            // `func_plat`/lift `func_door` carries the player riding it.
+            // See "Riding movers" in `docs/FORMAT_SOURCES.md`.
+            controller.base_velocity = controller
+                .state
+                .ground_brush
+                .and_then(|brush| level.brush_velocity.get(&brush).copied())
+                .unwrap_or(Vec3::ZERO);
             controller.advance(collision, &input.controller_input(), dt);
             camera.position = controller.eye_position().to_array();
         } else {

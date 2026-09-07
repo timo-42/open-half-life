@@ -216,6 +216,12 @@ pub struct Trace {
     pub in_water: bool,
     /// The contents value at [`Self::end_pos`], as seen by the traced hull.
     pub contents: i32,
+    /// Which attached brush entity's hull tree produced the nearest hit
+    /// ([`combine`] keeps the smaller fraction), so a caller can tell a
+    /// world surface from a `func_train`/`func_plat`/`func_door` the player
+    /// is standing on or was stopped by. `None` when the move ended on the
+    /// world tree, or hit nothing at all.
+    pub brush_index: Option<BrushId>,
 }
 
 impl Trace {
@@ -232,6 +238,7 @@ impl Trace {
             in_open: false,
             in_water: false,
             contents: contents::EMPTY,
+            brush_index: None,
         }
     }
 
@@ -579,6 +586,18 @@ impl CollisionModel {
         }
     }
 
+    /// The world-space origin `brush` currently sits at (its offset from
+    /// where it was compiled), or `Vec3::ZERO` for an out-of-range
+    /// `BrushId`. Lets a caller compute a mover's per-step displacement by
+    /// reading this before calling [`Self::set_brush_origin`] with the
+    /// entity's new position.
+    #[must_use]
+    pub fn brush_origin(&self, brush: BrushId) -> Vec3 {
+        self.brushes
+            .get(brush.0)
+            .map_or(Vec3::ZERO, |part| part.origin)
+    }
+
     /// Detaches an attached brush entity, so a map-logic despawn (a
     /// `func_wall` floor removed by a scripted `killtarget`, for example)
     /// stops blocking the player instead of leaving a solid the collision
@@ -718,7 +737,7 @@ impl CollisionModel {
         }
 
         let mut trace = self.trace_tree(hull, self.heads[hull.index()], Vec3::ZERO, start, end);
-        for brush in &self.brushes {
+        for (index, brush) in self.brushes.iter().enumerate() {
             let head = brush.heads[hull.index()];
             if head < 0 {
                 // This submodel's tree for this hull is a bare contents
@@ -740,7 +759,7 @@ impl CollisionModel {
                 continue;
             }
             let hit = self.trace_tree(hull, head, brush.origin, start, end);
-            combine(&mut trace, &hit);
+            combine(&mut trace, &hit, BrushId(index));
         }
 
         if trace.start_solid {
@@ -949,8 +968,10 @@ impl CollisionModel {
 /// brush in practice. `in_open` is deliberately *not* unioned in: see its
 /// field doc on [`Trace`] for why that would be wrong, and left to whatever
 /// the world tree's own trace already set. A start inside *any* solid
-/// (world or brush) stops the move outright.
-fn combine(best: &mut Trace, hit: &Trace) {
+/// (world or brush) stops the move outright. `brush` names which attached
+/// brush produced `hit`, recorded on [`Trace::brush_index`] only when `hit`
+/// wins.
+fn combine(best: &mut Trace, hit: &Trace, brush: BrushId) {
     best.in_water |= hit.in_water;
     best.all_solid |= hit.all_solid;
     if hit.start_solid {
@@ -961,6 +982,7 @@ fn combine(best: &mut Trace, hit: &Trace) {
         best.end_pos = hit.end_pos;
         best.plane_normal = hit.plane_normal;
         best.plane_dist = hit.plane_dist;
+        best.brush_index = Some(brush);
     }
 }
 

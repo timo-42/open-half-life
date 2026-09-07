@@ -18,7 +18,7 @@
 
 use glam::Vec3;
 
-use crate::hull::{CollisionModel, Hull, Trace, contents};
+use crate::hull::{BrushId, CollisionModel, Hull, Trace, contents};
 
 /// How deep in a liquid the player is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -259,6 +259,14 @@ pub struct PlayerState {
     pub on_ground: bool,
     /// The normal of the surface being stood on; zero when airborne.
     pub ground_normal: Vec3,
+    /// Which attached brush entity the player is standing on, when the
+    /// ground itself is a `func_train`/`func_tracktrain`/`func_plat`/
+    /// `func_door` rather than the static world tree. `None` while
+    /// airborne or standing on worldspawn geometry. A host reads this to
+    /// look up that entity's current velocity and feed it back in as next
+    /// tick's [`MoveInput::base_velocity`], the documented "riding movers"
+    /// mechanism (`docs/FORMAT_SOURCES.md`).
+    pub ground_brush: Option<BrushId>,
     /// How deep the player is in a liquid.
     pub water_level: WaterLevel,
     /// Whether collision is disabled.
@@ -286,6 +294,7 @@ impl Default for PlayerState {
             ducked: false,
             on_ground: false,
             ground_normal: Vec3::ZERO,
+            ground_brush: None,
             water_level: WaterLevel::Dry,
             noclip: false,
             jump_held: false,
@@ -436,7 +445,8 @@ fn is_near_ledge(model: &CollisionModel, state: &PlayerState, config: &MoveConfi
 }
 
 /// Refreshes [`PlayerState::on_ground`], [`PlayerState::ground_normal`],
-/// [`PlayerState::water_level`] and [`PlayerState::liquid`].
+/// [`PlayerState::ground_brush`], [`PlayerState::water_level`] and
+/// [`PlayerState::liquid`].
 pub fn categorize_position(model: &CollisionModel, state: &mut PlayerState, config: &MoveConfig) {
     // Captured before anything below overwrites it: `unstick_from_ground`
     // only runs on the tick a fall actually lands (`false` here, `true`
@@ -455,6 +465,7 @@ pub fn categorize_position(model: &CollisionModel, state: &mut PlayerState, conf
     if state.on_ladder {
         state.on_ground = false;
         state.ground_normal = Vec3::ZERO;
+        state.ground_brush = None;
         return;
     }
 
@@ -463,6 +474,7 @@ pub fn categorize_position(model: &CollisionModel, state: &mut PlayerState, conf
     if state.velocity.z > config.leave_ground_speed {
         state.on_ground = false;
         state.ground_normal = Vec3::ZERO;
+        state.ground_brush = None;
         return;
     }
 
@@ -471,6 +483,11 @@ pub fn categorize_position(model: &CollisionModel, state: &mut PlayerState, conf
     if trace.fraction < 1.0 && !trace.all_solid && trace.plane_normal.z >= config.slope_limit {
         state.on_ground = true;
         state.ground_normal = trace.plane_normal;
+        // Which attached brush entity (if any) the player is standing on,
+        // so a host can add that mover's velocity as `MoveInput::base_velocity`
+        // on the *next* call — see "Riding movers" in
+        // `docs/FORMAT_SOURCES.md`.
+        state.ground_brush = trace.brush_index;
         if !trace.start_solid {
             state.origin = trace.end_pos;
         }
@@ -484,6 +501,7 @@ pub fn categorize_position(model: &CollisionModel, state: &mut PlayerState, conf
     } else {
         state.on_ground = false;
         state.ground_normal = Vec3::ZERO;
+        state.ground_brush = None;
     }
 }
 
@@ -780,6 +798,41 @@ fn wish_direction(input: &MoveInput) -> (Vec3, f32) {
     }
 }
 
+/// Directly tracks a vertical mover's per-step displacement
+/// (`displacement_z`, the ground brush's `base_velocity.z * dt`), rather
+/// than relying on ordinary gravity and [`categorize_position`]'s 2-unit
+/// ground probe to catch up to it: a platform rising faster than that probe
+/// reaches in one tick would otherwise leave the player behind (falling
+/// through it), and a descending one would leave the player standing in
+/// mid-air, weightless, until gravity resumed. The move is still bounded by
+/// a hull trace, exactly like every other player movement, so a mover can
+/// never push the player through a ceiling or another solid this way — see
+/// "Riding movers" in `docs/FORMAT_SOURCES.md`.
+fn ride_vertical_mover(model: &CollisionModel, state: &mut PlayerState, displacement_z: f32) {
+    let candidate = state.origin + Vec3::Z * displacement_z;
+    // A rising mover's own move this step already carried its solid up
+    // *underneath* the player before this runs (`ohl-engine` moves the
+    // brush before the player-move phase), so a trace from the player's
+    // still-unmoved position is a trace that starts already embedded in
+    // the platform's new geometry — reporting `start_solid` immediately,
+    // with a zero fraction, never a distance to travel. That is exactly
+    // the case this function exists to resolve, so it is deliberately not
+    // treated as "blocked": the destination is checked directly instead,
+    // and only a candidate that is *itself* still stuck (a mover pushing
+    // the player into a ceiling or another solid) falls back to a bounded
+    // trace from the old position, which stops at the nearest obstruction
+    // rather than embedding them any further.
+    let clear = model.trace(state.hull(), candidate, candidate);
+    if !clear.start_solid {
+        state.origin = candidate;
+        return;
+    }
+    let trace = model.trace(state.hull(), state.origin, candidate);
+    if !trace.start_solid {
+        state.origin = trace.end_pos;
+    }
+}
+
 fn ground_max_speed(state: &PlayerState, config: &MoveConfig) -> f32 {
     if state.ducked {
         config.max_speed * config.duck_speed_fraction
@@ -887,6 +940,7 @@ pub fn player_move_events(
         state.ducked = input.duck;
         state.on_ground = false;
         state.ground_normal = Vec3::ZERO;
+        state.ground_brush = None;
         state.velocity = wish_dir * (config.noclip_speed * wish_scale);
         state.origin += state.velocity * dt;
         state.water_level = WaterLevel::Dry;
@@ -899,6 +953,28 @@ pub fn player_move_events(
     let was_on_ladder = state.on_ladder;
     let was_water_level = state.water_level;
     let mut entry_velocity_z = state.velocity.z;
+
+    // A vertical mover (a rising/falling `func_plat`, a lift `func_door`)
+    // has to be tracked *before* the ground probe below runs, not after:
+    // `ohl-engine`'s `Level::sync_brush_collision` already moved the brush
+    // this step, so a fast enough rise can embed the player in the new
+    // solid before `categorize_position`'s own 2-unit-deep probe ever gets
+    // a chance to notice — reporting "stuck", not "on ground", and taking
+    // the air-move branch below instead of the ground one that would
+    // otherwise apply this same correction. Only fires when the player was
+    // already riding a mover as of last tick's `categorize_position`
+    // (`state.ground_brush`), so a mover simply appearing under an
+    // already-falling player cannot teleport them onto it.
+    if was_on_ground && state.ground_brush.is_some() {
+        let base = if input.base_velocity.is_finite() {
+            input.base_velocity
+        } else {
+            Vec3::ZERO
+        };
+        if base.z != 0.0 {
+            ride_vertical_mover(model, state, base.z * dt);
+        }
+    }
 
     apply_duck(model, state, input);
     if input.duck {
@@ -1045,6 +1121,7 @@ fn walk_or_air_move(
             }
             state.on_ground = false;
             state.ground_normal = Vec3::ZERO;
+            state.ground_brush = None;
         }
         state.jump_held = true;
     } else {
@@ -1064,9 +1141,16 @@ fn walk_or_air_move(
         // velocity stays flat while the player is on the ground.
         state.velocity.z = 0.0;
         state.velocity = accelerate(state.velocity, wish_dir, wish_speed, config.accelerate, dt);
-        state.velocity += base;
+        // Only the horizontal half of a ground mover's velocity is blended
+        // through the ordinary slide-move trace below; a vertical mover
+        // (`func_plat`, a lift `func_door`) was already tracked directly at
+        // the top of `player_move_events`, see `ride_vertical_mover`, so
+        // `base.z` plays no further part in this move — applying it again
+        // here would double the ride.
+        let base_horizontal = Vec3::new(base.x, base.y, 0.0);
+        state.velocity += base_horizontal;
         step_move(model, state, config, dt);
-        state.velocity -= base;
+        state.velocity -= base_horizontal;
         state.velocity.z = 0.0;
     } else {
         // Half the gravity before the move and half after, so the height a
@@ -1142,4 +1226,35 @@ pub fn trace_ground(model: &CollisionModel, state: &PlayerState, distance: f32) 
         state.origin,
         state.origin - Vec3::Z * distance,
     )
+}
+
+/// Pushes `state` by `displacement` — an attached brush entity's own move
+/// this step (a `func_door` swinging shut, a `func_train` sliding past) —
+/// bounded by the same hull trace as any other player move, so a mover can
+/// never shove the player through a wall or another solid to make room for
+/// itself. Returns `false` when the player is still embedded in solid after
+/// the bounded push, which the caller reports back to the mover as
+/// "blocked": TWHL's `func_door`/`func_tracktrain` pages document a `dmg`
+/// keyvalue as damage dealt to whatever obstructs the mover's path (see
+/// `docs/FORMAT_SOURCES.md`, "Entity keyvalues and map logic" and "Track
+/// trains and paths"), which only makes sense if a blocked mover is itself
+/// a documented state; *how* a blocked mover reacts (halting, reversing,
+/// applying `dmg`) is `TODO(black-box)` and left to the caller, matching
+/// the same crush-detection gap already recorded for `TrackTrain::dmg`.
+#[must_use]
+pub fn push_from_mover(
+    model: &CollisionModel,
+    state: &mut PlayerState,
+    displacement: Vec3,
+) -> bool {
+    if !displacement.is_finite() || displacement == Vec3::ZERO {
+        return true;
+    }
+    let end = state.origin + displacement;
+    let trace = model.trace(state.hull(), state.origin, end);
+    if !trace.start_solid {
+        state.origin = trace.end_pos;
+    }
+    let clear = model.trace(state.hull(), state.origin, state.origin);
+    !clear.start_solid
 }

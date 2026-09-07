@@ -73,17 +73,34 @@ struct Scenario {
 /// script loaded and finished markers.
 const BASE_PRESENT: [&str; 2] = ["Scripted input loaded.", "Scripted input finished."];
 
-/// The seven milestone lines a scenario that never fires, hits, damages or
+/// The eight milestone lines a scenario that never fires, hits, damages or
 /// picks up anything, and that never leaves the player embedded in solid
-/// geometry, is expected never to log. A scenario that does expect one of
-/// these present removes it from its own `absent` list instead.
+/// geometry or riding a mover, is expected never to log. A scenario that
+/// does expect one of these present removes it from its own `absent` list
+/// instead.
 ///
 /// "The player is inside solid geometry." joined this list (M9) so that
 /// every scenario in this file — not only the chapter-walk ones added
 /// alongside it — asserts the PR #91 class of bug (the player falling
 /// through a brush entity's floor and coming to rest embedded in solid
 /// geometry) absent.
-const BASE_ABSENT: [&str; 7] = [
+///
+/// "The player is riding a mover." joined this list once mover-riders
+/// (`crates/ohl-physics`'s `PlayerState::ground_brush`,
+/// `crates/ohl-engine`'s `Level::brush_velocity`) landed: none of these
+/// scenarios stands on a moving `func_train`/`func_tracktrain`/`func_plat`/
+/// lift `func_door`, so none should log it. This includes "look around in
+/// the first chapter start" (`ohl_campaign::STARTMAP`, `"c0a0"`), whose
+/// script waits through the map's opening tram sequence: that sequence is
+/// implemented in this project (M7.12) as a `trigger_camera`-driven view
+/// override, which moves `camera.position` directly rather than the
+/// player's own collision body, so it does not exercise this line —
+/// verified by running this scenario's own script against the real payload
+/// before this line was added to this list. See
+/// `crates/ohl-physics/tests/mover_riders.rs` and
+/// `crates/ohl-engine/tests/mover_riders.rs` for the mechanism exercised
+/// against a real (synthetic) `func_train` instead.
+const BASE_ABSENT: [&str; 8] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
     "A monster took damage.",
@@ -91,6 +108,7 @@ const BASE_ABSENT: [&str; 7] = [
     "A pickup was collected.",
     "The player took damage.",
     "The player is inside solid geometry.",
+    "The player is riding a mover.",
 ];
 
 /// The fixed line every M9 chapter-walk scenario expects present beyond
@@ -118,12 +136,13 @@ const WALK_PRESENT_MONSTER_ENCOUNTER: [&str; 5] = [
 
 /// [`BASE_ABSENT`] minus the two lines [`WALK_PRESENT_MONSTER_ENCOUNTER`]
 /// moves to its own present set.
-const WALK_ABSENT_MONSTER_ENCOUNTER: [&str; 5] = [
+const WALK_ABSENT_MONSTER_ENCOUNTER: [&str; 6] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
     "A pickup was collected.",
     "The player took damage.",
     "The player is inside solid geometry.",
+    "The player is riding a mover.",
 ];
 
 /// [`WALK_PRESENT`] plus the line this scenario's own walk (in
@@ -139,13 +158,14 @@ const WALK_PRESENT_PLAYER_DAMAGED: [&str; 4] = [
 
 /// [`BASE_ABSENT`] minus the one line [`WALK_PRESENT_PLAYER_DAMAGED`]
 /// moves to its own present set.
-const WALK_ABSENT_PLAYER_DAMAGED: [&str; 6] = [
+const WALK_ABSENT_PLAYER_DAMAGED: [&str; 7] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
     "A monster took damage.",
     "A monster died.",
     "A pickup was collected.",
     "The player is inside solid geometry.",
+    "The player is riding a mover.",
 ];
 
 /// The fixed lines a scenario that does pick up and fire a weapon expects
@@ -169,13 +189,15 @@ const FIRE_AND_PICKUP_PRESENT: [&str; 5] = [
 /// to its own present set: the swing lands, but nothing in this scenario
 /// takes enough damage to report a monster hurt or killed, and nothing in
 /// it can damage the player either. Still includes "The player is inside
-/// solid geometry.": this scenario's own regression guard for the PR #91
-/// class of bug, same as every other scenario in this file.
-const FIRE_AND_PICKUP_ABSENT: [&str; 4] = [
+/// solid geometry." and "The player is riding a mover.": this scenario's
+/// own regression guard for the PR #91 class of bug and for mover-riders,
+/// same as every other scenario in this file.
+const FIRE_AND_PICKUP_ABSENT: [&str; 5] = [
     "A monster took damage.",
     "A monster died.",
     "The player took damage.",
     "The player is inside solid geometry.",
+    "The player is riding a mover.",
 ];
 
 /// The scenarios this command runs, in order. Map names come only from
@@ -215,7 +237,11 @@ const FIRE_AND_PICKUP_ABSENT: [&str; 4] = [
 /// relative geometry and never recorded here beyond a turn/walk
 /// technique. All 23 scenarios in this file — the four pre-existing ones
 /// included — assert "The player is inside solid geometry." absent: this
-/// scenario set's own regression guard for the PR #91 class of bug.
+/// scenario set's own regression guard for the PR #91 class of bug. All 23
+/// also assert "The player is riding a mover." absent: none of them stands
+/// on a moving brush entity today, including the intro-tram wait in "look
+/// around in the first chapter start" (see [`BASE_ABSENT`]'s own doc
+/// comment for why that one specifically does not trip it).
 #[allow(
     clippy::too_many_lines,
     reason = "one Scenario literal per M9 chapter-walk scenario, plus the four \

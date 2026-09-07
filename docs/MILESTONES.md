@@ -2708,3 +2708,36 @@ payload.
   windowed loop already does. All 23 `combat-smoke` scenarios, including
   the Xen one, still pass unchanged — the standard scenario's own cautious
   window still never reaches the fall.
+
+- **Mover riders: carry the player on moving brush entities.** A player
+  standing on a `func_train`/`func_tracktrain`/`func_plat`/lift `func_door`
+  is now carried with it instead of being left behind or sinking through a
+  rising platform. `ohl_physics::hull::Trace` gained `brush_index`, so the
+  ground trace reports *which* attached brush (if any) it hit;
+  `ohl_physics::movement::PlayerState` gained `ground_brush` from that;
+  `ohl-engine`'s `Level::brush_velocity` records each attached brush's
+  per-step displacement divided by `dt`; and `Systems::player_move` feeds
+  a standing player's ground brush's velocity back in as
+  `PlayerController::base_velocity` — a mechanism that already existed
+  (PR #59) but was never fed from anywhere until now. A vertical mover is
+  additionally tracked by moving the player's origin directly, bounded by
+  the same hull trace, since a ground probe that only looks 2 units down
+  cannot reliably catch a platform moving faster than that in one tick. A
+  mover that moves into the player instead pushes them clear, bounded by
+  the same trace; a push that cannot fully clear the player is published
+  on `Level::movers_blocked` (`TODO(black-box)`: nothing yet halts,
+  reverses, or applies a blocking mover's `dmg` from that signal — the
+  same crush-detection gap already recorded for `TrackTrain::dmg`).
+  `func_plat`/`func_platform` also gained a `platform_offset` render/
+  collision offset mirroring `door_offset`'s: previously `Platform`
+  advanced its own `MoverState`/timer but nothing translated that into a
+  visible or collidable brush move at all. Tested with synthetic
+  `ohl-physics` fixtures (a platform brush ridden up, down and sideways
+  with zero player input) and a synthetic `ohl-engine` test riding a real
+  `func_train`/`path_corner` chain through `Simulation`. Verified against
+  the real payload: the campaign start map's opening tram sequence does
+  *not* trip the new "The player is riding a mover." script-log line,
+  because that sequence is implemented in this project (M7.12) as a
+  `trigger_camera` view override rather than the player's own collision
+  body standing on a mover; `cargo xtask combat-smoke`'s `BASE_ABSENT` set
+  now asserts the line absent on all 23 scenarios as a regression guard.

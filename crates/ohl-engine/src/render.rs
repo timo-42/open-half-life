@@ -8,7 +8,7 @@
 
 use glam::Vec3;
 use ohl_game::hecs::Entity;
-use ohl_game::registry::{Door, MoverState, Transform};
+use ohl_game::registry::{Door, MoverState, Platform, Transform};
 use ohl_game::{TrackTrain, TrackTrainState};
 use ohl_render::{
     FreeFlyCamera, GpuContext, LightStyles, ModelInstance, RenderProps, SkyRenderer,
@@ -337,9 +337,8 @@ impl Renderers {
             let Some(model) = level.submodels.get(&instance.model_index) else {
                 continue;
             };
-            let (train_offset, yaw_override) =
-                track_train_transform(&level.registry, instance.entity);
-            let offset = door_offset(&level.registry, instance.entity) + train_offset;
+            let (_, yaw_override) = track_train_transform(&level.registry, instance.entity);
+            let offset = brush_offset(&level.registry, instance.entity);
             let origin = instance.origin + offset;
             let yaw = yaw_override.unwrap_or(instance.angles.y);
             self.world.draw_world_submodel(
@@ -439,13 +438,48 @@ pub(crate) fn door_offset(registry: &ohl_game::Registry, entity: Entity) -> Vec3
     door.movedir * door.travel_distance * fraction
 }
 
+/// How far a `func_plat`/`func_platform` has slid along its move direction,
+/// from the state machine `ohl-game` advances.
+///
+/// Mirrors [`door_offset`] exactly: [`Platform`] carries the identical
+/// `speed`/`movedir`/`travel_distance`/`state`/`timer` shape as [`Door`]
+/// (see `docs/FORMAT_SOURCES.md`, "Entity keyvalues and map logic"), so the
+/// same timer-to-fraction mapping applies. Without this a `func_plat`'s
+/// `Platform` component advances its own state machine but the brush never
+/// visibly (or collidably) moves at all.
+pub(crate) fn platform_offset(registry: &ohl_game::Registry, entity: Entity) -> Vec3 {
+    let Ok(platform) = registry.world.get::<&Platform>(entity) else {
+        return Vec3::ZERO;
+    };
+    let travel_seconds = if platform.speed > 0.0 {
+        platform.travel_distance / platform.speed
+    } else {
+        0.0
+    };
+    if travel_seconds <= 0.0 {
+        let fraction = f32::from(u8::from(platform.state == MoverState::Open));
+        return platform.movedir * platform.travel_distance * fraction;
+    }
+    let progress = (platform.timer / travel_seconds).clamp(0.0, 1.0);
+    let fraction = match platform.state {
+        MoverState::Closed => 0.0,
+        MoverState::Open => 1.0,
+        MoverState::Opening => 1.0 - progress,
+        MoverState::Closing => progress,
+    };
+    platform.movedir * platform.travel_distance * fraction
+}
+
 /// How far a brush entity has moved from where its geometry was compiled.
 ///
 /// The same value the renderer offsets the submodel by, so the brush the
-/// player collides with is exactly the brush that is drawn: a door caught
-/// mid-slide blocks where it looks like it is, not where it was authored.
+/// player collides with is exactly the brush that is drawn: a door or
+/// platform caught mid-slide blocks where it looks like it is, not where it
+/// was authored.
 pub(crate) fn brush_offset(registry: &ohl_game::Registry, entity: Entity) -> Vec3 {
-    door_offset(registry, entity) + track_train_transform(registry, entity).0
+    door_offset(registry, entity)
+        + platform_offset(registry, entity)
+        + track_train_transform(registry, entity).0
 }
 
 /// Maps `ohl-game`'s raw `rendermode`/`renderamt`/`rendercolor` keyvalues

@@ -40,6 +40,14 @@
 //!   entity's floor): [`ohl_engine::Game::eye_is_in_solid`] has read `true`
 //!   for a cumulative total of more than [`IN_SOLID_LOG_THRESHOLD_SECS`]
 //!   seconds. Every combat-smoke scenario asserts this line absent.
+//! - "The player is riding a mover." — [`ohl_engine::Game::ground_mover_speed`]
+//!   has read non-zero for a cumulative total of more than
+//!   [`RIDING_MOVER_LOG_THRESHOLD_SECS`] seconds, the same
+//!   longer-than-a-single-tick pattern as the in-solid guard above (so a
+//!   single-tick ground-brush hiccup at a mover's start/stop edge cannot
+//!   fire it). Verifies mover-riders (M7's "carry the player on moving
+//!   brush entities"): the campaign start map's intro tram ride is
+//!   expected to trip this line.
 
 use ohl_engine::Game;
 
@@ -57,6 +65,15 @@ pub const SPAWN_MOVE_THRESHOLD: f32 = 64.0;
 /// this regression guard; a player who has actually fallen through the
 /// world stays in solid geometry far longer than one second.
 pub const IN_SOLID_LOG_THRESHOLD_SECS: f32 = 1.0;
+
+/// How many cumulative seconds [`ohl_engine::Game::ground_mover_speed`]
+/// must read non-zero during one scripted run before [`ScriptLog::observe`]
+/// logs "The player is riding a mover." A single tick of a brush's own
+/// per-step velocity briefly reading non-zero at a mover's start/stop edge
+/// should not trip this line; a player actually being carried by a
+/// `func_train`/`func_tracktrain`/`func_plat`/lift `func_door` stays on it
+/// far longer than one second.
+pub const RIDING_MOVER_LOG_THRESHOLD_SECS: f32 = 1.0;
 
 /// Tracks which milestone lines have already fired this run.
 #[allow(
@@ -79,6 +96,7 @@ pub struct ScriptLog {
     camera_was_active: bool,
     moved_from_spawn: bool,
     in_solid: bool,
+    riding_mover: bool,
     baseline_fired: u64,
     baseline_hit: u64,
     baseline_damage_events: u64,
@@ -87,6 +105,7 @@ pub struct ScriptLog {
     baseline_player_damage: u64,
     spawn_position: [f32; 3],
     in_solid_seconds: f32,
+    riding_mover_seconds: f32,
 }
 
 impl ScriptLog {
@@ -110,6 +129,7 @@ impl ScriptLog {
             camera_was_active: game.camera_sequence_active(),
             moved_from_spawn: false,
             in_solid: false,
+            riding_mover: false,
             baseline_fired: game.weapon_fired_count(),
             baseline_hit: game.shot_hit_count(),
             baseline_damage_events: game.monster_damage_event_count(),
@@ -118,6 +138,7 @@ impl ScriptLog {
             baseline_player_damage: game.player_damage_event_count(),
             spawn_position: game.eye_position(),
             in_solid_seconds: 0.0,
+            riding_mover_seconds: 0.0,
         }
     }
 
@@ -194,6 +215,18 @@ impl ScriptLog {
                 }
             } else {
                 self.in_solid_seconds = 0.0;
+            }
+        }
+
+        if !self.riding_mover {
+            if game.ground_mover_speed() > 0.0 {
+                self.riding_mover_seconds += dt;
+                if self.riding_mover_seconds > RIDING_MOVER_LOG_THRESHOLD_SECS {
+                    self.riding_mover = true;
+                    tracing::info!("The player is riding a mover.");
+                }
+            } else {
+                self.riding_mover_seconds = 0.0;
             }
         }
     }
