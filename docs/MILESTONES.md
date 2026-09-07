@@ -3068,3 +3068,117 @@ payload.
   the moment the guard acquires an enemy, and the ordinary triggered path
   still takes over and hands the guard back to its own idle once the
   script completes.
+
+## Status as of 2026-09-07 (wave 3)
+
+This section is a rollup of the detailed entries directly above (all landed
+between the "Status as of 2026-09-07" snapshot's own initial writing and
+this addendum); it groups them by theme for a reader who does not want the
+full narrative, and does not repeat their detail.
+
+Merged, by theme:
+
+- **Xen landing unstuck, dead-player simulation gated.**
+  [PR #96](https://github.com/timo-42/open-half-life/pull/96) fixes a hard
+  Xen-map landing that could resolve to an origin still read as embedded in
+  solid geometry, adds `unstick_from_ground`, and stops `Systems::step`/
+  `run_scripted` from continuing to simulate and move a player who has
+  already died.
+- **Mover riders and `func_plat` motion.**
+  [PR #97](https://github.com/timo-42/open-half-life/pull/97) carries the
+  player along on a moving brush entity (`func_train`/`func_tracktrain`/
+  `func_plat`/lift `func_door`) instead of leaving them behind or letting
+  them sink through it, and gives `func_plat`/`func_platform` the render/
+  collision offset (`platform_offset`) it was missing, so a platform's own
+  `MoverState` timer actually translates into a visible, collidable move.
+- **`monstermaker` triggers, and tag-28 mover/camera/script/maker/
+  auto-trigger persistence.**
+  [PR #98](https://github.com/timo-42/open-half-life/pull/98) lets a
+  `monstermaker` without `Start On` be started (and toggled off again) by
+  its own `targetname`, and adds `SECTION_MOVER_STATE` (save tag 28),
+  which closes three previously open save/load gaps at once: a
+  `func_train`/`func_tracktrain`'s mid-route position, an active
+  `trigger_camera` sequence, and a running `scripted_sequence`'s
+  phase/timers/bound monster now all resume from a save instead of
+  resetting to dormant; a `monstermaker`'s spawn counters (not its already-
+  spawned children) survive a reload; and a `trigger_auto`'s one-shot
+  `fired` flag is carried too, so replaying it on load no longer silently
+  re-toggles a train/camera the rest of the same section had just restored
+  to an active state.
+- **Monster `Transform`/`Actor` sync.**
+  [PR #99](https://github.com/timo-42/open-half-life/pull/99) adds phase 8b
+  (`Systems::sync_monster_transforms`), copying a walking/chasing/fleeing
+  monster's `Actor` position onto its `Transform` every step so its
+  rendered model and hitbox actually track its AI-driven motion instead of
+  staying pinned at its last position, and `Systems::sync_actor_from_
+  transforms`, run once after a `Game::restore`, so a reloaded monster
+  senses, navigates and attacks from where the save left it rather than
+  snapping back to its map spawn point.
+- **`func_ladder`/`func_water` contents volumes.**
+  [PR #100](https://github.com/timo-42/open-half-life/pull/100) attaches a
+  `func_ladder`/`func_water` submodel as a non-solid contents volume
+  (ladder, water, slime, or lava, the latter three from `func_water`'s
+  `skin` keyvalue) alongside its existing solid-brush attachment, so a
+  brush-entity ladder or body of water behaves distinctly from ordinary
+  solid geometry, not only world-baked contents.
+- **`game_playerspawn`.**
+  [PR #101](https://github.com/timo-42/open-half-life/pull/101) implements
+  GoldSrc's `game_playerspawn` special-`targetname` convention (fired once
+  per player spawn, independent of `trigger_auto`), which had never been
+  implemented at all.
+- **Track-train spawn placement — the intro tram ride works.**
+  [PR #102](https://github.com/timo-42/open-half-life/pull/102) places a
+  `func_train`/`func_tracktrain` on the first node of its own path at
+  spawn (measuring its offset from the entity's own `origin` keyvalue
+  rather than from the path chain's first node, which had cancelled to
+  zero), instead of leaving it wherever its brushes were compiled. This
+  was the real root cause of the campaign start map's tram sequence
+  dropping the player into free-fall; combined with the mover-riders fix
+  above, the intro tram ride now plays end to end on the real payload — a
+  scripted idle run rides the tram out of the start area, through the
+  hazard-striped tunnel portal, and down the rock tunnel.
+- **Hull-box ladder probe, and a 24th combat-smoke scenario.**
+  [PR #103](https://github.com/timo-42/open-half-life/pull/103) probes a
+  `func_ladder` volume with the player's own standing/crouched hull box
+  (eight corners, six face centres, and the origin) instead of a single
+  origin point, so a player whose hull overlaps a ladder volume but whose
+  origin sits just outside it still attaches; verified against the real
+  payload by reaching and climbing a `func_ladder` on the Hazard Course's
+  "t0a0a" sub-map, added as the 24th `combat-smoke` scenario.
+
+As of this snapshot, [PR #104](https://github.com/timo-42/open-half-life/pull/104)
+("Play a scripted_sequence's idle animation before it is triggered") is
+open, implementing the `m_iszIdle` pre-trigger idle animation this
+document's follow-up lists have long recorded as missing. Treat it as
+in-flight, not yet landed, until it shows as merged.
+
+Remaining follow-ups, in no particular priority order (superseding the
+equivalent bullets in the 2026-09-06 and initial 2026-09-07 snapshots above
+where they overlap):
+
+- **`m_iszIdle` pre-trigger idle animation.** In flight as
+  [PR #104](https://github.com/timo-42/open-half-life/pull/104) (see
+  above); not yet landed on `main`.
+- **Brush `angles`.** A brush entity's own `angles` keyvalue (a rotated
+  door or platform) is still not applied to its collision shape; no PR
+  addressing this was open at the time of this snapshot.
+- **`func_pendulum`/`momentary_rot_button`.** Neither entity is
+  implemented yet; both depend on the same brush-`angles` gap above for a
+  collidable rotating shape, not only a rendered one.
+- **Monster children of a `monstermaker` are not persisted.** Tag 28
+  (`SECTION_MOVER_STATE`) carries a maker's own spawn counters but not its
+  already-spawned children, which are not themselves indexed by
+  `Registry::entities` (see `ohl_engine::save_state`'s module doc,
+  "Monstermaker children are not saved").
+  `func_tracktrain`/`func_train` altpath branching is likewise still
+  recorded but not applied.
+- **Linux audio backend decision** (unchanged from the 2026-09-06 and
+  initial 2026-09-07 snapshots): `ohl-audio` still always uses a
+  `NullSink` on Linux, since `cpal`'s only Linux backend links `libasound`
+  through a build-time `pkg-config` lookup, which this project's "no FFI"
+  rule forbids as written; whether to relax that rule, adopt a pure-Rust
+  ALSA/PipeWire backend if one appears, or leave Linux silent by design
+  remains open.
+- **First tagged release.** No `v*` tag has been pushed yet; the next
+  actual tag push will be `publish-release`'s (PR #83) first real exercise
+  and the first entry in this project's GitHub Releases.

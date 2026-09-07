@@ -863,7 +863,32 @@ everything else has already agreed on). The current phase order is:
    train the previous step's phase 12 moved is collided against where it
    now is, not where the map was compiled — the player collides against
    brush entities the same way it collides against worldspawn, not only
-   against the static world.
+   against the static world. A `func_train`/`func_tracktrain` attaches at
+   its already-placed spawn position (on the first node of its own path,
+   not wherever its brushes were compiled), so it collides correctly from
+   the level's very first tick, not one tick later. A `func_ladder`/
+   `func_water` submodel is attached twice: once as ordinary solid
+   geometry, and once as a non-solid *contents volume*
+   (`CollisionModel::attach_contents_brush`, `ContentsKind::Ladder`/
+   `Water`/`Slime`/`Lava`) that `contents_at`/`point_contents` report
+   inside while a trace still passes through it, so climbing and swimming
+   against a brush entity behave distinctly from ordinary solid brushes.
+   A player standing on a moving brush entity's ground is carried with it
+   (`Level::brush_velocity` feeds each attached brush's per-step
+   displacement back in as `PlayerController::base_velocity`), and a
+   vertical mover additionally moves the player's origin directly, bounded
+   by the same hull trace, since a ground probe that only looks a couple
+   of units down cannot reliably catch a fast-moving platform in one tick.
+   `CollisionModel::detach_brush` removes a despawned or component-
+   stripped entity's brush from the model (reducing it to the same bare-
+   contents no-op state an empty submodel already has), so a brush entity
+   removed at runtime (a `func_wall` floor cleared by a scripted
+   `killtarget`, for example) does not stay collidable forever; `trace`/
+   `contents_at` also run a broad-phase check first (each attached brush's
+   own compiled bounding box, expanded by the traced hull's size) that
+   skips a brush's tree walk entirely once its segment or point cannot
+   reach it, and the number of brushes attached at once is capped at a
+   documented `MAX_ATTACHED_BRUSHES`.
 3. player systems (`ohl-player`: health/armor, fall damage, drowning, the
    HEV suit, flashlight, long jump)
 4. actor sync (camera/controller state written back onto the entity world)
@@ -897,7 +922,20 @@ everything else has already agreed on). The current phase order is:
     into a touch trigger fires it the same way a real touch trigger tests
     brush-against-brush, without needing a `use` press. The crouched hull
     is not yet threaded through this phase, so a crouching player is still
-    tested against the standing box.
+    tested against the standing box. The same touch path also covers a
+    plain (non-"USE Only") `trigger_changelevel`
+    (`Simulation::touch_changelevel_triggers`): its volume fires from the
+    player's own touch the same way an ordinary touch trigger does, not
+    only from a `use` press.
+12.5. camera override (`crate::camera::apply_override`): a `trigger_camera`
+    sequence's own view, once active, replaces the free-fly camera's pose
+    for this step — run after movers (phase 12), not before, so the
+    override sees the same positions the rest of this step's simulation
+    just agreed on, per this phase's own module-doc rule. A
+    `trigger_camera`'s documented "Freeze Player" spawnflag is applied
+    earlier, right after phase 1 latches input and before phase 2 moves
+    the player, by freezing that latched input to a fixed no-op instead of
+    letting phase 2 read it as given.
 13. presentation (`ohl-gameplay::GameplayBridge` turning combat/pickup
     events into HUD state and sound cues)
 
