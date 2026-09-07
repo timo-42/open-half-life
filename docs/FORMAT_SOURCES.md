@@ -3500,9 +3500,18 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
     intermittently reported the player embedded (`start_solid`) rather
     than standing — dropping the rider off a floor they had not left.
     `movement.rs`'s `ground_probe` now retries that trace from one unit
-    above the origin and uses the retry only when it comes back clean, so
-    a player genuinely inside solid still reports embedded and a player
-    over nothing still finds nothing. One unit is the same discrete step
+    above the origin, but only when the original trace's embedding brush
+    (`Trace::brush_index`) is *currently rotating*
+    (`CollisionModel::brush_is_rotating`) — the case above, and no other —
+    and even then only uses the retry when it comes back clean, so a
+    player genuinely inside solid still reports embedded and a player over
+    nothing still finds nothing. A shallow embed on a static worldspawn
+    floor or on a translating `func_train`/`func_plat`/lift `func_door`
+    still reports embedded exactly as it did before this fix, unchanged by
+    it (see the `a_shallow_embed_on_a_static_floor_is_not_snapped_up_by_the_
+    rotating_rider_retry`/`a_shallow_embed_on_a_stationary_translating_
+    brush_is_not_snapped_up` regression tests added in review, which fail
+    without the restriction). One unit is the same discrete step
     `unstick_from_ground` already recovers a stuck landing in, and far
     less than a step up, so the retry can never lift a player onto
     something they were not already standing on. Found by the new

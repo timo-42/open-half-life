@@ -540,3 +540,46 @@ fn a_landing_under_a_hull0_only_overhang_gets_unstuck_from_it() {
         "the eye position is embedded in the hull-0-only overhang: {eye:?}"
     );
 }
+
+/// `ground_probe`'s one-unit retry (added alongside the rotating-rider ride
+/// in PR #110) exists for a rider whose ground brush is *currently
+/// rotating*: the review of that PR found it was not actually restricted to
+/// that case, so a shallow (up to one unit) embed on an ordinary, static
+/// worldspawn floor also got silently snapped up onto the floor instead of
+/// reporting the embed, a behavioural change from every version of this
+/// crate before that PR. This pins the pre-#110 behaviour back down: a
+/// player whose origin sits up to a unit below the resting height on a
+/// perfectly static floor must still report `on_ground = false` with the
+/// origin left untouched, exactly as `categorize_position` always did for
+/// worldspawn.
+///
+/// Confirmed to fail without the restriction: temporarily letting
+/// `ground_probe`'s retry run unconditionally (as PR #110 shipped it) makes
+/// every embed depth checked here settle with `on_ground = true` and the
+/// origin snapped up near the resting height instead.
+#[test]
+fn a_shallow_embed_on_a_static_floor_is_not_snapped_up_by_the_rotating_rider_retry() {
+    let model = collision_model_from(&build_flat_floor_bsp());
+    let config = MoveConfig::default();
+
+    // FLOOR_ORIGIN_Z (36.0) is the resting height; embed up to a unit below
+    // it, the exact window PR #110's review measured the unrestricted retry
+    // changing (`origin in [35.00, 35.75]`).
+    for embed in [0.05_f32, 0.25, 0.5, 0.75, 1.0] {
+        let origin = Vec3::new(0.0, 0.0, FLOOR_ORIGIN_Z - embed);
+        let mut state = PlayerState::at(origin);
+        ohl_physics::movement::categorize_position(&model, &mut state, &config);
+
+        assert!(
+            !state.on_ground,
+            "a {embed}-unit embed on a static floor must not report on_ground \
+             (got origin {:?})",
+            state.origin
+        );
+        assert_eq!(
+            state.origin, origin,
+            "a static floor's embed must leave the origin untouched, not snap it up"
+        );
+        assert_eq!(state.ground_brush, None);
+    }
+}

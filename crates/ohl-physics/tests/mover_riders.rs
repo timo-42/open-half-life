@@ -16,6 +16,7 @@
 //! a real `func_train` and `Simulation`.
 
 use ohl_physics::controller::TICK_SECONDS;
+use ohl_physics::movement::categorize_position;
 use ohl_physics::test_support::build_platform_room;
 use ohl_physics::{CollisionModel, MoveConfig, MoveInput, PlayerState, Vec3};
 
@@ -182,4 +183,37 @@ fn a_horizontal_train_carries_the_player_along_with_zero_input() {
         "the ride left residual velocity: moved to {:?} after stopping",
         state.origin
     );
+}
+
+/// `ground_probe`'s one-unit retry (`crate::movement`) is restricted to a
+/// ground brush that is currently *rotating* — the review of PR #110 (which
+/// added the retry) found the shipped version fired for any attached brush,
+/// including a `func_train`/`func_plat`-style translating one that never
+/// moved this tick. This pins down that an ordinary, motionless translating
+/// mover's shallow (up to one unit) embed still reports `on_ground = false`
+/// with the origin untouched, exactly as it did before PR #110 — matching
+/// the review's own measurement of `z_in` 39.00-39.75 on a brush resting at
+/// 39 (`RIDER_ORIGIN_Z` here is 36, so the same one-unit window is
+/// `35.00..=36.00`).
+#[test]
+fn a_shallow_embed_on_a_stationary_translating_brush_is_not_snapped_up() {
+    let (model, _brush) = build_platform_room();
+    let config = MoveConfig::default();
+
+    for embed in [0.05_f32, 0.25, 0.5, 0.75, 1.0] {
+        let origin = Vec3::new(0.0, 0.0, RIDER_ORIGIN_Z - embed);
+        let mut state = PlayerState::at(origin);
+        categorize_position(&model, &mut state, &config);
+
+        assert!(
+            !state.on_ground,
+            "a {embed}-unit embed on a stationary translating brush must not \
+             report on_ground (got origin {:?})",
+            state.origin
+        );
+        assert_eq!(
+            state.origin, origin,
+            "a stationary translating brush's embed must leave the origin untouched"
+        );
+    }
 }

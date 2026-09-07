@@ -516,7 +516,7 @@ const GROUND_PROBE_LIFT: f32 = 1.0;
 /// standing on something" from.
 ///
 /// Ordinarily this is one trace from the player's origin two units down.
-/// The retry exists for a *rotating* ground brush
+/// The retry exists for, and is restricted to, a *rotating* ground brush
 /// (`func_rotating`/`func_door_rotating`, whose pose
 /// `crate::hull::CollisionModel::set_brush_pose` re-derives every step):
 /// a player resting exactly on such a brush's surface sits exactly on the
@@ -528,18 +528,35 @@ const GROUND_PROBE_LIFT: f32 = 1.0;
 /// runs, `ground_brush` clears, and the player takes the air branch and
 /// falls off a floor they never actually left.
 ///
-/// The retry re-traces from [`GROUND_PROBE_LIFT`] above the origin and is
-/// used only when it comes back clean (not embedded, and still hitting
-/// something within the probe's own reach), so a player genuinely inside
-/// solid — a mover that has actually crushed them into a wall — still
-/// reports embedded and is handled by the caller's own paths, and a player
-/// standing over nothing still finds nothing. Not a documented rule: it is
-/// this project's own bounded numerical-robustness step, recorded as
-/// project behaviour in `docs/FORMAT_SOURCES.md` item 26.
+/// The initial trace's own [`Trace::brush_index`] (`combine`'s
+/// `get_or_insert` in `crate::hull`, so it is the *first* attached brush the
+/// segment starts embedded in, or `None` when only the static world reports
+/// `start_solid`) decides whether the retry even runs: only when that brush
+/// is currently rotating ([`CollisionModel::brush_is_rotating`]) is the
+/// short trace re-run from [`GROUND_PROBE_LIFT`] above the origin, and even
+/// then only used when it
+/// comes back clean (not embedded, and still hitting something within the
+/// probe's own reach). A static floor or a translating
+/// `func_train`/`func_plat`/lift `func_door` therefore traces exactly as it
+/// did before this retry existed — a shallow embed there still reports
+/// `start_solid` with the origin unchanged, and is instead recovered (or
+/// not) by `unstick_from_ground`'s own bounded nudge on the next landing —
+/// and a player genuinely inside solid on a rotating brush that has crushed
+/// them into a wall still reports embedded, since the lifted retrace itself
+/// comes back `start_solid` too. Not a documented rule: it is this
+/// project's own bounded numerical-robustness step, restricted to the case
+/// it was built for and recorded as project behaviour in
+/// `docs/FORMAT_SOURCES.md` item 26.
 fn ground_probe(model: &CollisionModel, state: &PlayerState) -> Trace {
     let below = state.origin - Vec3::Z * 2.0;
     let trace = model.trace(state.hull(), state.origin, below);
     if !trace.start_solid && !trace.all_solid {
+        return trace;
+    }
+    let embedded_in_rotating_brush = trace
+        .brush_index
+        .is_some_and(|brush| model.brush_is_rotating(brush));
+    if !embedded_in_rotating_brush {
         return trace;
     }
     let lifted = model.trace(
