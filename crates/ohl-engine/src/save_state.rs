@@ -1,8 +1,9 @@
 //! Save-file snapshot structs for M7.9 P4b: `SECTION_INVENTORY` (23),
 //! `SECTION_ENTITY_COMBAT` (24), `SECTION_AI` (25), `SECTION_PROJECTILES`
-//! (26) and `SECTION_RNG` (27). See `crate::save`'s module doc for the full
-//! tag map and `.plan/m79-design.md` §6 for the rules every section here
-//! follows: additive only, entities referenced by spawn index (never a raw
+//! (26) and `SECTION_RNG` (27); plus M9.5's `SECTION_MAKER_CHILDREN` (29).
+//! See `crate::save`'s module doc for the full tag map and
+//! `.plan/m79-design.md` §6 for the rules every section here follows:
+//! additive only, entities referenced by spawn index (never a raw
 //! `hecs::Entity`), a missing section loads as a default so a save written
 //! before this package still opens, and every length is bounded.
 //!
@@ -14,18 +15,43 @@
 //! number and back, by its position in `Registry::entities` — the same
 //! spawn order every other save section already keys by.
 //!
-//! # Monstermaker children are not saved
+//! # Monstermaker children are now saved (`SECTION_MAKER_CHILDREN`, 29)
 //!
-//! `TODO(P4b-followup)`: a `monstermaker`'s children are spawned directly
-//! through `registry.world.spawn` (`crate::ai::AiState::spawn_child`),
-//! bypassing `Registry::entities`, so this package has no spawn index to
-//! key them by at all. A live maker-spawned monster is therefore lost
-//! across a save/load: it simply is not present in the reloaded level. The
-//! maker itself (an indexed entity) and its own spawn-count bookkeeping are
-//! unaffected and keep spawning more children on schedule after a load, so
-//! this is a bounded, documented limitation rather than silent corruption —
-//! a later package should either widen `Registry::entities` to cover
-//! maker children or key them by `(maker_index, ordinal)` instead.
+//! The gap this heading used to describe — a `monstermaker`'s children were
+//! spawned directly through `registry.world.spawn`
+//! (`crate::ai::AiState::spawn_child`), bypassing `Registry::entities`, so
+//! no spawn index existed to key them by — is closed: `crate::ai::AiState::
+//! spawn_child` now also pushes the new entity onto `Registry::entities`
+//! (see that method's own doc comment), so a maker child gets a spawn index
+//! exactly like any map-declared monster the instant it exists, and every
+//! other index-keyed section (`SECTION_ENTITY_REGISTRY` 18 for its
+//! transform, `SECTION_ENTITY_COMBAT` 24 for its health,
+//! `SECTION_AI` 25 for its AI state) already covers it for free.
+//!
+//! What is left is recreating the child *entity itself* on load, before
+//! those index-keyed sections are zipped against `Registry::entities` — a
+//! fresh `attach_level` only ever spawns the map's own declared entities,
+//! never a maker's dynamically-created children, so `Registry::entities`
+//! is shorter than the save recorded until [`snapshot_maker_children`]'s
+//! own section fills the gap back in. [`MonsterMakerChildSnapshot`]
+//! records just enough per child (which maker made it, and its spawn
+//! classname) for `crate::ai::AiState::restore_maker_children` to recreate
+//! a placeholder monster of the right kind at the right spawn index, ahead
+//! of every other tag's own restore; `crate::ai::AiState::
+//! finalize_maker_children` links the survivors back onto their maker's
+//! own live-child list once health/AI state has actually landed on them,
+//! so [`ohl_ai::Spawner::live_children`]/`has_room` keep counting correctly
+//! after a load exactly as they do mid-session.
+//!
+//! A child already gone by save time — gibbed outright, or a faded corpse
+//! `crate::ai::AiState::age_corpses` already despawned — has no classname
+//! left to record (its components are gone with it), so its slot in
+//! [`snapshot_maker_children`]'s section is `None`; restoring a `None` tail
+//! slot recreates an inert, component-less placeholder purely to keep
+//! every *later* child's index aligned, and nothing ever queries it again.
+//! This mirrors the pre-existing rule `SECTION_ENTITY_COMBAT` already
+//! applies to a gibbed map-declared monster: the record is gone, so the
+//! entity simply stays gone.
 //!
 //! # A restored projectile draws as nothing
 //!
@@ -44,11 +70,11 @@
 use glam::Vec3;
 use ohl_combat::{EntityId as CombatEntityId, ProjectileKind};
 use ohl_game::hecs::Entity;
-use ohl_game::registry::{AutoTrigger, MakerActivation, Rotator};
+use ohl_game::registry::{AutoTrigger, ClassName, MakerActivation, Rotator};
 use ohl_game::{TrackTrainState, TriggerCameraState};
 use serde::{Deserialize, Serialize};
 
-use crate::components::MonsterMaker;
+use crate::components::{MonsterMaker, Owner};
 use crate::ids::{entity_id, entity_of};
 use crate::level::Level;
 
@@ -883,6 +909,57 @@ pub(crate) fn restore_movers(level: &mut Level, snapshots: &[Option<MoverSnapsho
     }
 }
 
+// --- `SECTION_MAKER_CHILDREN` (29) ----------------------------------------
+
+/// The most maker children one `SECTION_MAKER_CHILDREN` section records,
+/// matching [`MAX_SNAPSHOT_ENTITIES`] — the same per-registry-slot cap
+/// every other index-keyed section already uses.
+pub const MAX_SNAPSHOT_MAKER_CHILDREN: usize = MAX_SNAPSHOT_ENTITIES;
+
+/// One `monstermaker` child, part of `SECTION_MAKER_CHILDREN` (29): just
+/// enough to recreate the entity itself (`crate::ai::AiState::
+/// restore_maker_children`) before the index-keyed sections (18/24/25) that
+/// already carry its transform/health/AI state are applied. See this
+/// module's own "Monstermaker children are now saved" doc section.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MonsterMakerChildSnapshot {
+    /// The `monstermaker` that spawned this child, as a spawn index.
+    pub maker: u32,
+    /// The classname `crate::ai::AiState::spawn_child` looked its brain up
+    /// by (a `monstertype` keyvalue value, e.g. `monster_headcrab` —
+    /// map-declared data, not a literal this project invented; see
+    /// `docs/CLEAN_ROOM.md`).
+    pub classname: String,
+}
+
+/// `SECTION_MAKER_CHILDREN` (29): one optional entry per `Registry::
+/// entities` slot, in spawn order, `None` for a slot that is not (or, for
+/// a child already gone by save time, is no longer identifiably) a
+/// `monstermaker` child.
+#[must_use]
+pub(crate) fn snapshot_maker_children(level: &Level) -> Vec<Option<MonsterMakerChildSnapshot>> {
+    level
+        .registry
+        .entities
+        .iter()
+        .take(MAX_SNAPSHOT_MAKER_CHILDREN)
+        .map(|entity| -> Option<MonsterMakerChildSnapshot> {
+            let owner = level.registry.world.get::<&Owner>(*entity).ok()?;
+            // Only an `Owner` pointing at a live `MonsterMaker` counts: a
+            // projectile/deployable also carries `Owner` (attributing a
+            // hit back to whoever fired it), but is not a maker child and
+            // has its own section (`SECTION_PROJECTILES`, 26).
+            level.registry.world.get::<&MonsterMaker>(owner.0).ok()?;
+            let maker = spawn_index_of(level, owner.0)?;
+            let classname = level.registry.world.get::<&ClassName>(*entity).ok()?;
+            Some(MonsterMakerChildSnapshot {
+                maker,
+                classname: classname.0.clone(),
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -961,15 +1038,17 @@ mod decode_proptests {
     use proptest::prelude::*;
 
     use super::{
-        AiSnapshot, EntityCombatSnapshot, InventorySnapshot, ProjectilesSnapshot, RngSnapshot,
+        AiSnapshot, EntityCombatSnapshot, InventorySnapshot, MonsterMakerChildSnapshot,
+        ProjectilesSnapshot, RngSnapshot,
     };
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(256))]
 
-        /// Decoding arbitrary bytes as any M7.9 P4b snapshot type never
-        /// panics, matching `ohl_save`'s and `ohl_engine::GameSave`'s own
-        /// "never panic on adversarial section bytes" guarantee.
+        /// Decoding arbitrary bytes as any M7.9 P4b (or, for
+        /// `MonsterMakerChildSnapshot`, M9.5) snapshot type never panics,
+        /// matching `ohl_save`'s and `ohl_engine::GameSave`'s own "never
+        /// panic on adversarial section bytes" guarantee.
         #[test]
         fn decoding_arbitrary_bytes_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..512)) {
             let _: Result<InventorySnapshot, _> = postcard::from_bytes(&bytes);
@@ -977,6 +1056,8 @@ mod decode_proptests {
             let _: Result<Vec<Option<EntityCombatSnapshot>>, _> = postcard::from_bytes(&bytes);
             let _: Result<AiSnapshot, _> = postcard::from_bytes(&bytes);
             let _: Result<Vec<Option<AiSnapshot>>, _> = postcard::from_bytes(&bytes);
+            let _: Result<MonsterMakerChildSnapshot, _> = postcard::from_bytes(&bytes);
+            let _: Result<Vec<Option<MonsterMakerChildSnapshot>>, _> = postcard::from_bytes(&bytes);
             let _: Result<ProjectilesSnapshot, _> = postcard::from_bytes(&bytes);
             let _: Result<RngSnapshot, _> = postcard::from_bytes(&bytes);
         }

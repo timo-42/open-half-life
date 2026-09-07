@@ -3165,13 +3165,90 @@ where they overlap):
 - **`func_pendulum`/`momentary_rot_button`.** Neither entity is
   implemented yet; both depend on the same brush-`angles` gap above for a
   collidable rotating shape, not only a rendered one.
-- **Monster children of a `monstermaker` are not persisted.** Tag 28
-  (`SECTION_MOVER_STATE`) carries a maker's own spawn counters but not its
-  already-spawned children, which are not themselves indexed by
-  `Registry::entities` (see `ohl_engine::save_state`'s module doc,
-  "Monstermaker children are not saved").
-  `func_tracktrain`/`func_train` altpath branching is likewise still
-  recorded but not applied.
+- **Monster children of a `monstermaker` are not persisted.** *Fixed at
+  M9.5 (below): tag 28 (`SECTION_MOVER_STATE`) still carries only a
+  maker's own spawn counters, but the new `SECTION_MAKER_CHILDREN` (tag
+  29) now separately restores the already-spawned children themselves,
+  which are indexed by `Registry::entities` as of this package (see
+  `ohl_engine::save_state`'s module doc, "Monstermaker children are now
+  saved").* `func_tracktrain`/`func_train` altpath branching is likewise
+  still recorded but not applied.
+
+## M9.5 (Rust): `monstermaker` children survive a save/load
+
+Status: accepted; evidence: PR #<n> ("Persist a `monstermaker`'s runtime-
+spawned children across a save/load").
+
+The gap the bullet just above used to describe in full — a live
+`monstermaker` child (a monster the map itself never declared, spawned at
+runtime by `ohl_ai::AiState::spawn_child`) was lost across a save/load,
+because it was never indexed by `Registry::entities` at all — is closed.
+`AiState::spawn_child` now pushes every child it creates onto
+`Registry::entities` the instant it spawns (both the runtime path,
+`AiState::tick_makers`, and the new restore path below use the same
+function), so a maker child gets a spawn index exactly like a
+map-declared monster and is covered automatically by every existing
+index-keyed save section: `SECTION_ENTITY_REGISTRY` (18, transform),
+`SECTION_ENTITY_COMBAT` (24, health/armor) and `SECTION_AI` (25,
+schedule/enemy memory/route state) all already restore a maker child
+correctly with no changes of their own.
+
+What those sections cannot do on their own is recreate the child *entity*
+after a load: a fresh `attach_level` only ever spawns a map's own declared
+entities, never a maker's dynamically-created children, so
+`Registry::entities` is shorter than the save recorded until something
+fills the gap back in first. The new `SECTION_MAKER_CHILDREN` (tag 29,
+`ohl_engine::save_state::MonsterMakerChildSnapshot`) records just enough
+per registry slot — which maker spawned it (as a spawn index) and its
+spawn classname — for `AiState::restore_maker_children` to recreate a
+placeholder monster of the right kind at the right index, run first in
+`Game::restore`, ahead of every other index-keyed section's own restore.
+`AiState::finalize_maker_children` then runs last (after
+`SECTION_ENTITY_COMBAT`/`SECTION_AI` and `Systems::
+sync_actor_from_transforms` have all applied the save's actual health/AI
+state), linking each recreated child back onto its maker's own
+`ohl_ai::Spawner::children` list (`Spawner::restore_child`, new) and
+pruning any that are already dead — the same `is_alive` check
+`AiState::tick_makers` uses mid-session — so `Spawner::live_children`/
+`has_room` (and so a reloaded maker's remaining-spawn accounting) read
+correctly immediately after a load, not just its `spawned_total`/`active`/
+`timer` counters (which already round-tripped through tag 28 before this
+package).
+
+A child already gone by save time — gibbed outright, or a faded corpse
+`AiState::age_corpses` had already despawned — has no classname left to
+record (its components are gone with the entity), so its
+`SECTION_MAKER_CHILDREN` slot is `None`; restoring a `None` tail slot
+spawns an inert, component-less placeholder purely to keep every later
+child's own index aligned, mirroring the pre-existing rule
+`SECTION_ENTITY_COMBAT` already applies to any other entity gone by save
+time. Recreation is capped by the same `MAX_MAKER_CHILDREN_PER_LEVEL`
+guard `AiState::tick_makers` already enforces at runtime, so a corrupt or
+adversarial save cannot use this restore path to spawn unbounded
+monsters. Tag 29 is read as absent (defaulting to no maker children
+recreated, the documented pre-M9.5 behaviour) when missing, so a save
+written before this package still loads.
+
+**Level transitions do not carry a live `monstermaker` child across a
+`trigger_changelevel`, and this package leaves that scope unchanged.**
+`crate::transition::TransitionState::capture` only carries an entity that
+has a `targetname` or a `globalname` of its own; `AiState::spawn_child`
+gives a maker child neither (it is built from the maker's
+`monstertype`/keyvalues alone), so it was already excluded by that same
+name test before this package existed and still is now that it carries a
+spawn index. Extending transitions to carry a maker child by, for
+example, its owning maker's own `targetname` plus an ordinal is left for
+a later package; this one is bounded to the save/load round trip alone.
+
+Tests (`crates/ohl-engine/tests/save_sections.rs`): a `monstermaker` with
+two spawned children, one of them killed before the save, round-trips
+both — the live one keeps thinking from its saved position/health and
+counts toward `Spawner::live_children`, the dead one stays a corpse and
+does not; and a save written before tag 29 existed (no
+`SECTION_MAKER_CHILDREN` section at all) still loads, with the
+pre-existing "children not restored, only counters" behaviour, exactly as
+`a_monstermakers_counters_survive_a_save_load_round_trip` already
+documented before this package updated it to assert the fix instead.
 - **Linux audio backend decision** (unchanged from the 2026-09-06 and
   initial 2026-09-07 snapshots): `ohl-audio` still always uses a
   `NullSink` on Linux, since `cpal`'s only Linux backend links `libasound`

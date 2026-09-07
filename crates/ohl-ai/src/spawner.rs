@@ -178,13 +178,12 @@ impl Spawner {
     /// the simulation a `NaN` timer or a quota already past its own cap.
     ///
     /// This does **not** restore [`Self::live_children`]'s underlying
-    /// entity list: a `monstermaker`'s children are not indexed by
-    /// `Registry::entities` at all (see `crate::save_state`'s module doc
-    /// in `ohl-engine`, "Monstermaker children are not saved"), so there
-    /// is no save-stable handle to reconstruct them from. A save/load
-    /// therefore still forgets which entities were this maker's live
-    /// children — a pre-existing, documented gap — even though the
-    /// *counters* above round-trip exactly.
+    /// entity list on its own: that needs the child *entities* to exist
+    /// again first, which `ohl-engine`'s `SECTION_MAKER_CHILDREN` (tag 29)
+    /// recreates separately (see that crate's `save_state` module doc,
+    /// "Monstermaker children are now saved") before calling
+    /// [`Self::restore_child`] once per recreated child. Call order between
+    /// the two does not matter: neither touches the other's fields.
     pub fn restore_counters(&mut self, spawned_total: u32, active: bool, timer: f32) {
         self.spawned_total = match u32::try_from(self.monstercount) {
             Ok(cap) => spawned_total.min(cap),
@@ -207,6 +206,20 @@ impl Spawner {
     /// Drops any tracked child `is_alive` reports as gone.
     pub fn prune_dead(&mut self, is_alive: &dyn Fn(Entity) -> bool) {
         self.children.retain(|&entity| is_alive(entity));
+    }
+
+    /// Reattaches a child recreated after a save/load onto this maker's own
+    /// live-child list (`ohl-engine`'s `SECTION_MAKER_CHILDREN`, tag 29;
+    /// see [`Self::restore_counters`]'s own doc comment for the gap this
+    /// closes). Unlike [`Self::note_spawned`], this does **not** bump
+    /// [`Self::spawned_total`]: that already round-trips through
+    /// [`Self::restore_counters`], and counting the same child twice would
+    /// double it. The caller is expected to [`Self::prune_dead`] afterwards
+    /// once the child's restored health is known, so a child the save
+    /// recorded as already dead does not linger in
+    /// [`Self::live_children`]/[`Self::has_room`]'s accounting.
+    pub fn restore_child(&mut self, entity: Entity) {
+        self.children.push(entity);
     }
 
     /// Records that `entity` was just spawned by this maker.
