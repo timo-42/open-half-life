@@ -3774,3 +3774,38 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
     technical limit: authoring and validating an equivalent scripted-input
     file for `c1a4`'s own corridors was not done within this package's own
     budget. See `docs/MILESTONES.md`'s M9.7 entry.
+
+    **Correction (M9.9, appended, not a retraction of the citations
+    above):** a fidelity-review pass (`.plan/fidelity-round-10.md`, item
+    L1) found that `Simulation::advance_pendulums`'s own `omega`
+    computation — `omega = pendulum.speed.to_radians() /
+    pendulum.distance.max(1.0)` — converted only `speed` to radians while
+    leaving `distance` unconverted, so the two operands no longer shared a
+    unit. Differentiating the "Project behaviour" formula above at
+    `elapsed = 0` gives peak `d(angle_deg)/dt = distance * omega`; with the
+    unconverted-`distance` bug that peak numerically equalled
+    `speed.to_radians()` degrees/second rather than `speed` degrees/second
+    — about `180/pi` (\u{2248}57.3x) slower than this item's own
+    "Project behaviour" paragraph always stated the formula was chosen to
+    produce, for every `func_pendulum` this project has ever simulated,
+    real map or synthetic fixture alike (the existing fixture test,
+    `func_pendulum_swings_and_toggles_off_freezing_the_pose`, only
+    asserted the angle was nonzero, which the bug still satisfied, so it
+    did not catch this). This is a code defect in the chosen law's own
+    implementation, not a revision of which uncited motion law this
+    project picked: the fix drops the stray `.to_radians()`
+    (`omega = pendulum.speed / pendulum.distance.max(1.0)`, both operands
+    left in the keyvalues' own documented "degrees" unit so they cancel to
+    the plain `1/second` scalar `f32::sin`'s always-radians argument
+    convention needs), leaving every other part of this item's "Project
+    behaviour" description — the damped-sinusoid shape, the damping-rate
+    mapping, the settle threshold, the Auto Return/Start ON handling, and
+    the tag-30 snapshot shape — unchanged. A new regression test,
+    `pendulum_reaches_near_amplitude_within_the_documented_quarter_period`
+    (`crates/ohl-game/src/logic.rs`), asserts a `speed = 180`/`distance =
+    30` pendulum reaches within 0.5 degrees of its 30-degree amplitude at
+    the formula's own predicted quarter-period elapsed time, and was
+    confirmed to fail against the pre-fix formula (angle \u{2248}0.82
+    degrees at that elapsed time, not \u{2248}30) before being restored to
+    assert the fixed value, so it discriminates the bug rather than merely
+    exercising the code path.
