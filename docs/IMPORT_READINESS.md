@@ -101,14 +101,20 @@ running against a real imported payload on Linux x86-64: `cargo xtask
 campaign-smoke` headless-renders all 93 campaign maps (18 story chapters
 plus the Hazard Course), and `cargo xtask combat-smoke` drives scripted
 combat scenarios (including picking up and firing a weapon) end to end.
-Both are useful implementation-correctness evidence — they exercise the
-payload the import path actually produced, not a synthetic stand-in — but
-neither is release-evidence toward any gate below: both smokes still run
-against the same single real ISO layout this project has ever exercised,
-so they say nothing about any other layout, package variant, or platform
-tuple, and neither substitutes for the installed-package inventory,
-crash/restart, sanitizer/fuzz, or independent-review gates that remain
-unmet.
+`combat-smoke`'s own scenario set has since grown to include a
+moving-player walk through each of the 18 story chapters plus the Hazard
+Course, a ladder climb reached and completed on a real sub-map (the Hazard
+Course's "t0a0a"), and the campaign start map's opening tram ride playing
+out from a scripted idle run with no movement key pressed — 24 scenarios
+in total, all passing against the same imported payload. Both smoke
+commands are useful implementation-correctness evidence — they exercise
+the payload the import path actually produced, not a synthetic stand-in —
+but neither is release-evidence toward any gate below: both smokes still
+run against the same single real ISO layout this project has ever
+exercised, so they say nothing about any other layout, package variant, or
+platform tuple, and neither substitutes for the installed-package
+inventory, crash/restart, sanitizer/fuzz, or independent-review gates that
+remain unmet.
 
 Every other tuple is unavailable for a simpler reason: containment is
 source-selected for Linux x86-64 only, and everywhere else the unsupported

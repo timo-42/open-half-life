@@ -264,23 +264,48 @@ it interactively on a real screen.
   monsters, props and sprites rendering alongside the world geometry.
 - **Movement and collision**: the player collides against both worldspawn
   geometry and solid brush entities (doors, moving platforms, and the
-  like), not only the static world.
+  like), not only the static world; a player standing on a moving brush
+  entity (a `func_train`/`func_tracktrain`, `func_plat`, or lift
+  `func_door`) rides along with it instead of being left behind or sinking
+  through it; and `func_ladder`/`func_water` submodels attach their own
+  ladder/water/slime/lava contents so climbing and swimming work against a
+  brush entity, not only world-baked geometry — verified on a real map
+  (the Hazard Course's "t0a0a" sub-map) with a scripted walk that reaches
+  and climbs a `func_ladder`.
+- **The campaign start map's opening tram ride now plays**: a
+  `func_tracktrain` is placed on the first node of its own path at spawn
+  (not wherever its brushes happened to be compiled), `game_playerspawn`
+  entities fire on load, and the mover-riding fix above carries the player
+  with the tram, so a scripted idle run rides out of the start area,
+  through the hazard-striped tunnel portal and down the rock tunnel, with
+  no movement key pressed.
+- **Monsters that move**: a monster's rendered model and hitbox now track
+  its AI-driven walking/chasing/fleeing motion every step (previously the
+  model stayed pinned at its last position while the AI kept moving
+  underneath), and a monster's position resumes correctly from a save
+  rather than snapping back to its map spawn point on the next AI think.
 - **Interactive map logic**: touch triggers (fired by the player's own
-  movement, not only `use`), doors, buttons, `func_train`/`func_tracktrain`
-  track trains, `trigger_camera` view sequences, scripted
-  sequences/talk monsters, and level transitions by touch
-  (`trigger_changelevel`) or by `use`.
+  movement, not only `use`, including `trigger_changelevel`), doors,
+  buttons, `func_train`/`func_tracktrain` track trains,
+  `trigger_camera` view sequences, scripted sequences/talk monsters,
+  `monstermaker`s (including toggling one by name via `use`/`trigger`),
+  and level transitions by touch (`trigger_changelevel`) or by `use`.
 - **Combat and AI**: weapons, pickups, damage, monster AI, and navigation
   are implemented and exercised by a scripted combat scenario that picks up
   and fires a weapon (`cargo xtask combat-smoke`), which also runs a
   moving-player walk scenario through each of the 18 story chapters plus
-  the Hazard Course as its own regression guard against the player falling
-  through the world or a touch trigger never firing from movement.
+  the Hazard Course, plus a ladder-climb scenario, as its own regression
+  guard against the player falling through the world or a touch trigger
+  never firing from movement — 24 scripted scenarios in total, all passing
+  against a real imported payload.
 - **Save/load** works over the project-owned `ohl-save` container (not the
   GoldSrc `.sav` format), with typed sections covering the engine header,
   entity registry, map-logic simulation, global state, light-style time,
-  camera/player pose, and — as of M7.9 P4b — inventory, entity combat
-  state, AI state, projectiles/deployables and the RNG stream.
+  camera/player pose, inventory, entity combat state, AI state,
+  projectiles/deployables, the RNG stream (M7.9 P4b), and — as of M7.13 —
+  `func_train`/`func_tracktrain` position, a running `trigger_camera`
+  sequence, a running scripted sequence's phase, a `monstermaker`'s spawn
+  counters, and a `trigger_auto`'s one-shot fired flag.
 - **Scripted-input smokes**: a project-owned deterministic script format
   drives headless runs for both the campaign and combat scenarios above,
   with fixed milestone log lines asserted in CI.
@@ -306,10 +331,13 @@ it interactively on a real screen.
 
 **Known gaps** (see `docs/MILESTONES.md`'s "Status as of" sections for the
 full list): `func_tracktrain` `altpath` branching is recorded but not
-applied; a `monstermaker` cannot yet be toggled at runtime by its own
-`targetname`; a `scripted_sequence` target's pre-trigger idle animation
-(`m_iszIdle`) is not yet modelled; and weapon inventory still rides inside
-`SECTION_PLAYER_CARRY`'s ad hoc encoding rather than its own save section.
+applied; a brush entity's own `angles` keyvalue (a rotated door or
+platform) is not yet applied to its collision shape; a `scripted_sequence`
+target's pre-trigger idle animation (`m_iszIdle`) is not yet modelled; a
+`monstermaker`'s already-spawned children are not themselves part of any
+save section (only the maker's own spawn counters round-trip); and weapon
+inventory still rides inside `SECTION_PLAYER_CARRY`'s ad hoc encoding
+rather than its own save section.
 
 **Fidelity note:** scene lighting is calibrated against public reference
 screenshots via the app's own `--overbright 1.7` default (pass
