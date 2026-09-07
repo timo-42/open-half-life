@@ -32,7 +32,10 @@
 use glam::{Quat, Vec3};
 use hecs::Entity;
 
-use crate::registry::{BrushCenter, Door, MoverState, Platform, Registry, Rotator, Transform};
+use crate::registry::{
+    BrushCenter, Door, MomentaryRotButton, MoverState, Pendulum, Platform, Registry, RotButton,
+    Rotator, Transform,
+};
 use crate::track_train::{TrackTrain, TrackTrainState};
 
 /// The `0.0..=1.0` progress fraction [`mover_offset`] (a translating
@@ -208,8 +211,56 @@ pub fn rotator_degrees(registry: &Registry, entity: Entity) -> (Vec3, f32) {
         })
 }
 
+/// How far a `func_rot_button` has swung, in degrees, from the same
+/// shared `speed`/`distance`/`state`/`timer` shape [`door_rotation_degrees`]
+/// reads (see [`crate::registry::RotButton`]'s own doc comment for why it
+/// is a separate component rather than a [`Door`]). `Vec3::ZERO`/`0.0` for
+/// any entity without a [`RotButton`].
+#[must_use]
+pub fn rot_button_degrees(registry: &Registry, entity: Entity) -> (Vec3, f32) {
+    registry
+        .world
+        .get::<&RotButton>(entity)
+        .map_or((Vec3::ZERO, 0.0), |button| {
+            let fraction =
+                mover_fraction(button.speed, button.distance, button.state, button.timer);
+            (button.axis, button.distance * fraction)
+        })
+}
+
+/// How far a `momentary_rot_button` has turned, in degrees, directly from
+/// its own `0.0..=1.0` [`MomentaryRotButton::fraction`] (there is no
+/// open/close timer to derive a fraction from — it is driven every tick
+/// `use` is held, see `crate::logic::Simulation::
+/// drive_momentary_rot_button`). `Vec3::ZERO`/`0.0` for any entity without
+/// one.
+#[must_use]
+pub fn momentary_rot_button_degrees(registry: &Registry, entity: Entity) -> (Vec3, f32) {
+    registry
+        .world
+        .get::<&MomentaryRotButton>(entity)
+        .map_or((Vec3::ZERO, 0.0), |button| {
+            (button.axis, button.distance * button.fraction)
+        })
+}
+
+/// How far a `func_pendulum` has swung, in degrees, directly from its own
+/// [`Pendulum::angle_deg`] (already the fully resolved pose — see
+/// `crate::logic::Simulation::advance_pendulums`). `Vec3::ZERO`/`0.0` for
+/// any entity without one.
+#[must_use]
+pub fn pendulum_degrees(registry: &Registry, entity: Entity) -> (Vec3, f32) {
+    registry
+        .world
+        .get::<&Pendulum>(entity)
+        .map_or((Vec3::ZERO, 0.0), |pendulum| {
+            (pendulum.axis, pendulum.angle_deg)
+        })
+}
+
 /// The signed rotation axis and current angle (degrees) a rotating brush
-/// mover — `func_door_rotating` or `func_rotating`, mutually exclusive
+/// mover — `func_door_rotating`, `func_rotating`, `func_rot_button`,
+/// `momentary_rot_button`, or `func_pendulum`, mutually exclusive
 /// components on any one entity — is currently posed at. `Vec3::ZERO`/
 /// `0.0` (no rotation) for every other brush entity, so a caller can
 /// branch on `axis != Vec3::ZERO` to tell a rotating mover from a
@@ -220,7 +271,19 @@ pub fn mover_rotation(registry: &Registry, entity: Entity) -> (Vec3, f32) {
     if axis != Vec3::ZERO {
         return (axis, degrees);
     }
-    rotator_degrees(registry, entity)
+    let (axis, degrees) = rotator_degrees(registry, entity);
+    if axis != Vec3::ZERO {
+        return (axis, degrees);
+    }
+    let (axis, degrees) = rot_button_degrees(registry, entity);
+    if axis != Vec3::ZERO {
+        return (axis, degrees);
+    }
+    let (axis, degrees) = momentary_rot_button_degrees(registry, entity);
+    if axis != Vec3::ZERO {
+        return (axis, degrees);
+    }
+    pendulum_degrees(registry, entity)
 }
 
 /// Where `entity`'s brush geometry is centred *right now*, in world space,

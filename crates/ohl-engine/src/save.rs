@@ -30,13 +30,14 @@
 //! | 27 | [`SECTION_RNG`] | [`RngSnapshot`]: the shared random stream and the substep counter (M7.9 P4b) |
 //! | 28 | [`SECTION_MOVER_STATE`] | `Vec<Option<`[`MoverSnapshot`]`>>`, one per registry entity, in spawn order: `func_train`/`func_tracktrain` position, `trigger_camera` sequence progress, running-script phase and `monstermaker` counters (M7.13) |
 //! | 29 | [`SECTION_MAKER_CHILDREN`] | `Vec<Option<`[`MonsterMakerChildSnapshot`]`>>`, one per registry entity, in spawn order: which `monstermaker` spawned this entity, and its classname (M9.5) |
+//! | 30 | [`SECTION_ROTATING_MOVER_STATE`] | [`RotatingMoverStateSnapshot`]: `func_rot_button`/`momentary_rot_button`/`func_pendulum` runtime state, one optional entry per registry entity, plus the `func_rot_button` touch-edge bookkeeping (M9.6) |
 //! | 32 | *(reserved, `ohl-player`)* | `PlayerSnapshot`, written through `Player::snapshot()` when a later package wires it |
 //!
-//! Tags 23-29 are read as `None`/a default when absent, so a save written
-//! before M7.9 P4b (tags 23-27), M7.13 (tag 28), or M9.5 (tag 29) still
-//! loads (`.plan/m79-design.md` §6); a section that is present but fails to
-//! decode fails the whole read closed ([`crate::EngineError::SaveUnreadable`]),
-//! same as every other section.
+//! Tags 23-30 are read as `None`/a default when absent, so a save written
+//! before M7.9 P4b (tags 23-27), M7.13 (tag 28), M9.5 (tag 29), or M9.6
+//! (tag 30) still loads (`.plan/m79-design.md` §6); a section that is
+//! present but fails to decode fails the whole read closed
+//! ([`crate::EngineError::SaveUnreadable`]), same as every other section.
 
 use ohl_campaign::Difficulty;
 use ohl_game::SimulationState;
@@ -44,7 +45,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::save_state::{
     AiSnapshot, EntityCombatSnapshot, InventorySnapshot, MonsterMakerChildSnapshot, MoverSnapshot,
-    ProjectilesSnapshot, RngSnapshot,
+    ProjectilesSnapshot, RngSnapshot, RotatingMoverSnapshot,
 };
 use crate::transition::{EntitySnapshot, GlobalStateTable, PlayerCarryState};
 
@@ -95,6 +96,22 @@ pub const SECTION_MOVER_STATE: u32 = 28;
 /// spawn order (M9.5).
 pub const SECTION_MAKER_CHILDREN: u32 = 29;
 
+/// `func_rot_button`/`momentary_rot_button`/`func_pendulum` runtime state,
+/// one optional entry per registry entity in spawn order, plus the
+/// `func_rot_button` touch-edge bookkeeping `ohl_game::logic::
+/// SimulationState` (tag 19) deliberately does not carry (M9.6). A new tag
+/// rather than an addition to [`SECTION_MOVER_STATE`] (tag 28) or
+/// [`SECTION_ENTITY_REGISTRY`]/[`SECTION_SIMULATION`] (tags 18/19): all
+/// three are required sections whose `postcard` encoding is not
+/// self-describing, so a field added to a type any of them serializes
+/// makes every save written before that field existed fail to decode —
+/// see this module's own doc comment on the tag map above. This section
+/// stays optional and self-contained instead, so an older save (missing
+/// tag 30 entirely) still loads with these three entities defaulting to
+/// their spawnflag/keyvalue resting state, exactly like tags 23-29 already
+/// do for what they each cover.
+pub const SECTION_ROTATING_MOVER_STATE: u32 = 30;
+
 /// The engine header section's contents.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EngineHeader {
@@ -136,6 +153,21 @@ pub struct ViewState {
     pub yaw: f32,
     /// Pitch in degrees.
     pub pitch: f32,
+}
+
+/// [`SECTION_ROTATING_MOVER_STATE`] (30)'s whole payload: the entity-indexed
+/// `func_rot_button`/`momentary_rot_button`/`func_pendulum` state plus the
+/// `func_rot_button` touch-edge bookkeeping, which has no entity-indexed
+/// shape to share `movers`' slots with (it is keyed by `hecs` bit pattern,
+/// not spawn order, matching `ohl_game::logic::TriggerSnapshot`'s own
+/// existing convention on tag 19).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct RotatingMoverStateSnapshot {
+    /// One optional entry per registry entity, in spawn order.
+    pub movers: Vec<Option<RotatingMoverSnapshot>>,
+    /// `ohl_game::logic::Simulation::rot_button_touch_snapshot`'s own
+    /// `(entity bit pattern, touching)` pairs.
+    pub rot_button_touch: Vec<(u64, bool)>,
 }
 
 /// Everything one save file holds, as this crate sees it.
@@ -196,6 +228,11 @@ pub struct GameSave {
     /// 29 — an older save simply has no maker children to recreate, the
     /// pre-existing documented gap this section fixes.
     pub maker_children: Option<Vec<Option<MonsterMakerChildSnapshot>>>,
+    /// `func_rot_button`/`momentary_rot_button`/`func_pendulum` runtime
+    /// state and the `func_rot_button` touch-edge bookkeeping (M9.6).
+    /// `None` for a save missing tag 30 — an older save simply has these
+    /// three entities default to their spawnflag/keyvalue resting state.
+    pub rotating_movers: Option<RotatingMoverStateSnapshot>,
 }
 
 impl GameSave {
@@ -259,6 +296,9 @@ impl GameSave {
             if let Some(maker_children) = &self.maker_children {
                 writer.add_section_serde(SECTION_MAKER_CHILDREN, maker_children)?;
             }
+            if let Some(rotating_movers) = &self.rotating_movers {
+                writer.add_section_serde(SECTION_ROTATING_MOVER_STATE, rotating_movers)?;
+            }
             Ok(())
         };
         write(&mut writer).map_err(|_| crate::EngineError::SaveUnwritable)?;
@@ -300,6 +340,7 @@ impl GameSave {
                 SECTION_MAKER_CHILDREN,
                 crate::save_state::MAX_SNAPSHOT_MAKER_CHILDREN,
             )?,
+            rotating_movers: optional_section(&reader, SECTION_ROTATING_MOVER_STATE)?,
         })
     }
 }

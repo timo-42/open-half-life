@@ -3439,3 +3439,78 @@ documented before this package updated it to assert the fix instead.
   *rider* path: a local probe found no rotating brush entity near the
   player start of any campaign map the existing scenarios visit, so a
   scenario would have to navigate a real map's corridors to reach one.
+
+- **M9.7 (`func_rot_button`, `momentary_rot_button`, `func_pendulum`).**
+  The three rotating-mover classnames item 24's own M9.4 entry left
+  unimplemented now round-trip through the map logic simulation, render,
+  and collision the same way `func_door_rotating`/`func_rotating` already
+  do. `ohl_game::registry::RotButton` is a new component reusing `Door`'s
+  rotating `speed`/`distance`/`state`/`timer` shape and the `ohl_game::pose`
+  render/collision pose mechanism M9.5 just centralised, but — unlike
+  `Door` — fires its `target` on reaching the pressed pose and supports the
+  documented "Toggle" spawnflag (`ohl_game::logic::Simulation::
+  advance_rot_buttons`); its documented "Touch activates" spawnflag is
+  enforced both by excluding a touch-only button from proximity `use`
+  search and by a new edge-triggered `Simulation::touch_rot_buttons`,
+  called from the same `Simulation::touch_triggers` phase every other
+  touch-driven entity already uses. `ohl_game::registry::MomentaryRotButton`
+  is driven every fixed step by *held* `use` (not a discrete activation,
+  unlike every other entity in this crate) through a new
+  `ohl_game::logic::find_momentary_rot_button_within`/
+  `Simulation::drive_momentary_rot_button` pair, wired into
+  `ohl-engine`'s `Systems::triggers_and_movers` (phase 12) behind
+  `Input::use_held`; its `target` is documented as normally naming a
+  `momentary_door`, which this crate does not implement, so its `0..1`
+  `fraction` is exposed on the component for a future consumer but not
+  wired to anything today. `ohl_game::registry::Pendulum` swings a plain
+  damped sinusoid between `-distance` and `+distance` — this project's own
+  choice, recorded at its point of use, since no public source states
+  GoldSrc's exact per-step motion law — settling at rest once its damped
+  amplitude falls under a small threshold (matching the documented
+  "narrows... until it stops... in the middle of its swing" behaviour),
+  toggled by `use`/trigger like `func_rotating`, with the documented "Auto
+  Return" spawnflag animating linearly back to rest instead of freezing in
+  place. All three now round-trip through a **new** optional save section,
+  `SECTION_ROTATING_MOVER_STATE` (tag 30: `RotButtonSnapshot`/
+  `MomentaryRotButtonSnapshot`/`PendulumSnapshot`, plus the
+  `func_rot_button` touch-edge bookkeeping), each with a dedicated,
+  discriminating round-trip test and a dedicated pre-existing-save
+  compatibility regression. A review round found the first version of
+  this milestone had instead added these same fields directly to three
+  *existing, required* sections (`SECTION_ENTITY_REGISTRY`/tag 18 via
+  `ohl_engine::transition::EntitySnapshot`, `SECTION_SIMULATION`/tag 19,
+  and `SECTION_MOVER_STATE`/tag 28) — since `postcard`'s wire shape is not
+  self-describing, that made every save written before this milestone
+  existed fail to load outright (`EngineError::SaveUnreadable`), confirmed
+  directly against a save built from `rotating_door_bsp` at `origin/main`.
+  Moving all three entities' state to the new tag 30 fixed that, at the
+  documented cost that none of the three now carries across a
+  `trigger_changelevel` transition (only across a save/load) — the
+  `EntitySnapshot` type that would carry it is exactly the required tag
+  the fields had to come back out of. A new integration test,
+  `crates/ohl-engine/tests/rot_button.rs`, drives a
+  `func_rot_button` through the real proximity `use_pressed` input path
+  end to end — the same real-proximity path M9.5/item 25 fixed, landed
+  concurrently with this package and rebased onto directly rather than
+  worked around. See `docs/FORMAT_SOURCES.md` item 27 for the full
+  keyvalue/spawnflag citations and this milestone's documented
+  approximations (the pendulum's motion law, the angular-frequency
+  mapping, and the damping-rate constant). A bounded, aggregate-only probe
+  of the real payload (parsing entities lumps directly; booleans/counts
+  only, nothing media-derived committed) found `c1a4` — a map the existing
+  `combat-smoke` suite already visits ("walk from spawn in Blast Pit") —
+  has both a `func_rot_button` and a `func_pendulum` within 256 units of a
+  spawn point, and no `momentary_rot_button` within that radius of a
+  spawn on any visited map; no combat-smoke scenario was added for any of
+  the three regardless. This is a budget call rather than a technical
+  limit: M9.5's own `use_rotating_door_anomalous_materials.txt` scenario
+  proves a tuned scripted-input file *can* walk up to and `use` a specific
+  rotating entity on a real map (superseding item 24's own earlier,
+  more pessimistic finding), but authoring and validating an equivalent
+  file for `c1a4`'s own corridors was not done within this package's
+  budget. Two pre-existing gaps remain, both already recorded elsewhere:
+  `dmg`/blocking behaviour is not wired into `Level::movers_blocked` for
+  any of the three (the same gap item 9, under "Mover riders", already
+  records for a translating mover), and none of the three carries a
+  standing rider (item 24's own reasoning for why a rotating mover cannot
+  yet).

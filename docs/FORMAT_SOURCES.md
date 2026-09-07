@@ -3541,3 +3541,227 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
     in `crates/ohl-engine/tests/rotating_riders.rs`/`rotating_door.rs`
     instead, and every existing scenario continues to assert "The player is
     inside solid geometry." absent.
+
+27. **`func_rot_button`, `momentary_rot_button`, and `func_pendulum`
+    (M9.7).** TWHL wiki `func_rot_button`
+    (`https://twhl.info/wiki/page/func_rot_button`), `momentary_rot_button`
+    (`https://twhl.info/wiki/page/momentary_rot_button`), and
+    `func_pendulum` (`https://twhl.info/wiki/page/func_pendulum`;
+    consulted via search-engine result summaries, the pages themselves
+    returning HTTP 403 to automated fetches from this environment, the same
+    caveat already recorded for the other TWHL citations in this document;
+    reviewed 2026-09-07): `func_rot_button`'s `distance` ("Distance in
+    degrees the button will rotate before activating its target"), `wait`
+    ("Delay before reset... -1 makes it stay set"), `health` ("If non-zero,
+    the button must be damaged to this extent to activate it"), and its
+    "Reverse direction" (2), "Toggle" (32, "allows button to be toggled...
+    each time retriggering its target"), "X axis" (64), "Y axis" (128), and
+    "Touch activates" (256, "the button can only be activated by the player
+    bumping into it... used for taps, spigots, levers, etc.") spawnflags;
+    that a `func_rot_button` shares `func_button`'s press/reset shape but
+    "for buttons that require you to hold the USE key, see
+    `momentary_rot_button`". `momentary_rot_button`'s `distance` ("Distance
+    in degrees the button will rotate"), `speed` ("defaults to 100 if blank
+    or 0"), `returnspeed` ("for buttons with Auto-return... the speed at
+    which the button will return to its starting position"), its `target`
+    normally naming a `momentary_door`; its "Door Hack" (1, "makes this
+    entity solid, but un-USE-able... the only way to actuate this entity is
+    for it and another, normal `momentary_rot_button`, [to] share a
+    `momentary_door` target"), "Auto return" (16), "X axis" (64), "Y axis"
+    (128) spawnflags, the last requiring "An origin brush... to specify its
+    axis of rotation"; that the linked `momentary_door`'s position is
+    "synchronized with the `momentary_rot_button` currently driving it...
+    a `0` to `1` fraction"; and (from a ModDB "Doors/buttons tutorial"
+    summary and a TWHL forum-thread summary, both consulted the same way)
+    that the button "flip-flops between opening and closing when it
+    reaches its endpoints" — i.e. its direction of travel reverses at
+    `fraction = 0`/`fraction = 1`, not on every fresh `use`.
+    `func_pendulum`'s `distance` ("Distance in degrees the pendulum will
+    swing"), `speed` ("Speed of movement of the pendulum"), `dmg` ("When
+    movement is blocked by the player, he will receive this amount of
+    damage"), `damping` ("causes the pendulum to slowly narrow its
+    movement until it stops moving... in the middle of its swing", a
+    `0..1000` integer); and its spawnflags "1 for 'Start ON', 8 for
+    'Passable', 16 for 'Auto-return', and 64 for 'X Axis'", plus "the
+    Y-axis flag causes the swing to be in the Y axis. The swing defaults to
+    the Z axis if neither of the axis flags is enabled" — that second
+    quotation names the flag but not a bit value for it, so `128` is this
+    project's own inference (the next bit after `X Axis`'s cited `64`),
+    not itself an independently found citation, the same honest caveat
+    already recorded for `func_rotating`'s "Start On" bit (item 24); that
+    `func_pendulum`, like the two rotating buttons above, "requires an
+    origin brush... to specify its axis of rotation" (the same documented
+    requirement item 24 already recorded for `func_door_rotating`/
+    `func_rotating`). No public source found in this pass states the exact
+    per-step trigonometric law GoldSrc integrates for either the pendulum's
+    swing or a `momentary_rot_button`'s turn rate in absolute terms beyond
+    the `speed`/`distance` keyvalues above; per this milestone's own
+    instruction, this project implements a documented, simple choice
+    instead of guessing at an uncited formula — see "Project behaviour"
+    below.
+
+    Project behaviour: `ohl_game::registry::RotButton` is a new component
+    (not a reuse of `Door` or `Button`): it shares `Door`'s rotating
+    `speed`/`distance` (here `RotButton::distance`)/`state`/`timer` shape
+    and its `mover_fraction`-based render/collision pose (see item 24's own
+    "Project behaviour" for that mechanism, and item 25 for `ohl_game::pose`,
+    the module it now lives in): `ohl_game::pose::rot_button_degrees` is
+    chained into the same `pose::mover_rotation`/`pose::brush_center`
+    pipeline every other rotating mover already shares, which `ohl-engine`
+    re-exports unmodified into its own renderer, `level.rs`
+    `attach_brush_collision`/`Level::sync_brush_collision`, and
+    `find_usable_within`'s proximity search — so a `func_rot_button`'s
+    `use`-proximity point, draw transform and collision brush all agree by
+    construction, the same invariant item 25 established for
+    `func_door_rotating`. But — unlike `Door` — it also fires its `target`
+    on reaching
+    the pressed pose (`ohl_game::logic::Simulation::advance_rot_buttons`,
+    mirroring `advance_buttons`'s own `to_fire` mechanism) and supports the
+    documented "Toggle" spawnflag by allowing a second `use`/touch to
+    re-trigger from the `Open` state back to `Closed`, firing `target`
+    again on that return too. **This project's own reading, not itself
+    stated by the cited wording**: Toggle also suppresses the ordinary
+    `wait` auto-return entirely, so a toggle button only ever returns on a
+    second `use`/touch, never on a timer (`RotButton::toggle`'s own doc
+    comment). `RotButton::touch` (the "Touch activates" spawnflag) is
+    enforced two ways: `ohl_game::logic::find_usable_within` excludes a
+    touch-only button from proximity `use` search entirely (the TWHL page
+    frames the two activation modes as alternatives, not a superset), and
+    the new `Simulation::touch_rot_buttons` presses one whose
+    `BrushBounds` overlaps the player's hull box, edge-triggered like the
+    existing `Simulation::touch_changelevel_triggers`, called from
+    `Simulation::touch_triggers` alongside the existing trigger-touch path
+    every fixed step already runs. **`TODO(black-box)`**:
+    `Simulation::touch_rot_buttons` tests the button's spawn-time
+    `BrushBounds`, not its currently-*posed* box (`ohl_game::pose::
+    brush_center`'s own rotated placement) — a half-open toggle button's
+    touch volume stays where it was compiled rather than following its
+    swing. Conservative (a real toggle-and-touch button is rarer than a
+    plain touch one, and the same "test the resting box, not the posed
+    one" simplification is not otherwise made anywhere touch overlap is
+    tested in this crate), and consistent with `Simulation::touch_triggers`'
+    own trigger-volume overlap test, which is likewise never posed. Also
+    **`TODO(black-box)`**: `RotButton::health` is parsed but nothing reads
+    it — a `health > 0` button is still only `use`/touch-pressable, so the
+    "Touch activates" quotation's own "(or by being shot, if Health is >
+    0)" half is unimplemented, the same latent gap `Button::health`
+    already has on `main`.
+
+    `ohl_game::registry::MomentaryRotButton` records `axis`/`speed`/
+    `distance`/`return_speed`/`auto_return`/`door_hack` from keyvalues and
+    spawnflags, plus the runtime `fraction`/`moving_forward`/`returning`
+    state TWHL's documented `0..1` position describes. Unlike every other
+    entity in this crate, it is driven by *held* `use`, not a discrete
+    activation: the new `ohl_game::logic::find_momentary_rot_button_within`
+    (excluding a "Door Hack" button, this project's own reading of "makes
+    this entity solid, but un-USE-able" — see that field's own doc
+    comment) and `Simulation::drive_momentary_rot_button` are called every
+    fixed step from `ohl-engine`'s `Systems::triggers_and_movers` (phase
+    12) whenever `Input::use_held` is set, turning the nearest eligible
+    button toward `fraction = 1.0` at `speed` degrees/second, flipping to
+    return toward `0.0` once it reaches either endpoint (the cited
+    "flip-flops... when it reaches its endpoints" behaviour), and animating
+    every *other* auto-returning button back toward `0.0` at
+    `return_speed` while it is not the one currently held. **This
+    project's documented gap**: `momentary_door` itself is not
+    implemented anywhere in this crate, so `MomentaryRotButton::fraction`
+    is exposed on the component for a future consumer but nothing today
+    reads it back out through the button's own `target` keyvalue the way a
+    real linked `momentary_door` would; this is the gap the M9 milestone
+    snapshot already flagged before this package started ("`func_pendulum`/
+    `momentary_rot_button`... both depend on the same brush-`angles` gap").
+
+    `ohl_game::registry::Pendulum` swings [`-distance`, `+distance`]
+    (peak amplitude, not half of it — this project's own reading of the
+    cited "Distance in degrees the pendulum will swing", since no public
+    source states whether the keyvalue is the full arc or the half-arc)
+    about its origin-keyvalue pivot. **This project's documented
+    approximation**: `ohl_game::logic::Simulation::advance_pendulums`
+    integrates a plain damped sinusoid,
+    `angle = amplitude(elapsed) * sin(omega * elapsed)`, with `omega`
+    (radians/second) chosen so `speed` is the peak angular speed at the
+    rest crossing (`omega = speed.to_radians() / distance.max(1.0)`) and
+    `amplitude` an exponential decay whose rate scales linearly with the
+    documented `damping` `0..1000` keyvalue up to a project-chosen
+    per-second maximum (`Simulation::PENDULUM_MAX_DAMPING_RATE`) — both the
+    angular-frequency mapping and the damping-rate constant are this
+    project's own choices, recorded at their point of use rather than
+    claimed as a cited formula, per this milestone's own instruction to
+    document an uncited motion law rather than guess at one silently. Once
+    the damped amplitude falls under a small settle threshold
+    (`Simulation::PENDULUM_SETTLE_EPSILON_DEGREES`) the pendulum stops at
+    the rest pose, matching the cited "stops... in the middle of its
+    swing" behaviour. The documented "Auto Return" spawnflag instead
+    animates linearly back to rest at `speed` degrees/second once toggled
+    off, rather than freezing in place (the default when "Auto Return" is
+    not set); "Start ON" (bit `1`, directly documented for this entity,
+    unlike `func_rotating`'s own FGD-convention-only reading — see item
+    24) spawns it already swinging. `dmg`/blocking behaviour is not wired
+    into `Level::movers_blocked` for any of the three entities in this
+    item, the same pre-existing gap item 9 (under "Mover riders") already
+    records for a translating mover's `dmg`, and item 24 already records
+    for `func_door_rotating`/`func_rotating`; none of the three carries a
+    standing rider either, for the same reason item 24 already gives.
+
+    All three entities' mutable state round-trips through a **new**
+    optional save section, `SECTION_ROTATING_MOVER_STATE` (tag 30:
+    `RotButtonSnapshot`/`MomentaryRotButtonSnapshot`/`PendulumSnapshot`,
+    plus the `func_rot_button` touch-edge bookkeeping
+    `ohl_game::logic::Simulation::rot_button_touch_snapshot` exposes),
+    with a dedicated round-trip test per entity
+    (`crates/ohl-engine/tests/save_sections.rs`) each proven discriminating
+    (fails when tag 30's own restore call is disabled) and a dedicated
+    compatibility regression
+    (`a_save_from_before_section_30_existed_still_loads`, built from
+    `ohl_engine::test_support::rotating_door_bsp`) proving a save missing
+    tag 30 entirely still loads. **This is a new tag, deliberately not an
+    addition to any existing section**: an earlier version of this package
+    added these same three entities' fields directly to
+    `ohl_engine::transition::EntitySnapshot` (shared, unconditionally, by
+    both the `trigger_changelevel` transition-carry mechanism *and*
+    `SECTION_ENTITY_REGISTRY`, tag 18 — a required section written for
+    every save) and to `ohl_game::logic::SimulationState`
+    (`SECTION_SIMULATION`, tag 19, also required) and to
+    `ohl_engine::save_state::MoverSnapshot` (`SECTION_MOVER_STATE`, tag
+    28). Since every one of `postcard`'s sections is a fixed, non-self-
+    describing wire shape, that made every save file written before this
+    package existed fail to load — confirmed directly: a save built from
+    `rotating_door_bsp` at `origin/main` (`424ac85`) failed with
+    `EngineError::SaveUnreadable` against that earlier version of this
+    package, and loads again once these three fields were pulled out of
+    tags 18/19/28 and moved to their own optional tag 30 instead. The
+    trade-off accepted for this fix: `func_rot_button`/
+    `momentary_rot_button`/`func_pendulum` state no longer carries across
+    a `trigger_changelevel` transition (only across a save/load) — a
+    **documented gap**, since fixing that without reopening the same
+    compatibility hazard would need `EntitySnapshot` split into a
+    required, save-file part and a separate, transition-only part, which
+    is out of this package's scope. A new integration
+    test, `crates/ohl-engine/tests/rot_button.rs`, drives a
+    `func_rot_button` through the real proximity `use_pressed` input path
+    (`ohl_game::logic::find_usable_within`, not forced state) end to end —
+    the same real-proximity path item 25 fixed for `func_door_rotating`
+    (this fixture's own `func_rot_button` happens to carry an `origin`
+    keyvalue of `0 0 0`, which item 25's now-unconditional `BrushCenter`
+    rule handles identically to a nonzero one; the two are equivalent since
+    that fix landed, not a workaround this package still needs).
+
+    **`TODO(black-box)`**: a bounded, aggregate-only probe (parsing each
+    `combat-smoke`-visited map's entities lump directly, checking only
+    whether a `func_rot_button`/`momentary_rot_button`/`func_pendulum`
+    origin sits within a fixed radius of an `info_player_start`, printing
+    booleans and counts only — no name/path/coordinate ever left the local
+    boundary; the probe script itself was not committed) found that
+    `c1a4` — already visited by the existing "walk from spawn in Blast
+    Pit" scenario — has both a `func_rot_button` and a `func_pendulum`
+    within 256 units of a spawn point; no `momentary_rot_button` was found
+    within that radius of a spawn on any visited map. No combat-smoke
+    scenario was added for any of the three this milestone regardless:
+    item 25's own `use_rotating_door_anomalous_materials.txt` scenario
+    proves a tuned scripted-input file *can* walk up to and `use` a
+    specific rotating entity on a real map (superseding item 24's own
+    earlier, more pessimistic finding that a blind turn-then-walk script
+    could not reliably do this), so this is a budget call, not a
+    technical limit: authoring and validating an equivalent scripted-input
+    file for `c1a4`'s own corridors was not done within this package's own
+    budget. See `docs/MILESTONES.md`'s M9.7 entry.
