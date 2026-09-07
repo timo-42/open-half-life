@@ -3290,6 +3290,17 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
     rotate-then-translate order for a translating mover's yaw), never a
     pivot to subtract and re-add.
 
+    PR #107 review follow-up: `Rotator::spinning`/`angle_deg` now round trip
+    through `SECTION_MOVER_STATE` (28) — `crate::save_state::
+    RotatorSnapshot`, alongside the existing track-train/camera/
+    `monstermaker`/`trigger_auto` entries in that section — so a
+    `func_rotating` toggled on by the player keeps spinning, at its
+    accumulated angle, across a save/load or level transition rather than
+    reverting to its spawnflag default. `Door::rotation_axis`'s own
+    open/close state already round-tripped through the pre-existing
+    `Door` state machine fields that section carries; only the new
+    `Rotator` component itself had lacked an entry.
+
     **`TODO(black-box)`**: without "One Way", TWHL documents
     `func_door_rotating` as opening away from whichever side activated it;
     this project does not compute an activator-relative direction at

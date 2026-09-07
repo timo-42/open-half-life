@@ -1145,14 +1145,28 @@ impl CollisionModel {
         }
         if rotating {
             let part = pose.expect("rotating implies pose is Some");
+            let local_normal = trace.plane_normal;
+            let local_dist = trace.plane_dist;
             trace.end_pos = part.world_point(trace.end_pos);
-            trace.plane_normal = part.normal_to_world(trace.plane_normal);
+            trace.plane_normal = part.normal_to_world(local_normal);
             // Unlike a translation, a rotation does not move a plane's
             // distance from the origin by a value independent of where the
-            // hit landed, so it is recomputed directly from the (already
-            // rotated) normal and the (already rotated) hit position rather
-            // than adjusted incrementally.
-            trace.plane_dist = trace.plane_normal.dot(trace.end_pos);
+            // hit landed, so it cannot be adjusted incrementally the way
+            // the translation-only branch below does. It also cannot be
+            // read back off `trace.end_pos`: that point is deliberately
+            // backed off the surface by `DIST_EPSILON` (and, on a
+            // start-solid hit, is not on the hit plane at all), so
+            // `plane_normal.dot(end_pos)` would be off by up to that
+            // epsilon or arbitrarily wrong. Instead this is the exact
+            // closed form for rotating a plane `n_local · x = local_dist`
+            // (in the compiled frame) about `pivot` and then translating
+            // by `origin`: for a world point `w`, `x = R⁻¹(w - pivot -
+            // origin) + pivot`, so `n_local · x = local_dist` becomes,
+            // using `n_world = R * n_local` (rotation is orthogonal, so
+            // `n_local · R⁻¹ = n_world ·`), `n_world · w = local_dist +
+            // n_world · (origin + pivot) - n_local · pivot`.
+            trace.plane_dist = local_dist + trace.plane_normal.dot(part.origin + part.pivot)
+                - local_normal.dot(part.pivot);
         } else {
             trace.end_pos += offset;
             // A plane's normal is unchanged by a translation; only its

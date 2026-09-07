@@ -4,8 +4,9 @@
 //!
 //! M7.13 adds `SECTION_MOVER_STATE` (28): a `func_tracktrain`'s mid-route
 //! position, an active `trigger_camera` sequence, a `scripted_sequence` mid
-//! possession and a `monstermaker`'s spawn counters, tested at the bottom
-//! of this file.
+//! possession, a `monstermaker`'s spawn counters, and (PR #107 review
+//! follow-up) a `func_rotating`'s spin state, tested at the bottom of this
+//! file.
 //!
 //! No bytes here come from any game installation; see `docs/CLEAN_ROOM.md`.
 
@@ -789,6 +790,94 @@ fn a_monstermakers_counters_survive_a_save_load_round_trip() {
         "monstercount=2 total, and one was already spent before the save: \
          only one more may ever spawn. A reset spawned_total would let two \
          more spawn instead of one"
+    );
+}
+
+/// A `func_rotating`'s spin state (`spinning`/`angle_deg`) round trips
+/// through a save/load, exactly like `func_tracktrain`/`trigger_camera`/
+/// `monstermaker` state above: without `RotatorSnapshot`
+/// (`crate::save_state`), a spinning `func_rotating` would revert to its
+/// spawnflag default (spinning per "Start On", `angle_deg: 0.0`) on load.
+/// "Start On" is set so `spinning` alone cannot distinguish a correct
+/// restore from a reset to the spawn default — only `angle_deg` can, so
+/// this saves *mid-spin*, after a nonzero angle has already accumulated,
+/// and checks that the reloaded angle is the accumulated one, not zero.
+#[test]
+fn a_spinning_rotator_round_trips_its_spin_state_and_continues() {
+    let entities = script_room_entities(
+        [-192.0, -192.0, 36.0],
+        &entity_block(
+            "func_rotating",
+            [96.0, -96.0, 36.0],
+            0.0,
+            &[
+                ("targetname", "fan1"),
+                ("speed", "180"),
+                ("spawnflags", "1"), // "Start On": see docs/FORMAT_SOURCES.md, "Entity keyvalues and map logic".
+            ],
+        ),
+    );
+
+    let mut game = script_game(&entities);
+    let entity = entity_of_classname(&game, "func_rotating").expect("the fan spawned");
+    assert!(
+        game.registry()
+            .world
+            .get::<&ohl_game::registry::Rotator>(entity)
+            .expect("the fan carries a Rotator")
+            .spinning,
+        "'Start On' must have it spinning already"
+    );
+
+    // 180 degrees/second for half a second is 90 degrees.
+    script_tick(&mut game, 50);
+
+    let (spinning_before_save, angle_before_save) = {
+        let rotator = game
+            .registry()
+            .world
+            .get::<&ohl_game::registry::Rotator>(entity)
+            .expect("the fan carries a Rotator");
+        (rotator.spinning, rotator.angle_deg)
+    };
+    assert!(spinning_before_save);
+    assert!(
+        (angle_before_save - 90.0).abs() < 1e-2,
+        "angle was {angle_before_save}"
+    );
+
+    let bytes = game.save_bytes(1_700_000_000).expect("the save is written");
+    let assets = script_game_assets(&entities);
+    let mut reloaded = Game::load_bytes(&assets, &bytes).expect("the save loads");
+    let reloaded_entity = entity_of_classname(&reloaded, "func_rotating").expect("the fan reloads");
+    {
+        let rotator = reloaded
+            .registry()
+            .world
+            .get::<&ohl_game::registry::Rotator>(reloaded_entity)
+            .expect("the reloaded fan still carries a Rotator");
+        assert!(rotator.spinning);
+        assert!(
+            (rotator.angle_deg - angle_before_save).abs() < 1e-6,
+            "angle_deg was {} but must round-trip the mid-spin value {angle_before_save}, \
+             not reset to the spawn default 0.0",
+            rotator.angle_deg
+        );
+    }
+
+    // Still spinning after the load: another half second accumulates
+    // another 90 degrees on top of the restored angle, not from zero.
+    script_tick(&mut reloaded, 50);
+    let angle_after = reloaded
+        .registry()
+        .world
+        .get::<&ohl_game::registry::Rotator>(reloaded_entity)
+        .expect("the fan is still there")
+        .angle_deg;
+    assert!(
+        (angle_after - 180.0).abs() < 1e-1,
+        "angle was {angle_after}, expected the restored 90 degrees plus \
+         another 90 accumulated post-load"
     );
 }
 

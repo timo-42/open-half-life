@@ -549,13 +549,16 @@ pub(crate) fn mover_rotation(registry: &ohl_game::Registry, entity: Entity) -> (
 /// simply the submodel's own local origin (`Vec3::ZERO`, no separate pivot
 /// parameter needed), and `origin` is added *after* rotating, exactly the
 /// same "rotate, then translate" order [`placement`] already uses for a
-/// yaw-only rotation. Returns the identity matrix for a zero axis or a
-/// zero angle, so composing this unconditionally would be a no-op — though
-/// every caller still branches on [`mover_rotation`] first rather than
-/// relying on that, since a rotating mover never also carries a
-/// translating [`brush_offset`] to add in.
+/// yaw-only rotation. A zero angle still needs the `origin` translation —
+/// `Quat::from_axis_angle` with a zero angle is already the identity
+/// quaternion, so the composed matrix is a pure translation by `origin`,
+/// exactly matching a closed door's or idle rotator's resting pose — so
+/// only a zero `axis` (whose `normalize()` would be NaN) short-circuits to
+/// the identity matrix; every caller still branches on [`mover_rotation`]
+/// first rather than relying on that, since a rotating mover never also
+/// carries a translating [`brush_offset`] to add in.
 pub(crate) fn rotated_placement(origin: Vec3, axis: Vec3, angle_degrees: f32) -> math::Mat4 {
-    if axis == Vec3::ZERO || angle_degrees == 0.0 {
+    if axis == Vec3::ZERO {
         return math::identity();
     }
     let rotation = Quat::from_axis_angle(axis.normalize(), angle_degrees.to_radians());
@@ -614,4 +617,57 @@ fn render_props(props: ohl_game::keyvalues::RenderProps) -> RenderProps {
     // `RenderProps::from_entity` applies that rule (and the unknown-mode
     // fallback) for both `Normal` and `Solid`.
     RenderProps::from_entity(props.mode, props.amt, props.color, 0)
+}
+
+#[cfg(test)]
+// Every comparison below is against an exact analytic value (a plain
+// translation composed with an identity or 90-degree rotation), matching
+// `save_sections.rs`'s own precedent for exact-comparison tests.
+#[allow(clippy::float_cmp)]
+mod tests {
+    use super::rotated_placement;
+    use glam::Vec3;
+
+    /// A closed rotating door or an idle `func_rotating` (angle exactly
+    /// zero, the spawn state for every one of them that does not start
+    /// open/spinning) must still place its submodel at `origin`: the
+    /// blocking bug this test pins down returned the identity matrix in
+    /// that case, silently discarding the translation and drawing the
+    /// brush at world `(0, 0, 0)` instead (see the PR #107 review at
+    /// `rotated_placement`, `crates/ohl-engine/src/render.rs`).
+    #[test]
+    fn rotated_placement_keeps_the_origin_translation_at_zero_angle() {
+        let origin = Vec3::new(100.0, 200.0, 300.0);
+        let matrix = rotated_placement(origin, Vec3::Z, 0.0);
+        let translation = [matrix[12], matrix[13], matrix[14]];
+        assert_eq!(translation, [100.0, 200.0, 300.0]);
+        // At angle zero the rotation itself must also be the identity, so
+        // a point at the local origin maps straight to `origin`.
+        assert_eq!(matrix[0], 1.0);
+        assert_eq!(matrix[5], 1.0);
+        assert_eq!(matrix[10], 1.0);
+    }
+
+    /// A quarter turn keeps the same `origin` translation and rotates the
+    /// basis vectors perpendicular to the axis, so this is not simply
+    /// pinning the zero-angle case at the cost of the general one.
+    #[test]
+    fn rotated_placement_still_rotates_at_ninety_degrees() {
+        let origin = Vec3::new(100.0, 200.0, 300.0);
+        let matrix = rotated_placement(origin, Vec3::Z, 90.0);
+        let translation = [matrix[12], matrix[13], matrix[14]];
+        assert_eq!(translation, [100.0, 200.0, 300.0]);
+        // Rotating +X by 90 degrees about +Z lands on +Y.
+        assert!((matrix[0]).abs() < 1e-5);
+        assert!((matrix[1] - 1.0).abs() < 1e-5);
+    }
+
+    /// A zero axis (no rotation configured at all) still has to fall back
+    /// to the identity matrix rather than attempt `Vec3::ZERO.normalize()`,
+    /// which is NaN.
+    #[test]
+    fn rotated_placement_zero_axis_is_identity() {
+        let matrix = rotated_placement(Vec3::new(5.0, 6.0, 7.0), Vec3::ZERO, 45.0);
+        assert_eq!(matrix, glam::Mat4::IDENTITY.to_cols_array());
+    }
 }
