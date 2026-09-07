@@ -3218,3 +3218,65 @@ where they overlap):
   shows the camera riding well down the tunnel, past the rail bed, a
   curving wall and a strip ceiling light, matching round 8's own
   `--script`-based tram-ride description at the same simulated time.
+
+
+- **M9.4 (rotating brush entities).** `func_door_rotating`/`func_rotating`
+  now actually rotate, in both collision and render, instead of sitting
+  frozen at their compiled orientation. `ohl_physics::hull::
+  CollisionModel::set_brush_pose` extends the brush-attachment mechanism
+  ("Collision hulls and player movement" in `docs/FORMAT_SOURCES.md`) with
+  an optional rotation about a caller-given pivot — a query is
+  inverse-rotated into the brush's compiled frame before the existing
+  hull-tree walk, and the hit position/normal are rotated back, with the
+  broad-phase AABB re-derived from the brush's rotated corners so it stays
+  conservative (a proptest caught and fixed a real bug in this path: the
+  test-only "widen the broad-phase bounds to infinity" helper produced NaN
+  once its `±INFINITY` corners were rotated, which made the broad phase
+  wrongly reject every segment instead of accepting all of them).
+  `ohl_game::registry::Door` gained `rotation_axis: Option<Vec3>` for
+  `func_door_rotating`, reusing `Door`'s existing timer/state machine with
+  `travel_distance` read as degrees instead of units; `func_rotating` is a
+  new `Rotator` component/state advanced every fixed step. `ohl-engine`
+  feeds the identical `(pivot, axis, angle_degrees)` triple into both the
+  submodel's draw transform (`render::rotated_placement`) and the attached
+  collision brush's pose (`level.rs`), so a rotating door blocks and pushes
+  the player at the pose it is drawn at. See `docs/FORMAT_SOURCES.md`
+  `TODO(black-box)` item 24 for what remains open (an activator-relative
+  opening direction, `func_pendulum`/`func_rot_button`/
+  `momentary_rot_button`, and a rotating mover carrying a standing rider).
+  A local classname survey of the campaign's own entity lumps (91 of 96
+  `ohl_campaign::CHAPTERS` map names loaded from the payload's `pak0.pak`,
+  including the Hazard Course; 5 map names were absent) found rotating
+  brush entities are common: 179 `func_door_rotating` across 43 maps
+  (including the Hazard Course's `t0a0`/`t0a0b`/`t0a0d`), 119
+  `func_rotating` across 34 maps, 48 `func_pendulum` across 10 maps, 31
+  `func_rot_button` across 18 maps, and 12 `momentary_rot_button` across 9
+  maps (including the Hazard Course's `t0a0a`). Inspecting a real
+  `func_door_rotating`'s own compiled submodel bounds against the payload
+  directly (its `BSPMODEL::mins/maxs` sit in a small box near local `(0, 0,
+  0)`, nowhere near the entity's `origin` keyvalue) caught a real bug this
+  milestone's first synthetic fixture had masked: `attach_brush_collision`/
+  `Level::sync_brush_collision`/`render::rotated_placement` originally
+  treated a rotating brush's compiled geometry as already sitting at its
+  world-space pivot (correct only for geometry authored with no origin
+  brush at all), when a real `func_door_rotating`'s geometry — like a
+  `func_train`'s (`render::track_train_transform`'s own doc comment) — is
+  compiled *relative to* its origin brush instead. Both are now fixed to
+  translate by the `origin` keyvalue and rotate about the submodel's own
+  local `(0, 0, 0)`, and `crates/ohl-engine/src/test_support.rs`'s
+  synthetic fixture was rebuilt to compile the same way (geometry relative
+  to a `ROTATING_DOOR_PIVOT` constant, matching the real convention) so it
+  cannot mask the same class of bug again. A scripted walk toward a real
+  `t0a0b` `func_door_rotating` reached within `use` range
+  of its pivot (about 25 units) but did not reach a point where opening it
+  demonstrably freed the player's path within this milestone's budget — a
+  blind turn-then-walk script cannot navigate a real map's corridors and
+  doorframes the way a player would; `docs/FORMAT_SOURCES.md`'s
+  `TODO(black-box)` item 25 also records a related, separately-scoped gap
+  this same probe surfaced (`ohl_game::registry::BrushCenter`, what a
+  proximity-based `use` press targets, is computed from a submodel's raw
+  compiled bounds with no `origin`-keyvalue offset added, so it is wrong
+  for any origin-brush entity, not only a rotating one). The engine-level
+  fixture tests (`crates/ohl-engine/tests/rotating_door.rs`) built on the
+  corrected convention do demonstrate a rotating door blocking while closed
+  and letting the player through once open.

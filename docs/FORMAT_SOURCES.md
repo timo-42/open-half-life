@@ -962,12 +962,23 @@ the real game before this project may claim movement parity.
   allows them to climb") are documented as non-solid, as is `func_water`
   (a swimmable volume) and every `trigger_*` volume, so
   `ohl_game::brush::is_solid_brush` excludes exactly those.
-  TODO(black-box): a brush entity's `angles` are not applied to its
+  ~~TODO(black-box): a brush entity's `angles` are not applied to its
   collision hulls (only its translation is); needs verification against the
-  real game. A mover *does* now carry a player standing on it; see "Riding
-  movers" under "Player systems" above for the mechanism, and the addition
-  below for the ground trace's `Trace::brush_index` and the push/block path
-  this needed.
+  real game.~~ **Partially addressed** (rotating-brush package, below,
+  under "Entity keyvalues and map logic"): `func_door_rotating`/
+  `func_rotating` now carry a live *rotation* about their origin-keyvalue
+  pivot into both collision (`CollisionModel::set_brush_pose`) and render.
+  This is distinct from a brush entity's static, spawn-time `angles`
+  keyvalue (still translation-only, unconsulted by any brush entity's
+  render or collision pose — TWHL's own `func_door`/`func_plat` pages
+  document that keyvalue purely as a movement direction, never a visual
+  orientation, so this gap was narrower than first recorded here): the
+  still-open question is only the *live rotation state* of the two
+  documented rotating classnames, not a general "rotate every brush
+  entity's static orientation" feature. A mover *does* now carry a player
+  standing on it; see "Riding movers" under "Player systems" above for the
+  mechanism, and the addition below for the ground trace's
+  `Trace::brush_index` and the push/block path this needed.
 - Mover riders (`Trace::brush_index`, `CollisionModel::brush_origin`,
   `ohl_physics::movement::push_from_mover`, `ohl-engine`'s
   `Level::brush_velocity`/`Level::movers_blocked`, and
@@ -3214,3 +3225,115 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
     each step, so a `func_water` mover (documented as sharing `func_door`'s
     move/trigger behaviour) is kept at its current origin the same way any
     other brush entity already is.
+
+24. **Rotating brush entities: `func_door_rotating`/`func_rotating`
+    (M9.4).** TWHL wiki `func_door_rotating` and `func_rotating`
+    (`https://twhl.info/wiki/page/func_door_rotating`,
+    `https://twhl.info/wiki/page/func_rotating`; consulted via
+    search-engine result summaries, the pages themselves returning HTTP 403
+    to automated fetches from this environment, the same caveat already
+    recorded above for other TWHL citations; reviewed 2026-09-07):
+    `func_door_rotating`'s `distance` ("Distance in degrees to rotate"),
+    `speed` (degrees/second), `wait`, `dmg`, `health`; its spawnflags
+    "Reverse Direction" (2), "One Way" (16), "X axis" (64), "Y axis" (128,
+    combinable with X, "neither set" defaulting to `Z` — the ordinary
+    swinging-door axis); "the door will always open away from the player"
+    when "One Way" is not set; and that the entity "requires an origin
+    brush ... which gives it the axis to rotate on". `func_rotating`'s
+    `speed` (degrees/second) and its own "Reverse Direction" (2), "X Axis"
+    (4), "Y Axis" (8) spawnflags (default axis again `Z`); its "Start On"
+    spawnflag bit (1) is this project's own reading of the standard
+    GoldSrc FGD convention that a rotator's first spawnflag checkbox is
+    always bit 1 (as every other entity's own first spawnflag already is
+    across this codebase), not itself independently found in a citable
+    TWHL passage.
+
+    Project behaviour: `ohl_game::registry::Door` gained
+    `rotation_axis: Option<Vec3>` — `Some` only for `func_door_rotating`,
+    a signed unit axis whose sign carries "Reverse Direction" XORed with a
+    negative `distance` keyvalue — reusing `Door`'s existing
+    `speed`/`wait`/`dmg`/`health`/`delay`/`state`/`timer` fields and the
+    unmodified `Simulation::activate`/`advance_doors` state machine
+    (`travel_distance` holds `distance`'s magnitude in *degrees* instead of
+    units; `lip`/`movedir` are left unused/zero, matching the "Lip: Not
+    used" keyvalue documentation). `func_rotating` is a new `Rotator`
+    component/state (`axis`, `speed`, `spinning`, `angle_deg`), toggled by
+    `use`/trigger through the same `Simulation::activate` dispatch every
+    other mover already uses, and advanced every fixed step by
+    `Simulation::advance_rotators`.
+    `ohl_physics::hull::CollisionModel::set_brush_pose` extends the
+    existing brush-attachment mechanism (`attach_brush`/`set_brush_origin`,
+    "Collision hulls and player movement" above) with an optional rotation
+    about a caller-given pivot: a query point is inverse-rotated into the
+    brush's compiled frame before the existing hull-tree walk, and a hit
+    position/normal is rotated back afterwards; the broad-phase AABB is
+    re-derived from the brush's rotated corners so it stays conservative.
+    `ohl-engine`'s `render::mover_rotation` (a shared read of `Door::
+    rotation_axis`/`Rotator`) feeds the identical `(origin, axis,
+    angle_degrees)` triple into both `render::rotated_placement` (the
+    submodel's draw transform) and `level.rs`'s
+    `attach_brush_collision`/`Level::sync_brush_collision` (the attached
+    collision brush's pose), so a rotating door blocks/pushes the player
+    at the pose it is drawn at — mirroring the existing "collide where it
+    looks like it is" invariant `brush_offset` already established for a
+    translating mover. The pivot passed to `set_brush_pose`/
+    `rotated_placement` is always the submodel's own local `(0, 0, 0)`,
+    *not* the entity's `origin` keyvalue: inspecting a real
+    `func_door_rotating`'s compiled `BSPMODEL::mins/maxs` directly against
+    the payload (see `docs/MILESTONES.md`'s M9.4 entry) confirmed its
+    geometry is compiled relative to its origin brush, the same convention
+    already recorded above for `func_train` (`render::
+    track_train_transform`'s doc comment: "the compiler writes that origin
+    brush's position into the entity's `origin` keyvalue and stores the
+    submodel's geometry relative to it") — so `origin` is the *translation*
+    (added after rotating, exactly like `placement`'s existing
+    rotate-then-translate order for a translating mover's yaw), never a
+    pivot to subtract and re-add.
+
+    **`TODO(black-box)`**: without "One Way", TWHL documents
+    `func_door_rotating` as opening away from whichever side activated it;
+    this project does not compute an activator-relative direction at
+    all — every rotating door here always swings the same fixed,
+    spawnflag/keyvalue-determined way regardless of which side triggered
+    it, until the real game's exact rule (which side of the pivot plane
+    counts as "away", and what happens for an activator exactly on the
+    hinge line) can be observed and cited. `func_rotating`'s "Start On"
+    spawnflag bit value (1) is the FGD-convention reading above, not an
+    independently found citation. `func_pendulum`, `func_rot_button`, and
+    `momentary_rot_button` are not implemented at all (only surveyed for
+    this milestone; see `docs/MILESTONES.md`). Neither rotating classname's
+    `dmg`/blocking behaviour is wired into `Level::movers_blocked`, the
+    same pre-existing gap item 9 above (under "Mover riders") already
+    records for a translating mover's `dmg`. A rotating mover never sets
+    `Level::brush_velocity` to anything but zero, so it cannot carry a
+    standing rider the way a translating `func_train`/`func_plat` already
+    can (see "Riding movers" under "Player systems"); no public source
+    describes that mechanic for a *rotating* platform distinctly from a
+    translating one, so this is left unimplemented rather than guessed at.
+
+25. **`ohl_game::registry::BrushCenter` is wrong for any origin-brush
+    entity (discovered verifying item 24 against the real payload).**
+    `Registry::build` computes `BrushCenter` as the midpoint of a
+    submodel's raw compiled `mins`/`maxs` with no `origin`-keyvalue offset
+    added — correct for an ordinary brush entity (compiled in absolute
+    world space, no origin brush), but wrong for one that has an origin
+    brush (`func_train`/`func_tracktrain`, and now
+    `func_door_rotating`/`func_rotating`; see item 24's "Project
+    behaviour"), whose compiled bounds sit near the submodel's own local
+    `(0, 0, 0)` instead. `ohl_game::logic::find_usable_within` — what a
+    proximity-based `use` press targets — "prefers a brush entity's
+    precomputed bounding-box centre ... over its `Transform::origin`", so
+    for any origin-brush entity it now searches near the wrong point
+    entirely, rather than merely being imprecise. **`TODO(black-box)`**:
+    not fixed by this milestone (out of the rotating-brush package's
+    scope; `crates/ohl-engine/tests/rotating_door.rs`'s own doc comment
+    records the same gap and works around it by forcing state directly
+    instead of relying on proximity). The correct fix is presumably to add
+    the entity's `origin` keyvalue to `BrushCenter` for any submodel whose
+    compiled bounds do not already contain world-space coordinates near
+    `Transform::origin`, or (simpler, if always safe) unconditionally —
+    but that needs verifying against a real map's own translating
+    `func_door`/`func_plat` first, since those are never known to carry an
+    origin brush in practice and this project has not confirmed their
+    `BrushCenter` is not *also* silently already-correct only by
+    coincidence.

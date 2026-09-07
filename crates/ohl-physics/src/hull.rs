@@ -450,16 +450,20 @@ impl BrushPart {
     /// brush's hull tree at all (the Minkowski sum of the hull box with the
     /// brush's own bounds).
     ///
-    /// A rotated brush's own box is first re-derived as the axis-aligned
-    /// box enclosing its (rotated) corners — necessarily larger than the
-    /// unrotated box unless the rotation is axis-aligned with it — so the
-    /// broad phase stays conservative (never rules out a hit) exactly as
-    /// the translation-only case already was.
+    /// A rotated brush's own box is expanded by `hull` *before* rotating —
+    /// matching the order the hull's own clip-tree planes were already
+    /// expanded in at compile time, in the submodel's local frame, before
+    /// this crate's rotation is ever applied to them — and only then
+    /// re-derived as the axis-aligned box enclosing its (rotated) corners.
+    /// Rotating first and adding an axis-aligned world-space hull box
+    /// afterwards, tried initially, is *not* equivalent: a proptest with a
+    /// non-`Z` rotation axis and the (uniformly ±32) large hull caught it
+    /// under-covering a point the unrestricted hull tree still reported
+    /// solid, which the broad phase must never do.
     fn broad_bounds(&self, hull: Hull) -> (Vec3, Vec3) {
         let (hull_mins, hull_maxs) = hull.bounds();
         if self.has_rotation() {
-            let (mins, maxs) = self.rotated_world_bounds();
-            (mins + hull_mins, maxs + hull_maxs)
+            self.rotated_world_bounds(self.mins + hull_mins, self.maxs + hull_maxs)
         } else {
             (
                 self.origin + self.mins + hull_mins,
@@ -468,29 +472,29 @@ impl BrushPart {
         }
     }
 
-    /// The axis-aligned box enclosing every corner of the compiled
-    /// `(mins, maxs)` box after this brush's current rotation and
+    /// The axis-aligned box enclosing every corner of the local box
+    /// `(local_mins, local_maxs)` after this brush's current rotation and
     /// translation are applied.
-    fn rotated_world_bounds(&self) -> (Vec3, Vec3) {
-        if !self.mins.is_finite() || !self.maxs.is_finite() {
-            // `CollisionModel::widen_brush_bounds_for_test` sets these to
-            // +/- infinity so a test can force the broad phase to always
-            // pass; rotating an infinite corner produces NaN (infinity
-            // times a near-zero sine/cosine component), which would make
-            // every `boxes_overlap` comparison false — the opposite of
-            // "always overlap". Skip the rotation and hand the already
-            // all-covering box straight through.
-            return (self.mins, self.maxs);
+    fn rotated_world_bounds(&self, local_mins: Vec3, local_maxs: Vec3) -> (Vec3, Vec3) {
+        if !local_mins.is_finite() || !local_maxs.is_finite() {
+            // `CollisionModel::widen_brush_bounds_for_test` sets `mins`/
+            // `maxs` to +/- infinity so a test can force the broad phase
+            // to always pass; rotating an infinite corner produces NaN
+            // (infinity times a near-zero sine/cosine component), which
+            // would make every `boxes_overlap` comparison false — the
+            // opposite of "always overlap". Skip the rotation and hand the
+            // already all-covering box straight through.
+            return (local_mins, local_maxs);
         }
         let corners = [
-            Vec3::new(self.mins.x, self.mins.y, self.mins.z),
-            Vec3::new(self.mins.x, self.mins.y, self.maxs.z),
-            Vec3::new(self.mins.x, self.maxs.y, self.mins.z),
-            Vec3::new(self.mins.x, self.maxs.y, self.maxs.z),
-            Vec3::new(self.maxs.x, self.mins.y, self.mins.z),
-            Vec3::new(self.maxs.x, self.mins.y, self.maxs.z),
-            Vec3::new(self.maxs.x, self.maxs.y, self.mins.z),
-            Vec3::new(self.maxs.x, self.maxs.y, self.maxs.z),
+            Vec3::new(local_mins.x, local_mins.y, local_mins.z),
+            Vec3::new(local_mins.x, local_mins.y, local_maxs.z),
+            Vec3::new(local_mins.x, local_maxs.y, local_mins.z),
+            Vec3::new(local_mins.x, local_maxs.y, local_maxs.z),
+            Vec3::new(local_maxs.x, local_mins.y, local_mins.z),
+            Vec3::new(local_maxs.x, local_mins.y, local_maxs.z),
+            Vec3::new(local_maxs.x, local_maxs.y, local_mins.z),
+            Vec3::new(local_maxs.x, local_maxs.y, local_maxs.z),
         ];
         let mut out_min = Vec3::splat(f32::INFINITY);
         let mut out_max = Vec3::splat(f32::NEG_INFINITY);
