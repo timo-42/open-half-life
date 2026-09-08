@@ -844,6 +844,14 @@ impl Systems {
         self.lifecycle(level, dt); // 10
         self.pickups(level, input, dt); // 11
         self.triggers_and_movers(level, camera, input, dt, events); // 12
+        // 12b — pushing a `func_pushable`, and breaking a `func_breakable`
+        // the player is standing on ("Pressure"): both ask where the
+        // player ended up *this* step, so both run after the move (phase
+        // 2) and after phase 12's own touch tests, and before the next
+        // step's `Level::sync_brush_collision` moves the affected brush
+        // hulls to match (`docs/FORMAT_SOURCES.md`, item 32).
+        crate::pushables::push_pushables(level, controller, input.controller_input(), dt); // 12b
+        Self::break_pressured_breakables(level, controller); // 12b
         crate::camera::apply_override(level, camera); // 12.5
         self.presentation(level, dt); // 13
         self.substep_counter = self.substep_counter.wrapping_add(1);
@@ -1266,6 +1274,45 @@ impl Systems {
             events,
         );
         events.extend(level.simulation.tick(&mut level.registry, dt));
+    }
+
+    /// Phase 12b — the documented "Pressure (4)" `func_breakable` flag
+    /// ("Brush will break when pressured (e.g. player walking on it)").
+    ///
+    /// This project reads "pressured" as *the player is standing on it*,
+    /// which the player move already answers exactly:
+    /// `ohl_physics::PlayerState::ground_brush` names the attached brush
+    /// under the player's feet, and `Level::brush_collision` maps that back
+    /// to its entity. **`TODO(black-box)`** (`docs/FORMAT_SOURCES.md`, item
+    /// 30): the cited page also says this flag makes "Delay before fire"
+    /// act as a delay before the entity *breaks*; this project breaks
+    /// immediately and applies `delay` only to the `target` fire, as it
+    /// does for every other break.
+    fn break_pressured_breakables(level: &mut Level, controller: &PlayerController) {
+        let Some(brush) = controller.state.ground_brush else {
+            return;
+        };
+        let Some(entity) = level
+            .brush_collision
+            .iter()
+            .find(|(_, attached)| *attached == brush)
+            .map(|(entity, _)| *entity)
+        else {
+            return;
+        };
+        let pressured = level
+            .registry
+            .world
+            .get::<&ohl_game::registry::Breakable>(entity)
+            .is_ok_and(|breakable| breakable.break_on_pressure && !breakable.broken);
+        if pressured {
+            let Level {
+                registry,
+                simulation,
+                ..
+            } = level;
+            simulation.break_entity(registry, entity);
+        }
     }
 
     /// Phase 13 — presentation: the HUD, sound cues and view-model actions

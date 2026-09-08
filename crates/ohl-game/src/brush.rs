@@ -10,7 +10,7 @@ use glam::Vec3;
 use hecs::Entity;
 
 use crate::keyvalues::RenderProps;
-use crate::registry::{BrushModel, ClassName, Liquid, Registry, Transform, Water};
+use crate::registry::{Breakable, BrushModel, ClassName, Liquid, Registry, Transform, Water};
 
 /// One brush-model entity's placement: which submodel to draw, and where.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -77,6 +77,19 @@ pub fn is_solid_brush(classname: &str) -> bool {
     !classname.starts_with("trigger_") && !NEVER_SOLID.contains(&classname)
 }
 
+/// Whether this entity is a `func_breakable`/`func_pushable` that has
+/// already broken, and so must be left out of both the drawn list
+/// ([`model_instances`]) and the solid list
+/// ([`solid_model_instances`]) — a broken brush is gone from the world
+/// entirely (`docs/FORMAT_SOURCES.md`, item 32). An entity with no
+/// [`Breakable`] is never broken.
+fn is_broken(registry: &Registry, entity: Entity) -> bool {
+    registry
+        .world
+        .get::<&Breakable>(entity)
+        .is_ok_and(|breakable| breakable.broken)
+}
+
 /// Collects one [`ModelInstance`] per brush entity that is solid to the
 /// player (see [`is_solid_brush`]), in registry spawn order.
 ///
@@ -92,7 +105,7 @@ pub fn solid_model_instances(registry: &Registry) -> Vec<ModelInstance> {
             .world
             .query::<(Entity, &BrushModel, &Transform, &RenderProps, &ClassName)>()
     {
-        if !is_solid_brush(&classname.0) {
+        if !is_solid_brush(&classname.0) || is_broken(registry, entity) {
             continue;
         }
         out.push(ModelInstance {
@@ -173,7 +186,7 @@ pub fn model_instances(registry: &Registry) -> Vec<ModelInstance> {
             .world
             .query::<(Entity, &BrushModel, &Transform, &RenderProps, &ClassName)>()
     {
-        if is_never_rendered(&classname.0) {
+        if is_never_rendered(&classname.0) || is_broken(registry, entity) {
             continue;
         }
         out.push(ModelInstance {

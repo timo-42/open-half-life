@@ -639,7 +639,20 @@ impl Level {
             return;
         };
         brush_collision.retain(|(entity, brush)| {
-            let Ok(transform) = registry.world.get::<&Transform>(*entity) else {
+            // A despawned entity (a `killtarget`ed `func_wall`) *and* a
+            // broken `func_breakable`/`func_pushable` are both gone from
+            // the world as far as collision is concerned: a broken brush
+            // keeps its entity (its state has to persist, see save tag 33)
+            // but must stop blocking the player, exactly as
+            // `ohl_game::brush::solid_model_instances` already stops
+            // offering it for attachment (`docs/FORMAT_SOURCES.md`, item
+            // 30).
+            let broken = registry
+                .world
+                .get::<&ohl_game::registry::Breakable>(*entity)
+                .is_ok_and(|breakable| breakable.broken);
+            let transform = registry.world.get::<&Transform>(*entity);
+            let (Ok(transform), false) = (transform, broken) else {
                 model.detach_brush(*brush);
                 brush_velocity.remove(brush);
                 brush_rotation.remove(brush);

@@ -71,8 +71,8 @@ use glam::Vec3;
 use ohl_combat::{EntityId as CombatEntityId, ProjectileKind};
 use ohl_game::hecs::Entity;
 use ohl_game::registry::{
-    AutoTrigger, ClassName, MakerActivation, MomentaryDoor, MomentaryRotButton, MoverState,
-    Pendulum, RotButton, Rotator,
+    AutoTrigger, Breakable, ClassName, MakerActivation, MomentaryDoor, MomentaryRotButton,
+    MoverState, Pendulum, Pushable, RotButton, Rotator,
 };
 use ohl_game::{TrackTrainState, TriggerCameraState};
 use serde::{Deserialize, Serialize};
@@ -1167,6 +1167,80 @@ pub(crate) fn restore_momentary_doors(
         let Some(snapshot) = snapshot else { continue };
         if let Ok(mut component) = level.registry.world.get::<&mut MomentaryDoor>(*entity) {
             component.fraction = snapshot.fraction;
+        }
+    }
+}
+
+// --- `SECTION_BREAKABLE_STATE` (33) ---------------------------------------
+
+/// A `func_breakable`/`func_pushable`'s own runtime state: remaining hit
+/// points, whether it has broken, and how far a `func_pushable` has been
+/// pushed. Everything else about either entity (`material`, the spawnflag-
+/// derived break rules, `friction`) is fixed at spawn and rebuilt
+/// identically by `attach_level` every load, so only these three need to
+/// round-trip — the same reasoning already recorded for
+/// [`MomentaryDoorSnapshot`]. Part of `SECTION_BREAKABLE_STATE` (tag 33;
+/// see `crate::save::SECTION_BREAKABLE_STATE` for why it is a new tag).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct BreakableSnapshot {
+    /// `ohl_game::registry::Breakable::health`.
+    pub health: f32,
+    /// `ohl_game::registry::Breakable::broken`.
+    pub broken: bool,
+    /// `ohl_game::registry::Pushable::offset`, `[0.0; 3]` for an entity
+    /// with no `Pushable` (an ordinary `func_breakable` never moves).
+    pub push_offset: [f32; 3],
+}
+
+/// The most entities one `SECTION_BREAKABLE_STATE` section records,
+/// matching [`MAX_SNAPSHOT_ENTITIES`] — the same per-registry-slot cap
+/// every other index-keyed section already uses.
+pub const MAX_SNAPSHOT_BREAKABLES: usize = MAX_SNAPSHOT_ENTITIES;
+
+/// `SECTION_BREAKABLE_STATE` (33)'s whole payload: one optional
+/// [`BreakableSnapshot`] per `Registry::entities` slot, in spawn order.
+/// `None` for an entity with no [`Breakable`].
+#[must_use]
+pub(crate) fn snapshot_breakables(level: &Level) -> Vec<Option<BreakableSnapshot>> {
+    level
+        .registry
+        .entities
+        .iter()
+        .take(MAX_SNAPSHOT_BREAKABLES)
+        .map(|entity| {
+            level
+                .registry
+                .world
+                .get::<&Breakable>(*entity)
+                .ok()
+                .map(|breakable| BreakableSnapshot {
+                    health: breakable.health,
+                    broken: breakable.broken,
+                    push_offset: level
+                        .registry
+                        .world
+                        .get::<&Pushable>(*entity)
+                        .map_or([0.0; 3], |pushable| pushable.offset.to_array()),
+                })
+        })
+        .collect()
+}
+
+/// Restores [`snapshot_breakables`], zipped against
+/// `level.registry.entities` in spawn order. A restored *broken* brush stays
+/// broken: the next `Level::sync_brush_collision` detaches its hull again,
+/// and `ohl_game::brush`'s instance lists leave it out of both the drawn and
+/// the solid set, exactly as they did before the save.
+pub(crate) fn restore_breakables(level: &mut Level, snapshots: &[Option<BreakableSnapshot>]) {
+    let entities = level.registry.entities.clone();
+    for (entity, snapshot) in entities.iter().zip(snapshots) {
+        let Some(snapshot) = snapshot else { continue };
+        if let Ok(mut breakable) = level.registry.world.get::<&mut Breakable>(*entity) {
+            breakable.health = snapshot.health;
+            breakable.broken = snapshot.broken;
+        }
+        if let Ok(mut pushable) = level.registry.world.get::<&mut Pushable>(*entity) {
+            pushable.offset = Vec3::from_array(snapshot.push_offset);
         }
     }
 }

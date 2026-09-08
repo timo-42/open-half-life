@@ -49,7 +49,7 @@
 use glam::Vec3;
 use ohl_engine::save::{EngineHeader, ViewState};
 use ohl_engine::save_state::{
-    MomentaryDoorSnapshot, MonsterMakerSnapshot, MoverSnapshot, RotatorSnapshot,
+    BreakableSnapshot, MomentaryDoorSnapshot, MonsterMakerSnapshot, MoverSnapshot, RotatorSnapshot,
     ScriptRunnerSnapshot, TrackTrainSnapshot, TriggerCameraSnapshot,
 };
 use ohl_engine::test_support::{
@@ -359,6 +359,19 @@ fn frozen_mover_state() -> Vec<Option<MoverSnapshot>> {
     ]
 }
 
+/// `SECTION_BREAKABLE_STATE` (33, M9.10) at the shape this build writes: the
+/// exact bytes [`frozen_breakable_state`]'s value encodes to. **New golden,
+/// not a revision of any tag above**: tag 33 did not exist before this
+/// package, so there is no earlier shape to protect — it is pinned from the
+/// moment it ships, exactly as item 29 said a future tag should be
+/// (`docs/FORMAT_SOURCES.md` item 32).
+const GOLDEN_TAG_33: &[u8] = &[
+    0x04, 0x00, 0x01, 0x00, 0x00, 0x48, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x20, 0x42, 0x00, 0x00, 0x00, 0x80, 0x42,
+    0x00, 0x00, 0x00, 0xc2, 0x00, 0x00, 0x00, 0x00,
+];
+
 /// The value [`GOLDEN_TAG_31`] holds: an empty slot, a partway-open door,
 /// and a fully-closed one — both arms of the `Option` and both ends of the
 /// `0.0..=1.0` fraction range on the wire.
@@ -448,6 +461,42 @@ fn tag_28_mover_state_keeps_its_frozen_wire_shape() {
 
     let decoded: Vec<Option<MoverSnapshot>> =
         postcard::from_bytes(GOLDEN_TAG_28).expect("an older save's section 28 still decodes");
+    assert_eq!(decoded, value);
+}
+
+/// The value [`GOLDEN_TAG_33`] holds: an empty slot, an intact
+/// `func_breakable` at partial health with no push offset, a broken one, and
+/// a pushed `func_pushable` — both arms of the `Option`, both values of
+/// `broken`, and a non-zero push offset, all on the wire.
+fn frozen_breakable_state() -> Vec<Option<BreakableSnapshot>> {
+    vec![
+        None,
+        Some(BreakableSnapshot {
+            health: 12.5,
+            broken: false,
+            push_offset: [0.0; 3],
+        }),
+        Some(BreakableSnapshot {
+            health: 0.0,
+            broken: true,
+            push_offset: [0.0; 3],
+        }),
+        Some(BreakableSnapshot {
+            health: 40.0,
+            broken: false,
+            push_offset: [64.0, -32.0, 0.0],
+        }),
+    ]
+}
+
+#[test]
+fn tag_33_breakable_state_keeps_its_frozen_wire_shape() {
+    let value = frozen_breakable_state();
+    let encoded = postcard::to_allocvec(&value).expect("the section encodes");
+    assert_golden(&encoded, GOLDEN_TAG_33, 33);
+
+    let decoded: Vec<Option<BreakableSnapshot>> =
+        postcard::from_bytes(GOLDEN_TAG_33).expect("section 33 decodes");
     assert_eq!(decoded, value);
 }
 

@@ -20,11 +20,12 @@
 
 use ohl_combat::{ProjectileKind, WeaponId, hud_slot};
 use ohl_engine::test_support::{
-    AI_MAP, MOMENTARY_DOOR_MAP, MOMENTARY_DOOR_NAME, ROT_BUTTON_MAP, ROT_BUTTON_NAME,
-    ROTATING_DOOR_MAP, SCRIPT_MAP, actor_origin, ai_room_bsp, entity_block, entity_of_classname,
-    momentary_door_bsp, momentary_door_entities, monster_entities, queue_monster_damage,
-    rot_button_bsp, rotating_door_bsp, rotating_door_entities, script_game, script_room_bsp,
-    script_room_entities,
+    AI_MAP, BREAKABLE_MAP, BREAKABLE_OBSTACLE_MAXS, MOMENTARY_DOOR_MAP, MOMENTARY_DOOR_NAME,
+    OBSTACLE_NAME, ROT_BUTTON_MAP, ROT_BUTTON_NAME, ROTATING_DOOR_MAP, SCRIPT_MAP, actor_origin,
+    ai_room_bsp, breakable_corridor_entities, entity_block, entity_of_classname,
+    momentary_door_bsp, momentary_door_entities, monster_entities, obstacle_corridor_bsp,
+    queue_monster_damage, rot_button_bsp, rotating_door_bsp, rotating_door_entities, script_game,
+    script_room_bsp, script_room_entities,
 };
 use ohl_engine::{AssetSource, EngineError, Game, GameEvent, Input, MemoryAssets, TICK_SECONDS};
 use ohl_formats::test_support::build_minimal_mdl10;
@@ -1607,6 +1608,147 @@ fn a_save_from_before_section_31_existed_still_loads() {
         0.0,
         "a pre-tag-31 save must leave the momentary_door at its spawn-time resting fraction"
     );
+}
+
+/// A `func_breakable` that has taken damage but not broken round-trips its
+/// remaining hit points, and one that has broken stays broken — the
+/// discriminating case `SECTION_BREAKABLE_STATE` (33, M9.10,
+/// `docs/FORMAT_SOURCES.md` item 32) exists for: a fresh `attach_level`
+/// spawns every breakable back at its authored `health`, unbroken, so both
+/// halves fail unless tag 33's own restore call actually runs. Every hit
+/// here is a real shot through the `Game` loop, never a forced component.
+#[test]
+fn a_damaged_and_a_broken_breakable_both_round_trip() {
+    let assets = breakable_assets();
+    let mut game =
+        Game::load(&assets as &dyn AssetSource, BREAKABLE_MAP).expect("the fixture loads");
+    arm_with_the_spawn_point_weapon(&mut game);
+
+    // One published 40-damage `.357` shot against the fixture's 100 hit
+    // points: damaged, not broken.
+    game.tick(
+        TICK_SECONDS,
+        &Input {
+            attack: true,
+            ..Input::default()
+        },
+    );
+    let damaged = breakable_of(&game);
+    assert!(
+        !damaged.broken && damaged.health < BREAKABLE_TOUGH_HEALTH && damaged.health > 0.0,
+        "one shot left the breakable at {damaged:?}"
+    );
+
+    let bytes = game.save_bytes(1_700_000_000).expect("the save is written");
+    let reloaded = Game::load_bytes(&assets, &bytes).expect("the save loads");
+    let restored = breakable_of(&reloaded);
+    assert!(
+        !restored.broken && (restored.health - damaged.health).abs() < 1e-6,
+        "a damaged breakable came back as {restored:?}, not at {}",
+        damaged.health
+    );
+
+    // Keep firing until the remaining hit points are gone.
+    for _ in 0..400 {
+        game.tick(
+            TICK_SECONDS,
+            &Input {
+                attack: true,
+                ..Input::default()
+            },
+        );
+    }
+    assert!(breakable_of(&game).broken, "sustained fire never broke it");
+    let bytes = game.save_bytes(1_700_000_000).expect("the save is written");
+    let reloaded = Game::load_bytes(&assets, &bytes).expect("the save loads");
+    assert!(
+        breakable_of(&reloaded).broken,
+        "a breakable broken before the save must still be broken after the load"
+    );
+}
+
+/// The exact regression `SECTION_BREAKABLE_STATE` (33) exists to rule out: a
+/// save written by a build before this section existed (tag 33 simply
+/// absent, reproduced by clearing `GameSave::breakables` before encoding,
+/// the same technique the tag-30 and tag-31 regressions above already use)
+/// must still load, with the breakable back at its authored `health` and
+/// unbroken.
+#[test]
+fn a_save_from_before_section_33_existed_still_loads() {
+    let assets = breakable_assets();
+    let game = Game::load(&assets as &dyn AssetSource, BREAKABLE_MAP).expect("the fixture loads");
+    let mut save = game.to_save(1_700_000_000);
+    save.breakables = None;
+    let bytes = save
+        .to_bytes()
+        .expect("a save missing SECTION_BREAKABLE_STATE still encodes");
+
+    let reloaded = Game::load_bytes(&assets, &bytes).expect("a pre-tag-33 save still loads");
+    let restored = breakable_of(&reloaded);
+    assert!(
+        !restored.broken && (restored.health - BREAKABLE_TOUGH_HEALTH).abs() < f32::EPSILON,
+        "a pre-tag-33 save must leave the breakable intact at its authored health, got {restored:?}"
+    );
+}
+
+/// The fixture breakable's `health`: more than one published 40-damage
+/// `.357` shot, so "damaged but not broken" is observable through real
+/// shots alone.
+const BREAKABLE_TOUGH_HEALTH: f32 = 100.0;
+
+/// Picks up the `weapon_357` the corridor fixture leaves on the spawn point
+/// and loads its clip, all through ordinary inputs.
+fn arm_with_the_spawn_point_weapon(game: &mut Game) {
+    game.tick(TICK_SECONDS, &Input::default());
+    game.tick(
+        TICK_SECONDS,
+        &Input {
+            select_slot: Some(2),
+            ..Input::default()
+        },
+    );
+    game.tick(
+        TICK_SECONDS,
+        &Input {
+            reload: true,
+            ..Input::default()
+        },
+    );
+    for _ in 0..400 {
+        game.tick(TICK_SECONDS, &Input::default());
+    }
+    assert!(
+        game.inventory().clip(WeaponId::Python) > 0,
+        "reload must have loaded the clip before the shots"
+    );
+}
+
+/// The `func_breakable` corridor fixture, as an asset source both a fresh
+/// load and a save/load round trip can read.
+fn breakable_assets() -> MemoryAssets {
+    let bytes = obstacle_corridor_bsp(
+        &breakable_corridor_entities(BREAKABLE_TOUGH_HEALTH, 0),
+        BREAKABLE_OBSTACLE_MAXS,
+        false,
+        false,
+    );
+    let mut assets = MemoryAssets::new();
+    assets.insert(&format!("maps/{BREAKABLE_MAP}.bsp"), bytes);
+    assets
+}
+
+/// The fixture's one `func_breakable` component.
+fn breakable_of(game: &Game) -> ohl_game::registry::Breakable {
+    let entity = *game
+        .registry()
+        .find(OBSTACLE_NAME)
+        .first()
+        .expect("the fixture's breakable reloads");
+    *game
+        .registry()
+        .world
+        .get::<&ohl_game::registry::Breakable>(entity)
+        .expect("the reloaded entity still carries a Breakable")
 }
 
 /// A save written before `SECTION_MOVER_STATE` (28) existed (no tag 28 at

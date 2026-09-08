@@ -33,8 +33,8 @@ use glam::{Quat, Vec3};
 use hecs::Entity;
 
 use crate::registry::{
-    BrushCenter, Door, MomentaryDoor, MomentaryRotButton, MoverState, Pendulum, Platform, Registry,
-    RotButton, Rotator, Transform,
+    BrushCenter, Door, MomentaryDoor, MomentaryRotButton, MoverState, Pendulum, Platform, Pushable,
+    Registry, RotButton, Rotator, Transform,
 };
 use crate::track_train::{TrackTrain, TrackTrainState};
 
@@ -199,6 +199,19 @@ pub fn momentary_door_offset(registry: &Registry, entity: Entity) -> Vec3 {
         })
 }
 
+/// How far a `func_pushable` has been pushed from where its geometry was
+/// compiled, straight out of its own [`Pushable::offset`] (the push
+/// integration itself lives in `ohl-engine`, which is the only crate that
+/// can see the player and the collision model; see
+/// `ohl_engine::pushables`). `Vec3::ZERO` for any entity without one.
+#[must_use]
+pub fn pushable_offset(registry: &Registry, entity: Entity) -> Vec3 {
+    registry
+        .world
+        .get::<&Pushable>(entity)
+        .map_or(Vec3::ZERO, |pushable| pushable.offset)
+}
+
 /// How far a brush entity has moved from where its geometry was compiled
 /// and placed — the sum of every translating-mover displacement it could
 /// carry (they are mutually exclusive in practice, and each is zero for an
@@ -209,6 +222,7 @@ pub fn brush_offset(registry: &Registry, entity: Entity) -> Vec3 {
         + platform_offset(registry, entity)
         + track_train_transform(registry, entity).0
         + momentary_door_offset(registry, entity)
+        + pushable_offset(registry, entity)
 }
 
 /// How far a `func_door_rotating` has swung, in degrees, from the same

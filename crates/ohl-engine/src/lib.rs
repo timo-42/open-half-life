@@ -55,6 +55,7 @@ mod combat;
 pub mod damage_map;
 mod pickups;
 mod presentation;
+pub mod pushables;
 
 // Campaign flow (M8.2): level transitions, save/load, chapter titles and
 // difficulty. See `docs/FORMAT_SOURCES.md` ("Campaign flow") for the public

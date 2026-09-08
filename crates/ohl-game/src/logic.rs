@@ -12,9 +12,10 @@ use glam::Vec3;
 use hecs::Entity;
 
 use crate::registry::{
-    AutoTrigger, BrushBounds, Button, ChangeLevel, Door, DoorPassable, DoorUseOnly, Message,
-    MomentaryDoor, MomentaryRotButton, MoverState, MultiManager, Pendulum, Platform, Registry,
-    RotButton, RotatingDoorSwing, Rotator, Target, TargetName, Transform, Trigger, TriggerHurt,
+    AutoTrigger, Breakable, BrushBounds, Button, ChangeLevel, Door, DoorPassable, DoorUseOnly,
+    Message, MomentaryDoor, MomentaryRotButton, MoverState, MultiManager, Pendulum, Platform,
+    Registry, RotButton, RotatingDoorSwing, Rotator, Target, TargetName, Transform, Trigger,
+    TriggerHurt,
 };
 use crate::track_train::TrackTrainState;
 
@@ -391,6 +392,7 @@ impl Simulation {
         }
         self.touch_changelevel_triggers(registry, player_mins, player_maxs, events);
         self.touch_rot_buttons(registry, player_mins, player_maxs);
+        self.touch_breakables(registry, player_mins, player_maxs);
     }
 
     /// Fires a `trigger_changelevel` (not "USE Only"; see
@@ -609,6 +611,18 @@ impl Simulation {
                 }
                 _ => {}
             }
+            return;
+        }
+        // A `func_breakable`/`func_pushable` breaks when triggered, whether
+        // or not it has any `health` left: "When the `func_breakable` is
+        // broken **or triggered**, it will activate this entity"
+        // (`docs/FORMAT_SOURCES.md`, item 32). This arm sits before the
+        // generic `Trigger` fallthrough at the end for the same reason
+        // every other component arm does — a breakable brush is not a
+        // `trigger_*` volume — and returns whether or not the brush was
+        // already broken, so a second trigger cannot fire `target` twice.
+        if registry.world.get::<&Breakable>(entity).is_ok() {
+            self.break_entity(registry, entity);
             return;
         }
         if let Ok(pendulum) = registry.world.query_one_mut::<&mut Pendulum>(entity) {
@@ -1182,6 +1196,119 @@ impl Simulation {
             }
         }
         opened
+    }
+
+    /// Breaks `entity`'s [`Breakable`], when it has one that is not
+    /// already broken: the brush is marked broken (which removes it from
+    /// the drawn and solid brush lists, and detaches its collision hull —
+    /// see [`crate::brush::solid_model_instances`] and
+    /// `ohl_engine::Level::sync_brush_collision`) and its `target` is fired
+    /// after the documented `delay` ("Target on Break... When the
+    /// `func_breakable` is broken or triggered, it will activate this
+    /// entity"; "Delay before fire... Delay before Target on Break is
+    /// triggered after being broken" — `docs/FORMAT_SOURCES.md`, item 32).
+    ///
+    /// Returns whether this call was the one that broke it. Breaking is
+    /// one-way: this project never restores a broken brush, and a second
+    /// call is a no-op, so a `target` fires at most once per break.
+    ///
+    /// **Documented gaps** (`docs/FORMAT_SOURCES.md`, item 32): no gib is
+    /// spawned, no per-[`Breakable::material`] break sound is played, and
+    /// the documented `spawnobject` item is not spawned.
+    pub fn break_entity(&mut self, registry: &mut Registry, entity: Entity) -> bool {
+        let Ok(mut breakable) = registry.world.get::<&mut Breakable>(entity) else {
+            return false;
+        };
+        if breakable.broken {
+            return false;
+        }
+        breakable.broken = true;
+        breakable.health = 0.0;
+        let delay = breakable.delay;
+        drop(breakable);
+        let target = registry
+            .world
+            .get::<&Target>(entity)
+            .ok()
+            .map(|target| target.0.clone());
+        if let Some(target) = target {
+            self.fire(target, Some(entity), delay);
+        }
+        true
+    }
+
+    /// Applies `amount` damage to `entity`'s [`Breakable`], breaking it
+    /// once its remaining `health` ("Strength - The amount of damage the
+    /// entity will take before breaking") reaches zero.
+    ///
+    /// `club` reports whether the damage carried a club/melee damage type —
+    /// this project's own stand-in for "whacked with a crowbar", since a
+    /// resolved hit carries a damage *type*, not a weapon id: with the documented "Instant crowbar (256)" flag set,
+    /// such a hit breaks the brush outright "regardless of strength"
+    /// (`docs/FORMAT_SOURCES.md`, item 32, which records the melee-vs-
+    /// crowbar approximation as project behaviour).
+    ///
+    /// Returns whether this call broke the brush. A brush with
+    /// `health == 0` (a `func_pushable` without the documented "Breakable"
+    /// flag, or a `func_breakable` a mapper left at the documented default)
+    /// takes no damage at all and waits to be triggered, as does one with
+    /// the documented "Only Trigger" flag. Non-finite or non-positive
+    /// `amount` is ignored, the same guard `ohl_combat::apply_damage`
+    /// applies on its own path.
+    pub fn damage_breakable(
+        &mut self,
+        registry: &mut Registry,
+        entity: Entity,
+        amount: f32,
+        club: bool,
+    ) -> bool {
+        let Ok(mut breakable) = registry.world.get::<&mut Breakable>(entity) else {
+            return false;
+        };
+        if breakable.broken || breakable.trigger_only || breakable.health <= 0.0 {
+            return false;
+        }
+        if !amount.is_finite() || amount <= 0.0 {
+            return false;
+        }
+        let instant = club && breakable.instant_crowbar;
+        let remaining = breakable.health - amount;
+        breakable.health = remaining.max(0.0);
+        let broke = instant || remaining <= 0.0;
+        drop(breakable);
+        if broke {
+            return self.break_entity(registry, entity);
+        }
+        false
+    }
+
+    /// Breaks every `func_breakable` carrying the documented "Touch (2)"
+    /// flag ("Brush will break on touch") whose own brush volume overlaps
+    /// the box `[player_mins, player_maxs]`, the same brush-against-box
+    /// overlap [`Self::touch_rot_buttons`] already uses for a touch-
+    /// activated `func_rot_button`. Visited in ascending id order so a
+    /// step touching several is deterministic.
+    pub fn touch_breakables(
+        &mut self,
+        registry: &mut Registry,
+        player_mins: Vec3,
+        player_maxs: Vec3,
+    ) {
+        let mut touched: Vec<Entity> = registry
+            .world
+            .query::<(Entity, &Breakable, &BrushBounds)>()
+            .iter()
+            .filter(|(_, breakable, bounds)| {
+                breakable.break_on_touch
+                    && !breakable.broken
+                    && aabb_overlaps(player_mins, player_maxs, bounds.mins, bounds.maxs)
+            })
+            .map(|(entity, _, _)| entity)
+            .collect();
+        touched.sort_unstable_by_key(|entity| entity.id());
+        for entity in touched {
+            self.break_entity(registry, entity);
+        }
     }
 
     /// Drives the `momentary_rot_button` currently found by proximity while
@@ -1908,6 +2035,146 @@ mod tests {
         let button = registry.world.get::<&MomentaryRotButton>(entity).unwrap();
         assert!((button.fraction - 0.0).abs() < 1e-3, "{}", button.fraction);
         assert!(!button.returning);
+    }
+
+    /// A `func_breakable` with hit points takes damage until it breaks, and
+    /// breaking fires its documented "Target on Break".
+    #[test]
+    fn a_breakable_breaks_once_its_health_is_spent_and_fires_its_target() {
+        let entities = vec![
+            raw(&[
+                ("classname", "func_breakable"),
+                ("targetname", "crate1"),
+                ("target", "door1"),
+                ("health", "30"),
+            ]),
+            raw(&[
+                ("classname", "func_door"),
+                ("targetname", "door1"),
+                ("speed", "100"),
+                ("wait", "-1"),
+            ]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let mut sim = Simulation::new();
+        let entity = registry.find("crate1")[0];
+        let door = registry.find("door1")[0];
+
+        assert!(!sim.damage_breakable(&mut registry, entity, 10.0, false));
+        assert!(!registry.world.get::<&Breakable>(entity).unwrap().broken);
+        assert!(
+            (registry.world.get::<&Breakable>(entity).unwrap().health - 20.0).abs() < f32::EPSILON
+        );
+
+        assert!(sim.damage_breakable(&mut registry, entity, 25.0, false));
+        assert!(registry.world.get::<&Breakable>(entity).unwrap().broken);
+        // The `target` fire is scheduled, not immediate; one tick drains it.
+        tick_for(&mut sim, &mut registry, 0.1, 0.05);
+        assert_ne!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Closed,
+            "breaking must fire the documented Target on Break"
+        );
+
+        // Breaking is one-way: further damage changes nothing.
+        assert!(!sim.damage_breakable(&mut registry, entity, 100.0, false));
+    }
+
+    /// The documented "Only Trigger (1)" flag makes damage a no-op, while a
+    /// trigger still breaks it; a `health` of `0` behaves the same way.
+    #[test]
+    fn an_only_trigger_or_zero_health_breakable_only_breaks_when_triggered() {
+        let entities = vec![
+            raw(&[
+                ("classname", "func_breakable"),
+                ("targetname", "only_trigger"),
+                ("health", "30"),
+                ("spawnflags", "1"),
+            ]),
+            raw(&[("classname", "func_breakable"), ("targetname", "no_health")]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let mut sim = Simulation::new();
+        for name in ["only_trigger", "no_health"] {
+            let entity = registry.find(name)[0];
+            assert!(!sim.damage_breakable(&mut registry, entity, 1000.0, false));
+            assert!(!registry.world.get::<&Breakable>(entity).unwrap().broken);
+            sim.use_entity(&mut registry, entity, None, &mut Vec::new());
+            assert!(
+                registry.world.get::<&Breakable>(entity).unwrap().broken,
+                "{name} must break when triggered"
+            );
+        }
+    }
+
+    /// The documented "Instant crowbar (256)" flag breaks the brush on a
+    /// single club hit "regardless of strength"; the same hit without the
+    /// flag only takes its own damage off.
+    #[test]
+    fn the_instant_crowbar_flag_breaks_on_one_club_hit() {
+        let entities = vec![
+            raw(&[
+                ("classname", "func_breakable"),
+                ("targetname", "instant"),
+                ("health", "500"),
+                ("spawnflags", "256"),
+            ]),
+            raw(&[
+                ("classname", "func_breakable"),
+                ("targetname", "ordinary"),
+                ("health", "500"),
+            ]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let mut sim = Simulation::new();
+        let instant = registry.find("instant")[0];
+        let ordinary = registry.find("ordinary")[0];
+
+        assert!(sim.damage_breakable(&mut registry, instant, 10.0, true));
+        assert!(registry.world.get::<&Breakable>(instant).unwrap().broken);
+
+        assert!(!sim.damage_breakable(&mut registry, ordinary, 10.0, true));
+        assert!(!registry.world.get::<&Breakable>(ordinary).unwrap().broken);
+    }
+
+    /// A `func_pushable` is only damageable with the documented
+    /// "Breakable (128)" flag; without it, its own `health` is ignored
+    /// entirely (the cited page states `health` applies only "If
+    /// breakable"), and its documented `friction` is carried through.
+    #[test]
+    fn a_pushable_is_only_breakable_with_its_documented_flag() {
+        use crate::registry::Pushable;
+        let entities = vec![
+            raw(&[
+                ("classname", "func_pushable"),
+                ("targetname", "plain"),
+                ("health", "20"),
+                ("friction", "100"),
+            ]),
+            raw(&[
+                ("classname", "func_pushable"),
+                ("targetname", "breakable"),
+                ("health", "20"),
+                ("spawnflags", "128"),
+            ]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let mut sim = Simulation::new();
+        let plain = registry.find("plain")[0];
+        let breakable = registry.find("breakable")[0];
+
+        assert!(
+            (registry.world.get::<&Pushable>(plain).unwrap().friction - 100.0).abs() < f32::EPSILON
+        );
+        assert!(!sim.damage_breakable(&mut registry, plain, 1000.0, false));
+        assert!(!registry.world.get::<&Breakable>(plain).unwrap().broken);
+
+        assert!(sim.damage_breakable(&mut registry, breakable, 1000.0, false));
+        assert!(registry.world.get::<&Breakable>(breakable).unwrap().broken);
     }
 
     #[test]

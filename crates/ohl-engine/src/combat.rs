@@ -52,7 +52,7 @@ use ohl_combat::{
     WeaponId, WeaponInput, WeaponSpec, resolve_hitscan_with_amount, spec, trace_attack_filtered,
 };
 use ohl_game::hecs::Entity;
-use ohl_game::registry::{BrushBounds, Button, RotButton, Transform};
+use ohl_game::registry::{Breakable, BrushBounds, Button, RotButton, Transform};
 use ohl_physics::{CollisionModel, PlayerController};
 use ohl_world::StudioPose;
 
@@ -659,25 +659,28 @@ pub(crate) fn rebuild_hitbox_index(hitboxes: &mut HitboxIndex, level: &Level) {
     push_damageable_brush_hitboxes(hitboxes, level);
 }
 
-/// Adds one whole-brush hitbox for every `func_button`/`func_rot_button`
-/// whose `health` keyvalue is non-zero, so `ohl_game::Simulation::damage_button`'s
-/// "(or by being shot, if Health is > 0)" press path (`docs/
-/// FORMAT_SOURCES.md` item 27) has something for a hitscan trace to land
-/// on: [`trace_attack_filtered`] only ever reports an [`EntityId`] for a
-/// [`HitboxIndex`] entry, never for solid world geometry a shot stops
-/// against ([`ohl_combat::trace::trace_attack_filtered`]'s own doc), and a
-/// brush entity carries no [`StudioAnim`] for the loop above to have
-/// already added it.
+/// Adds one whole-brush hitbox for every brush entity a shot is allowed to
+/// damage: a `func_button`/`func_rot_button` whose `health` keyvalue is
+/// non-zero (`ohl_game::Simulation::damage_button`'s "(or by being shot, if
+/// Health is > 0)" press path, `docs/FORMAT_SOURCES.md` item 27), and every
+/// unbroken `func_breakable`/`func_pushable` with hit points left (the
+/// documented "Strength (`health`) - The amount of damage the entity will
+/// take before breaking", item 32). Without an entry here a hitscan trace
+/// cannot reach either: [`trace_attack_filtered`] only ever reports an
+/// [`EntityId`] for a [`HitboxIndex`] entry, never for solid world geometry
+/// a shot stops against, and a brush entity carries no [`StudioAnim`] for
+/// the loop above to have already added it.
 ///
 /// One box per entity ([`HitGroup::Generic`], the neutral default — no
-/// public source splits a button's own hit groups), taken from its spawn-
-/// time [`BrushBounds`] rather than its currently posed box, matching the
-/// same conservative simplification `docs/FORMAT_SOURCES.md` item 27
-/// already documents for `ohl_game::Simulation::touch_rot_buttons`'s own overlap
-/// test. A button with `health == 0` (the documented "responds only to
-/// `use`/touch" default) is left out entirely, so a shot at an ordinary
-/// button silently passes through to the world/model behind it exactly as
-/// before this function existed.
+/// public source splits either kind into hit groups), taken from its
+/// spawn-time [`BrushBounds`] plus whatever `ohl_game::pose::brush_offset`
+/// has since moved it by (a pushed `func_pushable` must be shootable where
+/// it now stands, not where it was compiled; for a button that offset is
+/// zero, so this is the same box item 27 already described). An entity with
+/// `health == 0` — the documented "responds only to `use`/touch" button,
+/// the documented "Only Trigger" `func_breakable`, and a `func_pushable`
+/// without its documented "Breakable" flag — is left out entirely, so a
+/// shot at one passes through to whatever is behind it.
 fn push_damageable_brush_hitboxes(hitboxes: &mut HitboxIndex, level: &Level) {
     for (entity, button, bounds) in &mut level
         .registry
@@ -685,7 +688,7 @@ fn push_damageable_brush_hitboxes(hitboxes: &mut HitboxIndex, level: &Level) {
         .query::<(Entity, &Button, &BrushBounds)>()
     {
         if button.health > 0.0 {
-            push_brush_hitbox(hitboxes, entity, bounds);
+            push_brush_hitbox(hitboxes, level, entity, bounds);
         }
     }
     for (entity, button, bounds) in &mut level
@@ -694,20 +697,46 @@ fn push_damageable_brush_hitboxes(hitboxes: &mut HitboxIndex, level: &Level) {
         .query::<(Entity, &RotButton, &BrushBounds)>()
     {
         if button.health > 0.0 {
-            push_brush_hitbox(hitboxes, entity, bounds);
+            push_brush_hitbox(hitboxes, level, entity, bounds);
+        }
+    }
+    for (entity, breakable, bounds) in &mut level
+        .registry
+        .world
+        .query::<(Entity, &Breakable, &BrushBounds)>()
+    {
+        if !breakable.broken && breakable.health > 0.0 {
+            push_brush_hitbox(hitboxes, level, entity, bounds);
         }
     }
 }
 
-fn push_brush_hitbox(hitboxes: &mut HitboxIndex, entity: Entity, bounds: &BrushBounds) {
-    let origin = bounds.mins.midpoint(bounds.maxs);
+/// How far outside its own solid faces a damageable brush's hitbox reaches,
+/// in units. A hitscan trace resolves the *nearest* impact, world or
+/// entity, and `ohl_physics`'s world trace deliberately stops
+/// `ohl_physics::DIST_EPSILON` short of whatever surface it hits — so a
+/// hitbox laid exactly on the brush's own faces always loses that
+/// comparison to the brush's own solid hull, and the shot registers as
+/// hitting "the world" instead of the entity. This slop (comfortably more
+/// than that epsilon, and far too small to matter to anything else) is what
+/// makes a shot at a *solid* brush actually reach it — which every
+/// damageable brush on a real map is, even though the synthetic fixtures
+/// item 27's own tests use carry a bounding box only
+/// (`docs/FORMAT_SOURCES.md`, item 32).
+pub const BRUSH_HITBOX_SLOP: f32 = 1.0;
+
+fn push_brush_hitbox(
+    hitboxes: &mut HitboxIndex,
+    level: &Level,
+    entity: Entity,
+    bounds: &BrushBounds,
+) {
+    let offset = crate::render::brush_offset(&level.registry, entity);
+    let slop = glam::Vec3::splat(BRUSH_HITBOX_SLOP);
+    let (mins, maxs) = (bounds.mins + offset - slop, bounds.maxs + offset + slop);
+    let origin = mins.midpoint(maxs);
     let mut entry = EntityHitboxes::new(entity_id(entity), origin);
-    entry.push_box(
-        0,
-        bounds.mins - origin,
-        bounds.maxs - origin,
-        HitGroup::Generic,
-    );
+    entry.push_box(0, mins - origin, maxs - origin, HitGroup::Generic);
     hitboxes.push(entry);
 }
 
@@ -794,6 +823,26 @@ pub(crate) fn resolve_damage(
             level
                 .simulation
                 .damage_button(&mut level.registry, target, info.amount);
+        } else if level
+            .registry
+            .world
+            .get::<&Breakable>(target)
+            .is_ok_and(|breakable| !breakable.broken)
+        {
+            // `Simulation::damage_breakable` owns a breakable brush's own
+            // hit points (`Breakable::health`, persisted in save tag 33);
+            // the brush carries no `ohl_combat::Health` component, so
+            // `apply_entity_damage` below would silently no-op on it.
+            // `DamageType::CLUB` is this project's stand-in for the
+            // documented "Instant crowbar" flag's crowbar whack — see
+            // `docs/FORMAT_SOURCES.md`, item 32.
+            let club = info.kind.contains(DamageType::CLUB);
+            let Level {
+                registry,
+                simulation,
+                ..
+            } = &mut *level;
+            simulation.damage_breakable(registry, target, info.amount, club);
         } else if level.registry.world.contains(target) {
             apply_entity_damage(level, target, &info);
         }
