@@ -1016,6 +1016,51 @@ pub const BEND_TRAIN_SPEED: f32 = 100.0;
 /// nothing is derived from any payload (`docs/CLEAN_ROOM.md`).
 #[must_use]
 pub fn bending_track_train_bsp() -> Vec<u8> {
+    bending_track_train_bsp_impl(None)
+}
+
+/// Where a rider seated [`BEND_SEAT_OFFSET_X`] units off the pivot lands if
+/// [`Level::rotational_carry`]'s quarter turn at the corner is *not*
+/// refused: the car's own origin sits at [`BEND_TRAIN_CORNER`] the instant
+/// it turns (see [`bend_train_pose`]'s doc comment for why that is the
+/// pivot), and the turn swings the seat from `+X` of it to `+Y` of it, so
+/// the destination is the corner offset by [`BEND_SEAT_OFFSET_X`] along
+/// `+Y`. [`bending_track_train_bsp_with_pillar`] plants a solid pillar
+/// centred here — standing across the seat the un-refused carry would land
+/// the rider in, but nowhere near the seat's position on either straight
+/// segment either side of the turn — so the refusal guard is the only
+/// thing standing between the rider and being teleported into it.
+///
+/// [`Level::rotational_carry`]: crate::level::Level::rotational_carry
+pub const BEND_PILLAR_CENTER: [f32; 3] = [
+    BEND_TRAIN_CORNER[0],
+    BEND_SEAT_OFFSET_X,
+    BEND_TRAIN_ORIGIN[2] + BEND_CAR_TOP_Z + 36.0,
+];
+
+/// Half-extents of the pillar [`BEND_PILLAR_CENTER`] is centred at: wide
+/// and tall enough to certainly contain a standing player hull placed
+/// anywhere near that seat, in every axis, while staying well clear of the
+/// `y = 0` segment the car (and its seated rider) travel before the turn.
+pub const BEND_PILLAR_HALF_EXTENTS: [f32; 3] = [40.0, 40.0, 60.0];
+
+/// [`bending_track_train_bsp`], with one addition: a static pillar
+/// (`worldspawn` geometry, submodel `*0`) standing across the world-space
+/// spot a rider seated off the car's pivot would be teleported into if the
+/// corner's quarter-turn carry were applied unconditionally — see
+/// [`BEND_PILLAR_CENTER`]. Used to check that the carry's own
+/// `.filter(|carried| !start_solid)` guard (`Systems::player_move`) really
+/// does refuse that destination and leave the rider where they were
+/// standing, rather than resolving the resulting overlap some other way.
+///
+/// Every keyvalue and coordinate here is authored for this project;
+/// nothing is derived from any payload (`docs/CLEAN_ROOM.md`).
+#[must_use]
+pub fn bending_track_train_bsp_with_pillar() -> Vec<u8> {
+    bending_track_train_bsp_impl(Some((BEND_PILLAR_CENTER, BEND_PILLAR_HALF_EXTENTS)))
+}
+
+fn bending_track_train_bsp_impl(pillar: Option<([f32; 3], [f32; 3])>) -> Vec<u8> {
     let mut b = Bsp30Builder::new();
     let [ox, oy, oz] = BEND_TRAIN_ORIGIN;
     let [cx, cy, cz] = BEND_TRAIN_CORNER;
@@ -1040,9 +1085,18 @@ pub fn bending_track_train_bsp() -> Vec<u8> {
          \"origin\" \"{ex} {ey} {ez}\"\n}}\n"
     ));
 
-    // Submodel 0: a void world, so the car's own brush is the only thing
-    // holding the passenger up.
-    let world_heads = b.push_collision_hulls(&[]);
+    // Submodel 0: a void world (so the car's own brush is the only thing
+    // holding the passenger up), plus, when `pillar` is given, one static
+    // solid brush standing across the corner's post-turn seat.
+    let world_brushes = pillar.map_or_else(Vec::new, |(center, half)| {
+        let [px, py, pz] = center;
+        let [hx, hy, hz] = half;
+        vec![CollisionBrush::box_brush(
+            [px - hx, py - hy, pz - hz],
+            [px + hx, py + hy, pz + hz],
+        )]
+    });
+    let world_heads = b.push_collision_hulls(&world_brushes);
     b.push_model(
         [-4096.0, -4096.0, -4096.0],
         [4096.0, 4096.0, 4096.0],

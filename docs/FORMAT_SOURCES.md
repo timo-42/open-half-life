@@ -1839,8 +1839,13 @@ at the end of this section.
   finite rigid step instead (`ohl_physics::rotational_ride_step`,
   `Level::rotational_carry`): the rider is rotated through the same angle
   about the same pivot the hull was, refused outright if the seat it lands
-  on is not free, and only the car's *translation* is then fed in as
-  `base_velocity` so the turn is applied exactly once. The velocity form
+  on is not free, in which case only the car's *translation* is fed in as
+  `base_velocity` so the turn is applied exactly once. When the carry is
+  refused, the rider is left where they were standing rather than
+  teleported into solid, and `base_velocity` falls back to the ordinary
+  velocity blend — the car's translation plus the tangential `omega x r`
+  term for the rider's own position — carried through the traced move like
+  any other mover ride, rather than translation alone. The velocity form
   above is unchanged and still carries every rotating mover whose per-step
   angle is small.
 

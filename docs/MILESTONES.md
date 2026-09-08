@@ -4659,9 +4659,12 @@ passenger is turned with it.
   rider along the tangent instead of around the arc, into the wall the car
   has just swept over them — so the rider is rotated through the same
   angle about the same pivot the hull was, refused if the seat it lands on
-  is not free, with only the car's translation left for `base_velocity`.
-  Every rotating mover whose per-step angle is small is unaffected: the
-  two agree to a rounding error there.
+  is not free, in which case the rider is left where they were standing
+  and `base_velocity` falls back to the ordinary ride blend — the car's
+  translation plus the tangential `omega x r` term for the rider's own
+  position, carried through the traced move like any other mover ride —
+  rather than translation alone. Every rotating mover whose per-step angle
+  is small is unaffected: the two agree to a rounding error there.
 - **The third hop's arrival point is no longer sealed.** The route
   investigation that closed out M9.17 found that arrival reduced to
   *exactly one* reachable cell with no frontier entity of any kind — no
