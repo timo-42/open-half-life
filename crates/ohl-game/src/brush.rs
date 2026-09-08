@@ -73,17 +73,20 @@ fn is_never_rendered(classname: &str) -> bool {
 /// - `func_monsterclip`: TWHL wiki `func_monsterclip` (search-engine result
 ///   summary; page returns HTTP 403 to automated fetches from this
 ///   environment) — "an invisible brush entity" that is "solid to
-///   monsters" but "not solid to players". This project's collision model
-///   is shared unmodified between the player and monster navigation (see
-///   `docs/FORMAT_SOURCES.md` item 33), so excluding it here also makes it
-///   non-solid to monsters, a documented, deliberate gap rather than a
-///   silent one.
+///   monsters" but "not solid to players". Excluded here only from the
+///   *player's* collision model: `ohl-engine`'s `Level` builds a second,
+///   separate collision model for monster navigation
+///   (`Level::monster_collision`), attached via
+///   [`monster_solid_model_instances`]/[`is_solid_to_monster`] below,
+///   which treats `func_monsterclip` as solid — so it stays solid to
+///   monsters, matching the cited text, rather than becoming a silent
+///   global gap. See `docs/FORMAT_SOURCES.md` item 33.
 /// - every `trigger_*`: collision-only *volumes* that fire map logic when
 ///   the player is inside them, which is impossible if they push the
 ///   player out (see [`is_never_rendered`]).
 ///
 /// See `docs/FORMAT_SOURCES.md`, "Entity keyvalues and map logic", and item
-/// 30.
+/// 33.
 const NEVER_SOLID: [&str; 4] = [
     "func_illusionary",
     "func_ladder",
@@ -330,10 +333,12 @@ mod tests {
 
     /// The collision counterpart of the render test above:
     /// `solid_model_instances` (what `ohl-engine`'s `attach_brush_collision`
-    /// walks to build the shared player/monster `CollisionModel`) must not
-    /// include a `func_monsterclip`, or the map's own monster-only clip
-    /// brush would block the player exactly like a `func_wall` — the
-    /// engine gap this milestone fixes.
+    /// walks to build the *player's own* `CollisionModel` — see
+    /// `monster_solid_model_instances` below for the separate monster-side
+    /// model, which does include `func_monsterclip`) must not include a
+    /// `func_monsterclip`, or the map's own monster-only clip brush would
+    /// block the player exactly like a `func_wall` — the engine gap this
+    /// milestone fixes.
     #[test]
     fn func_monsterclip_is_never_a_solid_brush() {
         assert!(!super::is_solid_brush("func_monsterclip"));

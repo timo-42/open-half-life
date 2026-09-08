@@ -413,46 +413,41 @@ const DOOR_AND_LEVEL_CHANGE_ABSENT: [&str; 8] = [
     "The player is riding a mover.",
 ];
 
-/// The Power Up scenario's own present set, since M9.10
-/// (`docs/FORMAT_SOURCES.md` item 33, `func_monsterclip` no longer solid
-/// to the player): this map carries 29 `func_monsterclip` entities, and
-/// the autopilot-authored route below was flown against the pre-M9.10
-/// collision model, which (incorrectly) treated `func_monsterclip` as
-/// solid to the player too. Freeing the player's own movement from those
-/// fences measurably changes this route's physical path — with identical
-/// scripted inputs — enough that it no longer reaches its
-/// `trigger_changelevel` inside its own step budget, and the monster it
-/// passes now lands one hit before dying instead of never connecting
-/// (confirmed by isolation: reverting only the player-side exclusion,
-/// leaving everything else in this fix as is, reproduces the original
-/// zero-damage, level-change-reached outcome exactly). Neither is a route
-/// failure — this project's own reading of TWHL's `func_monsterclip`
-/// documentation is that this newly-reachable encounter is the corrected
-/// behaviour, not a regression — so this scenario's own expectations are
-/// updated to match rather than re-authoring 480+ lines of autopilot
-/// output blind; see `docs/MILESTONES.md`, M9.10, for the full account and
-/// the re-authoring follow-up this leaves open.
-const POWER_UP_MONSTER_ENCOUNTER_PRESENT: [&str; 5] = [
+/// [`LEVEL_CHANGE_PRESENT`] plus "A monster took damage.": the scenario
+/// that walks a chapter's first map from its player start to its own
+/// `trigger_changelevel` and passes near a monster along the way. See
+/// `xtask/smoke-scenarios/progress_c2a1_reach_changelevel.txt`'s own
+/// header for the route.
+///
+/// Re-authored for M9.11 (`docs/FORMAT_SOURCES.md` item 33,
+/// `func_monsterclip` no longer solid to the player): this map carries 29
+/// `func_monsterclip` entities, and the route this scenario originally
+/// replayed was flown against the pre-M9.11 collision model, which
+/// (incorrectly) also treated `func_monsterclip` as solid to the player,
+/// so it stopped reaching its `trigger_changelevel` once that was fixed.
+/// Rather than weaken this scenario's own assertions, the route itself was
+/// re-authored fresh against the corrected engine
+/// (`.plan/progress-probe-2.md`'s two-`Game` planner/autopilot technique;
+/// see the scenario file's own header for the full account) — this
+/// constant, and the present/absent split below it, are therefore
+/// unchanged from before that milestone.
+const LEVEL_CHANGE_PRESENT_MONSTER_ENCOUNTER: [&str; 5] = [
     "Scripted input loaded.",
     "Scripted input finished.",
     "The player moved from the spawn point.",
     "A monster took damage.",
-    "A monster died.",
+    "A level change was followed.",
 ];
 
-/// [`BASE_ABSENT`] plus "The player died." (no other scenario needs to
-/// guard against it, so it is not in [`BASE_ABSENT`] itself), minus the
-/// three lines [`POWER_UP_MONSTER_ENCOUNTER_PRESENT`] moves to its own
-/// present set, minus "The player took damage." and "A level change was
-/// followed." (see that constant's own doc comment for why both are no
-/// longer asserted at all rather than moved to `absent`: this scenario
-/// takes no position on whether either happens, only that the player
-/// survives with a dead monster nearby).
-const POWER_UP_MONSTER_ENCOUNTER_ABSENT: [&str; 7] = [
+/// [`BASE_ABSENT`] minus the two lines
+/// [`LEVEL_CHANGE_PRESENT_MONSTER_ENCOUNTER`] moves to its own present
+/// set.
+const LEVEL_CHANGE_ABSENT_MONSTER_ENCOUNTER: [&str; 8] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
-    "The player died.",
+    "A monster died.",
     "A pickup was collected.",
+    "The player took damage.",
     "The player is inside solid geometry.",
     "The player is riding a mover.",
     "The player opened a door.",
@@ -894,11 +889,11 @@ fn scenarios() -> [Scenario; 35] {
             follow_level_change: true,
         },
         Scenario {
-            name: "walk from spawn past a monster encounter in Power Up",
+            name: "walk from spawn to a followed level change in Power Up",
             file: "progress_c2a1_reach_changelevel.txt",
             map: "c2a1",
-            present: &POWER_UP_MONSTER_ENCOUNTER_PRESENT,
-            absent: &POWER_UP_MONSTER_ENCOUNTER_ABSENT,
+            present: &LEVEL_CHANGE_PRESENT_MONSTER_ENCOUNTER,
+            absent: &LEVEL_CHANGE_ABSENT_MONSTER_ENCOUNTER,
             follow_level_change: true,
         },
         Scenario {
