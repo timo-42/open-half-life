@@ -1,0 +1,149 @@
+# M9 scripted-input scenario: a spawn-to-exit progression walk in "Forget
+# About Freeman!".
+#
+# Project-authored; no bytes here come from any game installation (see
+# docs/CLEAN_ROOM.md). Run against "c3a1" ("Forget About Freeman!", per
+# ohl_campaign::CHAPTERS's own cited table) by xtask/src/combat_smoke.rs,
+# with `--follow-level-change` so a `trigger_changelevel` this walk
+# reaches is actually followed rather than only logged as "not followed".
+#
+# Route, in words only (no entity name, path or coordinate from any
+# payload): from the player's spawn point, advance forward through a
+# sequence of turns and waits until a level change fires close by; then
+# wait out the transition. No door needs opening on this route.
+#
+# Technique: an autopilot was flown over this map's own collision hulls,
+# and the per-tick inputs it applied were recorded and merged into the
+# whole/fractional-degree turns below, matching the technique documented
+# in xtask/smoke-scenarios/reach_level_change_anomalous_materials.txt.
+# Runs whose per-tick turn is not bit-for-bit identical to its neighbor
+# are kept as their own single-tick line rather than merged, which is why
+# many lines below carry small fractional-degree turns. The run is
+# deterministic, so replaying these inputs reproduces the same route
+# every time.
+#
+# Expected fixed log lines, asserted by the harness rather than parsed
+# from this file:
+#   present: "Scripted input loaded.", "Scripted input finished.",
+#            "The player moved from the spawn point.",
+#            "A level change was followed."
+#   absent:  every other fixed line, including "The player is inside
+#            solid geometry." (this scenario's own regression guard for
+#            the PR #91 class of bug) and "The player opened a door."
+#            (no door is opened on this route)
+1 forward look 0.000000000 6.000000000
+70 forward look 0.000000000 -420.000000000
+1 forward look 0.000000000 -4.897827148
+1 forward look 0.000000000 -5.502075195
+1 forward look 0.000000000 -3.207367182
+59 forward look 0.000000000 -354.000000000
+1 forward look 0.000000000 -5.090637207
+629 forward look 0.000000000 -3774.000000000
+1 forward look 0.000000000 -5.162151337
+1 forward look 0.000000000 -5.794748306
+1 forward look 0.000000000 -6.000000000
+1 forward look 0.000000000 -5.235313416
+59 forward look 0.000000000 -354.000000000
+1 forward look 0.000000000 -5.206110001
+59 forward look 0.000000000 -354.000000000
+1 forward look 0.000000000 -5.578957558
+53 forward look 0.000000000 -318.000000000
+1 forward look 0.000000000 -5.947731018
+1 forward look 0.000000000 -2.621612549
+1 forward look 0.000000000 -2.881473541
+1 forward look 0.000000000 -1.560863495
+1 forward look 0.000000000 -3.427967072
+1 forward look 0.000000000 -3.953864813
+1 forward look 0.000000000 -2.233375549
+1 forward look 0.000000000 -5.166681290
+1 forward look 0.000000000 -6.000000000
+1 forward look 0.000000000 -4.411104202
+57 forward look 0.000000000 -342.000000000
+1 forward look 0.000000000 -5.039943695
+1 forward look 0.000000000 -5.606899261
+1 forward look 0.000000000 -3.222412109
+59 forward look 0.000000000 -354.000000000
+1 forward look 0.000000000 -5.289522171
+55 forward look 0.000000000 -330.000000000
+1 forward look 0.000000000 -4.723155975
+1 forward look 0.000000000 -1.380371094
+1 forward look 0.000000000 -2.981891632
+1 forward look 0.000000000 -3.352672815
+1 forward look 0.000000000 -1.851982117
+1 forward look 0.000000000 -4.165512085
+1 forward look 0.000000000 -4.988426208
+1 forward look 0.000000000 -2.913644791
+59 forward look 0.000000000 -354.000000000
+1 forward look 0.000000000 -3.803552389
+59 forward look 0.000000000 -354.000000000
+1 forward look 0.000000000 -5.810459137
+2 forward look 0.000000000 -12.000000000
+1 forward look 0.000000000 -5.749381065
+53 forward look 0.000000000 -318.000000000
+1 forward look 0.000000000 -3.691333771
+1 forward look 0.000000000 -2.684181213
+1 forward look 0.000000000 -2.968475342
+1 forward look 0.000000000 -1.616542816
+1 forward look 0.000000000 -3.572887421
+1 forward look 0.000000000 -4.162399292
+1 forward look 0.000000000 -2.372035980
+1 forward look 0.000000000 -5.550321579
+1 forward look 0.000000000 -6.000000000
+1 forward look 0.000000000 -5.469995499
+56 forward look 0.000000000 -336.000000000
+1 forward look 0.000000000 -5.308094025
+1 forward look 0.000000000 -5.101289749
+1 forward look 0.000000000 -6.000000000
+1 forward look 0.000000000 -3.618970633
+59 forward look 0.000000000 -354.000000000
+1 forward look 0.000000000 -4.668672562
+1 forward look 0.000000000 -6.000000000
+1 forward look 0.000000000 6.000000000
+1 forward look 0.000000000 5.979356766
+57 forward look 0.000000000 -342.000000000
+1 forward look 0.000000000 -5.562316895
+1 forward look 0.000000000 -4.229576111
+1 forward look 0.000000000 -2.360881805
+1 forward look 0.000000000 -5.380996704
+1 forward look 0.000000000 -6.000000000
+1 forward look 0.000000000 -4.477842331
+57 forward look 0.000000000 -342.000000000
+1 forward look 0.000000000 -5.567199707
+1 forward look 0.000000000 -6.000000000
+1 forward look 0.000000000 -3.548107147
+55 forward look 0.000000000 -330.000000000
+1 forward look 0.000000000 -2.016838074
+1 forward look 0.000000000 -1.416938782
+1 forward look 0.000000000 -3.077785730
+1 forward look 0.000000000 -3.490119934
+1 forward look 0.000000000 -1.942249298
+1 forward look 0.000000000 -4.409133911
+1 forward look 0.000000000 -5.358806610
+1 forward look 0.000000000 -3.172206879
+58 forward look 0.000000000 -348.000000000
+1 forward look 0.000000000 -5.624490738
+1 forward look 0.000000000 -2.698396683
+59 forward look 0.000000000 -354.000000000
+1 forward look 0.000000000 -5.291772842
+2 forward look 0.000000000 -12.000000000
+1 forward look 0.000000000 -5.902249336
+53 forward look 0.000000000 -318.000000000
+1 forward look 0.000000000 -3.441410303
+1 forward look 0.000000000 -2.688304901
+1 forward look 0.000000000 -2.975120544
+1 forward look 0.000000000 -1.621162415
+1 forward look 0.000000000 -3.585743189
+1 forward look 0.000000000 -4.182277679
+1 forward look 0.000000000 -2.385818481
+1 forward look 0.000000000 -5.590181351
+1 forward look 0.000000000 -6.000000000
+1 forward look 0.000000000 -5.587403297
+56 forward look 0.000000000 -336.000000000
+1 forward look 0.000000000 -5.118808746
+1 forward look 0.000000000 -5.119625092
+1 forward look 0.000000000 -6.000000000
+1 forward look 0.000000000 -3.659316778
+59 forward look 0.000000000 -354.000000000
+1 forward look 0.000000000 -4.868303299
+46 forward look 0.000000000 -276.000000000
+180 wait

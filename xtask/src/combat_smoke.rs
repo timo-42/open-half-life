@@ -88,7 +88,7 @@ const BASE_PRESENT: [&str; 2] = ["Scripted input loaded.", "Scripted input finis
 /// `absent` list instead.
 ///
 /// "A level change was followed." joined this list (the spawn-to-exit
-/// progression scenarios) alongside the two scenarios that assert it
+/// progression scenarios) alongside the four scenarios that assert it
 /// *present* and are the only ones run with `--follow-level-change`; every
 /// other scenario's script either never reaches a `trigger_changelevel` or
 /// is not run with that flag, so it must never log this line.
@@ -101,8 +101,9 @@ const BASE_PRESENT: [&str; 2] = ["Scripted input loaded.", "Scripted input finis
 ///
 /// "The player opened a door." joined this list (M9, `TODO(black-box)`
 /// item 25) alongside the scenarios that assert it *present*: only the two
-/// scenarios that run on "c1a0" press `use` at all, so every other one must
-/// never report a door opened by proximity.
+/// scenarios that run on "c1a0" and the "c2a5" progression scenario press
+/// `use` at all, so every other one must never report a door opened by
+/// proximity.
 ///
 /// "The player is riding a mover." joined this list once mover-riders
 /// (`crates/ohl-physics`'s `PlayerState::ground_brush`,
@@ -329,13 +330,15 @@ const WALK_ABSENT_DOOR_OPENED: [&str; 9] = [
     "A level change was followed.",
 ];
 
-/// [`WALK_PRESENT`] plus the line this scenario's own walk (in
-/// `xtask/smoke-scenarios/progress_c1a1_reach_changelevel.txt`) reaches: a
+/// [`WALK_PRESENT`] plus the line a door-free spawn-to-exit walk (in
+/// `xtask/smoke-scenarios/progress_c1a1_reach_changelevel.txt` and, from a
+/// later reachability-triage pass,
+/// `xtask/smoke-scenarios/progress_c3a1_reach_changelevel.txt`) reaches: a
 /// `trigger_changelevel` followed end to end with `--follow-level-change`
-/// (`crates/ohl-app/src/game_run.rs`'s `handle_level_change`). This is the
-/// first scenario in this file whose script actually rides a chapter's
+/// (`crates/ohl-app/src/game_run.rs`'s `handle_level_change`). These are the
+/// scenarios in this file whose script actually rides a chapter's
 /// spawn-to-exit route through to the next map, rather than only walking
-/// partway; see that scenario file's own header for the route.
+/// partway; see each scenario file's own header for its route.
 const LEVEL_CHANGE_PRESENT: [&str; 4] = [
     "Scripted input loaded.",
     "Scripted input finished.",
@@ -357,12 +360,15 @@ const LEVEL_CHANGE_ABSENT: [&str; 9] = [
     "The player opened a door.",
 ];
 
-/// [`LEVEL_CHANGE_PRESENT`] plus "The player opened a door.": the scenario
-/// that walks a chapter's first map from its player start, through a door
-/// it opens with a `use` press, to that map's own `trigger_changelevel`.
-/// See `xtask/smoke-scenarios/reach_level_change_anomalous_materials.txt`'s
-/// own header for the route-authoring technique, and for why a walk that
-/// only advances straight ahead on that map stops at a wall instead.
+/// [`LEVEL_CHANGE_PRESENT`] plus "The player opened a door.": the scenarios
+/// that walk a chapter's first map from its player start, through a door
+/// they open with a `use` press, to that map's own `trigger_changelevel`
+/// (`xtask/smoke-scenarios/reach_level_change_anomalous_materials.txt` and,
+/// from a later reachability-triage pass,
+/// `xtask/smoke-scenarios/progress_c2a5_reach_changelevel.txt`). See the
+/// first file's own header for the route-authoring technique, and for why a
+/// walk that only advances straight ahead on that map stops at a wall
+/// instead.
 const DOOR_AND_LEVEL_CHANGE_PRESENT: [&str; 5] = [
     "Scripted input loaded.",
     "Scripted input finished.",
@@ -503,26 +509,27 @@ const FIRE_AND_PICKUP_ABSENT: [&str; 7] = [
 /// through the engine's own `ohl_game::find_usable_within` proximity path
 /// — the real-payload counterpart of
 /// `crates/ohl-engine/tests/rotating_door.rs`'s synthetic fixture. It and
-/// three of the progression scenarios below (on "c1a0", "c1a3" and "c2a2")
-/// are the only scenarios in this file that press `use` at all, which is
-/// why every other one asserts "The player opened a door." absent.
+/// four of the progression scenarios below (on "c1a0", "c1a3", "c2a2" and
+/// "c2a5") are the only scenarios in this file that press `use` at all,
+/// which is why every other one asserts "The player opened a door."
+/// absent.
 ///
 /// One further scenario rides `ohl_campaign::STARTMAP`'s opening tram to
 /// its end and follows the level change it reaches (see
 /// [`RIDE_TO_LEVEL_CHANGE_PRESENT`]): the campaign's own first
 /// progression gate, reached without a single movement key.
 ///
-/// All 33 scenarios in this file — the four pre-existing ones included —
+/// All 35 scenarios in this file — the four pre-existing ones included —
 /// assert "The player is inside solid geometry." absent: this scenario
-/// set's own regression guard for the PR #91 class of bug. 30 of the 33
+/// set's own regression guard for the PR #91 class of bug. 32 of the 35
 /// also assert "The player is riding a mover." absent, since none of them
 /// stands on a moving brush entity; the three that run on
 /// `ohl_campaign::STARTMAP` assert it *present* instead, because the
 /// player spawns inside that map's opening tram and rides it (see
 /// [`START_MAP_PRESENT`]'s own doc comment).
 ///
-/// Eight scenarios — one per progression route — assert "A level change
-/// was followed." present, and they are the only eight whose
+/// Ten scenarios — one per progression route — assert "A level change
+/// was followed." present, and they are the only ten whose
 /// [`Scenario::follow_level_change`] is `true`; every other scenario
 /// asserts that line absent instead, since none of their scripts reaches a
 /// `trigger_changelevel` they are run with the flag for.
@@ -568,13 +575,29 @@ const FIRE_AND_PICKUP_ABSENT: [&str; 7] = [
 /// entities (a swinging obstacle, a pushable, further buttons) after every
 /// use-openable door is gone — so it has no scenario here; see
 /// `docs/MILESTONES.md`.
+///
+/// A third reachability-triage pass (`.plan/progress-probe-3.md`, using PR
+/// #121's `--reachability-report` dev tool) found two more chapters' first
+/// maps reachable from spawn to their own `trigger_changelevel`: Surface
+/// Tension (c2a5), whose route opens a door along the way (so it asserts
+/// "The player opened a door." present, the same as "c1a0"'s route above),
+/// and "Forget About Freeman!" (c3a1), whose route needs no door. The same
+/// pass found three further maps **not** reachable by this walk — Residue
+/// Processing (c2a4) and Xen (c4a1), sealed by static geometry or a
+/// fall/jump longer than the reachability walk's own conservative drop
+/// bound, and Lambda Core (c3a2), blocked by `func_breakable` having no
+/// shoot-to-destroy behaviour anywhere in this engine yet — and one,
+/// Questionable Ethics (c2a4d), confirmed reachable by
+/// `--reachability-report` but not turned into a working route within that
+/// probe's own tool budget; documented in `docs/MILESTONES.md`, none of
+/// them gets a scenario here.
 #[allow(
     clippy::too_many_lines,
     reason = "one Scenario literal per M9 chapter-walk scenario, plus the four \
-              pre-existing ones, plus the eight progression scenarios; splitting \
+              pre-existing ones, plus the ten progression scenarios; splitting \
               the list would only add indirection"
 )]
-fn scenarios() -> [Scenario; 33] {
+fn scenarios() -> [Scenario; 35] {
     [
         Scenario {
             name: "walk forward in the training start",
@@ -809,6 +832,14 @@ fn scenarios() -> [Scenario; 33] {
             follow_level_change: true,
         },
         Scenario {
+            name: "walk from spawn to a followed level change in Surface Tension",
+            file: "progress_c2a5_reach_changelevel.txt",
+            map: "c2a5",
+            present: &DOOR_AND_LEVEL_CHANGE_PRESENT,
+            absent: &DOOR_AND_LEVEL_CHANGE_ABSENT,
+            follow_level_change: true,
+        },
+        Scenario {
             name: "walk from spawn to a followed level change in Blast Pit",
             file: "progress_c1a4_reach_changelevel.txt",
             map: "c1a4",
@@ -836,6 +867,14 @@ fn scenarios() -> [Scenario; 33] {
             name: "walk from spawn to a followed level change in Apprehension",
             file: "progress_c2a3_reach_changelevel.txt",
             map: "c2a3",
+            present: &LEVEL_CHANGE_PRESENT,
+            absent: &LEVEL_CHANGE_ABSENT,
+            follow_level_change: true,
+        },
+        Scenario {
+            name: "walk from spawn to a followed level change in \"Forget About Freeman!\"",
+            file: "progress_c3a1_reach_changelevel.txt",
+            map: "c3a1",
             present: &LEVEL_CHANGE_PRESENT,
             absent: &LEVEL_CHANGE_ABSENT,
             follow_level_change: true,
