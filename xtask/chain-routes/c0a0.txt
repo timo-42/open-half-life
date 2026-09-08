@@ -1,0 +1,35 @@
+# M9.14 chain-walk route 0: the campaign's own start map, from its player
+# start to the first level change.
+#
+# Project-authored; no bytes here come from any game installation (see
+# docs/CLEAN_ROOM.md). Run against ohl_campaign::STARTMAP ("c0a0", a name
+# from that crate's own cited table) as the first --chain-script route of
+# `cargo xtask chain-walk`.
+#
+# A line's leading number is a count of *ticks*, each one CAPTURE_STEP
+# (1/60 s) of simulated time — not seconds.
+#
+# Route, in words only (no entity name, path or coordinate from any
+# payload): the player spawns standing inside the start map's opening
+# mover and is carried by it without this route pressing a single movement
+# key. The look lines turn the view while riding; the wait lines cover the
+# ride itself. The ride ends by carrying the player through a level
+# boundary, and the chain walk follows it and hands over to
+# `c0a0-hop1.txt` at the arrival point.
+#
+# This is the same ride xtask/smoke-scenarios/ride_tram_to_level_change.txt
+# already exercises as a single-map scenario; it is repeated here rather
+# than shared because a chain route is allowed to end early (at its level
+# change) while a smoke scenario is not, and because the two files are free
+# to drift apart as the chain grows.
+#
+# The trailing wait is slack: `run_chained` (crates/ohl-app/src/game_run.rs)
+# ends a route at the level change it reaches, so any ticks left over here
+# are never run.
+
+60 look 0 90
+60 look 0 90
+60 look 0 90
+60 look 0 90
+2400 wait
+360 wait

@@ -7,11 +7,15 @@
 //!   image and the shipping media-parser worker image, proves each is a
 //!   static, non-interpreted `ET_EXEC` binary, and installs the latter at
 //!   `<target>/<profile>/libexec/open-half-life/ohl-media-parser-worker`.
+//! - `cargo xtask chain-walk` walks the campaign as a chain: one scripted
+//!   route per map, each one starting where the previous route's level
+//!   change put the player down, and reports how many maps deep it got.
 //! - `cargo xtask dist` builds the release binary (and, on Linux x86-64, the
 //!   parser worker image) and assembles a versioned, self-contained release
 //!   folder plus a `.tar.gz`/`.zip` archive under `target/dist/`.
 
 mod campaign_smoke;
+mod chain_walk;
 mod combat_smoke;
 mod dist;
 mod graph;
@@ -97,9 +101,14 @@ fn main() -> ExitCode {
             let rest: Vec<String> = std::env::args().skip(2).collect();
             combat_smoke::run(&root, &rest)
         }
+        Some("chain-walk") => {
+            let rest: Vec<String> = std::env::args().skip(2).collect();
+            chain_walk::run(&root, &rest)
+        }
         other => {
             eprintln!(
-                "usage: cargo xtask <policy|graph|worker-image|dist|campaign-smoke|combat-smoke>"
+                "usage: cargo xtask \
+<policy|graph|worker-image|dist|campaign-smoke|combat-smoke|chain-walk>"
             );
             if let Some(other) = other {
                 eprintln!("unknown subcommand: {other}");

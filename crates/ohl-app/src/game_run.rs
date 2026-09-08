@@ -10,7 +10,7 @@
 //! count or size ever reaches a log line, which includes map names, model
 //! paths, entity counts and the user's own command-line paths.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -181,6 +181,10 @@ pub struct GameArgs<'a> {
     /// A deterministic scripted-input file (`crate::script`), run instead
     /// of the interactive window or the frame-count capture loop.
     pub script: Option<&'a Path>,
+    /// A chain of scripted-input route files (`--chain-script`, given once
+    /// per route, in chain order), run instead of a single `script`: see
+    /// [`run_chained`]. Empty when no chain was asked for.
+    pub chain_script: &'a [PathBuf],
     /// Enables the scripted-input milestone log lines. Ignored without
     /// `script`.
     pub script_log: bool,
@@ -350,6 +354,10 @@ recognise (expected a comma-separated list of weapon_*/ammo_* classnames)"
         return Ok(());
     }
 
+    if !args.chain_script.is_empty() {
+        return run_chained(&mut game, &source, args, args.chain_script);
+    }
+
     if let Some(script_path) = args.script {
         return run_scripted(&mut game, &source, args, script_path);
     }
@@ -375,13 +383,15 @@ fn handle_level_change(
     landmark: &str,
     follow: bool,
     script_log: bool,
-) {
+) -> bool {
     if follow && game.change_level(source, map, landmark).is_ok() {
         if script_log {
             tracing::info!("A level change was followed.");
         }
+        true
     } else {
         tracing::info!("A level change fired during capture; it was not followed.");
+        false
     }
 }
 
@@ -440,18 +450,86 @@ fn run_scripted(
     }
 
     let mut log = crate::script_log::ScriptLog::new(game);
+    run_script_ticks(
+        game,
+        source,
+        &script,
+        &mut log,
+        &TickOptions {
+            script_log: args.script_log,
+            follow_level_change: args.follow_level_change,
+            stop_on_level_change: false,
+        },
+    );
+
+    if args.script_log {
+        tracing::info!("Scripted input finished.");
+    }
+
+    if !matches!(pose, CapturePose::None) && pose_is_in_solid(game, &pose) {
+        tracing::warn!("Capture viewpoint ends inside solid geometry.");
+    }
+
+    match args.screenshot {
+        Some(path) => write_screenshot(game, path, &pose),
+        None => Ok(()),
+    }
+}
+
+/// How [`run_script_ticks`] treats the events one route's ticks produce.
+struct TickOptions {
+    /// Emits the `crate::script_log` milestone lines.
+    script_log: bool,
+    /// Passed straight to [`handle_level_change`].
+    follow_level_change: bool,
+    /// Ends the route as soon as a level change has actually been
+    /// followed, leaving the rest of this script's ticks unrun. `false`
+    /// for a plain `--script` run, whose remaining ticks keep running on
+    /// the destination map exactly as they did before a chain walk
+    /// existed; `true` for one leg of a `--chain-script` walk, where the
+    /// next leg's own route takes over at the arrival point.
+    stop_on_level_change: bool,
+}
+
+/// What one route's ticks did, as data: the caller decides what to log.
+struct TickOutcome {
+    /// A `trigger_changelevel` fired and was followed onto its
+    /// destination map.
+    followed_level_change: bool,
+    /// How many simulation ticks actually ran. Fewer than the script
+    /// scheduled when [`TickOptions::stop_on_level_change`] cut the route
+    /// short.
+    ticks: u64,
+}
+
+/// Ticks one parsed script through [`Game::tick`] at [`CAPTURE_STEP`],
+/// handling the events it produces. Shared by [`run_scripted`] (one
+/// script, run to its end) and [`run_chained`] (one script per map, each
+/// ending at the level change that carries the player into the next one).
+fn run_script_ticks(
+    game: &mut Game,
+    source: &AssetFsSource,
+    script: &crate::script::Script,
+    log: &mut crate::script_log::ScriptLog,
+    options: &TickOptions,
+) -> TickOutcome {
+    let mut outcome = TickOutcome {
+        followed_level_change: false,
+        ticks: 0,
+    };
     for input in script.inputs() {
         for event in game.tick(CAPTURE_STEP, input) {
             match event {
                 GameEvent::LevelChange { map, landmark } => {
-                    handle_level_change(
+                    let followed = handle_level_change(
                         game,
                         source,
                         &map,
                         &landmark,
-                        args.follow_level_change,
-                        args.script_log,
+                        options.follow_level_change,
+                        options.script_log,
                     );
+                    outcome.followed_level_change |= followed;
                 }
                 // The same fixed line the interactive window logs
                 // (`GameRun::draw`, below): a scripted/headless run is
@@ -468,23 +546,108 @@ fn run_scripted(
                 | GameEvent::ViewModel(_) => {}
             }
         }
-        if args.script_log {
+        outcome.ticks += 1;
+        if options.script_log {
             log.observe(game, CAPTURE_STEP);
+        }
+        if options.stop_on_level_change && outcome.followed_level_change {
+            break;
+        }
+    }
+    outcome
+}
+
+/// The fixed line a chain walk logs when one of its routes ran out of
+/// scripted ticks without reaching a `trigger_changelevel`: the chain got
+/// no further than the map that route ran on.
+const CHAIN_STOPPED: &str = "The chain walk stopped.";
+
+/// The fixed line a chain walk logs when every route it was given did
+/// reach a level change, so the walk ended only because no route was
+/// authored for the map it last arrived in. Not a failure.
+const CHAIN_NO_FURTHER_ROUTE: &str = "The chain walk has no further route.";
+
+/// Runs a *sequence* of scripted-input routes across level changes in one
+/// process: `routes[0]` from the start map's own player start, and every
+/// later route from the point the preceding route's followed level change
+/// put the player down in the destination map — carrying health, armor,
+/// weapons and ammo through `ohl_engine::transition`'s own machinery,
+/// which is exactly what a cold `--map <name>` load of a mid-campaign map
+/// cannot reproduce.
+///
+/// A route ends at the first level change it follows (the next route takes
+/// over there) or when its own ticks run out (the chain stops). Level
+/// changes are always followed here: a chain walk that did not follow them
+/// would be a plain `--script` run.
+///
+/// Logs, beyond the per-hop "A level change was followed." line
+/// [`handle_level_change`] already emits: one of the two fixed terminal
+/// lines above, plus the walk's own bounded aggregates (how many maps deep
+/// it got and how many simulated seconds that took). No map name, entity
+/// name or position is logged, here or anywhere below.
+fn run_chained(
+    game: &mut Game,
+    source: &AssetFsSource,
+    args: &GameArgs<'_>,
+    routes: &[PathBuf],
+) -> Result<(), &'static str> {
+    let mut scripts = Vec::with_capacity(routes.len());
+    for path in routes {
+        let bytes = std::fs::read(path).map_err(|_| "the script file could not be read")?;
+        scripts.push(
+            crate::script::Script::parse(&bytes)
+                .map_err(|_| "the script file could not be parsed")?,
+        );
+    }
+
+    if args.script_log {
+        tracing::info!("Scripted input loaded.");
+    }
+
+    let mut ticks: u64 = 0;
+    let mut depth: usize = 1;
+    let mut stopped = false;
+    for script in &scripts {
+        // A fresh log per route, so every milestone line is observed from
+        // this map's own arrival point rather than from the chain's start.
+        let mut log = crate::script_log::ScriptLog::new(game);
+        let outcome = run_script_ticks(
+            game,
+            source,
+            script,
+            &mut log,
+            &TickOptions {
+                script_log: args.script_log,
+                follow_level_change: true,
+                stop_on_level_change: true,
+            },
+        );
+        ticks += outcome.ticks;
+        if outcome.followed_level_change {
+            depth += 1;
+        } else {
+            stopped = true;
+            break;
         }
     }
 
     if args.script_log {
         tracing::info!("Scripted input finished.");
     }
-
-    if !matches!(pose, CapturePose::None) && pose_is_in_solid(game, &pose) {
-        tracing::warn!("Capture viewpoint ends inside solid geometry.");
+    if stopped {
+        tracing::info!("{CHAIN_STOPPED}");
+    } else {
+        tracing::info!("{CHAIN_NO_FURTHER_ROUTE}");
     }
-
-    match args.screenshot {
-        Some(path) => write_screenshot(game, path, &pose),
-        None => Ok(()),
-    }
+    // Two bounded aggregates over project-authored routes (how many maps
+    // the chain entered, and how much simulated time the routes it ran
+    // took), in the fixed shapes `xtask/src/chain_walk.rs` parses. Neither
+    // is a media-derived name, path or content figure.
+    tracing::info!("Chain walk depth: {depth}.");
+    #[allow(clippy::cast_precision_loss, reason = "a tick count for a report line")]
+    let seconds = ticks as f32 * CAPTURE_STEP;
+    tracing::info!("Chain walk simulated seconds: {seconds:.1}.");
+    Ok(())
 }
 
 /// Renders exactly one frame and writes it as a PNG. Shared by
