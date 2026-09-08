@@ -1,4 +1,4 @@
-//! Link configuration for the freestanding media-parser worker image.
+//! Link configuration for the hosted media-parser worker image.
 //!
 //! The image must be a static, non-PIE `ET_EXEC` ELF with no `PT_INTERP` and
 //! no `PT_DYNAMIC`, because `ohl-platform`'s isolated-worker backend verifies
@@ -12,29 +12,22 @@
 //! builder) reaches this package.
 //!
 //! The default `cc` linker driver is used - the same one every other binary
-//! in the repository already links with. `-nostdlib` drops the C runtime
-//! start files and the default libraries, so no C library is linked in;
-//! `-Wl,-e,_start` names the hand-written entry point explicitly instead of
-//! relying on the driver's default; `--build-id=none` keeps the image
-//! reproducible.
+//! in the repository already links with. The Rust standard library comes from
+//! the explicitly selected musl target; `-static` and `-no-pie` make its
+//! normal Rust entry point an `ET_EXEC`, while `--build-id=none` keeps the
+//! image reproducible.
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");
-    // The hosted (macOS) shape of this image is an ordinary `std` binary
-    // linked the ordinary way; only the freestanding Linux x86-64 shape
-    // needs the flags below. `CARGO_CFG_*` describe the *target* of this
-    // build, which is what matters here.
+    // The macOS image is an ordinary dynamically linked `std` binary. Only
+    // the Linux x86-64 musl target needs these image-local link arguments.
+    // `CARGO_CFG_*` describe the *target* of this build, which is what
+    // matters here.
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     if target_os != "linux" || target_arch != "x86_64" {
         return;
     }
-    for argument in [
-        "-nostdlib",
-        "-static",
-        "-no-pie",
-        "-Wl,-e,_start",
-        "-Wl,--build-id=none",
-    ] {
+    for argument in ["-static", "-no-pie", "-Wl,--build-id=none"] {
         println!("cargo::rustc-link-arg-bins={argument}");
     }
 }

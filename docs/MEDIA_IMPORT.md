@@ -274,13 +274,15 @@ holds the OWP/1 framing, schemas and session validator; `ohl-parser-worker-servi
 holds the worker-side lifetime, with the C++ callback tables expressed as the
 `Transport` and `Dispatcher` traits and the buffer-overlap and view-lifetime
 rules enforced by the borrow checker instead of by pointer comparison; and
-`ohl-parser-worker` builds and installs the freestanding
-`ohl-media-parser-worker` image that hosts one lifetime with the compile-fixed
-unsupported dispatcher. All three are `no_std` and the first two are
-allocation-free; all three forbid `unsafe` except the image, whose inventory
-is reproduced in its own module documentation. Since R4.7b the image hosts the
-real `ohl-parser-backends` dispatcher, so it enumerates and streams the
-containers it recognises and refuses only the ones it does not.
+`ohl-parser-worker` builds and installs the hosted Rust `std`
+`ohl-media-parser-worker` image. The protocol and service remain `no_std` and
+allocation-free; the image uses the standard library on Linux and macOS.
+Linux links musl statically, while macOS links libSystem. Its unsafe sites
+are documented in the shared hosted implementation. The image hosts the
+compile-fixed `ohl-parser-backends` dispatcher, enumerating and streaming
+containers it recognises and refusing the ones it does not. Standard-library
+dependencies are permitted inside the worker; using `no_std` in a decoder
+is an optional library capability, not an import requirement.
 
 Authority remains asymmetric. The trusted parent owns the pinned source,
 validates every worker frame independently, establishes catalog membership,
@@ -873,31 +875,24 @@ answered. The two random-access containers are instead buffered whole, bounded
 before the first byte by `MAXIMUM_BUFFERED_BYTES` (32 MiB); anything larger is
 refused as unsupported rather than decoded partially.
 
-### The heap is a fixed arena
+### The worker uses the standard library
 
-The worker image has no allocator to borrow, so it carries one: a forward-only
-bump allocator over a single `ARENA_BYTES` (96 MiB) `.bss` region, installed
-as the `#[global_allocator]`. It never calls `brk` or `mmap` — neither is on
-the seccomp allowlist and both are forbidden symbols in the image audit — it
-never reclaims a freed block, and it simply runs out, which is a panic and
-therefore a fail-closed exit. It is sized well inside the launcher's
-`RLIMIT_DATA` (256 MiB) and `RLIMIT_AS` (512 MiB).
+Linux and macOS share the hosted worker and its `std::alloc::System`
+allocator. `BoundedSystem` limits live allocations to 128 MiB and returns
+freed memory to the allocator, allowing successive streams to reuse memory.
+Allocation failure terminates the worker without publishing partial output.
+Linux additionally enforces `RLIMIT_DATA` (256 MiB) and `RLIMIT_AS` (512 MiB).
 
-This is the image's only new `unsafe` site (row 6 of the `unsafe` inventory in
-`crates/ohl-parser-worker/image/src/main.rs`): `GlobalAlloc` is an unsafe
-trait returning raw pointers and the arena has to be a `static`, so it needs
-`UnsafeCell`, `unsafe impl Sync` and `unsafe impl GlobalAlloc`. It is sound
-because the process is single-threaded by construction (`RLIMIT_NPROC` is 1
-and neither `clone` nor `fork` is on the seccomp allowlist), so the non-atomic
-cursor cannot race; `alloc` returns either an aligned, in-bounds,
-never-previously-returned sub-slice or null, which the caller must already
-handle; `dealloc` does nothing, which is always sound; and the cursor only
-moves forward, so two live allocations can never overlap. Every other crate in
-the workspace, this one included, keeps `forbid(unsafe_code)`.
+The Linux worker is statically linked against musl. Its seccomp policy permits
+the runtime's initialization and bounded allocation operations while retaining
+restrictions on file access, networking, process creation and executable
+memory mappings. Image audits verify static executable identity and resolution
+of required symbols; libc and allocator symbol names are expected.
 
-The back ends are written for that arena: one `StreamReader` is reused for
-every Wise stream rather than one allocated per stream, and a separate 8 MiB
-spelling arena is claimed once per process.
+The shared hosted implementation documents its descriptor ownership and
+bounded-allocator unsafe sites. The container decoders keep their bounded
+source interfaces and streaming behavior, but future libraries may use Rust's
+standard library. No decoder replacement is part of this runtime change.
 
 ### Enumeration
 

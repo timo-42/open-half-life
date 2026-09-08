@@ -12,6 +12,9 @@ use std::process::Command;
 
 use ohl_iso9660::test_support::{self as fixture, Options};
 
+#[cfg(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos"))]
+mod support;
+
 /// Bytes for a synthetic image that neither the ISO 9660 nor the UDF
 /// preflight recognizes: an all-zero buffer the right size to be a
 /// plausible-looking image but matching no signature either preflight
@@ -36,6 +39,52 @@ fn run(args: &[&str]) -> std::process::Output {
         .args(args)
         .output()
         .expect("spawn open-half-life")
+}
+
+#[cfg(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos"))]
+#[test]
+fn missing_worker_image_reports_the_safe_cause_and_profile_matched_install_command() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let copied_binary = directory.path().join("open-half-life");
+    std::fs::copy(binary(), &copied_binary).expect("copy application without its worker image");
+
+    let iso = directory.path().join("synthetic.iso");
+    std::fs::write(&iso, support::synthetic_wise_iso()).expect("synthetic iso fixture");
+    let cache = directory.path().join("cache");
+    let payload = directory.path().join("payload");
+    let output = Command::new(&copied_binary)
+        .args([
+            "--iso",
+            iso.to_str().expect("utf-8 path"),
+            "--cache",
+            cache.to_str().expect("utf-8 path"),
+            "--payload-root",
+            payload.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("spawn copied open-half-life");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
+    assert!(
+        stderr.contains(
+            "Payload import failed: no parser worker could be launched: isolated worker: service \
+             image is not installed."
+        ),
+        "stderr: {stderr}"
+    );
+    #[cfg(debug_assertions)]
+    assert!(
+        stderr.contains("`cargo xtask worker-image`"),
+        "debug hint did not match the binary profile: {stderr}"
+    );
+    #[cfg(not(debug_assertions))]
+    assert!(
+        stderr.contains("`cargo run --release -p xtask -- worker-image`"),
+        "release hint did not match the binary profile: {stderr}"
+    );
+    assert!(!stderr.contains(iso.to_str().expect("utf-8 path")));
+    assert!(!stderr.contains(payload.to_str().expect("utf-8 path")));
 }
 
 #[test]

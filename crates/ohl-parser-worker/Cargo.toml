@@ -1,6 +1,6 @@
 [package]
 name = "ohl-parser-worker"
-description = "Builder, install location and host-side contract for the freestanding Linux media-parser worker image"
+description = "Builder, install location and host-side contract for the isolated media-parser worker image"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,7 +11,7 @@ publish = false
 [lib]
 name = "ohl_parser_worker"
 
-# The freestanding image in `image/` is a standalone package, so the shipping
+# The image in `image/` is a standalone package, so the shipping
 # library here has no dependencies at all. The integration test drives a real
 # confined worker, which is why the launcher and the wire protocol appear as
 # development dependencies only.

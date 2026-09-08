@@ -1,17 +1,16 @@
-# Standalone (non-member) package for the freestanding Linux media-parser
-# worker image.
+# Standalone (non-member) package for the hosted media-parser worker image.
 #
 # It is deliberately *not* a member of the repository workspace:
 #
-# - a `#![no_std] #![no_main]` binary can only be compiled with
-#   `panic = "abort"` ("unwinding panics are not supported without std"), and
-#   `panic` is a profile-level setting that cannot be scoped to one package
-#   inside a workspace (`profile.<p>.package.<name>.panic` is rejected by
-#   Cargo);
+# - the image must use `panic = "abort"` so a panic cannot unwind across its
+#   worker boundary, and `panic` is a profile-level setting that cannot be
+#   scoped to one package inside a workspace
+#   (`profile.<p>.package.<name>.panic` is rejected by Cargo);
 # - the workspace root manifest is owned by another work package and must not
 #   grow a `[profile]` section for one binary;
 # - `unsafe_code` is `forbid` workspace-wide, and this package needs a local
-#   `allow` for its documented entry point, syscall and `mem` shims.
+#   `allow` to adopt its two inherited descriptors and install its documented
+#   bounded allocator.
 #
 # `ohl-parser-worker` (the workspace member one directory up) drives `cargo
 # build` for this package with an explicit `--target-dir`, so nothing here is

@@ -1,31 +1,25 @@
-//! The media-parser worker image, in its two native shapes.
+//! The media-parser worker image.
 //!
-//! - On Linux x86-64 this is the freestanding `#![no_std] #![no_main]` image
-//!   of [`freestanding`]: raw syscalls, a fixed `.bss` arena, no libc, so
-//!   `ohl-platform`'s seccomp allowlist is sufficient and any other syscall
-//!   is a genuine policy violation.
-//! - On macOS it is the hosted `std` image of [`hosted`]: an ordinary binary
-//!   linked against libSystem and nothing else, which `ohl-platform`'s macOS
-//!   backend runs under the system sandbox with a self-imposed heap ceiling.
+//! Linux x86-64 and macOS share the ordinary hosted `std` implementation in
+//! [`hosted`]. On Linux, the builder explicitly selects
+//! `x86_64-unknown-linux-musl` and this package's build script makes its
+//! linked image static and non-PIE. On macOS it links normally against
+//! libSystem. Both backends confine the process before it starts.
 //!
 //! Both host exactly one `run_parser_worker_service` lifetime over
 //! descriptor 3 with `ohl_parser_backends::ContainerDispatcher`, attest
 //! readiness on descriptor 4, parse no arguments, read no environment, open
 //! no file, and exit with the statuses in `contract.rs`.
 //!
-//! The crate-level attributes are conditional so one package (and one
-//! `Cargo.lock`) serves both; `build.rs` emits the freestanding link
-//! arguments only for the Linux x86-64 target.
-#![cfg_attr(all(target_os = "linux", target_arch = "x86_64"), no_std, no_main)]
 #![allow(unsafe_code)]
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-mod freestanding;
+mod hosted;
 
 #[cfg(target_os = "macos")]
 mod hosted;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos"))]
 fn main() -> ! {
     hosted::main()
 }

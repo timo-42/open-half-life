@@ -1,13 +1,9 @@
 //! Development-only support for the isolated-worker test image.
 //!
 //! The image itself lives in [`image/`](../image), a standalone Cargo package
-//! that is deliberately **not** a workspace member: on Linux x86-64 it is a
-//! `#![no_std] #![no_main]` binary that can only be compiled with
-//! `panic = "abort"`, and `panic` is a profile-level setting that Cargo
-//! refuses to scope to a single package inside a workspace. On macOS the same
-//! package builds as a hosted `std` binary (see `image/src/hosted.rs`).
-//! Building it therefore means invoking `cargo` on that package with an
-//! explicit `--target-dir`, which is what [`build_test_worker_image`] does.
+//! that is deliberately **not** a workspace member, so its abort-on-panic
+//! release profile stays private. Linux uses the fixed static musl target;
+//! macOS uses the system runtime. Both run the same standard-library fixture.
 //!
 //! Nothing in this crate is used by shipping code. It contains no `unsafe`
 //! (the workspace-wide `unsafe_code = "forbid"` applies) and is only ever
@@ -82,8 +78,7 @@ impl From<std::io::Error> for BuildError {
 }
 
 /// Whether this host can build (and its `ohl-platform` backend can launch)
-/// the image: Linux x86-64 for the freestanding shape, macOS for the hosted
-/// one.
+/// the image: Linux x86-64 with the musl target installed, or macOS.
 #[must_use]
 pub const fn image_host_supported() -> bool {
     cfg!(any(
@@ -141,6 +136,13 @@ pub fn build_test_worker_image(variant: TestWorkerVariant) -> Result<PathBuf, Bu
         command.arg("--features").arg("never-ready");
     }
     scrub_build_environment(&mut command);
+    if cfg!(target_os = "linux") {
+        command.arg("--target").arg("x86_64-unknown-linux-musl");
+        command.env(
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS",
+            "-C relocation-model=static",
+        );
+    }
 
     let output = command.output()?;
     if !output.status.success() {
@@ -149,7 +151,12 @@ pub fn build_test_worker_image(variant: TestWorkerVariant) -> Result<PathBuf, Bu
         ));
     }
 
-    let built = target_directory
+    let artifact_directory = if cfg!(target_os = "linux") {
+        target_directory.join("x86_64-unknown-linux-musl")
+    } else {
+        target_directory
+    };
+    let built = artifact_directory
         .join("release")
         .join("ohl-media-parser-worker");
     stage_read_only(&built, &root.join(format!("{}-image", variant.slug())))
@@ -161,7 +168,7 @@ pub fn build_test_worker_image(variant: TestWorkerVariant) -> Result<PathBuf, Bu
 /// script: an inherited compiler, wrapper, linker, or flag set could quietly
 /// turn it into a dynamically linked, instrumented, or differently targeted
 /// binary that the host backend would then refuse to execute (or, worse,
-/// would execute with a C runtime attached).
+/// would execute with an unintended runtime attached).
 const SCRUBBED_ENVIRONMENT_NAMES: [&str; 21] = [
     "RUSTFLAGS",
     "CARGO_ENCODED_RUSTFLAGS",

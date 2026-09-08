@@ -1,10 +1,9 @@
 //! End-to-end tests for the Linux x86-64 isolated-worker backend.
 //!
 //! Every test drives a real confined child built from
-//! `crates/ohl-test-worker/image`: a freestanding, statically linked
-//! `#![no_std]` program that issues raw syscalls only. That is what makes the
-//! seccomp assertions meaningful - a libc-based helper would need dozens of
-//! syscalls the policy deliberately denies.
+//! `crates/ohl-test-worker/image`: the same static musl Rust std runtime as
+//! the parser. Startup, allocation and transport run under the real policy;
+//! explicit raw probes distinguish seccomp kills from ordinary errors.
 
 use super::{
     IsolatedWorker, IsolatedWorkerCancellationSource, IsolatedWorkerCancellationToken,
@@ -472,4 +471,38 @@ fn the_compile_fixed_install_location_is_the_only_production_source() {
 fn the_staged_image_lives_where_the_builder_says_it_does() {
     let path = image(TestWorkerVariant::Ready);
     assert!(Path::new(&path).is_file());
+}
+
+#[test]
+fn standard_runtime_allocation_sync_time_and_hashing_work_under_confinement() {
+    let mut worker = launch_ready();
+    send_frame(&mut worker, &[protocol::MODE_STD_RUNTIME]).expect("select runtime probe");
+    assert_eq!(
+        receive_frame(&mut worker).expect("runtime probe replies"),
+        vec![1]
+    );
+    worker.close_channel();
+    assert_eq!(
+        worker.wait(deadline(Duration::from_secs(5))),
+        Ok(IsolatedWorkerExitKind::Clean)
+    );
+}
+
+#[test]
+fn forbidden_authorities_are_individually_killed_by_seccomp() {
+    for probe in 0..protocol::LINUX_DENIAL_PROBE_COUNT {
+        let mut worker = launch_ready();
+        send_frame(&mut worker, &[protocol::MODE_LINUX_DENIAL, probe])
+            .expect("select denial probe");
+        assert_eq!(
+            worker.wait(deadline(Duration::from_secs(5))),
+            Ok(IsolatedWorkerExitKind::Crashed),
+            "probe {probe}"
+        );
+        assert_eq!(
+            worker.terminating_signal(),
+            Some(SIGSYS),
+            "probe {probe} must be killed by seccomp"
+        );
+    }
 }

@@ -1,4 +1,4 @@
-//! Hosted (`std`) macOS test worker image.
+//! Shared standard-library Linux musl and macOS test worker image.
 //!
 //! The confined side of the `ohl-platform` isolated-worker contract on
 //! macOS: an ordinary Rust binary that the host runs under the system sandbox
@@ -17,6 +17,7 @@
 
 use std::fs::File;
 use std::io::{Read as _, Write as _};
+#[cfg(target_os = "macos")]
 use std::mem::ManuallyDrop;
 use std::os::fd::FromRawFd as _;
 use std::os::unix::net::UnixStream;
@@ -73,6 +74,7 @@ fn hang_forever() -> ! {
 /// Bitmask of the descriptors below [`FD_PROBE_CEILING`] that are open,
 /// probed with `fstat`: it succeeds on any open descriptor and fails with
 /// `EBADF` on a closed number.
+#[cfg(target_os = "macos")]
 fn fd_inventory() -> u64 {
     let mut mask = 0u64;
     for descriptor in 0..FD_PROBE_CEILING {
@@ -89,6 +91,7 @@ fn fd_inventory() -> u64 {
 
 /// Attempts each operation the sandbox must deny; bit `n` set means probe
 /// `n` succeeded. See [`CONFINEMENT_PROBE_COUNT`] for the order.
+#[cfg(target_os = "macos")]
 fn confinement_probe() -> u8 {
     let mut succeeded = 0u8;
     if File::open("/private/etc/hosts").is_ok() {
@@ -110,6 +113,28 @@ fn confinement_probe() -> u8 {
     }
     const { assert!(CONFINEMENT_PROBE_COUNT == 4) };
     succeeded
+}
+
+#[cfg(target_os = "linux")]
+use crate::linux_probes::fd_inventory;
+
+fn standard_runtime_probe() -> bool {
+    let start = std::time::Instant::now();
+    let lock = std::sync::Mutex::new(Vec::new());
+    let mut bytes = lock.lock().unwrap();
+    // Large grow/shrink operations exercise malloc/realloc/free and touch
+    // every page, keeping actual allocation observable through the checksum.
+    bytes.resize(2 * 1024 * 1024, 37u8);
+    bytes.resize(4 * 1024 * 1024, 19);
+    let sum: u64 = bytes.iter().map(|byte| u64::from(*byte)).sum();
+    bytes.truncate(128);
+    bytes.shrink_to_fit();
+    let mut seeded = std::collections::HashMap::new();
+    seeded.insert("sum", sum);
+    std::thread::park_timeout(std::time::Duration::from_millis(1));
+    start.elapsed() > std::time::Duration::ZERO
+        && seeded["sum"] == 2 * 1024 * 1024 * (37 + 19)
+        && bytes.iter().all(|byte| *byte == 37)
 }
 
 fn reply(stream: &mut UnixStream, payload: &[u8]) -> bool {
@@ -137,8 +162,24 @@ fn serve(stream: &mut UnixStream, buffer: &mut [u8]) -> i32 {
         let selected = *mode.get_or_insert(buffer[0]);
         match selected {
             MODE_HANG => hang_forever(),
+            #[cfg(target_os = "macos")]
             MODE_CRASH => std::process::abort(),
+            #[cfg(target_os = "linux")]
+            MODE_CRASH => crate::linux_probes::crash(),
+            #[cfg(target_os = "macos")]
             MODE_FORBIDDEN_SYSCALL => return WORKER_PROTOCOL_FAILURE_STATUS,
+            #[cfg(target_os = "linux")]
+            MODE_FORBIDDEN_SYSCALL => return crate::linux_probes::denied(0),
+            #[cfg(target_os = "linux")]
+            MODE_LINUX_DENIAL => {
+                return crate::linux_probes::denied(*buffer.get(1).unwrap_or(&255));
+            }
+            MODE_STD_RUNTIME => {
+                if !reply(stream, &[u8::from(standard_runtime_probe())]) {
+                    return WORKER_PROTOCOL_FAILURE_STATUS;
+                }
+                continue;
+            }
             MODE_EXIT => {
                 return if length >= 2 {
                     i32::from(buffer[1])
@@ -152,6 +193,7 @@ fn serve(stream: &mut UnixStream, buffer: &mut [u8]) -> i32 {
                 }
                 continue;
             }
+            #[cfg(target_os = "macos")]
             MODE_CONFINEMENT_PROBE => {
                 if !reply(stream, &[confinement_probe()]) {
                     return WORKER_PROTOCOL_FAILURE_STATUS;
@@ -177,6 +219,9 @@ pub(crate) fn main() -> ! {
         std::process::exit(WORKER_PROTOCOL_FAILURE_STATUS);
     }
     let mut stream = channel();
+    if stream.set_nonblocking(true).is_err() || stream.set_nonblocking(false).is_err() {
+        std::process::exit(WORKER_PROTOCOL_FAILURE_STATUS);
+    }
     let mut buffer = vec![0u8; MAX_FRAME_BYTES];
     let status = serve(&mut stream, &mut buffer);
     std::process::exit(status)

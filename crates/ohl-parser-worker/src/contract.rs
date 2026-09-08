@@ -1,8 +1,8 @@
 // The launch contract shared by the host side of this crate, the integration
-// test, and the freestanding worker image itself.
+// test, and the hosted worker image itself.
 //
 // This file is compiled twice: once as a module of the `ohl-parser-worker`
-// library (`std`), and once via `include!` from the `#![no_std]` image. It
+// library (`std`), and once via `include!` from the hosted image. It
 // therefore contains nothing but `const` items.
 //
 // The descriptor numbers and the readiness attestation must stay identical to
