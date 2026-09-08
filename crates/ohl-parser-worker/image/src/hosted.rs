@@ -1,11 +1,13 @@
-//! The hosted (`std`) macOS media-parser worker image.
+//! The hosted (`std`) media-parser worker image.
 //!
-//! This is the confined side of the OWP/1 contract on macOS. It is an
-//! ordinary Rust binary: `ohl-platform`'s macOS backend verifies that it is a
-//! thin `MH_EXECUTE` Mach-O linking only `/usr/lib/libSystem.B.dylib`, then
-//! runs it under the system sandbox (`macos_profile.sb`: deny by default,
-//! no network, no writes, no `fork`) with descriptors 3 (channel) and 4
-//! (readiness) already in place and the resource limits already applied.
+//! This is the confined side of the OWP/1 contract on Linux x86-64 and macOS.
+//! It is an ordinary Rust binary. Linux builds use the static
+//! `x86_64-unknown-linux-musl` target and are audited as non-PIE `ET_EXEC`
+//! files with no interpreter or dynamic segment. macOS builds are thin
+//! `MH_EXECUTE` Mach-O files linking only `/usr/lib/libSystem.B.dylib`.
+//! Their respective backends confine the process with descriptors 3
+//! (channel) and 4 (readiness) already in place and the resource limits
+//! already applied.
 //! It writes the readiness attestation on descriptor 4, hosts exactly one
 //! `run_parser_worker_service` lifetime over descriptor 3 with
 //! `ohl_parser_backends::ContainerDispatcher`, and exits with a fixed status.
@@ -13,25 +15,24 @@
 //!
 //! # The heap
 //!
-//! Unlike the freestanding Linux image, this one has a real allocator - and
-//! the host cannot put a ceiling under it: Darwin rejects `setrlimit` for
+//! This image has a real allocator. On macOS, the host cannot put a ceiling
+//! under it: Darwin rejects `setrlimit` for
 //! both `RLIMIT_AS` and `RLIMIT_DATA` outright (`EINVAL`), so those limits
 //! are absent from the macOS backend's table and no kernel-enforced memory
 //! bound exists on this platform.
 //! [`BoundedSystem`] is: a counting wrapper around the system allocator that
 //! refuses any allocation which would take the live total past
 //! [`HEAP_CEILING_BYTES`]. Refusal is the standard allocation-failure abort,
-//! which the host reports as a crashed worker - fail-closed, like arena
-//! exhaustion on Linux.
+//! which the host reports as a crashed worker.
 //!
 //! # Exit statuses
 //!
-//! Identical to the freestanding image (`contract.rs`): `0` orderly shutdown
-//! or orderly peer close, `64` protocol failure, `65` dispatcher
+//! `contract.rs` defines: `0` orderly shutdown or orderly peer close, `64`
+//! protocol failure, `65` dispatcher
 //! `unsupported`, `66` transport failure, `70` anything else, including a
 //! panic (a panic hook turns the `panic = "abort"` into that exit status).
 //!
-//! # Deviations from the freestanding image
+//! # Hosted transport behavior
 //!
 //! - `SIGPIPE` is ignored (every Rust `std` binary starts that way), so a
 //!   parent that vanishes mid-write produces `EPIPE`, a transport failure,
@@ -70,9 +71,8 @@ include!("../../src/contract.rs");
 
 const PAYLOAD_BYTES: usize = MAXIMUM_FRAME_PAYLOAD_BYTES as usize;
 
-/// The live-heap ceiling, in bytes: the freestanding image's 96 MiB arena
-/// plus its two 1 MiB `.bss` payload buffers, rounded up. Well inside the
-/// host's (nominal) `RLIMIT_DATA`, and far above what the back ends need.
+/// The live-heap ceiling, in bytes. It is far above what the back ends need
+/// and gives macOS the memory ceiling its kernel cannot impose.
 const HEAP_CEILING_BYTES: usize = 128 * 1024 * 1024;
 
 /// The spelling storage the dispatcher copies offered names into.
@@ -138,6 +138,24 @@ unsafe impl GlobalAlloc for BoundedSystem {
 static HEAP: BoundedSystem = BoundedSystem {
     live: AtomicUsize::new(0),
 };
+
+#[cfg(test)]
+mod heap_tests {
+    use super::{AtomicUsize, BoundedSystem, HEAP_CEILING_BYTES, Ordering};
+
+    #[test]
+    fn the_live_heap_ceiling_is_released_for_later_allocations() {
+        let heap = BoundedSystem {
+            live: AtomicUsize::new(0),
+        };
+        assert!(heap.reserve(HEAP_CEILING_BYTES));
+        assert!(!heap.reserve(1));
+
+        heap.release(HEAP_CEILING_BYTES);
+        assert!(heap.reserve(1));
+        assert_eq!(heap.live.load(Ordering::Relaxed), 1);
+    }
+}
 
 // ------------------------------------------------------------ transport ----
 
@@ -303,6 +321,8 @@ pub(crate) fn main() -> ! {
     // A panic must be the contract's internal-failure status, not `SIGABRT`,
     // and must print nothing (there is nowhere to print to anyway: 0/1/2 are
     // `/dev/null`).
-    std::panic::set_hook(Box::new(|_| std::process::exit(WORKER_INTERNAL_FAILURE_EXIT)));
+    std::panic::set_hook(Box::new(|_| {
+        std::process::exit(WORKER_INTERNAL_FAILURE_EXIT)
+    }));
     std::process::exit(serve())
 }

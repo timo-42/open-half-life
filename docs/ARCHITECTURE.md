@@ -11,7 +11,7 @@ acyclic and matches the table below, which restates
 | `ohl-core` | errors, sanitized diagnostics, SHA-256, bounded arithmetic | `no_std` + `alloc` |
 | `ohl-parser-protocol` | OWP/1 framing, twelve typed schemas, budgets, ordering | `no_std`, no `alloc` |
 | `ohl-parser-worker-service` | one bounded worker-side OWP/1 lifetime | `no_std`, no `alloc` |
-| `ohl-parser-worker` | binary: fd 4 readiness, fd 3 lifetime, fixed dispatcher | `no_std` + `no_main` |
+| `ohl-parser-worker` | hosted binary: fd 4 readiness, fd 3 lifetime, fixed dispatcher | `std`; static musl on Linux, libSystem on macOS |
 | `ohl-media-archive` | block-source trait, bounded listing model, path rules, classification vocabulary shared by both media readers and `ohl-vfs` | `no_std` + `alloc` |
 | `ohl-iso9660`, `ohl-udf` | thin wrappers over pinned `hadris-iso`/`hadris-udf` 2.3.0 plus anti-abuse limits | `no_std` + `alloc` |
 | `ohl-cabinet-format` | cabinet structure parsing/validation (Unshield translation) | `no_std` + `alloc` |
@@ -37,7 +37,7 @@ acyclic and matches the table below, which restates
 | `ohl-wise` | clean-room reader for Wise Installation System packages (PE/NE overlay) | `no_std` + `alloc` |
 | `ohl-mscab` | clean-room, bounds-checked reader for the Microsoft Cabinet (MS-CAB) container | `no_std` + `alloc` |
 | `ohl-isz` | clean-room decoder for InstallShield 3 "Z" archives and PKWARE "imploded" streams | `no_std` + `alloc` |
-| `ohl-test-worker` | development-only support for the freestanding Linux isolated-worker test image | std |
+| `ohl-test-worker` | development-only support for the hosted Linux/macOS isolated-worker test image | std |
 | `ohl-app` | composition root binary (`open-half-life`) | std |
 | `xtask` | policy check, worker image build, packaging, campaign/combat smokes | std |
 
@@ -106,10 +106,9 @@ crate-level attribute, so the allowance lives in each crate's own
   bootstrap, descriptor adoption and `kqueue` registration. Every unsafe site
   carries a `// SAFETY:` comment and is inventoried in the crate's own module
   documentation.
-- **`ohl-parser-worker`** — the freestanding binary's own `_start` entry
-  point, because a `#![no_std] #![no_main]` binary has no runtime to hand
-  control to `main` for it, plus (in the hosted macOS shape of the same
-  image) descriptor adoption and the bounded global allocator.
+- **`ohl-parser-worker`** — descriptor adoption and the bounded system
+  allocator in the shared Linux/macOS hosted image. Rust's standard library
+  supplies startup, transport and allocation on both platforms.
 
 Both crates carry `#![deny(unsafe_op_in_unsafe_fn)]`. No other crate,
 including every parser and format decoder, contains an `unsafe` block.
@@ -117,9 +116,10 @@ including every parser and format decoder, contains an `unsafe` block.
 
 The `ohl-parser-protocol` crate is deliberately isolated: nothing outside the
 parser-worker chain depends on it, and its only allowed dependency edge is
-`ohl-core` (see the crate table above). The `no_std`, no-`alloc` bound means
-the same protocol sources build unchanged into the freestanding
-`ohl-parser-worker` binary. Its accepted OWP/1 protocol layer provides
+`ohl-core` (see the crate table above). Its `no_std`, no-`alloc` capability
+keeps protocol processing allocation-free inside the hosted
+`ohl-parser-worker` binary. Worker dependencies may use `std`; the protocol
+crate's narrower capability is a library choice. Its accepted OWP/1 protocol layer provides
 canonical bounded framing and headers,
 generic bounded primitive payload readers and writers, per-frame and cumulative
 message/payload budgets, and fail-closed session ordering. Accepted typed

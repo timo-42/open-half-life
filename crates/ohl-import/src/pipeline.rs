@@ -50,7 +50,7 @@ use ohl_payload::stage::{
 };
 use ohl_payload::store::DirectoryPayloadStore;
 use ohl_payload::stream::{PayloadByteSink, PayloadSource};
-use ohl_platform::MediaSource;
+use ohl_platform::{IsolatedWorkerError, MediaSource};
 use ohl_vfs::Mount;
 use thiserror::Error;
 
@@ -194,8 +194,12 @@ pub enum ImportError {
     #[error("the mounted media could not be read")]
     Media,
     /// No confined parser worker could be launched on this build.
-    #[error("no parser worker could be launched")]
-    WorkerUnavailable,
+    ///
+    /// The platform cause is itself a fixed, payload-free code. Retaining it
+    /// lets the composition root distinguish a missing installed image from
+    /// a backend or confinement failure without exposing a path or OS error.
+    #[error("no parser worker could be launched: {0}")]
+    WorkerUnavailable(#[source] IsolatedWorkerError),
     /// The worker refused the operation: it recognised no container it can
     /// decode, or the container's bytes did not decode. It answers
     /// `unsupported` by emitting no frame and exiting, which the parent
@@ -566,7 +570,7 @@ pub fn run_import(
             let startup = Instant::now()
                 .checked_add(config.startup_timeout)
                 .unwrap_or_else(Instant::now);
-            ParserWorkerProcess::launch(startup).map_err(|_| ImportError::WorkerUnavailable)
+            ParserWorkerProcess::launch(startup).map_err(ImportError::WorkerUnavailable)
         },
         allocation,
         cancellation,
@@ -822,7 +826,11 @@ fn run_import_inner<W: WorkerProcess, F: FnOnce() -> Result<W, ImportError>>(
 
 #[cfg(test)]
 mod tests {
-    use super::{ContainerCandidate, ContainerKind, choose_primary};
+    use std::error::Error as _;
+
+    use ohl_platform::IsolatedWorkerError;
+
+    use super::{ContainerCandidate, ContainerKind, ImportError, choose_primary};
     use crate::catalog::NormalizedPath;
 
     fn candidate(path: &str, kind: ContainerKind, length: u64) -> ContainerCandidate {
@@ -896,5 +904,19 @@ mod tests {
     #[test]
     fn no_candidate_is_no_choice() {
         assert!(choose_primary(&[]).is_none());
+    }
+
+    #[test]
+    fn worker_launch_failure_preserves_its_fixed_platform_cause() {
+        let error = ImportError::WorkerUnavailable(IsolatedWorkerError::ServiceUnavailable);
+
+        assert_eq!(
+            error.to_string(),
+            "no parser worker could be launched: isolated worker: service image is not installed"
+        );
+        assert_eq!(
+            error.source().map(ToString::to_string),
+            Some("isolated worker: service image is not installed".to_owned())
+        );
     }
 }

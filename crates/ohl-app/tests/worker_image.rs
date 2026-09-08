@@ -2,7 +2,7 @@
 //!
 //! This is the only test that launches a confined process. It is `#[ignore]`d
 //! because it needs the image installed beside the built binary first, and it
-//! runs only on the one tuple that has a containment backend:
+//! runs only on targets that have a containment backend:
 //!
 //! ```text
 //! cargo xtask worker-image
@@ -18,7 +18,7 @@
 //!   is not an archive, which the worker must refuse, leaving the run to exit
 //!   0 having published nothing.
 
-#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#![cfg(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos"))]
 
 mod support;
 

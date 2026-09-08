@@ -53,6 +53,17 @@ const EXIT_USAGE: u8 = 2;
 /// A media, mount, or cache failure.
 const EXIT_FAILURE: u8 = 1;
 
+/// How to install the worker beside a binary built in this Cargo profile.
+///
+/// These are compile-fixed strings: launch diagnostics never interpolate an
+/// image path, an OS error, or any media-derived data.
+#[cfg(debug_assertions)]
+const WORKER_IMAGE_INSTALL_HINT: &str =
+    "Install the parser worker for this debug build with `cargo xtask worker-image`, then retry.";
+#[cfg(not(debug_assertions))]
+const WORKER_IMAGE_INSTALL_HINT: &str = "Install the parser worker for this release build with \
+    `cargo run --release -p xtask -- worker-image`, then retry.";
+
 /// The `--difficulty` choices, mapped onto `ohl-campaign`'s documented
 /// `skill` cvar values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -1169,6 +1180,14 @@ fn report_import(outcome: Result<ohl_import::ImportReport, ohl_import::ImportErr
             );
             ExitCode::SUCCESS
         }
+        Err(
+            error @ ohl_import::ImportError::WorkerUnavailable(
+                ohl_platform::IsolatedWorkerError::ServiceUnavailable,
+            ),
+        ) => {
+            tracing::error!("Payload import failed: {error}. {WORKER_IMAGE_INSTALL_HINT}");
+            ExitCode::from(EXIT_FAILURE)
+        }
         Err(error) => {
             tracing::error!("Payload import failed: {error}");
             ExitCode::from(EXIT_FAILURE)
@@ -1248,6 +1267,16 @@ mod tests {
         assert_eq!(
             report_import(Err(ohl_import::ImportError::Unsupported)),
             ExitCode::SUCCESS
+        );
+    }
+
+    #[test]
+    fn a_missing_worker_image_remains_a_failure_exit() {
+        assert_eq!(
+            report_import(Err(ohl_import::ImportError::WorkerUnavailable(
+                ohl_platform::IsolatedWorkerError::ServiceUnavailable,
+            ))),
+            ExitCode::from(super::EXIT_FAILURE)
         );
     }
 

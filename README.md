@@ -11,14 +11,23 @@ engine.
 
 ## Build
 
-The project is implemented entirely in Rust (Rust 2024 edition, no FFI, no
-linked C libraries), as a Cargo workspace under `crates/`. There is no CMake
+The project is implemented in Rust (Rust 2024 edition), as a Cargo workspace
+under `crates/`. The Linux parser worker uses Rust's standard library with
+a statically linked musl runtime. There is no CMake
 or C++ build; the earlier C++ tree was removed once the Rust port reached M1
 parity (see [docs/MILESTONES.md](docs/MILESTONES.md)).
 
 Requirements: a stable Rust toolchain matching `rust-toolchain.toml` (installed
 automatically by `rustup` on first use) plus the `clippy` and `rustfmt`
 components.
+
+On Linux x86-64, install the worker's static-runtime build prerequisites
+before running the tests or building an import worker:
+
+```sh
+sudo apt-get install musl-tools # Debian/Ubuntu
+rustup target add x86_64-unknown-linux-musl
+```
 
 ```sh
 cargo build --workspace
@@ -27,11 +36,25 @@ cargo xtask policy
 cargo xtask graph
 ```
 
-Run the composition-root binary:
+Payload import needs the parser worker installed beside the application.
+On Linux x86-64 and macOS, build, audit and install it for the debug profile,
+then run the composition-root binary:
 
 ```sh
+cargo xtask worker-image
 cargo run -p ohl-app -- --iso /path/to/owned-media.iso
 ```
+
+For a release application, install beside the release binary instead:
+
+```sh
+cargo run --release -p xtask -- worker-image
+```
+
+Repeat the matching worker-image command after updating the parser code.
+`cargo build --workspace` does not install the standalone worker image.
+Packaged releases produced by `cargo xtask dist` include it on supported
+hosts. Other platforms currently have no native import worker.
 
 or `cargo run -p ohl-app -- /path/to/owned-media.iso` (positional form), or
 with no path at all, which prompts for one on stdin, as the previous C++
@@ -89,6 +112,7 @@ design and current readiness.
 explicit cache and payload root instead of the platform defaults:
 
 ```sh
+cargo run --release -p xtask -- worker-image
 cargo run --release -p ohl-app -- \
   --iso /path/to/owned-media.iso --cache /path/to/cache --payload-root /path/to/payload
 ```
@@ -394,7 +418,7 @@ cargo xtask graph     # validates the crate dependency graph against xtask/src/g
 - **Import worker sandbox**: the isolated media-parser worker has a
   native containment backend on two targets. On Linux x86-64 it is
   resource limits, no-new-privileges, Landlock, seccomp and a
-  pidfd-backed lifecycle around a freestanding static image executed by
+  pidfd-backed lifecycle around a static musl Rust std image executed by
   descriptor. On macOS (both architectures) it is resource limits, a
   descriptor sweep, and the system sandbox (Seatbelt, via
   `/usr/bin/sandbox-exec`) around a hosted image that links nothing but

@@ -5,6 +5,14 @@ for runtime use. It is **not** production-qualified, and every other platform
 tuple remains unavailable: no build on any other tuple can extract a medium at
 all, and no tuple on any platform meets the release-evidence gates below.
 
+**Worker runtime update.** The current Linux x86-64 worker uses Rust's
+standard library with a statically linked musl runtime, sharing its hosted
+implementation and bounded system allocator with macOS. The older references
+below to a freestanding worker, forbidden libc symbols and a fixed bump arena
+are historical. Existing decoder libraries can remain `no_std` compatible;
+that is no longer a worker dependency requirement. The runtime change alone
+does not qualify any platform for production import.
+
 This page records release evidence that must exist before that status changes.
 Checklist items are unmet unless a concrete review, test, hosted run, or
 release artifact is linked from the item. Absence of a link means absence of

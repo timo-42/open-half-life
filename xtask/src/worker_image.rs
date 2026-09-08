@@ -12,9 +12,8 @@
 //!
 //! - the `ohl-test-worker` fixture image, in its two startup variants;
 //! - the shipping `ohl-media-parser-worker` image, which on Linux is
-//!   additionally proved to reference no libc symbol, to define none of the
-//!   well-known symbols a statically linked libc would bring in, and to have
-//!   no undefined symbol at all, and is then installed at
+//!   additionally checked for unresolved required symbols (its Rust standard
+//!   library and musl runtime are linked statically), and is then installed at
 //!   `<directory of this executable>/libexec/open-half-life/`, which is
 //!   exactly where the backend resolves it.
 
@@ -29,25 +28,17 @@ use ohl_test_worker::{
     summarise_macho,
 };
 
-/// Symbol names that may never appear in the parser worker image. Each one
-/// would mean a C library, or a syscall outside the seccomp allowlist, had
-/// been linked in.
-pub const FORBIDDEN_SYMBOL_NAMES: [&str; 6] = ["open", "openat", "ioctl", "socket", "mmap", "brk"];
-
 /// One symbol-table finding.
 #[derive(Debug, PartialEq, Eq)]
 pub enum SymbolViolation {
-    /// The image references a symbol nothing defines.
+    /// The image requires a symbol nothing defines.
     Undefined(String),
-    /// The image names a symbol from [`FORBIDDEN_SYMBOL_NAMES`].
-    Forbidden(String),
 }
 
 impl std::fmt::Display for SymbolViolation {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Undefined(name) => write!(formatter, "undefined symbol `{name}`"),
-            Self::Forbidden(name) => write!(formatter, "forbidden symbol `{name}`"),
         }
     }
 }
@@ -82,7 +73,11 @@ fn string_at(table: &[u8], offset: usize) -> Option<&str> {
     core::str::from_utf8(&rest[..end]).ok()
 }
 
-/// Every undefined or forbidden symbol name in `bytes`.
+/// Every unresolved required symbol name in `bytes`.
+///
+/// Static libc symbols are expected in the hosted worker. Undefined weak
+/// symbols are optional ELF hooks, not runtime dependencies. Syscall access
+/// is enforced by the launcher's filter, not inferred from symbol names.
 ///
 /// The image is linked with `strip = "debuginfo"` precisely so `.symtab`
 /// survives; an image without one is rejected rather than silently passed,
@@ -140,11 +135,9 @@ pub fn symbol_violations(bytes: &[u8]) -> Result<Vec<SymbolViolation>, &'static 
             if name.is_empty() {
                 continue;
             }
-            if section_index == 0 {
+            let binding = entry[4] >> 4;
+            if section_index == 0 && binding != 2 {
                 violations.push(SymbolViolation::Undefined(name.to_owned()));
-            }
-            if FORBIDDEN_SYMBOL_NAMES.contains(&name) {
-                violations.push(SymbolViolation::Forbidden(name.to_owned()));
             }
         }
     }
@@ -284,8 +277,7 @@ fn normalize_directory_permissions(path: &std::path::Path) -> Result<(), String>
 #[cfg(not(unix))]
 fn normalize_directory_permissions(_path: &std::path::Path) {}
 
-/// The Linux-only symbol audits on the freestanding image: no undefined or
-/// forbidden symbol, and no sign of a statically linked C library.
+/// The Linux-only symbol audit: all required symbols are statically resolved.
 fn audit_elf_symbols(built: &std::path::Path, bytes: &[u8]) -> usize {
     let mut failures = 0usize;
     match symbol_violations(bytes) {
@@ -301,23 +293,6 @@ fn audit_elf_symbols(built: &std::path::Path, bytes: &[u8]) -> usize {
         }
     }
 
-    // A statically linked C library leaves no PT_INTERP and no PT_DYNAMIC
-    // behind, so the identity check cannot see it; its own symbols can.
-    match ohl_test_worker::static_libc_symbols(bytes) {
-        Ok(found) => {
-            for name in &found {
-                eprintln!(
-                    "error: {}: statically linked libc symbol `{name}`",
-                    built.display()
-                );
-            }
-            failures += found.len();
-        }
-        Err(reason) => {
-            eprintln!("error: {}: {reason}", built.display());
-            failures += 1;
-        }
-    }
     failures
 }
 
@@ -328,11 +303,14 @@ fn run_parser_worker_image() -> Result<usize, String> {
         .map_err(|error| format!("failed to read {}: {error}", built.display()))?;
     let mut failures = check_identity(&built, &bytes);
 
-    // The symbol audits are the Linux freestanding image's: the hosted macOS
-    // image links libSystem by design, and the Mach-O identity check above
-    // already proved it links nothing else.
+    // Linux links std and musl statically. macOS links libSystem by design;
+    // the Mach-O identity check above already proved it links nothing else.
     if !cfg!(target_os = "macos") {
         failures += audit_elf_symbols(&built, &bytes);
+    }
+
+    if failures != 0 {
+        return Ok(failures);
     }
 
     let executable = std::env::current_exe()
@@ -531,13 +509,39 @@ mod tests {
     }
 
     #[test]
-    fn undefined_and_forbidden_symbols_are_reported() {
+    fn unresolved_required_symbols_are_reported() {
         let bytes = fixture(&[("__libc_start_main", 0), ("openat", 1), ("socket", 0)]);
         let violations = symbol_violations(&bytes).expect("the fixture parses");
         assert!(violations.contains(&SymbolViolation::Undefined("__libc_start_main".to_owned())));
-        assert!(violations.contains(&SymbolViolation::Forbidden("openat".to_owned())));
         assert!(violations.contains(&SymbolViolation::Undefined("socket".to_owned())));
-        assert!(violations.contains(&SymbolViolation::Forbidden("socket".to_owned())));
+        assert_eq!(violations.len(), 2);
+    }
+
+    #[test]
+    fn statically_linked_libc_and_allocator_symbols_are_accepted() {
+        let bytes = fixture(&[
+            ("__libc_start_main", 1),
+            ("mmap", 1),
+            ("brk", 1),
+            ("openat", 1),
+        ]);
+        assert_eq!(symbol_violations(&bytes), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn unresolved_weak_hooks_are_optional() {
+        let mut bytes = fixture(&[("__optional_hook", 0)]);
+        let section_offset =
+            usize::try_from(read_fixture_u64(&bytes, 0x28)).expect("small fixture");
+        let symtab_section = section_offset + 2 * SECTION_HEADER_BYTES;
+        let symbols = usize::try_from(read_fixture_u64(&bytes, symtab_section + 0x18))
+            .expect("small fixture");
+        bytes[symbols + 24 + 4] = 0x20; // STB_WEAK | STT_NOTYPE
+        assert_eq!(symbol_violations(&bytes), Ok(Vec::new()));
+    }
+
+    fn read_fixture_u64(bytes: &[u8], offset: usize) -> u64 {
+        u64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("fixture field"))
     }
 
     #[test]

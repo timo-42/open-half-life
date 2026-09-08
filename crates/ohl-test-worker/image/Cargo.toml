@@ -1,19 +1,5 @@
-# Standalone (non-member) package for the freestanding Linux test worker
-# image consumed by `ohl-platform`'s isolated-worker tests.
-#
-# It is deliberately *not* a member of the repository workspace:
-#
-# - a `#![no_std] #![no_main]` binary can only be compiled with
-#   `panic = "abort"` ("unwinding panics are not supported without std"), and
-#   `panic` is a profile-level setting that cannot be scoped to one package
-#   inside a workspace (`profile.<p>.package.<name>.panic` is rejected by
-#   Cargo);
-# - the workspace root manifest is owned by another work package and must not
-#   grow a `[profile]` section for a test fixture.
-#
-# `ohl-test-worker` (the workspace member one directory up) drives `cargo
-# build` for this package with an explicit `--target-dir`, so nothing here is
-# ever built by a plain `cargo build --workspace`.
+# Standalone test image with a private abort-on-panic profile. Linux builds
+# use the fixed static musl target; macOS builds link the system runtime.
 [package]
 name = "ohl-test-worker-image"
 version = "0.1.0"

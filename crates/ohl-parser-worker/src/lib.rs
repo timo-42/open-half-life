@@ -4,29 +4,27 @@
 //! that is deliberately **not** a workspace member, for the same reasons
 //! `ohl-test-worker/image` is not one:
 //!
-//! - on Linux x86-64 it is a `#![no_std] #![no_main]` binary that can only
-//!   be compiled with `panic = "abort"`, and `panic` is a profile-level
-//!   setting Cargo refuses to scope to a single package inside a workspace;
+//! - it uses `panic = "abort"`, and `panic` is a profile-level setting Cargo
+//!   refuses to scope to a single package inside a workspace;
 //! - the workspace root manifest is owned by another work package and must
 //!   not grow a `[profile]` section for one binary;
 //! - the image needs a package-local `unsafe_code = "allow"` against the
 //!   workspace-wide `forbid`.
 //!
-//! The same package has two shapes, selected by the target: the freestanding
-//! Linux x86-64 image (`image/src/freestanding.rs`, raw syscalls, a fixed
-//! `.bss` arena, executed by descriptor under seccomp and Landlock) and the
-//! hosted macOS image (`image/src/hosted.rs`, an ordinary `std` binary
-//! linking only libSystem, executed under the system sandbox). Both host the
-//! same `run_parser_worker_service` lifetime over the same descriptors with
-//! the same exit statuses.
+//! One hosted `std` image (`image/src/hosted.rs`) serves both supported hosts.
+//! Linux builds explicitly target `x86_64-unknown-linux-musl` and link a
+//! static, non-PIE `ET_EXEC`, executed by descriptor under seccomp and
+//! Landlock. macOS links only libSystem and runs under the system sandbox.
+//! Both host the same `run_parser_worker_service` lifetime over the same
+//! descriptors with the same exit statuses.
 //!
 //! Building it therefore means invoking `cargo` on that package with an
 //! explicit `--target-dir`, which is what [`build_parser_worker_image`] does.
-//! The freestanding link configuration (`-nostdlib -static -no-pie` with the
-//! default `cc` driver, emitted from the image's own `build.rs` as
-//! `cargo::rustc-link-arg-bins`, for the Linux x86-64 target only) stays
-//! attached to that package, so a plain `cargo build --workspace` on Linux,
-//! macOS or Windows never sees it and no global `RUSTFLAGS` is ever required.
+//! Linux's static, non-PIE link configuration is emitted from the image's own
+//! `build.rs` as `cargo::rustc-link-arg-bins` for the Linux x86-64 target
+//! only. The builder also scopes Rust's static relocation model to its nested
+//! Linux build, so a plain `cargo build --workspace` on Linux, macOS or
+//! Windows never sees either setting and no global `RUSTFLAGS` is required.
 //!
 //! # Install location
 //!
@@ -98,7 +96,7 @@ impl From<std::io::Error> for BuildError {
 }
 
 /// Whether this host can build the image and `ohl-platform` can launch it:
-/// Linux x86-64 (freestanding) or macOS (hosted).
+/// Linux x86-64 (hosted musl) or macOS (hosted).
 #[must_use]
 pub const fn image_host_supported() -> bool {
     cfg!(any(
@@ -163,9 +161,13 @@ pub fn build_parser_worker_image() -> Result<PathBuf, BuildError> {
         .arg("--offline")
         .arg("--target-dir")
         .arg(&target_directory);
-    // Never let the outer build's flags or wrappers leak into the image: it
-    // needs its own link arguments and must not inherit, say, an
-    // instrumentation wrapper from `cargo test`.
+    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        // Build from the target whose ABI and CRT policy we audit, rather
+        // than inheriting the host target. This also determines the artefact
+        // directory component below.
+        command.arg("--target").arg("x86_64-unknown-linux-musl");
+    }
+    // Never let the outer build's flags or wrappers leak into the image.
     for variable in [
         "RUSTFLAGS",
         "CARGO_ENCODED_RUSTFLAGS",
@@ -180,6 +182,13 @@ pub fn build_parser_worker_image() -> Result<PathBuf, BuildError> {
     ] {
         command.env_remove(variable);
     }
+    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        // Avoid the musl target's position-independent code path so its
+        // static executable has the ET_EXEC identity the launcher audits.
+        // This remains confined to the nested image build; build.rs confines
+        // the companion linker flags to this binary target.
+        command.env("CARGO_ENCODED_RUSTFLAGS", "-Crelocation-model=static");
+    }
 
     let output = command.output()?;
     if !output.status.success() {
@@ -188,7 +197,14 @@ pub fn build_parser_worker_image() -> Result<PathBuf, BuildError> {
         ));
     }
 
-    let built = target_directory.join("release").join(IMAGE_NAME);
+    let built = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        target_directory
+            .join("x86_64-unknown-linux-musl")
+            .join("release")
+            .join(IMAGE_NAME)
+    } else {
+        target_directory.join("release").join(IMAGE_NAME)
+    };
     stage_read_only(&built, &root.join(IMAGE_NAME))
 }
 

@@ -127,45 +127,59 @@ const RLIMIT_NPROC: isize = 6;
 const RLIMIT_NOFILE: isize = 7;
 const RLIMIT_AS: isize = 9;
 
-/// The complete seccomp allowlist. Everything else, on any architecture other
-/// than x86-64, is `SECCOMP_RET_KILL_PROCESS`.
+/// Unconditional calls operate only on existing descriptors or process-local
+/// memory/runtime state. Calls granting narrower authority have argument rules
+/// in [`build_seccomp_filter`]. The image is static musl: no loader or pathname
+/// access is needed. Every other syscall/architecture kills the process.
 ///
-/// | syscall | why it is allowed |
-/// |---------|-------------------|
-/// | `execveat` | the final bootstrap step, and constrained to `dirfd == 5`, `flags == AT_EMPTY_PATH` |
-/// | `read`, `write` | the protocol channel and the readiness attestation |
-/// | `close` | closing [`READY_FD`] is what signals "ready" to the host |
-/// | `ppoll` | lets a worker block for input instead of spinning against `RLIMIT_CPU` |
-/// | `restart_syscall` | the kernel's own resumption of an interrupted blocking call (see below) |
-/// | `exit`, `exit_group` | orderly shutdown |
-///
-/// `restart_syscall` is never issued by the worker: the kernel inserts it
-/// when a process is stopped and continued (`SIGSTOP`/`SIGCONT`, a debugger
-/// attach, cgroup freezing) in the middle of a blocking call that carries
-/// resumption state in a `restart_block` (`ERESTART_RESTARTBLOCK`; a plain
-/// socket `read` instead rewinds into the original syscall and needs
-/// nothing). Denying it would turn such a stop into
-/// `SECCOMP_RET_KILL_PROCESS` - a self-inflicted denial of service triggered
-/// by something entirely outside the worker's control. It carries no
-/// arguments of its own and can only resume a call the process already made
-/// and the policy already allowed, so allowing it grants no new authority.
-///
-/// Notably absent: `openat`, `mmap`, `mprotect`, `brk`, `socket`, `clone`,
-/// `fork`, `prctl` and every `*stat`. A statically linked, freestanding
-/// worker needs none of them, so any appearance is a genuine escape attempt.
-const ALLOWED_SYSCALLS: [isize; 7] = [
+/// `restart_syscall` only resumes a previously allowed kernel restart block
+/// after stop/continue; it adds no authority. `brk`, `munmap` and signal-stack
+/// management support the standard allocator and Rust's overflow handler.
+const ALLOWED_SYSCALLS: [isize; 15] = [
     SYS_READ,
     SYS_WRITE,
     SYS_CLOSE,
-    SYS_PPOLL,
+    SYS_READV,
+    SYS_WRITEV,
+    SYS_BRK,
+    SYS_MUNMAP,
+    SYS_RT_SIGRETURN,
+    SYS_SIGALTSTACK,
+    SYS_SET_TID_ADDRESS,
+    SYS_GETTID,
     SYS_RESTART_SYSCALL,
     SYS_EXIT,
     SYS_EXIT_GROUP,
+    SYS_GETPID,
 ];
 
 const SYS_READ: isize = 0;
 const SYS_WRITE: isize = 1;
 const SYS_CLOSE: isize = 3;
+const SYS_POLL: isize = 7;
+const SYS_MMAP: isize = 9;
+const SYS_MPROTECT: isize = 10;
+const SYS_MUNMAP: isize = 11;
+const SYS_BRK: isize = 12;
+const SYS_RT_SIGACTION: isize = 13;
+const SYS_RT_SIGPROCMASK: isize = 14;
+const SYS_RT_SIGRETURN: isize = 15;
+const SYS_IOCTL: isize = 16;
+const SYS_READV: isize = 19;
+const SYS_WRITEV: isize = 20;
+const SYS_MREMAP: isize = 25;
+const SYS_MADVISE: isize = 28;
+const SYS_GETPID: isize = 39;
+const SYS_SENDTO: isize = 44;
+const SYS_RECVFROM: isize = 45;
+const SYS_FCNTL: isize = 72;
+const SYS_SIGALTSTACK: isize = 131;
+const SYS_ARCH_PRCTL: isize = 158;
+const SYS_GETTID: isize = 186;
+const SYS_FUTEX: isize = 202;
+const SYS_SET_TID_ADDRESS: isize = 218;
+const SYS_CLOCK_GETTIME: isize = 228;
+const SYS_GETRANDOM: isize = 318;
 const SYS_PPOLL: isize = 271;
 const SYS_RESTART_SYSCALL: isize = 219;
 const SYS_EXIT: isize = 60;
@@ -640,36 +654,121 @@ fn build_landlock_ruleset(image: &File) -> Result<OwnedFd, IsolatedWorkerError> 
     Option::<OwnedFd>::from(created).ok_or(IsolatedWorkerError::ConfinementUnavailable)
 }
 
-/// Compiles [`ALLOWED_SYSCALLS`] plus the argument-constrained `execveat`
-/// into BPF, in the parent, so the child only has to install it.
+/// Compiles the static musl runtime policy before fork. No pathname lookup,
+/// socket creation, descriptor duplication, process/thread creation, or new
+/// executable memory is permitted. Pointer contents cannot be checked by BPF;
+/// authority restrictions therefore use scalar arguments, never pointed-to data.
 fn build_seccomp_filter() -> Result<BpfProgram, IsolatedWorkerError> {
-    let number = |value: isize| {
-        i64::try_from(value).map_err(|_| IsolatedWorkerError::ConfinementUnavailable)
-    };
+    let unavailable = |_| IsolatedWorkerError::ConfinementUnavailable;
     let mut rules: std::collections::BTreeMap<i64, Vec<SeccompRule>> = ALLOWED_SYSCALLS
         .into_iter()
-        .map(|syscall| number(syscall).map(|syscall| (syscall, Vec::new())))
-        .collect::<Result<_, _>>()?;
+        .map(|syscall| (syscall as i64, Vec::new()))
+        .collect();
+    let eq =
+        |arg, value| SeccompCondition::new(arg, SeccompCmpArgLen::Qword, SeccompCmpOp::Eq, value);
+    let int_eq =
+        |arg, value| SeccompCondition::new(arg, SeccompCmpArgLen::Dword, SeccompCmpOp::Eq, value);
+    let masked = |arg, mask, value| {
+        SeccompCondition::new(
+            arg,
+            SeccompCmpArgLen::Qword,
+            SeccompCmpOp::MaskedEq(mask),
+            value,
+        )
+    };
+    let mut allow =
+        |syscall: isize, conditions: Vec<Result<SeccompCondition, seccompiler::BackendError>>| {
+            let conditions = conditions
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(unavailable)?;
+            rules
+                .entry(syscall as i64)
+                .or_default()
+                .push(SeccompRule::new(conditions).map_err(unavailable)?);
+            Ok::<_, IsolatedWorkerError>(())
+        };
 
-    let execveat = SeccompRule::new(vec![
-        SeccompCondition::new(
-            0,
-            SeccompCmpArgLen::Qword,
-            SeccompCmpOp::Eq,
-            u64::try_from(IMAGE_FD).map_err(|_| IsolatedWorkerError::ConfinementUnavailable)?,
-        )
-        .map_err(|_| IsolatedWorkerError::ConfinementUnavailable)?,
-        SeccompCondition::new(
-            4,
-            SeccompCmpArgLen::Qword,
-            SeccompCmpOp::Eq,
-            u64::try_from(AT_EMPTY_PATH)
-                .map_err(|_| IsolatedWorkerError::ConfinementUnavailable)?,
-        )
-        .map_err(|_| IsolatedWorkerError::ConfinementUnavailable)?,
-    ])
-    .map_err(|_| IsolatedWorkerError::ConfinementUnavailable)?;
-    rules.insert(number(SYS_EXECVEAT)?, vec![execveat]);
+    allow(
+        SYS_EXECVEAT,
+        vec![eq(0, IMAGE_FD as u64), eq(4, AT_EMPTY_PATH as u64)],
+    )?;
+    // musl installs its TLS pointer, then Rust installs SIGPIPE and stack
+    // overflow handlers. Signal masks/handlers apply only to this process.
+    allow(SYS_ARCH_PRCTL, vec![eq(0, 0x1002)])?; // ARCH_SET_FS only
+    for signal in [7, 11, 13] {
+        // SIGBUS, SIGSEGV, SIGPIPE
+        allow(SYS_RT_SIGACTION, vec![int_eq(0, signal), eq(3, 8)])?;
+    }
+    for how in [0, 1, 2] {
+        // SIG_BLOCK, SIG_UNBLOCK, SIG_SETMASK
+        allow(SYS_RT_SIGPROCMASK, vec![int_eq(0, how), eq(3, 8)])?;
+    }
+    // Rust checks that standard descriptors exist at startup. No duplication
+    // or descriptor flag mutation is allowed through fcntl.
+    for descriptor in 0..=READY_FD {
+        allow(SYS_FCNTL, vec![int_eq(0, descriptor as u64), int_eq(1, 1)])?; // F_GETFD
+    }
+    allow(
+        SYS_IOCTL,
+        vec![int_eq(0, CHANNEL_FD as u64), int_eq(1, 0x5421)],
+    )?; // FIONBIO
+    for syscall in [SYS_POLL, SYS_PPOLL] {
+        let count = SeccompCondition::new(1, SeccompCmpArgLen::Qword, SeccompCmpOp::Le, 8);
+        allow(syscall, vec![count])?;
+    }
+    // UnixStream send/recv can only use the inherited connected endpoint.
+    // No ancillary data, address selection, or descriptor reception is exposed.
+    allow(
+        SYS_SENDTO,
+        vec![
+            int_eq(0, CHANNEL_FD as u64),
+            eq(3, 0x4000),
+            eq(4, 0),
+            eq(5, 0),
+        ],
+    )?; // MSG_NOSIGNAL
+    allow(
+        SYS_RECVFROM,
+        vec![int_eq(0, CHANNEL_FD as u64), eq(3, 0), eq(4, 0), eq(5, 0)],
+    )?;
+    // Anonymous private allocation, optionally marked MAP_STACK. Reject all
+    // other flags, file-backed mappings and PROT_EXEC.
+    allow(
+        SYS_MMAP,
+        vec![
+            masked(2, !3, 0),
+            masked(3, !0x20000, 0x22),
+            int_eq(4, u32::MAX as u64),
+            eq(5, 0),
+        ],
+    )?;
+    // musl malloc places a PROT_NONE guard over its initial brk page. Fixed
+    // addresses are accepted only for this inaccessible anonymous shape.
+    allow(
+        SYS_MMAP,
+        vec![eq(2, 0), eq(3, 0x32), int_eq(4, u32::MAX as u64), eq(5, 0)],
+    )?;
+    allow(SYS_MPROTECT, vec![masked(2, !3, 0)])?;
+    // musl realloc may move its mapping, but cannot choose a fixed destination
+    // or clone it with MREMAP_DONTUNMAP. This does not add execute permission.
+    for flags in [0, 1] {
+        allow(SYS_MREMAP, vec![eq(3, flags)])?;
+    }
+    allow(SYS_MADVISE, vec![int_eq(2, 4)])?; // MADV_DONTNEED on allocator pages
+    // Single-process synchronization only: WAIT, WAKE, WAIT_BITSET with the
+    // private flag. No shared futex, requeue, PI or wake-op operations.
+    for operation in [128, 129, 137] {
+        allow(SYS_FUTEX, vec![int_eq(1, operation)])?;
+    }
+    for clock in [0, 1] {
+        // CLOCK_REALTIME, CLOCK_MONOTONIC
+        allow(SYS_CLOCK_GETTIME, vec![int_eq(0, clock)])?;
+    }
+    for flags in [0, 1, 4] {
+        // ordinary/nonblocking/insecure entropy for std hash seeds
+        allow(SYS_GETRANDOM, vec![eq(2, flags)])?;
+    }
 
     let filter = SeccompFilter::new(
         rules,
@@ -677,7 +776,7 @@ fn build_seccomp_filter() -> Result<BpfProgram, IsolatedWorkerError> {
         SeccompAction::Allow,
         TargetArch::x86_64,
     )
-    .map_err(|_| IsolatedWorkerError::ConfinementUnavailable)?;
+    .map_err(unavailable)?;
     BpfProgram::try_from(filter).map_err(|_| IsolatedWorkerError::ConfinementUnavailable)
 }
 

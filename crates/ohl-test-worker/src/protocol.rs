@@ -2,9 +2,8 @@
 // the worker image itself.
 //
 // This file is compiled twice: once as a module of the `ohl-test-worker`
-// library (`std`), and once via `include!` from the image (freestanding
-// `#![no_std]` on Linux, hosted `std` on macOS), which cannot depend on any
-// other crate. It therefore contains nothing but `const` items.
+// library and once via `include!` from the standalone std image.
+// It therefore contains nothing but `const` items.
 
 /// Descriptor the private full-duplex byte channel is bound to in the child.
 pub const CHANNEL_FD: i32 = 3;
@@ -84,3 +83,12 @@ pub const EXPECTED_FD_MASK: u64 = 0b1111;
 
 /// Exit status the worker uses for any protocol or I/O failure of its own.
 pub const WORKER_PROTOCOL_FAILURE_STATUS: i32 = 90;
+
+/// Linux probe selector: each operation must independently die with SIGSYS.
+pub const MODE_LINUX_DENIAL: u8 = 0x07;
+/// Exercise standard allocation, reallocation, time and synchronization.
+pub const MODE_STD_RUNTIME: u8 = 0x08;
+/// Denied operations: file open/create, network, clone/fork/exec, executable
+/// mmap/mprotect, file-backed mmap, descriptor duplication, TLS operation,
+/// socket ioctl and non-private futex.
+pub const LINUX_DENIAL_PROBE_COUNT: u8 = 14;

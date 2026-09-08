@@ -132,6 +132,13 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Install Linux worker toolchain
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          rustup target add x86_64-unknown-linux-musl
+
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
@@ -158,6 +165,10 @@ jobs:
       - name: Worker image
         if: matrix.os != 'windows-latest'
         run: cargo xtask worker-image
+
+      - name: Import with the installed worker
+        if: matrix.os != 'windows-latest'
+        run: cargo test -p ohl-app --test worker_image -- --ignored
 
       # macOS only: the confined worker's stdio is `/dev/null` and a Seatbelt
       # denial is an error return rather than a kill, so a launch failure is
@@ -284,6 +295,13 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Install Linux worker toolchain
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          rustup target add x86_64-unknown-linux-musl
 
       - name: Determine target triple
         id: target

@@ -1,9 +1,8 @@
 # ohl-parser-worker
 
 Host-side support for the media-parser worker image, plus the image itself in
-[`image/`](image). The image has two shapes, selected by target: the
-freestanding Linux x86-64 one (`image/src/freestanding.rs`) and the hosted
-macOS one (`image/src/hosted.rs`).
+[`image/`](image). Linux x86-64 and macOS share the hosted `std`
+implementation in [`image/src/hosted.rs`](image/src/hosted.rs).
 
 Both shapes host the compile-fixed `ohl_parser_backends::ContainerDispatcher`,
 which decodes Wise, MS-CAB and IS3 Z containers for real. Media cannot select
@@ -36,33 +35,34 @@ and forces the two created directories to mode `0o755`.
 ## Build configuration
 
 `image/` is a standalone (non-member) Cargo package. It is not a workspace
-member because the Linux `#![no_std] #![no_main]` shape needs
-`panic = "abort"`, which Cargo will not scope to one package inside a
-workspace, and because it needs a package-local `unsafe_code = "allow"`
-against the workspace-wide `forbid`.
+member because it needs `panic = "abort"`, which Cargo will not scope to one
+package inside a workspace, and because it needs a package-local
+`unsafe_code = "allow"` to adopt its two inherited descriptors and install
+its bounded allocator against the workspace-wide `forbid`.
 
-`main.rs` selects the shape by target and carries the conditional crate
-attributes, so one package and one `Cargo.lock` serve both. Its `build.rs`
-emits `cargo::rustc-link-arg-bins` for
-`-nostdlib -static -no-pie -Wl,-e,_start -Wl,--build-id=none` using the
-default `cc` linker driver, **for the Linux x86-64 target only**; the hosted
-macOS shape links the ordinary way. No global `RUSTFLAGS` and no
-`.cargo/config.toml` is involved, so `cargo build --workspace` on Linux,
-macOS and Windows never touches this package; only
+`main.rs` selects the hosted implementation for both supported targets, so
+one package and one `Cargo.lock` serve both. On Linux the builder explicitly
+uses `x86_64-unknown-linux-musl`, scopes `-C relocation-model=static` to its
+nested Cargo invocation, and `build.rs` emits
+`cargo::rustc-link-arg-bins` for `-static -no-pie -Wl,--build-id=none`.
+Those settings produce the required static non-PIE `ET_EXEC` without an
+interpreter or dynamic segment. macOS links the ordinary way. No global
+`RUSTFLAGS` and no `.cargo/config.toml` is involved, so `cargo build
+--workspace` on Linux, macOS and Windows never touches this package; only
 `build_parser_worker_image` and `cargo xtask worker-image` do.
 
-`strip = "debuginfo"` keeps `.symtab`, which is what lets
-`cargo xtask worker-image` prove the Linux image has no undefined symbol and
-names none of `open`, `openat`, `ioctl`, `socket`, `mmap`, `brk`. Those
-symbol audits are Linux-only: the hosted macOS image links libSystem by
-design, and its Mach-O identity check already proves it links nothing
-else.
+`strip = "debuginfo"` keeps `.symtab`, which lets `cargo xtask worker-image`
+audit the Linux image's linked runtime. The hosted musl image defines libc
+and allocator symbols by design; required unresolved symbols are rejected,
+while optional weak hooks are permitted. Those symbol audits are Linux-only:
+the hosted macOS image links libSystem by design, and its Mach-O identity
+check already proves it links nothing else.
 
 ## Exit statuses
 
 They mirror the C++ worker (`src/platform/src/media_parser_worker_linux.cpp`)
 and are defined once in [`src/contract.rs`](src/contract.rs), which is also
-`include!`d by the freestanding image:
+`include!`d by the hosted image:
 
 | status | meaning |
 | --- | --- |
@@ -77,25 +77,13 @@ and are defined once in [`src/contract.rs`](src/contract.rs), which is also
 values above are the contract for any future consumer that observes the raw
 status.
 
-## Syscalls
+## Hosted transport
 
-The freestanding Linux image issues `read`, `write`, `close`, `ppoll` and
-`exit_group` only, which is a subset of the backend's seccomp allowlist. It
-parses no arguments, reads no environment, and opens no file.
-
-Two deviations from the C++ worker follow from that allowlist: `SIGPIPE` is
-not ignored (`rt_sigaction` is not allowed), so a parent that vanishes
-mid-write ends the worker with a signal rather than an exit status; and input
-is probed with a zero-timeout `ppoll` instead of
-`recvfrom(MSG_PEEK | MSG_DONTWAIT)`.
-
-The hosted macOS image has no syscall allowlist to satisfy (Seatbelt confines
-resources, not syscall numbers), and it also parses no arguments, reads no
-environment and opens no file. Its two deviations run the other way:
-`SIGPIPE` *is* ignored, as in every Rust `std` binary, so a vanished parent
-produces a transport failure rather than a signalled exit; and input is
-probed with a non-blocking one-byte read into a private pushback slot that
-the next `read_exact` drains first, because `std` exposes no stable
-`MSG_PEEK`. Instead of a fixed `.bss` arena it bounds its live heap with a
-counting global allocator, because XNU does not enforce
-`RLIMIT_AS`/`RLIMIT_DATA` against `mmap`-backed allocations.
+The hosted image parses no arguments, reads no environment and opens no file.
+It adopts the pre-opened channel and readiness descriptors, and probes input
+with a non-blocking one-byte read into a private pushback slot that the next
+`read_exact` drains first, because `std` exposes no stable `MSG_PEEK`.
+`SIGPIPE` is ignored as in Rust `std` binaries, so a parent that vanishes
+mid-write becomes a transport failure. A counting system allocator bounds
+the live heap at 128 MiB; this supplies the ceiling that XNU cannot enforce
+with `RLIMIT_AS` or `RLIMIT_DATA`.
