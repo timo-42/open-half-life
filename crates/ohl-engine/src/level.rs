@@ -314,6 +314,13 @@ pub struct Level {
     /// comment) — published as a diagnostic so a wrong-framing report has a
     /// number to point at instead of only a screenshot.
     pub player_start_count: usize,
+    /// How many of this map's quoted entity-lump strings were not valid
+    /// UTF-8 and were therefore decoded byte-per-byte (see
+    /// [`ohl_formats::bsp30::EntityLumpReport`]). An aggregate count only —
+    /// safe to report, unlike the strings themselves. Non-zero means the
+    /// map was authored on a legacy single-byte codepage; it is not an
+    /// error, and the map's structure and ASCII vocabulary are unaffected.
+    pub entity_lump_relaxed_strings: usize,
     /// The parsed entity lump, kept so the systems that spawn monsters,
     /// pickups and navigation seeds can read the same definitions the
     /// registry was built from.
@@ -534,7 +541,15 @@ impl Level {
     ) -> Result<Self> {
         let limits = BspLimits::default();
         let bsp = Bsp::parse(bytes, &limits).map_err(|_| EngineError::MapUnreadable)?;
-        let entities = bsp.entities(&limits).unwrap_or_default();
+        // Never `unwrap_or_default()`: an entities lump that fails to
+        // parse used to leave the level with an empty entity list, which
+        // loads as a silent empty room — no player start, no monsters, no
+        // triggers, and a player spawned at the origin, usually inside
+        // solid geometry — while every caller still saw a successful load.
+        // A lump this build cannot read is a load failure.
+        let (entities, entity_lump) = bsp
+            .entities_with_report(&limits)
+            .map_err(|_| EngineError::EntityLumpUnreadable)?;
         let kv_limits = KeyvalueLimits::default();
         let defs = keyvalues::parse_entities(&entities, &kv_limits);
 
@@ -634,6 +649,7 @@ impl Level {
             name: map.to_string(),
             spawn: world.spawn,
             player_start_count: world.player_start_count,
+            entity_lump_relaxed_strings: entity_lump.relaxed_strings,
             world,
             submodels,
             registry,
@@ -831,6 +847,25 @@ impl Level {
                 )
             });
         translation + rotation
+    }
+
+    /// Whether this level declares any `info_landmark` at all.
+    ///
+    /// A map reached only through a `trigger_changelevel`/`info_landmark`
+    /// pair legitimately declares no `info_player_start`: the player
+    /// arrives relative to the landmark it came through, not at a spawn
+    /// point (`docs/FORMAT_SOURCES.md`, the `trigger_changelevel`/
+    /// `info_landmark` item). So "no player start" alone does not mean a
+    /// map failed to load its entity world — "no player start *and* no
+    /// landmark" is the combination that does.
+    #[must_use]
+    pub fn has_landmark(&self) -> bool {
+        self.registry
+            .world
+            .query::<&Landmark>()
+            .into_iter()
+            .next()
+            .is_some()
     }
 
     /// The world-space origin of the landmark named `landmark`, when this
@@ -1050,6 +1085,128 @@ mod tests {
     use super::{Level, angular_velocity, attach_brush_collision, attach_monster_brush_collision};
     use crate::assets::MemoryAssets;
     use crate::test_support::synthetic_map_bsp_with_extra_entity;
+
+    /// Overwrites the single byte of `marker` inside `bytes` with `byte`,
+    /// keeping every lump offset and length exactly as compiled (the
+    /// entities lump's length is recorded in the BSP header, so a fixture
+    /// must not grow or shrink it). Panics if the marker is not unique.
+    fn patch_marker(bytes: &mut [u8], marker: &[u8], offset_in_marker: usize, byte: u8) {
+        let positions: Vec<usize> = bytes
+            .windows(marker.len())
+            .enumerate()
+            .filter(|(_, window)| *window == marker)
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(
+            positions.len(),
+            1,
+            "the marker must be unique in the fixture"
+        );
+        bytes[positions[0] + offset_in_marker] = byte;
+    }
+
+    /// The failure class this milestone found in a real campaign map: an
+    /// otherwise well-formed entities lump carrying one byte in
+    /// `0x80..=0xFF` inside a quoted value (a legacy single-byte codepage's
+    /// punctuation). The whole map used to load as an empty room because
+    /// the lump failed UTF-8 validation and `Level::load` swallowed the
+    /// error; it must now load its entities, keep its player start, and
+    /// merely report the relaxed string as a count.
+    #[test]
+    fn a_non_utf8_byte_in_a_quoted_value_still_loads_the_whole_entity_world() {
+        let mut map = synthetic_map_bsp_with_extra_entity(
+            "next",
+            "{\n\"classname\" \"monster_zombie\"\n\
+             \"message\" \"aZb\"\n\"origin\" \"11 22 33\"\n}\n",
+        );
+        patch_marker(&mut map, b"\"aZb\"", 2, 0x92);
+
+        let assets = MemoryAssets::new();
+        let level = Level::from_bytes(&assets, "ohlsynth", &map)
+            .expect("a non-UTF-8 byte inside a quoted value is not a load failure");
+
+        assert_eq!(level.entity_lump_relaxed_strings, 1);
+        assert!(
+            level.defs.len() > 1,
+            "the map's real entities loaded, not an empty room"
+        );
+        assert!(
+            level.spawn.is_some(),
+            "the player start survived the relaxed decode"
+        );
+        assert!(
+            level
+                .defs
+                .iter()
+                .any(|def| def.classname == "monster_zombie"),
+            "the entity carrying the relaxed value is still present"
+        );
+    }
+
+    /// A structurally broken entities lump must be a *load error*, not a
+    /// silently empty world: before this, `bsp.entities(..).unwrap_or_default()`
+    /// turned it into a map with no player start, no monsters and no
+    /// triggers that every caller still counted as loaded.
+    #[test]
+    fn a_structurally_broken_entity_lump_is_a_load_error_not_an_empty_room() {
+        let mut map = synthetic_map_bsp_with_extra_entity("next", "");
+        // Break the grammar without changing the lump's length: the very
+        // first `{` of the first block becomes an ordinary character.
+        patch_marker(&mut map, b"{\n\"classname\" \"worldspawn\"", 0, b'x');
+
+        let assets = MemoryAssets::new();
+        let error = Level::from_bytes(&assets, "ohlsynth", &map)
+            .err()
+            .expect("an unreadable entities lump is a load failure");
+        assert_eq!(error, crate::EngineError::EntityLumpUnreadable);
+    }
+
+    /// A map reached only through a `trigger_changelevel`/`info_landmark`
+    /// pair legitimately declares no `info_player_start` of its own. It is
+    /// still a fully loaded entity world, and `has_landmark` is what lets a
+    /// caller tell it apart from a map that loaded nothing at all.
+    #[test]
+    fn a_map_with_a_landmark_and_no_player_start_still_reports_its_landmark() {
+        let map = crate::test_support::synthetic_map_bsp_with_entities(
+            "{\n\"classname\" \"worldspawn\"\n}\n\
+             {\n\"classname\" \"info_landmark\"\n\
+             \"targetname\" \"ohl_landmark\"\n\"origin\" \"0 0 8\"\n}\n",
+        );
+        let assets = MemoryAssets::new();
+        let level = Level::from_bytes(&assets, "ohlsynth", &map).expect("level loads");
+
+        assert!(
+            level.spawn.is_none(),
+            "the fixture declares no player start"
+        );
+        assert!(level.has_landmark());
+        assert!(level.defs.len() > 1);
+    }
+
+    /// The opposite case: a map with neither a player start nor a landmark
+    /// has nothing for a caller to arrive at.
+    #[test]
+    fn a_map_with_neither_a_player_start_nor_a_landmark_reports_no_landmark() {
+        let map = crate::test_support::synthetic_map_bsp_with_entities(
+            "{\n\"classname\" \"worldspawn\"\n}\n",
+        );
+        let assets = MemoryAssets::new();
+        let level = Level::from_bytes(&assets, "ohlsynth", &map).expect("level loads");
+
+        assert!(level.spawn.is_none());
+        assert!(!level.has_landmark());
+    }
+
+    /// A healthy fixture reports no relaxed strings at all, so the count
+    /// cannot quietly rise for every map.
+    #[test]
+    fn an_ordinary_ascii_entity_lump_reports_no_relaxed_strings() {
+        let map = synthetic_map_bsp_with_extra_entity("next", "");
+        let assets = MemoryAssets::new();
+        let level = Level::from_bytes(&assets, "ohlsynth", &map).expect("level loads");
+        assert_eq!(level.entity_lump_relaxed_strings, 0);
+        assert!(level.spawn.is_some());
+    }
 
     /// A rotator advancing across the 359 degree -> 1 degree wrap
     /// (`Simulation::advance_rotators` keeps `angle_degrees` in `0.0..360.0`,

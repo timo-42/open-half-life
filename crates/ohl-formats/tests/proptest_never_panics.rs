@@ -164,4 +164,59 @@ proptest! {
     fn pak_parse_never_panics(data in proptest::collection::vec(any::<u8>(), 0..4096)) {
         exercise_pak(&data);
     }
+
+    /// A structurally well-formed entities lump parses whatever bytes its
+    /// quoted values hold: the format's grammar is delimited by ASCII
+    /// `{`/`}`/`"` only, so any other byte — including one that is not
+    /// valid UTF-8 — is ordinary value content (see
+    /// `bsp30::entities::decode_quoted`). Every entity must survive, and
+    /// the report must count exactly the values that were not UTF-8.
+    #[test]
+    fn well_formed_entity_lumps_parse_whatever_bytes_their_values_hold(
+        values in proptest::collection::vec(
+            proptest::collection::vec(any::<u8>(), 0..24),
+            1..8,
+        ),
+    ) {
+        // The only bytes that cannot appear inside a value: the quote that
+        // ends it, and the NUL that ends the lump.
+        let values: Vec<Vec<u8>> = values
+            .into_iter()
+            .map(|value| {
+                value
+                    .into_iter()
+                    .map(|byte| match byte {
+                        0 | b'"' => b'x',
+                        other => other,
+                    })
+                    .collect()
+            })
+            .collect();
+
+        let mut lump = Vec::new();
+        for value in &values {
+            lump.extend_from_slice(b"{\n\"classname\" \"synthetic\"\n\"value\" \"");
+            lump.extend_from_slice(value);
+            lump.extend_from_slice(b"\"\n}\n");
+        }
+        lump.push(0);
+
+        let limits = ohl_formats::bsp30::Limits::default();
+        let (entities, report) = ohl_formats::bsp30::parse_entities_with_report(&lump, &limits)
+            .expect("a well-formed lump parses whatever bytes its values hold");
+        prop_assert_eq!(entities.len(), values.len());
+        let expected_relaxed = values
+            .iter()
+            .filter(|value| core::str::from_utf8(value).is_err())
+            .count();
+        prop_assert_eq!(report.relaxed_strings, expected_relaxed);
+        for (entity, value) in entities.iter().zip(&values) {
+            let decoded = entity.get("value").expect("the value key is present");
+            let expected: String = match core::str::from_utf8(value) {
+                Ok(text) => text.to_string(),
+                Err(_) => value.iter().map(|&byte| char::from(byte)).collect(),
+            };
+            prop_assert_eq!(decoded, &expected);
+        }
+    }
 }

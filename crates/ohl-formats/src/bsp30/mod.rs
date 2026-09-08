@@ -17,7 +17,10 @@ pub mod walk;
 
 use alloc::vec::Vec;
 
-pub use entities::{Entity, parse as parse_entities};
+pub use entities::{
+    Entity, EntityLumpReport, parse as parse_entities,
+    parse_with_report as parse_entities_with_report,
+};
 pub use limits::Limits;
 pub use raw::{
     Clipnode, Edge, Face, LUMP_COUNT, Leaf, LumpId, Marksurface, Model, Node, Plane, Surfedge,
@@ -77,9 +80,17 @@ impl<'a> Bsp<'a> {
         self.lump(id, limits)
     }
 
-    /// Parses the entities lump into an ordered list of key/value maps.
+    /// Parses the entities lump into an ordered list of key/value maps,
+    /// discarding [`Self::entities_with_report`]'s report.
     pub fn entities(&self, limits: &Limits) -> Result<Vec<Entity>> {
-        entities::parse(self.lump(LumpId::Entities, limits)?, limits)
+        self.entities_with_report(limits)
+            .map(|(entities, _)| entities)
+    }
+
+    /// Parses the entities lump, also reporting what had to be relaxed to
+    /// read it (see [`EntityLumpReport`]).
+    pub fn entities_with_report(&self, limits: &Limits) -> Result<(Vec<Entity>, EntityLumpReport)> {
+        entities::parse_with_report(self.lump(LumpId::Entities, limits)?, limits)
     }
 
     /// The planes lump.

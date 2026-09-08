@@ -248,6 +248,39 @@ impl Game {
         self.level.player_start_count
     }
 
+    /// Whether this level resolved a player start to spawn at. `false`
+    /// means the player was placed at the world origin instead, which is
+    /// very likely inside solid geometry: a map that reports `false` here
+    /// did not load the entity world it was supposed to.
+    #[must_use]
+    pub fn has_player_start(&self) -> bool {
+        self.level.spawn.is_some()
+    }
+
+    /// Whether this level declares an `info_landmark` (see
+    /// [`crate::Level::has_landmark`]), i.e. whether it is a map a
+    /// transition can arrive into without a player start of its own.
+    #[must_use]
+    pub fn has_landmark(&self) -> bool {
+        self.level.has_landmark()
+    }
+
+    /// How many entity definitions this level's entities lump declared. A
+    /// zero here means the level is an empty room. Media-derived only in
+    /// the aggregate; safe to report as a count.
+    #[must_use]
+    pub fn entity_def_count(&self) -> usize {
+        self.level.defs.len()
+    }
+
+    /// How many of this level's entity-lump strings had to be decoded
+    /// byte-per-byte because they were not valid UTF-8 (see
+    /// [`crate::Level::entity_lump_relaxed_strings`]).
+    #[must_use]
+    pub fn entity_lump_relaxed_strings(&self) -> usize {
+        self.level.entity_lump_relaxed_strings
+    }
+
     /// Whether this level has usable collision hulls, i.e. whether the
     /// player walks rather than flies.
     #[must_use]

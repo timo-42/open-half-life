@@ -4014,7 +4014,6 @@ frontier attempts) on `c4a2` (Gonarch's Lair).
   followed level change in Power Up" on its re-authored route) and `cargo
   xtask campaign-smoke` (93/93 maps, 0 missing-map/load-error/timeout/
   crash/blank-capture) both pass against the same payload after this fix.
-
 ## M9.12 (Rust): `--start-inventory`, breakables/pushables/long-jump in `--reachability-report`
 
 Status: in progress (Rust); evidence: this PR.
@@ -4126,3 +4125,73 @@ Status: in progress (Rust); evidence: this PR.
   the "route-authoring" gap `.plan/progress-probe-5.md`'s ranked list left
   open (item 1) is this package's job; using it to actually author a
   working "c1a2"/"c3a2" route stays a follow-up, per that same list.
+
+## M9.13 (Rust): the entities lump stops failing silently
+
+Closes the gap M9.11's own entry above records as pre-existing and
+deliberately untouched: the 93rd map whose entities lump fails this
+project's bounded parser with `InvalidText`, which `Level::load` silently
+accepted.
+
+- **One campaign map used to load as an empty room, and everything
+  reported it as a success.** Its entities lump failed
+  `ohl_formats::bsp30::entities::parse` with `FormatError::InvalidText`,
+  and `Level::load` ran that through `unwrap_or_default()`: the map then
+  built with no entity definitions at all — no player start (so the player
+  spawned at the world origin, normally inside solid geometry), no
+  monsters, no triggers, no brush entities — while `cargo xtask
+  campaign-smoke` still counted it among 93/93 loaded, because it exited
+  zero and captured a perfectly healthy-looking frame of that empty room's
+  walls.
+- **The failure class was encoding, not structure.** A bounded,
+  aggregate-only local probe over all 93 cited maps (uncommitted, nothing
+  media-derived recorded) found 92 lumps parsing and 1 failing, with **zero
+  structural problems anywhere**: the failing lump has balanced blocks, a
+  correct terminator, no interior NUL, no control characters and no
+  over-long string, and carries **exactly one byte in `0x80..=0xFF` inside
+  one quoted value** — the punctuation a legacy single-byte Windows
+  codepage writes. The published grammar (Unofficial Quake Specs section 4,
+  lump 0) specifies no encoding for a quoted run beyond the ASCII its own
+  delimiters use, so that lump is legal and the parser was too strict.
+- **The fix, in three parts** (`docs/FORMAT_SOURCES.md` item 34):
+  - `ohl-formats` decodes a quoted run as UTF-8 when it is valid UTF-8 and
+    otherwise byte-per-byte into the Latin-1 range — total, lossless,
+    deterministic, and ASCII-preserving, so no classname, keyname or
+    targetname the game logic matches on can change. Structural violations
+    are still hard rejections. The new `parse_with_report` /
+    `Bsp::entities_with_report` publish an aggregate
+    `EntityLumpReport::relaxed_strings` count (never the string, never the
+    byte).
+  - `Level::from_bytes_with_ramp` no longer swallows the error: an
+    unreadable lump is now `EngineError::EntityLumpUnreadable`, and
+    `Level::entity_lump_relaxed_strings` republishes the aggregate count.
+  - `ohl-app` prints one fixed, content-free line after a successful load
+    (`ENTITY_WORLD_OK_LINE`) when the map really has entities *and*
+    something to arrive at — a resolved `info_player_start`, or an
+    `info_landmark` for a map entered only through a level transition (one
+    cited map, `c1a4e`, is exactly that case: 150 entities, two landmarks,
+    no player start, and legitimately so) — and a fixed warning
+    (`ENTITY_WORLD_EMPTY_LINE`) when it does not. `campaign-smoke` requires
+    the former before scoring a map `loaded` and otherwise files it under
+    the new, non-passing `empty-entity-world` bucket. An empty-room load
+    can never score as a pass again.
+- **Before/after, on the map itself.** Run with `--script`/`--script-log`
+  against the real payload, the affected map used to log the fixed line
+  "The player is inside solid geometry." — the player standing in an empty
+  room's geometry with no spawn point to be placed at. With the fix it logs
+  the entity-world line and the relaxed-decode note instead, and the
+  in-solid guard line is gone. Everything the run prints is a fixed string;
+  no map-derived text is logged in either direction.
+- **Tests.** Synthetic unit tests in `ohl-formats` reproduce the failure
+  class directly (a non-UTF-8 byte in a value, and in a key; a relaxed
+  string not stopping later entities; valid UTF-8 never counted as
+  relaxed), alongside kept-strict cases (unterminated quote, unclosed
+  block, stray `}`, over-long value). A new proptest asserts that a
+  well-formed lump parses whatever bytes its values hold and that the
+  relaxed count matches exactly. `ohl-engine` tests cover the load path
+  end to end: a map whose lump holds a non-UTF-8 byte loads its whole
+  entity world and keeps its player start, and a structurally broken lump
+  is a load error rather than an empty room, and two more pin
+  `Level::has_landmark` on a landmark-only map and on a map with neither.
+  `campaign-smoke`'s own tests cover the new bucket and the fixed-line
+  check.

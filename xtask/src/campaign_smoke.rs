@@ -96,6 +96,12 @@ enum Category {
     /// The process ended abnormally (killed by a signal, or could not be
     /// spawned at all).
     Crash,
+    /// The app exited successfully and captured a healthy frame, but it
+    /// never printed [`ENTITY_WORLD_OK_LINE`]: the map loaded with no
+    /// entities at all, or with neither a player start nor a landmark. A room with nothing in it can
+    /// still render and still clear the capture health check, so without
+    /// this bucket an entity-lump failure scored as a pass.
+    EmptyEntityWorld,
     /// The app exited successfully, but the capture either did not decode,
     /// did not match the expected capture size, or did not clear the
     /// non-background pixel threshold (a blank or otherwise unusable
@@ -116,6 +122,7 @@ impl Category {
             Self::LoadedRendered => "loaded",
             Self::MissingMap => "missing-map",
             Self::LoadError(_) => "load-error",
+            Self::EmptyEntityWorld => "empty-entity-world",
             Self::Timeout => "timeout",
             Self::Crash => "crash",
             Self::BlankCapture => "blank-capture",
@@ -126,6 +133,22 @@ impl Category {
 /// The fixed message `crates/ohl-app/src/game_run.rs::run` returns when the
 /// requested map is not published in the payload.
 const MISSING_MAP_MESSAGE: &str = "the start map could not be loaded from the payload";
+
+/// The fixed line `crates/ohl-app/src/game_run.rs::run` prints (as
+/// `ENTITY_WORLD_OK_LINE`) once, right after a successful load, when the
+/// loaded map really has an entity world: at least one entity definition,
+/// *and* either a resolved player start or an `info_landmark` to arrive at
+/// (a map entered only through a `trigger_changelevel` landmark pair
+/// legitimately declares no player start of its own).
+///
+/// A run that does not print this exact line is not a pass, however well it
+/// rendered: a map whose entities lump failed to parse used to load as an
+/// empty room — no player start, no monsters, no triggers, the player
+/// spawned at the world origin inside solid geometry — and still exited
+/// zero with a perfectly healthy-looking capture of that room's walls. This
+/// is the fixed check that makes such a load fail its row.
+const ENTITY_WORLD_OK_LINE: &str =
+    "Entity world loaded: the map declares entities and a spawn or landmark to arrive at.";
 
 /// Known fixed failure messages the app logs (see `crates/ohl-app/src/
 /// main.rs` and `crates/ohl-app/src/game_run.rs`), mapped to a short,
@@ -176,6 +199,8 @@ struct RunOutcome {
     timed_out: bool,
     exit_code: Option<i32>,
     last_error_line: Option<String>,
+    /// Whether the run printed [`ENTITY_WORLD_OK_LINE`].
+    entity_world_ok: bool,
 }
 
 /// Classifies a run purely from its outcome shape, never from raw output
@@ -185,7 +210,8 @@ fn classify(outcome: &RunOutcome) -> Category {
         return Category::Timeout;
     }
     match outcome.exit_code {
-        Some(0) => Category::LoadedRendered,
+        Some(0) if outcome.entity_world_ok => Category::LoadedRendered,
+        Some(0) => Category::EmptyEntityWorld,
         Some(_failure) => {
             let line = outcome.last_error_line.as_deref().unwrap_or("");
             if line.contains(MISSING_MAP_MESSAGE) {
@@ -395,10 +421,17 @@ fn run_one(
         .rfind(|line| line.starts_with("[error]"))
         .map(ToString::to_string);
 
+    // Only the presence of the one fixed line is kept; nothing else from
+    // the run's output survives this point.
+    let entity_world_ok = stderr_text
+        .lines()
+        .any(|line| line.contains(ENTITY_WORLD_OK_LINE));
+
     let outcome = RunOutcome {
         timed_out: status.is_none() && Instant::now() >= deadline,
         exit_code: status.and_then(|status| status.code()),
         last_error_line,
+        entity_world_ok,
     };
     let category = classify(&outcome);
 
@@ -483,10 +516,11 @@ fn group_by_chapter<'a>(
 /// [`Category::LoadError`] reason code collapses into the single
 /// `"load-error"` bucket (see [`Category::bucket`]): the summary reports
 /// aggregate counts only, never a per-code or per-map breakdown.
-const CATEGORY_BUCKETS: [(&str, &str); 6] = [
+const CATEGORY_BUCKETS: [(&str, &str); 7] = [
     ("loaded", "Loaded"),
     ("missing-map", "Missing-map"),
     ("load-error", "Load-error"),
+    ("empty-entity-world", "Empty-entity-world"),
     ("timeout", "Timeout"),
     ("crash", "Crash"),
     ("blank-capture", "Blank-capture"),
@@ -683,7 +717,34 @@ mod tests {
             timed_out,
             exit_code,
             last_error_line: last_error_line.map(ToString::to_string),
+            // The common case in these tests: a run that reported a real
+            // entity world. The cases that did not are spelled out below.
+            entity_world_ok: true,
         }
+    }
+
+    fn outcome_without_entity_world(exit_code: Option<i32>) -> RunOutcome {
+        RunOutcome {
+            timed_out: false,
+            exit_code,
+            last_error_line: None,
+            entity_world_ok: false,
+        }
+    }
+
+    #[test]
+    fn a_successful_run_without_the_entity_world_line_is_not_a_pass() {
+        let result = classify(&outcome_without_entity_world(Some(0)));
+        assert_eq!(result, Category::EmptyEntityWorld);
+        assert!(!result.is_pass());
+    }
+
+    #[test]
+    fn the_entity_world_line_is_matched_exactly_as_the_app_prints_it() {
+        // The app prints it through its `[level] message` formatter, so the
+        // check has to survive that prefix.
+        let printed = format!("[info] {ENTITY_WORLD_OK_LINE}");
+        assert!(printed.contains(ENTITY_WORLD_OK_LINE));
     }
 
     #[test]
@@ -775,13 +836,13 @@ mod tests {
         let chapters = group_by_chapter(&reports, &titles);
         let summary = write_summary(&chapters, Duration::from_secs(3));
 
-        // Loaded | Missing-map | Load-error | Timeout | Crash | Blank-capture | Total
-        assert!(summary.contains("| Black Mesa Inbound | 1 | 0 | 0 | 0 | 0 | 0 | 1 |"));
-        assert!(summary.contains("| Anomalous Materials | 1 | 1 | 0 | 0 | 0 | 0 | 2 |"));
-        assert!(
-            summary
-                .contains("| **Total** | **2** | **1** | **0** | **0** | **0** | **0** | **3** |")
-        );
+        // Loaded | Missing-map | Load-error | Empty-entity-world | Timeout |
+        // Crash | Blank-capture | Total
+        assert!(summary.contains("| Black Mesa Inbound | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 1 |"));
+        assert!(summary.contains("| Anomalous Materials | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 2 |"));
+        assert!(summary.contains(
+            "| **Total** | **2** | **1** | **0** | **0** | **0** | **0** | **0** | **3** |"
+        ));
     }
 
     #[test]
@@ -794,10 +855,20 @@ mod tests {
         let chapters = group_by_chapter(&reports, &titles);
         let summary = write_summary(&chapters, Duration::from_secs(1));
 
-        assert!(summary.contains("| Blast Pit | 0 | 0 | 2 | 0 | 0 | 0 | 2 |"));
+        assert!(summary.contains("| Blast Pit | 0 | 0 | 2 | 0 | 0 | 0 | 0 | 2 |"));
         // Never leaks the reason code itself.
         assert!(!summary.contains("no-gpu"));
         assert!(!summary.contains("render-failed"));
+    }
+
+    #[test]
+    fn summary_counts_empty_entity_worlds_as_their_own_failure_bucket() {
+        let reports = vec![fake_report("Blast Pit", Category::EmptyEntityWorld)];
+        let titles = ["Blast Pit"];
+        let chapters = group_by_chapter(&reports, &titles);
+        let summary = write_summary(&chapters, Duration::from_secs(1));
+
+        assert!(summary.contains("| Blast Pit | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 1 |"));
     }
 
     #[test]
@@ -807,7 +878,7 @@ mod tests {
         let chapters = group_by_chapter(&reports, &titles);
         let summary = write_summary(&chapters, Duration::from_secs(1));
 
-        assert!(summary.contains("| Xen | 0 | 0 | 0 | 0 | 0 | 1 | 1 |"));
+        assert!(summary.contains("| Xen | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 1 |"));
     }
 
     #[test]
@@ -836,7 +907,7 @@ mod tests {
         let chapters = group_by_chapter(&reports, &titles);
         let summary = write_summary(&chapters, Duration::from_secs(0));
 
-        assert!(summary.contains("| Interloper | 0 | 0 | 0 | 0 | 0 | 0 | 0 |"));
+        assert!(summary.contains("| Interloper | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |"));
     }
 
     #[test]
