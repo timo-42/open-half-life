@@ -3562,3 +3562,38 @@ documented before this package updated it to assert the fix instead.
   scenario was added for this milestone — there is no cited-table map to
   point one at, not a budget call like M9.7's own `func_rot_button`/
   `func_pendulum` gap.
+
+## Status as of 2026-09-08
+
+- **First spawn-to-exit progression scenario, and `combat-smoke`'s
+  `--follow-level-change` support.** A 26th `combat-smoke` scenario
+  (`xtask/smoke-scenarios/progress_c1a1_reach_changelevel.txt`) walks from
+  spawn on "c1a1" (Unforeseen Consequences, `ohl_campaign::CHAPTERS`'s
+  second chapter's first map) to a level change and follows it end to end
+  (`crates/ohl-app/src/game_run.rs`'s `handle_level_change`), the first
+  scenario in this suite whose script rides a chapter's own route from its
+  start all the way to the next map rather than only partway. Reaching
+  the level change from spawn takes under a second of simulated time on
+  this map: a short turn followed by a walk in `use`-pressed steps crosses
+  it almost immediately. `xtask/src/combat_smoke.rs`'s `Scenario` gained a
+  `follow_level_change` field so only this one scenario is run with
+  `--follow-level-change`; every other scenario now also asserts "A level
+  change was followed." absent, verified by running the full 26-scenario
+  suite against the real payload.
+- **`c0a0`/`c1a0` progression is blocked, pending fixes.** The same
+  spawn-to-exit technique does not yet reach a level change on either of
+  the campaign's first two maps. On the very first map, forward movement
+  stops for good just after the map's opening scripted ride ends, at a
+  point that turns out to sit almost directly beneath the map's only
+  found level-change trigger; that map's several scripted sequences also
+  never all finish over the run lengths tried. On the second map, forward
+  movement likewise stops for good at one fixed point past the map's one
+  openable door, well before either of two level-change triggers found
+  further along the same general direction, regardless of how long the
+  script waits or how many further `use` presses it tries; sideways and
+  backward movement from that same point are unobstructed, and the player
+  is not embedded in solid geometry in either case, which argues against
+  a repeat of the PR #91 class of regression and toward a closed door, an
+  invisible clip brush, or an unresolved scripted gate facing the walk
+  direction on each map. No scenario for either map was added this round;
+  this is left as a follow-up.

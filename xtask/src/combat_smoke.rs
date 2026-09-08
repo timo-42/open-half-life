@@ -67,18 +67,31 @@ struct Scenario {
     map: &'static str,
     present: &'static [&'static str],
     absent: &'static [&'static str],
+    /// Passes `--follow-level-change` to the run
+    /// (`crates/ohl-app/src/main.rs`), so a `trigger_changelevel` this
+    /// scenario's script reaches actually loads its destination map and
+    /// logs "A level change was followed." instead of staying on the
+    /// original map. `false` for every scenario except the one that
+    /// asserts that line present.
+    follow_level_change: bool,
 }
 
 /// The two lines every scenario's `--script-log` run always emits: the
 /// script loaded and finished markers.
 const BASE_PRESENT: [&str; 2] = ["Scripted input loaded.", "Scripted input finished."];
 
-/// The nine milestone lines a scenario that never fires, hits, damages or
-/// picks up anything, that opens no door with a `use` press, and that never
-/// leaves the player embedded in solid geometry or riding a mover, is
-/// expected never to log. A scenario that
-/// does expect one of these present removes it from its own `absent` list
-/// instead.
+/// The ten milestone lines a scenario that never fires, hits, damages or
+/// picks up anything, that opens no door with a `use` press, that never
+/// leaves the player embedded in solid geometry or riding a mover, and
+/// that never follows a level change, is expected never to log. A
+/// scenario that does expect one of these present removes it from its own
+/// `absent` list instead.
+///
+/// "A level change was followed." joined this list (the spawn-to-exit
+/// progression scenario) alongside the one scenario that asserts it
+/// *present* and is the only one run with `--follow-level-change`; every
+/// other scenario's script either never reaches a `trigger_changelevel` or
+/// is not run with that flag, so it must never log this line.
 ///
 /// "The player is inside solid geometry." joined this list (M9) so that
 /// every scenario in this file — not only the chapter-walk ones added
@@ -104,7 +117,7 @@ const BASE_PRESENT: [&str; 2] = ["Scripted input loaded.", "Scripted input finis
 /// `"c0a0"`) does *not* use this constant: the player rides that map's
 /// opening tram, so it asserts that line *present* instead. See
 /// [`START_MAP_PRESENT`]'s own doc comment.
-const BASE_ABSENT: [&str; 9] = [
+const BASE_ABSENT: [&str; 10] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
     "A monster took damage.",
@@ -114,6 +127,7 @@ const BASE_ABSENT: [&str; 9] = [
     "The player is inside solid geometry.",
     "The player is riding a mover.",
     "The player opened a door.",
+    "A level change was followed.",
 ];
 
 /// The fixed lines both scenarios that run on `ohl_campaign::STARTMAP`
@@ -147,7 +161,7 @@ const START_MAP_PRESENT: [&str; 4] = [
 
 /// [`BASE_ABSENT`], minus "The player is riding a mover.", which
 /// [`START_MAP_PRESENT`] asserts present instead.
-const START_MAP_ABSENT: [&str; 8] = [
+const START_MAP_ABSENT: [&str; 9] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
     "A monster took damage.",
@@ -156,6 +170,7 @@ const START_MAP_ABSENT: [&str; 8] = [
     "The player took damage.",
     "The player is inside solid geometry.",
     "The player opened a door.",
+    "A level change was followed.",
 ];
 
 /// The fixed line every M9 chapter-walk scenario expects present beyond
@@ -183,7 +198,7 @@ const WALK_PRESENT_MONSTER_ENCOUNTER: [&str; 5] = [
 
 /// [`BASE_ABSENT`] minus the two lines [`WALK_PRESENT_MONSTER_ENCOUNTER`]
 /// moves to its own present set.
-const WALK_ABSENT_MONSTER_ENCOUNTER: [&str; 7] = [
+const WALK_ABSENT_MONSTER_ENCOUNTER: [&str; 8] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
     "A pickup was collected.",
@@ -191,6 +206,7 @@ const WALK_ABSENT_MONSTER_ENCOUNTER: [&str; 7] = [
     "The player is inside solid geometry.",
     "The player is riding a mover.",
     "The player opened a door.",
+    "A level change was followed.",
 ];
 
 /// [`WALK_PRESENT`] plus the line this scenario's own walk (in
@@ -206,7 +222,7 @@ const WALK_PRESENT_PLAYER_DAMAGED: [&str; 4] = [
 
 /// [`BASE_ABSENT`] minus the one line [`WALK_PRESENT_PLAYER_DAMAGED`]
 /// moves to its own present set.
-const WALK_ABSENT_PLAYER_DAMAGED: [&str; 8] = [
+const WALK_ABSENT_PLAYER_DAMAGED: [&str; 9] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
     "A monster took damage.",
@@ -215,6 +231,7 @@ const WALK_ABSENT_PLAYER_DAMAGED: [&str; 8] = [
     "The player is inside solid geometry.",
     "The player is riding a mover.",
     "The player opened a door.",
+    "A level change was followed.",
 ];
 
 /// The fixed lines a scenario that does pick up and fire a weapon expects
@@ -261,7 +278,7 @@ const WALK_PRESENT_DOOR_OPENED: [&str; 4] = [
 
 /// [`BASE_ABSENT`] minus the one line [`WALK_PRESENT_DOOR_OPENED`] moves to
 /// its own present set.
-const WALK_ABSENT_DOOR_OPENED: [&str; 8] = [
+const WALK_ABSENT_DOOR_OPENED: [&str; 9] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
     "A monster took damage.",
@@ -270,6 +287,35 @@ const WALK_ABSENT_DOOR_OPENED: [&str; 8] = [
     "The player took damage.",
     "The player is inside solid geometry.",
     "The player is riding a mover.",
+    "A level change was followed.",
+];
+
+/// [`WALK_PRESENT`] plus the line this scenario's own walk (in
+/// `xtask/smoke-scenarios/progress_c1a1_reach_changelevel.txt`) reaches: a
+/// `trigger_changelevel` followed end to end with `--follow-level-change`
+/// (`crates/ohl-app/src/game_run.rs`'s `handle_level_change`). This is the
+/// first scenario in this file whose script actually rides a chapter's
+/// spawn-to-exit route through to the next map, rather than only walking
+/// partway; see that scenario file's own header for the route.
+const LEVEL_CHANGE_PRESENT: [&str; 4] = [
+    "Scripted input loaded.",
+    "Scripted input finished.",
+    "The player moved from the spawn point.",
+    "A level change was followed.",
+];
+
+/// [`BASE_ABSENT`] minus the one line [`LEVEL_CHANGE_PRESENT`] moves to its
+/// own present set.
+const LEVEL_CHANGE_ABSENT: [&str; 9] = [
+    "The player fired a weapon.",
+    "A shot hit an entity.",
+    "A monster took damage.",
+    "A monster died.",
+    "A pickup was collected.",
+    "The player took damage.",
+    "The player is inside solid geometry.",
+    "The player is riding a mover.",
+    "The player opened a door.",
 ];
 
 /// [`BASE_ABSENT`] minus the three lines [`FIRE_AND_PICKUP_PRESENT`] moves
@@ -279,13 +325,14 @@ const WALK_ABSENT_DOOR_OPENED: [&str; 8] = [
 /// solid geometry." and "The player is riding a mover.": this scenario's
 /// own regression guard for the PR #91 class of bug and for mover-riders,
 /// same as every other scenario in this file.
-const FIRE_AND_PICKUP_ABSENT: [&str; 6] = [
+const FIRE_AND_PICKUP_ABSENT: [&str; 7] = [
     "A monster took damage.",
     "A monster died.",
     "The player took damage.",
     "The player is inside solid geometry.",
     "The player is riding a mover.",
     "The player opened a door.",
+    "A level change was followed.",
 ];
 
 /// The scenarios this command runs, in order. Map names come only from
@@ -338,20 +385,38 @@ const FIRE_AND_PICKUP_ABSENT: [&str; 6] = [
 /// the only scenario in this file that presses `use` at all, which is why
 /// every other one asserts "The player opened a door." absent.
 ///
-/// All 25 scenarios in this file — the four pre-existing ones included —
+/// All 26 scenarios in this file — the four pre-existing ones included —
 /// assert "The player is inside solid geometry." absent: this scenario
-/// set's own regression guard for the PR #91 class of bug. 23 of the 25
+/// set's own regression guard for the PR #91 class of bug. 23 of the 26
 /// also assert "The player is riding a mover." absent, since none of them
 /// stands on a moving brush entity; the two that run on
 /// `ohl_campaign::STARTMAP` assert it *present* instead, because the
 /// player spawns inside that map's opening tram and rides it (see
 /// [`START_MAP_PRESENT`]'s own doc comment).
+///
+/// The 26th scenario (a spawn-to-exit progression walk) is the only one
+/// that asserts "A level change was followed." present, and the only one
+/// whose `Scenario::follow_level_change` is `true`; every other scenario
+/// asserts that line absent instead, since none of their scripts walk far
+/// enough to reach a `trigger_changelevel` and none is run with
+/// `--follow-level-change`. It walks a turn-then-forward route from spawn
+/// on "c1a1" (Unforeseen Consequences) to a `trigger_changelevel` reached
+/// within a few simulated seconds, then follows it end to end through
+/// `crates/ohl-app/src/game_run.rs`'s `handle_level_change`. See
+/// `xtask/smoke-scenarios/progress_c1a1_reach_changelevel.txt`'s own
+/// header for the route in words. The other two of the first three
+/// campaign maps do not yet have a scenario like this: their own
+/// spawn-to-exit routes are blocked short of any `trigger_changelevel` by
+/// unresolved forward-movement stops (tracked separately; see
+/// `docs/MILESTONES.md`), not by anything this scenario or its harness
+/// changes.
 #[allow(
     clippy::too_many_lines,
     reason = "one Scenario literal per M9 chapter-walk scenario, plus the four \
-              pre-existing ones; splitting the list would only add indirection"
+              pre-existing ones, plus the one progression scenario; splitting \
+              the list would only add indirection"
 )]
-fn scenarios() -> [Scenario; 25] {
+fn scenarios() -> [Scenario; 26] {
     [
         Scenario {
             name: "walk forward in the training start",
@@ -359,6 +424,7 @@ fn scenarios() -> [Scenario; 25] {
             map: ohl_campaign::TRAINMAP,
             present: &BASE_PRESENT,
             absent: &BASE_ABSENT,
+            follow_level_change: false,
         },
         Scenario {
             name: "look around in the first chapter start",
@@ -366,6 +432,7 @@ fn scenarios() -> [Scenario; 25] {
             map: ohl_campaign::STARTMAP,
             present: &START_MAP_PRESENT,
             absent: &START_MAP_ABSENT,
+            follow_level_change: false,
         },
         Scenario {
             name: "approach the first monster encounter",
@@ -373,6 +440,7 @@ fn scenarios() -> [Scenario; 25] {
             map: "c1a1",
             present: &BASE_PRESENT,
             absent: &BASE_ABSENT,
+            follow_level_change: false,
         },
         Scenario {
             name: "pick up and fire a weapon in the hazard course",
@@ -380,6 +448,7 @@ fn scenarios() -> [Scenario; 25] {
             map: "t0a0b1",
             present: &FIRE_AND_PICKUP_PRESENT,
             absent: &FIRE_AND_PICKUP_ABSENT,
+            follow_level_change: false,
         },
         Scenario {
             name: "walk from spawn in Black Mesa Inbound",
@@ -387,6 +456,7 @@ fn scenarios() -> [Scenario; 25] {
             map: "c0a0",
             present: &START_MAP_PRESENT,
             absent: &START_MAP_ABSENT,
+            follow_level_change: false,
         },
         Scenario {
             name: "open a rotating door with use in Anomalous Materials",
@@ -394,6 +464,7 @@ fn scenarios() -> [Scenario; 25] {
             map: "c1a0",
             present: &WALK_PRESENT_DOOR_OPENED,
             absent: &WALK_ABSENT_DOOR_OPENED,
+            follow_level_change: false,
         },
         Scenario {
             name: "walk from spawn in Anomalous Materials",
@@ -401,6 +472,7 @@ fn scenarios() -> [Scenario; 25] {
             map: "c1a0",
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
+            follow_level_change: false,
         },
         Scenario {
             name: "walk from spawn in Unforeseen Consequences",
@@ -408,6 +480,7 @@ fn scenarios() -> [Scenario; 25] {
             map: "c1a1",
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
+            follow_level_change: false,
         },
         Scenario {
             name: "walk from spawn in Office Complex",
@@ -415,6 +488,7 @@ fn scenarios() -> [Scenario; 25] {
             map: "c1a2",
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
+            follow_level_change: false,
         },
         Scenario {
             name: "walk from spawn in \"We've Got Hostiles!\"",
@@ -422,6 +496,7 @@ fn scenarios() -> [Scenario; 25] {
             map: "c1a3",
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
+            follow_level_change: false,
         },
         Scenario {
             name: "walk from spawn in Blast Pit",
@@ -429,6 +504,7 @@ fn scenarios() -> [Scenario; 25] {
             map: "c1a4",
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
+            follow_level_change: false,
         },
         Scenario {
             name: "walk from spawn in Power Up",
@@ -436,6 +512,7 @@ fn scenarios() -> [Scenario; 25] {
             map: "c2a1",
             present: &WALK_PRESENT_MONSTER_ENCOUNTER,
             absent: &WALK_ABSENT_MONSTER_ENCOUNTER,
+            follow_level_change: false,
         },
         Scenario {
             name: "walk from spawn in On A Rail",
@@ -443,6 +520,7 @@ fn scenarios() -> [Scenario; 25] {
             map: "c2a2",
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
+            follow_level_change: false,
         },
         Scenario {
             name: "walk from spawn in Apprehension",
@@ -450,6 +528,7 @@ fn scenarios() -> [Scenario; 25] {
             map: "c2a3",
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
+            follow_level_change: false,
         },
         Scenario {
             name: "walk from spawn in Residue Processing",
@@ -457,6 +536,7 @@ fn scenarios() -> [Scenario; 25] {
             map: "c2a4",
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
+            follow_level_change: false,
         },
         Scenario {
             name: "walk from spawn in Questionable Ethics",
@@ -464,6 +544,7 @@ fn scenarios() -> [Scenario; 25] {
             map: "c2a4d",
             present: &WALK_PRESENT_PLAYER_DAMAGED,
             absent: &WALK_ABSENT_PLAYER_DAMAGED,
+            follow_level_change: false,
         },
         Scenario {
             name: "walk from spawn in Surface Tension",
@@ -471,6 +552,7 @@ fn scenarios() -> [Scenario; 25] {
             map: "c2a5",
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
+            follow_level_change: false,
         },
         Scenario {
             name: "walk from spawn in \"Forget About Freeman!\"",
@@ -478,6 +560,7 @@ fn scenarios() -> [Scenario; 25] {
             map: "c3a1",
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
+            follow_level_change: false,
         },
         Scenario {
             name: "walk from spawn in Lambda Core",
@@ -485,6 +568,7 @@ fn scenarios() -> [Scenario; 25] {
             map: "c3a2",
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
+            follow_level_change: false,
         },
         Scenario {
             name: "walk from spawn in Xen",
@@ -492,6 +576,7 @@ fn scenarios() -> [Scenario; 25] {
             map: "c4a1",
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
+            follow_level_change: false,
         },
         Scenario {
             name: "walk from spawn in Gonarch's Lair",
@@ -499,6 +584,7 @@ fn scenarios() -> [Scenario; 25] {
             map: "c4a2",
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
+            follow_level_change: false,
         },
         Scenario {
             name: "walk from spawn in Nihilanth",
@@ -506,6 +592,7 @@ fn scenarios() -> [Scenario; 25] {
             map: "c4a3",
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
+            follow_level_change: false,
         },
         Scenario {
             name: "walk from spawn in Endgame",
@@ -513,6 +600,7 @@ fn scenarios() -> [Scenario; 25] {
             map: "c5a1",
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
+            follow_level_change: false,
         },
         Scenario {
             name: "walk from spawn in the Hazard Course",
@@ -520,6 +608,7 @@ fn scenarios() -> [Scenario; 25] {
             map: ohl_campaign::TRAINMAP,
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
+            follow_level_change: false,
         },
         Scenario {
             name: "reach and climb a ladder in the Hazard Course",
@@ -527,6 +616,15 @@ fn scenarios() -> [Scenario; 25] {
             map: "t0a0a",
             present: &WALK_PRESENT_LADDER,
             absent: &BASE_ABSENT,
+            follow_level_change: false,
+        },
+        Scenario {
+            name: "walk from spawn to a followed level change in Unforeseen Consequences",
+            file: "progress_c1a1_reach_changelevel.txt",
+            map: "c1a1",
+            present: &LEVEL_CHANGE_PRESENT,
+            absent: &LEVEL_CHANGE_ABSENT,
+            follow_level_change: true,
         },
     ]
 }
@@ -650,14 +748,19 @@ fn run_one(
 ) -> ScenarioReport {
     let script_path = scenarios_dir.join(scenario.file);
 
-    let Ok(mut child) = Command::new(bin)
+    let mut command = Command::new(bin);
+    command
         .arg("--payload-root")
         .arg(payload_root)
         .arg("--map")
         .arg(scenario.map)
         .arg("--script")
         .arg(&script_path)
-        .arg("--script-log")
+        .arg("--script-log");
+    if scenario.follow_level_change {
+        command.arg("--follow-level-change");
+    }
+    let Ok(mut child) = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
