@@ -160,6 +160,33 @@ level-change path the interactive window uses and keep ticking on the
 destination map — useful for a capture or script that needs to land on
 whatever map a level transition leads to.
 
+**Chained scripted routes**, for walking the campaign the way it is
+actually played. Every scenario under `xtask/smoke-scenarios/` starts at
+its own map's player start with an empty inventory; a real campaign
+instead arrives through a level change, at an offset from the
+destination's landmark, carrying whatever the earlier maps gave the
+player. `--chain-script` runs a *sequence* of route files in one process:
+the first from the start map's player start, and each later one from
+wherever the previous route's level change put the player down, with
+health, armor, weapons and ammo carried across by the engine's own
+transition machinery. Give the flag once per route, in chain order:
+
+```sh
+cargo run --release -p ohl-app -- \
+  --payload-root /path/to/payload --map c0a0 --script-log \
+  --chain-script xtask/chain-routes/c0a0.txt \
+  --chain-script xtask/chain-routes/c0a0-hop1.txt
+```
+
+A route ends at the first level change it reaches (the next route takes
+over there, and the run logs the same fixed "A level change was followed."
+line a `--follow-level-change` run does); when a route's ticks run out
+first, the walk logs the fixed line "The chain walk stopped." and ends. A
+walk that ran every route it was given logs "The chain walk has no further
+route." instead. Level changes are always followed during a chain, so
+`--follow-level-change` is neither needed nor consulted. The two flags are
+mutually exclusive with `--script`.
+
 Development-only builds (`--features dev-tools`) add
 `--viewpoint-at-nearest-monster DISTANCE`, which places the headless
 capture eye `DISTANCE` units from whichever spawned monster is nearest to
@@ -314,7 +341,25 @@ cargo run --release -p ohl-app --features dev-tools -- \
 ```sh
 cargo xtask campaign-smoke --payload-root /path/to/payload   # every campaign map, headless-screenshotted
 cargo xtask combat-smoke --payload-root /path/to/payload     # every xtask/smoke-scenarios/*.txt scripted scenario
+cargo xtask chain-walk --payload-root /path/to/payload       # the chained campaign walk (xtask/chain-routes/)
 ```
+
+`cargo xtask chain-walk` assembles a chain from `xtask/chain-routes/`
+(`<start>.txt` for the start map's own route, then `<start>-hop1.txt`,
+`-hop2.txt`, ... for the route from each successive arrival point; a
+missing hop ends the chain), runs it in one process through
+`--chain-script`, and prints an aggregate-only report: how many maps deep
+the chain got, how many simulated seconds that took, and which fixed
+terminal line ended it. It exits non-zero when the chain reaches fewer
+maps than `--min-depth` (default 2). `--start NAME` walks a different
+chain, and must name a map from `ohl-campaign`'s own cited table.
+
+Route files are named by their position in the chain rather than by the
+map they run on, past the first: which map a level change lands in is a
+fact about the user's own payload, and only lawfully public name literals
+belong in this repository (see [docs/CLEAN_ROOM.md](docs/CLEAN_ROOM.md)
+rule 7). Their contents follow the same rule the smoke scenarios do —
+script commands, campaign-table names and route words only.
 
 **Other `cargo xtask` subcommands:**
 

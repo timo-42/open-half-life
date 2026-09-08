@@ -4255,3 +4255,90 @@ Closing checks: `cargo fmt --all`; `cargo clippy --workspace --all-targets
 --all-features -- -D warnings`; `cargo clippy $NO_STD_CRATES --all-targets
 --no-default-features -- -D warnings`; `cargo test --workspace`; `cargo
 xtask policy`; `cargo xtask graph` — all clean.
+
+## M9.15 (Rust): the chained campaign walk
+
+Status: implemented (Rust); evidence: this PR ("Walk the campaign as a
+chain: `--chain-script` and `cargo xtask chain-walk`").
+
+Every scenario `cargo xtask combat-smoke` runs starts at its own map's
+`info_player_start` with an empty inventory. A real campaign never does
+that: the player arrives through a `trigger_changelevel`, is placed at the
+same offset from the destination map's `info_landmark` they had from the
+source map's, and carries health, armor, weapons, ammo and the suit with
+them. Per-map routes therefore do not compose, and
+`.plan/progress-probe-5.md`/`.plan/progress-probe-7.md` classified several
+maps "blocked" partly for that reason: a cold `--map <name>` load has no
+campaign state at all, so on those maps the only weapon sits thousands of
+units past the frontier that needs it. This milestone adds the missing
+methodology — a walk that keeps one process, one `Game` and one inventory
+across level changes — rather than another per-map cold load.
+
+- **`--chain-script <PATH>`, repeatable, in chain order**
+  (`crates/ohl-app/src/main.rs`, `crates/ohl-app/src/game_run.rs`'s
+  `run_chained`). Route 0 runs from the start map's own player start;
+  every later route runs from wherever the preceding route's followed
+  level change put the player down, through the same
+  `ohl_engine::Game::change_level`/`ohl_engine::transition` machinery
+  `--follow-level-change` already used, so the carry is the engine's own,
+  not a harness fiction. A route ends at the first level change it
+  reaches; a route whose ticks run out first ends the chain. Level
+  changes are always followed during a chain (a chain that did not follow
+  them would just be a `--script` run), so `--follow-level-change` is
+  neither needed nor consulted, and `--chain-script` and `--script` are
+  mutually exclusive.
+- **Two new fixed report lines**, alongside the per-hop "A level change
+  was followed." line that already existed: "The chain walk stopped."
+  when a route ran out of ticks without reaching a level change, and "The
+  chain walk has no further route." when every route given did reach one.
+  Two bounded aggregates follow them ("Chain walk depth: N.", "Chain walk
+  simulated seconds: X.X."). No map name, entity name or position is
+  logged, here or anywhere else in the walk.
+- **`crates/ohl-app/src/game_run.rs`'s scripted tick loop is now shared**
+  (`run_script_ticks`, `TickOptions`, `TickOutcome`) between `run_scripted`
+  and `run_chained`, with `stop_on_level_change` the only behavioural
+  difference: a plain `--script` run keeps ticking its remaining ticks on
+  the destination map exactly as it did before this milestone.
+- **`cargo xtask chain-walk --payload-root <dir>`**
+  (`xtask/src/chain_walk.rs`) assembles the chain from a new
+  `xtask/chain-routes/` directory, runs it once through the built binary,
+  and prints an aggregate-only summary: routes assembled, maps reached
+  (chain depth), level changes followed, elapsed game seconds, and which
+  fixed terminal line ended the walk. It exits non-zero below
+  `--min-depth` (default 2). This is **not** a required CI job: it is an
+  xtask subcommand run in a PR's closing checks alongside
+  `cargo xtask combat-smoke`, since like that command it needs a locally
+  imported payload no CI runner has.
+- **Route files are named by position in the chain**, not by destination
+  map: `<start>.txt`, then `<start>-hop1.txt`, `-hop2.txt`, ... A missing
+  hop ends the chain rather than being skipped, since hop `n`'s route only
+  means anything if hop `n-1`'s route delivered the player there. Only
+  `<start>` is a real name, and it must be one from `ohl_campaign`'s own
+  cited table (`is_campaign_table_name` rejects anything else). Which map
+  a `trigger_changelevel` actually lands in is a fact about the user's own
+  payload, and `docs/CLEAN_ROOM.md` rule 7 admits only lawfully public
+  name literals; naming the file "the route from where the first level
+  change out of `c0a0` lands" says what it is for without writing that
+  name down.
+- **The first two routes are authored and working**
+  (`xtask/chain-routes/c0a0.txt`, `xtask/chain-routes/c0a0-hop1.txt`).
+  The first is the start map's opening mover ride, which carries the
+  player through a level boundary without a movement key pressed; the
+  second is a settle-then-walk-forward route from the arrival point.
+  Against a locally imported retail payload (identified only by its
+  sanitized digest), the chain reaches **depth 3** — two level changes
+  followed, 42.1 simulated seconds, ending on "The chain walk has no
+  further route." because nothing is authored for the third map yet, not
+  because a route failed. Standing still at the first arrival point for
+  over three simulated minutes fires nothing, so the second hop is walked
+  into rather than an artifact of landing inside a trigger volume.
+- **Tests**: `xtask/src/chain_walk.rs`'s own unit tests cover chain
+  assembly (consecutive hops, a gap ending the chain, a missing start
+  route, a start map outside the cited table, and the shipped chain being
+  assemblable and non-empty), report parsing from the app's fixed lines,
+  and the summary staying aggregate-only. `crates/ohl-app/tests/
+  chain_script.rs` drives the real binary end to end over `ohl-engine`'s
+  own synthetic two-map touch-`trigger_changelevel` fixture: a two-route
+  chain reports depth 2 and stops, a chain whose first route reaches
+  nothing stops at depth 1, and a chain that runs every route reports "no
+  further route" instead.

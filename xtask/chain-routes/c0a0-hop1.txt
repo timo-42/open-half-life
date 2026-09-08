@@ -1,0 +1,38 @@
+# M9.14 chain-walk route 1: the map the first level change out of
+# ohl_campaign::STARTMAP ("c0a0") lands in, walked from the *arrival*
+# point rather than from that map's own info_player_start.
+#
+# Project-authored; no bytes here come from any game installation (see
+# docs/CLEAN_ROOM.md). The destination map's own name is deliberately not
+# written down anywhere in this repository: it is a fact about the user's
+# payload, not a lawfully public one, so this file is named by its position
+# in the chain instead (see xtask/src/chain_walk.rs's module documentation
+# and docs/CLEAN_ROOM.md rule 7).
+#
+# A line's leading number is a count of *ticks*, each one CAPTURE_STEP
+# (1/60 s) of simulated time — not seconds.
+#
+# Route, in words only (no entity name, path or coordinate from any
+# payload): let the arrival settle for a couple of seconds without pressing
+# anything, then walk straight forward along the facing direction the
+# transition placed the player in, until a level change fires; then wait.
+#
+# Authoring notes (black-box, from this route's own runs): standing still
+# at the arrival point for over three simulated minutes fires nothing at
+# all, so the level change this route reaches is genuinely walked into
+# rather than a volume the arrival itself already sits inside. The forward
+# walk reaches it within the first second, which is why the settle wait is
+# there: it separates the arrival from the walk, so a regression that
+# teleported the player into the next trigger on arrival would still show
+# up as a level change fired before this route ever moved.
+#
+# The remaining forward ticks and the trailing wait are slack:
+# `run_chained` (crates/ohl-app/src/game_run.rs) ends a route at the level
+# change it reaches, so they are never run while this route works. They
+# exist so the route degrades into a plain, bounded forward walk — and a
+# visible "The chain walk stopped." — rather than into an instant failure,
+# if the walk ever stops reaching that boundary.
+
+120 wait
+1800 forward
+300 wait

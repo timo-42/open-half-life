@@ -139,6 +139,7 @@ confuse for one another"
 )]
 #[derive(Debug, Parser)]
 #[command(name = "Open Half-Life", version = VERSION, about = None, long_about = None)]
+#[command(group(clap::ArgGroup::new("scripted").args(["script", "chain_script"])))]
 struct Cli {
     /// Path to a Half-Life installation ISO.
     #[arg(long, conflicts_with = "path")]
@@ -304,9 +305,31 @@ number greater than 0 and no more than 8.0."
     #[arg(long, value_name = "PATH")]
     script: Option<PathBuf>,
 
+    /// Runs a *chain* of deterministic scripted-input routes across level
+    /// changes in one process: give the flag once per route, in chain
+    /// order. The first route runs from the start map's own player start;
+    /// every later one runs from wherever the preceding route's level
+    /// change put the player down in the destination map, with the health,
+    /// armor, weapons and ammo `ohl_engine::transition` carries across —
+    /// the campaign state a cold `--map <name>` load of a mid-campaign map
+    /// cannot reproduce. Level changes are always followed here, so
+    /// `--follow-level-change` is neither needed nor consulted. A route
+    /// ends at the first level change it reaches; when a route's ticks run
+    /// out first the chain stops there. See `game_run::run_chained` for
+    /// the fixed report lines, and `cargo xtask chain-walk` for the
+    /// harness that assembles a chain and reports how deep it got.
+    ///
+    /// The routes are ordinal rather than keyed by destination map name on
+    /// purpose: which map a level change lands in is a fact about the
+    /// user's own payload, and only `ohl_campaign`'s own publicly sourced
+    /// table of names may be written down in this repository (see
+    /// `docs/CLEAN_ROOM.md` rule 7).
+    #[arg(long, value_name = "PATH", conflicts_with = "script")]
+    chain_script: Vec<PathBuf>,
+
     /// Enables the scripted-input milestone log lines documented in
-    /// `docs/m79-design.md` §7. Ignored without `--script`.
-    #[arg(long, requires = "script")]
+    /// `docs/m79-design.md` §7. Ignored without `--script`/`--chain-script`.
+    #[arg(long, requires = "scripted")]
     script_log: bool,
 
     /// Follows a `trigger_changelevel` during a headless (`--headless-
@@ -728,6 +751,7 @@ fn run(cli: Cli) -> ExitCode {
         || cli.load.is_some()
         || cli.headless_screenshot.is_some()
         || cli.script.is_some()
+        || !cli.chain_script.is_empty()
         || reachability_report
     {
         return run_game_flow(&cli);
@@ -771,6 +795,7 @@ fn run_game_flow(cli: &Cli) -> ExitCode {
         viewpoint: cli.viewpoint,
         spawn_offset: cli.spawn_offset,
         script: cli.script.as_deref(),
+        chain_script: &cli.chain_script,
         script_log: cli.script_log,
         overbright: cli.overbright,
         follow_level_change: cli.follow_level_change,
