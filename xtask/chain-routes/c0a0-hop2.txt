@@ -1,0 +1,17 @@
+# M9.17 chain-walk route 2: the map the *second* level change out of
+# ohl_campaign::STARTMAP ("c0a0") lands in, walked from its arrival point.
+#
+# Project-authored; no bytes here come from any game installation (see
+# docs/CLEAN_ROOM.md). Named by its position in the chain rather than by
+# the map it runs on, for the reason recorded in c0a0-hop1.txt and in
+# xtask/src/chain_walk.rs's module documentation.
+#
+# A line's leading number is a count of *ticks*, each one CAPTURE_STEP
+# (1/60 s) of simulated time — not seconds.
+#
+# Route, in words only: the ride the previous two routes were on is still
+# under the player when this one starts, and it carries them to this map's
+# own level change without a single key press. So this route waits, and
+# `run_chained` ends it at the boundary the ride reaches.
+
+5400 wait

@@ -600,7 +600,7 @@ impl Simulation {
         Self::advance_platforms(registry, dt);
         Self::advance_rotators(registry, dt);
         Self::advance_pendulums(registry, dt);
-        Self::advance_trains(registry, dt);
+        self.advance_trains(registry, dt);
         self.advance_cameras(registry, dt);
         if let Some(destination) = self.arrived_at.take() {
             self.seed_teleport_arrival(registry, destination);
@@ -1875,11 +1875,29 @@ impl Simulation {
     }
 
     /// Advances every `func_train`/`func_tracktrain` along its resolved
-    /// `path_track`/`path_corner` chain; see
-    /// [`crate::track_train::TrackTrainState::advance`].
-    fn advance_trains(registry: &mut Registry, dt: f32) {
-        for train in registry.world.query_mut::<&mut TrackTrainState>() {
-            train.advance(dt);
+    /// `path_track`/`path_corner` chain (see
+    /// [`crate::track_train::TrackTrainState::advance`]) and fires the
+    /// documented fire-on-pass `message` of every `path_track`/`path_corner`
+    /// a train passes this step, with the train itself as the activator.
+    ///
+    /// Trains are drained in ascending entity id order, and each train's own
+    /// messages in the order it passed them, so a step in which two trains
+    /// cross a node fires deterministically. See `docs/FORMAT_SOURCES.md`
+    /// ("Track trains and paths") for the public source of the keyvalue.
+    fn advance_trains(&mut self, registry: &mut Registry, dt: f32) {
+        let mut fired: Vec<(Entity, Vec<String>)> = Vec::new();
+        for (entity, train) in registry.world.query_mut::<(Entity, &mut TrackTrainState)>() {
+            let mut messages = Vec::new();
+            train.advance_firing(dt, &mut messages);
+            if !messages.is_empty() {
+                fired.push((entity, messages));
+            }
+        }
+        fired.sort_unstable_by_key(|(entity, _)| entity.id());
+        for (entity, messages) in fired {
+            for message in messages {
+                self.fire(message, Some(entity), 0.0);
+            }
         }
     }
 

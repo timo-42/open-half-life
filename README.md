@@ -392,7 +392,9 @@ missing hop ends the chain), runs it in one process through
 maps deep the chain got, how many simulated seconds that took, and which
 fixed terminal line ended it. It exits non-zero when the chain reaches
 fewer distinct maps than `--min-depth` (default 2), or when it re-entered
-a map it had already visited at any depth. `--start NAME` walks a different
+a map it had already visited at any depth. The shipped chain reaches four
+distinct maps and ends on "The chain walk has no further route." — it
+runs out of authored routes, not out of map. `--start NAME` walks a different
 chain, and must name a map from `ohl-campaign`'s own cited table.
 
 Route files are named by their position in the chain rather than by the

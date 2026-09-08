@@ -5,7 +5,7 @@
 
 use ohl_engine::transition::{
     CarriedEntity, EntitySnapshot, GlobalStateTable, MoverSnapshot, PlayerCarryState,
-    TransitionState,
+    TrackTrainCarry, TransitionState,
 };
 use ohl_game::registry::{Door, GlobalStateValue, MoverState, Rotator, Transform};
 use proptest::prelude::*;
@@ -106,6 +106,21 @@ prop_compose! {
 }
 
 prop_compose! {
+    /// A `func_train`/`func_tracktrain`'s carried ride state: the node it
+    /// is at, by name, plus its own motion.
+    fn track_train_carry()(
+        node in "[a-z_]{1,16}",
+        t in finite(),
+        direction in finite(),
+        speed in finite(),
+        moving in proptest::bool::ANY,
+        wait_timer in finite(),
+    ) -> TrackTrainCarry {
+        TrackTrainCarry { node, t, direction, speed, moving, wait_timer }
+    }
+}
+
+prop_compose! {
     fn carried()(
         classname in "[a-z_]{1,16}",
         targetname in proptest::option::of("[a-z_]{1,16}"),
@@ -113,6 +128,7 @@ prop_compose! {
         target in proptest::option::of("[a-z_]{1,16}"),
         offset in proptest::option::of((finite(), finite(), finite())),
         snapshot in snapshot(),
+        track_train in proptest::option::of(track_train_carry()),
     ) -> CarriedEntity {
         CarriedEntity {
             classname,
@@ -121,6 +137,7 @@ prop_compose! {
             target,
             offset: offset.map(|(x, y, z)| [x, y, z]),
             snapshot,
+            track_train,
         }
     }
 }

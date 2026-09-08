@@ -1128,7 +1128,15 @@ impl Game {
         TransitionState::capture(
             &self.level,
             landmark,
-            Vec3::from_array(self.camera.position),
+            // The player's own hull origin, not the eye: the documented
+            // rule places the player in the destination at the offset from
+            // the landmark they had in the source map, and
+            // `apply_transition` applies that offset to the destination
+            // player's *origin*. Measuring it from the eye instead raised
+            // the player by the standing view offset on every level change
+            // — enough to drop someone arriving on a moving mover out of it
+            // before they landed.
+            Vec3::from_array(self.player_origin()),
             self.camera.yaw,
             self.camera.pitch,
             // M7.9 P1: `self.systems` is now the real source of the
@@ -1173,6 +1181,14 @@ impl Game {
             .as_ref()
             .is_some_and(|worldspawn| worldspawn.newunit);
         let placement = transition.apply(&mut next);
+        // Re-baseline the collision model against whatever the transition
+        // just moved (a carried `func_tracktrain` is placed where the
+        // source map's copy was, thousands of units from where this map
+        // spawned it). A zero `dt` records the new positions with no
+        // velocity, so the first step does not read that placement as one
+        // step's worth of motion and hand a rider a base velocity of
+        // thousands of units per second.
+        next.sync_brush_collision(0.0);
 
         let mut globals = if newunit {
             GlobalStateTable::new()
@@ -1207,9 +1223,14 @@ impl Game {
         self.carry.restore(&transition.player);
 
         if let Some(position) = placement {
-            self.camera.position = position.to_array();
-            self.camera.yaw = transition.yaw;
-            self.camera.pitch = transition.pitch;
+            // `position` is a player *origin* (see `capture_transition`), so
+            // the camera is placed above it the same way an
+            // `info_player_start` spawn places it.
+            self.camera = FreeFlyCamera::at_spawn(ohl_world::PlayerSpawn {
+                origin: position.to_array(),
+                yaw: transition.yaw,
+                pitch: transition.pitch,
+            });
             self.controller =
                 PlayerController::spawn_at(position, transition.yaw, transition.pitch);
         }

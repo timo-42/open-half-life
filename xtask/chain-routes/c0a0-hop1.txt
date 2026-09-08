@@ -1,4 +1,4 @@
-# M9.15 chain-walk route 1: the map the first level change out of
+# M9.17 chain-walk route 1: the map the first level change out of
 # ohl_campaign::STARTMAP ("c0a0") lands in, walked from the *arrival*
 # point rather than from that map's own info_player_start.
 #
@@ -13,43 +13,27 @@
 # (1/60 s) of simulated time — not seconds.
 #
 # Route, in words only (no entity name, path or coordinate from any
-# payload): let the arrival settle for a couple of seconds without pressing
-# anything, then turn to face away from the boundary the transition just
-# carried the player through, and walk straight forward from there for
-# half a simulated minute.
+# payload): the transition carries the player in still riding the start
+# map's opening mover, which keeps going on this map's own copy of the
+# same track (that carry is what M9.17 fixed; before it, the mover in this
+# map drove off without its passenger and the campaign stopped here). The
+# two short steps at the top move the player off the wall of the car they
+# arrived pressed against and toward the middle of it, which is what keeps
+# them aboard through the corners: a rider is carried by a mover's
+# translation only, so a passenger standing at the edge of a turning car
+# keeps their *world* offset from it and is eventually scraped off against
+# the tunnel — see docs/MILESTONES.md M9.17 for that open gap. The long
+# wait is the ride itself. Where the ride finally does put the player
+# down, the walk lines cover the last stretch to the level change on foot.
 #
-# Authoring notes, black-box, all from this route's own runs against a
-# local payload (nothing below is a payload literal — only headings
-# relative to the arrival pose, and this project's own report lines):
-#
-#   * The first version of this route walked straight ahead along the
-#     facing direction the transition placed the player in. That reaches a
-#     level change within a second — but it is the boundary the player
-#     just arrived through, so it lands back in the chain's own start map.
-#     That is a ping-pong, not progress, which is why the walk now tracks
-#     the maps it has entered and fails on a re-entry
-#     ("The chain walk re-entered a map it had already visited."); this
-#     route is authored against that check.
-#   * Headings within about 45 degrees either side of the arrival facing
-#     all re-enter the same way. Headings at 90, 135 and 180 degrees reach
-#     no level change at all within 30 simulated seconds, and neither does
-#     standing still for over three simulated minutes.
-#   * Running the reachability walk from the arrival point itself
-#     (--chain-script with --reachability-report, dev-tools) explains why:
-#     8,428 cells are reachable from there, the only entity on the whole
-#     frontier is a single func_tracktrain, and the only reachable
-#     trigger_changelevel is the one ~290 units away that the player
-#     arrived through. The way onward is that tracktrain, which never
-#     departs in this engine no matter how long the route waits beside it
-#     or which side it approaches from.
-#
-# So this route deliberately walks *away* from the boundary and reports
-# "The chain walk stopped." at distinct depth 2, rather than manufacturing
-# a deeper-looking number by walking back and forth across one boundary.
-# The chain gets deeper when that tracktrain departs, or when a later
-# start map is chained; the walk is the instrument that will show it.
+# The trailing wait is slack: `run_chained` (crates/ohl-app/src/game_run.rs)
+# ends a route at the level change it reaches, so any ticks left over here
+# are never run.
 
 120 wait
-60 look 0 180
+15 back
+20 right
+4000 wait
+1200 forward left
 1800 forward
-300 wait
+3000 wait

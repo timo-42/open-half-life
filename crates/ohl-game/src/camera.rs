@@ -236,7 +236,7 @@ impl TriggerCameraState {
                     self.node_index = next;
                     self.t = 0.0;
                     transitions += 1;
-                    let node = chain.nodes[self.node_index];
+                    let node = &chain.nodes[self.node_index];
                     if let Some(speed) = node.speed {
                         self.speed = speed.abs();
                     }
@@ -639,6 +639,7 @@ mod tests {
                     wait: 0.0,
                     speed: None,
                     stop: false,
+                    message: None,
                 })
                 .collect();
             let min = coords.iter().fold(Vec3::splat(f32::MAX), |acc, &(x, y, z)| {
