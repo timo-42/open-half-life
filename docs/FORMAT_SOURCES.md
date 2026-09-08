@@ -4369,3 +4369,36 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
     mid-close by an obstruction) from one that finished closing cleanly
     underneath a stationary player — so this remains an open gap rather
     than a guessed-at fix.
+
+31. **`ohl_game::pose::brush_center` is wrong for a `func_tracktrain`
+    authored without an origin brush (found reviewing item 25's own rule
+    against `track_train_transform`).** No new external source: this
+    follows from the same documented shape item 25 and `track_train_
+    transform`'s own doc comment already record — a train built without an
+    origin brush has world-baked geometry (compiled wherever the map
+    editor happened to place it, unrelated to the path it rides) and a
+    `0 0 0` `origin` keyvalue. `track_train_transform` returns the train's
+    absolute path position for that shape, and render/collision get it
+    right because they add that delta to the same `0 0 0` keyvalue. But
+    `brush_center`'s own `BrushCenter` is the compiled bounds midpoint —
+    the unrelated editor location — plus that same `0 0 0` keyvalue, and
+    `brush_offset` then adds the absolute path position *on top of* it
+    instead of replacing it, so the `use`-proximity point drifts away from
+    the train as soon as it leaves its spawn node, by however far the
+    editor's build location sits from world origin.
+
+    Not fixed in this pass: item 25 verified the unconditional
+    `origin`-keyvalue rule against a real survey of `func_train`/
+    `func_tracktrain` entities, but this specific no-origin-brush shape
+    was not separately re-verified here, and fixing `brush_center` for it
+    needs a documented choice this project has not made yet (whether to
+    special-case a `BrushCenter` with no attached `TrackTrainState` origin
+    brush, or to route `brush_center` through `track_train_transform`'s
+    already-correct delta the way the renderer and collision model do,
+    for a train specifically). Recorded here as `TODO(black-box)` at
+    `track_train_transform`'s own doc comment in
+    `crates/ohl-game/src/pose.rs`, with a dedicated regression,
+    `ohl_game::pose::tests::
+    a_tracktrain_without_an_origin_brush_gives_a_wrong_brush_center`,
+    that pins the current, documented-wrong sum so a future fix has to
+    update it deliberately rather than silently change behaviour underfoot.
