@@ -1639,9 +1639,25 @@ pub fn reachability_door_bsp(entities: &str) -> Vec<u8> {
 /// installation; see `docs/CLEAN_ROOM.md`.
 #[must_use]
 pub fn reachability_door_only_entities() -> String {
+    reachability_door_only_entities_at_height(REACH_SPAWN_Z)
+}
+
+/// The `z` [`reachability_door_only_entities`] stands its
+/// `info_player_start` at: just clear of the fixture's own floor, the way
+/// an ordinary map places one.
+pub const REACH_SPAWN_Z: f32 = 40.0;
+
+/// As [`reachability_door_only_entities`], with the `info_player_start`
+/// placed at an arbitrary height instead of [`REACH_SPAWN_Z`] — for the
+/// walk's own "settle the spawn onto the floor first" regression, which
+/// needs a start hanging further above the floor than
+/// [`crate::reachability::DROP`]. No bytes here come from any game
+/// installation; see `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn reachability_door_only_entities_at_height(spawn_z: f32) -> String {
     format!(
         "{{\n\"classname\" \"worldspawn\"\n}}\n\
-         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"150 0 40\"\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"150 0 {spawn_z}\"\n\
          \"angle\" \"0\"\n}}\n\
          {{\n\"classname\" \"func_door\"\n\"targetname\" \"{REACH_DOOR_NAME}\"\n\
          \"model\" \"*1\"\n\"speed\" \"100\"\n\"wait\" \"-1\"\n\"angle\" \"-1\"\n\
@@ -1656,10 +1672,18 @@ pub fn reachability_door_only_entities() -> String {
 /// here come from any game installation; see `docs/CLEAN_ROOM.md`.
 #[must_use]
 pub fn reachability_changelevel_entities(next_map: &str) -> String {
+    reachability_changelevel_entities_at_height(next_map, REACH_SPAWN_Z)
+}
+
+/// As [`reachability_changelevel_entities`], with the `info_player_start`
+/// at an arbitrary height; see
+/// [`reachability_door_only_entities_at_height`].
+#[must_use]
+pub fn reachability_changelevel_entities_at_height(next_map: &str, spawn_z: f32) -> String {
     format!(
         "{}{{\n\"classname\" \"trigger_changelevel\"\n\"model\" \"*2\"\n\
          \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n",
-        reachability_door_only_entities(),
+        reachability_door_only_entities_at_height(spawn_z),
     )
 }
 

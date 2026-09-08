@@ -33,7 +33,7 @@ pub mod movement;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 
-pub use controller::{ControllerInput, PlayerController};
+pub use controller::{ControllerInput, MAX_PITCH_DEGREES, PlayerController};
 pub use hull::{
     BrushId, CollisionModel, ContentsKind, DIST_EPSILON, HULL_SIZES, Hull, MAX_ATTACHED_BRUSHES,
     MAX_TRACE_DEPTH, Trace, contents, point_contents, trace_hull,

@@ -354,6 +354,23 @@ impl TrackTrainState {
         }
     }
 
+    /// Where this train's chain *starts*: the world-space position of its
+    /// first `path_track`/`path_corner`, `height` already applied — the
+    /// point [`Self::position`] returns before the train has moved at all.
+    ///
+    /// Exposed for [`crate::pose::track_train_transform`]'s world-baked
+    /// placement rule (see that function's doc comment): a train whose
+    /// brushes were compiled in absolute world space has no origin brush
+    /// to measure its path displacement from, and its first node is the
+    /// only published reference point that stands in for one.
+    #[must_use]
+    pub fn first_node_position(&self) -> Vec3 {
+        self.chain
+            .nodes
+            .first()
+            .map_or(Vec3::ZERO, |node| node.position)
+    }
+
     /// The train's yaw, in degrees (matching [`crate::registry::movedir_from_angles`]'s
     /// convention: counter-clockwise around `+Z` from `+X`), facing along
     /// the active segment toward the node it is heading for; `None` when

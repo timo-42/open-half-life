@@ -34,10 +34,12 @@
 //! | 31 | [`SECTION_MOMENTARY_DOOR_STATE`] | `Vec<Option<`[`MomentaryDoorSnapshot`]`>>`, one per registry entity, in spawn order: `momentary_door` runtime position (M9.8) |
 //! | 32 | *(reserved, `ohl-player`)* | `PlayerSnapshot`, written through `Player::snapshot()` when a later package wires it |
 //! | 33 | [`SECTION_BREAKABLE_STATE`] | `Vec<Option<`[`BreakableSnapshot`]`>>`, one per registry entity, in spawn order: `func_breakable`/`func_pushable` remaining hit points, broken flag and push offset (M9.10) |
+//! | 34 | [`SECTION_TELEPORT_STATE`] | [`TeleportStateSnapshot`]: the `trigger_teleport` touch-edge bookkeeping and the `multisource` master fire counts (M9) |
 //!
-//! Tags 23-31 and 33 are read as `None`/a default when absent, so a save
-//! written before M7.9 P4b (tags 23-27), M7.13 (tag 28), M9.5 (tag 29),
-//! M9.6 (tag 30), M9.8 (tag 31) or M9.10 (tag 33) still loads (`.plan/m79-design.md` §6); a
+//! Tags 23-31, 33 and 34 are read as `None`/a default when absent, so a
+//! save written before M7.9 P4b (tags 23-27), M7.13 (tag 28), M9.5 (tag 29),
+//! M9.6 (tag 30), M9.8 (tag 31), M9.10 (tag 33) or the teleport/master
+//! package (tag 34) still loads (`.plan/m79-design.md` §6); a
 //! section that is present but fails to decode fails the whole read closed
 //! ([`crate::EngineError::SaveUnreadable`]), same as every other section.
 //!
@@ -211,6 +213,44 @@ pub const SECTION_MOMENTARY_DOOR_STATE: u32 = 31;
 /// always gets its own optional tag.
 pub const SECTION_BREAKABLE_STATE: u32 = 33;
 
+/// The `trigger_teleport` touch-edge bookkeeping and the `multisource`
+/// master fire counts (see [`TeleportStateSnapshot`]).
+///
+/// Tag 34: tag 32 is reserved for `ohl-player`'s own snapshot and tag 33 is
+/// M9.10's `func_breakable`/`func_pushable` state (see this module's tag
+/// map). A new tag rather than an addition to
+/// [`SECTION_SIMULATION`] (19), which is where the rest of
+/// `ohl_game::logic::Simulation`'s bookkeeping lives: that section is
+/// shipped and frozen at its own wire shape, so widening
+/// `ohl_game::logic::SimulationState` would invalidate every save already
+/// written — exactly the reasoning tags 30 and 31 each recorded for
+/// staying out of tags 18/19/28.
+pub const SECTION_TELEPORT_STATE: u32 = 34;
+
+/// [`SECTION_TELEPORT_STATE`] (34)'s whole payload.
+///
+/// Both halves are keyed by `hecs` bit pattern rather than by spawn order,
+/// matching `ohl_game::logic::TriggerSnapshot`'s own existing convention on
+/// tag 19 and [`RotatingMoverStateSnapshot::rot_button_touch`]'s on tag 30.
+///
+/// Neither half can ride an existing tag, and both fail in the *unsafe*
+/// direction if they are simply dropped: a lost teleport touch edge makes
+/// the first step after a load a rising edge on the volume the player is
+/// standing in (advancing a scripted chain by one scene the player never
+/// walked into), and a lost master fire count re-locks a master that had
+/// already gone active (stalling a sequence gated on it). See
+/// `ohl_game::logic::Simulation::teleport_touching`/`master_fires` for
+/// both.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TeleportStateSnapshot {
+    /// `ohl_game::logic::Simulation`'s `trigger_teleport` touch-edge
+    /// bookkeeping: `(entity bit pattern, touching)` pairs.
+    pub teleport_touch: Vec<(u64, bool)>,
+    /// `ohl_game::logic::Simulation`'s `multisource` fire counts:
+    /// `(entity bit pattern, fires)` pairs.
+    pub master_fires: Vec<(u64, u32)>,
+}
+
 /// The engine header section's contents.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EngineHeader {
@@ -343,6 +383,8 @@ pub struct GameSave {
     /// its authored `health`, unbroken, and every pushable back where it
     /// was compiled.
     pub breakables: Option<Vec<Option<BreakableSnapshot>>>,
+    /// The teleport touch edges and master fire counts, when present.
+    pub teleport_state: Option<TeleportStateSnapshot>,
 }
 
 impl GameSave {
@@ -415,6 +457,9 @@ impl GameSave {
             if let Some(breakables) = &self.breakables {
                 writer.add_section_serde(SECTION_BREAKABLE_STATE, breakables)?;
             }
+            if let Some(teleport_state) = &self.teleport_state {
+                writer.add_section_serde(SECTION_TELEPORT_STATE, teleport_state)?;
+            }
             Ok(())
         };
         write(&mut writer).map_err(|_| crate::EngineError::SaveUnwritable)?;
@@ -467,6 +512,7 @@ impl GameSave {
                 SECTION_BREAKABLE_STATE,
                 crate::save_state::MAX_SNAPSHOT_BREAKABLES,
             )?,
+            teleport_state: optional_section(&reader, SECTION_TELEPORT_STATE)?,
         })
     }
 }

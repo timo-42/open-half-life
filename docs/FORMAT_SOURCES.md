@@ -1392,6 +1392,16 @@ medium appears in the code, tests, fixtures or this file.
   requirement to match an `info_landmark` of the same name in the
   destination map; `path_corner`/`path_track`'s `target` (next node) and
   `wait`.
+- A map's `info_player_start` is a point entity, and nothing requires it to
+  sit on the floor: the engine spawns the player at it and lets them fall.
+  `ohl_engine::reachability`'s bounded walk is a fixed-position grid step,
+  so from a start hanging further above the floor than its own documented
+  drop bound every direction is discarded and the whole map reports as one
+  reachable cell. `reachability::settle_start` therefore drops the walk's
+  start onto the first floor beneath it — one downward hull trace, bounded
+  by `SPAWN_SETTLE_DROP` — before the walk runs, which is the same thing
+  the spawning player does on the level's first ticks. This is a dev-tool
+  correctness rule, not an engine behaviour claim.
 - The `angle`/`angles` "straight up" (`-1`)/"straight down" (`-2`) sentinel
   convention used by GoldSrc map editors in place of a numeric yaw is
   standard, widely documented public knowledge for Quake-engine-family
@@ -2644,6 +2654,171 @@ writes there, and the reference point the `height` keyvalue above is
 documented against — so a train is drawn and collided wherever its path
 currently puts it, including at spawn, rather than wherever its brushes
 happened to be compiled.
+
+- A train authored **without** an origin brush is the one shape that rule
+  does not fit, and it is a shape real maps use. The compiler then writes a
+  `0 0 0` `origin` keyvalue and bakes the car's vertices into absolute
+  world space, so measuring the path displacement from `origin` moves the
+  whole car by the full magnitude of its own track coordinates the instant
+  the level loads — thousands of units on a real map — instead of leaving
+  it on its track. The published `path_corner`/`path_track` pages cited
+  above describe a train as *riding* its path, and a train whose geometry
+  is baked in world space has no origin brush to measure that ride from, so
+  the only reference point its own data offers is the first node of the
+  path it rides. `ohl_game::pose::track_train_transform` therefore measures
+  a world-baked train from
+  `ohl_game::track_train::TrackTrainState::first_node_position` and an
+  origin-brush train from its `origin` keyvalue. Before this distinction
+  existed, a map that spawned the player standing inside a world-baked car
+  dropped them out of it the moment it loaded, into a space no input could
+  leave; see `crates/ohl-engine/tests/train_spawn_placement.rs` for both
+  shapes against synthetic fixtures.
+
+  This is a *relative* placement, not the "the car is already sitting on
+  its first node" claim an earlier draft of this entry made. Measured
+  across every `func_train`/`func_tracktrain` in the 93 cited maps, well
+  under half of the world-baked ones have their first node anywhere inside
+  the compiled car; the rule's justification is only that a world-baked
+  train has no origin brush to measure from and its first node is the one
+  reference point its own path data supplies, so the displacement is zero
+  at spawn and grows exactly as far as the train travels.
+
+  The two cases are told apart by the `origin` keyvalue being `0 0 0`,
+  which is what a compiler leaves a brush entity with no origin brush at. A
+  geometric test — "do the entity's placed `BrushBounds` contain its
+  `origin` point", on the reasoning that an origin brush is part of the
+  entity — was written first and rejected on measurement over that same
+  corpus: a compiler drops the origin brush's own faces from the model, so
+  a real origin brush routinely sits flush with, or a unit or two past, the
+  compiled bounds. The geometric test read a handful of ordinary
+  origin-brush trains as world-baked, one of them moving its spawn
+  placement by hundreds of units — the very regression this rule exists to
+  prevent, in the other direction — and sat within a few units of flipping
+  for most of the rest. The `origin` keyvalue separated the same corpus
+  with no misclassifications.
+
+## Teleport volumes and destinations
+
+- [TWHL wiki: trigger_teleport](https://twhl.info/wiki/page/trigger_teleport)
+  and [TWHL wiki: info_teleport_destination](https://twhl.info/wiki/page/info_teleport_destination)
+  (both return HTTP 403 to automated fetches from this environment, the
+  same caveat already recorded for every other TWHL entity page in this
+  document, so both were consulted via search-engine result summaries of
+  those exact pages), corroborated for the destination entity by the Sven
+  Co-op community's
+  [svenmanor.com entity guide: info_teleport_destination](https://www.svenmanor.com/entity-guide/info_teleport_destination)
+  (fetched directly), which describes it as "the correct entity to use as
+  the teleport destination entity of a `trigger_teleport`".
+  - `trigger_teleport` is "a brush-based entity, which is where the player
+    is being teleported from"; it "will make the brush invisible and
+    teleport the player to the origin of the target entity that was
+    provided to it in its list of properties, when the player touches it".
+  - Its documented keyvalues are `target` ("the name of the
+    `info_teleport_destination` **or any other entity** to use as
+    destination"), `targetname`, `master` and `delay` ("the time in seconds
+    before an entity should trigger its target after being triggered
+    itself").
+  - Its documented spawnflags are "Monsters (1) — allow monsters to
+    activate this entity" and "No Clients (2) — players cannot activate
+    this entity".
+  - `info_teleport_destination`'s `angles` are "the angles at which the
+    entity will be facing upon teleportation".
+
+Project behaviour supported: `ohl_game::registry::Registry::build` gives a
+`trigger_teleport` the same `Trigger` component every other `trigger_*`
+volume gets — so it is touched, cooled down by `wait` and delayed by
+`delay` through machinery that already existed — plus a `TeleportTrigger`
+component carrying the "No Clients" spawnflag
+(`SPAWNFLAG_TELEPORT_NO_CLIENTS`), which the touch path honours by simply
+never firing for the player. What the volume fires is its destination, and
+`ohl_game::logic::Simulation::activate_trigger` marks that fire by carrying
+the *volume itself* as the activator; `Simulation::activate` reads that
+activator and treats whatever entity was fired as a destination, whatever
+its classname, emitting `logic::Event::Teleport` with that entity's
+`origin` and `angles`. That is what makes the documented "or any other
+entity" work without the opposite error of moving the player every time an
+unrelated chain happens to fire a marker entity. `ohl_engine::Game`
+(`apply_teleports`) applies the event to the player inside the same fixed
+step that produced it, using the same placement convention as its own
+`info_player_start` spawn — the destination's `origin` becomes the
+player's entity origin, the camera sits the documented standing view
+offset above it, `angles` become the facing, velocity is cleared and
+collision stays on — and counts it in `Game::teleport_count`, which
+`crates/ohl-app/src/script_log.rs` turns into the fixed line "The player
+was teleported.".
+
+A teleport volume fires on the **rising edge** of a touch, not on every
+step the player overlaps it — the same reading
+`Simulation::touch_changelevel_triggers` already records for a
+`trigger_changelevel` volume, and for the same reason: a volume that moves
+the player somewhere is not a thing to re-run while they stand in it. It
+matters more here, because a teleport's destination is routinely placed
+inside the *next* volume of a scripted chain, so without an edge an
+arrival re-fires immediately and a whole sequence of scenes resolves in a
+handful of fixed steps. `Simulation::seed_teleport_arrival` therefore
+records the volumes a destination lands the player inside as already
+touched, so an arrival is never itself a rising edge, while a player who
+walks out and back in still gets one.
+
+**`TODO(black-box)`**: the documented "Monsters (1)" spawnflag is not
+modelled — nothing but the player is teleported today, since monsters do
+not touch trigger volumes in this project at all.
+
+## Masters (`multisource`)
+
+- [TWHL wiki: multisource](https://twhl.info/wiki/page/multisource) and
+  [TWHL wiki: Entity Attribute: Master](https://twhl.info/wiki/page/Entity_Attribute:_Master)
+  (same HTTP 403 caveat and same search-engine-result-summary sourcing as
+  every other TWHL page cited in this document).
+  - `master` is "the name of a `multisource` (or `game_team_master`)
+    entity. A master must usually be active in order for the entity to
+    work." Masters "act almost like an on/off switch, in their simplest
+    form, and like an AND gate in more complex configurations."
+  - "The `multisource` acts as an AND gate. It only triggers its target(s)
+    if all entities targeting it are in the 'ON' state", and it can be used
+    "as a master (instead of actively triggering something when the
+    conditions are met, events or entities using it as a master will only
+    be able to function when the conditions are met)".
+
+Project behaviour supported: `ohl_game::registry::Registry::build` attaches
+a `Master` component to any entity carrying a non-empty `master` keyvalue,
+whatever its classname, and a `MultiSource` marker to every `multisource`.
+`ohl_game::logic::Simulation::activate` refuses to act on a mastered entity
+whose master is not active, before the activation is recorded, so an entity
+a master held back never counts toward satisfying anything else either.
+`Simulation::master_is_active` counts how many entities target the named
+`multisource` — both ways one entity can name another: a `target`
+keyvalue, and a `multi_manager`'s fan-out keyvalues, which are targets by a
+different spelling — and reports it active once the `multisource` itself
+has been *fired* at least that many times (`Simulation::master_fires`).
+Counting fires rather than marking targeters as triggered is what keeps a
+master at the pace its map authored: a `multi_manager` naming a master
+among its fan-out targets has been triggered the moment it fans out, but
+does not fire the master until that entry's own documented delay elapses.
+A `multisource` no entity targets at all still requires one fire, so an
+unreachable master stays shut rather than silently opening every gate that
+names it; a `master` naming nothing this map declares, or naming something
+that is not a `multisource`, is not a gate at all and the entity works
+normally.
+
+**`TODO(black-box)`**: three gaps, all of them pre-existing behaviour this
+section narrows rather than widens.
+
+- The cited text is about entities being "in the 'ON' state", and this
+  project has no general notion of an entity being switched back off — a
+  master here latches once its fire count is reached, where the published
+  text says a targeter turning off ("such as a button turning off") shuts
+  the master again.
+- The other half of the cited sentence — that a satisfied `multisource`
+  "only triggers its target(s)", i.e. that it fires its own `target` when
+  it goes active — is not implemented: `Simulation::activate` counts a
+  `multisource` fire and stops there, never fanning out. That matches the
+  behaviour before this section existed (a `multisource` was an unhandled
+  classname that did nothing at all), so nothing regresses, but a map
+  driving a chain *through* a master rather than only gating on one still
+  will not run.
+- `game_team_master` (the other entity a `master` may name) and the
+  `globalstate` key the same page mentions are not modelled either.
 
 ## Scripted sequences and talk monsters
 
@@ -4386,6 +4561,19 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
     instead of replacing it, so the `use`-proximity point drifts away from
     the train as soon as it leaves its spawn node, by however far the
     editor's build location sits from world origin.
+
+    **Narrowed by the "Track trains and paths" world-baked rule above.**
+    `track_train_transform` no longer returns the absolute path position
+    for a train with no origin brush: it returns the displacement from the
+    train's own first path node, which is zero at spawn. So for a
+    world-baked train whose first node does sit inside the car it drew,
+    `brush_center` now agrees with the renderer and the collision model
+    too. That is not the general case, and this entry no longer claims it
+    is: measured across the 93 cited maps, well under half of the
+    world-baked trains have their first node anywhere inside their compiled
+    geometry, and for the rest `brush_center` still adds the path
+    displacement on top of an unrelated compiled midpoint. What remains of
+    this item is that majority, which the regression below pins.
 
     Not fixed in this pass: item 25 verified the unconditional
     `origin`-keyvalue rule against a real survey of `func_train`/

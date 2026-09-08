@@ -34,8 +34,8 @@ pub use brush::ModelInstance;
 pub use camera::TriggerCameraState;
 pub use keyvalues::{EntityDef, Limits as KeyvalueLimits, ModelRef};
 pub use logic::{
-    Event, LevelChange, PendingFire, Simulation, SimulationState, TriggerSnapshot,
-    find_momentary_rot_button_within, find_usable_within,
+    Event, LevelChange, PendingFire, Simulation, SimulationState, TeleportStateSnapshot,
+    TriggerSnapshot, find_momentary_rot_button_within, find_usable_within,
 };
 pub use registry::{
     Ladder, Liquid, Registry, TRIGGER_HURT_INTERVAL_SECONDS, TriggerCamera, TriggerHurt, Water,

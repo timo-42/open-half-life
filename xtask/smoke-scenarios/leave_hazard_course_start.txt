@@ -1,0 +1,32 @@
+# M9 scripted-input scenario: "leave the hazard course start".
+#
+# Project-authored; no bytes here come from any game installation (see
+# docs/CLEAN_ROOM.md). Run against ohl_campaign::TRAINMAP ("t0a0") by
+# xtask/src/combat_smoke.rs.
+#
+# The player starts standing inside a brush mover that rides a two-node
+# path. A brush mover authored in absolute world space (no origin brush)
+# used to be displaced by the full magnitude of its own path coordinates
+# the instant the level loaded, dropping the player out of it into a
+# sealed space below from which no input could recover — a reachability
+# walk from that spawn reached exactly one grid cell. With the mover
+# staying where it was compiled, a single second of walking forward is
+# enough to trip the volume that opens the way out, and a couple more
+# carry the player through it.
+#
+# Expected fixed log lines (see docs/m79-design.md §7), asserted by the
+# harness rather than parsed from this file:
+#   present: "Scripted input loaded.", "Scripted input finished.",
+#            "The player moved from the spawn point.",
+#            "The player walked into a trigger volume."
+#   absent:  every line in xtask/src/combat_smoke.rs's BASE_ABSENT
+#
+# The touch-volume line is the discriminating one. With the world-baked
+# placement disabled and nothing else changed, the player still slides far
+# enough around the sealed space below the mover to log "The player moved
+# from the spawn point." — but never reaches a single touch volume, so that
+# second line is absent and this scenario fails, which is the point of it.
+
+60  wait
+240 forward
+60  wait

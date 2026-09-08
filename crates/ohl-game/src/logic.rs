@@ -13,9 +13,9 @@ use hecs::Entity;
 
 use crate::registry::{
     AutoTrigger, Breakable, BrushBounds, Button, ChangeLevel, Door, DoorPassable, DoorUseOnly,
-    Message, MomentaryDoor, MomentaryRotButton, MoverState, MultiManager, Pendulum, Platform,
-    Registry, RotButton, RotatingDoorSwing, Rotator, Target, TargetName, Transform, Trigger,
-    TriggerHurt,
+    Master, Message, MomentaryDoor, MomentaryRotButton, MoverState, MultiManager, MultiSource,
+    Pendulum, Platform, Registry, RotButton, RotatingDoorSwing, Rotator, Target, TargetName,
+    TeleportTrigger, Transform, Trigger, TriggerHurt,
 };
 use crate::track_train::TrackTrainState;
 
@@ -175,6 +175,24 @@ pub enum Event {
     /// `titles.txt` entry (when [`Message::literal`] is `false`) and shows
     /// it.
     Message(Message),
+    /// A `trigger_teleport` activated its destination: the host must move
+    /// the player there (this crate does not own the player). See
+    /// [`crate::registry::TeleportTrigger`].
+    Teleport(Teleport),
+}
+
+/// Where a [`Event::Teleport`] puts the player: an
+/// `info_teleport_destination`'s own placed pose.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Teleport {
+    /// The destination entity's `origin`, in world units — the player's
+    /// new entity origin, exactly as an `info_player_start`'s origin is
+    /// (`ohl_engine::Game`'s own spawn placement uses the same
+    /// convention).
+    pub origin: [f32; 3],
+    /// The destination's `angles`, as `pitch yaw roll` degrees: the
+    /// direction the player faces on arrival.
+    pub angles: [f32; 3],
 }
 
 /// The destination of a level transition.
@@ -210,6 +228,24 @@ pub struct PendingFire {
     pub activator: Option<u64>,
     /// Seconds remaining before it fires.
     pub delay: f32,
+}
+
+/// [`Simulation::teleport_touching`]'s and [`Simulation::master_fires`]'
+/// bookkeeping, in a form a save file can hold.
+///
+/// A struct of its own rather than a tuple: `ohl_engine::save`'s tag 34
+/// carries both halves together, and naming them here keeps the two
+/// `Vec<(u64, _)>` lists from being told apart only by position. Entities
+/// are recorded by `hecs` bit pattern, matching [`TriggerSnapshot`]'s own
+/// existing convention.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TeleportStateSnapshot {
+    /// `(entity bit pattern, touching)` pairs, one per
+    /// `trigger_teleport` volume with recorded touch state.
+    pub teleport_touching: Vec<(u64, bool)>,
+    /// `(entity bit pattern, fires)` pairs, one per `multisource` that has
+    /// been fired at least once.
+    pub master_fires: Vec<(u64, u32)>,
 }
 
 /// One trigger's cooldown state, as stored in a save file.
@@ -303,7 +339,65 @@ pub struct Simulation {
     /// configured `health`), the same "documented gap" shape
     /// [`Self::rot_button_touch`] already accepts for its own edge state.
     button_health: std::collections::BTreeMap<Entity, f32>,
+    /// How many times each `multisource` has been fired, keyed by entity —
+    /// the count [`Self::master_is_active`] compares against how many
+    /// entities target it, to decide whether "all the entities that target
+    /// it have been triggered".
+    ///
+    /// Counting fires rather than marking targeters is what makes a master
+    /// keep the pace its map authored: a `multi_manager` that names a
+    /// master among its fan-out targets has been *triggered* the moment it
+    /// fans out, but it does not *fire the master* until that target's own
+    /// documented delay elapses, which is how a map spreads a sequence of
+    /// master-gated stages over the seconds its own scripting takes.
+    ///
+    /// Not carried in [`SimulationState`] — that section's wire shape is
+    /// frozen — but persisted all the same, through
+    /// [`Self::teleport_state_snapshot`] and its own optional save
+    /// section: a master that had gone active before a save must not
+    /// re-lock on load, or a map whose sequence is gated on one stalls
+    /// where it had been progressing.
+    master_fires: std::collections::BTreeMap<Entity, usize>,
+    /// Whether the player's box was overlapping each `trigger_teleport`
+    /// volume the last time [`Self::touch_triggers`] looked, so a teleport
+    /// fires on the *rising* edge of a touch rather than on every
+    /// overlapping step.
+    ///
+    /// This is the same edge bookkeeping
+    /// [`TriggerState::changelevel_touching`] already keeps for a
+    /// `trigger_changelevel`, and for the same reason: a volume that moves
+    /// the player somewhere is not a thing to re-run while they stand in
+    /// it. It matters more here, because a teleport's destination is
+    /// routinely inside the *next* volume of a scripted chain: without an
+    /// edge, arriving there re-fires immediately and the whole chain
+    /// resolves in a handful of steps instead of at the pace its map
+    /// authored. [`Self::seed_teleport_arrival`] seeds this map as
+    /// "already touching" for whatever volumes the destination sits in, so
+    /// an arrival is never itself a rising edge; a player who walks out
+    /// and back in gets a real one.
+    ///
+    /// Persisted, through [`Self::teleport_state_snapshot`] and its own
+    /// optional save section. Unlike [`Self::rot_button_touch`] — whose
+    /// own doc comment can reason that a lost `true` only suppresses a
+    /// spurious re-open — losing a `true` here fails in the unsafe
+    /// direction: the arrival seed disappears, the first step after a load
+    /// is a rising edge on the volume the player is standing in, and the
+    /// chain advances a scene the player never walked into.
+    teleport_touching: std::collections::BTreeMap<Entity, bool>,
+    /// Where the teleport this step will actually move the player to
+    /// landed, drained at the end of [`Self::tick`] by
+    /// [`Self::seed_teleport_arrival`]. Scratch state for one step, so it
+    /// is never persisted; see [`Self::teleport_touching`], which is.
+    arrived_at: Option<Vec3>,
 }
+
+/// Half-extents of the player's standing box, used only by
+/// [`Simulation::seed_teleport_arrival`] to ask which volumes a teleport
+/// destination lands the player inside. The same documented standing hull
+/// size `ohl_physics::HULL_SIZES` records; this crate has no dependency on
+/// that one, and a host that used a different box would only change which
+/// volumes are seeded, never whether the edge rule applies.
+const PLAYER_BOX_HALF_EXTENTS: Vec3 = Vec3::new(16.0, 16.0, 36.0);
 
 impl Simulation {
     /// An empty simulation.
@@ -367,6 +461,16 @@ impl Simulation {
     /// Entities are visited in ascending id order so which trigger fires
     /// first (when several volumes overlap on the same step) is
     /// deterministic.
+    /// Returns how many touched volumes actually dispatched this call: a
+    /// volume the player merely stands in without it firing (a spent
+    /// `trigger_once`, one still inside its `wait` cooldown, a teleport
+    /// volume whose edge is already consumed or whose `master` is shut)
+    /// counts nothing. The caller turns that into the documented "the
+    /// player walked into a trigger volume" milestone (see
+    /// `ohl_engine::Game::touch_trigger_count`), which is the end-to-end
+    /// evidence that the player is somewhere a map's own touch volumes can
+    /// reach at all — the thing a player sealed into the wrong place by a
+    /// misplaced brush mover never manages.
     pub fn touch_triggers(
         &mut self,
         registry: &mut Registry,
@@ -374,25 +478,60 @@ impl Simulation {
         player_maxs: Vec3,
         activator: Option<Entity>,
         events: &mut Vec<Event>,
-    ) {
-        let mut touched: Vec<Entity> = registry
+    ) -> u32 {
+        let overlapping: Vec<(Entity, bool)> = registry
             .world
             .query::<(Entity, &Trigger, &BrushBounds)>()
             .without::<&TriggerHurt>()
             .without::<&ChangeLevel>()
             .iter()
-            .filter(|(_, _, bounds)| {
-                aabb_overlaps(player_mins, player_maxs, bounds.mins, bounds.maxs)
+            .map(|(entity, _, bounds)| {
+                (
+                    entity,
+                    aabb_overlaps(player_mins, player_maxs, bounds.mins, bounds.maxs),
+                )
             })
-            .map(|(entity, _, _)| entity)
             .collect();
+        let mut touched: Vec<Entity> = Vec::new();
+        for (entity, overlaps) in overlapping {
+            if registry.world.get::<&TeleportTrigger>(entity).is_err() {
+                if overlaps {
+                    touched.push(entity);
+                }
+                continue;
+            }
+            // A teleport volume fires on the rising edge of a touch only;
+            // see `Self::teleport_touching`. The published "No Clients"
+            // spawnflag is applied here and only here: it says "players
+            // cannot activate this entity", which is about the player
+            // touching the volume — not about another entity's fire chain
+            // reaching it by name, which the cited sentence says nothing
+            // about. A volume its `master` holds
+            // shut is treated as not touched at all rather than as a
+            // consumed edge, so a player standing in it when the master
+            // does go active still gets a rising edge then — "the entity
+            // does not work" while the master is shut, not "the entity
+            // spends its one chance while the master is shut".
+            let blocked_for_players = registry
+                .world
+                .get::<&TeleportTrigger>(entity)
+                .is_ok_and(|teleport| teleport.no_clients);
+            let touching =
+                overlaps && !blocked_for_players && self.master_is_active(registry, entity);
+            let previously = self.teleport_touching.insert(entity, touching);
+            if touching && previously != Some(true) {
+                touched.push(entity);
+            }
+        }
         touched.sort_unstable_by_key(|entity| entity.id());
+        let mut fired = 0;
         for entity in touched {
-            self.activate_trigger(registry, entity, activator);
+            fired += u32::from(self.activate_trigger(registry, entity, activator));
         }
         self.touch_changelevel_triggers(registry, player_mins, player_maxs, events);
         self.touch_rot_buttons(registry, player_mins, player_maxs);
         self.touch_breakables(registry, player_mins, player_maxs);
+        fired
     }
 
     /// Fires a `trigger_changelevel` (not "USE Only"; see
@@ -463,6 +602,9 @@ impl Simulation {
         Self::advance_pendulums(registry, dt);
         Self::advance_trains(registry, dt);
         self.advance_cameras(registry, dt);
+        if let Some(destination) = self.arrived_at.take() {
+            self.seed_teleport_arrival(registry, destination);
+        }
         for state in self.trigger_state.values_mut() {
             state.cooldown = (state.cooldown - dt).max(0.0);
         }
@@ -563,6 +705,49 @@ impl Simulation {
         activator: Option<Entity>,
         events: &mut Vec<Event>,
     ) {
+        // The documented `master` gate: an entity whose `master` names a
+        // `multisource` that is not active does not work at all. Checked
+        // before anything below acts, and before the activation itself is
+        // recorded — an entity a master held back was never triggered, so
+        // it must not count toward satisfying any other master either.
+        if !self.master_is_active(registry, entity) {
+            return;
+        }
+        if registry.world.get::<&MultiSource>(entity).is_ok() {
+            let fires = self.master_fires.entry(entity).or_default();
+            *fires = fires.saturating_add(1);
+            return;
+        }
+
+        // A teleport volume's `target` is its *destination*, not something
+        // to switch on: whatever entity this is, being activated by a
+        // `trigger_teleport` means "put the player here" and nothing else.
+        // Checked before every state-machine branch below so a destination
+        // that happens to also be a door or a train is still read as a
+        // destination when a teleport volume is what fired it.
+        if activator
+            .is_some_and(|activator| registry.world.get::<&TeleportTrigger>(activator).is_ok())
+        {
+            let destination = registry
+                .world
+                .get::<&Transform>(entity)
+                .map(|transform| (transform.origin, transform.angles))
+                .ok();
+            if let Some((origin, angles)) = destination {
+                // Seeded at the end of the step, not here: a step that
+                // activates two destinations only ever moves the player to
+                // the last of them (`ohl_engine::Game::apply_teleports`),
+                // and a destination the player never reaches must not
+                // consume any volume's touch edge.
+                self.arrived_at = Some(origin);
+                events.push(Event::Teleport(Teleport {
+                    origin: origin.to_array(),
+                    angles: angles.to_array(),
+                }));
+            }
+            return;
+        }
+
         // Decided before the `&mut Door` borrow below, since it reads two
         // other components off the same registry: which way a
         // `func_door_rotating` should swing for *this* activator. `None`
@@ -767,6 +952,55 @@ impl Simulation {
             .collect()
     }
 
+    /// [`Self::teleport_touching`]'s `(entity bit pattern, touching)`
+    /// pairs, and [`Self::master_fires`]' `(entity bit pattern, fires)`
+    /// pairs, in a form a save file can hold.
+    ///
+    /// Separate from [`Self::snapshot`] for the same reason
+    /// [`Self::rot_button_touch_snapshot`] is: [`SimulationState`] is a
+    /// shipped, frozen save-section shape (`ohl_engine::save`'s tag 19),
+    /// so new bookkeeping travels in its own optional section instead of
+    /// widening that one.
+    #[must_use]
+    pub fn teleport_state_snapshot(&self) -> TeleportStateSnapshot {
+        let touching = self
+            .teleport_touching
+            .iter()
+            .map(|(entity, touching)| (entity.to_bits().get(), *touching))
+            .collect();
+        let fires = self
+            .master_fires
+            .iter()
+            .map(|(entity, fires)| {
+                (
+                    entity.to_bits().get(),
+                    u32::try_from(*fires).unwrap_or(u32::MAX),
+                )
+            })
+            .collect();
+        TeleportStateSnapshot {
+            teleport_touching: touching,
+            master_fires: fires,
+        }
+    }
+
+    /// Replaces [`Self::teleport_touching`] and [`Self::master_fires`] with
+    /// `touching`/`fires`, the mirror of [`Self::teleport_state_snapshot`].
+    pub fn restore_teleport_state(&mut self, touching: &[(u64, bool)], fires: &[(u64, u32)]) {
+        self.teleport_touching = touching
+            .iter()
+            .filter_map(|(bits, touching)| {
+                Entity::from_bits(*bits).map(|entity| (entity, *touching))
+            })
+            .collect();
+        self.master_fires = fires
+            .iter()
+            .filter_map(|(bits, fires)| {
+                Entity::from_bits(*bits).map(|entity| (entity, *fires as usize))
+            })
+            .collect();
+    }
+
     /// Replaces [`Self::rot_button_touch`] with `entries`, the mirror of
     /// [`Self::rot_button_touch_snapshot`]. See that method's own doc
     /// comment for why this is separate from [`Self::restore`].
@@ -810,25 +1044,118 @@ impl Simulation {
             .collect();
     }
 
+    /// Records every `trigger_teleport` volume the player's box would
+    /// overlap standing at `destination` as already touched, so arriving
+    /// there is not itself a rising edge. See [`Self::teleport_touching`].
+    fn seed_teleport_arrival(&mut self, registry: &Registry, destination: Vec3) {
+        let mins = destination - PLAYER_BOX_HALF_EXTENTS;
+        let maxs = destination + PLAYER_BOX_HALF_EXTENTS;
+        let arrived_inside: Vec<Entity> = registry
+            .world
+            .query::<(Entity, &TeleportTrigger, &BrushBounds)>()
+            .iter()
+            .filter(|(_, _, bounds)| aabb_overlaps(mins, maxs, bounds.mins, bounds.maxs))
+            .map(|(entity, _, _)| entity)
+            .collect();
+        for entity in arrived_inside {
+            self.teleport_touching.insert(entity, true);
+        }
+    }
+
+    /// Whether `entity`'s documented `master` gate (if it has one) is
+    /// open: the [`MultiSource`] its `master` names is active. The
+    /// published wording is that a `multisource` "only triggers its
+    /// target(s) if all entities targeting it are in the 'ON' state"
+    /// (`docs/FORMAT_SOURCES.md`, "Masters (`multisource`)"); this
+    /// project's own reading of "in the 'ON' state" — recorded there under
+    /// project behaviour, not as part of the quotation — is that a
+    /// targeting entity counts once it has *fired* the `multisource`.
+    ///
+    /// `true` for the overwhelmingly common case of an entity with no
+    /// `master` at all, and `true` for one whose `master` names nothing
+    /// this map declares, or names something that is not a `multisource`:
+    /// this rule is a documented gate on a named master's state, not a
+    /// licence to silently disable an entity whose master a map never
+    /// authored.
+    ///
+    /// "All entities targeting it" is counted from the map's own graph,
+    /// both ways an entity can name another: a `target` keyvalue,
+    /// and a `multi_manager`'s fan-out keyvalues (which are targets by a
+    /// different spelling, and the common way a map drives a master). A
+    /// `multisource` no entity targets at all still requires one fire —
+    /// a master nothing has ever triggered is not active — so an
+    /// unreachable one stays shut rather than silently opening every gate
+    /// that names it.
+    fn master_is_active(&self, registry: &Registry, entity: Entity) -> bool {
+        let Ok(master) = registry.world.get::<&Master>(entity) else {
+            return true;
+        };
+        let sources: Vec<Entity> = registry
+            .find(&master.0)
+            .iter()
+            .copied()
+            .filter(|source| registry.world.get::<&MultiSource>(*source).is_ok())
+            .collect();
+        if sources.is_empty() {
+            return true;
+        }
+        let by_target = registry
+            .world
+            .query::<(Entity, &Target)>()
+            .iter()
+            .filter(|(_, target)| target.0 == master.0)
+            .count();
+        let by_fan_out = registry
+            .world
+            .query::<(Entity, &MultiManager)>()
+            .iter()
+            .filter(|(_, manager)| manager.targets.iter().any(|(name, _)| *name == master.0))
+            .count();
+        let required = by_target.saturating_add(by_fan_out).max(1);
+        sources.into_iter().any(|source| {
+            self.master_fires
+                .get(&source)
+                .is_some_and(|fires| *fires >= required)
+        })
+    }
+
+    /// Activates one `trigger_*` volume, returning whether it actually
+    /// dispatched — `false` for a volume its `master` holds shut, one with
+    /// no [`Trigger`] component, a spent `trigger_once`, or one still
+    /// inside its own `wait` cooldown. [`Self::touch_triggers`] counts the
+    /// `true`s; see its own doc comment for what that count is for.
     fn activate_trigger(
         &mut self,
         registry: &mut Registry,
         entity: Entity,
         activator: Option<Entity>,
-    ) {
+    ) -> bool {
+        // The documented `master` gate, checked here as well as in
+        // [`Self::activate`]: a touch reaches this method directly, without
+        // going through that one.
+        if !self.master_is_active(registry, entity) {
+            return false;
+        }
         let Ok(trigger) = registry.world.get::<&Trigger>(entity) else {
-            return;
+            return false;
         };
         let trigger = *trigger;
         let state = self.trigger_state.entry(entity).or_default();
         if state.used || state.cooldown > 0.0 {
-            return;
+            return false;
         }
         state.used = trigger.once;
         state.cooldown = trigger.wait.max(0.0);
+        // A teleport volume fires its destination as *itself*, not as
+        // whoever walked into it: `Self::activate` reads that activator to
+        // know the fired entity is a destination rather than something to
+        // switch on. See [`TeleportTrigger`].
+        let is_teleport = registry.world.get::<&TeleportTrigger>(entity).is_ok();
         if let Ok(target) = registry.world.get::<&crate::registry::Target>(entity) {
+            let activator = if is_teleport { Some(entity) } else { activator };
             self.fire(target.0.clone(), activator, trigger.delay);
         }
+        true
     }
 
     /// The signed rotation axis `entity` — when it is a

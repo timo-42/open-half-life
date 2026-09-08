@@ -47,7 +47,7 @@
 #![allow(clippy::needless_update)]
 
 use glam::Vec3;
-use ohl_engine::save::{EngineHeader, ViewState};
+use ohl_engine::save::{EngineHeader, TeleportStateSnapshot, ViewState};
 use ohl_engine::save_state::{
     BreakableSnapshot, MomentaryDoorSnapshot, MonsterMakerSnapshot, MoverSnapshot, RotatorSnapshot,
     ScriptRunnerSnapshot, TrackTrainSnapshot, TriggerCameraSnapshot,
@@ -187,6 +187,25 @@ const GOLDEN_TAG_28: &[u8] = &[
 const GOLDEN_TAG_31: &[u8] = &[
     0x03, 0x00, 0x01, 0x00, 0x00, 0x40, 0x3f, 0x01, 0x00, 0x00, 0x00, 0x00,
 ];
+
+/// `SECTION_TELEPORT_STATE` (34) at the shape this build writes: the exact
+/// bytes [`frozen_teleport_state`]'s value encodes to. **New golden, not a
+/// revision of any tag above**: tag 34 did not exist before this package,
+/// exactly the "a future package adding a tag would pin its own golden
+/// from scratch" case [`GOLDEN_TAG_31`]'s own comment anticipated.
+const GOLDEN_TAG_34: &[u8] = &[
+    0x02, 0xd3, 0x2c, 0x01, 0xa1, 0x1f, 0x00, 0x02, 0xd3, 0x2c, 0x03, 0xa1, 0x1f, 0x81, 0x02,
+];
+
+/// The value [`GOLDEN_TAG_34`] holds: both halves non-empty, and both
+/// arms of the touch-edge `bool` on the wire, plus a fire count past the
+/// single-byte varint boundary.
+fn frozen_teleport_state() -> TeleportStateSnapshot {
+    TeleportStateSnapshot {
+        teleport_touch: vec![(5715, true), (4001, false)],
+        master_fires: vec![(5715, 3), (4001, 257)],
+    }
+}
 
 /// The value [`GOLDEN_TAG_18`] holds: one entity carrying every component
 /// this section persists, and one carrying none, so both arms of every
@@ -508,6 +527,17 @@ fn tag_31_momentary_door_state_keeps_its_frozen_wire_shape() {
 
     let decoded: Vec<Option<MomentaryDoorSnapshot>> =
         postcard::from_bytes(GOLDEN_TAG_31).expect("section 31 decodes");
+    assert_eq!(decoded, value);
+}
+
+#[test]
+fn tag_34_teleport_state_keeps_its_frozen_wire_shape() {
+    let value = frozen_teleport_state();
+    let encoded = postcard::to_allocvec(&value).expect("the section encodes");
+    assert_golden(&encoded, GOLDEN_TAG_34, 34);
+
+    let decoded: TeleportStateSnapshot =
+        postcard::from_bytes(GOLDEN_TAG_34).expect("section 34 decodes");
     assert_eq!(decoded, value);
 }
 
