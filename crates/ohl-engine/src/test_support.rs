@@ -2046,6 +2046,10 @@ pub const REACH_BREAKABLE_MAP: &str = "ohlreachbreakablesynth";
 /// published under.
 pub const REACH_PUSHABLE_MAP: &str = "ohlreachpushablesynth";
 
+/// The map name the reachability-report `func_pendulum` fixture is
+/// published under.
+pub const REACH_PENDULUM_MAP: &str = "ohlreachpendulumsynth";
+
 /// The obstacle's box, spanning the whole corridor width — reuses
 /// [`OBSTACLE_NAME`]'s own near face ([`OBSTACLE_NEAR_X`]) so the shape
 /// matches [`obstacle_corridor_bsp`]'s fixture family.
@@ -2148,6 +2152,26 @@ pub fn reachability_pushable_bsp(next_map: &str) -> Vec<u8> {
          \"angle\" \"0\"\n}}\n\
          {{\n\"classname\" \"func_pushable\"\n\"targetname\" \"{OBSTACLE_NAME}\"\n\
          \"model\" \"*1\"\n\"friction\" \"0\"\n\"material\" \"1\"\n}}\n\
+         {{\n\"classname\" \"trigger_changelevel\"\n\"model\" \"*2\"\n\
+         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n"
+    );
+    reachability_obstacle_bsp(&entities)
+}
+
+/// [`reachability_obstacle_bsp`], with a `func_pendulum` (submodel `*1`,
+/// [`OBSTACLE_NAME`]) as the obstacle and a `trigger_changelevel`
+/// (submodel `*2`) beyond it — the fixture
+/// [`crate::reachability`]'s own `assume_pendulum_wait` regression test
+/// walks. No bytes here come from any game installation; see
+/// `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn reachability_pendulum_bsp(next_map: &str) -> Vec<u8> {
+    let entities = format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"0 0 40\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"func_pendulum\"\n\"targetname\" \"{OBSTACLE_NAME}\"\n\
+         \"model\" \"*1\"\n}}\n\
          {{\n\"classname\" \"trigger_changelevel\"\n\"model\" \"*2\"\n\
          \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n"
     );

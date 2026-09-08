@@ -212,6 +212,25 @@ pub struct GameArgs<'a> {
     /// without `reachability_report`.
     #[cfg(feature = "dev-tools")]
     pub reachability_assume_longjump: bool,
+    /// Treats a `func_pendulum` on the reachability walk's frontier as
+    /// passable between rounds (`--reachability-assume-pendulum-wait`,
+    /// `dev-tools` only). Ignored without `reachability_report`.
+    #[cfg(feature = "dev-tools")]
+    pub reachability_assume_pendulum_wait: bool,
+    /// Overrides the reachability walk's per-round cell cap
+    /// (`--reachability-cell-cap`, `dev-tools` only), bounded by
+    /// `ohl_engine::reachability::MAX_CELL_CAP`. `None` keeps
+    /// `ohl_engine::reachability::ReachabilityConfig::default`'s own cap.
+    /// Ignored without `reachability_report`.
+    #[cfg(feature = "dev-tools")]
+    pub reachability_cell_cap: Option<usize>,
+    /// Overrides the reachability walk's door-opening round cap
+    /// (`--reachability-round-cap`, `dev-tools` only), bounded by
+    /// `ohl_engine::reachability::MAX_ROUND_CAP`. `None` keeps
+    /// `ohl_engine::reachability::ReachabilityConfig::default`'s own cap.
+    /// Ignored without `reachability_report`.
+    #[cfg(feature = "dev-tools")]
+    pub reachability_round_cap: Option<usize>,
     /// A `--start-inventory` list (`dev-tools` only): comma-separated
     /// `weapon_*`/`ammo_*` classnames given to the player right after the
     /// map loads. See `ohl_engine::parse_start_inventory`.
@@ -324,6 +343,9 @@ recognise (expected a comma-separated list of weapon_*/ammo_* classnames)"
             &mut game,
             args.reachability_assume_armed,
             args.reachability_assume_longjump,
+            args.reachability_assume_pendulum_wait,
+            args.reachability_cell_cap,
+            args.reachability_round_cap,
         );
         return Ok(());
     }
@@ -509,102 +531,134 @@ fn write_screenshot(game: &mut Game, path: &Path, pose: &CapturePose) -> Result<
 /// a targetname (`docs/CLEAN_ROOM.md`; the caller already knows which map
 /// it asked for).
 #[cfg(feature = "dev-tools")]
-fn run_reachability_report(game: &mut Game, assume_armed: bool, assume_longjump: bool) {
+fn run_reachability_report(
+    game: &mut Game,
+    assume_armed: bool,
+    assume_longjump: bool,
+    assume_pendulum_wait: bool,
+    cell_cap: Option<usize>,
+    round_cap: Option<usize>,
+) {
     if !game.has_collision() {
         tracing::info!("Reachability report: the map has no usable collision hulls.");
         return;
     }
 
+    let default_config = ohl_engine::ReachabilityConfig::default();
     let config = ohl_engine::ReachabilityConfig {
         assume_armed,
         assume_longjump,
-        ..ohl_engine::ReachabilityConfig::default()
+        assume_pendulum_wait,
+        cell_cap: cell_cap.unwrap_or(default_config.cell_cap),
+        max_rounds: round_cap.unwrap_or(default_config.max_rounds),
     };
     let report = ohl_engine::compute_reachability_report(game, &config);
 
     tracing::info!("Reachability report:");
     for round in &report.rounds {
+        print_reachability_round(round);
+    }
+}
+
+/// Prints one [`ohl_engine::RoundReport`]'s fixed lines, per
+/// [`run_reachability_report`]'s own logging policy (split out of that
+/// function solely to keep it under this project's own line-count lint).
+#[cfg(feature = "dev-tools")]
+fn print_reachability_round(round: &ohl_engine::RoundReport) {
+    tracing::info!(
+        "Round {}: {} cell(s) reachable{}{}.",
+        round.round,
+        round.reachable_cells,
+        if round.capped { " (capped)" } else { "" },
+        if round.pendulum_wait {
+            " (pendulum wait assumed)"
+        } else {
+            ""
+        }
+    );
+    if round.frontier_classes.is_empty() {
+        tracing::info!("  Frontier: nothing blocking (or the walk found open space only).");
+    }
+    for class in &round.frontier_classes {
         tracing::info!(
-            "Round {}: {} cell(s) reachable{}.",
-            round.round,
-            round.reachable_cells,
-            if round.capped { " (capped)" } else { "" }
+            "  Frontier: {} x{}{}{}{}{}.",
+            class.classname,
+            class.instance_count,
+            if class.use_openable {
+                ", use-openable from a reached cell"
+            } else {
+                ", not use-openable from a reached cell"
+            },
+            if class.damage_openable {
+                ", damage-openable (armed assumed)"
+            } else {
+                ""
+            },
+            if class.push_openable {
+                ", push-openable"
+            } else {
+                ""
+            },
+            if class.pendulum_openable {
+                ", pendulum-openable (pendulum wait assumed)"
+            } else {
+                ""
+            }
         );
-        if round.frontier_classes.is_empty() {
-            tracing::info!("  Frontier: nothing blocking (or the walk found open space only).");
+    }
+    match (
+        round.changelevel.reachable,
+        round.changelevel.distance_rounded,
+    ) {
+        (true, Some(distance)) => {
+            tracing::info!("  trigger_changelevel: reachable, ~{distance:.0} units from spawn.");
         }
-        for class in &round.frontier_classes {
-            tracing::info!(
-                "  Frontier: {} x{}{}{}{}.",
-                class.classname,
-                class.instance_count,
-                if class.use_openable {
-                    ", use-openable from a reached cell"
-                } else {
-                    ", not use-openable from a reached cell"
-                },
-                if class.damage_openable {
-                    ", damage-openable (armed assumed)"
-                } else {
-                    ""
-                },
-                if class.push_openable {
-                    ", push-openable"
-                } else {
-                    ""
-                }
-            );
+        (true, None) => {
+            // Not expected (a reachable trigger always has a distance),
+            // but never fabricate one.
+            tracing::info!("  trigger_changelevel: reachable.");
         }
-        match (
-            round.changelevel.reachable,
-            round.changelevel.distance_rounded,
-        ) {
-            (true, Some(distance)) => {
-                tracing::info!(
-                    "  trigger_changelevel: reachable, ~{distance:.0} units from spawn."
-                );
-            }
-            (true, None) => {
-                // Not expected (a reachable trigger always has a distance),
-                // but never fabricate one.
-                tracing::info!("  trigger_changelevel: reachable.");
-            }
-            (false, Some(distance)) => tracing::info!(
-                "  trigger_changelevel: not reachable this round, ~{distance:.0} units from spawn."
-            ),
-            (false, None) => tracing::info!("  trigger_changelevel: none declared."),
-        }
-        if round.long_drop_cells > 0 {
-            tracing::info!(
-                "  {} cell(s) reached only by a one-way fall taller than the walk's old {:.0}-unit bound.",
-                round.long_drop_cells,
-                ohl_engine::reachability::DROP,
-            );
-        }
-        if round.long_jump_cells > 0 {
-            tracing::info!(
-                "  {} cell(s) reached only by the long-jump edge (armed with the long jump module assumed).",
-                round.long_jump_cells,
-            );
-        }
-        if round.doors_opened > 0 {
-            tracing::info!(
-                "  Opening {} door(s) for the next round.",
-                round.doors_opened
-            );
-        }
-        if round.breakables_opened > 0 {
-            tracing::info!(
-                "  Breaking {} breakable(s) for the next round.",
-                round.breakables_opened
-            );
-        }
-        if round.pushables_opened > 0 {
-            tracing::info!(
-                "  Pushing {} pushable(s) for the next round.",
-                round.pushables_opened
-            );
-        }
+        (false, Some(distance)) => tracing::info!(
+            "  trigger_changelevel: not reachable this round, ~{distance:.0} units from spawn."
+        ),
+        (false, None) => tracing::info!("  trigger_changelevel: none declared."),
+    }
+    if round.long_drop_cells > 0 {
+        tracing::info!(
+            "  {} cell(s) reached only by a one-way fall taller than the walk's old {:.0}-unit bound.",
+            round.long_drop_cells,
+            ohl_engine::reachability::DROP,
+        );
+    }
+    if round.long_jump_cells > 0 {
+        tracing::info!(
+            "  {} cell(s) reached only by the long-jump edge (armed with the long jump module assumed).",
+            round.long_jump_cells,
+        );
+    }
+    if round.doors_opened > 0 {
+        tracing::info!(
+            "  Opening {} door(s) for the next round.",
+            round.doors_opened
+        );
+    }
+    if round.breakables_opened > 0 {
+        tracing::info!(
+            "  Breaking {} breakable(s) for the next round.",
+            round.breakables_opened
+        );
+    }
+    if round.pushables_opened > 0 {
+        tracing::info!(
+            "  Pushing {} pushable(s) for the next round.",
+            round.pushables_opened
+        );
+    }
+    if round.pendulums_opened > 0 {
+        tracing::info!(
+            "  Treating {} pendulum(s) as passable for the next round (wait assumed).",
+            round.pendulums_opened
+        );
     }
 }
 

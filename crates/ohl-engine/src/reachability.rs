@@ -69,7 +69,7 @@ use std::collections::{BTreeMap, HashSet, VecDeque};
 use glam::Vec3;
 use ohl_game::hecs::Entity;
 use ohl_game::registry::{
-    Breakable, BrushBounds, ChangeLevel, ClassName, Door, MoverState, Pushable,
+    Breakable, BrushBounds, ChangeLevel, ClassName, Door, MoverState, Pendulum, Pushable,
 };
 use ohl_physics::{BrushId, CollisionModel, Hull};
 
@@ -107,6 +107,30 @@ pub const MAX_FALL: f32 = 8_192.0;
 /// Distances this module reports are rounded to the nearest multiple of
 /// this many units (see this module's own doc comment).
 pub const DISTANCE_ROUNDING: f32 = 10.0;
+
+/// The largest [`ReachabilityConfig::cell_cap`] a caller (the
+/// `--reachability-cell-cap` CLI flag, `dev-tools` only) may request.
+///
+/// [`ReachabilityConfig::default`]'s own 40,000-cell cap is tuned for a
+/// quick, always-safe default, not for every map: a large, open level's own
+/// round-0 walk can exceed it before a single round-advance edge
+/// (door/breakable/pushable/pendulum) ever runs, hiding whatever those
+/// edges would otherwise reveal (recorded against `c4a2`,
+/// `.plan/progress-probe-7.md`). Raising the cap is legitimate triage, but
+/// an unbounded one would let a pathological or malformed map turn a single
+/// walk into effectively unbounded work; this ceiling — chosen generously
+/// above the largest reachable area any real, published map has been
+/// observed to have in this project's own investigations so far (`c4a2`'s
+/// full closure was 79,296 cells, `.plan/progress-probe-6.md`) — keeps the
+/// walk bounded even at its most permissive setting.
+pub const MAX_CELL_CAP: usize = 2_000_000;
+
+/// The largest [`ReachabilityConfig::max_rounds`] a caller (the
+/// `--reachability-round-cap` CLI flag, `dev-tools` only) may request, for
+/// the same reason [`MAX_CELL_CAP`] bounds the per-round cell cap: each
+/// round re-runs the whole walk, so an unbounded round count could still
+/// make a single report take unbounded work even with a moderate cell cap.
+pub const MAX_ROUND_CAP: usize = 64;
 
 /// The eight compass directions the walk tries from every visited cell.
 const DIRECTIONS: [(f32, f32); 8] = [
@@ -159,6 +183,25 @@ pub struct ReachabilityConfig {
     /// (`ohl_combat::Inventory::has_long_jump`), so this never checks or
     /// fabricates that ownership. `false` by default.
     pub assume_longjump: bool,
+    /// Treats a `func_pendulum` on the frontier as passable between rounds,
+    /// the same coarse "detach the brush" treatment a broken breakable or a
+    /// shoved pushable gets (see [`RoundReport::pendulum_wait`]).
+    ///
+    /// This walk has no notion of time or of a moving obstacle's current
+    /// swing phase — every brush is either attached (blocking) or detached
+    /// (passable) for a whole round, never "blocking only while swinging
+    /// through this cell." A real `func_pendulum` genuinely does clear a
+    /// gap once per swing, so this flag encodes a caller-supplied
+    /// assumption ("assume the player can time the swing and walk through
+    /// during a clear moment"), not a claim that the corridor is
+    /// permanently open — the same documented-assumption shape
+    /// [`Self::assume_armed`] and [`Self::assume_longjump`] already use for
+    /// their own edges. `false` by default, matching every other
+    /// assumption flag here: without it, a `func_pendulum` stays on the
+    /// frontier forever, exactly as this project's walk has always treated
+    /// it (see `.plan/progress-probe-7.md`'s `c1a2` finding, the gap this
+    /// flag closes).
+    pub assume_pendulum_wait: bool,
 }
 
 impl Default for ReachabilityConfig {
@@ -168,11 +211,17 @@ impl Default for ReachabilityConfig {
             max_rounds: 6,
             assume_armed: false,
             assume_longjump: false,
+            assume_pendulum_wait: false,
         }
     }
 }
 
 /// One brush-entity classname found on a round's unreached frontier.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag reports a separate, independent round-advance edge this classname might \
+offer (use/damage/push/pendulum), not related state a caller could confuse for one another"
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct FrontierClass {
     /// The blocking entities' `classname` (for example `func_door`).
@@ -199,6 +248,11 @@ pub struct FrontierClass {
     /// rounds, the same coarse "remove the brush" treatment a broken
     /// breakable gets.
     pub push_openable: bool,
+    /// Whether at least one of them is a `func_pendulum` — passable next
+    /// round, but only when [`ReachabilityConfig::assume_pendulum_wait`]
+    /// was set for this walk (see that field's own doc comment). Always
+    /// `false` without it, even when a pendulum genuinely sits here.
+    pub pendulum_openable: bool,
 }
 
 /// Whether a `trigger_changelevel` volume was reached this round, and how
@@ -250,6 +304,19 @@ pub struct RoundReport {
     /// ([`FrontierClass::push_openable`]) and pushed out of the way for
     /// the *next* round.
     pub pushables_opened: usize,
+    /// How many `func_pendulum`s this round found openable
+    /// ([`FrontierClass::pendulum_openable`], `assume_pendulum_wait` only)
+    /// and treated as passable for the *next* round.
+    pub pendulums_opened: usize,
+    /// Whether this round's own reachable cells were found only after a
+    /// *previous* round detached a `func_pendulum`
+    /// ([`ReachabilityConfig::assume_pendulum_wait`]) — the
+    /// "wait-for-pendulum" round this module's own doc comment describes,
+    /// tagged here so a report reader can tell a route that depends on
+    /// timing a swing from one that does not. `false` on round 0 (nothing
+    /// precedes it) and on any round not immediately following a round
+    /// whose [`Self::pendulums_opened`] was nonzero.
+    pub pendulum_wait: bool,
     /// Whether this round's walk stopped early because it hit
     /// [`ReachabilityConfig::cell_cap`] rather than exhausting every
     /// reachable cell — a sign the reported [`Self::reachable_cells`] and
@@ -623,29 +690,36 @@ fn changelevel_status(game: &Game, start: Vec3, reached: &[Vec3]) -> ChangeLevel
 /// distinct entities, and whether at least one of them is openable each of
 /// the three ways [`compute_reachability_report`] models (use, damage,
 /// push).
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "mirrors FrontierClass's own independent per-edge flags, aggregated per classname"
+)]
 #[derive(Default)]
 struct FrontierAgg {
     count: usize,
     use_openable: bool,
     damage_openable: bool,
     push_openable: bool,
+    pendulum_openable: bool,
 }
 
 /// One round's frontier, classified into per-classname aggregates
-/// ([`FrontierAgg`]) and the three separate brush lists
+/// ([`FrontierAgg`]) and the four separate brush lists
 /// [`compute_reachability_report`] detaches between rounds: closed,
 /// use-openable doors; breakables openable-by-damage
-/// (`config.assume_armed` only); and pushables (always).
+/// (`config.assume_armed` only); pushables (always); and pendulums
+/// (`config.assume_pendulum_wait` only).
 struct ClassifiedFrontier {
     classes: BTreeMap<String, FrontierAgg>,
     openable_doors: Vec<BrushId>,
     openable_breakables: Vec<BrushId>,
     openable_pushables: Vec<BrushId>,
+    openable_pendulums: Vec<BrushId>,
 }
 
 /// Classifies `walk_result`'s frontier brushes by classname and by which
-/// of the three round-advance edges (door/breakable/pushable) each one
-/// offers, per this module's own doc comment.
+/// of the four round-advance edges (door/breakable/pushable/pendulum) each
+/// one offers, per this module's own doc comment.
 fn classify_frontier(
     game: &Game,
     walk_result: &WalkResult,
@@ -655,6 +729,7 @@ fn classify_frontier(
     let mut openable_doors: Vec<BrushId> = Vec::new();
     let mut openable_breakables: Vec<BrushId> = Vec::new();
     let mut openable_pushables: Vec<BrushId> = Vec::new();
+    let mut openable_pendulums: Vec<BrushId> = Vec::new();
     for brush in &walk_result.frontier_brushes {
         let Some(entity) = entity_for_brush(game, *brush) else {
             continue;
@@ -680,11 +755,15 @@ fn classify_frontier(
 
         let push_openable = game.registry().world.get::<&Pushable>(entity).is_ok();
 
+        let is_pendulum = game.registry().world.get::<&Pendulum>(entity).is_ok();
+        let pendulum_openable = config.assume_pendulum_wait && is_pendulum;
+
         let entry = classes.entry(classname).or_default();
         entry.count += 1;
         entry.use_openable |= door_openable;
         entry.damage_openable |= damage_openable;
         entry.push_openable |= push_openable;
+        entry.pendulum_openable |= pendulum_openable;
 
         if door_openable {
             openable_doors.push(*brush);
@@ -695,12 +774,16 @@ fn classify_frontier(
         if push_openable {
             openable_pushables.push(*brush);
         }
+        if pendulum_openable {
+            openable_pendulums.push(*brush);
+        }
     }
     ClassifiedFrontier {
         classes,
         openable_doors,
         openable_breakables,
         openable_pushables,
+        openable_pendulums,
     }
 }
 
@@ -752,6 +835,8 @@ pub fn compute_reachability_report(
             doors_opened: 0,
             breakables_opened: 0,
             pushables_opened: 0,
+            pendulums_opened: 0,
+            pendulum_wait: false,
             capped: false,
         });
         return ReachabilityReport { rounds };
@@ -766,6 +851,11 @@ pub fn compute_reachability_report(
         .assume_longjump
         .then(|| JumpBounds::from_long_jump_config(game.move_config()));
 
+    // Whether the round about to run follows a previous round that
+    // detached one or more `func_pendulum`s — see
+    // [`RoundReport::pendulum_wait`]'s own doc comment.
+    let mut pendulum_wait = false;
+
     for round in 0..config.max_rounds.max(1) {
         let walk_result = {
             let Some(collision) = game.collision() else {
@@ -779,12 +869,14 @@ pub fn compute_reachability_report(
             openable_doors,
             openable_breakables,
             openable_pushables,
+            openable_pendulums,
         } = classify_frontier(game, &walk_result, config);
 
         let changelevel = changelevel_status(game, start, &walk_result.visited_positions);
         let doors_opened = openable_doors.len();
         let breakables_opened = openable_breakables.len();
         let pushables_opened = openable_pushables.len();
+        let pendulums_opened = openable_pendulums.len();
 
         rounds.push(RoundReport {
             round,
@@ -797,6 +889,7 @@ pub fn compute_reachability_report(
                     use_openable: agg.use_openable,
                     damage_openable: agg.damage_openable,
                     push_openable: agg.push_openable,
+                    pendulum_openable: agg.pendulum_openable,
                 })
                 .collect(),
             changelevel,
@@ -805,22 +898,27 @@ pub fn compute_reachability_report(
             doors_opened,
             breakables_opened,
             pushables_opened,
+            pendulums_opened,
+            pendulum_wait,
             capped: walk_result.capped,
         });
 
         if openable_doors.is_empty()
             && openable_breakables.is_empty()
             && openable_pushables.is_empty()
+            && openable_pendulums.is_empty()
         {
             break;
         }
         let Some(collision) = game.collision_mut() else {
             break;
         };
+        pendulum_wait = !openable_pendulums.is_empty();
         for brush in openable_doors
             .into_iter()
             .chain(openable_breakables)
             .chain(openable_pushables)
+            .chain(openable_pendulums)
         {
             collision.detach_brush(brush);
         }
@@ -1206,6 +1304,109 @@ mod tests {
         assert!(
             report.rounds[1].changelevel.reachable,
             "with the pushable's brush detached, the walk should now reach the changelevel trigger"
+        );
+    }
+
+    /// A corridor blocked by a `func_pendulum` hides a `trigger_changelevel`
+    /// on round 0, exactly like a breakable or a pushable does — but,
+    /// unlike either, it never opens at all without
+    /// [`ReachabilityConfig::assume_pendulum_wait`] (this walk has no
+    /// notion of a swing's timing, so an unmarked pendulum is permanent
+    /// geometry to it). With the flag set, round 0 reports it
+    /// pendulum-openable, round 1 reaches the trigger, and round 1 is
+    /// tagged [`RoundReport::pendulum_wait`] — the "wait-for-pendulum"
+    /// round this module's own doc comment and
+    /// [`ReachabilityConfig::assume_pendulum_wait`]'s doc comment describe.
+    #[test]
+    fn a_pendulum_is_passable_only_when_pendulum_wait_is_assumed_and_the_next_round_is_tagged() {
+        use crate::test_support::{REACH_PENDULUM_MAP, reachability_pendulum_bsp};
+
+        let bytes = reachability_pendulum_bsp("ohlreachnext");
+        let mut assets = MemoryAssets::new();
+        assets.insert(&format!("maps/{REACH_PENDULUM_MAP}.bsp"), bytes);
+
+        let without_config = ReachabilityConfig::default();
+        assert!(!without_config.assume_pendulum_wait);
+        let mut without_game =
+            Game::load(&assets as &dyn AssetSource, REACH_PENDULUM_MAP).expect("fixture loads");
+        let without_report = compute_reachability_report(&mut without_game, &without_config);
+        assert!(
+            !without_report.rounds[0].changelevel.reachable,
+            "the pendulum should keep the changelevel trigger unreachable without \
+--reachability-assume-pendulum-wait"
+        );
+        let without_class = without_report.rounds[0]
+            .frontier_classes
+            .iter()
+            .find(|class| class.classname == "func_pendulum")
+            .expect("the func_pendulum should be on the frontier");
+        assert!(!without_class.pendulum_openable);
+        assert_eq!(without_report.rounds[0].pendulums_opened, 0);
+        assert!(
+            without_report.rounds.len() == 1,
+            "no round-advance edge exists without assume_pendulum_wait, so the walk should stop \
+after round 0"
+        );
+
+        let with_config = ReachabilityConfig {
+            assume_pendulum_wait: true,
+            ..ReachabilityConfig::default()
+        };
+        let mut with_game =
+            Game::load(&assets as &dyn AssetSource, REACH_PENDULUM_MAP).expect("fixture loads");
+        let with_report = compute_reachability_report(&mut with_game, &with_config);
+        assert!(
+            with_report.rounds.len() >= 2,
+            "assuming the swing can be timed should open a round-advance edge, expected at \
+least two rounds, got {}",
+            with_report.rounds.len()
+        );
+        let first = &with_report.rounds[0];
+        assert!(!first.changelevel.reachable);
+        assert!(!first.pendulum_wait, "round 0 follows nothing");
+        assert_eq!(first.pendulums_opened, 1);
+        let first_class = first
+            .frontier_classes
+            .iter()
+            .find(|class| class.classname == "func_pendulum")
+            .expect("the func_pendulum should be on the frontier");
+        assert!(first_class.pendulum_openable);
+
+        let second = &with_report.rounds[1];
+        assert!(
+            second.changelevel.reachable,
+            "with the pendulum's brush detached, the walk should now reach the changelevel \
+trigger"
+        );
+        assert!(
+            second.pendulum_wait,
+            "round 1 followed round 0 detaching a func_pendulum, so it should be tagged \
+pendulum_wait"
+        );
+    }
+
+    /// [`ReachabilityConfig::cell_cap`] genuinely bounds the walk: a cap far
+    /// smaller than the fixture's own reachable area stops the walk short
+    /// and reports [`RoundReport::capped`], matching the CLI's
+    /// `--reachability-cell-cap` override (`crates/ohl-app/src/main.rs`)
+    /// this test exists to back.
+    #[test]
+    fn a_small_cell_cap_stops_the_walk_early_and_reports_capped() {
+        let mut game = game();
+        let config = ReachabilityConfig {
+            cell_cap: 4,
+            ..ReachabilityConfig::default()
+        };
+        let report = compute_reachability_report(&mut game, &config);
+        let first = &report.rounds[0];
+        assert!(
+            first.capped,
+            "a 4-cell cap should be hit well before the fixture closes"
+        );
+        assert!(
+            first.reachable_cells <= 4,
+            "the walk should not visit more cells than the cap allows, got {}",
+            first.reachable_cells
         );
     }
 }

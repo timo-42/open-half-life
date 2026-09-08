@@ -97,6 +97,40 @@ fn parse_overbright(value: &str) -> Result<f32, String> {
     }
 }
 
+/// Validates `--reachability-cell-cap`: a whole number greater than 0 and no
+/// larger than [`ohl_engine::reachability::MAX_CELL_CAP`] (that constant's
+/// own doc comment explains why an unbounded override would be unsafe).
+#[cfg(feature = "dev-tools")]
+fn parse_reachability_cell_cap(value: &str) -> Result<usize, String> {
+    let message = format!(
+        "expected a whole number greater than 0 and at most {}",
+        ohl_engine::reachability::MAX_CELL_CAP
+    );
+    let parsed: usize = value.parse().map_err(|_| message.clone())?;
+    if parsed > 0 && parsed <= ohl_engine::reachability::MAX_CELL_CAP {
+        Ok(parsed)
+    } else {
+        Err(message)
+    }
+}
+
+/// Validates `--reachability-round-cap`, the same way
+/// [`parse_reachability_cell_cap`] validates its own flag, bounded instead
+/// by [`ohl_engine::reachability::MAX_ROUND_CAP`].
+#[cfg(feature = "dev-tools")]
+fn parse_reachability_round_cap(value: &str) -> Result<usize, String> {
+    let message = format!(
+        "expected a whole number greater than 0 and at most {}",
+        ohl_engine::reachability::MAX_ROUND_CAP
+    );
+    let parsed: usize = value.parse().map_err(|_| message.clone())?;
+    if parsed > 0 && parsed <= ohl_engine::reachability::MAX_ROUND_CAP {
+        Ok(parsed)
+    } else {
+        Err(message)
+    }
+}
+
 /// `Open Half-Life <version>` command line.
 #[allow(
     clippy::struct_excessive_bools,
@@ -321,8 +355,9 @@ number greater than 0 and no more than 8.0."
     /// reached cell), and whether a `trigger_changelevel` was reached (and
     /// its straight-line distance from spawn, rounded to the nearest ten
     /// units). Closed doors the walk found and could open are then
-    /// simulated open for up to six rounds, so a route needing several
-    /// doors opened in sequence is triaged one round at a time. See
+    /// simulated open for up to six rounds by default (see
+    /// `--reachability-round-cap`), so a route needing several doors opened
+    /// in sequence is triaged one round at a time. See
     /// `ohl_engine::reachability`.
     ///
     /// Loads through the normal `--map`/payload path exactly like
@@ -370,6 +405,61 @@ number greater than 0 and no more than 8.0."
     #[cfg(feature = "dev-tools")]
     #[arg(long, requires = "reachability_report")]
     reachability_assume_longjump: bool,
+
+    /// Development only: with `--reachability-report`, treats a
+    /// `func_pendulum` on the walk's frontier as passable between rounds —
+    /// tagged in the report as "pendulum-openable" on the round it is
+    /// found, and the following round marked "(pendulum wait)" — the same
+    /// round-advance shape a closed door or a breakable gets.
+    ///
+    /// This walk has no notion of a swing's timing: a `func_pendulum` is
+    /// either permanently blocking (without this flag) or permanently
+    /// passable for a whole round (with it), never "blocking except during
+    /// a clear moment." Setting this flag is a caller-supplied assumption
+    /// ("assume the player can time the swing and walk through during a
+    /// gap"), not a claim that the corridor is actually open — see
+    /// `ohl_engine::reachability::ReachabilityConfig::assume_pendulum_wait`.
+    /// Without this flag a `func_pendulum` stays on the frontier forever,
+    /// this project's own long-standing default (`.plan/progress-probe-7.md`'s
+    /// `c1a2` finding).
+    #[cfg(feature = "dev-tools")]
+    #[arg(long, requires = "reachability_report")]
+    reachability_assume_pendulum_wait: bool,
+
+    /// Development only: with `--reachability-report`, overrides the
+    /// walk's own per-round cell cap (40,000 by default —
+    /// `ohl_engine::reachability::ReachabilityConfig::default`). A map
+    /// whose own reachable area is larger than the default hits that cap
+    /// before a single round-advance edge (door/breakable/pushable/
+    /// pendulum) runs at all, hiding whatever those edges would otherwise
+    /// reveal (`.plan/progress-probe-7.md`'s `c4a2` finding, the gap this
+    /// flag closes). Bounded by
+    /// `ohl_engine::reachability::MAX_CELL_CAP` — a hard sanity maximum,
+    /// not a per-map tuned value — so even the most permissive override
+    /// keeps the walk's work bounded.
+    #[cfg(feature = "dev-tools")]
+    #[arg(
+        long,
+        requires = "reachability_report",
+        value_name = "N",
+        value_parser = parse_reachability_cell_cap
+    )]
+    reachability_cell_cap: Option<usize>,
+
+    /// Development only: with `--reachability-report`, overrides the
+    /// walk's own door-opening round cap (6 by default —
+    /// `ohl_engine::reachability::ReachabilityConfig::default`), the
+    /// analogous override to `--reachability-cell-cap` for the number of
+    /// rounds run rather than the cells visited per round. Bounded by
+    /// `ohl_engine::reachability::MAX_ROUND_CAP`.
+    #[cfg(feature = "dev-tools")]
+    #[arg(
+        long,
+        requires = "reachability_report",
+        value_name = "N",
+        value_parser = parse_reachability_round_cap
+    )]
+    reachability_round_cap: Option<usize>,
 
     /// Development only: gives the player named weapons and ammo right
     /// after the map loads, so a single-map probe or scenario can model
@@ -692,6 +782,12 @@ fn run_game_flow(cli: &Cli) -> ExitCode {
         reachability_assume_armed: cli.reachability_assume_armed,
         #[cfg(feature = "dev-tools")]
         reachability_assume_longjump: cli.reachability_assume_longjump,
+        #[cfg(feature = "dev-tools")]
+        reachability_assume_pendulum_wait: cli.reachability_assume_pendulum_wait,
+        #[cfg(feature = "dev-tools")]
+        reachability_cell_cap: cli.reachability_cell_cap,
+        #[cfg(feature = "dev-tools")]
+        reachability_round_cap: cli.reachability_round_cap,
         #[cfg(feature = "dev-tools")]
         start_inventory: cli.start_inventory.as_deref(),
     }) {
