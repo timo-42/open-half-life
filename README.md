@@ -203,7 +203,8 @@ cell), and whether a `trigger_changelevel` was reached (and its
 straight-line distance from spawn, rounded to the nearest ten units).
 Every closed door the walk found and could open is then simulated open for
 the next round, so a route needing several doors opened in sequence is
-triaged one round at a time, for up to six rounds. A `func_pushable` on the
+triaged one round at a time, for up to six rounds by default (see
+`--reachability-round-cap` below). A `func_pushable` on the
 frontier is reported push-openable and its brush is detached for the next
 round the same way a door's is — approximate (this walk does not simulate
 the real push distance or direction, only that the crate is out of the way
@@ -240,6 +241,44 @@ map load owns none — it only assumes one for the walk's own triage:
 cargo run --release -p ohl-app --features dev-tools -- \
   --payload-root /path/to/payload --map c4a1 --reachability-report \
   --reachability-assume-longjump
+```
+
+`--reachability-assume-pendulum-wait` adds a fourth round-advance edge, for
+a `func_pendulum`: a brush that swings continuously through a corridor
+rather than sitting statically closed or broken. The walk has no notion of
+time or of a swing's current phase, so it cannot tell "blocked only while
+swinging through this cell" from "permanently blocking" — without this
+flag a `func_pendulum` on the frontier stays there forever, exactly like an
+unarmed breakable does without `--reachability-assume-armed`. Setting the
+flag treats it as passable between rounds, the same "detach the brush"
+treatment a broken breakable or a shoved pushable gets, on the documented
+assumption that a player can time the swing and walk through during a
+clear moment — not a claim that the corridor is actually, permanently
+open. The round that follows one being treated this way is marked
+"(pendulum wait assumed)" in the printed report, so a route depending on
+timing a swing is distinguishable from one that is not:
+
+```sh
+cargo run --release -p ohl-app --features dev-tools -- \
+  --payload-root /path/to/payload --map c1a2 --reachability-report \
+  --reachability-assume-pendulum-wait
+```
+
+`--reachability-cell-cap N` and `--reachability-round-cap N` raise the
+walk's own bounds past their defaults (40,000 cells per round, 6 rounds).
+A map whose reachable area is itself larger than the default cell cap
+stops the walk before a single round-advance edge
+(door/breakable/pushable/pendulum) ever runs at all, hiding whatever those
+edges would otherwise reveal; a map needing more than 6 rounds of doors
+opened in sequence stops early the same way. Both are bounded by a hard
+sanity maximum (`ohl_engine::reachability::MAX_CELL_CAP`/`MAX_ROUND_CAP`)
+so even the most permissive override cannot turn a single report into
+unbounded work:
+
+```sh
+cargo run --release -p ohl-app --features dev-tools -- \
+  --payload-root /path/to/payload --map c4a2 --reachability-report \
+  --reachability-assume-armed --reachability-cell-cap 300000
 ```
 
 Also `dev-tools` only: `--start-inventory LIST` gives the player named
