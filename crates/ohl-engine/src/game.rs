@@ -811,6 +811,16 @@ impl Game {
         self.controller.state.origin.to_array()
     }
 
+    /// The tunables the walking player's own [`ohl_physics::PlayerController`]
+    /// moves with — `crate::reachability`'s walk derives its jump-height and
+    /// jump-distance bounds from this rather than restating either figure,
+    /// so both stay in lock-step with whatever this build's `PlayerController`
+    /// actually simulates.
+    #[must_use]
+    pub fn move_config(&self) -> &ohl_physics::MoveConfig {
+        &self.controller.config
+    }
+
     /// The speed of the attached brush entity the player is currently
     /// standing on (a moving `func_train`/`func_tracktrain`/`func_plat`/
     /// lift `func_door`, or a rotating `func_rotating`/`func_door_rotating`

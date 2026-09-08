@@ -487,6 +487,13 @@ fn run_reachability_report(game: &mut Game) {
             ),
             (false, None) => tracing::info!("  trigger_changelevel: none declared."),
         }
+        if round.long_drop_cells > 0 {
+            tracing::info!(
+                "  {} cell(s) reached only by a one-way fall taller than the walk's old {:.0}-unit bound.",
+                round.long_drop_cells,
+                ohl_engine::reachability::DROP,
+            );
+        }
         if round.doors_opened > 0 {
             tracing::info!(
                 "  Opening {} door(s) for the next round.",

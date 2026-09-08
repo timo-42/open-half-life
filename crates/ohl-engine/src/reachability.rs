@@ -19,6 +19,30 @@
 //! as it blocks the player, because it is the same attached brush; nothing
 //! here special-cases doors during the walk itself.
 //!
+//! Two edge shapes are tried from every visited cell in every direction:
+//!
+//! - **A plain step**: ascend at most [`STEP_UP`] (unchanged from the
+//!   original walk), move [`CELL_SIZE`] horizontally, then descend to
+//!   whatever floor is found within [`MAX_FALL`] — a one-way drop of any
+//!   height is now a legal edge, not just one within the old, much smaller
+//!   bound; a landing that falls further than [`DROP`] (the walk's old,
+//!   conservative bound) is counted separately as [`RoundReport::long_drop_cells`]
+//!   so a report reader can tell "this route needs a real fall" from "this
+//!   is a normal step down a stair."
+//! - **A jump**, tried only when the plain step fails (blocked ascending,
+//!   blocked moving across, or no floor found at all): ascend at most the
+//!   walking player's own jump apex plus [`STEP_UP`] (`v² / (2g)` from
+//!   [`ohl_physics::MoveConfig::jump_velocity`] and
+//!   [`ohl_physics::MoveConfig::gravity`], read from the live [`Game`] this
+//!   walk is running against — never a restated copy of those constants),
+//!   move up to the horizontal distance the player's own run speed covers
+//!   over a full jump's airtime
+//!   (`max_speed * 2 * jump_velocity / gravity`), then descend the same
+//!   [`MAX_FALL`]-bounded way a plain step does. This is a deliberately
+//!   coarse, single-hop approximation of a running jump — not a simulated
+//!   arc — so it is documented as approximate, not as parity with
+//!   [`ohl_physics::movement::player_move`]'s own physics.
+//!
 //! [`compute_reachability_report`] then runs that walk for up to
 //! [`ReachabilityConfig::max_rounds`] rounds: each round reports how many
 //! cells were reached, which brush-entity classnames sit on the
@@ -56,10 +80,22 @@ pub const CELL_SIZE: f32 = 16.0;
 /// `ohl_physics::movement`'s own module doc and `docs/FORMAT_SOURCES.md`).
 pub const STEP_UP: f32 = 18.0;
 
-/// How far below a stepped horizontal move the walk looks for a new floor.
-/// A drop further than this (a pit, a ledge) is treated as leaving the
-/// walkable graph rather than as a new reachable cell.
+/// The walk's old, conservative drop bound. A one-way fall is no longer
+/// rejected past this distance (see this module's own doc comment and
+/// [`MAX_FALL`]); it is kept only as the threshold
+/// [`RoundReport::long_drop_cells`] reports against, so a route that only
+/// works because of a real fall — not a stair step — is called out
+/// separately rather than silently folded into the ordinary reachable
+/// count.
 pub const DROP: f32 = 72.0;
+
+/// The largest one-way fall (or jump landing) the walk will follow before
+/// giving up on finding a floor below. This is not a documented map-format
+/// fact — it exists only so a genuine bottomless void (a kill volume, the
+/// edge of the world) cannot make the walk search downward forever; it is
+/// set generously larger than any drop a real level's own vertical layout
+/// would ever ask a route to take.
+pub const MAX_FALL: f32 = 8_192.0;
 
 /// Distances this module reports are rounded to the nearest multiple of
 /// this many units (see this module's own doc comment).
@@ -136,6 +172,12 @@ pub struct RoundReport {
     pub frontier_classes: Vec<FrontierClass>,
     /// Whether a `trigger_changelevel` was reached this round.
     pub changelevel: ChangeLevelStatus,
+    /// How many of this round's [`Self::reachable_cells`] were first
+    /// reached by a one-way fall (a plain step or a jump landing) deeper
+    /// than the walk's old, conservative [`DROP`] bound — a route through
+    /// one of these cells needs a real fall, not just a stair step or a
+    /// short hop, to work.
+    pub long_drop_cells: usize,
     /// How many doors this round found and opened for the *next* round
     /// (`0` on the last round, since nothing further needed opening).
     pub doors_opened: usize,
@@ -182,17 +224,98 @@ struct WalkResult {
     frontier_brushes: HashSet<BrushId>,
     /// Whether the walk stopped early because it hit [`ReachabilityConfig::cell_cap`].
     capped: bool,
+    /// How many landings fell further than [`DROP`] below the cell they
+    /// stepped or jumped from (see [`RoundReport::long_drop_cells`]).
+    long_drop_cells: usize,
+}
+
+/// The ascend/horizontal bounds a jump edge is allowed, derived once from
+/// the live [`ohl_physics::MoveConfig`] a walk runs against rather than
+/// restated as fixed numbers (see this module's own doc comment).
+#[derive(Debug, Clone, Copy)]
+struct JumpBounds {
+    /// Tallest obstruction a jump edge may ascend over: the standing
+    /// step-up plus the jump apex height (`v² / (2g)`).
+    ascend: f32,
+    /// Furthest horizontal distance a jump edge may cross in one hop: run
+    /// speed times a full jump's airtime (`2v / g`). A coarse, documented
+    /// approximation of a running jump's actual range, not a simulated arc.
+    horizontal: f32,
+}
+
+impl JumpBounds {
+    fn from_move_config(config: &ohl_physics::MoveConfig) -> Self {
+        let apex_height = config.jump_velocity * config.jump_velocity / (2.0 * config.gravity);
+        let airtime = 2.0 * config.jump_velocity / config.gravity;
+        Self {
+            ascend: config.step_size + apex_height,
+            horizontal: config.max_speed * airtime,
+        }
+    }
+}
+
+/// One edge attempt's outcome: either a new landing (with how far below
+/// the starting cell it fell), or a reason it failed.
+#[derive(Clone, Copy)]
+enum EdgeOutcome {
+    Landed { position: Vec3, drop: f32 },
+    BlockedUp,
+    BlockedAcross(Option<BrushId>),
+    NoFloor,
+}
+
+/// Tries one ascend/move/drop edge from `position` in direction
+/// `horizontal_dir`, ascending at most `ascend`, moving `horizontal_dist`
+/// across, then descending at most [`MAX_FALL`] to find a new floor.
+fn try_edge(
+    collision: &CollisionModel,
+    hull: Hull,
+    position: Vec3,
+    horizontal_dir: Vec3,
+    ascend: f32,
+    horizontal_dist: f32,
+) -> EdgeOutcome {
+    let up = collision.trace(hull, position, position + Vec3::Z * ascend);
+    if up.start_solid {
+        return EdgeOutcome::BlockedUp;
+    }
+    let top = up.end_pos;
+
+    let across = collision.trace(hull, top, top + horizontal_dir * horizontal_dist);
+    if across.blocked() {
+        return EdgeOutcome::BlockedAcross(across.brush_index);
+    }
+
+    let down_target = across.end_pos - Vec3::Z * (ascend + MAX_FALL);
+    let down = collision.trace(hull, across.end_pos, down_target);
+    if down.start_solid || down.fraction >= 1.0 {
+        // Either embedded in solid immediately (shouldn't happen after a
+        // successful horizontal move, but skip rather than trust it) or no
+        // floor within the fall bound: a void, not a new reachable cell.
+        return EdgeOutcome::NoFloor;
+    }
+
+    let landing = down.end_pos;
+    let drop = (position.z - landing.z).max(0.0);
+    EdgeOutcome::Landed {
+        position: landing,
+        drop,
+    }
 }
 
 /// The step-up/move/drop walk itself: from `start`, breadth-first over the
 /// 16-unit grid, using [`Hull::Standing`] against `collision` exactly as
-/// the walking player would.
-fn walk(collision: &CollisionModel, start: Vec3, cap: usize) -> WalkResult {
+/// the walking player would. From every visited cell, in every direction,
+/// a plain [`STEP_UP`]/[`CELL_SIZE`] edge is tried first; a jump edge
+/// (bounded by `jump`) is tried only when that plain edge fails — see this
+/// module's own doc comment.
+fn walk(collision: &CollisionModel, start: Vec3, cap: usize, jump: JumpBounds) -> WalkResult {
     let hull = Hull::Standing;
     let mut visited_cells: HashSet<Cell> = HashSet::new();
     let mut visited_positions = Vec::new();
     let mut frontier_brushes = HashSet::new();
     let mut queue = VecDeque::new();
+    let mut long_drop_cells = 0usize;
 
     visited_cells.insert(cell_of(start));
     visited_positions.push(start);
@@ -205,40 +328,57 @@ fn walk(collision: &CollisionModel, start: Vec3, cap: usize) -> WalkResult {
                 capped = true;
                 break;
             }
-            let horizontal = Vec3::new(dx, dy, 0.0).normalize_or_zero() * CELL_SIZE;
-            if horizontal == Vec3::ZERO {
+            let horizontal_dir = Vec3::new(dx, dy, 0.0).normalize_or_zero();
+            if horizontal_dir == Vec3::ZERO {
                 continue;
             }
 
-            let up = collision.trace(hull, position, position + Vec3::Z * STEP_UP);
-            if up.start_solid {
-                continue;
-            }
-            let top = up.end_pos;
+            let plain = try_edge(
+                collision,
+                hull,
+                position,
+                horizontal_dir,
+                STEP_UP,
+                CELL_SIZE,
+            );
+            let outcome = if matches!(plain, EdgeOutcome::Landed { .. }) {
+                plain
+            } else {
+                try_edge(
+                    collision,
+                    hull,
+                    position,
+                    horizontal_dir,
+                    jump.ascend,
+                    jump.horizontal,
+                )
+            };
 
-            let across = collision.trace(hull, top, top + horizontal);
-            if across.blocked() {
-                if let Some(brush) = across.brush_index {
-                    frontier_brushes.insert(brush);
+            match outcome {
+                EdgeOutcome::Landed {
+                    position: landing,
+                    drop,
+                } => {
+                    let cell = cell_of(landing);
+                    if visited_cells.insert(cell) {
+                        visited_positions.push(landing);
+                        queue.push_back(landing);
+                        if drop > DROP {
+                            long_drop_cells += 1;
+                        }
+                    }
                 }
-                continue;
-            }
-
-            let down_target = across.end_pos - Vec3::Z * (STEP_UP + DROP);
-            let down = collision.trace(hull, across.end_pos, down_target);
-            if down.start_solid || down.fraction >= 1.0 {
-                // Either embedded in solid immediately (shouldn't happen
-                // after a successful horizontal move, but skip rather than
-                // trust it) or no floor within the drop bound: a pit or a
-                // ledge, not a new reachable cell.
-                continue;
-            }
-
-            let landing = down.end_pos;
-            let cell = cell_of(landing);
-            if visited_cells.insert(cell) {
-                visited_positions.push(landing);
-                queue.push_back(landing);
+                EdgeOutcome::BlockedAcross(_) | EdgeOutcome::BlockedUp | EdgeOutcome::NoFloor => {
+                    // Neither the plain nor the jump edge found a new cell:
+                    // record every blocking brush either attempt found, so
+                    // the frontier reflects whatever actually stopped the
+                    // walk in this direction.
+                    for attempt in [plain, outcome] {
+                        if let EdgeOutcome::BlockedAcross(Some(brush)) = attempt {
+                            frontier_brushes.insert(brush);
+                        }
+                    }
+                }
             }
         }
         if capped {
@@ -250,6 +390,7 @@ fn walk(collision: &CollisionModel, start: Vec3, cap: usize) -> WalkResult {
         visited_positions,
         frontier_brushes,
         capped: capped || visited_cells.len() >= cap,
+        long_drop_cells,
     }
 }
 
@@ -359,18 +500,21 @@ pub fn compute_reachability_report(
                 reachable: false,
                 distance_rounded: None,
             },
+            long_drop_cells: 0,
             doors_opened: 0,
             capped: false,
         });
         return ReachabilityReport { rounds };
     }
 
+    let jump = JumpBounds::from_move_config(game.move_config());
+
     for round in 0..config.max_rounds.max(1) {
         let walk_result = {
             let Some(collision) = game.collision() else {
                 break;
             };
-            walk(collision, start, config.cell_cap)
+            walk(collision, start, config.cell_cap, jump)
         };
 
         let mut classes: BTreeMap<String, (usize, bool)> = BTreeMap::new();
@@ -412,6 +556,7 @@ pub fn compute_reachability_report(
                 )
                 .collect(),
             changelevel,
+            long_drop_cells: walk_result.long_drop_cells,
             doors_opened,
             capped: walk_result.capped,
         });
@@ -505,5 +650,79 @@ mod tests {
         let report = compute_reachability_report(&mut game, &ReachabilityConfig::default());
         assert_eq!(report.rounds[0].changelevel.distance_rounded, None);
         assert!(!report.rounds[0].changelevel.reachable);
+    }
+
+    /// A ledge whose only route is a one-way fall taller than the walk's
+    /// old, conservative [`DROP`] bound (72 units) is now reached — and
+    /// counted separately as a long drop, not silently folded into the
+    /// ordinary reachable-cell count.
+    #[test]
+    fn a_ledge_reachable_only_by_a_long_drop_is_reached() {
+        use crate::test_support::{
+            REACH_LEDGE_MAP, reachability_ledge_bsp, reachability_ledge_entities,
+        };
+
+        let bytes = reachability_ledge_bsp(&reachability_ledge_entities("ohlreachnext"));
+        let mut assets = MemoryAssets::new();
+        assets.insert(&format!("maps/{REACH_LEDGE_MAP}.bsp"), bytes);
+        let mut game =
+            Game::load(&assets as &dyn AssetSource, REACH_LEDGE_MAP).expect("the fixture loads");
+
+        let report = compute_reachability_report(&mut game, &ReachabilityConfig::default());
+        let first = &report.rounds[0];
+
+        assert!(
+            first.changelevel.reachable,
+            "the ledge beyond a >72-unit drop should be reached in round 0 (no door to open)"
+        );
+        assert!(
+            first.long_drop_cells > 0,
+            "at least the cell landed on right after the cliff edge should be counted as a long drop"
+        );
+    }
+
+    /// A gap narrower than the walking player's own jump range (run speed
+    /// times jump airtime, both read from [`ohl_physics::MoveConfig`]) is
+    /// crossed; the same map widened past that range is not — the jump
+    /// edge's horizontal bound is a real bound, not an unlimited hop.
+    #[test]
+    fn a_jumpable_gap_is_reached_but_a_wider_one_is_not() {
+        use crate::test_support::{REACH_GAP_MAP, reachability_gap_bsp, reachability_gap_entities};
+
+        let config = ohl_physics::MoveConfig::default();
+        let jump = JumpBounds::from_move_config(&config);
+
+        let narrow_width = jump.horizontal - 64.0;
+        let wide_width = jump.horizontal + 64.0;
+        assert!(
+            narrow_width > 0.0,
+            "the fixture's own default jump range should comfortably fit a 64-unit margin"
+        );
+
+        let entities = reachability_gap_entities("ohlreachnext");
+
+        let narrow_bytes = reachability_gap_bsp(narrow_width, &entities);
+        let mut narrow_assets = MemoryAssets::new();
+        narrow_assets.insert(&format!("maps/{REACH_GAP_MAP}.bsp"), narrow_bytes);
+        let mut narrow_game = Game::load(&narrow_assets as &dyn AssetSource, REACH_GAP_MAP)
+            .expect("the narrow-gap fixture loads");
+        let narrow_report =
+            compute_reachability_report(&mut narrow_game, &ReachabilityConfig::default());
+        assert!(
+            narrow_report.rounds[0].changelevel.reachable,
+            "a gap narrower than the jump range should be crossed"
+        );
+
+        let wide_bytes = reachability_gap_bsp(wide_width, &entities);
+        let mut wide_assets = MemoryAssets::new();
+        wide_assets.insert(&format!("maps/{REACH_GAP_MAP}.bsp"), wide_bytes);
+        let mut wide_game = Game::load(&wide_assets as &dyn AssetSource, REACH_GAP_MAP)
+            .expect("the wide-gap fixture loads");
+        let wide_report =
+            compute_reachability_report(&mut wide_game, &ReachabilityConfig::default());
+        assert!(
+            !wide_report.rounds[0].changelevel.reachable,
+            "a gap wider than the jump range should not be crossed"
+        );
     }
 }

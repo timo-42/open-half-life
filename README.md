@@ -182,16 +182,34 @@ route-triage command for level authors and regression investigations: it
 loads a map headlessly (no window, no GPU) and runs a bounded,
 deterministic breadth-first walk over the live collision model from the
 player start, using the same standing hull and 18-unit step-up the walking
-player does. It prints, per round: how many 16-unit grid cells were
-reached, which brush-entity classnames sit on the unreached frontier (a
-count of distinct entities and whether the engine's own use-proximity path
-could open one from a reached cell), and whether a `trigger_changelevel`
-was reached (and its straight-line distance from spawn, rounded to the
-nearest ten units). Every closed door the walk found and could open is
-then simulated open for the next round, so a route needing several doors
-opened in sequence is triaged one round at a time, for up to six rounds.
-Output is deliberately sparse: classnames, aggregate counts and rounded
-distances only — never a map name, coordinate, or targetname:
+player does. From every reached cell, in every direction, the walk first
+tries a plain step; a one-way fall of any height (not just the small,
+conservative bound the walk originally shipped with) is a legal landing
+for it, so a route that only works by dropping off a ledge is now found,
+not just one that descends a stair. When the plain step fails (blocked
+ascending, blocked moving across, or no floor found at all), the walk
+tries a jump instead: an ascent up to the walking player's own jump apex
+plus the step-up height, and a horizontal reach up to the distance that
+player's run speed covers over one jump's full airtime, both computed from
+this build's own `ohl_physics::MoveConfig` rather than restated — a
+deliberately coarse, documented approximation of a running jump, not a
+simulated arc. It prints, per round: how many 16-unit grid cells were
+reached (and, of those, how many were reached only by a one-way fall
+deeper than the walk's old bound, called out separately since that kind of
+route needs a real fall rather than a stair step), which brush-entity
+classnames sit on the unreached frontier (a count of distinct entities and
+whether the engine's own use-proximity path could open one from a reached
+cell), and whether a `trigger_changelevel` was reached (and its
+straight-line distance from spawn, rounded to the nearest ten units).
+Every closed door the walk found and could open is then simulated open for
+the next round, so a route needing several doors opened in sequence is
+triaged one round at a time, for up to six rounds. `func_breakable` is not
+modeled as destructible by this walk (or by anything else in the engine
+today — there is no shoot-to-destroy component for it yet): a
+`func_breakable` blocking a route is reported exactly like any other
+closed, non-use-openable brush entity on the frontier, not specially
+called out. Output is deliberately sparse: classnames, aggregate counts
+and rounded distances only — never a map name, coordinate, or targetname:
 
 ```sh
 cargo run --release -p ohl-app --features dev-tools -- \
