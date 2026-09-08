@@ -314,12 +314,15 @@ pub struct Systems {
     /// since this level was attached. Media-derived: data, never a log
     /// line from this crate.
     player_damage_events: u64,
-    /// How many times a `use` press found a closed door in reach and
-    /// opened it, i.e. the whole proximity path — `ohl_game::pose::
-    /// brush_center` placing the door, [`crate::USE_RADIUS`] reaching it,
-    /// and `Simulation::use_entity` acting on it — worked end to end.
-    /// Media-derived: data, never a log line from this crate.
-    doors_opened_by_use: u64,
+    /// How many times a closed `func_door`/`func_door_rotating` (without
+    /// the "Use Only" spawnflag) was actually opened since this level was
+    /// attached, whether by a `use` press finding it in reach (the
+    /// proximity path — `ohl_game::pose::brush_center` placing the door,
+    /// [`crate::USE_RADIUS`] reaching it, and `Simulation::use_entity`
+    /// acting on it, worked end to end) or by the player's own hull
+    /// touching it (`Simulation::touch_doors`, `docs/FORMAT_SOURCES.md`
+    /// item 30). Media-derived: data, never a log line from this crate.
+    doors_opened: u64,
 }
 
 impl Systems {
@@ -350,7 +353,7 @@ impl Systems {
             physics_output: ohl_player::PhysicsOutput::default(),
             hitboxes: HitboxIndex::new(ohl_combat::HitboxLimits::default()),
             player_damage_events: 0,
-            doors_opened_by_use: 0,
+            doors_opened: 0,
         }
     }
 
@@ -376,11 +379,12 @@ impl Systems {
         self.pickups.taken_count()
     }
 
-    /// How many closed doors a `use` press has opened since this level was
-    /// attached. Media-derived: data, never a log line from this crate.
+    /// How many closed doors have been opened (by a `use` press or by the
+    /// player's own touch) since this level was attached. Media-derived:
+    /// data, never a log line from this crate.
     #[must_use]
-    pub fn doors_opened_by_use_count(&self) -> u64 {
-        self.doors_opened_by_use
+    pub fn doors_opened_count(&self) -> u64 {
+        self.doors_opened
     }
 
     /// How many times damage aimed at the player has actually been applied
@@ -1202,7 +1206,7 @@ impl Systems {
                         Some(MoverState::Opening | MoverState::Open)
                     )
                 {
-                    self.doors_opened_by_use += 1;
+                    self.doors_opened += 1;
                 }
             } else {
                 // Nothing usable in reach: the press is offered to a talk
@@ -1242,6 +1246,18 @@ impl Systems {
         let player_origin = self.physics_output.origin;
         let player_mins = player_origin + Vec3::from_array(hull_mins);
         let player_maxs = player_origin + Vec3::from_array(hull_maxs);
+        // A closed `func_door`/`func_door_rotating` without the "Use Only"
+        // spawnflag also opens the moment the player's own hull touches it
+        // — the same brush-vs-brush overlap test as the touch triggers
+        // just above, not gated behind any separate `trigger_*` volume a
+        // map may or may not have placed around it (`docs/FORMAT_SOURCES.md`
+        // item 30). Run before `touch_triggers`/`tick` below so a door
+        // opened this way still gets this same step's `advance_doors` pass.
+        let touch_opened =
+            level
+                .simulation
+                .touch_doors(&mut level.registry, player_mins, player_maxs);
+        self.doors_opened += touch_opened as u64;
         level.simulation.touch_triggers(
             &mut level.registry,
             player_mins,

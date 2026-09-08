@@ -301,14 +301,27 @@ const WALK_PRESENT_LADDER: [&str; 4] = [
     "The player is on a ladder.",
 ];
 
-/// [`WALK_PRESENT`] plus the line this scenario's own walk-and-press (in
-/// `xtask/smoke-scenarios/use_rotating_door_anomalous_materials.txt`)
-/// reaches: a `func_door_rotating` opened by a `use` press through the
-/// engine's own proximity path. That path only finds an "origin brush"
-/// entity at all once its proximity point is computed from the same placed
-/// pose the renderer and the collision model use
-/// (`ohl_game::pose::brush_center`); see `docs/FORMAT_SOURCES.md`'s
-/// `TODO(black-box)` item 25 and that scenario file's own header.
+/// [`WALK_PRESENT`] plus "The player opened a door.", reached two
+/// different ways by the scenarios that share this set:
+///
+/// - `xtask/smoke-scenarios/use_rotating_door_anomalous_materials.txt`
+///   walks up to a real `func_door_rotating` and opens it with a `use`
+///   press through the engine's own proximity path. That path only finds
+///   an "origin brush" entity at all once its proximity point is computed
+///   from the same placed pose the renderer and the collision model use
+///   (`ohl_game::pose::brush_center`); see `docs/FORMAT_SOURCES.md`'s
+///   `TODO(black-box)` item 25 and that scenario file's own header.
+/// - `walk_anomalous_materials.txt` and `walk_surface_tension.txt` press no
+///   `use` key at all; each one's own ~20-40s forward walk happens to
+///   carry the player's hull into a real closed door along the way, which
+///   this milestone's own `ohl_game::logic::Simulation::touch_doors` now
+///   opens on contact (`docs/FORMAT_SOURCES.md` item 30). Confirmed by
+///   running each scenario directly with `--script-log` against the real
+///   payload: both log exactly this one extra fixed line and nothing
+///   else unexpected. Before item 30 landed, both scenarios used
+///   [`WALK_PRESENT`]/[`BASE_ABSENT`] like every other plain walk in this
+///   file; this is a scenario-set reassignment, not a script or map
+///   change.
 const WALK_PRESENT_DOOR_OPENED: [&str; 4] = [
     "Scripted input loaded.",
     "Scripted input finished.",
@@ -667,8 +680,8 @@ fn scenarios() -> [Scenario; 35] {
             name: "walk from spawn in Anomalous Materials",
             file: "walk_anomalous_materials.txt",
             map: "c1a0",
-            present: &WALK_PRESENT,
-            absent: &BASE_ABSENT,
+            present: &WALK_PRESENT_DOOR_OPENED,
+            absent: &WALK_ABSENT_DOOR_OPENED,
             follow_level_change: false,
         },
         Scenario {
@@ -747,8 +760,8 @@ fn scenarios() -> [Scenario; 35] {
             name: "walk from spawn in Surface Tension",
             file: "walk_surface_tension.txt",
             map: "c2a5",
-            present: &WALK_PRESENT,
-            absent: &BASE_ABSENT,
+            present: &WALK_PRESENT_DOOR_OPENED,
+            absent: &WALK_ABSENT_DOOR_OPENED,
             follow_level_change: false,
         },
         Scenario {
