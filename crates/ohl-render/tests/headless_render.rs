@@ -9,7 +9,9 @@
 //! No bytes here come from any game installation; see `docs/CLEAN_ROOM.md`.
 
 use ohl_formats::bsp30::Bsp;
-use ohl_render::{FreeFlyCamera, GpuContext, OFFSCREEN_FORMAT, OffscreenTarget, WorldRenderer};
+use ohl_render::{
+    FreeFlyCamera, GpuContext, LightStyles, OFFSCREEN_FORMAT, OffscreenTarget, WorldRenderer,
+};
 use ohl_world::test_support::{synthetic_room_bsp, synthetic_room_wad};
 use ohl_world::{BspLimits, WorldBuildOptions, WorldModel};
 
@@ -63,7 +65,39 @@ fn render_frame() -> Option<Vec<u8>> {
         "the camera stands inside the room, so something must survive culling"
     );
 
-    Some(target.read_rgba(&context).expect("frame reads back"))
+    let initial = target.read_rgba(&context).expect("frame reads back");
+    let mut styles = LightStyles::new();
+    // Neutral intensity must preserve the atlas uploaded at construction.
+    styles.set_pattern(0, "");
+    assert!(renderer.update_light_styles(&context, &model, &styles, 0.0));
+    let render_pixels = |renderer: &mut WorldRenderer| {
+        renderer.render(
+            &context,
+            &model,
+            &camera,
+            target.view(),
+            target.width(),
+            target.height(),
+        );
+        target.read_rgba(&context).expect("frame reads back")
+    };
+    assert_eq!(initial, render_pixels(&mut renderer));
+    assert!(!renderer.update_light_styles(&context, &model, &styles, 0.0));
+    assert!(!renderer.update_light_styles(&context, &model, &styles, 0.1));
+    styles.set_pattern(1, "az");
+    assert!(!renderer.update_light_styles(&context, &model, &styles, 0.1));
+    // Runtime edits must take effect even without advancing the clock.
+    styles.set_pattern(0, "a");
+    assert!(renderer.update_light_styles(&context, &model, &styles, 0.1));
+    let dark = render_pixels(&mut renderer);
+    assert_ne!(initial, dark);
+    assert!(!renderer.update_light_styles(&context, &model, &styles, 0.1));
+    assert_eq!(dark, render_pixels(&mut renderer));
+    styles.set_pattern(0, "");
+    assert!(renderer.update_light_styles(&context, &model, &styles, 0.1));
+    assert_eq!(initial, render_pixels(&mut renderer));
+
+    Some(initial)
 }
 
 fn check(pixels: &[u8]) {

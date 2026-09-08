@@ -87,7 +87,7 @@ pub use reachability::{
     ChangeLevelStatus, FrontierClass, ReachabilityConfig, ReachabilityReport, RoundReport,
     compute_reachability_report,
 };
-pub use render::RenderTarget;
+pub use render::{RenderResourceStats, RenderTarget};
 pub use save::GameSave;
 pub use start_inventory::{StartInventoryError, StartInventoryItem, parse_start_inventory};
 pub use systems::{QueuedDamage, Systems, SystemsConfig};

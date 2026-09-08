@@ -1,5 +1,7 @@
 //! The world renderer: pipeline, buffers, bind groups and the draw loop.
 
+use std::cell::Cell;
+
 use ohl_world::{
     DrawList, SpriteAsset, SpriteType, TextureImage, WorldModel, index_bytes, vertex_bytes,
 };
@@ -7,7 +9,7 @@ use ohl_world::{
 use crate::camera::FreeFlyCamera;
 use crate::error::{RenderError, Result};
 use crate::gpu::GpuContext;
-use crate::light_styles::LightStyles;
+use crate::light_styles::{LightStyleState, LightStyles};
 use crate::math::{self, Mat4};
 use crate::render_props::{BlendKind, RenderProps};
 
@@ -111,6 +113,7 @@ pub struct WorldRenderer {
     /// re-upload a re-blended atlas.
     lightmap_texture: wgpu::Texture,
     lightmap_size: (u32, u32),
+    light_style_state: LightStyleState,
     /// The liquid ("water") pass: same bind group layouts as the opaque
     /// pass (so it can reuse [`Self::texture_bind_groups`]), a dedicated
     /// camera-like uniform carrying the turbulence phase and alpha, and its
@@ -121,12 +124,13 @@ pub struct WorldRenderer {
     liquid_global_bind_group: wgpu::BindGroup,
     liquid_index_buffer: wgpu::Buffer,
     liquid_index_capacity: usize,
-    /// Resources [`Self::draw_world_submodel`] reuses to build each brush
-    /// entity's own (transient) buffers and bind groups: its own global
+    /// Resources [`Self::prepare_world_submodel`] uses to build cached brush
+    /// entity buffers and bind groups: its own global
     /// bind group layout (a wider uniform than the opaque pass's, to carry
     /// the entity transform and render-mode parameters), `texture_layout`
     /// shared with the opaque pass, both samplers, and one precompiled
     /// pipeline per [`crate::render_props::BlendKind`].
+    submodel_resource_stats: Cell<SubmodelResourceStats>,
     submodel_global_layout: wgpu::BindGroupLayout,
     texture_layout: wgpu::BindGroupLayout,
     world_sampler: wgpu::Sampler,
@@ -134,7 +138,7 @@ pub struct WorldRenderer {
     submodel_opaque_pipeline: wgpu::RenderPipeline,
     submodel_alpha_pipeline: wgpu::RenderPipeline,
     submodel_additive_pipeline: wgpu::RenderPipeline,
-    submodel_draw_list: DrawList,
+    submodel_instance_slots: Vec<SubmodelUniformSlot>,
     /// The sprite billboard pass: one pipeline per [`BlendKind`] (reusing
     /// `texture_layout`/`world_sampler` for its per-frame texture), a
     /// dedicated per-instance uniform layout, and a shared unit-quad
@@ -151,13 +155,45 @@ pub struct WorldRenderer {
     sprite_instance_slots: Vec<(wgpu::Buffer, wgpu::BindGroup)>,
 }
 
+/// Cumulative static uploads used to prepare brush models for this renderer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SubmodelResourceStats {
+    /// Number of prepared brush models.
+    pub preparations: u64,
+    /// Vertex, index, lightmap, and unshared texture bytes uploaded.
+    pub static_upload_bytes: u64,
+    /// Lightmap and unshared diffuse texture uploads.
+    pub texture_uploads: u64,
+}
+
+/// Immutable geometry and texture resources uploaded once for a brush model.
+///
+/// Create with [`WorldRenderer::prepare_world_submodel`] for standalone models
+/// or [`WorldRenderer::prepare_map_submodel`] for a submodel from the renderer's
+/// map. Keep this alongside that renderer and discard it when changing maps.
+pub struct PreparedSubmodel {
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    lightmap_view: wgpu::TextureView,
+    texture_bind_groups: Vec<wgpu::BindGroup>,
+    draw_list: DrawList,
+}
+
+/// Separate uniforms for every instance in one submission, with stable buffer
+/// allocations. The view identity detects a changed model at this slot without
+/// relying on renderer-local ids that could alias resources from another map.
+struct SubmodelUniformSlot {
+    camera_buffer: wgpu::Buffer,
+    global_bind_group: wgpu::BindGroup,
+    lightmap_view: wgpu::TextureView,
+}
+
 /// One placed brush-entity submodel to draw with
 /// [`WorldRenderer::draw_world_submodel`].
 #[derive(Clone, Copy)]
 pub struct SubmodelInstance<'a> {
-    /// The submodel's own [`WorldModel`], built by
-    /// [`ohl_world::WorldModel::build_submodel`].
-    pub model: &'a WorldModel,
+    /// The submodel's resources, prepared once and reused across frames.
+    pub model: &'a PreparedSubmodel,
     /// The entity's placement in world space, column-major (for example
     /// [`crate::placement`]).
     pub transform: Mat4,
@@ -789,11 +825,13 @@ impl WorldRenderer {
             srgb_output: color_format.is_srgb(),
             lightmap_texture,
             lightmap_size,
+            light_style_state: LightStyleState::new(model.lightmap_style_ids()),
             liquid_pipeline,
             liquid_camera_buffer,
             liquid_global_bind_group,
             liquid_index_buffer,
             liquid_index_capacity,
+            submodel_resource_stats: Cell::default(),
             submodel_global_layout,
             texture_layout,
             world_sampler: sampler,
@@ -801,7 +839,7 @@ impl WorldRenderer {
             submodel_opaque_pipeline,
             submodel_alpha_pipeline,
             submodel_additive_pipeline,
-            submodel_draw_list: DrawList::new(),
+            submodel_instance_slots: Vec::new(),
             sprite_instance_layout,
             sprite_opaque_pipeline,
             sprite_alpha_pipeline,
@@ -814,21 +852,24 @@ impl WorldRenderer {
 
     /// Re-blends [`ohl_world::WorldModel::lightmap_atlas`] at `styles`'
     /// intensities for `time_seconds` and re-uploads it, animating light
-    /// styles. Cheap enough to call once per rendered frame (or, since
-    /// styles only change at [`crate::STYLE_HZ`], only when that step has
-    /// advanced); a no-op if `model` is not the model this renderer was
-    /// built from.
+    /// styles. Only recomputes and uploads when a style used by the model
+    /// changes intensity, including pattern edits within the same animation
+    /// step. Returns whether an atlas was uploaded. Pass the same model
+    /// this renderer was built from; incompatible atlas dimensions are
+    /// ignored.
     pub fn update_light_styles(
-        &self,
+        &mut self,
         context: &GpuContext,
         model: &WorldModel,
         styles: &LightStyles,
         time_seconds: f32,
-    ) {
-        let blended = model.blend_lightmap(|style| styles.intensity(style, time_seconds));
-        if (blended.width(), blended.height()) != self.lightmap_size {
-            return;
+    ) -> bool {
+        if (model.lightmap_atlas.width(), model.lightmap_atlas.height()) != self.lightmap_size
+            || !self.light_style_state.update(styles, time_seconds)
+        {
+            return false;
         }
+        let blended = model.blend_lightmap(|style| self.light_style_state.intensity(style));
         let size = wgpu::Extent3d {
             width: self.lightmap_size.0,
             height: self.lightmap_size.1,
@@ -841,6 +882,7 @@ impl WorldRenderer {
             blended.rgba(),
             size.width,
         );
+        true
     }
 
     /// Recreates the depth buffer when the target size changes.
@@ -1090,50 +1132,43 @@ impl WorldRenderer {
         context.queue.submit(Some(encoder.finish()));
     }
 
-    /// Draws one brush-entity submodel (see
-    /// [`ohl_world::WorldModel::build_submodel`]) with `props`' render-mode
-    /// blend state, into the same `target`/depth as the just-completed
-    /// [`Self::render`] call (loaded, not cleared).
-    ///
-    /// Must be called after [`Self::render`] in the same frame, so a depth
-    /// buffer already exists to test (and, for
-    /// [`crate::render_props::RenderMode::Normal`]/[`crate::render_props::RenderMode::Solid`],
-    /// write) against.
-    ///
-    /// Builds this submodel's vertex/index buffers and texture/lightmap
-    /// bind groups fresh on every call rather than caching them per model:
-    /// brush entities are typically small, and this keeps the first-light
-    /// implementation simple (see `docs/MILESTONES.md`, M3.4); a future
-    /// milestone can cache per-`WorldModel` resources if profiling shows
-    /// this matters. Ignores this submodel's own liquid faces (only
-    /// [`ohl_world::DrawList::batches`] is drawn, from
-    /// [`ohl_world::WorldModel::build_draw_list_for_model`]) under whichever
-    /// pipeline `props.blend_kind()` selects.
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-    pub fn draw_world_submodel(
-        &mut self,
+    /// Static brush-resource work since this renderer was created.
+    #[must_use]
+    pub fn submodel_resource_stats(&self) -> SubmodelResourceStats {
+        self.submodel_resource_stats.get()
+    }
+
+    /// Uploads a standalone submodel's geometry, lightmap, and textures once.
+    /// The returned resources can be reused for every instance and frame.
+    pub fn prepare_world_submodel(
+        &self,
         context: &GpuContext,
-        instance: SubmodelInstance<'_>,
-        props: RenderProps,
-        camera: &FreeFlyCamera,
-        target: &wgpu::TextureView,
-        width: u32,
-        height: u32,
-    ) {
-        let model = instance.model;
-        if model.vertices.is_empty() || model.indices.is_empty() {
-            return;
-        }
-        let Some((depth_view, _, _)) = &self.depth else {
-            return;
-        };
+        model: &WorldModel,
+    ) -> PreparedSubmodel {
+        self.prepare_submodel(context, model, false)
+    }
+
+    /// Uploads a submodel's geometry and lightmap, sharing this renderer's map
+    /// texture bindings. `model` must have been built from the same BSP and
+    /// texture options as the world model passed to [`Self::new`].
+    pub fn prepare_map_submodel(
+        &self,
+        context: &GpuContext,
+        model: &WorldModel,
+    ) -> PreparedSubmodel {
+        self.prepare_submodel(context, model, true)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn prepare_submodel(
+        &self,
+        context: &GpuContext,
+        model: &WorldModel,
+        share_map_textures: bool,
+    ) -> PreparedSubmodel {
         let device = &context.device;
-
-        model.build_draw_list_for_model(&mut self.submodel_draw_list);
-        if self.submodel_draw_list.indices.is_empty() {
-            return;
-        }
-
+        let mut draw_list = DrawList::new();
+        model.build_draw_list_for_model(&mut draw_list);
         let vertex_data = vertex_bytes(&model.vertices);
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("ohl submodel vertices"),
@@ -1143,7 +1178,7 @@ impl WorldRenderer {
         });
         context.queue.write_buffer(&vertex_buffer, 0, &vertex_data);
 
-        let index_data = index_bytes(&self.submodel_draw_list.indices);
+        let index_data = index_bytes(&draw_list.indices);
         let index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("ohl submodel indices"),
             size: (index_data.len() as wgpu::BufferAddress).max(12),
@@ -1158,86 +1193,185 @@ impl WorldRenderer {
             "ohl submodel lightmap atlas",
         );
 
-        let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("ohl submodel camera uniform"),
-            size: SUBMODEL_UNIFORM_BYTES,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let global_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("ohl submodel global bind group"),
-            layout: &self.submodel_global_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: camera_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&lightmap_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&self.lightmap_sampler),
-                },
-            ],
-        });
-
-        let mut texture_bind_groups = Vec::with_capacity(model.textures.len());
-        for image in &model.textures {
-            let (_texture, view) = upload_texture(context, image, "ohl submodel texture");
-            texture_bind_groups.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("ohl submodel texture bind group"),
-                layout: &self.texture_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.world_sampler),
-                    },
-                ],
-            }));
+        let texture_bind_groups = if share_map_textures {
+            self.texture_bind_groups.clone()
+        } else {
+            let mut texture_bind_groups = Vec::with_capacity(model.textures.len());
+            for image in &model.textures {
+                let (_texture, view) = upload_texture(context, image, "ohl submodel texture");
+                texture_bind_groups.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("ohl submodel texture bind group"),
+                    layout: &self.texture_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.world_sampler),
+                        },
+                    ],
+                }));
+            }
+            texture_bind_groups
+        };
+        let mut stats = self.submodel_resource_stats.get();
+        stats.preparations += 1;
+        stats.static_upload_bytes +=
+            (vertex_data.len() + index_data.len() + model.lightmap_atlas.rgba().len()) as u64;
+        stats.texture_uploads += 1;
+        if !share_map_textures {
+            stats.static_upload_bytes += model
+                .textures
+                .iter()
+                .map(|texture| texture.rgba().len() as u64)
+                .sum::<u64>();
+            stats.texture_uploads += model.textures.len() as u64;
         }
+        self.submodel_resource_stats.set(stats);
+        PreparedSubmodel {
+            vertex_buffer,
+            index_buffer,
+            lightmap_view,
+            texture_bind_groups,
+            draw_list,
+        }
+    }
 
+    /// Prepares distinct uniform storage for every brush in one submission.
+    /// Reuses slot buffers and only rebuilds a binding when its lightmap changes.
+    fn reserve_submodel_slots(
+        &mut self,
+        context: &GpuContext,
+        instances: &[(SubmodelInstance<'_>, RenderProps)],
+    ) {
+        let layout = &self.submodel_global_layout;
+        let sampler = &self.lightmap_sampler;
+        let bind_group = |buffer: &wgpu::Buffer, view: &wgpu::TextureView| {
+            context
+                .device
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("ohl submodel instance bind group"),
+                    layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::Sampler(sampler),
+                        },
+                    ],
+                })
+        };
+        for (index, (instance, _)) in instances.iter().enumerate() {
+            let view = &instance.model.lightmap_view;
+            if let Some(slot) = self.submodel_instance_slots.get_mut(index) {
+                if slot.lightmap_view != *view {
+                    slot.global_bind_group = bind_group(&slot.camera_buffer, view);
+                    slot.lightmap_view = view.clone();
+                }
+            } else {
+                let camera_buffer = context.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("ohl submodel instance uniform"),
+                    size: SUBMODEL_UNIFORM_BYTES,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                let global_bind_group = bind_group(&camera_buffer, view);
+                self.submodel_instance_slots.push(SubmodelUniformSlot {
+                    camera_buffer,
+                    global_bind_group,
+                    lightmap_view: view.clone(),
+                });
+            }
+        }
+    }
+
+    /// Draws one prepared brush entity. Use [`Self::draw_world_submodels`] to
+    /// render several brushes in one pass and queue submission.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_world_submodel(
+        &mut self,
+        context: &GpuContext,
+        instance: SubmodelInstance<'_>,
+        props: RenderProps,
+        camera: &FreeFlyCamera,
+        target: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+    ) {
+        self.draw_world_submodels(context, &[(instance, props)], camera, target, width, height);
+    }
+
+    /// Draws prepared brushes in input order in one pass and queue submission,
+    /// loading the color/depth targets established by [`Self::render`]. Each
+    /// instance keeps its own transform/render-property uniform even when many
+    /// instances share a model. Geometry, textures, and lightmaps are reused.
+    /// Submodel liquid faces are not drawn by this pass.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    pub fn draw_world_submodels(
+        &mut self,
+        context: &GpuContext,
+        instances: &[(SubmodelInstance<'_>, RenderProps)],
+        camera: &FreeFlyCamera,
+        target: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+    ) {
+        if self.depth.is_none()
+            || instances
+                .iter()
+                .all(|(instance, _)| instance.model.draw_list.indices.is_empty())
+        {
+            return;
+        }
+        self.reserve_submodel_slots(context, instances);
+        let Some((depth_view, _, _)) = &self.depth else {
+            return;
+        };
         #[allow(clippy::cast_precision_loss)]
         let aspect = width.max(1) as f32 / height.max(1) as f32;
-        let combined = math::multiply(&camera.view_projection(aspect), &instance.transform);
-
-        let mut uniform = Vec::with_capacity(usize::try_from(SUBMODEL_UNIFORM_BYTES).unwrap_or(96));
-        for value in combined {
-            uniform.extend_from_slice(&value.to_le_bytes());
+        let view_projection = camera.view_projection(aspect);
+        for ((instance, props), slot) in instances.iter().zip(&self.submodel_instance_slots) {
+            let combined = math::multiply(&view_projection, &instance.transform);
+            let srgb = if self.srgb_output { 1.0f32 } else { 0.0f32 };
+            let use_render_color = if props.uses_render_color() {
+                1.0f32
+            } else {
+                0.0f32
+            };
+            let parameters = [
+                srgb,
+                props.alpha(),
+                use_render_color,
+                0.0,
+                f32::from(props.color[0]) / 255.0,
+                f32::from(props.color[1]) / 255.0,
+                f32::from(props.color[2]) / 255.0,
+                0.0,
+            ];
+            let mut uniform = [0u8; 96];
+            for (value, bytes) in combined
+                .into_iter()
+                .chain(parameters)
+                .zip(uniform.as_chunks_mut::<4>().0)
+            {
+                bytes.copy_from_slice(&value.to_le_bytes());
+            }
+            context.queue.write_buffer(&slot.camera_buffer, 0, &uniform);
         }
-        let srgb = if self.srgb_output { 1.0f32 } else { 0.0f32 };
-        let use_render_color = if props.uses_render_color() {
-            1.0f32
-        } else {
-            0.0f32
-        };
-        for value in [srgb, props.alpha(), use_render_color, 0.0] {
-            uniform.extend_from_slice(&value.to_le_bytes());
-        }
-        for value in [
-            f32::from(props.color[0]) / 255.0,
-            f32::from(props.color[1]) / 255.0,
-            f32::from(props.color[2]) / 255.0,
-            0.0,
-        ] {
-            uniform.extend_from_slice(&value.to_le_bytes());
-        }
-        context.queue.write_buffer(&camera_buffer, 0, &uniform);
-
-        let pipeline = match props.blend_kind() {
-            BlendKind::Opaque => &self.submodel_opaque_pipeline,
-            BlendKind::AlphaBlend => &self.submodel_alpha_pipeline,
-            BlendKind::Additive => &self.submodel_additive_pipeline,
-        };
-
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("ohl submodel encoder"),
-        });
+        let mut encoder = context
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("ohl submodel encoder"),
+            });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("ohl submodel pass"),
@@ -1262,20 +1396,28 @@ impl WorldRenderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, &global_bind_group, &[]);
-            pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-            pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            for batch in &self.submodel_draw_list.batches {
-                let Some(bind_group) = texture_bind_groups.get(batch.texture) else {
-                    continue;
+            for ((instance, props), slot) in instances.iter().zip(&self.submodel_instance_slots) {
+                let model = instance.model;
+                let pipeline = match props.blend_kind() {
+                    BlendKind::Opaque => &self.submodel_opaque_pipeline,
+                    BlendKind::AlphaBlend => &self.submodel_alpha_pipeline,
+                    BlendKind::Additive => &self.submodel_additive_pipeline,
                 };
-                let end = batch.first_index + batch.index_count;
-                if end as usize > self.submodel_draw_list.indices.len() {
-                    continue;
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, &slot.global_bind_group, &[]);
+                pass.set_vertex_buffer(0, model.vertex_buffer.slice(..));
+                pass.set_index_buffer(model.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                for batch in &model.draw_list.batches {
+                    let Some(bind_group) = model.texture_bind_groups.get(batch.texture) else {
+                        continue;
+                    };
+                    let end = batch.first_index + batch.index_count;
+                    if end as usize > model.draw_list.indices.len() {
+                        continue;
+                    }
+                    pass.set_bind_group(1, bind_group, &[]);
+                    pass.draw_indexed(batch.first_index..end, 0, 0..1);
                 }
-                pass.set_bind_group(1, bind_group, &[]);
-                pass.draw_indexed(batch.first_index..end, 0, 0..1);
             }
         }
         context.queue.submit(Some(encoder.finish()));

@@ -113,7 +113,10 @@ fn liquid_world_with_brick_submodel_bsp() -> Vec<u8> {
 
 fn overhead_camera() -> FreeFlyCamera {
     FreeFlyCamera {
-        position: [0.0, 0.0, 200.0],
+        // At 75-degree vertical FOV, this places the 128-unit quad over
+        // a third of the frame. At z=200 its projected area is only 13%,
+        // which cannot satisfy the quarter-frame coverage assertion below.
+        position: [0.0, 0.0, 128.0],
         yaw: 0.0,
         pitch: 89.0,
         ..FreeFlyCamera::default()
@@ -176,6 +179,7 @@ fn run_submodel_test() {
     let target = OffscreenTarget::new(&context, WIDTH, HEIGHT).expect("offscreen target");
     let mut renderer =
         WorldRenderer::new(&context, &world, OFFSCREEN_FORMAT).expect("renderer builds");
+    let prepared = renderer.prepare_world_submodel(&context, &submodel);
     let camera = overhead_camera();
 
     // The opaque pass draws nothing (worldspawn has no opaque batches) but
@@ -185,7 +189,7 @@ fn run_submodel_test() {
     renderer.draw_world_submodel(
         &context,
         SubmodelInstance {
-            model: &submodel,
+            model: &prepared,
             transform: ohl_render::math::identity(),
         },
         RenderProps {
@@ -211,7 +215,15 @@ fn run_submodel_test() {
         .count();
     assert!(
         blended > (WIDTH * HEIGHT) as usize / 4,
-        "expected a meaningful part of the frame to show blended submodel pixels"
+        "expected a meaningful part of the frame to show blended submodel pixels; got {blended} of {}",
+        WIDTH * HEIGHT
+    );
+    let centre = rgba[(HEIGHT as usize / 2) * WIDTH as usize + WIDTH as usize / 2];
+    // The fixture texture is grey 220, fully lit. Blending 128/255 over
+    // the clear red value 5 gives approximately 113, not opaque grey 220.
+    assert!(
+        (i16::from(centre[0]) - 113).abs() <= 2,
+        "the quad centre must show the expected half-alpha blend, got {centre:?}"
     );
     assert!(
         rgba.iter().all(|pixel| pixel[3] == 255),
