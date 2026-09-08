@@ -207,6 +207,11 @@ pub struct GameArgs<'a> {
     /// `dev-tools` only). Ignored without `reachability_report`.
     #[cfg(feature = "dev-tools")]
     pub reachability_assume_armed: bool,
+    /// Adds a long-jump edge to the reachability walk
+    /// (`--reachability-assume-longjump`, `dev-tools` only). Ignored
+    /// without `reachability_report`.
+    #[cfg(feature = "dev-tools")]
+    pub reachability_assume_longjump: bool,
     /// A `--start-inventory` list (`dev-tools` only): comma-separated
     /// `weapon_*`/`ammo_*` classnames given to the player right after the
     /// map loads. See `ohl_engine::parse_start_inventory`.
@@ -275,7 +280,11 @@ recognise (expected a comma-separated list of weapon_*/ammo_* classnames)"
 
     #[cfg(feature = "dev-tools")]
     if args.reachability_report {
-        run_reachability_report(&mut game, args.reachability_assume_armed);
+        run_reachability_report(
+            &mut game,
+            args.reachability_assume_armed,
+            args.reachability_assume_longjump,
+        );
         return Ok(());
     }
 
@@ -460,7 +469,7 @@ fn write_screenshot(game: &mut Game, path: &Path, pose: &CapturePose) -> Result<
 /// a targetname (`docs/CLEAN_ROOM.md`; the caller already knows which map
 /// it asked for).
 #[cfg(feature = "dev-tools")]
-fn run_reachability_report(game: &mut Game, assume_armed: bool) {
+fn run_reachability_report(game: &mut Game, assume_armed: bool, assume_longjump: bool) {
     if !game.has_collision() {
         tracing::info!("Reachability report: the map has no usable collision hulls.");
         return;
@@ -468,6 +477,7 @@ fn run_reachability_report(game: &mut Game, assume_armed: bool) {
 
     let config = ohl_engine::ReachabilityConfig {
         assume_armed,
+        assume_longjump,
         ..ohl_engine::ReachabilityConfig::default()
     };
     let report = ohl_engine::compute_reachability_report(game, &config);
@@ -529,6 +539,12 @@ fn run_reachability_report(game: &mut Game, assume_armed: bool) {
                 "  {} cell(s) reached only by a one-way fall taller than the walk's old {:.0}-unit bound.",
                 round.long_drop_cells,
                 ohl_engine::reachability::DROP,
+            );
+        }
+        if round.long_jump_cells > 0 {
+            tracing::info!(
+                "  {} cell(s) reached only by the long-jump edge (armed with the long jump module assumed).",
+                round.long_jump_cells,
             );
         }
         if round.doors_opened > 0 {

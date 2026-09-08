@@ -4015,7 +4015,7 @@ frontier attempts) on `c4a2` (Gonarch's Lair).
   xtask campaign-smoke` (93/93 maps, 0 missing-map/load-error/timeout/
   crash/blank-capture) both pass against the same payload after this fix.
 
-## M9.12 (Rust): `--start-inventory`, and breakables/pushables in `--reachability-report`
+## M9.12 (Rust): `--start-inventory`, breakables/pushables/long-jump in `--reachability-report`
 
 Status: in progress (Rust); evidence: this PR.
 
@@ -4081,11 +4081,41 @@ Status: in progress (Rust); evidence: this PR.
   (`xtask::combat_smoke::tests::build_command_*`); no default scenario
   uses it yet, so the existing suite's plain (non-`dev-tools`) release
   binary build is unaffected.
-- **`c1a2`/`c3a2` re-measured with `--reachability-assume-armed`.** Both
-  maps' `--reachability-report --reachability-assume-armed` runs are
-  recorded as aggregates only in this package's own pull request
-  description, per `docs/CLEAN_ROOM.md`'s reviewed-sanitized-report rule;
-  see that PR for the per-map round-by-round result.
+- **`--reachability-assume-longjump`** (`crates/ohl-app/src/main.rs`,
+  `dev-tools` only, `requires = "reachability_report"`), added mid-package
+  once `.plan/progress-probe-6.md` (a follow-up read-only investigation)
+  found "c4a1" (Xen) and "c4a3" (Nihilanth) closing their entire reachable
+  area under the walk's existing single running-jump model without ever
+  reaching their own `trigger_changelevel`, with no entity of any kind
+  left on the frontier to blame — consistent with a jump/mobility
+  technique the walk's model could not yet express, and this project's
+  own long-jump module (`item_longjump`,
+  `ohl_physics::movement`'s `long_jump_ready`/the `long_jump_forward_speed`/
+  `long_jump_up_speed` impulse) already existed as exactly that
+  technique, unmodeled by the walk. `ohl_engine::reachability` gained a
+  third edge attempt, tried only when both the plain step and the
+  ordinary jump edge fail: a long-jump edge bounded by
+  `JumpBounds::from_long_jump_config`, deriving both its airtime and its
+  horizontal reach from `MoveConfig::long_jump_forward_speed`/
+  `long_jump_up_speed`/`gravity` alone (unlike the ordinary jump edge,
+  the long jump's impulse sets *both* velocity components directly, so
+  neither bound involves `max_speed`) — read live from the same `Game`
+  the walk runs against, never a restated literal. A cell reached only
+  this way is counted in the new `RoundReport::long_jump_cells`. Gated by
+  `ReachabilityConfig::assume_longjump` (default `false`) the same way
+  `assume_armed` gates the breakable edge: a cold map load owns no items
+  at all, so this is a caller-supplied assumption, never an inventory
+  check. A new regression test
+  (`a_gap_beyond_the_ordinary_jump_is_reached_only_with_assume_longjump`)
+  proves this against the existing `reachability_gap_bsp`/
+  `reachability_gap_entities` fixture family (already parametrized by gap
+  width), widened past the ordinary jump's own reach but within the long
+  jump's.
+- **`c1a2`/`c3a2` re-measured with `--reachability-assume-armed`; `c4a1`/
+  `c4a3` re-measured with `--reachability-assume-longjump`.** All four
+  maps' runs are recorded as aggregates only in this package's own pull
+  request description, per `docs/CLEAN_ROOM.md`'s reviewed-sanitized-report
+  rule; see that PR for the per-map round-by-round result.
 - **Scope.** Neither flag changes what a *script* or a *save* can express:
   `--start-inventory` is a dev-tools load-time convenience over the same
   API a pickup touch already calls, not a new inventory mechanism, and the

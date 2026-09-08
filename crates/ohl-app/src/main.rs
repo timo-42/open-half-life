@@ -351,6 +351,26 @@ number greater than 0 and no more than 8.0."
     #[arg(long, requires = "reachability_report")]
     reachability_assume_armed: bool,
 
+    /// Development only: with `--reachability-report`, adds a third,
+    /// longer-reaching edge attempt (tried only when both the plain step
+    /// and the ordinary running-jump edge fail): a long jump
+    /// (`item_longjump`), bounded by the same live
+    /// `ohl_physics::MoveConfig::long_jump_forward_speed`/
+    /// `long_jump_up_speed`/`gravity` this build's engine already uses for
+    /// the real long-jump impulse, never a restated literal. A cell
+    /// reached only this way is counted separately in the printed report.
+    ///
+    /// This assumes the long jump module is owned; it never checks or
+    /// grants actual ownership (a cold map load owns none — see
+    /// `--start-inventory` for actually giving weapons/ammo, though the
+    /// long jump module itself is not a `weapon_*`/`ammo_*` pickup this
+    /// flag can grant). Without this flag the walk's jump edge stays
+    /// bounded by the ordinary running jump only, which this project's
+    /// own default: a fresh spawn does not own the long jump module.
+    #[cfg(feature = "dev-tools")]
+    #[arg(long, requires = "reachability_report")]
+    reachability_assume_longjump: bool,
+
     /// Development only: gives the player named weapons and ammo right
     /// after the map loads, so a single-map probe or scenario can model
     /// the inventory a real campaign run would have carried in from an
@@ -670,6 +690,8 @@ fn run_game_flow(cli: &Cli) -> ExitCode {
         reachability_report: cli.reachability_report,
         #[cfg(feature = "dev-tools")]
         reachability_assume_armed: cli.reachability_assume_armed,
+        #[cfg(feature = "dev-tools")]
+        reachability_assume_longjump: cli.reachability_assume_longjump,
         #[cfg(feature = "dev-tools")]
         start_inventory: cli.start_inventory.as_deref(),
     }) {
