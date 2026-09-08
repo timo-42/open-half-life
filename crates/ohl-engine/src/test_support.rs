@@ -1042,6 +1042,29 @@ pub fn rotating_door_entities() -> String {
     )
 }
 
+/// [`rotating_door_entities`], with the "Use Only" spawnflag
+/// (`ohl_game::registry::SPAWNFLAG_DOOR_USE_ONLY`, 256) set on the door: a
+/// closed door built this way never opens from the player's own touch
+/// (`ohl_game::logic::Simulation::touch_doors`), only from a `use` press or
+/// another entity's fire chain — see `docs/FORMAT_SOURCES.md` item 30. No
+/// bytes here come from any game installation; see `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn rotating_door_use_only_entities() -> String {
+    format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"150 0 40\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"func_door_rotating\"\n\"targetname\" \"{ROTATING_DOOR_NAME}\"\n\
+         \"model\" \"*1\"\n\"speed\" \"360\"\n\"distance\" \"90\"\n\"wait\" \"-1\"\n\
+         \"spawnflags\" \"{}\"\n\
+         \"origin\" \"{} {} {}\"\n}}\n",
+        ohl_game::registry::SPAWNFLAG_DOOR_USE_ONLY,
+        ROTATING_DOOR_PIVOT[0],
+        ROTATING_DOOR_PIVOT[1],
+        ROTATING_DOOR_PIVOT[2],
+    )
+}
+
 // ---------------------------------------------------------------------
 // A `func_rotating` turntable the player stands on
 // ---------------------------------------------------------------------

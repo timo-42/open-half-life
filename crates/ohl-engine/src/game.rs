@@ -615,14 +615,16 @@ impl Game {
         self.systems.pickup_count()
     }
 
-    /// How many closed doors a `use` press has opened since this level was
-    /// loaded — the whole proximity path (`ohl_game::pose::brush_center`
-    /// placing the door, [`crate::USE_RADIUS`] reaching it, the map logic
-    /// simulation acting on it) having worked end to end. Data, never a
+    /// How many closed doors have been opened since this level was loaded,
+    /// whether by a `use` press (the proximity path —
+    /// `ohl_game::pose::brush_center` placing the door,
+    /// [`crate::USE_RADIUS`] reaching it, the map logic simulation acting
+    /// on it) or by the player's own hull touching one without the "Use
+    /// Only" spawnflag (`docs/FORMAT_SOURCES.md` item 30). Data, never a
     /// log line.
     #[must_use]
-    pub fn doors_opened_by_use_count(&self) -> u64 {
-        self.systems.doors_opened_by_use_count()
+    pub fn doors_opened_count(&self) -> u64 {
+        self.systems.doors_opened_count()
     }
 
     /// How many times damage aimed at the player has actually been applied

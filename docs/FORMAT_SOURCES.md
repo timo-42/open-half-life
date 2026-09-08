@@ -4119,3 +4119,156 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
     decision. `dmg`/blocking is not wired into `Level::movers_blocked` for
     this entity either, the same pre-existing gap items 9, 24 and 27
     already record for every other mover in this crate.
+
+### Touch-activated doors (M9.9)
+
+30. **`func_door`/`func_door_rotating` open from the player's own touch,
+    not only from a `use` press.** Every door-opening path in this crate
+    before this package (`ohl_game::logic::find_usable_within`/
+    `Simulation::use_entity`, driven by `ohl-engine`'s own `use_pressed`
+    handling; a `trigger_once`/`trigger_multiple` gating a door by name)
+    required either a proximity `use` press or a *separate* touch-trigger
+    brush a mapper had to place around the door. Public Half-Life mapping
+    documentation for `func_door` describes an ordinary door as also
+    opening the moment a player walks into it, with no separate trigger
+    needed, unless a specific spawnflag opts out of that. TWHL's own
+    `func_door` page returns HTTP 403 to automated fetches from this
+    environment (the same caveat recorded for every other TWHL citation in
+    this document) and a search-engine summary of it only confirmed the
+    flag's *existence* and bit value, not its literal wording, so the
+    literal cited here instead is the [Sven Co-op wiki: `Func_door`
+    page](https://wiki.svencoop.com/Func_door) (fetched directly, reviewed
+    2026-09-08), which documents the full `func_door` spawnflags list
+    including: "256 : Use Only" — "If set, this door can be triggered by
+    using it but not by touching it anymore. This does not outrule
+    activation by triggering, though." — and states elsewhere that a door
+    triggers "on touch, unless they have a name, in which case they
+    require to be triggered manually" (i.e. `targetname` gating a door
+    behind a trigger chain is a *separate*, pre-existing concern from
+    "Use Only", not something this package changes: see below). This is
+    corroborated by the general-web search-summary results returned for
+    "func_door 'Use Only' 256 half-life FGD", which independently describe
+    bit 256 as "Use only (256) — Player must 'use' to open. Enabling this
+    prevents the entity being triggered any other way" for
+    `func_door_rotating`'s own copy of the same flag (both entities share
+    `Door`'s spawn-time construction in `ohl_game::registry::Registry::
+    build`, so one citation covers both, the same way the existing
+    "Entity keyvalues and map logic" section already shares citations
+    across `func_door`/`func_door_rotating`/`func_plat` keyvalues).
+
+    **This project's own reading of what "does not outrule activation by
+    triggering" means for `targetname` gating, since the existing code
+    was checked and not itself changed here**: before this package,
+    `ohl_game::logic::find_usable_within` and `Simulation::use_entity`
+    already reached a `func_door` regardless of whether it had a
+    `targetname` — nothing in this crate has ever gated a `use` press or a
+    fire-chain activation on a door's own `targetname` being absent, only
+    on the "Use Only" flag now does for touch. Rather than invent a new
+    "named doors don't respond to touch either" rule the cited page does
+    not actually attribute to the flag itself (it attributes it to a
+    door's `targetname`, a separate, pre-existing keyvalue this package
+    does not newly wire up either way), this package keeps that behaviour
+    uniform: a door's `targetname` remains just an additional way to reach
+    it by name, never a gate on `use` or touch. This is recorded here as
+    project behaviour, not claimed from the cited wording, per this
+    project's clean-room policy against stating semantics from memory.
+
+    **Project behaviour.** A new marker component,
+    `ohl_game::registry::DoorUseOnly`, is attached at `Registry::build`
+    time to a `func_door`/`func_door_rotating` whose `spawnflags` carries
+    the new `SPAWNFLAG_DOOR_USE_ONLY` (256) bit — a plain marker rather
+    than a `bool` field added to `Door` itself, since `Door` is reached
+    transitively by the save file's *required* entity-registry section
+    (`ohl_engine::transition::EntitySnapshot::door`), whose wire shape is
+    frozen (item 28, "New persisted state gets a new optional tag ...
+    never a new field on an existing tag's type or on any type it reaches
+    transitively"); `DoorUseOnly`, like `RotatingDoorSwing` before it, is
+    fixed at spawn from the map's own `spawnflags` keyvalue and is never
+    referenced by the save/transition path at all, so it needs no tag of
+    its own. A new `ohl_game::logic::Simulation::touch_doors` method —
+    mirroring `Simulation::touch_rot_buttons`'s PR #111 touch-edge
+    pattern exactly — visits every `Door` without `DoorUseOnly`, tests its
+    placed `BrushBounds` against the player's own hull box the same
+    brush-vs-brush way `touch_triggers`/`touch_rot_buttons` already do,
+    and calls the same `Simulation::activate` a `use` press or another
+    entity's fire chain already goes through on a closed-to-open rising
+    edge — so a `func_door_rotating` opened this way still swings *away*
+    from the player (item 26/PR #110's rule), since `activate`'s own
+    activator-relative swing decision falls back to
+    `Simulation::activator_origin` (refreshed every tick from the player's
+    position) exactly as `touch_rot_buttons` already relies on for a
+    `func_rot_button`'s own touch path. `ohl-engine`'s `Systems::
+    triggers_and_movers` (phase 12) calls it with the same standing-hull
+    box `touch_triggers` already builds, right before that call, so both
+    share the `TODO(black-box)` this document's "Collision hulls and
+    player movement"/`touch_triggers` entries already record: the crouched
+    hull is not threaded through yet.
+
+    **`DOOR_TOUCH_MARGIN` (4 units), a bounded project choice, not a cited
+    value.** An un-inflated overlap test against the same closed door's own
+    solid brush that `ohl_physics` collision already stops the player's
+    hull at never actually fires: `ohl_physics::hull::DIST_EPSILON` (1/32
+    of a unit)
+    backs a resolved position off the contact plane by design, so a player
+    walked flush up against a closed door's own solid brush sits a hair's
+    width short of the box `touch_doors` tests, never inside it. No public
+    source states that a real client's door-touch check uses any slop at
+    all (or, if it does, how much) — plausibly the original engine's own
+    `MOVETYPE_TOUCH` server-side check is not the same bounding-box test
+    this project's collision-and-touch split reimplements at all. This
+    project inflates the door's own `BrushBounds` by a fixed, bounded 4
+    units in every direction before the overlap test — comfortably larger
+    than the epsilon above, small next to a standing hull's own 32-unit
+    footprint — so a player stopped flush against a closed door is
+    reliably read as touching it, matching the real, observable Half-Life
+    behaviour that bumping into a closed door opens it. Recorded here as
+    project behaviour, per this project's clean-room policy against
+    guessing an uncited numeric constant silently.
+
+    **Tests.** `crates/ohl-game/src/logic.rs` adds `touch_opens_a_plain_door`
+    (a closed `func_door`'s brush overlapping the player's hull opens it,
+    with no `use_only` marker and no separate trigger) and
+    `touch_does_nothing_for_a_use_only_door` (the same overlap against a
+    `SPAWNFLAG_DOOR_USE_ONLY` door leaves it closed, while a direct
+    `use_entity` call on the same door still opens it).
+    `crates/ohl-game/src/registry.rs` adds
+    `use_only_spawnflag_attaches_door_use_only_marker` and its
+    `_on_rotating_door` counterpart, proving the marker is attached only
+    when the flag is set, for both classnames.
+    `crates/ohl-engine/tests/rotating_door.rs`'s pre-existing
+    `a_closed_rotating_door_blocks_the_corridor` assumed a closed door
+    with no interaction at all blocks a corridor forever — an assumption
+    this package's own fix makes false for a plain door, since the
+    player's forward walk now touches and opens it once collision stops
+    them flush against it. That test is renamed
+    `a_use_only_rotating_door_blocks_the_corridor_forever` and rebuilt on
+    a new `ohl_engine::test_support::rotating_door_use_only_entities`
+    fixture (the same corridor, with `SPAWNFLAG_DOOR_USE_ONLY` set), which
+    keeps proving a genuinely proximity-inert door blocks forever. A new
+    `a_closed_door_opens_when_the_player_walks_into_it` test takes over
+    the original fixture (no "Use Only" flag), walks the same 600 ticks
+    with no `use` press at all, and asserts the door opened, the player
+    walked through it, and `Game::doors_opened_count` (renamed from
+    `doors_opened_by_use_count`, since it now counts either opening path —
+    every call site updated, `crates/ohl-app/src/script_log.rs`'s "The
+    player opened a door." milestone line included) read `1`.
+
+    **`combat-smoke` scenario impact, checked against the real payload
+    (`cargo xtask combat-smoke`).** See `docs/MILESTONES.md`'s M9.9 entry
+    for which of the pre-existing chapter-walk scenarios' "The player
+    opened a door." expectation moved from absent to present because that
+    scenario's own scripted walk happens to touch a real closed door along
+    its path, now that touching one is sufficient — no scenario's *map* or
+    *script* changed, only which fixed line(s) its assertion set expects.
+
+    **`TODO(black-box)`**: whether a monster (as opposed to the player)
+    can open a touch-eligible door by walking into it is not implemented
+    or tested by this package — `touch_doors` is called only with the
+    player's own hull box, the same scope `touch_triggers`/
+    `touch_rot_buttons` already have; and whether the real engine's touch
+    check re-triggers on every tick a mover keeps overlapping an
+    already-open door (as opposed to only on the closed-to-open rising
+    edge this project chose) is not stated by either cited source and is
+    likewise this project's own bounded reading, consistent with
+    `touch_rot_buttons`'/`touch_changelevel_triggers`'s existing
+    edge-triggered choices elsewhere in this file.

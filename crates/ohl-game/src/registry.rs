@@ -231,6 +231,22 @@ impl RotatingDoorSwing {
     }
 }
 
+/// Marks a `func_door`/`func_door_rotating` whose "Use Only" spawnflag
+/// ([`SPAWNFLAG_DOOR_USE_ONLY`]) is set: fixed at spawn from the map's own
+/// `spawnflags` keyvalue, exactly like [`RotatingDoorSwing`] above (see its
+/// own doc comment), so it never needs to be saved — `ohl-engine` rebuilds
+/// it identically from the map every load. A plain marker rather than a
+/// `bool` field on [`Door`] itself: `Door` is reached transitively by the
+/// save-file's *required* entity-registry section
+/// (`ohl_engine::transition::EntitySnapshot::door`), whose wire shape is
+/// frozen (`docs/FORMAT_SOURCES.md` item 28, "New persisted state gets a
+/// new optional tag ... never a new field on an existing tag's type or on
+/// any type it reaches transitively"); a component the save path never
+/// looks at carries this instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct DoorUseOnly;
+
 /// `func_button`: `speed`, `wait`, `health`, `delay` and a `sounds` index.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -953,6 +969,18 @@ pub const SPAWNFLAG_DOOR_ROTATING_Y_AXIS: u32 = 128;
 /// closed.
 pub const SPAWNFLAG_DOOR_ROTATING_STARTS_OPEN: u32 = 1;
 
+/// `func_door`/`func_door_rotating`'s "Use Only" spawnflag: the Sven
+/// Co-op wiki's `Func_door` page (`https://wiki.svencoop.com/Func_door`,
+/// fetched directly; see `docs/FORMAT_SOURCES.md` item 30) documents it as
+/// "If set, this door can be triggered by using it but not by touching it
+/// anymore. This does not outrule activation by triggering, though." — a
+/// player's `use` press ([`crate::logic::find_usable_within`]/
+/// `Simulation::use_entity`) and another entity's fire chain
+/// (`Simulation::activate_trigger`/fan-out) still reach a door with this
+/// flag set; only [`crate::logic::Simulation::touch_doors`]'s own touch
+/// path excludes it. Carried on [`DoorUseOnly`].
+pub const SPAWNFLAG_DOOR_USE_ONLY: u32 = 256;
+
 /// `func_rotating`'s "Start On" spawnflag: the brush is already spinning at
 /// map spawn. TWHL wiki `func_rotating` (`docs/FORMAT_SOURCES.md`, "Entity
 /// keyvalues and map logic"; same search-summary/403 caveat).
@@ -1252,6 +1280,9 @@ impl Registry {
                         timer: 0.0,
                     };
                     world.insert_one(entity, door).ok();
+                    if def.spawnflags & SPAWNFLAG_DOOR_USE_ONLY != 0 {
+                        world.insert_one(entity, DoorUseOnly).ok();
+                    }
                 }
                 // `func_door_rotating`: TWHL wiki `func_door_rotating`
                 // (`docs/FORMAT_SOURCES.md`, "Entity keyvalues and map
@@ -1308,6 +1339,9 @@ impl Registry {
                         timer,
                     };
                     world.insert_one(entity, door).ok();
+                    if flags & SPAWNFLAG_DOOR_USE_ONLY != 0 {
+                        world.insert_one(entity, DoorUseOnly).ok();
+                    }
                     world
                         .insert_one(
                             entity,
@@ -1787,6 +1821,41 @@ mod tests {
         assert!((door.wait - 2.0).abs() < f32::EPSILON);
         assert!((door.lip - 8.0).abs() < f32::EPSILON);
         assert!((door.movedir - Vec3::new(0.0, 1.0, 0.0)).length() < 1e-4);
+    }
+
+    /// `func_door`'s "Use Only" spawnflag (256; `SPAWNFLAG_DOOR_USE_ONLY`)
+    /// attaches [`DoorUseOnly`]; leaving it unset does not.
+    #[test]
+    fn use_only_spawnflag_attaches_door_use_only_marker() {
+        let entities = vec![
+            raw(&[
+                ("classname", "func_door"),
+                ("targetname", "door1"),
+                ("spawnflags", &SPAWNFLAG_DOOR_USE_ONLY.to_string()),
+            ]),
+            raw(&[("classname", "func_door"), ("targetname", "door2")]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let use_only = registry.find("door1")[0];
+        let plain = registry.find("door2")[0];
+        assert!(registry.world.get::<&DoorUseOnly>(use_only).is_ok());
+        assert!(registry.world.get::<&DoorUseOnly>(plain).is_err());
+    }
+
+    /// The same spawnflag, read off `func_door_rotating` instead.
+    #[test]
+    fn use_only_spawnflag_attaches_door_use_only_marker_on_rotating_door() {
+        let entities = vec![raw(&[
+            ("classname", "func_door_rotating"),
+            ("targetname", "door1"),
+            ("model", "*1"),
+            ("spawnflags", &SPAWNFLAG_DOOR_USE_ONLY.to_string()),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let entity = registry.find("door1")[0];
+        assert!(registry.world.get::<&DoorUseOnly>(entity).is_ok());
     }
 
     /// A brush entity built around an "origin brush" has its geometry

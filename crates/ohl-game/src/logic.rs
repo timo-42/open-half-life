@@ -12,7 +12,7 @@ use glam::Vec3;
 use hecs::Entity;
 
 use crate::registry::{
-    AutoTrigger, BrushBounds, Button, ChangeLevel, Door, Message, MomentaryDoor,
+    AutoTrigger, BrushBounds, Button, ChangeLevel, Door, DoorUseOnly, Message, MomentaryDoor,
     MomentaryRotButton, MoverState, MultiManager, Pendulum, Platform, Registry, RotButton,
     RotatingDoorSwing, Rotator, Target, Transform, Trigger, TriggerHurt,
 };
@@ -118,6 +118,22 @@ const MAX_EVENTS_PER_TICK: usize = 4096;
 
 /// The largest number of scheduled events kept at once.
 const MAX_PENDING_EVENTS: usize = 4096;
+
+/// How far a closed door's own placed [`BrushBounds`] are inflated in every
+/// direction before [`Simulation::touch_doors`] tests them against the
+/// player's hull box. A player who has walked forward into a closed door's
+/// solid brush is stopped by ordinary collision *before* the two boxes
+/// exactly touch — `ohl_physics::hull::DIST_EPSILON` (1/32 of a unit)
+/// backs the resolved position off the contact plane by design — so an
+/// un-inflated overlap test would never see a rising edge for a player
+/// standing flush against a door they just walked into. No public source
+/// states this slop's exact size (or that a real client-side "touch" check
+/// uses one at all, as opposed to whatever server-side proximity a
+/// `MOVETYPE_TOUCH` walk in the original engine used); this project's own
+/// bounded choice, comfortably larger than that epsilon while still small
+/// next to a standing hull's own footprint, recorded here as project
+/// behaviour (`docs/FORMAT_SOURCES.md`, item 30).
+const DOOR_TOUCH_MARGIN: f32 = 4.0;
 
 /// A scheduled "fire this target" event, counting down `delay` seconds.
 #[derive(Debug, Clone)]
@@ -226,6 +242,16 @@ pub struct Simulation {
     /// [`TriggerState::changelevel_touching`], kept in its own map since a
     /// `RotButton` is not a [`Trigger`].
     rot_button_touch: std::collections::BTreeMap<Entity, bool>,
+    /// Per-`func_door`/`func_door_rotating` last-observed touch state, for
+    /// [`Self::touch_doors`]'s own edge trigger — the same shape as
+    /// [`Self::rot_button_touch`], kept in its own map for the same
+    /// reason: a [`Door`] is not a [`Trigger`] either. Not part of
+    /// [`SimulationState`]: like [`Self::rot_button_touch`], a stale
+    /// `true` surviving a save/load only ever suppresses one spurious
+    /// re-open on the load's first tick if the player happens to still be
+    /// standing in the same door's touch volume, never opens one that
+    /// should stay shut.
+    door_touch: std::collections::BTreeMap<Entity, bool>,
     /// Whether [`Self::fire_player_spawn`] has already run. Not carried in
     /// [`SimulationState`]: matches this project's existing convention for
     /// `trigger_auto`'s own one-shot `fired` flag (an ECS component field,
@@ -1033,6 +1059,80 @@ impl Simulation {
                 self.activate(registry, entity, None, &mut Vec::new());
             }
         }
+    }
+
+    /// Opens every `func_door`/`func_door_rotating` without the documented
+    /// "Use Only" spawnflag ([`DoorUseOnly`]; TWHL mapping documentation
+    /// for public GoldSrc doors, corroborated by the Sven Co-op wiki's
+    /// `Func_door` page, describes an ordinary door as opening both when
+    /// `use`d and when touched, unless "Use Only" is set — see
+    /// `docs/FORMAT_SOURCES.md`, item 30) whose brush volume, inflated by
+    /// [`DOOR_TOUCH_MARGIN`], overlaps `[player_mins, player_maxs]` —
+    /// mirroring [`Self::touch_triggers`]/[`Self::touch_rot_buttons`]'s own
+    /// brush-vs-brush overlap test, not a single point. Edge-triggered the
+    /// same way [`Self::touch_rot_buttons`] is (PR #111's pattern), so a
+    /// player standing in a door's own reach across many fixed steps only
+    /// opens it once per approach.
+    ///
+    /// `activate` is called with `activator = None`, exactly like
+    /// [`Self::touch_rot_buttons`] above: [`Self::rotating_door_open_axis`]
+    /// falls back to [`Self::activator_origin`] (refreshed every tick from
+    /// the player's own position by the host) when no activator [`Entity`]
+    /// is given, so a `func_door_rotating` opened this way still swings
+    /// *away* from the player, the same rule item 26/PR #110 gives a
+    /// `use`-opened one.
+    ///
+    /// A door already `Open`/`Opening`/`Closing` is still visited (so its
+    /// touch state stays current for the next `Closed` edge), but
+    /// [`Self::activate`]'s own `Door` arm only actually starts a move from
+    /// `Closed`, exactly as it already does for a proximity `use` press —
+    /// this method adds a *second way in* to the same state machine, not a
+    /// second one.
+    ///
+    /// Returns how many doors this call actually started opening (a rising
+    /// touch edge landing on a door still `Closed`), the same "did the
+    /// state machine actually move" count [`Self::activate`]'s callers
+    /// already compute by hand for a `use` press — mirrored here since a
+    /// touch edge on a door that is already open, or one still animating,
+    /// reaches [`Self::activate`] too but is a no-op there.
+    pub fn touch_doors(
+        &mut self,
+        registry: &mut Registry,
+        player_mins: Vec3,
+        player_maxs: Vec3,
+    ) -> usize {
+        let mut candidates: Vec<(Entity, bool, bool)> = registry
+            .world
+            .query::<(Entity, &Door, &BrushBounds)>()
+            .without::<&DoorUseOnly>()
+            .iter()
+            .map(|(entity, door, bounds)| {
+                (
+                    entity,
+                    aabb_overlaps(
+                        player_mins,
+                        player_maxs,
+                        bounds.mins - Vec3::splat(DOOR_TOUCH_MARGIN),
+                        bounds.maxs + Vec3::splat(DOOR_TOUCH_MARGIN),
+                    ),
+                    door.state == MoverState::Closed,
+                )
+            })
+            .collect();
+        candidates.sort_unstable_by_key(|(entity, _, _)| entity.id());
+        let mut opened = 0;
+        for (entity, overlapping, was_closed) in candidates {
+            let state = self.door_touch.entry(entity).or_default();
+            let rising_edge = overlapping && !*state;
+            *state = overlapping;
+            if rising_edge {
+                self.activate(registry, entity, None, &mut Vec::new());
+                if was_closed {
+                    opened += 1;
+                }
+            }
+        }
+        opened
     }
 
     /// Drives the `momentary_rot_button` currently found by proximity while
@@ -2291,6 +2391,97 @@ mod tests {
         let found = find_usable_within(&registry, Vec3::new(5.0, 5.0, 5.0), 64.0);
         assert_eq!(found, Some(registry.find("near_door")[0]));
         assert!(find_usable_within(&registry, Vec3::new(500.0, 5.0, 5.0), 10.0).is_none());
+    }
+
+    /// A plain `func_door` (no "Use Only" spawnflag) opens the moment the
+    /// player's own hull box overlaps its brush — no `use` press, no
+    /// separate `trigger_*` volume — the gap this milestone closes.
+    #[test]
+    fn touch_opens_a_plain_door() {
+        let entities = vec![raw(&[
+            ("classname", "func_door"),
+            ("targetname", "door1"),
+            ("model", "*1"),
+            ("speed", "100"),
+            ("wait", "-1"),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut bounds = BTreeMap::new();
+        bounds.insert(1u32, ([100.0, -32.0, 0.0], [116.0, 32.0, 72.0]));
+        let mut registry = Registry::build(&defs, &bounds, &Limits::default());
+        let mut sim = Simulation::new();
+        let door = registry.find("door1")[0];
+
+        // Short of the door: no overlap even with the touch margin, so it
+        // stays closed.
+        sim.touch_doors(
+            &mut registry,
+            Vec3::new(-16.0, -16.0, -36.0),
+            Vec3::new(16.0, 16.0, 36.0),
+        );
+        assert_eq!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Closed
+        );
+
+        // Walking forward, the player's own hull now overlaps the door's
+        // brush.
+        let opened = sim.touch_doors(
+            &mut registry,
+            Vec3::new(84.0, -16.0, -36.0),
+            Vec3::new(116.0, 16.0, 36.0),
+        );
+        assert_eq!(opened, 1);
+        assert_eq!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Opening
+        );
+    }
+
+    /// A `func_door` with the "Use Only" spawnflag set (256;
+    /// `SPAWNFLAG_DOOR_USE_ONLY`) never opens from
+    /// [`Simulation::touch_doors`], even standing squarely inside its
+    /// brush — only `use` (proved in the same test) reaches it.
+    #[test]
+    fn touch_does_nothing_for_a_use_only_door() {
+        let entities = vec![raw(&[
+            ("classname", "func_door"),
+            ("targetname", "door1"),
+            ("model", "*1"),
+            ("speed", "100"),
+            ("wait", "-1"),
+            (
+                "spawnflags",
+                &crate::registry::SPAWNFLAG_DOOR_USE_ONLY.to_string(),
+            ),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut bounds = BTreeMap::new();
+        bounds.insert(1u32, ([100.0, -32.0, 0.0], [116.0, 32.0, 72.0]));
+        let mut registry = Registry::build(&defs, &bounds, &Limits::default());
+        let mut sim = Simulation::new();
+        let door = registry.find("door1")[0];
+
+        let opened = sim.touch_doors(
+            &mut registry,
+            Vec3::new(100.0, -16.0, -36.0),
+            Vec3::new(116.0, 16.0, 36.0),
+        );
+        assert_eq!(opened, 0);
+        assert_eq!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Closed,
+            "a Use Only door must not open from touch"
+        );
+
+        // `use` still reaches it.
+        let mut events = Vec::new();
+        sim.use_entity(&mut registry, door, None, &mut events);
+        assert_eq!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Opening,
+            "a Use Only door must still open from a use press"
+        );
     }
 
     /// Reproduces the training-map fixture: a closed `func_door` gated by an

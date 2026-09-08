@@ -59,10 +59,12 @@
 //!   read `true` for the same threshold; likewise true for either a
 //!   world-compiled liquid volume or a real `func_water` entity.
 //! - "The player opened a door." —
-//!   [`ohl_engine::Game::doors_opened_by_use_count`] increasing: a `use`
+//!   [`ohl_engine::Game::doors_opened_count`] increasing: either a `use`
 //!   press found a closed door within `ohl_engine::USE_RADIUS` of the
-//!   player and opened it. A fixed string: no door, map or `targetname` is
-//!   ever interpolated. This is the end-to-end evidence that a brush
+//!   player and opened it, or the player's own hull touched a closed door
+//!   without the "Use Only" spawnflag (`docs/FORMAT_SOURCES.md` item 30).
+//!   A fixed string: no door, map or `targetname` is ever interpolated.
+//!   The `use`-press half of this is the end-to-end evidence that a brush
 //!   entity's `use`-proximity point agrees with where its geometry is
 //!   actually placed (`ohl_game::pose::brush_center`), which for an entity
 //!   built around an origin brush — a rotating door, say — it previously
@@ -172,7 +174,7 @@ impl ScriptLog {
             baseline_deaths: game.monster_death_count(),
             baseline_pickups: game.pickup_count(),
             baseline_player_damage: game.player_damage_event_count(),
-            baseline_doors_opened: game.doors_opened_by_use_count(),
+            baseline_doors_opened: game.doors_opened_count(),
             spawn_position: game.eye_position(),
             in_solid_seconds: 0.0,
             riding_mover_seconds: 0.0,
@@ -217,7 +219,7 @@ impl ScriptLog {
             self.player_damaged = true;
             tracing::info!("The player took damage.");
         }
-        if !self.door_opened && game.doors_opened_by_use_count() > self.baseline_doors_opened {
+        if !self.door_opened && game.doors_opened_count() > self.baseline_doors_opened {
             self.door_opened = true;
             tracing::info!("The player opened a door.");
         }

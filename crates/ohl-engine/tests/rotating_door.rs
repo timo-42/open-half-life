@@ -27,11 +27,21 @@
 //! was `docs/FORMAT_SOURCES.md`'s `TODO(black-box)` item 25, and this test
 //! is its regression guard.
 //!
+//! `a_closed_door_opens_when_the_player_walks_into_it` covers the other way
+//! in: a plain door (no "Use Only" spawnflag) opening from the player's
+//! own hull touching its closed brush while walking, with no `use` press
+//! at all (`ohl_game::logic::Simulation::touch_doors`,
+//! `docs/FORMAT_SOURCES.md` item 30).
+//! `a_use_only_rotating_door_blocks_the_corridor_forever` is that
+//! feature's negative: the same walk against a door built with the flag
+//! set never opens it.
+//!
 //! No bytes here come from any game installation; see `docs/CLEAN_ROOM.md`.
 
 use ohl_engine::test_support::{
     ROTATING_DOOR_MAP, ROTATING_DOOR_MAXS, ROTATING_DOOR_MINS, ROTATING_DOOR_NAME,
     rotating_door_bsp, rotating_door_entities, rotating_door_trigger_entities,
+    rotating_door_use_only_entities,
 };
 use ohl_engine::{AssetSource, Game, Input, MemoryAssets};
 use ohl_game::registry::{Door, MoverState};
@@ -64,12 +74,19 @@ fn door_state(game: &Game) -> MoverState {
         .state
 }
 
-/// A door with no rotation at all (never `use`d) fully blocks the corridor:
-/// walking forward for far longer than it would take to reach it leaves the
-/// player short of its closed leaf, not through it.
+/// A door with the "Use Only" spawnflag set fully blocks the corridor
+/// forever: walking forward for far longer than it would take to reach it
+/// leaves the player short of its closed leaf, not through it, since
+/// nothing in this scenario presses `use` and the flag excludes it from
+/// [`ohl_game::logic::Simulation::touch_doors`]'s own touch path
+/// (`docs/FORMAT_SOURCES.md` item 30).
 #[test]
-fn a_closed_rotating_door_blocks_the_corridor() {
-    let mut game = game();
+fn a_use_only_rotating_door_blocks_the_corridor_forever() {
+    let bytes = rotating_door_bsp(&rotating_door_use_only_entities());
+    let mut assets = MemoryAssets::new();
+    assets.insert(&format!("maps/{ROTATING_DOOR_MAP}.bsp"), bytes);
+    let mut game =
+        Game::load(&assets as &dyn AssetSource, ROTATING_DOOR_MAP).expect("the fixture loads");
     assert_eq!(door_state(&game), MoverState::Closed);
 
     let forward = Input {
@@ -81,8 +98,49 @@ fn a_closed_rotating_door_blocks_the_corridor() {
     let x = game.eye_position()[0];
     assert!(
         x < ROTATING_DOOR_MINS[0],
-        "the closed door did not stop the player: eye x = {x}, door starts at x = {}",
+        "the closed Use Only door did not stop the player: eye x = {x}, door starts at x = {}",
         ROTATING_DOOR_MINS[0]
+    );
+    assert_eq!(
+        door_state(&game),
+        MoverState::Closed,
+        "a Use Only door must not open from the player walking into it"
+    );
+}
+
+/// A plain door (no "Use Only" spawnflag, no `use` press, no separate
+/// `trigger_*` volume) opens the moment the player's own hull, walking
+/// forward down the corridor, touches its closed brush — the gap this
+/// milestone closes — and the same forward walk that would otherwise be
+/// blocked then carries the player through the doorway and past it, the
+/// real-`use_pressed`-free counterpart of
+/// [`an_open_door_lets_the_player_walk_through`].
+#[test]
+fn a_closed_door_opens_when_the_player_walks_into_it() {
+    let mut game = game();
+    assert_eq!(door_state(&game), MoverState::Closed);
+
+    let forward = Input {
+        forward: 1,
+        ..Input::default()
+    };
+    tick_n(&mut game, 600, &forward);
+
+    assert_ne!(
+        door_state(&game),
+        MoverState::Closed,
+        "walking into the door's own brush never opened it"
+    );
+    let x = game.eye_position()[0];
+    assert!(
+        x > ROTATING_DOOR_MAXS[0],
+        "the touch-opened door still blocked the player: eye x = {x}, door ends at x = {}",
+        ROTATING_DOOR_MAXS[0]
+    );
+    assert_eq!(
+        game.doors_opened_count(),
+        1,
+        "the touch open should be counted the same way a use-press open is"
     );
 }
 
@@ -132,18 +190,18 @@ fn an_open_door_lets_the_player_walk_through() {
 #[test]
 fn a_use_press_that_opens_a_door_is_counted() {
     let mut game = game();
-    assert_eq!(game.doors_opened_by_use_count(), 0);
+    assert_eq!(game.doors_opened_count(), 0);
 
     let use_press = Input {
         use_pressed: true,
         ..Input::default()
     };
     game.tick(STEP, &use_press);
-    assert_eq!(game.doors_opened_by_use_count(), 1);
+    assert_eq!(game.doors_opened_count(), 1);
 
     // A second press on an already-open door is not a second opening.
     game.tick(STEP, &use_press);
-    assert_eq!(game.doors_opened_by_use_count(), 1);
+    assert_eq!(game.doors_opened_count(), 1);
 }
 
 /// A rotating door opened by the player swings *away* from them.
