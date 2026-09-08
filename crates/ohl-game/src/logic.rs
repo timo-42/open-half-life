@@ -12,9 +12,9 @@ use glam::Vec3;
 use hecs::Entity;
 
 use crate::registry::{
-    AutoTrigger, BrushBounds, Button, ChangeLevel, Door, DoorUseOnly, Message, MomentaryDoor,
-    MomentaryRotButton, MoverState, MultiManager, Pendulum, Platform, Registry, RotButton,
-    RotatingDoorSwing, Rotator, Target, Transform, Trigger, TriggerHurt,
+    AutoTrigger, BrushBounds, Button, ChangeLevel, Door, DoorPassable, DoorUseOnly, Message,
+    MomentaryDoor, MomentaryRotButton, MoverState, MultiManager, Pendulum, Platform, Registry,
+    RotButton, RotatingDoorSwing, Rotator, Target, TargetName, Transform, Trigger, TriggerHurt,
 };
 use crate::track_train::TrackTrainState;
 
@@ -133,6 +133,21 @@ const MAX_PENDING_EVENTS: usize = 4096;
 /// bounded choice, comfortably larger than that epsilon while still small
 /// next to a standing hull's own footprint, recorded here as project
 /// behaviour (`docs/FORMAT_SOURCES.md`, item 30).
+///
+/// **Measured thin-wall boundary** (a synthetic probe, not a payload
+/// scan): a door placed directly behind a plain wall, with the player
+/// stopped flush against the wall's own near face (backed off by
+/// `DIST_EPSILON`, the same as against a door directly), opens through
+/// the wall at `wall_thickness = 3` but not at `wall_thickness = 4` or
+/// thicker. At exactly this margin's own value the miss is decided by
+/// `DIST_EPSILON` alone (`aabb_overlaps` counts an exact face touch as
+/// overlapping, so a wall exactly `DOOR_TOUCH_MARGIN` units thick, with no
+/// epsilon gap at all, would still false-positive) — defensible only
+/// because real map geometry does not build door frames into walls
+/// thinner than this margin. Raising `DOOR_TOUCH_MARGIN` narrows how thin
+/// a wall has to be to trigger this false positive; lowering it risks
+/// missing a legitimate flush-contact touch again, the failure this
+/// margin exists to prevent in the first place.
 const DOOR_TOUCH_MARGIN: f32 = 4.0;
 
 /// A scheduled "fire this target" event, counting down `delay` seconds.
@@ -1061,18 +1076,33 @@ impl Simulation {
         }
     }
 
-    /// Opens every `func_door`/`func_door_rotating` without the documented
-    /// "Use Only" spawnflag ([`DoorUseOnly`]; TWHL mapping documentation
-    /// for public GoldSrc doors, corroborated by the Sven Co-op wiki's
-    /// `Func_door` page, describes an ordinary door as opening both when
-    /// `use`d and when touched, unless "Use Only" is set — see
-    /// `docs/FORMAT_SOURCES.md`, item 30) whose brush volume, inflated by
-    /// [`DOOR_TOUCH_MARGIN`], overlaps `[player_mins, player_maxs]` —
-    /// mirroring [`Self::touch_triggers`]/[`Self::touch_rot_buttons`]'s own
+    /// Opens every eligible `func_door`/`func_door_rotating` whose brush
+    /// volume, inflated by [`DOOR_TOUCH_MARGIN`], overlaps
+    /// `[player_mins, player_maxs]` — mirroring
+    /// [`Self::touch_triggers`]/[`Self::touch_rot_buttons`]'s own
     /// brush-vs-brush overlap test, not a single point. Edge-triggered the
     /// same way [`Self::touch_rot_buttons`] is (PR #111's pattern), so a
     /// player standing in a door's own reach across many fixed steps only
     /// opens it once per approach.
+    ///
+    /// The Sven Co-op wiki's `Func_door` page (`docs/FORMAT_SOURCES.md`,
+    /// item 30) states the touch rule as one sentence: "Func_doors are
+    /// triggered on touch, unless they have a name, in which's case they
+    /// require to be triggered manually." A door is excluded from this
+    /// method — but still reachable by a `use` press
+    /// ([`crate::logic::find_usable_within`]/`Self::use_entity`) or by
+    /// another entity's fire chain (`Self::activate_trigger`/fan-out) —
+    /// when either half of that sentence applies: it carries a
+    /// [`TargetName`] (the "unless they have a name" clause; a named door
+    /// is presumed gated behind whatever fires that name, which touch must
+    /// not bypass), or it has the "Use Only" spawnflag ([`DoorUseOnly`]).
+    /// A door with the "Passable" spawnflag ([`DoorPassable`]) is also
+    /// excluded: the same page documents it as entirely non-solid *and*
+    /// "cannot be triggered on-touch anymore then" — without this
+    /// exclusion, a passable door's own bounds would still register a
+    /// touch overlap (nothing stops the player's hull from passing through
+    /// them) even though the door has no collision to walk flush against
+    /// in the first place, unlike every other door this method opens.
     ///
     /// `activate` is called with `activator = None`, exactly like
     /// [`Self::touch_rot_buttons`] above: [`Self::rotating_door_open_axis`]
@@ -1095,6 +1125,23 @@ impl Simulation {
     /// already compute by hand for a `use` press — mirrored here since a
     /// touch edge on a door that is already open, or one still animating,
     /// reaches [`Self::activate`] too but is a no-op there.
+    ///
+    /// `TODO(black-box)`: whether a monster (as opposed to the player) can
+    /// open an eligible door by walking into it is not implemented — this
+    /// method is called only with the player's own hull box, the same
+    /// scope [`Self::touch_triggers`]/[`Self::touch_rot_buttons`] already
+    /// have. A door with a nonzero `wait` that auto-closes while the
+    /// player never leaves its touch volume also does not re-open: the
+    /// touch-edge state stays high across the whole
+    /// `Opening -> Open -> Closing -> Closed` cycle, so the closed-to-open
+    /// edge this method looks for never re-fires, and the player is left
+    /// standing against a closed door until they step out of its touch
+    /// volume and back in. No public source states whether a real
+    /// touch-triggered door re-opens under a standing player instead (the
+    /// real engine reverses a *blocked* door, a different case from one
+    /// that finished closing cleanly underneath a stationary player); this
+    /// project's edge-triggered choice leaves that case unhandled rather
+    /// than guessing at unpublished behaviour.
     pub fn touch_doors(
         &mut self,
         registry: &mut Registry,
@@ -1105,6 +1152,8 @@ impl Simulation {
             .world
             .query::<(Entity, &Door, &BrushBounds)>()
             .without::<&DoorUseOnly>()
+            .without::<&DoorPassable>()
+            .without::<&TargetName>()
             .iter()
             .map(|(entity, door, bounds)| {
                 (
@@ -2393,14 +2442,32 @@ mod tests {
         assert!(find_usable_within(&registry, Vec3::new(500.0, 5.0, 5.0), 10.0).is_none());
     }
 
-    /// A plain `func_door` (no "Use Only" spawnflag) opens the moment the
-    /// player's own hull box overlaps its brush — no `use` press, no
-    /// separate `trigger_*` volume — the gap this milestone closes.
+    /// The entity carrying the fixture's only `Door` component — used
+    /// throughout the `touch_doors` tests below in place of
+    /// `Registry::find`, since an *unnamed* door (the case this method
+    /// actually opens — see [`Simulation::touch_doors`]'s own doc comment
+    /// for the cited "unless they have a name" clause) has no `targetname`
+    /// to look it up by.
+    fn only_door(registry: &Registry) -> Entity {
+        registry
+            .world
+            .query::<(Entity, &Door)>()
+            .iter()
+            .next()
+            .expect("the fixture declares exactly one door")
+            .0
+    }
+
+    /// A plain, *unnamed* `func_door` (no "Use Only"/"Passable" spawnflag,
+    /// no `targetname`) opens the moment the player's own hull box
+    /// overlaps its brush — no `use` press, no separate `trigger_*` volume
+    /// — the gap this milestone closes. The Sven Co-op wiki's `Func_door`
+    /// page cites this as the unnamed half of its touch rule (see
+    /// `Simulation::touch_doors`'s own doc comment).
     #[test]
-    fn touch_opens_a_plain_door() {
+    fn touch_opens_a_plain_unnamed_door() {
         let entities = vec![raw(&[
             ("classname", "func_door"),
-            ("targetname", "door1"),
             ("model", "*1"),
             ("speed", "100"),
             ("wait", "-1"),
@@ -2410,7 +2477,7 @@ mod tests {
         bounds.insert(1u32, ([100.0, -32.0, 0.0], [116.0, 32.0, 72.0]));
         let mut registry = Registry::build(&defs, &bounds, &Limits::default());
         let mut sim = Simulation::new();
-        let door = registry.find("door1")[0];
+        let door = only_door(&registry);
 
         // Short of the door: no overlap even with the touch margin, so it
         // stays closed.
@@ -2438,15 +2505,60 @@ mod tests {
         );
     }
 
-    /// A `func_door` with the "Use Only" spawnflag set (256;
-    /// `SPAWNFLAG_DOOR_USE_ONLY`) never opens from
+    /// A `func_door` with a `targetname` never opens from
     /// [`Simulation::touch_doors`], even standing squarely inside its
-    /// brush — only `use` (proved in the same test) reaches it.
+    /// brush and carrying neither "Use Only" nor "Passable" — the "unless
+    /// they have a name, in which's case they require to be triggered
+    /// manually" half of the cited touch rule. A direct `Simulation::
+    /// activate` call (standing in for another entity's fire chain) still
+    /// opens it.
+    #[test]
+    fn touch_does_nothing_for_a_named_door() {
+        let entities = vec![raw(&[
+            ("classname", "func_door"),
+            ("targetname", "door1"),
+            ("model", "*1"),
+            ("speed", "100"),
+            ("wait", "-1"),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut bounds = BTreeMap::new();
+        bounds.insert(1u32, ([100.0, -32.0, 0.0], [116.0, 32.0, 72.0]));
+        let mut registry = Registry::build(&defs, &bounds, &Limits::default());
+        let mut sim = Simulation::new();
+        let door = registry.find("door1")[0];
+
+        let opened = sim.touch_doors(
+            &mut registry,
+            Vec3::new(100.0, -16.0, -36.0),
+            Vec3::new(116.0, 16.0, 36.0),
+        );
+        assert_eq!(opened, 0);
+        assert_eq!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Closed,
+            "a named door must not open from touch"
+        );
+
+        // Another entity's fire chain still reaches it (a `use` press
+        // does too, through `use_entity`, exercised elsewhere).
+        sim.use_entity(&mut registry, door, None, &mut Vec::new());
+        assert_eq!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Opening,
+            "a named door must still open when triggered"
+        );
+    }
+
+    /// A `func_door` with the "Use Only" spawnflag set (256;
+    /// `SPAWNFLAG_DOOR_USE_ONLY`), unnamed so the assertion isolates this
+    /// flag's own effect from the `targetname` exclusion proved above,
+    /// never opens from [`Simulation::touch_doors`] — only `use` (proved
+    /// in the same test) reaches it.
     #[test]
     fn touch_does_nothing_for_a_use_only_door() {
         let entities = vec![raw(&[
             ("classname", "func_door"),
-            ("targetname", "door1"),
             ("model", "*1"),
             ("speed", "100"),
             ("wait", "-1"),
@@ -2460,7 +2572,7 @@ mod tests {
         bounds.insert(1u32, ([100.0, -32.0, 0.0], [116.0, 32.0, 72.0]));
         let mut registry = Registry::build(&defs, &bounds, &Limits::default());
         let mut sim = Simulation::new();
-        let door = registry.find("door1")[0];
+        let door = only_door(&registry);
 
         let opened = sim.touch_doors(
             &mut registry,
@@ -2481,6 +2593,42 @@ mod tests {
             registry.world.get::<&Door>(door).unwrap().state,
             MoverState::Opening,
             "a Use Only door must still open from a use press"
+        );
+    }
+
+    /// A `func_door` with the "Passable" spawnflag set (8;
+    /// `SPAWNFLAG_DOOR_PASSABLE`), unnamed, never opens from
+    /// [`Simulation::touch_doors`] either: the cited page documents it as
+    /// non-solid *and* not touch-triggerable.
+    #[test]
+    fn touch_does_nothing_for_a_passable_door() {
+        let entities = vec![raw(&[
+            ("classname", "func_door"),
+            ("model", "*1"),
+            ("speed", "100"),
+            ("wait", "-1"),
+            (
+                "spawnflags",
+                &crate::registry::SPAWNFLAG_DOOR_PASSABLE.to_string(),
+            ),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut bounds = BTreeMap::new();
+        bounds.insert(1u32, ([100.0, -32.0, 0.0], [116.0, 32.0, 72.0]));
+        let mut registry = Registry::build(&defs, &bounds, &Limits::default());
+        let mut sim = Simulation::new();
+        let door = only_door(&registry);
+
+        let opened = sim.touch_doors(
+            &mut registry,
+            Vec3::new(100.0, -16.0, -36.0),
+            Vec3::new(116.0, 16.0, 36.0),
+        );
+        assert_eq!(opened, 0);
+        assert_eq!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Closed,
+            "a Passable door must not open from touch"
         );
     }
 

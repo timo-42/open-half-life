@@ -28,20 +28,26 @@
 //! is its regression guard.
 //!
 //! `a_closed_door_opens_when_the_player_walks_into_it` covers the other way
-//! in: a plain door (no "Use Only" spawnflag) opening from the player's
-//! own hull touching its closed brush while walking, with no `use` press
-//! at all (`ohl_game::logic::Simulation::touch_doors`,
-//! `docs/FORMAT_SOURCES.md` item 30).
-//! `a_use_only_rotating_door_blocks_the_corridor_forever` is that
-//! feature's negative: the same walk against a door built with the flag
-//! set never opens it.
+//! in: a plain, *unnamed* door (no "Use Only" spawnflag, no `targetname`)
+//! opening from the player's own hull touching its closed brush while
+//! walking, with no `use` press at all
+//! (`ohl_game::logic::Simulation::touch_doors`, `docs/FORMAT_SOURCES.md`
+//! item 30). It runs against a dedicated
+//! `ohl_engine::test_support::rotating_door_unnamed_entities` fixture
+//! rather than this file's usual named one, since the cited touch rule
+//! ("triggered on touch, unless they have a name") only opens an unnamed
+//! door this way. `a_use_only_rotating_door_blocks_the_corridor_forever`
+//! is a negative case for the same feature: a *named* door with the "Use
+//! Only" flag set never opens from this walk either — proving that flag's
+//! own exclusion on top of the (already-excluding) `targetname` it also
+//! carries.
 //!
 //! No bytes here come from any game installation; see `docs/CLEAN_ROOM.md`.
 
 use ohl_engine::test_support::{
     ROTATING_DOOR_MAP, ROTATING_DOOR_MAXS, ROTATING_DOOR_MINS, ROTATING_DOOR_NAME,
     rotating_door_bsp, rotating_door_entities, rotating_door_trigger_entities,
-    rotating_door_use_only_entities,
+    rotating_door_unnamed_entities, rotating_door_use_only_entities,
 };
 use ohl_engine::{AssetSource, Game, Input, MemoryAssets};
 use ohl_game::registry::{Door, MoverState};
@@ -71,6 +77,21 @@ fn door_state(game: &Game) -> MoverState {
         .world
         .get::<&Door>(entity)
         .expect("the named entity is a door")
+        .state
+}
+
+/// [`door_state`], but for a fixture whose door has no `targetname` (e.g.
+/// [`rotating_door_unnamed_entities`]) — `Registry::find` has nothing to
+/// look up, so this queries the registry for its one `Door` component
+/// directly instead.
+fn unnamed_door_state(game: &Game) -> MoverState {
+    let registry = game.registry();
+    registry
+        .world
+        .query::<&Door>()
+        .iter()
+        .next()
+        .expect("the fixture declares exactly one door")
         .state
 }
 
@@ -117,8 +138,18 @@ fn a_use_only_rotating_door_blocks_the_corridor_forever() {
 /// [`an_open_door_lets_the_player_walk_through`].
 #[test]
 fn a_closed_door_opens_when_the_player_walks_into_it() {
-    let mut game = game();
-    assert_eq!(door_state(&game), MoverState::Closed);
+    // Unnamed: the Sven Co-op wiki's `Func_door` page's own touch rule
+    // ("triggered on touch, unless they have a name") only opens an
+    // unnamed door this way (`docs/FORMAT_SOURCES.md` item 30); the plain
+    // `rotating_door_entities` fixture every other test in this file uses
+    // carries a `targetname` and is deliberately excluded, so it cannot
+    // stand in for this test.
+    let bytes = rotating_door_bsp(&rotating_door_unnamed_entities());
+    let mut assets = MemoryAssets::new();
+    assets.insert(&format!("maps/{ROTATING_DOOR_MAP}.bsp"), bytes);
+    let mut game =
+        Game::load(&assets as &dyn AssetSource, ROTATING_DOOR_MAP).expect("the fixture loads");
+    assert_eq!(unnamed_door_state(&game), MoverState::Closed);
 
     let forward = Input {
         forward: 1,
@@ -127,7 +158,7 @@ fn a_closed_door_opens_when_the_player_walks_into_it() {
     tick_n(&mut game, 600, &forward);
 
     assert_ne!(
-        door_state(&game),
+        unnamed_door_state(&game),
         MoverState::Closed,
         "walking into the door's own brush never opened it"
     );

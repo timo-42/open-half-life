@@ -1065,6 +1065,32 @@ pub fn rotating_door_use_only_entities() -> String {
     )
 }
 
+/// [`rotating_door_entities`], with the door's own `targetname` omitted:
+/// the Sven Co-op wiki's `Func_door` page (`docs/FORMAT_SOURCES.md` item
+/// 30) documents a door as opening on touch "unless they have a name, in
+/// which's case they require to be triggered manually", so
+/// `ohl_game::logic::Simulation::touch_doors` only ever opens an unnamed
+/// door — this fixture is the corridor's own unnamed variant, used to
+/// prove that path in isolation from the "Use Only"/"Passable" flag
+/// exclusions [`rotating_door_use_only_entities`] and a `func_door`'s own
+/// spawnflags cover. Since the door has no `targetname`, a test using this
+/// fixture cannot look its entity up by name (`Registry::find`) the way
+/// every other fixture's own test helper does; it must query the registry
+/// for its one `Door` component directly instead. No bytes here come from
+/// any game installation; see `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn rotating_door_unnamed_entities() -> String {
+    format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"150 0 40\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"func_door_rotating\"\n\
+         \"model\" \"*1\"\n\"speed\" \"360\"\n\"distance\" \"90\"\n\"wait\" \"-1\"\n\
+         \"origin\" \"{} {} {}\"\n}}\n",
+        ROTATING_DOOR_PIVOT[0], ROTATING_DOOR_PIVOT[1], ROTATING_DOOR_PIVOT[2],
+    )
+}
+
 // ---------------------------------------------------------------------
 // A `func_rotating` turntable the player stands on
 // ---------------------------------------------------------------------
