@@ -1629,6 +1629,15 @@ impl Game {
         self.level.sync_brush_collision(0.0);
     }
 
+    /// Returns cumulative resource uploads for the current level.
+    /// Counts reset when a level's renderer is replaced.
+    #[must_use]
+    pub fn render_resource_stats(&self) -> crate::RenderResourceStats {
+        self.renderers
+            .as_ref()
+            .map_or_else(Default::default, Renderers::resource_stats)
+    }
+
     /// Draws the current frame into `target`, creating the GPU resources
     /// on first use.
     ///

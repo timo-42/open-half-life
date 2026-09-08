@@ -626,6 +626,24 @@ impl WorldModel {
         })
     }
 
+    /// The distinct style ids with sample layers in this model's atlas.
+    /// Missing layers and the unused-slot sentinel are excluded, so a
+    /// renderer can ignore changes to styles that cannot affect its atlas.
+    #[must_use]
+    pub fn lightmap_style_ids(&self) -> Vec<u8> {
+        let mut used = [false; 256];
+        for tile in &self.light_tiles {
+            for (&style, layer) in tile.styles.iter().zip(&tile.layers) {
+                if style != STYLE_NONE && layer.is_some() {
+                    used[usize::from(style)] = true;
+                }
+            }
+        }
+        (0..STYLE_NONE)
+            .filter(|&style| used[usize::from(style)])
+            .collect()
+    }
+
     /// Recomposes [`Self::lightmap_atlas`] at the given per-style
     /// intensities, for a renderer animating light styles.
     ///

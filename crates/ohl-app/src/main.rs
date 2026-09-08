@@ -33,6 +33,7 @@ use ohl_vfs::{DirectoryLimits, MediaSourceBlockReader, Mount};
 mod dev_bsp;
 #[cfg(feature = "dev-tools")]
 mod dev_mdl;
+mod frame_profile;
 mod game_run;
 mod script;
 mod script_log;
@@ -164,7 +165,7 @@ struct Cli {
     /// compiled in solely by the non-default `dev-tools` cargo feature and
     /// is therefore absent from release builds.
     #[cfg(feature = "dev-tools")]
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["benchmark_seconds", "profile_frames"])]
     dev_bsp: Option<PathBuf>,
 
     /// Development only: WAD3 texture packages consulted for the map's
@@ -268,6 +269,19 @@ number greater than 0 and no more than 8.0."
     /// Render offscreen and write a PNG here instead of opening a window.
     #[arg(long, value_name = "PATH")]
     headless_screenshot: Option<PathBuf>,
+
+    /// Benchmark completed offscreen frames after a five-second warmup.
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        value_parser = clap::value_parser!(u32).range(1..=3600),
+        conflicts_with_all = ["headless_screenshot", "script", "chain_script", "follow_level_change", "profile_frames"]
+    )]
+    benchmark_seconds: Option<u32>,
+
+    /// Log window frame-time percentiles and CPU stages every two seconds.
+    #[arg(long, conflicts_with_all = ["headless_screenshot", "script", "chain_script"])]
+    profile_frames: bool,
 
     /// How many frames a headless capture advances before it is written.
     #[arg(
@@ -387,7 +401,7 @@ number greater than 0 and no more than 8.0."
     /// pipeline and is compiled in solely by the non-default `dev-tools`
     /// cargo feature.
     #[cfg(feature = "dev-tools")]
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["benchmark_seconds", "profile_frames"])]
     dev_mdl: Option<PathBuf>,
 
     /// Development only: runs a bounded, deterministic breadth-first
@@ -417,7 +431,7 @@ number greater than 0 and no more than 8.0."
     /// which is exactly the state a cold `--map <name>` load cannot
     /// reproduce and where a chain route has to be authored from.
     #[cfg(feature = "dev-tools")]
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["benchmark_seconds", "profile_frames"])]
     reachability_report: bool,
 
     /// Development only: with `--reachability-report`, treats a
@@ -777,6 +791,8 @@ fn run(cli: Cli) -> ExitCode {
         || cli.map.is_some()
         || cli.load.is_some()
         || cli.headless_screenshot.is_some()
+        || cli.benchmark_seconds.is_some()
+        || cli.profile_frames
         || cli.script.is_some()
         || !cli.chain_script.is_empty()
         || reachability_report
@@ -818,6 +834,8 @@ fn run_game_flow(cli: &Cli) -> ExitCode {
         load_slot: cli.load.as_deref(),
         difficulty: cli.difficulty.into(),
         screenshot: cli.headless_screenshot.as_deref(),
+        benchmark_seconds: cli.benchmark_seconds,
+        profile_frames: cli.profile_frames,
         frames: cli.frames,
         viewpoint: cli.viewpoint,
         spawn_offset: cli.spawn_offset,
@@ -1215,6 +1233,54 @@ mod tests {
     use clap::Parser as _;
 
     use super::{Cli, DEFAULT_RECIPE, load_recipe, platform_line, report_import};
+
+    #[test]
+    fn benchmark_accepts_bounded_duration_without_a_screenshot() {
+        let cli =
+            Cli::try_parse_from(["open-half-life", "--training", "--benchmark-seconds", "30"])
+                .expect("benchmark needs no screenshot path");
+        assert_eq!(cli.benchmark_seconds, Some(30));
+        for invalid in ["0", "3601", "-1"] {
+            assert!(
+                Cli::try_parse_from(["open-half-life", "--benchmark-seconds", invalid]).is_err()
+            );
+        }
+        assert!(
+            Cli::try_parse_from([
+                "open-half-life",
+                "--benchmark-seconds",
+                "30",
+                "--profile-frames"
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "open-half-life",
+                "--benchmark-seconds",
+                "30",
+                "--headless-screenshot",
+                "capture.png"
+            ])
+            .is_err()
+        );
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn development_modes_cannot_silently_override_frame_profiling() {
+        for mode in ["--dev-bsp", "--dev-mdl", "--reachability-report"] {
+            let mut args = vec!["open-half-life", mode];
+            if mode != "--reachability-report" {
+                args.push("fixture");
+            }
+            let mut benchmark = args.clone();
+            benchmark.extend(["--benchmark-seconds", "1"]);
+            assert!(Cli::try_parse_from(benchmark).is_err());
+            args.push("--profile-frames");
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+    }
 
     /// The app's own `--overbright` default is the round 5 calibrated
     /// `1.7`, not the engine's raw `1.0` (see

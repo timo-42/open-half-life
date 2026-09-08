@@ -190,12 +190,13 @@ fn run_opaque_submodel_test() {
         let target = OffscreenTarget::new(&context, WIDTH, HEIGHT).expect("offscreen target");
         let mut renderer =
             WorldRenderer::new(&context, &world, OFFSCREEN_FORMAT).expect("renderer builds");
+        let prepared = renderer.prepare_world_submodel(&context, submodel);
         let camera = overhead_camera();
         renderer.render(&context, &world, &camera, target.view(), WIDTH, HEIGHT);
         renderer.draw_world_submodel(
             &context,
             SubmodelInstance {
-                model: submodel,
+                model: &prepared,
                 transform: ohl_render::math::identity(),
             },
             props,
@@ -226,12 +227,13 @@ fn run_opaque_submodel_test() {
     let target = OffscreenTarget::new(&context, WIDTH, HEIGHT).expect("offscreen target");
     let mut renderer =
         WorldRenderer::new(&context, &world, OFFSCREEN_FORMAT).expect("renderer builds");
+    let prepared = renderer.prepare_world_submodel(&context, submodel);
     let camera = overhead_camera();
     renderer.render(&context, &world, &camera, target.view(), WIDTH, HEIGHT);
     renderer.draw_world_submodel(
         &context,
         SubmodelInstance {
-            model: submodel,
+            model: &prepared,
             transform: ohl_render::math::identity(),
         },
         RenderProps::from_entity(2, 0, [255, 255, 255], 0),
@@ -247,5 +249,187 @@ fn run_opaque_submodel_test() {
     assert!(
         u32::from(centre[0]) < u32::from(WALL_FILL) + 60,
         "a genuinely transparent entity must not occlude, got {centre:?}"
+    );
+}
+
+#[test]
+#[ignore = "requires a graphics adapter; run with --ignored or set OHL_RENDER_GPU_TEST=1"]
+fn prepared_submodels_reuse_uploads_and_keep_instance_uniforms_distinct() {
+    if std::env::var_os(OPT_IN).is_none() {
+        run_prepared_submodel_test();
+    }
+}
+
+#[test]
+fn prepared_submodels_reuse_uploads_when_opted_in() {
+    if std::env::var_os(OPT_IN).is_some() {
+        run_prepared_submodel_test();
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn run_prepared_submodel_test() {
+    let Some(context) = headless() else {
+        return;
+    };
+    let bytes = wall_world_with_opaque_submodel_bsp();
+    let limits = BspLimits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("synthetic map parses");
+    let options = WorldBuildOptions {
+        limits,
+        ..WorldBuildOptions::default()
+    };
+    let world = WorldModel::build(&bsp, &options).expect("world builds");
+    let mut submodel = WorldModel::build_submodel(&bsp, &options, 1).expect("submodel builds");
+    let target = OffscreenTarget::new(&context, WIDTH, HEIGHT).expect("target builds");
+    let mut renderer = WorldRenderer::new(&context, &world, OFFSCREEN_FORMAT).unwrap();
+    let shared = renderer.prepare_map_submodel(&context, &submodel);
+    let shared_stats = renderer.submodel_resource_stats();
+    assert_eq!(shared_stats.preparations, 1);
+    assert_eq!(
+        shared_stats.texture_uploads, 1,
+        "only the lightmap is uploaded"
+    );
+    let independent = renderer.prepare_world_submodel(&context, &submodel);
+    let initial_stats = renderer.submodel_resource_stats();
+    assert_eq!(initial_stats.preparations, 2);
+    assert_eq!(
+        initial_stats.texture_uploads,
+        2 + submodel.textures.len() as u64
+    );
+    let camera = overhead_camera();
+    let mut reference = None;
+    // Compare sequential submissions with a single batch containing two
+    // instances of the same model. Their distinct colors and transforms must
+    // survive the batch's uniform writes, including when slots change models.
+    for (frame, prepared) in [&shared, &independent, &shared, &shared]
+        .into_iter()
+        .enumerate()
+    {
+        renderer.render(&context, &world, &camera, target.view(), WIDTH, HEIGHT);
+        let instances =
+            [(-45.0, 25.0, [255, 0, 0]), (45.0, -20.0, [0, 255, 0])].map(|(offset, yaw, color)| {
+                let mut transform = ohl_render::placement([0.0, offset, 0.0], yaw);
+                for value in &mut transform[..12] {
+                    *value *= 0.5;
+                }
+                (
+                    SubmodelInstance {
+                        model: prepared,
+                        transform,
+                    },
+                    RenderProps::from_entity(1, 255, color, 0),
+                )
+            });
+        if frame == 0 {
+            for (instance, props) in instances {
+                renderer.draw_world_submodel(
+                    &context,
+                    instance,
+                    props,
+                    &camera,
+                    target.view(),
+                    WIDTH,
+                    HEIGHT,
+                );
+            }
+        } else {
+            renderer.draw_world_submodels(
+                &context,
+                &instances,
+                &camera,
+                target.view(),
+                WIDTH,
+                HEIGHT,
+            );
+        }
+        let pixels = target.read_rgba(&context).expect("frame reads back");
+        let (rgba, _) = pixels.as_chunks::<4>();
+        assert!(rgba.iter().filter(|p| p[0] > 128 && p[1] < 16).count() > 100);
+        assert!(rgba.iter().filter(|p| p[1] > 128 && p[0] < 16).count() > 100);
+        if let Some(previous) = &reference {
+            assert_eq!(
+                &pixels, previous,
+                "cached resources preserve repeated frames"
+            );
+        } else {
+            reference = Some(pixels);
+        }
+        assert_eq!(renderer.submodel_resource_stats(), initial_stats);
+    }
+
+    // Mixing opaque, alpha, and additive items in a batch must retain input
+    // order and depth/blend semantics. The overlays overlap the opaque model.
+    let instances = [
+        (
+            SubmodelInstance {
+                model: &shared,
+                transform: ohl_render::math::identity(),
+            },
+            RenderProps::default(),
+        ),
+        (
+            SubmodelInstance {
+                model: &independent,
+                transform: ohl_render::placement([0.0, 0.0, 20.0], 20.0),
+            },
+            RenderProps::from_entity(1, 128, [255, 0, 0], 0),
+        ),
+        (
+            SubmodelInstance {
+                model: &shared,
+                transform: ohl_render::placement([0.0, 0.0, 30.0], -20.0),
+            },
+            RenderProps::from_entity(5, 32, [255, 255, 255], 0),
+        ),
+    ];
+    renderer.render(&context, &world, &camera, target.view(), WIDTH, HEIGHT);
+    for (instance, props) in instances {
+        renderer.draw_world_submodel(
+            &context,
+            instance,
+            props,
+            &camera,
+            target.view(),
+            WIDTH,
+            HEIGHT,
+        );
+    }
+    let sequential = target
+        .read_rgba(&context)
+        .expect("sequential mixed frame reads back");
+    renderer.render(&context, &world, &camera, target.view(), WIDTH, HEIGHT);
+    renderer.draw_world_submodels(&context, &instances, &camera, target.view(), WIDTH, HEIGHT);
+    assert_eq!(
+        target.read_rgba(&context).expect("mixed batch reads back"),
+        sequential
+    );
+    assert_eq!(renderer.submodel_resource_stats(), initial_stats);
+
+    // Standalone resources must retain their own textures even when their
+    // texture slot numbers coincide with the renderer's BSP slots.
+    for texture in &mut submodel.textures {
+        *texture = ohl_world::TextureImage::new(1, 1, vec![0, 0, 255, 255]).unwrap();
+    }
+    let independent = renderer.prepare_world_submodel(&context, &submodel);
+    renderer.render(&context, &world, &camera, target.view(), WIDTH, HEIGHT);
+    renderer.draw_world_submodel(
+        &context,
+        SubmodelInstance {
+            model: &independent,
+            transform: ohl_render::math::identity(),
+        },
+        RenderProps::default(),
+        &camera,
+        target.view(),
+        WIDTH,
+        HEIGHT,
+    );
+    let pixels = target.read_rgba(&context).expect("frame reads back");
+    let (rgba, _) = pixels.as_chunks::<4>();
+    let centre = rgba[(HEIGHT as usize / 2) * WIDTH as usize + WIDTH as usize / 2];
+    assert!(
+        centre[2] > 200 && centre[0] < 16,
+        "standalone texture stays blue"
     );
 }

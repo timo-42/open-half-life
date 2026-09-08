@@ -140,6 +140,7 @@ fn build_draw_list_for_model_draws_every_face_unconditionally() {
 #[test]
 fn blend_lightmap_reflects_style_intensity() {
     let model = build_model();
+    assert_eq!(model.lightmap_style_ids(), vec![0]);
     let full = model.blend_lightmap(|_style| 1.0);
     let dark = model.blend_lightmap(|_style| 0.0);
     let bright = model.blend_lightmap(|_style| 2.0);

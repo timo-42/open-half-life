@@ -39,6 +39,41 @@ pub struct LightStyles {
     patterns: Vec<String>,
 }
 
+/// The intensities last uploaded for one model. Evaluate each used style
+/// once per frame; comparing values also detects pattern changes within a
+/// 10 Hz step and avoids uploads for repeated characters across steps.
+pub(crate) struct LightStyleState {
+    used: Vec<u8>,
+    intensities: [f32; 256],
+    initialized: bool,
+}
+
+impl LightStyleState {
+    pub(crate) fn new(used: Vec<u8>) -> Self {
+        Self {
+            used,
+            intensities: [1.0; 256],
+            initialized: false,
+        }
+    }
+
+    pub(crate) fn update(&mut self, styles: &LightStyles, time_seconds: f32) -> bool {
+        let mut changed = !self.initialized;
+        for &style in &self.used {
+            let value = styles.intensity(style, time_seconds);
+            let previous = &mut self.intensities[usize::from(style)];
+            changed |= previous.to_bits() != value.to_bits();
+            *previous = value;
+        }
+        self.initialized = true;
+        changed
+    }
+
+    pub(crate) fn intensity(&self, style: u8) -> f32 {
+        self.intensities[usize::from(style)]
+    }
+}
+
 /// The documented default pattern for styles `0..=11`, reproduced verbatim
 /// from the Valve Developer Community's "Light Styles" article (see
 /// `docs/FORMAT_SOURCES.md`, "Rendering conventions"), which publishes this
@@ -125,7 +160,56 @@ impl LightStyles {
 #[cfg(test)]
 #[allow(clippy::float_cmp)]
 mod tests {
-    use super::{LightStyles, STYLE_NONE, char_intensity};
+    use super::{LightStyleState, LightStyles, STYLE_NONE, char_intensity};
+
+    #[test]
+    fn atlas_state_uploads_initial_intensities_then_skips_identical_frames() {
+        let mut state = LightStyleState::new(vec![0]);
+        let styles = LightStyles::new();
+        assert!(state.update(&styles, 0.0));
+        assert_eq!(state.intensity(0), char_intensity(b'm'));
+        assert!(!state.update(&styles, 0.0));
+        assert!(!state.update(&styles, 100.0));
+    }
+
+    #[test]
+    fn atlas_state_tracks_intensities_across_steps_and_time_rewinds() {
+        let mut state = LightStyleState::new(vec![32]);
+        let mut styles = LightStyles::new();
+        styles.set_pattern(32, "aaz");
+        assert!(state.update(&styles, 0.0));
+        assert!(!state.update(&styles, 0.05));
+        assert!(!state.update(&styles, 0.1));
+        assert!(state.update(&styles, 0.2));
+        assert_eq!(state.intensity(32), 2.0);
+        assert!(state.update(&styles, 0.0));
+        assert_eq!(state.intensity(32), 0.0);
+    }
+
+    #[test]
+    fn atlas_state_detects_same_time_pattern_changes_but_ignores_unused_styles() {
+        let mut state = LightStyleState::new(vec![32]);
+        let mut styles = LightStyles::new();
+        assert!(state.update(&styles, 0.0));
+        styles.set_pattern(33, "a");
+        assert!(!state.update(&styles, 0.0));
+        styles.set_pattern(32, "a");
+        assert!(state.update(&styles, 0.0));
+        assert_eq!(state.intensity(32), 0.0);
+        styles.set_pattern(32, "az");
+        assert!(!state.update(&styles, 0.0));
+    }
+
+    #[test]
+    fn atlas_state_handles_unconfigured_styles_and_unlit_models() {
+        let styles = LightStyles::new();
+        for used in [vec![200], vec![]] {
+            let mut state = LightStyleState::new(used);
+            assert!(state.update(&styles, 0.0));
+            assert!(!state.update(&styles, f32::NAN));
+            assert_eq!(state.intensity(200), 1.0);
+        }
+    }
 
     #[test]
     fn char_intensity_matches_the_documented_endpoints() {

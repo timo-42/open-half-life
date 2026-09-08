@@ -25,6 +25,8 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
+use crate::frame_profile::{FrameProfile, FrameSample};
+
 /// The offscreen capture size, in pixels.
 const CAPTURE_SIZE: (u32, u32) = (1280, 720);
 
@@ -173,6 +175,10 @@ pub struct GameArgs<'a> {
     pub map: &'a str,
     /// Where to write a PNG capture instead of opening a window.
     pub screenshot: Option<&'a Path>,
+    /// Runs completed-frame offscreen measurements for this many seconds.
+    pub benchmark_seconds: Option<u32>,
+    /// Reports CPU frame stages in the interactive window.
+    pub profile_frames: bool,
     /// How many frames a headless capture advances before writing.
     pub frames: u32,
     /// Where to stand for a headless capture.
@@ -389,10 +395,113 @@ recognise (expected a comma-separated list of weapon_*/ammo_* classnames)"
         return run_scripted(&mut game, &source, args, script_path);
     }
 
+    if let Some(seconds) = args.benchmark_seconds {
+        return benchmark(&mut game, seconds);
+    }
+
     match args.screenshot {
         Some(path) => capture(&mut game, &source, args, path),
-        None => windowed(game, &source),
+        None => windowed(game, &source, args.profile_frames),
     }
+}
+
+fn log_profile_device(context: &GpuContext, width: u32, height: u32) {
+    let info = context.adapter.get_info();
+    tracing::info!(
+        adapter = info.name,
+        backend = ?info.backend,
+        width,
+        height,
+        "frame profile device"
+    );
+}
+
+/// Measures fully completed frames without presentation/vsync or readback.
+/// The ordinary simulation advances by one fixed tick per rendered frame;
+/// level changes and death end the run instead of changing its workload.
+fn benchmark(game: &mut Game, seconds: u32) -> Result<(), &'static str> {
+    let context = GpuContext::headless().map_err(|_| "no usable graphics adapter is available")?;
+    let (width, height) = CAPTURE_SIZE;
+    let target = OffscreenTarget::new(&context, width, height)
+        .map_err(|_| "no offscreen target could be created")?;
+    log_profile_device(&context, width, height);
+    tracing::info!("Benchmark warming up for five seconds.");
+    let warmup_start = Instant::now();
+    let mut measurement_start = None;
+    let mut warmup_resources = ohl_engine::RenderResourceStats::default();
+    let mut profile = FrameProfile::default();
+    loop {
+        let frame_start = Instant::now();
+        let events = game.tick(CAPTURE_STEP, &Input::default());
+        if events
+            .iter()
+            .any(|event| matches!(event, GameEvent::LevelChange { .. } | GameEvent::PlayerDied))
+        {
+            tracing::warn!("Benchmark stopped because the level changed or the player died.");
+            return Ok(());
+        }
+        let simulation = frame_start.elapsed();
+        let render_start = Instant::now();
+        render_capture(
+            game,
+            &context,
+            RenderTarget {
+                view: target.view(),
+                width,
+                height,
+                format: OFFSCREEN_FORMAT,
+            },
+            &CapturePose::None,
+        )?;
+        let render = render_start.elapsed();
+        let wait_start = Instant::now();
+        context.wait();
+        let completed = Instant::now();
+        if let Some(start) = measurement_start {
+            profile.record(FrameSample {
+                frame: completed.duration_since(frame_start),
+                simulation,
+                render,
+                gpu_wait: completed.duration_since(wait_start),
+                ..FrameSample::default()
+            });
+            let elapsed = completed.duration_since(start);
+            if elapsed >= Duration::from_secs(u64::from(seconds)) {
+                if let Some(summary) = profile.finish(elapsed) {
+                    summary.log("headless_completed");
+                }
+                log_resource_uploads(game, warmup_resources);
+                return Ok(());
+            }
+        } else if completed.duration_since(warmup_start) >= Duration::from_secs(5) {
+            tracing::info!(seconds, "Benchmark measurement started.");
+            warmup_resources = game.render_resource_stats();
+            measurement_start = Some(Instant::now());
+        }
+    }
+}
+
+/// Resource work since the supplied checkpoint; only enabled by profiling.
+fn log_resource_uploads(game: &Game, previous: ohl_engine::RenderResourceStats) {
+    let current = game.render_resource_stats();
+    tracing::info!(
+        brush_preparations = current
+            .submodels
+            .preparations
+            .saturating_sub(previous.submodels.preparations),
+        brush_static_upload_bytes = current
+            .submodels
+            .static_upload_bytes
+            .saturating_sub(previous.submodels.static_upload_bytes),
+        brush_texture_uploads = current
+            .submodels
+            .texture_uploads
+            .saturating_sub(previous.submodels.texture_uploads),
+        world_lightmap_uploads = current
+            .lightmap_uploads
+            .saturating_sub(previous.lightmap_uploads),
+        "profile resource uploads"
+    );
 }
 
 /// Logs the outcome of a `GameEvent::LevelChange` a headless/scripted run
@@ -1103,7 +1212,7 @@ fn capture(
 
 /// Opens a window and runs the loop until it closes or Escape is pressed.
 #[allow(clippy::needless_pass_by_value)]
-fn windowed(game: Game, source: &AssetFsSource) -> Result<(), &'static str> {
+fn windowed(game: Game, source: &AssetFsSource, profile_frames: bool) -> Result<(), &'static str> {
     let event_loop = EventLoop::new().map_err(|_| "no window system is available")?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App {
@@ -1118,6 +1227,7 @@ fn windowed(game: Game, source: &AssetFsSource) -> Result<(), &'static str> {
         last_frame: Instant::now(),
         fps_window_start: Instant::now(),
         frames: 0,
+        profile: profile_frames.then(FrameProfile::default),
         failure: None,
     };
     event_loop
@@ -1151,6 +1261,7 @@ struct App<'a> {
     last_frame: Instant,
     fps_window_start: Instant,
     frames: u32,
+    profile: Option<FrameProfile>,
     failure: Option<&'static str>,
 }
 
@@ -1231,17 +1342,14 @@ impl App<'_> {
         }
     }
 
-    fn draw(&mut self) {
-        let now = Instant::now();
-        let delta = now.saturating_duration_since(self.last_frame);
-        self.last_frame = now;
-
+    /// Advances simulation and refreshes the HUD for one display frame.
+    fn tick_game(&mut self, delta_seconds: f32) {
         // The held axes persist across frames; the two edge-triggered
         // fields (mouse motion and the "use" press) are consumed here.
         let frame_input = self.input;
         self.input.mouse_delta = (0.0, 0.0);
         self.input.use_pressed = false;
-        for event in self.game.tick(delta.as_secs_f32(), &frame_input) {
+        for event in self.game.tick(delta_seconds, &frame_input) {
             match event {
                 GameEvent::LevelChange { map, landmark } => {
                     // Neither string is logged: both are map-derived.
@@ -1285,15 +1393,27 @@ impl App<'_> {
         self.hud.reserve_ammo = engine_hud.reserve_ammo;
         self.hud.damage_flash = self.hud.damage_flash.max(engine_hud.damage_flash);
 
-        self.hud.decay_damage_flash(2.0, delta.as_secs_f32());
-        self.hud.tick_message(delta.as_secs_f32());
+        self.hud.decay_damage_flash(2.0, delta_seconds);
+        self.hud.tick_message(delta_seconds);
+    }
+
+    fn draw(&mut self) {
+        let now = Instant::now();
+        let delta = now.saturating_duration_since(self.last_frame);
+        self.last_frame = now;
+
+        self.tick_game(delta.as_secs_f32());
+        let simulation = now.elapsed();
 
         let Some(active) = self.state.as_mut() else {
             return;
         };
+        let acquire_start = Instant::now();
         let Some(frame) = active.surface.acquire(&active.context) else {
             return;
         };
+        let acquire = acquire_start.elapsed();
+        let render_start = Instant::now();
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -1313,6 +1433,8 @@ impl App<'_> {
             self.failure = Some(error.message());
         }
 
+        let render = render_start.elapsed();
+        let ui_start = Instant::now();
         active.ui.begin_frame();
         ohl_ui::hud::draw(active.ui.context(), &self.hud);
         if self.console.is_open() {
@@ -1336,6 +1458,17 @@ impl App<'_> {
         active.context.queue.submit([encoder.finish()]);
         active.context.queue.present(frame);
 
+        if let Some(profile) = self.profile.as_mut() {
+            profile.record(FrameSample {
+                frame: delta,
+                simulation,
+                acquire,
+                render,
+                ui_present: ui_start.elapsed(),
+                ..FrameSample::default()
+            });
+        }
+
         self.frames += 1;
         let elapsed = now.saturating_duration_since(self.fps_window_start);
         if elapsed >= FPS_INTERVAL {
@@ -1343,6 +1476,12 @@ impl App<'_> {
             let fps = self.frames as f32 / elapsed.as_secs_f32();
             // A property of this machine and this run, not of the map.
             tracing::info!(fps = format_args!("{fps:.1}"), "frame rate");
+            if let Some(profile) = self.profile.as_mut()
+                && let Some(summary) = profile.finish(elapsed)
+            {
+                summary.log("window_cpu");
+                log_resource_uploads(&self.game, ohl_engine::RenderResourceStats::default());
+            }
             self.frames = 0;
             self.fps_window_start = now;
         }
@@ -1357,6 +1496,7 @@ impl ApplicationHandler for App<'_> {
         }
         let attributes = Window::default_attributes()
             .with_title("Open Half-Life")
+            .with_active(self.profile.is_none())
             .with_inner_size(winit::dpi::PhysicalSize::new(
                 INITIAL_SIZE.0,
                 INITIAL_SIZE.1,
@@ -1366,16 +1506,21 @@ impl ApplicationHandler for App<'_> {
             return;
         };
         let window = Arc::new(window);
-        if window.set_cursor_grab(CursorGrabMode::Locked).is_err() {
-            let _ = window.set_cursor_grab(CursorGrabMode::Confined);
+        if self.profile.is_none() {
+            if window.set_cursor_grab(CursorGrabMode::Locked).is_err() {
+                let _ = window.set_cursor_grab(CursorGrabMode::Confined);
+            }
+            window.set_cursor_visible(false);
         }
-        window.set_cursor_visible(false);
 
         let Ok((context, wgpu_surface)) = GpuContext::for_surface(Arc::clone(&window)) else {
             self.fail(event_loop, "no usable graphics adapter is available");
             return;
         };
         let size = window.inner_size();
+        if self.profile.is_some() {
+            log_profile_device(&context, size.width, size.height);
+        }
         let Ok(surface) = WindowSurface::new(&context, wgpu_surface, size.width, size.height)
         else {
             self.fail(event_loop, "the window surface could not be configured");
@@ -1471,7 +1616,7 @@ impl ApplicationHandler for App<'_> {
         _device_id: DeviceId,
         event: DeviceEvent,
     ) {
-        if self.console.is_open() {
+        if self.console.is_open() || self.profile.is_some() {
             return;
         }
         if let DeviceEvent::MouseMotion { delta } = event {
