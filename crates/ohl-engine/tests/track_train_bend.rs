@@ -18,9 +18,10 @@
 //! No bytes here come from any game installation; see `docs/CLEAN_ROOM.md`.
 
 use ohl_engine::test_support::{
-    BEND_CAR_HALF_LENGTH, BEND_CAR_HALF_WIDTH, BEND_CAR_TOP_Z, BEND_SEAT_OFFSET_X,
-    BEND_TRAIN_CORNER, BEND_TRAIN_MAP, BEND_TRAIN_ORIGIN, BEND_TRAIN_SPEED,
-    bending_track_train_bsp,
+    BEND_CAR_HALF_LENGTH, BEND_CAR_HALF_WIDTH, BEND_CAR_TOP_Z, BEND_PILLAR_CENTER,
+    BEND_SEAT_OFFSET_X, BEND_TRAIN_CORNER, BEND_TRAIN_END, BEND_TRAIN_MAP, BEND_TRAIN_ORIGIN,
+    BEND_TRAIN_SPEED, bend_train_pose, bending_track_train_bsp,
+    bending_track_train_bsp_with_pillar,
 };
 use ohl_engine::{AssetSource, Game, Input, MemoryAssets};
 
@@ -35,12 +36,25 @@ fn loaded() -> Game {
     Game::load(&assets as &dyn AssetSource, BEND_TRAIN_MAP).expect("the bending-train map loads")
 }
 
+/// [`loaded`], but with a static pillar standing across the seat a rider
+/// would land in if the corner's quarter-turn carry were applied without
+/// its refusal guard (see [`BEND_PILLAR_CENTER`]).
+fn loaded_with_pillar() -> Game {
+    let mut assets = MemoryAssets::new();
+    assets.insert(
+        &format!("maps/{BEND_TRAIN_MAP}.bsp"),
+        bending_track_train_bsp_with_pillar(),
+    );
+    Game::load(&assets as &dyn AssetSource, BEND_TRAIN_MAP).expect("the bending-train map loads")
+}
+
 /// How long the ride is sampled for: long enough to cross the corner
 /// (the first segment is `corner - origin` units at [`BEND_TRAIN_SPEED`]
 /// units per second) and travel well up the second segment, but stopping
-/// short of the chain's last node — a parked train has no segment left to
-/// face and so no defined heading, which is a separate case from the
-/// turning one under test here.
+/// short of the chain's last node — a parked train keeps the heading of
+/// the segment it arrived on (see `a_passenger_is_not_snapped_over_when_
+/// the_car_parks_at_the_end_of_the_bend` below), but that is still a
+/// separate case from the turning one under test here.
 fn ride_steps() -> u32 {
     let first = BEND_TRAIN_CORNER[0] - BEND_TRAIN_ORIGIN[0];
     let seconds = 2.0 * first / BEND_TRAIN_SPEED - 0.5;
@@ -135,4 +149,135 @@ fn the_passenger_is_inside_the_cars_footprint_at_every_step_of_the_bend() {
             "on step {step} the passenger sank through the car's floor: {here:?}"
         );
     }
+}
+
+/// A train that runs off the end of its chain and parks keeps facing the
+/// way its last segment pointed, rather than snapping its collision hull
+/// back to an unrotated pose the instant it has nowhere left to go.
+///
+/// [`TrackTrainState::yaw_degrees`] used to return `None` once
+/// [`ohl_game::track_train::PathChain::next_index`] ran out of nodes, and
+/// every consumer of that yaw — the renderer, `Level::sync_brush_collision`
+/// (through `ohl_game::pose::brush_pose_rotation`) and `brush_center` —
+/// treated a `None` exactly like an un-turned `func_train`, i.e. axis
+/// `Vec3::ZERO`. So the frame this fixture's car finished its 90-degree
+/// turn and parked at [`BEND_TRAIN_END`], its hull un-rotated back to 0
+/// degrees in a single step while the passenger, still seated
+/// [`BEND_SEAT_OFFSET_X`] units along the car's *turned* `+X` (now world
+/// `+Y`), was left standing over open air the moment the floor under them
+/// rotated away — exactly the drop this package's carry mechanism exists
+/// to prevent for a *moving* turn, just triggered by parking instead.
+///
+/// This checks the whole ride through to well after the train parks: the
+/// passenger is never in solid, never sinks through the floor, and is
+/// always within the car's own footprint, both while it is still turning
+/// and once it has stopped — and that the reported pose itself is the
+/// second segment's heading (90 degrees, at [`BEND_TRAIN_END`]), not the
+/// zeroed one a stale `None` would still produce.
+#[test]
+fn a_passenger_is_not_snapped_over_when_the_car_parks_at_the_end_of_the_bend() {
+    let mut game = loaded();
+
+    for _ in 0..4 {
+        game.tick(STEP, &Input::default());
+    }
+
+    // The full chain (origin -> corner -> end) is 600 units at
+    // `BEND_TRAIN_SPEED` = 100/sec, so 6 seconds covers it; ride well past
+    // that so the train has certainly parked and settled before the final
+    // assertions run.
+    let total =
+        BEND_TRAIN_CORNER[0] - BEND_TRAIN_ORIGIN[0] + BEND_TRAIN_END[1] - BEND_TRAIN_CORNER[1];
+    let seconds = total / BEND_TRAIN_SPEED + 2.0;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let steps = (seconds / STEP).round() as u32;
+
+    for step in 0..steps {
+        let train = bend_train_pose(&game);
+        game.tick(STEP, &Input::default());
+        assert!(
+            !game.eye_is_in_solid(),
+            "the passenger was pushed inside solid geometry on step {step}: {:?}",
+            game.player_origin()
+        );
+        let here = game.player_origin();
+        let dx = here[0] - train.origin[0];
+        let dy = here[1] - train.origin[1];
+        let (sin, cos) = (-train.yaw_degrees.to_radians()).sin_cos();
+        let local_x = dx * cos - dy * sin;
+        let local_y = dx * sin + dy * cos;
+        assert!(
+            local_x.abs() <= BEND_CAR_HALF_LENGTH && local_y.abs() <= BEND_CAR_HALF_WIDTH,
+            "on step {step} the passenger stood at car-local ({local_x}, {local_y}), \
+             outside the car's own {BEND_CAR_HALF_LENGTH} x {BEND_CAR_HALF_WIDTH} floor \
+             (car pose {train:?})"
+        );
+        assert!(
+            here[2] > train.origin[2] + BEND_CAR_TOP_Z - 8.0,
+            "on step {step} the passenger sank through the car's floor: {here:?}"
+        );
+    }
+
+    let final_pose = bend_train_pose(&game);
+    assert!(
+        (final_pose.origin[0] - BEND_TRAIN_END[0]).abs() < 1.0
+            && (final_pose.origin[1] - BEND_TRAIN_END[1]).abs() < 1.0,
+        "the parked car should sit at the chain's last node: {final_pose:?}"
+    );
+    assert!(
+        (final_pose.yaw_degrees - 90.0).abs() < 1.0,
+        "a car parked at the end of a bend must keep the last segment's \
+         heading (90 degrees here), not snap back to unrotated: {final_pose:?}"
+    );
+}
+
+/// `Systems::player_move`'s rigid-turn carry is refused outright when the
+/// destination seat is not free (`.filter(|carried| !start_solid)`, right
+/// after `Level::rotational_carry`): a rider seated off the pivot who
+/// would otherwise be swung straight into solid geometry is instead left
+/// exactly where they were standing, and the ordinary ride blend (the
+/// car's translation plus its tangential `omega x r` term for the rider's
+/// own position) takes over from there through the usual traced move.
+///
+/// [`bending_track_train_bsp_with_pillar`] plants a static pillar centred
+/// on [`BEND_PILLAR_CENTER`] — precisely the world point the corner's
+/// quarter turn would carry this fixture's seated rider into — so a
+/// carry that is *not* refused embeds the rider in solid the instant it
+/// runs, and one that *is* refused never does. This is the same fixture
+/// [`a_passenger_seated_off_the_pivot_keeps_their_seat_through_a_corner`]
+/// rides, with one brush added; every other tick of the corner is
+/// identical, and this test rides well past it.
+#[test]
+fn a_refused_carry_leaves_the_rider_behind_instead_of_embedding_them() {
+    let mut game = loaded_with_pillar();
+
+    for _ in 0..4 {
+        game.tick(STEP, &Input::default());
+    }
+
+    let mut in_solid_ticks = 0u32;
+    // Past the corner (around tick 181 for this fixture's speed/geometry)
+    // and well into the second segment, so the refused carry's aftermath
+    // — the rider falling through this fixture's deliberately floorless
+    // world once they are no longer on the car — has time to play out.
+    for _step in 0..220 {
+        if game.eye_is_in_solid() {
+            in_solid_ticks += 1;
+        }
+        game.tick(STEP, &Input::default());
+    }
+    assert_eq!(
+        in_solid_ticks, 0,
+        "the refused carry must never leave the rider inside the pillar's solid"
+    );
+
+    let end = game.player_origin();
+    let horizontal = ((end[0] - BEND_PILLAR_CENTER[0]).powi(2)
+        + (end[1] - BEND_PILLAR_CENTER[1]).powi(2))
+    .sqrt();
+    assert!(
+        horizontal > BEND_CAR_HALF_WIDTH,
+        "the rider ended up at the pillar's seat destination {end:?} rather than \
+         being left behind by the refused carry"
+    );
 }

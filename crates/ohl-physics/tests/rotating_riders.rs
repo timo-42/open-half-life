@@ -249,12 +249,6 @@ fn hull_resting_on_a_slowly_rotating_disc_stays_on_it(
 /// `Systems::player_move` applies it: pose the brush, then move the rider
 /// rigidly with it, then run the ordinary move with the body's
 /// *translation* (zero, for a body that only turns) as base velocity.
-/// `steps` as an `f32`. The strategy that feeds it is bounded well inside
-/// `f32`'s exactly-representable integer range, so this is exact.
-fn steps_as_f32(steps: u32) -> f32 {
-    f32::from(u16::try_from(steps).expect("the strategy bounds `steps` far below `u16::MAX`"))
-}
-
 fn hull_seated_off_the_pivot_rides_a_quarter_turn(
     steps: u32,
     clockwise: bool,
@@ -344,6 +338,12 @@ fn hull_seated_off_the_pivot_rides_a_quarter_turn(
         state.origin
     );
     Ok(())
+}
+
+/// `steps` as an `f32`. The strategy that feeds it is bounded well inside
+/// `f32`'s exactly-representable integer range, so this is exact.
+fn steps_as_f32(steps: u32) -> f32 {
+    f32::from(u16::try_from(steps).expect("the strategy bounds `steps` far below `u16::MAX`"))
 }
 
 proptest! {

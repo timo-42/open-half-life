@@ -399,14 +399,36 @@ impl TrackTrainState {
     /// project leaves at its spawned `angles`) or the segment has no
     /// horizontal extent (a purely vertical hop between two nodes, which
     /// carries no defined yaw).
+    ///
+    /// A train parked at the *end* of a non-looped chain (no node ahead of
+    /// it to face) has no active segment for [`Self::other_index`] to
+    /// resolve, but it did not spin back to `0` when it got there: it
+    /// keeps the heading of the last segment it actually travelled, the
+    /// same pose the renderer, [`crate::pose::brush_pose_rotation`]'s
+    /// collision hull and `brush_center` all read this value through. That
+    /// fallback mirrors [`Self::other_index`]'s own direction convention —
+    /// the heading is measured from the neighbour behind the direction of
+    /// travel to the current node, i.e. the same segment/order pair that
+    /// was in effect right up to the step the train stopped advancing —
+    /// so it agrees exactly with the yaw this method reported the instant
+    /// before the train parked.
     #[must_use]
     pub fn yaw_degrees(&self, train: &TrackTrain) -> Option<f32> {
         if !train.turns_to_face {
             return None;
         }
-        let other = self.other_index()?;
-        let direction =
-            self.chain.nodes[other].position - self.chain.nodes[self.node_index].position;
+        let direction = if let Some(other) = self.other_index() {
+            self.chain.nodes[other].position - self.chain.nodes[self.node_index].position
+        } else {
+            let last = if self.direction >= 0.0 {
+                self.node_index.checked_sub(1)
+            } else {
+                self.node_index
+                    .checked_add(1)
+                    .filter(|&index| index < self.chain.nodes.len())
+            }?;
+            self.chain.nodes[self.node_index].position - self.chain.nodes[last].position
+        };
         if direction.x.abs() < f32::EPSILON && direction.y.abs() < f32::EPSILON {
             return None;
         }
@@ -660,6 +682,43 @@ mod tests {
                 ("classname", "path_track"),
                 ("targetname", "node3"),
                 ("origin", "200 0 0"),
+            ]),
+        ]
+    }
+
+    /// A synthetic bent track (`node1` at the origin, `node2` 100 units
+    /// along `+X`, `node3` 100 units further along `+Y`, a non-looped dead
+    /// end) plus one `func_tracktrain` targeting `node1`. Used to check
+    /// what yaw a train reports once it has run off the end of its chain
+    /// and parked, as opposed to [`three_node_track`]'s collinear layout,
+    /// where a stale `None` and the correct persisted heading would
+    /// coincidentally both round-trip through `Some(0.0)`.
+    fn bent_track(train_extra: &[(&str, &str)]) -> Vec<RawEntity> {
+        let mut train_kv = vec![
+            ("classname", "func_tracktrain"),
+            ("targetname", "tram"),
+            ("target", "node1"),
+            ("height", "0"),
+        ];
+        train_kv.extend_from_slice(train_extra);
+        vec![
+            raw(&train_kv),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "node1"),
+                ("target", "node2"),
+                ("origin", "0 0 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "node2"),
+                ("target", "node3"),
+                ("origin", "100 0 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "node3"),
+                ("origin", "100 100 0"),
             ]),
         ]
     }
@@ -972,6 +1031,37 @@ mod tests {
         let state = train_state(&registry);
         assert!(!train.turns_to_face);
         assert_eq!(state.yaw_degrees(&train), None);
+    }
+
+    /// A train that runs off the end of a non-looped chain parks facing
+    /// the way it was already heading — the last segment it actually
+    /// travelled, `node2` -> `node3` here, 90 degrees — rather than
+    /// reporting no heading at all and snapping its drawn/collision pose
+    /// back to whatever `angles` it spawned at. This is
+    /// [`TrackTrainState::yaw_degrees`]'s own persisted-yaw fallback;
+    /// `crates/ohl-engine/tests/track_train_bend.rs` checks the same fact
+    /// end to end, including that a rider is not left stranded when the
+    /// hull stops turning under them.
+    #[test]
+    fn a_train_parked_at_the_end_of_a_bend_keeps_its_last_heading() {
+        let entities = bent_track(&[("speed", "1000"), ("startspeed", "1000")]);
+        let registry = build_registry(&entities);
+        let mut state = train_state(&registry);
+        let train = train_component(&registry);
+        state.turn_on();
+        // Far more distance than the 200-unit chain covers, so the train
+        // is guaranteed to have run off the end and stopped.
+        state.advance(10.0);
+        assert!(
+            !state.moving,
+            "the train should have parked at the dead end"
+        );
+        assert_eq!(state.position(), Vec3::new(100.0, 100.0, 0.0));
+        assert_eq!(
+            state.yaw_degrees(&train),
+            Some(90.0),
+            "a parked train must keep the heading of the segment it arrived on"
+        );
     }
 
     #[test]
