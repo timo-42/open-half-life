@@ -1814,3 +1814,169 @@ pub fn pushable_corridor_entities(friction: f32, back_wall: bool) -> String {
          {wall}"
     )
 }
+
+// ---------------------------------------------------------------------
+// A one-way ledge: the only route to the `trigger_changelevel` is a
+// straight fall taller than the reachability walk's old, conservative
+// 72-unit drop bound.
+// ---------------------------------------------------------------------
+
+/// The map name the reachability-report ledge/drop fixture is published
+/// under.
+pub const REACH_LEDGE_MAP: &str = "ohlreachledgesynth";
+
+/// Where the high floor ends and the low floor begins, along `x`.
+pub const REACH_LEDGE_EDGE_X: f32 = 64.0;
+
+/// How far below the high floor's top the low floor's top sits — chosen
+/// well past [`crate::reachability::DROP`] (72 units) so only a one-way
+/// fall, not a stepped descent, reaches it.
+pub const REACH_LEDGE_DROP_HEIGHT: f32 = 150.0;
+
+/// A `worldspawn`-only corridor (`y` in `-96..96`, floor at `z = 0` for
+/// `x <= `[`REACH_LEDGE_EDGE_X`], no ceiling below it) whose floor drops
+/// [`REACH_LEDGE_DROP_HEIGHT`] units at that edge and continues at the
+/// lower height out to `x = 400`, plus a *non-solid* submodel 1 for a
+/// `trigger_changelevel` volume sitting on the low floor. Both floors are
+/// real solid brushes (not one continuous half-space), so a walk stepping
+/// past the edge finds open air, not a lower step within stepping
+/// distance. No bytes here come from any game installation; see
+/// `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn reachability_ledge_bsp(entities: &str) -> Vec<u8> {
+    const X_MIN: f32 = -256.0;
+    const X_MAX: f32 = 400.0;
+    const CEILING: f32 = 300.0;
+    const TRIGGER_MINS: [f32; 3] = [150.0, -96.0, -REACH_LEDGE_DROP_HEIGHT];
+    const TRIGGER_MAXS: [f32; 3] = [220.0, 96.0, -REACH_LEDGE_DROP_HEIGHT + 96.0];
+
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(entities);
+
+    let world_heads = b.push_collision_hulls(&[
+        CollisionBrush::half_space([0.0, 0.0, -1.0], -CEILING),
+        CollisionBrush::half_space([-1.0, 0.0, 0.0], -X_MAX),
+        CollisionBrush::half_space([1.0, 0.0, 0.0], X_MIN),
+        CollisionBrush::half_space([0.0, -1.0, 0.0], -96.0),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], -96.0),
+        // The high floor, `x <= REACH_LEDGE_EDGE_X`, top at `z = 0`.
+        CollisionBrush::box_brush([X_MIN, -96.0, -32.0], [REACH_LEDGE_EDGE_X, 96.0, 0.0]),
+        // The low floor, `x > REACH_LEDGE_EDGE_X`, top at
+        // `z = -REACH_LEDGE_DROP_HEIGHT`: a real cliff, not a stepped ramp.
+        CollisionBrush::box_brush(
+            [REACH_LEDGE_EDGE_X, -96.0, -32.0 - REACH_LEDGE_DROP_HEIGHT],
+            [X_MAX, 96.0, -REACH_LEDGE_DROP_HEIGHT],
+        ),
+    ]);
+    let trigger_heads = b.push_collision_hulls(&[]);
+
+    b.push_model(
+        [X_MIN, -96.0, -32.0 - REACH_LEDGE_DROP_HEIGHT],
+        [X_MAX, 96.0, CEILING],
+        [0.0; 3],
+        world_heads,
+        2,
+        0,
+        0,
+    );
+    b.push_model(TRIGGER_MINS, TRIGGER_MAXS, [0.0; 3], trigger_heads, 2, 0, 0);
+
+    b.build()
+}
+
+/// A `worldspawn` plus an `info_player_start` on the high floor (`x = 0`,
+/// facing `+x`) and a `trigger_changelevel` (submodel `*1`, naming
+/// `next_map`/[`LANDMARK`]) on the low floor beyond the ledge — the shape
+/// [`crate::reachability`]'s own long-drop regression test walks. No bytes
+/// here come from any game installation; see `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn reachability_ledge_entities(next_map: &str) -> String {
+    format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"0 0 40\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"trigger_changelevel\"\n\"model\" \"*1\"\n\
+         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n"
+    )
+}
+
+// ---------------------------------------------------------------------
+// A one-way gap: the only route to the `trigger_changelevel` is a
+// horizontal jump, bounded by the walking player's own run speed and
+// jump airtime (`ohl_physics::MoveConfig` defaults).
+// ---------------------------------------------------------------------
+
+/// The map name the reachability-report gap/jump fixture is published
+/// under.
+pub const REACH_GAP_MAP: &str = "ohlreachgapsynth";
+
+/// Where the near floor ends and the open gap begins, along `x`.
+pub const REACH_GAP_EDGE_X: f32 = 64.0;
+
+/// How long the far floor runs past the gap, along `x`.
+pub const REACH_GAP_FAR_FLOOR_LENGTH: f32 = 150.0;
+
+/// A `worldspawn`-only corridor (`y` in `-96..96`, floor at `z = 0` on
+/// both sides) with a real, floorless gap `gap_width` units wide starting
+/// at [`REACH_GAP_EDGE_X`] — no brush at all covers that span, so a walk's
+/// down-trace there finds no floor within any bound, not just a deep one
+/// — plus a *non-solid* submodel 1 for a `trigger_changelevel` volume on
+/// the far floor. No bytes here come from any game installation; see
+/// `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn reachability_gap_bsp(gap_width: f32, entities: &str) -> Vec<u8> {
+    const X_MIN: f32 = -256.0;
+    const CEILING: f32 = 300.0;
+    let far_floor_start = REACH_GAP_EDGE_X + gap_width;
+    let x_max = far_floor_start + REACH_GAP_FAR_FLOOR_LENGTH;
+
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(entities);
+
+    let world_heads = b.push_collision_hulls(&[
+        CollisionBrush::half_space([0.0, 0.0, -1.0], -CEILING),
+        CollisionBrush::half_space([-1.0, 0.0, 0.0], -x_max),
+        CollisionBrush::half_space([1.0, 0.0, 0.0], X_MIN),
+        CollisionBrush::half_space([0.0, -1.0, 0.0], -96.0),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], -96.0),
+        // The near floor, `x <= REACH_GAP_EDGE_X`, top at `z = 0`.
+        CollisionBrush::box_brush([X_MIN, -96.0, -32.0], [REACH_GAP_EDGE_X, 96.0, 0.0]),
+        // The far floor, `x >= far_floor_start`, top at `z = 0` — the same
+        // height as the near floor, so only the horizontal distance (not
+        // any ascent) is under test.
+        CollisionBrush::box_brush([far_floor_start, -96.0, -32.0], [x_max, 96.0, 0.0]),
+    ]);
+    let trigger_heads = b.push_collision_hulls(&[]);
+
+    b.push_model(
+        [X_MIN, -96.0, -32.0],
+        [x_max, 96.0, CEILING],
+        [0.0; 3],
+        world_heads,
+        2,
+        0,
+        0,
+    );
+    let trigger_mins = [far_floor_start + 10.0, -96.0, 0.0];
+    let trigger_maxs = [x_max - 10.0, 96.0, 96.0];
+    b.push_model(trigger_mins, trigger_maxs, [0.0; 3], trigger_heads, 2, 0, 0);
+
+    b.build()
+}
+
+/// A `worldspawn` plus an `info_player_start` on the near floor (`x = 0`,
+/// facing `+x`) and a `trigger_changelevel` (submodel `*1`, naming
+/// `next_map`/[`LANDMARK`]) on the far floor beyond the gap — the shape
+/// [`crate::reachability`]'s own jump regression tests walk, both the
+/// narrow (reachable) and wide (unreachable) gap. No bytes here come from
+/// any game installation; see `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn reachability_gap_entities(next_map: &str) -> String {
+    format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"0 0 40\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"trigger_changelevel\"\n\"model\" \"*1\"\n\
+         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n"
+    )
+}

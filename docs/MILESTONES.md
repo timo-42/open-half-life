@@ -3610,6 +3610,35 @@ documented before this package updated it to assert the fix instead.
   facing the walk direction. No scenario for that map was added this
   round; this is left as a follow-up, and the reachability probe used to
   clear "c1a0" is the obvious next tool to point at it.
+- **`--reachability-report` now models one-way falls and jumps.**
+  `.plan/progress-probe-3.md`'s own follow-up investigation found the
+  walk's original 72-unit drop bound (not any real geometry) was the
+  reason two maps read as sealed. The walk's plain step now accepts a
+  one-way fall of any height (a landing deeper than the old 72-unit bound
+  is still called out separately, as `RoundReport::long_drop_cells`), and
+  a jump edge — ascent up to the walking player's own jump apex plus
+  step-up, horizontal reach up to run speed times one jump's airtime, both
+  read live from `ohl_physics::MoveConfig` rather than restated — is tried
+  whenever the plain step fails. Re-run against the three maps
+  `progress-probe-3.md` reported unreachable: "c4a1" (Xen) now reaches
+  40,000 cells (the walk's own cap) via 67 long-drop landings instead of
+  388 cells sealed by plain wall, but still does not reach its
+  `trigger_changelevel` within that cap — consistent with the probe's own
+  "island-hopping, longer than even this bound" read, not yet resolved.
+  "c2a4" (Residue Processing) similarly grows from 416 to 16,948 cells (89
+  of them long-drop landings) and its frontier is no longer wall-only;
+  what remains is `func_breakable` and one `func_wall`, not a fall/jump
+  bound. "c3a2" (Lambda Core) is unchanged (1,467 cells, `func_breakable`
+  and `func_door` on the frontier) — its blocker was never a drop or a
+  jump, only `func_breakable` having no destructible behaviour anywhere
+  in the engine, which this change does not touch. `func_breakable` is
+  not modeled as openable by this walk; see the "known limitation" note
+  in M9.9's own entry below. New synthetic fixtures back two new
+  regression tests: `ohl_engine::test_support::reachability_ledge_bsp`/
+  `reachability_ledge_entities` (a ledge only reachable by a >72-unit
+  drop) and `reachability_gap_bsp`/`reachability_gap_entities` (a gap
+  crossable by a jump within the computed horizontal bound, and the same
+  map widened past it, unreachable).
 
 ## M9.9 (Rust): reachability/route-triage dev tool
 
@@ -3737,6 +3766,16 @@ tested engine module and a `dev-tools`-only CLI flag.
   a limitation of that one probe's tooling rather than a confirmed engine
   defect or a reachability finding in question. No scenario was added for
   any of these four maps.
+- **Follow-up (one-way drops and jumps).** The original 72-unit drop bound
+  was later found to be the reason two of `.plan/progress-probe-3.md`'s six
+  probed maps read as sealed; the walk now also tries a one-way fall of any
+  height and a jump edge. **Known limitation, not addressed by that
+  follow-up:** although `ohl_game::registry::Breakable` now exists (M9.10,
+  landed separately), this walk still does not read it — a `func_breakable`
+  blocking a route still reports on the frontier exactly like a
+  `func_wall`, never as openable-by-damage. Teaching the walk to treat a
+  damageable `func_breakable` as an opening path the same way it already
+  treats a use-openable door is left for whoever extends it next.
 
 ## M9.9 (Rust): touch-activated doors
 
