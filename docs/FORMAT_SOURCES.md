@@ -4643,15 +4643,22 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
 
     **Fixed.** `func_monsterclip` joins `ohl_game::brush::NEVER_SOLID`
     (excluding it from `solid_model_instances`, so `ohl-engine`'s
-    `attach_brush_collision` never attaches it to the shared
+    `attach_brush_collision` never attaches it to the *player's own*
     `CollisionModel`) and `is_never_rendered` (excluding it from
     `model_instances`, so it is never drawn — an invisible brush entity
     rendered as ordinary opaque geometry would embed the camera in it from
     the first frame it overlaps, the same reasoning `func_ladder`'s own
-    entry already records). Unlike `func_ladder`/`func_water`, it
-    contributes no `ContentsVolumeKind` either: it carries no swimmable,
-    climbable, or otherwise player-relevant content once it stops being
-    solid, so nothing needs `attach_contents_brush`.
+    entry already records). A *separate* collision model,
+    `Level::monster_collision`, is built for monster navigation and does
+    attach `func_monsterclip` as solid (`attach_monster_brush_collision`,
+    `monster_solid_model_instances`); see the dual-collision-model
+    paragraph below for the full account — the two models are not the same
+    object, and were not even in this fix's first version (see this
+    item's own revision history). Unlike `func_ladder`/`func_water`,
+    `func_monsterclip` contributes no `ContentsVolumeKind` on either
+    model: it carries no swimmable, climbable, or otherwise
+    player-relevant content once it stops being solid, so nothing needs
+    `attach_contents_brush`.
 
     **This project's own reading, not itself stated by the cited
     wording**: the cited text describes `func_monsterclip` as solid
@@ -4720,11 +4727,58 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
     (`a_func_wall_blocks_the_corridor`), and the regression guard,
     `a_func_monsterclip_does_not_block_the_player`, proves the same
     corridor is walkable end to end when that submodel's classname is
-    `func_monsterclip` instead — the player side; nothing in this repo yet
-    synthesizes a fixture with a live monster to regression-guard the
-    monster side the same way, so `progress_c2a1_reach_changelevel.txt`
-    against the real payload is this fix's only monster-side evidence (see
-    below).
+    `func_monsterclip` instead.
+
+    A PR #129 review round found three further gaps, each closed with a
+    dedicated test rather than only a doc correction:
+
+    - **The two models being "kept in sync" was untested.** Making
+      `Level::sync_monster_brush_collision` an unconditional no-op left
+      `cargo test --workspace` green and a real scenario's log
+      byte-identical. **New** `crates/ohl-engine/tests/
+      monster_collision_sync.rs`: `an_opened_door_moves_in_the_monster_
+      model_too` opens a `func_door_rotating` through the real `use`
+      proximity path and asserts both models agree on its open brush
+      origin/rotation; `a_killtargeted_brush_is_detached_from_the_
+      monster_model_too` reuses `killtarget_brush_despawn.rs`'s own
+      fixture and asserts a scripted `killtarget`'s despawn detaches the
+      brush from *both* models. Both were confirmed to fail outright
+      against the same no-op that previously passed silently.
+    - **The nav-graph build and attack hit-trace switches (`ai.rs:493`,
+      `ai.rs:1042`) had no test independently exercising either.** **New**
+      `crates/ohl-engine/tests/monsterclip_blocks_monster.rs`: a
+      `monster_human_grunt` (a ranged attacker, so it never needs to path
+      anywhere to kill the player) is fenced off from the player by a
+      `func_monsterclip` in `rotating_door_bsp`'s own corridor. Isolating
+      each of the three `ai.rs` sites individually against this fixture
+      (each reverted alone, `cargo test --test monsterclip_blocks_monster`
+      re-run) found: reverting the static navigation-graph build
+      (`nav::build`) alone changes nothing observable, matching the PR
+      review's own finding against the real "Power Up" map —
+      `SightContext`'s own movement/steering already fully gates whether a
+      monster ever gets anywhere nav-graph waypoints would matter for, in
+      every fixture or scenario this project has today; this project does
+      not yet have independent test evidence that the nav-graph build
+      itself needs the monster model, only that it is consistent to give
+      it one. Reverting `SightContext` alone, or the attack hit-trace
+      alone, also leaves the fixture's own behavioural test passing — the
+      two are redundant on this fixture, since either the sensing gate or
+      the attack trace's own re-check independently stops the shot;
+      reverting *both together* does reproduce the regression. A
+      lower-level test in the same file,
+      `a_monsterclip_blocks_a_trace_on_the_monster_model_but_not_the_
+      player_model`, independently pins the attack-trace site's own data
+      (a trace through the fence is blocked on `Game::monster_collision`,
+      not blocked on `Game::collision`) regardless of that redundancy. See
+      that test file's own module doc for the full account.
+    - **`ohl_engine::reachability`'s door detachment (`Game::
+      collision_mut`) only ever mutates the player model.** Documented as
+      deliberate rather than an inconsistency needing a fix: that module's
+      own walk only ever traces against `Game::collision`, never
+      `Game::monster_collision`, so nothing there would observe the
+      divergence — see `crates/ohl-engine/src/reachability.rs`'s
+      `compute_reachability_report` doc comment, appended for this
+      review round.
 
     Run against a locally imported retail payload (identified only by its
     sanitized digest, per `docs/CLEAN_ROOM.md`; no path or map name left
@@ -4743,23 +4797,56 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
     the player-side classification nor `c4a2`'s own map data changed
     between them. A bounded, aggregate-only probe (this project's own
     clean-room `ohl-formats` BSP entities-lump parser plus
-    `ohl_assets::AssetFs`, resolving every map under the same payload's
-    `valve` mod tree exactly as the real gameplay path does, including
-    packed `PACK`/`.pak` archive entries a loose-file-only directory walk
-    would miss; aggregate counts only, no map name/path ever left the
-    local boundary; the probe script itself was not committed) parsed 113
-    valid `.bsp` files (206 `maps/`-prefixed assets listed; the remainder
-    are non-BSP companion files such as overview images under the same
-    prefix, not parse failures on real maps) and found **150**
-    `func_monsterclip` entities in total across them — a superset of
-    `ohl_campaign::CHAPTERS`'s own cited 93-map campaign table, since this
-    mod tree's `maps/` directory also carries the retail multiplayer and
-    bonus maps shipped alongside the campaign, one of which (Power Up, 29
-    `func_monsterclip` entities) is the map the regression above surfaced
-    on.
+    `ohl_assets::AssetFs`, resolving each of `ohl_campaign::CHAPTERS`'/
+    `HAZARD_COURSE_MAPS`'s own cited 93 map names — not the payload's
+    whole `maps/` directory, which also carries retail multiplayer/bonus
+    maps this table does not cite — exactly as the real gameplay path
+    resolves a map name, including packed `PACK`/`.pak` archive entries a
+    loose-file-only directory walk would miss; aggregate counts only, no
+    map name beyond what `ohl_campaign::CHAPTERS` already cites, no path,
+    ever left the local boundary; the probe script itself was not
+    committed) found **147** `func_monsterclip` entities across 92 of the
+    93 cited maps' entities lumps — one, "We've Got Hostiles!"'s `c1a3d`,
+    fails this project's own bounded entities-lump parser with
+    `FormatError::InvalidText`; `Level::load` already accepts that same
+    failure silently (`bsp.entities(&limits).unwrap_or_default()`, an
+    unrelated, pre-existing gap this fix does not touch or attempt to
+    diagnose further) rather than treating it as a load error, which is
+    why `campaign-smoke`'s own "Loaded" count for that map is unaffected.
+    Power Up (`c2a1`, 29 `func_monsterclip` entities, part of that 147) is
+    the map the combat-smoke regression below surfaced on.
+
+    **`xtask/smoke-scenarios/progress_c2a1_reach_changelevel.txt`'s route
+    was re-authored, not its assertions weakened.** A PR #129 review round
+    rejected an earlier version of this fix that dropped "A level change
+    was followed." from that scenario's own present set (and "The player
+    took damage." from its absent set) rather than reach the exit at all —
+    correctly, since that turns a spawn-to-exit progression check into a
+    much weaker "survives, monster dies somewhere" one that would pass on
+    a route that stalls anywhere. The scenario's own present/absent sets
+    (`LEVEL_CHANGE_PRESENT_MONSTER_ENCOUNTER`/`_ABSENT`,
+    `xtask/src/combat_smoke.rs`) are unchanged from before this milestone;
+    the file's *steps* are new, authored fresh against the corrected
+    engine using `.plan/progress-probe-2.md`'s own two-`Game`
+    planner/autopilot technique (a breadth-first walk with parent pointers
+    over a "planning" `Game`'s live collision model, reimplementing that
+    module's private `walk`, to a `trigger_changelevel` — no door needed,
+    since `--reachability-report` already found it reachable at round 0,
+    ~930 units from spawn, unchanged from before the fix — then a
+    **second, freshly reloaded** `Game` flies an autopilot along the
+    resulting waypoints, steering by the real starting eye yaw read off
+    the camera rather than an assumed one). Verified end to end against
+    the real binary in 2 iterations (well within the technique's own
+    10-iteration budget): the first freshly-planned route worked outright;
+    a merge-and-rescale pass over its raw per-tick turns (collapsing
+    identical-degree runs into blocks, purely a line-count cosmetic) was
+    tried and silently changed the outcome — the exact sub-degree rounding
+    risk `.plan/progress-probe-2.md` itself already flags for a merge that
+    only combines bit-for-bit identical per-tick turns — so it was
+    discarded and the unmerged, verified-working route was kept instead.
+    See the scenario file's own header for the full account.
 
     `combat-smoke`'s full scenario suite and `campaign-smoke` (against the
-    same payload) were both re-run after the dual-collision-model fix;
-    their results, including the one `combat-smoke` scenario whose own
-    expectations needed updating because of this fix, are recorded in the
-    milestone entry below rather than duplicated here.
+    same payload) were both re-run after the dual-collision-model fix and
+    after the `c2a1` route below was re-authored; their results are
+    recorded in the milestone entry below rather than duplicated here.

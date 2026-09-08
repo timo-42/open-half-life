@@ -483,6 +483,20 @@ fn changelevel_status(game: &Game, start: Vec3, reached: &[Vec3]) -> ChangeLevel
 /// still needs afterward should call this on a `Game` it loaded solely for
 /// this analysis (matching this project's other headless dev-tools
 /// commands).
+///
+/// This walk (and so this detach) only ever reads/mutates
+/// [`Game::collision`] — the *player's* collision model — through
+/// [`Game::collision_mut`], never [`Game::monster_collision`] (M9.11,
+/// `docs/FORMAT_SOURCES.md` item 33): the two models diverge for the
+/// remainder of a `Game` this function was called on, but that is
+/// harmless here specifically because nothing in this module ever traces
+/// against, or otherwise reads, the monster model — the walk this module
+/// runs is deliberately a player-reachability question ("can the walking
+/// *player* get from spawn to the exit"), not a monster-pathing one, so
+/// simulating an opened door only where this module actually looks is the
+/// right scope, not an oversight. A caller that also needs the monster
+/// model to reflect this walk's simulated door-opens (none do today)
+/// would need its own detach against [`Game::monster_collision_mut`].
 #[must_use]
 pub fn compute_reachability_report(
     game: &mut Game,

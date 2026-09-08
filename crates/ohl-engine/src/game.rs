@@ -799,6 +799,33 @@ impl Game {
         &self.level.brush_collision
     }
 
+    /// The live *monster-side* collision model (M9.11,
+    /// `docs/FORMAT_SOURCES.md` item 33): identical to [`Self::collision`]
+    /// except `func_monsterclip` is attached as solid, which
+    /// [`Self::collision`] never attaches at all. `ai.rs` reads this one
+    /// for every AI-side trace; nothing else in this crate does. `None`
+    /// exactly when [`Self::collision`] is (see [`Self::has_collision`]).
+    #[must_use]
+    pub fn monster_collision(&self) -> Option<&ohl_physics::CollisionModel> {
+        self.level.monster_collision.as_ref()
+    }
+
+    /// As [`Self::monster_collision`], mutably: for a test or dev tool
+    /// that needs to mutate the monster model directly (a door detach that
+    /// should also apply on the monster side, for example) rather than
+    /// through [`crate::Level::sync_monster_brush_collision`].
+    pub fn monster_collision_mut(&mut self) -> Option<&mut ohl_physics::CollisionModel> {
+        self.level.monster_collision.as_mut()
+    }
+
+    /// As [`Self::brush_collision`], but for [`Self::monster_collision`]:
+    /// a superset (every `func_monsterclip` entity is attached here and
+    /// not in [`Self::brush_collision`]).
+    #[must_use]
+    pub fn monster_brush_collision(&self) -> &[(ohl_game::hecs::Entity, ohl_physics::BrushId)] {
+        &self.level.monster_brush_collision
+    }
+
     /// The walking player's own hull-space origin (36 units above the
     /// floor it stands on for the standing hull), as
     /// [`ohl_physics::PlayerController`] tracks it — distinct from
