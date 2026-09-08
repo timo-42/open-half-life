@@ -3610,3 +3610,62 @@ documented before this package updated it to assert the fix instead.
   facing the walk direction. No scenario for that map was added this
   round; this is left as a follow-up, and the reachability probe used to
   clear "c1a0" is the obvious next tool to point at it.
+
+## M9.9 (Rust): reachability/route-triage dev tool
+
+Status: accepted (Rust); evidence: PR #<n> ("Add a reachability/route-
+triage dev tool"). Promotes a technique two throwaway, uncommitted
+investigations (`.plan/progress-probe-1.md`,
+`.plan/c1a0-progress-investigation.md`) each rebuilt from scratch — a
+breadth-first walk over the live collision model to find what blocks the
+player from reaching a map's `trigger_changelevel` — into a reusable,
+tested engine module and a `dev-tools`-only CLI flag.
+
+- **`ohl_engine::reachability`** (`crates/ohl-engine/src/reachability.rs`):
+  a bounded, deterministic breadth-first walk over a 16-unit grid from the
+  player's own hull-space origin, using
+  `ohl_physics::CollisionModel::trace` with `Hull::Standing` and the
+  documented 18-unit step-up (`ohl_physics::movement`'s own `sv_stepsize`),
+  in all eight compass directions, with a floor-drop bound so a pit or
+  ledge is treated as leaving the walkable graph rather than a new cell. A
+  closed `func_door`/`func_door_rotating` blocks the walk exactly as it
+  blocks the walking player, since it traces against the same attached
+  brush. `compute_reachability_report` runs that walk for up to six
+  rounds, reporting per round: how many cells were reached; each
+  frontier-adjacent brush-entity classname's instance count and whether
+  the engine's own use-proximity path (`ohl_game::find_usable_within`'s
+  radius) could open it from a reached cell; and whether any
+  `trigger_changelevel` volume was reached (and its straight-line distance
+  from spawn, rounded to the nearest ten units). Between rounds, every
+  closed door found both on the frontier and use-openable is detached
+  from the collision model (`CollisionModel::detach_brush`) to simulate it
+  having been opened, so a route needing several doors opened in sequence
+  is triaged one round at a time.
+- Two new `Game` accessors this needed and did not already have:
+  `collision`/`collision_mut` (the live `CollisionModel`, for tracing
+  directly rather than through the player-move step) and
+  `brush_collision` (which attached brush hull belongs to which entity)
+  and `player_origin` (the walking player's own hull-space origin, as
+  distinct from `eye_position`).
+- **`--reachability-report`** (`crates/ohl-app/src/game_run.rs`,
+  `dev-tools` only): loads a map through the normal `--map`/payload path
+  headlessly (no window, no GPU) and prints the report as fixed lines —
+  classnames, aggregate counts, and rounded distances only, never a map
+  name, coordinate, or targetname (`docs/CLEAN_ROOM.md`).
+- A **new** synthetic fixture,
+  `ohl_engine::test_support::reachability_door_bsp`/
+  `reachability_changelevel_entities` (a closed corridor door gating a
+  `trigger_changelevel` beyond it, in a bounded room so the walk's own
+  cell cap is never approached), backs a **new** regression test proving
+  the changelevel trigger is reachable only after the one closed,
+  use-openable door on the frontier is opened.
+- Run against the real payload's start map and the first maps of the next
+  two campaign chapters (`ohl_campaign::CHAPTERS` order), the tool
+  reproduces both throwaway investigations' own findings without rebuilding
+  either one: the start map's reachable area stops at a `func_tracktrain`
+  (the intro tram) roughly 7,240 units short of its `trigger_changelevel`,
+  and `c1a0` reports a `func_door` neither investigation could get `use`'s
+  proximity search to reach on its own frontier after the first door
+  opens — the same "if a second door blocks the spot, `use`'s proximity
+  search is not finding it" finding
+  `.plan/c1a0-progress-investigation.md` recorded manually.

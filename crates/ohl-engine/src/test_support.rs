@@ -1371,3 +1371,119 @@ pub fn momentary_rot_button_entities() -> String {
          \"origin\" \"0 0 0\"\n}}\n"
     )
 }
+
+// ---------------------------------------------------------------------
+// A closed door gating a `trigger_changelevel` beyond it
+// ---------------------------------------------------------------------
+
+/// The map name the reachability-report fixture is published under.
+pub const REACH_DOOR_MAP: &str = "ohlreachdoorsynth";
+
+/// The `targetname` of the fixture's blocking `func_door`.
+pub const REACH_DOOR_NAME: &str = "ohl_reach_door";
+
+/// The closed door leaf's world-space box: a real solid submodel filling
+/// the whole 192-unit-wide corridor (`y` in `-96..96`, an 8-unit margin to
+/// each wall, matching [`ROTATING_DOOR_MINS`]'s own reasoning), 16 units
+/// thick along `x`, full corridor height.
+pub const REACH_DOOR_MINS: [f32; 3] = [184.0, -88.0, 0.0];
+/// See [`REACH_DOOR_MINS`].
+pub const REACH_DOOR_MAXS: [f32; 3] = [200.0, 88.0, 96.0];
+
+/// A `worldspawn`-only corridor (`y` in `-96..96`, unbounded along `x`,
+/// floor at `z = 0`, no ceiling) plus a *real* solid submodel 1 for a
+/// plain translating door leaf at [`REACH_DOOR_MINS`]/[`REACH_DOOR_MAXS`]
+/// — compiled at its absolute world position, unlike
+/// [`rotating_door_bsp`]'s door, because a plain `func_door` (not a
+/// `func_door_rotating`) needs no origin-brush-relative compile (see
+/// [`rotating_door_bsp`]'s own doc comment for why a rotating one does) —
+/// and a *non-solid* submodel 2 (bare hull heads, like
+/// [`door_behind_touch_trigger_bsp`]'s touch trigger) beyond the door, for
+/// a `trigger_changelevel` volume. No bytes here come from any game
+/// installation; see `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn reachability_door_bsp(entities: &str) -> Vec<u8> {
+    const TRIGGER_MINS: [f32; 3] = [300.0, -96.0, 0.0];
+    const TRIGGER_MAXS: [f32; 3] = [360.0, 96.0, 96.0];
+    // A closed box, not an unbounded corridor like `rotating_door_bsp`'s:
+    // this module's reachability walk floods every reachable cell rather
+    // than driving a scripted number of ticks, so the fixture's own
+    // reachable area has to stay small and finite for the walk (and its
+    // test) to run quickly and deterministically. `X_MIN`/`X_MAX` cap the
+    // corridor well past the changelevel trigger; `CEILING` caps its
+    // height well past where the door leaf ends up once slid open.
+    const X_MIN: f32 = -256.0;
+    const X_MAX: f32 = 480.0;
+    const CEILING: f32 = 256.0;
+
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(entities);
+
+    let world_heads = b.push_collision_hulls(&[
+        CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+        CollisionBrush::half_space([0.0, 0.0, -1.0], -CEILING),
+        CollisionBrush::half_space([-1.0, 0.0, 0.0], -X_MAX),
+        CollisionBrush::half_space([1.0, 0.0, 0.0], X_MIN),
+        CollisionBrush::half_space([0.0, -1.0, 0.0], -96.0),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], -96.0),
+    ]);
+    let door_heads =
+        b.push_collision_hulls(&[CollisionBrush::box_brush(REACH_DOOR_MINS, REACH_DOOR_MAXS)]);
+    let trigger_heads = b.push_collision_hulls(&[]);
+
+    b.push_model(
+        [X_MIN, -96.0, 0.0],
+        [X_MAX, 96.0, CEILING],
+        [0.0; 3],
+        world_heads,
+        2,
+        0,
+        0,
+    );
+    b.push_model(
+        REACH_DOOR_MINS,
+        REACH_DOOR_MAXS,
+        [0.0; 3],
+        door_heads,
+        2,
+        0,
+        0,
+    );
+    b.push_model(TRIGGER_MINS, TRIGGER_MAXS, [0.0; 3], trigger_heads, 2, 0, 0);
+
+    b.build()
+}
+
+/// A `worldspawn` plus an `info_player_start` short of the door (`x =
+/// 150`, facing `+x`, matching [`rotating_door_entities`]'s own
+/// placement), and a `func_door` (submodel `*1`, targetname
+/// [`REACH_DOOR_NAME`]) that slides straight up (`angle -1`, the
+/// documented "up" sentinel; see `ohl_game::registry::movedir_from_angles`)
+/// clear of the corridor's own unbounded ceiling when opened, with `wait =
+/// -1` so it never auto-closes. No bytes here come from any game
+/// installation; see `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn reachability_door_only_entities() -> String {
+    format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"150 0 40\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"func_door\"\n\"targetname\" \"{REACH_DOOR_NAME}\"\n\
+         \"model\" \"*1\"\n\"speed\" \"100\"\n\"wait\" \"-1\"\n\"angle\" \"-1\"\n\
+         \"origin\" \"0 0 0\"\n}}\n"
+    )
+}
+
+/// As [`reachability_door_only_entities`], plus a `trigger_changelevel`
+/// volume (submodel `*2`) beyond the door, naming `next_map`/[`LANDMARK`]
+/// — the shape [`crate::reachability`]'s own regression test walks: a
+/// closed door hides the level-change trigger until it opens. No bytes
+/// here come from any game installation; see `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn reachability_changelevel_entities(next_map: &str) -> String {
+    format!(
+        "{}{{\n\"classname\" \"trigger_changelevel\"\n\"model\" \"*2\"\n\
+         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n",
+        reachability_door_only_entities(),
+    )
+}

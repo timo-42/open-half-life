@@ -192,6 +192,11 @@ pub struct GameArgs<'a> {
     /// only). Ignored without `headless_screenshot`.
     #[cfg(feature = "dev-tools")]
     pub viewpoint_at_nearest_monster: Option<f32>,
+    /// Runs the bounded reachability/route-triage walk
+    /// (`--reachability-report`, `dev-tools` only) instead of the
+    /// interactive window, a capture, or a script, and prints its report.
+    #[cfg(feature = "dev-tools")]
+    pub reachability_report: bool,
 }
 
 /// The save directory this run reads and writes slots in, or `None` when the
@@ -242,6 +247,12 @@ pub fn run(args: &GameArgs<'_>) -> Result<(), &'static str> {
     }
     if !game.has_collision() {
         tracing::warn!("The map has no usable collision hulls; the camera flies instead.");
+    }
+
+    #[cfg(feature = "dev-tools")]
+    if args.reachability_report {
+        run_reachability_report(&mut game);
+        return Ok(());
     }
 
     if let Some(script_path) = args.script {
@@ -413,6 +424,76 @@ fn write_screenshot(game: &mut Game, path: &Path, pose: &CapturePose) -> Result<
         .map_err(|_| "the capture could not be written")?;
     tracing::info!("Screenshot written.");
     Ok(())
+}
+
+/// Development only: runs `ohl_engine::reachability`'s bounded walk from
+/// the map's player start and prints its report.
+///
+/// Every printed line is either a fixed string, a classname (this
+/// project's own documented entity vocabulary), an aggregate count, or a
+/// distance already rounded to the nearest ten units by
+/// `ohl_engine::reachability` itself — never a map name, a coordinate, or
+/// a targetname (`docs/CLEAN_ROOM.md`; the caller already knows which map
+/// it asked for).
+#[cfg(feature = "dev-tools")]
+fn run_reachability_report(game: &mut Game) {
+    if !game.has_collision() {
+        tracing::info!("Reachability report: the map has no usable collision hulls.");
+        return;
+    }
+
+    let report =
+        ohl_engine::compute_reachability_report(game, &ohl_engine::ReachabilityConfig::default());
+
+    tracing::info!("Reachability report:");
+    for round in &report.rounds {
+        tracing::info!(
+            "Round {}: {} cell(s) reachable{}.",
+            round.round,
+            round.reachable_cells,
+            if round.capped { " (capped)" } else { "" }
+        );
+        if round.frontier_classes.is_empty() {
+            tracing::info!("  Frontier: nothing blocking (or the walk found open space only).");
+        }
+        for class in &round.frontier_classes {
+            tracing::info!(
+                "  Frontier: {} x{}{}.",
+                class.classname,
+                class.instance_count,
+                if class.use_openable {
+                    ", use-openable from a reached cell"
+                } else {
+                    ", not use-openable from a reached cell"
+                }
+            );
+        }
+        match (
+            round.changelevel.reachable,
+            round.changelevel.distance_rounded,
+        ) {
+            (true, Some(distance)) => {
+                tracing::info!(
+                    "  trigger_changelevel: reachable, ~{distance:.0} units from spawn."
+                );
+            }
+            (true, None) => {
+                // Not expected (a reachable trigger always has a distance),
+                // but never fabricate one.
+                tracing::info!("  trigger_changelevel: reachable.");
+            }
+            (false, Some(distance)) => tracing::info!(
+                "  trigger_changelevel: not reachable this round, ~{distance:.0} units from spawn."
+            ),
+            (false, None) => tracing::info!("  trigger_changelevel: none declared."),
+        }
+        if round.doors_opened > 0 {
+            tracing::info!(
+                "  Opening {} door(s) for the next round.",
+                round.doors_opened
+            );
+        }
+    }
 }
 
 /// Development only: places the capture eye `distance` units from whichever
