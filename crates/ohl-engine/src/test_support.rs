@@ -1268,3 +1268,106 @@ pub fn momentary_door_entities() -> String {
          \"origin\" \"0 0 0\"\n}}\n"
     )
 }
+
+/// The map name the health-gated `func_rot_button` fixture below is
+/// published under (distinct from [`ROT_BUTTON_MAP`] purely so both
+/// fixtures can be told apart at a glance; nothing in either loads them
+/// together).
+pub const ROT_BUTTON_HEALTH_MAP: &str = "ohlrotbuttonhealthsynth";
+
+/// The `targetname` of the health-gated `func_rot_button` fixture below.
+pub const ROT_BUTTON_HEALTH_NAME: &str = "ohl_rot_button_health";
+
+/// The `targetname` of the `func_door` the health-gated fixture's button
+/// targets.
+pub const ROT_BUTTON_HEALTH_DOOR_NAME: &str = "ohl_rot_button_health_door";
+
+/// The fixture's `func_rot_button` `health` keyvalue: comfortably below the
+/// published 40-damage `.357 Magnum` single-shot ([`ohl_combat::spec`]'s own
+/// citation for `WeaponId::Python`), so one landed shot exhausts it in a
+/// single hit rather than needing two.
+pub const ROT_BUTTON_HEALTH: f32 = 30.0;
+
+/// [`rot_button_entities`]'s own fixture, with two additions: the
+/// `func_rot_button` carries a `health` keyvalue
+/// ([`ROT_BUTTON_HEALTH`]), and a `weapon_357` sits exactly at the
+/// `info_player_start`'s own origin so the very first step's pickup touch
+/// (`crate::pickups::PICKUP_TOUCH_RADIUS`, well inside a zero-distance
+/// touch) already grants it — a real player armed only by walking over a
+/// weapon, not one spawned holding it. The spawn's `angle` is `90` (yaw
+/// only, pitch `0`; GoldSrc's own `angle` convention — see
+/// `ohl_world::spawn::PlayerSpawn`'s doc comment for "counter-clockwise
+/// around +X") rather than [`rot_button_entities`]'s own `0`: that fixture
+/// is only ever pressed by *proximity* (`find_usable_within`, which does
+/// not care which way the player faces), but this one is pressed by a real
+/// hitscan trace along the camera's view direction, which does. At `angle
+/// 90` the camera faces `+y` directly at [`ROT_BUTTON_CENTER`]; since the
+/// spawn's standing eye height (`origin.z` plus the published
+/// `view_height_standing`, 28, i.e. `z = 68`) already sits inside the
+/// button's own compiled box (`z` in `48..=80`, [`rot_button_bsp`]'s own
+/// `BUTTON_HALF`), a level `pitch = 0` shot lands without needing to aim
+/// up or down. No bytes here come from any game installation; see
+/// `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn rot_button_health_entities() -> String {
+    format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"0 -24 40\"\n\
+         \"angle\" \"90\"\n}}\n\
+         {{\n\"classname\" \"weapon_357\"\n\"origin\" \"0 -24 40\"\n}}\n\
+         {{\n\"classname\" \"func_rot_button\"\n\"targetname\" \"{ROT_BUTTON_HEALTH_NAME}\"\n\
+         \"target\" \"{ROT_BUTTON_HEALTH_DOOR_NAME}\"\n\
+         \"model\" \"*1\"\n\"speed\" \"360\"\n\"distance\" \"90\"\n\"wait\" \"-1\"\n\
+         \"health\" \"{ROT_BUTTON_HEALTH}\"\n\"origin\" \"0 0 0\"\n}}\n\
+         {{\n\"classname\" \"func_door\"\n\"targetname\" \"{ROT_BUTTON_HEALTH_DOOR_NAME}\"\n\
+         \"speed\" \"200\"\n\"wait\" \"-1\"\n}}\n"
+    )
+}
+
+// ---------------------------------------------------------------------
+// A `momentary_rot_button` reached by walking, then driven by held `use`
+// ---------------------------------------------------------------------
+
+/// The map name the `momentary_rot_button` walk-and-hold fixture below is
+/// published under.
+pub const MOMENTARY_ROT_BUTTON_MAP: &str = "ohlmomentaryrotbuttonsynth";
+
+/// The `targetname` of the fixture's `momentary_rot_button`.
+pub const MOMENTARY_ROT_BUTTON_WALK_NAME: &str = "ohl_momentary_rot_button";
+
+/// [`rot_button_bsp`]'s own geometry (a flat floor plus one bounding-box-
+/// only submodel centred on [`ROT_BUTTON_CENTER`]), reused unchanged: a
+/// `momentary_rot_button` needs exactly the same "one real brush submodel"
+/// shape a `func_rot_button` does for `ohl_game::pose::brush_center` (and so
+/// `ohl_game::logic::find_momentary_rot_button_within`'s own proximity
+/// search) to find it at all.
+///
+/// A `worldspawn` plus an `info_player_start` well outside
+/// `ohl_engine::USE_RADIUS` of [`ROT_BUTTON_CENTER`] (`0 -200 40`; about 200
+/// units of horizontal distance, more than three times the 64-unit radius),
+/// facing it (`angle 90`, the same "counter-clockwise from +x" convention
+/// [`rot_button_health_entities`]'s own doc comment explains), and a
+/// `momentary_rot_button` (submodel `*1`, targetname
+/// [`MOMENTARY_ROT_BUTTON_WALK_NAME`], `origin 0 0 0`, `speed 45`/`distance 90`)
+/// with no `target` — this project does not implement `momentary_door`
+/// (`docs/FORMAT_SOURCES.md` item 27's own documented gap), so nothing
+/// would read one back out regardless. Combined `forward`+`use_held` input
+/// must first close the distance (walking) before the proximity search
+/// (`ohl_engine::Systems::triggers_and_movers`, phase 12) can find and
+/// start driving the valve — the same "walk then hold" shape a real
+/// combat-smoke scenario would use, see
+/// `crates/ohl-engine/tests/momentary_rot_button.rs`'s own module doc for
+/// why this synthetic fixture stands in for one. No bytes here come from
+/// any game installation; see `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn momentary_rot_button_entities() -> String {
+    format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"0 -200 40\"\n\
+         \"angle\" \"90\"\n}}\n\
+         {{\n\"classname\" \"momentary_rot_button\"\n\
+         \"targetname\" \"{MOMENTARY_ROT_BUTTON_WALK_NAME}\"\n\
+         \"model\" \"*1\"\n\"speed\" \"45\"\n\"distance\" \"90\"\n\
+         \"origin\" \"0 0 0\"\n}}\n"
+    )
+}

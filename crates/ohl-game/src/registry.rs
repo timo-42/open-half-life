@@ -241,6 +241,10 @@ pub struct Button {
     pub wait: f32,
     /// Hit points before a `func_button` with no `health` responds only to
     /// `use`; `0` means it only responds to `use`/touch, not damage.
+    /// [`crate::logic::Simulation::damage_button`] reads this: once accrued
+    /// damage reaches it, the button presses exactly as a `use` would (see
+    /// that method's own doc comment for the "TODO(black-box)" this closed,
+    /// and `docs/FORMAT_SOURCES.md` item 27).
     pub health: f32,
     /// Seconds between being pressed and firing `target`.
     pub delay: f32,
@@ -328,12 +332,13 @@ pub struct RotButton {
     /// (documented as "-1 makes it stay set").
     pub wait: f32,
     /// Hit points before the button responds to damage; `0` means it does
-    /// not respond to damage at all (only `use`/touch). **`TODO(black-box)`**:
-    /// parsed and stored, but nothing reads it — a `health > 0` button is
-    /// still only `use`/touch-pressable in this crate, so the "Touch
-    /// activates" spawnflag's own documented "(or by being shot, if Health
-    /// is > 0)" half is unimplemented; the same latent gap already exists
-    /// for [`Button::health`], which this field mirrors.
+    /// not respond to damage at all (only `use`/touch). Read by
+    /// [`crate::logic::Simulation::damage_button`], which presses the
+    /// button once accrued damage reaches this value — the "(or by being
+    /// shot, if Health is > 0)" half of the documented "Touch activates"
+    /// wording, closing the `TODO(black-box)` this field previously
+    /// recorded (`docs/FORMAT_SOURCES.md` item 27); [`Button::health`],
+    /// which this field mirrors, is wired through the same method.
     pub health: f32,
     /// Seconds between activation and starting to rotate.
     pub delay: f32,

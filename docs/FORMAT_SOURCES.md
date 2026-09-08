@@ -3810,6 +3810,73 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
     assert the fixed value, so it discriminates the bug rather than merely
     exercising the code path.
 
+    **Correction (dated 2026-09-08, appended, not a retraction of the
+    citations above): the "(or by being shot, if Health is > 0)"
+    `TODO(black-box)` above is closed, for both `func_rot_button` and
+    `func_button`.** Same TWHL wiki `func_rot_button` citation this item
+    already recorded; `func_button`'s own `health` keyvalue is not
+    independently re-cited here since the wording item 27 already quotes
+    ("the button must be damaged to this extent to activate it") is the
+    shared documented behaviour both classnames' `health` keyvalue names,
+    and `Button::health`'s own doc comment already pointed at this same
+    latent gap in `RotButton::health`'s. **Project behaviour:** a new
+    `ohl_game::logic::Simulation::damage_button(registry, entity, amount)`
+    accumulates `amount` against whichever of `Button::health`/
+    `RotButton::health` is non-zero, and once accumulated damage reaches
+    that configured value, presses the entity through
+    `Simulation::activate` — the identical state-machine path a proximity
+    `use` press already takes (`Simulation::use_entity`), so a
+    `func_button`'s `delay`/`wait` and a `func_rot_button`'s
+    `distance`/`speed`/`toggle` shape a damage-triggered press exactly the
+    way they already shape a `use`-triggered one — then resets the
+    counter back to the configured `health`, so the entity can be shot
+    down again once it returns (or, for a `Toggle` `func_rot_button`,
+    once a second press closes it again). **This project's own reading,
+    not itself stated by the cited wording**: remaining health is *not*
+    added to any persisted save section. `docs/FORMAT_SOURCES.md` item 28
+    (below) established that save section 18
+    (`ohl_engine::transition::EntitySnapshot`, a *required* section)
+    round-trips `Button`/`RotButton` whole, so widening either struct
+    with a new field would reject every save file written before this
+    change existed the same way item 28's own table demonstrates for an
+    earlier `rotator` addition; rather than reopen that hazard for a
+    keyvalue this project has no citation for GoldSrc even persisting,
+    `Simulation::damage_button` tracks accumulated damage in its own
+    `button_health` map (mirroring `Simulation::rot_button_touch`'s
+    already-accepted "not carried in `SimulationState`" shape) — a
+    damageable button's accrued damage resets to zero on every save/load,
+    a documented gap rather than a silent one.
+    **Brush entities are now damageable targets, minimally**: neither
+    `Button` nor `RotButton` carries a studio-model pose for
+    `ohl-engine`'s hitbox index (`crate::combat::rebuild_hitbox_index`,
+    phase 5) to have already included, so a hitscan trace against solid
+    world geometry previously reported no entity at all
+    (`ohl_combat::trace::trace_attack_filtered`'s own doc: a world hit
+    never carries an `EntityId`). `crate::combat::
+    push_damageable_brush_hitboxes` now adds one whole-brush
+    [`HitGroup::Generic`] hitbox (`ohl_combat::HitGroup`), taken from the
+    entity's spawn-time `BrushBounds` rather than its currently posed box
+    — the same conservative "test the resting box, not the posed one"
+    simplification this item's own `Simulation::touch_rot_buttons`
+    paragraph above already documents and accepts — for every `Button`/
+    `RotButton` whose `health` is non-zero only; an ordinary (non-
+    damageable) button contributes nothing, so a shot at one still passes
+    through to whatever is behind it exactly as before this change.
+    `crate::combat::resolve_damage` (phase 9) routes a hit landing on such
+    an entity to `Simulation::damage_button` instead of the generic
+    `ohl_combat::Health`-component fallback (`apply_entity_damage`, which
+    neither struct carries a component for anyway). Proven by a new unit
+    test pair in `crates/ohl-game/src/logic.rs`
+    (`damage_button_presses_once_and_fires_target_once_health_is_exhausted`/
+    `damage_rot_button_presses_once_and_fires_target_once_health_is_exhausted`,
+    plus `damage_button_does_nothing_when_health_is_zero`) and a new
+    end-to-end integration test,
+    `crates/ohl-engine/tests/rot_button.rs`'s
+    `a_weapon_shot_from_spawn_presses_a_health_gated_button_and_opens_its_target_door`,
+    which drives a real `Game` loop — pick up a `weapon_357` at the spawn
+    point, select it, reload it, fire one shot straight down the spawn's
+    own facing — with no forced component state anywhere in the test.
+
 ### Save-format items, continued (M9.7: the compatibility floor, measured)
 
 28. **What actually sets the save-file compatibility floor, and the
