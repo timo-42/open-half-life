@@ -5133,3 +5133,60 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
       failed to load its entity world; "no player start *and* no landmark",
       or no entity definitions at all, does. `Level::has_landmark` (and
       `Game::has_landmark`) publish that distinction.
+
+## Campaign chapter interior map table (`CHAPTER_MAPS`)
+
+`crates/ohl-campaign/src/chapters.rs` adds `CHAPTER_MAPS`, keyed by chapter
+title, alongside the existing `CHAPTERS` table described above under
+"Campaign map sequence". It exists so route/fixture code that needs to
+name an *interior* map reached by a level change while still inside a
+chapter (for example a chained scripted route named after the map a level
+change lands in, rather than by its ordinal position — see
+`xtask/chain-routes/` and PR #134) has a cited literal to use, even for the
+two chapters ("Black Mesa Inbound", "Anomalous Materials") whose `CHAPTERS`
+row lists only the chapter's starting map. Full per-literal citations live
+in the doc comment directly above `CHAPTER_MAPS` in that file. New sources
+used only for this table (in addition to the ones already listed above):
+
+- SourceRuns Wiki, "Half-Life Maps"
+  (<https://wiki.sourceruns.org/Half-Life-Maps.html>), a read-only archive
+  page listing every chapter's `.bsp` map names under its own `<h3>`/`<ul>`,
+  fetched directly (HTTP 200). Used as the primary source for the two
+  chapters' previously-missing interior maps (`c0a0a`..`c0a0e` for "Black
+  Mesa Inbound"; `c1a0a`, `c1a0b`, `c1a0d`, `c1a0e` for "Anomalous
+  Materials"), and as set-level (not necessarily order-level) corroboration
+  for every other chapter already covered by `CHAPTERS`.
+- A second, direct fetch of `combineoverwiki.net/wiki/Half-Life_storyline`
+  (already cited above), quoted for one specific sentence: "It is possible
+  that _Gonarch's Lair_ was originally placed after _Interloper_ as the
+  _Gonarch's Lair_ map names begin from `c4a2`, while _Interloper_ map
+  names begin from `c4a1a`."
+
+Combined, the SourceRuns Wiki page and that combineoverwiki sentence are
+two independent, directly-fetched sources agreeing that "Interloper"
+begins at `c4a1a` (not `c4a2b`) — but this table does **not** adopt that
+split: `CHAPTERS`'s own "Xen" row already assigns `c4a1a`..`c4a1f` to
+*Xen*, not Interloper, so `CHAPTER_MAPS`'s "Xen" row reuses that existing
+assignment verbatim (7 maps) and its "Interloper" row stays empty,
+mirroring `CHAPTERS`. Reconciling which chapter title `c4a1a`..`c4a1f`
+actually belongs under — resolving open item 1 above, which would also
+mean revisiting `CHAPTERS`'s own "Xen" row, not just its "Interloper"
+row — is left to a follow-up; this table only records what `CHAPTERS`
+already asserts, never a competing assignment for the same names.
+
+The Steam Community guide "half-life 1 map names" (already cited above)
+returned HTTP 403/429 ("You've made too many requests recently") on every
+direct fetch attempt made while building this table; where it is cited
+above as cross-check corroboration for "Black Mesa Inbound", that is
+recorded honestly as a search-engine summary of the guide's indexed
+content, never as a direct fetch.
+
+As an aggregate-only verification (`docs/CLEAN_ROOM.md` rule 7's payload
+boundary — no map name was read from the payload to *choose* a literal,
+only counted against the already-cited list above): of the local payload
+at the time this table was added, 0 of the cited map names (out of 102
+total across `STARTMAP`, `TRAINMAP`, `HAZARD_COURSE_MAPS`, `CHAPTERS`, and
+`CHAPTER_MAPS`) were present, and all 24 of the payload's own `.bsp` maps
+were uncovered by any cited name — that payload holds only Team Fortress
+Classic and other non-single-player-campaign maps, not the retail
+Half-Life single-player campaign.
