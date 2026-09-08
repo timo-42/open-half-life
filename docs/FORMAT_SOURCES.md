@@ -1778,7 +1778,7 @@ at the end of this section.
   position (`ohl_physics::rotational_ride_velocity`, from
   `Level::brush_rotation`), which is what carries a passenger standing off
   the axis of a `func_rotating`/`func_door_rotating`.
-  `ohl_game::pose::mover_rotation` deliberately reports a
+  ~~`ohl_game::pose::mover_rotation` deliberately reports a
   `func_tracktrain` as *unrotated*, so a rider on one keeps their world-space
   offset from the car through a corner instead of keeping their seat in it —
   a passenger standing at the edge of a long car is eventually left hanging
@@ -1790,7 +1790,69 @@ at the end of this section.
   literally and taking it 180 degrees from the drawn yaw place a passenger in
   two different, both physically plausible, parts of the same car; nothing
   public decides between them, so this stays an open gap
-  (`docs/MILESTONES.md`, M9.17) rather than a guess.
+  (`docs/MILESTONES.md`, M9.17) rather than a guess.~~
+
+  **Closed (M9.18).** The paragraph above is struck rather than deleted,
+  per this doc's append-only convention. Two things closed it.
+
+  *Which heading.* The open question was never which yaw a
+  `func_tracktrain` is *drawn* at — `TrackTrainState::yaw_degrees` has
+  always returned `atan2(direction.y, direction.x)` for the segment the
+  train is on, and the renderer has always applied it — but which of two
+  physically plausible readings of that yaw the published game's own
+  compiled car uses, since the drawn yaw and the drawn yaw plus half a
+  turn seat a passenger in two different parts of the same car. No public
+  page states it, so it was settled the only way left: **project-determined
+  by black-box comparison.** This project's own renders of a tram interior,
+  built once with each convention and captured from the same rider
+  viewpoint at two points of the same ride, were compared against public
+  screenshots of that interior. The as-shipped convention (the drawn yaw
+  taken literally, no added offset) puts the aisle, the seat bench and the
+  wall panel beside the door on the same sides as the public images; the
+  plus-half-a-turn convention is their mirror image, at both timestamps,
+  with a pixel diff confirming a large structural difference rather than
+  noise. `yaw_degrees`'s existing sign and offset are therefore used
+  unchanged. This is an empirical finding about behaviour, not a citation:
+  no engine or SDK source was consulted, and no payload-derived name, path
+  or coordinate is recorded here or anywhere in the change.
+
+  *One transform for everything.* `ohl_game::pose::brush_pose_rotation`
+  now reports that yaw the same way it reports a rotating mover's angle —
+  as an axis, an angle and a pivot in the submodel's own compiled frame —
+  and the renderer (`draw_brush_entities`), the collision hull
+  (`Level::sync_brush_collision`, through
+  `ohl_physics::CollisionModel::set_brush_pose`), the `use`-proximity point
+  (`brush_center`) and the rider's own ride velocity all read that one
+  answer. The pivot is the origin brush for an ordinary train and, for a
+  world-baked one, the chain's first node — the same reference point the
+  world-baked *translation* rule already uses, rather than the world origin
+  a zero pivot would have rotated a world-baked car about.
+
+  *Riding a turn.* A train's heading is the direction of the straight
+  segment it is on, so it does not turn a little each step: it turns the
+  whole angle between two segments in the single step it changes segment
+  on. A tangential `omega x r` base velocity cannot ride that — integrated
+  over one step it walks the rider along the tangent to their circle
+  rather than around it, overshooting the arc and crossing the wall the
+  car has just swept over them, after which the push path cannot free them
+  and they are dropped. So the rotational half of the ride is applied as a
+  finite rigid step instead (`ohl_physics::rotational_ride_step`,
+  `Level::rotational_carry`): the rider is rotated through the same angle
+  about the same pivot the hull was, refused outright if the seat it lands
+  on is not free, and only the car's *translation* is then fed in as
+  `base_velocity` so the turn is applied exactly once. The velocity form
+  above is unchanged and still carries every rotating mover whose per-step
+  angle is small.
+
+  *Still open: the rider's own view does not turn with the car.* A
+  passenger keeps their seat through a corner but keeps facing the same
+  world direction while doing it. Turning the view with the ground brush is
+  cheap to compute (the same per-step angle is already in
+  `Level::brush_rotation`), but nothing public states that a GoldSrc mover
+  yaws its rider's view, and doing it would silently redefine what
+  "forward" means for every existing scripted route and smoke scenario
+  mid-ride. It is left out deliberately rather than guessed at
+  (`docs/MILESTONES.md`, M9.18).
 
 ### Black-box placeholders
 

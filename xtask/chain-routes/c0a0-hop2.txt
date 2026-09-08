@@ -1,4 +1,4 @@
-# M9.17 chain-walk route 2: the map the *second* level change out of
+# M9.18 chain-walk route 2: the map the *second* level change out of
 # ohl_campaign::STARTMAP ("c0a0") lands in, walked from its arrival point.
 #
 # Project-authored; no bytes here come from any game installation (see
@@ -10,8 +10,28 @@
 # (1/60 s) of simulated time — not seconds.
 #
 # Route, in words only: the ride the previous two routes were on is still
-# under the player when this one starts, and it carries them to this map's
-# own level change without a single key press. So this route waits, and
-# `run_chained` ends it at the boundary the ride reaches.
+# under the player when this one starts, but this map's own copy of the
+# track runs out shortly afterwards and the car parks in a tunnel. Staying
+# aboard therefore ends the walk boxed inside the parked car; stepping
+# straight back off it, before it pulls away, puts the player down in the
+# open instead.
+#
+# That step is the visible result of M9.18: this arrival point used to be
+# *sealed*. With the car's collision hull left unrotated it sat flush
+# across the spot the transition hands the player off to, and a
+# post-chain --reachability-report found exactly one reachable cell with
+# no frontier entity of any kind — no sequence of movement tokens could
+# move the player at all (the finding that closed out the M9.17 route
+# investigation). With the hull posed at the heading the car is drawn at,
+# the same arrival point reports tens of thousands of reachable cells and
+# this route walks out of the car into them.
+#
+# The walk stops here rather than at a level change: the nearest boundary
+# this map offers from the open ground below is behind two closed
+# `func_door`s that the report finds are not use-openable from anywhere
+# the player can reach, which is a door/trigger question for a later
+# milestone and not something a movement route can answer. See
+# docs/MILESTONES.md M9.18.
 
-5400 wait
+60 wait
+600 back

@@ -1187,7 +1187,13 @@ impl Game {
         // spawned it). A zero `dt` records the new positions with no
         // velocity, so the first step does not read that placement as one
         // step's worth of motion and hand a rider a base velocity of
-        // thousands of units per second.
+        // thousands of units per second. The save-restore path
+        // (`Self::restore`, at the end of this file) makes the
+        // identical zero-`dt` call for the identical reason — a restored
+        // mover's `Transform` is just as far from where a fresh `Level`
+        // attached its hull — and `crates/ohl-engine/tests/
+        // train_across_level_change.rs` pins this one so it cannot go
+        // missing unnoticed.
         next.sync_brush_collision(0.0);
 
         let mut globals = if newunit {
@@ -1625,7 +1631,9 @@ impl Game {
         // full restore displacement. Syncing once here, with a
         // non-positive `dt`, moves every brush to its restored position
         // and records zero velocity for all of them — exactly the seed a
-        // cold load already gets for free.
+        // cold load already gets for free. `Self::apply_transition` makes
+        // the identical zero-`dt` call, for the identical reason, after a
+        // level change re-seats a carried `func_tracktrain`.
         self.level.sync_brush_collision(0.0);
     }
 

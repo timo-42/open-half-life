@@ -951,6 +951,174 @@ pub fn zero_speed_node_train_bsp() -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------
+// A `func_tracktrain` whose track turns a square corner
+// ---------------------------------------------------------------------
+
+/// The map name the bending track-train fixture is published under.
+pub const BEND_TRAIN_MAP: &str = "ohlbendtrainsynth";
+
+/// The `targetname` of the fixture's `func_tracktrain`.
+pub const BEND_TRAIN_NAME: &str = "ohl_bend_train";
+
+/// Where the fixture's origin brush sits — the entity's own `origin`
+/// keyvalue, deliberately non-zero so the fixture exercises the ordinary
+/// origin-brush shape (compiled geometry stored relative to this point,
+/// `ohl_game::pose::track_train_transform`) rather than the world-baked
+/// one. It is also the chain's first node, so the car spawns exactly where
+/// it was compiled.
+pub const BEND_TRAIN_ORIGIN: [f32; 3] = [100.0, 0.0, 0.0];
+
+/// The chain's middle node: the corner itself. The first segment runs
+/// `+X` from [`BEND_TRAIN_ORIGIN`] to here, the second runs `+Y` from here
+/// to [`BEND_TRAIN_END`], so the car's drawn yaw steps from 0 to 90
+/// degrees in the single simulation step it changes segment on — the
+/// whole point of the fixture.
+pub const BEND_TRAIN_CORNER: [f32; 3] = [400.0, 0.0, 0.0];
+
+/// The chain's last node.
+pub const BEND_TRAIN_END: [f32; 3] = [400.0, 300.0, 0.0];
+
+/// The car's compiled half-extents about its own origin brush: long along
+/// its own `+X` (the direction it faces), narrow across. Long enough that
+/// a passenger seated [`BEND_SEAT_OFFSET_X`] units from the pivot is well
+/// inside it before the corner and would be well outside the *turned* car
+/// if the turn did not carry them.
+pub const BEND_CAR_HALF_LENGTH: f32 = 96.0;
+/// See [`BEND_CAR_HALF_LENGTH`].
+pub const BEND_CAR_HALF_WIDTH: f32 = 40.0;
+/// The car floor's top, in the compiled frame.
+pub const BEND_CAR_TOP_Z: f32 = 8.0;
+/// The car floor's bottom, in the compiled frame.
+pub const BEND_CAR_BOTTOM_Z: f32 = -8.0;
+
+/// How far along the car, from its origin brush, the fixture's
+/// `info_player_start` seats the passenger.
+pub const BEND_SEAT_OFFSET_X: f32 = 64.0;
+
+/// The train's `speed`/`startspeed`, units per second. A non-zero
+/// `startspeed` starts it moving at map load without a trigger.
+pub const BEND_TRAIN_SPEED: f32 = 100.0;
+
+/// A void world (submodel `*0`, no collision of its own, so the car is the
+/// only thing holding anyone up) carrying a `func_tracktrain` (submodel
+/// `*1`) on a three-node `path_track` chain that turns a square corner,
+/// with an `info_player_start` seated on the car [`BEND_SEAT_OFFSET_X`]
+/// units *away from* its origin brush.
+///
+/// This is the shape the "riding movers" gap was about: the car turns to
+/// face its segment, so at the corner its whole body swings about the
+/// origin brush, and the seat the passenger is standing on swings with it.
+/// A passenger who is not turned with the car keeps their world offset
+/// from it, ends up beyond the turned car's own footprint, and falls into
+/// the void this fixture deliberately leaves under them.
+///
+/// Every keyvalue and coordinate here is authored for this project;
+/// nothing is derived from any payload (`docs/CLEAN_ROOM.md`).
+#[must_use]
+pub fn bending_track_train_bsp() -> Vec<u8> {
+    let mut b = Bsp30Builder::new();
+    let [ox, oy, oz] = BEND_TRAIN_ORIGIN;
+    let [cx, cy, cz] = BEND_TRAIN_CORNER;
+    let [ex, ey, ez] = BEND_TRAIN_END;
+    let seat_x = ox + BEND_SEAT_OFFSET_X;
+    let seat_z = oz + BEND_CAR_TOP_Z + 36.0;
+    let speed = BEND_TRAIN_SPEED;
+    b.set_entities_text(&format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\
+         \"origin\" \"{seat_x} {oy} {seat_z}\"\n\"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"func_tracktrain\"\n\"model\" \"*1\"\n\
+         \"targetname\" \"{BEND_TRAIN_NAME}\"\n\
+         \"target\" \"ohl_bend1\"\n\"speed\" \"{speed}\"\n\
+         \"startspeed\" \"{speed}\"\n\"height\" \"0\"\n\
+         \"origin\" \"{ox} {oy} {oz}\"\n}}\n\
+         {{\n\"classname\" \"path_track\"\n\"targetname\" \"ohl_bend1\"\n\
+         \"target\" \"ohl_bend2\"\n\"origin\" \"{ox} {oy} {oz}\"\n}}\n\
+         {{\n\"classname\" \"path_track\"\n\"targetname\" \"ohl_bend2\"\n\
+         \"target\" \"ohl_bend3\"\n\"origin\" \"{cx} {cy} {cz}\"\n}}\n\
+         {{\n\"classname\" \"path_track\"\n\"targetname\" \"ohl_bend3\"\n\
+         \"origin\" \"{ex} {ey} {ez}\"\n}}\n"
+    ));
+
+    // Submodel 0: a void world, so the car's own brush is the only thing
+    // holding the passenger up.
+    let world_heads = b.push_collision_hulls(&[]);
+    b.push_model(
+        [-4096.0, -4096.0, -4096.0],
+        [4096.0, 4096.0, 4096.0],
+        [0.0, 0.0, 0.0],
+        world_heads,
+        2,
+        0,
+        0,
+    );
+    // Submodel 1: the car, compiled relative to its origin brush.
+    let car_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(
+        [
+            -BEND_CAR_HALF_LENGTH,
+            -BEND_CAR_HALF_WIDTH,
+            BEND_CAR_BOTTOM_Z,
+        ],
+        [BEND_CAR_HALF_LENGTH, BEND_CAR_HALF_WIDTH, BEND_CAR_TOP_Z],
+    )]);
+    b.push_model(
+        [
+            -BEND_CAR_HALF_LENGTH,
+            -BEND_CAR_HALF_WIDTH,
+            BEND_CAR_BOTTOM_Z,
+        ],
+        [BEND_CAR_HALF_LENGTH, BEND_CAR_HALF_WIDTH, BEND_CAR_TOP_Z],
+        [0.0, 0.0, 0.0],
+        car_heads,
+        2,
+        0,
+        0,
+    );
+    b.build()
+}
+
+/// Where [`bending_track_train_bsp`]'s car currently is, for a test that
+/// has to express an expectation in the car's own frame.
+#[derive(Debug, Clone, Copy)]
+pub struct BendTrainPose {
+    /// The world point the car's compiled `(0, 0, 0)` — its origin brush —
+    /// currently sits at: the same `origin` `sync_brush_collision` hands
+    /// `ohl_physics::CollisionModel::set_brush_pose` and the renderer
+    /// composes its placement matrix with.
+    pub origin: [f32; 3],
+    /// The yaw, in degrees, the car is both drawn and collided at.
+    pub yaw_degrees: f32,
+}
+
+/// Reads [`BendTrainPose`] off a running [`crate::Game`] loaded with
+/// [`bending_track_train_bsp`].
+///
+/// # Panics
+/// If the game is not running that fixture, or its train has stopped
+/// somewhere with no defined heading.
+#[must_use]
+pub fn bend_train_pose(game: &crate::Game) -> BendTrainPose {
+    let registry = game.registry();
+    let entity = registry.find(BEND_TRAIN_NAME)[0];
+    let authored = registry
+        .world
+        .get::<&ohl_game::registry::Transform>(entity)
+        .expect("the fixture train has a transform")
+        .origin;
+    let origin = authored + ohl_game::pose::brush_offset(registry, entity);
+    let (axis, yaw_degrees, _) = ohl_game::pose::brush_pose_rotation(registry, entity);
+    assert_eq!(
+        axis,
+        ohl_physics::Vec3::Z,
+        "the fixture train is on a horizontal segment and must report a yaw"
+    );
+    BendTrainPose {
+        origin: origin.to_array(),
+        yaw_degrees,
+    }
+}
+
+// ---------------------------------------------------------------------
 // A `func_door_rotating` blocking a corridor
 // ---------------------------------------------------------------------
 
@@ -1006,7 +1174,7 @@ pub const ROTATING_DOOR_PIVOT: [f32; 3] = [192.0, -88.0, 0.0];
 /// .. `[ROTATING_DOOR_MAXS] - [ROTATING_DOOR_PIVOT]` — rather than at its
 /// absolute world position, matching how a real map's own `func_train`
 /// compiles (see `crate::render::rotated_placement`'s and
-/// `crate::render::track_train_transform`'s doc comments: "the compiler
+/// `ohl_game::pose::track_train_transform`'s doc comments: "the compiler
 /// writes that origin brush's position into the entity's `origin`
 /// keyvalue and stores the submodel's geometry relative to it"), which
 /// [`rotating_door_entities`]'s `origin` keyvalue must then equal exactly

@@ -25,7 +25,8 @@
 use ohl_physics::controller::TICK_SECONDS;
 use ohl_physics::test_support::build_platform_room;
 use ohl_physics::{
-    MoveConfig, MoveInput, PlayerState, Vec3, player_move_events, rotational_ride_velocity,
+    MoveConfig, MoveInput, PlayerState, Vec3, player_move_events, rotational_ride_step,
+    rotational_ride_velocity,
 };
 use proptest::prelude::*;
 
@@ -226,6 +227,125 @@ fn hull_resting_on_a_slowly_rotating_disc_stays_on_it(
     Ok(())
 }
 
+/// A hull seated off the pivot on a body that turns a quarter circle over
+/// `steps` simulation steps stays on it, is never left inside its solid,
+/// and ends up rotated about that pivot — the seat it was standing on,
+/// wherever the turn took it.
+///
+/// This is the `func_tracktrain` case rather than the `func_rotating` one
+/// above: a train's heading is the direction of the straight path segment
+/// it is currently on, so it does not turn a little every step — it turns
+/// the *whole* angle between two segments in the one step it changes
+/// segment on. `steps == 1` is therefore a real shape a map can produce,
+/// not a pathological input, and it is exactly the shape a tangential
+/// `omega x r` base velocity cannot ride: integrated over one step that
+/// velocity walks the rider along the tangent to their circle instead of
+/// around it, overshooting the arc and crossing the wall the body just
+/// swept over them. [`ohl_physics::rotational_ride_step`] rotates them
+/// through the same angle about the same pivot instead, which is what this
+/// checks holds for every subdivision of the same quarter turn.
+///
+/// The carry is applied here exactly the way `ohl-engine`'s
+/// `Systems::player_move` applies it: pose the brush, then move the rider
+/// rigidly with it, then run the ordinary move with the body's
+/// *translation* (zero, for a body that only turns) as base velocity.
+/// `steps` as an `f32`. The strategy that feeds it is bounded well inside
+/// `f32`'s exactly-representable integer range, so this is exact.
+fn steps_as_f32(steps: u32) -> f32 {
+    f32::from(u16::try_from(steps).expect("the strategy bounds `steps` far below `u16::MAX`"))
+}
+
+fn hull_seated_off_the_pivot_rides_a_quarter_turn(
+    steps: u32,
+    clockwise: bool,
+    radius: f32,
+) -> Result<(), TestCaseError> {
+    let (mut model, brush) = build_platform_room();
+    let axis = if clockwise { -Vec3::Z } else { Vec3::Z };
+    let config = MoveConfig::default();
+    let per_step_degrees = 90.0 / steps_as_f32(steps);
+    let angular_velocity = axis * per_step_degrees.to_radians() / TICK;
+
+    let start = Vec3::new(radius, 0.0, RIDER_ORIGIN_Z);
+    let mut state = PlayerState::at(start);
+    let mut angle = 0.0f32;
+
+    // Settle onto the body first: a freshly-placed `PlayerState` has not
+    // categorised its ground yet, and a one-step quarter turn would
+    // otherwise be over before the rider had ever reported standing on
+    // anything. The engine's own rider path has the same precondition —
+    // it carries whatever last tick's `categorize_position` recorded.
+    for _ in 0..4 {
+        player_move_events(&model, &mut state, &MoveInput::default(), &config, TICK);
+    }
+    prop_assert_eq!(
+        state.ground_brush,
+        Some(brush),
+        "the rider never settled onto the body"
+    );
+
+    for step in 0..steps {
+        angle += per_step_degrees;
+        model.set_brush_pose(brush, Vec3::ZERO, Vec3::ZERO, axis, angle);
+
+        if state.ground_brush == Some(brush) {
+            let carried = rotational_ride_step(Vec3::ZERO, angular_velocity, TICK, state.origin);
+            // The engine refuses a carry whose destination is solid; on
+            // this fixture's flat disc it never is, and a silent refusal
+            // here would hide the very thing under test.
+            prop_assert!(
+                !ohl_physics::contents::is_solid(
+                    model.point_contents(carried + Vec3::Z * config.view_height_standing)
+                ),
+                "step {step}: the carried seat at {carried:?} was inside the disc"
+            );
+            state.origin = carried;
+        }
+        player_move_events(&model, &mut state, &MoveInput::default(), &config, TICK);
+
+        prop_assert!(
+            state.origin.is_finite(),
+            "step {step}: origin {:?}",
+            state.origin
+        );
+        let eye = state.origin + Vec3::Z * config.view_height_standing;
+        prop_assert!(
+            !ohl_physics::contents::is_solid(model.point_contents(eye)),
+            "step {step}: the rider's eye ended up inside the body at {:?}",
+            state.origin
+        );
+        prop_assert!(
+            state.on_ground && state.ground_brush == Some(brush),
+            "step {step}: the rider left the body (on_ground {}, ground {:?})",
+            state.on_ground,
+            state.ground_brush
+        );
+        prop_assert!(
+            (state.origin.z - RIDER_ORIGIN_Z).abs() <= 1.0,
+            "step {step}: the rider sank or rose to z = {}",
+            state.origin.z
+        );
+    }
+
+    // A quarter turn about the origin takes `(radius, 0)` to `(0, radius)`
+    // counter-clockwise, or `(0, -radius)` clockwise. The tolerance covers
+    // the ordinary move's own friction and ground snapping acting on the
+    // carried position afterwards, not a different endpoint.
+    let expected = if clockwise {
+        Vec3::new(0.0, -radius, RIDER_ORIGIN_Z)
+    } else {
+        Vec3::new(0.0, radius, RIDER_ORIGIN_Z)
+    };
+    let offset = (state.origin - expected).truncate().length();
+    prop_assert!(
+        offset <= 2.0,
+        "after a quarter turn about the pivot the rider should be at {expected:?}, \
+         but ended at {:?} ({offset} units away)",
+        state.origin
+    );
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(512))]
 
@@ -257,6 +377,15 @@ proptest! {
         radius in 24.0f32..96.0,
     ) {
         hull_resting_on_a_slowly_rotating_disc_stays_on_it(degrees_per_second, clockwise, radius)?;
+    }
+
+    #[test]
+    fn a_hull_seated_off_the_pivot_rides_a_quarter_turn_however_it_is_subdivided(
+        steps in 1u32..48,
+        clockwise in any::<bool>(),
+        radius in 24.0f32..96.0,
+    ) {
+        hull_seated_off_the_pivot_rides_a_quarter_turn(steps, clockwise, radius)?;
     }
 }
 

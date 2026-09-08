@@ -4612,3 +4612,110 @@ opening ride and the rest of the campaign, and all three had to go.
   carrying a fire-on-pass `message` fires it as the train passes and not
   before. Each was verified to fail against a mutant that removes the
   behaviour it pins.
+
+## M9.18 (Rust): the car a passenger rides is the car it collides with
+
+Closes the "Still open" item M9.17 left above: a `func_tracktrain`'s
+collision hull is now posed at the heading the car is drawn at, and a
+passenger is turned with it.
+
+- **One transform serves render, collision, `use`-proximity and riders**
+  (`ohl_game::pose::brush_pose_rotation`). It reports the axis, angle and
+  compiled-frame pivot a brush entity is posed at: a rotating mover's
+  angle exactly as `mover_rotation` always did, *and* a `func_tracktrain`'s
+  drawn yaw. `Level::sync_brush_collision` and
+  `attach_brush_collision` feed it to
+  `ohl_physics::CollisionModel::set_brush_pose`,
+  `Renderer::draw_brush_entities` feeds it to the same
+  `rotated_placement` matrix (which now takes that pivot), and
+  `pose::brush_center` rotates the `use` point through it. Before this, a
+  train's hull was translated only, so through a bend the drawn car and
+  the colliding car pointed different ways.
+- **The pivot is the origin brush, or the chain's first node.** A train
+  built around an origin brush has its geometry compiled relative to that
+  brush, so the pivot is the compiled frame's own `(0, 0, 0)`, as for
+  every other rotating mover. A world-baked train (`origin` `0 0 0`,
+  absolute vertices) has no origin brush, and the same first-node rule
+  M9.16 already uses to measure its *translation* supplies the pivot too —
+  a zero pivot would have swung such a car about the world origin, which
+  for a car built thousands of units out is not a rotation but a
+  teleport.
+- **Which heading: project-determined by black-box comparison.** Which of
+  the two physically plausible readings of the drawn yaw the published
+  game's compiled car uses is stated by no public page, which is exactly
+  why M9.17 recorded it rather than guessing. It was settled by building
+  this project's own renders of a tram interior under each convention and
+  comparing them against public screenshots of that interior: the
+  as-shipped convention (`TrackTrainState::yaw_degrees` taken literally,
+  no added half turn) matches; the other is the mirror image. No engine or
+  SDK source was consulted and no payload-derived name, path or coordinate
+  is recorded. See `docs/FORMAT_SOURCES.md`, "Riding movers".
+- **A rider is carried through the turn as one rigid step**
+  (`ohl_physics::rotational_ride_step`, `Level::rotational_carry`,
+  applied in `Systems::player_move`). A train's heading is the direction
+  of the straight segment it is on, so it turns the whole angle between
+  two segments in the single step it changes segment on. The existing
+  `omega x r` base velocity cannot ride that — over one step it walks the
+  rider along the tangent instead of around the arc, into the wall the car
+  has just swept over them — so the rider is rotated through the same
+  angle about the same pivot the hull was, refused if the seat it lands on
+  is not free, with only the car's translation left for `base_velocity`.
+  Every rotating mover whose per-step angle is small is unaffected: the
+  two agree to a rounding error there.
+- **The third hop's arrival point is no longer sealed.** The route
+  investigation that closed out M9.17 found that arrival reduced to
+  *exactly one* reachable cell with no frontier entity of any kind — no
+  movement token could move the player at all, because the parked car's
+  unrotated hull sat across the spot the transition hands them off to.
+  With the hull posed at the drawn heading, a post-chain
+  `--reachability-report` from the same arrival point reports tens of
+  thousands of reachable cells, and `xtask/chain-routes/c0a0-hop2.txt` now
+  steps off the car into them.
+- **The chain walk reports distinct depth 3, down from M9.17's 4, and the
+  drop is the fix working.** Both later hops are re-authored:
+  `c0a0-hop1.txt` drops its "step toward the middle of the car"
+  workaround, which existed only because a rider was scraped off a turning
+  car and which now actively nudges the passenger off a seat they would
+  otherwise keep. Riding the whole way instead crosses the same map's
+  boundary earlier, at the point the car itself reaches it, and lands at a
+  different arrival point in the same destination map — one where that
+  map's own copy of the track runs out shortly afterwards. M9.17's fourth
+  map was reached from the *other* arrival point, and reached it with a
+  player who had been left standing frozen in geometry for 53 simulated
+  seconds, pressing nothing and moving not at all, until a level change
+  fired around them: an artifact of exactly the bug this milestone
+  removes, not a route. `cargo xtask chain-walk` passes (its own
+  `--min-depth` default is 2) at 3 routes, 3 distinct maps, 2 level
+  changes, 93.6 simulated seconds.
+- **Still open: the last stretch of hop 2 is behind two closed doors.**
+  From the open ground the passenger now steps out into, the nearest
+  `trigger_changelevel` is a few hundred units away behind two
+  `func_door`s that the reachability walk finds are not use-openable from
+  anywhere reachable — a door/trigger question, not a movement one, and
+  the natural next thing to pick up.
+- **Still open: a rider's *view* does not turn with the car.** Cheap to
+  compute, but nothing public states that a GoldSrc mover yaws its rider's
+  view, and adding it would silently redefine "forward" for every existing
+  scripted route mid-ride. Left out deliberately; see
+  `docs/FORMAT_SOURCES.md`, "Riding movers".
+- **Tests**: a proptest in `crates/ohl-physics/tests/rotating_riders.rs`
+  (a hull seated off the pivot on a body that turns a quarter circle over
+  any number of steps, down to one, stays on it, is never inside its
+  solid, and ends rotated about that pivot); a unit test in
+  `crates/ohl-engine/src/level.rs` asserting render and collision agree on
+  a *turning* train's pose at several progress values either side of a
+  corner, alongside the existing rotating-door pair; and
+  `crates/ohl-engine/tests/track_train_bend.rs`, which rides a synthetic
+  square corner and asserts the passenger is never inside solid, never
+  leaves the car's own live footprint, and ends up on the turned car
+  rather than beside it. Both engine tests were verified to fail against a
+  mutant that drops the rider carry.
+- **Also, from the M9.17 review**: the post-transition
+  `Level::sync_brush_collision(0.0)` re-baseline is now pinned by a test
+  (removing it left every other gate green while the first step after a
+  handover moved the train's hull at tens of thousands of units per
+  second), the no-matching-node fallback of `transition::
+  restore_track_train` is covered (a carried node name the destination
+  declares nowhere leaves that map's own train on its own spawn node), and
+  the two identical zero-`dt` syncs — after a transition and after a save
+  restore — now cross-reference each other.

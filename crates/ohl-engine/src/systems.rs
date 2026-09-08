@@ -904,6 +904,34 @@ impl Systems {
         level.sync_brush_collision(dt);
         level.movers_blocked.clear();
         if let Some(collision) = level.collision.as_ref() {
+            // A brush the player was standing on that *turned* this step
+            // carries them round with it as one rigid motion, before
+            // anything else looks at where either of them is. A
+            // `func_tracktrain` takes the whole angle between two path
+            // segments in the one step it changes segment on, and its hull
+            // sweeps over its own passengers doing it: integrating the
+            // tangential `omega x r` ride velocity through the ordinary
+            // move (below) would walk them off the arc and into the wall
+            // that just swept past, leaving them embedded and, once the
+            // push below cannot free them, dropped off the car. Rotating
+            // them by the same angle about the same pivot instead keeps
+            // them exactly where they were sitting. The move is refused
+            // outright if the seat it lands on is not free, so this can
+            // never place the player inside solid; the push path below
+            // then handles them as it handles any other mover that moved
+            // into them. See "Riding movers" in `docs/FORMAT_SOURCES.md`.
+            let carried_by_rotation = controller
+                .state
+                .ground_brush
+                .and_then(|brush| level.rotational_carry(brush, controller.state.origin, dt))
+                .filter(|carried| {
+                    !collision
+                        .trace(controller.state.hull(), *carried, *carried)
+                        .start_solid
+                });
+            if let Some(carried) = carried_by_rotation {
+                controller.state.origin = carried;
+            }
             // A mover that moved into the player this step (a closing
             // `func_door`, a rising `func_plat`) must push them clear
             // rather than leave them embedded in its new solid; this is
@@ -949,7 +977,19 @@ impl Systems {
             // `func_rotating` disc or a swinging `func_door_rotating`
             // carries the player the same way a `func_train` already does.
             controller.base_velocity = controller.state.ground_brush.map_or(Vec3::ZERO, |brush| {
-                level.brush_ride_velocity(brush, controller.state.origin)
+                if carried_by_rotation.is_some() {
+                    // The rotation was already applied above, as a rigid
+                    // step; only the whole-body translation is left for the
+                    // ordinary ride blend, or the turn would be applied
+                    // twice.
+                    level
+                        .brush_velocity
+                        .get(&brush)
+                        .copied()
+                        .unwrap_or(Vec3::ZERO)
+                } else {
+                    level.brush_ride_velocity(brush, controller.state.origin)
+                }
             });
             controller.advance(collision, &input.controller_input(), dt);
             camera.position = controller.eye_position().to_array();

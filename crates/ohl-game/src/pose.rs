@@ -209,12 +209,29 @@ pub fn platform_offset(registry: &Registry, entity: Entity) -> Vec3 {
 /// deliberately.
 #[must_use]
 pub fn track_train_transform(registry: &Registry, entity: Entity) -> (Vec3, Option<f32>) {
-    let Ok(state) = registry.world.get::<&TrackTrainState>(entity) else {
+    let Some((state, train, _, reference)) = train_placement_reference(registry, entity) else {
         return (Vec3::ZERO, None);
     };
-    let Ok(train) = registry.world.get::<&TrackTrain>(entity) else {
-        return (Vec3::ZERO, None);
-    };
+    (state.position() - reference, state.yaw_degrees(&train))
+}
+
+/// The pieces every train placement is built from: its live state, its
+/// static keyvalues, the `origin` keyvalue its geometry was placed by, and
+/// the world-space *reference point* its path displacement (and, for a
+/// `func_tracktrain`, its yaw) is measured from — the origin brush for an
+/// ordinary train, the chain's first node for a world-baked one. See
+/// [`track_train_transform`]'s doc comment for why those two.
+fn train_placement_reference(
+    registry: &Registry,
+    entity: Entity,
+) -> Option<(
+    hecs::Ref<'_, TrackTrainState>,
+    hecs::Ref<'_, TrackTrain>,
+    Vec3,
+    Vec3,
+)> {
+    let state = registry.world.get::<&TrackTrainState>(entity).ok()?;
+    let train = registry.world.get::<&TrackTrain>(entity).ok()?;
     let authored = registry
         .world
         .get::<&Transform>(entity)
@@ -224,7 +241,32 @@ pub fn track_train_transform(registry: &Registry, entity: Entity) -> (Vec3, Opti
     } else {
         authored
     };
-    (state.position() - reference, state.yaw_degrees(&train))
+    Some((state, train, authored, reference))
+}
+
+/// The point a `func_tracktrain` turns about, expressed in the *compiled*
+/// frame its submodel's own vertices are stored in — the frame
+/// [`ohl_physics::CollisionModel::set_brush_pose`]'s `pivot` and
+/// `ohl-engine`'s render placement both take.
+///
+/// A train built around an origin brush has its geometry compiled relative
+/// to that brush, so the brush — the point the published `height`
+/// keyvalue is defined against, and therefore the point the car rides its
+/// track on ([`track_train_transform`]) — is the compiled frame's own
+/// `(0, 0, 0)`. A world-baked train has no origin brush, and the same
+/// first-node rule that stands in for one when measuring its *translation*
+/// stands in for one here: its first `path_track`, whose world coordinates
+/// are also compiled-frame coordinates because a world-baked submodel's
+/// vertices are absolute.
+///
+/// `Vec3::ZERO` for any entity that is not a train, which is also the
+/// no-op every other brush entity wants.
+#[must_use]
+pub fn track_train_pivot(registry: &Registry, entity: Entity) -> Vec3 {
+    let Some((_, _, authored, reference)) = train_placement_reference(registry, entity) else {
+        return Vec3::ZERO;
+    };
+    reference - authored
 }
 
 /// Whether `entity`'s brush geometry was compiled in absolute world space
@@ -383,6 +425,55 @@ pub fn mover_rotation(registry: &Registry, entity: Entity) -> (Vec3, f32) {
     pendulum_degrees(registry, entity)
 }
 
+/// The rotation a brush entity's geometry is currently posed at, as the
+/// three values every consumer of a pose needs: the signed rotation axis,
+/// the angle about it in degrees, and the pivot to rotate about *in the
+/// submodel's own compiled frame* (the frame
+/// `ohl_physics::CollisionModel::set_brush_pose`'s `pivot` parameter and
+/// `ohl-engine`'s render placement are both expressed in). `Vec3::ZERO`
+/// for the axis means "no rotation", so a caller can branch on it exactly
+/// as it already branches on [`mover_rotation`].
+///
+/// This is the superset [`mover_rotation`] used to be: a rotating mover
+/// (`func_door_rotating`/`func_rotating`/`func_rot_button`/
+/// `momentary_rot_button`/`func_pendulum`) reports what it always did,
+/// about its own compiled origin, *and* a `func_tracktrain` now reports the
+/// yaw it is drawn at — the same [`TrackTrainState::yaw_degrees`] the
+/// renderer has always applied — about [`track_train_pivot`].
+///
+/// Reporting it here is what makes one transform serve the renderer, the
+/// collision hull, [`brush_center`]'s `use`-proximity point and a rider's
+/// tangential ride velocity: before this, only the renderer turned a
+/// `func_tracktrain`, so through a bend its drawn car and its collision
+/// hull pointed different ways and a passenger standing away from the
+/// pivot was carried by the car's translation alone and scraped off
+/// against the geometry the track runs through (`docs/FORMAT_SOURCES.md`,
+/// "Riding movers").
+///
+/// The sign and offset of that yaw are `TrackTrainState::yaw_degrees`'s,
+/// unchanged and with no added half turn: which of the two physically
+/// plausible conventions the published game uses is a project-determined
+/// finding from a black-box comparison of this project's own renders
+/// against public screenshots, not a fact any public page states. A plain
+/// `func_train` reports no yaw at all (it keeps its authored `angles`),
+/// because `yaw_degrees` returns `None` unless the entity is the
+/// turns-to-face kind.
+#[must_use]
+pub fn brush_pose_rotation(registry: &Registry, entity: Entity) -> (Vec3, f32, Vec3) {
+    let (axis, degrees) = mover_rotation(registry, entity);
+    if axis != Vec3::ZERO {
+        // A rotating mover requires an origin brush, so its compiled
+        // geometry is already centred on the point it turns about.
+        return (axis, degrees, Vec3::ZERO);
+    }
+    match track_train_transform(registry, entity).1 {
+        // Yaw is a rotation about the world up axis, matching
+        // `crate::registry::movedir_from_angles`'s convention.
+        Some(yaw) => (Vec3::Z, yaw, track_train_pivot(registry, entity)),
+        None => (Vec3::ZERO, 0.0, Vec3::ZERO),
+    }
+}
+
 /// Where `entity`'s brush geometry is centred *right now*, in world space,
 /// or `None` for an entity that carries no [`BrushCenter`] (a point entity,
 /// or a brush entity whose submodel bounds were unavailable at load).
@@ -398,16 +489,25 @@ pub fn mover_rotation(registry: &Registry, entity: Entity) -> (Vec3, f32) {
 #[must_use]
 pub fn brush_center(registry: &Registry, entity: Entity) -> Option<Vec3> {
     let center = registry.world.get::<&BrushCenter>(entity).ok()?.0;
-    let (axis, degrees) = mover_rotation(registry, entity);
+    let (axis, degrees, pivot_local) = brush_pose_rotation(registry, entity);
+    let offset = brush_offset(registry, entity);
     if axis == Vec3::ZERO {
-        return Some(center + brush_offset(registry, entity));
+        return Some(center + offset);
     }
-    let pivot = registry
+    let authored = registry
         .world
         .get::<&Transform>(entity)
         .map_or(Vec3::ZERO, |transform| transform.origin);
+    // `BrushCenter` is the *placed* centre (compiled midpoint plus the
+    // `origin` keyvalue), so `center - authored` takes it back into the
+    // compiled frame `pivot_local` is expressed in; rotate there, then put
+    // it back and add however far a translating mover has travelled. A
+    // rotating mover has `pivot_local == Vec3::ZERO` and no translation, so
+    // this reduces exactly to the swing-about-the-origin-keyvalue rule it
+    // has always used.
     let rotation = Quat::from_axis_angle(axis.normalize(), degrees.to_radians());
-    Some(pivot + rotation * (center - pivot))
+    let local = center - authored;
+    Some(authored + offset + pivot_local + rotation * (local - pivot_local))
 }
 
 #[cfg(test)]

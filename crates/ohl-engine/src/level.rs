@@ -358,7 +358,7 @@ pub struct Level {
 /// `crate::render::brush_offset` [`Level::sync_brush_collision`] applies
 /// every step is applied once here too, symmetrically for both loops. A
 /// `func_train`/`func_tracktrain` is placed on the first node of its path
-/// at spawn (see `crate::render::track_train_transform`), so without this
+/// at spawn (see `ohl_game::pose::track_train_transform`), so without this
 /// its hull would spend the level's very first tick — the tick the
 /// player's own spawn position is resolved against — back wherever the map
 /// compiled it, leaving nothing under a player the map authored standing
@@ -417,19 +417,23 @@ fn attach_brush_collision_with(
         }
         let origin = instance.origin + crate::render::brush_offset(registry, instance.entity);
         if let Ok(id) = model.attach_brush(bsp, limits, index, origin) {
-            let (axis, angle_degrees) = crate::render::mover_rotation(registry, instance.entity);
+            let (axis, angle_degrees, pivot) =
+                crate::render::brush_pose_rotation(registry, instance.entity);
             if axis != Vec3::ZERO {
                 // A rotating mover's compiled geometry is stored relative
                 // to its own origin brush, exactly like a `func_train`'s
-                // (`crate::render::track_train_transform`'s own doc
+                // (`ohl_game::pose::track_train_transform`'s own doc
                 // comment: "the compiler writes that origin brush's
                 // position into the entity's `origin` keyvalue and stores
                 // the submodel's geometry relative to it") — so the
                 // pivot to rotate about is the *local* origin the geometry
                 // is already centred on, `Vec3::ZERO`, not the world-space
                 // `origin` keyvalue `attach_brush` already translated by
-                // above.
-                model.set_brush_pose(id, origin, Vec3::ZERO, axis, angle_degrees);
+                // above. A world-baked `func_tracktrain` is the one case
+                // that is not centred on its own turning point and reports
+                // a non-zero compiled-frame pivot instead
+                // (`ohl_game::pose::track_train_pivot`).
+                model.set_brush_pose(id, origin, pivot, axis, angle_degrees);
             }
             attached.push((instance.entity, id));
         }
@@ -749,7 +753,8 @@ impl Level {
             // on a `func_rotating`/`func_door_rotating` — is recorded
             // separately in `brush_rotation` just below.
             brush_velocity.insert(*brush, velocity);
-            let (axis, angle_degrees) = crate::render::mover_rotation(registry, *entity);
+            let (axis, angle_degrees, pivot) =
+                crate::render::brush_pose_rotation(registry, *entity);
             if axis == Vec3::ZERO {
                 brush_rotation.remove(brush);
                 model.set_brush_origin(*brush, new_origin);
@@ -761,20 +766,27 @@ impl Level {
                 brush_rotation.insert(
                     *brush,
                     BrushRotation {
-                        // The pivot handed to `set_brush_pose` below is the
-                        // submodel's own local `(0, 0, 0)`, which
-                        // `new_origin` then translates: in world space that
-                        // is `new_origin` itself.
-                        pivot: new_origin,
+                        // The pivot handed to `set_brush_pose` below is in
+                        // the submodel's own compiled frame, which
+                        // `new_origin` then translates: in world space it
+                        // is `new_origin + pivot` (and so `new_origin`
+                        // itself for every mover compiled around its own
+                        // turning point).
+                        pivot: new_origin + pivot,
                         angular_velocity,
                         angle_degrees,
                     },
                 );
                 // See `attach_brush_collision`'s matching branch: the pivot
-                // to rotate about is the *local* origin the compiled
-                // geometry is already centred on, not the world-space
-                // translation `new_origin` already carries.
-                model.set_brush_pose(*brush, new_origin, Vec3::ZERO, axis, angle_degrees);
+                // to rotate about is in the compiled frame the geometry is
+                // stored in, not the world-space translation `new_origin`
+                // already carries. This is the same axis/angle/pivot triple
+                // `crate::render::draw_brush_entities` draws the entity
+                // with, so a `func_tracktrain` through a bend collides
+                // where it is drawn, and the whole per-step yaw change
+                // lands as a single pose rather than as a sequence the
+                // player could be scraped along.
+                model.set_brush_pose(*brush, new_origin, pivot, axis, angle_degrees);
             }
             true
         });
@@ -805,11 +817,12 @@ impl Level {
                 return false;
             };
             let new_origin = transform.origin + crate::render::brush_offset(registry, *entity);
-            let (axis, angle_degrees) = crate::render::mover_rotation(registry, *entity);
+            let (axis, angle_degrees, pivot) =
+                crate::render::brush_pose_rotation(registry, *entity);
             if axis == Vec3::ZERO {
                 model.set_brush_origin(*brush, new_origin);
             } else {
-                model.set_brush_pose(*brush, new_origin, Vec3::ZERO, axis, angle_degrees);
+                model.set_brush_pose(*brush, new_origin, pivot, axis, angle_degrees);
             }
             true
         });
@@ -847,6 +860,43 @@ impl Level {
                 )
             });
         translation + rotation
+    }
+
+    /// Where a rider standing at `point` on the attached brush `brush` is
+    /// carried to by whatever *rotation* that brush went through in the
+    /// step [`Self::sync_brush_collision`] just applied, or `None` when
+    /// `brush` did not turn at all (every translating mover, and a
+    /// rotating one that is currently still).
+    ///
+    /// This is the rotational half of "riding a mover" applied as a finite
+    /// rigid step rather than as a velocity: a brush whose heading is the
+    /// direction of the path segment it is on — a `func_tracktrain` — turns
+    /// through the entire angle between two segments in the single step it
+    /// changes segment on, and no velocity integrated over that step can
+    /// follow the arc the rider's seat travels (see
+    /// [`ohl_physics::rotational_ride_step`]). The caller moves the rider
+    /// here only after checking the destination is free, and then feeds
+    /// only the brush's *translation* back in as `base_velocity`, so the
+    /// ride is applied exactly once.
+    ///
+    /// The pivot used is the brush's pivot as it was *before* this step's
+    /// translation (`brush_rotation`'s pivot less this step's own
+    /// displacement), because that is the pose the rider's offset was
+    /// measured against; the translation itself is then added by
+    /// `base_velocity` in the ordinary way.
+    #[must_use]
+    pub fn rotational_carry(&self, brush: BrushId, point: Vec3, dt: f32) -> Option<Vec3> {
+        let rotation = self.brush_rotation.get(&brush)?;
+        let translation = self
+            .brush_velocity
+            .get(&brush)
+            .copied()
+            .unwrap_or(Vec3::ZERO)
+            * dt;
+        let pivot = rotation.pivot - translation;
+        let carried =
+            ohl_physics::rotational_ride_step(pivot, rotation.angular_velocity, dt, point);
+        (carried != point).then_some(carried)
     }
 
     /// Whether this level declares any `info_landmark` at all.
@@ -1518,7 +1568,7 @@ mod tests {
     /// space exactly as the renderer would place that vertex, must be
     /// reported solid by the collision model that
     /// `Level::sync_brush_collision` posed with the identical
-    /// `crate::render::mover_rotation` triple.
+    /// `crate::render::brush_pose_rotation` triple.
     /// Runs the render/collision pose-agreement check for one
     /// [`ohl_game::registry::MoverState`], forced directly (no ticking a
     /// whole `Simulation`) and compared against the angle
@@ -1568,7 +1618,8 @@ mod tests {
         // `rotating_door_bsp`'s doc comment), so it is what render's
         // rotate-then-translate composes with, unchanged from a plain
         // translating mover's `origin` keyvalue.
-        let transform = crate::render::rotated_placement(pivot, axis, angle_degrees);
+        let transform =
+            crate::render::rotated_placement(pivot, ohl_physics::Vec3::ZERO, axis, angle_degrees);
 
         // A point just inside the door leaf's own compiled (local, pivot-
         // relative) shape — offset 2 units in from its pivot edge, well
@@ -1628,6 +1679,91 @@ mod tests {
             ohl_game::registry::MoverState::Closed,
             0.0,
             true,
+        );
+    }
+
+    /// The same agreement, for the mover this milestone posed for the
+    /// first time: a `func_tracktrain` turning to face its track.
+    ///
+    /// Checked at several progress values along a chain that turns a
+    /// square corner — before the corner (drawn yaw 0), and after it
+    /// (drawn yaw 90) — because a train is the one brush entity whose
+    /// rotation *and* translation both change every step, so agreeing at
+    /// one pose says nothing about agreeing at the next. Each check maps a
+    /// point from the car's own compiled frame into world space through
+    /// exactly the matrix `draw_brush_entities` draws the submodel with
+    /// (`crate::render::rotated_placement`, fed from the same
+    /// `ohl_game::pose::brush_pose_rotation`/`brush_offset` pair
+    /// `sync_brush_collision` poses the hull from) and asserts the
+    /// collision model agrees there is solid geometry at that world point.
+    /// Before this milestone the collision hull was translated only, so
+    /// every point taken from a *rotated* render pose landed outside it.
+    #[test]
+    fn render_and_collision_agree_on_a_turning_track_train_pose() {
+        let mut assets = MemoryAssets::new();
+        assets.insert(
+            &format!("maps/{}.bsp", crate::test_support::BEND_TRAIN_MAP),
+            crate::test_support::bending_track_train_bsp(),
+        );
+        let mut level = Level::load(&assets, crate::test_support::BEND_TRAIN_MAP)
+            .expect("the bending-train fixture loads");
+
+        let entity = level.registry.find(crate::test_support::BEND_TRAIN_NAME)[0];
+        let step = 1.0 / 60.0;
+        // The corner is 300 units out at 100 units/second, so three
+        // seconds of stepping crosses it: sample a spread of progress
+        // values either side.
+        let mut seen_yaws: Vec<f32> = Vec::new();
+        for tick in 0..300 {
+            level.simulation.tick(&mut level.registry, step);
+            level.sync_brush_collision(step);
+            if tick % 20 != 0 {
+                continue;
+            }
+
+            let (axis, angle_degrees, pivot) =
+                crate::render::brush_pose_rotation(&level.registry, entity);
+            assert_eq!(
+                axis,
+                ohl_physics::Vec3::Z,
+                "a `func_tracktrain` on a horizontal segment must report a yaw"
+            );
+            seen_yaws.push(angle_degrees);
+
+            let authored = level
+                .registry
+                .world
+                .get::<&ohl_game::registry::Transform>(entity)
+                .expect("the fixture train has a transform")
+                .origin;
+            let origin = authored + crate::render::brush_offset(&level.registry, entity);
+            let transform = crate::render::rotated_placement(origin, pivot, axis, angle_degrees);
+
+            // The car's own compiled centre, and a point most of the way
+            // along its length — the seat a passenger stands on, and the
+            // point that moves furthest when the car turns.
+            let model = level.collision.as_ref().expect("the fixture has collision");
+            for local_x in [0.0, crate::test_support::BEND_SEAT_OFFSET_X] {
+                let local = ohl_physics::Vec3::new(local_x, 0.0, 0.0);
+                let world = apply_placement(&transform, local);
+                assert_eq!(
+                    model.point_contents(world),
+                    contents::SOLID,
+                    "collision does not agree the car's render pose at yaw \
+                     {angle_degrees} puts solid geometry at {world:?}"
+                );
+            }
+        }
+
+        // The sampled run really did cross the corner: both the first
+        // segment's heading and the second's were drawn.
+        assert!(
+            seen_yaws.iter().any(|yaw| yaw.abs() < 1e-3),
+            "the run never sampled the first (+X) segment: {seen_yaws:?}"
+        );
+        assert!(
+            seen_yaws.iter().any(|yaw| (yaw - 90.0).abs() < 1e-3),
+            "the run never sampled the second (+Y) segment: {seen_yaws:?}"
         );
     }
 }

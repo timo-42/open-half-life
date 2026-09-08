@@ -441,25 +441,28 @@ impl Renderers {
             let Some(model) = level.submodels.get(&instance.model_index) else {
                 continue;
             };
-            let (rotation_axis, rotation_degrees) =
-                mover_rotation(&level.registry, instance.entity);
+            let (rotation_axis, rotation_degrees, rotation_pivot) =
+                brush_pose_rotation(&level.registry, instance.entity);
+            // The same three inputs `Level::sync_brush_collision` poses the
+            // collision hull from, read from the same one helper: a brush
+            // entity is drawn exactly where it collides, including a
+            // `func_tracktrain` turning through a bend.
+            let origin = instance.origin + brush_offset(&level.registry, instance.entity);
             let transform = if rotation_axis == Vec3::ZERO {
-                let (_, yaw_override) = track_train_transform(&level.registry, instance.entity);
-                let offset = brush_offset(&level.registry, instance.entity);
-                let origin = instance.origin + offset;
-                let yaw = yaw_override.unwrap_or(instance.angles.y);
-                placement(origin.to_array(), yaw)
+                placement(origin.to_array(), instance.angles.y)
             } else {
                 // A rotating mover's compiled geometry is stored relative
                 // to its own origin keyvalue (see `rotated_placement`'s
-                // doc comment); it never also carries a translating
+                // doc comment) and never also carries a translating
                 // `brush_offset` (`Door::movedir` is left `Vec3::ZERO` for
                 // a `func_door_rotating`, and `func_rotating` has no
                 // offset source at all — see `mover_rotation`'s doc
-                // comment), so the entity's own authored `angles` yaw is
-                // not reapplied here either: only the live
-                // simulation-driven rotation state matters.
-                rotated_placement(instance.origin, rotation_axis, rotation_degrees)
+                // comment), so adding `brush_offset` above is a no-op for
+                // one. The entity's own authored `angles` yaw is not
+                // reapplied here either: only the live simulation-driven
+                // rotation state matters, which for a `func_tracktrain` is
+                // the yaw it faces its segment at.
+                rotated_placement(origin, rotation_pivot, rotation_axis, rotation_degrees)
             };
             if !brush_in_frustum(&model.bounds, &transform, &frustum) {
                 continue;
@@ -534,7 +537,7 @@ fn ambient_at(level: &Level, origin: [f32; 3]) -> [f32; 3] {
 /// proximity check in `ohl_game::find_usable_within` all read one
 /// implementation of "where is this brush entity right now" rather than
 /// three. See `ohl_game::pose` for the placement rule they share.
-pub(crate) use ohl_game::pose::{brush_offset, mover_rotation, track_train_transform};
+pub(crate) use ohl_game::pose::{brush_offset, brush_pose_rotation};
 
 /// A world-space placement matrix for a rotating brush entity: rotate the
 /// submodel's own compiled vertices by `angle_degrees` about `axis`, then
@@ -550,9 +553,9 @@ pub(crate) use ohl_game::pose::{brush_offset, mover_rotation, track_train_transf
 /// same convention `track_train_transform`'s doc comment already records
 /// for `func_train`'s origin keyvalue ("the compiler writes that origin
 /// brush's position into the entity's `origin` keyvalue and stores the
-/// submodel's geometry relative to it"). So the pivot to rotate about is
-/// simply the submodel's own local origin (`Vec3::ZERO`, no separate pivot
-/// parameter needed), and `origin` is added *after* rotating, exactly the
+/// submodel's geometry relative to it"). So for such a mover the pivot to
+/// rotate about is simply the submodel's own local origin (`Vec3::ZERO`),
+/// and `origin` is added *after* rotating, exactly the
 /// same "rotate, then translate" order [`placement`] already uses for a
 /// yaw-only rotation. A zero angle still needs the `origin` translation —
 /// `Quat::from_axis_angle` with a zero angle is already the identity
@@ -562,12 +565,31 @@ pub(crate) use ohl_game::pose::{brush_offset, mover_rotation, track_train_transf
 /// the identity matrix; every caller still branches on [`mover_rotation`]
 /// first rather than relying on that, since a rotating mover never also
 /// carries a translating [`brush_offset`] to add in.
-pub(crate) fn rotated_placement(origin: Vec3, axis: Vec3, angle_degrees: f32) -> math::Mat4 {
+///
+/// `pivot` is that rotation centre, in the submodel's own *compiled*
+/// frame, so a brush entity whose geometry is not centred on the point it
+/// turns about can say so: a world-baked `func_tracktrain` has no origin
+/// brush and turns about its chain's first node instead
+/// (`ohl_game::pose::track_train_pivot`). The composed matrix is
+/// "translate to the pivot, rotate, translate back, then translate by
+/// `origin`", which for the `Vec3::ZERO` pivot every rotating mover passes
+/// is bit-identical to the plain rotate-then-translate above. The one
+/// transform this builds is exactly what `Level::sync_brush_collision`
+/// hands `ohl_physics::CollisionModel::set_brush_pose`, so the drawn car
+/// and the colliding car are the same car.
+pub(crate) fn rotated_placement(
+    origin: Vec3,
+    pivot: Vec3,
+    axis: Vec3,
+    angle_degrees: f32,
+) -> math::Mat4 {
     if axis == Vec3::ZERO {
         return math::identity();
     }
     let rotation = Quat::from_axis_angle(axis.normalize(), angle_degrees.to_radians());
-    let matrix = Mat4::from_translation(origin) * Mat4::from_quat(rotation);
+    let matrix = Mat4::from_translation(origin + pivot)
+        * Mat4::from_quat(rotation)
+        * Mat4::from_translation(-pivot);
     matrix.to_cols_array()
 }
 
@@ -623,9 +645,9 @@ mod tests {
         };
         // The min and max corners both rotate to x=2. The other corners
         // extend to x=2-sqrt(2), inside the frustum's right plane at x=1.
-        let rotated = rotated_placement(Vec3::new(2.0, 0.0, 0.0), Vec3::Z, 45.0);
+        let rotated = rotated_placement(Vec3::new(2.0, 0.0, 0.0), Vec3::ZERO, Vec3::Z, 45.0);
         assert!(brush_in_frustum(&bounds, &rotated, &frustum));
-        let outside = rotated_placement(Vec3::new(3.0, 0.0, 0.0), Vec3::Z, 45.0);
+        let outside = rotated_placement(Vec3::new(3.0, 0.0, 0.0), Vec3::ZERO, Vec3::Z, 45.0);
         assert!(!brush_in_frustum(&bounds, &outside, &frustum));
     }
 
@@ -687,7 +709,7 @@ mod tests {
     #[test]
     fn rotated_placement_keeps_the_origin_translation_at_zero_angle() {
         let origin = Vec3::new(100.0, 200.0, 300.0);
-        let matrix = rotated_placement(origin, Vec3::Z, 0.0);
+        let matrix = rotated_placement(origin, Vec3::ZERO, Vec3::Z, 0.0);
         let translation = [matrix[12], matrix[13], matrix[14]];
         assert_eq!(translation, [100.0, 200.0, 300.0]);
         // At angle zero the rotation itself must also be the identity, so
@@ -703,7 +725,7 @@ mod tests {
     #[test]
     fn rotated_placement_still_rotates_at_ninety_degrees() {
         let origin = Vec3::new(100.0, 200.0, 300.0);
-        let matrix = rotated_placement(origin, Vec3::Z, 90.0);
+        let matrix = rotated_placement(origin, Vec3::ZERO, Vec3::Z, 90.0);
         let translation = [matrix[12], matrix[13], matrix[14]];
         assert_eq!(translation, [100.0, 200.0, 300.0]);
         // Rotating +X by 90 degrees about +Z lands on +Y.
@@ -716,7 +738,7 @@ mod tests {
     /// which is NaN.
     #[test]
     fn rotated_placement_zero_axis_is_identity() {
-        let matrix = rotated_placement(Vec3::new(5.0, 6.0, 7.0), Vec3::ZERO, 45.0);
+        let matrix = rotated_placement(Vec3::new(5.0, 6.0, 7.0), Vec3::ZERO, Vec3::ZERO, 45.0);
         assert_eq!(matrix, glam::Mat4::IDENTITY.to_cols_array());
     }
 }

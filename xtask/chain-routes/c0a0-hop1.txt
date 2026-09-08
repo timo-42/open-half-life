@@ -1,4 +1,4 @@
-# M9.17 chain-walk route 1: the map the first level change out of
+# M9.18 chain-walk route 1: the map the first level change out of
 # ohl_campaign::STARTMAP ("c0a0") lands in, walked from the *arrival*
 # point rather than from that map's own info_player_start.
 #
@@ -15,25 +15,24 @@
 # Route, in words only (no entity name, path or coordinate from any
 # payload): the transition carries the player in still riding the start
 # map's opening mover, which keeps going on this map's own copy of the
-# same track (that carry is what M9.17 fixed; before it, the mover in this
-# map drove off without its passenger and the campaign stopped here). The
-# two short steps at the top move the player off the wall of the car they
-# arrived pressed against and toward the middle of it, which is what keeps
-# them aboard through the corners: a rider is carried by a mover's
-# translation only, so a passenger standing at the edge of a turning car
-# keeps their *world* offset from it and is eventually scraped off against
-# the tunnel — see docs/MILESTONES.md M9.17 for that open gap. The long
-# wait is the ride itself. Where the ride finally does put the player
-# down, the walk lines cover the last stretch to the level change on foot.
+# same track. The ride is the whole route — the player presses nothing,
+# and the mover carries them through this map's own level boundary, which
+# is where `run_chained` ends the route.
+#
+# This route used to open with two short steps ("15 back", "20 right") to
+# move the player off the wall of the car they arrived pressed against and
+# toward its middle. That was a workaround for M9.17's open gap: a rider
+# was carried by a mover's translation only, so a passenger standing away
+# from a turning car's own pivot kept their *world* offset from it through
+# a corner and was eventually scraped off against the tunnel. M9.18 closed
+# that gap — the car's collision hull is now posed at the heading it is
+# drawn at, and a rider is turned with it about the same pivot — so the
+# recentering is no longer needed, and it is actively harmful now: nudged
+# off their seat, the player ends the ride somewhere the walk cannot
+# continue from. Removing it is the point of this revision.
 #
 # The trailing wait is slack: `run_chained` (crates/ohl-app/src/game_run.rs)
 # ends a route at the level change it reaches, so any ticks left over here
 # are never run.
 
-120 wait
-15 back
-20 right
-4000 wait
-1200 forward left
-1800 forward
-3000 wait
+9000 wait
