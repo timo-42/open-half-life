@@ -3514,3 +3514,51 @@ documented before this package updated it to assert the fix instead.
   records for a translating mover), and none of the three carries a
   standing rider (item 24's own reasoning for why a rotating mover cannot
   yet).
+
+- **M9.8 (`momentary_door`).** Closes the gap M9.7's own entry above left
+  open: `momentary_rot_button`'s documented `target` — a `momentary_door` —
+  is now implemented. `ohl_game::registry::MomentaryDoor` is a new
+  component sharing `func_door`'s translating `speed`/`lip`/`movedir`/
+  `travel_distance` shape (the same `movedir_from_angles`/
+  `brush_travel_distance` helpers `func_door` already uses), but with no
+  `wait`/`state`/`timer` open-close cycle of its own: only
+  `Simulation::drive_momentary_rot_button` ever moves its `0.0..=1.0`
+  `fraction`, and `ohl_game::pose::momentary_door_offset` (chained into
+  `pose::brush_offset`, the same pipeline `func_door`/`func_plat`/
+  track-train offsets already share) turns that fraction into a world
+  displacement the renderer, collision model and `use`-proximity search
+  all agree on by construction. Each tick a `momentary_rot_button`'s own
+  `fraction` changes (held, or mid "Auto return"), it pushes that value as
+  a commanded fraction to every `momentary_door` sharing its `target`
+  keyvalue; a second pass then moves each such door's own `fraction`
+  toward the commanded value at the door's own `speed` — this project's
+  own reading of the cited "synchronized... a `0` to `1` fraction" text,
+  which does not say at what rate the door follows the button (`docs/
+  FORMAT_SOURCES.md` item 29). A door with no button currently pushing to
+  it (nothing active this tick) simply holds wherever it last stopped,
+  which is what gives the documented "stays where you left it" behaviour
+  for a button with no "Auto return" and the documented return-to-`0.0`
+  behaviour for one that has it, without the door needing any return logic
+  of its own. `MomentaryDoor::fraction` round-trips through a **new**
+  optional save section, `SECTION_MOMENTARY_DOOR_STATE` (tag 31), kept
+  separate from tag 30 (`func_rot_button`/`momentary_rot_button`/
+  `func_pendulum`'s own state) even though the two are closely related,
+  because tag 30 is already shipped and frozen at its own shape — the same
+  "new state gets a new tag" rule tag 30 itself was created to follow,
+  restated in `ohl_engine::save`'s module doc. A dedicated, discriminating
+  round-trip test (`crates/ohl-engine/tests/save_sections.rs`), a
+  pre-existing-save compatibility regression proving a save missing tag 31
+  entirely still loads, and a **new** golden-bytes test for tag 31
+  (`crates/ohl-engine/tests/save_format_frozen.rs`, added without touching
+  any existing golden) all landed with this package. A new integration
+  test, `crates/ohl-engine/tests/momentary_door.rs`, drives a
+  `momentary_rot_button` through the real `use_held` proximity path
+  (`ohl_game::logic::find_momentary_rot_button_within`) from the player's
+  own spawn point, opening its target `momentary_door` in step and closing
+  it again on release. A bounded, aggregate-only probe of the real payload
+  (this project's own clean-room `ohl-formats` BSP entities-lump parser;
+  a single integer count, nothing media-derived committed) found **zero**
+  `momentary_door` entities anywhere in the payload, so no combat-smoke
+  scenario was added for this milestone — there is no cited-table map to
+  point one at, not a budget call like M9.7's own `func_rot_button`/
+  `func_pendulum` gap.

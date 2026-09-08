@@ -3912,3 +3912,124 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
     coverage gap, not a known defect. Moving the floor above `6090676`
     (abandoning every existing save file) remains a decision to take
     deliberately and record here, never a side effect of adding a field.
+
+### `momentary_door` (M9.8)
+
+29. **`momentary_door`, the entity item 27 above left unimplemented.** No
+    new external source: the TWHL wiki `momentary_rot_button` page item 27
+    already cites (`https://twhl.info/wiki/page/momentary_rot_button`,
+    consulted via search-engine result summaries, the page itself returning
+    HTTP 403 to automated fetches from this environment, the same caveat
+    already recorded for every other TWHL citation in this document;
+    reviewed 2026-09-07) is the only public source found in this pass that
+    mentions `momentary_door` at all, and only in passing, describing the
+    linked door's position as "synchronized with the `momentary_rot_button`
+    currently driving it... a `0` to `1` fraction". No dedicated
+    `momentary_door` page, FGD entry, or keyvalue table was found; this
+    project therefore treats it as a translating brush mover reusing
+    `func_door`'s own documented `speed`/`lip`/`angles` keyvalue shape
+    (this document's "Entity keyvalues and map logic" section — see
+    `ohl_game::registry::Door`'s own doc comment for that citation) rather
+    than inventing an undocumented keyvalue table from nothing, and records that
+    choice here per this milestone's own instruction to write down a
+    project decision rather than guess at an uncited one silently.
+
+    Project behaviour: `ohl_game::registry::MomentaryDoor` carries `speed`/
+    `lip`/`movedir`/`travel_distance` (computed by the same
+    `movedir_from_angles`/`brush_travel_distance` helpers `func_door`
+    already uses) plus a runtime `0.0..=1.0` `fraction`, with no
+    `wait`/`state`/`timer` open-close cycle of its own — nothing about this
+    entity is documented as auto-closing or auto-opening on its own; only a
+    driving button ever moves it. `ohl_game::pose::momentary_door_offset`
+    turns `fraction` into a world displacement along `movedir` scaled by
+    `travel_distance`, chained into `ohl_game::pose::brush_offset` (the
+    same pipeline `func_door`/`func_plat`/track-train offsets already
+    share; see item 25's own citation for why that pipeline is what keeps
+    render/collision/`use`-proximity in agreement), so a `momentary_door`
+    behaves like any other translating mover from every consumer's point of
+    view once something is driving its `fraction`.
+
+    `ohl_game::logic::Simulation::drive_momentary_rot_button` (already
+    called every fixed step from `ohl-engine`'s `Systems::
+    triggers_and_movers`, item 27) is extended, not replaced: after
+    computing each `momentary_rot_button`'s own `fraction` for this tick
+    (the same held/returning logic item 27 already describes), a button
+    whose `fraction` actually changed this tick pushes that value as a
+    commanded fraction to every entity sharing its `target` keyvalue (read
+    through the existing generic `Target` component every targeted entity
+    already carries, not a new lookup mechanism); a second pass then moves
+    each such `MomentaryDoor::fraction` toward the commanded value by the
+    *door's own* `speed`, one fraction-per-second step
+    (`door.speed / door.travel_distance`), the same `speed / distance`
+    ratio shape `RotButton`/`MomentaryRotButton` already use for their own
+    per-tick step. **This project's own reading, not itself stated by the
+    cited wording**: the cited "synchronized" text does not say at what
+    rate the door's own position follows the button's — an instant snap is
+    equally consistent with the word "synchronized" — so this project
+    chose a rate-limited chase at the door's own `speed` keyvalue (the same
+    FGD-conventional field name/default `func_door` already uses) over an
+    instant assignment, recorded here as project behaviour rather than
+    silently guessed. A `momentary_door` with no `model` (so
+    `travel_distance` is `0.0`) or a `speed` of `0` falls back to an
+    instant assignment (`step = 1.0`, clamped to the commanded value) so a
+    degenerate fixture still tracks its button rather than staying frozen
+    at `0.0` forever.
+    A door with no button actively pushing to it this tick (neither held
+    nor mid "Auto return") is left untouched entirely: this is what gives
+    the documented "stays where you left it" shape for a button with no
+    "Auto return" spawnflag (nothing ever pushes again after `use` is
+    released, so the door simply holds), and the documented return-to-`0.0`
+    behaviour for one that has it (the button's own existing auto-return
+    animation keeps pushing lower values down to `0.0`, and the door keeps
+    tracking it) — without `MomentaryDoor` needing any return logic of its
+    own. `MomentaryRotButton`'s own doc comment is updated to record that
+    its `target`/`fraction` are now actually consumed, replacing the
+    "this crate does not implement it" gap item 27 recorded.
+
+    All mutable state round-trips through a **new** optional save section,
+    `SECTION_MOMENTARY_DOOR_STATE` (tag 31: `Vec<Option<
+    MomentaryDoorSnapshot>>`, one entry per registry entity in spawn
+    order), proven by a dedicated, discriminating round-trip test
+    (`a_momentary_door_round_trips_its_fraction`, `save_sections.rs`) and a
+    dedicated pre-existing-save compatibility regression
+    (`a_save_from_before_section_31_existed_still_loads`) proving a save
+    missing tag 31 entirely still loads with the door defaulting to
+    `fraction = 0.0`. **This is a new tag, not an addition to tag 30**: item
+    28 above already records why tag 30 itself is frozen at its own shape
+    (a shape change on any already-shipped tag, required or optional,
+    invalidates every save whose section for that tag is non-empty once the
+    tag has shipped at all) — `momentary_door` and the button driving it
+    are closely related, but tag 30 already shipped, so its own state gets
+    its own tag rather than reopening that one, the exact rule item 28
+    states and tag 30 itself was created to follow (item 27). A **new**
+    golden-bytes test, `tag_31_momentary_door_state_keeps_its_frozen_wire_
+    shape` (`crates/ohl-engine/tests/save_format_frozen.rs`), pins tag 31's
+    own wire shape from the moment it ships, rather than leaving it in the
+    "frozen by the rule but not yet pinned by a golden" state item 28
+    records for sections 23-27, 29 and 30; no existing golden in that file
+    was edited to add it.
+
+    A new integration test, `crates/ohl-engine/tests/momentary_door.rs`,
+    drives a `momentary_rot_button` through the real `use_held` proximity
+    path (`ohl_game::logic::find_momentary_rot_button_within`, not forced
+    state) from the player's own spawn point, opening its target
+    `momentary_door` in step over a held press and closing it again once
+    `use` is released (the fixture sets the button's documented "Auto
+    return" spawnflag so the release half of the round trip is
+    observable).
+
+    **`TODO(black-box)`**: a bounded, aggregate-only probe (this project's
+    own clean-room `ohl-formats` BSP entities-lump parser, decoding every
+    `.bsp` under the local payload root directly and tallying entities
+    whose `classname` equals `momentary_door`; a single integer count
+    printed, no map name/path/coordinate ever left the local boundary; the
+    probe script itself was not committed) found **zero** `momentary_door`
+    entities anywhere in the payload — not merely none near a spawn point,
+    as item 27's own probe found for `momentary_rot_button`. No
+    combat-smoke scenario was added for this milestone; unlike item 27's
+    own `func_rot_button`/`func_pendulum` gap (a budget call, since a
+    cited-table map with one near spawn does exist), there is no
+    cited-table map to point a scenario at, so this is not a budget
+    decision. `dmg`/blocking is not wired into `Level::movers_blocked` for
+    this entity either, the same pre-existing gap items 9, 24 and 27
+    already record for every other mover in this crate.

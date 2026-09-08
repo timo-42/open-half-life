@@ -20,8 +20,9 @@
 
 use ohl_combat::{ProjectileKind, WeaponId, hud_slot};
 use ohl_engine::test_support::{
-    AI_MAP, ROT_BUTTON_MAP, ROT_BUTTON_NAME, ROTATING_DOOR_MAP, SCRIPT_MAP, actor_origin,
-    ai_room_bsp, entity_block, entity_of_classname, monster_entities, queue_monster_damage,
+    AI_MAP, MOMENTARY_DOOR_MAP, MOMENTARY_DOOR_NAME, ROT_BUTTON_MAP, ROT_BUTTON_NAME,
+    ROTATING_DOOR_MAP, SCRIPT_MAP, actor_origin, ai_room_bsp, entity_block, entity_of_classname,
+    momentary_door_bsp, momentary_door_entities, monster_entities, queue_monster_damage,
     rot_button_bsp, rotating_door_bsp, rotating_door_entities, script_game, script_room_bsp,
     script_room_entities,
 };
@@ -1507,6 +1508,104 @@ fn a_save_from_before_section_30_existed_still_loads() {
             .get::<&ohl_game::registry::Door>(entity)
             .is_ok(),
         "the reloaded fixture is a live Game, not a placeholder"
+    );
+}
+
+/// A `momentary_door` pushed partway open (through the real `use_held`
+/// input path driving its `momentary_rot_button`) round-trips its
+/// `fraction`, not resetting to `0.0` on reload — the discriminating case
+/// `SECTION_MOMENTARY_DOOR_STATE` (31, M9.8, `docs/FORMAT_SOURCES.md` item
+/// 29) exists for: the default `MomentaryDoor::fraction` a fresh
+/// `attach_level` spawns is `0.0`, so this fails unless tag 31's own
+/// restore call actually runs.
+#[test]
+fn a_momentary_door_round_trips_its_fraction() {
+    let bytes = momentary_door_bsp(&momentary_door_entities());
+    let mut assets = MemoryAssets::new();
+    assets.insert(&format!("maps/{MOMENTARY_DOOR_MAP}.bsp"), bytes);
+    let mut game =
+        Game::load(&assets as &dyn AssetSource, MOMENTARY_DOOR_MAP).expect("the fixture loads");
+
+    let held = Input {
+        use_held: true,
+        ..Input::default()
+    };
+    // A partial hold: well short of the button's full 30-tick sweep.
+    for _ in 0..7 {
+        game.tick(TICK_SECONDS, &held);
+    }
+    let entity = *game
+        .registry()
+        .find(MOMENTARY_DOOR_NAME)
+        .first()
+        .expect("the fixture declares one named momentary_door");
+    let fraction_before_save = game
+        .registry()
+        .world
+        .get::<&ohl_game::registry::MomentaryDoor>(entity)
+        .expect("the named entity is a momentary_door")
+        .fraction;
+    assert!(
+        fraction_before_save > 0.0 && fraction_before_save < 1.0,
+        "fraction was {fraction_before_save}, expected partway through the sweep"
+    );
+
+    let bytes = game.save_bytes(1_700_000_000).expect("the save is written");
+    let reloaded = Game::load_bytes(&assets, &bytes).expect("the save loads");
+    let reloaded_entity = *reloaded
+        .registry()
+        .find(MOMENTARY_DOOR_NAME)
+        .first()
+        .expect("the fixture's momentary_door reloads");
+    let fraction_after_load = reloaded
+        .registry()
+        .world
+        .get::<&ohl_game::registry::MomentaryDoor>(reloaded_entity)
+        .expect("the reloaded entity still carries a MomentaryDoor")
+        .fraction;
+    assert!(
+        (fraction_after_load - fraction_before_save).abs() < 1e-6,
+        "fraction was {fraction_after_load} but must round-trip {fraction_before_save}, \
+         not reset to 0.0"
+    );
+}
+
+/// The exact regression `SECTION_MOMENTARY_DOOR_STATE` (31) exists to rule
+/// out: a save written by a build before this section existed (tag 31
+/// simply absent, reproduced here by clearing `GameSave::momentary_doors`
+/// before encoding, the same technique
+/// [`a_save_from_before_section_30_existed_still_loads`] already uses for
+/// tag 30) must still load, with the `momentary_door` defaulting to
+/// `fraction = 0.0`, its spawn-time resting position.
+#[test]
+fn a_save_from_before_section_31_existed_still_loads() {
+    let bytes = momentary_door_bsp(&momentary_door_entities());
+    let mut assets = MemoryAssets::new();
+    assets.insert(&format!("maps/{MOMENTARY_DOOR_MAP}.bsp"), bytes);
+    let game =
+        Game::load(&assets as &dyn AssetSource, MOMENTARY_DOOR_MAP).expect("the fixture loads");
+
+    let mut save = game.to_save(1_700_000_000);
+    save.momentary_doors = None;
+    let bytes = save
+        .to_bytes()
+        .expect("a save missing SECTION_MOMENTARY_DOOR_STATE still encodes");
+
+    let reloaded = Game::load_bytes(&assets, &bytes).expect("a pre-tag-31 save still loads");
+    let entity = *reloaded
+        .registry()
+        .find(MOMENTARY_DOOR_NAME)
+        .first()
+        .expect("the fixture's momentary_door reloads");
+    assert_eq!(
+        reloaded
+            .registry()
+            .world
+            .get::<&ohl_game::registry::MomentaryDoor>(entity)
+            .expect("the reloaded entity still carries a MomentaryDoor")
+            .fraction,
+        0.0,
+        "a pre-tag-31 save must leave the momentary_door at its spawn-time resting fraction"
     );
 }
 

@@ -12,9 +12,9 @@ use glam::Vec3;
 use hecs::Entity;
 
 use crate::registry::{
-    AutoTrigger, BrushBounds, Button, ChangeLevel, Door, Message, MomentaryRotButton, MoverState,
-    MultiManager, Pendulum, Platform, Registry, RotButton, RotatingDoorSwing, Rotator, Target,
-    Transform, Trigger, TriggerHurt,
+    AutoTrigger, BrushBounds, Button, ChangeLevel, Door, Message, MomentaryDoor,
+    MomentaryRotButton, MoverState, MultiManager, Pendulum, Platform, Registry, RotButton,
+    RotatingDoorSwing, Rotator, Target, Transform, Trigger, TriggerHurt,
 };
 use crate::track_train::TrackTrainState;
 
@@ -976,16 +976,30 @@ impl Simulation {
     /// documented "Auto return" spawnflag continues animating back toward
     /// `fraction = 0.0` while not held, matching TWHL wiki
     /// `momentary_rot_button`'s documented auto-return behaviour.
+    ///
+    /// Every button whose own `fraction` changed this tick (held, or mid
+    /// "Auto return") also pushes that value as a commanded fraction to
+    /// every [`MomentaryDoor`] sharing its `target` keyvalue
+    /// (`docs/FORMAT_SOURCES.md`, item 29): a second pass then moves each
+    /// such door's own [`MomentaryDoor::fraction`] toward the commanded
+    /// value at the door's own `speed`, so a door with no button currently
+    /// driving it (nothing pushed to it this tick) simply holds wherever it
+    /// last stopped — the documented "stays where you left it" shape a
+    /// non-auto-return button already gives its own `fraction`.
     pub fn drive_momentary_rot_button(
         registry: &mut Registry,
         held_entity: Option<Entity>,
         dt: f32,
     ) {
-        for (entity, button) in registry
-            .world
-            .query_mut::<(Entity, &mut MomentaryRotButton)>()
+        let mut commanded: Vec<(String, f32)> = Vec::new();
+        for (entity, button, target) in
+            registry
+                .world
+                .query_mut::<(Entity, &mut MomentaryRotButton, Option<&Target>)>()
         {
+            let mut active = false;
             if Some(entity) == held_entity && !button.door_hack {
+                active = true;
                 button.returning = false;
                 let step = if button.distance > 0.0 {
                     button.speed * dt / button.distance
@@ -1005,11 +1019,10 @@ impl Simulation {
                         button.moving_forward = true;
                     }
                 }
-                continue;
-            }
-            if button.fraction > 0.0
+            } else if button.fraction > 0.0
                 && (button.returning || (button.auto_return && Some(entity) != held_entity))
             {
+                active = true;
                 button.returning = true;
                 let step = if button.distance > 0.0 {
                     button.return_speed * dt / button.distance
@@ -1020,6 +1033,27 @@ impl Simulation {
                 if button.fraction <= 0.0 {
                     button.returning = false;
                     button.moving_forward = true;
+                }
+            }
+            if active && let Some(target) = target {
+                commanded.push((target.0.clone(), button.fraction));
+            }
+        }
+        for (target_name, fraction) in commanded {
+            let doors: Vec<Entity> = registry.find(&target_name).to_vec();
+            for door_entity in doors {
+                let Ok(mut door) = registry.world.get::<&mut MomentaryDoor>(door_entity) else {
+                    continue;
+                };
+                let step = if door.travel_distance > 0.0 && door.speed > 0.0 {
+                    door.speed * dt / door.travel_distance
+                } else {
+                    1.0
+                };
+                if door.fraction < fraction {
+                    door.fraction = (door.fraction + step).min(fraction);
+                } else if door.fraction > fraction {
+                    door.fraction = (door.fraction - step).max(fraction);
                 }
             }
         }
