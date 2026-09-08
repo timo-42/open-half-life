@@ -1,4 +1,5 @@
-//! Keep the Linux fixture identical to the production static musl ELF shape.
+//! Require the fixed Linux runtime target. The image builder supplies its
+//! static relocation and link flags together; direct tests use Cargo defaults.
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");
     let target = std::env::var("TARGET").unwrap_or_default();
@@ -7,8 +8,5 @@ fn main() {
             target, "x86_64-unknown-linux-musl",
             "Linux worker requires the fixed musl target"
         );
-        for argument in ["-static", "-no-pie", "-Wl,--build-id=none"] {
-            println!("cargo::rustc-link-arg-bins={argument}");
-        }
     }
 }

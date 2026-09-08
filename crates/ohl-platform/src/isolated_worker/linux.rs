@@ -658,6 +658,8 @@ fn build_landlock_ruleset(image: &File) -> Result<OwnedFd, IsolatedWorkerError> 
 /// socket creation, descriptor duplication, process/thread creation, or new
 /// executable memory is permitted. Pointer contents cannot be checked by BPF;
 /// authority restrictions therefore use scalar arguments, never pointed-to data.
+// Keep the complete argument policy together for security review.
+#[allow(clippy::too_many_lines)]
 fn build_seccomp_filter() -> Result<BpfProgram, IsolatedWorkerError> {
     let unavailable = |_| IsolatedWorkerError::ConfinementUnavailable;
     let mut rules: std::collections::BTreeMap<i64, Vec<SeccompRule>> = ALLOWED_SYSCALLS
@@ -706,8 +708,8 @@ fn build_seccomp_filter() -> Result<BpfProgram, IsolatedWorkerError> {
     }
     // Rust checks that standard descriptors exist at startup. No duplication
     // or descriptor flag mutation is allowed through fcntl.
-    for descriptor in 0..=READY_FD {
-        allow(SYS_FCNTL, vec![int_eq(0, descriptor as u64), int_eq(1, 1)])?; // F_GETFD
+    for descriptor in 0..=READY_FD as u64 {
+        allow(SYS_FCNTL, vec![int_eq(0, descriptor), int_eq(1, 1)])?; // F_GETFD
     }
     allow(
         SYS_IOCTL,
@@ -739,7 +741,7 @@ fn build_seccomp_filter() -> Result<BpfProgram, IsolatedWorkerError> {
         vec![
             masked(2, !3, 0),
             masked(3, !0x20000, 0x22),
-            int_eq(4, u32::MAX as u64),
+            int_eq(4, u64::from(u32::MAX)),
             eq(5, 0),
         ],
     )?;
@@ -747,7 +749,12 @@ fn build_seccomp_filter() -> Result<BpfProgram, IsolatedWorkerError> {
     // addresses are accepted only for this inaccessible anonymous shape.
     allow(
         SYS_MMAP,
-        vec![eq(2, 0), eq(3, 0x32), int_eq(4, u32::MAX as u64), eq(5, 0)],
+        vec![
+            eq(2, 0),
+            eq(3, 0x32),
+            int_eq(4, u64::from(u32::MAX)),
+            eq(5, 0),
+        ],
     )?;
     allow(SYS_MPROTECT, vec![masked(2, !3, 0)])?;
     // musl realloc may move its mapping, but cannot choose a fixed destination

@@ -38,7 +38,7 @@ pub const MODE_CRASH: u8 = 0x02;
 /// Mode byte: attempt `openat(2)`, which the seccomp policy does not allow,
 /// i.e. die on `SIGSYS` from `SECCOMP_RET_KILL_PROCESS`.
 ///
-/// Linux only. The hosted (macOS) image answers this mode with a protocol
+/// Linux only. The macOS image answers this mode with a protocol
 /// failure exit; its confinement is probed with [`MODE_CONFINEMENT_PROBE`]
 /// instead, because a Seatbelt denial is an error return, not a kill.
 pub const MODE_FORBIDDEN_SYSCALL: u8 = 0x03;
@@ -49,9 +49,8 @@ pub const MODE_EXIT: u8 = 0x04;
 /// Mode byte: report which of the first [`FD_PROBE_CEILING`] descriptors are
 /// open as a little-endian `u64` bitmask, then keep serving.
 ///
-/// The probe uses `ppoll`, because it is the only allowlisted syscall that
-/// distinguishes an open descriptor from a closed one (`POLLNVAL`); `fcntl`
-/// would be the obvious tool and is deliberately not in the policy.
+/// Linux uses `poll` and `POLLNVAL`; macOS uses descriptor metadata. Neither
+/// probe adds descriptors or changes their flags.
 pub const MODE_FD_INVENTORY: u8 = 0x05;
 
 /// How many descriptor numbers [`MODE_FD_INVENTORY`] probes.
@@ -61,9 +60,8 @@ pub const FD_PROBE_CEILING: i32 = 64;
 /// sandbox must deny, then reply with one byte whose bit `n` is set when
 /// probe `n` *succeeded*, and keep serving. A confined worker replies `0`.
 ///
-/// Hosted (macOS) image only; the freestanding Linux image cannot attempt
-/// any of these without being killed by seccomp, which
-/// [`MODE_FORBIDDEN_SYSCALL`] already proves.
+/// macOS only. Linux checks each denial in a fresh worker through
+/// [`MODE_LINUX_DENIAL`], because seccomp kills the process on the first one.
 pub const MODE_CONFINEMENT_PROBE: u8 = 0x06;
 
 /// The probes behind [`MODE_CONFINEMENT_PROBE`], in bit order:
@@ -91,4 +89,4 @@ pub const MODE_STD_RUNTIME: u8 = 0x08;
 /// Denied operations: file open/create, network, clone/fork/exec, executable
 /// mmap/mprotect, file-backed mmap, descriptor duplication, TLS operation,
 /// socket ioctl and non-private futex.
-pub const LINUX_DENIAL_PROBE_COUNT: u8 = 14;
+pub const LINUX_DENIAL_PROBE_COUNT: u8 = 18;

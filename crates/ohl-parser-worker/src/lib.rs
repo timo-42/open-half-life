@@ -20,11 +20,10 @@
 //!
 //! Building it therefore means invoking `cargo` on that package with an
 //! explicit `--target-dir`, which is what [`build_parser_worker_image`] does.
-//! Linux's static, non-PIE link configuration is emitted from the image's own
-//! `build.rs` as `cargo::rustc-link-arg-bins` for the Linux x86-64 target
-//! only. The builder also scopes Rust's static relocation model to its nested
-//! Linux build, so a plain `cargo build --workspace` on Linux, macOS or
-//! Windows never sees either setting and no global `RUSTFLAGS` is required.
+//! Linux's static relocation and non-PIE link configuration is scoped to the
+//! builder's nested Cargo invocation. A plain `cargo build --workspace` on
+//! Linux, macOS or Windows never sees either setting and no global
+//! `RUSTFLAGS` is required.
 //!
 //! # Install location
 //!
@@ -185,9 +184,14 @@ pub fn build_parser_worker_image() -> Result<PathBuf, BuildError> {
     if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         // Avoid the musl target's position-independent code path so its
         // static executable has the ET_EXEC identity the launcher audits.
-        // This remains confined to the nested image build; build.rs confines
-        // the companion linker flags to this binary target.
-        command.env("CARGO_ENCODED_RUSTFLAGS", "-Crelocation-model=static");
+        // The linker flags must be paired with this setting: applying
+        // `-no-pie` to a default position-independent musl build can produce
+        // a binary that starts incorrectly. This remains confined to the
+        // nested image build.
+        command.env(
+            "CARGO_ENCODED_RUSTFLAGS",
+            "-Crelocation-model=static\u{1f}-Clink-arg=-static\u{1f}-Clink-arg=-no-pie\u{1f}-Clink-arg=-Wl,--build-id=none",
+        );
     }
 
     let output = command.output()?;

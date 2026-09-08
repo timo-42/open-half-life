@@ -2,9 +2,9 @@
 //!
 //! Linux x86-64 and macOS share the ordinary hosted `std` implementation in
 //! [`hosted`]. On Linux, the builder explicitly selects
-//! `x86_64-unknown-linux-musl` and this package's build script makes its
-//! linked image static and non-PIE. On macOS it links normally against
-//! libSystem. Both backends confine the process before it starts.
+//! `x86_64-unknown-linux-musl` and scopes static, non-PIE code generation to
+//! that build. On macOS it links normally against libSystem. Both backends
+//! confine the process before it starts.
 //!
 //! Both host exactly one `run_parser_worker_service` lifetime over
 //! descriptor 3 with `ohl_parser_backends::ContainerDispatcher`, attest

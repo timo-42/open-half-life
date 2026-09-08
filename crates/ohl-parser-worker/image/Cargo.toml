@@ -42,7 +42,7 @@ panic = "abort"
 opt-level = "z"
 lto = true
 # Debug info is dropped, but the symbol table is kept on purpose: `cargo xtask
-# worker-image` proves the image references no libc symbol and has no
-# undefined symbol, which needs `.symtab` to be present.
+# worker-image` uses it to reject required unresolved symbols while allowing
+# optional weak hooks, which needs `.symtab` to be present.
 strip = "debuginfo"
 codegen-units = 1

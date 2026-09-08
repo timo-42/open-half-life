@@ -139,8 +139,14 @@ pub fn build_test_worker_image(variant: TestWorkerVariant) -> Result<PathBuf, Bu
     if cfg!(target_os = "linux") {
         command.arg("--target").arg("x86_64-unknown-linux-musl");
         command.env(
-            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS",
-            "-C relocation-model=static",
+            "CARGO_ENCODED_RUSTFLAGS",
+            [
+                "-Crelocation-model=static",
+                "-Clink-arg=-static",
+                "-Clink-arg=-no-pie",
+                "-Clink-arg=-Wl,--build-id=none",
+            ]
+            .join("\x1f"),
         );
     }
 
@@ -164,8 +170,8 @@ pub fn build_test_worker_image(variant: TestWorkerVariant) -> Result<PathBuf, Bu
 
 /// Environment variables removed by name before the nested `cargo` runs.
 ///
-/// The image must be built from nothing but its own manifest and build
-/// script: an inherited compiler, wrapper, linker, or flag set could quietly
+/// The image must be built from its manifest and the builder's fixed flags:
+/// an inherited compiler, wrapper, linker, or flag set could quietly
 /// turn it into a dynamically linked, instrumented, or differently targeted
 /// binary that the host backend would then refuse to execute (or, worse,
 /// would execute with an unintended runtime attached).
