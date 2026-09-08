@@ -4195,3 +4195,54 @@ accepted.
   `Level::has_landmark` on a landmark-only map and on a map with neither.
   `campaign-smoke`'s own tests cover the new bucket and the fixed-line
   check.
+
+## M9.14 (Rust): chapter interior map table (`CHAPTER_MAPS`)
+
+Status: accepted (Rust). `crates/ohl-campaign/src/chapters.rs` gets a new
+`CHAPTER_MAPS` table, keyed by chapter title, alongside the existing
+`CHAPTERS` table. Two chapters ("Black Mesa Inbound", "Anomalous
+Materials") only carried their starting map in `CHAPTERS` (`c0a0`, `c1a0`
+respectively) even though the real chapter has several interior maps
+reached by level changes off it; PR #134's chained-route walk had no cited
+literal for those interior destinations and had to name its route files
+ordinally (`<start>-hop1.txt`, ...) instead of by destination map, per
+`docs/CLEAN_ROOM.md` rule 7. `CHAPTER_MAPS` closes that gap.
+
+- New per-chapter interior map lists, each cited (see
+  `docs/FORMAT_SOURCES.md`'s new "Campaign chapter interior map table"
+  section and the doc comment directly above `CHAPTER_MAPS` in
+  `chapters.rs`): `c0a0a`..`c0a0e` added for "Black Mesa Inbound"; `c1a0a`,
+  `c1a0b`, `c1a0d`, `c1a0e` added for "Anomalous Materials"; every other
+  chapter reuses `CHAPTERS`'s own list verbatim, including "Xen"'s
+  existing `c4a1a`..`c4a1f`. Two independent, directly-fetched sources
+  (SourceRuns Wiki and a second, targeted fetch of the already-cited
+  `combineoverwiki-storyline`) agree that "Interloper" begins at `c4a1a`
+  rather than `c4a2b`, but that split is *not* adopted here: `CHAPTERS`'s
+  own "Xen" row already claims `c4a1a`..`c4a1f`, so giving the same names
+  to "Interloper" too would be a conflicting assignment within this table.
+  "Interloper" stays empty here, mirroring `CHAPTERS`'s own pre-existing
+  "to verify" status; reconciling which chapter those six maps actually
+  belong under is left to a follow-up that would also revisit `CHAPTERS`.
+- New `ohl_campaign::chapter_maps(title) -> Option<&[&str]>` lookup and
+  `ohl_campaign::is_cited_map_name(name) -> bool`, the latter checking
+  `STARTMAP`, `TRAINMAP`, `HAZARD_COURSE_MAPS`, `CHAPTERS`, and
+  `CHAPTER_MAPS` together — a single place for route/fixture code to
+  confirm a map-name literal is traceable to this crate's own citations
+  before writing it down elsewhere.
+- New tests in `crates/ohl-campaign/src/chapters.rs`: `CHAPTER_MAPS` is
+  non-empty per chapter and covers every `CHAPTERS` chapter exactly once,
+  every name is lowercase ASCII, no chapter's list has a duplicate name,
+  every `CHAPTERS` chapter's first map appears in its `CHAPTER_MAPS` entry,
+  the title lookup, and `is_cited_map_name` covering every table.
+- **Aggregate-only payload verification** (`docs/CLEAN_ROOM.md` rule 7 —
+  the payload was read only to count against the already-cited list, never
+  to choose a literal): of the local payload checked, 0 of the 102 total
+  cited map names were present, and all 24 of the payload's own `.bsp`
+  maps were uncovered by any cited name (that payload holds Team Fortress
+  Classic and other non-campaign maps, not the retail single-player
+  campaign).
+
+Closing checks: `cargo fmt --all`; `cargo clippy --workspace --all-targets
+--all-features -- -D warnings`; `cargo clippy $NO_STD_CRATES --all-targets
+--no-default-features -- -D warnings`; `cargo test --workspace`; `cargo
+xtask policy`; `cargo xtask graph` — all clean.

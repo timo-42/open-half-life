@@ -47,6 +47,9 @@ pub mod chapters;
 pub mod difficulty;
 pub mod skill_table;
 
-pub use chapters::{CHAPTERS, Chapter, STARTMAP, TRAINMAP, chapter_of, next_chapter};
+pub use chapters::{
+    CHAPTER_MAPS, CHAPTERS, Chapter, ChapterMaps, STARTMAP, TRAINMAP, chapter_maps, chapter_of,
+    is_cited_map_name, next_chapter,
+};
 pub use difficulty::Difficulty;
 pub use skill_table::{Limits, SkillTable};
