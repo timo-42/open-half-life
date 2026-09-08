@@ -3836,3 +3836,46 @@ volume does not re-open, since the touch-edge state stays high across the
 whole open/close cycle; not a crash or a stuck-in-solid regression, just an
 unresolved case, now easier to reach than before this milestone, recorded
 in item 30 rather than guessed at.
+
+## M9.10 (Rust): `func_breakable` and `func_pushable`
+
+- **Both classnames are implemented, and neither existed before.** A
+  `func_breakable` (and a `func_pushable` with its documented "Breakable"
+  flag) now takes damage through the shot path, breaks when its documented
+  `health` ("Strength") is spent, fires its documented "Target on Break"
+  after the documented `delay`, and is removed from both collision and
+  render; one with the documented "Only Trigger" flag (or no `health` at
+  all) ignores damage and breaks when triggered instead. The documented
+  "Touch", "Pressure" and "Instant crowbar" flags are wired too, the last
+  two with approximations recorded as project behaviour (`docs/
+  FORMAT_SOURCES.md` item 32). A `func_pushable` additionally moves when
+  the player walks into it: `ohl_engine::pushables` translates it along the
+  player's own movement wish at a `friction`-scaled speed, traced through
+  the collision model with the crate's own hull ignored
+  (`ohl_physics::CollisionModel::trace_ignoring`, new) so it stops on
+  contact with a wall and never overlaps the player. All of it — remaining
+  hit points, the broken flag and the push offset — round-trips through a
+  **new** optional save section, `SECTION_BREAKABLE_STATE` (tag 33; 32 stays
+  reserved for `ohl-player`), with a discriminating round-trip test, a
+  pre-tag-33 compatibility regression, and a new golden-bytes test that
+  touches no existing golden.
+- **What this unblocks, and what it does not.** `.plan/progress-probe-2.md`
+  found Office Complex ("c1a2", `ohl_campaign::CHAPTERS`'s own cited table)
+  unreachable with a frontier made of `func_pushable`/`func_breakable`/
+  `func_wall`/`func_button`/`func_pendulum` brushes; two of those five
+  classnames now do something. Whether that map's route actually opens up
+  is not claimed here: the reachability dev tool that measured it is still
+  an unmerged pull request, so nothing in this tree could be re-measured
+  against it, and teaching that walk to break or push a brush is left for
+  whoever lands it.
+- **Gaps, all recorded rather than guessed at** (`docs/FORMAT_SOURCES.md`
+  item 32): no gibs, no per-`material` break sounds, no `spawnobject`
+  spawning, no falling/pulling/buoyancy for a pushable, and no transition
+  carry (save/load only) — the last for exactly the frozen-section reason
+  item 28 records. No `combat-smoke` scenario was added: a bounded,
+  aggregate-only probe found both classnames near spawn points on maps the
+  suite already visits, but a fresh map spawns the player unarmed, so
+  breaking one in a scenario would need a multi-leg authored route to a
+  weapon and back — out of this package's budget. Synthetic integration
+  fixtures (`crates/ohl-engine/tests/breakable.rs`, `pushable.rs`) stand in
+  for one, both driving the real `Game` loop with no forced state.

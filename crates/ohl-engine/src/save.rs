@@ -33,10 +33,11 @@
 //! | 30 | [`SECTION_ROTATING_MOVER_STATE`] | [`RotatingMoverStateSnapshot`]: `func_rot_button`/`momentary_rot_button`/`func_pendulum` runtime state, one optional entry per registry entity, plus the `func_rot_button` touch-edge bookkeeping (M9.6) |
 //! | 31 | [`SECTION_MOMENTARY_DOOR_STATE`] | `Vec<Option<`[`MomentaryDoorSnapshot`]`>>`, one per registry entity, in spawn order: `momentary_door` runtime position (M9.8) |
 //! | 32 | *(reserved, `ohl-player`)* | `PlayerSnapshot`, written through `Player::snapshot()` when a later package wires it |
+//! | 33 | [`SECTION_BREAKABLE_STATE`] | `Vec<Option<`[`BreakableSnapshot`]`>>`, one per registry entity, in spawn order: `func_breakable`/`func_pushable` remaining hit points, broken flag and push offset (M9.10) |
 //!
-//! Tags 23-31 are read as `None`/a default when absent, so a save written
-//! before M7.9 P4b (tags 23-27), M7.13 (tag 28), M9.5 (tag 29), M9.6
-//! (tag 30) or M9.8 (tag 31) still loads (`.plan/m79-design.md` §6); a
+//! Tags 23-31 and 33 are read as `None`/a default when absent, so a save
+//! written before M7.9 P4b (tags 23-27), M7.13 (tag 28), M9.5 (tag 29),
+//! M9.6 (tag 30), M9.8 (tag 31) or M9.10 (tag 33) still loads (`.plan/m79-design.md` §6); a
 //! section that is present but fails to decode fails the whole read closed
 //! ([`crate::EngineError::SaveUnreadable`]), same as every other section.
 //!
@@ -116,7 +117,7 @@ use ohl_game::SimulationState;
 use serde::{Deserialize, Serialize};
 
 use crate::save_state::{
-    AiSnapshot, EntityCombatSnapshot, InventorySnapshot, MomentaryDoorSnapshot,
+    AiSnapshot, BreakableSnapshot, EntityCombatSnapshot, InventorySnapshot, MomentaryDoorSnapshot,
     MonsterMakerChildSnapshot, MoverSnapshot, ProjectilesSnapshot, RngSnapshot,
     RotatingMoverSnapshot,
 };
@@ -195,6 +196,20 @@ pub const SECTION_ROTATING_MOVER_STATE: u32 = 30;
 /// reopening tag 30's wire shape — the same reasoning tag 30 itself
 /// recorded for staying out of tags 18/19/28.
 pub const SECTION_MOMENTARY_DOOR_STATE: u32 = 31;
+
+/// A `func_breakable`/`func_pushable`'s runtime state — remaining hit
+/// points, whether it has broken, and how far it has been pushed — one
+/// optional entry per registry entity in spawn order (M9.10,
+/// `docs/FORMAT_SOURCES.md` item 32).
+///
+/// **33, not 32**: tag 32 is reserved for `ohl-player`'s own
+/// `PlayerSnapshot` in the tag map above, so this section takes the next
+/// number after it rather than claiming a tag another package has already
+/// been promised. A new tag rather than a field on any existing one, for
+/// the reason this module's "Frozen section shapes" doc gives: every
+/// shipped section's `postcard` shape is frozen, so new persisted state
+/// always gets its own optional tag.
+pub const SECTION_BREAKABLE_STATE: u32 = 33;
 
 /// The engine header section's contents.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -322,6 +337,12 @@ pub struct GameSave {
     /// older save simply has every `momentary_door` default to `fraction =
     /// 0.0`, its spawn-time resting position.
     pub momentary_doors: Option<Vec<Option<MomentaryDoorSnapshot>>>,
+    /// `func_breakable`/`func_pushable` runtime state, one optional entry
+    /// per registry entity, in spawn order (M9.10). `None` for a save
+    /// missing tag 33 — an older save simply has every breakable back at
+    /// its authored `health`, unbroken, and every pushable back where it
+    /// was compiled.
+    pub breakables: Option<Vec<Option<BreakableSnapshot>>>,
 }
 
 impl GameSave {
@@ -391,6 +412,9 @@ impl GameSave {
             if let Some(momentary_doors) = &self.momentary_doors {
                 writer.add_section_serde(SECTION_MOMENTARY_DOOR_STATE, momentary_doors)?;
             }
+            if let Some(breakables) = &self.breakables {
+                writer.add_section_serde(SECTION_BREAKABLE_STATE, breakables)?;
+            }
             Ok(())
         };
         write(&mut writer).map_err(|_| crate::EngineError::SaveUnwritable)?;
@@ -437,6 +461,11 @@ impl GameSave {
                 &reader,
                 SECTION_MOMENTARY_DOOR_STATE,
                 crate::save_state::MAX_SNAPSHOT_MOMENTARY_DOORS,
+            )?,
+            breakables: optional_bounded_vec_section(
+                &reader,
+                SECTION_BREAKABLE_STATE,
+                crate::save_state::MAX_SNAPSHOT_BREAKABLES,
             )?,
         })
     }

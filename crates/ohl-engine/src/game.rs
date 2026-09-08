@@ -1107,6 +1107,7 @@ impl Game {
                 rot_button_touch: self.level.simulation.rot_button_touch_snapshot(),
             }),
             momentary_doors: Some(crate::save_state::snapshot_momentary_doors(&self.level)),
+            breakables: Some(crate::save_state::snapshot_breakables(&self.level)),
         }
     }
 
@@ -1367,6 +1368,13 @@ impl Game {
         // own last-restored `fraction` until a button pushes it again).
         if let Some(momentary_doors) = &save.momentary_doors {
             crate::save_state::restore_momentary_doors(&mut self.level, momentary_doors);
+        }
+        // `SECTION_BREAKABLE_STATE` (33, M9.10): the same spawn-order-zipped
+        // overlay. A brush that had already broken before the save stays
+        // broken after the load, and a pushed `func_pushable` is restored
+        // where the player left it, not where it was compiled.
+        if let Some(breakables) = &save.breakables {
+            crate::save_state::restore_breakables(&mut self.level, breakables);
         }
         // A load is a map load: the chapter title is announced again.
         self.pending.clear();

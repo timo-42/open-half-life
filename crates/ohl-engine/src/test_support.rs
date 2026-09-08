@@ -1635,3 +1635,182 @@ pub fn reachability_changelevel_entities(next_map: &str) -> String {
         reachability_door_only_entities(),
     )
 }
+
+// ---------------------------------------------------------------------
+// A corridor blocked by a `func_breakable`, and one blocked by a
+// `func_pushable` (M9.10, `docs/FORMAT_SOURCES.md` item 32)
+// ---------------------------------------------------------------------
+
+/// The map name the `func_breakable` corridor fixture is published under.
+pub const BREAKABLE_MAP: &str = "ohlbreakablesynth";
+
+/// The map name the `func_pushable` corridor fixture is published under.
+pub const PUSHABLE_MAP: &str = "ohlpushablesynth";
+
+/// The `targetname` of the corridor fixtures' obstacle (the
+/// `func_breakable`, or the `func_pushable`).
+pub const OBSTACLE_NAME: &str = "ohl_obstacle";
+
+/// The `targetname` of the `func_door` the breakable fixture's obstacle
+/// targets, so "breaking fires `target`" is observable end to end.
+pub const BREAKABLE_DOOR_NAME: &str = "ohl_breakable_door";
+
+/// The near face of the corridor obstacle, on `+X`: a player walking
+/// forward from the spawn point stops here while it is still in the way.
+pub const OBSTACLE_NEAR_X: f32 = 64.0;
+
+/// The far face of the `func_breakable` corridor obstacle, on `+X`.
+pub const OBSTACLE_FAR_X: f32 = 96.0;
+
+/// Half the width of the walled corridor [`obstacle_corridor_bsp`] can
+/// build: wide enough that the 64-unit crate below leaves no gap a
+/// 32-unit-wide player could squeeze through, and wide enough that the
+/// crate's own 64-unit collision hull is not flush against either wall.
+pub const CORRIDOR_HALF_Y: f32 = 48.0;
+
+/// The upper corner of the `func_breakable` fixture's obstacle: a slab
+/// spanning the full corridor, tall enough to cover a standing player.
+pub const BREAKABLE_OBSTACLE_MAXS: [f32; 3] = [OBSTACLE_FAR_X, 64.0, 128.0];
+
+/// The upper corner of the `func_pushable` fixture's crate: 64 units on
+/// every axis, so `ohl_physics::Hull::for_size` picks the documented
+/// 64x64x64 large hull for it and the traced push is the crate's own size
+/// rather than a rough stand-in.
+pub const PUSHABLE_CRATE_MAXS: [f32; 3] = [OBSTACLE_NEAR_X + 64.0, 32.0, 64.0];
+
+/// The `func_breakable`'s `health` keyvalue: below the published 40-damage
+/// `.357 Magnum` single shot (`ohl_combat::spec`'s own citation for
+/// `WeaponId::Python`), so one landed shot breaks it outright.
+pub const BREAKABLE_HEALTH: f32 = 30.0;
+
+/// The `X` coordinate of the near face of the optional back wall the
+/// pushable fixture can place behind the crate, to prove a pushed brush
+/// stops on contact with world geometry instead of sliding through it.
+pub const PUSHABLE_BACK_WALL_X: f32 = 192.0;
+
+/// A flat floor (worldspawn) plus one obstacle submodel spanning the
+/// straight walk from the spawn point, with real collision hulls of its own
+/// so it genuinely blocks a walking player — unlike the bounding-box-only
+/// submodels [`rot_button_bsp`] uses, which are only ever needed for a
+/// proximity search.
+///
+/// Submodel 1 is the obstacle, a box from `x = ` [`OBSTACLE_NEAR_X`] to
+/// [`OBSTACLE_FAR_X`], `y` in `-half_y..half_y` and `z` in `0..top_z`, so a
+/// player walking `+X` from `(0, 0, 40)` runs into it. `corridor` walls the
+/// straight walk in on both sides at `y = ±`[`CORRIDOR_HALF_Y`], so a
+/// narrower obstacle still cannot be walked around; `back_wall` emits
+/// submodel 2, a static slab at [`PUSHABLE_BACK_WALL_X`] a fixture can
+/// declare as a `func_wall` to stand in the way of a pushed crate.
+///
+/// No bytes here come from any game installation; see `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn obstacle_corridor_bsp(
+    entities: &str,
+    obstacle_maxs: [f32; 3],
+    corridor: bool,
+    back_wall: bool,
+) -> Vec<u8> {
+    const HALF: f32 = 512.0;
+    const HEIGHT: f32 = 256.0;
+
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(entities);
+    let mut world = vec![
+        CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+        CollisionBrush::half_space([0.0, 0.0, -1.0], -HEIGHT),
+        CollisionBrush::half_space([-1.0, 0.0, 0.0], -HALF),
+        CollisionBrush::half_space([1.0, 0.0, 0.0], -HALF),
+        CollisionBrush::half_space([0.0, -1.0, 0.0], -HALF),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], -HALF),
+    ];
+    if corridor {
+        world.push(CollisionBrush::box_brush(
+            [-HALF, CORRIDOR_HALF_Y, 0.0],
+            [HALF, HALF, HEIGHT],
+        ));
+        world.push(CollisionBrush::box_brush(
+            [-HALF, -HALF, 0.0],
+            [HALF, -CORRIDOR_HALF_Y, HEIGHT],
+        ));
+    }
+    let world_heads = b.push_collision_hulls(&world);
+    let obstacle_mins = [OBSTACLE_NEAR_X, -obstacle_maxs[1], 0.0];
+    let obstacle_heads =
+        b.push_collision_hulls(&[CollisionBrush::box_brush(obstacle_mins, obstacle_maxs)]);
+    let wall_mins = [PUSHABLE_BACK_WALL_X, -HALF, 0.0];
+    let wall_maxs = [PUSHABLE_BACK_WALL_X + 16.0, HALF, HEIGHT];
+    let wall_heads = back_wall
+        .then(|| b.push_collision_hulls(&[CollisionBrush::box_brush(wall_mins, wall_maxs)]));
+    b.push_model(
+        [-HALF, -HALF, 0.0],
+        [HALF, HALF, HEIGHT],
+        [0.0; 3],
+        world_heads,
+        2,
+        0,
+        0,
+    );
+    b.push_model(
+        obstacle_mins,
+        obstacle_maxs,
+        [0.0; 3],
+        obstacle_heads,
+        2,
+        0,
+        0,
+    );
+    if let Some(wall_heads) = wall_heads {
+        b.push_model(wall_mins, wall_maxs, [0.0; 3], wall_heads, 2, 0, 0);
+    }
+    b.build()
+}
+
+/// A `worldspawn`, an `info_player_start` at `(0, 0, 40)` facing `+X`
+/// (`angle 0`, the "counter-clockwise around +X" convention
+/// `ohl_world::spawn::PlayerSpawn` documents) with a `weapon_357` sitting on
+/// it so the very first pickup touch arms the player, a `func_breakable`
+/// (submodel `*1`, [`BREAKABLE_HEALTH`] hit points, `targetname`
+/// [`OBSTACLE_NAME`]) squarely in the way, and a `func_door`
+/// ([`BREAKABLE_DOOR_NAME`], `wait -1`) as its "Target on Break" so the
+/// documented `target` fire is observable. `spawnflags` is caller-chosen so
+/// the same fixture can exercise the documented "Only Trigger (1)" and
+/// "Touch (2)" flags. No bytes here come from any game installation; see
+/// `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn breakable_corridor_entities(health: f32, spawnflags: u32) -> String {
+    format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"0 0 40\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"weapon_357\"\n\"origin\" \"0 0 40\"\n}}\n\
+         {{\n\"classname\" \"func_breakable\"\n\"targetname\" \"{OBSTACLE_NAME}\"\n\
+         \"target\" \"{BREAKABLE_DOOR_NAME}\"\n\"model\" \"*1\"\n\
+         \"health\" \"{health}\"\n\"spawnflags\" \"{spawnflags}\"\n\"material\" \"1\"\n}}\n\
+         {{\n\"classname\" \"func_door\"\n\"targetname\" \"{BREAKABLE_DOOR_NAME}\"\n\
+         \"speed\" \"200\"\n\"wait\" \"-1\"\n}}\n"
+    )
+}
+
+/// The same corridor, blocked by a `func_pushable` crate (submodel `*1`,
+/// `targetname` [`OBSTACLE_NAME`]) instead: a player walking into it must
+/// shove it out of the way to get past. `friction` is caller-chosen (the
+/// documented `0..400` resistance range), and `back_wall` declares the
+/// fixture's optional static `func_wall` (submodel `*2`) so a test can prove
+/// a pushed crate stops against world geometry. No bytes here come from any
+/// game installation; see `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn pushable_corridor_entities(friction: f32, back_wall: bool) -> String {
+    let wall = if back_wall {
+        "{\n\"classname\" \"func_wall\"\n\"model\" \"*2\"\n}\n"
+    } else {
+        ""
+    };
+    format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"0 0 40\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"func_pushable\"\n\"targetname\" \"{OBSTACLE_NAME}\"\n\
+         \"model\" \"*1\"\n\"friction\" \"{friction}\"\n\"material\" \"1\"\n}}\n\
+         {wall}"
+    )
+}

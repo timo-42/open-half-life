@@ -483,6 +483,110 @@ pub struct MomentaryDoor {
     pub fraction: f32,
 }
 
+/// `func_breakable` (and, when its documented "Breakable" spawnflag is set,
+/// `func_pushable`): a solid brush that is removed from the world once it
+/// has taken its `health` keyvalue's worth of damage, or once it is
+/// triggered.
+///
+/// TWHL wiki `func_breakable` (`https://twhl.info/wiki/page/func_breakable`,
+/// fetched directly, HTTP 200, reviewed 2026-09-08; `docs/
+/// FORMAT_SOURCES.md`, item 32): "The `func_breakable` entity allows you to
+/// create a breakable brush, with the option of spawning items";
+/// "Strength (`health`) - The amount of damage the entity will take before
+/// breaking"; "Target on Break (`target`) - When the `func_breakable` is
+/// broken or triggered, it will activate this entity"; "Delay before fire
+/// (`delay`) - Delay before Target on Break is triggered after being
+/// broken"; "Material Type (`material`)"; and the flags "Only Trigger (1)",
+/// "Touch (2)", "Pressure (4)" and "Instant crowbar (256)".
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+// Five spawnflag/state booleans, each one a documented flag of its own (see
+// this struct's own doc comment); the same `allow` `MomentaryRotButton`
+// already carries for its own flag set.
+#[allow(clippy::struct_excessive_bools)]
+pub struct Breakable {
+    /// Remaining hit points, seeded from the documented `health`
+    /// ("Strength") keyvalue and reduced by
+    /// [`crate::logic::Simulation::damage_breakable`]. `0.0` means the
+    /// brush cannot be broken by damage at all and waits to be triggered —
+    /// the same reading [`Button::health`] already records for a `0`
+    /// `health` on a button.
+    pub health: f32,
+    /// The `material` keyvalue as authored, `0..=8` per the cited option
+    /// list (0 Glass, 1 Wood, 2 Metal, 3 Flesh, 4 Cinder Block, 5 Ceiling
+    /// Tile, 6 Computer, 7 Unbreakable Glass, 8 Rocks). Carried so a later
+    /// package can pick the documented per-material break sound and gib
+    /// model; **nothing in this project reads it yet** (see
+    /// `docs/FORMAT_SOURCES.md`, item 32's own gap list).
+    pub material: u8,
+    /// The documented "Only Trigger (1)" flag: the brush can only be broken
+    /// by being triggered, never by damage.
+    pub trigger_only: bool,
+    /// The documented "Touch (2)" flag: "Brush will break on touch."
+    pub break_on_touch: bool,
+    /// The documented "Pressure (4)" flag: "Brush will break when pressured
+    /// (e.g. player walking on it)."
+    pub break_on_pressure: bool,
+    /// The documented "Instant crowbar (256)" flag: "Whack it with a
+    /// crowbar and it will break instantly (regardless of strength)."
+    pub instant_crowbar: bool,
+    /// The documented "Delay before fire" (`delay`) keyvalue: seconds
+    /// between breaking and firing `target`.
+    pub delay: f32,
+    /// Whether this brush has already broken. A broken brush is skipped by
+    /// [`crate::brush::model_instances`]/[`crate::brush::solid_model_instances`]
+    /// (so it stops being drawn and stops being re-attached to a collision
+    /// model) and detached from the live collision model by
+    /// `ohl_engine::Level::sync_brush_collision`.
+    pub broken: bool,
+}
+
+/// `func_pushable`: the one brush entity a player can push around.
+///
+/// TWHL wiki `func_pushable` (`https://twhl.info/wiki/page/func_pushable`,
+/// fetched directly, HTTP 200, reviewed 2026-09-08; `docs/
+/// FORMAT_SOURCES.md`, item 32): "The only type of brush entity that can be
+/// pushed, pulled, lifted (not by the player) and fall, most commonly used
+/// with crates. It can also optionally be breakable"; "Friction
+/// (`friction`) - This determines the amount of resistance the brush will
+/// give when the player pushes it. Range is 0 to 400, where 400 is the most
+/// resistance"; "Hull size (`size`) - The parameter is supposed to set the
+/// entity size, but it doesn't do anything"; and the flag "Breakable (128)
+/// - If this is enabled, the entity will act like a `func_breakable`."
+///
+/// Every `func_pushable` also carries a [`Breakable`]; only one whose
+/// "Breakable" flag is set can actually be broken by damage
+/// ([`Self::breakable`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Pushable {
+    /// The documented `friction` keyvalue, clamped to the documented
+    /// `0..=400` range: how much resistance the brush gives when pushed.
+    pub friction: f32,
+    /// The documented "Breakable (128)" flag.
+    pub breakable: bool,
+    /// How far this brush has been pushed from where it was compiled —
+    /// this project's own runtime state, reaching the renderer, the
+    /// collision model and the `use`-proximity search through
+    /// [`crate::pose::pushable_offset`], the same one-offset pipeline every
+    /// other translating mover already uses.
+    pub offset: Vec3,
+}
+
+/// `func_breakable`'s documented "Only Trigger" flag.
+pub const SPAWNFLAG_BREAKABLE_ONLY_TRIGGER: u32 = 1;
+/// `func_breakable`'s documented "Touch" flag.
+pub const SPAWNFLAG_BREAKABLE_TOUCH: u32 = 2;
+/// `func_breakable`'s documented "Pressure" flag.
+pub const SPAWNFLAG_BREAKABLE_PRESSURE: u32 = 4;
+/// `func_breakable`'s documented "Instant crowbar" flag.
+pub const SPAWNFLAG_BREAKABLE_INSTANT_CROWBAR: u32 = 256;
+/// `func_pushable`'s documented "Breakable" flag.
+pub const SPAWNFLAG_PUSHABLE_BREAKABLE: u32 = 128;
+/// The documented upper end of `func_pushable`'s `friction` range ("Range
+/// is 0 to 400, where 400 is the most resistance").
+pub const PUSHABLE_MAX_FRICTION: f32 = 400.0;
+
 /// `func_pendulum`: a brush that swings continuously about an origin-keyvalue
 /// pivot like a physical pendulum (TWHL wiki `func_pendulum`,
 /// `docs/FORMAT_SOURCES.md`, "Entity keyvalues and map logic"): `distance`
@@ -1459,6 +1563,60 @@ impl Registry {
                 // `Door` itself), but never gets a `state`/`timer`
                 // open-close cycle: only `Simulation::
                 // drive_momentary_rot_button` ever moves `fraction`.
+                // `func_breakable`/`func_pushable`: TWHL wiki
+                // `func_breakable`/`func_pushable` (`docs/
+                // FORMAT_SOURCES.md`, item 32). Both carry a `Breakable`;
+                // a `func_pushable` additionally carries a `Pushable`, and
+                // is only breakable by damage when its own documented
+                // "Breakable (128)" flag is set.
+                "func_breakable" | "func_pushable" => {
+                    let pushable = def.classname == "func_pushable";
+                    let flags = def.spawnflags;
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let material = numeric(def, "material", 0.0).clamp(0.0, 255.0) as u8;
+                    let breakable_flag = !pushable || flags & SPAWNFLAG_PUSHABLE_BREAKABLE != 0;
+                    let breakable = Breakable {
+                        // A `func_pushable` without the documented
+                        // "Breakable" flag keeps no hit points at all, so
+                        // no damage path can ever reach it: the cited page
+                        // states its own `health` applies only "If
+                        // breakable".
+                        health: if breakable_flag {
+                            numeric(def, "health", 0.0).max(0.0)
+                        } else {
+                            0.0
+                        },
+                        material,
+                        // A `func_pushable`'s "Only Trigger"/"Touch"/
+                        // "Pressure" bits are not documented for it at all
+                        // (its own cited flag list has one entry,
+                        // "Breakable (128)"), and the same page records
+                        // that a pushable "Can't be broken by impact like a
+                        // func_breakable does with 'Pressure' on" — so only
+                        // a real `func_breakable` reads those three bits.
+                        trigger_only: !pushable && flags & SPAWNFLAG_BREAKABLE_ONLY_TRIGGER != 0,
+                        break_on_touch: !pushable && flags & SPAWNFLAG_BREAKABLE_TOUCH != 0,
+                        break_on_pressure: !pushable && flags & SPAWNFLAG_BREAKABLE_PRESSURE != 0,
+                        instant_crowbar: breakable_flag
+                            && flags & SPAWNFLAG_BREAKABLE_INSTANT_CROWBAR != 0,
+                        delay: numeric(def, "delay", 0.0).max(0.0),
+                        broken: false,
+                    };
+                    world.insert_one(entity, breakable).ok();
+                    if pushable {
+                        world
+                            .insert_one(
+                                entity,
+                                Pushable {
+                                    friction: numeric(def, "friction", 0.0)
+                                        .clamp(0.0, PUSHABLE_MAX_FRICTION),
+                                    breakable: breakable_flag,
+                                    offset: Vec3::ZERO,
+                                },
+                            )
+                            .ok();
+                    }
+                }
                 "momentary_door" => {
                     let lip = def
                         .keyvalues

@@ -1058,6 +1058,25 @@ impl CollisionModel {
     /// stops a falling player exactly as a worldspawn floor does.
     #[must_use]
     pub fn trace(&self, hull: Hull, start: Vec3, end: Vec3) -> Trace {
+        self.trace_ignoring(hull, start, end, None)
+    }
+
+    /// As [`Self::trace`], but skipping one attached brush entirely.
+    ///
+    /// This is what lets a brush entity be traced *as a mover*: a
+    /// `func_pushable` being pushed has its own hull attached to this model
+    /// like any other solid brush, so a trace of where it is about to go
+    /// would otherwise start inside itself and report every move as blocked
+    /// (see `ohl_engine::pushables`). `ignore` naming a detached or unknown
+    /// id simply skips nothing, and the world tree is always traced.
+    #[must_use]
+    pub fn trace_ignoring(
+        &self,
+        hull: Hull,
+        start: Vec3,
+        end: Vec3,
+        ignore: Option<BrushId>,
+    ) -> Trace {
         if !start.is_finite() || !end.is_finite() {
             // Nothing sensible can be traced; report a fully blocked move so
             // callers keep the entity where it is.
@@ -1079,6 +1098,9 @@ impl CollisionModel {
             BrushKind::Solid,
         );
         for (index, brush) in self.brushes.iter().enumerate() {
+            if ignore == Some(BrushId(index)) {
+                continue;
+            }
             let head = brush.heads[hull.index()];
             if head < 0 {
                 // This submodel's tree for this hull is a bare contents

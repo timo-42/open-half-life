@@ -4402,3 +4402,221 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
     a_tracktrain_without_an_origin_brush_gives_a_wrong_brush_center`,
     that pins the current, documented-wrong sum so a future fix has to
     update it deliberately rather than silently change behaviour underfoot.
+
+### `func_breakable` and `func_pushable` (M9.10)
+
+32. **`func_breakable` and `func_pushable`, the two classnames a solid
+    brush uses when the player is meant to destroy it or shove it aside.**
+
+    Sources (both fetched directly, HTTP 200 from this environment — not
+    the search-summary fallback earlier TWHL citations in this document had
+    to use; reviewed 2026-09-08):
+
+    - TWHL wiki, `func_breakable`
+      (`https://twhl.info/wiki/page/func_breakable`): "The `func_breakable`
+      entity allows you to create a breakable brush, with the option of
+      spawning items." Attributes quoted verbatim from that page:
+      "Material Type (`material`) - The type of material that a
+      `func_breakable` or `func_pushable` should act as", with the option
+      list `0 = Glass`, `1 = Wood`, `2 = Metal`, `3 = Flesh`,
+      `4 = Cinder Block`, `5 = Ceiling Tile`, `6 = Computer`,
+      `7 = Unbreakable Glass`, `8 = Rocks`; "Spawn on Break (`spawnobject`)
+      ... Determines what item is spawned when the entity is broken";
+      "Target on Break (`target`) - When the `func_breakable` is broken or
+      triggered, it will activate this entity"; "Strength (`health`) - The
+      amount of damage the entity will take before breaking"; "Gibs
+      Direction (`explosion`)"; "Delay before fire (`delay`) - Delay before
+      Target on Break is triggered after being broken"; "Gib Model
+      (`gibmodel`)"; "Explode Magnitude (`explodemagnitude`)". Flags:
+      "Only Trigger (1) - Entity can only be activated (broken) by being
+      triggered"; "Touch (2) - Brush will break on touch"; "Pressure (4) -
+      Brush will break when pressured (e.g. player walking on it). This
+      also makes Delay before fire parameter act as a delay before the
+      entity breaks after the pressure has been applied"; "Instant crowbar
+      (256) - Whack it with a crowbar and it will break instantly
+      (regardless of strength)."
+    - TWHL wiki, `func_pushable`
+      (`https://twhl.info/wiki/page/func_pushable`): "The only type of
+      brush entity that can be pushed, pulled, lifted (not by the player)
+      and fall, most commonly used with crates. It can also optionally be
+      breakable." Attributes: "Target on break (`target`) - If breakable,
+      this event will be activated when broken"; "Strength (`health`) - If
+      breakable, this is the amount of damage to be taken before breaking";
+      "Hull size (`size`) - The parameter is supposed to set the entity
+      size, but it doesn't do anything"; "Friction (`friction`) - This
+      determines the amount of resistance the brush will give when the
+      player pushes it. Range is 0 to 400, where 400 is the most
+      resistance"; "Bouyancy (`bouyancy`) - Determines how well the entity
+      floats on water". Flags: "Breakable (128) - If this is enabled, the
+      entity will act like a `func_breakable`." Notes: "Can't be broken by
+      impact like a `func_breakable` does with 'Pressure' on."
+    - `twhl-community/halflife-unified-sdk`'s public entity guide
+      (`docs/entityguide/entities/func_breakable.md` and
+      `func_pushable.md`, fetched from `raw.githubusercontent.com`, HTTP
+      200, reviewed 2026-09-08): "Brush entity that can be broken by
+      damaging it" / "Brush entity that can be moved and can be broken by
+      damaging it", plus the `spawnobject` keyvalue. Consulted only to
+      corroborate the two TWHL pages above; nothing in this project is
+      taken from that repository's own code.
+
+    **Project behaviour.** `ohl_game::registry::Breakable` is a new
+    component on every `func_breakable` *and* every `func_pushable` (the
+    cited pages describe the same break behaviour for both), carrying the
+    remaining `health`, the `material` value as authored, the four cited
+    spawnflag bits, the cited `delay`, and a `broken` flag.
+    `ohl_game::registry::Pushable` additionally carries a `func_pushable`'s
+    cited `friction` (clamped to the cited `0..=400` range), its cited
+    "Breakable (128)" bit, and the runtime push displacement.
+
+    A `func_pushable` without the cited "Breakable" flag is spawned with
+    `health = 0` outright, since the cited page states its `health` applies
+    only "If breakable", and a `func_pushable`'s "Only Trigger"/"Touch"/
+    "Pressure" bits are not read at all: its own cited flag list has one
+    entry, and the same page states a pushable "Can't be broken by impact
+    like a `func_breakable` does with 'Pressure' on".
+
+    Breaking, in `ohl_game::logic::Simulation`:
+    `damage_breakable` subtracts damage from `Breakable::health` and breaks
+    the brush when it reaches zero; `break_entity` marks it broken and
+    fires the cited "Target on Break" through the existing `Target`
+    component after the cited `delay`. A brush with `health == 0` or the
+    cited "Only Trigger" flag ignores damage entirely and breaks only when
+    triggered, which `Simulation::activate` now does for any entity
+    carrying a `Breakable` — the cited "broken **or triggered**" wording.
+    The cited "Touch" flag is handled by `Simulation::touch_breakables`,
+    called from the same `touch_triggers` pass a touch-activated
+    `func_rot_button` already uses (brush box against the player's box).
+    Breaking is one-way: nothing in this project ever restores a broken
+    brush, so a `target` fires at most once.
+
+    Once broken, the brush leaves the world by two existing mechanisms
+    rather than a new one: `ohl_game::brush`'s
+    `model_instances`/`solid_model_instances` skip it (so it stops being
+    drawn and stops being offered for collision attachment), and
+    `ohl_engine::Level::sync_brush_collision` detaches its already-attached
+    hull the same way it already detaches a `killtarget`ed entity's. The
+    entity itself is kept (unlike a `killtarget`) because its broken state
+    has to persist; see the save section below.
+
+    Damage reaches a brush through the hitbox index:
+    `ohl_engine::combat::push_damageable_brush_hitboxes` — the function item
+    27 added for health-gated `func_button`/`func_rot_button`, extended
+    rather than duplicated — publishes one whole-brush box
+    (`HitGroup::Generic`) per unbroken breakable with hit points left, taken
+    from its placed `BrushBounds` plus `pose::brush_offset`, and
+    `resolve_damage` routes a hit on one into
+    `Simulation::damage_breakable`. **This project's own finding, recorded
+    here because it is not obvious**: that box has to be grown slightly
+    (`ohl_engine::combat::BRUSH_HITBOX_SLOP`, 1 unit) or the shot never
+    registers — `ohl_combat::trace_attack_filtered` takes the *nearest*
+    impact, world or entity, and `ohl_physics`'s world trace deliberately
+    stops `DIST_EPSILON` short of the surface it hits, so a hitbox laid
+    exactly on a solid brush's own faces always loses to that brush's own
+    hull and the shot resolves as "hit the world". **Append-only correction
+    to item 27**: that applies to a health-gated button just as much as to a
+    breakable — item 27's own fixtures give their button a bounding box with
+    no collision hulls of its own, which is why the effect never showed up
+    there, while every button on a real map is solid. The slop is therefore
+    applied to both kinds of brush by the one shared helper, which is a
+    behaviour change for a shot at a real map's shootable button (it now
+    registers) rather than only new behaviour for this item's own
+    entities.
+
+    **"Instant crowbar", approximated.** A resolved hit carries a damage
+    *type*, not a weapon id, so this project treats any `DamageType::CLUB`
+    hit as the cited "whack it with a crowbar": with the cited flag set,
+    such a hit breaks the brush "regardless of strength". Recorded as
+    project behaviour, not as a claim about the original engine.
+
+    **"Pressure", approximated.** `ohl_engine::Systems::
+    break_pressured_breakables` (phase 12b) reads "pressured" as *the
+    player is standing on it*, which the player move already answers
+    exactly (`ohl_physics::PlayerState::ground_brush`, mapped back to its
+    entity through `Level::brush_collision`). `TODO(black-box)`: the cited
+    "Delay before fire ... act[ing] as a delay before the entity breaks" is
+    **not** implemented — this project breaks immediately and applies
+    `delay` only to the `target` fire.
+
+    **Pushing, entirely this project's own law** (`ohl_engine::pushables`,
+    a new module; the cited page gives a `friction` range and nothing
+    else — no speed, no contact rule, no law relating the two): a
+    `func_pushable` moves when the player's own hull box, grown by
+    `CONTACT_SLOP` (2 units), overlaps the crate's current box *and* the
+    player's movement wish (`PlayerController::wish_move`, not their
+    resulting velocity — a player leaning on a crate has already had their
+    velocity clipped to zero by its own hull) points toward it. It then
+    travels along that wish direction at the player's own configured
+    ground speed scaled by `1 - friction / 400` and capped at
+    `MAX_PUSH_SPEED` (200 u/s), with the step traced through the collision
+    model by `ohl_physics::CollisionModel::trace_ignoring` (a **new**
+    method: as-`trace`, skipping one attached brush, which is what lets a
+    brush be traced as a mover without starting inside itself) using the
+    hull `ohl_physics::Hull::for_size` picks for the crate's own box, from
+    a query point at the crate's horizontal centre and its own floor plus
+    that hull's `foot_offset`. The push is accumulated in
+    `Pushable::offset` and reaches the renderer, the collision model and
+    the `use`-proximity search through `ohl_game::pose::pushable_offset`
+    chained into the same `pose::brush_offset` every other translating
+    mover already uses. Because the direction is always *away* from the
+    player, a pushed crate can never be driven into the player and leave
+    them in solid.
+
+    **`TODO(black-box)`/documented gaps.** None of the following is
+    implemented, and none is guessed at: no gib is spawned and no
+    `gibmodel`/`explosion`/`explodemagnitude` is honoured; no per-`material`
+    break or damage sound is played (`Breakable::material` is parsed and
+    carried, and nothing reads it yet); the cited `spawnobject` item is not
+    spawned; the cited "pulled, lifted ... and fall" behaviours of a
+    `func_pushable` are absent (no gravity, no pulling, `bouyancy` ignored,
+    the cited-as-inert `size` ignored); the cited "Unbreakable Glass"
+    material value gets no special handling beyond being recorded; and a
+    breakable/pushable's state does **not** cross a `trigger_changelevel`
+    transition (only a save/load), the same documented gap item 27 already
+    records for tag 30's entities and for the same reason —
+    `ohl_engine::transition::EntitySnapshot` is save section 18's own
+    frozen wire shape and must not gain fields (item 28).
+
+    **Save format.** All of it round-trips through a **new** optional
+    section, `SECTION_BREAKABLE_STATE` (**tag 33**, `Vec<Option<
+    BreakableSnapshot>>`: remaining `health`, `broken`, and the
+    `func_pushable` push offset, one entry per registry entity in spawn
+    order). **33, not 32**: `ohl_engine::save`'s own tag map already
+    reserves 32 for `ohl-player`'s `PlayerSnapshot`, so this section takes
+    the next free number rather than claiming a reserved one. Covered by a
+    discriminating round-trip test (`a_damaged_and_a_broken_breakable_both_
+    round_trip`, `crates/ohl-engine/tests/save_sections.rs`, every hit in
+    it a real shot through the `Game` loop), a pre-existing-save
+    compatibility regression (`a_save_from_before_section_33_existed_still_
+    loads`, proving a save with no tag 33 still loads with every breakable
+    intact), and a **new** golden-bytes test
+    (`tag_33_breakable_state_keeps_its_frozen_wire_shape`,
+    `crates/ohl-engine/tests/save_format_frozen.rs`) that pins tag 33's
+    shape from the moment it ships without touching any existing golden.
+
+    **`TODO(black-box)`: no `combat-smoke` scenario was added.** A bounded,
+    aggregate-only probe (this project's own clean-room `ohl-formats` BSP
+    parser over every map `ohl_campaign::CHAPTERS`/`HAZARD_COURSE_MAPS`
+    cite, counting entities by classname and measuring each one's submodel
+    bounding-box centre against that map's `info_player_start` origins;
+    counts and distances only, nothing media-derived committed, the probe
+    itself not committed) found **1896 `func_breakable` entities across 84
+    of the 93 cited maps, and 287 `func_pushable` entities across 45 of
+    them**, with 342 breakables and 54 pushables within 512 units of a
+    spawn point. So instances near a spawn certainly exist on maps the
+    `combat-smoke` suite already visits. What does not exist is a way to
+    *break* one in a scenario: a freshly loaded map spawns the player with
+    no weapon at all, so a scripted scenario would first have to walk a
+    tuned route to a weapon pickup, then back to the breakable, then aim
+    and fire — a multi-leg authored route well beyond this package's own
+    budget, and a strictly bigger job than the single-leg walks item 27
+    already recorded as a budget call. The synthetic fixtures
+    (`crates/ohl-engine/tests/breakable.rs`, `pushable.rs`) stand in for
+    one meanwhile, each driving the real `Game` loop end to end with no
+    forced component state.
+
+    **`TODO(black-box)`: the reachability dev tool is unchanged.** The
+    `--reachability-report` tool this milestone's own task expected to
+    extend (so a breakable with `health > 0` is reported as openable-by-
+    damage in a later round) is still an unmerged pull request at the time
+    of writing, so there is nothing in this tree to extend; the change is
+    left for whoever lands that tool.
