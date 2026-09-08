@@ -184,21 +184,29 @@ fn a_level_change_reloads_the_next_map_relative_to_the_landmark() {
     let assets = assets();
     let mut game = game(&assets);
     game.set_viewpoint([48.0, 0.0, 40.0], 0.0, 0.0);
-    let before = game.eye_position();
+    let before = game.player_origin();
 
     game.change_level(&assets, NEXT_MAP, LANDMARK)
         .expect("the destination map loads");
 
     assert_eq!(game.map(), NEXT_MAP);
     // Both maps place the landmark at the same origin, so the player's
-    // offset from it is preserved exactly.
-    let after = game.eye_position();
+    // offset from it is preserved exactly. The offset is the *player's*,
+    // measured from and applied to their own origin — the eye sits the
+    // standing view offset above that on arrival, the same way an
+    // `info_player_start` spawn places it.
+    let after = game.player_origin();
     for axis in 0..3 {
         assert!(
             (after[axis] - before[axis]).abs() < 1e-3,
             "the player keeps its offset from the landmark"
         );
     }
+    let eye = game.eye_position();
+    assert!(
+        (eye[2] - after[2] - 28.0).abs() < 1e-3,
+        "and the camera arrives the standing view offset above that origin"
+    );
 }
 
 #[test]

@@ -4352,9 +4352,11 @@ across level changes — rather than another per-map cold load.
   player through a level boundary without a movement key pressed; the
   second walks away from that boundary at the arrival point. Against a
   locally imported retail payload (identified only by its sanitized
-  digest), the chain reaches **distinct depth 2** — one level change
-  followed, 77.3 simulated seconds, ending on "The chain walk stopped."
-- **What blocks the chain at depth 2, from the arrival-point report**:
+  digest), the chain reached **distinct depth 2** at this milestone — one
+  level change followed, 77.3 simulated seconds, ending on "The chain walk
+  stopped." (M9.17 fixed the blocker below and re-authored both later
+  routes; the numbers there supersede these.)
+- **What blocked the chain at depth 2, from the arrival-point report**:
   8,428 cells are reachable from the first arrival point; the only entity
   on the whole frontier is a single `func_tracktrain`; and the only
   reachable `trigger_changelevel` is the one ~290 units away that the
@@ -4505,3 +4507,108 @@ refusing at launch, but every macOS result here is from project-authored
 tests on a CI runner. `docs/IMPORT_READINESS.md`'s matrix records the tuple
 as composed-but-unevidenced, and no release-evidence gate is met on any
 platform.
+
+## M9.17 (Rust): the ride continues across the level change
+
+Status: implemented (Rust); evidence: this PR ("The tram ride continues
+across the first level change").
+
+M9.15's chain walk stopped at distinct depth 2 with a concrete finding
+rather than a number: from the first arrival point the only entity on the
+whole frontier was a `func_tracktrain` that never departed, no matter the
+heading, the wait, or the approach. This milestone is what that instrument
+found, root-caused and fixed. Three separate engine gaps stood between the
+opening ride and the rest of the campaign, and all three had to go.
+
+- **A moving `func_train`/`func_tracktrain` now travels across a level
+  change** (`crates/ohl-engine/src/transition.rs`:
+  `TrackTrainCarry`, `capture_track_train`, `restore_track_train`). The
+  public rule this project already works from is that entities persist
+  across a transition when correlated by a shared `globalname`
+  (`docs/FORMAT_SOURCES.md`, "Campaign flow"), and a train's route is a
+  chain of `path_corner`/`path_track` nodes addressed by `targetname`
+  ("Track trains and paths"). Put together, the only part of a chain
+  position that means anything on the other side is the **name** of the
+  node the train is at — so that name travels, with the train's progress
+  along its active segment, direction, speed, whether it is moving, and
+  any `wait` left; never a node index (which belongs to the source map's
+  chain) and never a world position. On arrival the destination's own copy
+  is re-seated on its node of that name, or given a chain rebuilt from it
+  when the chain it built from its own `target` does not contain it.
+
+  Before this, the destination map's copy of the train spawned at its own
+  first node and — where its keyvalues start it moving — drove off empty,
+  thousands of units from where the transition had put its passenger down.
+  That is exactly the "tracktrain that never departs" M9.15 reported: from
+  the arrival point it had already gone, and what the frontier saw was the
+  car parked at the far end of its own track.
+
+  `TrackTrainCarry` is deliberately **not** a field on
+  `transition::EntitySnapshot`: that type is save tag 18 and frozen at its
+  current shape (`crate::save`'s "Frozen section shapes" rule), and adding
+  a field to it would invalidate every existing save file. It rides on
+  `CarriedEntity`, which the save container does not serialize, and is
+  applied only through the `globalname` correlation — never through the
+  `targetname` fallback, for the same reason a `transform` never travels
+  by name: a ride position is a placement.
+- **The player's arrival offset is measured from their own origin, not
+  their eye** (`Game::capture_transition`). The documented rule places the
+  player at the offset from the landmark they had in the source map, and
+  `Game::apply_transition` applies that offset to the arriving player's
+  *origin*; capturing it from the camera instead raised them by the
+  standing view offset on every single level change. Harmless-looking on
+  a map you arrive standing on a floor — and fatal on one that hands you
+  over mid-ride, where the extra height meant a short fall during which
+  the car moved out from under the passenger. The camera is now placed
+  above the arriving origin the same way an `info_player_start` spawn
+  places it.
+- **The collision model is re-baselined after a transition applies**
+  (`Game::apply_transition` calls `Level::sync_brush_collision(0.0)`). A
+  carried train is placed far from where the destination map spawned it,
+  and the first step would otherwise read that placement as one step's
+  worth of motion and hand a rider a base velocity of hundreds of
+  thousands of units per second. A zero `dt` records the new positions
+  with no velocity.
+- **`path_track`'s documented fire-on-pass `message` is implemented**
+  (`ohl_game::registry::PathFireOnPass`,
+  `TrackTrainState::advance_firing`,
+  `Simulation::advance_trains`). It was listed in `FORMAT_SOURCES.md` as
+  documented-but-unimplemented; the ride needs it, because a scripted ride
+  clears its own way — a real map hangs an obstacle over the track and
+  moves it aside from a node the ride passes on the approach. Without it
+  the obstacle stayed put and the ride's passenger was scraped off against
+  it a few hundred units later.
+- **The chain walk now reaches distinct depth 4.** Against a locally
+  imported retail payload (identified only by its sanitized digest),
+  `cargo xtask chain-walk` reports 3 routes assembled, **4 distinct maps**,
+  3 level changes followed, 165.3 simulated seconds, ending on "The chain
+  walk has no further route." — i.e. it ran out of authored routes rather
+  than out of map. `xtask/chain-routes/c0a0-hop1.txt` is re-authored (ride
+  the carried mover, then walk the last stretch on foot) and
+  `xtask/chain-routes/c0a0-hop2.txt` is new (the ride is still under the
+  player when that route starts, so it presses nothing at all).
+- **Still open: a rider is not turned by a `func_tracktrain`.** A rider is
+  carried by a mover's translation only, so a passenger standing away from
+  a long car's own origin keeps their *world* offset from it through a
+  corner rather than keeping their seat, and is eventually left hanging
+  outside the drawn car. `c0a0-hop1.txt` works around it by stepping
+  toward the middle of the car on arrival, which is a thing a player can
+  do and the route says so. Closing it properly means posing the car's
+  collision hull at the heading it is drawn at, which needs one fact no
+  public page supplies: which way a train's compiled geometry faces before
+  the engine turns it to face its segment. Measured against a real map,
+  taking the drawn yaw literally and taking it 180 degrees away place a
+  passenger in two different, both physically plausible, parts of the same
+  car, and both were tried; nothing public decides between them, so this
+  is recorded rather than guessed (see `docs/FORMAT_SOURCES.md`, "Riding
+  movers").
+- **Tests**: `crates/ohl-engine/tests/train_across_level_change.rs`, on a
+  synthetic two-map fixture whose maps share node names the way two halves
+  of one ride do. A moving train arrives where it left and keeps going
+  (both the re-seated and the rebuilt-chain branch); a *stopped* train
+  stays stopped and stays parked on its own node, so the carry moves real
+  state rather than just "it moves"; the arriving player's own origin does
+  not move when both maps place the landmark identically; and a node
+  carrying a fire-on-pass `message` fires it as the train passes and not
+  before. Each was verified to fail against a mutant that removes the
+  behaviour it pins.

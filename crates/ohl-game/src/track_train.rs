@@ -23,7 +23,7 @@
 use glam::Vec3;
 use hecs::Entity;
 
-use crate::registry::{Path, Registry, Target, Transform};
+use crate::registry::{Path, PathFireOnPass, Registry, Target, Transform};
 
 /// Largest number of nodes one path chain follows before giving up,
 /// bounding both a malformed non-terminating scan and the memory one
@@ -64,7 +64,7 @@ const TRACKTRAIN_NO_USER_CONTROL_FLAG: u32 = 2;
 /// One `path_corner`/`path_track` node, resolved into world space (its
 /// `height` offset, when the owning train supplied one, already added to
 /// `position`).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PathNode {
     /// The node's own entity, kept so a caller could look up further
     /// keyvalues.
@@ -81,6 +81,21 @@ pub struct PathNode {
     /// and needs an explicit trigger (see [`TrackTrainState::toggle`]) to
     /// resume, rather than continuing after `wait` seconds.
     pub stop: bool,
+    /// The documented fire-on-pass `message`: the name of an entity fired
+    /// as a follower passes this node
+    /// ([`crate::registry::PathFireOnPass`]).
+    pub message: Option<String>,
+}
+
+/// The three fields of a node the train has just reached that
+/// [`TrackTrainState::advance_firing`] still needs after it stops borrowing
+/// the chain, so the fire-on-pass `message` can be read by reference
+/// instead of cloning a whole [`PathNode`] per boundary crossing.
+#[derive(Debug, Clone, Copy)]
+struct PassedNode {
+    speed: Option<f32>,
+    stop: bool,
+    wait: f32,
 }
 
 /// A resolved `path_corner`/`path_track` chain, walked once at load time
@@ -139,12 +154,18 @@ impl PathChain {
                 .get::<&Target>(entity)
                 .ok()
                 .map(|target| target.0.clone());
+            let message = registry
+                .world
+                .get::<&PathFireOnPass>(entity)
+                .ok()
+                .map(|fire| fire.0.clone());
             nodes.push(PathNode {
                 entity,
                 position,
                 wait: path.wait,
                 speed: path.speed,
                 stop: path.stop,
+                message,
             });
             match next {
                 Some(next_name) => current_name = next_name,
@@ -392,6 +413,20 @@ impl TrackTrainState {
         Some(direction.y.atan2(direction.x).to_degrees())
     }
 
+    /// The [`PathChain`] this train follows, so a caller that has to
+    /// correlate the train's current node with another map's copy of the
+    /// same track can read the node entities by name.
+    ///
+    /// Used by `ohl_engine::transition` to carry a moving train across a
+    /// level change: the documented cross-level correlation key is a
+    /// shared `globalname`, and the only reference a chain position has
+    /// that means anything in the destination map is the `targetname` of
+    /// the `path_track` the train is currently at.
+    #[must_use]
+    pub fn chain(&self) -> &PathChain {
+        &self.chain
+    }
+
     /// Starts the train moving (in its current direction) if it is stopped.
     pub fn turn_on(&mut self) {
         self.moving = true;
@@ -490,6 +525,15 @@ impl TrackTrainState {
     /// is simply dropped for this tick; `dt` is clamped to `0..` first, so
     /// a negative caller value cannot run this backward.
     pub fn advance(&mut self, dt: f32) {
+        self.advance_firing(dt, &mut Vec::new());
+    }
+
+    /// [`Self::advance`], additionally appending the documented fire-on-pass
+    /// `message` of every node the train passes this step to `fired`, in
+    /// the order they were passed. `ohl-game`'s own map-logic simulation
+    /// fires each one by name; see
+    /// [`crate::logic::Simulation::advance_trains`].
+    pub fn advance_firing(&mut self, dt: f32, fired: &mut Vec<String>) {
         if !self.moving {
             return;
         }
@@ -513,7 +557,15 @@ impl TrackTrainState {
                 self.node_index = other;
                 self.t = 0.0;
                 transitions += 1;
-                let node = self.chain.nodes[self.node_index];
+                let node = &self.chain.nodes[self.node_index];
+                if let Some(message) = node.message.as_ref() {
+                    fired.push(message.clone());
+                }
+                let node = PassedNode {
+                    speed: node.speed,
+                    stop: node.stop,
+                    wait: node.wait,
+                };
                 if let Some(speed) = node.speed {
                     self.speed = speed.abs();
                 }
@@ -996,6 +1048,7 @@ mod tests {
                     wait: 0.0,
                     speed: None,
                     stop: false,
+                    message: None,
                 })
                 .collect();
             let min = coords.iter().fold(Vec3::splat(f32::MAX), |acc, &(x, y, z)| {

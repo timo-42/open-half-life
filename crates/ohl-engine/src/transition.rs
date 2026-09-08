@@ -34,6 +34,7 @@ use ohl_game::registry::{
     Message, MoverState, Platform, Registry, RenderPropsComponent, Rotator, SpawnFlags, Target,
     TargetName, Transform, TransitionVolume, Trigger,
 };
+use ohl_game::track_train::{PathChain, TrackTrain, TrackTrainState};
 use serde::{Deserialize, Serialize};
 
 use crate::level::Level;
@@ -233,6 +234,46 @@ impl EntitySnapshot {
     }
 }
 
+/// A `func_train`/`func_tracktrain`'s ride state, as it travels to the
+/// next map alongside the entity that owns it.
+///
+/// The documented cross-level rule (see `docs/FORMAT_SOURCES.md`,
+/// "Campaign flow": entities persist across a transition when correlated
+/// by a shared `globalname`) says *that* such a train persists, and the
+/// `path_track`/`path_corner` documentation says a train's route is
+/// expressed as a chain of nodes named by `targetname`. So the one part of
+/// a chain position that means anything in the destination map is the
+/// **name** of the node the train is currently at: a node index belongs to
+/// the source map's chain, and the destination's own chain routinely
+/// starts somewhere else entirely. This struct therefore carries the node
+/// by name plus the train's own motion, and never a node index or a world
+/// position.
+///
+/// Kept out of [`EntitySnapshot`] deliberately: that type is tag 18 of the
+/// save container and frozen at its current shape (see `crate::save`), and
+/// this state is rebuilt from the destination map's own chain anyway. See
+/// [`crate::save_state::TrackTrainSnapshot`] for the *save* path's own,
+/// index-based record of the same runtime fields, which stays index-based
+/// because a save is always reloaded into the same map.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TrackTrainCarry {
+    /// The `targetname` of the `path_track`/`path_corner` the train last
+    /// departed from (or rests at).
+    pub node: String,
+    /// Progress from that node toward the next one in the train's
+    /// direction of travel, in `0..=1`.
+    pub t: f32,
+    /// `1.0` travelling toward the chain's next node, `-1.0` toward its
+    /// previous one.
+    pub direction: f32,
+    /// Speed magnitude, units/second.
+    pub speed: f32,
+    /// Whether the train is moving.
+    pub moving: bool,
+    /// Seconds left in a `path_track`'s `wait` pause.
+    pub wait_timer: f32,
+}
+
 /// One entity travelling to the next map.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CarriedEntity {
@@ -252,6 +293,10 @@ pub struct CarriedEntity {
     pub offset: Option<[f32; 3]>,
     /// Component state.
     pub snapshot: EntitySnapshot,
+    /// The ride state of a `func_train`/`func_tracktrain`, when this entity
+    /// is one that was following a path. Applied only through the
+    /// `globalname` correlation; see [`TrackTrainCarry`].
+    pub track_train: Option<TrackTrainCarry>,
 }
 
 /// One named mover's state, carried so the previous map's doors and buttons
@@ -384,6 +429,98 @@ fn entity_position(registry: &Registry, entity: Entity) -> Option<Vec3> {
         .map(|transform| transform.origin)
 }
 
+/// The ride state of `entity`, when it is a `func_train`/`func_tracktrain`
+/// that resolved a path chain, with the node it is at recorded by name.
+/// `None` for any other entity, and for a train whose current node carries
+/// no `targetname` (nothing in the destination could then be correlated
+/// with it).
+fn capture_track_train(registry: &Registry, entity: Entity) -> Option<TrackTrainCarry> {
+    let state = registry.world.get::<&TrackTrainState>(entity).ok()?;
+    let (node_index, t, direction, speed, moving, wait_timer) = state.dynamic_state();
+    let node_entity = state.chain().nodes.get(node_index)?.entity;
+    let node = registry
+        .world
+        .get::<&TargetName>(node_entity)
+        .ok()?
+        .0
+        .clone();
+    Some(TrackTrainCarry {
+        node,
+        t,
+        direction,
+        speed,
+        moving,
+        wait_timer,
+    })
+}
+
+/// Puts the destination map's copy of a carried train back where the
+/// source map's copy was, and moving the same way.
+///
+/// Two maps that share one ride share the *node names* along it — that is
+/// what makes a chain expressible at all (`path_track`'s documented
+/// `target`), and it is the only correlation a destination map offers for
+/// a position along a track. So:
+///
+/// - When the destination train's own chain already contains a node of the
+///   carried name, the train is simply re-seated on it, and keeps that
+///   chain (so a train travelling backward still has the nodes behind it).
+/// - Otherwise the chain is rebuilt from the carried node's own name, the
+///   same way [`ohl_game::track_train::spawn_all`] builds one from the
+///   train's `target`: the destination's copy of the node the train is at
+///   leads onward exactly as the source's copy did.
+///
+/// A train that reaches neither — no `TrackTrain` keyvalues, or a node
+/// name the destination map does not declare — is left exactly as the
+/// destination map spawned it rather than placed at a guessed position.
+///
+/// A train travelling backward onto a *rebuilt* chain has no node behind
+/// it (a rebuilt chain starts at the train's own node) and so comes to
+/// rest there; a map that hands a reversing train across a level change
+/// would need the destination to declare the nodes behind it, which is
+/// exactly the first case above.
+fn restore_track_train(registry: &mut Registry, entity: Entity, carry: &TrackTrainCarry) {
+    let Some(train) = registry
+        .world
+        .get::<&TrackTrain>(entity)
+        .ok()
+        .map(|train| *train)
+    else {
+        return;
+    };
+    let existing = registry
+        .world
+        .get::<&TrackTrainState>(entity)
+        .ok()
+        .map(|state| TrackTrainState::clone(&state));
+    let seated = existing.and_then(|state| {
+        let index = state.chain().nodes.iter().position(|node| {
+            registry
+                .world
+                .get::<&TargetName>(node.entity)
+                .is_ok_and(|name| name.0 == carry.node)
+        })?;
+        Some((state, index))
+    });
+    let (mut state, index) = if let Some(seated) = seated {
+        seated
+    } else {
+        let Some(chain) = PathChain::build(registry, &carry.node, train.height) else {
+            return;
+        };
+        (TrackTrainState::spawn(&train, chain), 0)
+    };
+    state.restore_dynamic_state(
+        index,
+        carry.t,
+        carry.direction,
+        carry.speed,
+        carry.moving,
+        carry.wait_timer,
+    );
+    registry.world.insert_one(entity, state).ok();
+}
+
 /// The `trigger_transition` volumes named after `landmark`.
 fn transition_volumes(registry: &Registry, landmark: &str) -> Vec<BrushBounds> {
     let mut volumes = Vec::new();
@@ -493,6 +630,7 @@ impl TransitionState {
                     .map(|target| target.0.clone()),
                 offset: origin.map(|origin| (position - origin).to_array()),
                 snapshot,
+                track_train: capture_track_train(registry, entity),
             });
         }
 
@@ -579,6 +717,14 @@ impl TransitionState {
                     let mut snapshot = carried.snapshot.clone();
                     snapshot.transform = None;
                     snapshot.apply(&mut level.registry, entity);
+                    // A ride position travels only through the documented
+                    // `globalname` correlation, for the same reason
+                    // `transform` does not travel at all: it is a
+                    // placement, and only a `globalname` says two maps mean
+                    // the same entity by it.
+                    if let Some(carry) = carried.track_train.as_ref() {
+                        restore_track_train(&mut level.registry, entity, carry);
+                    }
                 }
                 return;
             }

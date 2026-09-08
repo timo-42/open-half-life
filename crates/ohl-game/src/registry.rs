@@ -762,6 +762,16 @@ pub struct Message {
     pub holdtime: Option<f32>,
 }
 
+/// A `path_corner`/`path_track`'s documented fire-on-pass `message`: the
+/// name of an entity to fire as a follower passes this node.
+///
+/// A separate component rather than a field on [`Path`] so that type stays
+/// `Copy`; see `docs/FORMAT_SOURCES.md` ("Track trains and paths") for the
+/// public source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct PathFireOnPass(pub String);
+
 /// `path_corner`/`path_track`: the next node's name, a pause, and (for
 /// `func_tracktrain`) a `path_track`-only speed override and stop flag. See
 /// `docs/FORMAT_SOURCES.md` ("Track trains and paths") for the public
@@ -1850,6 +1860,16 @@ impl Registry {
                         stop: crate::track_train::path_stop_from_flags(def.spawnflags),
                     };
                     world.insert_one(entity, path).ok();
+                    if let Some(message) = def
+                        .keyvalues
+                        .get("message")
+                        .map(|message| message.trim())
+                        .filter(|message| !message.is_empty())
+                    {
+                        world
+                            .insert_one(entity, PathFireOnPass(message.to_string()))
+                            .ok();
+                    }
                 }
                 "func_train" | "func_tracktrain" => {
                     let train = crate::track_train::TrackTrain {

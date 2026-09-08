@@ -1774,6 +1774,24 @@ at the end of this section.
   velocity. The mover entities themselves are documented in "Entity
   keyvalues and map logic" above.
 
+  A rotating mover contributes the tangential velocity of the rider's own
+  position (`ohl_physics::rotational_ride_velocity`, from
+  `Level::brush_rotation`), which is what carries a passenger standing off
+  the axis of a `func_rotating`/`func_door_rotating`.
+  `ohl_game::pose::mover_rotation` deliberately reports a
+  `func_tracktrain` as *unrotated*, so a rider on one keeps their world-space
+  offset from the car through a corner instead of keeping their seat in it —
+  a passenger standing at the edge of a long car is eventually left hanging
+  outside the drawn car and scraped off against the geometry the track runs
+  through. Closing that means posing the car's *collision hull* at the
+  heading it is drawn at, which needs the one fact none of the pages above
+  supply: which way a train's compiled geometry faces before the engine turns
+  it to face its segment. Measured against a real map, taking the drawn yaw
+  literally and taking it 180 degrees from the drawn yaw place a passenger in
+  two different, both physically plausible, parts of the same car; nothing
+  public decides between them, so this stays an open gap
+  (`docs/MILESTONES.md`, M9.17) rather than a guess.
+
 ### Black-box placeholders
 
 These have no reachable public source and are neutral defaults, each marked
@@ -1900,6 +1918,32 @@ consulted, and the M8 research pass that collected them is recorded in
   transition when correlated by a shared `globalname`; unnamed entities do
   not. The worldspawn `newunit` key discards the previous level's carried
   state instead of applying it.
+  A `func_train`/`func_tracktrain` correlated that way carries its *ride*
+  as well as its keyvalues: `ohl_engine::transition::TrackTrainCarry` holds
+  the `targetname` of the `path_track`/`path_corner` the train is currently
+  at, plus its progress along the active segment, direction, speed, whether
+  it is moving, and any `wait` left — and `restore_track_train` re-seats the
+  destination map's own copy on its node of that name (or, when that node is
+  not on the chain the destination's train built from its own `target`,
+  rebuilds the chain from that node). Only the node *name* travels: a node
+  index belongs to the source map's chain, and a world position means
+  nothing in the destination's coordinates. This is the documented
+  `globalname` rule applied to the one piece of state a train has; nothing
+  about it is read from any engine source. It is what makes a ride that
+  spans a level change stay a ride, and without it the destination map's
+  copy of the train departs from its own first node while its passenger
+  stands wherever the transition put them down. Guarded by
+  `crates/ohl-engine/tests/train_across_level_change.rs`.
+
+  The player's own arrival offset is measured from their **origin**, not
+  from their eye. The rule above is "the same offset from the landmark",
+  and `Game::apply_transition` applies the captured offset to the arriving
+  player's origin, so capturing it from the camera raised the player by the
+  standing view offset on every level change — enough, on a map whose
+  transition hands the player over while they are riding, to drop them out
+  of the moving car before they landed. Pinned by that same test file's
+  `the_player_arrives_at_their_own_origin_offset_not_their_eye`.
+
 - [TWHL "Tutorial: Globals"](https://twhl.info/wiki/page/Tutorial:_Globals):
   `env_global`/global state variables are the documented cross-level state
   mechanism, with a named variable that is off, on, or dead.
@@ -2619,9 +2663,24 @@ counterpart in `ohl-ai`'s sound classification and is recorded as
     that caveat. The same source is the basis for the "No User Control"
     spawnflag's bit value (`2`) recorded on
     `ohl_game::track_train::TrackTrain::no_user_control_from_flags`.
-  - `path_track`'s documented `altpath` (branch path) and `message`/`netname`
-    (fire-on-pass/fire-on-dead-end) keyvalues exist in the public
-    documentation but are **not implemented**; see the `TODO(black-box)` on
+  - `path_track`'s documented `message` keyvalue (fire-on-pass) names an
+    entity that is fired as a follower passes the node. Implemented as
+    `ohl_game::registry::PathFireOnPass` (a separate component so
+    `registry::Path` stays `Copy`), carried onto
+    `ohl_game::track_train::PathNode::message`, collected by
+    `TrackTrainState::advance_firing` for every node a train passes in one
+    step, and fired by name — with the train as the activator, trains
+    drained in ascending entity id order — by
+    `ohl_game::logic::Simulation::advance_trains`. This is what lets a
+    scripted ride clear its own way: a real map hangs an obstacle over the
+    track and moves it aside from a node the ride passes on the approach,
+    and without fire-on-pass the obstacle never moves and the ride's
+    passenger is scraped off against it. Guarded by
+    `crates/ohl-engine/tests/train_across_level_change.rs`
+    (`a_path_node_fires_its_message_as_the_train_passes`).
+  - `path_track`'s documented `altpath` (branch path) and `netname`
+    (fire-on-dead-end) keyvalues exist in the public documentation but are
+    **not implemented**; see the `TODO(black-box)` on
     `ohl_game::track_train::PathChain` (branching) — a train instead simply
     follows the single `target` chain.
 
