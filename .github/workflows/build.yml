@@ -231,7 +231,7 @@ jobs:
       - name: Install Windows cross toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-mingw-w64-x86-64
+          sudo apt-get install -y gcc-mingw-w64-x86-64 file
           rustup target add x86_64-pc-windows-gnu
 
       - name: Cross-build Windows application
