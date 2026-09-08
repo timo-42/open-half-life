@@ -1066,6 +1066,7 @@ impl Game {
                 movers: crate::save_state::snapshot_rotating_movers(&self.level),
                 rot_button_touch: self.level.simulation.rot_button_touch_snapshot(),
             }),
+            momentary_doors: Some(crate::save_state::snapshot_momentary_doors(&self.level)),
         }
     }
 
@@ -1319,6 +1320,13 @@ impl Game {
             self.level
                 .simulation
                 .restore_rot_button_touch(&rotating_movers.rot_button_touch);
+        }
+        // `SECTION_MOMENTARY_DOOR_STATE` (31, M9.8): same spawn-order-zipped
+        // overlay, applied after tag 30 restores the button driving it (the
+        // two are independent state either way — a door simply holds its
+        // own last-restored `fraction` until a button pushes it again).
+        if let Some(momentary_doors) = &save.momentary_doors {
+            crate::save_state::restore_momentary_doors(&mut self.level, momentary_doors);
         }
         // A load is a map load: the chapter title is announced again.
         self.pending.clear();

@@ -33,8 +33,8 @@ use glam::{Quat, Vec3};
 use hecs::Entity;
 
 use crate::registry::{
-    BrushCenter, Door, MomentaryRotButton, MoverState, Pendulum, Platform, Registry, RotButton,
-    Rotator, Transform,
+    BrushCenter, Door, MomentaryDoor, MomentaryRotButton, MoverState, Pendulum, Platform, Registry,
+    RotButton, Rotator, Transform,
 };
 use crate::track_train::{TrackTrain, TrackTrainState};
 
@@ -171,6 +171,22 @@ pub fn track_train_transform(registry: &Registry, entity: Entity) -> (Vec3, Opti
     (state.position() - authored, state.yaw_degrees(&train))
 }
 
+/// How far a `momentary_door` has slid toward whichever
+/// `momentary_rot_button` is currently driving it, from its own
+/// `0.0..=1.0` [`MomentaryDoor::fraction`] (there is no open/close timer to
+/// derive a fraction from — it is pushed toward a commanded value every
+/// tick a driving button changes, see `crate::logic::Simulation::
+/// drive_momentary_rot_button`). `Vec3::ZERO` for any entity without one.
+#[must_use]
+pub fn momentary_door_offset(registry: &Registry, entity: Entity) -> Vec3 {
+    registry
+        .world
+        .get::<&MomentaryDoor>(entity)
+        .map_or(Vec3::ZERO, |door| {
+            door.movedir * door.travel_distance * door.fraction.clamp(0.0, 1.0)
+        })
+}
+
 /// How far a brush entity has moved from where its geometry was compiled
 /// and placed — the sum of every translating-mover displacement it could
 /// carry (they are mutually exclusive in practice, and each is zero for an
@@ -180,6 +196,7 @@ pub fn brush_offset(registry: &Registry, entity: Entity) -> Vec3 {
     door_offset(registry, entity)
         + platform_offset(registry, entity)
         + track_train_transform(registry, entity).0
+        + momentary_door_offset(registry, entity)
 }
 
 /// How far a `func_door_rotating` has swung, in degrees, from the same

@@ -49,8 +49,8 @@
 use glam::Vec3;
 use ohl_engine::save::{EngineHeader, ViewState};
 use ohl_engine::save_state::{
-    MonsterMakerSnapshot, MoverSnapshot, RotatorSnapshot, ScriptRunnerSnapshot, TrackTrainSnapshot,
-    TriggerCameraSnapshot,
+    MomentaryDoorSnapshot, MonsterMakerSnapshot, MoverSnapshot, RotatorSnapshot,
+    ScriptRunnerSnapshot, TrackTrainSnapshot, TriggerCameraSnapshot,
 };
 use ohl_engine::test_support::{
     ROTATING_DOOR_MAP, ROTATING_DOOR_NAME, rotating_door_bsp, rotating_door_entities,
@@ -175,6 +175,17 @@ const GOLDEN_TAG_28: &[u8] = &[
     0x3f, 0x00, 0x00, 0x00, 0xc0, 0x00, 0x00, 0x40, 0x40, 0x01, 0x1f, 0x03, 0x01, 0x00, 0x00, 0xe0,
     0x40, 0x02, 0x01, 0x01, 0x00, 0x00, 0xf7, 0x42, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00,
+];
+
+/// `SECTION_MOMENTARY_DOOR_STATE` (31, M9.8) at the shape this build writes:
+/// the exact bytes [`frozen_momentary_door_state`]'s value encodes to.
+/// **New golden, not a revision of any of the tags above**: tag 31 did not
+/// exist before this package, so there is no earlier shape to protect —
+/// this pins the shape this build introduces, the same way a future package
+/// adding tag 33 would pin its own golden from scratch (`docs/
+/// FORMAT_SOURCES.md` item 29).
+const GOLDEN_TAG_31: &[u8] = &[
+    0x03, 0x00, 0x01, 0x00, 0x00, 0x40, 0x3f, 0x01, 0x00, 0x00, 0x00, 0x00,
 ];
 
 /// The value [`GOLDEN_TAG_18`] holds: one entity carrying every component
@@ -348,6 +359,17 @@ fn frozen_mover_state() -> Vec<Option<MoverSnapshot>> {
     ]
 }
 
+/// The value [`GOLDEN_TAG_31`] holds: an empty slot, a partway-open door,
+/// and a fully-closed one — both arms of the `Option` and both ends of the
+/// `0.0..=1.0` fraction range on the wire.
+fn frozen_momentary_door_state() -> Vec<Option<MomentaryDoorSnapshot>> {
+    vec![
+        None,
+        Some(MomentaryDoorSnapshot { fraction: 0.75 }),
+        Some(MomentaryDoorSnapshot { fraction: 0.0 }),
+    ]
+}
+
 /// `MoverSnapshot`'s field list as it stood *before* the `rotator` field was
 /// added to it (`9ea7029`), transcribed from that revision. Serialize-only,
 /// and deliberately **not** the shape this build reads: it stands in for an
@@ -426,6 +448,17 @@ fn tag_28_mover_state_keeps_its_frozen_wire_shape() {
 
     let decoded: Vec<Option<MoverSnapshot>> =
         postcard::from_bytes(GOLDEN_TAG_28).expect("an older save's section 28 still decodes");
+    assert_eq!(decoded, value);
+}
+
+#[test]
+fn tag_31_momentary_door_state_keeps_its_frozen_wire_shape() {
+    let value = frozen_momentary_door_state();
+    let encoded = postcard::to_allocvec(&value).expect("the section encodes");
+    assert_golden(&encoded, GOLDEN_TAG_31, 31);
+
+    let decoded: Vec<Option<MomentaryDoorSnapshot>> =
+        postcard::from_bytes(GOLDEN_TAG_31).expect("section 31 decodes");
     assert_eq!(decoded, value);
 }
 

@@ -71,8 +71,8 @@ use glam::Vec3;
 use ohl_combat::{EntityId as CombatEntityId, ProjectileKind};
 use ohl_game::hecs::Entity;
 use ohl_game::registry::{
-    AutoTrigger, ClassName, MakerActivation, MomentaryRotButton, MoverState, Pendulum, RotButton,
-    Rotator,
+    AutoTrigger, ClassName, MakerActivation, MomentaryDoor, MomentaryRotButton, MoverState,
+    Pendulum, RotButton, Rotator,
 };
 use ohl_game::{TrackTrainState, TriggerCameraState};
 use serde::{Deserialize, Serialize};
@@ -1108,6 +1108,65 @@ pub(crate) fn restore_rotating_movers(
             component.elapsed = pendulum.elapsed;
             component.returning = pendulum.returning;
             component.angle_deg = pendulum.angle_deg;
+        }
+    }
+}
+
+// --- `SECTION_MOMENTARY_DOOR_STATE` (31) ----------------------------------
+
+/// A `momentary_door`'s own position: `ohl_game::registry::MomentaryDoor::
+/// fraction`. `speed`/`lip`/`movedir`/`travel_distance` are fixed at spawn
+/// (`attach_level` always rebuilds them identically), so only the fraction a
+/// driving `momentary_rot_button` can move needs to round-trip — the same
+/// reasoning already recorded for [`RotatorSnapshot`]/
+/// [`MomentaryRotButtonSnapshot`]. Part of `SECTION_MOMENTARY_DOOR_STATE`
+/// (tag 31, see `crate::save::SECTION_MOMENTARY_DOOR_STATE`'s own doc
+/// comment for why this is a **new** tag rather than an addition to tag 30).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MomentaryDoorSnapshot {
+    /// `ohl_game::registry::MomentaryDoor::fraction`.
+    pub fraction: f32,
+}
+
+/// The most entities one `SECTION_MOMENTARY_DOOR_STATE` section records,
+/// matching [`MAX_SNAPSHOT_ENTITIES`] — the same per-registry-slot cap every
+/// other index-keyed section already uses.
+pub const MAX_SNAPSHOT_MOMENTARY_DOORS: usize = MAX_SNAPSHOT_ENTITIES;
+
+/// `SECTION_MOMENTARY_DOOR_STATE` (31)'s whole payload: one optional
+/// [`MomentaryDoorSnapshot`] per `Registry::entities` slot, in spawn order.
+/// `None` for an entity with no [`MomentaryDoor`].
+#[must_use]
+pub(crate) fn snapshot_momentary_doors(level: &Level) -> Vec<Option<MomentaryDoorSnapshot>> {
+    level
+        .registry
+        .entities
+        .iter()
+        .take(MAX_SNAPSHOT_MOMENTARY_DOORS)
+        .map(|entity| {
+            level
+                .registry
+                .world
+                .get::<&MomentaryDoor>(*entity)
+                .ok()
+                .map(|door| MomentaryDoorSnapshot {
+                    fraction: door.fraction,
+                })
+        })
+        .collect()
+}
+
+/// Restores [`snapshot_momentary_doors`], zipped against
+/// `level.registry.entities` in spawn order.
+pub(crate) fn restore_momentary_doors(
+    level: &mut Level,
+    snapshots: &[Option<MomentaryDoorSnapshot>],
+) {
+    let entities = level.registry.entities.clone();
+    for (entity, snapshot) in entities.iter().zip(snapshots) {
+        let Some(snapshot) = snapshot else { continue };
+        if let Ok(mut component) = level.registry.world.get::<&mut MomentaryDoor>(*entity) {
+            component.fraction = snapshot.fraction;
         }
     }
 }

@@ -31,12 +31,13 @@
 //! | 28 | [`SECTION_MOVER_STATE`] | `Vec<Option<`[`MoverSnapshot`]`>>`, one per registry entity, in spawn order: `func_train`/`func_tracktrain` position, `trigger_camera` sequence progress, running-script phase and `monstermaker` counters (M7.13) |
 //! | 29 | [`SECTION_MAKER_CHILDREN`] | `Vec<Option<`[`MonsterMakerChildSnapshot`]`>>`, one per registry entity, in spawn order: which `monstermaker` spawned this entity, and its classname (M9.5) |
 //! | 30 | [`SECTION_ROTATING_MOVER_STATE`] | [`RotatingMoverStateSnapshot`]: `func_rot_button`/`momentary_rot_button`/`func_pendulum` runtime state, one optional entry per registry entity, plus the `func_rot_button` touch-edge bookkeeping (M9.6) |
+//! | 31 | [`SECTION_MOMENTARY_DOOR_STATE`] | `Vec<Option<`[`MomentaryDoorSnapshot`]`>>`, one per registry entity, in spawn order: `momentary_door` runtime position (M9.8) |
 //! | 32 | *(reserved, `ohl-player`)* | `PlayerSnapshot`, written through `Player::snapshot()` when a later package wires it |
 //!
-//! Tags 23-30 are read as `None`/a default when absent, so a save written
-//! before M7.9 P4b (tags 23-27), M7.13 (tag 28), M9.5 (tag 29) or M9.6
-//! (tag 30) still loads (`.plan/m79-design.md` §6); a section that is
-//! present but fails to decode fails the whole read closed
+//! Tags 23-31 are read as `None`/a default when absent, so a save written
+//! before M7.9 P4b (tags 23-27), M7.13 (tag 28), M9.5 (tag 29), M9.6
+//! (tag 30) or M9.8 (tag 31) still loads (`.plan/m79-design.md` §6); a
+//! section that is present but fails to decode fails the whole read closed
 //! ([`crate::EngineError::SaveUnreadable`]), same as every other section.
 //!
 //! # Frozen section shapes, the compatibility floor, and the rule
@@ -99,7 +100,10 @@
 //! absent. Tag 30 exists for exactly this reason: its state was first
 //! added as fields on tags 18/19/28 and had to be moved out before it
 //! shipped (`docs/FORMAT_SOURCES.md` `TODO(black-box)` item 27; item 28
-//! records the rest of this section's own history).
+//! records the rest of this section's own history). Tag 31 follows the same
+//! rule from the start: `momentary_door`'s own `fraction` never touches
+//! tags 18/19/28/30, even though `RotatingMoverSnapshot` (tag 30) already
+//! covers the button that drives it (`docs/FORMAT_SOURCES.md`, item 29).
 //!
 //! `crates/ohl-engine/tests/save_format_frozen.rs` pins tags 16, 17, 18,
 //! 19, 20, 21, 22 and 28 with committed golden bytes, decoded by the
@@ -112,8 +116,9 @@ use ohl_game::SimulationState;
 use serde::{Deserialize, Serialize};
 
 use crate::save_state::{
-    AiSnapshot, EntityCombatSnapshot, InventorySnapshot, MonsterMakerChildSnapshot, MoverSnapshot,
-    ProjectilesSnapshot, RngSnapshot, RotatingMoverSnapshot,
+    AiSnapshot, EntityCombatSnapshot, InventorySnapshot, MomentaryDoorSnapshot,
+    MonsterMakerChildSnapshot, MoverSnapshot, ProjectilesSnapshot, RngSnapshot,
+    RotatingMoverSnapshot,
 };
 use crate::transition::{EntitySnapshot, GlobalStateTable, PlayerCarryState};
 
@@ -179,6 +184,17 @@ pub const SECTION_MAKER_CHILDREN: u32 = 29;
 /// their spawnflag/keyvalue resting state, exactly like tags 23-29 already
 /// do for what they each cover.
 pub const SECTION_ROTATING_MOVER_STATE: u32 = 30;
+
+/// A `momentary_door`'s own runtime position, one optional entry per
+/// registry entity in spawn order (M9.8, `docs/FORMAT_SOURCES.md` item 29).
+/// A new tag rather than an addition to [`SECTION_ROTATING_MOVER_STATE`]
+/// (tag 30): that section is already shipped and frozen at its own shape
+/// (see this module's own "Frozen section shapes" doc above), so even
+/// though a `momentary_door` and the `momentary_rot_button` driving it are
+/// closely related, its `fraction` gets its own optional tag rather than
+/// reopening tag 30's wire shape — the same reasoning tag 30 itself
+/// recorded for staying out of tags 18/19/28.
+pub const SECTION_MOMENTARY_DOOR_STATE: u32 = 31;
 
 /// The engine header section's contents.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -301,6 +317,11 @@ pub struct GameSave {
     /// `None` for a save missing tag 30 — an older save simply has these
     /// three entities default to their spawnflag/keyvalue resting state.
     pub rotating_movers: Option<RotatingMoverStateSnapshot>,
+    /// `momentary_door` runtime position, one optional entry per registry
+    /// entity, in spawn order (M9.8). `None` for a save missing tag 31 — an
+    /// older save simply has every `momentary_door` default to `fraction =
+    /// 0.0`, its spawn-time resting position.
+    pub momentary_doors: Option<Vec<Option<MomentaryDoorSnapshot>>>,
 }
 
 impl GameSave {
@@ -367,6 +388,9 @@ impl GameSave {
             if let Some(rotating_movers) = &self.rotating_movers {
                 writer.add_section_serde(SECTION_ROTATING_MOVER_STATE, rotating_movers)?;
             }
+            if let Some(momentary_doors) = &self.momentary_doors {
+                writer.add_section_serde(SECTION_MOMENTARY_DOOR_STATE, momentary_doors)?;
+            }
             Ok(())
         };
         write(&mut writer).map_err(|_| crate::EngineError::SaveUnwritable)?;
@@ -409,6 +433,11 @@ impl GameSave {
                 crate::save_state::MAX_SNAPSHOT_MAKER_CHILDREN,
             )?,
             rotating_movers: optional_section(&reader, SECTION_ROTATING_MOVER_STATE)?,
+            momentary_doors: optional_bounded_vec_section(
+                &reader,
+                SECTION_MOMENTARY_DOOR_STATE,
+                crate::save_state::MAX_SNAPSHOT_MOMENTARY_DOORS,
+            )?,
         })
     }
 }

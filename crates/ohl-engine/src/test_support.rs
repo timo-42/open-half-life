@@ -1133,3 +1133,138 @@ pub fn rot_button_entities() -> String {
          \"speed\" \"200\"\n\"wait\" \"-1\"\n}}\n"
     )
 }
+
+// ---------------------------------------------------------------------
+// A `momentary_rot_button` driving a `momentary_door` through the real
+// `use_held` input path (M9.8, `docs/FORMAT_SOURCES.md` item 29)
+// ---------------------------------------------------------------------
+
+/// The map name the `momentary_rot_button`/`momentary_door` fixture is
+/// published under.
+pub const MOMENTARY_DOOR_MAP: &str = "ohlmomentarydoorsynth";
+
+/// The `targetname` of the fixture's `momentary_rot_button`.
+pub const MOMENTARY_ROT_BUTTON_NAME: &str = "ohl_momentary_button";
+
+/// The `targetname` of the `momentary_door` the button targets.
+pub const MOMENTARY_DOOR_NAME: &str = "ohl_momentary_door";
+
+/// The world-space centre [`momentary_door_bsp`] compiles the button's
+/// bounding box around; see [`ROT_BUTTON_CENTER`]'s own doc comment for why
+/// this fixture reuses the same placement convention (close to a standing
+/// player's own eye height).
+pub const MOMENTARY_BUTTON_CENTER: [f32; 3] = [0.0, 0.0, 64.0];
+
+/// The world-space centre [`momentary_door_bsp`] compiles the door's own
+/// bounding box around at `fraction = 0.0` — placed well clear of the
+/// button so the two submodels' boxes never overlap.
+pub const MOMENTARY_DOOR_CENTER: [f32; 3] = [256.0, 0.0, 64.0];
+
+/// A `worldspawn`-only flat floor (matching [`rot_button_bsp`]'s own),
+/// submodel 1 (the button, centred on [`MOMENTARY_BUTTON_CENTER`]) and
+/// submodel 2 (the door, centred on [`MOMENTARY_DOOR_CENTER`], `64` units
+/// wide along `+X` so `momentary_door_entities`'s `angle 0` gives it a
+/// `travel_distance` of `64`). Neither submodel carries faces or collision
+/// of its own, the same simplification [`rot_button_bsp`] already makes.
+#[must_use]
+pub fn momentary_door_bsp(entities: &str) -> Vec<u8> {
+    const HALF: f32 = 512.0;
+    const HEIGHT: f32 = 256.0;
+    const BUTTON_HALF: f32 = 16.0;
+    const DOOR_HALF_X: f32 = 32.0;
+    const DOOR_HALF_YZ: f32 = 16.0;
+
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(entities);
+
+    let world_heads = b.push_collision_hulls(&[
+        CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+        CollisionBrush::half_space([0.0, 0.0, -1.0], -HEIGHT),
+        CollisionBrush::half_space([-1.0, 0.0, 0.0], -HALF),
+        CollisionBrush::half_space([1.0, 0.0, 0.0], -HALF),
+        CollisionBrush::half_space([0.0, -1.0, 0.0], -HALF),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], -HALF),
+    ]);
+    b.push_model(
+        [-HALF, -HALF, 0.0],
+        [HALF, HALF, HEIGHT],
+        [0.0; 3],
+        world_heads,
+        2,
+        0,
+        0,
+    );
+    // Submodel 1: the button.
+    b.push_model(
+        [
+            MOMENTARY_BUTTON_CENTER[0] - BUTTON_HALF,
+            MOMENTARY_BUTTON_CENTER[1] - BUTTON_HALF,
+            MOMENTARY_BUTTON_CENTER[2] - BUTTON_HALF,
+        ],
+        [
+            MOMENTARY_BUTTON_CENTER[0] + BUTTON_HALF,
+            MOMENTARY_BUTTON_CENTER[1] + BUTTON_HALF,
+            MOMENTARY_BUTTON_CENTER[2] + BUTTON_HALF,
+        ],
+        [0.0; 3],
+        [-1, -1, -1, -1],
+        0,
+        0,
+        0,
+    );
+    // Submodel 2: the door, `2 * DOOR_HALF_X` (64) wide along `X` — the
+    // axis `momentary_door_entities`'s `angle 0` selects as `movedir`, so
+    // this is the bounding-box-derived `travel_distance`
+    // `ohl_game::registry::brush_travel_distance` computes for it.
+    b.push_model(
+        [
+            MOMENTARY_DOOR_CENTER[0] - DOOR_HALF_X,
+            MOMENTARY_DOOR_CENTER[1] - DOOR_HALF_YZ,
+            MOMENTARY_DOOR_CENTER[2] - DOOR_HALF_YZ,
+        ],
+        [
+            MOMENTARY_DOOR_CENTER[0] + DOOR_HALF_X,
+            MOMENTARY_DOOR_CENTER[1] + DOOR_HALF_YZ,
+            MOMENTARY_DOOR_CENTER[2] + DOOR_HALF_YZ,
+        ],
+        [0.0; 3],
+        [-1, -1, -1, -1],
+        0,
+        0,
+        0,
+    );
+    b.build()
+}
+
+/// A `worldspawn` plus an `info_player_start` (`0 -24 40`; the same
+/// distance-to-button placement [`rot_button_entities`] uses, well inside
+/// `ohl_engine::USE_RADIUS` of [`MOMENTARY_BUTTON_CENTER`]), a
+/// `momentary_rot_button` (submodel `*1`, targetname
+/// [`MOMENTARY_ROT_BUTTON_NAME`], `origin 0 0 0`) turning 90 degrees at 180
+/// degrees per second (a full `0.0..=1.0` sweep in half a second) about the
+/// documented default `Z` axis, with the "Auto return" spawnflag (`16`) set
+/// so releasing `use` returns it — targeting a `momentary_door` (submodel
+/// `*2`, targetname [`MOMENTARY_DOOR_NAME`]) that travels along `+X`
+/// (`angle 0`) at a matching `128` units/second (`travel_distance = 64`, so
+/// the same `speed / travel_distance` ratio as the button's own
+/// `speed / distance`, keeping the two in step tick for tick) so a real
+/// `use_held` press can be observed opening it, and releasing `use` can be
+/// observed closing it again, end to end. No bytes here come from any game
+/// installation; see `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn momentary_door_entities() -> String {
+    format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"0 -24 40\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"momentary_rot_button\"\n\
+         \"targetname\" \"{MOMENTARY_ROT_BUTTON_NAME}\"\n\
+         \"target\" \"{MOMENTARY_DOOR_NAME}\"\n\
+         \"model\" \"*1\"\n\"speed\" \"180\"\n\"distance\" \"90\"\n\
+         \"returnspeed\" \"180\"\n\"spawnflags\" \"16\"\n\
+         \"origin\" \"0 0 0\"\n}}\n\
+         {{\n\"classname\" \"momentary_door\"\n\"targetname\" \"{MOMENTARY_DOOR_NAME}\"\n\
+         \"model\" \"*2\"\n\"speed\" \"128\"\n\"angle\" \"0\"\n\
+         \"origin\" \"0 0 0\"\n}}\n"
+    )
+}

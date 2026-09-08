@@ -359,10 +359,11 @@ pub struct RotButton {
 /// `momentary_rot_button`: a rotating valve/wheel that turns while `use` is
 /// held and reports a `0.0..=1.0` fraction of its own `distance` sweep (TWHL
 /// wiki `momentary_rot_button`, `docs/FORMAT_SOURCES.md`, "Entity keyvalues
-/// and map logic"). Its documented `target` is normally a `momentary_door`,
-/// which this crate does not implement (see that module section's own
-/// `TODO(black-box)`); [`Self::fraction`] is exposed for a future consumer
-/// but nothing here currently reads it back out through `target`.
+/// and map logic"). Its documented `target` is normally a [`MomentaryDoor`]:
+/// `crate::logic::Simulation::drive_momentary_rot_button` reads
+/// [`Self::fraction`] back out through this entity's `Target` keyvalue every
+/// tick it changes and pushes it toward every `momentary_door` sharing that
+/// `targetname` (`docs/FORMAT_SOURCES.md`, item 29).
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[allow(clippy::struct_excessive_bools)]
@@ -402,6 +403,51 @@ pub struct MomentaryRotButton {
     /// [`Self::auto_return`] is set and [`Self::fraction`] is not already
     /// zero).
     pub returning: bool,
+}
+
+/// `momentary_door`: a translating brush whose position is a `0.0..=1.0`
+/// fraction of its own travel, synchronised with whichever
+/// [`MomentaryRotButton`] currently targets it (TWHL wiki
+/// `momentary_rot_button`, `docs/FORMAT_SOURCES.md`, "Entity keyvalues and
+/// map logic": the linked `momentary_door`'s position "is synchronized with
+/// the `momentary_rot_button` currently driving it... a `0` to `1`
+/// fraction"; no separate `momentary_door`-specific public source was found
+/// in this pass — see `docs/FORMAT_SOURCES.md`, item 29).
+///
+/// Shares [`Door`]'s translating `speed`/`lip`/`movedir`/`travel_distance`
+/// shape (`crate::registry::movedir_from_angles`/`brush_travel_distance`,
+/// the same helpers `func_door` uses) rather than [`Door`] itself: unlike a
+/// `func_door` this entity has no `wait`/`state`/`timer` open-close cycle of
+/// its own — it never moves except when a driving button pushes
+/// [`Self::fraction`] toward a commanded value
+/// (`crate::logic::Simulation::drive_momentary_rot_button`). **This
+/// project's own reading, not itself stated by the cited wording**: the
+/// cited "synchronized" text does not say at what rate the door's own
+/// position follows the button's, so this project rate-limits it by the
+/// door's own `speed` keyvalue (the same FGD-conventional field name/
+/// default `func_door` already uses) rather than snapping instantly,
+/// recorded as project behaviour where the public source is silent.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct MomentaryDoor {
+    /// Units per second this door's own [`Self::fraction`] follows a
+    /// commanded value at; this project's own choice (see this struct's own
+    /// doc comment).
+    pub speed: f32,
+    /// Units subtracted from the bounding-box-derived travel distance, the
+    /// same `lip` convention [`Door::lip`] documents for `func_door`.
+    pub lip: f32,
+    /// Unit vector this door travels along from `fraction = 0.0` to
+    /// `fraction = 1.0`, derived from `angles`/`angle` the same way
+    /// [`Door::movedir`] is.
+    pub movedir: Vec3,
+    /// The distance travelled over the full `0.0..=1.0` sweep, derived from
+    /// the brush model's bounding box the same way [`Door::travel_distance`]
+    /// is for a translating `func_door`.
+    pub travel_distance: f32,
+    /// Current position, `0.0` (rest) to `1.0` (fully travelled) — see
+    /// [`crate::pose::momentary_door_offset`].
+    pub fraction: f32,
 }
 
 /// `func_pendulum`: a brush that swings continuously about an origin-keyvalue
@@ -1335,6 +1381,31 @@ impl Registry {
                         returning: false,
                     };
                     world.insert_one(entity, button).ok();
+                }
+                // `momentary_door`: TWHL wiki `momentary_rot_button`
+                // (`docs/FORMAT_SOURCES.md`, "Entity keyvalues and map
+                // logic", item 29): shares `func_door`'s translating
+                // `speed`/`lip`/`movedir`/`travel_distance` shape (see
+                // `MomentaryDoor`'s own doc comment for why it is not a
+                // `Door` itself), but never gets a `state`/`timer`
+                // open-close cycle: only `Simulation::
+                // drive_momentary_rot_button` ever moves `fraction`.
+                "momentary_door" => {
+                    let lip = def
+                        .keyvalues
+                        .get("lip")
+                        .and_then(|v| v.trim().parse::<f32>().ok())
+                        .unwrap_or(0.0);
+                    let movedir = movedir_from_angles(transform.angles);
+                    let travel = brush_travel_distance(def, movedir, lip, model_bounds);
+                    let door = MomentaryDoor {
+                        speed: numeric(def, "speed", 100.0).abs(),
+                        lip,
+                        movedir,
+                        travel_distance: travel,
+                        fraction: 0.0,
+                    };
+                    world.insert_one(entity, door).ok();
                 }
                 // `func_pendulum`: TWHL wiki `func_pendulum` (`docs/
                 // FORMAT_SOURCES.md`, "Entity keyvalues and map logic").
