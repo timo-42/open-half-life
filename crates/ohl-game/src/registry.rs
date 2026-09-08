@@ -952,6 +952,62 @@ pub struct AutoTrigger {
     pub fired: bool,
 }
 
+/// Marks a `multisource`: the published "master" entity, documented as an
+/// AND gate that "only triggers its target(s) if all entities targeting it
+/// are in the 'ON' state".
+///
+/// This project's reading of "in the 'ON' state", recorded as project
+/// behaviour rather than as a quotation: a targeting entity counts once it
+/// has *fired* this `multisource`. See `docs/FORMAT_SOURCES.md`, "Masters
+/// (`multisource`)", for the citation and for the divergences that reading
+/// carries. Which entities target it is not stored here — it is the
+/// `targetname` index run backwards, which `ohl_game::logic::Simulation`
+/// computes from the registry when it evaluates a [`Master`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MultiSource;
+
+/// An entity's `master` keyvalue: "the name of a `multisource` (or
+/// `game_team_master`) entity. A master must usually be active in order
+/// for the entity to work."
+///
+/// Attached to any entity that carries a non-empty `master`, whatever its
+/// classname, since the key is documented on the whole `trigger_*`/mover
+/// family rather than on one entity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Master(pub String);
+
+/// `trigger_teleport`'s published "No Clients" spawnflag bit: "Players
+/// cannot activate this entity" (see `docs/FORMAT_SOURCES.md`, "Teleport
+/// volumes and destinations").
+pub const SPAWNFLAG_TELEPORT_NO_CLIENTS: u32 = 2;
+
+/// Marks a `trigger_teleport`: the brush volume a player walks into to be
+/// moved to wherever its `target` names.
+///
+/// Published behaviour (`docs/FORMAT_SOURCES.md`, "Teleport volumes and
+/// destinations"): the volume "will teleport the player to the origin of
+/// the target entity that was provided to it in its list of properties,
+/// when the player touches it", its `target` is "the name of the
+/// `info_teleport_destination` **or any other entity** to use as
+/// destination", and a destination's own `angles` are "the angles at which
+/// the entity will be facing upon teleportation".
+///
+/// The dispatch rides the ordinary [`Trigger`] machinery — the volume is
+/// touched, and its `target` is fired after its own `delay` — with one
+/// difference this component is what marks: the fire carries the volume
+/// itself as its activator, and `ohl_game::logic::Simulation::activate`
+/// treats *any* entity activated by a teleport volume as that teleport's
+/// destination, whatever its classname. That is what makes "or any other
+/// entity" work without the opposite error of teleporting the player every
+/// time some unrelated chain happens to fire a marker entity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TeleportTrigger {
+    /// The published "No Clients" spawnflag
+    /// ([`SPAWNFLAG_TELEPORT_NO_CLIENTS`]): the player may not activate
+    /// this volume.
+    pub no_clients: bool,
+}
+
 /// `trigger_camera`'s documented "Start At Player" spawnflag: the sequence's
 /// camera begins at the player's own current view instead of the entity's
 /// placed `origin`/`angles`, when it has no `moveto` path (see
@@ -1357,6 +1413,14 @@ impl Registry {
                         )
                         .ok();
                 }
+            }
+            if let Some(master) = def
+                .keyvalues
+                .get("master")
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+            {
+                world.insert_one(entity, Master(master.to_string())).ok();
             }
             if let Some(global) = def
                 .keyvalues
@@ -1872,6 +1936,29 @@ impl Registry {
                             .unwrap_or(0),
                     };
                     world.insert_one(entity, hurt).ok();
+                }
+                "multisource" => {
+                    world.insert_one(entity, MultiSource).ok();
+                }
+                "trigger_teleport" => {
+                    world
+                        .insert_one(
+                            entity,
+                            Trigger {
+                                once: false,
+                                wait: numeric(def, "wait", 0.2),
+                                delay: numeric(def, "delay", 0.0),
+                            },
+                        )
+                        .ok();
+                    world
+                        .insert_one(
+                            entity,
+                            TeleportTrigger {
+                                no_clients: def.spawnflags & SPAWNFLAG_TELEPORT_NO_CLIENTS != 0,
+                            },
+                        )
+                        .ok();
                 }
                 "trigger_camera" => {
                     let (start_at_player, follow_player, freeze_player) =

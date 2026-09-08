@@ -148,26 +148,64 @@ pub fn platform_offset(registry: &Registry, entity: Entity) -> Vec3 {
 /// from its own track that is.
 ///
 /// The cancellation is exact only for a train that has an origin brush,
-/// which is the only shape the documentation describes (`height` is
-/// defined against that brush) and the shape a compiler leaves the
+/// which is the shape the documentation describes in most detail (`height`
+/// is defined against that brush) and the shape a compiler leaves the
 /// geometry in: vertices stored relative to the brush, its world position
-/// in the `origin` keyvalue. A train authored *without* one has a `0 0 0`
-/// keyvalue and world-baked vertices, so nothing cancels and it is placed
-/// at the absolute polyline coordinate — the same thing an engine that
-/// simply assigns the entity's origin from the path does, and a map shape
-/// the documentation gives no other meaning to.
+/// in the `origin` keyvalue.
 ///
-/// TODO(black-box): that no-origin-brush placement is correct for render/
-/// collision (both add this delta to the same `0 0 0` `origin` keyvalue),
-/// but not for [`brush_center`]: its own `BrushCenter` is the compiled
-/// bounds midpoint plus that same `0 0 0` keyvalue, i.e. wherever the
-/// train's geometry happened to be built in the map editor, unrelated to
-/// the path — so `brush_center` adds this absolute path position *on top
-/// of* that unrelated editor location instead of replacing it. See
+/// A train authored *without* an origin brush has a `0 0 0` keyvalue and
+/// world-baked vertices, so nothing cancels; placing it at the absolute
+/// polyline coordinate (the previous behaviour here) teleports the whole
+/// brush by the full magnitude of its own track coordinates the instant
+/// the level loads — several thousand units on a real map — dropping any
+/// player the map spawned standing inside it. That is observable, and it
+/// is not what the published `path_corner`/`path_track` documentation
+/// describes: a train "rides the path". A world-baked train has no origin
+/// brush to measure that ride from, and the first node of the path it
+/// rides is the one reference point its own data supplies, so this
+/// function measures such a train's displacement from
+/// [`TrackTrainState::first_node_position`] instead: zero at spawn, so the
+/// car stays exactly where it was compiled, and growing exactly as far as
+/// the train travels along its own polyline afterwards.
+///
+/// This is a *relative* placement, not a claim that the car is already
+/// sitting on its first node. An earlier draft argued the latter; measured
+/// across every `func_train`/`func_tracktrain` in this project's own cited
+/// map list, well under half of the world-baked ones have their first node
+/// anywhere inside the compiled car, so the rule rests only on the
+/// reference-point argument above (`docs/FORMAT_SOURCES.md`, "Track trains
+/// and paths").
+///
+/// The two cases are told apart by the `origin` keyvalue itself: a
+/// compiler writes an origin brush's own world position there, and leaves
+/// a brush entity built without one at `0 0 0`.
+///
+/// A geometric test — "do the entity's placed
+/// [`crate::registry::BrushBounds`] contain its `origin` point" — was
+/// written first, on the reasoning that an origin brush is part of the
+/// entity and so must lie inside it. Measurement across every
+/// `func_train`/`func_tracktrain` in this project's own cited map list
+/// rejected it: a compiler drops the origin brush's own faces from the
+/// model, so a real origin brush routinely sits flush with, or a unit or
+/// two past, the compiled bounds. That test read a handful of ordinary
+/// origin-brush trains as world-baked — one of them moving its spawn
+/// placement by hundreds of units, the very regression this rule exists to
+/// prevent, in the other direction — and sat within a few units of
+/// flipping for most of the rest. The `origin` keyvalue separated the same
+/// set with no misclassifications.
+///
+/// TODO(black-box): the rule above makes the placement self-consistent for
+/// the shape a world-baked map actually authors — the first node inside
+/// the car it drew, which is the only way such a map is on its own track —
+/// and with it [`brush_center`] agrees with the renderer and the collision
+/// model at spawn and stays with the car as it moves. It does *not* fix
+/// the pathological world-baked shape whose first node sits nowhere near
+/// its compiled geometry: for that one `brush_center` still adds the path
+/// displacement on top of an unrelated compiled midpoint. See
 /// `docs/FORMAT_SOURCES.md` item 31 and this module's own
 /// `a_tracktrain_without_an_origin_brush_gives_a_wrong_brush_center` test,
-/// which pins the current, documented-wrong behaviour so a future fix has
-/// to update it deliberately.
+/// which pins that remaining case so a future fix has to update it
+/// deliberately.
 #[must_use]
 pub fn track_train_transform(registry: &Registry, entity: Entity) -> (Vec3, Option<f32>) {
     let Ok(state) = registry.world.get::<&TrackTrainState>(entity) else {
@@ -180,7 +218,22 @@ pub fn track_train_transform(registry: &Registry, entity: Entity) -> (Vec3, Opti
         .world
         .get::<&Transform>(entity)
         .map_or(Vec3::ZERO, |transform| transform.origin);
-    (state.position() - authored, state.yaw_degrees(&train))
+    let reference = if train_geometry_is_world_baked(authored) {
+        state.first_node_position()
+    } else {
+        authored
+    };
+    (state.position() - reference, state.yaw_degrees(&train))
+}
+
+/// Whether `entity`'s brush geometry was compiled in absolute world space
+/// rather than relative to an origin brush: its `origin` keyvalue is
+/// `0 0 0`, which is what a compiler leaves a brush entity with no origin
+/// brush at. See [`track_train_transform`]'s doc comment for why this, and
+/// not the geometric bounds-containment test tried first, is the
+/// discriminator.
+fn train_geometry_is_world_baked(authored: Vec3) -> bool {
+    authored == Vec3::ZERO
 }
 
 /// How far a `momentary_door` has slid toward whichever
@@ -456,16 +509,24 @@ mod tests {
     /// world-baked geometry compiled wherever the map editor happened to
     /// place it — unrelated to the path it rides — and a `0 0 0` `origin`
     /// keyvalue (see `track_train_transform`'s own doc comment). Render
-    /// and collision get this right: they add the train's absolute path
-    /// position to that same zero `origin`. But `brush_center` is
-    /// currently wrong for this shape: its `BrushCenter` is the compiled
-    /// bounds midpoint (the unrelated editor location) plus that zero
-    /// `origin`, and `brush_offset` then adds the absolute path position
-    /// *on top of* it, rather than replacing it — so the proximity point
+    /// and collision get this right: they add the train's path
+    /// displacement to that same zero `origin`. But `brush_center` is
+    /// still wrong for *this* fixture's shape: its `BrushCenter` is the
+    /// compiled bounds midpoint (the unrelated editor location) plus that
+    /// zero `origin`, and `brush_offset` then adds the path displacement
+    /// on top of it, rather than replacing it — so the proximity point
     /// drifts away from the train as soon as it leaves its spawn node.
-    /// This test pins that documented, current-but-wrong behaviour (`docs/
-    /// FORMAT_SOURCES.md` item 31); a future fix must update this test
-    /// deliberately rather than leave it silently passing on the old sum.
+    ///
+    /// Note what this fixture deliberately is *not*: a world-baked train
+    /// whose first node sits inside the car it drew, which is how a real
+    /// map without an origin brush authors one and the shape
+    /// `track_train_transform`'s world-baked rule is measured against. For
+    /// that shape the displacement is zero at spawn and `brush_center`
+    /// agrees with the car. This fixture's node is 500 units from its
+    /// compiled geometry, so it keeps pinning the documented remaining gap
+    /// (`docs/FORMAT_SOURCES.md` item 31); a future fix must update this
+    /// test deliberately rather than leave it silently passing on the old
+    /// sum.
     #[test]
     fn a_tracktrain_without_an_origin_brush_gives_a_wrong_brush_center() {
         let train_kv = [

@@ -58,6 +58,22 @@
 //! - "The player is in water." — [`ohl_engine::Game::player_in_water`] has
 //!   read `true` for the same threshold; likewise true for either a
 //!   world-compiled liquid volume or a real `func_water` entity.
+//! - "The player walked into a trigger volume." —
+//!   [`ohl_engine::Game::touch_trigger_count`] increasing: the player's own
+//!   hull entered a `trigger_*` volume and it fired. A fixed string: no
+//!   classname, `targetname` or coordinate is ever interpolated. This is
+//!   the end-to-end evidence that the player is somewhere a map's own touch
+//!   volumes can reach at all, which a player sealed into the wrong place
+//!   by a misplaced brush mover never is.
+//!
+//! - "The player was teleported." —
+//!   [`ohl_engine::Game::teleport_count`] increasing: the player walked
+//!   into a `trigger_teleport` volume and an `info_teleport_destination`
+//!   moved them. A fixed string: no destination, `targetname` or
+//!   coordinate is ever interpolated. Before this line existed, a map
+//!   whose opening sequence teleports the player out of a sealed start
+//!   room produced no milestone line at all, however long the run waited.
+//!
 //! - "The player opened a door." —
 //!   [`ohl_engine::Game::doors_opened_count`] increasing: either a `use`
 //!   press found a closed door within `ohl_engine::USE_RADIUS` of the
@@ -129,6 +145,8 @@ pub struct ScriptLog {
     on_ladder: bool,
     in_water: bool,
     door_opened: bool,
+    teleported: bool,
+    touched_trigger: bool,
     baseline_fired: u64,
     baseline_hit: u64,
     baseline_damage_events: u64,
@@ -136,6 +154,8 @@ pub struct ScriptLog {
     baseline_pickups: u64,
     baseline_player_damage: u64,
     baseline_doors_opened: u64,
+    baseline_teleports: u64,
+    baseline_touch_triggers: u64,
     spawn_position: [f32; 3],
     in_solid_seconds: f32,
     riding_mover_seconds: f32,
@@ -168,6 +188,8 @@ impl ScriptLog {
             on_ladder: false,
             in_water: false,
             door_opened: false,
+            teleported: false,
+            touched_trigger: false,
             baseline_fired: game.weapon_fired_count(),
             baseline_hit: game.shot_hit_count(),
             baseline_damage_events: game.monster_damage_event_count(),
@@ -175,6 +197,8 @@ impl ScriptLog {
             baseline_pickups: game.pickup_count(),
             baseline_player_damage: game.player_damage_event_count(),
             baseline_doors_opened: game.doors_opened_count(),
+            baseline_teleports: game.teleport_count(),
+            baseline_touch_triggers: game.touch_trigger_count(),
             spawn_position: game.eye_position(),
             in_solid_seconds: 0.0,
             riding_mover_seconds: 0.0,
@@ -222,6 +246,14 @@ impl ScriptLog {
         if !self.door_opened && game.doors_opened_count() > self.baseline_doors_opened {
             self.door_opened = true;
             tracing::info!("The player opened a door.");
+        }
+        if !self.teleported && game.teleport_count() > self.baseline_teleports {
+            self.teleported = true;
+            tracing::info!("The player was teleported.");
+        }
+        if !self.touched_trigger && game.touch_trigger_count() > self.baseline_touch_triggers {
+            self.touched_trigger = true;
+            tracing::info!("The player walked into a trigger volume.");
         }
     }
 

@@ -5,7 +5,7 @@
 use glam::Vec3;
 use ohl_campaign::{Difficulty, SkillTable};
 use ohl_game::Event;
-use ohl_physics::PlayerController;
+use ohl_physics::{MAX_PITCH_DEGREES, PlayerController};
 use ohl_render::{FreeFlyCamera, GpuContext, LightStyles};
 use ohl_world::LightRamp;
 
@@ -124,6 +124,9 @@ pub struct Game {
     /// Events produced outside [`Self::tick`] (a chapter title on load),
     /// drained by the next tick so a host has exactly one event path.
     pending: Vec<GameEvent>,
+    /// How many times a `trigger_teleport` has moved the player on this
+    /// level; see [`Self::teleport_count`].
+    teleports: u64,
 }
 
 impl Game {
@@ -192,6 +195,7 @@ impl Game {
             systems,
             clock: TickClock::new(),
             pending,
+            teleports: 0,
         }
     }
 
@@ -615,6 +619,20 @@ impl Game {
         self.systems.pickup_count()
     }
 
+    /// How many `trigger_*` volumes have fired because the player's own
+    /// hull walked into them since this level was loaded (a `use` press or
+    /// another entity's fire chain reaching the same volume by name does
+    /// not count; see `ohl_game::logic::Simulation::touch_triggers`).
+    ///
+    /// This is the end-to-end evidence that the player is somewhere a
+    /// map's own touch volumes can reach at all — which a player sealed
+    /// into the wrong place by a misplaced brush mover never is. Data,
+    /// never a log line.
+    #[must_use]
+    pub fn touch_trigger_count(&self) -> u64 {
+        self.systems.touch_trigger_count()
+    }
+
     /// How many closed doors have been opened since this level was loaded,
     /// whether by a `use` press (the proximity path —
     /// `ohl_game::pose::brush_center` placing the door,
@@ -921,14 +939,18 @@ impl Game {
         }
 
         let mut out = std::mem::take(&mut self.pending);
-        out.extend(events.into_iter().map(|event| match event {
-            Event::LevelChange(change) => GameEvent::LevelChange {
+        out.extend(events.into_iter().filter_map(|event| match event {
+            Event::LevelChange(change) => Some(GameEvent::LevelChange {
                 map: change.map,
                 landmark: change.landmark,
-            },
-            Event::Message(message) => GameEvent::Message {
+            }),
+            Event::Message(message) => Some(GameEvent::Message {
                 block: self.titles.resolve(&message),
-            },
+            }),
+            // Already applied to the player in `Self::apply_teleports`, and
+            // removed from the queue there; this arm only exists for a
+            // teleport queued outside a fixed step, which nothing does.
+            Event::Teleport(_) => None,
         }));
         out.extend(
             self.systems
@@ -957,6 +979,7 @@ impl Game {
     /// [`crate::tick::TICK_SECONDS`], so what the simulation does never
     /// depends on how fast the host renders it.
     fn step(&mut self, events: &mut Vec<Event>) {
+        let before = events.len();
         self.systems.step(
             &mut self.level,
             &mut self.camera,
@@ -964,7 +987,68 @@ impl Game {
             TICK_SECONDS,
             events,
         );
+        self.apply_teleports(events, before);
         self.elapsed += TICK_SECONDS;
+    }
+
+    /// Applies (and removes) every [`Event::Teleport`] this step produced,
+    /// so the next step already simulates the player from their new
+    /// position rather than the host seeing a teleport it has no way to
+    /// act on.
+    ///
+    /// Only the *last* teleport of a step actually places the player: two
+    /// destinations activated in one fixed step are two positions for one
+    /// player, and the later one wins for the same reason the later of two
+    /// same-tick moves does. Placement matches this crate's own spawn
+    /// convention exactly (`Game::from_level`): the destination's `origin`
+    /// becomes the player's entity origin and the camera sits
+    /// [`ohl_render::FreeFlyCamera::at_spawn`]'s documented standing view
+    /// offset above it. Velocity is cleared — a teleported player arrives,
+    /// they do not carry the speed they walked into the volume with — and
+    /// collision stays on, unlike [`Self::set_viewpoint`]'s free camera,
+    /// because a destination is a mapper-placed point a player is meant to
+    /// stand at.
+    fn apply_teleports(&mut self, events: &mut Vec<Event>, from: usize) {
+        let mut destination = None;
+        let mut index = from;
+        while index < events.len() {
+            if let Event::Teleport(teleport) = events[index] {
+                destination = Some(teleport);
+                events.remove(index);
+            } else {
+                index += 1;
+            }
+        }
+        let Some(teleport) = destination else {
+            return;
+        };
+        let origin = Vec3::from_array(teleport.origin);
+        if !origin.is_finite() {
+            return;
+        }
+        let (pitch, yaw) = (teleport.angles[0], teleport.angles[1]);
+        let (pitch, yaw) = if pitch.is_finite() && yaw.is_finite() {
+            (pitch, yaw)
+        } else {
+            (self.controller.pitch, self.controller.yaw)
+        };
+        self.controller.state.origin = origin;
+        self.controller.state.velocity = Vec3::ZERO;
+        self.controller.yaw = yaw;
+        self.controller.pitch = pitch.clamp(-MAX_PITCH_DEGREES, MAX_PITCH_DEGREES);
+        self.camera.position = self.controller.eye_position().to_array();
+        self.camera.yaw = self.controller.yaw;
+        self.camera.pitch = self.controller.pitch;
+        self.teleports = self.teleports.saturating_add(1);
+    }
+
+    /// How many times a `trigger_teleport` volume has moved the player
+    /// since this level was loaded (see
+    /// [`ohl_game::registry::TeleportDestination`]). Data, never a log
+    /// line.
+    #[must_use]
+    pub fn teleport_count(&self) -> u64 {
+        self.teleports
     }
 
     /// Captures everything that travels through `landmark` out of the
@@ -1047,6 +1131,7 @@ impl Game {
         // `render` rebuilds against whatever target it is handed.
         self.renderers = None;
         self.elapsed = 0.0;
+        self.teleports = 0;
         self.clock = TickClock::new();
         self.systems.reset();
         self.systems
@@ -1145,6 +1230,13 @@ impl Game {
             }),
             momentary_doors: Some(crate::save_state::snapshot_momentary_doors(&self.level)),
             breakables: Some(crate::save_state::snapshot_breakables(&self.level)),
+            teleport_state: Some({
+                let state = self.level.simulation.teleport_state_snapshot();
+                crate::save::TeleportStateSnapshot {
+                    teleport_touch: state.teleport_touching,
+                    master_fires: state.master_fires,
+                }
+            }),
         }
     }
 
@@ -1412,6 +1504,15 @@ impl Game {
         // where the player left it, not where it was compiled.
         if let Some(breakables) = &save.breakables {
             crate::save_state::restore_breakables(&mut self.level, breakables);
+        }
+        // `SECTION_TELEPORT_STATE` (34): the `trigger_teleport` touch edges
+        // and `multisource` fire counts, both keyed by `hecs` bit pattern
+        // rather than spawn order (see `crate::save::TeleportStateSnapshot`).
+        if let Some(teleport_state) = &save.teleport_state {
+            self.level.simulation.restore_teleport_state(
+                &teleport_state.teleport_touch,
+                &teleport_state.master_fires,
+            );
         }
         // A load is a map load: the chapter title is announced again.
         self.pending.clear();

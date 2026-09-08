@@ -95,6 +95,11 @@ pub const DROP: f32 = 72.0;
 /// edge of the world) cannot make the walk search downward forever; it is
 /// set generously larger than any drop a real level's own vertical layout
 /// would ever ask a route to take.
+///
+/// [`settle_start`] reuses it for the one downward trace it takes before
+/// the walk begins, for the same reason and with the same bound: a spawn
+/// point hanging above its own floor is one more fall this module has to
+/// follow, and no legitimate one is further than this.
 pub const MAX_FALL: f32 = 8_192.0;
 
 /// Distances this module reports are rounded to the nearest multiple of
@@ -303,6 +308,30 @@ fn try_edge(
     }
 }
 
+/// Drops `start` straight down onto the first floor beneath it, the way
+/// the spawning player themselves falls on the map's first ticks.
+///
+/// A map's `info_player_start` is a *point* entity: nothing requires it to
+/// sit exactly on the floor, and mappers routinely place one well above
+/// one (the engine spawns the player there and lets them fall). The walk
+/// below, however, is a fixed-position grid step from wherever it is told
+/// to start: from a point hanging in mid-air, every one of the eight
+/// compass directions ends in a drop longer than [`DROP`] and is discarded,
+/// so the whole map reports as exactly one reachable cell. Settling first
+/// makes the walk start where the player actually ends up standing.
+///
+/// Returns `start` unchanged when the downward trace finds no floor at all
+/// (a spawn over a pit, or a map with no usable geometry beneath it) or
+/// when the start point is already embedded in solid: neither is this
+/// function's to invent a position for.
+fn settle_start(collision: &CollisionModel, start: Vec3) -> Vec3 {
+    let down = collision.trace(Hull::Standing, start, start - Vec3::Z * MAX_FALL);
+    if down.start_solid || down.fraction >= 1.0 {
+        return start;
+    }
+    down.end_pos
+}
+
 /// The step-up/move/drop walk itself: from `start`, breadth-first over the
 /// 16-unit grid, using [`Hull::Standing`] against `collision` exactly as
 /// the walking player would. From every visited cell, in every direction,
@@ -502,7 +531,6 @@ pub fn compute_reachability_report(
     game: &mut Game,
     config: &ReachabilityConfig,
 ) -> ReachabilityReport {
-    let start = Vec3::from_array(game.player_origin());
     let mut rounds = Vec::new();
 
     if game.collision().is_none() {
@@ -522,6 +550,10 @@ pub fn compute_reachability_report(
     }
 
     let jump = JumpBounds::from_move_config(game.move_config());
+    let start = match game.collision() {
+        Some(collision) => settle_start(collision, Vec3::from_array(game.player_origin())),
+        None => Vec3::from_array(game.player_origin()),
+    };
 
     for round in 0..config.max_rounds.max(1) {
         let walk_result = {
@@ -593,7 +625,8 @@ pub fn compute_reachability_report(
 mod tests {
     use super::*;
     use crate::test_support::{
-        REACH_DOOR_MAP, reachability_changelevel_entities, reachability_door_bsp,
+        REACH_DOOR_MAP, reachability_changelevel_entities,
+        reachability_changelevel_entities_at_height, reachability_door_bsp,
     };
     use crate::{AssetSource, MemoryAssets};
 
@@ -602,6 +635,60 @@ mod tests {
         let mut assets = MemoryAssets::new();
         assets.insert(&format!("maps/{REACH_DOOR_MAP}.bsp"), bytes);
         Game::load(&assets as &dyn AssetSource, REACH_DOOR_MAP).expect("the fixture loads")
+    }
+
+    /// The same fixture with its `info_player_start` hanging `spawn_z`
+    /// above the floor instead of just clear of it.
+    fn game_spawned_at(spawn_z: f32) -> Game {
+        let bytes = reachability_door_bsp(&reachability_changelevel_entities_at_height(
+            "ohlreachnext",
+            spawn_z,
+        ));
+        let mut assets = MemoryAssets::new();
+        assets.insert(&format!("maps/{REACH_DOOR_MAP}.bsp"), bytes);
+        Game::load(&assets as &dyn AssetSource, REACH_DOOR_MAP).expect("the fixture loads")
+    }
+
+    /// A map's `info_player_start` is a point entity a mapper may hang well
+    /// above the floor; the spawning player falls onto it. This walk is a
+    /// fixed-position grid step, so from a start in mid-air every one of
+    /// the eight directions ends in a drop longer than [`DROP`] and is
+    /// discarded — the whole map reports as one cell, whatever is actually
+    /// walkable under it. [`settle_start`] drops the start onto the floor
+    /// first, which must make a high spawn report exactly what the same
+    /// map reports from a floor-level one.
+    #[test]
+    fn a_spawn_hanging_above_the_floor_walks_the_same_map_as_one_on_it() {
+        let config = ReachabilityConfig::default();
+        let on_the_floor = compute_reachability_report(&mut game(), &config);
+        // Far enough above the floor that an unsettled walk cannot step
+        // anywhere at all (`DROP` is 72).
+        let hanging = compute_reachability_report(&mut game_spawned_at(200.0), &config);
+
+        assert!(
+            on_the_floor.rounds[0].reachable_cells > 1,
+            "the floor-level control walk should reach a real area"
+        );
+        assert_eq!(
+            hanging.rounds[0].reachable_cells, on_the_floor.rounds[0].reachable_cells,
+            "a spawn hanging above the floor must settle onto it and walk the same map"
+        );
+        assert_eq!(
+            hanging.rounds.len(),
+            on_the_floor.rounds.len(),
+            "the settled walk must find (and open) the same doors, round for round"
+        );
+        assert_eq!(
+            hanging
+                .rounds
+                .last()
+                .map(|round| round.changelevel.reachable),
+            on_the_floor
+                .rounds
+                .last()
+                .map(|round| round.changelevel.reachable),
+            "the settled walk must reach the same level-change trigger"
+        );
     }
 
     /// The whole point of this module: a closed door hides a

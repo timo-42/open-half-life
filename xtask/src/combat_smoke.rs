@@ -80,10 +80,11 @@ struct Scenario {
 /// script loaded and finished markers.
 const BASE_PRESENT: [&str; 2] = ["Scripted input loaded.", "Scripted input finished."];
 
-/// The ten milestone lines a scenario that never fires, hits, damages or
-/// picks up anything, that opens no door with a `use` press, that never
-/// leaves the player embedded in solid geometry or riding a mover, and
-/// that never follows a level change, is expected never to log. A
+/// The eleven milestone lines a scenario that never fires, hits, damages
+/// or picks up anything, that opens no door with a `use` press, that never
+/// leaves the player embedded in solid geometry or riding a mover, that is
+/// never moved by a `trigger_teleport`, and that never follows a level
+/// change, is expected never to log. A
 /// scenario that does expect one of these present removes it from its own
 /// `absent` list instead.
 ///
@@ -113,6 +114,11 @@ const BASE_PRESENT: [&str; 2] = ["Scripted input loaded.", "Scripted input finis
 /// [`WALK_PRESENT_DOOR_OPENED`]'s own doc comment for the two scenarios
 /// that still use it (both `use` presses, unaffected by that correction).
 ///
+/// "The player was teleported." joined this list alongside the one
+/// scenario that asserts it *present* (see [`TELEPORTED_PRESENT`]): only
+/// that map's own opening sequence moves the player with a
+/// `trigger_teleport`, so every other scenario must never report one.
+///
 /// "The player is riding a mover." joined this list once mover-riders
 /// (`crates/ohl-physics`'s `PlayerState::ground_brush`,
 /// `crates/ohl-engine`'s `Level::brush_velocity`) landed: none of the
@@ -126,7 +132,7 @@ const BASE_PRESENT: [&str; 2] = ["Scripted input loaded.", "Scripted input finis
 /// *not* use this constant: the player rides that map's opening tram, so
 /// they assert "The player is riding a mover." *present* instead. See
 /// [`START_MAP_PRESENT`]'s own doc comment.
-const BASE_ABSENT: [&str; 10] = [
+const BASE_ABSENT: [&str; 11] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
     "A monster took damage.",
@@ -137,6 +143,7 @@ const BASE_ABSENT: [&str; 10] = [
     "The player is riding a mover.",
     "The player opened a door.",
     "A level change was followed.",
+    "The player was teleported.",
 ];
 
 /// The fixed lines every scenario that runs on `ohl_campaign::STARTMAP`
@@ -173,7 +180,7 @@ const START_MAP_PRESENT: [&str; 4] = [
 
 /// [`BASE_ABSENT`], minus "The player is riding a mover.", which
 /// [`START_MAP_PRESENT`] asserts present instead.
-const START_MAP_ABSENT: [&str; 9] = [
+const START_MAP_ABSENT: [&str; 10] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
     "A monster took damage.",
@@ -183,6 +190,7 @@ const START_MAP_ABSENT: [&str; 9] = [
     "The player is inside solid geometry.",
     "The player opened a door.",
     "A level change was followed.",
+    "The player was teleported.",
 ];
 
 /// [`START_MAP_PRESENT`] plus the line the one scenario that rides the
@@ -210,7 +218,7 @@ const RIDE_TO_LEVEL_CHANGE_PRESENT: [&str; 5] = [
 
 /// [`START_MAP_ABSENT`] minus "A level change was followed.", which
 /// [`RIDE_TO_LEVEL_CHANGE_PRESENT`] asserts present instead.
-const RIDE_TO_LEVEL_CHANGE_ABSENT: [&str; 8] = [
+const RIDE_TO_LEVEL_CHANGE_ABSENT: [&str; 9] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
     "A monster took damage.",
@@ -219,6 +227,7 @@ const RIDE_TO_LEVEL_CHANGE_ABSENT: [&str; 8] = [
     "The player took damage.",
     "The player is inside solid geometry.",
     "The player opened a door.",
+    "The player was teleported.",
 ];
 
 /// The fixed line every M9 chapter-walk scenario expects present beyond
@@ -230,6 +239,38 @@ const WALK_PRESENT: [&str; 3] = [
     "Scripted input loaded.",
     "Scripted input finished.",
     "The player moved from the spawn point.",
+];
+
+/// [`WALK_PRESENT`] plus the line the campaign's last map's own opening
+/// sequence reaches with no input at all: a `trigger_teleport` the player
+/// already stands in moved them out of a sealed start volume
+/// (`crates/ohl-app/src/script_log.rs`). Before teleport volumes were
+/// implemented, that map printed no milestone line whatsoever over a
+/// fifty-second unconditioned wait; the volume fired its `target` every
+/// cooldown and nothing on the far end of that fire did anything.
+const TELEPORTED_PRESENT: [&str; 4] = [
+    "Scripted input loaded.",
+    "Scripted input finished.",
+    "The player was teleported.",
+    "The player moved from the spawn point.",
+];
+
+/// [`BASE_ABSENT`] minus the one line [`TELEPORTED_PRESENT`] moves to its
+/// own present set. Used by the two scenarios that run on the campaign's
+/// last map: the one that waits and presses nothing, and the chapter walk
+/// that starts in the same volume and so is moved by it before its own
+/// first step.
+const TELEPORTED_ABSENT: [&str; 10] = [
+    "The player fired a weapon.",
+    "A shot hit an entity.",
+    "A monster took damage.",
+    "A monster died.",
+    "A pickup was collected.",
+    "The player took damage.",
+    "The player is inside solid geometry.",
+    "The player is riding a mover.",
+    "The player opened a door.",
+    "A level change was followed.",
 ];
 
 /// [`WALK_PRESENT`] plus the two lines this scenario's own walk (in
@@ -246,7 +287,7 @@ const WALK_PRESENT_MONSTER_ENCOUNTER: [&str; 5] = [
 
 /// [`BASE_ABSENT`] minus the two lines [`WALK_PRESENT_MONSTER_ENCOUNTER`]
 /// moves to its own present set.
-const WALK_ABSENT_MONSTER_ENCOUNTER: [&str; 8] = [
+const WALK_ABSENT_MONSTER_ENCOUNTER: [&str; 9] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
     "A pickup was collected.",
@@ -255,6 +296,7 @@ const WALK_ABSENT_MONSTER_ENCOUNTER: [&str; 8] = [
     "The player is riding a mover.",
     "The player opened a door.",
     "A level change was followed.",
+    "The player was teleported.",
 ];
 
 /// [`WALK_PRESENT`] plus the line this scenario's own walk (in
@@ -270,7 +312,7 @@ const WALK_PRESENT_PLAYER_DAMAGED: [&str; 4] = [
 
 /// [`BASE_ABSENT`] minus the one line [`WALK_PRESENT_PLAYER_DAMAGED`]
 /// moves to its own present set.
-const WALK_ABSENT_PLAYER_DAMAGED: [&str; 9] = [
+const WALK_ABSENT_PLAYER_DAMAGED: [&str; 10] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
     "A monster took damage.",
@@ -280,6 +322,34 @@ const WALK_ABSENT_PLAYER_DAMAGED: [&str; 9] = [
     "The player is riding a mover.",
     "The player opened a door.",
     "A level change was followed.",
+    "The player was teleported.",
+];
+
+/// [`WALK_PRESENT`] plus the line the walk out of `ohl_campaign::TRAINMAP`'s
+/// start reaches: a `trigger_*` volume fired because the player's own hull
+/// walked into it (`crates/ohl-app/src/script_log.rs`).
+///
+/// That line is what makes this scenario pin the world-baked brush-mover
+/// placement rather than merely re-walk a map. The player starts standing
+/// inside a brush mover authored in absolute world space; with that
+/// placement wrong the mover is displaced by the full magnitude of its own
+/// path coordinates at load, the player falls out of it into a sealed space
+/// no input can leave, and — measured, with
+/// `ohl_game::pose::track_train_transform`'s world-baked branch forced
+/// `false` and nothing else changed — the player still slides far enough to
+/// log "The player moved from the spawn point." but never reaches a single
+/// touch volume. The two lines together are the discriminating pair.
+///
+/// "The player walked into a trigger volume." is deliberately *not* in
+/// [`BASE_ABSENT`]: most scenarios in this file walk through a map's own
+/// touch volumes as a matter of course, so it is asserted where it carries
+/// meaning and left unconstrained elsewhere — the same treatment "The
+/// player moved from the spawn point." already gets.
+const WALK_PRESENT_TOUCH_TRIGGER: [&str; 4] = [
+    "Scripted input loaded.",
+    "Scripted input finished.",
+    "The player moved from the spawn point.",
+    "The player walked into a trigger volume.",
 ];
 
 /// The fixed lines a scenario that does pick up and fire a weapon expects
@@ -341,7 +411,7 @@ const WALK_PRESENT_DOOR_OPENED: [&str; 4] = [
 
 /// [`BASE_ABSENT`] minus the one line [`WALK_PRESENT_DOOR_OPENED`] moves to
 /// its own present set.
-const WALK_ABSENT_DOOR_OPENED: [&str; 9] = [
+const WALK_ABSENT_DOOR_OPENED: [&str; 10] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
     "A monster took damage.",
@@ -351,6 +421,7 @@ const WALK_ABSENT_DOOR_OPENED: [&str; 9] = [
     "The player is inside solid geometry.",
     "The player is riding a mover.",
     "A level change was followed.",
+    "The player was teleported.",
 ];
 
 /// [`WALK_PRESENT`] plus the line a door-free spawn-to-exit walk (in
@@ -371,7 +442,7 @@ const LEVEL_CHANGE_PRESENT: [&str; 4] = [
 
 /// [`BASE_ABSENT`] minus the one line [`LEVEL_CHANGE_PRESENT`] moves to its
 /// own present set.
-const LEVEL_CHANGE_ABSENT: [&str; 9] = [
+const LEVEL_CHANGE_ABSENT: [&str; 10] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
     "A monster took damage.",
@@ -381,6 +452,7 @@ const LEVEL_CHANGE_ABSENT: [&str; 9] = [
     "The player is inside solid geometry.",
     "The player is riding a mover.",
     "The player opened a door.",
+    "The player was teleported.",
 ];
 
 /// [`LEVEL_CHANGE_PRESENT`] plus "The player opened a door.": the scenarios
@@ -402,7 +474,7 @@ const DOOR_AND_LEVEL_CHANGE_PRESENT: [&str; 5] = [
 
 /// [`BASE_ABSENT`] minus the two lines [`DOOR_AND_LEVEL_CHANGE_PRESENT`]
 /// moves to its own present set.
-const DOOR_AND_LEVEL_CHANGE_ABSENT: [&str; 8] = [
+const DOOR_AND_LEVEL_CHANGE_ABSENT: [&str; 9] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
     "A monster took damage.",
@@ -411,6 +483,7 @@ const DOOR_AND_LEVEL_CHANGE_ABSENT: [&str; 8] = [
     "The player took damage.",
     "The player is inside solid geometry.",
     "The player is riding a mover.",
+    "The player was teleported.",
 ];
 
 /// [`LEVEL_CHANGE_PRESENT`] plus "A monster took damage.": the scenario
@@ -442,7 +515,7 @@ const LEVEL_CHANGE_PRESENT_MONSTER_ENCOUNTER: [&str; 5] = [
 /// [`BASE_ABSENT`] minus the two lines
 /// [`LEVEL_CHANGE_PRESENT_MONSTER_ENCOUNTER`] moves to its own present
 /// set.
-const LEVEL_CHANGE_ABSENT_MONSTER_ENCOUNTER: [&str; 8] = [
+const LEVEL_CHANGE_ABSENT_MONSTER_ENCOUNTER: [&str; 9] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
     "A monster died.",
@@ -451,6 +524,7 @@ const LEVEL_CHANGE_ABSENT_MONSTER_ENCOUNTER: [&str; 8] = [
     "The player is inside solid geometry.",
     "The player is riding a mover.",
     "The player opened a door.",
+    "The player was teleported.",
 ];
 
 /// [`DOOR_AND_LEVEL_CHANGE_PRESENT`] plus "A monster took damage.": the
@@ -471,7 +545,7 @@ const DOOR_AND_LEVEL_CHANGE_PRESENT_MONSTER_ENCOUNTER: [&str; 6] = [
 /// [`BASE_ABSENT`] minus the three lines
 /// [`DOOR_AND_LEVEL_CHANGE_PRESENT_MONSTER_ENCOUNTER`] moves to its own
 /// present set.
-const DOOR_AND_LEVEL_CHANGE_ABSENT_MONSTER_ENCOUNTER: [&str; 7] = [
+const DOOR_AND_LEVEL_CHANGE_ABSENT_MONSTER_ENCOUNTER: [&str; 8] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
     "A monster died.",
@@ -479,6 +553,7 @@ const DOOR_AND_LEVEL_CHANGE_ABSENT_MONSTER_ENCOUNTER: [&str; 7] = [
     "The player took damage.",
     "The player is inside solid geometry.",
     "The player is riding a mover.",
+    "The player was teleported.",
 ];
 
 /// [`BASE_ABSENT`] minus the three lines [`FIRE_AND_PICKUP_PRESENT`] moves
@@ -488,7 +563,7 @@ const DOOR_AND_LEVEL_CHANGE_ABSENT_MONSTER_ENCOUNTER: [&str; 7] = [
 /// solid geometry." and "The player is riding a mover.": this scenario's
 /// own regression guard for the PR #91 class of bug and for mover-riders,
 /// same as every other scenario in this file.
-const FIRE_AND_PICKUP_ABSENT: [&str; 7] = [
+const FIRE_AND_PICKUP_ABSENT: [&str; 8] = [
     "A monster took damage.",
     "A monster died.",
     "The player took damage.",
@@ -496,6 +571,7 @@ const FIRE_AND_PICKUP_ABSENT: [&str; 7] = [
     "The player is riding a mover.",
     "The player opened a door.",
     "A level change was followed.",
+    "The player was teleported.",
 ];
 
 /// The scenarios this command runs, in order. Map names come only from
@@ -560,9 +636,26 @@ const FIRE_AND_PICKUP_ABSENT: [&str; 7] = [
 /// [`RIDE_TO_LEVEL_CHANGE_PRESENT`]): the campaign's own first
 /// progression gate, reached without a single movement key.
 ///
-/// All 35 scenarios in this file — the four pre-existing ones included —
+/// Two further scenarios (M9, the auto-start gaps) cover the two maps an
+/// earlier read-only investigation found doing nothing at all. The first
+/// waits thirty simulated seconds on the campaign's last map and presses
+/// nothing: its opening `trigger_teleport` moves the player out of a
+/// sealed start volume on its own, once the `master` gating that volume
+/// goes active at the pace the map's own fan-out delays set (see
+/// [`TELEPORTED_PRESENT`]). The second walks four simulated seconds
+/// forward on `ohl_campaign::TRAINMAP` and leaves its start area, which
+/// only exists once a brush mover authored in absolute world space stays
+/// where it was compiled instead of being displaced by the full magnitude
+/// of its own path coordinates at load. It asserts "The player walked into
+/// a trigger volume." present, which is the half of its claim that
+/// actually fails without that placement (see
+/// [`WALK_PRESENT_TOUCH_TRIGGER`]); see
+/// `crates/ohl-engine/tests/train_spawn_placement.rs` for the same
+/// mechanism against a synthetic fixture.
+///
+/// All 37 scenarios in this file — the four pre-existing ones included —
 /// assert "The player is inside solid geometry." absent: this scenario
-/// set's own regression guard for the PR #91 class of bug. 32 of the 35
+/// set's own regression guard for the PR #91 class of bug. 34 of the 37
 /// also assert "The player is riding a mover." absent, since none of them
 /// stands on a moving brush entity; the three that run on
 /// `ohl_campaign::STARTMAP` assert it *present* instead, because the
@@ -638,8 +731,24 @@ const FIRE_AND_PICKUP_ABSENT: [&str; 7] = [
               pre-existing ones, plus the ten progression scenarios; splitting \
               the list would only add indirection"
 )]
-fn scenarios() -> [Scenario; 35] {
+fn scenarios() -> [Scenario; 37] {
     [
+        Scenario {
+            name: "the endgame's opening teleport fires on its own",
+            file: "endgame_opening_teleport.txt",
+            map: "c5a1",
+            present: &TELEPORTED_PRESENT,
+            absent: &TELEPORTED_ABSENT,
+            follow_level_change: false,
+        },
+        Scenario {
+            name: "leave the hazard course start",
+            file: "leave_hazard_course_start.txt",
+            map: ohl_campaign::TRAINMAP,
+            present: &WALK_PRESENT_TOUCH_TRIGGER,
+            absent: &BASE_ABSENT,
+            follow_level_change: false,
+        },
         Scenario {
             name: "walk forward in the training start",
             file: "training_start.txt",
@@ -836,8 +945,8 @@ fn scenarios() -> [Scenario; 35] {
             name: "walk from spawn in Endgame",
             file: "walk_endgame.txt",
             map: "c5a1",
-            present: &WALK_PRESENT,
-            absent: &BASE_ABSENT,
+            present: &TELEPORTED_PRESENT,
+            absent: &TELEPORTED_ABSENT,
             follow_level_change: false,
         },
         Scenario {

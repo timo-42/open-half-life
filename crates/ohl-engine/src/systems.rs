@@ -323,6 +323,10 @@ pub struct Systems {
     /// touching it (`Simulation::touch_doors`, `docs/FORMAT_SOURCES.md`
     /// item 30). Media-derived: data, never a log line from this crate.
     doors_opened: u64,
+    /// How many `trigger_*` volumes have fired from the player's own hull
+    /// touching them since this level was loaded; see
+    /// [`crate::Game::touch_trigger_count`].
+    touch_triggers_fired: u64,
 }
 
 impl Systems {
@@ -354,6 +358,7 @@ impl Systems {
             hitboxes: HitboxIndex::new(ohl_combat::HitboxLimits::default()),
             player_damage_events: 0,
             doors_opened: 0,
+            touch_triggers_fired: 0,
         }
     }
 
@@ -385,6 +390,14 @@ impl Systems {
     #[must_use]
     pub fn doors_opened_count(&self) -> u64 {
         self.doors_opened
+    }
+
+    /// How many `trigger_*` volumes have fired from the player's own hull
+    /// touching them since this level was loaded (see
+    /// `ohl_game::logic::Simulation::touch_triggers`).
+    #[must_use]
+    pub fn touch_trigger_count(&self) -> u64 {
+        self.touch_triggers_fired
     }
 
     /// How many times damage aimed at the player has actually been applied
@@ -1266,13 +1279,13 @@ impl Systems {
                 .simulation
                 .touch_doors(&mut level.registry, player_mins, player_maxs);
         self.doors_opened += touch_opened as u64;
-        level.simulation.touch_triggers(
+        self.touch_triggers_fired += u64::from(level.simulation.touch_triggers(
             &mut level.registry,
             player_mins,
             player_maxs,
             None,
             events,
-        );
+        ));
         events.extend(level.simulation.tick(&mut level.registry, dt));
     }
 

@@ -1,0 +1,29 @@
+# M9 scripted-input scenario: "the endgame's opening teleport fires on its
+# own".
+#
+# Project-authored; no bytes here come from any game installation (see
+# docs/CLEAN_ROOM.md). Run against "c5a1" (the last chapter's first map in
+# ohl_campaign::CHAPTERS) by xtask/src/combat_smoke.rs.
+#
+# This scenario presses nothing at all: thirty simulated seconds of
+# `wait`. That is the whole point. The map opens by moving the player out
+# of a sealed start volume with a `trigger_teleport` the player is already
+# standing in, so a correct engine needs no input to start it, and a
+# missing one produces no milestone line however long the run waits —
+# which is exactly what an earlier read-only investigation observed over
+# fifty seconds of the same unconditioned wait.
+#
+# The wait is long because the volume is gated by a `master`, and the
+# map's own fan-out delays are what decide when that master goes active:
+# the sequence keeps the pace the map authored rather than resolving the
+# instant the level loads. Thirty seconds clears it with room to spare;
+# twenty does not.
+#
+# Expected fixed log lines (see docs/m79-design.md §7), asserted by the
+# harness rather than parsed from this file:
+#   present: "Scripted input loaded.", "Scripted input finished.",
+#            "The player was teleported.",
+#            "The player moved from the spawn point."
+#   absent:  every line in xtask/src/combat_smoke.rs's BASE_ABSENT
+
+1800 wait
