@@ -252,6 +252,27 @@ impl TrackTrain {
     }
 }
 
+/// Interprets a `path_track`'s raw `speed` ("New Train Speed") keyvalue as
+/// an override, or as "leave the train's speed alone".
+///
+/// Public documentation (see `docs/FORMAT_SOURCES.md`, "Track trains and
+/// paths") describes the keyvalue as "as the train passes this point, this
+/// speed will be assigned to it", gives it a default of `0`, and states
+/// that `0` means no speed change — the same reading the same family of
+/// pages already records for `func_train`'s own `speed`, which is
+/// documented as "defaulting to 100 if left blank or zero", i.e. a zero
+/// speed keyvalue is "unset", not "stand still". A node that carried a
+/// literal zero override would otherwise park its train forever at that
+/// node, since nothing in the published behaviour ever restores a speed
+/// the train no longer has.
+///
+/// A non-finite value is likewise no override, so malformed map data
+/// cannot poison a train's speed.
+#[must_use]
+pub fn path_speed_override(raw: f32) -> Option<f32> {
+    (raw.is_finite() && raw != 0.0).then_some(raw)
+}
+
 /// Reads the documented `path_track`/`path_corner` "Wait for retrigger"
 /// spawnflag out of a raw `spawnflags` bitmask.
 #[must_use]
@@ -754,6 +775,58 @@ mod tests {
             state.advance(0.01);
         }
         assert_close(state.position(), Vec3::new(200.0, 0.0, 0.0));
+    }
+
+    /// The documented `path_track` default for "New Train Speed" is `0`,
+    /// and `0` is documented to mean *no* speed change (see
+    /// [`path_speed_override`]). A node carrying it must therefore be
+    /// passed through at the train's current speed.
+    ///
+    /// Regression: read literally, a zero override set the train's speed
+    /// to zero, which parked it at that node forever — it stayed "moving"
+    /// but covered no distance, so every node after it, and anything
+    /// waiting for the train to arrive there, was unreachable. A ride that
+    /// is meant to carry its passenger through a level boundary simply
+    /// stopped short of it.
+    #[test]
+    fn a_zero_speed_node_is_no_override_and_does_not_park_the_train() {
+        let mut entities = three_node_track(&[("speed", "100")]);
+        // node2 (index 2) carries the keyvalue's own default value.
+        entities[2].insert("speed".to_string(), "0".to_string());
+        let registry = build_registry(&entities);
+        let mut state = train_state(&registry);
+        state.turn_on();
+        // 200 units at the un-overridden 100/sec is 2s; give it 3s.
+        for _ in 0..300 {
+            state.advance(0.01);
+        }
+        assert_close(state.position(), Vec3::new(200.0, 0.0, 0.0));
+        assert!(
+            !state.moving,
+            "the train must have reached the chain's dead end, not stalled at node2"
+        );
+    }
+
+    /// The same fact one level down: the parsed node carries no override at
+    /// all, rather than an override of zero.
+    #[test]
+    fn a_zero_speed_keyvalue_parses_as_no_override() {
+        let mut entities = three_node_track(&[("speed", "100")]);
+        entities[2].insert("speed".to_string(), "0".to_string());
+        entities[3].insert("speed".to_string(), "25".to_string());
+        let registry = build_registry(&entities);
+        let state = train_state(&registry);
+        assert_eq!(state.chain.nodes[1].speed, None);
+        assert_eq!(state.chain.nodes[2].speed, Some(25.0));
+    }
+
+    #[test]
+    fn path_speed_override_reads_zero_and_non_finite_as_no_override() {
+        assert_eq!(path_speed_override(0.0), None);
+        assert_eq!(path_speed_override(-0.0), None);
+        assert_eq!(path_speed_override(f32::NAN), None);
+        assert_eq!(path_speed_override(f32::INFINITY), None);
+        assert_eq!(path_speed_override(250.0), Some(250.0));
     }
 
     #[test]

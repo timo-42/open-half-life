@@ -1560,7 +1560,7 @@ impl Registry {
                             .keyvalues
                             .get("speed")
                             .and_then(|v| v.trim().parse::<f32>().ok())
-                            .filter(|v| v.is_finite()),
+                            .and_then(crate::track_train::path_speed_override),
                         stop: crate::track_train::path_stop_from_flags(def.spawnflags),
                     };
                     world.insert_one(entity, path).ok();

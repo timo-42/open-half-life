@@ -1,0 +1,37 @@
+# M9 scripted-input scenario: "ride the opening tram to the level change".
+#
+# Project-authored; no bytes here come from any game installation (see
+# docs/CLEAN_ROOM.md). Run against ohl_campaign::STARTMAP ("c0a0") by
+# xtask/src/combat_smoke.rs, which passes --follow-level-change for this
+# scenario alone.
+#
+# A line's leading number is a count of *ticks*, each one CAPTURE_STEP
+# (1/60 s) of simulated time — not seconds.
+#
+# Expected fixed log lines (see docs/m79-design.md §7), asserted by the
+# harness rather than parsed from this file:
+#   present: "Scripted input loaded.", "Scripted input finished.",
+#            "The player moved from the spawn point.",
+#            "The player is riding a mover.",
+#            "A level change was followed."
+#   absent:  every other fixed line.
+#
+# The player spawns standing inside the map's opening tram and is carried
+# by it without this script pressing a single movement key: the whole
+# scenario is the ride. The ride ends by carrying the player through a
+# level boundary, which is the progression this scenario guards — a ride
+# that stops short of it (the regression in
+# crates/ohl-engine/tests/zero_speed_path_node.rs) leaves the passenger
+# with nowhere to walk and no way to continue.
+#
+# The look lines turn the view while riding; the waits cover the ride
+# itself and then keep the destination map simulating for a few seconds
+# after the transition, so a transition that lands somewhere unusable
+# would still trip the in-solid guard.
+
+60 look 0 90
+60 look 0 90
+60 look 0 90
+60 look 0 90
+2400 wait
+360 wait

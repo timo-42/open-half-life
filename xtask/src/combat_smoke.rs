@@ -71,8 +71,8 @@ struct Scenario {
     /// (`crates/ohl-app/src/main.rs`), so a `trigger_changelevel` this
     /// scenario's script reaches actually loads its destination map and
     /// logs "A level change was followed." instead of staying on the
-    /// original map. `false` for every scenario except the one that
-    /// asserts that line present.
+    /// original map. `false` for every scenario except the two that
+    /// assert that line present.
     follow_level_change: bool,
 }
 
@@ -113,9 +113,9 @@ const BASE_PRESENT: [&str; 2] = ["Scripted input loaded.", "Scripted input finis
 /// `crates/ohl-engine/tests/mover_riders.rs` for the mechanism exercised
 /// against a real (synthetic) `func_train` instead.
 ///
-/// "look around in the first chapter start" (`ohl_campaign::STARTMAP`,
-/// `"c0a0"`) does *not* use this constant: the player rides that map's
-/// opening tram, so it asserts that line *present* instead. See
+/// The three scenarios that run on `ohl_campaign::STARTMAP` (`"c0a0"`) do
+/// *not* use this constant: the player rides that map's opening tram, so
+/// they assert "The player is riding a mover." *present* instead. See
 /// [`START_MAP_PRESENT`]'s own doc comment.
 const BASE_ABSENT: [&str; 10] = [
     "The player fired a weapon.",
@@ -130,9 +130,12 @@ const BASE_ABSENT: [&str; 10] = [
     "A level change was followed.",
 ];
 
-/// The fixed lines both scenarios that run on `ohl_campaign::STARTMAP`
-/// ("look around in the first chapter start" and "walk from spawn in
-/// Black Mesa Inbound") expect present, beyond [`BASE_PRESENT`].
+/// The fixed lines every scenario that runs on `ohl_campaign::STARTMAP`
+/// ("look around in the first chapter start", "walk from spawn in Black
+/// Mesa Inbound" and "ride the opening tram to the level change", the last
+/// of which adds one more line of its own; see
+/// [`RIDE_TO_LEVEL_CHANGE_PRESENT`]) expects present, beyond
+/// [`BASE_PRESENT`].
 ///
 /// In the real game the player starts standing inside the map's opening
 /// tram and rides it, and this project now reproduces that: a
@@ -171,6 +174,42 @@ const START_MAP_ABSENT: [&str; 9] = [
     "The player is inside solid geometry.",
     "The player opened a door.",
     "A level change was followed.",
+];
+
+/// [`START_MAP_PRESENT`] plus the line the one scenario that rides the
+/// opening tram all the way to its end reaches: the ride carried the
+/// player through a level boundary and the destination map loaded
+/// (`crates/ohl-app/src/game_run.rs`'s `handle_level_change`, gated on
+/// `--follow-level-change`, which [`Scenario::follow_level_change`] passes
+/// for that scenario alone).
+///
+/// This is the campaign's own first progression gate, and the only
+/// scenario in this file that asserts a level change at all. The ride
+/// stopping short of it — a `path_track` carrying the documented default
+/// "New Train Speed" of `0` being read as an order to stop rather than as
+/// "no speed change" — left the passenger sealed in a tram that never
+/// arrived, with no input able to recover; see
+/// `crates/ohl-engine/tests/zero_speed_path_node.rs` for the same
+/// mechanism against a synthetic fixture.
+const RIDE_TO_LEVEL_CHANGE_PRESENT: [&str; 5] = [
+    "Scripted input loaded.",
+    "Scripted input finished.",
+    "The player moved from the spawn point.",
+    "The player is riding a mover.",
+    "A level change was followed.",
+];
+
+/// [`START_MAP_ABSENT`] minus "A level change was followed.", which
+/// [`RIDE_TO_LEVEL_CHANGE_PRESENT`] asserts present instead.
+const RIDE_TO_LEVEL_CHANGE_ABSENT: [&str; 8] = [
+    "The player fired a weapon.",
+    "A shot hit an entity.",
+    "A monster took damage.",
+    "A monster died.",
+    "A pickup was collected.",
+    "The player took damage.",
+    "The player is inside solid geometry.",
+    "The player opened a door.",
 ];
 
 /// The fixed line every M9 chapter-walk scenario expects present beyond
@@ -413,21 +452,25 @@ const FIRE_AND_PICKUP_ABSENT: [&str; 7] = [
 /// file that press `use` at all, which is why every other one asserts "The
 /// player opened a door." absent.
 ///
-/// All 27 scenarios in this file — the four pre-existing ones included —
-/// assert "The player is inside solid geometry." absent: this scenario
-/// set's own regression guard for the PR #91 class of bug. Every one of
-/// them except the two that run on `ohl_campaign::STARTMAP`
-/// also asserts "The player is riding a mover." absent, since none of them
-/// stands on a moving brush entity; those two assert it *present* instead,
-/// because the player spawns inside that map's opening tram and rides it
-/// (see [`START_MAP_PRESENT`]'s own doc comment).
+/// One further scenario rides `ohl_campaign::STARTMAP`'s opening tram to
+/// its end and follows the level change it reaches (see
+/// [`RIDE_TO_LEVEL_CHANGE_PRESENT`]): the campaign's own first
+/// progression gate, reached without a single movement key.
 ///
-/// Two scenarios (the spawn-to-exit progression walks) assert "A level
-/// change was followed." present and are the only ones whose
-/// `Scenario::follow_level_change` is `true`; every other scenario asserts
-/// that line absent instead, since none of their scripts walk far enough to
-/// reach a `trigger_changelevel` and none is run with
-/// `--follow-level-change`.
+/// All 28 scenarios in this file — the four pre-existing ones included —
+/// assert "The player is inside solid geometry." absent: this scenario
+/// set's own regression guard for the PR #91 class of bug. 25 of the 28
+/// also assert "The player is riding a mover." absent, since none of them
+/// stands on a moving brush entity; the three that run on
+/// `ohl_campaign::STARTMAP` assert it *present* instead, because the
+/// player spawns inside that map's opening tram and rides it (see
+/// [`START_MAP_PRESENT`]'s own doc comment).
+///
+/// Three scenarios — one per progression route — assert "A level change
+/// was followed." present, and they are the only three whose
+/// [`Scenario::follow_level_change`] is `true`; every other scenario
+/// asserts that line absent instead, since none of their scripts reaches a
+/// `trigger_changelevel` they are run with the flag for.
 ///
 /// The first walks a turn-then-forward route from spawn on "c1a1"
 /// (Unforeseen Consequences) to a `trigger_changelevel` reached within a
@@ -445,18 +488,24 @@ const FIRE_AND_PICKUP_ABSENT: [&str; 7] = [
 /// that stop showed worldspawn geometry with no brush entity within four
 /// times `ohl_engine::USE_RADIUS` — a wall the earlier scripted walk simply
 /// walked into — and the route below reaches the exit with the engine as it
-/// stands. See that scenario file's own header. Of the first three campaign
-/// maps only `ohl_campaign::STARTMAP` still has no scenario like this; its
-/// own spawn-to-exit route remains blocked short of any
-/// `trigger_changelevel` (tracked separately; see `docs/MILESTONES.md`),
-/// not by anything these scenarios or their harness change.
+/// stands. See that scenario file's own header.
+///
+/// The third presses nothing at all: it rides `ohl_campaign::STARTMAP`'s
+/// opening tram from spawn to the level boundary the ride itself crosses,
+/// which is the first map's whole progression. That route only exists
+/// once a `path_track` carrying the documented default "New Train Speed"
+/// of `0` is read as "no speed change" rather than as an order to stop —
+/// read literally, the ride parked partway and left the passenger with
+/// nowhere to walk. See
+/// `crates/ohl-engine/tests/zero_speed_path_node.rs` for the same
+/// mechanism against a synthetic fixture.
 #[allow(
     clippy::too_many_lines,
     reason = "one Scenario literal per M9 chapter-walk scenario, plus the four \
-              pre-existing ones, plus the two progression scenarios; splitting \
+              pre-existing ones, plus the three progression scenarios; splitting \
               the list would only add indirection"
 )]
-fn scenarios() -> [Scenario; 27] {
+fn scenarios() -> [Scenario; 28] {
     [
         Scenario {
             name: "walk forward in the training start",
@@ -497,6 +546,14 @@ fn scenarios() -> [Scenario; 27] {
             present: &START_MAP_PRESENT,
             absent: &START_MAP_ABSENT,
             follow_level_change: false,
+        },
+        Scenario {
+            name: "ride the opening tram to the level change",
+            file: "ride_tram_to_level_change.txt",
+            map: ohl_campaign::STARTMAP,
+            present: &RIDE_TO_LEVEL_CHANGE_PRESENT,
+            absent: &RIDE_TO_LEVEL_CHANGE_ABSENT,
+            follow_level_change: true,
         },
         Scenario {
             name: "open a rotating door with use in Anomalous Materials",

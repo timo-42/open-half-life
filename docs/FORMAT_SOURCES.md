@@ -2579,6 +2579,25 @@ counterpart in `ohl-ai`'s sound classification and is recorded as
     the train passes this point, this speed will be assigned to it"). A
     `path_track`/`path_corner` with no `target` (or whose `target` cannot be
     resolved) is documented as a dead end.
+  - "New Train Speed" carries a documented default of `0`, and `0` is
+    documented to mean **no speed change**: the search-engine result
+    summary of the same (403-to-automated-fetch) TWHL `path_track` page,
+    reviewed 2026-09-08, states "'0' means no speeds change", i.e. a train
+    passing such a node keeps the speed it already has. That reading is
+    corroborated within the same family of pages by `func_train`'s own
+    `speed`, quoted above as "defaulting to 100 if left blank **or zero**":
+    a zero speed keyvalue on these entities is "unset", not "stand still".
+    Implemented as `ohl_game::track_train::path_speed_override`, which the
+    `path_corner`/`path_track` registry arm applies before a node ever
+    carries an override. Taken literally instead, a zero override parked
+    its train on that node permanently — nothing in the published
+    behaviour ever restores a speed a train no longer has — which is a
+    progression stopper for any ride whose job is to carry its passenger
+    somewhere. Guarded by
+    `crates/ohl-engine/tests/zero_speed_path_node.rs` (synthetic fixture:
+    a rider, a zero-`speed` node, and a level-exit volume past it), by
+    `ohl_game::track_train`'s own unit tests, and by the
+    "ride the opening tram to the level change" combat-smoke scenario.
   - `path_track`'s documented "Wait for retrigger" spawnflag: the train
     stops at that node and does not continue until it is triggered again,
     rather than resuming automatically after `wait` seconds. The exact bit
