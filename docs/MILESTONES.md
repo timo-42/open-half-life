@@ -3699,3 +3699,41 @@ tested engine module and a `dev-tools`-only CLI flag.
   support (timed obstacle dodging / pushing an object to open a new step),
   not on anything this round's scenario work changes; no scenario was
   added for it.
+
+- **Two more spawn-to-exit progression scenarios, from a third
+  reachability triage pass.** `.plan/progress-probe-3.md` pointed PR
+  #121's `--reachability-report` dev tool at the six campaign maps
+  following `c2a3` in `ohl_campaign::CHAPTERS`'s own cited table and found
+  two more reachable at round 0: `progress_c2a5_reach_changelevel.txt`
+  (Surface Tension), whose route opens a door along the way with a `use`
+  press, and `progress_c3a1_reach_changelevel.txt` ("Forget About
+  Freeman!"), whose route needs no door. Both were authored by an
+  autopilot flown over the map's own collision hulls the same way as the
+  second pass's five scenarios, merged into a scripted-input file, and
+  verified end to end against the real binary with
+  `--script-log --follow-level-change`; both worked on the first try.
+  Progression scenarios now cover `c1a0`, `c1a1`, `c1a3`, `c1a4`, `c2a1`,
+  `c2a2`, `c2a3`, `c2a5` and `c3a1`.
+  The same pass found three of the remaining four maps **not** reachable
+  by this walk. `c2a4` (Residue Processing) and `c4a1` (Xen) are both
+  sealed by static, non-entity world geometry or a fall/jump longer than
+  the walk's own conservative 72-unit drop bound (most confidently for
+  `c4a1`, whose `down_no_floor` frontier share is roughly ten times
+  `c2a4`'s and whose `trigger_changelevel` sits an order of magnitude
+  further from spawn than any other map probed so far) — a duck-only
+  vent/crawlspace was ruled out for both by re-running the identical walk
+  with the crouched hull instead of standing. `c3a2` (Lambda Core) is
+  blocked because `func_breakable` has no shoot-to-destroy behaviour
+  anywhere in this engine at all today: it is spawned as permanent solid
+  geometry with no health, damage, or destruction handling in any crate, a
+  finding confirmed by a direct source search rather than only inferred
+  from the walk's own inability to shoot through it, so this map is
+  expected to unblock once `func_breakable` support lands (tracked
+  separately). The fourth, `c2a4d` (Questionable Ethics), **is** reachable
+  by `--reachability-report` itself (round 4, after four rounds of
+  door-opening) but no route was authored for it: every steering strategy
+  this probe's own from-scratch autopilot tried left the player wedged at
+  the same reproducible point roughly a fifth of the way along the route,
+  a limitation of that one probe's tooling rather than a confirmed engine
+  defect or a reachability finding in question. No scenario was added for
+  any of these four maps.
