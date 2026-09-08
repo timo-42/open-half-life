@@ -41,8 +41,20 @@ pub struct ModelInstance {
 /// (for example a `trigger_transition` at a level's exit) so that it
 /// encloses the player, and rendering it as ordinary opaque geometry means
 /// the camera ends up embedded in it from the very first frame.
+///
+/// `func_monsterclip` joins this list for the same reason: TWHL wiki
+/// `func_monsterclip` (search-engine result summary; the page itself
+/// returns HTTP 403 to automated fetches from this environment, the same
+/// caveat `docs/FORMAT_SOURCES.md` already records for other TWHL
+/// citations) describes it as "an invisible brush entity" that is "solid to
+/// monsters" but "not solid to players", used to shape monster paths
+/// without affecting player movement or visibility. See
+/// `docs/FORMAT_SOURCES.md`, item 33, for the full citation and the
+/// project's own reading of it.
 fn is_never_rendered(classname: &str) -> bool {
-    classname.starts_with("trigger_") || classname == "func_ladder"
+    classname.starts_with("trigger_")
+        || classname == "func_ladder"
+        || classname == "func_monsterclip"
 }
 
 /// Brush-entity classnames that are documented as *not* solid to the
@@ -58,12 +70,26 @@ fn is_never_rendered(classname: &str) -> bool {
 /// - `func_water`: a swimmable liquid volume, not a wall. Still marks its
 ///   own space with the liquid its `skin` keyvalue selects; see
 ///   [`contents_model_instances`].
+/// - `func_monsterclip`: TWHL wiki `func_monsterclip` (search-engine result
+///   summary; page returns HTTP 403 to automated fetches from this
+///   environment) — "an invisible brush entity" that is "solid to
+///   monsters" but "not solid to players". This project's collision model
+///   is shared unmodified between the player and monster navigation (see
+///   `docs/FORMAT_SOURCES.md` item 33), so excluding it here also makes it
+///   non-solid to monsters, a documented, deliberate gap rather than a
+///   silent one.
 /// - every `trigger_*`: collision-only *volumes* that fire map logic when
 ///   the player is inside them, which is impossible if they push the
 ///   player out (see [`is_never_rendered`]).
 ///
-/// See `docs/FORMAT_SOURCES.md`, "Entity keyvalues and map logic".
-const NEVER_SOLID: [&str; 3] = ["func_illusionary", "func_ladder", "func_water"];
+/// See `docs/FORMAT_SOURCES.md`, "Entity keyvalues and map logic", and item
+/// 30.
+const NEVER_SOLID: [&str; 4] = [
+    "func_illusionary",
+    "func_ladder",
+    "func_water",
+    "func_monsterclip",
+];
 
 /// Whether a brush entity with this classname blocks the player.
 ///
@@ -99,13 +125,44 @@ fn is_broken(registry: &Registry, entity: Entity) -> bool {
 /// (`func_illusionary`).
 #[must_use]
 pub fn solid_model_instances(registry: &Registry) -> Vec<ModelInstance> {
+    collect_solid_model_instances(registry, is_solid_brush)
+}
+
+/// Whether a brush entity with this classname blocks *monster* navigation
+/// — as opposed to the player; see [`is_solid_brush`] for that side.
+///
+/// Identical to [`is_solid_brush`] except `func_monsterclip`, which counts
+/// as solid here: TWHL wiki `func_monsterclip` (search-engine result
+/// summary; see `docs/FORMAT_SOURCES.md` item 33) documents it as "solid
+/// to monsters" though "not solid to players". Every other classname's
+/// player-side solidity already matches what a monster should collide
+/// with too (a door, wall or breakable blocks both), so this is
+/// [`is_solid_brush`] plus exactly the one classname the two sides
+/// disagree about.
+#[must_use]
+pub fn is_solid_to_monster(classname: &str) -> bool {
+    is_solid_brush(classname) || classname == "func_monsterclip"
+}
+
+/// As [`solid_model_instances`], but for the collision model
+/// `ohl-engine` builds for monster navigation (see [`is_solid_to_monster`]):
+/// includes `func_monsterclip`, which [`solid_model_instances`] excludes.
+#[must_use]
+pub fn monster_solid_model_instances(registry: &Registry) -> Vec<ModelInstance> {
+    collect_solid_model_instances(registry, is_solid_to_monster)
+}
+
+fn collect_solid_model_instances(
+    registry: &Registry,
+    is_solid: fn(&str) -> bool,
+) -> Vec<ModelInstance> {
     let mut out = Vec::new();
     for (entity, model, transform, render, classname) in
         &mut registry
             .world
             .query::<(Entity, &BrushModel, &Transform, &RenderProps, &ClassName)>()
     {
-        if !is_solid_brush(&classname.0) || is_broken(registry, entity) {
+        if !is_solid(&classname.0) || is_broken(registry, entity) {
             continue;
         }
         out.push(ModelInstance {
@@ -257,6 +314,62 @@ mod tests {
         let defs = parse_entities(&entities, &Limits::default());
         let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
         assert!(model_instances(&registry).is_empty());
+    }
+
+    /// `func_monsterclip` is documented (TWHL wiki, "func_monsterclip",
+    /// search-engine result summary; see `docs/FORMAT_SOURCES.md` item 33)
+    /// as an invisible brush that is not solid to the player; it must
+    /// neither render nor attach to player collision.
+    #[test]
+    fn excludes_func_monsterclip_from_rendering() {
+        let entities = vec![raw(&[("classname", "func_monsterclip"), ("model", "*7")])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        assert!(model_instances(&registry).is_empty());
+    }
+
+    /// The collision counterpart of the render test above:
+    /// `solid_model_instances` (what `ohl-engine`'s `attach_brush_collision`
+    /// walks to build the shared player/monster `CollisionModel`) must not
+    /// include a `func_monsterclip`, or the map's own monster-only clip
+    /// brush would block the player exactly like a `func_wall` — the
+    /// engine gap this milestone fixes.
+    #[test]
+    fn func_monsterclip_is_never_a_solid_brush() {
+        assert!(!super::is_solid_brush("func_monsterclip"));
+        let entities = vec![
+            raw(&[("classname", "func_monsterclip"), ("model", "*7")]),
+            raw(&[("classname", "func_wall"), ("model", "*8")]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let instances = super::solid_model_instances(&registry);
+        assert_eq!(instances.len(), 1, "only the func_wall should be solid");
+        assert_eq!(instances[0].model_index, 8);
+    }
+
+    /// The monster-navigation counterpart of the test above:
+    /// `func_monsterclip` is solid to a monster's own collision model (see
+    /// `docs/FORMAT_SOURCES.md` item 33), unlike the player's.
+    #[test]
+    fn func_monsterclip_is_solid_to_monsters() {
+        assert!(super::is_solid_to_monster("func_monsterclip"));
+        let entities = vec![
+            raw(&[("classname", "func_monsterclip"), ("model", "*7")]),
+            raw(&[("classname", "func_wall"), ("model", "*8")]),
+            raw(&[("classname", "func_illusionary"), ("model", "*9")]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let mut instances = super::monster_solid_model_instances(&registry);
+        instances.sort_by_key(|instance| instance.model_index);
+        assert_eq!(
+            instances.len(),
+            2,
+            "func_monsterclip and func_wall are solid to a monster; func_illusionary never is"
+        );
+        assert_eq!(instances[0].model_index, 7);
+        assert_eq!(instances[1].model_index, 8);
     }
 
     #[test]

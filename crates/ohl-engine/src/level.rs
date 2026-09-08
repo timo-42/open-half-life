@@ -227,6 +227,21 @@ pub struct Level {
     /// can be followed as the map logic advances it. Empty when the map has
     /// no usable collision hulls.
     pub brush_collision: Vec<(Entity, BrushId)>,
+    /// A second collision model, built and kept in step alongside
+    /// [`Self::collision`], for monster navigation/sensing/movement
+    /// instead of the player: identical except `func_monsterclip` is
+    /// attached as solid here (see `ohl_game::brush::
+    /// monster_solid_model_instances`, `docs/FORMAT_SOURCES.md` item 33).
+    /// `ohl-engine`'s own player-move phase never reads this field, only
+    /// [`Self::collision`]; `ai.rs` reads this one for every AI-side trace
+    /// (sight, movement/steering, the attack hit-trace, and the static
+    /// navigation graph build) instead of the player's.
+    pub monster_collision: Option<CollisionModel>,
+    /// As [`Self::brush_collision`], but for [`Self::monster_collision`].
+    /// A superset of `brush_collision`'s entities (every `func_monsterclip`
+    /// entity is attached here and not there), kept in step by the same
+    /// [`Self::sync_brush_collision`] call.
+    pub monster_brush_collision: Vec<(Entity, BrushId)>,
     /// Each attached brush's velocity as of the last [`Self::sync_brush_collision`]
     /// call: this step's displacement (its new origin minus its previous
     /// one) divided by that step's `dt`. Read by the player-move phase and
@@ -347,8 +362,45 @@ fn attach_brush_collision(
     limits: &BspLimits,
     registry: &Registry,
 ) -> Vec<(Entity, BrushId)> {
+    attach_brush_collision_with(
+        model,
+        bsp,
+        limits,
+        registry,
+        ohl_game::brush::solid_model_instances,
+    )
+}
+
+/// As [`attach_brush_collision`], but for [`Level::monster_collision`]:
+/// identical except which brush entities count as *solid* is decided by
+/// `ohl_game::brush::monster_solid_model_instances` instead of
+/// `solid_model_instances` — the only classname the two disagree about is
+/// `func_monsterclip` (`docs/FORMAT_SOURCES.md` item 33). Contents volumes
+/// (`func_ladder`/`func_water`) are attached identically either way.
+fn attach_monster_brush_collision(
+    model: &mut CollisionModel,
+    bsp: &Bsp<'_>,
+    limits: &BspLimits,
+    registry: &Registry,
+) -> Vec<(Entity, BrushId)> {
+    attach_brush_collision_with(
+        model,
+        bsp,
+        limits,
+        registry,
+        ohl_game::brush::monster_solid_model_instances,
+    )
+}
+
+fn attach_brush_collision_with(
+    model: &mut CollisionModel,
+    bsp: &Bsp<'_>,
+    limits: &BspLimits,
+    registry: &Registry,
+    solid_instances: fn(&Registry) -> Vec<ohl_game::brush::ModelInstance>,
+) -> Vec<(Entity, BrushId)> {
     let mut attached = Vec::new();
-    for instance in ohl_game::brush::solid_model_instances(registry) {
+    for instance in solid_instances(registry) {
         let Ok(index) = usize::try_from(instance.model_index) else {
             continue;
         };
@@ -533,6 +585,11 @@ impl Level {
             .as_mut()
             .map(|model| attach_brush_collision(model, &bsp, &limits, &registry))
             .unwrap_or_default();
+        let mut monster_collision = CollisionModel::from_bsp(&bsp, &limits).ok();
+        let monster_brush_collision = monster_collision
+            .as_mut()
+            .map(|model| attach_monster_brush_collision(model, &bsp, &limits, &registry))
+            .unwrap_or_default();
         let skybox = registry
             .worldspawn
             .as_ref()
@@ -583,6 +640,8 @@ impl Level {
             simulation: Simulation::new(),
             collision,
             brush_collision,
+            monster_collision,
+            monster_brush_collision,
             brush_velocity: BTreeMap::new(),
             brush_rotation: BTreeMap::new(),
             movers_blocked: Vec::new(),
@@ -624,6 +683,7 @@ impl Level {
     /// (recorded once, at attach time), so there is no per-step name or
     /// entity search to do.
     pub fn sync_brush_collision(&mut self, dt: f32) {
+        self.sync_monster_brush_collision();
         if self.brush_collision.is_empty() {
             return;
         }
@@ -698,6 +758,41 @@ impl Level {
                 // to rotate about is the *local* origin the compiled
                 // geometry is already centred on, not the world-space
                 // translation `new_origin` already carries.
+                model.set_brush_pose(*brush, new_origin, Vec3::ZERO, axis, angle_degrees);
+            }
+            true
+        });
+    }
+
+    /// [`Self::monster_collision`]'s own position/pose sync, called from
+    /// [`Self::sync_brush_collision`]. Position-only, unlike the player
+    /// pass above: nothing reads a velocity or rotation off
+    /// [`Self::monster_collision`] today (AI does not ride movers), so
+    /// there is no `brush_velocity`/`brush_rotation`-equivalent map to
+    /// maintain for it.
+    fn sync_monster_brush_collision(&mut self) {
+        if self.monster_brush_collision.is_empty() {
+            return;
+        }
+        let Self {
+            registry,
+            monster_collision,
+            monster_brush_collision,
+            ..
+        } = self;
+        let Some(model) = monster_collision.as_mut() else {
+            return;
+        };
+        monster_brush_collision.retain(|(entity, brush)| {
+            let Ok(transform) = registry.world.get::<&Transform>(*entity) else {
+                model.detach_brush(*brush);
+                return false;
+            };
+            let new_origin = transform.origin + crate::render::brush_offset(registry, *entity);
+            let (axis, angle_degrees) = crate::render::mover_rotation(registry, *entity);
+            if axis == Vec3::ZERO {
+                model.set_brush_origin(*brush, new_origin);
+            } else {
                 model.set_brush_pose(*brush, new_origin, Vec3::ZERO, axis, angle_degrees);
             }
             true
@@ -952,7 +1047,7 @@ mod tests {
     use ohl_physics::test_support::{build_ladder_entity_room_bsp, build_water_entity_room_bsp};
     use ohl_physics::{CollisionModel, contents};
 
-    use super::{Level, angular_velocity, attach_brush_collision};
+    use super::{Level, angular_velocity, attach_brush_collision, attach_monster_brush_collision};
     use crate::assets::MemoryAssets;
     use crate::test_support::synthetic_map_bsp_with_extra_entity;
 
@@ -1039,6 +1134,42 @@ mod tests {
         assert_eq!(
             model.point_contents(ohl_physics::Vec3::new(0.0, 0.0, 100.0)),
             contents::WATER
+        );
+    }
+
+    /// `attach_brush_collision`/`attach_monster_brush_collision` are the
+    /// two functions `Level::load` uses to build [`Level::collision`] (the
+    /// player's) and [`Level::monster_collision`] respectively (M9.10,
+    /// `docs/FORMAT_SOURCES.md` item 33): a `func_monsterclip` submodel
+    /// must be skipped by the former and attached by the latter, so the
+    /// same brush is solid on one model and absent from the other.
+    #[test]
+    fn func_monsterclip_is_attached_only_to_the_monster_collision_model() {
+        let bsp_limits = BspLimits::default();
+        let bytes = ohl_formats::test_support::build_brush_entity_floor_bsp("func_monsterclip");
+        let bsp = Bsp::parse(&bytes, &bsp_limits).expect("fixture parses as BSP v30");
+        let raw_entities = bsp.entities(&bsp_limits).unwrap_or_default();
+        let kv_limits = KeyvalueLimits::default();
+        let defs = keyvalues::parse_entities(&raw_entities, &kv_limits);
+        let registry = Registry::build(&defs, &std::collections::BTreeMap::new(), &kv_limits);
+
+        let mut player_model =
+            CollisionModel::from_bsp(&bsp, &bsp_limits).expect("fixture has usable hulls");
+        let player_attached =
+            attach_brush_collision(&mut player_model, &bsp, &bsp_limits, &registry);
+        assert!(
+            player_attached.is_empty(),
+            "func_monsterclip must not be attached to the player's own collision model"
+        );
+
+        let mut monster_model =
+            CollisionModel::from_bsp(&bsp, &bsp_limits).expect("fixture has usable hulls");
+        let monster_attached =
+            attach_monster_brush_collision(&mut monster_model, &bsp, &bsp_limits, &registry);
+        assert_eq!(
+            monster_attached.len(),
+            1,
+            "func_monsterclip must be attached to the monster collision model"
         );
     }
 

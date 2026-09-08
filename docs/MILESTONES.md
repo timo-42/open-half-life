@@ -3918,3 +3918,86 @@ in item 30 rather than guessed at.
   weapon and back — out of this package's budget. Synthetic integration
   fixtures (`crates/ohl-engine/tests/breakable.rs`, `pushable.rs`) stand in
   for one, both driving the real `Game` loop with no forced state.
+
+## M9.11 (Rust): `func_monsterclip` is no longer solid to the player
+
+Status: accepted (Rust); evidence: PR #<n> ("Fix `func_monsterclip`
+blocking the player"). `.plan/progress-probe-4.md`'s `c4a2` finding
+(`docs/FORMAT_SOURCES.md` item 33): `func_monsterclip` was spawned with no
+special handling at all, falling through to `ohl_game::brush`'s
+"everything not documented otherwise is solid" default and blocking the
+player exactly like a `func_wall` — the dominant blocker (~62% of blocked
+frontier attempts) on `c4a2` (Gonarch's Lair).
+
+- `func_monsterclip` joins `ohl_game::brush::NEVER_SOLID` and
+  `is_never_rendered` (`crates/ohl-game/src/brush.rs`): excluded from
+  `solid_model_instances` (so it is never attached to the player's own
+  collision model) and `model_instances` (so it is never drawn, matching
+  its documented invisibility). It contributes no `ContentsVolumeKind`,
+  unlike `func_ladder`/`func_water`: an inert brush has no player-relevant
+  contents once it stops being solid to the player.
+- **A second collision model for monster navigation, not a silently
+  accepted global gap**: an initial version of this fix excluded
+  `func_monsterclip` from the one `CollisionModel` `ohl-ai`/`ohl-nav`
+  shared with the player, which `combat-smoke`'s own full-suite re-run
+  caught as a real regression on "Power Up" (`c2a1`, 29
+  `func_monsterclip` entities) — a monster a fence used to keep away from
+  the player's scripted route could now reach and, in one run, kill them.
+  `Level::monster_collision` (`crates/ohl-engine/src/level.rs`) is now
+  built and kept in step (`Level::sync_monster_brush_collision`) alongside
+  the player's `Level::collision`, attached with a new
+  `ohl_game::brush::monster_solid_model_instances`/`is_solid_to_monster`
+  that treats `func_monsterclip` as solid; `ai.rs` reads this model for
+  every AI-side trace (navigation-graph build, sensing, movement/steering,
+  and the monster attack hit-trace) instead of the player's. See
+  `docs/FORMAT_SOURCES.md` item 33 for the full citation, the still-open
+  per-monster-spawnflag/`CLIPHULL#` gap this coarser fix does not close,
+  and the diagnosis that isolated the regression to the player's own
+  changed walkable space (not a bug in the new model).
+- **One `combat-smoke` scenario's expectations updated, not the engine**:
+  `xtask/smoke-scenarios/progress_c2a1_reach_changelevel.txt`'s
+  autopilot-flown route was authored against the pre-fix collision model,
+  which (incorrectly) treated `func_monsterclip` as solid to the player
+  too; freeing the player's own movement from those fences on this
+  29-`func_monsterclip` map changes the route's physical path enough
+  (under identical scripted inputs) that it no longer reaches its
+  `trigger_changelevel` within its own step budget, and the monster it
+  passes now lands one hit before dying instead of never connecting.
+  Neither is treated as a route failure any more (`xtask/src/
+  combat_smoke.rs`'s `POWER_UP_MONSTER_ENCOUNTER_PRESENT`/`_ABSENT`); the
+  scenario's own file documents both its updated and original
+  expectations. Re-authoring the route's actual steps against the
+  corrected engine is left as follow-up.
+- **New tests**: three registry-level unit tests in `crates/ohl-game/src/
+  brush.rs` (`func_monsterclip_is_never_a_solid_brush`,
+  `excludes_func_monsterclip_from_rendering`,
+  `func_monsterclip_is_solid_to_monsters`); a new `crates/ohl-engine/src/
+  level.rs` unit test, `func_monsterclip_is_attached_only_to_the_monster_
+  collision_model`; a new integration test, `crates/ohl-engine/tests/
+  monsterclip_corridor.rs`, proving a corridor blocked only by a
+  `func_monsterclip` is walkable end to end (with a `func_wall` control
+  case proving the same fixture's geometry really is solid when it should
+  be), built on a new `ohl_engine::test_support::corridor_brush_entities`
+  fixture helper that reuses `rotating_door_bsp`'s own corridor geometry
+  with a caller-chosen classname standing in for the door.
+- **Evidence against a locally imported retail payload** (identified only
+  by its sanitized digest; no path or map name left the local boundary,
+  per `docs/CLEAN_ROOM.md`): `--reachability-report` on `c4a2` before this
+  fix reproduces `.plan/progress-probe-4.md`'s own numbers exactly (round
+  0: 12,678 cells reachable; frontier `func_breakable` x3,
+  `func_monsterclip` x13, `func_wall` x1); after it, on the same map, cells
+  reachable nearly double (23,520) and `func_monsterclip` is gone from the
+  frontier entirely (frontier `func_breakable` x3, `func_wall` x3 remain —
+  a separate, already-tracked gap, not a regression) — unchanged by the
+  dual-collision-model revision, since `c4a2`'s frontier only ever
+  reflects the player's own model. A bounded aggregate probe
+  (`ohl-formats`' BSP entities parser plus `ohl_assets::AssetFs`,
+  resolving maps the same way the real gameplay path does, including
+  packed `.pak` archive entries) found 150 `func_monsterclip` entities
+  across 113 parsed maps in this payload's `valve` mod tree (a superset of
+  the 93-map campaign table, since it also includes retail multiplayer/
+  bonus maps — Power Up, above, among them). `cargo xtask combat-smoke`
+  (35/35 scenarios, including the retitled "walk from spawn past a monster
+  encounter in Power Up") and `cargo xtask campaign-smoke` (93/93 maps, 0
+  missing-map/load-error/timeout/crash/blank-capture) both pass against
+  the same payload after this fix.
