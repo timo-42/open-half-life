@@ -1,0 +1,95 @@
+# M9 scripted-input scenario: walk from the player start to a level-change
+# trigger in Anomalous Materials, opening the door on the way with `use`.
+#
+# Project-authored; no bytes here come from any game installation (see
+# docs/CLEAN_ROOM.md). Run against "c1a0" (Anomalous Materials, per
+# ohl_campaign::CHAPTERS's own cited table) by xtask/src/combat_smoke.rs
+# with Scenario::follow_level_change set.
+#
+# This is the second spawn-to-exit scenario in this file (after
+# progress_c1a1_reach_changelevel.txt) and the first whose route needs a
+# door opened on the way. It exists because a scripted walk that only
+# advances straight ahead stops at the first wall it meets,
+# which is easy to mistake for an engine-level progression bug (a door that
+# never opens, a clip brush, a blocking NPC). Driving the same map to a
+# level change instead proves the walk-and-`use` path itself is sound: the
+# route is walkable once the early door is opened by the engine's own
+# `use`-proximity search (ohl_game::find_usable_within), no other gate on
+# the way needs anything this project does not already implement, and the
+# player never ends up embedded in solid geometry along the whole run.
+#
+# Technique: an autopilot was flown over this map's own collision hulls
+# (a breadth-first walk of 16-unit steps with the documented 18-unit step
+# up), pressing `use` whenever a usable brush entity came within
+# ohl_engine::USE_RADIUS, and the per-tick inputs it applied were recorded
+# and then merged into the whole-degree turns below. Nothing about the map
+# beyond those turn totals and tick counts is recorded here, matching the
+# convention xtask/smoke-scenarios/use_rotating_door_anomalous_materials.txt
+# and walk_power_up.txt already use ("tuned only against this one map's own
+# player-start-relative geometry"). The run is deterministic, so replaying
+# these inputs reproduces the same route every time.
+#
+# The turn totals below were also compressed: the widest merge of adjacent
+# ticks whose open-loop replay still reaches the trigger was kept, which is
+# why one line can carry a turn of well over ninety degrees.
+#
+# Expected fixed log lines, asserted by the harness rather than parsed
+# from this file:
+#   present: "Scripted input loaded.", "Scripted input finished.",
+#            "The player moved from the spawn point.",
+#            "The player opened a door.",
+#            "A level change was followed."
+#   absent:  "The player is inside solid geometry." (this scenario's own
+#            regression guard for the PR #91 class of bug)
+#            plus every other fixed line
+30 wait
+16 forward look 0 10
+8 forward
+12 forward use look 0 -40
+12 forward use look 0 41
+12 forward use look 0 90
+12 forward use look 0 240
+12 forward use look 0 52
+12 forward use look 0 -64
+16 forward use look 0 5
+16 forward look 0 -19
+16 forward look 0 -320
+16 forward look 0 45
+8 forward look 0 160
+16 forward use look 0 169
+8 forward look 0 26
+12 forward use look 0 -17
+12 forward use look 0 -67
+12 forward use look 0 79
+12 forward use look 0 -64
+16 forward use look 0 6
+16 forward look 0 229
+16 forward look 0 189
+16 forward look 0 -49
+16 forward look 0 -26
+16 forward look 0 -320
+16 forward look 0 -286
+16 forward look 0 -98
+16 forward look 0 -12
+84 forward
+16 forward look 0 -8
+16 forward look 0 -152
+16 forward look 0 -149
+16 forward look 0 -186
+16 forward look 0 -184
+16 forward look 0 -23
+16 forward look 0 21
+43 forward
+16 forward look 0 8
+20 forward
+16 forward look 0 8
+16 forward look 0 29
+16 forward look 0 8
+16 forward look 0 20
+18 forward
+16 forward look 0 16
+16 forward look 0 19
+16 forward look 0 -120
+16 forward look 0 -27
+16 forward look 0 -28
+9 forward look 0 148
