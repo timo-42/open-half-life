@@ -787,6 +787,105 @@ pub fn mover_train_bsp() -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------
+// A track train whose path carries a zero "New Train Speed" node
+// ---------------------------------------------------------------------
+
+/// The map name the zero-`speed`-node train fixture is published under.
+pub const ZERO_SPEED_NODE_MAP: &str = "ohlzerospeednodesynth";
+
+/// Where the fixture's middle `path_track` — the one carrying the
+/// documented default "New Train Speed" of `0` — sits along `+X`.
+pub const ZERO_SPEED_NODE_X: f32 = 150.0;
+
+/// Where the fixture's `trigger_changelevel` volume starts along `+X`:
+/// past [`ZERO_SPEED_NODE_X`], so only a train that keeps going after the
+/// zero-`speed` node ever carries its passenger into it.
+pub const ZERO_SPEED_TRIGGER_MIN_X: f32 = 200.0;
+
+/// Where the fixture's last `path_track` sits, well past the trigger.
+pub const ZERO_SPEED_END_X: f32 = 400.0;
+
+/// A void world (submodel `*0`, no collision) with a solid track-train
+/// brush (submodel `*1`) the player starts standing on, a three-node
+/// `path_track` chain along `+X` whose *middle* node carries `speed "0"`
+/// — the keyvalue's own documented default, meaning "no speed change" —
+/// and a `trigger_changelevel` volume (submodel `*2`) beyond that middle
+/// node.
+///
+/// The player never presses anything: the whole journey is the ride. A
+/// train that reads the zero override literally parks itself on the middle
+/// node and the volume is never reached; one that reads it as "leave the
+/// speed alone" carries its passenger through. Same shape as
+/// [`mover_train_bsp`], which this is modelled on.
+///
+/// Every keyvalue and coordinate here is authored for this project;
+/// nothing is derived from any payload.
+#[must_use]
+pub fn zero_speed_node_train_bsp() -> Vec<u8> {
+    let mut b = Bsp30Builder::new();
+    let player_z = MOVER_PLAYER_START_Z;
+    let speed = MOVER_SPEED;
+    b.set_entities_text(&format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\
+         \"origin\" \"0 0 {player_z}\"\n\"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"func_tracktrain\"\n\"model\" \"*1\"\n\
+         \"target\" \"ohl_zn1\"\n\"speed\" \"{speed}\"\n\
+         \"startspeed\" \"{speed}\"\n\"height\" \"0\"\n\
+         \"origin\" \"0 0 0\"\n}}\n\
+         {{\n\"classname\" \"path_track\"\n\"targetname\" \"ohl_zn1\"\n\
+         \"target\" \"ohl_zn2\"\n\"origin\" \"0 0 0\"\n}}\n\
+         {{\n\"classname\" \"path_track\"\n\"targetname\" \"ohl_zn2\"\n\
+         \"target\" \"ohl_zn3\"\n\"speed\" \"0\"\n\
+         \"origin\" \"{ZERO_SPEED_NODE_X} 0 0\"\n}}\n\
+         {{\n\"classname\" \"path_track\"\n\"targetname\" \"ohl_zn3\"\n\
+         \"origin\" \"{ZERO_SPEED_END_X} 0 0\"\n}}\n\
+         {{\n\"classname\" \"trigger_changelevel\"\n\"model\" \"*2\"\n\
+         \"map\" \"{NEXT_MAP}\"\n\"landmark\" \"{LANDMARK}\"\n\
+         \"origin\" \"0 0 0\"\n}}\n"
+    ));
+
+    // Submodel 0: a void world, so the train's own brush is the only thing
+    // holding the player up.
+    let world_heads = b.push_collision_hulls(&[]);
+    b.push_model(
+        [-4096.0, -4096.0, -4096.0],
+        [4096.0, 4096.0, 4096.0],
+        [0.0, 0.0, 0.0],
+        world_heads,
+        2,
+        0,
+        0,
+    );
+    // Submodel 1: the train's own brush, resting at its first node.
+    let train_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(
+        [-MOVER_HALF, -MOVER_HALF, MOVER_BOTTOM_Z],
+        [MOVER_HALF, MOVER_HALF, MOVER_TOP_Z],
+    )]);
+    b.push_model(
+        [-MOVER_HALF, -MOVER_HALF, MOVER_BOTTOM_Z],
+        [MOVER_HALF, MOVER_HALF, MOVER_TOP_Z],
+        [0.0, 0.0, 0.0],
+        train_heads,
+        2,
+        0,
+        0,
+    );
+    // Submodel 2: the level-exit volume, a bounding box only (like every
+    // other trigger volume in this module).
+    b.push_model(
+        [ZERO_SPEED_TRIGGER_MIN_X, -64.0, -32.0],
+        [ZERO_SPEED_TRIGGER_MIN_X + 64.0, 64.0, 96.0],
+        [0.0, 0.0, 0.0],
+        [-1, -1, -1, -1],
+        0,
+        0,
+        0,
+    );
+    b.build()
+}
+
+// ---------------------------------------------------------------------
 // A `func_door_rotating` blocking a corridor
 // ---------------------------------------------------------------------
 
