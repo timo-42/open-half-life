@@ -4234,13 +4234,22 @@ ordinally (`<start>-hop1.txt`, ...) instead of by destination map, per
   every name is lowercase ASCII, no chapter's list has a duplicate name,
   every `CHAPTERS` chapter's first map appears in its `CHAPTER_MAPS` entry,
   the title lookup, and `is_cited_map_name` covering every table.
-- **Aggregate-only payload verification** (`docs/CLEAN_ROOM.md` rule 7 —
+- ~~**Aggregate-only payload verification** (`docs/CLEAN_ROOM.md` rule 7 —
   the payload was read only to count against the already-cited list, never
   to choose a literal): of the local payload checked, 0 of the 102 total
   cited map names were present, and all 24 of the payload's own `.bsp`
   maps were uncovered by any cited name (that payload holds Team Fortress
   Classic and other non-campaign maps, not the retail single-player
-  campaign).
+  campaign).~~ **Correction (PR #135 review):** the struck bullet above
+  only walked loose `.bsp` files and missed that the campaign maps ship
+  inside `valve/pak0.pak`, which `ohl_assets::AssetFs` (the same asset
+  store `cargo xtask campaign-smoke` already uses to load all 93
+  chapter/hazard-course maps) indexes alongside loose files. Redone
+  through `AssetFs` against the same local payload, resolving
+  `maps/<name>.bsp` for every cited name: **102 of the 102 total cited map
+  names open through the asset store; 0 are absent** (sanity-checked with
+  a bogus name correctly reporting absent, and `STARTMAP` independently
+  confirmed present, through the same code path).
 
 Closing checks: `cargo fmt --all`; `cargo clippy --workspace --all-targets
 --all-features -- -D warnings`; `cargo clippy $NO_STD_CRATES --all-targets
