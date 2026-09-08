@@ -56,6 +56,10 @@ Repeat the matching worker-image command after updating the parser code.
 Packaged releases produced by `cargo xtask dist` include it on supported
 hosts. Other platforms currently have no native import worker.
 
+For Linux-hosted builds targeting Windows x86-64 or Apple Silicon macOS,
+see [cross-build setup and commands](docs/CROSS_BUILD.md). The macOS target
+is `aarch64-apple-darwin`; no Intel macOS cross-build is produced.
+
 or `cargo run -p ohl-app -- /path/to/owned-media.iso` (positional form), or
 with no path at all, which prompts for one on stdin, as the previous C++
 build did. `--cache /absolute/path` overrides the platform per-user cache

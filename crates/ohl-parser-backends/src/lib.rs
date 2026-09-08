@@ -7,8 +7,7 @@
 //! wire protocol's pull model, in which the worker may only *ask* for bytes
 //! and must return one bounded action per step.
 //!
-//! It lives outside the freestanding image on purpose: the image cannot host
-//! a test harness, and everything interesting here — the window adapter, the
+//! It lives in a library separate from the image so the window adapter, the
 //! spelling policy, the Wise walk, the enumeration and the streaming — is
 //! exercised on the host through the real service, over a scripted transport,
 //! against synthetic packages built by the decoders' own writers.

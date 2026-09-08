@@ -225,13 +225,10 @@ fn scrub_build_environment(command: &mut std::process::Command) {
     }
 }
 
-/// Symbols whose presence in an image's symbol table means a C library was
-/// linked into it, even statically - in which case the image would start with
-/// a full libc runtime behind the seccomp allowlist instead of the
-/// freestanding `_start` the host expects.
-///
-/// `malloc` is included because a freestanding image has no allocator at all;
-/// its only plausible source is a libc object.
+/// Recognizable C-runtime symbol names, retained for symbol-table diagnostics.
+/// These are expected in a static musl standard-library worker and are not a
+/// rejection criterion; ELF interpreter and dynamic headers determine whether
+/// an external runtime is required.
 pub const STATIC_LIBC_SYMBOL_NAMES: [&str; 8] = [
     "__libc_start_main",
     "__libc_csu_init",
@@ -246,10 +243,8 @@ pub const STATIC_LIBC_SYMBOL_NAMES: [&str; 8] = [
 /// Every name from [`STATIC_LIBC_SYMBOL_NAMES`] that `bytes` *defines* or
 /// references, in symbol-table order and without duplicates.
 ///
-/// This is the statically linked libc check `cargo xtask worker-image`
-/// applies on top of the "no `PT_INTERP`, no `PT_DYNAMIC`" identity test: a
-/// static libc leaves no dynamic marker behind, so the symbol table is the
-/// only place it shows up.
+/// This diagnostic can identify a statically linked runtime even when it has
+/// no dynamic ELF marker. The shipping worker audit permits these symbols.
 ///
 /// # Errors
 ///
