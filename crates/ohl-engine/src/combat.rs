@@ -48,11 +48,11 @@
 
 use ohl_combat::{
     AmmoPool, AmmoType, Armor, CombatEvent, DamageInfo, DamageType, EntityHitboxes, EntityId,
-    FiringState, Health, HitboxIndex, Inventory, TraceFilter, TraceMask, WeaponAction, WeaponId,
-    WeaponInput, WeaponSpec, resolve_hitscan_with_amount, spec, trace_attack_filtered,
+    FiringState, Health, HitGroup, HitboxIndex, Inventory, TraceFilter, TraceMask, WeaponAction,
+    WeaponId, WeaponInput, WeaponSpec, resolve_hitscan_with_amount, spec, trace_attack_filtered,
 };
 use ohl_game::hecs::Entity;
-use ohl_game::registry::Transform;
+use ohl_game::registry::{BrushBounds, Button, RotButton, Transform};
 use ohl_physics::{CollisionModel, PlayerController};
 use ohl_world::StudioPose;
 
@@ -656,6 +656,59 @@ pub(crate) fn rebuild_hitbox_index(hitboxes: &mut HitboxIndex, level: &Level) {
         entry.push_studio_hitboxes(&pose, &model.hitboxes);
         hitboxes.push(entry);
     }
+    push_damageable_brush_hitboxes(hitboxes, level);
+}
+
+/// Adds one whole-brush hitbox for every `func_button`/`func_rot_button`
+/// whose `health` keyvalue is non-zero, so `ohl_game::Simulation::damage_button`'s
+/// "(or by being shot, if Health is > 0)" press path (`docs/
+/// FORMAT_SOURCES.md` item 27) has something for a hitscan trace to land
+/// on: [`trace_attack_filtered`] only ever reports an [`EntityId`] for a
+/// [`HitboxIndex`] entry, never for solid world geometry a shot stops
+/// against ([`ohl_combat::trace::trace_attack_filtered`]'s own doc), and a
+/// brush entity carries no [`StudioAnim`] for the loop above to have
+/// already added it.
+///
+/// One box per entity ([`HitGroup::Generic`], the neutral default — no
+/// public source splits a button's own hit groups), taken from its spawn-
+/// time [`BrushBounds`] rather than its currently posed box, matching the
+/// same conservative simplification `docs/FORMAT_SOURCES.md` item 27
+/// already documents for `ohl_game::Simulation::touch_rot_buttons`'s own overlap
+/// test. A button with `health == 0` (the documented "responds only to
+/// `use`/touch" default) is left out entirely, so a shot at an ordinary
+/// button silently passes through to the world/model behind it exactly as
+/// before this function existed.
+fn push_damageable_brush_hitboxes(hitboxes: &mut HitboxIndex, level: &Level) {
+    for (entity, button, bounds) in &mut level
+        .registry
+        .world
+        .query::<(Entity, &Button, &BrushBounds)>()
+    {
+        if button.health > 0.0 {
+            push_brush_hitbox(hitboxes, entity, bounds);
+        }
+    }
+    for (entity, button, bounds) in &mut level
+        .registry
+        .world
+        .query::<(Entity, &RotButton, &BrushBounds)>()
+    {
+        if button.health > 0.0 {
+            push_brush_hitbox(hitboxes, entity, bounds);
+        }
+    }
+}
+
+fn push_brush_hitbox(hitboxes: &mut HitboxIndex, entity: Entity, bounds: &BrushBounds) {
+    let origin = bounds.mins.midpoint(bounds.maxs);
+    let mut entry = EntityHitboxes::new(entity_id(entity), origin);
+    entry.push_box(
+        0,
+        bounds.mins - origin,
+        bounds.maxs - origin,
+        HitGroup::Generic,
+    );
+    hitboxes.push(entry);
 }
 
 /// Phase 9 — drains the damage queue once, in insertion order. Damage aimed
@@ -731,11 +784,39 @@ pub(crate) fn resolve_damage(
                 &combat_armor,
             );
             player_events.extend(events);
+        } else if is_damageable_button(level, target) {
+            // `Simulation::damage_button` owns the press bookkeeping (see
+            // its own doc comment); neither `Button` nor `RotButton` carries
+            // an `ohl_combat::Health` component, so `apply_entity_damage`
+            // below would silently no-op on either anyway — this branch
+            // exists mainly to document that a damageable button's hit
+            // never falls through to it.
+            level
+                .simulation
+                .damage_button(&mut level.registry, target, info.amount);
         } else if level.registry.world.contains(target) {
             apply_entity_damage(level, target, &info);
         }
     }
     *damage_queue = left_for_lifecycle;
+}
+
+/// Whether `entity` is a `func_button`/`func_rot_button` with a non-zero
+/// `health` — the set [`push_damageable_brush_hitboxes`] exposes to a
+/// hitscan trace, and the same set [`Simulation::damage_button`] itself
+/// gates on internally; checked again here only to decide routing, not to
+/// duplicate that gate's own logic.
+fn is_damageable_button(level: &Level, entity: Entity) -> bool {
+    level
+        .registry
+        .world
+        .get::<&Button>(entity)
+        .is_ok_and(|button| button.health > 0.0)
+        || level
+            .registry
+            .world
+            .get::<&RotButton>(entity)
+            .is_ok_and(|button| button.health > 0.0)
 }
 
 /// Mirrors `player`'s health and armor onto the player entity's

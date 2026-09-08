@@ -244,6 +244,23 @@ pub struct Simulation {
     /// host that never sets it simply leaves every rotating door swinging
     /// its spawnflag-chosen way, exactly as before this rule existed.
     activator_origin: Option<Vec3>,
+    /// Remaining hit points for a [`Button`]/[`RotButton`] whose `health`
+    /// keyvalue is non-zero, keyed by entity, populated lazily the first
+    /// time [`Self::damage_button`] sees that entity and reset to the
+    /// configured `health` again once it reaches zero and presses. **Not
+    /// carried in [`SimulationState`], and no new field was added to
+    /// [`crate::registry::Button`]/[`crate::registry::RotButton`]
+    /// themselves**: both structs round-trip whole through
+    /// `ohl_engine::transition::EntitySnapshot` (save section 18, a
+    /// *required* section — see `docs/FORMAT_SOURCES.md` item 28's own
+    /// "floor" finding), so widening either would reject every save
+    /// written before this field existed the same way item 28 already
+    /// documents for section 18's `rotator` addition. This project's
+    /// documented behaviour instead: a damageable button's accumulated
+    /// damage resets on save/load (every button starts back at its full
+    /// configured `health`), the same "documented gap" shape
+    /// [`Self::rot_button_touch`] already accepts for its own edge state.
+    button_health: std::collections::BTreeMap<Entity, f32>,
 }
 
 impl Simulation {
@@ -921,6 +938,61 @@ impl Simulation {
                 let target = target.0.clone();
                 self.fire(target, Some(entity), 0.0);
             }
+        }
+    }
+
+    /// Applies `amount` of damage to `entity`'s [`Button`]/[`RotButton`]
+    /// `health`, when it is non-zero — the documented "(or by being shot, if
+    /// Health is > 0)" alternative to `use`/touch activation TWHL wiki
+    /// `func_rot_button` states for both entities (`docs/FORMAT_SOURCES.md`
+    /// item 27, which previously left this unimplemented for both
+    /// `func_rot_button` and `func_button`; `func_button`'s own `health` doc
+    /// comment already cited the same wording). An entity with `health ==
+    /// 0` (the documented "responds only to `use`" default) or with neither
+    /// component returns `false` immediately, doing nothing.
+    ///
+    /// Non-finite or non-positive `amount` is ignored (mirrors
+    /// [`ohl_combat::apply_damage`]'s own guard, kept here too since this
+    /// path does not go through that function). Once accumulated damage
+    /// reaches the configured `health`, the button presses through
+    /// [`Self::activate`] — the exact same press path a proximity `use`
+    /// takes ([`Self::use_entity`]), so a `func_button`'s `delay`/`wait` and
+    /// a `func_rot_button`'s `distance`/`speed`/`toggle` shape the press
+    /// identically regardless of what triggered it — and the counter resets
+    /// to the full configured `health`, so the button can be shot down
+    /// again after it returns (or, for a `Toggle` `func_rot_button`, after a
+    /// second press closes it again). Events `Self::activate` would
+    /// otherwise report (a `Message`/`LevelChange` reached through this
+    /// button's `target`) are discarded here, the same accepted limitation
+    /// [`Self::touch_rot_buttons`] already has for its own `Self::activate`
+    /// call. Returns whether this call was the one that pressed the button.
+    pub fn damage_button(&mut self, registry: &mut Registry, entity: Entity, amount: f32) -> bool {
+        if !amount.is_finite() || amount <= 0.0 {
+            return false;
+        }
+        let configured = registry
+            .world
+            .get::<&Button>(entity)
+            .ok()
+            .map(|button| button.health)
+            .or_else(|| {
+                registry
+                    .world
+                    .get::<&RotButton>(entity)
+                    .ok()
+                    .map(|button| button.health)
+            });
+        let Some(configured) = configured.filter(|health| *health > 0.0) else {
+            return false;
+        };
+        let remaining = *self.button_health.get(&entity).unwrap_or(&configured) - amount;
+        if remaining <= 0.0 {
+            self.button_health.insert(entity, configured);
+            self.activate(registry, entity, None, &mut Vec::new());
+            true
+        } else {
+            self.button_health.insert(entity, remaining);
+            false
         }
     }
 
@@ -1838,6 +1910,127 @@ mod tests {
         tick_for(&mut sim, &mut registry, 1.0, 0.05);
         let door_component = registry.world.get::<&Door>(door).unwrap();
         assert_eq!(door_component.state, MoverState::Open);
+    }
+
+    /// `Simulation::damage_button`'s documented press: a `func_button` with
+    /// `health = 50` takes two 30-point hits (60 total, past the 50
+    /// threshold) and presses exactly once, firing `target` — the same
+    /// place a `use` press would — rather than pressing on the first,
+    /// insufficient hit or pressing twice for the overshoot.
+    #[test]
+    fn damage_button_presses_once_and_fires_target_once_health_is_exhausted() {
+        let entities = vec![
+            raw(&[
+                ("classname", "func_button"),
+                ("targetname", "btn1"),
+                ("target", "door1"),
+                ("health", "50"),
+                ("wait", "1"),
+                ("delay", "0"),
+            ]),
+            raw(&[
+                ("classname", "func_door"),
+                ("targetname", "door1"),
+                ("speed", "100"),
+                ("wait", "-1"),
+            ]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let mut sim = Simulation::new();
+        let button = registry.find("btn1")[0];
+        let door = registry.find("door1")[0];
+
+        assert!(
+            !sim.damage_button(&mut registry, button, 30.0),
+            "30 of 50 health must not press the button yet"
+        );
+        assert_eq!(
+            registry.world.get::<&Button>(button).unwrap().state,
+            MoverState::Closed
+        );
+        assert!(
+            sim.damage_button(&mut registry, button, 30.0),
+            "a second 30-point hit (60 total) must exhaust the button's 50 health and press it"
+        );
+        assert_eq!(
+            registry.world.get::<&Button>(button).unwrap().state,
+            MoverState::Opening
+        );
+        tick_for(&mut sim, &mut registry, 1.0, 0.05);
+        let door_component = registry.world.get::<&Door>(door).unwrap();
+        assert_eq!(
+            door_component.state,
+            MoverState::Open,
+            "the damage-triggered press must fire target through the same path a use press does"
+        );
+    }
+
+    /// [`Simulation::damage_button`] on a `func_button`/`func_rot_button`
+    /// with `health = 0` (the documented "responds only to `use`/touch"
+    /// default) must never press, regardless of how much damage arrives.
+    #[test]
+    fn damage_button_does_nothing_when_health_is_zero() {
+        let entities = vec![raw(&[
+            ("classname", "func_button"),
+            ("targetname", "btn1"),
+            ("target", "door1"),
+            ("wait", "1"),
+            ("delay", "0"),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let mut sim = Simulation::new();
+        let button = registry.find("btn1")[0];
+        assert!(!sim.damage_button(&mut registry, button, 1_000_000.0));
+        assert_eq!(
+            registry.world.get::<&Button>(button).unwrap().state,
+            MoverState::Closed
+        );
+    }
+
+    /// The same exhaustion/press shape as
+    /// [`damage_button_presses_once_and_fires_target_once_health_is_exhausted`],
+    /// for a `func_rot_button` instead of a `func_button` — the two share
+    /// [`Simulation::damage_button`]'s implementation, but the rotating
+    /// button's own press path (`Simulation::advance_rot_buttons`) is a
+    /// distinct state machine worth its own regression.
+    #[test]
+    fn damage_rot_button_presses_once_and_fires_target_once_health_is_exhausted() {
+        let entities = vec![
+            raw(&[
+                ("classname", "func_rot_button"),
+                ("targetname", "btn1"),
+                ("target", "door1"),
+                ("speed", "90"),
+                ("distance", "45"),
+                ("wait", "1"),
+                ("health", "10"),
+            ]),
+            raw(&[
+                ("classname", "func_door"),
+                ("targetname", "door1"),
+                ("speed", "100"),
+                ("wait", "-1"),
+            ]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let mut sim = Simulation::new();
+        let button = registry.find("btn1")[0];
+        let door = registry.find("door1")[0];
+
+        assert!(!sim.damage_button(&mut registry, button, 9.0));
+        assert_eq!(
+            registry.world.get::<&RotButton>(button).unwrap().state,
+            MoverState::Closed
+        );
+        assert!(sim.damage_button(&mut registry, button, 1.0));
+        tick_for(&mut sim, &mut registry, 0.6, 0.05);
+        assert_eq!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Open
+        );
     }
 
     /// Regression for the campaign start map's intro tram: a
