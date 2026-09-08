@@ -25,6 +25,13 @@ rustix = { workspace = true, features = ["event", "fs", "net", "pipe", "process"
 seccompiler = { workspace = true }
 landlock = { workspace = true }
 
+# The macOS isolated-worker backend: `kqueue` for exit observation, `poll`
+# for the channel, `socketpair`/`pipe` for the transport, `setrlimit`,
+# `kill` and `dup2` for the bootstrap, and the file operations of the shared
+# image resolver. All thin libc syscall wrappers; no other native code.
+[target.'cfg(target_os = "macos")'.dependencies]
+rustix = { workspace = true, features = ["event", "fs", "net", "pipe", "process"] }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = [
     "Win32_Foundation",
@@ -36,10 +43,12 @@ proptest = { workspace = true }
 tempfile = { workspace = true }
 
 # The Linux-gated FIFO test needs `rustix` directly; the isolated-worker tests
-# need the freestanding worker image that `ohl-test-worker` builds. Neither is
-# reachable from shipping code.
+# on both native backends need the worker test image that `ohl-test-worker`
+# builds. Neither is reachable from shipping code.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 rustix = { workspace = true, features = ["fs"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dev-dependencies]
 ohl-test-worker = { path = "../ohl-test-worker", version = "=0.1.0" }
 
 # The workspace lint table cannot be inherited here: `[lints] workspace = true`

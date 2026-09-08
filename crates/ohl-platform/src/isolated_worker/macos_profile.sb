@@ -1,0 +1,69 @@
+;; Seatbelt profile for the Open Half-Life media-parser worker on macOS.
+;;
+;; Rendered by `ohl-platform`'s macOS isolated-worker backend, which replaces
+;; every `@IMAGE@` placeholder with the canonical, already-verified path of
+;; the worker image, and handed to `/usr/bin/sandbox-exec -p` in the confined
+;; child before it executes the image.
+;;
+;; Rules are last-match-wins, so the order below is load-bearing: a blanket
+;; read, then the withdrawals, then the image re-allowed in case it lives
+;; under a withdrawn tree.
+(version 1)
+(deny default)
+
+;; The image itself: the one program this sandbox may ever execute.
+(allow process-exec (literal "@IMAGE@"))
+
+;; Reads are allowed broadly, and this is measured rather than chosen: under
+;; `(deny default)` a hosted binary cannot reach `main` at all without
+;; `file-read*`, because dyld must map the shared cache and libSystem before
+;; any of our code runs. Enumerating those paths instead was tried and does
+;; not survive contact with the platform — on Apple Silicon the cache lives
+;; behind `/System/Volumes/Preboot/Cryptexes`, a firmlink whose resolved path
+;; a `(subpath "/System")` rule does not match, and that location has already
+;; moved once between macOS releases.
+;;
+;; What this costs is bounded by what the worker can do with a byte it reads.
+;; It has no network, no writes, no `fork`, and no `exec` of anything but the
+;; image, so its only channel out is the OWP/1 pipe the parent validates; and
+;; the dispatcher opens nothing of its own — every payload byte it parses is
+;; one the parent chose to answer inside a bounded window. The user's own
+;; data is withdrawn below regardless.
+(allow file-read*)
+(allow file-map-executable)
+
+;; Withdraw what actually matters: user data, mounted volumes, the root
+;; account's home, and the system's own configuration.
+(deny file-read* file-map-executable
+    (subpath "/Users")
+    (subpath "/Volumes")
+    (subpath "/private/var/root")
+    (subpath "/private/etc"))
+
+;; ... but the image may itself sit under one of those trees (a developer
+;; build, or a CI checkout under `/Users`), so it is re-allowed last.
+(allow file-read* (literal "@IMAGE@"))
+(allow file-map-executable (literal "@IMAGE@"))
+
+;; Reading system configuration values. This is not optional and it is not
+;; obvious: `std::rt::init` installs the main thread's stack guard page
+;; before `main` runs, and sizing it queries the page size through sysctl.
+;; Denied, that query fails, the guard-page `mmap` is handed a bogus size and
+;; returns EINVAL, and the process aborts with "failed to allocate a guard
+;; page: Invalid argument (os error 22)" — before any of our code exists.
+;;
+;; This was measured by attribution, not guessed. A C binary such as
+;; `/usr/bin/true` never allocates a guard page and starts happily without
+;; this rule, which made it a misleading thing to validate against; and the
+;; failure looks like a Mach-exception-port problem, which it is not —
+;; granting every Mach class changes nothing, and `sysctl-read` alone fixes
+;; it. No Mach capability is granted here for exactly that reason.
+(allow sysctl-read)
+
+;; Restated for the reader; `(deny default)` above already covers them. The
+;; worker has no business writing anywhere, reaching the network, creating a
+;; process, or talking to a Mach service.
+(deny file-write*)
+(deny network*)
+(deny process-fork)
+(deny mach-lookup)

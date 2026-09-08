@@ -1,8 +1,8 @@
 //! End-to-end lifetime of the real, confined media-parser worker.
 //!
-//! The whole file is gated on Linux x86-64: on macOS and Windows there is no
-//! isolated-worker backend and no freestanding image, so `cargo test
-//! --workspace` compiles this to nothing and skips it.
+//! The whole file is gated on the two targets with a native backend, Linux
+//! x86-64 and macOS: on Windows there is no isolated-worker backend and no
+//! image, so `cargo test --workspace` compiles this to nothing and skips it.
 //!
 //! Everything here goes through the *production* launcher,
 //! `ohl_platform::launch_isolated_worker`, which resolves the image at
@@ -20,7 +20,7 @@
 //! versus `Failed`; the numeric statuses are pinned by
 //! `ohl_parser_worker::contract` and documented in the crate README.
 
-#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#![cfg(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos"))]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

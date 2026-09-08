@@ -10,11 +10,12 @@
 //!
 //! # Platform support
 //!
-//! `ohl-platform` selects a native containment backend only on Linux x86-64
-//! and the unsupported backend everywhere else, so this adapter compiles on
-//! every supported tuple and [`ParserWorkerProcess::launch`] simply reports
-//! the sanitized [`IsolatedWorkerError::Unsupported`] where no backend
-//! exists. Callers do not branch on the target: they map the launch error.
+//! `ohl-platform` selects a native containment backend on Linux x86-64 and
+//! on macOS, and the unsupported backend everywhere else, so this adapter
+//! compiles on every supported tuple and [`ParserWorkerProcess::launch`]
+//! simply reports the sanitized [`IsolatedWorkerError::Unsupported`] where
+//! no backend exists. Callers do not branch on the target: they map the
+//! launch error.
 //!
 //! # Concurrency
 //!
@@ -302,9 +303,10 @@ mod tests {
 
     #[test]
     fn an_unsupported_target_reports_a_sanitized_launch_failure() {
-        // On Linux x86-64 the image may or may not be installed, so only the
-        // targets with no backend at all have a fixed expectation.
-        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        // On Linux x86-64 and macOS the image may or may not be installed,
+        // so only the targets with no backend at all have a fixed
+        // expectation.
+        #[cfg(not(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos")))]
         {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
             assert_eq!(

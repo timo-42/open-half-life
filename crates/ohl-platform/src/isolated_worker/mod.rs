@@ -24,25 +24,39 @@
 //! - [`IsolatedWorker`] never abandons a live child: its `Drop` requests
 //!   termination and reaps.
 //!
-//! Only Linux x86-64 has a native backend. Everywhere else
+//! Two targets have a native backend: Linux x86-64 (`linux`: Landlock,
+//! seccomp, a freestanding static image executed by descriptor) and macOS
+//! (`macos`: the system sandbox through `sandbox-exec`, resource limits, a
+//! hosted image executed by its verified path). Everywhere else
 //! [`launch_isolated_worker`] fails with [`IsolatedWorkerError::Unsupported`]
-//! and no other item behaves differently.
+//! and no other item behaves differently. The two Unix backends share their
+//! install-location resolution and metadata policy (`unix_image`).
 
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+#[cfg(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos"))]
+mod unix_image;
+
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[path = "linux.rs"]
 mod backend;
 
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(target_os = "macos")]
+#[path = "macos.rs"]
+mod backend;
+
+#[cfg(not(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos")))]
 #[path = "unsupported.rs"]
 mod backend;
 
 #[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
 mod linux_tests;
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_tests;
 
 /// Largest transfer a single [`IsolatedWorker::read_exact`] or
 /// [`IsolatedWorker::write_all`] call will accept.
@@ -388,7 +402,10 @@ pub fn launch_isolated_worker(
 /// Test-only launcher that names the image by path instead of resolving the
 /// compile-fixed install location. Verification and confinement are exactly
 /// the same; only the resolution step differs.
-#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(
+    test,
+    any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos")
+))]
 pub(crate) fn launch_isolated_worker_from_image(
     image: &std::path::Path,
     startup_deadline: Instant,
@@ -406,10 +423,14 @@ pub(crate) fn launch_isolated_worker_from_image(
     })
 }
 
-#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(
+    test,
+    any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos")
+))]
 impl IsolatedWorker {
     /// Terminating signal of the reaped child, so a seccomp kill (`SIGSYS`)
-    /// can be told apart from another fatal signal in tests.
+    /// or an abort (`SIGABRT`) can be told apart from another fatal signal
+    /// in tests.
     pub(crate) fn terminating_signal(&self) -> Option<i32> {
         self.backend.terminating_signal()
     }

@@ -151,12 +151,55 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: cargo test --workspace --all-features
 
-      # Linux only: the freestanding worker image is Linux x86-64-only (see
-      # `ohl_parser_worker::BuildError::Unsupported`), so this cannot run on
-      # the other two runners.
+      # Linux and macOS: the two targets with a native isolated-worker
+      # backend and therefore a worker image (see
+      # `ohl_parser_worker::image_host_supported`). Windows has neither, so
+      # this cannot run there.
       - name: Worker image
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os != 'windows-latest'
         run: cargo xtask worker-image
+
+      # macOS only: the confined worker's stdio is `/dev/null` and a Seatbelt
+      # denial is an error return rather than a kill, so a launch failure is
+      # otherwise invisible. On failure this renders the real profile for a
+      # throwaway Rust binary (a `std` binary, not `/usr/bin/true` — only the
+      # former allocates a stack guard page, which is what made the profile
+      # fail during bring-up) and reports whether the profile or the runner
+      # is at fault, plus the unified log's Sandbox entries.
+      - name: Sandbox diagnostics
+        # `failure()` is load-bearing, not decorative: a bare `if:` condition
+        # still implies `success()`, so writing just the `matrix.os` test here
+        # would skip this step in exactly the case it exists for. `set +e`
+        # likewise — Actions runs `shell: bash` with `-eo pipefail`, and every
+        # probe below is expected to exit non-zero.
+        if: failure() && matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          set +e -u
+          echo 'fn main() { std::process::exit(0) }' > /tmp/tiny.rs
+          rustc -O -o "$PWD/tiny-worker" /tmp/tiny.rs || { echo "rustc unavailable"; exit 0; }
+          chmod 0555 "$PWD/tiny-worker"; IMG="$PWD/tiny-worker"
+          run() { err=$(/usr/bin/sandbox-exec -p "$2" "$IMG" 2>&1); printf '%-22s status=%s\n' "$1" "$?"; [ -n "$err" ] && echo "$err" | sed -n '1,4p' | sed 's/^/      | /'; return 0; }
+          echo "::group::is sandbox-exec itself usable on this runner"
+          "$IMG"; echo "unsandboxed status=$?"
+          run "allow-default" '(version 1)(allow default)'
+          echo "::endgroup::"
+          echo "::group::the shipped worker profile, rendered for that binary"
+          run "worker-profile" "$(sed "s#@IMAGE@#$IMG#g" crates/ohl-platform/src/isolated_worker/macos_profile.sb)"
+          echo "::endgroup::"
+          echo "::group::which setrlimit values this kernel actually accepts"
+          stat -f 'sandbox-exec: mode=%Sp uid=%u type=%HT' /usr/bin/sandbox-exec 2>&1 || true
+          for spec in "c:0:core" "d:262144:data" "f:0:fsize" "n:16:nofile" "s:8192:stack" "t:300:cpu" "u:1:nproc" "v:524288:as"; do
+            flag=$(echo "$spec" | cut -d: -f1); val=$(echo "$spec" | cut -d: -f2); nm=$(echo "$spec" | cut -d: -f3)
+            out=$(bash -c "ulimit -S -$flag $val 2>&1 && ulimit -H -$flag $val 2>&1 && echo OK" 2>&1 | tail -1)
+            printf '%-8s -%s %-8s -> %s\n' "$nm" "$flag" "$val" "$out"
+          done
+          echo "::endgroup::"
+          echo "::group::unified log: Sandbox denials (last 10 minutes)"
+          log show --last 10m --style compact --predicate 'sender == "Sandbox" OR eventMessage CONTAINS "deny("' 2>/dev/null | tail -n 120 || true
+          echo "::endgroup::"
+          rm -f "$IMG"
+          exit 0
 
   rust-miri:
     name: Rust miri

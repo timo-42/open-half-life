@@ -1,10 +1,10 @@
 // The wire contract shared by the host backend, the test-image builder, and
-// the freestanding worker image itself.
+// the worker image itself.
 //
 // This file is compiled twice: once as a module of the `ohl-test-worker`
-// library (`std`), and once via `include!` from the freestanding
-// `#![no_std]` image, which cannot depend on any other crate. It therefore
-// contains nothing but `const` items and one plain data enum.
+// library (`std`), and once via `include!` from the image (freestanding
+// `#![no_std]` on Linux, hosted `std` on macOS), which cannot depend on any
+// other crate. It therefore contains nothing but `const` items.
 
 /// Descriptor the private full-duplex byte channel is bound to in the child.
 pub const CHANNEL_FD: i32 = 3;
@@ -38,6 +38,10 @@ pub const MODE_CRASH: u8 = 0x02;
 
 /// Mode byte: attempt `openat(2)`, which the seccomp policy does not allow,
 /// i.e. die on `SIGSYS` from `SECCOMP_RET_KILL_PROCESS`.
+///
+/// Linux only. The hosted (macOS) image answers this mode with a protocol
+/// failure exit; its confinement is probed with [`MODE_CONFINEMENT_PROBE`]
+/// instead, because a Seatbelt denial is an error return, not a kill.
 pub const MODE_FORBIDDEN_SYSCALL: u8 = 0x03;
 
 /// Mode byte: exit immediately with the status in the next payload byte.
@@ -54,10 +58,28 @@ pub const MODE_FD_INVENTORY: u8 = 0x05;
 /// How many descriptor numbers [`MODE_FD_INVENTORY`] probes.
 pub const FD_PROBE_CEILING: i32 = 64;
 
+/// Mode byte: attempt each of the [`CONFINEMENT_PROBE_COUNT`] operations the
+/// sandbox must deny, then reply with one byte whose bit `n` is set when
+/// probe `n` *succeeded*, and keep serving. A confined worker replies `0`.
+///
+/// Hosted (macOS) image only; the freestanding Linux image cannot attempt
+/// any of these without being killed by seccomp, which
+/// [`MODE_FORBIDDEN_SYSCALL`] already proves.
+pub const MODE_CONFINEMENT_PROBE: u8 = 0x06;
+
+/// The probes behind [`MODE_CONFINEMENT_PROBE`], in bit order:
+///
+/// 0. open a world-readable system file for reading (`/private/etc/hosts`);
+/// 1. create a file in the system temporary directory (`/private/tmp`);
+/// 2. bind a TCP listener on the loopback interface;
+/// 3. spawn a child process (`/usr/bin/true`).
+pub const CONFINEMENT_PROBE_COUNT: u32 = 4;
+
 /// The descriptors a bootstrapped worker must still have once it has attested
 /// readiness and closed [`READY_FD`]: `/dev/null` on 0/1/2 and the channel on
-/// 3. [`IMAGE_FD`] and the Landlock ruleset descriptor are `O_CLOEXEC`, so
-/// `execveat` closes them, and `close_range` removed everything else.
+/// 3. On Linux, [`IMAGE_FD`] and the Landlock ruleset descriptor are
+/// `O_CLOEXEC`, so `execveat` closes them, and `close_range` removed
+/// everything else; on macOS the bootstrap's close sweep did the same.
 pub const EXPECTED_FD_MASK: u64 = 0b1111;
 
 /// Exit status the worker uses for any protocol or I/O failure of its own.

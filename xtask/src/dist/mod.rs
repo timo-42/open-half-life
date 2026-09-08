@@ -1,4 +1,4 @@
-//! `cargo xtask dist`: builds the release binary (and, on Linux x86-64, the
+//! `cargo xtask dist`: builds the release binary (and, on Linux x86-64 and macOS, the
 //! parser worker image via `ohl_parser_worker`), assembles a versioned,
 //! self-contained release folder under `target/dist/`, and archives it.
 //!
@@ -199,7 +199,7 @@ fn run_inner(root: &Path, args: &Args) -> Result<(), String> {
 
     let version = version::resolve();
     let platform = target::classify(&target_triple);
-    let host_is_linux_x86_64 = cfg!(all(target_os = "linux", target_arch = "x86_64"));
+    let host_can_bundle_worker = ohl_parser_worker::image_host_supported();
     let building_for_host = args.target.is_none();
 
     println!("Building {BINARY_NAME} {version} for {target_triple}...");
@@ -211,15 +211,11 @@ fn run_inner(root: &Path, args: &Args) -> Result<(), String> {
         ));
     }
 
-    // The freestanding parser worker image is only ever produced on a
-    // Linux x86-64 host, and only makes sense to bundle when the release
-    // itself targets Linux x86-64 too (a cross-compiled release for another
-    // target could not run it anyway).
-    let worker_image_path = if host_is_linux_x86_64
-        && building_for_host
-        && matches!(platform, Platform::Unix)
-        && target_triple.contains("linux")
-    {
+    // The parser worker image is only ever produced on a host with a native
+    // isolated-worker backend (Linux x86-64, macOS), and only makes sense to
+    // bundle when the release targets that same host (a cross-compiled
+    // release for another target could not run it anyway).
+    let worker_image_path = if host_can_bundle_worker && building_for_host {
         println!("Building the parser worker image...");
         Some(
             ohl_parser_worker::build_parser_worker_image()
@@ -227,7 +223,7 @@ fn run_inner(root: &Path, args: &Args) -> Result<(), String> {
         )
     } else {
         println!(
-            "Skipping the parser worker image (Linux x86-64 host builds targeting Linux only)"
+            "Skipping the parser worker image (only bundled for a host build on Linux x86-64 or macOS)"
         );
         None
     };

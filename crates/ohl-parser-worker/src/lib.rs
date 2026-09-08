@@ -1,24 +1,32 @@
-//! Host-side support for the freestanding Linux media-parser worker image.
+//! Host-side support for the media-parser worker image.
 //!
 //! The image itself lives in [`image/`](../image), a standalone Cargo package
 //! that is deliberately **not** a workspace member, for the same reasons
 //! `ohl-test-worker/image` is not one:
 //!
-//! - a `#![no_std] #![no_main]` binary can only be compiled with
-//!   `panic = "abort"`, and `panic` is a profile-level setting Cargo refuses
-//!   to scope to a single package inside a workspace;
+//! - on Linux x86-64 it is a `#![no_std] #![no_main]` binary that can only
+//!   be compiled with `panic = "abort"`, and `panic` is a profile-level
+//!   setting Cargo refuses to scope to a single package inside a workspace;
 //! - the workspace root manifest is owned by another work package and must
 //!   not grow a `[profile]` section for one binary;
 //! - the image needs a package-local `unsafe_code = "allow"` against the
 //!   workspace-wide `forbid`.
 //!
+//! The same package has two shapes, selected by the target: the freestanding
+//! Linux x86-64 image (`image/src/freestanding.rs`, raw syscalls, a fixed
+//! `.bss` arena, executed by descriptor under seccomp and Landlock) and the
+//! hosted macOS image (`image/src/hosted.rs`, an ordinary `std` binary
+//! linking only libSystem, executed under the system sandbox). Both host the
+//! same `run_parser_worker_service` lifetime over the same descriptors with
+//! the same exit statuses.
+//!
 //! Building it therefore means invoking `cargo` on that package with an
 //! explicit `--target-dir`, which is what [`build_parser_worker_image`] does.
-//! The link configuration (`-nostdlib -static -no-pie` with the default `cc`
-//! driver, emitted from the image's own `build.rs` as
-//! `cargo::rustc-link-arg-bins`) stays attached to that package, so a plain
-//! `cargo build --workspace` on Linux, macOS or Windows never sees it and no
-//! global `RUSTFLAGS` is ever required.
+//! The freestanding link configuration (`-nostdlib -static -no-pie` with the
+//! default `cc` driver, emitted from the image's own `build.rs` as
+//! `cargo::rustc-link-arg-bins`, for the Linux x86-64 target only) stays
+//! attached to that package, so a plain `cargo build --workspace` on Linux,
+//! macOS or Windows never sees it and no global `RUSTFLAGS` is ever required.
 //!
 //! # Install location
 //!
@@ -51,7 +59,7 @@ pub const IMAGE_RELATIVE_DIRECTORIES: [&str; 2] = ["libexec", "open-half-life"];
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum BuildError {
-    /// The image is Linux x86-64 only.
+    /// The image is built on Linux x86-64 and macOS only.
     Unsupported,
     /// The repository layout around this crate was not what is expected.
     Layout(&'static str),
@@ -64,9 +72,8 @@ pub enum BuildError {
 impl fmt::Display for BuildError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Unsupported => {
-                formatter.write_str("the freestanding parser worker image is Linux x86-64 only")
-            }
+            Self::Unsupported => formatter
+                .write_str("the parser worker image is only built on Linux x86-64 and macOS"),
             Self::Layout(detail) => write!(formatter, "unexpected repository layout: {detail}"),
             Self::Io(error) => {
                 write!(
@@ -88,6 +95,16 @@ impl From<std::io::Error> for BuildError {
     fn from(error: std::io::Error) -> Self {
         Self::Io(error)
     }
+}
+
+/// Whether this host can build the image and `ohl-platform` can launch it:
+/// Linux x86-64 (freestanding) or macOS (hosted).
+#[must_use]
+pub const fn image_host_supported() -> bool {
+    cfg!(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        target_os = "macos"
+    ))
 }
 
 /// Absolute path of the standalone image package.
@@ -125,10 +142,10 @@ fn artefact_root() -> Result<PathBuf, BuildError> {
 /// target-directory lock rather than by anything here.
 ///
 /// # Errors
-/// [`BuildError`] for a non-Linux host, an unexpected layout, a failed
-/// `cargo build`, or a failed copy.
+/// [`BuildError`] for a host with no native backend, an unexpected layout, a
+/// failed `cargo build`, or a failed copy.
 pub fn build_parser_worker_image() -> Result<PathBuf, BuildError> {
-    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+    if !image_host_supported() {
         return Err(BuildError::Unsupported);
     }
 

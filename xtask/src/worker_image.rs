@@ -1,18 +1,20 @@
-//! `cargo xtask worker-image`: build and audit the freestanding worker image.
+//! `cargo xtask worker-image`: build and audit the worker image.
 //!
-//! The Linux isolated-worker backend refuses to execute anything that is not
-//! a statically linked, non-interpreted `ET_EXEC` x86-64 ELF, so a regression
-//! in the image's link configuration would show up as an opaque
-//! `ServiceIdentityMismatch` at launch time. This command turns that into an
-//! explicit, standalone check with a readable failure.
+//! The isolated-worker backends refuse to execute anything that does not
+//! match their image policy - on Linux a statically linked, non-interpreted
+//! `ET_EXEC` x86-64 ELF; on macOS a thin `MH_EXECUTE` Mach-O for the host
+//! CPU that loads nothing but libSystem - so a regression in the image's
+//! link configuration would show up as an opaque `ServiceIdentityMismatch`
+//! at launch time. This command turns that into an explicit, standalone
+//! check with a readable failure.
 //!
 //! Two images are covered:
 //!
 //! - the `ohl-test-worker` fixture image, in its two startup variants;
-//! - the shipping `ohl-media-parser-worker` image, which is additionally
-//!   proved to reference no libc symbol, to define none of the well-known
-//!   symbols a statically linked libc would bring in, and to have no
-//!   undefined symbol at all, and is then installed at
+//! - the shipping `ohl-media-parser-worker` image, which on Linux is
+//!   additionally proved to reference no libc symbol, to define none of the
+//!   well-known symbols a statically linked libc would bring in, and to have
+//!   no undefined symbol at all, and is then installed at
 //!   `<directory of this executable>/libexec/open-half-life/`, which is
 //!   exactly where the backend resolves it.
 
@@ -22,7 +24,9 @@ use ohl_parser_worker::{
     IMAGE_NAME, IMAGE_RELATIVE_DIRECTORIES, build_parser_worker_image, install_parser_worker_image,
 };
 use ohl_test_worker::{
-    EM_X86_64, ET_EXEC, TestWorkerVariant, build_test_worker_image, summarise_elf,
+    CPU_TYPE_ARM64, CPU_TYPE_X86_64, EM_X86_64, ET_EXEC, MH_EXECUTE, PERMITTED_MACOS_DYLIB,
+    PERMITTED_MACOS_DYLINKER, TestWorkerVariant, build_test_worker_image, summarise_elf,
+    summarise_macho,
 };
 
 /// Symbol names that may never appear in the parser worker image. Each one
@@ -150,8 +154,66 @@ pub fn symbol_violations(bytes: &[u8]) -> Result<Vec<SymbolViolation>, &'static 
     Ok(violations)
 }
 
-/// Checks the ELF identity of one already-built image.
+/// Checks the executable identity of one already-built image against the
+/// policy of this host's backend.
 fn check_identity(path: &std::path::Path, bytes: &[u8]) -> usize {
+    if cfg!(target_os = "macos") {
+        check_macho_identity(path, bytes)
+    } else {
+        check_elf_identity(path, bytes)
+    }
+}
+
+/// The macOS policy: a thin 64-bit `MH_EXECUTE` for the host CPU, whose only
+/// dynamic library is libSystem, whose only dynamic linker is dyld, and with
+/// no run-path search.
+fn check_macho_identity(path: &std::path::Path, bytes: &[u8]) -> usize {
+    let Some(summary) = summarise_macho(bytes) else {
+        eprintln!("error: {} is not a thin 64-bit Mach-O file", path.display());
+        return 1;
+    };
+    let host_cpu = if cfg!(target_arch = "aarch64") {
+        CPU_TYPE_ARM64
+    } else {
+        CPU_TYPE_X86_64
+    };
+    let mut failures = 0usize;
+    for (condition, detail) in [
+        (summary.file_type == MH_EXECUTE, "must be MH_EXECUTE"),
+        (
+            summary.cpu_type == host_cpu,
+            "must target the host CPU type",
+        ),
+        (
+            summary
+                .dylibs
+                .iter()
+                .all(|dylib| dylib == PERMITTED_MACOS_DYLIB),
+            "must load no dynamic library other than libSystem",
+        ),
+        (
+            summary
+                .dylinkers
+                .iter()
+                .all(|linker| linker == PERMITTED_MACOS_DYLINKER)
+                && !summary.dylinkers.is_empty(),
+            "must name /usr/lib/dyld as its only dynamic linker",
+        ),
+        (!summary.has_rpath, "must have no LC_RPATH"),
+    ] {
+        if !condition {
+            eprintln!("error: {} {detail}", path.display());
+            failures += 1;
+        }
+    }
+    if failures > 0 {
+        eprintln!("note: {} loads {:?}", path.display(), summary.dylibs);
+    }
+    failures
+}
+
+/// The Linux policy: a static, non-interpreted x86-64 `ET_EXEC`.
+fn check_elf_identity(path: &std::path::Path, bytes: &[u8]) -> usize {
     let Some(summary) = summarise_elf(bytes) else {
         eprintln!(
             "error: {} is not an ELF64 little-endian file",
@@ -222,14 +284,11 @@ fn normalize_directory_permissions(path: &std::path::Path) -> Result<(), String>
 #[cfg(not(unix))]
 fn normalize_directory_permissions(_path: &std::path::Path) {}
 
-/// Builds, audits and installs the shipping media-parser worker image.
-fn run_parser_worker_image() -> Result<usize, String> {
-    let built = build_parser_worker_image().map_err(|error| error.to_string())?;
-    let bytes = std::fs::read(&built)
-        .map_err(|error| format!("failed to read {}: {error}", built.display()))?;
-    let mut failures = check_identity(&built, &bytes);
-
-    match symbol_violations(&bytes) {
+/// The Linux-only symbol audits on the freestanding image: no undefined or
+/// forbidden symbol, and no sign of a statically linked C library.
+fn audit_elf_symbols(built: &std::path::Path, bytes: &[u8]) -> usize {
+    let mut failures = 0usize;
+    match symbol_violations(bytes) {
         Ok(violations) => {
             for violation in &violations {
                 eprintln!("error: {}: {violation}", built.display());
@@ -243,8 +302,8 @@ fn run_parser_worker_image() -> Result<usize, String> {
     }
 
     // A statically linked C library leaves no PT_INTERP and no PT_DYNAMIC
-    // behind, so the identity check above cannot see it; its own symbols can.
-    match ohl_test_worker::static_libc_symbols(&bytes) {
+    // behind, so the identity check cannot see it; its own symbols can.
+    match ohl_test_worker::static_libc_symbols(bytes) {
         Ok(found) => {
             for name in &found {
                 eprintln!(
@@ -258,6 +317,22 @@ fn run_parser_worker_image() -> Result<usize, String> {
             eprintln!("error: {}: {reason}", built.display());
             failures += 1;
         }
+    }
+    failures
+}
+
+/// Builds, audits and installs the shipping media-parser worker image.
+fn run_parser_worker_image() -> Result<usize, String> {
+    let built = build_parser_worker_image().map_err(|error| error.to_string())?;
+    let bytes = std::fs::read(&built)
+        .map_err(|error| format!("failed to read {}: {error}", built.display()))?;
+    let mut failures = check_identity(&built, &bytes);
+
+    // The symbol audits are the Linux freestanding image's: the hosted macOS
+    // image links libSystem by design, and the Mach-O identity check above
+    // already proved it links nothing else.
+    if !cfg!(target_os = "macos") {
+        failures += audit_elf_symbols(&built, &bytes);
     }
 
     let executable = std::env::current_exe()
@@ -315,26 +390,7 @@ pub fn run() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-        let Some(summary) = summarise_elf(&bytes) else {
-            eprintln!(
-                "error: {} is not an ELF64 little-endian file",
-                path.display()
-            );
-            failures += 1;
-            continue;
-        };
-
-        for (condition, detail) in [
-            (summary.object_type == ET_EXEC, "must be ET_EXEC"),
-            (summary.machine == EM_X86_64, "must target x86-64"),
-            (!summary.has_interpreter, "must have no PT_INTERP"),
-            (!summary.has_dynamic, "must have no PT_DYNAMIC"),
-        ] {
-            if !condition {
-                eprintln!("error: {} {detail}", path.display());
-                failures += 1;
-            }
-        }
+        failures += check_identity(&path, &bytes);
         println!("{variant:?}: {} ({} bytes)", path.display(), bytes.len());
     }
 
