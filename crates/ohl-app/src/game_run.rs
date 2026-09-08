@@ -204,6 +204,11 @@ pub struct GameArgs<'a> {
     /// Runs the bounded reachability/route-triage walk
     /// (`--reachability-report`, `dev-tools` only) instead of the
     /// interactive window, a capture, or a script, and prints its report.
+    ///
+    /// Combined with `chain_script` it runs *after* the chain instead, so
+    /// the walk starts from wherever the chain's last route left the
+    /// player — the arrival point of a level change, which is the one
+    /// place a cold `--map <name>` load can never put the walk.
     #[cfg(feature = "dev-tools")]
     pub reachability_report: bool,
     /// Treats a `func_breakable` on the reachability walk's frontier as
@@ -342,7 +347,7 @@ recognise (expected a comma-separated list of weapon_*/ammo_* classnames)"
     }
 
     #[cfg(feature = "dev-tools")]
-    if args.reachability_report {
+    if args.reachability_report && args.chain_script.is_empty() {
         run_reachability_report(
             &mut game,
             args.reachability_assume_armed,
@@ -355,7 +360,23 @@ recognise (expected a comma-separated list of weapon_*/ammo_* classnames)"
     }
 
     if !args.chain_script.is_empty() {
-        return run_chained(&mut game, &source, args, args.chain_script);
+        let result = run_chained(&mut game, &source, args, args.chain_script);
+        // `compute_reachability_report` walks out from the player's
+        // *current* origin, so running it here reports the map the chain
+        // ended in, from the point the chain left the player standing —
+        // the arrival-point triage a cold `--map <name>` load cannot do.
+        #[cfg(feature = "dev-tools")]
+        if args.reachability_report && result.is_ok() {
+            run_reachability_report(
+                &mut game,
+                args.reachability_assume_armed,
+                args.reachability_assume_longjump,
+                args.reachability_assume_pendulum_wait,
+                args.reachability_cell_cap,
+                args.reachability_round_cap,
+            );
+        }
+        return result;
     }
 
     if let Some(script_path) = args.script {
@@ -567,6 +588,18 @@ const CHAIN_STOPPED: &str = "The chain walk stopped.";
 /// authored for the map it last arrived in. Not a failure.
 const CHAIN_NO_FURTHER_ROUTE: &str = "The chain walk has no further route.";
 
+/// The fixed line a chain walk logs when a route's level change landed it
+/// back in a map the chain had already entered — most often by walking
+/// straight back into the boundary it just arrived through, which is a
+/// route-authoring mistake rather than progress. A re-entry ends the chain
+/// as a failure: a walk that may revisit maps could satisfy any depth
+/// requirement by ping-ponging across a single boundary, which would make
+/// the depth aggregate worthless as a progress metric.
+///
+/// Name-free like every other line here: it reports *that* a map repeated,
+/// never which one.
+const CHAIN_RE_ENTERED: &str = "The chain walk re-entered a map it had already visited.";
+
 /// Runs a *sequence* of scripted-input routes across level changes in one
 /// process: `routes[0]` from the start map's own player start, and every
 /// later route from the point the preceding route's followed level change
@@ -580,11 +613,19 @@ const CHAIN_NO_FURTHER_ROUTE: &str = "The chain walk has no further route.";
 /// changes are always followed here: a chain walk that did not follow them
 /// would be a plain `--script` run.
 ///
+/// The reported depth counts *distinct* maps entered, and a level change
+/// back into a map the chain has already been in ends the walk as a
+/// failure ([`CHAIN_RE_ENTERED`]). Counting entries instead would let a
+/// route that simply walks back into the boundary it arrived through
+/// report unbounded "progress"; the visited set below is kept in memory
+/// only and never reaches a log line, the same as every other map name in
+/// this module.
+///
 /// Logs, beyond the per-hop "A level change was followed." line
-/// [`handle_level_change`] already emits: one of the two fixed terminal
-/// lines above, plus the walk's own bounded aggregates (how many maps deep
-/// it got and how many simulated seconds that took). No map name, entity
-/// name or position is logged, here or anywhere below.
+/// [`handle_level_change`] already emits: exactly one of the three fixed
+/// terminal lines above, plus the walk's own bounded aggregates (how many
+/// distinct maps deep it got and how many simulated seconds that took). No
+/// map name, entity name or position is logged, here or anywhere below.
 fn run_chained(
     game: &mut Game,
     source: &AssetFsSource,
@@ -604,9 +645,13 @@ fn run_chained(
         tracing::info!("Scripted input loaded.");
     }
 
+    // Every map this chain has entered, lowercased for comparison. Held in
+    // memory to detect a re-entry and to count distinct maps; never
+    // logged, never written anywhere.
+    let mut visited: Vec<String> = vec![game.map().to_ascii_lowercase()];
     let mut ticks: u64 = 0;
-    let mut depth: usize = 1;
     let mut stopped = false;
+    let mut re_entered = false;
     for script in &scripts {
         // A fresh log per route, so every milestone line is observed from
         // this map's own arrival point rather than from the chain's start.
@@ -623,27 +668,33 @@ fn run_chained(
             },
         );
         ticks += outcome.ticks;
-        if outcome.followed_level_change {
-            depth += 1;
-        } else {
+        if !outcome.followed_level_change {
             stopped = true;
             break;
         }
+        let arrived = game.map().to_ascii_lowercase();
+        if visited.contains(&arrived) {
+            re_entered = true;
+            break;
+        }
+        visited.push(arrived);
     }
 
     if args.script_log {
         tracing::info!("Scripted input finished.");
     }
-    if stopped {
+    if re_entered {
+        tracing::info!("{CHAIN_RE_ENTERED}");
+    } else if stopped {
         tracing::info!("{CHAIN_STOPPED}");
     } else {
         tracing::info!("{CHAIN_NO_FURTHER_ROUTE}");
     }
-    // Two bounded aggregates over project-authored routes (how many maps
-    // the chain entered, and how much simulated time the routes it ran
-    // took), in the fixed shapes `xtask/src/chain_walk.rs` parses. Neither
-    // is a media-derived name, path or content figure.
-    tracing::info!("Chain walk depth: {depth}.");
+    // Two bounded aggregates over project-authored routes (how many
+    // distinct maps the chain entered, and how much simulated time the
+    // routes it ran took), in the fixed shapes `xtask/src/chain_walk.rs`
+    // parses. Neither is a media-derived name, path or content figure.
+    tracing::info!("Chain walk depth: {}.", visited.len());
     #[allow(clippy::cast_precision_loss, reason = "a tick count for a report line")]
     let seconds = ticks as f32 * CAPTURE_STEP;
     tracing::info!("Chain walk simulated seconds: {seconds:.1}.");

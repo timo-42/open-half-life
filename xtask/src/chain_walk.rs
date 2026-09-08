@@ -148,10 +148,17 @@ pub fn assemble_chain(routes_dir: &Path, start: &str) -> Result<Vec<PathBuf>, As
     Ok(routes)
 }
 
-/// The two fixed terminal lines `crates/ohl-app/src/game_run.rs`'s
+/// The fixed line `run_chained` logs when a route's level change landed
+/// the walk back in a map it had already entered. Always a failure here,
+/// whatever depth was reached: a chain that may revisit maps could satisfy
+/// any `--min-depth` by ping-ponging across a single boundary.
+pub const RE_ENTERED_LINE: &str = "The chain walk re-entered a map it had already visited.";
+
+/// The three fixed terminal lines `crates/ohl-app/src/game_run.rs`'s
 /// `run_chained` ends a chain walk with, in the order this module looks
 /// for them.
-const TERMINAL_LINES: [&str; 2] = [
+const TERMINAL_LINES: [&str; 3] = [
+    RE_ENTERED_LINE,
     "The chain walk stopped.",
     "The chain walk has no further route.",
 ];
@@ -171,6 +178,9 @@ pub struct ChainReport {
     /// the run ended without logging one at all (a crash, a timeout, or a
     /// load failure).
     pub stopped_at: Option<&'static str>,
+    /// Whether the walk ended by re-entering a map it had already
+    /// visited, which fails this command regardless of depth.
+    pub re_entered: bool,
     /// How many "A level change was followed." lines the run logged: one
     /// per hop, a cross-check on `depth`.
     pub hops: usize,
@@ -200,6 +210,7 @@ pub fn parse_report(stderr: &str) -> ChainReport {
         stopped_at: TERMINAL_LINES
             .into_iter()
             .find(|line| stderr.contains(line)),
+        re_entered: stderr.contains(RE_ENTERED_LINE),
         hops: stderr
             .lines()
             .filter(|line| line.contains("A level change was followed."))
@@ -226,7 +237,11 @@ pub fn write_summary(
     let _ = writeln!(out, "Wall-clock elapsed: {:.1}s\n", elapsed.as_secs_f64());
     out.push_str("| Measure | Value |\n|---|---|\n");
     let _ = writeln!(out, "| Routes assembled | {routes} |");
-    let _ = writeln!(out, "| Maps reached (chain depth) | {} |", report.depth);
+    let _ = writeln!(
+        out,
+        "| Distinct maps reached (chain depth) | {} |",
+        report.depth
+    );
     let _ = writeln!(out, "| Level changes followed | {} |", report.hops);
     let _ = writeln!(out, "| Elapsed game seconds | {:.1} |", report.seconds);
     let _ = writeln!(
@@ -238,13 +253,20 @@ pub fn write_summary(
     let _ = writeln!(
         out,
         "| Result | {} |",
-        if report.depth >= min_depth {
+        if passed(report, min_depth) {
             "Pass"
         } else {
             "Fail"
         }
     );
     out
+}
+
+/// Whether a chain run counts as a pass: it entered at least `min_depth`
+/// *distinct* maps and never re-entered one it had already been in.
+#[must_use]
+pub fn passed(report: &ChainReport, min_depth: usize) -> bool {
+    report.depth >= min_depth && !report.re_entered
 }
 
 const APP_BIN_NAME: &str = "open-half-life";
@@ -375,7 +397,7 @@ pub fn run(root: &Path, raw_args: &[String]) -> ExitCode {
         write_summary(&start, routes.len(), &report, args.min_depth, elapsed)
     );
 
-    if report.depth >= args.min_depth {
+    if passed(&report, args.min_depth) {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
@@ -474,6 +496,7 @@ mod tests {
         assert_eq!(report.hops, 1);
         assert!((report.seconds - 61.5).abs() < f32::EPSILON);
         assert_eq!(report.stopped_at, Some("The chain walk stopped."));
+        assert!(!report.re_entered);
     }
 
     #[test]
@@ -490,10 +513,11 @@ mod tests {
             depth: 2,
             seconds: 61.5,
             stopped_at: Some("The chain walk stopped."),
+            re_entered: false,
             hops: 1,
         };
         let summary = write_summary("c0a0", 2, &report, 2, Duration::from_secs(9));
-        assert!(summary.contains("| Maps reached (chain depth) | 2 |"));
+        assert!(summary.contains("| Distinct maps reached (chain depth) | 2 |"));
         assert!(summary.contains("| Elapsed game seconds | 61.5 |"));
         assert!(summary.contains("| Stopped at | The chain walk stopped. |"));
         assert!(summary.contains("| Result | Pass |"));
@@ -509,9 +533,47 @@ mod tests {
             depth: 1,
             seconds: 3.0,
             stopped_at: Some("The chain walk stopped."),
+            re_entered: false,
             hops: 0,
         };
         let summary = write_summary("c0a0", 2, &report, 2, Duration::from_secs(1));
         assert!(summary.contains("| Result | Fail |"));
+    }
+
+    #[test]
+    fn a_re_entry_fails_however_deep_the_walk_got() {
+        // The exact shape a ping-pong across one boundary produces: the
+        // depth requirement is met, but a map repeated, so the walk made
+        // no real progress and this command must not call it a pass.
+        let report = ChainReport {
+            depth: 2,
+            seconds: 42.1,
+            stopped_at: Some(RE_ENTERED_LINE),
+            re_entered: true,
+            hops: 2,
+        };
+        assert!(!passed(&report, 2));
+        let summary = write_summary("c0a0", 2, &report, 2, Duration::from_secs(3));
+        assert!(summary.contains("| Result | Fail |"));
+        assert!(summary.contains(RE_ENTERED_LINE));
+    }
+
+    #[test]
+    fn the_re_entry_line_is_recognised_when_parsing() {
+        let stderr = format!(
+            "[info] A level change was followed.\n\
+             [info] A level change was followed.\n\
+             [info] {RE_ENTERED_LINE}\n\
+             [info] Chain walk depth: 2.\n\
+             [info] Chain walk simulated seconds: 42.1.\n"
+        );
+        let report = parse_report(&stderr);
+        assert!(report.re_entered);
+        assert_eq!(report.stopped_at, Some(RE_ENTERED_LINE));
+        // Two hops, but only two distinct maps: the aggregate the app
+        // reports is the distinct one, and the hop count exposes the gap.
+        assert_eq!(report.hops, 2);
+        assert_eq!(report.depth, 2);
+        assert!(!passed(&report, 2));
     }
 }

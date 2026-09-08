@@ -183,9 +183,21 @@ over there, and the run logs the same fixed "A level change was followed."
 line a `--follow-level-change` run does); when a route's ticks run out
 first, the walk logs the fixed line "The chain walk stopped." and ends. A
 walk that ran every route it was given logs "The chain walk has no further
-route." instead. Level changes are always followed during a chain, so
-`--follow-level-change` is neither needed nor consulted. The two flags are
-mutually exclusive with `--script`.
+route." instead. If a route's level change lands back in a map the chain
+has already entered — most often a route walking straight back into the
+boundary it arrived through — the walk logs "The chain walk re-entered a
+map it had already visited." and ends as a failure: the reported depth
+counts *distinct* maps, so a chain cannot manufacture progress by
+ping-ponging across one boundary. Level changes are always followed during
+a chain, so `--follow-level-change` is neither needed nor consulted;
+`--chain-script` is mutually exclusive with `--script` and with the
+capture-pose flags (`--headless-screenshot`, `--viewpoint`,
+`--spawn-offset`), which a headless, multi-map walk has no use for.
+
+On a `dev-tools` build, adding `--reachability-report` to a chain run
+walks the reachability report *after* the chain, from wherever its last
+route left the player standing — route triage from a level-change arrival
+point, which a cold `--map <name>` load cannot reproduce.
 
 Development-only builds (`--features dev-tools`) add
 `--viewpoint-at-nearest-monster DISTANCE`, which places the headless
@@ -348,10 +360,11 @@ cargo xtask chain-walk --payload-root /path/to/payload       # the chained campa
 (`<start>.txt` for the start map's own route, then `<start>-hop1.txt`,
 `-hop2.txt`, ... for the route from each successive arrival point; a
 missing hop ends the chain), runs it in one process through
-`--chain-script`, and prints an aggregate-only report: how many maps deep
-the chain got, how many simulated seconds that took, and which fixed
-terminal line ended it. It exits non-zero when the chain reaches fewer
-maps than `--min-depth` (default 2). `--start NAME` walks a different
+`--chain-script`, and prints an aggregate-only report: how many *distinct*
+maps deep the chain got, how many simulated seconds that took, and which
+fixed terminal line ended it. It exits non-zero when the chain reaches
+fewer distinct maps than `--min-depth` (default 2), or when it re-entered
+a map it had already visited at any depth. `--start NAME` walks a different
 chain, and must name a map from `ohl-campaign`'s own cited table.
 
 Route files are named by their position in the chain rather than by the

@@ -4287,13 +4287,25 @@ across level changes — rather than another per-map cold load.
   them would just be a `--script` run), so `--follow-level-change` is
   neither needed nor consulted, and `--chain-script` and `--script` are
   mutually exclusive.
-- **Two new fixed report lines**, alongside the per-hop "A level change
+- **Three new fixed report lines**, alongside the per-hop "A level change
   was followed." line that already existed: "The chain walk stopped."
-  when a route ran out of ticks without reaching a level change, and "The
-  chain walk has no further route." when every route given did reach one.
-  Two bounded aggregates follow them ("Chain walk depth: N.", "Chain walk
-  simulated seconds: X.X."). No map name, entity name or position is
+  when a route ran out of ticks without reaching a level change, "The
+  chain walk has no further route." when every route given did reach one,
+  and "The chain walk re-entered a map it had already visited." when a
+  route's level change landed back in a map the chain had already been
+  in. Two bounded aggregates follow them ("Chain walk depth: N.", "Chain
+  walk simulated seconds: X.X."). No map name, entity name or position is
   logged, here or anywhere else in the walk.
+- **Depth counts distinct maps, and a re-entry ends the walk as a
+  failure.** The first version of this milestone counted map *entries*,
+  which a PR review caught reporting "depth 3" for a chain that actually
+  went start map -> destination -> start map: the second route walked
+  straight back into the boundary it had just arrived through. Counting
+  entries lets any `--min-depth` be satisfied indefinitely by
+  ping-ponging across a single boundary, which is the one thing a
+  progress metric for unblocking the campaign must not do. `run_chained`
+  now keeps the set of maps it has entered (in memory, never logged —
+  which is why the re-entry line names no map) and stops on a repeat.
 - **`crates/ohl-app/src/game_run.rs`'s scripted tick loop is now shared**
   (`run_script_ticks`, `TickOptions`, `TickOutcome`) between `run_scripted`
   and `run_chained`, with `stop_on_level_change` the only behavioural
@@ -4320,18 +4332,40 @@ across level changes — rather than another per-map cold load.
   name literals; naming the file "the route from where the first level
   change out of `c0a0` lands" says what it is for without writing that
   name down.
+- **Arrival-point route triage**: `--reachability-report` combined with
+  `--chain-script` runs the reachability walk *after* the chain rather
+  than instead of it, from wherever the last route left the player
+  standing.
+  `compute_reachability_report` already walks out from the player's
+  current origin, so this needed no new walk — only the ordering. It is
+  the one way to triage a route from a level-change arrival point, which
+  a cold `--map <name>` load cannot reproduce, and it is what authored the
+  route below.
+- **`--chain-script` rejects the capture-pose flags** rather than
+  silently ignoring them: `--headless-screenshot`, `--viewpoint` and
+  `--spawn-offset` are `conflicts_with`. A chain writes no PNG, and a
+  frozen or rider pose is defined against one map's geometry while a
+  chain deliberately leaves that map partway through.
 - **The first two routes are authored and working**
   (`xtask/chain-routes/c0a0.txt`, `xtask/chain-routes/c0a0-hop1.txt`).
   The first is the start map's opening mover ride, which carries the
   player through a level boundary without a movement key pressed; the
-  second is a settle-then-walk-forward route from the arrival point.
-  Against a locally imported retail payload (identified only by its
-  sanitized digest), the chain reaches **depth 3** — two level changes
-  followed, 42.1 simulated seconds, ending on "The chain walk has no
-  further route." because nothing is authored for the third map yet, not
-  because a route failed. Standing still at the first arrival point for
-  over three simulated minutes fires nothing, so the second hop is walked
-  into rather than an artifact of landing inside a trigger volume.
+  second walks away from that boundary at the arrival point. Against a
+  locally imported retail payload (identified only by its sanitized
+  digest), the chain reaches **distinct depth 2** — one level change
+  followed, 77.3 simulated seconds, ending on "The chain walk stopped."
+- **What blocks the chain at depth 2, from the arrival-point report**:
+  8,428 cells are reachable from the first arrival point; the only entity
+  on the whole frontier is a single `func_tracktrain`; and the only
+  reachable `trigger_changelevel` is the one ~290 units away that the
+  player arrived through. Every heading within about 45 degrees of the
+  arrival facing walks back into that boundary (which is now a reported
+  failure, not depth); headings at 90, 135 and 180 degrees reach no level
+  change within 30 simulated seconds; and standing still for over three
+  simulated minutes reaches nothing either, on any approach to the
+  tracktrain. **The way onward is a tracktrain that never departs in this
+  engine** — a concrete, newly isolated campaign blocker, and the first
+  one this instrument found rather than inferred.
 - **Tests**: `xtask/src/chain_walk.rs`'s own unit tests cover chain
   assembly (consecutive hops, a gap ending the chain, a missing start
   route, a start map outside the cited table, and the shipped chain being
@@ -4342,3 +4376,18 @@ across level changes — rather than another per-map cold load.
   chain reports depth 2 and stops, a chain whose first route reaches
   nothing stops at depth 1, and a chain that runs every route reports "no
   further route" instead.
+- **The handover itself is tested, not just the hop.** A PR review found
+  that flipping `stop_on_level_change` to `false` — deleting the whole
+  point of a chain, letting route *n* keep ticking on the destination map
+  instead of handing over to route *n+1* — left every test passing.
+  `a_route_hands_over_to_the_next_one_at_the_level_change_it_reaches` now
+  discriminates it with a two-sided bound on the app's own
+  simulated-seconds aggregate: route 0 budgets 900 forward ticks but
+  reaches the fixture's trigger in under 300, and route 1 then spends
+  exactly 600 waiting, so a total in [10 s, 15 s) is reachable only if
+  route 0 stopped early *and* route 1 ran afterwards. The mutant lands at
+  exactly 25 s. A second new test,
+  `a_route_that_walks_back_through_its_arrival_boundary_fails_as_a_re_entry`,
+  stages a destination map whose own touch trigger points back at the
+  source and asserts the re-entry line, the distinct depth of 2, and that
+  neither other terminal line fires; it fails against the same mutant.

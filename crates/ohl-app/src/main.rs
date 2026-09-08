@@ -324,7 +324,17 @@ number greater than 0 and no more than 8.0."
     /// user's own payload, and only `ohl_campaign`'s own publicly sourced
     /// table of names may be written down in this repository (see
     /// `docs/CLEAN_ROOM.md` rule 7).
-    #[arg(long, value_name = "PATH", conflicts_with = "script")]
+    ///
+    /// A chain walk is headless and writes no PNG, so it takes no capture
+    /// pose: `--headless-screenshot`, `--viewpoint` and `--spawn-offset`
+    /// are rejected outright rather than silently ignored. A frozen or
+    /// rider pose is defined against one map's geometry, and a chain
+    /// deliberately leaves that map partway through.
+    #[arg(
+        long,
+        value_name = "PATH",
+        conflicts_with_all = ["script", "headless_screenshot", "viewpoint", "spawn_offset"]
+    )]
     chain_script: Vec<PathBuf>,
 
     /// Enables the scripted-input milestone log lines documented in
@@ -389,6 +399,12 @@ number greater than 0 and no more than 8.0."
     /// aggregate counts and rounded distances — never a map name,
     /// coordinate, or targetname (`docs/CLEAN_ROOM.md`). Compiled in
     /// solely by the non-default `dev-tools` cargo feature.
+    ///
+    /// Combined with `--chain-script` the walk runs *after* the chain,
+    /// from wherever its last route left the player standing, rather than
+    /// from a player start: that is the arrival point of a level change,
+    /// which is exactly the state a cold `--map <name>` load cannot
+    /// reproduce and where a chain route has to be authored from.
     #[cfg(feature = "dev-tools")]
     #[arg(long)]
     reachability_report: bool,
