@@ -203,17 +203,53 @@ cell), and whether a `trigger_changelevel` was reached (and its
 straight-line distance from spawn, rounded to the nearest ten units).
 Every closed door the walk found and could open is then simulated open for
 the next round, so a route needing several doors opened in sequence is
-triaged one round at a time, for up to six rounds. `func_breakable` is not
-modeled as destructible by this walk (or by anything else in the engine
-today — there is no shoot-to-destroy component for it yet): a
-`func_breakable` blocking a route is reported exactly like any other
-closed, non-use-openable brush entity on the frontier, not specially
-called out. Output is deliberately sparse: classnames, aggregate counts
-and rounded distances only — never a map name, coordinate, or targetname:
+triaged one round at a time, for up to six rounds. A `func_pushable` on the
+frontier is reported push-openable and its brush is detached for the next
+round the same way a door's is — approximate (this walk does not simulate
+the real push distance or direction, only that the crate is out of the way
+afterward), and needing no assumed weapon, since shoving a crate needs
+nothing but the player's own body. A `func_breakable` with `health > 0`
+(not the documented "Only Trigger" flag, and not already broken) is
+reported damage-openable, and broken the same way, but **only** when the
+run is given `--reachability-assume-armed`: without it a breakable stays
+on the frontier forever, because a cold map load starts with no weapon at
+all, not even the crowbar (`ohl_combat::Inventory::new`), and this walk
+never fabricates one — see `--start-inventory` below for giving it one for
+real instead of merely assuming one. Output is deliberately sparse:
+classnames, aggregate counts and rounded distances only — never a map
+name, coordinate, or targetname:
 
 ```sh
 cargo run --release -p ohl-app --features dev-tools -- \
-  --payload-root /path/to/payload --map c1a0 --reachability-report
+  --payload-root /path/to/payload --map c1a0 --reachability-report \
+  --reachability-assume-armed
+```
+
+Also `dev-tools` only: `--start-inventory LIST` gives the player named
+weapons and ammo right after the map loads, so a single-map probe or
+scripted scenario can model the inventory a real campaign run would have
+carried in from an earlier map via `changelevel`, instead of always
+starting from the empty inventory a cold load otherwise gets. `LIST` is a
+comma-separated list of `weapon_*`/`ammo_*` classnames — the same pickup
+vocabulary a `weapon_*`/`ammo_*` entity in a map already uses
+(`ohl_combat::classify_classname`), applied through the same grant path a
+touch pickup uses: a weapon entry unlocks it and grants its bundled ammo,
+an ammo entry tops up one pickup's worth, and repeating a classname stacks
+it. An unrecognised classname, or one that names something other than a
+weapon or ammo (`item_suit`, `func_healthcharger`, ...), is a usage error.
+This never changes the save format — inventory is save tag 23, and giving
+items at load uses the ordinary runtime inventory API, not a new one. It
+combines with `--script`/`--headless-screenshot`/`--play` the same way
+`--load` does, for an armed scripted scenario or capture; it is
+independent of `--reachability-report --reachability-assume-armed` above
+— that flag only ever *assumes* a weapon for the walk's own triage, it
+never reads the player's actual inventory, so `--start-inventory` does not
+change what the walk reports:
+
+```sh
+cargo run --release -p ohl-app --features dev-tools -- \
+  --payload-root /path/to/payload --map t0a0b1 \
+  --start-inventory weapon_shotgun,ammo_buckshot --play
 ```
 
 **Smoke tests**, each of which builds (or accepts a prebuilt)

@@ -2031,3 +2031,125 @@ pub fn reachability_gap_entities(next_map: &str) -> String {
          \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n"
     )
 }
+
+// ---------------------------------------------------------------------
+// A corridor blocked by a `func_breakable`, or a `func_pushable`, hiding a
+// `trigger_changelevel` beyond it (M9.11, `crate::reachability`'s own
+// breakable/pushable extension)
+// ---------------------------------------------------------------------
+
+/// The map name the reachability-report `func_breakable` fixture is
+/// published under.
+pub const REACH_BREAKABLE_MAP: &str = "ohlreachbreakablesynth";
+
+/// The map name the reachability-report `func_pushable` fixture is
+/// published under.
+pub const REACH_PUSHABLE_MAP: &str = "ohlreachpushablesynth";
+
+/// The obstacle's box, spanning the whole corridor width — reuses
+/// [`OBSTACLE_NAME`]'s own near face ([`OBSTACLE_NEAR_X`]) so the shape
+/// matches [`obstacle_corridor_bsp`]'s fixture family.
+const REACH_OBSTACLE_MAXS: [f32; 3] = [OBSTACLE_FAR_X, 64.0, 128.0];
+
+/// The `trigger_changelevel` volume beyond the obstacle: comfortably past
+/// [`REACH_OBSTACLE_MAXS`]'s far `X` face, well short of the fixture's own
+/// outer walls.
+const REACH_OBSTACLE_TRIGGER_MINS: [f32; 3] = [200.0, -96.0, 0.0];
+/// See [`REACH_OBSTACLE_TRIGGER_MINS`].
+const REACH_OBSTACLE_TRIGGER_MAXS: [f32; 3] = [260.0, 96.0, 96.0];
+
+/// A walled corridor (matching [`obstacle_corridor_bsp`]'s own shape) with
+/// a real solid submodel 1 obstacle ([`REACH_OBSTACLE_MAXS`]) and a
+/// non-solid submodel 2 beyond it for a `trigger_changelevel` volume
+/// ([`REACH_OBSTACLE_TRIGGER_MINS`]/[`REACH_OBSTACLE_TRIGGER_MAXS`]). No
+/// bytes here come from any game installation; see `docs/CLEAN_ROOM.md`.
+#[must_use]
+fn reachability_obstacle_bsp(entities: &str) -> Vec<u8> {
+    const X_MIN: f32 = -256.0;
+    const X_MAX: f32 = 320.0;
+    const CEILING: f32 = 256.0;
+
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(entities);
+
+    let world_heads = b.push_collision_hulls(&[
+        CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+        CollisionBrush::half_space([0.0, 0.0, -1.0], -CEILING),
+        CollisionBrush::half_space([-1.0, 0.0, 0.0], -X_MAX),
+        CollisionBrush::half_space([1.0, 0.0, 0.0], X_MIN),
+        CollisionBrush::half_space([0.0, -1.0, 0.0], -CORRIDOR_HALF_Y),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], -CORRIDOR_HALF_Y),
+    ]);
+    let obstacle_mins = [OBSTACLE_NEAR_X, -REACH_OBSTACLE_MAXS[1], 0.0];
+    let obstacle_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(
+        obstacle_mins,
+        REACH_OBSTACLE_MAXS,
+    )]);
+    let trigger_heads = b.push_collision_hulls(&[]);
+
+    b.push_model(
+        [X_MIN, -CORRIDOR_HALF_Y, 0.0],
+        [X_MAX, CORRIDOR_HALF_Y, CEILING],
+        [0.0; 3],
+        world_heads,
+        2,
+        0,
+        0,
+    );
+    b.push_model(
+        obstacle_mins,
+        REACH_OBSTACLE_MAXS,
+        [0.0; 3],
+        obstacle_heads,
+        2,
+        0,
+        0,
+    );
+    b.push_model(
+        REACH_OBSTACLE_TRIGGER_MINS,
+        REACH_OBSTACLE_TRIGGER_MAXS,
+        [0.0; 3],
+        trigger_heads,
+        2,
+        0,
+        0,
+    );
+
+    b.build()
+}
+
+/// [`reachability_obstacle_bsp`], with a `func_breakable` (submodel `*1`,
+/// [`OBSTACLE_NAME`], `health` [`BREAKABLE_HEALTH`]) as the obstacle and a
+/// `trigger_changelevel` (submodel `*2`) beyond it. No bytes here come
+/// from any game installation; see `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn reachability_breakable_bsp(next_map: &str) -> Vec<u8> {
+    let entities = format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"0 0 40\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"func_breakable\"\n\"targetname\" \"{OBSTACLE_NAME}\"\n\
+         \"model\" \"*1\"\n\"health\" \"{BREAKABLE_HEALTH}\"\n\"material\" \"1\"\n}}\n\
+         {{\n\"classname\" \"trigger_changelevel\"\n\"model\" \"*2\"\n\
+         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n"
+    );
+    reachability_obstacle_bsp(&entities)
+}
+
+/// [`reachability_obstacle_bsp`], with a `func_pushable` (submodel `*1`,
+/// [`OBSTACLE_NAME`], `friction 0`) as the obstacle and a
+/// `trigger_changelevel` (submodel `*2`) beyond it. No bytes here come
+/// from any game installation; see `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn reachability_pushable_bsp(next_map: &str) -> Vec<u8> {
+    let entities = format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"0 0 40\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"func_pushable\"\n\"targetname\" \"{OBSTACLE_NAME}\"\n\
+         \"model\" \"*1\"\n\"friction\" \"0\"\n\"material\" \"1\"\n}}\n\
+         {{\n\"classname\" \"trigger_changelevel\"\n\"model\" \"*2\"\n\
+         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n"
+    );
+    reachability_obstacle_bsp(&entities)
+}

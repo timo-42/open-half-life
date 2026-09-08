@@ -435,6 +435,17 @@ impl Systems {
         self.combat.display_inventory()
     }
 
+    /// Mutable access to the weapon inventory and the reserve-ammo ledger
+    /// together, forwarded from [`CombatState::inventory_and_ammo_mut`]
+    /// for `crate::start_inventory`'s `--start-inventory` seeding — the
+    /// same grant path `crate::pickups` uses, applied once at load instead
+    /// of on a touch.
+    pub(crate) fn inventory_and_ammo_mut(
+        &mut self,
+    ) -> (&mut ohl_combat::Inventory, &mut crate::combat::AmmoBank) {
+        self.combat.inventory_and_ammo_mut()
+    }
+
     /// The player's current health, from `ohl_player::Player`'s own state.
     #[must_use]
     pub(crate) fn player_health(&self) -> f32 {

@@ -3919,6 +3919,7 @@ in item 30 rather than guessed at.
   fixtures (`crates/ohl-engine/tests/breakable.rs`, `pushable.rs`) stand in
   for one, both driving the real `Game` loop with no forced state.
 
+
 ## M9.11 (Rust): `func_monsterclip` is no longer solid to the player
 
 Status: accepted (Rust); evidence: PR #129 ("Fix `func_monsterclip`
@@ -4013,3 +4014,85 @@ frontier attempts) on `c4a2` (Gonarch's Lair).
   followed level change in Power Up" on its re-authored route) and `cargo
   xtask campaign-smoke` (93/93 maps, 0 missing-map/load-error/timeout/
   crash/blank-capture) both pass against the same payload after this fix.
+
+## M9.12 (Rust): `--start-inventory`, and breakables/pushables in `--reachability-report`
+
+Status: in progress (Rust); evidence: this PR.
+
+- **Motivation.** `.plan/progress-probe-5.md` re-ran `--reachability-report`
+  on "c1a2" (Office Complex) and "c3a2" (Lambda Core) after M9.10 landed
+  `func_breakable`/`func_pushable` gameplay, and found two gaps neither
+  earlier probe had isolated: the walk itself still never modeled breaking
+  or pushing a brush as a round-advance edge (confirmed by source, not
+  just by the walk's own output — nothing in `reachability.rs` read either
+  component), and both maps' only weapon pickup sits thousands of units
+  past their own blocked frontier, an order of magnitude past anything
+  either map's own walk reaches — consistent with both being mid-campaign
+  maps a real campaign run would already reach armed, which this
+  investigation's single-map-load methodology cannot exercise (a cold
+  `Game::load` always starts from `ohl_combat::Inventory::new`'s empty
+  inventory, not even the crowbar). This package closes both gaps.
+- **`ohl_engine::reachability` now models breaking and pushing.**
+  `ReachabilityConfig::assume_armed` (default `false`) gates a new
+  round-advance edge: a `func_breakable` on the frontier with `health >
+  0`, not the documented "Only Trigger" flag, and not already broken is
+  reported `FrontierClass::damage_openable` and has its brush detached for
+  the next round — the same coarse "remove the brush" treatment a door
+  already gets — but only when this flag is set; the walk never checks or
+  fabricates an actual inventory, so a run without it leaves a breakable
+  on the frontier forever, the same as before this package. A
+  `func_pushable` is reported `FrontierClass::push_openable` and detached
+  the same way, unconditionally: pushing needs no assumed weapon. Both are
+  counted separately in `RoundReport` (`breakables_opened`,
+  `pushables_opened`), alongside the existing `doors_opened`. Two new
+  regression tests
+  (`a_breakable_is_openable_only_when_armed_is_assumed`,
+  `a_pushable_is_openable_by_push_without_any_assumed_weapon`) prove the
+  round-advance shape against new synthetic fixtures
+  (`ohl_engine::test_support::reachability_breakable_bsp`/
+  `reachability_pushable_bsp`): a corridor blocked by one obstacle,
+  hiding a `trigger_changelevel` beyond it, reached only after the
+  obstacle's brush is detached.
+- **`--reachability-assume-armed`** (`crates/ohl-app/src/main.rs`,
+  `dev-tools` only, `requires = "reachability_report"`): threads
+  `ReachabilityConfig::assume_armed` from the command line. The printed
+  report now tags each frontier line with "damage-openable (armed
+  assumed)"/"push-openable" where applicable, and a round with either kind
+  of edge logs "Breaking N breakable(s)..."/"Pushing N pushable(s)..."
+  alongside the existing door line.
+- **`--start-inventory LIST`** (`crates/ohl-app/src/main.rs`,
+  `crates/ohl-engine/src/start_inventory.rs`, both `dev-tools` only): gives
+  the player named weapons and ammo right after the map loads, so a
+  single-map probe or a `combat-smoke` scenario can model the inventory a
+  real campaign run would have carried in from an earlier map, without
+  walking the whole campaign chain first. `LIST` is a comma-separated list
+  of `weapon_*`/`ammo_*` classnames — the exact vocabulary
+  `ohl_combat::classify_classname` already recognises (no new classname
+  literal), applied through the same grant path a touch pickup already
+  uses (`Inventory::give_weapon`/`give_ammo`,
+  `weapon_pickup_ammo`/`ammo_pickup_amount`; `Game::give_start_inventory`).
+  An unrecognised classname, or a recognised one that is not a weapon or
+  ammo (`item_suit`, `func_healthcharger`, ...), is a clear parse error.
+  This never touches the save format: inventory is save tag 23, and
+  seeding it at load is ordinary runtime state through the ordinary
+  inventory API, not a new grant path or a format change. Unit tests cover
+  parsing (`ohl_engine::start_inventory::tests`) and the `xtask
+  combat-smoke` `Scenario::start_inventory` field's command-line wiring
+  (`xtask::combat_smoke::tests::build_command_*`); no default scenario
+  uses it yet, so the existing suite's plain (non-`dev-tools`) release
+  binary build is unaffected.
+- **`c1a2`/`c3a2` re-measured with `--reachability-assume-armed`.** Both
+  maps' `--reachability-report --reachability-assume-armed` runs are
+  recorded as aggregates only in this package's own pull request
+  description, per `docs/CLEAN_ROOM.md`'s reviewed-sanitized-report rule;
+  see that PR for the per-map round-by-round result.
+- **Scope.** Neither flag changes what a *script* or a *save* can express:
+  `--start-inventory` is a dev-tools load-time convenience over the same
+  API a pickup touch already calls, not a new inventory mechanism, and the
+  reachability walk's push/break edges remain the same approximate
+  "detach the brush" treatment a door already gets — not a simulation of
+  the real push distance/direction or the real damage-vs-health math. No
+  `combat-smoke` scenario was changed to use `--start-inventory`: closing
+  the "route-authoring" gap `.plan/progress-probe-5.md`'s ranked list left
+  open (item 1) is this package's job; using it to actually author a
+  working "c1a2"/"c3a2" route stays a follow-up, per that same list.
