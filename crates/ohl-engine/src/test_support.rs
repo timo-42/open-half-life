@@ -1091,6 +1091,33 @@ pub fn rotating_door_unnamed_entities() -> String {
     )
 }
 
+/// The map name the classname-solidity corridor fixture is published
+/// under.
+pub const CLIP_CORRIDOR_MAP: &str = "ohlclipcorridorsynth";
+
+/// [`rotating_door_bsp`]'s own corridor geometry (a floor plus two side
+/// walls at `y = +/-96`, unbounded along `x`, plus a real solid submodel
+/// `*1` spanning [`ROTATING_DOOR_MINS`]..[`ROTATING_DOOR_MAXS`]), but with
+/// a plain, non-moving brush entity of the caller's own `classname` as
+/// that submodel instead of a `func_door_rotating` — no
+/// `speed`/`distance`/`wait`, since this fixture exists to prove
+/// *solidity to the player*, not movement. Reuses [`ROTATING_DOOR_PIVOT`]
+/// purely because [`rotating_door_bsp`] compiles submodel `*1` relative to
+/// that point (see its own doc comment); the brush itself never moves
+/// here. No bytes here come from any game installation; see
+/// `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn corridor_brush_entities(classname: &str) -> String {
+    format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"150 0 40\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"{classname}\"\n\"model\" \"*1\"\n\
+         \"origin\" \"{} {} {}\"\n}}\n",
+        ROTATING_DOOR_PIVOT[0], ROTATING_DOOR_PIVOT[1], ROTATING_DOOR_PIVOT[2],
+    )
+}
+
 // ---------------------------------------------------------------------
 // A `func_rotating` turntable the player stands on
 // ---------------------------------------------------------------------

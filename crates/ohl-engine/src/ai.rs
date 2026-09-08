@@ -490,7 +490,7 @@ impl AiState {
         Self::attach_makers(level);
         Self::attach_player_actor(level);
 
-        if let Some(bridge) = nav::build(&level.defs, level.collision.as_ref()) {
+        if let Some(bridge) = nav::build(&level.defs, level.monster_collision.as_ref()) {
             self.world.attach_navigator(bridge);
         }
     }
@@ -914,7 +914,7 @@ impl AiState {
         self.update_followers(level);
         let events = {
             let context = SightContext {
-                collision: level.collision.as_ref(),
+                collision: level.monster_collision.as_ref(),
                 world: Some(&level.world),
             };
             self.world.tick(&mut level.registry.world, &context, dt)
@@ -1039,7 +1039,7 @@ impl AiState {
         // chose by relationship and line of sight, so there is nothing for
         // a hitbox refinement to decide. M7.9 P1's populated index makes
         // this a per-hitbox trace without changing the call.
-        if let Some(collision) = level.collision.as_ref() {
+        if let Some(collision) = level.monster_collision.as_ref() {
             let trace = ohl_combat::trace_attack_filtered(
                 collision,
                 &self.hitboxes,
