@@ -42,14 +42,22 @@ its bounded allocator against the workspace-wide `forbid`.
 
 `main.rs` selects the hosted implementation for both supported targets, so
 one package and one `Cargo.lock` serve both. On Linux the builder explicitly
-uses `x86_64-unknown-linux-musl`, scopes `-C relocation-model=static` to its
-nested Cargo invocation, and `build.rs` emits
-`cargo::rustc-link-arg-bins` for `-static -no-pie -Wl,--build-id=none`.
-Those settings produce the required static non-PIE `ET_EXEC` without an
-interpreter or dynamic segment. macOS links the ordinary way. No global
-`RUSTFLAGS` and no `.cargo/config.toml` is involved, so `cargo build
+uses `x86_64-unknown-linux-musl` and scopes the complete image configuration
+to its nested Cargo invocation: `-C relocation-model=static`, then
+`-C link-arg=-static`, `-C link-arg=-no-pie`, and
+`-C link-arg=-Wl,--build-id=none`. Together these produce the required static
+non-PIE `ET_EXEC` without an interpreter or dynamic segment. macOS links the
+ordinary way. No global `RUSTFLAGS` and no `.cargo/config.toml` is involved, so `cargo build
 --workspace` on Linux, macOS and Windows never touches this package; only
 `build_parser_worker_image` and `cargo xtask worker-image` do.
+
+The standalone package keeps its ordinary musl defaults unless the builder
+selects the image configuration, so this direct target test also runs:
+
+```sh
+cargo test --manifest-path crates/ohl-parser-worker/image/Cargo.toml \
+  --target x86_64-unknown-linux-musl --locked --offline
+```
 
 `strip = "debuginfo"` keeps `.symtab`, which lets `cargo xtask worker-image`
 audit the Linux image's linked runtime. The hosted musl image defines libc

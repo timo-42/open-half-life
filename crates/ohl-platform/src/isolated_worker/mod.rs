@@ -25,7 +25,7 @@
 //!   termination and reaps.
 //!
 //! Two targets have a native backend: Linux x86-64 (`linux`: Landlock,
-//! seccomp, a freestanding static image executed by descriptor) and macOS
+//! seccomp, a static musl image executed by descriptor) and macOS
 //! (`macos`: the system sandbox through `sandbox-exec`, resource limits, a
 //! hosted image executed by its verified path). Everywhere else
 //! [`launch_isolated_worker`] fails with [`IsolatedWorkerError::Unsupported`]

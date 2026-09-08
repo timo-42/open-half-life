@@ -1,7 +1,7 @@
 //! Shared standard-library Linux musl and macOS test worker image.
 //!
-//! The confined side of the `ohl-platform` isolated-worker contract on
-//! macOS: an ordinary Rust binary that the host runs under the system sandbox
+//! The confined side of the `ohl-platform` isolated-worker contract: an
+//! ordinary Rust binary that the host runs under its native sandbox
 //! with descriptors 3 (channel) and 4 (readiness) already in place. It
 //! parses no arguments, reads no environment and, outside
 //! [`MODE_CONFINEMENT_PROBE`], opens no file.

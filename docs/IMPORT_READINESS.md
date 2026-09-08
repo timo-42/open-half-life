@@ -1,9 +1,10 @@
 # Production import readiness
 
-Linux x86-64 can now extract a user medium into a payload set and publish it
-for runtime use. It is **not** production-qualified, and every other platform
-tuple remains unavailable: no build on any other tuple can extract a medium at
-all, and no tuple on any platform meets the release-evidence gates below.
+Linux x86-64 has recorded extraction from one owned medium. Linux x86-64
+and macOS Apple Silicon also pass the installed-worker synthetic Wise
+import and repeat-import tests. Neither is **production-qualified**; the
+synthetic macOS result does not establish compatibility with owned media.
+Other tuples have no new end-to-end evidence from this change.
 
 **Worker runtime update.** The current Linux x86-64 worker uses Rust's
 standard library with a statically linked musl runtime, sharing its hosted
@@ -12,6 +13,14 @@ below to a freestanding worker, forbidden libc symbols and a fixed bump arena
 are historical. Existing decoder libraries can remain `no_std` compatible;
 that is no longer a worker dependency requirement. The runtime change alone
 does not qualify any platform for production import.
+
+Validation for this update (2026-09-08): `cargo test -p ohl-app --test
+worker_image -- --ignored` passed on native Linux x86-64; its release-profile
+equivalent passed on macOS ARM64. Both verify a synthetic Wise payload,
+repeat-import reuse, and refusal of an unsupported container. Native Linux
+also passed the isolated-worker tests, including standard-library runtime
+operations and 18 separate forbidden-operation probes. These tests use only
+project-authored fixtures.
 
 This page records release evidence that must exist before that status changes.
 Checklist items are unmet unless a concrete review, test, hosted run, or

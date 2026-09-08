@@ -170,6 +170,10 @@ jobs:
         if: matrix.os != 'windows-latest'
         run: cargo test -p ohl-app --test worker_image -- --ignored
 
+      - name: Standalone std worker tests
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo test --manifest-path crates/ohl-parser-worker/image/Cargo.toml --target x86_64-unknown-linux-musl --locked
+
       # macOS only: the confined worker's stdio is `/dev/null` and a Seatbelt
       # denial is an error return rather than a kill, so a launch failure is
       # otherwise invisible. On failure this renders the real profile for a

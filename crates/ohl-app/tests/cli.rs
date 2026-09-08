@@ -44,7 +44,12 @@ fn run(args: &[&str]) -> std::process::Output {
 #[cfg(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos"))]
 #[test]
 fn missing_worker_image_reports_the_safe_cause_and_profile_matched_install_command() {
+    use std::os::unix::fs::PermissionsExt as _;
+
     let directory = tempfile::tempdir().expect("temporary directory");
+    // Reach the missing-image lookup even under a group-writable umask.
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("trusted executable directory");
     let copied_binary = directory.path().join("open-half-life");
     std::fs::copy(binary(), &copied_binary).expect("copy application without its worker image");
 

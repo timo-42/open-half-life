@@ -82,6 +82,10 @@ pub fn denied(probe: u8) -> i32 {
                     0,
                 ],
             ),
+            14 => syscall(9, [0, 4096, 3, 0x32, -1, 0]), // writable MAP_FIXED
+            15 => syscall(25, [0, 4096, 8192, 3, 0, 0]), // MREMAP_FIXED
+            16 => syscall(16, [4, 0x5421, (&raw mut futex_word) as isize, 0, 0, 0]), // wrong FIONBIO fd
+            17 => syscall(44, [3, 0, 0, 0x4000, c"address".as_ptr() as isize, 7]), // sendto address
             _ => return 90,
         };
     }
