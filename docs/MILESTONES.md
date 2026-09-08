@@ -4722,3 +4722,157 @@ passenger is turned with it.
   declares nowhere leaves that map's own train on its own spawn node), and
   the two identical zero-`dt` syncs — after a transition and after a save
   restore — now cross-reference each other.
+
+
+## M9.19 (Rust): a ride whose track runs out is carried onto the next one
+
+Closes the "Still open" item M9.18 left above — the chained walk's third
+map ended with the nearest level boundary behind two closed `func_door`s
+the reachability walk found were not use-openable from anywhere reachable
+— and it turned out not to be a door problem at all.
+
+**What the instrumented walk found.** A local, uncommitted probe of this
+project's own fire-chain dispatcher and of that map's own entity data (no
+name, path or coordinate from it is recorded anywhere in this repository)
+showed that the two blocking doors are named by exactly one thing in the
+whole map: the documented fire-on-pass `message` of a `path_track` on the
+tram's own `target` chain. Every other scripted beat in that map — the
+station stop, the doors, the announcements, and the level change out of it
+— hangs off nodes of the same chain. The tram never passed any of them,
+because it was parked at the dead end of a *different*, three-node chain:
+the short piece of track the ride shares with the previous map, which its
+own copy continues for a few hundred units and then ends. The two chains
+are over a thousand units apart, so no movement route could ever have
+joined them. The map's answer to that gap is a `func_trackautochange`
+sitting at the dead end — a rotating lift that takes the car down and
+round onto the long chain — and this port implemented neither the entity
+nor the `path_track` keyvalue that starts it. The keyvalue was already
+recorded as documented-but-unimplemented (alongside `altpath`); the
+*entity* appeared nowhere in this repository at all before this milestone
+— no doc, no source, no test — so its public sources are written down here
+for the first time.
+
+- **`path_track`'s `netname` ("Fire on dead end")**
+  (`ohl_game::registry::PathFireOnDeadEnd`,
+  `ohl_game::track_train::PathNode::dead_end`). Documented as "entity to
+  trigger when func_tracktrain reaches this path_track as a last
+  path_track in a chain". `TrackTrainState::advance_firing` pushes it into
+  the same fired-names list the fire-on-pass `message` already used, so
+  `Simulation::advance_trains` fires it by name with the train as the
+  activator, in the same deterministic order. It fires once per *arrival*,
+  not once per attempt to leave: a train switched back on while parked at
+  a dead end re-enters its travel loop, finds nothing ahead and stops
+  again, and that second attempt must not fire the `netname` again — which
+  for the real shape this exists for would send the platform straight back
+  where it came from (`TrackTrainState::dead_end_fired`, cleared the moment
+  the train leaves that node or is relinked).
+- **`func_trackchange`/`func_trackautochange`**
+  (`ohl_game::registry::TrackChange`/`TrackChangeLinks`,
+  `ohl_game::logic::Simulation::{start_track_change, advance_track_changes,
+  finish_track_change}`). Activated through the same `Simulation::activate`
+  path every other mover uses. It picks up the train its `train` keyvalue
+  names **only** when that train is resting on the `path_track` at the end
+  it is setting off from, travels for the documented `height / speed`
+  seconds, and hands the train over to the chain at the far end — the
+  documented "after finishing, the train is assigned to path_track of the
+  bottom path".
+- **One transform, again.** The platform is an ordinary brush mover as far
+  as `ohl_game::pose` is concerned: `track_change_offset` joins the other
+  translating movers in `brush_offset` and `track_change_degrees` joins the
+  other rotating ones in `mover_rotation`, so M9.18's single
+  `brush_pose_rotation` answer already serves its renderer placement, its
+  collision hull, its `use`-proximity point and anything riding it, with no
+  new pose path. The carried *train* gets a displacement and an extra yaw
+  of its own (`TrackTrainState::set_carry`, applied in
+  `pose::track_train_transform`), interpolated between the two documented
+  endpoint nodes rather than replaying the platform's own `height` — which
+  is what makes the arrival land exactly on the node the pages say the
+  train is assigned to, with no snap at the end for a passenger to be
+  scraped off by. A rider is carried by the same `base_velocity` /
+  `rotational_carry` machinery M9.18 built; nothing new was needed for
+  them.
+- **A relinked train keeps its compiled reference point.**
+  `TrackTrainState::first_node_position` used to read the current chain's
+  first node. That is the stand-in an origin-brush-less, world-baked car
+  has for an origin brush (M9.16), i.e. a fact about where its vertices
+  were compiled — so recomputing it from a chain the car was *handed over*
+  to teleported such a car by the whole distance between the two tracks
+  the instant the platform finished. It is now captured once at spawn and
+  survives a relink. Caught by the new engine fixture, whose train is
+  deliberately the world-baked shape.
+- **Which of the two readings of "Auto Activate train".** The relinked
+  train rides on. No page reviewed states what the published game's
+  unflagged platform does — TWHL names the flag and leaves its description
+  blank, and the only description found is the Sven Co-op *mod's*, a
+  different engine. The alternative reading delivers a ride onto a track
+  with nothing in its map able to start it again, which is the same shape
+  of progression stopper M9.13 already recorded for a zero "New Train
+  Speed" taken literally. Recorded as `TODO(black-box)` at the point of
+  use and in `docs/FORMAT_SOURCES.md`, "Track trains and paths".
+- **The chain walk reports distinct depth 4**, up from M9.18's 3, and the
+  third route is now the ride again rather than a step off a parked car.
+  `xtask/chain-routes/c0a0-hop2.txt` presses nothing: the car runs its
+  track out, is carried down and round, rides on through the doors that
+  section of the ride opens ahead of itself, pauses where the ride is
+  scripted to pause, and ends at a level change the end of the ride fires
+  by name. `cargo xtask chain-walk` passes at 3 routes, 4 distinct maps, 3
+  level changes, 167.7 simulated seconds. The passenger is aboard for all
+  of it: a probe of `Game::ground_mover_speed` across the route shows it
+  changing between the ride's documented speeds and returning to zero only
+  at the two scripted station stops, never a fall and never a frozen pose.
+- **Still open: the fourth map's arrival point is sealed.** A post-chain
+  `--reachability-report` from where the ride sets the player down reports
+  exactly **one** reachable cell and no frontier entity of any kind, and
+  the nearest `trigger_changelevel` is ~280 units away and unreachable.
+  Two simulated minutes of standing still change nothing: no mover comes
+  to free the player. That is the same *symptom* M9.18 fixed for the third
+  map but not the same cause (that one had a `func_tracktrain` on the
+  frontier; this one has no frontier brush entity at all), so no
+  `c0a0-hop3.txt` is authored here — there is no honest route out of a
+  sealed cell, and guessing one would be exactly the frozen-in-geometry
+  artifact M9.18 removed. It is the next thing to pick up.
+- **`TODO(black-box)`: the "Start at Bottom" end-of-chain reversal.** The
+  published `toptrack`/`bottomtrack` descriptions carry a parenthesised
+  clause — with that flag set the two names point at the *other* end of
+  each chain — and `finish_track_change` always seats the relinked train
+  at node `0` of the chain the destination name resolves to. Such a
+  platform's downward destination is therefore documented to be a chain's
+  last node, where the train would be handed a one-node chain and dead-end
+  on arrival. No page reviewed states which way a train handed a chain's
+  far end is meant to travel, and nothing in the tree sets the flag, so it
+  is quoted in full and marked rather than guessed at; see
+  `docs/FORMAT_SOURCES.md`, "Track trains and paths".
+- **Not saved.** A save taken mid-trip, or after a platform has relinked a
+  train, restores that train on the chain its own `target` names: save tag
+  28's `MoverSnapshot` is index-based against the chain rebuilt at load and
+  its wire shape is frozen. The level-change carry is unaffected —
+  `transition::capture_track_train` records the node by *name*, which after
+  a relink is a node on the new chain, which is why the walk's own hop
+  across the boundary after the track change works. Recorded as a known
+  gap in `docs/FORMAT_SOURCES.md`.
+- **Follow-up, older than this branch: single-tick ride-speed spikes at a
+  node.** A per-tick probe of `Game::ground_mover_speed` over the whole
+  chain shows isolated one-tick spikes of a thousand-odd to a few thousand
+  units per second wherever a `func_tracktrain` changes path segment — the
+  per-node yaw snap, whose whole turn happens in one step (M9.18). Most of
+  them occur on routes this milestone did not touch, so it predates this
+  branch and is left alone here; it wants its own look, since a rider's
+  `base_velocity` is read from that same per-step displacement.
+- **Tests**: `crates/ohl-engine/tests/track_change.rs` rides a synthetic
+  fixture (`test_support::track_change_bsp`: a void world, a car on a
+  two-node top chain whose dead end names a `func_trackautochange`, and a
+  two-node bottom chain three hundred units below and a quarter turn
+  round) and asserts the passenger is never in solid, is on a mover every
+  step of the trip, is part-way down at half the documented duration
+  rather than teleported at the end, lands on the bottom chain and rides
+  off along it. Both tests were verified to fail against two separate
+  mutants: one that drops the dead-end fire, one that drops the rider
+  carry. `ohl_game::logic`'s own unit tests cover the handover without any
+  engine (the platform starts, is part-way at half the trip, arrives, and
+  the train ends up riding the bottom chain), that a dead end fires its
+  `netname` once per arrival even when the parked train is re-triggered
+  there (a second train stands in as the witness, since activating one
+  *toggles* it, so "still running a second later" is a parity check on how
+  many times the dead end fired — verified to fail with the once-only
+  guard removed), and that a platform whose named train is somewhere else
+  travels empty instead of dragging it over.

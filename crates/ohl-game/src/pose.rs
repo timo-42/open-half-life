@@ -34,7 +34,7 @@ use hecs::Entity;
 
 use crate::registry::{
     BrushCenter, Door, MomentaryDoor, MomentaryRotButton, MoverState, Pendulum, Platform, Pushable,
-    Registry, RotButton, Rotator, Transform,
+    Registry, RotButton, Rotator, TrackChange, Transform,
 };
 use crate::track_train::{TrackTrain, TrackTrainState};
 
@@ -212,7 +212,19 @@ pub fn track_train_transform(registry: &Registry, entity: Entity) -> (Vec3, Opti
     let Some((state, train, _, reference)) = train_placement_reference(registry, entity) else {
         return (Vec3::ZERO, None);
     };
-    (state.position() - reference, state.yaw_degrees(&train))
+    // A train being carried by a `func_trackchange`/`func_trackautochange`
+    // is displaced (and spun) bodily by the platform under it, on top of
+    // wherever its own chain currently puts it; both are zero for every
+    // train no platform is carrying. See
+    // `ohl_game::track_train::TrackTrainState::set_carry`.
+    let (carry_offset, carry_yaw) = state.carry();
+    (
+        state.position() - reference + carry_offset,
+        state
+            .yaw_degrees(&train)
+            .map(|yaw| yaw + carry_yaw)
+            .or((carry_yaw != 0.0).then_some(carry_yaw)),
+    )
 }
 
 /// The pieces every train placement is built from: its live state, its
@@ -308,6 +320,30 @@ pub fn pushable_offset(registry: &Registry, entity: Entity) -> Vec3 {
         .map_or(Vec3::ZERO, |pushable| pushable.offset)
 }
 
+/// How far a `func_trackchange`/`func_trackautochange` platform has
+/// travelled from where its geometry was compiled, straight out of its own
+/// [`TrackChange::offset`]. `Vec3::ZERO` for any entity without one.
+#[must_use]
+pub fn track_change_offset(registry: &Registry, entity: Entity) -> Vec3 {
+    registry
+        .world
+        .get::<&TrackChange>(entity)
+        .map_or(Vec3::ZERO, |change| change.offset())
+}
+
+/// The signed axis and angle (degrees) a
+/// `func_trackchange`/`func_trackautochange` platform is currently spun
+/// to, straight out of its own [`TrackChange::degrees`]. `Vec3::ZERO`/
+/// `0.0` for any entity without one, so [`mover_rotation`] can chain it
+/// with every other rotating mover.
+#[must_use]
+pub fn track_change_degrees(registry: &Registry, entity: Entity) -> (Vec3, f32) {
+    registry
+        .world
+        .get::<&TrackChange>(entity)
+        .map_or((Vec3::ZERO, 0.0), |change| (change.axis, change.degrees()))
+}
+
 /// How far a brush entity has moved from where its geometry was compiled
 /// and placed — the sum of every translating-mover displacement it could
 /// carry (they are mutually exclusive in practice, and each is zero for an
@@ -319,6 +355,7 @@ pub fn brush_offset(registry: &Registry, entity: Entity) -> Vec3 {
         + track_train_transform(registry, entity).0
         + momentary_door_offset(registry, entity)
         + pushable_offset(registry, entity)
+        + track_change_offset(registry, entity)
 }
 
 /// How far a `func_door_rotating` has swung, in degrees, from the same
@@ -422,7 +459,11 @@ pub fn mover_rotation(registry: &Registry, entity: Entity) -> (Vec3, f32) {
     if axis != Vec3::ZERO {
         return (axis, degrees);
     }
-    pendulum_degrees(registry, entity)
+    let (axis, degrees) = pendulum_degrees(registry, entity);
+    if axis != Vec3::ZERO {
+        return (axis, degrees);
+    }
+    track_change_degrees(registry, entity)
 }
 
 /// The rotation a brush entity's geometry is currently posed at, as the

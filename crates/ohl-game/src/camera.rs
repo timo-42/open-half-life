@@ -640,6 +640,7 @@ mod tests {
                     speed: None,
                     stop: false,
                     message: None,
+                    dead_end: None,
                 })
                 .collect();
             let min = coords.iter().fold(Vec3::splat(f32::MAX), |acc, &(x, y, z)| {

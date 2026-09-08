@@ -2464,3 +2464,145 @@ pub fn reachability_pendulum_bsp(next_map: &str) -> Vec<u8> {
     );
     reachability_obstacle_bsp(&entities)
 }
+
+// ---------------------------------------------------------------------
+
+/// The map name the track-change fixture is published under.
+pub const TRACK_CHANGE_MAP: &str = "ohltrackchangesynth";
+
+/// The `targetname` of the fixture's `func_tracktrain`.
+pub const TRACK_CHANGE_TRAIN_NAME: &str = "ohl_tc_train";
+
+/// The fixture's top chain: the car spawns on the first node and dead-ends
+/// on the second, which is the one carrying the documented `netname`
+/// ("fire on dead end") that names the platform.
+pub const TRACK_CHANGE_TOP_START: [f32; 3] = [0.0, 0.0, 0.0];
+/// See [`TRACK_CHANGE_TOP_START`].
+pub const TRACK_CHANGE_TOP_END: [f32; 3] = [200.0, 0.0, 0.0];
+
+/// The fixture's bottom chain, [`TRACK_CHANGE_HEIGHT`] units below the top
+/// one and running along `+Y` rather than `+X`, so a car that arrives on
+/// it has both descended and turned.
+pub const TRACK_CHANGE_BOTTOM_START: [f32; 3] = [200.0, 0.0, -300.0];
+/// See [`TRACK_CHANGE_BOTTOM_START`].
+pub const TRACK_CHANGE_BOTTOM_END: [f32; 3] = [200.0, 400.0, -300.0];
+
+/// The platform's documented `height` ("travel distance, from top to
+/// bottom"), matching the drop between the fixture's two chains.
+pub const TRACK_CHANGE_HEIGHT: f32 = 300.0;
+/// The platform's documented `rotation` ("the spin done by this platform
+/// on entire way up/down"), a quarter turn onto the `+Y` bottom chain.
+pub const TRACK_CHANGE_ROTATION: f32 = 90.0;
+/// The platform's documented `speed`, units per second over the whole
+/// trip, so the trip takes [`TRACK_CHANGE_HEIGHT`] / this seconds.
+pub const TRACK_CHANGE_SPEED: f32 = 100.0;
+/// The train's own `speed`/`startspeed`.
+pub const TRACK_CHANGE_TRAIN_SPEED: f32 = 100.0;
+
+/// The car's compiled half-extents about its origin brush, and the seat
+/// offset the fixture's `info_player_start` sits at along the car.
+pub const TRACK_CHANGE_CAR_HALF_LENGTH: f32 = 96.0;
+/// See [`TRACK_CHANGE_CAR_HALF_LENGTH`].
+pub const TRACK_CHANGE_CAR_HALF_WIDTH: f32 = 48.0;
+/// See [`TRACK_CHANGE_CAR_HALF_LENGTH`].
+pub const TRACK_CHANGE_CAR_TOP_Z: f32 = 8.0;
+/// See [`TRACK_CHANGE_CAR_HALF_LENGTH`].
+pub const TRACK_CHANGE_CAR_BOTTOM_Z: f32 = -8.0;
+
+/// A void world (submodel `*0`) carrying a `func_tracktrain` (submodel
+/// `*1`) that rides a two-node top chain into a dead end, a
+/// `func_trackautochange` platform (submodel `*2`) named by that dead
+/// end's documented `netname`, and a two-node bottom chain the platform is
+/// documented to assign the train to when it arrives.
+///
+/// This is the shape the campaign blocker was: a ride whose track runs out
+/// with a moving piece of track waiting to carry it onward. Without the
+/// `netname` fire-on-dead-end the platform never activates; without the
+/// platform the train never reaches the second chain, and every node along
+/// that chain — including the ones whose `message` opens the doors ahead
+/// of the ride — is never passed.
+///
+/// The world is void so the car is the only thing holding the passenger
+/// up: a passenger the platform fails to carry falls out of the map rather
+/// than quietly standing on a floor.
+///
+/// Every keyvalue and coordinate here is authored for this project;
+/// nothing is derived from any payload (`docs/CLEAN_ROOM.md`).
+#[must_use]
+pub fn track_change_bsp() -> Vec<u8> {
+    let mut b = Bsp30Builder::new();
+    let [tsx, tsy, tsz] = TRACK_CHANGE_TOP_START;
+    let [tex, tey, tez] = TRACK_CHANGE_TOP_END;
+    let [bsx, bsy, bsz] = TRACK_CHANGE_BOTTOM_START;
+    let [bex, bey, bez] = TRACK_CHANGE_BOTTOM_END;
+    let seat_z = tsz + TRACK_CHANGE_CAR_TOP_Z + 36.0;
+    let speed = TRACK_CHANGE_TRAIN_SPEED;
+    let height = TRACK_CHANGE_HEIGHT;
+    let rotation = TRACK_CHANGE_ROTATION;
+    let platform_speed = TRACK_CHANGE_SPEED;
+    b.set_entities_text(&format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\
+         \"origin\" \"{tsx} {tsy} {seat_z}\"\n\"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"func_tracktrain\"\n\"model\" \"*1\"\n\
+         \"targetname\" \"{TRACK_CHANGE_TRAIN_NAME}\"\n\
+         \"target\" \"ohl_tc_top1\"\n\"speed\" \"{speed}\"\n\
+         \"startspeed\" \"{speed}\"\n\"height\" \"0\"\n\
+         \"origin\" \"{tsx} {tsy} {tsz}\"\n}}\n\
+         {{\n\"classname\" \"path_track\"\n\"targetname\" \"ohl_tc_top1\"\n\
+         \"target\" \"ohl_tc_top2\"\n\"origin\" \"{tsx} {tsy} {tsz}\"\n}}\n\
+         {{\n\"classname\" \"path_track\"\n\"targetname\" \"ohl_tc_top2\"\n\
+         \"netname\" \"ohl_tc_lift\"\n\"origin\" \"{tex} {tey} {tez}\"\n}}\n\
+         {{\n\"classname\" \"path_track\"\n\"targetname\" \"ohl_tc_bottom1\"\n\
+         \"target\" \"ohl_tc_bottom2\"\n\"origin\" \"{bsx} {bsy} {bsz}\"\n}}\n\
+         {{\n\"classname\" \"path_track\"\n\"targetname\" \"ohl_tc_bottom2\"\n\
+         \"origin\" \"{bex} {bey} {bez}\"\n}}\n\
+         {{\n\"classname\" \"func_trackautochange\"\n\"model\" \"*2\"\n\
+         \"targetname\" \"ohl_tc_lift\"\n\
+         \"train\" \"{TRACK_CHANGE_TRAIN_NAME}\"\n\
+         \"toptrack\" \"ohl_tc_top2\"\n\"bottomtrack\" \"ohl_tc_bottom1\"\n\
+         \"height\" \"{height}\"\n\"rotation\" \"{rotation}\"\n\
+         \"speed\" \"{platform_speed}\"\n\
+         \"origin\" \"{tex} {tey} {tez}\"\n}}\n"
+    ));
+
+    // Submodel 0: a void world.
+    let world_heads = b.push_collision_hulls(&[]);
+    b.push_model(
+        [-4096.0, -4096.0, -4096.0],
+        [4096.0, 4096.0, 4096.0],
+        [0.0, 0.0, 0.0],
+        world_heads,
+        2,
+        0,
+        0,
+    );
+    // Submodel 1: the car, compiled relative to its origin brush.
+    let car_mins = [
+        -TRACK_CHANGE_CAR_HALF_LENGTH,
+        -TRACK_CHANGE_CAR_HALF_WIDTH,
+        TRACK_CHANGE_CAR_BOTTOM_Z,
+    ];
+    let car_maxs = [
+        TRACK_CHANGE_CAR_HALF_LENGTH,
+        TRACK_CHANGE_CAR_HALF_WIDTH,
+        TRACK_CHANGE_CAR_TOP_Z,
+    ];
+    let car_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(car_mins, car_maxs)]);
+    b.push_model(car_mins, car_maxs, [0.0, 0.0, 0.0], car_heads, 2, 0, 0);
+    // Submodel 2: the platform itself, a slab under the car, compiled
+    // relative to its own origin brush so it turns about it.
+    let lift_mins = [
+        -TRACK_CHANGE_CAR_HALF_LENGTH,
+        -TRACK_CHANGE_CAR_HALF_WIDTH,
+        -32.0,
+    ];
+    let lift_maxs = [
+        TRACK_CHANGE_CAR_HALF_LENGTH,
+        TRACK_CHANGE_CAR_HALF_WIDTH,
+        -16.0,
+    ];
+    let lift_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(lift_mins, lift_maxs)]);
+    b.push_model(lift_mins, lift_maxs, [0.0, 0.0, 0.0], lift_heads, 2, 0, 0);
+    b.build()
+}
