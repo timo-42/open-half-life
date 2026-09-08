@@ -177,6 +177,27 @@ cargo run --release -p ohl-app --features dev-tools -- \
   --viewpoint-at-nearest-monster 160
 ```
 
+The same `dev-tools` build also adds `--reachability-report`, a
+route-triage command for level authors and regression investigations: it
+loads a map headlessly (no window, no GPU) and runs a bounded,
+deterministic breadth-first walk over the live collision model from the
+player start, using the same standing hull and 18-unit step-up the walking
+player does. It prints, per round: how many 16-unit grid cells were
+reached, which brush-entity classnames sit on the unreached frontier (a
+count of distinct entities and whether the engine's own use-proximity path
+could open one from a reached cell), and whether a `trigger_changelevel`
+was reached (and its straight-line distance from spawn, rounded to the
+nearest ten units). Every closed door the walk found and could open is
+then simulated open for the next round, so a route needing several doors
+opened in sequence is triaged one round at a time, for up to six rounds.
+Output is deliberately sparse: classnames, aggregate counts and rounded
+distances only — never a map name, coordinate, or targetname:
+
+```sh
+cargo run --release -p ohl-app --features dev-tools -- \
+  --payload-root /path/to/payload --map c1a0 --reachability-report
+```
+
 **Smoke tests**, each of which builds (or accepts a prebuilt)
 `open-half-life` and drives it against an already-imported payload:
 

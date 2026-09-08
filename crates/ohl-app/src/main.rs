@@ -311,6 +311,29 @@ number greater than 0 and no more than 8.0."
     #[cfg(feature = "dev-tools")]
     #[arg(long, value_name = "PATH")]
     dev_mdl: Option<PathBuf>,
+
+    /// Development only: runs a bounded, deterministic breadth-first
+    /// reachability walk over the map's live collision model, from the
+    /// player start, and reports (as fixed lines, one per round): how many
+    /// 16-unit grid cells were reached, which brush-entity classnames sit
+    /// on the unreached frontier (a count of distinct entities and
+    /// whether the engine's own use-proximity path could open one from a
+    /// reached cell), and whether a `trigger_changelevel` was reached (and
+    /// its straight-line distance from spawn, rounded to the nearest ten
+    /// units). Closed doors the walk found and could open are then
+    /// simulated open for up to six rounds, so a route needing several
+    /// doors opened in sequence is triaged one round at a time. See
+    /// `ohl_engine::reachability`.
+    ///
+    /// Loads through the normal `--map`/payload path exactly like
+    /// `--script`, headlessly: no window opens and no GPU is used. Prints
+    /// only classnames (this project's own documented entity vocabulary),
+    /// aggregate counts and rounded distances — never a map name,
+    /// coordinate, or targetname (`docs/CLEAN_ROOM.md`). Compiled in
+    /// solely by the non-default `dev-tools` cargo feature.
+    #[cfg(feature = "dev-tools")]
+    #[arg(long)]
+    reachability_report: bool,
 }
 
 /// Formats an event as `[level] message`, mirroring the C++ `ohl::core::log`
@@ -542,12 +565,18 @@ fn run(cli: Cli) -> ExitCode {
         return code;
     }
 
+    #[cfg(feature = "dev-tools")]
+    let reachability_report = cli.reachability_report;
+    #[cfg(not(feature = "dev-tools"))]
+    let reachability_report = false;
+
     if cli.play
         || cli.training
         || cli.map.is_some()
         || cli.load.is_some()
         || cli.headless_screenshot.is_some()
         || cli.script.is_some()
+        || reachability_report
     {
         return run_game_flow(&cli);
     }
@@ -595,6 +624,8 @@ fn run_game_flow(cli: &Cli) -> ExitCode {
         follow_level_change: cli.follow_level_change,
         #[cfg(feature = "dev-tools")]
         viewpoint_at_nearest_monster: cli.viewpoint_at_nearest_monster,
+        #[cfg(feature = "dev-tools")]
+        reachability_report: cli.reachability_report,
     }) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {

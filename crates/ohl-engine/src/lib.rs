@@ -64,6 +64,12 @@ pub mod save_state;
 pub mod text;
 pub mod transition;
 
+// A dev-tools route-triage command (M9): a bounded breadth-first walk over
+// the live collision model, promoted from two throwaway investigation
+// scripts into a reusable, tested piece of the engine. See this module's
+// own doc comment.
+pub mod reachability;
+
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
@@ -75,6 +81,10 @@ pub use game::{Game, GameConfig, GameEvent};
 pub use ids::{entity_id, entity_of};
 pub use input::Input;
 pub use level::{PLAYER_MAX_ARMOR, PLAYER_MAX_HEALTH, SpritePlacement};
+pub use reachability::{
+    ChangeLevelStatus, FrontierClass, ReachabilityConfig, ReachabilityReport, RoundReport,
+    compute_reachability_report,
+};
 pub use render::RenderTarget;
 pub use save::GameSave;
 pub use systems::{QueuedDamage, Systems, SystemsConfig};

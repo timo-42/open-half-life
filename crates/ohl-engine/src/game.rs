@@ -771,6 +771,44 @@ impl Game {
         })
     }
 
+    /// The live collision model, for a host that needs to trace against it
+    /// directly (`crate::reachability`'s route-triage walk) rather than
+    /// through the player-move step. `None` when this level has no usable
+    /// collision hulls (see [`Self::has_collision`]).
+    #[must_use]
+    pub fn collision(&self) -> Option<&ohl_physics::CollisionModel> {
+        self.level.collision.as_ref()
+    }
+
+    /// As [`Self::collision`], mutably: `crate::reachability`'s iterative
+    /// walk detaches a door's brush (`CollisionModel::detach_brush`) to
+    /// simulate it having been opened, between rounds.
+    pub fn collision_mut(&mut self) -> Option<&mut ohl_physics::CollisionModel> {
+        self.level.collision.as_mut()
+    }
+
+    /// Which attached brush hull belongs to which entity, so a caller that
+    /// gets a [`ohl_physics::BrushId`] back from a
+    /// [`ohl_physics::CollisionModel::trace`] (via
+    /// [`ohl_physics::Trace::brush_index`]) can look up the entity — and,
+    /// through [`Self::registry`], its classname — that blocked it.
+    #[must_use]
+    pub fn brush_collision(&self) -> &[(ohl_game::hecs::Entity, ohl_physics::BrushId)] {
+        &self.level.brush_collision
+    }
+
+    /// The walking player's own hull-space origin (36 units above the
+    /// floor it stands on for the standing hull), as
+    /// [`ohl_physics::PlayerController`] tracks it — distinct from
+    /// [`Self::eye_position`], which adds the eye-height offset on top.
+    /// `crate::reachability`'s walk starts here, since it traces with the
+    /// same [`ohl_physics::Hull::Standing`] this origin is defined
+    /// relative to.
+    #[must_use]
+    pub fn player_origin(&self) -> [f32; 3] {
+        self.controller.state.origin.to_array()
+    }
+
     /// The speed of the attached brush entity the player is currently
     /// standing on (a moving `func_train`/`func_tracktrain`/`func_plat`/
     /// lift `func_door`, or a rotating `func_rotating`/`func_door_rotating`
