@@ -1,0 +1,637 @@
+# M9 scripted-input scenario: a spawn-to-exit progression walk in On A
+# Rail.
+#
+# Project-authored; no bytes here come from any game installation (see
+# docs/CLEAN_ROOM.md). Run against "c2a2" (On A Rail, per
+# ohl_campaign::CHAPTERS's own cited table) by xtask/src/combat_smoke.rs,
+# with `--follow-level-change` so a `trigger_changelevel` this walk
+# reaches is actually followed rather than only logged as "not followed".
+#
+# Route, in words only (no entity name, path or coordinate from any
+# payload): from the player's spawn point, advance forward through a long
+# sequence of turns, opening a rotating door along the way with a `use`
+# press once it is within reach, and passing near a monster along the way
+# (a source of damage to it, not a route failure), until a level change
+# fires; then wait out the transition.
+#
+# Technique: an autopilot was flown over this map's own collision hulls,
+# pressing `use` whenever a usable brush entity came within
+# ohl_engine::USE_RADIUS, and the per-tick inputs it applied were
+# recorded and merged into the whole/fractional-degree turns below,
+# matching the technique documented in
+# xtask/smoke-scenarios/reach_level_change_anomalous_materials.txt. Runs
+# whose per-tick turn is not bit-for-bit identical to its neighbor are
+# kept as their own single-tick line rather than merged, which is why
+# many lines below carry small fractional-degree turns. The run is
+# deterministic, so replaying these inputs reproduces the same route
+# every time.
+#
+# Expected fixed log lines, asserted by the harness rather than parsed
+# from this file:
+#   present: "Scripted input loaded.", "Scripted input finished.",
+#            "The player moved from the spawn point.",
+#            "The player opened a door.",
+#            "A monster took damage.",
+#            "A level change was followed."
+#   absent:  every other fixed line, including "The player is inside
+#            solid geometry." (this scenario's own regression guard for
+#            the PR #91 class of bug)
+8 forward look 0 48.000000
+1 forward look 0 3.345715
+1 forward look 0 -1.617191
+1 forward look 0 0.480259
+1 forward look 0 1.144653
+10 forward look 0 60.000000
+1 forward look 0 5.022209
+2 forward look 0 12.000000
+1 forward look 0 -4.026817
+1 forward look 0 6.000000
+1 forward look 0 -5.485115
+1 forward look 0 3.786751
+1 forward look 0 6.000000
+1 forward look 0 -6.000000
+1 forward look 0 0.307327
+1 forward look 0 -6.000000
+1 forward look 0 -0.812836
+1 forward look 0 2.698311
+1 forward look 0 -6.000000
+1 forward look 0 -3.742477
+1 forward look 0 -6.000000
+1 forward look 0 -3.447281
+1 forward look 0 0.097351
+1 forward look 0 -6.000000
+1 forward look 0 -1.891464
+1 forward look 0 -1.726624
+1 forward look 0 -3.311157
+1 forward look 0 -2.178574
+1 forward look 0 -3.066338
+1 forward look 0 -0.156334
+1 forward look 0 -2.749962
+1 forward look 0 -3.863228
+1 forward look 0 2.429123
+1 forward look 0 -2.961929
+1 forward look 0 -4.163383
+6 forward look 0 36.000000
+14 forward use look 0 84.000000
+3 forward look 0 18.000000
+1 forward look 0 -2.155396
+1 forward look 0 -1.451294
+1 forward look 0 -3.692627
+1 forward look 0 -4.751343
+1 forward look 0 -2.526276
+1 forward look 0 -5.345581
+1 forward look 0 -6.000000
+1 forward look 0 -5.863770
+1 forward look 0 -4.953537
+1 forward look 0 -6.000000
+1 forward look 0 -3.929688
+1 forward look 0 0.265274
+1 forward look 0 -6.000000
+1 forward look 0 -4.317154
+18 forward look 0 -108.000000
+1 forward look 0 -0.277271
+7 forward look 0 42.000000
+1 forward look 0 4.650085
+1 forward look 0 0.707550
+1 forward look 0 4.025131
+1 forward look 0 2.636414
+1 forward look 0 -2.110779
+1 forward look 0 4.155869
+1 forward look 0 2.730911
+1 forward look 0 -4.272339
+1 forward look 0 3.868744
+1 forward look 0 -5.527985
+1 forward look 0 2.449600
+1 forward look 0 3.362915
+1 forward look 0 -5.935860
+1 forward look 0 1.905869
+1 forward look 0 2.635201
+1 forward look 0 -5.749435
+1 forward look 0 1.270187
+1 forward look 0 1.767471
+1 forward look 0 -5.039322
+1 forward look 0 0.614449
+1 forward look 0 0.859070
+1 forward look 0 -3.939415
+1 forward look 0 0.007210
+1 forward look 0 0.009796
+1 forward look 0 -2.626350
+1 forward look 0 -0.497635
+1 forward look 0 -0.697502
+1 forward look 0 -1.282265
+1 forward look 0 -0.866753
+1 forward look 0 -1.215012
+1 forward look 0 -0.054146
+1 forward look 0 -1.089737
+1 forward look 0 -1.526810
+1 forward look 0 0.958725
+1 forward look 0 -1.171791
+1 forward look 0 -1.642029
+1 forward look 0 1.702560
+1 forward look 0 -1.131271
+1 forward look 0 -1.586197
+1 forward look 0 2.158882
+1 forward look 0 -0.993156
+1 forward look 0 -1.393929
+1 forward look 0 2.336563
+1 forward look 0 -0.787292
+1 forward look 0 -1.106171
+1 forward look 0 2.265907
+1 forward look 0 -0.543587
+1 forward look 0 -0.764381
+1 forward look 0 1.994659
+1 forward look 0 -0.291618
+1 forward look 0 -0.410461
+1 forward look 0 1.582291
+1 forward look 0 -0.056656
+1 forward look 0 -0.079636
+1 forward look 0 1.092995
+1 forward look 0 0.141953
+1 forward look 0 0.200111
+1 forward look 0 0.587097
+1 forward look 0 0.292244
+1 forward look 0 0.411522
+1 forward look 0 0.115936
+1 forward look 0 0.388214
+1 forward look 0 0.546524
+1 forward look 0 -0.281906
+1 forward look 0 0.430687
+1 forward look 0 0.606667
+1 forward look 0 -0.582520
+1 forward look 0 0.425407
+1 forward look 0 0.599243
+1 forward look 0 -0.775169
+1 forward look 0 0.381447
+1 forward look 0 0.536919
+1 forward look 0 -0.861092
+1 forward look 0 0.309349
+1 forward look 0 0.435745
+33 forward look 0 198.000000
+16 look 0 96.000000
+1 look 0 1.664497
+1 look 0 -0.199556
+1 look 0 -0.088337
+1 look 0 -0.154390
+1 look 0 -0.125431
+1 look 0 -0.052069
+1 look 0 -0.083225
+1 look 0 -0.055708
+1 look 0 -0.017651
+1 look 0 -0.014967
+3 wait
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+2 forward
+3 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+31 forward look 0 186.000000
+1 look 0 5.925964
+1 look 0 1.874023
+1 look 0 4.150269
+1 look 0 4.729431
+1 look 0 2.593018
+1 look 0 5.647430
+1 look 0 6.000000
+1 look 0 3.535583
+2 look 0 12.000000
+1 look 0 5.574768
+2 look 0 12.000000
+1 look 0 4.754333
+1 look 0 5.832764
+1 look 0 5.222290
+1 look 0 2.381592
+1 look 0 4.323669
+1 look 0 3.779633
+1 look 0 1.704132
+1 look 0 3.070404
+1 look 0 2.654510
+1 look 0 1.184204
+1 look 0 2.107330
+1 look 0 1.788269
+1 look 0 0.784882
+1 look 0 1.369232
+1 look 0 1.122040
+1 look 0 0.474884
+1 forward look 0 0.788147
+1 forward look 0 0.594330
+1 forward look 0 0.259552
+1 forward look 0 0.525757
+1 forward look 0 0.582733
+1 forward look 0 0.331512
+31 forward look 0 -186.000000
+2 look 0 -12.000000
+1 look 0 -2.377678
+1 look 0 -0.550934
+1 look 0 -0.275917
+1 look 0 -0.551628
+1 look 0 0.085991
+1 look 0 0.398338
+1 look 0 0.774704
+1 look 0 0.744392
+1 look 0 0.360611
+1 look 0 0.696312
+1 look 0 0.658607
+1 look 0 0.313499
+1 look 0 0.592361
+1 look 0 0.541710
+1 look 0 0.250374
+1 look 0 0.457008
+1 look 0 0.395271
+1 look 0 0.173256
+1 look 0 0.295731
+1 look 0 0.225922
+1 look 0 0.085983
+1 look 0 0.116989
+1 look 0 0.042877
+4 wait
+1 forward
+1 forward look 0 0.000137
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward look 0 0.000107
+1 forward
+1 forward look 0 0.000198
+38 forward look 0 228.000000
+8 look 0 48.000000
+1 look 0 2.464287
+1 look 0 1.119026
+1 look 0 1.067505
+1 look 0 0.514183
+1 look 0 0.989277
+1 look 0 0.937035
+1 look 0 0.447956
+1 look 0 0.851360
+1 look 0 0.787594
+1 look 0 0.368382
+1 look 0 0.682934
+1 look 0 0.607796
+1 look 0 0.274471
+1 look 0 0.488083
+1 look 0 0.404278
+1 look 0 0.169983
+1 look 0 0.274178
+1 look 0 0.185272
+1 look 0 0.058861
+1 look 0 0.049862
+1 wait
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward
+1 forward look 0 -0.000118
+1 forward look 0 -0.000175
+31 forward look 0 186.000000
+11 look 0 66.000000
+1 look 0 3.536133
+1 look 0 1.203003
+1 look 0 1.078888
+1 look 0 0.497498
+1 look 0 0.919342
+1 look 0 0.828064
+1 look 0 0.383057
+1 look 0 0.710022
+1 look 0 0.641968
+1 look 0 0.297882
+1 look 0 0.553528
+1 look 0 0.502258
+1 look 0 0.233551
+1 look 0 0.434021
+1 look 0 0.391327
+1 look 0 0.180023
+1 look 0 0.329834
+1 look 0 0.290283
+1 forward look 0 0.130676
+1 forward look 0 0.230957
+1 forward look 0 0.195404
+1 forward look 0 0.091888
+1 forward look 0 0.176941
+1 forward look 0 0.169983
+1 forward look 0 0.083069
+1 forward look 0 0.163544
+1 forward look 0 0.161957
+1 forward look 0 0.080750
+1 forward look 0 0.161530
+1 forward look 0 0.161896
+1 forward look 0 0.081238
+1 forward look 0 0.163605
+1 forward look 0 0.165649
+1 forward look 0 0.083862
+1 forward look 0 0.170227
+1 forward look 0 0.174530
+1 forward look 0 0.089203
+1 forward look 0 0.183197
+1 forward look 0 0.190918
+1 forward look 0 0.098877
+1 forward look 0 0.206085
+1 forward look 0 0.219360
+1 forward look 0 0.115845
+1 forward look 0 0.246277
+1 forward look 0 0.270935
+1 forward look 0 0.146942
+1 forward look 0 0.322693
+1 forward look 0 0.372894
+1 look 0 0.211151
+1 look 0 0.484863
+1 look 0 0.589539
+1 look 0 0.344330
+1 look 0 0.817596
+1 look 0 1.046936
+31 forward look 0 -186.000000
+11 look 0 -66.000000
+1 look 0 -3.079193
+1 look 0 -2.875427
+1 look 0 -2.616508
+1 look 0 -1.216133
+1 look 0 -2.259613
+1 look 0 -2.044838
+1 look 0 -0.947712
+1 look 0 -1.757687
+1 look 0 -1.588688
+1 look 0 -0.735012
+1 look 0 -1.355209
+1 look 0 -1.207207
+1 look 0 -0.550034
+1 look 0 -0.996338
+1 look 0 -0.862823
+1 look 0 -0.382858
+1 look 0 -0.671585
+1 look 0 -0.549286
+1 forward look 0 -0.229950
+1 forward look 0 -0.379581
+1 forward look 0 -0.332195
+1 forward look 0 -0.163242
+1 forward look 0 -0.330196
+1 forward look 0 -0.346260
+1 forward look 0 -0.183636
+1 forward look 0 -0.401802
+1 forward look 0 -0.473282
+1 forward look 0 -0.274471
+1 forward look 0 -0.657043
+1 forward look 0 -0.877743
+1 forward look 0 -0.569031
+31 forward look 0 186.000000
+10 look 0 60.000000
+1 look 0 3.907837
+1 look 0 1.442200
+1 look 0 1.296234
+1 look 0 0.598572
+1 look 0 1.107178
+1 look 0 0.998413
+1 look 0 0.462158
+1 look 0 0.857025
+1 look 0 0.775391
+1 look 0 0.359802
+1 look 0 0.668762
+1 look 0 0.606934
+1 look 0 0.282257
+1 look 0 0.525726
+1 look 0 0.477417
+1 look 0 0.221222
+1 look 0 0.408203
+1 look 0 0.363892
+1 look 0 0.165710
+1 forward look 0 0.299469
+1 forward look 0 0.256470
+1 forward look 0 0.112854
+1 forward look 0 0.211334
+1 forward look 0 0.200623
+1 forward look 0 0.097229
+1 forward look 0 0.190094
+1 forward look 0 0.186310
+1 forward look 0 0.092468
+1 forward look 0 0.184570
+1 forward look 0 0.184937
+1 forward look 0 0.092773
+1 forward look 0 0.186707
+1 forward look 0 0.188873
+1 forward look 0 0.095459
+1 forward look 0 0.193695
+1 forward look 0 0.198303
+1 forward look 0 0.101257
+1 forward look 0 0.207581
+1 forward look 0 0.216064
+1 forward look 0 0.111755
+1 forward look 0 0.232513
+1 forward look 0 0.247223
+1 forward look 0 0.130249
+1 forward look 0 0.276398
+1 forward look 0 0.302948
+1 forward look 0 0.163574
+1 forward look 0 0.358368
+1 forward look 0 0.411499
+1 forward look 0 0.231842
+1 look 0 0.533875
+1 look 0 0.659943
+1 look 0 0.390900
+1 look 0 0.944885
+31 forward look 0 -186.000000
+15 look 0 -90.000000
+1 look 0 -0.988159
+1 look 0 -1.592434
+1 look 0 -1.415859
+1 look 0 -0.648758
+1 look 0 -1.191792
+1 look 0 -1.064999
+1 look 0 -0.488522
+1 look 0 -0.894020
+1 look 0 -0.788956
+1 look 0 -0.357128
+1 look 0 -0.642988
+1 look 0 -0.552101
+1 look 0 -0.243374
+1 look 0 -0.423571
+1 forward look 0 -0.342209
+1 forward look 0 -0.142027
+1 forward look 0 -0.230392
+1 forward look 0 -0.212114
+1 forward look 0 -0.104609
+1 forward look 0 -0.210320
+1 forward look 0 -0.217169
+1 forward look 0 -0.113340
+1 forward look 0 -0.241716
+1 forward look 0 -0.271215
+1 forward look 0 -0.149647
+1 forward look 0 -0.336376
+1 forward look 0 -0.403214
+1 forward look 0 -0.236025
+1 forward look 0 -0.571430
+1 forward look 0 -0.778494
+31 forward look 0 186.000000
+10 look 0 60.000000
+1 look 0 3.054962
+1 look 0 0.640564
+1 look 0 1.185547
+1 look 0 1.069641
+1 look 0 0.495361
+1 look 0 0.918701
+1 look 0 0.831451
+1 look 0 0.385895
+1 look 0 0.717316
+1 look 0 0.651001
+1 look 0 0.302765
+1 look 0 0.563965
+1 look 0 0.513123
+1 look 0 0.239075
+1 look 0 0.445251
+1 look 0 0.402344
+1 look 0 0.185516
+1 look 0 0.340302
+1 look 0 0.300140
+1 forward look 0 0.135315
+1 forward look 0 0.240356
+1 forward look 0 0.206940
+1 forward look 0 0.097778
+1 forward look 0 0.188110
+1 forward look 0 0.180420
+1 forward look 0 0.088013
+1 forward look 0 0.172974
+1 forward look 0 0.170532
+1 forward look 0 0.084778
+1 forward look 0 0.168915
+1 forward look 0 0.168396
+1 forward look 0 0.084137
+1 forward look 0 0.168701
+1 forward look 0 0.169769
+1 forward look 0 0.085419
+1 forward look 0 0.172455
+1 forward look 0 0.175262
+1 forward look 0 0.088989
+1 forward look 0 0.181458
+1 forward look 0 0.186890
+1 forward look 0 0.095856
+1 forward look 0 0.197906
+1 forward look 0 0.207733
+1 forward look 0 0.108124
+1 forward look 0 0.226959
+1 forward look 0 0.244171
+1 forward look 0 0.129913
+1 forward look 0 0.278870
+1 forward look 0 0.311188
+1 look 0 0.170685
+1 look 0 0.378265
+1 look 0 0.434998
+1 look 0 0.242584
+1 look 0 0.543884
+1 look 0 0.637695
+1 look 0 0.361023
+1 look 0 0.825226
+1 look 0 0.994415
+31 forward look 0 -186.000000
+16 look 0 -96.000000
+1 look 0 -3.734051
+1 look 0 -0.403693
+1 look 0 -0.742383
+1 look 0 -0.664781
+1 look 0 -0.306367
+1 look 0 -0.565834
+1 look 0 -0.508478
+1 look 0 -0.233863
+1 look 0 -0.428809
+1 look 0 -0.379072
+1 look 0 -0.171626
+1 look 0 -0.308720
+1 look 0 -0.264161
+1 forward look 0 -0.115872
+1 forward look 0 -0.194710
+1 forward look 0 -0.155985
+1 forward look 0 -0.073576
+1 forward look 0 -0.143014
+1 forward look 0 -0.139666
+1 forward look 0 -0.069296
+1 forward look 0 -0.139151
+1 forward look 0 -0.142207
+1 forward look 0 -0.072788
+1 forward look 0 -0.149911
+1 forward look 0 -0.156757
+1 forward look 0 -0.081342
+1 forward look 0 -0.170211
+1 forward look 0 -0.182201
+1 forward look 0 -0.096464
+1 forward look 0 -0.206291
+1 forward look 0 -0.228714
+1 forward look 0 -0.124684
+1 forward look 0 -0.275863
+1 forward look 0 -0.322854
+1 forward look 0 -0.184906
+1 forward look 0 -0.434540
+1 forward look 0 -0.562364
+1 forward look 0 -0.353760
+31 forward look 0 -186.000000
+5 look 0 -30.000000
+1 look 0 -2.272003
+1 look 0 -1.387695
+1 look 0 -0.682678
+1 look 0 -1.340012
+1 look 0 -1.302322
+1 look 0 -0.635818
+1 look 0 -1.238647
+1 look 0 -1.192688
+1 look 0 -0.578415
+1 look 0 -1.119705
+1 look 0 -1.069473
+1 look 0 -0.515472
+1 look 0 -0.992615
+1 look 0 -0.940979
+1 look 0 -0.449837
+1 look 0 -0.855125
+1 look 0 -0.790840
+1 look 0 -0.369690
+1 look 0 -0.685211
+1 look 0 -0.608925
+1 look 0 -0.274597
+1 look 0 -0.487297
+1 look 0 -0.402046
+1 look 0 -0.168228
+1 forward look 0 -0.269753
+1 forward look 0 -0.195129
+1 forward look 0 -0.090439
+1 forward look 0 -0.178459
+1 forward look 0 -0.179787
+1 forward look 0 -0.092194
+1 forward look 0 -0.192955
+1 forward look 0 -0.212189
+1 forward look 0 -0.116508
+1 forward look 0 -0.260750
+1 forward look 0 -0.310211
+1 forward look 0 -0.180328
+1 forward look 0 -0.433197
+1 forward look 0 -0.580910
+1 forward look 0 -0.378845
+30 forward look 0 180.000000
+60 wait

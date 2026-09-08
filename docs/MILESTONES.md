@@ -3669,3 +3669,33 @@ tested engine module and a `dev-tools`-only CLI flag.
   opens — the same "if a second door blocks the spot, `use`'s proximity
   search is not finding it" finding
   `.plan/c1a0-progress-investigation.md` recorded manually.
+
+- **Five more spawn-to-exit progression scenarios, from a second
+  reachability triage pass.** With the `--reachability-report` dev tool in
+  hand, five more `combat-smoke` scenarios were added:
+  `xtask/smoke-scenarios/progress_c1a3_reach_changelevel.txt` ("We've Got
+  Hostiles!") and `progress_c2a2_reach_changelevel.txt` (On A Rail), each
+  opening a door on the way with a `use` press, the latter also passing a
+  monster; `progress_c2a1_reach_changelevel.txt` (Power Up), which also
+  passes a monster but needs no door; and
+  `progress_c1a4_reach_changelevel.txt` (Blast Pit) and
+  `progress_c2a3_reach_changelevel.txt` (Apprehension), whose routes need
+  neither, all four reaching their own map's level-change trigger and
+  following it end to end. Progression scenarios now cover `c1a0`, `c1a1`,
+  `c1a3`, `c1a4`, `c2a1`, `c2a2` and `c2a3`.
+  The same pass found "c1a2" (Office Complex) **not** reachable by that
+  walk: every use-openable door on the map's frontier does get opened
+  round over round, but the frontier left standing afterward is a
+  `func_pendulum`, a `func_pushable` and further `func_button`/
+  `func_wall`/`func_breakable` entities — none of them a closed door, so
+  none of them is something the reachability walk's round-advance (which
+  only ever opens a closed `Door`-component brush) can act on. A targeted
+  probe confirmed buttons on this map are live (pressing one reachable
+  button did change two real door states elsewhere), but a fresh walk from
+  the player's new position still left the same non-door frontier and the
+  level-change trigger still unreached, so the proximate blocker is most
+  plausibly the mover/pushable obstacle rather than a missed trigger
+  chain. `c1a2` is therefore blocked on `func_pendulum`/`func_pushable`
+  support (timed obstacle dodging / pushing an object to open a new step),
+  not on anything this round's scenario work changes; no scenario was
+  added for it.
