@@ -116,3 +116,30 @@ Keep native macOS CI because only macOS can run the pair, exercise Metal and
 CoreAudio, and test the Seatbelt confinement profile. The native
 `cargo xtask worker-image` command also performs host-specific image audits;
 the Linux cross-build performs format and architecture checks instead.
+
+## Validated toolchains and outputs
+
+The commands above were run on an x86-64 Debian Linux host with Rust 1.98.1 on
+September 8, 2026. The Windows build used Debian's MinGW-w64 GCC 16 toolchain.
+The Apple build used osxcross
+`27d21e4977c9751d01199c7a226a6faf494c3dd9`, the official Command Line Tools
+macOS 15.4 SDK, and a minimum deployment target of macOS 11.0.
+
+The script produced and checked these release artifacts:
+
+- Windows application: PE32+ console executable for x86-64; SHA-256
+  `4b0303dcf22a91d3d74932358ffce7ea732fb6d56fbcc98232f678067af2d74d`.
+  Its PE import table contained Windows system DLLs and no GCC, libstdc++, or
+  winpthreads runtime DLL.
+- macOS application: Mach-O 64-bit arm64 executable; SHA-256
+  `0e2b4c30320cd721fc8d7a4b61988d4effb132f2562b7c0c8cab43fe657b010e`.
+- macOS parser worker: Mach-O 64-bit arm64 executable; SHA-256
+  `38949c9e0243df7e9bdef250ed3a52de9650f240adea52c997b9a94e187c8809`.
+  Its only dynamic dependency was `/usr/lib/libSystem.B.dylib`.
+
+After copying the outputs from the Linux builder, both applications completed
+native `--version` smoke runs on their target OS. On Apple Silicon, the
+cross-built worker also passed all five production worker-lifetime scenarios
+under the real Seatbelt launcher. Artifact hashes include the source and
+`OHL_VERSION` inputs, so a later revision is expected to produce different
+values.

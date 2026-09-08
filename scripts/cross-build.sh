@@ -62,7 +62,7 @@ verify_windows_imports() {
     local library
 
     require_command "$objdump"
-    imports="$($objdump -p "$artifact" | awk '$1 == "DLL" && $2 == "Name:" { print $3 }')"
+    imports="$("$objdump" -p "$artifact" | awk '$1 == "DLL" && $2 == "Name:" { print $3 }')"
     [[ -n "$imports" ]] || fail "no PE import table found in $artifact"
     while IFS= read -r library; do
         case "${library,,}" in
@@ -101,7 +101,8 @@ find_osxcross_tool() {
     local tool
 
     tool="$(find -L "$OSXCROSS_ROOT/bin" -maxdepth 1 -type f \
-        -name "arm64-apple-darwin*-$suffix" -print -quit)"
+        -regextype posix-extended \
+        -regex ".*/arm64-apple-darwin[0-9.]+-$suffix" -print -quit)"
     [[ -n "$tool" ]] || fail "no arm64 osxcross $suffix wrapper found under $OSXCROSS_ROOT/bin"
     printf '%s\n' "$tool"
 }
