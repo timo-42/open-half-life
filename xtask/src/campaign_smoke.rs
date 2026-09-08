@@ -165,7 +165,13 @@ const KNOWN_ERROR_CODES: &[(&str, &str)] = &[
         "no offscreen target could be created",
         "no-offscreen-target",
     ),
-    ("the frame could not be rendered", "render-failed"),
+    // `ohl_engine::EngineError::message` (game_run.rs::render_capture maps
+    // through it directly, since it already returns a fixed, sanitized
+    // reason per failed step): `Renderer` is the only variant a render
+    // call can return today, so this keeps the code stable under its old
+    // name even though the message text changed from the previous single
+    // generic string.
+    ("the renderer could not be created", "render-failed"),
     ("the frame could not be read back", "readback-failed"),
     ("the capture could not be written", "capture-write-failed"),
     (

@@ -151,7 +151,13 @@ fn render_capture(
         }
         CapturePose::Frozen | CapturePose::None => game.render(context, target),
     }
-    .map_err(|_| "the frame could not be rendered")
+    // `ohl_engine::EngineError::message` is already a fixed, sanitized
+    // reason (never media-derived), so this reports the specific step that
+    // failed (e.g. "the renderer could not be created") instead of the one
+    // generic "the frame could not be rendered" every failure used to
+    // collapse into, which made a degenerate/unbuildable world
+    // indistinguishable from a missing adapter or a lost device.
+    .map_err(|error| error.message())
 }
 
 /// Everything the playable loop needs from the command line.
@@ -1292,20 +1298,19 @@ impl App<'_> {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         let (width, height) = (active.surface.width(), active.surface.height());
-        if self
-            .game
-            .render(
-                &active.context,
-                RenderTarget {
-                    view: &view,
-                    width,
-                    height,
-                    format: active.surface.format(),
-                },
-            )
-            .is_err()
-        {
-            self.failure = Some("the frame could not be rendered");
+        if let Err(error) = self.game.render(
+            &active.context,
+            RenderTarget {
+                view: &view,
+                width,
+                height,
+                format: active.surface.format(),
+            },
+        ) {
+            // As `render_capture`'s own `map_err`: the specific, sanitized
+            // reason, not one generic string every render failure used to
+            // collapse into.
+            self.failure = Some(error.message());
         }
 
         active.ui.begin_frame();
