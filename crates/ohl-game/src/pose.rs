@@ -156,6 +156,18 @@ pub fn platform_offset(registry: &Registry, entity: Entity) -> Vec3 {
 /// at the absolute polyline coordinate — the same thing an engine that
 /// simply assigns the entity's origin from the path does, and a map shape
 /// the documentation gives no other meaning to.
+///
+/// TODO(black-box): that no-origin-brush placement is correct for render/
+/// collision (both add this delta to the same `0 0 0` `origin` keyvalue),
+/// but not for [`brush_center`]: its own `BrushCenter` is the compiled
+/// bounds midpoint plus that same `0 0 0` keyvalue, i.e. wherever the
+/// train's geometry happened to be built in the map editor, unrelated to
+/// the path — so `brush_center` adds this absolute path position *on top
+/// of* that unrelated editor location instead of replacing it. See
+/// `docs/FORMAT_SOURCES.md` item 31 and this module's own
+/// `a_tracktrain_without_an_origin_brush_gives_a_wrong_brush_center` test,
+/// which pins the current, documented-wrong behaviour so a future fix has
+/// to update it deliberately.
 #[must_use]
 pub fn track_train_transform(registry: &Registry, entity: Entity) -> (Vec3, Option<f32>) {
     let Ok(state) = registry.world.get::<&TrackTrainState>(entity) else {
@@ -424,5 +436,75 @@ mod tests {
         set_state(&registry, MoverState::Open);
         let center = brush_center(&registry, entity).expect("a placed centre");
         assert!((center - Vec3::new(1000.0, -468.0, 64.0 + travel)).length() < 1e-3);
+    }
+
+    /// A `func_tracktrain` authored *without* an origin brush has
+    /// world-baked geometry compiled wherever the map editor happened to
+    /// place it — unrelated to the path it rides — and a `0 0 0` `origin`
+    /// keyvalue (see `track_train_transform`'s own doc comment). Render
+    /// and collision get this right: they add the train's absolute path
+    /// position to that same zero `origin`. But `brush_center` is
+    /// currently wrong for this shape: its `BrushCenter` is the compiled
+    /// bounds midpoint (the unrelated editor location) plus that zero
+    /// `origin`, and `brush_offset` then adds the absolute path position
+    /// *on top of* it, rather than replacing it — so the proximity point
+    /// drifts away from the train as soon as it leaves its spawn node.
+    /// This test pins that documented, current-but-wrong behaviour (`docs/
+    /// FORMAT_SOURCES.md` item 31); a future fix must update this test
+    /// deliberately rather than leave it silently passing on the old sum.
+    #[test]
+    fn a_tracktrain_without_an_origin_brush_gives_a_wrong_brush_center() {
+        let train_kv = [
+            ("classname", "func_tracktrain"),
+            ("targetname", "tram"),
+            ("target", "node1"),
+            ("model", "*1"),
+            ("height", "0"),
+            // No `origin` keyvalue: this is the no-origin-brush shape.
+        ];
+        let defs = parse_entities(
+            &[
+                raw(&train_kv),
+                raw(&[
+                    ("classname", "path_track"),
+                    ("targetname", "node1"),
+                    ("target", "node2"),
+                    ("origin", "0 0 0"),
+                ]),
+                raw(&[
+                    ("classname", "path_track"),
+                    ("targetname", "node2"),
+                    ("origin", "100 0 0"),
+                ]),
+            ],
+            &Limits::default(),
+        );
+        let mut bounds = BTreeMap::new();
+        // World-baked geometry compiled far from the path, at the
+        // editor's own build location — this project's own synthetic
+        // fixture, not derived from any payload.
+        bounds.insert(1u32, ([492.0, 292.0, 2.0], [508.0, 308.0, 18.0]));
+        let mut registry = Registry::build(&defs, &bounds, &Limits::default());
+        crate::track_train::spawn_all(&mut registry);
+        let entity = registry.find("tram")[0];
+
+        {
+            let mut state = registry
+                .world
+                .get::<&mut crate::track_train::TrackTrainState>(entity)
+                .expect("a resolved path");
+            state.turn_on();
+            state.advance(0.5);
+        }
+
+        let center = brush_center(&registry, entity).expect("a placed centre");
+        // Correct placement would be the train's own path position,
+        // `(50, 0, 0)` — halfway from `node1` to `node2` at `speed 100`.
+        // The documented-wrong sum instead adds that onto the unrelated
+        // compiled centre `(500, 300, 10)`.
+        assert!(
+            (center - Vec3::new(550.0, 300.0, 10.0)).length() < 1e-2,
+            "expected the documented-wrong sum, got {center:?}"
+        );
     }
 }

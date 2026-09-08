@@ -88,8 +88,8 @@ const BASE_PRESENT: [&str; 2] = ["Scripted input loaded.", "Scripted input finis
 /// `absent` list instead.
 ///
 /// "A level change was followed." joined this list (the spawn-to-exit
-/// progression scenarios) alongside the four scenarios that assert it
-/// *present* and are the only ones run with `--follow-level-change`; every
+/// progression scenarios) alongside the scenarios that assert it
+/// *present*, which are the ones run with `--follow-level-change`; every
 /// other scenario's script either never reaches a `trigger_changelevel` or
 /// is not run with that flag, so it must never log this line.
 ///
