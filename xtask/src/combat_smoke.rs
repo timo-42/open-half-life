@@ -88,8 +88,8 @@ const BASE_PRESENT: [&str; 2] = ["Scripted input loaded.", "Scripted input finis
 /// `absent` list instead.
 ///
 /// "A level change was followed." joined this list (the spawn-to-exit
-/// progression scenario) alongside the one scenario that asserts it
-/// *present* and is the only one run with `--follow-level-change`; every
+/// progression scenarios) alongside the two scenarios that assert it
+/// *present* and are the only ones run with `--follow-level-change`; every
 /// other scenario's script either never reaches a `trigger_changelevel` or
 /// is not run with that flag, so it must never log this line.
 ///
@@ -100,8 +100,8 @@ const BASE_PRESENT: [&str; 2] = ["Scripted input loaded.", "Scripted input finis
 /// geometry) absent.
 ///
 /// "The player opened a door." joined this list (M9, `TODO(black-box)`
-/// item 25) alongside the scenario that asserts it *present*: exactly one
-/// scenario in this file presses `use` at all, so every other one must
+/// item 25) alongside the scenarios that assert it *present*: only the two
+/// scenarios that run on "c1a0" press `use` at all, so every other one must
 /// never report a door opened by proximity.
 ///
 /// "The player is riding a mover." joined this list once mover-riders
@@ -318,6 +318,33 @@ const LEVEL_CHANGE_ABSENT: [&str; 9] = [
     "The player opened a door.",
 ];
 
+/// [`LEVEL_CHANGE_PRESENT`] plus "The player opened a door.": the scenario
+/// that walks a chapter's first map from its player start, through a door
+/// it opens with a `use` press, to that map's own `trigger_changelevel`.
+/// See `xtask/smoke-scenarios/reach_level_change_anomalous_materials.txt`'s
+/// own header for the route-authoring technique, and for why a walk that
+/// only advances straight ahead on that map stops at a wall instead.
+const DOOR_AND_LEVEL_CHANGE_PRESENT: [&str; 5] = [
+    "Scripted input loaded.",
+    "Scripted input finished.",
+    "The player moved from the spawn point.",
+    "The player opened a door.",
+    "A level change was followed.",
+];
+
+/// [`BASE_ABSENT`] minus the two lines [`DOOR_AND_LEVEL_CHANGE_PRESENT`]
+/// moves to its own present set.
+const DOOR_AND_LEVEL_CHANGE_ABSENT: [&str; 8] = [
+    "The player fired a weapon.",
+    "A shot hit an entity.",
+    "A monster took damage.",
+    "A monster died.",
+    "A pickup was collected.",
+    "The player took damage.",
+    "The player is inside solid geometry.",
+    "The player is riding a mover.",
+];
+
 /// [`BASE_ABSENT`] minus the three lines [`FIRE_AND_PICKUP_PRESENT`] moves
 /// to its own present set: the swing lands, but nothing in this scenario
 /// takes enough damage to report a monster hurt or killed, and nothing in
@@ -381,42 +408,55 @@ const FIRE_AND_PICKUP_ABSENT: [&str; 7] = [
 /// real `func_door_rotating` on "c1a0" and opens it with a `use` press,
 /// through the engine's own `ohl_game::find_usable_within` proximity path
 /// — the real-payload counterpart of
-/// `crates/ohl-engine/tests/rotating_door.rs`'s synthetic fixture. It is
-/// the only scenario in this file that presses `use` at all, which is why
-/// every other one asserts "The player opened a door." absent.
+/// `crates/ohl-engine/tests/rotating_door.rs`'s synthetic fixture. It and
+/// the "c1a0" progression scenario below are the only two scenarios in this
+/// file that press `use` at all, which is why every other one asserts "The
+/// player opened a door." absent.
 ///
-/// All 26 scenarios in this file — the four pre-existing ones included —
+/// All 27 scenarios in this file — the four pre-existing ones included —
 /// assert "The player is inside solid geometry." absent: this scenario
-/// set's own regression guard for the PR #91 class of bug. 23 of the 26
-/// also assert "The player is riding a mover." absent, since none of them
-/// stands on a moving brush entity; the two that run on
-/// `ohl_campaign::STARTMAP` assert it *present* instead, because the
-/// player spawns inside that map's opening tram and rides it (see
-/// [`START_MAP_PRESENT`]'s own doc comment).
+/// set's own regression guard for the PR #91 class of bug. Every one of
+/// them except the two that run on `ohl_campaign::STARTMAP`
+/// also asserts "The player is riding a mover." absent, since none of them
+/// stands on a moving brush entity; those two assert it *present* instead,
+/// because the player spawns inside that map's opening tram and rides it
+/// (see [`START_MAP_PRESENT`]'s own doc comment).
 ///
-/// The 26th scenario (a spawn-to-exit progression walk) is the only one
-/// that asserts "A level change was followed." present, and the only one
-/// whose `Scenario::follow_level_change` is `true`; every other scenario
-/// asserts that line absent instead, since none of their scripts walk far
-/// enough to reach a `trigger_changelevel` and none is run with
-/// `--follow-level-change`. It walks a turn-then-forward route from spawn
-/// on "c1a1" (Unforeseen Consequences) to a `trigger_changelevel` reached
-/// within a few simulated seconds, then follows it end to end through
+/// Two scenarios (the spawn-to-exit progression walks) assert "A level
+/// change was followed." present and are the only ones whose
+/// `Scenario::follow_level_change` is `true`; every other scenario asserts
+/// that line absent instead, since none of their scripts walk far enough to
+/// reach a `trigger_changelevel` and none is run with
+/// `--follow-level-change`.
+///
+/// The first walks a turn-then-forward route from spawn on "c1a1"
+/// (Unforeseen Consequences) to a `trigger_changelevel` reached within a
+/// few simulated seconds, then follows it end to end through
 /// `crates/ohl-app/src/game_run.rs`'s `handle_level_change`. See
 /// `xtask/smoke-scenarios/progress_c1a1_reach_changelevel.txt`'s own
-/// header for the route in words. The other two of the first three
-/// campaign maps do not yet have a scenario like this: their own
-/// spawn-to-exit routes are blocked short of any `trigger_changelevel` by
-/// unresolved forward-movement stops (tracked separately; see
-/// `docs/MILESTONES.md`), not by anything this scenario or its harness
-/// changes.
+/// header for the route in words.
+///
+/// The second does the same for "c1a0" (Anomalous Materials, the second
+/// chapter in that same cited table), whose route
+/// is longer and needs a door opened with `use` partway along it — so it is
+/// the only scenario here that asserts both that line and "The player
+/// opened a door." present. Its map was previously believed to be blocked
+/// short of any `trigger_changelevel` by a forward-movement stop; tracing
+/// that stop showed worldspawn geometry with no brush entity within four
+/// times `ohl_engine::USE_RADIUS` — a wall the earlier scripted walk simply
+/// walked into — and the route below reaches the exit with the engine as it
+/// stands. See that scenario file's own header. Of the first three campaign
+/// maps only `ohl_campaign::STARTMAP` still has no scenario like this; its
+/// own spawn-to-exit route remains blocked short of any
+/// `trigger_changelevel` (tracked separately; see `docs/MILESTONES.md`),
+/// not by anything these scenarios or their harness change.
 #[allow(
     clippy::too_many_lines,
     reason = "one Scenario literal per M9 chapter-walk scenario, plus the four \
-              pre-existing ones, plus the one progression scenario; splitting \
+              pre-existing ones, plus the two progression scenarios; splitting \
               the list would only add indirection"
 )]
-fn scenarios() -> [Scenario; 26] {
+fn scenarios() -> [Scenario; 27] {
     [
         Scenario {
             name: "walk forward in the training start",
@@ -465,6 +505,14 @@ fn scenarios() -> [Scenario; 26] {
             present: &WALK_PRESENT_DOOR_OPENED,
             absent: &WALK_ABSENT_DOOR_OPENED,
             follow_level_change: false,
+        },
+        Scenario {
+            name: "reach a level change in Anomalous Materials",
+            file: "reach_level_change_anomalous_materials.txt",
+            map: "c1a0",
+            present: &DOOR_AND_LEVEL_CHANGE_PRESENT,
+            absent: &DOOR_AND_LEVEL_CHANGE_ABSENT,
+            follow_level_change: true,
         },
         Scenario {
             name: "walk from spawn in Anomalous Materials",
