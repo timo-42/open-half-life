@@ -247,6 +247,18 @@ impl RotatingDoorSwing {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DoorUseOnly;
 
+/// Marks a `func_door`/`func_door_rotating` whose "Passable" spawnflag
+/// ([`SPAWNFLAG_DOOR_PASSABLE`]) is set: the Sven Co-op wiki's `Func_door`
+/// page (`https://wiki.svencoop.com/Func_door`, fetched directly; see
+/// `docs/FORMAT_SOURCES.md` item 30) documents it as "the door is entirely
+/// non-solid. It also cannot be triggered on-touch anymore then." Fixed at
+/// spawn from the map's own `spawnflags` keyvalue, the same rationale
+/// [`DoorUseOnly`]'s own doc comment gives for why this is a marker rather
+/// than a `Door` field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct DoorPassable;
+
 /// `func_button`: `speed`, `wait`, `health`, `delay` and a `sounds` index.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -979,7 +991,19 @@ pub const SPAWNFLAG_DOOR_ROTATING_STARTS_OPEN: u32 = 1;
 /// (`Simulation::activate_trigger`/fan-out) still reach a door with this
 /// flag set; only [`crate::logic::Simulation::touch_doors`]'s own touch
 /// path excludes it. Carried on [`DoorUseOnly`].
+///
+/// The same page's touch rule is one sentence, not two independent ones:
+/// "Func_doors are triggered on touch, unless they have a name, in
+/// which's case they require to be triggered manually." A door's own
+/// `targetname` is therefore *also* part of this cited rule, not a
+/// separate, project-invented exclusion — see [`crate::logic::Simulation::
+/// touch_doors`]'s own doc comment for where that half is implemented
+/// (a [`crate::registry::TargetName`] check, not a spawnflag).
 pub const SPAWNFLAG_DOOR_USE_ONLY: u32 = 256;
+/// `func_door`/`func_door_rotating`'s "Passable" spawnflag: see
+/// [`DoorPassable`]'s own doc comment for the cited wording. Carried on
+/// [`DoorPassable`].
+pub const SPAWNFLAG_DOOR_PASSABLE: u32 = 8;
 
 /// `func_rotating`'s "Start On" spawnflag: the brush is already spinning at
 /// map spawn. TWHL wiki `func_rotating` (`docs/FORMAT_SOURCES.md`, "Entity
@@ -1283,6 +1307,9 @@ impl Registry {
                     if def.spawnflags & SPAWNFLAG_DOOR_USE_ONLY != 0 {
                         world.insert_one(entity, DoorUseOnly).ok();
                     }
+                    if def.spawnflags & SPAWNFLAG_DOOR_PASSABLE != 0 {
+                        world.insert_one(entity, DoorPassable).ok();
+                    }
                 }
                 // `func_door_rotating`: TWHL wiki `func_door_rotating`
                 // (`docs/FORMAT_SOURCES.md`, "Entity keyvalues and map
@@ -1341,6 +1368,9 @@ impl Registry {
                     world.insert_one(entity, door).ok();
                     if flags & SPAWNFLAG_DOOR_USE_ONLY != 0 {
                         world.insert_one(entity, DoorUseOnly).ok();
+                    }
+                    if flags & SPAWNFLAG_DOOR_PASSABLE != 0 {
+                        world.insert_one(entity, DoorPassable).ok();
                     }
                     world
                         .insert_one(
@@ -1856,6 +1886,41 @@ mod tests {
         let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
         let entity = registry.find("door1")[0];
         assert!(registry.world.get::<&DoorUseOnly>(entity).is_ok());
+    }
+
+    /// `func_door`'s "Passable" spawnflag (8; `SPAWNFLAG_DOOR_PASSABLE`)
+    /// attaches [`DoorPassable`]; leaving it unset does not.
+    #[test]
+    fn passable_spawnflag_attaches_door_passable_marker() {
+        let entities = vec![
+            raw(&[
+                ("classname", "func_door"),
+                ("targetname", "door1"),
+                ("spawnflags", &SPAWNFLAG_DOOR_PASSABLE.to_string()),
+            ]),
+            raw(&[("classname", "func_door"), ("targetname", "door2")]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let passable = registry.find("door1")[0];
+        let plain = registry.find("door2")[0];
+        assert!(registry.world.get::<&DoorPassable>(passable).is_ok());
+        assert!(registry.world.get::<&DoorPassable>(plain).is_err());
+    }
+
+    /// The same spawnflag, read off `func_door_rotating` instead.
+    #[test]
+    fn passable_spawnflag_attaches_door_passable_marker_on_rotating_door() {
+        let entities = vec![raw(&[
+            ("classname", "func_door_rotating"),
+            ("targetname", "door1"),
+            ("model", "*1"),
+            ("spawnflags", &SPAWNFLAG_DOOR_PASSABLE.to_string()),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let entity = registry.find("door1")[0];
+        assert!(registry.world.get::<&DoorPassable>(entity).is_ok());
     }
 
     /// A brush entity built around an "origin brush" has its geometry

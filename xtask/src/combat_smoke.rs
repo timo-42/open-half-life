@@ -100,10 +100,18 @@ const BASE_PRESENT: [&str; 2] = ["Scripted input loaded.", "Scripted input finis
 /// geometry) absent.
 ///
 /// "The player opened a door." joined this list (M9, `TODO(black-box)`
-/// item 25) alongside the scenarios that assert it *present*: only the two
-/// scenarios that run on "c1a0" and the "c2a5" progression scenario press
-/// `use` at all, so every other one must never report a door opened by
-/// proximity.
+/// item 25) alongside the scenarios that assert it *present*: only the
+/// scenarios that run on "c1a0", "c1a3", "c2a2" and "c2a5" press `use` at
+/// all, so every other one must never report a door opened by proximity.
+/// Item 30 (touch-activated doors) briefly moved two more scenarios here
+/// to a present set of their own, on the theory that their forward walk
+/// touches a real closed door along the way; a PR #122 review round found
+/// every door either walk actually opened carried a `targetname` — a case
+/// item 30's own cited touch rule excludes from touch-opening ("...unless
+/// they have a name, in which's case they require to be triggered
+/// manually") — so both scenarios were reverted to this constant. See
+/// [`WALK_PRESENT_DOOR_OPENED`]'s own doc comment for the two scenarios
+/// that still use it (both `use` presses, unaffected by that correction).
 ///
 /// "The player is riding a mover." joined this list once mover-riders
 /// (`crates/ohl-physics`'s `PlayerState::ground_brush`,
@@ -301,27 +309,29 @@ const WALK_PRESENT_LADDER: [&str; 4] = [
     "The player is on a ladder.",
 ];
 
-/// [`WALK_PRESENT`] plus "The player opened a door.", reached two
-/// different ways by the scenarios that share this set:
+/// [`WALK_PRESENT`] plus "The player opened a door.", used by
+/// `xtask/smoke-scenarios/use_rotating_door_anomalous_materials.txt`: it
+/// walks up to a real `func_door_rotating` and opens it with a `use` press
+/// through the engine's own proximity path. That path only finds an
+/// "origin brush" entity at all once its proximity point is computed from
+/// the same placed pose the renderer and the collision model use
+/// (`ohl_game::pose::brush_center`); see `docs/FORMAT_SOURCES.md`'s
+/// `TODO(black-box)` item 25 and that scenario file's own header.
 ///
-/// - `xtask/smoke-scenarios/use_rotating_door_anomalous_materials.txt`
-///   walks up to a real `func_door_rotating` and opens it with a `use`
-///   press through the engine's own proximity path. That path only finds
-///   an "origin brush" entity at all once its proximity point is computed
-///   from the same placed pose the renderer and the collision model use
-///   (`ohl_game::pose::brush_center`); see `docs/FORMAT_SOURCES.md`'s
-///   `TODO(black-box)` item 25 and that scenario file's own header.
-/// - `walk_anomalous_materials.txt` and `walk_surface_tension.txt` press no
-///   `use` key at all; each one's own ~20-40s forward walk happens to
-///   carry the player's hull into a real closed door along the way, which
-///   this milestone's own `ohl_game::logic::Simulation::touch_doors` now
-///   opens on contact (`docs/FORMAT_SOURCES.md` item 30). Confirmed by
-///   running each scenario directly with `--script-log` against the real
-///   payload: both log exactly this one extra fixed line and nothing
-///   else unexpected. Before item 30 landed, both scenarios used
-///   [`WALK_PRESENT`]/[`BASE_ABSENT`] like every other plain walk in this
-///   file; this is a scenario-set reassignment, not a script or map
-///   change.
+/// `walk_anomalous_materials.txt` and `walk_surface_tension.txt` briefly
+/// used this set too (M9.9, touch-activated doors): each one's own
+/// ~20-40s forward walk happens to carry the player's hull into a real
+/// closed door along the way, which `ohl_game::logic::Simulation::
+/// touch_doors` opened on contact at the time. A PR #122 review round
+/// found every door either walk actually opened carried a `targetname` —
+/// a real map's door gated behind a trigger chain, which
+/// `docs/FORMAT_SOURCES.md` item 30's own cited touch rule excludes from
+/// touch-opening once read in full ("...unless they have a name, in
+/// which's case they require to be triggered manually") — so both
+/// scenarios moved back to [`WALK_PRESENT`]/[`BASE_ABSENT`], their
+/// original (pre-M9.9) sets, confirmed by re-running both directly with
+/// `--script-log` against the real payload with neither logging "The
+/// player opened a door." any more.
 const WALK_PRESENT_DOOR_OPENED: [&str; 4] = [
     "Scripted input loaded.",
     "Scripted input finished.",
@@ -524,8 +534,13 @@ const FIRE_AND_PICKUP_ABSENT: [&str; 7] = [
 /// `crates/ohl-engine/tests/rotating_door.rs`'s synthetic fixture. It and
 /// four of the progression scenarios below (on "c1a0", "c1a3", "c2a2" and
 /// "c2a5") are the only scenarios in this file that press `use` at all,
-/// which is why every other one asserts "The player opened a door."
-/// absent.
+/// and the only ones that assert "The player opened a door." present:
+/// every real door any other scenario's own forward walk (no `use` press)
+/// has been found to touch along its route carries a `targetname`, which
+/// `docs/FORMAT_SOURCES.md` item 30's own cited touch rule excludes from
+/// touch-opening (see [`WALK_PRESENT_DOOR_OPENED`]'s own doc comment for
+/// the two scenarios that briefly asserted otherwise, and why that was
+/// reverted). Every other scenario in this file asserts the line absent.
 ///
 /// One further scenario rides `ohl_campaign::STARTMAP`'s opening tram to
 /// its end and follows the level change it reaches (see
@@ -680,8 +695,8 @@ fn scenarios() -> [Scenario; 35] {
             name: "walk from spawn in Anomalous Materials",
             file: "walk_anomalous_materials.txt",
             map: "c1a0",
-            present: &WALK_PRESENT_DOOR_OPENED,
-            absent: &WALK_ABSENT_DOOR_OPENED,
+            present: &WALK_PRESENT,
+            absent: &BASE_ABSENT,
             follow_level_change: false,
         },
         Scenario {
@@ -760,8 +775,8 @@ fn scenarios() -> [Scenario; 35] {
             name: "walk from spawn in Surface Tension",
             file: "walk_surface_tension.txt",
             map: "c2a5",
-            present: &WALK_PRESENT_DOOR_OPENED,
-            absent: &WALK_ABSENT_DOOR_OPENED,
+            present: &WALK_PRESENT,
+            absent: &BASE_ABSENT,
             follow_level_change: false,
         },
         Scenario {

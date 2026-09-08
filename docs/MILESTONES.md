@@ -3737,3 +3737,102 @@ tested engine module and a `dev-tools`-only CLI flag.
   a limitation of that one probe's tooling rather than a confirmed engine
   defect or a reachability finding in question. No scenario was added for
   any of these four maps.
+
+## M9.9 (Rust): touch-activated doors
+
+Status: done. Closes a gap public Half-Life mapping documentation exposed:
+every door-opening path in this crate before this package needed either a
+proximity `use` press or a *separate* touch-trigger brush a mapper placed
+around the door, but a real `func_door`/`func_door_rotating` also opens the
+moment a player walks into it — with three documented exceptions, all read
+from one cited sentence and its neighbouring spawnflags
+(`docs/FORMAT_SOURCES.md` item 30, cited from the Sven Co-op wiki's
+`Func_door` page, fetched directly): the "Use Only" spawnflag (256), the
+"Passable" spawnflag (8), and carrying a `targetname` at all ("Func_doors
+are triggered on touch, unless they have a name, in which's case they
+require to be triggered manually").
+
+A PR #122 review round caught that the version first merged here read only
+the "Use Only" half of that sentence and explicitly declined the
+`targetname` half, reasoning (incorrectly) that it was a separate,
+project-invented concern. Instrumenting the real payload during review
+found every door either of the two chapter-walk scenarios this milestone
+had flipped to expect "The player opened a door." actually opened carried
+a `targetname` — zero unnamed doors touched anywhere — so the shipped
+reading had no in-spec activation to show for itself. Item 30 records the
+wrong paragraph struck, in place, alongside the corrected one, rather than
+silently rewritten.
+
+Two new marker components, `ohl_game::registry::DoorUseOnly` and
+`DoorPassable`, are attached at `Registry::build` time from
+`SPAWNFLAG_DOOR_USE_ONLY`/`SPAWNFLAG_DOOR_PASSABLE` — plain markers rather
+than `bool` fields added to `Door` itself, since `Door` is reached
+transitively by the save file's *required* entity-registry section and
+item 28's frozen-section rule forbids a new field there; like
+`RotatingDoorSwing` before them, both markers are rebuilt from the map
+every load and never touch the save/transition path. `ohl_game::logic::
+Simulation::touch_doors` — mirroring `Simulation::touch_rot_buttons`'s PR
+#111 touch-edge pattern — opens every closed door with neither marker and
+no `TargetName` component, whose placed brush bounds, inflated by a new,
+bounded `DOOR_TOUCH_MARGIN` (4 units; large enough to still register where
+ordinary collision has already stopped the player flush against the
+door's own solid, per `ohl_physics::hull::DIST_EPSILON` — and, per a
+PR #122 review measurement now recorded on the constant's own doc
+comment, reaching through a wall thinner than 4 units, which is
+considered acceptable since real door frames are not built into walls
+that thin), overlap the player's hull, through the same
+`Simulation::activate` a `use` press already goes through — so a
+`func_door_rotating` opened this way still swings away from the player
+(item 26/PR #110's rule). `ohl-engine`'s `Systems::triggers_and_movers`
+(phase 12) calls it with the same standing-hull box `touch_triggers`
+already builds. `Game::doors_opened_by_use_count` is renamed
+`doors_opened_count` (every call site updated, including the "The player
+opened a door." milestone line in `crates/ohl-app/src/script_log.rs`)
+since it now counts either opening path.
+
+Tests: `crates/ohl-game/src/logic.rs` adds `touch_opens_a_plain_unnamed_door`,
+`touch_does_nothing_for_a_named_door` (a direct `Simulation::activate`/
+`use_entity` call still opens it, isolating the `targetname` exclusion),
+`touch_does_nothing_for_a_use_only_door`, and
+`touch_does_nothing_for_a_passable_door` — the latter two built unnamed so
+each isolates its own flag's effect from the `targetname` exclusion.
+`crates/ohl-game/src/registry.rs` adds marker-attachment tests for both
+new spawnflags, each with a `func_door_rotating` counterpart.
+`crates/ohl-engine/tests/rotating_door.rs`'s pre-existing
+`a_closed_rotating_door_blocks_the_corridor` is renamed
+`a_use_only_rotating_door_blocks_the_corridor_forever` and rebuilt on a
+`rotating_door_use_only_entities` fixture (named, "Use Only" set, so it
+proves that flag's own exclusion specifically). A **new**
+`rotating_door_unnamed_entities` fixture (the same corridor and door,
+`targetname` omitted) backs `a_closed_door_opens_when_the_player_walks_
+into_it`, the only test in that file whose door has no name to look it up
+by, so it queries the registry for its one `Door` component directly
+instead of through `Registry::find`.
+
+`cargo xtask combat-smoke --payload-root <dir>` (26/26) required
+*reverting* the two pre-existing chapter-walk scenarios this milestone had
+flipped — "walk from spawn in Anomalous Materials" and "walk from spawn
+in Surface Tension" — back to their original `WALK_PRESENT`/`BASE_ABSENT`
+sets, since the doors either walk touches are all named and this
+correction excludes them; confirmed directly with `--script-log` against
+the real payload, neither logging "The player opened a door." any more.
+The pre-existing `use`-press scenario is unaffected and unchanged. `cargo
+xtask campaign-smoke --payload-root <dir>` stays 93/93 throughout (it only
+loads maps, never scripts movement). This leaves the feature with no
+demonstrated, in-spec touch-open anywhere in the current real payload's
+chapter-walk routes — real doors along those routes are all named — a gap
+recorded rather than hidden.
+
+**`TODO(black-box)`**: whether a monster (as opposed to the player) opens a
+touch-eligible door by walking into it is not implemented — `touch_doors`
+is called only with the player's own hull box, the same scope
+`touch_triggers`/`touch_rot_buttons` already have. Whether a real touch
+check re-triggers every tick a mover keeps overlapping an already-open door
+is not stated by either cited source; this project's edge-triggered choice
+(open once per closed-to-open approach) matches every other touch path
+already in this crate. **Added during PR #122 review**: a door with a
+nonzero `wait` that auto-closes while the player never leaves its touch
+volume does not re-open, since the touch-edge state stays high across the
+whole open/close cycle; not a crash or a stuck-in-solid regression, just an
+unresolved case, now easier to reach than before this milestone, recorded
+in item 30 rather than guessed at.
