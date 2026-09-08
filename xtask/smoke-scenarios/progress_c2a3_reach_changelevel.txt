@@ -1,0 +1,104 @@
+# M9 scripted-input scenario: a spawn-to-exit progression walk in
+# Apprehension.
+#
+# Project-authored; no bytes here come from any game installation (see
+# docs/CLEAN_ROOM.md). Run against "c2a3" (Apprehension, per
+# ohl_campaign::CHAPTERS's own cited table) by xtask/src/combat_smoke.rs,
+# with `--follow-level-change` so a `trigger_changelevel` this walk
+# reaches is actually followed rather than only logged as "not followed".
+#
+# Route, in words only (no entity name, path or coordinate from any
+# payload): from the player's spawn point, advance forward through a
+# sequence of turns until a level change fires close by; then wait out
+# the transition. No door needs opening on this route.
+#
+# Technique: an autopilot was flown over this map's own collision hulls,
+# and the per-tick inputs it applied were recorded and merged into the
+# whole/fractional-degree turns below, matching the technique documented
+# in xtask/smoke-scenarios/reach_level_change_anomalous_materials.txt.
+# Runs whose per-tick turn is not bit-for-bit identical to its neighbor
+# are kept as their own single-tick line rather than merged, which is why
+# many lines below carry small fractional-degree turns. The run is
+# deterministic, so replaying these inputs reproduces the same route
+# every time.
+#
+# Expected fixed log lines, asserted by the harness rather than parsed
+# from this file:
+#   present: "Scripted input loaded.", "Scripted input finished.",
+#            "The player moved from the spawn point.",
+#            "A level change was followed."
+#   absent:  every other fixed line, including "The player is inside
+#            solid geometry." (this scenario's own regression guard for
+#            the PR #91 class of bug) and "The player opened a door."
+#            (no door is opened on this route)
+31 forward look 0 186.000000
+12 look 0 72.000000
+1 look 0 3.284721
+1 look 0 0.030022
+1 look 0 -0.215355
+1 look 0 -0.194527
+1 look 0 -0.539009
+1 look 0 -0.396172
+1 look 0 -0.155525
+1 look 0 -0.231682
+1 look 0 -0.131172
+1 look 0 -0.029152
+1 look 0 -0.005203
+6 wait
+2 forward
+1 forward
+1 forward
+1 forward
+3 forward look 0 -18.000000
+1 forward look 0 -5.015694
+1 forward look 0 -4.252853
+1 forward look 0 -2.691128
+1 forward look 0 6.000000
+1 forward look 0 2.461090
+1 forward look 0 -2.092735
+1 forward look 0 -5.441570
+1 forward look 0 6.000000
+1 forward look 0 3.187935
+1 forward look 0 -4.585453
+1 forward look 0 6.000000
+1 forward look 0 0.989151
+1 forward look 0 -4.107479
+1 forward look 0 -5.663994
+1 forward look 0 6.000000
+1 forward look 0 1.410931
+1 forward look 0 -5.583576
+1 forward look 0 -3.734409
+1 forward look 0 6.000000
+1 forward look 0 -1.607777
+1 forward look 0 -3.753822
+1 forward look 0 6.000000
+1 forward look 0 -2.318214
+1 forward look 0 -3.951447
+1 forward look 0 6.000000
+1 forward look 0 -2.857925
+1 forward look 0 -4.324635
+1 forward look 0 6.000000
+1 forward look 0 -3.279675
+1 forward look 0 6.000000
+1 forward look 0 -0.308933
+1 forward look 0 -6.000000
+1 forward look 0 6.000000
+1 forward look 0 -1.749409
+1 forward look 0 -6.000000
+1 forward look 0 6.000000
+1 forward look 0 1.557671
+1 forward look 0 -6.000000
+1 forward look 0 6.000000
+1 forward look 0 1.414818
+1 forward look 0 -5.589394
+1 forward look 0 -3.639339
+1 forward look 0 6.000000
+1 forward look 0 -0.553181
+1 forward look 0 -3.274620
+1 forward look 0 6.000000
+1 forward look 0 -1.091698
+1 forward look 0 -2.955982
+1 forward look 0 6.000000
+1 forward look 0 -1.562515
+1 forward look 0 -2.677181
+60 wait

@@ -1,0 +1,55 @@
+# M9 scripted-input scenario: a spawn-to-exit progression walk in Blast
+# Pit.
+#
+# Project-authored; no bytes here come from any game installation (see
+# docs/CLEAN_ROOM.md). Run against "c1a4" (Blast Pit, per
+# ohl_campaign::CHAPTERS's own cited table) by xtask/src/combat_smoke.rs,
+# with `--follow-level-change` so a `trigger_changelevel` this walk
+# reaches is actually followed rather than only logged as "not followed".
+#
+# Route, in words only (no entity name, path or coordinate from any
+# payload): from the player's spawn point, turn and advance forward
+# through a short sequence of turns and waits until a level change fires
+# close by; then wait out the transition. No door needs opening on this
+# route.
+#
+# Technique: an autopilot was flown over this map's own collision hulls,
+# and the per-tick inputs it applied were recorded and merged into the
+# whole/fractional-degree turns below, matching the technique documented
+# in xtask/smoke-scenarios/reach_level_change_anomalous_materials.txt.
+# The run is deterministic, so replaying these inputs reproduces the same
+# route every time.
+#
+# Expected fixed log lines, asserted by the harness rather than parsed
+# from this file:
+#   present: "Scripted input loaded.", "Scripted input finished.",
+#            "The player moved from the spawn point.",
+#            "A level change was followed."
+#   absent:  every other fixed line, including "The player is inside
+#            solid geometry." (this scenario's own regression guard for
+#            the PR #91 class of bug) and "The player opened a door."
+#            (no door is opened on this route)
+31 forward look 0 186
+25 look 0 150
+4 wait
+14 forward
+31 forward look 0 -186
+7 look 0 -42
+3 look 0 -9
+1 look 0 -1
+2 look 0 -6
+1 look 0 -1
+2 look 0 -4
+1 look 0 -1
+2 look 0 -4
+1 look 0 -1
+1 look 0 -2
+4 look 0 -4
+1 wait
+2 look 0 -2
+1 wait
+1 forward look 0 -1
+8 forward
+3 forward look 0 -3
+24 forward look 0 144
+60 wait

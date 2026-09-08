@@ -1,0 +1,235 @@
+# M9 scripted-input scenario: a spawn-to-exit progression walk in
+# "We've Got Hostiles!"
+#
+# Project-authored; no bytes here come from any game installation (see
+# docs/CLEAN_ROOM.md). Run against "c1a3" ("We've Got Hostiles!", per
+# ohl_campaign::CHAPTERS's own cited table) by xtask/src/combat_smoke.rs,
+# with `--follow-level-change` so a `trigger_changelevel` this walk
+# reaches is actually followed rather than only logged as "not followed".
+#
+# Route, in words only (no entity name, path or coordinate from any
+# payload): from the player's spawn point, advance forward through a
+# series of turns, opening a door along the way with a `use` press once
+# it is within reach, then continue forward through a further sequence of
+# turns and waits until a level change fires; then wait out the
+# transition.
+#
+# Technique: an autopilot was flown over this map's own collision hulls,
+# pressing `use` whenever a usable brush entity came within
+# ohl_engine::USE_RADIUS, and the per-tick inputs it applied were
+# recorded and merged into the whole/fractional-degree turns below,
+# matching the technique documented in
+# xtask/smoke-scenarios/reach_level_change_anomalous_materials.txt. The
+# run is deterministic, so replaying these inputs reproduces the same
+# route every time.
+#
+# Expected fixed log lines, asserted by the harness rather than parsed
+# from this file:
+#   present: "Scripted input loaded.", "Scripted input finished.",
+#            "The player moved from the spawn point.",
+#            "The player opened a door.",
+#            "A level change was followed."
+#   absent:  "The player is inside solid geometry." (this scenario's own
+#            regression guard for the PR #91 class of bug)
+#            plus every other fixed line
+62 forward
+17 forward look 0 -102
+1 forward look 0 -1
+1 forward look 0 -2
+1 forward look 0 4
+1 forward look 0 -1
+1 forward look 0 -2
+1 forward look 0 4
+1 forward
+1 forward look 0 -1
+1 forward look 0 4
+2 forward
+1 forward look 0 3
+2 forward
+1 forward look 0 2
+1 forward
+2 forward look 0 2
+1 forward
+1 forward look 0 1
+1 forward
+2 forward look 0 2
+1 forward look 0 -1
+2 forward look 0 2
+1 forward look 0 -1
+1 forward
+1 forward look 0 1
+1 forward look 0 -1
+1 forward
+1 forward look 0 1
+1 forward look 0 -2
+1 forward
+1 forward look 0 1
+1 forward look 0 -2
+2 forward
+1 forward look 0 -1
+2 forward
+1 forward look 0 -1
+2 forward
+1 forward look 0 -1
+8 forward
+32 forward look 0 192
+11 look 0 66
+1 look 0 3
+17 wait
+10 forward
+2 forward look 0 -2
+1 forward
+2 forward look 0 -2
+1 forward
+4 forward look 0 -4
+1 forward look 0 -2
+1 forward look 0 -1
+31 forward look 0 -186
+6 look 0 -36
+1 look 0 -2
+22 wait
+6 forward
+2 forward look 0 2
+1 forward
+7 forward look 0 7
+1 forward look 0 2
+1 forward look 0 1
+2 forward look 0 4
+1 forward look 0 1
+2 forward look 0 6
+1 forward look 0 2
+2 forward look 0 8
+1 forward look 0 2
+2 forward look 0 10
+1 forward look 0 3
+2 look 0 12
+1 look 0 3
+1 look 0 6
+1 look 0 5
+1 look 0 2
+2 look 0 8
+1 look 0 2
+2 look 0 6
+1 look 0 1
+2 look 0 4
+1 look 0 1
+2 look 0 4
+6 look 0 6
+1 wait
+2 look 0 2
+1 wait
+1 look 0 1
+32 wait
+18 forward
+18 forward look 0 -108
+11 forward look 0 66
+10 forward use look 0 60
+1 forward use look 0 2
+2 forward use look 0 -2
+1 forward use look 0 -2
+1 forward look 0 -3
+1 forward look 0 -2
+5 forward look 0 -30
+8 look 0 -48
+21 wait
+2 forward
+1 forward look 0 1
+1 forward look 0 2
+1 forward look 0 1
+2 forward look 0 6
+1 forward look 0 2
+2 forward look 0 8
+1 forward look 0 2
+2 forward look 0 8
+3 forward look 0 6
+4 forward
+8 forward look 0 -8
+1 forward
+1 forward look 0 -1
+1 look 0 -1
+59 wait
+30 forward
+60 wait
+65 forward
+16 forward look 0 96
+2 forward look 0 2
+1 forward look 0 2
+36 forward look 0 -216
+11 look 0 -66
+1 look 0 -1
+17 wait
+28 forward
+31 forward look 0 -186
+9 look 0 -54
+6 look 0 -6
+1 wait
+2 look 0 -2
+1 wait
+2 look 0 -2
+1 wait
+1 look 0 -1
+6 wait
+26 forward
+15 forward look 0 90
+1 forward look 0 2
+1 forward look 0 3
+1 forward look 0 -6
+1 forward look 0 1
+1 forward look 0 2
+1 forward look 0 -5
+2 forward look 0 2
+1 forward look 0 -4
+2 forward
+1 forward look 0 -3
+2 forward
+1 forward look 0 -2
+5 forward look 0 -5
+1 forward
+2 forward look 0 -2
+1 forward look 0 1
+1 forward look 0 -1
+1 forward look 0 -2
+32 forward look 0 -192
+16 look 0 -96
+13 wait
+26 forward
+31 forward look 0 -186
+6 look 0 -36
+1 look 0 -3
+22 wait
+7 forward
+2 forward look 0 2
+1 forward
+7 forward look 0 7
+1 forward look 0 2
+1 forward look 0 1
+2 forward look 0 4
+1 forward look 0 1
+2 forward look 0 6
+1 forward look 0 2
+2 forward look 0 8
+1 forward look 0 2
+2 forward look 0 10
+1 look 0 3
+2 look 0 12
+1 look 0 3
+2 look 0 12
+1 look 0 3
+1 look 0 6
+1 look 0 5
+1 look 0 3
+1 look 0 5
+1 look 0 4
+1 look 0 2
+1 look 0 4
+1 look 0 3
+1 look 0 1
+1 look 0 3
+1 look 0 2
+1 look 0 1
+2 look 0 4
+2 look 0 2
+37 wait
+11 forward
+23 forward look 0 -138
+60 wait

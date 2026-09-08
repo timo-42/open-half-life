@@ -384,6 +384,61 @@ const DOOR_AND_LEVEL_CHANGE_ABSENT: [&str; 8] = [
     "The player is riding a mover.",
 ];
 
+/// [`LEVEL_CHANGE_PRESENT`] plus "A monster took damage.": the scenario
+/// that walks a chapter's first map from its player start to its own
+/// `trigger_changelevel` and passes near a monster along the way. See
+/// `xtask/smoke-scenarios/progress_c2a1_reach_changelevel.txt`'s own
+/// header for the route.
+const LEVEL_CHANGE_PRESENT_MONSTER_ENCOUNTER: [&str; 5] = [
+    "Scripted input loaded.",
+    "Scripted input finished.",
+    "The player moved from the spawn point.",
+    "A monster took damage.",
+    "A level change was followed.",
+];
+
+/// [`BASE_ABSENT`] minus the two lines
+/// [`LEVEL_CHANGE_PRESENT_MONSTER_ENCOUNTER`] moves to its own present
+/// set.
+const LEVEL_CHANGE_ABSENT_MONSTER_ENCOUNTER: [&str; 8] = [
+    "The player fired a weapon.",
+    "A shot hit an entity.",
+    "A monster died.",
+    "A pickup was collected.",
+    "The player took damage.",
+    "The player is inside solid geometry.",
+    "The player is riding a mover.",
+    "The player opened a door.",
+];
+
+/// [`DOOR_AND_LEVEL_CHANGE_PRESENT`] plus "A monster took damage.": the
+/// scenario that walks a chapter's first map from its player start,
+/// through a door it opens with a `use` press, past a monster along the
+/// way, to that map's own `trigger_changelevel`. See
+/// `xtask/smoke-scenarios/progress_c2a2_reach_changelevel.txt`'s own
+/// header for the route.
+const DOOR_AND_LEVEL_CHANGE_PRESENT_MONSTER_ENCOUNTER: [&str; 6] = [
+    "Scripted input loaded.",
+    "Scripted input finished.",
+    "The player moved from the spawn point.",
+    "The player opened a door.",
+    "A monster took damage.",
+    "A level change was followed.",
+];
+
+/// [`BASE_ABSENT`] minus the three lines
+/// [`DOOR_AND_LEVEL_CHANGE_PRESENT_MONSTER_ENCOUNTER`] moves to its own
+/// present set.
+const DOOR_AND_LEVEL_CHANGE_ABSENT_MONSTER_ENCOUNTER: [&str; 7] = [
+    "The player fired a weapon.",
+    "A shot hit an entity.",
+    "A monster died.",
+    "A pickup was collected.",
+    "The player took damage.",
+    "The player is inside solid geometry.",
+    "The player is riding a mover.",
+];
+
 /// [`BASE_ABSENT`] minus the three lines [`FIRE_AND_PICKUP_PRESENT`] moves
 /// to its own present set: the swing lands, but nothing in this scenario
 /// takes enough damage to report a monster hurt or killed, and nothing in
@@ -448,26 +503,26 @@ const FIRE_AND_PICKUP_ABSENT: [&str; 7] = [
 /// through the engine's own `ohl_game::find_usable_within` proximity path
 /// — the real-payload counterpart of
 /// `crates/ohl-engine/tests/rotating_door.rs`'s synthetic fixture. It and
-/// the "c1a0" progression scenario below are the only two scenarios in this
-/// file that press `use` at all, which is why every other one asserts "The
-/// player opened a door." absent.
+/// three of the progression scenarios below (on "c1a0", "c1a3" and "c2a2")
+/// are the only scenarios in this file that press `use` at all, which is
+/// why every other one asserts "The player opened a door." absent.
 ///
 /// One further scenario rides `ohl_campaign::STARTMAP`'s opening tram to
 /// its end and follows the level change it reaches (see
 /// [`RIDE_TO_LEVEL_CHANGE_PRESENT`]): the campaign's own first
 /// progression gate, reached without a single movement key.
 ///
-/// All 28 scenarios in this file — the four pre-existing ones included —
+/// All 33 scenarios in this file — the four pre-existing ones included —
 /// assert "The player is inside solid geometry." absent: this scenario
-/// set's own regression guard for the PR #91 class of bug. 25 of the 28
+/// set's own regression guard for the PR #91 class of bug. 30 of the 33
 /// also assert "The player is riding a mover." absent, since none of them
 /// stands on a moving brush entity; the three that run on
 /// `ohl_campaign::STARTMAP` assert it *present* instead, because the
 /// player spawns inside that map's opening tram and rides it (see
 /// [`START_MAP_PRESENT`]'s own doc comment).
 ///
-/// Three scenarios — one per progression route — assert "A level change
-/// was followed." present, and they are the only three whose
+/// Eight scenarios — one per progression route — assert "A level change
+/// was followed." present, and they are the only eight whose
 /// [`Scenario::follow_level_change`] is `true`; every other scenario
 /// asserts that line absent instead, since none of their scripts reaches a
 /// `trigger_changelevel` they are run with the flag for.
@@ -499,13 +554,27 @@ const FIRE_AND_PICKUP_ABSENT: [&str; 7] = [
 /// nowhere to walk. See
 /// `crates/ohl-engine/tests/zero_speed_path_node.rs` for the same
 /// mechanism against a synthetic fixture.
+///
+/// Five more (a second investigation pass, PR authored after PR #121's
+/// `--reachability-report` dev tool landed) cover the next five chapters'
+/// first maps whose route a breadth-first reachability walk showed
+/// reachable: "c1a3" ("We've Got Hostiles!") and "c2a2" (On A Rail), each
+/// needing a door opened with `use` along the way, the latter also passing
+/// a monster; "c2a1" (Power Up), which also passes a monster but needs no
+/// door; and "c1a4" (Blast Pit) and "c2a3" (Apprehension), whose routes
+/// need neither. See each scenario file's own header for its route in
+/// words. The same investigation found "c1a2" (Office Complex) not
+/// reachable by that walk — its frontier is left with only non-door
+/// entities (a swinging obstacle, a pushable, further buttons) after every
+/// use-openable door is gone — so it has no scenario here; see
+/// `docs/MILESTONES.md`.
 #[allow(
     clippy::too_many_lines,
     reason = "one Scenario literal per M9 chapter-walk scenario, plus the four \
-              pre-existing ones, plus the three progression scenarios; splitting \
+              pre-existing ones, plus the eight progression scenarios; splitting \
               the list would only add indirection"
 )]
-fn scenarios() -> [Scenario; 28] {
+fn scenarios() -> [Scenario; 33] {
     [
         Scenario {
             name: "walk forward in the training start",
@@ -727,6 +796,46 @@ fn scenarios() -> [Scenario; 28] {
             name: "walk from spawn to a followed level change in Unforeseen Consequences",
             file: "progress_c1a1_reach_changelevel.txt",
             map: "c1a1",
+            present: &LEVEL_CHANGE_PRESENT,
+            absent: &LEVEL_CHANGE_ABSENT,
+            follow_level_change: true,
+        },
+        Scenario {
+            name: "walk from spawn to a followed level change in \"We've Got Hostiles!\"",
+            file: "progress_c1a3_reach_changelevel.txt",
+            map: "c1a3",
+            present: &DOOR_AND_LEVEL_CHANGE_PRESENT,
+            absent: &DOOR_AND_LEVEL_CHANGE_ABSENT,
+            follow_level_change: true,
+        },
+        Scenario {
+            name: "walk from spawn to a followed level change in Blast Pit",
+            file: "progress_c1a4_reach_changelevel.txt",
+            map: "c1a4",
+            present: &LEVEL_CHANGE_PRESENT,
+            absent: &LEVEL_CHANGE_ABSENT,
+            follow_level_change: true,
+        },
+        Scenario {
+            name: "walk from spawn to a followed level change in Power Up",
+            file: "progress_c2a1_reach_changelevel.txt",
+            map: "c2a1",
+            present: &LEVEL_CHANGE_PRESENT_MONSTER_ENCOUNTER,
+            absent: &LEVEL_CHANGE_ABSENT_MONSTER_ENCOUNTER,
+            follow_level_change: true,
+        },
+        Scenario {
+            name: "walk from spawn to a followed level change in On A Rail",
+            file: "progress_c2a2_reach_changelevel.txt",
+            map: "c2a2",
+            present: &DOOR_AND_LEVEL_CHANGE_PRESENT_MONSTER_ENCOUNTER,
+            absent: &DOOR_AND_LEVEL_CHANGE_ABSENT_MONSTER_ENCOUNTER,
+            follow_level_change: true,
+        },
+        Scenario {
+            name: "walk from spawn to a followed level change in Apprehension",
+            file: "progress_c2a3_reach_changelevel.txt",
+            map: "c2a3",
             present: &LEVEL_CHANGE_PRESENT,
             absent: &LEVEL_CHANGE_ABSENT,
             follow_level_change: true,
