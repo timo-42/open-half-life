@@ -82,9 +82,10 @@ write-up and the Linux linking decision):
   (all MIT OR Apache-2.0), reaching CoreAudio and WASAPI directly rather than
   vendoring or linking a third-party C library
 
-As later packages add the freestanding parser worker's remaining pieces and
-the input stack, this section will be extended; `cargo deny check` remains
-the enforced, up-to-date source of truth between updates to this file.
+As later packages add the hosted, static-musl parser worker's remaining
+pieces and the input stack, this section will be extended; `cargo deny check`
+remains the enforced, up-to-date source of truth between updates to this
+file.
 
 Added by the M4 "movement" physics crate, pinned exactly in
 `crates/ohl-physics/Cargo.toml`:
@@ -122,10 +123,10 @@ Added at R4 by the Microsoft Cabinet decoder:
   framing around DEFLATE is project-owned, clean-room code (see
   `docs/FORMAT_SOURCES.md`).
 
-As later packages add the freestanding parser worker (`rustix`, `seccompiler`,
-`landlock`) and the audio/input stack (`cpal`/`rodio`), this section will be
-extended; `cargo deny check` remains the enforced, up-to-date source of truth
-between updates to this file.
+As later packages add the hosted, static-musl parser worker's sandboxing
+pieces (`rustix`, `seccompiler`, `landlock`) and the audio/input stack
+(`cpal`/`rodio`), this section will be extended; `cargo deny check` remains
+the enforced, up-to-date source of truth between updates to this file.
 
 ## `ohl-cabinet-format` and `ohl-cabinet` (Rust translation of Unshield)
 

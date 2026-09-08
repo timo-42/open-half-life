@@ -21,13 +21,16 @@ Requirements: a stable Rust toolchain matching `rust-toolchain.toml` (installed
 automatically by `rustup` on first use) plus the `clippy` and `rustfmt`
 components.
 
-On Linux x86-64, install the worker's static-runtime build prerequisites
+On Linux x86-64, install the worker's static-runtime build prerequisite
 before running the tests or building an import worker:
 
 ```sh
-sudo apt-get install musl-tools # Debian/Ubuntu
 rustup target add x86_64-unknown-linux-musl
 ```
+
+`musl-tools` (for a system `musl-gcc`) is only needed if your Rust toolchain
+lacks the self-contained musl target; recent `rustup`-installed toolchains
+bundle it and link the worker without any extra package.
 
 ```sh
 cargo build --workspace
