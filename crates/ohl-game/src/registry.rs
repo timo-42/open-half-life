@@ -772,6 +772,157 @@ pub struct Message {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PathFireOnPass(pub String);
 
+/// A `path_track`'s documented `netname` ("Fire on dead end"): the name of
+/// an entity fired when a `func_tracktrain` reaches this node as the last
+/// node of its chain.
+///
+/// A separate component rather than a field on [`Path`] for the same
+/// reason [`PathFireOnPass`] is one — that type stays `Copy`. See
+/// `docs/FORMAT_SOURCES.md` ("Track trains and paths") for the public
+/// source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct PathFireOnDeadEnd(pub String);
+
+/// `func_trackchange`/`func_trackautochange`: the moving piece of track
+/// that carries a `func_tracktrain` from one `path_track` chain to
+/// another, rotating and/or travelling between them.
+///
+/// The names it links ([`TrackChangeLinks`]) live in their own component
+/// so this one stays `Copy`, exactly as [`Path`]/[`PathFireOnPass`] are
+/// split. See `docs/FORMAT_SOURCES.md` ("Track trains and paths") for the
+/// public sources of every field here.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct TrackChange {
+    /// `height`: "travel distance, from top to bottom", in units, along
+    /// the world up axis. Non-negative; the direction of travel comes
+    /// from which end the platform is currently at.
+    pub height: f32,
+    /// `rotation`: "the spin done by this platform on entire way up/down",
+    /// in degrees, about [`Self::axis`]. Signed.
+    pub rotation: f32,
+    /// `speed`: "speed in which func_trackautochange travel the whole way
+    /// up/down (units per seconds)".
+    pub speed: f32,
+    /// The signed unit axis the platform spins about: the documented
+    /// default `Z`, or `X`/`Y` with the matching spawnflag.
+    pub axis: Vec3,
+    /// The entity's own `spawnflags`, read through
+    /// [`Self::auto_activate`]/[`Self::rotate_only`]/
+    /// [`Self::start_at_bottom`] rather than unpacked into a field each:
+    /// the documented flags are a bit field, and keeping them one is what
+    /// lets a flag this project does not act on ("Relink track") still
+    /// round-trip untouched.
+    pub spawnflags: u32,
+    /// How far the platform currently is from the end its geometry was
+    /// compiled at, `0..=1`: `0` resting where it spawned, `1` resting at
+    /// the other end. This, not an absolute "top"/"bottom", is what the
+    /// pose is built from, so one fraction covers both spawn ends.
+    pub displaced: f32,
+    /// `1.0` while travelling away from the spawn end, `-1.0` while
+    /// travelling back to it. Meaningless while [`Self::moving`] is false.
+    pub direction: f32,
+    /// Whether the platform is travelling right now.
+    pub moving: bool,
+    /// Whether a train was aboard when this travel started, and so is
+    /// being carried between [`Self::carry_from`] and [`Self::carry_to`].
+    pub carrying: bool,
+    /// The world-space point the carried train rides from: the position of
+    /// the `path_track` at the end the platform set off from.
+    pub carry_from: Vec3,
+    /// The world-space point the carried train rides to: the position of
+    /// the `path_track` at the end the platform is travelling to, which is
+    /// the node it is "assigned to" on arrival.
+    pub carry_to: Vec3,
+}
+
+impl TrackChange {
+    /// The documented "Auto Activate train" spawnflag
+    /// ([`SPAWNFLAG_TRACK_CHANGE_AUTO_ACTIVATE`]). Recorded but not acted
+    /// on: see `ohl_game::logic::Simulation::finish_track_change` for why
+    /// this project's relinked train rides on either way.
+    #[must_use]
+    pub const fn auto_activate(&self) -> bool {
+        self.spawnflags & SPAWNFLAG_TRACK_CHANGE_AUTO_ACTIVATE != 0
+    }
+
+    /// The documented "Rotate Only" spawnflag
+    /// ([`SPAWNFLAG_TRACK_CHANGE_ROTATE_ONLY`]): the platform spins
+    /// without travelling [`Self::height`].
+    #[must_use]
+    pub const fn rotate_only(&self) -> bool {
+        self.spawnflags & SPAWNFLAG_TRACK_CHANGE_ROTATE_ONLY != 0
+    }
+
+    /// The documented "Start at Bottom" spawnflag
+    /// ([`SPAWNFLAG_TRACK_CHANGE_START_AT_BOTTOM`]): the platform's
+    /// compiled geometry rests at the bottom track rather than the top, so
+    /// [`Self::displaced`] is measured *upward* from there.
+    #[must_use]
+    pub const fn start_at_bottom(&self) -> bool {
+        self.spawnflags & SPAWNFLAG_TRACK_CHANGE_START_AT_BOTTOM != 0
+    }
+
+    /// Seconds one whole trip takes: the documented `height` at the
+    /// documented `speed` ("speed in which func_trackautochange travel the
+    /// whole way up/down (units per seconds)"). Zero — an instant trip —
+    /// when either is zero, which is also what a "Rotate Only" platform
+    /// gets: no public page states how long a rotation-only trip takes,
+    /// since the one documented duration is built from a travel distance
+    /// this flag removes. TODO(black-box).
+    #[must_use]
+    pub fn travel_seconds(&self) -> f32 {
+        if self.rotate_only() || self.height <= 0.0 || self.speed <= 0.0 {
+            return 0.0;
+        }
+        self.height / self.speed
+    }
+
+    /// Whether the platform is resting (or heading for) the *bottom*
+    /// track, given which end its geometry was compiled at.
+    #[must_use]
+    pub fn at_bottom(&self) -> bool {
+        self.start_at_bottom() != (self.displaced >= 0.5)
+    }
+
+    /// The platform's current displacement from where its geometry was
+    /// compiled: along the world up axis, away from its spawn end.
+    /// `Vec3::ZERO` for a "Rotate Only" platform, which is documented to
+    /// spin without travelling.
+    #[must_use]
+    pub fn offset(&self) -> Vec3 {
+        if self.rotate_only() {
+            return Vec3::ZERO;
+        }
+        let away = if self.start_at_bottom() { 1.0 } else { -1.0 };
+        Vec3::Z * (away * self.height * self.displaced.clamp(0.0, 1.0))
+    }
+
+    /// The platform's current spin, in degrees about [`Self::axis`],
+    /// measured from the pose its geometry was compiled at: the documented
+    /// `rotation` ("the spin done by this platform on entire way up/down")
+    /// scaled by how far along that way it is.
+    #[must_use]
+    pub fn degrees(&self) -> f32 {
+        self.rotation * self.displaced.clamp(0.0, 1.0)
+    }
+}
+
+/// The three `targetname`s a [`TrackChange`] links: the train it carries
+/// and the last/first `path_track` of the two chains it joins.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct TrackChangeLinks {
+    /// `train`: "name of the func_tracktrain this platform will transport
+    /// to top/bottom track".
+    pub train: String,
+    /// `toptrack`: "name of last path_track of the top path".
+    pub toptrack: String,
+    /// `bottomtrack`: "name of first path_track of the bottom track".
+    pub bottomtrack: String,
+}
+
 /// `path_corner`/`path_track`: the next node's name, a pause, and (for
 /// `func_tracktrain`) a `path_track`-only speed override and stop flag. See
 /// `docs/FORMAT_SOURCES.md` ("Track trains and paths") for the public
@@ -1174,6 +1325,30 @@ pub const SPAWNFLAG_DOOR_USE_ONLY: u32 = 256;
 /// [`DoorPassable`]'s own doc comment for the cited wording. Carried on
 /// [`DoorPassable`].
 pub const SPAWNFLAG_DOOR_PASSABLE: u32 = 8;
+
+/// `func_trackchange`/`func_trackautochange`'s "Auto Activate train"
+/// spawnflag. Sven Co-op Manor's `func_trackautochange` entry
+/// (`https://www.svenmanor.com/entity-guide/func_trackautochange`, fetched
+/// directly, reviewed 2026-09-08) documents it as "train continues moving
+/// instead of pausing after platform finishes movement"; TWHL's own
+/// `func_trackautochange` page names the flag but leaves its description
+/// blank. See [`crate::registry::TrackChange::auto_activate`] and
+/// `docs/FORMAT_SOURCES.md` for what this project does with a platform
+/// that does *not* set it.
+pub const SPAWNFLAG_TRACK_CHANGE_AUTO_ACTIVATE: u32 = 1;
+/// `func_trackchange`/`func_trackautochange`'s "Start at Bottom"
+/// spawnflag: "platform starts at the bottom path_track rather than the
+/// top".
+pub const SPAWNFLAG_TRACK_CHANGE_START_AT_BOTTOM: u32 = 8;
+/// `func_trackchange`/`func_trackautochange`'s "Rotate Only" spawnflag:
+/// "platform rotates without traveling the specified altitude".
+pub const SPAWNFLAG_TRACK_CHANGE_ROTATE_ONLY: u32 = 16;
+/// `func_trackchange`/`func_trackautochange`'s "X Axis" spawnflag.
+pub const SPAWNFLAG_TRACK_CHANGE_X_AXIS: u32 = 64;
+/// `func_trackchange`/`func_trackautochange`'s "Y Axis" spawnflag. Neither
+/// this nor [`SPAWNFLAG_TRACK_CHANGE_X_AXIS`] set means the documented
+/// default, `Z`.
+pub const SPAWNFLAG_TRACK_CHANGE_Y_AXIS: u32 = 128;
 
 /// `func_rotating`'s "Start On" spawnflag: the brush is already spinning at
 /// map spawn. TWHL wiki `func_rotating` (`docs/FORMAT_SOURCES.md`, "Entity
@@ -1870,6 +2045,50 @@ impl Registry {
                             .insert_one(entity, PathFireOnPass(message.to_string()))
                             .ok();
                     }
+                    if let Some(netname) = def
+                        .keyvalues
+                        .get("netname")
+                        .map(|netname| netname.trim())
+                        .filter(|netname| !netname.is_empty())
+                    {
+                        world
+                            .insert_one(entity, PathFireOnDeadEnd(netname.to_string()))
+                            .ok();
+                    }
+                }
+                "func_trackchange" | "func_trackautochange" => {
+                    let flags = def.spawnflags;
+                    let axis = if flags & SPAWNFLAG_TRACK_CHANGE_X_AXIS != 0 {
+                        Vec3::X
+                    } else if flags & SPAWNFLAG_TRACK_CHANGE_Y_AXIS != 0 {
+                        Vec3::Y
+                    } else {
+                        Vec3::Z
+                    };
+                    let change = TrackChange {
+                        height: numeric(def, "height", 0.0).abs(),
+                        rotation: numeric(def, "rotation", 0.0),
+                        speed: numeric(def, "speed", 0.0).abs(),
+                        axis,
+                        spawnflags: flags,
+                        displaced: 0.0,
+                        direction: 1.0,
+                        moving: false,
+                        carrying: false,
+                        carry_from: Vec3::ZERO,
+                        carry_to: Vec3::ZERO,
+                    };
+                    let links = TrackChangeLinks {
+                        train: def.keyvalues.get("train").cloned().unwrap_or_default(),
+                        toptrack: def.keyvalues.get("toptrack").cloned().unwrap_or_default(),
+                        bottomtrack: def
+                            .keyvalues
+                            .get("bottomtrack")
+                            .cloned()
+                            .unwrap_or_default(),
+                    };
+                    world.insert_one(entity, change).ok();
+                    world.insert_one(entity, links).ok();
                 }
                 "func_train" | "func_tracktrain" => {
                     let train = crate::track_train::TrackTrain {

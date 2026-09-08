@@ -85,6 +85,10 @@ pub struct PathNode {
     /// as a follower passes this node
     /// ([`crate::registry::PathFireOnPass`]).
     pub message: Option<String>,
+    /// The documented fire-on-dead-end `netname`: the name of an entity
+    /// fired when a `func_tracktrain` reaches this node *as the last node
+    /// of its chain* ([`crate::registry::PathFireOnDeadEnd`]).
+    pub dead_end: Option<String>,
 }
 
 /// The three fields of a node the train has just reached that
@@ -159,6 +163,11 @@ impl PathChain {
                 .get::<&PathFireOnPass>(entity)
                 .ok()
                 .map(|fire| fire.0.clone());
+            let dead_end = registry
+                .world
+                .get::<&crate::registry::PathFireOnDeadEnd>(entity)
+                .ok()
+                .map(|fire| fire.0.clone());
             nodes.push(PathNode {
                 entity,
                 position,
@@ -166,6 +175,7 @@ impl PathChain {
                 speed: path.speed,
                 stop: path.stop,
                 message,
+                dead_end,
             });
             match next {
                 Some(next_name) => current_name = next_name,
@@ -324,6 +334,33 @@ pub struct TrackTrainState {
     /// Seconds remaining in a `path_track`'s `wait` pause before this train
     /// auto-continues.
     wait_timer: f32,
+    /// `true` once the node the train is resting at has fired its
+    /// documented fire-on-dead-end `netname`, so one arrival at a dead end
+    /// fires it exactly once however long the train sits there. Cleared
+    /// the moment the train leaves that node (it starts moving again, is
+    /// re-seated, or is relinked to another chain).
+    dead_end_fired: bool,
+    /// A world-space displacement added to [`Self::position`] by whatever
+    /// is *carrying* the whole train — today only a
+    /// `func_trackchange`/`func_trackautochange` platform mid-travel (see
+    /// [`Self::set_carry`]). `Vec3::ZERO` whenever the train is riding its
+    /// own track under its own power, which is every step for every train
+    /// no platform names.
+    carry_offset: Vec3,
+    /// Degrees added to [`Self::yaw_degrees`] by the same carrier, about
+    /// the world up axis. `0.0` in the same "not being carried" case.
+    carry_yaw: f32,
+    /// The position of the first node of the chain this train *spawned*
+    /// on, kept even after a [`Self::relink`] puts it on another one.
+    ///
+    /// This is the stand-in for an origin brush a world-baked car has no
+    /// other reference point for (see
+    /// [`crate::pose::track_train_transform`]): a property of where the
+    /// car's vertices were compiled, not of which track it happens to be
+    /// riding. Recomputing it from the current chain would teleport such a
+    /// car by the whole distance between two tracks the moment a
+    /// `func_trackchange` handed it over.
+    first_node: Vec3,
 }
 
 impl TrackTrainState {
@@ -338,6 +375,7 @@ impl TrackTrainState {
     pub fn spawn(train: &TrackTrain, chain: PathChain) -> Self {
         let moving = train.start_speed.abs() > f32::EPSILON;
         let direction = if train.start_speed < 0.0 { -1.0 } else { 1.0 };
+        let first_node = chain.nodes.first().map_or(Vec3::ZERO, |node| node.position);
         Self {
             chain,
             node_index: 0,
@@ -350,7 +388,59 @@ impl TrackTrainState {
             },
             moving,
             wait_timer: 0.0,
+            dead_end_fired: false,
+            carry_offset: Vec3::ZERO,
+            carry_yaw: 0.0,
+            first_node,
         }
+    }
+
+    /// The displacement and extra yaw a carrier is currently applying to
+    /// this whole train (see [`Self::set_carry`]). `(Vec3::ZERO, 0.0)`
+    /// unless a `func_trackchange`/`func_trackautochange` is mid-travel
+    /// with this train aboard.
+    #[must_use]
+    pub fn carry(&self) -> (Vec3, f32) {
+        (self.carry_offset, self.carry_yaw)
+    }
+
+    /// Sets the displacement and extra yaw a carrier applies to the whole
+    /// train, in world space and degrees about the world up axis. Both are
+    /// sanitized: a non-finite value is dropped rather than propagated
+    /// into the placement every consumer of a pose reads.
+    pub fn set_carry(&mut self, offset: Vec3, yaw_degrees: f32) {
+        self.carry_offset = if offset.is_finite() {
+            offset
+        } else {
+            Vec3::ZERO
+        };
+        self.carry_yaw = if yaw_degrees.is_finite() {
+            yaw_degrees
+        } else {
+            0.0
+        };
+    }
+
+    /// Puts this train on `chain`, at its first node, facing along its
+    /// first segment, and clears any carrier displacement — the state a
+    /// `func_trackchange`/`func_trackautochange` leaves the train it has
+    /// just carried in ("after finishing, the train is assigned to
+    /// path_track of the bottom path"; see `docs/FORMAT_SOURCES.md`,
+    /// "Track trains and paths").
+    ///
+    /// `moving` says whether the train rides on from there. Its speed,
+    /// direction and `wait` timer are left as they were: a relink changes
+    /// which track the train is on, not how fast it travels.
+    pub fn relink(&mut self, chain: PathChain, moving: bool) {
+        self.chain = chain;
+        self.node_index = 0;
+        self.t = 0.0;
+        self.direction = 1.0;
+        self.wait_timer = 0.0;
+        self.dead_end_fired = false;
+        self.carry_offset = Vec3::ZERO;
+        self.carry_yaw = 0.0;
+        self.moving = moving;
     }
 
     /// The node currently ahead of the train in its direction of travel,
@@ -375,9 +465,11 @@ impl TrackTrainState {
         }
     }
 
-    /// Where this train's chain *starts*: the world-space position of its
-    /// first `path_track`/`path_corner`, `height` already applied — the
-    /// point [`Self::position`] returns before the train has moved at all.
+    /// Where this train's chain *started*: the world-space position of the
+    /// first `path_track`/`path_corner` of the chain it spawned on,
+    /// `height` already applied — the point [`Self::position`] returned
+    /// before the train had moved at all. A [`Self::relink`] onto another
+    /// chain does not change it; see [`Self::first_node`].
     ///
     /// Exposed for [`crate::pose::track_train_transform`]'s world-baked
     /// placement rule (see that function's doc comment): a train whose
@@ -386,10 +478,7 @@ impl TrackTrainState {
     /// only published reference point that stands in for one.
     #[must_use]
     pub fn first_node_position(&self) -> Vec3 {
-        self.chain
-            .nodes
-            .first()
-            .map_or(Vec3::ZERO, |node| node.position)
+        self.first_node
     }
 
     /// The train's yaw, in degrees (matching [`crate::registry::movedir_from_angles`]'s
@@ -569,7 +658,18 @@ impl TrackTrainState {
         let mut transitions = 0;
         while remaining > 0.0 && self.moving && transitions < MAX_TRANSITIONS_PER_TICK {
             let Some(other) = self.other_index() else {
+                // A dead end: the chain has no node ahead in this
+                // direction. The train comes to rest here, and the node's
+                // documented `netname` ("fire on dead end") fires — once
+                // per arrival, however many steps the train then sits
+                // here for.
                 self.moving = false;
+                if !self.dead_end_fired {
+                    self.dead_end_fired = true;
+                    if let Some(dead_end) = self.chain.nodes[self.node_index].dead_end.as_ref() {
+                        fired.push(dead_end.clone());
+                    }
+                }
                 break;
             };
             let len = self.chain.segment_len(self.node_index, other);
@@ -578,6 +678,7 @@ impl TrackTrainState {
                 remaining -= remaining_in_segment.max(0.0);
                 self.node_index = other;
                 self.t = 0.0;
+                self.dead_end_fired = false;
                 transitions += 1;
                 let node = &self.chain.nodes[self.node_index];
                 if let Some(message) = node.message.as_ref() {
@@ -1139,6 +1240,7 @@ mod tests {
                     speed: None,
                     stop: false,
                     message: None,
+                    dead_end: None,
                 })
                 .collect();
             let min = coords.iter().fold(Vec3::splat(f32::MAX), |acc, &(x, y, z)| {
@@ -1155,6 +1257,10 @@ mod tests {
                 speed,
                 moving: true,
                 wait_timer: 0.0,
+                dead_end_fired: false,
+                carry_offset: Vec3::ZERO,
+                carry_yaw: 0.0,
+                first_node: Vec3::ZERO,
             };
             for dt in steps {
                 state.advance(dt);

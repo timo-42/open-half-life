@@ -1,4 +1,4 @@
-# M9.18 chain-walk route 2: the map the *second* level change out of
+# M9.19 chain-walk route 2: the map the *second* level change out of
 # ohl_campaign::STARTMAP ("c0a0") lands in, walked from its arrival point.
 #
 # Project-authored; no bytes here come from any game installation (see
@@ -9,29 +9,29 @@
 # A line's leading number is a count of *ticks*, each one CAPTURE_STEP
 # (1/60 s) of simulated time — not seconds.
 #
-# Route, in words only: the ride the previous two routes were on is still
-# under the player when this one starts, but this map's own copy of the
-# track runs out shortly afterwards and the car parks in a tunnel. Staying
-# aboard therefore ends the walk boxed inside the parked car; stepping
-# straight back off it, before it pulls away, puts the player down in the
-# open instead.
+# Route, in words only (no entity name, path or coordinate from any
+# payload): the ride the previous two routes were on is still under the
+# player when this one starts, and it is still the whole route. The player
+# presses nothing. The car runs its track out shortly after arriving, is
+# carried down and round onto the next one by the moving piece of track
+# waiting at that dead end, rides on through the doors that section of the
+# ride opens ahead of itself, pauses where the ride is scripted to pause,
+# and finishes at a level change the end of the ride fires by name — which
+# is where `run_chained` ends the route.
 #
-# That step is the visible result of M9.18: this arrival point used to be
-# *sealed*. With the car's collision hull left unrotated it sat flush
-# across the spot the transition hands the player off to, and a
-# post-chain --reachability-report found exactly one reachable cell with
-# no frontier entity of any kind — no sequence of movement tokens could
-# move the player at all (the finding that closed out the M9.17 route
-# investigation). With the hull posed at the heading the car is drawn at,
-# the same arrival point reports tens of thousands of reachable cells and
-# this route walks out of the car into them.
+# M9.18 could not do any of that. Two published `path_track`/track-change
+# keyvalues were recorded as documented-but-unimplemented, so the car
+# simply stopped at the dead end: the ride's remaining nodes were never
+# passed, the two `func_door`s the reachability walk found closed and
+# not use-openable from anywhere reachable were never fired open (the
+# only thing in that map that names them is a node the car never reached),
+# and this route had to step the player off the parked car into open
+# ground that leads nowhere. M9.19 implements both keyvalues and the route
+# is the ride again; see docs/MILESTONES.md M9.19 and
+# docs/FORMAT_SOURCES.md, "Track trains and paths".
 #
-# The walk stops here rather than at a level change: the nearest boundary
-# this map offers from the open ground below is behind two closed
-# `func_door`s that the report finds are not use-openable from anywhere
-# the player can reach, which is a door/trigger question for a later
-# milestone and not something a movement route can answer. See
-# docs/MILESTONES.md M9.18.
+# The trailing wait is slack: `run_chained` (crates/ohl-app/src/game_run.rs)
+# ends a route at the level change it reaches, so any ticks left over here
+# are never run.
 
-60 wait
-600 back
+9000 wait

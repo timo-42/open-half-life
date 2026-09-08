@@ -15,9 +15,9 @@ use crate::registry::{
     AutoTrigger, Breakable, BrushBounds, Button, ChangeLevel, Door, DoorPassable, DoorUseOnly,
     Master, Message, MomentaryDoor, MomentaryRotButton, MoverState, MultiManager, MultiSource,
     Pendulum, Platform, Registry, RotButton, RotatingDoorSwing, Rotator, Target, TargetName,
-    TeleportTrigger, Transform, Trigger, TriggerHurt,
+    TeleportTrigger, TrackChange, TrackChangeLinks, Transform, Trigger, TriggerHurt,
 };
-use crate::track_train::TrackTrainState;
+use crate::track_train::{PathChain, TrackTrainState};
 
 /// Finds the closest `func_door`, `func_button`, or `use`-activated
 /// `func_rot_button` within `radius` units of `position`, measured against
@@ -601,6 +601,7 @@ impl Simulation {
         Self::advance_rotators(registry, dt);
         Self::advance_pendulums(registry, dt);
         self.advance_trains(registry, dt);
+        Self::advance_track_changes(registry, dt);
         self.advance_cameras(registry, dt);
         if let Some(destination) = self.arrived_at.take() {
             self.seed_teleport_arrival(registry, destination);
@@ -828,6 +829,10 @@ impl Simulation {
         }
         if let Ok(train) = registry.world.query_one_mut::<&mut TrackTrainState>(entity) {
             train.toggle();
+            return;
+        }
+        if registry.world.get::<&TrackChange>(entity).is_ok() {
+            Self::start_track_change(registry, entity);
             return;
         }
         if let Ok(rotator) = registry.world.query_one_mut::<&mut Rotator>(entity) {
@@ -1901,6 +1906,237 @@ impl Simulation {
         }
     }
 
+    /// Starts a `func_trackchange`/`func_trackautochange` travelling to
+    /// its other end, picking up the train it names if that train is
+    /// resting on the `path_track` at the end it is setting off from.
+    ///
+    /// A platform already travelling ignores the activation rather than
+    /// restarting or reversing mid-trip: the published pages describe one
+    /// trip up and one trip down, not a reversible lift, and nothing
+    /// states what a second trigger part-way does. TODO(black-box).
+    ///
+    /// The train is picked up by *name and node*, not by proximity: the
+    /// documented keyvalues name the train and the two `path_track`s the
+    /// platform joins, so a platform whose named train is somewhere else
+    /// entirely simply travels empty. See `docs/FORMAT_SOURCES.md`
+    /// ("Track trains and paths").
+    fn start_track_change(registry: &mut Registry, entity: Entity) {
+        let Some(change) = registry
+            .world
+            .get::<&TrackChange>(entity)
+            .ok()
+            .map(|change| *change)
+        else {
+            return;
+        };
+        if change.moving {
+            return;
+        }
+        let Some(links) = registry
+            .world
+            .get::<&TrackChangeLinks>(entity)
+            .ok()
+            .map(|links| TrackChangeLinks::clone(&links))
+        else {
+            return;
+        };
+        let direction = if change.displaced >= 0.5 { -1.0 } else { 1.0 };
+        // The end it sets off from, and the end it is heading for, as the
+        // two documented `path_track` names.
+        let (from_name, to_name) = if change.at_bottom() {
+            (links.bottomtrack.as_str(), links.toptrack.as_str())
+        } else {
+            (links.toptrack.as_str(), links.bottomtrack.as_str())
+        };
+        let train = Self::named_train(registry, &links.train);
+        let carry = train.and_then(|train| {
+            let from = Self::train_node_position(registry, train, from_name)?;
+            let to = Self::train_node_position(registry, train, to_name)?;
+            // Only a train actually sitting on the node this platform is
+            // joined to rides it; one still out on the line does not.
+            let at_from = registry
+                .world
+                .get::<&TrackTrainState>(train)
+                .is_ok_and(|state| state.position().abs_diff_eq(from, 1.0));
+            at_from.then_some((from, to))
+        });
+        if let Ok(mut change) = registry.world.get::<&mut TrackChange>(entity) {
+            change.moving = true;
+            change.direction = direction;
+            change.carrying = carry.is_some();
+            let (from, to) = carry.unwrap_or((Vec3::ZERO, Vec3::ZERO));
+            change.carry_from = from;
+            change.carry_to = to;
+            if change.travel_seconds() <= 0.0 {
+                // An instant trip still has to land: run the same
+                // completion the timed path runs, on the same step.
+                change.displaced = if direction > 0.0 { 1.0 } else { 0.0 };
+                change.moving = false;
+            }
+        }
+        let arrived = registry
+            .world
+            .get::<&TrackChange>(entity)
+            .is_ok_and(|change| !change.moving);
+        if arrived {
+            Self::finish_track_change(registry, entity);
+        }
+    }
+
+    /// Advances every travelling `func_trackchange`/`func_trackautochange`
+    /// by `dt`, carrying its train with it, and completes the ones that
+    /// arrive this step. Platforms are drained in ascending entity id
+    /// order so a step in which two of them arrive is deterministic.
+    fn advance_track_changes(registry: &mut Registry, dt: f32) {
+        let mut arrived: Vec<Entity> = Vec::new();
+        let mut carried: Vec<(Entity, Vec3, f32)> = Vec::new();
+        for (entity, change) in registry.world.query_mut::<(Entity, &mut TrackChange)>() {
+            if !change.moving {
+                continue;
+            }
+            let seconds = change.travel_seconds();
+            let step = if seconds > 0.0 {
+                dt.max(0.0) / seconds
+            } else {
+                1.0
+            };
+            change.displaced = (change.displaced + change.direction * step).clamp(0.0, 1.0);
+            if change.carrying {
+                let fraction = if change.direction > 0.0 {
+                    change.displaced
+                } else {
+                    1.0 - change.displaced
+                };
+                carried.push((
+                    entity,
+                    change.carry_from.lerp(change.carry_to, fraction) - change.carry_from,
+                    change.rotation * change.direction * fraction,
+                ));
+            }
+            // Arrived only if it actually moved this step: a zero-length
+            // step leaves `displaced` where it was, which for a trip that
+            // has only just started is `0.0` — the same value the "back
+            // at the spawn end" arrival test reads.
+            if step > 0.0 && (change.displaced <= 0.0 || change.displaced >= 1.0) {
+                change.moving = false;
+                arrived.push(entity);
+            }
+        }
+        carried.sort_unstable_by_key(|(entity, _, _)| entity.id());
+        for (entity, offset, yaw) in carried {
+            let Some(train) = registry
+                .world
+                .get::<&TrackChangeLinks>(entity)
+                .ok()
+                .and_then(|links| Self::named_train(registry, &links.train))
+            else {
+                continue;
+            };
+            if let Ok(mut state) = registry.world.get::<&mut TrackTrainState>(train) {
+                state.set_carry(offset, yaw);
+            }
+        }
+        arrived.sort_unstable_by_key(|entity| entity.id());
+        for entity in arrived {
+            Self::finish_track_change(registry, entity);
+        }
+    }
+
+    /// Hands the train a platform has just carried over to the chain at
+    /// the end it arrived at: "after finishing, the train is assigned to
+    /// path_track of the bottom path" (Sven Co-op's and Sven Manor's
+    /// `func_trackautochange` pages, see `docs/FORMAT_SOURCES.md`).
+    ///
+    /// TODO(black-box): the train is seated at node `0` of the chain the
+    /// destination name resolves to. The same pages document that with
+    /// the "Start at Bottom" spawnflag set, `bottomtrack` names the
+    /// *last* `path_track` of the bottom path rather than the first (and
+    /// `toptrack` the first of the top path rather than the last), so
+    /// such a platform's downward destination is a chain's far end and
+    /// this seating would leave the train on a one-node chain, dead-ended
+    /// on arrival. No page reviewed states which way a train handed a
+    /// chain's far end is meant to travel, and no fixture here exercises
+    /// the flag; see `docs/FORMAT_SOURCES.md`, "Track trains and paths".
+    ///
+    /// The relinked train rides on. That is this project's own black-box
+    /// reading, not a quoted sentence: TWHL's `func_trackautochange` page
+    /// names an "Auto Activate train" flag but leaves its description
+    /// blank, and the Sven Co-op mod's guide — a different engine —
+    /// describes the flag as the difference between continuing and
+    /// pausing. Taking "pausing" as the unflagged default would deliver a
+    /// ride onto a track with nothing able to start it again, the same
+    /// shape of progression stopper `track_train::path_speed_override`
+    /// already records for a zero speed override. TODO(black-box): verify
+    /// against the real game.
+    fn finish_track_change(registry: &mut Registry, entity: Entity) {
+        let Some((change, links)) = registry
+            .world
+            .get::<&TrackChange>(entity)
+            .ok()
+            .map(|change| *change)
+            .zip(
+                registry
+                    .world
+                    .get::<&TrackChangeLinks>(entity)
+                    .ok()
+                    .map(|links| TrackChangeLinks::clone(&links)),
+            )
+        else {
+            return;
+        };
+        if !change.carrying {
+            return;
+        }
+        if let Ok(mut change) = registry.world.get::<&mut TrackChange>(entity) {
+            change.carrying = false;
+        }
+        let to_name = if change.at_bottom() {
+            links.bottomtrack.as_str()
+        } else {
+            links.toptrack.as_str()
+        };
+        let Some(train) = Self::named_train(registry, &links.train) else {
+            return;
+        };
+        let height = registry
+            .world
+            .get::<&crate::track_train::TrackTrain>(train)
+            .map_or(0.0, |train| train.height);
+        let Some(chain) = PathChain::build(registry, to_name, height) else {
+            // Nothing to hand the train over to: leave it exactly where
+            // the platform put it rather than inventing a route.
+            if let Ok(mut state) = registry.world.get::<&mut TrackTrainState>(train) {
+                state.set_carry(Vec3::ZERO, 0.0);
+            }
+            return;
+        };
+        if let Ok(mut state) = registry.world.get::<&mut TrackTrainState>(train) {
+            state.relink(chain, true);
+        }
+    }
+
+    /// The entity a [`TrackChangeLinks::train`] name resolves to, when it
+    /// is a train this crate actually put a [`TrackTrainState`] on.
+    fn named_train(registry: &Registry, name: &str) -> Option<Entity> {
+        registry
+            .find(name)
+            .iter()
+            .copied()
+            .find(|entity| registry.world.get::<&TrackTrainState>(*entity).is_ok())
+    }
+
+    /// Where `train` would sit on the `path_track` called `name`: the
+    /// node's own position with the train's documented `height` added, the
+    /// same offset [`PathChain::build`] applies to every node it resolves.
+    fn train_node_position(registry: &Registry, train: Entity, name: &str) -> Option<Vec3> {
+        let height = registry
+            .world
+            .get::<&crate::track_train::TrackTrain>(train)
+            .map_or(0.0, |train| train.height);
+        PathChain::build(registry, name, height)
+            .and_then(|chain| chain.nodes.first().map(|node| node.position))
+    }
+
     /// Advances every `trigger_camera` sequence, firing its completion
     /// `target` (see [`crate::camera::completion_target`]) exactly once, the
     /// tick [`crate::camera::TriggerCameraState::advance`] reports it
@@ -2849,6 +3085,279 @@ mod tests {
         assert!(
             state.position().x > 0.0,
             "game_playerspawn must have started the tram moving toward node2, got {:?}",
+            state.position()
+        );
+    }
+
+    /// The two chains and the platform joining them, as a `path_track`
+    /// dead end whose documented `netname` names a
+    /// `func_trackautochange`. Project-authored; no payload data.
+    fn track_change_entities(extra_platform_keys: &[(&str, &str)]) -> Vec<RawEntity> {
+        let mut platform: Vec<(&str, &str)> = vec![
+            ("classname", "func_trackautochange"),
+            ("model", "*2"),
+            ("targetname", "lift"),
+            ("train", "tram"),
+            ("toptrack", "top2"),
+            ("bottomtrack", "bottom1"),
+            ("height", "100"),
+            ("rotation", "90"),
+            ("speed", "50"),
+            ("origin", "100 0 0"),
+        ];
+        platform.extend_from_slice(extra_platform_keys);
+        vec![
+            raw(&[
+                ("classname", "func_tracktrain"),
+                ("targetname", "tram"),
+                ("target", "top1"),
+                ("speed", "100"),
+                ("startspeed", "100"),
+                ("height", "0"),
+                ("origin", "0 0 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "top1"),
+                ("target", "top2"),
+                ("origin", "0 0 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "top2"),
+                ("netname", "lift"),
+                ("origin", "100 0 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "bottom1"),
+                ("target", "bottom2"),
+                ("origin", "100 0 -100"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "bottom2"),
+                ("origin", "100 200 -100"),
+            ]),
+            raw(&platform),
+        ]
+    }
+
+    fn track_change_registry(extra_platform_keys: &[(&str, &str)]) -> Registry {
+        let entities = track_change_entities(extra_platform_keys);
+        let defs = parse_entities(&entities, &Limits::default());
+        Registry::build(&defs, &BTreeMap::new(), &Limits::default())
+    }
+
+    /// The whole documented handover, at the `ohl-game` level: the train
+    /// runs out of top chain, the dead end's `netname` starts the
+    /// platform, the platform's own pose travels its `height` and turns
+    /// its `rotation` over `height / speed` seconds, and the train ends up
+    /// on the bottom chain and riding it.
+    #[test]
+    fn a_dead_end_netname_starts_the_platform_that_relinks_the_train() {
+        let mut registry = track_change_registry(&[]);
+        let mut sim = Simulation::new();
+        let tram = registry.find("tram")[0];
+        let lift = registry.find("lift")[0];
+
+        // One second at 100 units/second covers the 100-unit top chain.
+        tick_for(&mut sim, &mut registry, 1.5, 1.0 / 60.0);
+        {
+            let change = registry.world.get::<&TrackChange>(lift).unwrap();
+            assert!(
+                change.moving,
+                "the dead end's netname should have started the platform"
+            );
+            assert!(
+                change.carrying,
+                "the platform should have picked up the train resting on its top track"
+            );
+        }
+
+        // Half the documented trip (height 100 at speed 50 is two
+        // seconds): the platform is part-way, and so is the train it
+        // carries.
+        tick_for(&mut sim, &mut registry, 1.0, 1.0 / 60.0);
+        {
+            let change = registry.world.get::<&TrackChange>(lift).unwrap();
+            assert!(
+                change.displaced > 0.2 && change.displaced < 0.8,
+                "the platform should be part-way through its trip, got {}",
+                change.displaced
+            );
+            assert!(
+                change.offset().z < 0.0 && change.offset().z > -100.0,
+                "the platform should have travelled part of its height, got {:?}",
+                change.offset()
+            );
+            let state = registry.world.get::<&TrackTrainState>(tram).unwrap();
+            let (carry, yaw) = state.carry();
+            assert!(
+                carry.z < 0.0 && carry.z > -100.0,
+                "the train should be carried part of the way down, got {carry:?}"
+            );
+            assert!(
+                yaw > 0.0 && yaw < 90.0,
+                "the train should be part-way through the platform's spin, got {yaw}"
+            );
+        }
+
+        // The rest of the trip, then a stretch of the bottom chain.
+        tick_for(&mut sim, &mut registry, 2.0, 1.0 / 60.0);
+        {
+            let change = registry.world.get::<&TrackChange>(lift).unwrap();
+            assert!(!change.moving, "the platform should have arrived");
+            assert!(change.at_bottom(), "it should be at the bottom track now");
+            let state = registry.world.get::<&TrackTrainState>(tram).unwrap();
+            assert_eq!(
+                state.carry(),
+                (Vec3::ZERO, 0.0),
+                "an arrived platform stops carrying: the train is assigned to the node instead"
+            );
+            assert!(
+                state.position().z <= -100.0 + 1.0,
+                "the train should be on the bottom chain, got {:?}",
+                state.position()
+            );
+            assert!(
+                state.position().y > 0.0,
+                "the relinked train should be riding the bottom chain, got {:?}",
+                state.position()
+            );
+        }
+    }
+
+    /// A dead end fires its `netname` once per *arrival*, not once per
+    /// attempt to leave it.
+    ///
+    /// The interesting case is a train that is re-triggered while parked
+    /// at a dead end: it is switched back on, [`TrackTrainState::advance`]
+    /// re-enters its travel loop, finds no node ahead and stops again.
+    /// Without [`TrackTrainState::dead_end_fired`] that second attempt
+    /// fires the `netname` a second time, which for the real shape this
+    /// exists for — a `func_trackautochange` — would send the platform
+    /// straight back where it came from.
+    ///
+    /// The witness is a second train, because activating one *toggles* it
+    /// (see [`Simulation::activate`]): one fire starts it, a second would
+    /// stop it again, so "still moving" is a parity check on how many
+    /// times the dead end fired. No platform is involved, so nothing here
+    /// can move the first train off the node it is parked at.
+    #[test]
+    fn a_dead_end_fires_its_netname_once_even_when_the_train_is_re_triggered_there() {
+        let entities = vec![
+            raw(&[
+                ("classname", "func_tracktrain"),
+                ("targetname", "tram"),
+                ("target", "top1"),
+                ("speed", "100"),
+                ("startspeed", "100"),
+                ("height", "0"),
+                ("origin", "0 0 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "top1"),
+                ("target", "top2"),
+                ("origin", "0 0 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "top2"),
+                ("netname", "witness"),
+                ("origin", "100 0 0"),
+            ]),
+            raw(&[
+                ("classname", "func_tracktrain"),
+                ("targetname", "witness"),
+                ("target", "witness1"),
+                ("speed", "100"),
+                ("startspeed", "0"),
+                ("height", "0"),
+                ("origin", "0 500 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "witness1"),
+                ("target", "witness2"),
+                ("origin", "0 500 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "witness2"),
+                ("origin", "1000 500 0"),
+            ]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let mut sim = Simulation::new();
+        let tram = registry.find("tram")[0];
+        let witness = registry.find("witness")[0];
+
+        // One second at 100 units/second runs the 100-unit chain out.
+        tick_for(&mut sim, &mut registry, 1.5, 1.0 / 60.0);
+        let travelled = {
+            let state = registry.world.get::<&TrackTrainState>(witness).unwrap();
+            assert!(
+                state.position().x > 0.0,
+                "the dead end should have fired its netname once, starting the witness"
+            );
+            state.position().x
+        };
+
+        // Re-trigger the parked train: it switches back on, finds nothing
+        // ahead and stops again. That is not a new arrival.
+        let mut events = Vec::new();
+        sim.use_entity(&mut registry, tram, None, &mut events);
+        {
+            let state = registry.world.get::<&TrackTrainState>(tram).unwrap();
+            assert!(
+                state
+                    .position()
+                    .abs_diff_eq(Vec3::new(100.0, 0.0, 0.0), 1.0),
+                "the re-triggered train is still parked on the dead end, got {:?}",
+                state.position()
+            );
+        }
+        tick_for(&mut sim, &mut registry, 1.0, 1.0 / 60.0);
+
+        // A second, spurious fire toggles the witness off on the first of
+        // those steps, so it covers a step's worth of ground and no more.
+        // One fire leaves it running for the whole second at 100 units a
+        // second, which the bound below is comfortably inside.
+        let state = registry.world.get::<&TrackTrainState>(witness).unwrap();
+        assert!(
+            state.position().x > travelled + 50.0,
+            "a second netname fire would have toggled the witness back off, \
+             leaving it barely past where it was: {:?} (was at x {travelled})",
+            state.position()
+        );
+    }
+
+    /// A platform whose named train is not on the `path_track` it is
+    /// joined to travels empty rather than dragging a train from
+    /// somewhere else onto the other chain.
+    #[test]
+    fn a_platform_whose_train_is_elsewhere_travels_empty() {
+        let mut registry = track_change_registry(&[]);
+        let mut sim = Simulation::new();
+        let tram = registry.find("tram")[0];
+        let lift = registry.find("lift")[0];
+        // Fire the platform before the train has got anywhere near the
+        // dead end it is joined to.
+        let mut events = Vec::new();
+        sim.use_entity(&mut registry, lift, None, &mut events);
+        {
+            let change = registry.world.get::<&TrackChange>(lift).unwrap();
+            assert!(change.moving, "the platform still travels when triggered");
+            assert!(!change.carrying, "but with no train aboard");
+        }
+        tick_for(&mut sim, &mut registry, 3.0, 1.0 / 60.0);
+        let state = registry.world.get::<&TrackTrainState>(tram).unwrap();
+        assert!(
+            state.position().z > -1.0,
+            "the train should still be on its own top chain, got {:?}",
             state.position()
         );
     }

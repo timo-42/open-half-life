@@ -2745,11 +2745,126 @@ counterpart in `ohl-ai`'s sound classification and is recorded as
     passenger is scraped off against it. Guarded by
     `crates/ohl-engine/tests/train_across_level_change.rs`
     (`a_path_node_fires_its_message_as_the_train_passes`).
-  - `path_track`'s documented `altpath` (branch path) and `netname`
-    (fire-on-dead-end) keyvalues exist in the public documentation but are
-    **not implemented**; see the `TODO(black-box)` on
-    `ohl_game::track_train::PathChain` (branching) — a train instead simply
-    follows the single `target` chain.
+  - `path_track`'s documented `netname` ("Fire on dead end") keyvalue.
+    Sven Co-op Manor's `path_track` entry
+    ([svenmanor.com: path_track](https://www.svenmanor.com/entity-guide/path_track),
+    fetched directly, reviewed 2026-09-09) documents it as "entity to
+    trigger when func_tracktrain reaches this path_track as a last
+    path_track in a chain", alongside the `message` "Fire On Pass" quoted
+    above; a search-engine summary of the (403-to-automated-fetch)
+    [Valve Developer Community `path_track` (GoldSrc)](https://developer.valvesoftware.com/wiki/Path_track_(GoldSrc))
+    page, reviewed the same day, states the same thing and adds that it
+    also fires "when the next stop target has been disabled and the train
+    reaches this point". Implemented as
+    `ohl_game::registry::PathFireOnDeadEnd` (a separate component for the
+    same reason `PathFireOnPass` is one), carried onto
+    `ohl_game::track_train::PathNode::dead_end`, and pushed into the same
+    `TrackTrainState::advance_firing` list the fire-on-pass `message`
+    uses — so `ohl_game::logic::Simulation::advance_trains` fires it by
+    name with the train as the activator, exactly as it already does for
+    a passed node. It fires **once per arrival**: a train parked at a dead
+    end for a hundred steps fires it on the first of them and not again
+    until it has left that node (`TrackTrainState::dead_end_fired`). This
+    project implements only the "no next node" half of the cited sentence;
+    the "next stop target has been disabled" half needs `path_track`'s
+    Disabled spawnflag, which is not implemented. TODO(black-box).
+  - `path_track`'s documented `altpath` (branch path) keyvalue exists in
+    the public documentation but is **not implemented**; see the
+    `TODO(black-box)` on `ohl_game::track_train::PathChain` (branching) —
+    a train instead simply follows the single `target` chain.
+  - **`func_trackchange`/`func_trackautochange`**: the moving piece of
+    track that carries a train from one chain to another. Sven Co-op's own
+    wiki ([wiki.svencoop.com: func_trackautochange](https://wiki.svencoop.com/Func_trackautochange),
+    fetched directly, reviewed 2026-09-09) and Sven Co-op Manor's mirror
+    of the same entity
+    ([svenmanor.com: func_trackautochange](https://www.svenmanor.com/entity-guide/func_trackautochange),
+    fetched directly, same date) describe it as a "brush entity that works
+    as a rotating ascending/descending elevator for uncontrollable
+    func_tracktrain. It connects two path_tracks — elevator takes the
+    train from last path_track of the top path, rotating and descending,
+    and then, after finishing, the train is assigned to path_track of the
+    bottom path." A search-engine summary of TWHL's own (403) page,
+    reviewed the same day, gives the base Half-Life wording: the entity
+    "lets you switch a train that is not being controlled by the player to
+    a new track via a moving piece of track, either rotating, or ascending
+    / descending, or both."
+    - Keyvalues, quoted in full: `toptrack` "name of last path_track of
+      the top path (if "Start at Bottom" is selected this is the name of
+      the first path_track at the top path)"; `bottomtrack` "name of first
+      path_track of the bottom track. (if "Start at Bottom" is selected
+      this is the name of the last path_track at the bottom path)";
+      `train` "name of the func_tracktrain this platform will transport to
+      top/bottom track"; `height` "travel distance, from top to bottom";
+      `rotation` "the spin done by this platform on entire way up/down";
+      `speed` "speed in which func_trackautochange travel the whole way
+      up/down (units per seconds)". Both pages also record that "an origin
+      brush needs to be part of the entity to specify its axis of
+      rotation, and the axis defaults to Z if neither of the axis flags is
+      enabled", which is why `ohl_game::pose::brush_pose_rotation` gives
+      this mover the same zero compiled-frame pivot every other rotating
+      mover gets.
+    - Spawnflags, quoted from the Sven pages (TWHL's own page names 1 and
+      2 but leaves their descriptions blank): 1 "Auto Activate train",
+      2 "Relink track", 8 "Start at Bottom", 16 "Rotate Only", 64 "X
+      Axis", 128 "Y Axis". This project implements 8, 16, 64 and 128
+      (`ohl_game::registry::SPAWNFLAG_TRACK_CHANGE_*`); 1 and 2 are
+      recorded but have no separate effect, for the reason below.
+    - **What this project does with a platform that arrives.** The
+      relinked train rides on. That is a project-determined black-box
+      reading, not a quoted sentence: the only description of the "Auto
+      Activate train" flag any page reviewed here gives is the Sven Co-op
+      *mod's* — "train continues moving instead of pausing after platform
+      finishes movement" — and that is a different engine. Taking
+      "pausing" as the unflagged default delivers a ride onto a track with
+      nothing able to start it again, the same shape of progression
+      stopper already recorded above for a zero "New Train Speed" taken
+      literally. Recorded as `TODO(black-box)` on
+      `ohl_game::logic::Simulation::finish_track_change`; it must be
+      verified against the real game.
+    - **What activates one.** This project drives both classnames through
+      the same `Simulation::activate` path every other mover uses, so a
+      `func_trackautochange` is activated by whatever fires its
+      `targetname` — in practice the `netname` of the `path_track` its
+      `toptrack` names. The published pages describe the *auto* variant as
+      reacting to the train's arrival rather than to a trigger, so a map
+      that declares one without wiring that arrival to it would not
+      activate it here. TODO(black-box).
+    - **What it carries, and how.** The named train rides the platform
+      only when it is actually resting on the `path_track` at the end the
+      platform sets off from; otherwise the platform travels empty. The
+      trip takes the documented `height / speed` seconds, over which the
+      platform's own brush translates along the world up axis by `height`
+      and turns `rotation` degrees about its origin brush (the same
+      offset/rotation pair `ohl_game::pose` already reports for every
+      other mover, so the renderer, the collision hull, the
+      `use`-proximity point and a rider all follow it), and the train is
+      moved from the `path_track` it left to the one it is documented to
+      be "assigned to" at the far end, turning through the same
+      `rotation`. Using the two documented endpoints for the train itself
+      — rather than replaying the platform's own `height` on it — is what
+      makes the arrival land exactly on the destination node the pages
+      name, with no snap for a passenger to be scraped off by.
+    - **The "Start at Bottom" end-of-chain reversal is not implemented.**
+      The parenthesised clauses quoted above say that with that flag set,
+      the two names point at the *other* end of each chain: `toptrack`
+      becomes the first node of the top path and `bottomtrack` the last
+      node of the bottom one. `Simulation::finish_track_change` always
+      relinks to `PathChain::build(destination_name)` and seats the train
+      at node 0, so for such a platform making the downward trip the
+      documented destination is the bottom path's **last** node, and the
+      train would be handed a one-node chain and dead-end on arrival
+      rather than riding the bottom path backward from its far end. Which
+      direction a train handed the far end of a chain is meant to travel
+      is not stated by any page reviewed, and no fixture here exercises
+      the flag. TODO(black-box).
+    - **Not saved.** A save taken while a platform is travelling, or after
+      it has relinked a train, restores that train on the chain its own
+      `target` names: save tag 28's `MoverSnapshot` is index-based against
+      the chain rebuilt at load and its wire shape is frozen
+      (`ohl_engine::save_state`). The *level-change* carry is unaffected,
+      because `ohl_engine::transition::capture_track_train` records the
+      node the train is at **by name**, which after a relink is a node on
+      the new chain. Recorded as a known gap.
 
 Everything not directly stated by the pages above is marked
 `TODO(black-box)` at its point of use in `crates/ohl-game/src/track_train.rs`
