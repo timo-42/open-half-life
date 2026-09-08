@@ -450,6 +450,39 @@ impl Game {
         self.systems.inventory()
     }
 
+    /// Applies a `--start-inventory` list (dev-tools only; see
+    /// `crate::start_inventory`), meant to be called exactly once, right
+    /// after [`Self::load`]/[`Self::load_with`], so a single-map probe or
+    /// scenario can model the inventory a real campaign run would have
+    /// carried in from an earlier map.
+    ///
+    /// Each item is applied through the same grant path a `weapon_*`/
+    /// `ammo_*` pickup touch already uses
+    /// (`ohl_combat::Inventory::give_weapon`/`give_ammo`,
+    /// `ohl_combat::weapon_pickup_ammo`/`ammo_pickup_amount`): a weapon
+    /// unlocks the slot and grants its bundled ammo, an ammo entry tops up
+    /// one pickup's worth of that ammo type, clamped to its carry cap the
+    /// same way a real pickup already clamps. This never touches the save
+    /// format (inventory is save tag 23; nothing here changes what that
+    /// tag records or how it is restored) — it is ordinary runtime state,
+    /// applied through the ordinary inventory API.
+    pub fn give_start_inventory(&mut self, items: &[crate::StartInventoryItem]) {
+        let (inventory, ammo) = self.systems.inventory_and_ammo_mut();
+        for item in items {
+            match *item {
+                crate::StartInventoryItem::Weapon(id) => {
+                    inventory.give_weapon(id);
+                    if let Some(ammo_kind) = ohl_combat::spec(id).ammo {
+                        ammo.add(ammo_kind, ohl_combat::weapon_pickup_ammo(id).value);
+                    }
+                }
+                crate::StartInventoryItem::Ammo(kind) => {
+                    ammo.add(kind, ohl_combat::ammo_pickup_amount(kind).value);
+                }
+            }
+        }
+    }
+
     /// The player's current health, from `ohl_player::Player`'s own state
     /// (not the world entity's `ohl_combat::Health` component, which is a
     /// mirror written after damage resolution; see `crate::damage_map`'s

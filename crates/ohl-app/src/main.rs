@@ -334,6 +334,48 @@ number greater than 0 and no more than 8.0."
     #[cfg(feature = "dev-tools")]
     #[arg(long)]
     reachability_report: bool,
+
+    /// Development only: with `--reachability-report`, treats a
+    /// `func_breakable` on the walk's frontier (`health > 0`, not the
+    /// documented "Only Trigger" flag, and not already broken) as
+    /// openable-by-damage between rounds, the same way a closed,
+    /// use-openable door is opened — tagged in the report as
+    /// "damage-openable" and counted separately from doors.
+    ///
+    /// This assumes a weapon capable of dealing damage is available; it
+    /// never checks or grants an actual inventory (a cold map load starts
+    /// with none — see `--start-inventory` for that). Without this flag a
+    /// breakable stays on the frontier forever, which is this project's
+    /// own default: a fresh, unarmed spawn cannot break anything.
+    #[cfg(feature = "dev-tools")]
+    #[arg(long, requires = "reachability_report")]
+    reachability_assume_armed: bool,
+
+    /// Development only: gives the player named weapons and ammo right
+    /// after the map loads, so a single-map probe or scenario can model
+    /// the inventory a real campaign run would have carried in from an
+    /// earlier map via `changelevel`, instead of always starting from the
+    /// empty inventory a cold load otherwise gets
+    /// (`ohl_combat::Inventory::new` grants nothing, not even the
+    /// crowbar).
+    ///
+    /// A comma-separated list of `weapon_*`/`ammo_*` classnames from this
+    /// project's own documented pickup vocabulary
+    /// (`ohl_combat::classify_classname`, `docs/FORMAT_SOURCES.md`,
+    /// "Pickups and chargers") — the exact same classnames a `weapon_*`/
+    /// `ammo_*` pickup entity already uses, applied through the same
+    /// grant path a touch pickup uses (`ohl_engine::Game::
+    /// give_start_inventory`). A weapon entry grants its bundled ammo the
+    /// same way picking it up would; repeating a classname stacks it (for
+    /// example `ammo_buckshot,ammo_buckshot` grants two boxes' worth). An
+    /// unrecognised classname, or one that names something other than a
+    /// weapon or ammo (`item_suit`, `func_healthcharger`, ...), is a
+    /// usage error. This never changes the save format: inventory is save
+    /// tag 23, and giving items at load uses the normal runtime inventory
+    /// API, not a new one.
+    #[cfg(feature = "dev-tools")]
+    #[arg(long, value_name = "LIST")]
+    start_inventory: Option<String>,
 }
 
 /// Formats an event as `[level] message`, mirroring the C++ `ohl::core::log`
@@ -626,6 +668,10 @@ fn run_game_flow(cli: &Cli) -> ExitCode {
         viewpoint_at_nearest_monster: cli.viewpoint_at_nearest_monster,
         #[cfg(feature = "dev-tools")]
         reachability_report: cli.reachability_report,
+        #[cfg(feature = "dev-tools")]
+        reachability_assume_armed: cli.reachability_assume_armed,
+        #[cfg(feature = "dev-tools")]
+        start_inventory: cli.start_inventory.as_deref(),
     }) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {

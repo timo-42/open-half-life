@@ -74,6 +74,11 @@ struct Scenario {
     /// original map. `false` for every scenario except the two that
     /// assert that line present.
     follow_level_change: bool,
+    /// A `--start-inventory` list (`crates/ohl-app/src/main.rs`) given to
+    /// the player right after the map loads, so a scenario can model the
+    /// inventory a real campaign run would have carried in from an
+    /// earlier map. Empty for every scenario that doesn't need one.
+    start_inventory: &'static [&'static str],
 }
 
 /// The two lines every scenario's `--script-log` run always emits: the
@@ -756,6 +761,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &BASE_PRESENT,
             absent: &BASE_ABSENT,
             follow_level_change: false,
+            start_inventory: &[],
         },
         Scenario {
             name: "look around in the first chapter start",
@@ -764,6 +770,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &START_MAP_PRESENT,
             absent: &START_MAP_ABSENT,
             follow_level_change: false,
+            start_inventory: &[],
         },
         Scenario {
             name: "approach the first monster encounter",
@@ -772,6 +779,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &BASE_PRESENT,
             absent: &BASE_ABSENT,
             follow_level_change: false,
+            start_inventory: &[],
         },
         Scenario {
             name: "pick up and fire a weapon in the hazard course",
@@ -780,6 +788,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &FIRE_AND_PICKUP_PRESENT,
             absent: &FIRE_AND_PICKUP_ABSENT,
             follow_level_change: false,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk from spawn in Black Mesa Inbound",
@@ -788,6 +797,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &START_MAP_PRESENT,
             absent: &START_MAP_ABSENT,
             follow_level_change: false,
+            start_inventory: &[],
         },
         Scenario {
             name: "ride the opening tram to the level change",
@@ -796,6 +806,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &RIDE_TO_LEVEL_CHANGE_PRESENT,
             absent: &RIDE_TO_LEVEL_CHANGE_ABSENT,
             follow_level_change: true,
+            start_inventory: &[],
         },
         Scenario {
             name: "open a rotating door with use in Anomalous Materials",
@@ -804,6 +815,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &WALK_PRESENT_DOOR_OPENED,
             absent: &WALK_ABSENT_DOOR_OPENED,
             follow_level_change: false,
+            start_inventory: &[],
         },
         Scenario {
             name: "reach a level change in Anomalous Materials",
@@ -812,6 +824,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &DOOR_AND_LEVEL_CHANGE_PRESENT,
             absent: &DOOR_AND_LEVEL_CHANGE_ABSENT,
             follow_level_change: true,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk from spawn in Anomalous Materials",
@@ -820,6 +833,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
             follow_level_change: false,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk from spawn in Unforeseen Consequences",
@@ -828,6 +842,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
             follow_level_change: false,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk from spawn in Office Complex",
@@ -836,6 +851,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
             follow_level_change: false,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk from spawn in \"We've Got Hostiles!\"",
@@ -844,6 +860,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
             follow_level_change: false,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk from spawn in Blast Pit",
@@ -852,6 +869,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
             follow_level_change: false,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk from spawn in Power Up",
@@ -860,6 +878,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &WALK_PRESENT_MONSTER_ENCOUNTER,
             absent: &WALK_ABSENT_MONSTER_ENCOUNTER,
             follow_level_change: false,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk from spawn in On A Rail",
@@ -868,6 +887,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
             follow_level_change: false,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk from spawn in Apprehension",
@@ -876,6 +896,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
             follow_level_change: false,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk from spawn in Residue Processing",
@@ -884,6 +905,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
             follow_level_change: false,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk from spawn in Questionable Ethics",
@@ -892,6 +914,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &WALK_PRESENT_PLAYER_DAMAGED,
             absent: &WALK_ABSENT_PLAYER_DAMAGED,
             follow_level_change: false,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk from spawn in Surface Tension",
@@ -900,6 +923,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
             follow_level_change: false,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk from spawn in \"Forget About Freeman!\"",
@@ -908,6 +932,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
             follow_level_change: false,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk from spawn in Lambda Core",
@@ -916,6 +941,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
             follow_level_change: false,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk from spawn in Xen",
@@ -924,6 +950,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
             follow_level_change: false,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk from spawn in Gonarch's Lair",
@@ -932,6 +959,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
             follow_level_change: false,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk from spawn in Nihilanth",
@@ -940,6 +968,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
             follow_level_change: false,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk from spawn in Endgame",
@@ -948,6 +977,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &TELEPORTED_PRESENT,
             absent: &TELEPORTED_ABSENT,
             follow_level_change: false,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk from spawn in the Hazard Course",
@@ -956,6 +986,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &WALK_PRESENT,
             absent: &BASE_ABSENT,
             follow_level_change: false,
+            start_inventory: &[],
         },
         Scenario {
             name: "reach and climb a ladder in the Hazard Course",
@@ -964,6 +995,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &WALK_PRESENT_LADDER,
             absent: &BASE_ABSENT,
             follow_level_change: false,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk from spawn to a followed level change in Unforeseen Consequences",
@@ -972,6 +1004,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &LEVEL_CHANGE_PRESENT,
             absent: &LEVEL_CHANGE_ABSENT,
             follow_level_change: true,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk from spawn to a followed level change in \"We've Got Hostiles!\"",
@@ -980,6 +1013,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &DOOR_AND_LEVEL_CHANGE_PRESENT,
             absent: &DOOR_AND_LEVEL_CHANGE_ABSENT,
             follow_level_change: true,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk from spawn to a followed level change in Surface Tension",
@@ -988,6 +1022,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &DOOR_AND_LEVEL_CHANGE_PRESENT,
             absent: &DOOR_AND_LEVEL_CHANGE_ABSENT,
             follow_level_change: true,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk from spawn to a followed level change in Blast Pit",
@@ -996,6 +1031,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &LEVEL_CHANGE_PRESENT,
             absent: &LEVEL_CHANGE_ABSENT,
             follow_level_change: true,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk from spawn to a followed level change in Power Up",
@@ -1004,6 +1040,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &LEVEL_CHANGE_PRESENT_MONSTER_ENCOUNTER,
             absent: &LEVEL_CHANGE_ABSENT_MONSTER_ENCOUNTER,
             follow_level_change: true,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk from spawn to a followed level change in On A Rail",
@@ -1012,6 +1049,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &DOOR_AND_LEVEL_CHANGE_PRESENT_MONSTER_ENCOUNTER,
             absent: &DOOR_AND_LEVEL_CHANGE_ABSENT_MONSTER_ENCOUNTER,
             follow_level_change: true,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk from spawn to a followed level change in Apprehension",
@@ -1020,6 +1058,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &LEVEL_CHANGE_PRESENT,
             absent: &LEVEL_CHANGE_ABSENT,
             follow_level_change: true,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk from spawn to a followed level change in \"Forget About Freeman!\"",
@@ -1028,6 +1067,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &LEVEL_CHANGE_PRESENT,
             absent: &LEVEL_CHANGE_ABSENT,
             follow_level_change: true,
+            start_inventory: &[],
         },
     ]
 }
@@ -1141,6 +1181,37 @@ struct ScenarioReport {
     category: Category,
 }
 
+/// Builds the `open-half-life` invocation for `scenario`: the fixed
+/// `--payload-root`/`--map`/`--script`/`--script-log` quartet, plus
+/// `--follow-level-change` and `--start-inventory` only when the scenario
+/// actually asks for them, so a scenario that needs neither runs the
+/// binary exactly as it always has.
+fn build_command(
+    bin: &Path,
+    payload_root: &Path,
+    script_path: &Path,
+    scenario: &Scenario,
+) -> Command {
+    let mut command = Command::new(bin);
+    command
+        .arg("--payload-root")
+        .arg(payload_root)
+        .arg("--map")
+        .arg(scenario.map)
+        .arg("--script")
+        .arg(script_path)
+        .arg("--script-log");
+    if scenario.follow_level_change {
+        command.arg("--follow-level-change");
+    }
+    if !scenario.start_inventory.is_empty() {
+        command
+            .arg("--start-inventory")
+            .arg(scenario.start_inventory.join(","));
+    }
+    command
+}
+
 /// Runs the app once for `scenario`, with a `timeout` deadline.
 fn run_one(
     bin: &Path,
@@ -1151,18 +1222,7 @@ fn run_one(
 ) -> ScenarioReport {
     let script_path = scenarios_dir.join(scenario.file);
 
-    let mut command = Command::new(bin);
-    command
-        .arg("--payload-root")
-        .arg(payload_root)
-        .arg("--map")
-        .arg(scenario.map)
-        .arg("--script")
-        .arg(&script_path)
-        .arg("--script-log");
-    if scenario.follow_level_change {
-        command.arg("--follow-level-change");
-    }
+    let mut command = build_command(bin, payload_root, &script_path, scenario);
     let Ok(mut child) = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -1435,6 +1495,62 @@ mod tests {
     #[test]
     fn classifies_signal_kill_as_crash() {
         assert_eq!(classify(&outcome(false, None, None, true)), Category::Crash);
+    }
+
+    fn scenario_with(
+        follow_level_change: bool,
+        start_inventory: &'static [&'static str],
+    ) -> Scenario {
+        Scenario {
+            name: "test scenario",
+            file: "test.txt",
+            map: "t0a0b1",
+            present: &BASE_PRESENT,
+            absent: &BASE_ABSENT,
+            follow_level_change,
+            start_inventory,
+        }
+    }
+
+    /// A scenario whose `start_inventory` field is empty runs exactly as
+    /// every scenario always has: no `--start-inventory` argument at all.
+    #[test]
+    fn build_command_omits_start_inventory_when_the_field_is_empty() {
+        let scenario = scenario_with(false, &[]);
+        let command = build_command(
+            Path::new("open-half-life"),
+            Path::new("/payload"),
+            Path::new("/scenarios/test.txt"),
+            &scenario,
+        );
+        let args: Vec<&std::ffi::OsStr> = command.get_args().collect();
+        assert!(
+            !args.contains(&std::ffi::OsStr::new("--start-inventory")),
+            "expected no --start-inventory argument, got {args:?}"
+        );
+    }
+
+    /// A scenario with a non-empty `start_inventory` field passes
+    /// `--start-inventory` with its items joined by commas — the list
+    /// format `ohl_engine::parse_start_inventory` expects.
+    #[test]
+    fn build_command_passes_start_inventory_when_the_field_is_set() {
+        let scenario = scenario_with(false, &["weapon_shotgun", "ammo_buckshot"]);
+        let command = build_command(
+            Path::new("open-half-life"),
+            Path::new("/payload"),
+            Path::new("/scenarios/test.txt"),
+            &scenario,
+        );
+        let args: Vec<&std::ffi::OsStr> = command.get_args().collect();
+        let flag_index = args
+            .iter()
+            .position(|arg| *arg == std::ffi::OsStr::new("--start-inventory"))
+            .expect("--start-inventory should be present");
+        assert_eq!(
+            args[flag_index + 1],
+            std::ffi::OsStr::new("weapon_shotgun,ammo_buckshot")
+        );
     }
 
     fn fake_report(name: &'static str, category: Category) -> ScenarioReport {

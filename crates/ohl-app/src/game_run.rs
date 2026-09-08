@@ -155,6 +155,11 @@ fn render_capture(
 }
 
 /// Everything the playable loop needs from the command line.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each is an independent command-line switch, not related state a caller could \
+confuse for one another"
+)]
 pub struct GameArgs<'a> {
     /// The published payload's `files/` directory.
     pub payload_files: &'a Path,
@@ -197,6 +202,16 @@ pub struct GameArgs<'a> {
     /// interactive window, a capture, or a script, and prints its report.
     #[cfg(feature = "dev-tools")]
     pub reachability_report: bool,
+    /// Treats a `func_breakable` on the reachability walk's frontier as
+    /// openable-by-damage between rounds (`--reachability-assume-armed`,
+    /// `dev-tools` only). Ignored without `reachability_report`.
+    #[cfg(feature = "dev-tools")]
+    pub reachability_assume_armed: bool,
+    /// A `--start-inventory` list (`dev-tools` only): comma-separated
+    /// `weapon_*`/`ammo_*` classnames given to the player right after the
+    /// map loads. See `ohl_engine::parse_start_inventory`.
+    #[cfg(feature = "dev-tools")]
+    pub start_inventory: Option<&'a str>,
 }
 
 /// The save directory this run reads and writes slots in, or `None` when the
@@ -250,8 +265,17 @@ pub fn run(args: &GameArgs<'_>) -> Result<(), &'static str> {
     }
 
     #[cfg(feature = "dev-tools")]
+    if let Some(spec) = args.start_inventory {
+        let items = ohl_engine::parse_start_inventory(spec).map_err(|_| {
+            "the --start-inventory list named an item this project does not \
+recognise (expected a comma-separated list of weapon_*/ammo_* classnames)"
+        })?;
+        game.give_start_inventory(&items);
+    }
+
+    #[cfg(feature = "dev-tools")]
     if args.reachability_report {
-        run_reachability_report(&mut game);
+        run_reachability_report(&mut game, args.reachability_assume_armed);
         return Ok(());
     }
 
@@ -436,14 +460,17 @@ fn write_screenshot(game: &mut Game, path: &Path, pose: &CapturePose) -> Result<
 /// a targetname (`docs/CLEAN_ROOM.md`; the caller already knows which map
 /// it asked for).
 #[cfg(feature = "dev-tools")]
-fn run_reachability_report(game: &mut Game) {
+fn run_reachability_report(game: &mut Game, assume_armed: bool) {
     if !game.has_collision() {
         tracing::info!("Reachability report: the map has no usable collision hulls.");
         return;
     }
 
-    let report =
-        ohl_engine::compute_reachability_report(game, &ohl_engine::ReachabilityConfig::default());
+    let config = ohl_engine::ReachabilityConfig {
+        assume_armed,
+        ..ohl_engine::ReachabilityConfig::default()
+    };
+    let report = ohl_engine::compute_reachability_report(game, &config);
 
     tracing::info!("Reachability report:");
     for round in &report.rounds {
@@ -458,13 +485,23 @@ fn run_reachability_report(game: &mut Game) {
         }
         for class in &round.frontier_classes {
             tracing::info!(
-                "  Frontier: {} x{}{}.",
+                "  Frontier: {} x{}{}{}{}.",
                 class.classname,
                 class.instance_count,
                 if class.use_openable {
                     ", use-openable from a reached cell"
                 } else {
                     ", not use-openable from a reached cell"
+                },
+                if class.damage_openable {
+                    ", damage-openable (armed assumed)"
+                } else {
+                    ""
+                },
+                if class.push_openable {
+                    ", push-openable"
+                } else {
+                    ""
                 }
             );
         }
@@ -498,6 +535,18 @@ fn run_reachability_report(game: &mut Game) {
             tracing::info!(
                 "  Opening {} door(s) for the next round.",
                 round.doors_opened
+            );
+        }
+        if round.breakables_opened > 0 {
+            tracing::info!(
+                "  Breaking {} breakable(s) for the next round.",
+                round.breakables_opened
+            );
+        }
+        if round.pushables_opened > 0 {
+            tracing::info!(
+                "  Pushing {} pushable(s) for the next round.",
+                round.pushables_opened
             );
         }
     }

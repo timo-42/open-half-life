@@ -166,8 +166,9 @@ impl CombatState {
     }
 
     /// Mutable access to the weapon inventory and the reserve-ammo ledger
-    /// together, for [`crate::pickups`] (the only other module allowed to
-    /// grant weapons, ammo, suit or long jump). Returned as one disjoint
+    /// together, for [`crate::pickups`] and `crate::start_inventory` (the
+    /// only other modules allowed to grant weapons, ammo, suit or long
+    /// jump — the latter only weapons and ammo). Returned as one disjoint
     /// pair rather than two separate accessors, so a caller can hold both
     /// mutably at once without the borrow checker seeing two overlapping
     /// borrows of `self`.

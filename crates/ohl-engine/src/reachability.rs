@@ -68,7 +68,9 @@ use std::collections::{BTreeMap, HashSet, VecDeque};
 
 use glam::Vec3;
 use ohl_game::hecs::Entity;
-use ohl_game::registry::{BrushBounds, ChangeLevel, ClassName, Door, MoverState};
+use ohl_game::registry::{
+    Breakable, BrushBounds, ChangeLevel, ClassName, Door, MoverState, Pushable,
+};
 use ohl_physics::{BrushId, CollisionModel, Hull};
 
 use crate::{Game, USE_RADIUS};
@@ -129,6 +131,21 @@ pub struct ReachabilityConfig {
     /// The largest number of door-opening rounds
     /// [`compute_reachability_report`] runs.
     pub max_rounds: usize,
+    /// Treats a `func_breakable` on the frontier with `health > 0` (not
+    /// the documented "Only Trigger" flag, and not already broken) as
+    /// openable-by-damage between rounds, the same way a closed,
+    /// use-openable door is opened: its brush is detached from the
+    /// collision model before the next round runs (see
+    /// [`RoundReport::breakables_opened`]).
+    ///
+    /// This never checks the walk's own (nonexistent) inventory or fires
+    /// any actual damage — it is a caller-supplied assumption ("assume the
+    /// player is carrying a weapon capable of breaking it") documented by
+    /// this flag's own name, not a claim that a specific weapon is
+    /// present. `false` by default, matching a cold map load, which by
+    /// this project's own `ohl_combat::Inventory::new` grants no weapon at
+    /// all, not even the crowbar.
+    pub assume_armed: bool,
 }
 
 impl Default for ReachabilityConfig {
@@ -136,6 +153,7 @@ impl Default for ReachabilityConfig {
         Self {
             cell_cap: 40_000,
             max_rounds: 6,
+            assume_armed: false,
         }
     }
 }
@@ -150,6 +168,23 @@ pub struct FrontierClass {
     /// Whether at least one of them could be opened by the engine's own
     /// use-proximity path from a cell this round's walk already reached.
     pub use_openable: bool,
+    /// Whether at least one of them is a `func_breakable` (or a
+    /// `func_pushable` with its own "Breakable" flag set) with `health >
+    /// 0`, not `trigger_only`, and not already broken — openable-by-damage
+    /// next round, but only when [`ReachabilityConfig::assume_armed`] was
+    /// set for this walk (see that field's own doc comment). Always
+    /// `false` without it, even when a breakable genuinely sits here.
+    pub damage_openable: bool,
+    /// Whether at least one of them is a `func_pushable` — openable-by-push
+    /// next round. Unlike [`Self::damage_openable`] this needs no assumed
+    /// weapon (walking into a pushable and shoving it needs nothing but
+    /// the player's own body), so it is reported regardless of
+    /// [`ReachabilityConfig::assume_armed`]. Approximate: this walk does
+    /// not simulate the real push distance or direction, it only reports
+    /// that a pushable sits on the frontier and detaches its brush between
+    /// rounds, the same coarse "remove the brush" treatment a broken
+    /// breakable gets.
+    pub push_openable: bool,
 }
 
 /// Whether a `trigger_changelevel` volume was reached this round, and how
@@ -186,6 +221,15 @@ pub struct RoundReport {
     /// How many doors this round found and opened for the *next* round
     /// (`0` on the last round, since nothing further needed opening).
     pub doors_opened: usize,
+    /// How many breakables this round found openable-by-damage
+    /// ([`FrontierClass::damage_openable`]) and broke for the *next*
+    /// round (`0` when [`ReachabilityConfig::assume_armed`] was not set,
+    /// or none was found).
+    pub breakables_opened: usize,
+    /// How many pushables this round found on the frontier
+    /// ([`FrontierClass::push_openable`]) and pushed out of the way for
+    /// the *next* round.
+    pub pushables_opened: usize,
     /// Whether this round's walk stopped early because it hit
     /// [`ReachabilityConfig::cell_cap`] rather than exhausting every
     /// reachable cell — a sign the reported [`Self::reachable_cells`] and
@@ -525,7 +569,95 @@ fn changelevel_status(game: &Game, start: Vec3, reached: &[Vec3]) -> ChangeLevel
 /// simulating an opened door only where this module actually looks is the
 /// right scope, not an oversight. A caller that also needs the monster
 /// model to reflect this walk's simulated door-opens (none do today)
-/// would need its own detach against [`Game::monster_collision_mut`].
+/// would need its own detach against [`Game::monster_collision_mut`]. The
+/// same applies to a breakable's or a pushable's brush, detached exactly
+/// the same way (M9.12).
+
+/// One classname's aggregated frontier state for a round: how many
+/// distinct entities, and whether at least one of them is openable each of
+/// the three ways [`compute_reachability_report`] models (use, damage,
+/// push).
+#[derive(Default)]
+struct FrontierAgg {
+    count: usize,
+    use_openable: bool,
+    damage_openable: bool,
+    push_openable: bool,
+}
+
+/// One round's frontier, classified into per-classname aggregates
+/// ([`FrontierAgg`]) and the three separate brush lists
+/// [`compute_reachability_report`] detaches between rounds: closed,
+/// use-openable doors; breakables openable-by-damage
+/// (`config.assume_armed` only); and pushables (always).
+struct ClassifiedFrontier {
+    classes: BTreeMap<String, FrontierAgg>,
+    openable_doors: Vec<BrushId>,
+    openable_breakables: Vec<BrushId>,
+    openable_pushables: Vec<BrushId>,
+}
+
+/// Classifies `walk_result`'s frontier brushes by classname and by which
+/// of the three round-advance edges (door/breakable/pushable) each one
+/// offers, per this module's own doc comment.
+fn classify_frontier(
+    game: &Game,
+    walk_result: &WalkResult,
+    config: &ReachabilityConfig,
+) -> ClassifiedFrontier {
+    let mut classes: BTreeMap<String, FrontierAgg> = BTreeMap::new();
+    let mut openable_doors: Vec<BrushId> = Vec::new();
+    let mut openable_breakables: Vec<BrushId> = Vec::new();
+    let mut openable_pushables: Vec<BrushId> = Vec::new();
+    for brush in &walk_result.frontier_brushes {
+        let Some(entity) = entity_for_brush(game, *brush) else {
+            continue;
+        };
+        let classname = classname_of(game, entity);
+        let is_closed_door = game
+            .registry()
+            .world
+            .get::<&Door>(entity)
+            .is_ok_and(|door| door.state == MoverState::Closed);
+        let door_openable =
+            is_closed_door && use_openable_from(game, entity, &walk_result.visited_positions);
+
+        let breakable_state =
+            game.registry()
+                .world
+                .get::<&Breakable>(entity)
+                .ok()
+                .map(|breakable| {
+                    !breakable.broken && !breakable.trigger_only && breakable.health > 0.0
+                });
+        let damage_openable = config.assume_armed && breakable_state.unwrap_or(false);
+
+        let push_openable = game.registry().world.get::<&Pushable>(entity).is_ok();
+
+        let entry = classes.entry(classname).or_default();
+        entry.count += 1;
+        entry.use_openable |= door_openable;
+        entry.damage_openable |= damage_openable;
+        entry.push_openable |= push_openable;
+
+        if door_openable {
+            openable_doors.push(*brush);
+        }
+        if damage_openable {
+            openable_breakables.push(*brush);
+        }
+        if push_openable {
+            openable_pushables.push(*brush);
+        }
+    }
+    ClassifiedFrontier {
+        classes,
+        openable_doors,
+        openable_breakables,
+        openable_pushables,
+    }
+}
+
 #[must_use]
 pub fn compute_reachability_report(
     game: &mut Game,
@@ -544,6 +676,8 @@ pub fn compute_reachability_report(
             },
             long_drop_cells: 0,
             doors_opened: 0,
+            breakables_opened: 0,
+            pushables_opened: 0,
             capped: false,
         });
         return ReachabilityReport { rounds };
@@ -563,57 +697,53 @@ pub fn compute_reachability_report(
             walk(collision, start, config.cell_cap, jump)
         };
 
-        let mut classes: BTreeMap<String, (usize, bool)> = BTreeMap::new();
-        let mut openable_doors: Vec<BrushId> = Vec::new();
-        for brush in &walk_result.frontier_brushes {
-            let Some(entity) = entity_for_brush(game, *brush) else {
-                continue;
-            };
-            let classname = classname_of(game, entity);
-            let is_closed_door = game
-                .registry()
-                .world
-                .get::<&Door>(entity)
-                .is_ok_and(|door| door.state == MoverState::Closed);
-            let openable =
-                is_closed_door && use_openable_from(game, entity, &walk_result.visited_positions);
-            let entry = classes.entry(classname).or_insert((0, false));
-            entry.0 += 1;
-            entry.1 |= openable;
-            if openable {
-                openable_doors.push(*brush);
-            }
-        }
+        let ClassifiedFrontier {
+            classes,
+            openable_doors,
+            openable_breakables,
+            openable_pushables,
+        } = classify_frontier(game, &walk_result, config);
 
         let changelevel = changelevel_status(game, start, &walk_result.visited_positions);
         let doors_opened = openable_doors.len();
+        let breakables_opened = openable_breakables.len();
+        let pushables_opened = openable_pushables.len();
 
         rounds.push(RoundReport {
             round,
             reachable_cells: walk_result.visited_positions.len(),
             frontier_classes: classes
                 .into_iter()
-                .map(
-                    |(classname, (instance_count, use_openable))| FrontierClass {
-                        classname,
-                        instance_count,
-                        use_openable,
-                    },
-                )
+                .map(|(classname, agg)| FrontierClass {
+                    classname,
+                    instance_count: agg.count,
+                    use_openable: agg.use_openable,
+                    damage_openable: agg.damage_openable,
+                    push_openable: agg.push_openable,
+                })
                 .collect(),
             changelevel,
             long_drop_cells: walk_result.long_drop_cells,
             doors_opened,
+            breakables_opened,
+            pushables_opened,
             capped: walk_result.capped,
         });
 
-        if openable_doors.is_empty() {
+        if openable_doors.is_empty()
+            && openable_breakables.is_empty()
+            && openable_pushables.is_empty()
+        {
             break;
         }
         let Some(collision) = game.collision_mut() else {
             break;
         };
-        for brush in openable_doors {
+        for brush in openable_doors
+            .into_iter()
+            .chain(openable_breakables)
+            .chain(openable_pushables)
+        {
             collision.detach_brush(brush);
         }
     }
@@ -824,6 +954,114 @@ mod tests {
         assert!(
             !wide_report.rounds[0].changelevel.reachable,
             "a gap wider than the jump range should not be crossed"
+        );
+    }
+
+    /// A corridor blocked by a `func_breakable` (`health > 0`, not
+    /// `trigger_only`) hides a `trigger_changelevel` on round 0 exactly
+    /// like a closed door does — but, unlike a door, it stays blocked on
+    /// every later round when the walk is run without
+    /// [`ReachabilityConfig::assume_armed`]: this walk carries no weapon,
+    /// so nothing here ever knocks it down. Setting the flag instead
+    /// reports it openable-by-damage on round 0 and reaches the trigger on
+    /// round 1, the same round-advance shape a door's own regression test
+    /// (`changelevel_becomes_reachable_only_after_the_door_opens`) proves.
+    #[test]
+    fn a_breakable_is_openable_only_when_armed_is_assumed() {
+        use crate::test_support::{REACH_BREAKABLE_MAP, reachability_breakable_bsp};
+
+        let bytes = reachability_breakable_bsp("ohlreachnext");
+        let mut assets = MemoryAssets::new();
+        assets.insert(&format!("maps/{REACH_BREAKABLE_MAP}.bsp"), bytes);
+
+        let unarmed_config = ReachabilityConfig::default();
+        assert!(!unarmed_config.assume_armed);
+        let mut unarmed_game =
+            Game::load(&assets as &dyn AssetSource, REACH_BREAKABLE_MAP).expect("fixture loads");
+        let unarmed_report = compute_reachability_report(&mut unarmed_game, &unarmed_config);
+        assert!(
+            !unarmed_report.rounds[0].changelevel.reachable,
+            "the breakable should keep the changelevel trigger unreachable without --reachability-assume-armed"
+        );
+        let unarmed_class = unarmed_report.rounds[0]
+            .frontier_classes
+            .iter()
+            .find(|class| class.classname == "func_breakable")
+            .expect("the func_breakable should be on the frontier");
+        assert!(!unarmed_class.damage_openable);
+        assert_eq!(unarmed_report.rounds[0].breakables_opened, 0);
+        assert!(
+            unarmed_report.rounds.len() == 1,
+            "no round-advance edge exists without an assumed weapon, so the walk should stop after round 0"
+        );
+
+        let armed_config = ReachabilityConfig {
+            assume_armed: true,
+            ..ReachabilityConfig::default()
+        };
+        let mut armed_game =
+            Game::load(&assets as &dyn AssetSource, REACH_BREAKABLE_MAP).expect("fixture loads");
+        let armed_report = compute_reachability_report(&mut armed_game, &armed_config);
+        assert!(
+            armed_report.rounds.len() >= 2,
+            "assuming a weapon should open a round-advance edge, expected at least two rounds, got {}",
+            armed_report.rounds.len()
+        );
+        let armed_first = &armed_report.rounds[0];
+        assert!(!armed_first.changelevel.reachable);
+        assert_eq!(armed_first.breakables_opened, 1);
+        let armed_class = armed_first
+            .frontier_classes
+            .iter()
+            .find(|class| class.classname == "func_breakable")
+            .expect("the func_breakable should be on the frontier");
+        assert!(armed_class.damage_openable);
+        assert!(
+            armed_report.rounds[1].changelevel.reachable,
+            "with the breakable's brush detached, the walk should now reach the changelevel trigger"
+        );
+    }
+
+    /// A corridor blocked by a `func_pushable` hides a `trigger_changelevel`
+    /// on round 0; unlike a breakable, no assumed weapon is needed — the
+    /// pushable is reported openable-by-push on round 0 regardless, and
+    /// the trigger is reached on round 1 once its brush is detached
+    /// (approximating the crate being shoved out of the way).
+    #[test]
+    fn a_pushable_is_openable_by_push_without_any_assumed_weapon() {
+        use crate::test_support::{REACH_PUSHABLE_MAP, reachability_pushable_bsp};
+
+        let bytes = reachability_pushable_bsp("ohlreachnext");
+        let mut assets = MemoryAssets::new();
+        assets.insert(&format!("maps/{REACH_PUSHABLE_MAP}.bsp"), bytes);
+        let mut game =
+            Game::load(&assets as &dyn AssetSource, REACH_PUSHABLE_MAP).expect("fixture loads");
+
+        let config = ReachabilityConfig::default();
+        assert!(!config.assume_armed);
+        let report = compute_reachability_report(&mut game, &config);
+
+        assert!(
+            report.rounds.len() >= 2,
+            "pushing needs no assumed weapon, so the pushable should open a round-advance edge on its own"
+        );
+        let first = &report.rounds[0];
+        assert!(!first.changelevel.reachable);
+        assert_eq!(first.pushables_opened, 1);
+        let class = first
+            .frontier_classes
+            .iter()
+            .find(|class| class.classname == "func_pushable")
+            .expect("the func_pushable should be on the frontier");
+        assert!(class.push_openable);
+        assert!(
+            !class.damage_openable,
+            "no weapon was assumed for this walk"
+        );
+
+        assert!(
+            report.rounds[1].changelevel.reachable,
+            "with the pushable's brush detached, the walk should now reach the changelevel trigger"
         );
     }
 }

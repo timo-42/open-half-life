@@ -31,6 +31,7 @@ mod level;
 mod projectiles;
 mod render;
 mod sprites;
+mod start_inventory;
 mod viewmodel;
 
 // M7.9 P0 (engine spine): the fixed timestep, the entity components the
@@ -88,6 +89,7 @@ pub use reachability::{
 };
 pub use render::RenderTarget;
 pub use save::GameSave;
+pub use start_inventory::{StartInventoryError, StartInventoryItem, parse_start_inventory};
 pub use systems::{QueuedDamage, Systems, SystemsConfig};
 pub use text::{AssetPath, MessageBlock, SentenceLookup, TitleLibrary};
 pub use tick::{MAX_TICKS_PER_FRAME, TICK_SECONDS, TickClock};
