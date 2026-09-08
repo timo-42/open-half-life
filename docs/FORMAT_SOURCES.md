@@ -5181,7 +5181,7 @@ above as cross-check corroboration for "Black Mesa Inbound", that is
 recorded honestly as a search-engine summary of the guide's indexed
 content, never as a direct fetch.
 
-As an aggregate-only verification (`docs/CLEAN_ROOM.md` rule 7's payload
+~~As an aggregate-only verification (`docs/CLEAN_ROOM.md` rule 7's payload
 boundary — no map name was read from the payload to *choose* a literal,
 only counted against the already-cited list above): of the local payload
 at the time this table was added, 0 of the cited map names (out of 102
@@ -5189,4 +5189,21 @@ total across `STARTMAP`, `TRAINMAP`, `HAZARD_COURSE_MAPS`, `CHAPTERS`, and
 `CHAPTER_MAPS`) were present, and all 24 of the payload's own `.bsp` maps
 were uncovered by any cited name — that payload holds only Team Fortress
 Classic and other non-single-player-campaign maps, not the retail
-Half-Life single-player campaign.
+Half-Life single-player campaign.~~
+
+**Correction (PR #135 review):** the paragraph above is wrong and is struck
+rather than deleted, per this doc's append-only convention. It checked
+presence by walking only loose `.bsp` files under the payload tree; the
+single-player campaign's maps ship inside `valve/pak0.pak`, which that walk
+never opened. `crates/ohl-assets`' own module docs describe exactly this: a
+payload's asset filesystem is built from both loose files and PAK archive
+entries, and `cargo xtask campaign-smoke` already loads all 93
+chapter/hazard-course maps that way. Redone through `ohl_assets::AssetFs`
+(mounted the same way `crates/ohl-app/src/game_run.rs`'s `run` does, over
+the same locally imported payload), resolving `maps/<name>.bsp` for every
+cited name in `STARTMAP`, `TRAINMAP`, `HAZARD_COURSE_MAPS`, `CHAPTERS`, and
+`CHAPTER_MAPS`: **102 of 102 cited map names open through the asset store;
+0 are absent.** (Sanity-checked the same way: a bogus map name correctly
+reports absent through the same code path, and `STARTMAP` was independently
+confirmed present, ruling out a check that trivially always returns one
+answer.)
