@@ -31,8 +31,8 @@
 //! - Every failure is a fixed [`Error`] code that carries no media-derived
 //!   bytes; destination paths are exposed as [`PathBytes`], whose `Debug`
 //!   prints only a length.
-//! - The crate is `#![no_std]` plus `alloc` and `#![forbid(unsafe_code)]`, so
-//!   it can be linked into the freestanding parser worker unchanged.
+//! - The crate supports `#![no_std]` plus `alloc` and forbids unsafe code.
+//!   The hosted parser worker can use it alongside std-based dependencies.
 //!
 //! # Coverage
 //!

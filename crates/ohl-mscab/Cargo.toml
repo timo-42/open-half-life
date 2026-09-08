@@ -22,8 +22,8 @@ test-support = []
 [dependencies]
 ohl-core = { path = "../ohl-core", version = "=0.1.0" }
 # `miniz_oxide`'s default feature set is exactly `with-alloc`: the crate stays
-# `no_std` and only gains `alloc`, which is what this crate needs (and all it
-# may have, since it links into the freestanding parser worker).
+# `no_std` and only gains `alloc`, preserving this library's optional
+# no-standard-library capability inside the hosted std parser worker.
 miniz_oxide = { workspace = true }
 
 [dev-dependencies]

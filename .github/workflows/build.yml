@@ -216,6 +216,48 @@ jobs:
           rm -f "$IMG"
           exit 0
 
+  cross-windows:
+    name: Cross-build Windows x64 on Linux
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      OHL_VERSION: ${{ needs.version.outputs.version }}
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Windows cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64
+          rustup target add x86_64-pc-windows-gnu
+
+      - name: Cross-build Windows application
+        run: bash scripts/cross-build.sh windows
+
+      - name: Upload Windows cross-build
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-half-life-cross-windows-x64
+          path: target/cross/windows/x86_64-pc-windows-gnu/release/open-half-life.exe
+          if-no-files-found: error
+
+  smoke-cross-windows:
+    name: Run Linux-built Windows executable
+    needs: cross-windows
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download Windows cross-build
+        uses: actions/download-artifact@v4
+        with:
+          name: open-half-life-cross-windows-x64
+
+      - name: Check executable startup
+        run: .\open-half-life.exe --version
+
   rust-miri:
     name: Rust miri
     if: github.event_name != 'pull_request'

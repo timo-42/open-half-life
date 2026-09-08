@@ -24,7 +24,7 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
     ("ohl-parser-worker-service", &["ohl-parser-protocol"]),
     ("ohl-parser-worker", &["ohl-parser-worker-service"]),
     // The container back ends the worker image hosts: the dispatcher logic
-    // lives here, outside the freestanding image, so it can be unit-tested on
+    // lives here, outside the hosted worker image, so it can be unit-tested on
     // the host through the real service (R4.7b).
     (
         "ohl-parser-backends",
@@ -60,7 +60,7 @@ pub const ALLOWED_EDGES: &[(&str, &[&str])] = &[
     ("ohl-wise", &["ohl-core"]),
     ("ohl-cabinet", &["ohl-cabinet-format"]),
     ("ohl-platform", &["ohl-core"]),
-    // Development-only: builds the freestanding isolated-worker test image.
+    // Development-only: builds the hosted isolated-worker test image.
     // It has no dependencies and nothing shipping may depend on it (only
     // `[dev-dependencies]`, which this table deliberately does not inspect).
     ("ohl-test-worker", &[]),

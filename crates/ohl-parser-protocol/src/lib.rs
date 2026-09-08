@@ -5,8 +5,8 @@
 //! It carries the whole trust boundary between the privileged parent and the
 //! sandboxed parser worker, so it is deliberately minimal:
 //!
-//! - `#![no_std]` **and allocation-free** — the identical code compiles into
-//!   the freestanding worker binary, which has no allocator;
+//! - `#![no_std]` **and allocation-free** — protocol processing uses only
+//!   caller-owned buffers, including inside the hosted std worker;
 //! - `#![forbid(unsafe_code)]` — fixed headers are parsed with [`zerocopy`],
 //!   variable payloads with hand-written bounded readers
 //!   ([`payload::PayloadReader`]), so no pointer arithmetic exists to audit;

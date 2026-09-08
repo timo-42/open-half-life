@@ -9,9 +9,8 @@
 //! `hello`/`ready` ... `shutdown` lifetime over them.
 //!
 //! Like [`ohl_parser_protocol`], it is `#![no_std]`, allocation-free and
-//! `#![forbid(unsafe_code)]`, because the identical code is linked into the
-//! freestanding worker binary (`ohl-parser-worker`), which has neither an
-//! allocator nor a libc.
+//! `#![forbid(unsafe_code)]`. These are library capabilities; the hosted
+//! worker (`ohl-parser-worker`) uses Rust std for startup, allocation and I/O.
 //!
 //! # What the type system replaces
 //!
