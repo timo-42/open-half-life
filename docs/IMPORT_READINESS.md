@@ -203,12 +203,67 @@ every other crate keeps `forbid(unsafe_code)`. See
 | Linux other architectures | Unevidenced and unqualified as import tuples. | Code path exists where the build is available; no payload extraction. | Unsupported; CMake selects the unsupported backend. | Absent; containment selects the unsupported backend, so no worker launches. | Absent; import unavailable. |
 | Windows x64 | Exact documented build/preflight tuple. | Implemented in hosted evidence; no payload extraction. | Unsupported; CMake selects the unsupported backend. | Absent; containment selects the unsupported backend, so no worker launches. | Absent; import unavailable. |
 | Windows other architectures | Unevidenced and unqualified. | Unevidenced for release qualification. | Unsupported; CMake selects the unsupported backend. | Absent; containment selects the unsupported backend, so no worker launches. | Absent; import unavailable. |
-| macOS Apple Silicon | Exact documented build/preflight tuple. | Implemented in hosted evidence; no payload extraction. | Unsupported; CMake selects the unsupported backend. | Absent; containment selects the unsupported backend, so no worker launches. | Absent; import unavailable. |
-| macOS other architectures | Unevidenced and unqualified. | Unevidenced for release qualification. | Unsupported; CMake selects the unsupported backend. | Absent; containment selects the unsupported backend, so no worker launches. | Absent; import unavailable. |
+| macOS Apple Silicon | Exact documented build/preflight tuple. | Implemented in hosted evidence; no payload extraction. | Implemented as a target-selected native backend (`target_os = "macos"`) with project-authored synthetic tests: resource limits, a descriptor sweep, the Seatbelt system sandbox via root-owned `/usr/bin/sandbox-exec`, a `kqueue` `NOTE_EXIT` lifecycle, and the same compile-fixed install-location and image identity policy as Linux, specialised to a thin `MH_EXECUTE` Mach-O that loads only libSystem. Fails closed when `sandbox-exec` is absent or the profile is refused. See "Current macOS worker bootstrap" below. | Composed but unevidenced: the worker launches and hosts the same real dispatcher, so no code path refuses by platform any more, but no medium has been imported on this tuple. Hosted CI evidence only. | Absent; no release-evidence gate below is met, and no real-medium run exists on this tuple. |
+| macOS Intel | Unevidenced and unqualified as an import tuple. | Code path exists where the build is available; no payload extraction. | Implemented: the backend is selected by `target_os`, not architecture, and verifies the image against the host CPU type. No hosted evidence — CI runs Apple Silicon only. | Composed but unevidenced, as above, and additionally unbuilt in CI. | Absent; import unqualified. |
 
 Platform-independent staging and the Linux atomic-directory store are
 implemented but disconnected from the application and parser stack. They do
 not change any production-import status in this matrix.
+
+## Current macOS worker bootstrap
+
+The macOS backend (`crates/ohl-platform/src/isolated_worker/macos.rs`) is the
+second native containment backend. It reaches the same `IsolatedWorker`
+contract as Linux — an all-or-nothing launch, a private full-duplex channel,
+a readiness attestation, a bounded terminate-and-reap — with the primitives
+macOS provides, and it shares the install-location walk and metadata policy
+with Linux (`isolated_worker/unix_image.rs`).
+
+What it does, in order: resolve
+`<canonical directory of the running executable>/libexec/open-half-life/ohl-media-parser-worker`
+one `O_NOFOLLOW` component at a time, refusing any component not owned by
+root or the user or writable by anyone else; verify the image is a read-only,
+non-set-id, executable regular file whose bytes are a thin 64-bit
+`MH_EXECUTE` Mach-O for the running CPU type, naming `/usr/lib/dyld` as its
+only dynamic linker, `/usr/lib/libSystem.B.dylib` as its only dynamic
+library, and no `LC_RPATH`; verify `/usr/bin/sandbox-exec` is a root-owned,
+non-group/other-writable executable; render the Seatbelt profile
+(`isolated_worker/macos_profile.sb`, `(deny default)` plus execute/read on
+that one image and read-only access to the system libraries) with the
+image's real path, refusing any path that cannot be spelled as a profile
+literal; then fork, move the channel and readiness pipe onto descriptors 3
+and 4, apply six `setrlimit` limits, sweep every descriptor from 5 to the
+parent's own `RLIMIT_NOFILE`, and `exec` `sandbox-exec`, which applies the
+profile to itself and `exec`s the image in place.
+
+Every failure at every step is fail-closed: a missing or non-root
+`sandbox-exec`, a refused profile, an unspellable path, a failed limit, or a
+missing readiness attestation ends the launch with a sanitized
+`IsolatedWorkerError`, never with a weaker sandbox.
+
+Three properties are weaker than the Linux backend and are recorded here
+rather than claimed away. The image is executed by path, not by descriptor
+(macOS has no `fexecve`), so the verification-to-`exec` window is guarded
+only by the directory trust policy. `RLIMIT_AS`/`RLIMIT_DATA` cannot be set at
+all — Darwin fails both with `EINVAL` — so there is no kernel-enforced
+memory ceiling and the hosted image imposes its own live-heap ceiling with a
+counting global allocator, binding its allocator rather than its address
+space.
+There is no `PR_SET_PDEATHSIG` equivalent, so a worker whose parent vanishes
+notices only at end-of-file on its channel.
+
+The evidence is project-authored synthetic tests
+(`isolated_worker/macos_tests.rs`) driving a real confined child built from
+`crates/ohl-test-worker/image`: frame round-trips, an orderly close, a hang
+followed by termination, a crash, a non-zero exit, a startup-deadline
+expiry, cancellation of a blocked read, `Drop` reaping a live child, twenty
+consecutive launches, a stop/continue cycle, the six image-verification
+refusals, an exact post-`exec` descriptor inventory, and a confinement probe
+in which the worker itself attempts a filesystem read, a filesystem write, a
+loopback bind and a process spawn and reports that the kernel denied all
+four. That is implementation-correctness evidence on a CI runner. It is not
+release evidence, and it is not evidence that any medium can be imported on
+macOS — no real-medium run exists on that platform.
 
 ## Current parser-worker service and Linux bootstrap
 

@@ -1,17 +1,17 @@
-//! Development-only support for the freestanding Linux isolated-worker test
-//! image.
+//! Development-only support for the isolated-worker test image.
 //!
 //! The image itself lives in [`image/`](../image), a standalone Cargo package
-//! that is deliberately **not** a workspace member: a `#![no_std] #![no_main]`
-//! binary can only be compiled with `panic = "abort"`, and `panic` is a
-//! profile-level setting that Cargo refuses to scope to a single package
-//! inside a workspace. Building it therefore means invoking `cargo` on that
-//! package with an explicit `--target-dir`, which is what
-//! [`build_test_worker_image`] does.
+//! that is deliberately **not** a workspace member: on Linux x86-64 it is a
+//! `#![no_std] #![no_main]` binary that can only be compiled with
+//! `panic = "abort"`, and `panic` is a profile-level setting that Cargo
+//! refuses to scope to a single package inside a workspace. On macOS the same
+//! package builds as a hosted `std` binary (see `image/src/hosted.rs`).
+//! Building it therefore means invoking `cargo` on that package with an
+//! explicit `--target-dir`, which is what [`build_test_worker_image`] does.
 //!
 //! Nothing in this crate is used by shipping code. It contains no `unsafe`
 //! (the workspace-wide `unsafe_code = "forbid"` applies) and is only ever
-//! reached from `ohl-platform`'s Linux test module and from
+//! reached from `ohl-platform`'s Linux and macOS test modules and from
 //! `cargo xtask worker-image`.
 
 pub mod protocol;
@@ -45,7 +45,7 @@ impl TestWorkerVariant {
 /// Why the test image could not be produced.
 #[derive(Debug)]
 pub enum BuildError {
-    /// The image is Linux x86-64 only.
+    /// The image is built on Linux x86-64 and macOS only.
     Unsupported,
     /// The workspace layout around this crate was not what is expected.
     Layout(&'static str),
@@ -58,8 +58,9 @@ pub enum BuildError {
 impl fmt::Display for BuildError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Unsupported => formatter
-                .write_str("the freestanding test worker image is only built on Linux x86-64"),
+            Self::Unsupported => {
+                formatter.write_str("the test worker image is only built on Linux x86-64 and macOS")
+            }
             Self::Layout(detail) => write!(formatter, "unexpected repository layout: {detail}"),
             Self::Io(error) => write!(formatter, "failed to build the test worker image: {error}"),
             Self::Cargo(output) => {
@@ -78,6 +79,17 @@ impl From<std::io::Error> for BuildError {
     fn from(error: std::io::Error) -> Self {
         Self::Io(error)
     }
+}
+
+/// Whether this host can build (and its `ohl-platform` backend can launch)
+/// the image: Linux x86-64 for the freestanding shape, macOS for the hosted
+/// one.
+#[must_use]
+pub const fn image_host_supported() -> bool {
+    cfg!(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        target_os = "macos"
+    ))
 }
 
 /// Absolute path of the standalone image package.
@@ -107,7 +119,7 @@ fn artefact_root() -> Result<PathBuf, BuildError> {
 /// its own `--target-dir`, so concurrent callers are serialised by Cargo's
 /// own target-directory lock rather than by anything in this crate.
 pub fn build_test_worker_image(variant: TestWorkerVariant) -> Result<PathBuf, BuildError> {
-    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+    if !image_host_supported() {
         return Err(BuildError::Unsupported);
     }
 
@@ -422,6 +434,103 @@ mod tests {
     fn a_truncated_file_is_not_summarised() {
         assert!(summarise_elf(&[0x7f, b'E', b'L', b'F']).is_none());
     }
+}
+
+/// A minimal Mach-O header summary, the macOS counterpart of
+/// [`ElfSummary`]: enough to prove a built image is a thin 64-bit
+/// `MH_EXECUTE` for the expected CPU that loads nothing beyond libSystem.
+#[derive(Debug, PartialEq, Eq)]
+pub struct MachOSummary {
+    /// `cputype`.
+    pub cpu_type: u32,
+    /// `filetype`.
+    pub file_type: u32,
+    /// Every dynamic library named by an `LC_LOAD_DYLIB`-family command, in
+    /// load-command order.
+    pub dylibs: Vec<String>,
+    /// Every `LC_LOAD_DYLINKER` path.
+    pub dylinkers: Vec<String>,
+    /// Whether any `LC_RPATH` is present.
+    pub has_rpath: bool,
+}
+
+/// `MH_MAGIC_64`.
+pub const MH_MAGIC_64: u32 = 0xfeed_facf;
+/// `MH_EXECUTE`.
+pub const MH_EXECUTE: u32 = 2;
+/// `CPU_TYPE_ARM64`.
+pub const CPU_TYPE_ARM64: u32 = 0x0100_000c;
+/// `CPU_TYPE_X86_64`.
+pub const CPU_TYPE_X86_64: u32 = 0x0100_0007;
+/// The one dynamic library a hosted worker image may load.
+pub const PERMITTED_MACOS_DYLIB: &str = "/usr/lib/libSystem.B.dylib";
+/// The one dynamic linker a hosted worker image may name.
+pub const PERMITTED_MACOS_DYLINKER: &str = "/usr/lib/dyld";
+
+/// Summarises the Mach-O header and load commands of `bytes`, or `None` if
+/// they are not a well-formed thin 64-bit Mach-O.
+#[must_use]
+pub fn summarise_macho(bytes: &[u8]) -> Option<MachOSummary> {
+    const HEADER_BYTES: usize = 32;
+    const LC_LOAD_DYLIB: u32 = 0xc;
+    const LC_LOAD_DYLINKER: u32 = 0xe;
+    const LC_LAZY_LOAD_DYLIB: u32 = 0x20;
+    const LC_LOAD_WEAK_DYLIB: u32 = 0x8000_0018;
+    const LC_RPATH: u32 = 0x8000_001c;
+    const LC_REEXPORT_DYLIB: u32 = 0x8000_001f;
+    const LC_LOAD_UPWARD_DYLIB: u32 = 0x8000_0023;
+
+    let read_u32 = |slice: &[u8], offset: usize| -> Option<u32> {
+        Some(u32::from_le_bytes(
+            slice.get(offset..offset.checked_add(4)?)?.try_into().ok()?,
+        ))
+    };
+    let string_at = |command: &[u8], offset: usize| -> Option<String> {
+        let rest = command.get(offset..)?;
+        let end = rest.iter().position(|byte| *byte == 0)?;
+        Some(String::from_utf8_lossy(&rest[..end]).into_owned())
+    };
+
+    if read_u32(bytes, 0)? != MH_MAGIC_64 {
+        return None;
+    }
+    let cpu_type = read_u32(bytes, 4)?;
+    let file_type = read_u32(bytes, 12)?;
+    let count = read_u32(bytes, 16)?;
+    let size = usize::try_from(read_u32(bytes, 20)?).ok()?;
+    let commands = bytes.get(HEADER_BYTES..HEADER_BYTES.checked_add(size)?)?;
+
+    let mut summary = MachOSummary {
+        cpu_type,
+        file_type,
+        dylibs: Vec::new(),
+        dylinkers: Vec::new(),
+        has_rpath: false,
+    };
+    let mut offset = 0usize;
+    for _ in 0..count {
+        let kind = read_u32(commands, offset)?;
+        let length = usize::try_from(read_u32(commands, offset + 4)?).ok()?;
+        if length < 8 {
+            return None;
+        }
+        let command = commands.get(offset..offset.checked_add(length)?)?;
+        match kind {
+            LC_LOAD_DYLIB | LC_LOAD_WEAK_DYLIB | LC_REEXPORT_DYLIB | LC_LOAD_UPWARD_DYLIB
+            | LC_LAZY_LOAD_DYLIB => {
+                let name_offset = usize::try_from(read_u32(command, 8)?).ok()?;
+                summary.dylibs.push(string_at(command, name_offset)?);
+            }
+            LC_LOAD_DYLINKER => {
+                let name_offset = usize::try_from(read_u32(command, 8)?).ok()?;
+                summary.dylinkers.push(string_at(command, name_offset)?);
+            }
+            LC_RPATH => summary.has_rpath = true,
+            _ => {}
+        }
+        offset += length;
+    }
+    (offset == commands.len()).then_some(summary)
 }
 
 #[cfg(test)]

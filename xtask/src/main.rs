@@ -3,16 +3,19 @@
 //! - `cargo xtask policy` reimplements the former C++ build's `cmake/CheckRepository.cmake` tracked-file policy (removed with the C++ tree at M1-rs parity).
 //! - `cargo xtask graph` validates the crate dependency graph against the
 //!   allowed edges from `.plan/rust-architecture-r1.md` section 1.
-//! - `cargo xtask worker-image` builds the freestanding isolated-worker test
-//!   image and the shipping media-parser worker image, proves each is a
-//!   static, non-interpreted `ET_EXEC` binary, and installs the latter at
+//! - `cargo xtask worker-image` builds the isolated-worker test image and the
+//!   shipping media-parser worker image, proves each matches the host
+//!   backend's image policy (a static, non-interpreted `ET_EXEC` on Linux
+//!   x86-64; a thin `MH_EXECUTE` linking only libSystem on macOS), and
+//!   installs the latter at
 //!   `<target>/<profile>/libexec/open-half-life/ohl-media-parser-worker`.
 //! - `cargo xtask chain-walk` walks the campaign as a chain: one scripted
 //!   route per map, each one starting where the previous route's level
 //!   change put the player down, and reports how many maps deep it got.
-//! - `cargo xtask dist` builds the release binary (and, on Linux x86-64, the
-//!   parser worker image) and assembles a versioned, self-contained release
-//!   folder plus a `.tar.gz`/`.zip` archive under `target/dist/`.
+//! - `cargo xtask dist` builds the release binary (and, on Linux x86-64 and
+//!   macOS, the parser worker image) and assembles a versioned,
+//!   self-contained release folder plus a `.tar.gz`/`.zip` archive under
+//!   `target/dist/`.
 
 mod campaign_smoke;
 mod chain_walk;

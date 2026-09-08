@@ -52,6 +52,7 @@
 //! `seccompiler::apply_filter`, which would route the last confinement step
 //! through libc's PLT and its errno TLS slot.
 
+use super::unix_image;
 use super::{
     IsolatedWorkerCancellationToken, IsolatedWorkerError, IsolatedWorkerExitKind,
     IsolatedWorkerService,
@@ -70,7 +71,6 @@ use landlock::{
     ABI, Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr as _, RulesetCreatedAttr as _,
 };
 use rustix::event::{PollFd, PollFlags};
-use rustix::fs::{Mode, OFlags};
 use rustix::net::{AddressFamily, SendFlags, Shutdown, SocketFlags, SocketType};
 use rustix::process::{Pid, Signal};
 use seccompiler::{
@@ -101,14 +101,6 @@ pub(super) const READY_ATTESTATION: [u8; 16] = [
 /// `argv[0]` handed to the worker. The image is executed by descriptor, so
 /// this is a label, not a lookup key.
 const WORKER_ARGV0: &[u8] = b"ohl-media-parser-worker\0";
-
-/// Install location of a service image, relative to the directory holding the
-/// running executable. Compile-fixed: no caller and no environment variable
-/// can influence it in a shipping build.
-const SERVICE_IMAGE_RELATIVE_DIRECTORIES: [&str; 2] = ["libexec", "open-half-life"];
-
-/// File name of the media-parser service image.
-const MEDIA_PARSER_IMAGE_NAME: &str = "ohl-media-parser-worker";
 
 /// The eight `prlimit64` limits, `(resource, soft, hard)`.
 ///
@@ -537,44 +529,13 @@ impl ChildBootstrap {
 }
 
 // ---------------------------------------------------------------------------
-// Image resolution and verification (parent, before fork)
+// Image verification (parent, before fork)
 // ---------------------------------------------------------------------------
 
-fn open_error(error: rustix::io::Errno) -> IsolatedWorkerError {
-    if error == rustix::io::Errno::NOENT {
-        IsolatedWorkerError::ServiceUnavailable
-    } else {
-        IsolatedWorkerError::ServiceIdentityMismatch
-    }
-}
-
-/// A directory on the install path must be a directory owned by root or by
-/// this user and writable by nobody else.
-fn trusted_directory(descriptor: BorrowedFd<'_>) -> bool {
-    let Ok(status) = rustix::fs::fstat(descriptor) else {
-        return false;
-    };
-    let mode = status.st_mode;
-    mode & FILE_TYPE_MASK == DIRECTORY_TYPE
-        && (status.st_uid == 0 || status.st_uid == rustix::process::geteuid().as_raw())
-        && mode & (0o020 | 0o002 | 0o4000 | 0o2000) == 0
-}
-
-const FILE_TYPE_MASK: u32 = 0o170_000;
-const DIRECTORY_TYPE: u32 = 0o040_000;
-const REGULAR_TYPE: u32 = 0o100_000;
-
-/// A service image must be a regular file owned by root or by this user, with
-/// no write bit, no set-id bit, and at least one execute bit.
-fn trusted_image_metadata(status: &rustix::fs::Stat) -> bool {
-    let mode = status.st_mode;
-    mode & FILE_TYPE_MASK == REGULAR_TYPE
-        && (status.st_uid == 0 || status.st_uid == rustix::process::geteuid().as_raw())
-        && mode & 0o222 == 0
-        && mode & (0o4000 | 0o2000) == 0
-        && mode & 0o111 != 0
-}
-
+/// The Linux [`unix_image::FormatCheck`]: the image must be a static,
+/// non-interpreted x86-64 `ET_EXEC` ELF64. Resolution and the metadata
+/// policy live in [`unix_image`].
+///
 /// Verifies the ELF identity by reading through the already-open descriptor,
 /// so what is inspected is exactly what will be executed.
 fn verify_static_elf(file: &File, size: u64) -> bool {
@@ -630,84 +591,6 @@ fn verify_static_elf(file: &File, size: u64) -> bool {
         }
     }
     true
-}
-
-/// Opens `path` with `O_NOFOLLOW` and applies the full metadata plus ELF
-/// policy. The returned file is the descriptor that will be executed.
-///
-/// Only the tests need to name an image by path. Shipping code reaches an
-/// image exclusively through [`resolve_service_image`], which is compile-fixed
-/// and honours no environment variable, so a deployed binary cannot be
-/// redirected at a different program.
-#[cfg(test)]
-fn open_verified_image(path: &Path) -> Result<File, IsolatedWorkerError> {
-    let descriptor = rustix::fs::open(
-        path,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(open_error)?;
-    verify_open_image(descriptor)
-}
-
-fn verify_open_image(descriptor: OwnedFd) -> Result<File, IsolatedWorkerError> {
-    let status =
-        rustix::fs::fstat(&descriptor).map_err(|_| IsolatedWorkerError::ServiceIdentityMismatch)?;
-    if !trusted_image_metadata(&status) {
-        return Err(IsolatedWorkerError::ServiceIdentityMismatch);
-    }
-    let size =
-        u64::try_from(status.st_size).map_err(|_| IsolatedWorkerError::ServiceIdentityMismatch)?;
-    let file = File::from(descriptor);
-    if !verify_static_elf(&file, size) {
-        return Err(IsolatedWorkerError::ServiceIdentityMismatch);
-    }
-    Ok(file)
-}
-
-/// Walks `<dir of current executable>/libexec/open-half-life/<image>` one
-/// `O_NOFOLLOW` component at a time, verifying each directory on the way.
-fn resolve_service_image(service: IsolatedWorkerService) -> Result<File, IsolatedWorkerError> {
-    let name = match service {
-        IsolatedWorkerService::MediaParser => MEDIA_PARSER_IMAGE_NAME,
-    };
-
-    let executable =
-        std::env::current_exe().map_err(|_| IsolatedWorkerError::ServiceUnavailable)?;
-    let base = executable
-        .parent()
-        .ok_or(IsolatedWorkerError::ServiceUnavailable)?;
-
-    let mut directory = rustix::fs::open(
-        base,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(open_error)?;
-    for component in SERVICE_IMAGE_RELATIVE_DIRECTORIES {
-        if !trusted_directory(directory.as_fd()) {
-            return Err(IsolatedWorkerError::ServiceIdentityMismatch);
-        }
-        directory = rustix::fs::openat(
-            &directory,
-            component,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(open_error)?;
-    }
-    if !trusted_directory(directory.as_fd()) {
-        return Err(IsolatedWorkerError::ServiceIdentityMismatch);
-    }
-
-    let image = rustix::fs::openat(
-        &directory,
-        name,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(open_error)?;
-    verify_open_image(image)
 }
 
 // ---------------------------------------------------------------------------
@@ -901,8 +784,8 @@ impl Backend {
         service: IsolatedWorkerService,
         startup_deadline: Instant,
     ) -> Result<Self, IsolatedWorkerError> {
-        let image = resolve_service_image(service)?;
-        Self::launch_image(&image, startup_deadline)
+        let image = unix_image::resolve_service_image(service, verify_static_elf)?;
+        Self::launch_image(&image.file, startup_deadline)
     }
 
     /// Test-only entry point that skips install-location resolution but
@@ -912,7 +795,7 @@ impl Backend {
         path: &Path,
         startup_deadline: Instant,
     ) -> Result<Self, IsolatedWorkerError> {
-        let image = open_verified_image(path)?;
+        let image = unix_image::open_verified_image(path, verify_static_elf)?;
         Self::launch_image(&image, startup_deadline)
     }
 

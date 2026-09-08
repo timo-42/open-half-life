@@ -391,23 +391,30 @@ cargo xtask graph     # validates the crate dependency graph against xtask/src/g
   still open; see `docs/MILESTONES.md`, "Status as of 2026-09-07"). On
   macOS and Windows, `cpal` reaches the OS's own audio API (CoreAudio,
   WASAPI) with no such concern.
-- **Linux import worker sandbox**: the isolated media-parser worker's
-  native containment backend (resource limits, no-new-privileges,
-  Landlock, seccomp, pidfd-backed lifecycle) is implemented and qualified
-  only for Linux x86-64; every other platform/architecture tuple selects
-  an unsupported backend, so import cannot begin there yet. See
+- **Import worker sandbox**: the isolated media-parser worker has a
+  native containment backend on two targets. On Linux x86-64 it is
+  resource limits, no-new-privileges, Landlock, seccomp and a
+  pidfd-backed lifecycle around a freestanding static image executed by
+  descriptor. On macOS (both architectures) it is resource limits, a
+  descriptor sweep, and the system sandbox (Seatbelt, via
+  `/usr/bin/sandbox-exec`) around a hosted image that links nothing but
+  libSystem, with a `kqueue` `NOTE_EXIT` lifecycle. Every other
+  platform/architecture tuple still selects the unsupported backend, so
+  import cannot begin there. Neither backend is release-qualified, and
+  only Linux x86-64 has been exercised against a real medium. See
   [docs/IMPORT_READINESS.md](docs/IMPORT_READINESS.md) for the exact gates.
 
 ## Release builds
 
-`cargo xtask dist` builds the release binary (and, on a Linux x86-64 host
-targeting Linux, the sandboxed media-parser worker image alongside it), then
+`cargo xtask dist` builds the release binary (and, on a Linux x86-64 or
+macOS host building for itself, the sandboxed media-parser worker image
+alongside it), then
 assembles a versioned, self-contained release folder under
 `target/dist/open-half-life-<version>-<target-triple>/`:
 
 ```text
 bin/open-half-life[.exe]
-libexec/open-half-life/ohl-media-parser-worker   (Linux only)
+libexec/open-half-life/ohl-media-parser-worker   (Linux x86-64 and macOS)
 LICENSE
 THIRD_PARTY_NOTICES.md
 licenses/                                        (every dependency's declared license)
@@ -425,8 +432,9 @@ package for another target (`--print-target` prints the triple an
 otherwise-identical invocation would resolve to, without building or
 packaging anything); cross-compiling the binary itself is best effort (it
 depends on your toolchain having that target installed) and the worker
-image, being Linux x86-64-only, is only ever bundled for a Linux x86-64
-host building for Linux. `cargo xtask dist --help` documents every flag.
+image, which exists only for the two targets with a native containment
+backend, is only ever bundled for a host building for itself.
+`cargo xtask dist --help` documents every flag.
 No game data is ever included in the archive. Release binaries are built
 with `[profile.release]` `strip = "symbols"`, `codegen-units = 1`, and thin
 LTO (see the root `Cargo.toml`) for a meaningfully smaller download; this
@@ -461,10 +469,13 @@ it interactively on a real screen.
   fingerprinted, mounted read-only, its Wise/MS-CAB/InstallShield-3-Z
   payload is parsed by a sandboxed worker process, and the result is
   published as a metadata-only provenance record plus an extracted payload
-  tree. See [docs/IMPORT_READINESS.md](docs/IMPORT_READINESS.md) for the
+  tree. macOS now has the second native worker sandbox, so the same
+  pipeline composes there rather than refusing at launch, but no medium
+  has been imported on macOS yet: that path has hosted CI evidence only,
+  not a real-disc run. See
+  [docs/IMPORT_READINESS.md](docs/IMPORT_READINESS.md) for the
   production-readiness gates that are *not* yet met on any platform, Linux
-  included — only one ISO layout has been exercised, and no other platform
-  tuple can extract a medium at all yet.
+  included — only one ISO layout has been exercised anywhere.
 - **All 93 campaign maps** (18 story chapters plus the Hazard Course) load
   and render successfully headless (`cargo xtask campaign-smoke`), with
   monsters, props and sprites rendering alongside the world geometry.
@@ -559,7 +570,8 @@ work.
 
 M0-M1 (build/logging foundation, media preflight/mount/provenance cache)
 are complete in Rust; the earlier C++ implementation has been removed. M2
-(import pipeline) is functionally complete on Linux x86-64 and still
+(import pipeline) is functionally complete on Linux x86-64, has its
+containment backend but no real-medium evidence on macOS, and is still
 tracked for the remaining platform tuples and release-evidence gates. M3-M9
 (rendering, movement, entities, models/animation, combat/AI, campaign
 save/load, UI shell, packaging, fuzz targets) are each in progress or done

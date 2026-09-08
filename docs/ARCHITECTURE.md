@@ -101,13 +101,15 @@ crate-level attribute, so the allowance lives in each crate's own
 
 - **`ohl-platform`** — Windows FFI (`GetFileType`, `GetFileInformationByHandle`
   for the pinned native identity `MediaSource` needs but `std` does not
-  expose) and, once the Linux worker launcher lands, the fork/exec, seccomp
-  install, pidfd, and `renameat2` calls that give the isolated parser worker
-  its sandboxed lifetime. Every unsafe site carries a `// SAFETY:` comment and
-  is inventoried in the crate's own module documentation.
+  expose); the Linux worker launcher's fork/exec, raw syscalls, seccomp
+  install, pidfd and `renameat2` calls; and the macOS launcher's `pre_exec`
+  bootstrap, descriptor adoption and `kqueue` registration. Every unsafe site
+  carries a `// SAFETY:` comment and is inventoried in the crate's own module
+  documentation.
 - **`ohl-parser-worker`** — the freestanding binary's own `_start` entry
   point, because a `#![no_std] #![no_main]` binary has no runtime to hand
-  control to `main` for it.
+  control to `main` for it, plus (in the hosted macOS shape of the same
+  image) descriptor adoption and the bounded global allocator.
 
 Both crates carry `#![deny(unsafe_op_in_unsafe_fn)]`. No other crate,
 including every parser and format decoder, contains an `unsafe` block.
@@ -571,8 +573,13 @@ static x86-64 worker. The worker identity remains the compile-fixed
 verifies its no-follow, non-writable, non-set-id, static x86-64 ELF identity
 before applying resource limits, no-new-privileges, Landlock, seccomp, the
 fixed descriptor inventory, readiness framing, and pidfd-backed lifecycle.
-This bootstrap is implemented and tested only on Linux x86-64. It is not a
-supported worker backend for another Linux architecture, Windows, or macOS.
+This bootstrap is implemented and tested on Linux x86-64. macOS has a second
+native backend of its own (Seatbelt via `sandbox-exec`, resource limits, a
+descriptor sweep, a `kqueue` `NOTE_EXIT` lifecycle, and a hosted Mach-O image
+that links only libSystem), sharing the install-location walk and metadata
+policy with this one; see `docs/IMPORT_READINESS.md`, "Current macOS worker
+bootstrap". Neither is release-qualified. There is no supported worker
+backend for another Linux architecture or for Windows.
 
 Local evidence includes `platform.isolated_worker.linux`, which stages the
 exact production-target bytes at the test backend's compile-fixed identity and

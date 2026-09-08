@@ -1,10 +1,11 @@
-//! End-to-end tests for the Linux x86-64 isolated-worker backend.
+//! End-to-end tests for the macOS isolated-worker backend.
 //!
 //! Every test drives a real confined child built from
-//! `crates/ohl-test-worker/image`: a freestanding, statically linked
-//! `#![no_std]` program that issues raw syscalls only. That is what makes the
-//! seccomp assertions meaningful - a libc-based helper would need dozens of
-//! syscalls the policy deliberately denies.
+//! `crates/ohl-test-worker/image`, in its hosted (`std`) shape, launched
+//! through the same bootstrap, resource limits and sandbox profile as the
+//! shipping media-parser worker. The confinement probe is what makes the
+//! sandbox assertions meaningful: the worker itself tries to read, write,
+//! bind and spawn, and reports what the kernel let it do.
 
 use super::{
     IsolatedWorker, IsolatedWorkerCancellationSource, IsolatedWorkerCancellationToken,
@@ -19,10 +20,8 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-/// `SIGILL`, raised by the `ud2` in the crash mode.
-const SIGILL: i32 = 4;
-/// `SIGSYS`, raised by `SECCOMP_RET_KILL_PROCESS`.
-const SIGSYS: i32 = 31;
+/// `SIGABRT`, raised by `std::process::abort` in the crash mode.
+const SIGABRT: i32 = 6;
 
 fn image(variant: TestWorkerVariant) -> PathBuf {
     static READY: OnceLock<PathBuf> = OnceLock::new();
@@ -42,7 +41,7 @@ fn deadline(after: Duration) -> Instant {
 fn launch_ready() -> IsolatedWorker {
     launch_isolated_worker_from_image(
         &image(TestWorkerVariant::Ready),
-        deadline(Duration::from_secs(5)),
+        deadline(Duration::from_secs(10)),
     )
     .expect("a confined worker launches")
 }
@@ -166,21 +165,28 @@ fn a_crashing_worker_is_reported_as_crashed() {
         worker.wait(deadline(Duration::from_secs(5))),
         Ok(IsolatedWorkerExitKind::Crashed)
     );
-    assert_eq!(worker.terminating_signal(), Some(SIGILL));
+    assert_eq!(worker.terminating_signal(), Some(SIGABRT));
 }
 
+/// The sandbox, not merely the worker's good manners, is what stops it from
+/// reading the filesystem, writing anywhere, listening on the network, or
+/// starting a process: the worker tries each and reports what succeeded.
 #[test]
-fn a_forbidden_syscall_is_killed_by_seccomp() {
+fn the_sandbox_denies_every_confinement_probe() {
     let mut worker = launch_ready();
-    send_frame(&mut worker, &[protocol::MODE_FORBIDDEN_SYSCALL]).expect("the mode is selected");
+    send_frame(&mut worker, &[protocol::MODE_CONFINEMENT_PROBE]).expect("the mode is selected");
+    let reply = receive_frame(&mut worker).expect("the probe report arrives");
+    assert_eq!(
+        reply,
+        vec![0],
+        "every probe must be denied (bit n set means probe n succeeded; see \
+         ohl_test_worker::protocol::CONFINEMENT_PROBE_COUNT for the order)"
+    );
+
+    worker.close_channel();
     assert_eq!(
         worker.wait(deadline(Duration::from_secs(5))),
-        Ok(IsolatedWorkerExitKind::Crashed)
-    );
-    assert_eq!(
-        worker.terminating_signal(),
-        Some(SIGSYS),
-        "openat(2) must be denied by SECCOMP_RET_KILL_PROCESS, not by anything else"
+        Ok(IsolatedWorkerExitKind::Clean)
     );
 }
 
@@ -282,13 +288,9 @@ fn dropping_a_live_worker_reaps_it() {
 }
 
 /// The confined child must start with `/dev/null` on 0/1/2 and the channel on
-/// 3, and nothing else: the image and ruleset descriptors are `O_CLOEXEC`,
-/// the readiness descriptor is closed by the worker itself, and
-/// `close_range(7, ~0)` removed everything the parent's spawn machinery held.
-///
-/// The worker probes the first 64 descriptor numbers with `ppoll` and reports
-/// a bitmask, which is the only way to observe the table from the outside:
-/// `/proc/<pid>/fd` is unreadable once Landlock is in force.
+/// 3, and nothing else: the readiness descriptor is closed by the worker
+/// itself, and the bootstrap's close sweep removed everything the parent's
+/// spawn machinery held.
 #[test]
 fn fd_inventory_after_exec_is_exactly_the_contract() {
     let mut worker = launch_ready();
@@ -315,17 +317,6 @@ fn fd_inventory_after_exec_is_exactly_the_contract() {
 
 /// `SIGSTOP` in the middle of a blocking channel read, then `SIGCONT`: the
 /// worker must come back and keep serving.
-///
-/// A stop interrupts whatever blocking call the worker is in, and the kernel
-/// resumes it afterwards - either by rewinding straight back into the
-/// original syscall (what a socket `read` does, through `ERESTARTSYS`) or,
-/// for the calls that carry resumption state, by issuing `restart_syscall` on
-/// the process's behalf (`ERESTART_RESTARTBLOCK`). The second form is why
-/// `restart_syscall` is on the allowlist: without it, anything able to stop
-/// the process - job control, a debugger attach, a cgroup freeze - could turn
-/// into `SECCOMP_RET_KILL_PROCESS`, a denial of service the worker itself
-/// cannot avoid. This test pins the observable half of that contract: a
-/// stop/continue cycle must never be fatal.
 #[test]
 fn a_stopped_and_continued_worker_survives_and_keeps_serving() {
     use rustix::process::{Pid, Signal, kill_process};
@@ -339,7 +330,6 @@ fn a_stopped_and_continued_worker_survives_and_keeps_serving() {
 
     let pid = Pid::from_raw(i32::try_from(worker.child_process_id()).expect("a positive pid"))
         .expect("a live child pid");
-    // The worker is now blocked in `read` on the channel.
     kill_process(pid, Signal::STOP).expect("the child stops");
     std::thread::sleep(Duration::from_millis(100));
     kill_process(pid, Signal::CONT).expect("the child continues");
@@ -349,11 +339,7 @@ fn a_stopped_and_continued_worker_survives_and_keeps_serving() {
         receive_frame(&mut worker).expect("the worker survived the stop"),
         vec![4, 3]
     );
-    assert_eq!(
-        worker.terminating_signal(),
-        None,
-        "the worker must still be running, not killed by seccomp"
-    );
+    assert_eq!(worker.terminating_signal(), None);
 
     worker.close_channel();
     assert_eq!(
@@ -417,19 +403,7 @@ fn a_symlinked_image_is_rejected() {
 }
 
 #[test]
-fn a_dynamically_linked_image_is_rejected() {
-    let dynamic = std::env::current_exe().expect("the test binary has a path");
-    let bytes = std::fs::read(dynamic).expect("the test binary is readable");
-    let (_directory, path) = stage(&bytes, 0o555, "ohl-media-parser-worker");
-    assert_eq!(
-        launch_failure(&path),
-        IsolatedWorkerError::ServiceIdentityMismatch,
-        "an interpreted or dynamic ELF is not a confinable image"
-    );
-}
-
-#[test]
-fn a_non_elf_image_is_rejected() {
+fn a_non_mach_o_image_is_rejected() {
     let (_directory, path) = stage(b"#!/bin/sh\nexit 0\n", 0o555, "ohl-media-parser-worker");
     assert_eq!(
         launch_failure(&path),

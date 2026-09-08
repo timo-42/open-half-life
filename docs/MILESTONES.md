@@ -4391,3 +4391,117 @@ across level changes — rather than another per-map cold load.
   stages a destination map whose own touch trigger points back at the
   source and asserts the re-entry line, the distinct depth of 2, and that
   neither other terminal line fires; it fails against the same mutant.
+
+
+## M9.16 (Rust): a native isolated-worker backend for macOS
+
+Status: accepted (Rust); evidence: PR #<n> ("Add a native macOS
+isolated-worker backend so the port runs on Apple Silicon").
+
+**The gap this closes.** `ohl-platform`'s `IsolatedWorker` had exactly one
+native backend, Linux x86-64. Every other target compiled the uninhabited
+`unsupported` backend, so `launch_isolated_worker` failed with
+`IsolatedWorkerError::Unsupported` before doing anything, and with it the
+whole import pipeline: on macOS the app built and ran, rendered an
+already-imported payload, and could never produce one. The engine, renderer,
+audio and packaging were already cross-platform; containment was the single
+target-gated hole.
+
+**Why the Linux design could not simply be ported.** The Linux backend
+executes a freestanding, statically linked `ET_EXEC` image by descriptor
+(`execveat`), confined by Landlock and a seccomp allowlist and observed
+through a pidfd. macOS has none of those four primitives, and a macOS
+process cannot avoid linking the system's libSystem, so a `-nostdlib`
+static image is not a thing that can exist there. The backend is therefore a
+different mechanism reaching the same contract, not a port:
+
+- **Confinement**: the Seatbelt system sandbox, applied by the root-owned
+  `/usr/bin/sandbox-exec` from a profile this backend renders
+  (`crates/ohl-platform/src/isolated_worker/macos_profile.sb`) — `(deny
+  default)`, execute-and-read on the one verified image, read-only access
+  to the system libraries, and explicit denials for network, writes, `fork`
+  and Mach lookups. `sandbox-exec` applies the profile to itself and then
+  `exec`s the image in place, so the process the parent spawned *is* the
+  worker and its exit status is the worker's.
+- **Image identity**: the same compile-fixed install-location walk and
+  metadata policy as Linux (now shared in
+  `isolated_worker/unix_image.rs`, which both backends call with their own
+  format check), specialised to a thin 64-bit `MH_EXECUTE` Mach-O for the
+  running CPU type that names `/usr/lib/dyld` as its only dynamic linker,
+  `/usr/lib/libSystem.B.dylib` as its only dynamic library, and no
+  `LC_RPATH`.
+- **Lifecycle**: `kqueue` with an `EVFILT_PROC`/`NOTE_EXIT` registration in
+  place of the pidfd poll, and `kill(SIGKILL)` in place of
+  `pidfd_send_signal`.
+- **Bootstrap**: a `pre_exec` closure that moves the channel and readiness
+  pipe onto descriptors 3 and 4, applies six `setrlimit` limits, and
+  sweeps every descriptor from 5 to the parent's own `RLIMIT_NOFILE` — the
+  macOS counterpart of Linux's `dup3`/`prlimit64`/`close_range` sequence,
+  and equally async-signal-safe (only `dup2`, `setrlimit`, `close` and one
+  `write`, on integers captured before the fork).
+
+**The image gained a second shape.** Both standalone image packages
+(`crates/ohl-test-worker/image`, `crates/ohl-parser-worker/image`) now
+select their source by target: `freestanding.rs` (the unchanged `#![no_std]
+#![no_main]` Linux x86-64 image) or `hosted.rs` (an ordinary `std` binary
+for macOS). One package, one `Cargo.lock`, conditional crate attributes, and
+a `build.rs` that emits the `-nostdlib -static -no-pie` link arguments only
+for the Linux x86-64 target. The hosted media-parser image hosts the same
+`run_parser_worker_service` lifetime over the same descriptors with the same
+`contract.rs` exit statuses, so nothing above the transport can tell the two
+apart.
+
+Two hosted-only deviations are deliberate and documented in the image's own
+module docs. Darwin rejects `setrlimit` for `RLIMIT_AS` and `RLIMIT_DATA`
+outright (`EINVAL`), so both are absent from the macOS limit table and there
+is no kernel-enforced memory ceiling on the platform at all; the image
+imposes its own with a counting global allocator that refuses past 128 MiB (the freestanding image's 96 MiB arena plus its two
+1 MiB payload buffers, rounded up), which fails closed exactly as arena
+exhaustion does. And `std` has no stable `MSG_PEEK`, so `probe_input` reads
+one byte into a private pushback slot that the next `read_exact` drains
+first — non-consuming as far as the service can observe, which is what the
+transport contract actually requires.
+
+**Three properties are weaker than Linux and are recorded, not claimed
+away**: the image is executed by path rather than by descriptor (macOS has
+no `fexecve`), so the verification-to-`exec` window rests on the directory
+trust policy; the memory limits are self-imposed as above; and there is no
+parent-death signal, so an orphaned worker notices only at end-of-file.
+Every failure path is still fail-closed — a missing or non-root
+`sandbox-exec`, a refused profile, an image path that cannot be spelled as a
+Seatbelt literal, a failed limit, or a missing readiness attestation ends the
+launch with a sanitized error and no child, never with a weaker sandbox.
+
+**Evidence.** `isolated_worker/macos_tests.rs` mirrors the Linux suite
+against a real confined child: frame round-trips, orderly close, hang then
+terminate, crash, non-zero exit, startup-deadline expiry, cancellation of a
+blocked read, `Drop` reaping a live child, twenty consecutive launches, a
+`SIGSTOP`/`SIGCONT` cycle, the six image-verification refusals, and an exact
+post-`exec` descriptor inventory of `{0, 1, 2, 3}`. The one test with no
+Linux counterpart is `the_sandbox_denies_every_confinement_probe`: a new
+worker mode in which the image itself attempts a filesystem read, a
+filesystem write, a loopback bind and a process spawn, and reports a bitmask
+of what succeeded, which must be zero. That is what makes the sandbox
+assertion falsifiable rather than a claim about a profile file — a Seatbelt
+denial is an error return, not a kill, so nothing else would have noticed a
+profile that silently stopped applying. Unit tests cover the Mach-O verifier
+(a valid shape, an extra dylib, an `LC_RPATH`, a foreign dylinker, a missing
+dylinker, a dylib/fat file, truncated load commands) and the profile
+renderer (the placeholder is filled, `(deny default)` survives, an
+unspellable path fails closed) on every host, including Linux.
+
+**CI** now runs `cargo xtask worker-image` on macOS as well as Linux, so the
+image identity audit — which on macOS is the Mach-O policy above, and on
+Linux the unchanged static-ELF and symbol-table audits — runs natively on
+both. A macOS-only diagnostic step, on failure only, compiles the profile
+with `sandbox-exec` and dumps the unified log's Sandbox entries, because the
+confined worker's stdio is `/dev/null` and a denial is otherwise invisible in
+a CI log. `cargo xtask dist` bundles the worker image for a macOS host build
+too, so a macOS release archive now ships a working `libexec/`.
+
+**Not claimed.** No medium has been imported on macOS. The backend launches,
+the worker hosts the real dispatcher, and the pipeline composes rather than
+refusing at launch, but every macOS result here is from project-authored
+tests on a CI runner. `docs/IMPORT_READINESS.md`'s matrix records the tuple
+as composed-but-unevidenced, and no release-evidence gate is met on any
+platform.

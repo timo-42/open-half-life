@@ -3,7 +3,7 @@
 //! ```text
 //! open-half-life-<version>-<target-triple>/
 //!   bin/open-half-life[.exe]
-//!   libexec/open-half-life/ohl-media-parser-worker   (Linux only)
+//!   libexec/open-half-life/ohl-media-parser-worker   (Linux x86-64 and macOS only)
 //!   LICENSE
 //!   THIRD_PARTY_NOTICES.md
 //!   licenses/...
@@ -24,7 +24,7 @@ pub struct DistInputs<'a> {
     /// The name the binary keeps inside `bin/` (`open-half-life[.exe]`).
     pub binary_file_name: &'a str,
     /// The already-built parser worker image, when one was produced (Linux
-    /// x86-64 only).
+    /// x86-64 and macOS only).
     pub worker_image_path: Option<&'a Path>,
     /// Repository root `LICENSE` file.
     pub license_path: &'a Path,
@@ -79,7 +79,7 @@ record under the platform's standard per-user cache directory (override\n\
 with `--cache /absolute/path`). No game files are copied out of the image\n\
 by this record; it only remembers that the image was validated.\n\
 \n\
-On Linux, `libexec/open-half-life/{WORKER_IMAGE_FILE_NAME}` is a sandboxed\n\
+On Linux x86-64 and macOS, `libexec/open-half-life/{WORKER_IMAGE_FILE_NAME}` is a sandboxed\n\
 helper the launcher uses for media parsing; it must stay alongside `bin/`\n\
 in the same relative layout this archive extracts to.\n\
 \n\
