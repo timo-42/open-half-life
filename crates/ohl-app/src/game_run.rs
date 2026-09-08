@@ -219,6 +219,22 @@ pub struct GameArgs<'a> {
     pub start_inventory: Option<&'a str>,
 }
 
+/// The fixed line a run prints once, right after a successful load, when
+/// the loaded map really does have an entity world: at least one entity
+/// definition, *and* either a resolved player start or an `info_landmark`
+/// to arrive at. `cargo xtask campaign-smoke`
+/// requires this exact line before it scores a map as loaded, so a map that
+/// renders a room but has no entities in it can never pass again. Carries
+/// nothing media-derived: no map name, no counts.
+pub const ENTITY_WORLD_OK_LINE: &str =
+    "Entity world loaded: the map declares entities and a spawn or landmark to arrive at.";
+
+/// The fixed line printed instead of [`ENTITY_WORLD_OK_LINE`] when the map
+/// loaded with no entities at all, or with neither a player start nor a
+/// landmark.
+pub const ENTITY_WORLD_EMPTY_LINE: &str =
+    "Entity world empty: the map declares no entities, or neither a player start nor a landmark.";
+
 /// The save directory this run reads and writes slots in, or `None` when the
 /// platform publishes no per-user data directory.
 fn save_slot_dir() -> Option<ohl_save::SaveSlot> {
@@ -261,6 +277,30 @@ pub fn run(args: &GameArgs<'_>) -> Result<(), &'static str> {
         })?,
     };
     tracing::info!("Map loaded.");
+    // A map reached only through a `trigger_changelevel`/`info_landmark`
+    // pair legitimately declares no `info_player_start` of its own (the
+    // player arrives relative to the landmark), so a landmark counts as
+    // evidence of a real, loaded entity world just as a player start does.
+    // What is never legitimate is a map with neither — nor one with no
+    // entity definitions at all.
+    if game.entity_def_count() > 0 && (game.has_player_start() || game.has_landmark()) {
+        tracing::info!("{ENTITY_WORLD_OK_LINE}");
+    } else {
+        // A map that loads with no entity definitions, or with none the
+        // spawn resolver recognised as a player start, is an empty room:
+        // the player is placed at the world origin, which is normally
+        // inside solid geometry. Before the entities lump's own failure was
+        // surfaced as a load error this was completely silent.
+        tracing::warn!("{ENTITY_WORLD_EMPTY_LINE}");
+    }
+    if game.entity_lump_relaxed_strings() > 0 {
+        // Deliberately no count and no text: only the fact that the
+        // relaxed decode path was taken at all.
+        tracing::info!(
+            "The map's entity lump holds at least one non-UTF-8 byte inside a quoted \
+             string; it was decoded byte-per-byte."
+        );
+    }
     if game.missing_model_count() > 0 {
         // Deliberately no count: it is derived from the map's own contents.
         tracing::info!("Some referenced models are not published in this payload; skipped.");

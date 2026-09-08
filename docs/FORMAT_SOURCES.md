@@ -5038,3 +5038,98 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
     same payload) were both re-run after the dual-collision-model fix and
     after the `c2a1` route below was re-authored; their results are
     recorded in the milestone entry below rather than duplicated here.
+### Entities-lump text encoding (M9.13)
+
+34. **What encoding a quoted entity-lump string is in, and what a parser
+    must do with a byte that is not valid UTF-8.**
+
+    Source (already cited in full in "GoldSrc BSP v30 and WAD3" above;
+    re-read for this item on 2026-09-08): "Unofficial Quake Specs", Quake
+    Documentation version 3.4, section 4 "Level Map Models", lump 0
+    ("entities"). It documents the lump as a block of *text*, terminated by
+    a `0` byte, holding one `{ ... }` block per entity, each block holding
+    `"key" "value"` pairs — a grammar whose every delimiter (`{`, `}`, `"`,
+    whitespace) is ASCII, and which defines a quoted value as the run of
+    bytes between two `"` characters with no escape mechanism. **No
+    character encoding is specified for that run beyond the ASCII the
+    delimiters themselves live in.**
+
+    That matters because this project decodes each key and value into a
+    Rust `String`, which must be UTF-8. Until this item, the parser
+    rejected the whole lump (`FormatError::InvalidText`) if any quoted run
+    was not valid UTF-8. That is a constraint this project added, not one
+    the format imposes: a map authored on a legacy single-byte Windows
+    codepage can legally carry a byte in `0x80..=0xFF` inside a
+    human-readable value (typographic punctuation, typically), and such a
+    lump is well-formed under the published grammar.
+
+    **Finding.** A bounded, aggregate-only local probe (this project's own
+    `ohl-formats` BSP reader over every map `ohl_campaign::CHAPTERS` and
+    `HAZARD_COURSE_MAPS` cite, reporting only structural counts and byte
+    classes; nothing media-derived was committed and the probe itself was
+    not committed) found that of the 93 cited maps, **92 parsed and 1 did
+    not**. The one failure was *not* structural: that map's lump has a
+    balanced brace structure, no interior NUL, a correct terminator, no
+    control characters, and every string within the configured length
+    limit. It carries **exactly one byte in `0x80..=0xFF` inside one quoted
+    value** — a single non-UTF-8 byte in a single string, in a lump of a
+    couple of hundred blocks. **Zero** of the 93 maps had a structural
+    problem of any kind.
+
+    **Decision: the lump is legal, so the parser was too strict.** The
+    project's encoding rule, implemented in
+    `ohl_formats::bsp30::entities::decode_quoted`, is: decode a quoted run
+    as UTF-8 when it *is* valid UTF-8, and otherwise map every byte to the
+    Unicode scalar of the same value (`char::from(u8)`, i.e. the Latin-1 /
+    ISO-8859-1 range). That fallback is total (it cannot fail), lossless
+    (no byte is dropped or replaced), deterministic, and leaves every ASCII
+    byte exactly where it was — which is all of the grammar's own structure
+    and all of the classname/targetname/keyname vocabulary the game logic
+    matches on, so no behaviour that depends on a key or a classname can
+    change. No recovery rule (skipping a block, truncating a value) was
+    needed or adopted: nothing is skipped, and the map loads its real
+    entities. Structural violations — an unbalanced or unterminated block,
+    a missing terminator, an interior NUL, a missing quote, an over-long
+    string or an over-large lump — are still hard rejections, exactly as
+    before; the relaxation is strictly about the *encoding* of bytes the
+    grammar already treats as opaque value content.
+
+    `parse_with_report` reports how many strings took the fallback path as
+    an aggregate count (`EntityLumpReport::relaxed_strings`), which
+    `Level::entity_lump_relaxed_strings` republishes. The count is an
+    aggregate only; neither the string nor the byte is ever logged.
+
+    **Why the bug was invisible.** `Level::load` swallowed the parse error
+    with `bsp.entities(&limits).unwrap_or_default()`, so the affected map
+    loaded as an *empty room*: no player start (the player spawned at the
+    world origin, normally inside solid geometry), no monsters, no
+    triggers, no brush entities — and every caller, including `cargo xtask
+    campaign-smoke`, still saw a successful load and a healthy-looking
+    capture of that room's walls. Two changes make that impossible to
+    repeat:
+
+    - `Level::from_bytes_with_ramp` now propagates the failure as
+      `EngineError::EntityLumpUnreadable` instead of defaulting to an empty
+      entity list, so a lump this build cannot read is a load *error*.
+    - `ohl-app` prints one fixed line after a successful load
+      (`game_run::ENTITY_WORLD_OK_LINE`) when the loaded map has at least
+      one entity definition *and* something to arrive at — either a
+      resolved `info_player_start` or an `info_landmark` — and a fixed
+      warning (`ENTITY_WORLD_EMPTY_LINE`) when it does not. `cargo xtask
+      campaign-smoke` requires that exact line before scoring a map as
+      `loaded`; a run without it lands in the new `empty-entity-world`
+      bucket, which is not a pass. Neither line carries a map name or any
+      count.
+
+      The landmark half of that condition is load-bearing and was found by
+      running the new check over all 93 cited maps: **one** of them (a
+      mid-chapter Blast Pit map, `c1a4e` in `ohl_campaign::CHAPTERS`'s own
+      table) declares no `info_player_start` at all while declaring 150
+      entities and two `info_landmark`s. That is legitimate and already
+      documented in this file's `trigger_changelevel`/`info_landmark` item:
+      a map entered only through a landmark transition places the player
+      relative to the landmark it came through, so it needs no spawn point
+      of its own. "No player start" alone therefore does not mean a map
+      failed to load its entity world; "no player start *and* no landmark",
+      or no entity definitions at all, does. `Level::has_landmark` (and
+      `Game::has_landmark`) publish that distinction.

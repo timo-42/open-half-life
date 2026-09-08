@@ -12,6 +12,14 @@ pub enum EngineError {
     MapNotFound,
     /// The map's bytes are not a BSP v30 map this build can read.
     MapUnreadable,
+    /// The map parsed as a BSP, but its entities lump did not: the map has
+    /// no entity world at all, so it has no player start, no monsters and
+    /// no triggers. Surfaced rather than swallowed — a level loaded with an
+    /// empty entity list is an empty room the player spawns in the middle
+    /// of (typically inside solid geometry), which is far worse than a
+    /// clean load failure and, before this variant existed, was
+    /// indistinguishable from a healthy load.
+    EntityLumpUnreadable,
     /// The map parsed but could not be turned into a renderable world.
     WorldUnbuildable,
     /// A GPU resource could not be created.
@@ -28,6 +36,7 @@ impl fmt::Display for EngineError {
         let message = match self {
             Self::MapNotFound => "the requested map is not present in the payload",
             Self::MapUnreadable => "the map is not a BSP v30 map this build can read",
+            Self::EntityLumpUnreadable => "the map's entities lump could not be read",
             Self::WorldUnbuildable => "the map could not be turned into a renderable world",
             Self::Renderer => "the renderer could not be created",
             Self::SaveUnwritable => "the save file could not be written",
