@@ -146,6 +146,19 @@ pub struct ReachabilityConfig {
     /// this project's own `ohl_combat::Inventory::new` grants no weapon at
     /// all, not even the crowbar.
     pub assume_armed: bool,
+    /// Adds a third, longer-reaching edge attempt (tried only when both
+    /// the plain step and the ordinary running-jump edge fail): a long
+    /// jump (`item_longjump`), bounded by
+    /// [`ohl_physics::MoveConfig::long_jump_forward_speed`]/
+    /// [`ohl_physics::MoveConfig::long_jump_up_speed`] read live from the
+    /// [`Game`] this walk runs against, the same way the ordinary jump
+    /// edge is bounded by that config's own `jump_velocity`/`max_speed`
+    /// (never a restated literal). Like [`Self::assume_armed`], this is a
+    /// caller-supplied assumption ("assume the player owns the long jump
+    /// module") — a cold map load owns no items at all
+    /// (`ohl_combat::Inventory::has_long_jump`), so this never checks or
+    /// fabricates that ownership. `false` by default.
+    pub assume_longjump: bool,
 }
 
 impl Default for ReachabilityConfig {
@@ -154,6 +167,7 @@ impl Default for ReachabilityConfig {
             cell_cap: 40_000,
             max_rounds: 6,
             assume_armed: false,
+            assume_longjump: false,
         }
     }
 }
@@ -218,6 +232,12 @@ pub struct RoundReport {
     /// one of these cells needs a real fall, not just a stair step or a
     /// short hop, to work.
     pub long_drop_cells: usize,
+    /// How many of this round's [`Self::reachable_cells`] were reached
+    /// only by the long-jump edge ([`ReachabilityConfig::assume_longjump`])
+    /// — neither the plain step nor the ordinary running jump reached
+    /// them, so a route through one of these cells needs the long jump
+    /// module. Always `0` without `assume_longjump`.
+    pub long_jump_cells: usize,
     /// How many doors this round found and opened for the *next* round
     /// (`0` on the last round, since nothing further needed opening).
     pub doors_opened: usize,
@@ -276,6 +296,9 @@ struct WalkResult {
     /// How many landings fell further than [`DROP`] below the cell they
     /// stepped or jumped from (see [`RoundReport::long_drop_cells`]).
     long_drop_cells: usize,
+    /// How many landings were reached only by the long-jump edge (see
+    /// [`RoundReport::long_jump_cells`]).
+    long_jump_cells: usize,
 }
 
 /// The ascend/horizontal bounds a jump edge is allowed, derived once from
@@ -299,6 +322,27 @@ impl JumpBounds {
         Self {
             ascend: config.step_size + apex_height,
             horizontal: config.max_speed * airtime,
+        }
+    }
+
+    /// As [`Self::from_move_config`], for a long jump (`item_longjump`)
+    /// instead of an ordinary running jump. Unlike an ordinary jump —
+    /// which only boosts the *vertical* launch speed, so its horizontal
+    /// reach is bounded by the player's own separately-configured run
+    /// speed (`max_speed`) — `ohl_physics::movement`'s long-jump impulse
+    /// sets *both* components directly
+    /// (`velocity = forward * long_jump_forward_speed + Z *
+    /// long_jump_up_speed`, see that module's `walk_or_air_move`), so both
+    /// this bound's airtime and its horizontal reach are derived from the
+    /// long jump's own two published constants alone, never from
+    /// `max_speed`.
+    fn from_long_jump_config(config: &ohl_physics::MoveConfig) -> Self {
+        let apex_height =
+            config.long_jump_up_speed * config.long_jump_up_speed / (2.0 * config.gravity);
+        let airtime = 2.0 * config.long_jump_up_speed / config.gravity;
+        Self {
+            ascend: config.step_size + apex_height,
+            horizontal: config.long_jump_forward_speed * airtime,
         }
     }
 }
@@ -380,15 +424,24 @@ fn settle_start(collision: &CollisionModel, start: Vec3) -> Vec3 {
 /// 16-unit grid, using [`Hull::Standing`] against `collision` exactly as
 /// the walking player would. From every visited cell, in every direction,
 /// a plain [`STEP_UP`]/[`CELL_SIZE`] edge is tried first; a jump edge
-/// (bounded by `jump`) is tried only when that plain edge fails — see this
-/// module's own doc comment.
-fn walk(collision: &CollisionModel, start: Vec3, cap: usize, jump: JumpBounds) -> WalkResult {
+/// (bounded by `jump`) is tried only when that plain edge fails; a
+/// long-jump edge (bounded by `long_jump`, only when given — see
+/// [`ReachabilityConfig::assume_longjump`]) is tried only when that
+/// ordinary jump edge also fails — see this module's own doc comment.
+fn walk(
+    collision: &CollisionModel,
+    start: Vec3,
+    cap: usize,
+    jump: JumpBounds,
+    long_jump: Option<JumpBounds>,
+) -> WalkResult {
     let hull = Hull::Standing;
     let mut visited_cells: HashSet<Cell> = HashSet::new();
     let mut visited_positions = Vec::new();
     let mut frontier_brushes = HashSet::new();
     let mut queue = VecDeque::new();
     let mut long_drop_cells = 0usize;
+    let mut long_jump_cells = 0usize;
 
     visited_cells.insert(cell_of(start));
     visited_positions.push(start);
@@ -414,7 +467,7 @@ fn walk(collision: &CollisionModel, start: Vec3, cap: usize, jump: JumpBounds) -
                 STEP_UP,
                 CELL_SIZE,
             );
-            let outcome = if matches!(plain, EdgeOutcome::Landed { .. }) {
+            let ordinary_jump = if matches!(plain, EdgeOutcome::Landed { .. }) {
                 plain
             } else {
                 try_edge(
@@ -425,6 +478,23 @@ fn walk(collision: &CollisionModel, start: Vec3, cap: usize, jump: JumpBounds) -
                     jump.ascend,
                     jump.horizontal,
                 )
+            };
+            let (outcome, via_long_jump) = if matches!(ordinary_jump, EdgeOutcome::Landed { .. }) {
+                (ordinary_jump, false)
+            } else if let Some(long_jump) = long_jump {
+                (
+                    try_edge(
+                        collision,
+                        hull,
+                        position,
+                        horizontal_dir,
+                        long_jump.ascend,
+                        long_jump.horizontal,
+                    ),
+                    true,
+                )
+            } else {
+                (ordinary_jump, false)
             };
 
             match outcome {
@@ -439,14 +509,17 @@ fn walk(collision: &CollisionModel, start: Vec3, cap: usize, jump: JumpBounds) -
                         if drop > DROP {
                             long_drop_cells += 1;
                         }
+                        if via_long_jump {
+                            long_jump_cells += 1;
+                        }
                     }
                 }
                 EdgeOutcome::BlockedAcross(_) | EdgeOutcome::BlockedUp | EdgeOutcome::NoFloor => {
-                    // Neither the plain nor the jump edge found a new cell:
-                    // record every blocking brush either attempt found, so
-                    // the frontier reflects whatever actually stopped the
-                    // walk in this direction.
-                    for attempt in [plain, outcome] {
+                    // Neither the plain step, the jump, nor (if tried) the
+                    // long jump found a new cell: record every blocking
+                    // brush any attempt found, so the frontier reflects
+                    // whatever actually stopped the walk in this direction.
+                    for attempt in [plain, ordinary_jump, outcome] {
                         if let EdgeOutcome::BlockedAcross(Some(brush)) = attempt {
                             frontier_brushes.insert(brush);
                         }
@@ -464,6 +537,7 @@ fn walk(collision: &CollisionModel, start: Vec3, cap: usize, jump: JumpBounds) -
         frontier_brushes,
         capped: capped || visited_cells.len() >= cap,
         long_drop_cells,
+        long_jump_cells,
     }
 }
 
@@ -544,34 +618,6 @@ fn changelevel_status(game: &Game, start: Vec3, reached: &[Vec3]) -> ChangeLevel
         distance_rounded: nearest.map(round_distance),
     }
 }
-
-/// Runs the bounded, iterative reachability walk described in this
-/// module's own doc comment, starting from `game`'s current player
-/// position.
-///
-/// Mutates `game`'s live collision model: doors this round's walk both
-/// found on the frontier and found use-openable are detached
-/// (`CollisionModel::detach_brush`) before the next round runs, so a
-/// caller that wants the report without permanently altering a `Game` it
-/// still needs afterward should call this on a `Game` it loaded solely for
-/// this analysis (matching this project's other headless dev-tools
-/// commands).
-///
-/// This walk (and so this detach) only ever reads/mutates
-/// [`Game::collision`] — the *player's* collision model — through
-/// [`Game::collision_mut`], never [`Game::monster_collision`] (M9.11,
-/// `docs/FORMAT_SOURCES.md` item 33): the two models diverge for the
-/// remainder of a `Game` this function was called on, but that is
-/// harmless here specifically because nothing in this module ever traces
-/// against, or otherwise reads, the monster model — the walk this module
-/// runs is deliberately a player-reachability question ("can the walking
-/// *player* get from spawn to the exit"), not a monster-pathing one, so
-/// simulating an opened door only where this module actually looks is the
-/// right scope, not an oversight. A caller that also needs the monster
-/// model to reflect this walk's simulated door-opens (none do today)
-/// would need its own detach against [`Game::monster_collision_mut`]. The
-/// same applies to a breakable's or a pushable's brush, detached exactly
-/// the same way (M9.12).
 
 /// One classname's aggregated frontier state for a round: how many
 /// distinct entities, and whether at least one of them is openable each of
@@ -658,6 +704,33 @@ fn classify_frontier(
     }
 }
 
+/// Runs the bounded, iterative reachability walk described in this
+/// module's own doc comment, starting from `game`'s current player
+/// position.
+///
+/// Mutates `game`'s live collision model: doors this round's walk both
+/// found on the frontier and found use-openable are detached
+/// (`CollisionModel::detach_brush`) before the next round runs, so a
+/// caller that wants the report without permanently altering a `Game` it
+/// still needs afterward should call this on a `Game` it loaded solely for
+/// this analysis (matching this project's other headless dev-tools
+/// commands).
+///
+/// This walk (and so this detach) only ever reads/mutates
+/// [`Game::collision`] — the *player's* collision model — through
+/// [`Game::collision_mut`], never [`Game::monster_collision`] (M9.11,
+/// `docs/FORMAT_SOURCES.md` item 33): the two models diverge for the
+/// remainder of a `Game` this function was called on, but that is
+/// harmless here specifically because nothing in this module ever traces
+/// against, or otherwise reads, the monster model — the walk this module
+/// runs is deliberately a player-reachability question ("can the walking
+/// *player* get from spawn to the exit"), not a monster-pathing one, so
+/// simulating an opened door only where this module actually looks is the
+/// right scope, not an oversight. A caller that also needs the monster
+/// model to reflect this walk's simulated door-opens (none do today)
+/// would need its own detach against [`Game::monster_collision_mut`]. The
+/// same applies to a breakable's or a pushable's brush, detached exactly
+/// the same way (M9.12).
 #[must_use]
 pub fn compute_reachability_report(
     game: &mut Game,
@@ -675,6 +748,7 @@ pub fn compute_reachability_report(
                 distance_rounded: None,
             },
             long_drop_cells: 0,
+            long_jump_cells: 0,
             doors_opened: 0,
             breakables_opened: 0,
             pushables_opened: 0,
@@ -688,13 +762,16 @@ pub fn compute_reachability_report(
         Some(collision) => settle_start(collision, Vec3::from_array(game.player_origin())),
         None => Vec3::from_array(game.player_origin()),
     };
+    let long_jump = config
+        .assume_longjump
+        .then(|| JumpBounds::from_long_jump_config(game.move_config()));
 
     for round in 0..config.max_rounds.max(1) {
         let walk_result = {
             let Some(collision) = game.collision() else {
                 break;
             };
-            walk(collision, start, config.cell_cap, jump)
+            walk(collision, start, config.cell_cap, jump, long_jump)
         };
 
         let ClassifiedFrontier {
@@ -724,6 +801,7 @@ pub fn compute_reachability_report(
                 .collect(),
             changelevel,
             long_drop_cells: walk_result.long_drop_cells,
+            long_jump_cells: walk_result.long_jump_cells,
             doors_opened,
             breakables_opened,
             pushables_opened,
@@ -759,6 +837,10 @@ mod tests {
         reachability_changelevel_entities_at_height, reachability_door_bsp,
     };
     use crate::{AssetSource, MemoryAssets};
+
+    /// See `a_gap_beyond_the_ordinary_jump_is_reached_only_with_assume_longjump`'s
+    /// own comment for why this margin exists.
+    const GAP_MARGIN: f32 = 20.0;
 
     fn game() -> Game {
         let bytes = reachability_door_bsp(&reachability_changelevel_entities("ohlreachnext"));
@@ -954,6 +1036,68 @@ mod tests {
         assert!(
             !wide_report.rounds[0].changelevel.reachable,
             "a gap wider than the jump range should not be crossed"
+        );
+    }
+
+    /// A gap wider than the ordinary running-jump range but narrower than
+    /// the long-jump range (both read live from
+    /// [`ohl_physics::MoveConfig`], never restated) is reached only when
+    /// [`ReachabilityConfig::assume_longjump`] is set: without it, neither
+    /// the plain step nor the ordinary jump edge crosses it; with it, the
+    /// long-jump edge does, and the landing is counted in
+    /// [`RoundReport::long_jump_cells`].
+    #[test]
+    fn a_gap_beyond_the_ordinary_jump_is_reached_only_with_assume_longjump() {
+        use crate::test_support::{REACH_GAP_MAP, reachability_gap_bsp, reachability_gap_entities};
+
+        let config = ohl_physics::MoveConfig::default();
+        let ordinary_jump = JumpBounds::from_move_config(&config);
+        let long_jump = JumpBounds::from_long_jump_config(&config);
+        assert!(
+            long_jump.horizontal > ordinary_jump.horizontal,
+            "this fixture assumes a long jump reaches further than an ordinary jump"
+        );
+        // The walk's real crossable width for either jump kind sits
+        // noticeably above each kind's own raw `horizontal` bound alone
+        // (once a jump lands anywhere on solid far-side ground, the walk
+        // continues toward the trigger by ordinary plain steps from
+        // there) — the same reason the existing ordinary-jump regression
+        // test above uses a flat +/-64 unit margin rather than the raw
+        // bound directly. This offset was found empirically against this
+        // exact fixture family and is pinned here as a regression margin,
+        // not restated as a claimed motion-model fact.
+        let width = long_jump.horizontal + GAP_MARGIN;
+
+        let entities = reachability_gap_entities("ohlreachnext");
+        let bytes = reachability_gap_bsp(width, &entities);
+
+        let mut without_assets = MemoryAssets::new();
+        without_assets.insert(&format!("maps/{REACH_GAP_MAP}.bsp"), bytes.clone());
+        let mut without_game = Game::load(&without_assets as &dyn AssetSource, REACH_GAP_MAP)
+            .expect("the fixture loads");
+        let without_report =
+            compute_reachability_report(&mut without_game, &ReachabilityConfig::default());
+        assert!(
+            !without_report.rounds[0].changelevel.reachable,
+            "beyond the ordinary jump range, the gap should not be crossed without assume_longjump"
+        );
+
+        let mut with_assets = MemoryAssets::new();
+        with_assets.insert(&format!("maps/{REACH_GAP_MAP}.bsp"), bytes);
+        let mut with_game =
+            Game::load(&with_assets as &dyn AssetSource, REACH_GAP_MAP).expect("the fixture loads");
+        let with_config = ReachabilityConfig {
+            assume_longjump: true,
+            ..ReachabilityConfig::default()
+        };
+        let with_report = compute_reachability_report(&mut with_game, &with_config);
+        assert!(
+            with_report.rounds[0].changelevel.reachable,
+            "with assume_longjump, the long-jump edge should cross the gap"
+        );
+        assert!(
+            with_report.rounds[0].long_jump_cells > 0,
+            "the landing should be counted as reached only by the long-jump edge"
         );
     }
 

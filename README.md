@@ -225,6 +225,23 @@ cargo run --release -p ohl-app --features dev-tools -- \
   --reachability-assume-armed
 ```
 
+`--reachability-assume-longjump` adds a third, longer-reaching edge
+attempt (tried only when both the plain step and the ordinary running-jump
+edge fail): a long jump (`item_longjump`), bounded the same way the
+ordinary jump is — read live from this build's own
+`ohl_physics::MoveConfig::long_jump_forward_speed`/`long_jump_up_speed`/
+`gravity`, the same constants the engine's real long-jump impulse uses,
+never a restated literal. A cell reached only this way is counted
+separately in the printed report. Like `--reachability-assume-armed`, this
+never checks or grants actual ownership of the long jump module — a cold
+map load owns none — it only assumes one for the walk's own triage:
+
+```sh
+cargo run --release -p ohl-app --features dev-tools -- \
+  --payload-root /path/to/payload --map c4a1 --reachability-report \
+  --reachability-assume-longjump
+```
+
 Also `dev-tools` only: `--start-inventory LIST` gives the player named
 weapons and ammo right after the map loads, so a single-map probe or
 scripted scenario can model the inventory a real campaign run would have

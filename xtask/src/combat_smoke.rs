@@ -745,6 +745,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &TELEPORTED_PRESENT,
             absent: &TELEPORTED_ABSENT,
             follow_level_change: false,
+            start_inventory: &[],
         },
         Scenario {
             name: "leave the hazard course start",
@@ -753,6 +754,7 @@ fn scenarios() -> [Scenario; 37] {
             present: &WALK_PRESENT_TOUCH_TRIGGER,
             absent: &BASE_ABSENT,
             follow_level_change: false,
+            start_inventory: &[],
         },
         Scenario {
             name: "walk forward in the training start",
