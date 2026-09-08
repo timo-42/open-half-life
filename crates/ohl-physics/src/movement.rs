@@ -16,7 +16,7 @@
 //! one still has to be verified against the real game before this crate can
 //! claim behavioural parity.
 
-use glam::Vec3;
+use glam::{Quat, Vec3};
 
 use crate::hull::{BrushId, CollisionModel, DIST_EPSILON, Hull, Trace, contents};
 
@@ -1452,6 +1452,50 @@ pub fn rotational_ride_velocity(pivot: Vec3, angular_velocity: Vec3, point: Vec3
     } else {
         Vec3::ZERO
     }
+}
+
+/// Where the point `point`, rigidly attached to a body rotating at
+/// `angular_velocity` (the same radians-per-second axis-angle vector
+/// [`rotational_ride_velocity`] takes) about `pivot`, ends up after one
+/// `dt`-long step: `point` rotated about `pivot` through
+/// `|angular_velocity| * dt`.
+///
+/// This is [`rotational_ride_velocity`]'s finite-step companion, and it
+/// exists because the velocity form alone cannot carry a rider through a
+/// *large* single-step turn. `omega x r` is the tangent to the rider's
+/// circle, so integrating it over one step walks them along that tangent
+/// rather than around the arc: for the small per-step angles a
+/// `func_rotating` disc or a swinging `func_door_rotating` turns through,
+/// the two agree to within a rounding error, but a brush whose heading is
+/// defined by which straight segment of a path it is currently on changes
+/// heading by the whole angle between two segments in a single step, and
+/// there the tangent both overshoots the arc and points the rider straight
+/// through the wall the body just swept over them. Rotating the rider by
+/// the same angle the body turned through, about the same pivot, keeps
+/// them exactly where they were sitting on it — which is what "riding a
+/// mover" means (`docs/FORMAT_SOURCES.md`, "Riding movers").
+///
+/// Like [`rotational_ride_velocity`] this is elementary rigid-body
+/// kinematics rather than a reimplementation of anything, and it is the
+/// caller's job to check the destination is not solid before moving a
+/// player there: this function is pure arithmetic and knows nothing about
+/// the collision model. A non-finite input, a non-positive `dt`, or a zero
+/// rate returns `point` unchanged.
+#[must_use]
+pub fn rotational_ride_step(pivot: Vec3, angular_velocity: Vec3, dt: f32, point: Vec3) -> Vec3 {
+    if !pivot.is_finite() || !angular_velocity.is_finite() || !point.is_finite() {
+        return point;
+    }
+    if !dt.is_finite() || dt <= 0.0 {
+        return point;
+    }
+    let rate = angular_velocity.length();
+    let axis = angular_velocity.normalize_or_zero();
+    if rate == 0.0 || axis == Vec3::ZERO {
+        return point;
+    }
+    let rotated = Quat::from_axis_angle(axis, rate * dt) * (point - pivot) + pivot;
+    if rotated.is_finite() { rotated } else { point }
 }
 
 /// Traces the player's current hull straight down by `distance`, the query

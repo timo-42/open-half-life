@@ -299,3 +299,126 @@ fn a_path_node_fires_its_message_as_the_train_passes() {
         "passing a node with a fire-on-pass message must fire it"
     );
 }
+
+/// The handover leaves the collision model already re-baselined against
+/// wherever it just put the carried train, so the first step after a level
+/// change reads one step's worth of motion rather than the whole handover
+/// displacement.
+///
+/// `Game::apply_transition` calls `Level::sync_brush_collision(0.0)` for
+/// exactly this: a destination map attaches its brushes at their
+/// *spawn-time* placement (its own train sits on its own first node),
+/// which for a carried train is thousands of units from where the carry
+/// just put it. Without the re-baseline the next step's own sync divides
+/// that whole gap by one tick and synthesises a brush velocity in the tens
+/// of thousands of units per second — enough to fling any rider standing
+/// on it, or to shove aside anyone standing in the destination train's
+/// hull. Nothing else in the suite noticed the line going missing, which
+/// is what this pins.
+#[test]
+fn the_handover_re_baselines_the_collision_model_before_the_first_step() {
+    let assets = assets("ohl_node_d");
+    let (mut game, _) = ride_then_change(&assets);
+
+    let (entity, brush) = train_brush(&game);
+    let placed = train_placed_origin(&game, entity);
+    let hull = game
+        .collision()
+        .expect("the destination map has collision")
+        .brush_origin(brush);
+    assert!(
+        (hull - placed).length() < 1.0,
+        "the carried train's hull was left at {hull:?} while the train itself is at {placed:?}"
+    );
+
+    // And the consequence the re-baseline exists for: one step of ride,
+    // not one step containing the whole handover.
+    let before = game
+        .collision()
+        .expect("the destination map has collision")
+        .brush_origin(brush);
+    tick_n(&mut game, 1);
+    let after = game
+        .collision()
+        .expect("the destination map has collision")
+        .brush_origin(brush);
+    let speed = (after - before).length() / TICK_SECONDS;
+    assert!(
+        speed <= SPEED * 2.0,
+        "the first step after the handover moved the train's hull at {speed} units/second, \
+         far past its own {SPEED}-unit/second ride"
+    );
+}
+
+/// A carried node name the destination map does not declare *at all*
+/// leaves its own train exactly where that map spawned it, rather than
+/// guessing a placement.
+///
+/// `transition::restore_track_train` has two ways to seat a carried train:
+/// find the node in the chain the destination's train already built, or
+/// rebuild a chain from the carried node's name. This pins the third case
+/// — neither works — which is the one that must not move anything.
+#[test]
+fn a_carried_node_the_destination_does_not_declare_leaves_its_train_alone() {
+    let source = common(NEXT_MAP)
+        + &train("ohl_node_a", SPEED)
+        + &node("ohl_node_a", NODE_A, Some("ohl_node_b"), None)
+        + &node("ohl_node_b", NODE_B, Some("ohl_node_c"), None)
+        + &node("ohl_node_c", NODE_C, None, None);
+    // The destination shares the train's `globalname` (so the carry is
+    // applied to it) but declares an entirely separate track whose nodes
+    // are named nothing the source map ever rode.
+    let destination = common(SYNTHETIC_MAP)
+        + &train("ohl_far_node_1", SPEED)
+        + &node("ohl_far_node_1", NODE_D, Some("ohl_far_node_2"), None)
+        + &node("ohl_far_node_2", [NODE_D[0] + 400.0, 0.0, 0.0], None, None);
+
+    let mut assets = MemoryAssets::new();
+    assets.insert(
+        &format!("maps/{SYNTHETIC_MAP}.bsp"),
+        synthetic_map_bsp_with_entities(&source),
+    );
+    assets.insert(
+        &format!("maps/{NEXT_MAP}.bsp"),
+        synthetic_map_bsp_with_entities(&destination),
+    );
+
+    let mut game = Game::load(&assets, SYNTHETIC_MAP).expect("the source map loads");
+    tick_n(&mut game, 600);
+    game.change_level(&assets, NEXT_MAP, LANDMARK)
+        .expect("the destination map loads");
+
+    let arrived = train_position(&game);
+    assert!(
+        (arrived.x - NODE_D[0]).abs() < 1.0,
+        "the destination train should have stayed on its own first node at x = {}, not {arrived:?}",
+        NODE_D[0]
+    );
+}
+
+/// The one attached track-train brush of the level the game is on.
+fn train_brush(game: &Game) -> (ohl_game::hecs::Entity, ohl_physics::BrushId) {
+    game.brush_collision()
+        .iter()
+        .copied()
+        .find(|(entity, _)| {
+            game.registry()
+                .world
+                .get::<&TrackTrainState>(*entity)
+                .is_ok()
+        })
+        .expect("the map declares exactly one attached track train")
+}
+
+/// Where that train's compiled geometry currently sits: the same `origin`
+/// keyvalue plus mover offset `Level::sync_brush_collision` hands
+/// `ohl_physics::CollisionModel::set_brush_pose`.
+fn train_placed_origin(game: &Game, entity: ohl_game::hecs::Entity) -> glam::Vec3 {
+    let registry = game.registry();
+    let authored = registry
+        .world
+        .get::<&ohl_game::registry::Transform>(entity)
+        .expect("the train has a transform")
+        .origin;
+    authored + ohl_game::pose::brush_offset(registry, entity)
+}
