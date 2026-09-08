@@ -31,9 +31,17 @@ pub enum EngineError {
     SaveUnreadable,
 }
 
-impl fmt::Display for EngineError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let message = match self {
+impl EngineError {
+    /// This variant's fixed, sanitized reason — safe to surface anywhere
+    /// (a log line, a CLI's own error output, a caller's `&'static str`
+    /// result) without allocating, unlike going through [`fmt::Display`].
+    /// Callers that used to collapse every [`EngineError`] into one generic
+    /// message (`ohl-app`'s `render_capture`, before it started calling
+    /// this) should prefer this so the *specific* step that failed is
+    /// reported instead.
+    #[must_use]
+    pub const fn message(&self) -> &'static str {
+        match self {
             Self::MapNotFound => "the requested map is not present in the payload",
             Self::MapUnreadable => "the map is not a BSP v30 map this build can read",
             Self::EntityLumpUnreadable => "the map's entities lump could not be read",
@@ -41,8 +49,13 @@ impl fmt::Display for EngineError {
             Self::Renderer => "the renderer could not be created",
             Self::SaveUnwritable => "the save file could not be written",
             Self::SaveUnreadable => "the save file could not be read",
-        };
-        f.write_str(message)
+        }
+    }
+}
+
+impl fmt::Display for EngineError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.message())
     }
 }
 

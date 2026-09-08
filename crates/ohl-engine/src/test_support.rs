@@ -729,14 +729,32 @@ pub const MOVER_SPEED: f32 = 50.0;
 /// on top of its brush.
 pub const MOVER_PLAYER_START_Z: f32 = MOVER_TOP_Z + 36.0;
 
-/// A void world (submodel `*0`, no collision at all) with a single solid
-/// box (submodel `*1`) resting at the world origin, referenced by a
-/// `func_train` riding a two-node `path_corner` chain along `+X`. An
-/// `info_player_start` sits on top of the train's brush at its resting
-/// position. The same shape `ohl-engine`'s own `tests/mover_riders.rs`
-/// tests directly; published here so a headless-capture CLI test can ride
-/// it too. Every keyvalue and coordinate here is authored for this
-/// project; nothing is derived from any payload.
+/// Half-extent of the worldspawn model's own visible floor face, on `X`
+/// and `Y` — a project-authored quad, far enough below the train's ride
+/// (see [`MOVER_FLOOR_Z`]) that it never overlaps the train's brush or any
+/// capture viewpoint riding it. Matches [`synthetic_map_bsp_with_entities`]'s
+/// own floor quad's extent, which is already sized to fit comfortably
+/// within the 900 lighting samples both fixtures push per face at the
+/// documented 16-unit luxel spacing.
+const MOVER_FLOOR_HALF: f32 = 192.0;
+
+/// The `Z` the worldspawn model's own visible floor face sits at, well
+/// below [`MOVER_BOTTOM_Z`] so it can never be mistaken for something the
+/// player or the train's own brush could touch.
+const MOVER_FLOOR_Z: f32 = -512.0;
+
+/// A void world (submodel `*0`, no collision at all — its only visible
+/// geometry is a single flat floor face far below the ride, carrying no
+/// collision of its own, added purely so a renderer has *something* of
+/// the worldspawn model to upload; see this function's own body) with a
+/// single solid box (submodel `*1`) resting at the world origin,
+/// referenced by a `func_train` riding a two-node `path_corner` chain
+/// along `+X`. An `info_player_start` sits on top of the train's brush at
+/// its resting position. The same shape `ohl-engine`'s own
+/// `tests/mover_riders.rs` tests directly; published here so a
+/// headless-capture CLI test can ride it too. Every keyvalue and
+/// coordinate here is authored for this project; nothing is derived from
+/// any payload.
 #[must_use]
 pub fn mover_train_bsp() -> Vec<u8> {
     let mut b = Bsp30Builder::new();
@@ -757,8 +775,55 @@ pub fn mover_train_bsp() -> Vec<u8> {
          \"origin\" \"{segment} 0 0\"\n}}\n"
     ));
 
-    // Submodel 0: the worldspawn model, with no solids of its own — the
-    // train's own brush is the only thing the player can stand on.
+    // The renderer legitimately refuses to upload a worldspawn model with
+    // zero faces (`ohl_render::RenderError::WorldTooLarge`, also used for
+    // any other degenerate/empty model) — every real published map has
+    // visible geometry, so an empty world is treated as malformed input,
+    // not a valid level. This fixture was authored for pure physics tests
+    // (`ohl-engine`'s own `tests/mover_riders.rs`, `zero_speed_path_node.rs`)
+    // and originally had none; a single flat floor face, textured and lit
+    // like every other synthetic fixture's floor, satisfies the renderer
+    // without adding any collision (the train's own brush stays the only
+    // thing the player can stand on).
+    b.push_plane([0.0, 0.0, 1.0], MOVER_FLOOR_Z, 2);
+    let floor_texture = b.add_embedded_texture("ohlmoverfloor", 64, 64, 200);
+    let floor_corners = [
+        [-MOVER_FLOOR_HALF, -MOVER_FLOOR_HALF, MOVER_FLOOR_Z],
+        [MOVER_FLOOR_HALF, -MOVER_FLOOR_HALF, MOVER_FLOOR_Z],
+        [MOVER_FLOOR_HALF, MOVER_FLOOR_HALF, MOVER_FLOOR_Z],
+        [-MOVER_FLOOR_HALF, MOVER_FLOOR_HALF, MOVER_FLOOR_Z],
+    ];
+    for corner in floor_corners {
+        b.push_vertex(corner);
+    }
+    for corner in 0..4u16 {
+        let next = (corner + 1) % 4;
+        b.push_edge(corner, next);
+    }
+    // Surfedge values are direct, 0-based edge indices (magnitude only;
+    // the sign picks which of an edge's two vertices comes first) — no
+    // dummy edge 0 is reserved here, unlike `synthetic_map_bsp_with_entities`,
+    // since this is the only face this fixture ever builds.
+    for step in 0..4 {
+        b.push_surfedge(step);
+    }
+    b.push_texinfo(
+        [1.0, 0.0, 0.0],
+        0.0,
+        [0.0, 1.0, 0.0],
+        0.0,
+        u32::try_from(floor_texture).expect("one texture slot fits"),
+        0,
+    );
+    let lighting_offset = i32::try_from(b.lighting.len()).expect("fits");
+    for _ in 0..900 {
+        b.push_lighting_rgb(200, 200, 200);
+    }
+    b.push_face(0, 0, 0, 4, 0, [0, 0xFF, 0xFF, 0xFF], lighting_offset);
+
+    // Submodel 0: the worldspawn model — one visible floor face, far below
+    // the ride, and no solids of its own: the train's own brush is the
+    // only thing the player can stand on.
     let world_heads = b.push_collision_hulls(&[]);
     b.push_model(
         [-4096.0, -4096.0, -4096.0],
@@ -767,7 +832,7 @@ pub fn mover_train_bsp() -> Vec<u8> {
         world_heads,
         2,
         0,
-        0,
+        1,
     );
     // Submodel 1: the train's own brush, resting at its first node.
     let train_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(
