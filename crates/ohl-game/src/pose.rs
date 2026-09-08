@@ -194,11 +194,12 @@ pub fn platform_offset(registry: &Registry, entity: Entity) -> Vec3 {
 /// flipping for most of the rest. The `origin` keyvalue separated the same
 /// set with no misclassifications.
 ///
-/// TODO(black-box): the rule above makes the placement self-consistent for
-/// the shape a world-baked map actually authors — the first node inside
-/// the car it drew, which is the only way such a map is on its own track —
-/// and with it [`brush_center`] agrees with the renderer and the collision
-/// model at spawn and stays with the car as it moves. It does *not* fix
+/// TODO(black-box): for a world-baked train whose first node happens to
+/// sit inside the car it drew, the rule above makes the placement
+/// self-consistent, and with it [`brush_center`] agrees with the renderer
+/// and the collision model at spawn and stays with the car as it moves.
+/// Measured across the 93 cited maps that is well under half of the
+/// world-baked trains, not the general case. It does *not* fix
 /// the pathological world-baked shape whose first node sits nowhere near
 /// its compiled geometry: for that one `brush_center` still adds the path
 /// displacement on top of an unrelated compiled midpoint. See
@@ -518,9 +519,10 @@ mod tests {
     /// drifts away from the train as soon as it leaves its spawn node.
     ///
     /// Note what this fixture deliberately is *not*: a world-baked train
-    /// whose first node sits inside the car it drew, which is how a real
-    /// map without an origin brush authors one and the shape
-    /// `track_train_transform`'s world-baked rule is measured against. For
+    /// whose first node sits inside the car it drew, the minority shape
+    /// (well under half of the 93 cited maps' world-baked trains, per
+    /// `docs/FORMAT_SOURCES.md` item 31) against which
+    /// `track_train_transform`'s world-baked rule stays self-consistent. For
     /// that shape the displacement is zero at spawn and `brush_center`
     /// agrees with the car. This fixture's node is 500 units from its
     /// compiled geometry, so it keeps pinning the documented remaining gap
