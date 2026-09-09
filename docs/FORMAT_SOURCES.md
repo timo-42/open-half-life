@@ -1822,7 +1822,12 @@ at the end of this section.
   **Closed (M9.18).** The paragraph above is struck rather than deleted,
   per this doc's append-only convention. Two things closed it.
 
-  *Which heading.* The open question was never which yaw a
+  *Which heading.* **Superseded (M9.27 below): the conclusion in this
+  paragraph is wrong, and the comparison it rests on cannot decide the
+  question.** Kept unstruck only because striking a paragraph this long
+  would make it unreadable; treat every sentence of it as historical, and
+  read "Which way the car itself was compiled (M9.27)" below for what
+  replaced it. The open question was never which yaw a
   `func_tracktrain` is *drawn* at — `TrackTrainState::yaw_degrees` has
   always returned `atan2(direction.y, direction.x)` for the segment the
   train is on, and the renderer has always applied it — but which of two
@@ -1839,7 +1844,11 @@ at the end of this section.
   plus-half-a-turn convention is their mirror image, at both timestamps,
   with a pixel diff confirming a large structural difference rather than
   noise. `yaw_degrees`'s existing sign and offset are therefore used
-  unchanged. This is an empirical finding about behaviour, not a citation:
+  unchanged. ~~(Superseded by M9.27: they are not. The comparison above
+  turns the capture camera along with the car, so both builds render the
+  same kind of view of an interior from one end of it and the mirror
+  between them is what that predicts either way.)~~ This is an empirical
+  finding about behaviour, not a citation:
   no engine or SDK source was consulted, and no payload-derived name, path
   or coordinate is recorded here or anywhere in the change.
 
@@ -1979,6 +1988,67 @@ at the end of this section.
   strictly as the last fallback: any chain that defines a heading at all
   still wins, so this changes nothing for a ride that continues.
   Project-determined, `TODO(black-box)`.
+
+  *Which way the car itself was compiled (M9.27).* **Reopens and settles
+  the "Which heading" finding under M9.18 above** (struck-through text is
+  kept, per this doc's append-only convention). That round asked which of
+  two readings of the segment yaw the published game's compiled car uses,
+  and answered it by comparing this project's own tram-interior renders,
+  built once with each convention, against public screenshots. The
+  comparison had a confound that round did not account for: a passenger is
+  carried by the car's *pose*, so turning the car by half a turn moves the
+  capture camera to the mirrored seat **and** turns it to face the
+  mirrored way. Both builds therefore render "an interior seen from one
+  end of the car", and choosing between them against a promotional
+  screenshot whose vantage is not the map's own spawn point is a judgement
+  call, not a measurement.
+
+  Three measurements taken from the maps' own placed poses and keyvalues —
+  no render, no screenshot, no judgement — all say the compiled car points
+  the *other* way down its track, so its pose is the segment heading plus
+  half a turn:
+
+  1. A map that parks the ride at a station declares the car's sliding
+     door leaf as a separate brush entity, placed by its own path nodes.
+     That leaf's compiled box is a thin panel lying flush inside one long
+     wall of the car's own compiled box. With the half turn, the leaf lands
+     in the car's own compiled doorway to within a few units on every
+     axis; without it, the panel is placed through the opposite, solid
+     wall. (This does not restate the leaf's own `angles` rule: the panel's
+     compiled box is *thinner across the wall than along it*, so only one
+     of the two car poses gives it a wall to lie flush in at all.)
+  2. That same map's `info_player_start` — where its own author stands a
+     cold-loaded player — falls inside the car directly in front of that
+     doorway, facing it, only with the half turn. Without it, it falls at
+     the car's far, doorless end, facing away.
+  3. The campaign's first map stands its player start inside the same
+     compiled car. With the half turn, that start is at the same doorway
+     end; without it, once again at the far end. The same map's ride also
+     starts with the car posed exactly *unrotated* with the half turn
+     applied, which is what an author building a car in place at the head
+     of its own track produces.
+
+  Recorded as `ohl_game::track_train::COMPILED_FACING_OFFSET_DEGREES` and
+  applied in `TrackTrainState::yaw_degrees`, which now reports the *pose*;
+  the direction of travel is `travel_heading_degrees`, unchanged. Still
+  **project-determined**, `TODO(black-box)`: no public page states which
+  way a track train's brushwork is compiled, and no engine or SDK source
+  was consulted. A heading handed across a level change (M9.25 above) is
+  already a pose and is carried unchanged, so exactly one half turn is
+  ever applied.
+
+  The visible consequence: the passenger who arrives at that station was
+  sealed inside the car, because the doorway the map opens for them was
+  posed against the solid wall on the far side. With the half turn they
+  walk out of it, which is what let `xtask/chain-routes/c0a0-hop5.txt` be
+  authored at all — and the honest measurement of that is the route
+  itself, `cargo xtask chain-walk` at distinct depth 7 against 6 with the
+  half turn removed. The reachability walk is *not* that measurement: it
+  still reports the same 75 cells from the arrival point either way,
+  because its floor-support edge will not cross the sill between the car
+  and the platform that a real player steps over, and it still lists the
+  car as a frontier from out on the platform (where it does reach over
+  seven thousand cells) because the car is a wall on every other side.
 
 ### Black-box placeholders
 

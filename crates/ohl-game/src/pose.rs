@@ -516,13 +516,27 @@ pub fn mover_rotation(registry: &Registry, entity: Entity) -> (Vec3, f32) {
 /// against the geometry the track runs through (`docs/FORMAT_SOURCES.md`,
 /// "Riding movers").
 ///
-/// The sign and offset of that yaw are `TrackTrainState::yaw_degrees`'s,
-/// unchanged and with no added half turn: which of the two physically
-/// plausible conventions the published game uses is a project-determined
-/// finding from a black-box comparison of this project's own renders
-/// against public screenshots, not a fact any public page states. A plain
-/// `func_train` reports no yaw at all (it keeps its authored `angles`),
-/// because `yaw_degrees` returns `None` unless the entity is the
+/// That yaw is the car's *pose*, not its direction of travel: the two
+/// differ by [`crate::track_train::COMPILED_FACING_OFFSET_DEGREES`], the
+/// half turn between the way a track train's brushwork was compiled and
+/// the way it drives. `TrackTrainState::yaw_degrees` applies it, once, and
+/// this function reports what that returns, unchanged — do not add or
+/// remove a half turn here, or the renderer, the collision hull,
+/// [`brush_center`] and the rider carry stop agreeing with each other and
+/// with the cross-level handover.
+///
+/// Which way that brushwork faces is a project-determined finding, not a
+/// fact any public page states: it rests on three measurements taken from
+/// the maps' own placed poses and keyvalues (a car's separately-placed
+/// door leaf lands in the car's own compiled doorway only with the half
+/// turn, and two maps' `info_player_start`s land at that doorway only with
+/// it). See that constant's doc comment for the measurements themselves,
+/// and `docs/FORMAT_SOURCES.md` ("Riding movers") for the record — including
+/// why the earlier render-against-public-screenshots comparison that once
+/// justified this paragraph could not decide the question.
+///
+/// A plain `func_train` reports no yaw at all (it keeps its authored
+/// `angles`), because `yaw_degrees` returns `None` unless the entity is the
 /// turns-to-face kind.
 #[must_use]
 pub fn brush_pose_rotation(registry: &Registry, entity: Entity) -> (Vec3, f32, Vec3) {
@@ -744,9 +758,16 @@ mod tests {
         // Correct placement would be the train's own path position,
         // `(50, 0, 0)` — halfway from `node1` to `node2` at `speed 100`.
         // The documented-wrong sum instead adds that onto the unrelated
-        // compiled centre `(500, 300, 10)`.
+        // compiled centre `(500, 300, 10)`, first turned about the pivot
+        // this world-baked shape stands in with (its first node, the
+        // world origin here) by the car's own pose: the chain runs along
+        // `+X`, so the car travels at 0 degrees and is posed a
+        // `crate::track_train::COMPILED_FACING_OFFSET_DEGREES` half turn
+        // from that, taking `(500, 300)` to `(-500, -300)`. Turning an
+        // unrelated compiled midpoint is exactly as wrong as translating
+        // it was, and just as deliberately pinned here.
         assert!(
-            (center - Vec3::new(550.0, 300.0, 10.0)).length() < 1e-2,
+            (center - Vec3::new(-450.0, -300.0, 10.0)).length() < 1e-2,
             "expected the documented-wrong sum, got {center:?}"
         );
     }
@@ -829,8 +850,9 @@ mod tests {
         let entity = registry.find("car")[0];
         assert_eq!(
             super::track_train_transform(&registry, entity).1,
-            Some(0.0),
-            "the chain runs along +X, so the car faces 0 degrees"
+            Some(180.0),
+            "the chain runs along +X, so the car travels at 0 degrees and is posed a \
+             `ohl_game::track_train::COMPILED_FACING_OFFSET_DEGREES` half turn from that"
         );
     }
 }

@@ -1,0 +1,46 @@
+# M9.27 chain-walk route 5: from where the fifth level change out of the
+# campaign's start map lands, to the sixth.
+#
+# Project-authored; no bytes here come from any game installation (see
+# docs/CLEAN_ROOM.md). Run as the sixth --chain-script route of
+# `cargo xtask chain-walk`, handed the arrival point `c0a0-hop4.txt`
+# leaves the player at.
+#
+# A line's leading number is a count of *ticks*, each one CAPTURE_STEP
+# (1/60 s) of simulated time — not seconds.
+#
+# Route, in words only (no entity name, path or coordinate from any
+# payload). The player arrives aboard the opening ride, which is parked
+# for good at this map's own end of the track:
+#
+#   1. Wait out the map's own arrival sequence (about half a minute). It
+#      runs itself: an announcement, the platform lights, and finally the
+#      car's sliding door, which is what opens the way out. Nothing here
+#      presses a key for any of it.
+#   2. Step aside by a hand's width so the standing hull clears the door
+#      frame, then walk out of the car onto the platform.
+#   3. Follow the corridor leading away from the platform: a first turn
+#      away from the track, then a second one back along the corridor's
+#      own direction, to the far door at its end.
+#   4. Wait there. That door is not opened by pressing use from the
+#      corridor side; the map's own guard, who follows the player down the
+#      corridor, is what gets it open. The `use` press and the second wait
+#      are slack, so the route still works if it opens a moment earlier.
+#   5. Walk through, turn back toward the level boundary and cross it.
+#
+# `run_chained` (crates/ohl-app/src/game_run.rs) ends a route at the level
+# change it reaches, so any ticks left over here are never run.
+
+1800 wait
+2 right
+120 forward
+20 look 0 -25
+300 forward
+20 look 0 42
+300 forward
+600 wait
+1 use
+300 wait
+200 forward
+20 look 0 -134
+120 forward

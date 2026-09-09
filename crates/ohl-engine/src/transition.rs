@@ -749,10 +749,17 @@ fn restore_track_train(registry: &mut Registry, entity: Entity, carry: &TrackTra
 
 /// The yaw, in degrees, `ohl_game::pose::brush_pose_rotation` poses
 /// `entity`'s collision hull and drawn geometry at — a `func_tracktrain`'s
-/// segment heading, and `0.0` for any mover that carries no yaw of its own.
-/// The one number a seat has to be expressed against so that a destination
-/// map's copy of a ride, pointing a different way, still seats a passenger
-/// in the same part of the car.
+/// *pose*, which is its segment heading turned by
+/// `ohl_game::track_train::COMPILED_FACING_OFFSET_DEGREES`, and `0.0` for
+/// any mover that carries no yaw of its own.
+///
+/// The *pose* is the one number a seat has to be expressed against, so that
+/// a destination map's copy of a ride, pointing a different way, still
+/// seats a passenger in the same part of the car: it is the frame the car's
+/// geometry — and so its floor — is actually drawn and collided in.
+/// Reading the bare direction of travel here
+/// (`TrackTrainState::travel_heading_degrees`) instead would seat a
+/// passenger half a car-length out.
 fn mover_yaw_degrees(registry: &Registry, entity: Entity) -> f32 {
     ohl_game::pose::track_train_transform(registry, entity)
         .1

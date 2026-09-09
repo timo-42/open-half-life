@@ -1772,13 +1772,16 @@ mod tests {
         }
 
         // The sampled run really did cross the corner: both the first
-        // segment's heading and the second's were drawn.
+        // segment's pose and the second's were drawn. A car is posed a
+        // `ohl_game::track_train::COMPILED_FACING_OFFSET_DEGREES` half
+        // turn from the direction it travels, so the `+X` segment draws at
+        // 180 and the `+Y` one at -90.
         assert!(
-            seen_yaws.iter().any(|yaw| yaw.abs() < 1e-3),
+            seen_yaws.iter().any(|yaw| (yaw - 180.0).abs() < 1e-3),
             "the run never sampled the first (+X) segment: {seen_yaws:?}"
         );
         assert!(
-            seen_yaws.iter().any(|yaw| (yaw - 90.0).abs() < 1e-3),
+            seen_yaws.iter().any(|yaw| (yaw + 90.0).abs() < 1e-3),
             "the run never sampled the second (+Y) segment: {seen_yaws:?}"
         );
     }
