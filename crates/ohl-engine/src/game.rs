@@ -1250,6 +1250,14 @@ impl Game {
             .as_ref()
             .is_some_and(|worldspawn| worldspawn.newunit);
         let placement = transition.apply(&mut next);
+        // `transition.apply` -> `crate::transition::materialise_carried`
+        // just appended whatever it carried past `next.map_defs` (the
+        // field never moves once a level is built); give exactly that
+        // range the studio-model load/attach pass `Level::load_with_ramp`
+        // above already ran for the destination's own defs, or a carried
+        // monster stays simulated but invisible — see
+        // `Level::attach_studio_models`'s doc comment.
+        next.attach_studio_models(source, next.map_defs);
         // Re-baseline the collision model against whatever the transition
         // just moved (a carried `func_tracktrain` is placed where the
         // source map's copy was, thousands of units from where this map
@@ -1512,6 +1520,14 @@ impl Game {
         let mut level = Level::load_with_ramp(source, &save.header.map, config.light_ramp())?;
         if let Some(carried) = save.carried_entities.as_deref() {
             crate::save_state::restore_carried_entities(&mut level, carried);
+            // As `Self::apply_transition` does after a live level change:
+            // `restore_carried_entities` -> `materialise_carried` appended
+            // past `level.map_defs`, which the initial `load_with_ramp`
+            // above never saw. Without this a monster restored from a
+            // tag-36 save keeps its `Actor`/brain (`Self::from_level`'s own
+            // `attach_level` call, below, re-runs over the whole restored
+            // `defs`) but never gets a `StudioAnim` back.
+            level.attach_studio_models(source, level.map_defs);
         }
         let mut game = Self::from_level(level, source, config);
         game.restore(save);

@@ -1269,10 +1269,15 @@ impl TransitionState {
 /// of a level's build reads a def and writes onto the entity at its index
 /// (`ohl_ai::spawn::attach_monsters`, `crate::ai::AiState`'s
 /// `register_brains`/`collect_triggers`/`attach_scripts`/`attach_followers`,
-/// and the navigation graph). Without one a carried monster arrives as a
-/// husk: no brain, no `Actor`, no hull — and a destination map whose own
-/// `scripted_sequence`s name that monster waits for an actor that can never
-/// exist.
+/// the navigation graph, and — past `Systems::attach_level`, which runs
+/// once more over the whole, now-extended `Level::defs` every time —
+/// `Level::attach_studio_models`, called separately by each of this
+/// function's own callers once they are done appending, for the same
+/// reason: it too only ever sees a def once this function has pushed it).
+/// Without one a carried monster arrives as a husk: no brain, no `Actor`,
+/// no hull, no model — and a destination map whose own `scripted_sequence`s
+/// name that monster waits for an actor that can never exist, drawing
+/// nothing even once it does.
 ///
 /// Appends nothing, and returns `None`, unless the two vectors are still
 /// aligned, so this can never be what misaligns them.

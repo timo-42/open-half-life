@@ -5720,6 +5720,73 @@ boundary this route crosses fires normally. Recorded rather than guessed at.
 `cargo test --workspace`, policy, graph, combat-smoke 37/37, campaign-smoke
 93/93, `cargo xtask chain-walk` at depth 7.
 
+## M9.28 (Rust): the carried guard was simulated, but never drawn
+
+A follow-up probe of M9.26's own open question (whether the sixth map's
+scripted guard was simply out of a fixed capture frame) found a second,
+independent gap behind the first: at every checkpoint probed, across two
+different camera placements, the carried guard's script *was* running (its
+start/completion counts advanced, and its distance to its own move target
+shrank step over step) but the entity never carried a component the
+renderer's own studio-instance query requires. It was alive, scripted and
+walking, and nothing ever gave it a model to be drawn with.
+
+**Root cause.** `Level::load_with_ramp` loads the studio models a map's
+entities reference, and attaches the resulting component to each matching
+entity, in one pass — over the *destination* map's own defs, run once,
+before the level is even returned to its caller. A level change's own
+carried-entity materialisation (`crate::transition::materialise_carried`,
+M9.26) appends its defs strictly *after* that pass has already run and
+finished; a save's tag-36 restore does too. `Systems::attach_level` — the
+stage that gives a carried monster its brain, its `Actor` and its scripts —
+runs *after* both of those appends, over the whole, now-extended def list,
+which is why the carry's simulation side already worked. The studio-model
+pass had no second run to be part of.
+
+**Fix.** `Level::attach_studio_models` runs the same load/attach logic again,
+scoped to a range of defs, and reuses whatever the initial pass already
+loaded (by lower-cased asset path) rather than reloading a model a carried
+entity shares with something the destination already places. Both callers
+that append past a level's own defs now call it with exactly the range they
+just appended: `Game::apply_transition`, right after
+`TransitionState::apply` returns, and `Game::from_save_with`, right after
+tag 36's own `restore_carried_entities`. Both name that boundary with
+`Level::map_defs` — set once, at construction, to the map's own def count,
+and never moved by a materialisation — so the range is always exactly
+"whatever arrived with the player", nothing the destination declared itself
+and already covered.
+
+**Tests.** `carried_monster_scripts.rs`'s two carry tests (a live level
+change, and the same carry through a save/load round trip) now register the
+carried guard's own default studio model and assert it carries a
+model-drawing component, and counts as one of the level's drawable
+placements, in the destination — in addition to the script-completion
+assertions those tests already made. A mutation check (reverting just the
+two new call sites) confirmed both new assertions fail without this fix and
+pass with it.
+
+**A real timing consequence, on the chain walk.** With the fix applied,
+`cargo xtask chain-walk` initially regressed from distinct depth 7 back to
+6, re-entering the same "chain walk stopped" state M9.27 had already left
+behind. A local, uncommitted probe (reverted, same pattern this section's
+own tests and earlier `.plan/` reports used) traced it to
+`crate::ai::AiState::action_seconds`: with no `StudioAnim`, it always fell
+back to `SCRIPT_FALLBACK_ACTION_SECONDS`, a project-authored 1-second
+guess. With one, it now resolves the map's own named action sequence
+against the guard's real model and uses that sequence's real duration —
+which this fix newly makes possible, since resolving it needs a
+`StudioAnim` to read `anim.model` off of. The guard's door-opening chain
+genuinely takes longer, real-duration measured against real-duration, than
+the fallback ever approximated it as; `xtask/chain-routes/c0a0-hop5.txt`'s
+own wait (tuned against the fallback) no longer left enough margin.
+Widened from 600 ticks to 1800 (measured sufficient at 1500); see that
+file's own updated comment. Not a second bug — the studio-model fix is
+what made the *timing* fix possible to even measure.
+
+**Gates**: fmt, clippy (workspace/all-features and no-default),
+`cargo test --workspace`, policy, graph, combat-smoke 37/37, campaign-smoke
+93/93, `cargo xtask chain-walk` at depth 7.
+
 ## M9.29 — an in-engine route planner, and two routes it authored
 
 `--reachability-report` has answered "can the player get there" since M9.9.
