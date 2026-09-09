@@ -1475,13 +1475,18 @@ pub fn merge_collinear(path: &[PathPoint]) -> Vec<PlanAction> {
             continue;
         };
         let jump = matches!(to.kind, EdgeKind::Jump | EdgeKind::LongJump);
-        // A one-way fall ends the run it belongs to: the player is in the
-        // air when it finishes, and how long for is what `fall` records.
-        let fall = if matches!(to.kind, EdgeKind::Drop) {
-            (from.position.z - to.position.z).max(0.0)
-        } else {
-            0.0
-        };
+        // An edge that ends below where it started ends the run it
+        // belongs to: the player is in the air when its ticks run out, and
+        // how long for is what `fall` records.
+        //
+        // Which *edge* it was does not decide this — the drop is the
+        // common case, but a jump across a gap onto a lower ledge lands
+        // just as far below its take-off and is in the air just as long,
+        // and a run that walked on regardless would replay from a point
+        // the player has not reached yet. Anything the walk itself would
+        // absorb as an ordinary step down ([`STEP_UP`]) is not a fall.
+        let descent = from.position.z - to.position.z;
+        let fall = if descent > STEP_UP { descent } else { 0.0 };
         if let Some(PlanAction::Move {
             yaw: last_yaw,
             distance: last_distance,
@@ -1735,6 +1740,13 @@ mod tests {
     fn point(x: f32, y: f32, kind: EdgeKind) -> PathPoint {
         PathPoint {
             position: Vec3::new(x, y, 0.0),
+            kind,
+        }
+    }
+
+    fn point_at(x: f32, y: f32, z: f32, kind: EdgeKind) -> PathPoint {
+        PathPoint {
+            position: Vec3::new(x, y, z),
             kind,
         }
     }
@@ -2480,5 +2492,51 @@ mod tests {
             ladder_face_yaw(collision, landing).is_some(),
             "and the mount lands on the ladder, at {landing:?}"
         );
+    }
+
+    /// The wait a run ends with belongs to the *descent*, not to the edge
+    /// that made it. A jump across a gap onto a ledge well below its
+    /// take-off leaves the player in the air exactly as long as stepping
+    /// off would, and a script that ran the next line regardless would
+    /// replay it from a point the player has not reached yet.
+    #[test]
+    fn a_jump_that_lands_below_its_take_off_carries_the_landing_wait() {
+        let path = [
+            point_at(0.0, 0.0, 128.0, EdgeKind::Walk),
+            point_at(120.0, 0.0, 32.0, EdgeKind::Jump),
+            point_at(136.0, 0.0, 32.0, EdgeKind::Walk),
+        ];
+        let actions = merge_collinear(&path);
+        let PlanAction::Move { jump, fall, .. } = actions[0] else {
+            panic!("the jump is a move")
+        };
+        assert!(jump, "it is still the jump edge");
+        assert!(
+            (fall - 96.0).abs() < 1e-3,
+            "and the run waits out the whole descent, got {fall}"
+        );
+        let PlanAction::Move { fall, .. } = actions[1] else {
+            panic!("the run after it is a move")
+        };
+        assert!(
+            fall <= 0.0,
+            "the run along the lower ledge waits for nothing"
+        );
+    }
+
+    /// The other side of the same rule: a step down within the walk's own
+    /// step-up bound is not a fall, and must not have the player standing
+    /// about waiting for one.
+    #[test]
+    fn a_step_down_within_the_step_bound_is_not_a_fall() {
+        let path = [
+            point_at(0.0, 0.0, 16.0, EdgeKind::Walk),
+            point_at(16.0, 0.0, 0.0, EdgeKind::Walk),
+        ];
+        let actions = merge_collinear(&path);
+        let PlanAction::Move { fall, .. } = actions[0] else {
+            panic!("a move")
+        };
+        assert!(fall <= 0.0, "a step down is a step, got {fall}");
     }
 }

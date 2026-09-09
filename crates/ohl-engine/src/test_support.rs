@@ -3399,9 +3399,6 @@ pub fn plan_pit_bsp(next_map: &str) -> Vec<u8> {
 
 /// The builder behind [`plan_ladder_bsp`] and [`plan_pit_bsp`].
 fn plan_shaft_bsp(next_map: &str, with_ladder: bool, lethal: bool) -> Vec<u8> {
-    // Three point volumes, a radius apart along the shaft floor, so
-    // wherever a player who stepped off the shelf comes down they land in
-    // one of them: the pit is meant to be fatal, not fatal-if-aimed.
     use std::fmt::Write as _;
 
     let mut hurt = String::new();

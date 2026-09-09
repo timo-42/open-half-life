@@ -393,8 +393,8 @@ A run that ends by stepping off a ledge is not over when its ticks are:
 the plan measures that fall, and the script waits it out (`sqrt(2h/g)`
 under the map's own gravity, plus a margin) so the next chunk replays
 from the landing it was planned from. A `forward` run's tick count comes
-from replaying the engine's own ground move in one dimension: friction, acceleration toward top speed, and the
-coast the release leaves behind. Both halves matter, in opposite
+from replaying the engine's own ground move in one dimension: friction,
+acceleration toward top speed, and the coast the release leaves behind. Both halves matter, in opposite
 directions — "distance over top speed" undershoots because a player
 starting from rest never travels at top speed, and counting only the held
 ticks overshoots by the better part of a corridor's width, which is
