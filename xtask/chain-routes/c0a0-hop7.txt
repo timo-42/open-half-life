@@ -37,13 +37,9 @@
 6 look 0 -27.88
 1 use
 89 wait
-6 look 0 31.78
-30 forward
-30 wait
-6 look 0 -34.54
 1 use
 89 wait
-6 look 0 34.54
+6 look 0 31.78
 30 forward
 30 wait
 6 look 0 -107.76

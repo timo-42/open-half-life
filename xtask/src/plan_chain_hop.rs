@@ -79,6 +79,15 @@ struct Args {
 /// The fixed line the app logs once a planned route has been written.
 pub const WRITTEN_LINE: &str = "Route plan written.";
 
+/// The fixed line `crates/ohl-app/src/game_run.rs` logs (as its returned
+/// error) instead of planning at all, when the chain run first ran stopped
+/// short or re-entered a map: planning from that state would plan from
+/// wherever the interrupted route happened to leave the player, not the
+/// hop's own clean arrival point. No file is written when this line
+/// appears.
+pub const CHAIN_INCOMPLETE_LINE: &str =
+    "Route plan refused: the chain did not arrive cleanly, so nothing was planned.";
+
 /// The fixed prefixes the app's own planner report lines carry.
 const REPORT_PREFIXES: [(&str, &str); 5] = [
     ("Route plan cells: ", "Cells the search reached"),
@@ -96,6 +105,10 @@ const REPORT_PREFIXES: [(&str, &str); 5] = [
 pub struct PlanReport {
     /// Whether a route file was actually written.
     pub written: bool,
+    /// Whether the run refused to plan at all because the chain it ran
+    /// first stopped short or re-entered a map ([`CHAIN_INCOMPLETE_LINE`]):
+    /// a distinct failure from "the planner tried and found no route".
+    pub chain_incomplete: bool,
     /// Each report line's label and value, in the order above.
     pub values: Vec<(&'static str, String)>,
 }
@@ -119,6 +132,7 @@ pub fn parse_report(stderr: &str) -> PlanReport {
     }
     PlanReport {
         written: stderr.contains(WRITTEN_LINE),
+        chain_incomplete: stderr.contains(CHAIN_INCOMPLETE_LINE),
         values,
     }
 }
@@ -144,6 +158,8 @@ pub fn write_summary(start: &str, routes: usize, report: &PlanReport, elapsed: D
         "| Result | {} |",
         if report.written {
             "Pass (a validated route was written)"
+        } else if report.chain_incomplete {
+            "Fail (the chain did not arrive cleanly; nothing was planned)"
         } else {
             "Fail (no route replayed to the goal; nothing was written)"
         }
@@ -290,9 +306,33 @@ mod tests {
     fn a_run_that_wrote_nothing_is_a_failure() {
         let report = parse_report("[error] no route to the goal could be planned and validated\n");
         assert!(!report.written);
+        assert!(!report.chain_incomplete);
         assert!(report.values.is_empty());
         let summary = write_summary("c0a0", 5, &report, Duration::from_secs(3));
         assert!(summary.contains("Fail (no route replayed to the goal"));
         assert!(summary.contains("| Routes already in the chain | 5 |"));
+    }
+
+    /// A chain that stopped short or re-entered a map leaves the planner
+    /// refusing to plan at all (`crates/ohl-app/src/game_run.rs`'s
+    /// `PLAN_REFUSED_INCOMPLETE_CHAIN`), rather than planning from wherever
+    /// the interrupted route happened to leave the player. That refusal has
+    /// to be told apart from an ordinary "no route found" failure: it
+    /// blames the chain, not the map.
+    #[test]
+    fn a_chain_that_did_not_arrive_cleanly_refuses_to_plan() {
+        let stderr = format!("[error] {CHAIN_INCOMPLETE_LINE}\n");
+        let report = parse_report(&stderr);
+        assert!(!report.written, "nothing was written");
+        assert!(
+            report.chain_incomplete,
+            "the fixed refusal line was recognised"
+        );
+        assert!(report.values.is_empty());
+        let summary = write_summary("c0a0", 5, &report, Duration::from_secs(3));
+        assert!(
+            summary.contains("Fail (the chain did not arrive cleanly; nothing was planned)"),
+            "the refusal reads as distinct from an ordinary planning failure"
+        );
     }
 }

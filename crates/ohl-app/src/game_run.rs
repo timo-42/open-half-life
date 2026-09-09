@@ -394,7 +394,7 @@ recognise (expected a comma-separated list of weapon_*/ammo_* classnames)"
     }
 
     if !args.chain_script.is_empty() {
-        let visited = run_chained(&mut game, &source, args, args.chain_script)?;
+        let (visited, arrived_cleanly) = run_chained(&mut game, &source, args, args.chain_script)?;
         // `compute_reachability_report` walks out from the player's
         // *current* origin, so running it here reports the map the chain
         // ended in, from the point the chain left the player standing —
@@ -415,11 +415,14 @@ recognise (expected a comma-separated list of weapon_*/ammo_* classnames)"
                 );
             }
             if let Some(path) = args.plan_route {
+                if !arrived_cleanly {
+                    return Err(PLAN_REFUSED_INCOMPLETE_CHAIN);
+                }
                 return run_route_planner(&mut game, &source, args, path, &visited);
             }
         }
         #[cfg(not(feature = "dev-tools"))]
-        drop(visited);
+        drop((visited, arrived_cleanly));
         return Ok(());
     }
 
@@ -747,6 +750,21 @@ const CHAIN_NO_FURTHER_ROUTE: &str = "The chain walk has no further route.";
 /// never which one.
 const CHAIN_RE_ENTERED: &str = "The chain walk re-entered a map it had already visited.";
 
+/// The fixed line `--plan-route` logs, and the fixed error [`run`] returns,
+/// instead of planning after a chain that stopped short
+/// ([`CHAIN_STOPPED`]) or re-entered a map ([`CHAIN_RE_ENTERED`]).
+///
+/// Either outcome leaves the player wherever the interrupted route
+/// happened to stall or double back, not at the destination map's own
+/// clean arrival point — the state [`run_route_planner`] is documented to
+/// require. Planning from it anyway would silently hand back a route
+/// keyed to the wrong hop; refusing outright, with a file never written,
+/// is cheap to check against the chain's own arrival state
+/// ([`run_chained`]'s second return value).
+#[cfg(feature = "dev-tools")]
+const PLAN_REFUSED_INCOMPLETE_CHAIN: &str =
+    "Route plan refused: the chain did not arrive cleanly, so nothing was planned.";
+
 /// Runs a *sequence* of scripted-input routes across level changes in one
 /// process: `routes[0]` from the start map's own player start, and every
 /// later route from the point the preceding route's followed level change
@@ -778,7 +796,7 @@ fn run_chained(
     source: &AssetFsSource,
     args: &GameArgs<'_>,
     routes: &[PathBuf],
-) -> Result<Vec<String>, &'static str> {
+) -> Result<(Vec<String>, bool), &'static str> {
     let mut scripts = Vec::with_capacity(routes.len());
     for path in routes {
         let bytes = std::fs::read(path).map_err(|_| "the script file could not be read")?;
@@ -848,8 +866,12 @@ fn run_chained(
     // The visited list itself is returned, never logged: `--plan-route`
     // uses it to avoid planning a route straight back through the
     // boundary the chain just arrived through (see
-    // `ohl_engine::PlanConfig::avoid_goal_maps`).
-    Ok(visited)
+    // `ohl_engine::PlanConfig::avoid_goal_maps`). The second value is
+    // whether the chain arrived cleanly (neither stopped short nor
+    // re-entered a map): `--plan-route` refuses to plan at all when it
+    // did not, rather than plan from an interrupted route's stall point
+    // (see `PLAN_REFUSED_INCOMPLETE_CHAIN`).
+    Ok((visited, !stopped && !re_entered))
 }
 
 /// Renders exactly one frame and writes it as a PNG. Shared by

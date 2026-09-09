@@ -333,7 +333,13 @@ pub struct ReachabilityReport {
 }
 
 /// One 16-unit grid cell, quantized from a world position.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// Ordered lexicographically by its own `(x, y, z)` fields — a fixed,
+/// reproducible tiebreak for anything that has to pick one cell among
+/// several exactly-tied candidates (`crate::route_plan::pick_goal_cell`,
+/// `pick_nearest_cell`), rather than settling the tie however a `HashMap`
+/// happened to iterate this process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct Cell(i32, i32, i32);
 
 // A published GoldSrc map's coordinates fit comfortably within `i16`, so
