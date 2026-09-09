@@ -1886,6 +1886,31 @@ at the end of this section.
   mid-ride. It is left out deliberately rather than guessed at
   (`docs/MILESTONES.md`, M9.18).
 
+  *Spawning aboard a mover (M9.23).* A map may place its
+  `info_player_start` inside one of its own movers, which is how a campaign
+  opening that starts the player aboard a `func_tracktrain` is authored.
+  Nothing public describes what the engine does with a spawn point that
+  overlaps solid; this project's own clip tree is not bit-identical to the
+  one such a point was authored against (see "Collision hulls and player
+  movement"), so a placement the map means as "standing in the car" can
+  come back embedded here by a few units. An embedded hull is not a
+  cosmetic problem: `categorize_position` reports *no* ground brush at all
+  while `start_solid` holds, so the `base_velocity` lookup above finds
+  nothing and the ride never starts, and no traced move out of solid
+  succeeds either, so the passenger cannot fall free — the car pulls out
+  from under someone who never moves at all, and they are left wherever
+  its geometry stops overlapping them. `ohl_physics::settle_at_spawn`,
+  which `ohl_engine::Game` runs once against the mover hulls when a level
+  is placed from an `info_player_start` (a fresh load, or a landmark-less
+  transition fallback; never a landmark-relative arrival, which must stay
+  a pure offset, and never a map that declares no spawn point at all),
+  closes it with no new rule: the same
+  bounded upward nudge and step a landing already uses
+  (`UNSTICK_MAX_NUDGE`/`UNSTICK_STEP` above), followed by an immediate
+  `categorize_position` so the mover under a freshly spawned rider is their
+  ground brush on the very first step. Project-owned and `TODO(black-box)`,
+  like the nudge it reuses.
+
 ### Black-box placeholders
 
 These have no reachable public source and are neutral defaults, each marked

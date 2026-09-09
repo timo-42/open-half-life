@@ -1173,6 +1173,151 @@ pub fn bend_train_pose(game: &crate::Game) -> BendTrainPose {
 }
 
 // ---------------------------------------------------------------------
+// A `func_tracktrain` the map spawns the player *inside*
+// ---------------------------------------------------------------------
+
+/// The map name the embedded-spawn track-train fixture is published under.
+pub const EMBEDDED_SPAWN_MAP: &str = "ohlembedspawnsynth";
+
+/// The `targetname` of the fixture's `func_tracktrain`.
+pub const EMBEDDED_SPAWN_TRAIN_NAME: &str = "ohl_embed_train";
+
+/// The fixture's origin brush and first chain node, non-zero for the same
+/// reason [`BEND_TRAIN_ORIGIN`] is: the ordinary origin-brush shape, not
+/// the world-baked one.
+pub const EMBEDDED_SPAWN_TRAIN_ORIGIN: [f32; 3] = [100.0, 0.0, 0.0];
+
+/// The chain's only other node: a long straight run along `+X`, so the
+/// whole fixture is about *departure*, with no corner to confuse it.
+pub const EMBEDDED_SPAWN_TRAIN_END: [f32; 3] = [1600.0, 0.0, 0.0];
+
+/// The car's compiled half-extents about its own origin brush, as
+/// [`BEND_CAR_HALF_LENGTH`]/[`BEND_CAR_HALF_WIDTH`].
+pub const EMBEDDED_SPAWN_CAR_HALF_LENGTH: f32 = 96.0;
+/// See [`EMBEDDED_SPAWN_CAR_HALF_LENGTH`].
+pub const EMBEDDED_SPAWN_CAR_HALF_WIDTH: f32 = 40.0;
+/// The car floor's top, in the compiled frame.
+pub const EMBEDDED_SPAWN_CAR_TOP_Z: f32 = 8.0;
+/// The car floor's bottom, in the compiled frame.
+pub const EMBEDDED_SPAWN_CAR_BOTTOM_Z: f32 = -8.0;
+
+/// How far along the car, from its origin brush, the `info_player_start`
+/// is placed.
+pub const EMBEDDED_SPAWN_SEAT_OFFSET_X: f32 = 64.0;
+
+/// How far *below* a clear standing height on the car's floor the
+/// fixture's `info_player_start` is placed, so the standing hull starts
+/// overlapping the car's own solid.
+///
+/// This is the shape a real map hands the port: a spawn point authored
+/// against the original engine's own compiled clip tree, landing a few
+/// units inside this project's when the two do not agree to the unit (see
+/// `docs/FORMAT_SOURCES.md`, "Collision hulls and player movement"). Big
+/// enough here that no epsilon can absorb it, and well within the bound
+/// `ohl_physics::settle_at_spawn`'s nudge may spend.
+pub const EMBEDDED_SPAWN_DEPTH: f32 = 12.0;
+
+/// The train's `speed`/`startspeed`, units per second. Non-zero
+/// `startspeed`, so the car is moving on the very first simulation step —
+/// there is no grace period in which a passenger could fall onto it.
+pub const EMBEDDED_SPAWN_TRAIN_SPEED: f32 = 100.0;
+
+/// A void world (submodel `*0`) carrying a `func_tracktrain` (submodel
+/// `*1`) on a two-node straight `path_track` chain, with an
+/// `info_player_start` placed [`EMBEDDED_SPAWN_DEPTH`] units *inside* the
+/// car's own solid rather than cleanly on top of it, and a `startspeed`
+/// that has the car moving from the first step.
+///
+/// Nothing here comes from any game installation; every keyvalue and
+/// coordinate is authored for this project (`docs/CLEAN_ROOM.md`).
+#[must_use]
+pub fn embedded_spawn_track_train_bsp() -> Vec<u8> {
+    let mut b = Bsp30Builder::new();
+    let [ox, oy, oz] = EMBEDDED_SPAWN_TRAIN_ORIGIN;
+    let [ex, ey, ez] = EMBEDDED_SPAWN_TRAIN_END;
+    let seat_x = ox + EMBEDDED_SPAWN_SEAT_OFFSET_X;
+    let seat_z = oz + EMBEDDED_SPAWN_CAR_TOP_Z + 36.0 - EMBEDDED_SPAWN_DEPTH;
+    let speed = EMBEDDED_SPAWN_TRAIN_SPEED;
+    b.set_entities_text(&format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\
+         \"origin\" \"{seat_x} {oy} {seat_z}\"\n\"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"func_tracktrain\"\n\"model\" \"*1\"\n\
+         \"targetname\" \"{EMBEDDED_SPAWN_TRAIN_NAME}\"\n\
+         \"target\" \"ohl_embed1\"\n\"speed\" \"{speed}\"\n\
+         \"startspeed\" \"{speed}\"\n\"height\" \"0\"\n\
+         \"origin\" \"{ox} {oy} {oz}\"\n}}\n\
+         {{\n\"classname\" \"path_track\"\n\"targetname\" \"ohl_embed1\"\n\
+         \"target\" \"ohl_embed2\"\n\"origin\" \"{ox} {oy} {oz}\"\n}}\n\
+         {{\n\"classname\" \"path_track\"\n\"targetname\" \"ohl_embed2\"\n\
+         \"origin\" \"{ex} {ey} {ez}\"\n}}\n"
+    ));
+
+    // Submodel 0: a void world, so the car's own brush is the only thing
+    // that can hold the passenger up — a rider who is dropped here has
+    // nothing else to land on, which is what makes the ride measurable.
+    let world_heads = b.push_collision_hulls(&[]);
+    b.push_model(
+        [-4096.0, -4096.0, -4096.0],
+        [4096.0, 4096.0, 4096.0],
+        [0.0, 0.0, 0.0],
+        world_heads,
+        2,
+        0,
+        0,
+    );
+    // Submodel 1: the car, compiled relative to its origin brush.
+    let car_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(
+        [
+            -EMBEDDED_SPAWN_CAR_HALF_LENGTH,
+            -EMBEDDED_SPAWN_CAR_HALF_WIDTH,
+            EMBEDDED_SPAWN_CAR_BOTTOM_Z,
+        ],
+        [
+            EMBEDDED_SPAWN_CAR_HALF_LENGTH,
+            EMBEDDED_SPAWN_CAR_HALF_WIDTH,
+            EMBEDDED_SPAWN_CAR_TOP_Z,
+        ],
+    )]);
+    b.push_model(
+        [
+            -EMBEDDED_SPAWN_CAR_HALF_LENGTH,
+            -EMBEDDED_SPAWN_CAR_HALF_WIDTH,
+            EMBEDDED_SPAWN_CAR_BOTTOM_Z,
+        ],
+        [
+            EMBEDDED_SPAWN_CAR_HALF_LENGTH,
+            EMBEDDED_SPAWN_CAR_HALF_WIDTH,
+            EMBEDDED_SPAWN_CAR_TOP_Z,
+        ],
+        [0.0, 0.0, 0.0],
+        car_heads,
+        2,
+        0,
+        0,
+    );
+    b.build()
+}
+
+/// Where [`embedded_spawn_track_train_bsp`]'s car's compiled `(0, 0, 0)` —
+/// its origin brush — currently sits, read the same way
+/// [`bend_train_pose`] reads its own fixture's.
+///
+/// # Panics
+/// If the game is not running that fixture.
+#[must_use]
+pub fn embedded_spawn_train_origin(game: &crate::Game) -> [f32; 3] {
+    let registry = game.registry();
+    let entity = registry.find(EMBEDDED_SPAWN_TRAIN_NAME)[0];
+    let authored = registry
+        .world
+        .get::<&ohl_game::registry::Transform>(entity)
+        .expect("the fixture train has a transform")
+        .origin;
+    (authored + ohl_game::pose::brush_offset(registry, entity)).to_array()
+}
+
+// ---------------------------------------------------------------------
 // A `func_door_rotating` blocking a corridor
 // ---------------------------------------------------------------------
 

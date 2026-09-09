@@ -89,6 +89,16 @@ impl PlayerController {
         }
     }
 
+    /// Settles a just-placed player against `model`: see
+    /// [`crate::settle_at_spawn`]. Called by the host for a placement the
+    /// map itself authored, with `model`'s mover hulls already where the
+    /// map logic puts them, so a player the map spawns standing inside a
+    /// `func_train`/`func_tracktrain` has that mover as their ground brush
+    /// from the first step and rides it from its first tick of motion.
+    pub fn settle_at_spawn(&mut self, model: &CollisionModel) {
+        crate::settle_at_spawn(model, &mut self.state, &self.config);
+    }
+
     /// The camera position for the current stance: the eye height above the
     /// entity origin (28 units standing, 12 ducked).
     #[must_use]

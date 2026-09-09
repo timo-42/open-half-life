@@ -5156,3 +5156,131 @@ what a sharp corner's one-tick heading change actually moved a rider by.
   `wheels`' unit was unstated where this milestone's own prose introduced
   it (unlike the neighbouring `speed`/`height` entries, which both say
   theirs); now states it is in map units.
+
+## M9.23 (Rust): the passenger is aboard from the departure's first tick
+
+The campaign's opening ride starts with the player standing in a
+`func_tracktrain`. A per-tick probe of that route (local, uncommitted;
+player origin, `PlayerState::ground_brush`, `on_ground`, velocity, the
+car's own chain position/speed/`moving`, and the `base_velocity` the host
+would look up) found the passenger was not riding it at all for the first
+few seconds:
+
+- for roughly the first two hundred ticks the player's world position was
+  *constant* — not falling, not sliding — with `ground_brush = None`, a
+  ride speed of zero, and a vertical velocity pinned at exactly one
+  half-gravity step, the signature of a move that is refused outright every
+  step rather than one that is falling;
+- the car, still parked at that point, then departed and slid out from
+  under them, and their seat in the car's own frame travelled from roughly
+  +119 units ahead of its centre to roughly 114 units behind it *without
+  the player moving at all*;
+- they then fell onto the floor near the back of the car and rode the rest
+  of the route from there.
+
+**Root cause.** The spawn point placed the player's standing hull inside
+the car's own solid, by a handful of units. Every consequence follows from
+`ohl_physics::categorize_position`: its ground probe requires
+`fraction < 1 && !all_solid && plane_normal.z >= slope_limit`, and an
+embedded hull satisfies none of it, so `ground_brush` stays `None` — which
+is what the host's `base_velocity` lookup keys off, so the ride never
+starts. The traced move cannot recover either: every trace out of solid is
+refused, which is why the player did not so much as fall. The state was
+therefore self-sustaining until the car's geometry moved far enough to stop
+overlapping them. Note that none of the hypotheses about *ordering* held:
+the car's hull is attached and posed before the first move, the player's
+ground brush is resolved on the first step that runs, and the car does not
+begin moving until well after spawn — the passenger was already stuck
+before it did anything at all.
+
+**Fix.** `ohl_physics::settle_at_spawn`: the same bounded upward nudge a
+landing already uses (`unstick_from_ground`, unchanged bound and step),
+followed immediately by `categorize_position`. `ohl_engine::Game` runs it
+once when a level is placed from an `info_player_start` — a fresh load, and
+a transition that falls back to the destination's own spawn — and both call
+sites are gated on the level actually having a spawn point, not merely on
+its having collision: with no `info_player_start` the controller sits at
+`PlayerController::default`'s world origin, a placement no map authored and
+nothing should nudge. On the fresh-load path no brush sync is needed first
+— `Level`'s own `attach_brush_collision_with` already attaches each brush
+at `origin + ohl_game::pose::brush_offset(..)` while the level loads, and
+nothing has moved a `Transform` since, so the mover hulls are posed by the
+time the settle runs. (The transition path's own zero-`dt`
+`sync_brush_collision` *is* load-bearing, for the opposite reason: there
+the carry has just moved movers after attach.) A landmark-relative arrival
+deliberately gets no settle: that placement is a pure offset from where the
+player stood in the source map, and nudging it would stop a boundary being
+a no-op for the physics state. A player spawned in mid-air still falls
+exactly as before, and a spot that is solid all the way through the bound
+is still left alone.
+
+**Result on the real start map**, same probe: the passenger's ground brush
+is the `func_tracktrain` on tick 0 and stays so for the whole route, and
+their seat in the car's own frame stays within about four units of where
+they spawned for the entire ride, corner included, instead of sliding some
+two hundred and thirty units down the car. Per-route aboard fraction over
+`cargo xtask chain-walk` (ticks with a `func_tracktrain` as the ground
+brush, over ticks run), measured at this milestone's own base (M9.22) both
+with and without the settle:
+
+| route | without | with |
+|---|---|---|
+| 0 | 2108/2357 (89.4%) | **2309/2310 (100%)** |
+| 1 | 2600/2601 (100%) | **2600/2601 (100%)** |
+| 2 | 5098/5099 (100%) | **5145/5146 (100%)** |
+| 3 | 0/4016 (**0%**) | **3952/4016 (98.4%)** |
+
+The one missing tick in the first three is the level-change tick itself, on
+which the player has already been placed in the next map. The chain's own
+aggregates are unchanged (4 routes, depth 5, 4 level changes, 234.6
+simulated seconds, no re-entry).
+
+M9.20 recorded "the carry does not put the passenger on the destination
+map's train" as its open item, naming world-baked spawn placement as one of
+the two upstream fixes it needed. This is that fix, and it closes the
+fourth route too, for the reason M9.20's own arithmetic predicted: the
+passenger used to arrive at that boundary seated about 114 units *behind*
+the car's centre, and the destination chain's head sits about 26 units
+short of where the ride crosses with its first segment about 14 degrees off
+the arriving car's heading, which moved that seat just past the back of a
+hull 144 units long from the centre. Settled at the seat the map actually
+spawns them in — about 119 units the *other* way, toward the front — the
+same 26 units and 14 degrees move them further *inside* the car, so they
+arrive aboard. Their remaining 64 ticks off the car are the arrival itself
+(a ~1.1 s fall onto the destination car, since a landmark-relative arrival
+deliberately gets no settle) plus that route's own level-change tick; the
+end-of-loop door scrape M9.20 recorded is already closed by M9.21, so
+nothing else on that route drops them.
+
+**Tests**: `crates/ohl-engine/tests/spawn_inside_mover.rs` against a new
+synthetic fixture (`test_support::embedded_spawn_track_train_bsp`: a void
+world, a `func_tracktrain` on a straight two-node `path_track` chain with a
+non-zero `startspeed` so it is moving on the first step, and an
+`info_player_start` placed twelve units *inside* the car's solid). It
+asserts the passenger has settled onto the car's floor before any tick
+runs, is riding it at the car's own speed within two steps, and keeps their
+seat within four units of where they spawned — and stays on the car's own
+footprint — for the whole departure. Both tests were verified to fail with
+the settle call removed (seat slid off by step 2; the player was left
+twelve units inside the floor).
+
+A third test pins the *gate*: a fixture with real collision but no
+`info_player_start`, whose one solid block swallows the world origin, must
+leave `PlayerController::default`'s placement untouched. Verified to fail
+with the `Level::spawn` half of the guard removed (the player was lifted
+28 units out of the block).
+
+**Still open.** This does not place the passenger *amidships*: they are
+settled where the map's own spawn point puts them, near one end of a long
+car. That is now the favourable end for the fourth boundary, but it is a
+seat with under thirty units of margin either way, so a boundary whose
+chain head is offset the other way would still lose them; the underlying
+gaps (the ~26-unit chain-head offset and the ~14-degree heading difference
+at that boundary) are unchanged.
+
+The other 64 ticks are the fourth route's arrival: a landmark-relative
+placement deliberately gets no settle, so the passenger falls about a
+second onto the destination car rather than starting on it. Settling a
+landmark-relative arrival would mean giving up the property that a boundary
+is a no-op for the physics state, so it is not done here; if that second is
+ever worth closing it wants its own argument, not this milestone's.
