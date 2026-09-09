@@ -213,6 +213,91 @@ impl EntitySnapshot {
         }
     }
 
+    /// As [`Self::apply`], but onto an entity the *destination map*
+    /// already declares — a `globalname` counterpart, or one the
+    /// destination happens to name the same way — rather than onto an
+    /// entity this transition is creating from nothing.
+    ///
+    /// Only a mover's **runtime** fields travel that way: its
+    /// open/closed/pressed/spinning state and the timer driving it. Its
+    /// `speed`, `wait`, `lip`, move direction, travel distance, damage,
+    /// health, delay and sounds do not, for exactly the reason
+    /// [`Transform`] does not (see [`TransitionState::apply`]'s own
+    /// comment): those are facts about the brush the *destination* map
+    /// compiled, not about the state the player left the mover in. Two
+    /// maps in one chapter routinely give unrelated doors the same
+    /// `targetname`, and one map's leaf sliding "down 172 units" is
+    /// nonsense applied to another map's leaf that slides up, left or
+    /// right — it parks a door's solid hull across the space its own map
+    /// compiled it to clear.
+    ///
+    /// A destination entity that carries no mover component at all is left
+    /// without one: inserting a foreign mover's keyvalues onto it is the
+    /// same mistake in a louder form.
+    pub fn apply_onto_existing(&self, registry: &mut Registry, entity: Entity) {
+        let world = &mut registry.world;
+        if let Some(value) = self.spawnflags {
+            world.insert_one(entity, SpawnFlags(value)).ok();
+        }
+        if let Some(value) = self.render {
+            world.insert_one(entity, value).ok();
+        }
+        if let Some(carried) = self.door
+            && let Ok(mut door) = world.get::<&mut Door>(entity)
+        {
+            door.state = carried.state;
+            door.timer = carried.timer;
+            // `Door::rotation_axis` is the one field in this component
+            // that is not purely compiled. Its *axis* is compiled (the
+            // spawnflag/`distance` choice `RotatingDoorSwing::base_axis`
+            // holds), but its *sign* is runtime: `ohl_game::logic`'s door
+            // arm rewrites it on every closed -> opening edge so the leaf
+            // swings away from whoever opened it (PR #110). Dropping the
+            // whole field would mirror a carried-open leaf onto the wrong
+            // side of its frame — the same "a mover's hull is parked where
+            // its own map never put it" fault this method exists to stop,
+            // reflected instead of translated. So the sign travels and the
+            // axis does not: both doors must be rotating ones for the
+            // question to mean anything, and a carried sign of zero (the
+            // dot product of two perpendicular axes) leaves the
+            // destination's own untouched.
+            if let (Some(carried_axis), Some(own_axis)) =
+                (carried.rotation_axis, door.rotation_axis)
+            {
+                let sign = carried_axis.dot(own_axis);
+                if sign < 0.0 {
+                    door.rotation_axis = Some(-own_axis);
+                } else if sign > 0.0 {
+                    door.rotation_axis = Some(own_axis);
+                }
+            }
+        }
+        if let Some(carried) = self.button
+            && let Ok(mut button) = world.get::<&mut Button>(entity)
+        {
+            button.state = carried.state;
+            button.timer = carried.timer;
+        }
+        if let Some(carried) = self.platform
+            && let Ok(mut platform) = world.get::<&mut Platform>(entity)
+        {
+            platform.state = carried.state;
+            platform.timer = carried.timer;
+        }
+        if let Some(carried) = self.rotator
+            && let Ok(mut rotator) = world.get::<&mut Rotator>(entity)
+        {
+            rotator.spinning = carried.spinning;
+            rotator.angle_deg = carried.angle_deg;
+        }
+        if let Some(value) = self.light {
+            world.insert_one(entity, value).ok();
+        }
+        if let Some(value) = self.message.clone() {
+            world.insert_one(entity, value).ok();
+        }
+    }
+
     /// Whether a mover this snapshot describes has been moved from its
     /// authored resting state, i.e. whether it is worth carrying across.
     #[must_use]
@@ -493,7 +578,7 @@ fn restore_track_train(registry: &mut Registry, entity: Entity, carry: &TrackTra
         .get::<&TrackTrainState>(entity)
         .ok()
         .map(|state| TrackTrainState::clone(&state));
-    let seated = existing.and_then(|state| {
+    let seated = existing.clone().and_then(|state| {
         let index = state.chain().nodes.iter().position(|node| {
             registry
                 .world
@@ -502,17 +587,35 @@ fn restore_track_train(registry: &mut Registry, entity: Entity, carry: &TrackTra
         })?;
         Some((state, index))
     });
-    let (mut state, index) = if let Some(seated) = seated {
-        seated
+    // `(state, index, t)`: which chain the destination's train ends up on,
+    // and where along it. The third case keeps the destination's *own*
+    // placement, so it keeps that placement's own `t` too.
+    let placed = if let Some((state, index)) = seated {
+        Some((state, index, carry.t))
+    } else if let Some(chain) = PathChain::build(registry, &carry.node, train.height) {
+        Some((TrackTrainState::spawn(&train, chain), 0, carry.t))
     } else {
-        let Some(chain) = PathChain::build(registry, &carry.node, train.height) else {
-            return;
-        };
-        (TrackTrainState::spawn(&train, chain), 0)
+        // The destination map declares no node of the carried name at all,
+        // so there is nothing to correlate a *position* with — but the
+        // train's own motion is not a position, and discarding it left the
+        // destination's copy running on its `startspeed` as if the ride
+        // that arrived had never happened. Keep the destination's own
+        // chain and place along it, and carry the ride: a map that parks
+        // its tram exactly at the boundary and has the *next* map start it
+        // again (`trigger_auto`'s documented `triggerstate`) then gets the
+        // parked train it was authored around instead of one already
+        // rolling at a speed no keyvalue in either map asked for.
+        existing.map(|state| {
+            let (index, t, ..) = state.dynamic_state();
+            (state, index, t)
+        })
+    };
+    let Some((mut state, index, t)) = placed else {
+        return;
     };
     state.restore_dynamic_state(
         index,
-        carry.t,
+        t,
         carry.direction,
         carry.speed,
         carry.moving,
@@ -667,11 +770,13 @@ impl TransitionState {
 
         for mover in &self.movers {
             for entity in level.registry.find(&mover.targetname).to_vec() {
-                let mut snapshot = mover.snapshot.clone();
-                // A mover keeps the destination map's own placement: only
-                // its state travels.
-                snapshot.transform = None;
-                snapshot.apply(&mut level.registry, entity);
+                // A mover keeps the destination map's own placement — and
+                // the rest of its own compiled keyvalues with it: only its
+                // state travels. See
+                // [`EntitySnapshot::apply_onto_existing`].
+                mover
+                    .snapshot
+                    .apply_onto_existing(&mut level.registry, entity);
             }
         }
 
@@ -714,9 +819,9 @@ impl TransitionState {
             }
             if !existing.is_empty() {
                 for entity in existing {
-                    let mut snapshot = carried.snapshot.clone();
-                    snapshot.transform = None;
-                    snapshot.apply(&mut level.registry, entity);
+                    carried
+                        .snapshot
+                        .apply_onto_existing(&mut level.registry, entity);
                     // A ride position travels only through the documented
                     // `globalname` correlation, for the same reason
                     // `transform` does not travel at all: it is a
@@ -735,9 +840,9 @@ impl TransitionState {
             let existing = level.registry.find(name).to_vec();
             if !existing.is_empty() {
                 for entity in existing {
-                    let mut snapshot = carried.snapshot.clone();
-                    snapshot.transform = None;
-                    snapshot.apply(&mut level.registry, entity);
+                    carried
+                        .snapshot
+                        .apply_onto_existing(&mut level.registry, entity);
                 }
                 return;
             }

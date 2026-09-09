@@ -4876,3 +4876,106 @@ for the first time.
   many times the dead end fired — verified to fail with the once-only
   guard removed), and that a platform whose named train is somewhere else
   travels empty instead of dragging it over.
+
+## M9.20 (Rust): the map that stopped the ride it was handed
+
+Closes the "Still open" item M9.19 left above — the chained walk's fourth
+map, whose arrival point a `--reachability-report` found sealed at exactly
+one reachable cell with no frontier entity of any kind. It was neither a
+missing entity nor a geometry problem, and it had two independent causes,
+each of which is on its own enough to seal the cell and each of which is on
+its own enough to open it again.
+
+- **`trigger_auto`/`trigger_relay`'s documented `triggerstate`.** The
+  published pages describe the key as choosing the use *type* a trigger
+  sends — "On- turns entity on; Off- Turns entity off; Toggle- turns entity
+  On when it's Off and vice versa" — with values `0`/`1`/`2`. This port read
+  every fire as a plain toggle. Of the four maps the chain has entered, this
+  one alone starts its own copy of the ride with a `trigger_auto` that
+  declares the key as **On**, one second after the map loads; read as a
+  toggle, it switched off whatever was moving and nothing else in the map
+  names the train. Implemented as
+  `ohl_game::registry::TriggerUse`/`TriggerUseType`, carried on
+  `ohl_game::logic::Fire::use_type` from `Simulation::fire_typed` to
+  `Simulation::activate_with`. Only `func_train`/`func_tracktrain` acts on
+  it — the one state machine here whose own published keyvalues describe an
+  explicit on and an explicit off — because a search summary of TWHL's
+  `trigger_relay` page says most entities ignore the signal and just
+  toggle, naming `func_door` among them. Citations and three
+  `TODO(black-box)` boundaries (no propagation down a fire chain; the frozen
+  save section drops the use type; the published "Off" default for an
+  *absent* key is knowingly not followed) are in `docs/FORMAT_SOURCES.md`,
+  `trigger_auto`.
+- **A carried train's ride is no longer discarded with its position.**
+  `restore_track_train` correlates a carried ride by the *name* of the node
+  it is at. This boundary is the first in the chain where the destination
+  map declares no node of that name at all, and the whole carry was then
+  dropped — so the destination's copy ran on its own `startspeed` as if the
+  ride that had just arrived had never happened, which is also why the
+  map's own `trigger_auto` had a moving train to stop in the first place.
+  The destination's own chain and its own place along it are kept; only the
+  motion travels.
+- **A carried mover keeps its own map's compiled keyvalues.** With the ride
+  running, a four-leaf door reported as *open* still stood closed across the
+  tunnel: its leaves slide up, down, left and right, and all four had been
+  handed the previous map's same-named leaves' single move direction and
+  travel distance, because a carried `EntitySnapshot` overwrote the whole
+  `Door` component rather than its state.
+  `EntitySnapshot::apply_onto_existing` now writes only the state and timer
+  of a `func_door`/`func_button`/`func_plat`/`func_rotating` the destination
+  already declares, for exactly the reason `Transform` has never travelled.
+  The one exception is `Door::rotation_axis`, whose axis is compiled but
+  whose *sign* is the activator-chosen swing side (M7's rotating-door rule):
+  that sign travels onto the destination leaf's own axis, so a carried-open
+  rotating door is not mirrored onto the wrong side of its own frame. The
+  full snapshot is still applied when the transition creates an entity the
+  destination does not declare.
+- **The chain walk reports distinct depth 5**, up from M9.19's 4, at 4
+  routes, 4 level changes and 243.3 simulated seconds, ending on "no
+  further route" rather than a stop or a re-entry.
+  `xtask/chain-routes/c0a0-hop3.txt` is one `wait` line and presses nothing.
+- **Measured, per tick, across the whole chain** (`PlayerState::ground_brush`
+  classname and `Game::ground_mover_speed` logged every tick from a local,
+  uncommitted probe of `run_script_ticks`):
+
+  | route | ticks | on a `func_tracktrain` | ride speed > 1 |
+  |---|---|---|---|
+  | start | 2357 (39.3 s) | 2108 (89.4 %) | 35.1 s |
+  | hop1 | 2601 (43.4 s) | 2600 (100 %) | 43.3 s |
+  | hop2 | 5103 (85.0 s) | 5102 (100 %) | 70.5 s |
+  | hop3 | 4536 (75.6 s) | **0 (0 %)** | 0.0 s |
+
+- **Still open, and the real next item: the carry does not put the
+  passenger on the fourth map's train.** The player is aboard on hop2's
+  last tick and on none of hop3's. They fall for about nine tenths of a
+  second on arrival and then stand on world geometry for the rest of the
+  route, while the map's own ride runs and fires the level change by name.
+  So hop3 reaches depth 5 *honestly* — the route presses nothing, nothing
+  is teleported, and the level change is one the map itself fires — but the
+  player is a bystander for it, not a passenger, and this milestone does
+  not claim otherwise.
+
+  The mechanism is measured, not guessed. In the car's own frame the
+  passenger rides about 115 units behind its centre, in a car whose hull is
+  144 units long from that centre: a seat with under thirty units of
+  margin, which they are left in by the *start* map, where they spend the
+  first four seconds airborne while the car pulls out from under them and
+  land near its back wall. At this boundary the destination chain's head
+  sits about 26 units short of where the ride crosses, and its first
+  segment's heading differs from the arriving car's by about 14 degrees;
+  applied to a seat that far off the pivot, that moves it a further 28
+  units back — just past the floor. Neither number is something the carry
+  can correct by name, so the fix belongs upstream: where a world-baked
+  car's hull is placed at spawn (so the passenger starts amidships rather
+  than against the back wall), and the documented `wheels`
+  heading-lag keyvalue that this port records but does not apply. Both are
+  their own milestones.
+- **Tests**: `crates/ohl-engine/tests/trigger_state_and_carry.rs`, on
+  project-authored synthetic fixtures — a rolling train an "On"
+  `trigger_auto` must not stop, one an "Off" one must, one an absent or
+  explicit "Toggle" one still toggles; a parked ride that must arrive parked
+  even when the destination declares no node of the carried name; a
+  `func_door` whose destination-map leaf keeps its own move direction,
+  travel distance and `speed` while its open state travels; and a
+  `func_door_rotating` that keeps the swing side its activator chose. Each
+  of the three new rules was verified to fail with its own arm disabled.
