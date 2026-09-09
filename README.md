@@ -394,14 +394,22 @@ A brush mover the walk is standing on is a third such edge. A lift at rest
 is floor — the walk steps onto it and stands there like anywhere else —
 and what the walk cannot see is that the floor moves, so a shaft whose
 only way up is the lift in it reads as a sealed room. The ride edge closes
-that: a `func_door` used as a lift or a `func_plat`, at rest, whose travel
-gains or loses more height than a step, is ridden from the surface it
-rests on to the surface it travels to, provided the walk can also *start*
-it from where it boards — by standing in a touch volume wired to it, or by
-a `use` press on the mover itself or on the `func_button` wired to it,
-both measured by the engine's own use-proximity rule. The route says so as
-at most one `use` press and a wait as long as the mover's own
-`distance / speed`; nothing is held, because the mover does the
+that: a `func_door` used as a lift, a `func_plat`, a `func_platrot`, or a
+resting `func_train`/`func_tracktrain` mid-chain, whose travel gains or
+loses more height than a step, is ridden from the surface it rests on to
+the surface it travels to, provided the walk can also *start* it from
+where it boards — by standing in a touch volume wired to it, or by a
+`use` press on the mover itself or on the `func_button` wired to it, both
+measured by the engine's own use-proximity rule. A track train's own trip
+follows its `path_corner`/`path_track` chain forward from where it rests,
+honouring every node's "New Train Speed" override and `wait` pause along
+the way, to whichever node actually stops it — a documented "Wait for
+retrigger" node, or the chain's own dead end when nothing on it ever
+stops the train on its own; a chain that loops back on itself with no
+such stop anywhere is not planned as a ride at all, since there is no
+arrival time to wait for. The route says so as at most one `use` press
+and a wait as long as the mover's own `distance / speed`; nothing is
+held, because the mover does the
 travelling and carries the player with it. A ride costs more than a climb
 and less than a jump, and — like a climb — always ends a committed chunk,
 because everything planned after it describes a body standing on a

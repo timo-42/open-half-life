@@ -40,4 +40,4 @@ pub use logic::{
 pub use registry::{
     Ladder, Liquid, Registry, TRIGGER_HURT_INTERVAL_SECONDS, TriggerCamera, TriggerHurt, Water,
 };
-pub use track_train::{PathChain, PathNode, TrackTrain, TrackTrainState};
+pub use track_train::{PathChain, PathNode, TrackTrain, TrackTrainState, TrainRide};

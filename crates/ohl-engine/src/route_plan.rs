@@ -81,8 +81,9 @@ use glam::{Quat, Vec3};
 use ohl_game::hecs::Entity;
 use ohl_game::registry::{
     BrushBounds, Button, ChangeLevel, ClassName, Door, MoverState, MultiManager, PlatRot, Platform,
-    Target, TargetName, TeleportTrigger, Trigger, TriggerHurt,
+    Target, TargetName, TeleportTrigger, Transform, Trigger, TriggerHurt,
 };
+use ohl_game::track_train::{TrackTrain, TrackTrainState};
 use ohl_physics::{BrushId, CollisionModel, Hull};
 
 use crate::reachability::{
@@ -1652,7 +1653,7 @@ const RIDE_FOOTPRINT_INSET: f32 = CELL_SIZE / 2.0;
 
 /// A ride this round found: a translating brush mover the walk is
 /// standing on, a way to set it going, and where it goes.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct RideCandidate {
     /// The mover itself.
     entity: Entity,
@@ -1680,11 +1681,17 @@ struct RideCandidate {
     /// The heading to press `use` along to start it, or `None` when
     /// standing on it is what starts it.
     use_yaw: Option<f32>,
+    /// `Some` for a `func_train`/`func_tracktrain` ride: the live
+    /// [`TrackTrainState`] [`take_ride`] assigns to the entity once this
+    /// ride is actually taken. `None` for every other mover kind, which
+    /// [`take_ride`] instead moves by setting its collision brush's own
+    /// pose directly. See [`RideMover::train_terminus`].
+    train_terminus: Option<TrackTrainState>,
 }
 
 /// One mover [`ride_candidates`] has decided is rideable *in principle*,
 /// before it asks whether any cell the walk reached can board and start it.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct RideMover {
     /// The mover itself.
     entity: Entity,
@@ -1697,6 +1704,12 @@ struct RideMover {
     /// The rotation it turns through over the same trip, as an axis and an
     /// angle in degrees; `None` for a mover that only translates.
     rotation: Option<(Vec3, f32)>,
+    /// `Some` for a `func_train`/`func_tracktrain` ride: the live
+    /// [`TrackTrainState`] to assign the entity once the ride is actually
+    /// taken (see [`take_ride`]), rather than the plain translate/rotate
+    /// collision pose a door, platform or `func_platrot` moves through.
+    /// `None` for every other mover kind.
+    train_terminus: Option<TrackTrainState>,
 }
 
 /// The rigid rotation a `func_platrot` turns through over one trip.
@@ -1902,6 +1915,12 @@ fn rideable_movers(game: &Game, taken: &HashSet<u32>) -> Vec<RideMover> {
                     })
             });
         let Some((offset, seconds)) = travel else {
+            // None of a door, a platform or a platrot: the fourth and
+            // last shape this walk rides is a `func_train`/
+            // `func_tracktrain` resting mid-chain. See `train_ride_mover`.
+            if let Some(mover) = train_ride_mover(game, entity, *bounds) {
+                movers.push(mover);
+            }
             continue;
         };
         if !offset.is_finite() || offset.z.abs() <= RIDE_MIN_LIFT || !(seconds.is_finite()) {
@@ -1925,9 +1944,61 @@ fn rideable_movers(game: &Game, taken: &HashSet<u32>) -> Vec<RideMover> {
             offset,
             seconds,
             rotation,
+            train_terminus: None,
         });
     }
     movers
+}
+
+/// Whether the `func_train`/`func_tracktrain` at `entity`, resting at
+/// `bounds`, is a ride candidate: at rest with somewhere left to go on its
+/// own chain ([`TrackTrainState::plan_ride`]), travelling far enough in
+/// `z` ([`RIDE_MIN_LIFT`]) to be worth riding at all — the same bar every
+/// other mover kind [`rideable_movers`] considers is held to.
+///
+/// `None` for any entity that is not a train at all, one already moving
+/// (see [`TrackTrainState::moving`]'s own doc comment for why that one is
+/// simply not planned as a ride), one with nothing ahead on its chain, or
+/// one whose own chain loops with no documented stop anywhere on it (see
+/// [`TrackTrainState::plan_ride`]).
+fn train_ride_mover(game: &Game, entity: Entity, bounds: BrushBounds) -> Option<RideMover> {
+    let state = game.registry().world.get::<&TrackTrainState>(entity).ok()?;
+    let train = game.registry().world.get::<&TrackTrain>(entity).ok()?;
+    let ride = state.plan_ride()?;
+    let offset = ride.state.position() - state.position();
+    if !offset.is_finite() || offset.z.abs() <= RIDE_MIN_LIFT || !ride.seconds.is_finite() {
+        return None;
+    }
+    // `func_tracktrain` turns to face its active segment as it travels
+    // (`TrackTrainState::yaw_degrees`); a plain `func_train` never turns
+    // at all, so it never needs a ride rotation. Both `yaw_degrees` calls
+    // are pure reads of `state`/`train`, not of the live registry, so
+    // nothing here has to touch the entity's own component to work this
+    // out.
+    let rotation = train.turns_to_face.then(|| {
+        let now = state.yaw_degrees(&train);
+        let then = ride.state.yaw_degrees(&train);
+        match (now, then) {
+            (Some(now), Some(then)) => Some(then - now),
+            // The train currently poses unrotated (its chain, at rest,
+            // defines no heading of its own) but will have one once it
+            // arrives: the whole turn is the destination yaw itself.
+            (None, Some(then)) => Some(then),
+            _ => None,
+        }
+    });
+    let rotation = rotation
+        .flatten()
+        .filter(|degrees| *degrees != 0.0 && degrees.is_finite())
+        .map(|degrees| (Vec3::Z, degrees));
+    Some(RideMover {
+        entity,
+        bounds,
+        offset,
+        seconds: ride.seconds,
+        rotation,
+        train_terminus: Some(ride.state),
+    })
 }
 
 /// Every translating brush mover this walk is *standing on* that it could
@@ -1953,23 +2024,37 @@ fn ride_candidates(game: &Game, walk: &Walk, taken: &HashSet<u32>) -> Vec<RideCa
         offset,
         seconds,
         rotation,
+        train_terminus,
     } in movers
     {
         let Some(brush) = brush_for_entity(game, entity) else {
             continue;
         };
         // The pivot is the mover's own compiled turning point in world
-        // space: `ohl_game::pose::brush_pose_rotation` reports a
-        // `func_platrot`'s pivot as `Vec3::ZERO` in its compiled frame
-        // (its geometry is built around its own origin brush), so in world
+        // space. For a `func_platrot`, `ohl_game::pose::brush_pose_rotation`
+        // reports its pivot as `Vec3::ZERO` in its compiled frame (its
+        // geometry is built around its own origin brush), so in world
         // space it is wherever the brush currently sits — which, for a
-        // mover at rest, is where it was placed.
-        let rotation = rotation.map(|(axis, degrees)| RideRotation {
-            axis,
-            degrees,
-            pivot: game
+        // mover at rest, is where it was placed. A `func_train`/
+        // `func_tracktrain`'s own compiled pivot
+        // (`ohl_game::pose::track_train_pivot`) is not always zero in its
+        // compiled frame the same way — a world-baked train's is its
+        // chain's first node — so its world pivot is that local pivot
+        // carried by the same placed brush origin, not the origin alone.
+        let rotation = rotation.map(|(axis, degrees)| {
+            let placed = game
                 .collision()
-                .map_or(Vec3::ZERO, |collision| collision.brush_origin(brush)),
+                .map_or(Vec3::ZERO, |collision| collision.brush_origin(brush));
+            let pivot = if train_terminus.is_some() {
+                placed + ohl_game::pose::track_train_pivot(game.registry(), entity)
+            } else {
+                placed
+            };
+            RideRotation {
+                axis,
+                degrees,
+                pivot,
+            }
         });
         // Every cell standing on the mover's own top surface, cheapest
         // first: which of them can *start* it is a question about where
@@ -2001,6 +2086,7 @@ fn ride_candidates(game: &Game, walk: &Walk, taken: &HashSet<u32>) -> Vec<RideCa
             rotation,
             seconds,
             use_yaw,
+            train_terminus,
         });
     }
     candidates.sort_by(|a, b| {
@@ -2427,38 +2513,21 @@ fn take_ride(game: &mut Game, walk: &mut Walk, ridden: &mut HashSet<u32>, cap: u
             .rotation
             .map_or(candidate.board, |rotation| rotation.carry(candidate.board))
             + candidate.offset;
-        let Some(collision) = game.collision_mut() else {
+        let Some(arrived) = (match &candidate.train_terminus {
+            Some(terminus) => {
+                apply_train_ride(game, candidate.entity, candidate.brush, terminus, landing)
+            }
+            None => apply_brush_ride(
+                game,
+                candidate.brush,
+                candidate.offset,
+                candidate.rotation,
+                landing,
+            ),
+        }) else {
             return false;
         };
-        let before = collision.brush_origin(candidate.brush);
-        match candidate.rotation {
-            Some(rotation) => collision.set_brush_pose(
-                candidate.brush,
-                before + candidate.offset,
-                Vec3::ZERO,
-                rotation.axis,
-                rotation.degrees,
-            ),
-            None => collision.set_brush_origin(candidate.brush, before + candidate.offset),
-        }
-        // Where the mover ends up has to be somewhere a body can stand:
-        // a lift whose far position is buried in the ceiling carries the
-        // player nowhere, and planning it would strand the script.
-        let arrived = !collision
-            .trace(Hull::Standing, landing, landing)
-            .start_solid
-            && standing_on_floor(collision, landing);
         if !arrived {
-            match candidate.rotation {
-                Some(rotation) => collision.set_brush_pose(
-                    candidate.brush,
-                    before,
-                    Vec3::ZERO,
-                    rotation.axis,
-                    0.0,
-                ),
-                None => collision.set_brush_origin(candidate.brush, before),
-            }
             continue;
         }
         ridden.insert(candidate.entity.id());
@@ -2481,6 +2550,134 @@ fn take_ride(game: &mut Game, walk: &mut Walk, ridden: &mut HashSet<u32>, cap: u
         return true;
     }
     false
+}
+
+/// [`take_ride`]'s door/platform/`func_platrot` half: moves `brush`'s own
+/// collision pose straight to the far end of its trip (translation, plus
+/// a rigid rotation about the compiled-frame origin for a mover that has
+/// one), and reports whether the result is somewhere a body can stand.
+/// Puts the brush back exactly as it was found when it is not, so a
+/// rejected candidate leaves nothing behind for the next one to trip over.
+///
+/// `None` only when the level has no collision model at all — the same
+/// failure every other round advance in this module reports.
+fn apply_brush_ride(
+    game: &mut Game,
+    brush: BrushId,
+    offset: Vec3,
+    rotation: Option<RideRotation>,
+    landing: Vec3,
+) -> Option<bool> {
+    let collision = game.collision_mut()?;
+    let before = collision.brush_origin(brush);
+    match rotation {
+        Some(rotation) => {
+            collision.set_brush_pose(
+                brush,
+                before + offset,
+                Vec3::ZERO,
+                rotation.axis,
+                rotation.degrees,
+            );
+        }
+        None => collision.set_brush_origin(brush, before + offset),
+    }
+    // Where the mover ends up has to be somewhere a body can stand: a
+    // lift whose far position is buried in the ceiling carries the player
+    // nowhere, and planning it would strand the script.
+    let arrived = !collision
+        .trace(Hull::Standing, landing, landing)
+        .start_solid
+        && standing_on_floor(collision, landing);
+    if !arrived {
+        match rotation {
+            Some(rotation) => {
+                collision.set_brush_pose(brush, before, Vec3::ZERO, rotation.axis, 0.0);
+            }
+            None => collision.set_brush_origin(brush, before),
+        }
+    }
+    Some(arrived)
+}
+
+/// [`take_ride`]'s `func_train`/`func_tracktrain` half: assigns
+/// `terminus` onto the entity's own live [`TrackTrainState`] — the state
+/// [`TrackTrainState::plan_ride`] already worked out — and re-derives the
+/// brush's collision pose from it with [`sync_train_brush`], the same way
+/// `ohl_engine::level::Level::sync_brush_collision` derives it every
+/// ordinary tick. Reports whether the result is somewhere a body can
+/// stand, and puts the live state (and so the brush) back exactly as
+/// found when it is not.
+///
+/// `None` only when the entity's own [`TrackTrainState`] or the level's
+/// collision model has gone.
+fn apply_train_ride(
+    game: &mut Game,
+    entity: Entity,
+    brush: BrushId,
+    terminus: &TrackTrainState,
+    landing: Vec3,
+) -> Option<bool> {
+    let mut live = game
+        .registry()
+        .world
+        .get::<&mut TrackTrainState>(entity)
+        .ok()?;
+    let original = live.clone();
+    *live = terminus.clone();
+    drop(live);
+    sync_train_brush(game, entity, brush);
+    let arrived = game.collision().is_some_and(|collision| {
+        !collision
+            .trace(Hull::Standing, landing, landing)
+            .start_solid
+            && standing_on_floor(collision, landing)
+    });
+    if !arrived {
+        let mut live = game
+            .registry()
+            .world
+            .get::<&mut TrackTrainState>(entity)
+            .ok()?;
+        *live = original;
+        drop(live);
+        sync_train_brush(game, entity, brush);
+    }
+    Some(arrived)
+}
+
+/// Re-derives `entity`'s own attached `brush`'s collision pose from its
+/// *current* live [`TrackTrainState`], exactly the way
+/// `ohl_engine::level::Level::sync_brush_collision` derives every train's
+/// pose from its state each tick: `entity`'s own placed `origin` keyvalue
+/// plus [`ohl_game::pose::brush_offset`]'s displacement, posed at
+/// [`ohl_game::pose::brush_pose_rotation`]'s axis/angle/pivot. Used by
+/// both halves of [`apply_train_ride`] — applying the new state and
+/// restoring the old one are the same recomputation, just read at a
+/// different moment.
+///
+/// A no-op (leaves the brush wherever it already was) for an entity with
+/// no placed `origin` keyvalue or no collision model at all.
+fn sync_train_brush(game: &mut Game, entity: Entity, brush: BrushId) {
+    let Some(authored) = game
+        .registry()
+        .world
+        .get::<&Transform>(entity)
+        .ok()
+        .map(|transform| transform.origin)
+    else {
+        return;
+    };
+    let offset = ohl_game::pose::brush_offset(game.registry(), entity);
+    let (axis, angle_degrees, pivot) = ohl_game::pose::brush_pose_rotation(game.registry(), entity);
+    let Some(collision) = game.collision_mut() else {
+        return;
+    };
+    if axis == Vec3::ZERO {
+        collision.set_brush_origin(brush, authored + offset);
+    } else {
+        collision.set_brush_pose(brush, authored + offset, pivot, axis, angle_degrees);
+    }
 }
 
 /// Moves every `func_platrot` a reached cell can switch out of the way to
@@ -2749,9 +2946,11 @@ mod tests {
         PLAN_PLATROT_GATE_MAP, PLAN_PLATROT_GATE_NAME, PLAN_PLATROT_GATE_SPEED,
         PLAN_PLATROT_GATE_TRAVEL, PLAN_PLATROT_MAP, PLAN_PLATROT_ROTATION, PLAN_PLATROT_SPEED,
         PLAN_PLATROT_TRAVEL, PLAN_STOOD_ON_MAP, PLAN_STOOD_ON_NAME, PLAN_STOOD_ON_PILLAR_NAME,
-        PLAN_TURN_MAP, REACH_GAP_EDGE_X, REACH_GAP_MAP, plan_cost_bsp, plan_ladder_bsp,
+        PLAN_TRAIN_RIDE_MAP, PLAN_TRAIN_RIDE_SPEED, PLAN_TRAIN_RIDE_TRAVEL, PLAN_TURN_MAP,
+        REACH_GAP_EDGE_X, REACH_GAP_MAP, TrainRideFixture, plan_cost_bsp, plan_ladder_bsp,
         plan_lift_bsp, plan_platrot_alcove_bsp, plan_platrot_bsp, plan_platrot_gate_bsp,
-        plan_stood_on_lift_bsp, plan_turn_bsp, reachability_gap_bsp, reachability_gap_entities,
+        plan_stood_on_lift_bsp, plan_train_ride_bsp, plan_turn_bsp, reachability_gap_bsp,
+        reachability_gap_entities,
     };
     use crate::{AssetSource, MemoryAssets};
 
@@ -2772,6 +2971,16 @@ mod tests {
             plan_lift_bsp("ohlplannext", fixture),
         );
         Game::load(&assets as &dyn AssetSource, PLAN_LIFT_MAP).expect("the fixture loads")
+    }
+
+    /// Loads the train-ride fixture in one of its three shapes.
+    fn train_ride_game(fixture: TrainRideFixture) -> Game {
+        let mut assets = MemoryAssets::new();
+        assets.insert(
+            &format!("maps/{PLAN_TRAIN_RIDE_MAP}.bsp"),
+            plan_train_ride_bsp("ohlplannext", fixture),
+        );
+        Game::load(&assets as &dyn AssetSource, PLAN_TRAIN_RIDE_MAP).expect("the fixture loads")
     }
 
     /// The edge bounds the planner's own default config walks with.
@@ -2881,6 +3090,66 @@ mod tests {
         }
     }
 
+    /// A resting `func_train` mid-chain is a ride candidate exactly like a
+    /// closed door or platform: the walk boards it, standing on it is
+    /// what starts it (the same touch-volume activation
+    /// [`a_touch_started_lift_is_planned_as_a_ride`] exercises for a
+    /// `func_door`), and the route reaches the level change only because
+    /// the train carries it to the ledge — the ledge is otherwise out of
+    /// reach of any step, jump or climb. The fixture's chain dead-ends at
+    /// its second node, exercising [`TrackTrainState::plan_ride`]'s "use
+    /// the terminus" rule for a chain with no documented stop on it.
+    #[test]
+    fn a_resting_func_train_is_planned_as_a_ride() {
+        let mut game = train_ride_game(TrainRideFixture::TouchStart);
+        let plan = plan_route(&mut game, &PlanConfig::default()).expect("the fixture plans");
+        assert!(plan.reaches_goal, "the route reaches the level change");
+        let (yaw, seconds) = ride_of(&plan).expect("the route rides the train");
+        assert_eq!(yaw, None, "standing on it is what starts it");
+        // The train's own documented travel time: distance over speed.
+        assert!(
+            (seconds - PLAN_TRAIN_RIDE_TRAVEL / PLAN_TRAIN_RIDE_SPEED).abs() < 0.01,
+            "the ride waits the train's own travel time, got {seconds}"
+        );
+    }
+
+    /// The same train with its touch volume moved out of reach and no
+    /// button anywhere: there is no way to set it going, so it is no edge
+    /// at all — the same shape [`a_lift_nobody_can_start_is_no_edge_at_all`]
+    /// checks for a door/platform lift.
+    #[test]
+    fn a_train_nobody_can_start_is_no_edge_at_all() {
+        let mut game = train_ride_game(TrainRideFixture::OutOfReach);
+        match plan_route(&mut game, &PlanConfig::default()) {
+            Ok(plan) => {
+                assert!(!plan.reaches_goal, "the goal stays out of reach");
+                assert!(ride_of(&plan).is_none(), "no ride is planned");
+            }
+            Err(rejection) => assert_eq!(rejection.error, PlanError::GoalUnreachable),
+        }
+    }
+
+    /// A train whose chain loops back on itself with no "Wait for
+    /// retrigger" node and no `wait` anywhere never stops on its own: there
+    /// is no deterministic arrival time to plan a ride to, so
+    /// [`TrackTrainState::plan_ride`] reports no ride at all rather than
+    /// guessing one. The touch volume that would start it is in reach
+    /// (unlike [`a_train_nobody_can_start_is_no_edge_at_all`]), isolating
+    /// the loop itself as the reason nothing is planned — and, just as
+    /// importantly, that planning around it terminates instead of looping
+    /// forever chasing a stop that never comes.
+    #[test]
+    fn a_looping_train_with_no_stop_is_no_edge_at_all() {
+        let mut game = train_ride_game(TrainRideFixture::Loop);
+        match plan_route(&mut game, &PlanConfig::default()) {
+            Ok(plan) => {
+                assert!(!plan.reaches_goal, "the goal stays out of reach");
+                assert!(ride_of(&plan).is_none(), "no ride is planned");
+            }
+            Err(rejection) => assert_eq!(rejection.error, PlanError::GoalUnreachable),
+        }
+    }
+
     /// The same shaft with a `func_platrot` in it: a lift that turns a
     /// quarter circle as it rises. The ride edge has to pick it up like
     /// any other lift *and* plan from the rotated landing — the point the
@@ -2922,7 +3191,7 @@ mod tests {
         let candidates = ride_candidates(&game, &walk, &HashSet::new());
         let candidate = candidates
             .first()
-            .copied()
+            .cloned()
             .expect("the walk stands on the platrot and can press its button");
         assert!(
             (candidate.offset.z - PLAN_PLATROT_TRAVEL).abs() < 0.01,
