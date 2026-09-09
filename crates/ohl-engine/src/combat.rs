@@ -14,8 +14,9 @@
 //! selection natively, but its ammo pools only ever grow
 //! ([`Inventory::give_ammo`] is the sole mutator, and it only adds). Firing
 //! a weapon has to *spend* ammo, which that API cannot express. Rather than
-//! edit `ohl-combat` (out of scope for this package; see
-//! `.plan/m79-design.md` §0), this module keeps the engine's own
+//! edit `ohl-combat` (out of scope for this package; see §0 of the
+//! M7.9 design plan, recorded in local design notes and not part of the
+//! repository), this module keeps the engine's own
 //! [`AmmoBank`] as the single source of truth for how much reserve ammo is
 //! actually left, and never calls [`Inventory::give_ammo`] on the
 //! long-lived [`Inventory`] this state owns — a pickup credits the bank
@@ -198,7 +199,8 @@ impl CombatState {
     /// blob included) is serialized whole into the `ohl-save` container, so
     /// no dedicated section is needed for that to work. `TODO(P4)`: fold
     /// this ad hoc encoding into its own `SECTION_INVENTORY`
-    /// (`.plan/m79-design.md` §6) instead, so a save's inventory section is
+    /// (§6 of the M7.9 design plan, recorded in local design notes and
+    /// not part of the repository) instead, so a save's inventory section is
     /// self-describing independent of `PlayerCarryState`'s shape. Weapon
     /// selection is deliberately not carried: `ohl_combat::Inventory`'s
     /// selection API is cycle-only (`select_next`/`select_prev`/
@@ -743,7 +745,8 @@ fn push_brush_hitbox(
 
 /// Phase 9 — drains the damage queue once, in insertion order. Damage aimed
 /// at the player is routed to `player` (the player's own health/armor/suit
-/// reactions, per `.plan/m79-design.md` §3); damage aimed at anything else
+/// reactions, per §3 of the M7.9 design plan (recorded in local design
+/// notes and not part of the repository)); damage aimed at anything else
 /// is routed to that entity's [`ohl_combat::Health`]/[`ohl_combat::Armor`]
 /// components, when it still has them.
 ///

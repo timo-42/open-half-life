@@ -66,7 +66,8 @@ impl Activity {
 
     /// The activity a previous [`Self::tag`] named, or `None` for a tag
     /// this build does not recognise. Additive, for save-file restore:
-    /// `.plan/m79-design.md` §6/§8 P4b.
+    /// §6/§8 P4b of the M7.9 design plan (recorded in local design notes,
+    /// not part of the repository).
     #[must_use]
     pub const fn from_tag(tag: u8) -> Option<Self> {
         Some(match tag {
@@ -385,7 +386,8 @@ impl ScheduleRunner {
     /// through [`crate::schedule_by_name`], the same lookup
     /// [`crate::resolve_schedule`] performs), task index, started flag and
     /// timer — additive, for save-file restore
-    /// (`.plan/m79-design.md` §6/§8 P4b): schedule identity is a stable
+    /// (§6/§8 P4b of the M7.9 design plan, recorded in local design
+    /// notes and not part of the repository): schedule identity is a stable
     /// string precisely so this restore never depends on a schedule's
     /// registration order.
     ///

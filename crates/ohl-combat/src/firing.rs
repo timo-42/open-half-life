@@ -201,7 +201,8 @@ impl FiringState {
     /// discriminant (not [`FireState`] itself, which stays private so a save
     /// format outlives this enum's shape) plus that state's own remaining
     /// timer (`0.0` for a state with none). Additive, for
-    /// `.plan/m79-design.md` §6/§8 P4b's `SECTION_INVENTORY`.
+    /// §6/§8 P4b of the M7.9 design plan (recorded in local design
+    /// notes, not part of the repository) for `SECTION_INVENTORY`.
     ///
     /// Tags: `0` idle, `1` firing, `2` reloading, `3` charging, `4` beam,
     /// `5` holstered. [`Self::restore`] is the inverse.

@@ -2,8 +2,9 @@
 //!
 //! Per TWHL "VERC: Adding New skill.cfg Entries", "Vlatitude: Editing
 //! skill.cfg", and vault entry "The skill.cfg file" (URLs recorded in
-//! `docs/FORMAT_SOURCES.md` "Game text formats" and
-//! `.plan/m8-research.md` section 5): `skill.cfg` cvars follow the
+//! `docs/FORMAT_SOURCES.md` "Game text formats" and section 5 of the M8
+//! research pass, recorded in local research notes and not part of the
+//! repository): `skill.cfg` cvars follow the
 //! convention `sk_<subject>_<property><N>` where `N` in `{1, 2, 3}` selects
 //! easy/medium/hard, chosen at runtime by the engine's `skill` cvar
 //! (`1`/`2`/`3`).

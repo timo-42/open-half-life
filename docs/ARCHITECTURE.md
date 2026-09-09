@@ -4,7 +4,8 @@ Open Half-Life is a Rust workspace split into narrow crates under `crates/`.
 Dependencies point from high-level orchestration toward low-level services;
 `cargo xtask graph` enforces that the intra-workspace dependency graph stays
 acyclic and matches the table below, which restates
-`.plan/rust-architecture-r1.md` section 1.
+section 1 of the Rust migration plan (recorded in local design notes,
+not part of the repository).
 
 | crate | responsibility | std? |
 | --- | --- | --- |
@@ -200,7 +201,8 @@ twelve accepted decoders provide that validation for `hello`, `ready`,
 > staging") specifies the accepted result-bridge, read-broker, handshake, and
 > parent/process-session design the removed C++ tree implemented and hosted
 > CI qualified. It is retained as the byte-for-byte specification the Rust
-> `ohl-import` crate (package R4.5 in `.plan/rust-architecture-r1.md`) must
+> `ohl-import` crate (package R4.5 of the Rust migration plan, recorded in
+local design notes and not part of the repository) must
 > reproduce; that crate does not exist yet, so the `OpenHalfLife::` names and
 > commit hashes below are historical identifiers into git history before the
 > C++ removal, not current Rust crate or module names. See
@@ -722,8 +724,9 @@ production import data.
 > and native-store design the removed C++ tree implemented (Unshield-backed
 > cabinet extraction, `renameat2(RENAME_NOREPLACE)` publication, the Linux
 > native-store qualification). None of it exists in Rust yet: `ohl-import`
-> and the two `ohl-cabinet*` crates (package R4.4/R4.6 in
-> `.plan/rust-architecture-r1.md`) are still ahead. It is retained as the
+> and the two `ohl-cabinet*` crates (packages R4.4/R4.6 of the Rust
+> migration plan, recorded in local design notes and not part of the
+> repository) are still ahead. It is retained as the
 > specification those crates must reproduce; `media`, `Unshield`, and the
 > commit hashes below are the historical C++ identity, not current Rust
 > names.

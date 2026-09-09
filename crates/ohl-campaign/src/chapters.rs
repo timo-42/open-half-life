@@ -6,8 +6,9 @@
 //! in the archived `liblist.gam` key/value pairs, so they qualify as
 //! literals from a lawfully public source; no wiki article prose is
 //! copied, only these name/identifier facts). This reproduces the table
-//! recorded in `.plan/m8-research.md` section 1 and
-//! `docs/FORMAT_SOURCES.md` ("Campaign map sequence").
+//! recorded in section 1 of the M8 research pass (local research notes,
+//! not part of the repository) and `docs/FORMAT_SOURCES.md` ("Campaign
+//! map sequence").
 //!
 //! Cross-checked sources (repeated per row below by short name):
 //! - `vdc-liblist`: developer.valvesoftware.com/wiki/Liblist.gam/Half-Life

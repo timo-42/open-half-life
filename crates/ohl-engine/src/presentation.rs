@@ -3,7 +3,8 @@
 //! [`Presentation`] owns the one [`ohl_gameplay::GameplayBridge`] this
 //! engine drives. The bridge itself writes [`ohl_ui::hud::HudState`]
 //! directly (health/armour/ammo/damage-flash: state, not a stream, per
-//! `.plan/m79-design.md` §5); [`Presentation::tick`] additionally turns
+//! §5 of the M7.9 design plan, recorded in local design notes and not
+//! part of the repository); [`Presentation::tick`] additionally turns
 //! `ohl_player::PlayerEvent`s into HUD updates the bridge has no way to see
 //! (the player's own health and armour, per `crate::damage_map`'s split),
 //! and collects everything a host needs to hear or announce — queued sound

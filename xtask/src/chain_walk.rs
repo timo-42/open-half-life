@@ -5,7 +5,8 @@
 //! campaign never does that: the player arrives through a level change, at
 //! an offset from the destination's `info_landmark`, carrying whatever the
 //! previous maps gave them. Routes authored from a cold spawn therefore do
-//! not compose, and `.plan/progress-probe-5.md`/`-7.md` found several maps
+//! not compose, and earlier follow-up investigations (recorded in local
+//! notes, not part of the repository) found several maps
 //! "blocked" for exactly that reason — the cold load has no campaign state
 //! to work with.
 //!

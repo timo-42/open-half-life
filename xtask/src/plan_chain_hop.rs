@@ -6,8 +6,9 @@
 //! got. Authoring the *next* route has always been the hard part: it can
 //! only be written from the arrival point the previous routes leave the
 //! player at, which is a state no cold `--map <name>` load reproduces, and
-//! `.plan/chain-hop6.md` records two hand-written navigation probes
-//! failing to walk a route the reachability report says exists.
+//! local investigation notes (not part of the repository) record two
+//! hand-written navigation probes failing to walk a route the
+//! reachability report says exists.
 //!
 //! This command is that job, run by the engine instead: it assembles the
 //! same chain `chain-walk` does, runs it in one process, and hands the

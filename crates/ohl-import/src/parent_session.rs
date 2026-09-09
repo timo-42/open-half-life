@@ -1,7 +1,8 @@
 //! The trusted parent composition for one handshaken worker lifetime.
 //!
 //! Port of the C++ `media::ParserParentSession`, expressed as a **typestate**
-//! as `.plan/rust-architecture-r1.md` section 2 requires: transitions consume
+//! as section 2 of the Rust migration plan requires (recorded in local
+//! design notes, not part of the repository): transitions consume
 //! the session and return the next state, so
 //!
 //! - `receive_one()` does not exist on [`Idle`] — a worker cannot pre-send a

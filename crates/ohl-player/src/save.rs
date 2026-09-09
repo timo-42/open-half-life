@@ -15,7 +15,8 @@ use crate::systems::Player;
 
 /// The `ohl-save` section tag carrying the player systems' state.
 ///
-/// `.plan/m7-design.md` section 4 reserves `0x20` for player state, `0x21`
+/// Section 4 of the M7 design plan (recorded in local design notes, not
+/// part of the repository) reserves `0x20` for player state, `0x21`
 /// for per-entity health/ammo/inventory and `0x22` for AI state.
 pub const PLAYER_STATE_TAG: u32 = 0x20;
 

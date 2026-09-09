@@ -505,8 +505,9 @@ const DOOR_AND_LEVEL_CHANGE_ABSENT: [&str; 9] = [
 /// so it stopped reaching its `trigger_changelevel` once that was fixed.
 /// Rather than weaken this scenario's own assertions, the route itself was
 /// re-authored fresh against the corrected engine
-/// (`.plan/progress-probe-2.md`'s two-`Game` planner/autopilot technique;
-/// see the scenario file's own header for the full account) — this
+/// (an earlier investigation's two-`Game` planner/autopilot technique,
+/// recorded in local notes and not part of the repository; see the
+/// scenario file's own header for the full account) — this
 /// constant, and the present/absent split below it, are therefore
 /// unchanged from before that milestone.
 const LEVEL_CHANGE_PRESENT_MONSTER_ENCOUNTER: [&str; 5] = [
@@ -715,7 +716,8 @@ const FIRE_AND_PICKUP_ABSENT: [&str; 8] = [
 /// use-openable door is gone — so it has no scenario here; see
 /// `docs/MILESTONES.md`.
 ///
-/// A third reachability-triage pass (`.plan/progress-probe-3.md`, using PR
+/// A third reachability-triage pass (a follow-up investigation, recorded
+/// in local notes and not part of the repository, using PR
 /// #121's `--reachability-report` dev tool) found two more chapters' first
 /// maps reachable from spawn to their own `trigger_changelevel`: Surface
 /// Tension (c2a5), whose route opens a door along the way (so it asserts

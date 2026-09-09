@@ -138,8 +138,9 @@ pub fn platform_offset(registry: &Registry, entity: Entity) -> Vec3 {
 /// not wherever its brushes happened to be built — a map may author the
 /// brush anywhere and let the first `path_track` place it at spawn.
 ///
-/// The `docs/CLEAN_ROOM.md`-governed `.plan/fidelity-round-2.md` finding
-/// E1 (returning the raw polyline coordinate, which the caller then adds
+/// The fidelity finding E1 (recorded in local investigation notes, not
+/// part of the repository; returning the raw polyline coordinate, which
+/// the caller then adds
 /// the `origin` keyvalue to and so double-applies it) stays fixed: the
 /// `origin` keyvalue is subtracted here precisely so the sum cancels to
 /// the absolute position exactly once. Subtracting the chain's first node

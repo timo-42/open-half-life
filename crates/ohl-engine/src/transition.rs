@@ -22,8 +22,9 @@
 //!
 //! The exact `env_global` save semantics are modelled here from the
 //! documented *behaviour* of a named global that is off/on/dead, not from a
-//! retrieved specification of its stored form; see `.plan/m8-research.md`
-//! open item 2 and [`ohl_game::registry::GlobalStateValue`].
+//! retrieved specification of its stored form; see open item 2 of the M8
+//! research pass (recorded in local research notes, not part of the
+//! repository) and [`ohl_game::registry::GlobalStateValue`].
 
 use std::collections::BTreeMap;
 
@@ -75,7 +76,8 @@ pub const MAX_CARRIED_KEYVALUES: usize = 64;
 /// **To verify:** that the player's inventory persists across a
 /// `changelevel` at all is community knowledge that the M8 research pass
 /// could not confirm from a reachable public page; see
-/// `.plan/m8-research.md` open item 3.
+/// open item 3 of the M8 research pass (recorded in local research
+/// notes, not part of the repository).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlayerCarryState {
     /// Health carried into the next map.

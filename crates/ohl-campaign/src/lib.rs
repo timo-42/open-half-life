@@ -17,9 +17,10 @@
 //! `startmap`/`trainmap` defaults are literal facts drawn from publicly
 //! documented sources; see the per-item citations in `chapters.rs` and the
 //! consolidated list in `docs/FORMAT_SOURCES.md` ("Campaign map
-//! sequence"), reusing the research recorded in `.plan/m8-research.md`.
+//! sequence"), reusing the research recorded in the M8 research pass
+//! (local research notes, not part of the repository).
 //!
-//! # Open items (flagged "to verify" per `.plan/m8-research.md`)
+//! # Open items (flagged "to verify" per that same M8 research pass)
 //!
 //! 1. **Interloper's starting map prefix.** Sources disagree (`c4a1a` vs
 //!    `c4a2b`); [`chapters::CHAPTERS`] deliberately leaves that chapter's

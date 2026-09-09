@@ -1,7 +1,8 @@
 //! Crate dependency-graph policy.
 //!
-//! Encodes the acyclic edge table from `.plan/rust-architecture-r1.md`
-//! section 1 as data, so crates not yet created (most of the table, at R2)
+//! Encodes the acyclic edge table from section 1 of the Rust migration
+//! plan (recorded in local design notes, not part of the repository) as
+//! data, so crates not yet created (most of the table, at R2)
 //! are still validated automatically the moment they are added under
 //! `crates/`.
 

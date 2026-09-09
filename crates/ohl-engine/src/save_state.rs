@@ -2,7 +2,8 @@
 //! `SECTION_ENTITY_COMBAT` (24), `SECTION_AI` (25), `SECTION_PROJECTILES`
 //! (26) and `SECTION_RNG` (27); plus M9.5's `SECTION_MAKER_CHILDREN` (29).
 //! See `crate::save`'s module doc for the full tag map and
-//! `.plan/m79-design.md` §6 for the rules every section here follows:
+//! §6 of the M7.9 design plan (recorded in local design notes, not part
+//! of the repository) for the rules every section here follows:
 //! additive only, entities referenced by spawn index (never a raw
 //! `hecs::Entity`), a missing section loads as a default so a save written
 //! before this package still opens, and every length is bounded.
@@ -220,7 +221,8 @@ pub struct EnemyMemorySnapshot {
 /// Schedule identity is the running schedule's stable name (`""` for none),
 /// resolved back to the schedule table by
 /// `ohl_ai::ScheduleRunner::restore` — never an index, so adding a schedule
-/// can never invalidate a save (`.plan/m79-design.md` §6).
+/// can never invalidate a save (§6 of the M7.9 design plan, recorded in
+/// local design notes and not part of the repository).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AiSnapshot {
     /// `ohl_ai::MonsterState::tag`.

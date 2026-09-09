@@ -76,7 +76,8 @@ impl MonsterState {
 
     /// The state a previous [`Self::tag`] named, or `None` for a tag this
     /// build does not recognise (a save file written by a newer build).
-    /// Additive, for save-file restore: `.plan/m79-design.md` §6/§8 P4b.
+    /// Additive, for save-file restore: §6/§8 P4b of the M7.9 design
+    /// plan (recorded in local design notes, not part of the repository).
     #[must_use]
     pub const fn from_tag(tag: u8) -> Option<Self> {
         Some(match tag {

@@ -546,7 +546,8 @@ fn the_player_group_is_cleared_by_a_level_change() {
     assert!(game.followers().is_empty());
 }
 
-/// M7.11 follow-up (`.plan/smoke-round-3.md`, "Scripted-sequence probe"):
+/// M7.11 follow-up ("Scripted-sequence probe", recorded in local
+/// investigation notes and not part of the repository):
 /// a walk-mode script bound to a monster that never moves — here made
 /// inert by stripping its `MonsterAi` outright, the worst case of "cannot
 /// reach the mark" — must still let go within

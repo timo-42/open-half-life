@@ -115,13 +115,15 @@ pub const DISTANCE_ROUNDING: f32 = 10.0;
 /// quick, always-safe default, not for every map: a large, open level's own
 /// round-0 walk can exceed it before a single round-advance edge
 /// (door/breakable/pushable/pendulum) ever runs, hiding whatever those
-/// edges would otherwise reveal (recorded against `c4a2`,
-/// `.plan/progress-probe-7.md`). Raising the cap is legitimate triage, but
+/// edges would otherwise reveal (recorded against `c4a2` in local
+/// investigation notes, not part of the repository). Raising the cap is
+/// legitimate triage, but
 /// an unbounded one would let a pathological or malformed map turn a single
 /// walk into effectively unbounded work; this ceiling — chosen generously
 /// above the largest reachable area any real, published map has been
 /// observed to have in this project's own investigations so far (`c4a2`'s
-/// full closure was 79,296 cells, `.plan/progress-probe-6.md`) — keeps the
+/// full closure was 79,296 cells, recorded in local investigation notes
+/// and not part of the repository) — keeps the
 /// walk bounded even at its most permissive setting.
 pub const MAX_CELL_CAP: usize = 2_000_000;
 
@@ -199,7 +201,8 @@ pub struct ReachabilityConfig {
     /// their own edges. `false` by default, matching every other
     /// assumption flag here: without it, a `func_pendulum` stays on the
     /// frontier forever, exactly as this project's walk has always treated
-    /// it (see `.plan/progress-probe-7.md`'s `c1a2` finding, the gap this
+    /// it (see the follow-up investigation's `c1a2` finding, recorded in
+    /// local notes and not part of the repository, the gap this
     /// flag closes).
     pub assume_pendulum_wait: bool,
 }

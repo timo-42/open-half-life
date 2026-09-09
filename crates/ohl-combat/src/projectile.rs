@@ -424,7 +424,8 @@ impl ProjectileSet {
 
     /// This set's own restart bookkeeping — the next id to hand out and the
     /// snark-hop generator's raw state — for a save file. Additive, for
-    /// `.plan/m79-design.md` §6/§8 P4b's `SECTION_PROJECTILES`; paired with
+    /// §6/§8 P4b of the M7.9 design plan (recorded in local design
+    /// notes, not part of the repository) for `SECTION_PROJECTILES`; paired with
     /// [`Self::restore_from_parts`].
     #[must_use]
     pub fn next_id_and_rng_state(&self) -> (u32, u64) {

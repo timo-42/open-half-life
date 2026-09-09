@@ -174,7 +174,8 @@ pub struct ScriptStep {
 /// cannot reach its mark" item: no public page says what a script does when
 /// its monster cannot reach the mark, so the previous behaviour — waiting
 /// forever — could hold a monster's brain hostage indefinitely (observed on
-/// the campaign start map's own intro sequence, `.plan/smoke-round-3.md`).
+/// the campaign start map's own intro sequence, recorded in local
+/// investigation notes and not part of the repository).
 /// This project instead bounds the wait and abandons the script, the same
 /// outcome a disturbance already produces, rather than inventing an
 /// undocumented teleport-on-timeout rule. At [`crate::scripts`]'s walking
