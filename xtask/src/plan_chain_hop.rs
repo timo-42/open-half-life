@@ -90,9 +90,10 @@ pub const CHAIN_INCOMPLETE_LINE: &str =
     "Route plan refused: the chain did not arrive cleanly, so nothing was planned.";
 
 /// The fixed prefixes the app's own planner report lines carry.
-const REPORT_PREFIXES: [(&str, &str); 5] = [
+const REPORT_PREFIXES: [(&str, &str); 6] = [
     ("Route plan cells: ", "Cells the search reached"),
     ("Route plan segments: ", "Walk-forward segments"),
+    ("Route plan ladder climbs: ", "Ladder climbs"),
     ("Route plan door presses: ", "Door presses"),
     ("Route plan replay attempts: ", "Plan/replay attempts"),
     (

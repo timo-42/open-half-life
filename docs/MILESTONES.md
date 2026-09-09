@@ -5894,3 +5894,54 @@ different questions, and only the second has to be crossable by a body.
 **Gates**: fmt, clippy (workspace/all-features and `--features dev-tools`),
 `cargo test --workspace` and `--all-features`, policy, graph, combat-smoke
 37/37, `cargo xtask chain-walk` at depth 9.
+
+## M9.30 --- What the route planner refused, and why (falls and ladders)
+
+The hop M9.29 attempted and refused was diagnosed by running it: the
+search reached that map's own trigger every time, so nothing about the
+map was unimplemented. What the *route* did was walk the player off a
+ledge into a shaft, because the walk this planner inherited follows a
+one-way fall of any depth at all — a triage walk's question is whether a
+place can be entered, not whether the player survives entering it. The
+first fall cost health, the second was fatal, and a corpse plans the same
+route every attempt, so the loop spent every remaining attempt on it and
+reported the goal unreachable. Three things came out of that.
+
+**A fall is now bounded by what the player survives.** The bound is
+derived, never restated: the published safe landing speed and damage
+curve this project already implements, inverted for the height a landing
+at a given damage budget comes from, with the map's own live gravity. By
+default a planned fall costs at most half the health the player has when
+the plan is made, and a player hanging on a ladder is never planned to let
+go of it for a fall that costs anything at all. A caller who wants the
+older, unbounded behaviour says so.
+
+**A ladder is an edge.** A climbable volume was invisible to a walk that
+only knows how to step, jump and drop, which is why a shaft with a ladder
+in it looked like a fatal fall. The walk now steps into such a volume off
+a ledge, climbs it a cell at a time, and steps off at its foot; the route
+says so as a turn to face the ladder and a held key — forward to go up,
+back to come down — which is the engine's own ladder step read back
+rather than a second rule stated here. A committed chunk always ends at
+its first climb: `back` means "down the ladder" only while the player is
+actually on one, and only a replay knows whether they are.
+
+**A planned run now brakes.** A `forward` line's tick count already
+replayed the engine's ground acceleration; it ignored the coast after the
+key is released, which on this build's own movement constants is most of
+a corridor's width. Every planned run overshot by that much, which is how
+a route ends up somewhere it was never planned to be — over a ledge, for
+instance. The count now releases the key on the last tick whose own coast
+still lands short of the distance.
+
+The hop itself is still not written. With these three, the planner's
+player survives the descent and gets a third of the way along the route
+instead of dying part-way, and the search reaches the goal from every
+point it plans from; the walk then ends in a small enclosure the bounded
+search sees only a hundred cells of, and the loop cannot get out of it.
+That is the next thing to look at, and it is a different question from
+this one.
+
+**Gates**: fmt, clippy (workspace/all-features and `--features dev-tools`),
+`cargo test --workspace` and `--all-features`, policy, graph, combat-smoke
+37/37, `cargo xtask chain-walk` at depth 9.

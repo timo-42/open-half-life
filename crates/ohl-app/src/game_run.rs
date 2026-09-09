@@ -272,6 +272,12 @@ pub struct GameArgs<'a> {
     /// `plan_route`.
     #[cfg(feature = "dev-tools")]
     pub plan_attempts: Option<usize>,
+
+    /// Development only: how many of one plan's travelling segments each
+    /// attempt commits (`--plan-segments`). Ignored without
+    /// `plan_route`.
+    #[cfg(feature = "dev-tools")]
+    pub plan_segments: Option<usize>,
 }
 
 /// The fixed line a run prints once, right after a successful load, when
@@ -931,7 +937,9 @@ fn run_route_planner(
             .plan_attempts
             .unwrap_or(crate::route_planner::DEFAULT_ATTEMPTS),
         settle_rounds: crate::route_planner::DEFAULT_SETTLE_ROUNDS,
-        segments_per_attempt: crate::route_planner::DEFAULT_SEGMENTS_PER_ATTEMPT,
+        segments_per_attempt: args
+            .plan_segments
+            .unwrap_or(crate::route_planner::DEFAULT_SEGMENTS_PER_ATTEMPT),
         plan: ohl_engine::PlanConfig {
             cell_cap: args
                 .reachability_cell_cap
@@ -950,6 +958,9 @@ fn run_route_planner(
             // never logged, exactly like `run_chained`'s own copy.
             avoid_goal_maps: visited.to_vec(),
             assume_longjump: args.reachability_assume_longjump,
+            // The default: never plan a fall the player does not walk
+            // away from unhurt (`ohl_engine::route_plan::safe_drop_height`).
+            max_drop: None,
         },
     };
 
@@ -965,6 +976,7 @@ fn run_route_planner(
     };
     tracing::info!("Route plan cells: {}.", route.cells);
     tracing::info!("Route plan segments: {}.", route.segments);
+    tracing::info!("Route plan ladder climbs: {}.", route.climbs);
     tracing::info!("Route plan door presses: {}.", route.doors);
     tracing::info!("Route plan replay attempts: {}.", route.attempts);
     tracing::info!("Route plan simulated seconds: {:.1}.", route.seconds());

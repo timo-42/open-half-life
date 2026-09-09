@@ -966,12 +966,19 @@ enum TreeKind {
 /// clipnode child link.
 const CHILD_EMPTY_CLIPNODE: i16 = -1;
 const CHILD_SOLID_CLIPNODE: i16 = -2;
-const CHILD_WATER_CLIPNODE: i16 = -3;
 /// Leaf 1 (empty), leaf 0 (solid) and leaf 2 (water), encoded as
 /// `!leaf_index`.
 const CHILD_EMPTY_LEAF: i16 = -2;
 const CHILD_SOLID_LEAF: i16 = -1;
 const CHILD_WATER_LEAF: i16 = -3;
+
+/// The three contents values the fixture builder's own leaves 0..2 stand
+/// for, and the size in bytes of one leaf record (so a new leaf's index is
+/// derivable from the lump's length).
+const CONTENTS_EMPTY: i32 = -1;
+const CONTENTS_SOLID: i32 = -2;
+const CONTENTS_WATER: i32 = -3;
+const LEAF_BYTES: usize = 28;
 
 impl Bsp30Builder {
     fn plane_count(&self) -> usize {
@@ -1047,6 +1054,19 @@ impl Bsp30Builder {
         solid: &[CollisionBrush],
         liquid: &[CollisionBrush],
     ) -> [i32; 4] {
+        self.push_collision_hulls_with_contents(solid, &[(CONTENTS_WATER, liquid)])
+    }
+
+    /// Like [`Self::push_collision_hulls`], but every `(contents,
+    /// brushes)` pair gives points inside those brushes (and outside every
+    /// solid brush) that contents value: a water pool, a climbable volume,
+    /// or any other non-solid contents a fixture needs. Earlier pairs win
+    /// over later ones where two volumes overlap.
+    pub fn push_collision_hulls_with_contents(
+        &mut self,
+        solid: &[CollisionBrush],
+        volumes: &[(i32, &[CollisionBrush])],
+    ) -> [i32; 4] {
         if self.leaves.is_empty() {
             // Leaf 0: the shared solid leaf. Leaf 1: empty space. Leaf 2:
             // water.
@@ -1054,26 +1074,46 @@ impl Bsp30Builder {
             self.push_leaf(-1, -1, [-4096; 3], [4096; 3], 0, 0, [0; 4]);
             self.push_leaf(-3, -1, [-4096; 3], [4096; 3], 0, 0, [0; 4]);
         }
+        // One further leaf per contents value that is not one of the three
+        // above, so hull 0's tree has a leaf to name. A clipnode tree names
+        // the contents value itself and needs none.
+        let mut leaf_child: Vec<(i32, i16)> = alloc::vec![
+            (CONTENTS_SOLID, CHILD_SOLID_LEAF),
+            (CONTENTS_EMPTY, CHILD_EMPTY_LEAF),
+            (CONTENTS_WATER, CHILD_WATER_LEAF),
+        ];
+        for (contents, _) in volumes {
+            if leaf_child.iter().any(|(value, _)| value == contents) {
+                continue;
+            }
+            let index = i16::try_from(self.leaves.len() / LEAF_BYTES).unwrap();
+            self.push_leaf(*contents, -1, [-4096; 3], [4096; 3], 0, 0, [0; 4]);
+            leaf_child.push((*contents, !index));
+        }
         let mut heads = [0i32; 4];
         for (hull, (mins, maxs)) in FIXTURE_HULL_SIZES.iter().enumerate() {
-            let (kind, empty, solid_child, water) = if hull == 0 {
-                (
-                    TreeKind::Nodes,
-                    CHILD_EMPTY_LEAF,
-                    CHILD_SOLID_LEAF,
-                    CHILD_WATER_LEAF,
-                )
+            let (kind, empty, solid_child) = if hull == 0 {
+                (TreeKind::Nodes, CHILD_EMPTY_LEAF, CHILD_SOLID_LEAF)
             } else {
                 (
                     TreeKind::Clipnodes,
                     CHILD_EMPTY_CLIPNODE,
                     CHILD_SOLID_CLIPNODE,
-                    CHILD_WATER_CLIPNODE,
                 )
             };
-            let liquid_tree = self.emit_union(liquid, *mins, *maxs, kind, water, empty);
-            heads[hull] =
-                i32::from(self.emit_union(solid, *mins, *maxs, kind, solid_child, liquid_tree));
+            let mut tree = empty;
+            for (contents, brushes) in volumes.iter().rev() {
+                let inside = if hull == 0 {
+                    leaf_child
+                        .iter()
+                        .find(|(value, _)| value == contents)
+                        .map_or(empty, |(_, child)| *child)
+                } else {
+                    i16::try_from(*contents).unwrap_or(empty)
+                };
+                tree = self.emit_union(brushes, *mins, *maxs, kind, inside, tree);
+            }
+            heads[hull] = i32::from(self.emit_union(solid, *mins, *maxs, kind, solid_child, tree));
         }
         heads
     }
