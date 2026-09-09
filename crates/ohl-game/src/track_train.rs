@@ -302,14 +302,16 @@ pub struct TrackTrain {
     ///
     /// TODO(black-box): no public source documents the exact wheel-offset
     /// turn-lag formula, so [`TrackTrainState::yaw_degrees`] does not model
-    /// one; but a positive value here *is* read as how far past a node the
-    /// hull's heading should take to finish turning onto the next segment,
-    /// rather than turning through the whole angle between segments in the
-    /// single tick the train reaches the node — see
-    /// [`TrackTrainState::yaw_degrees`]'s own doc comment for why a hard
-    /// snap is a problem worth avoiding even without a documented lag
-    /// formula to replace it with, and `DEFAULT_YAW_BLEND_DISTANCE` for the
-    /// distance used when this is left at `0`.
+    /// one; but a positive value here (map units, the same distance unit
+    /// `speed`'s per-second rate and `height`'s offset are both given in)
+    /// *is* read as how far past a node the hull's heading should take to
+    /// finish turning onto the next segment, rather than turning through
+    /// the whole angle between segments in the single tick the train
+    /// reaches the node — see [`TrackTrainState::yaw_degrees`]'s own doc
+    /// comment for why a hard snap is a problem worth avoiding even
+    /// without a documented lag formula to replace it with, and
+    /// `DEFAULT_YAW_BLEND_DISTANCE` for the distance used when this is
+    /// left at `0`.
     pub wheels: f32,
     /// The documented "No User Control" spawnflag. See
     /// [`TRACKTRAIN_NO_USER_CONTROL_FLAG`]; recorded but unused, since this
@@ -588,15 +590,27 @@ impl TrackTrainState {
 
     /// The node behind [`Self::node_index`] in the direction the train is
     /// (or, if parked, was) travelling: the departure point of the segment
-    /// that led into the current node. `None` at the start of a non-looped
-    /// chain, where no such node exists.
+    /// that led into the current node. `None` at the true start of a
+    /// non-looped chain, where no such node exists; never `None` for a
+    /// looped one, which has no start to run out at.
+    ///
+    /// Uses [`PathChain::prev_index`]/[`PathChain::next_index`] — the same
+    /// looped-aware pair [`Self::other_index`] uses one screen above — not
+    /// raw index arithmetic. A `node_index` of `0` moving forward (or the
+    /// chain's last node moving backward) is only "off the start" on a
+    /// non-looped chain; on a looped one it is a wrap, and the node on the
+    /// far side of that wrap is exactly as much "the previous node" as any
+    /// other. Both [`Self::yaw_degrees`]'s parked-at-the-end fallback and
+    /// [`Self::blend_yaw_after_node`] resolve "the previous segment's
+    /// heading" through this one method, so getting the wrap case wrong
+    /// here was enough to leave a looped chain's own wrap corner snapping
+    /// its whole heading change in one tick, the same bug every other
+    /// corner was already fixed for.
     fn previous_node_index(&self) -> Option<usize> {
         if self.direction >= 0.0 {
-            self.node_index.checked_sub(1)
+            self.chain.prev_index(self.node_index)
         } else {
-            self.node_index
-                .checked_add(1)
-                .filter(|&index| index < self.chain.nodes.len())
+            self.chain.next_index(self.node_index)
         }
     }
 
@@ -1354,6 +1368,222 @@ mod tests {
         let position = state.position();
         assert!(position.y.abs() < 1e-3 && position.z.abs() < 1e-3);
         assert!((0.0..=200.0).contains(&position.x));
+    }
+
+    /// [`TrackTrainState::previous_node_index`] at the true start of the
+    /// three-node loop above (`node_index == 0`, moving forward) resolves
+    /// to `c`, the node on the far side of the wrap — not `None`, which
+    /// raw `checked_sub(1)` arithmetic would report there. `other_index`
+    /// (the node *ahead*) already used the chain's looped-aware
+    /// `next_index`/`prev_index` pair for the same reason; this pins that
+    /// `previous_node_index` does too, since it is the one
+    /// [`TrackTrainState::yaw_degrees`] and
+    /// [`TrackTrainState::blend_yaw_after_node`] both read "the previous
+    /// segment's heading" through, and getting the wrap case wrong there
+    /// left a looped chain's own wrap corner snapping its whole heading
+    /// change in one tick — see
+    /// `yaw_blends_across_a_looped_chains_wrap_corner_too` and
+    /// `a_looped_square_tracks_worst_per_tick_yaw_step_stays_small` below
+    /// for the end-to-end version of this same fix.
+    #[test]
+    fn previous_node_index_wraps_on_a_looped_chain_instead_of_reporting_none() {
+        let entities = vec![
+            raw(&[
+                ("classname", "func_tracktrain"),
+                ("targetname", "tram"),
+                ("target", "a"),
+                ("speed", "100"),
+                ("height", "0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "a"),
+                ("target", "b"),
+                ("origin", "0 0 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "b"),
+                ("target", "c"),
+                ("origin", "100 0 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "c"),
+                ("target", "a"),
+                ("origin", "200 0 0"),
+            ]),
+        ];
+        let registry = build_registry(&entities);
+        let state = train_state(&registry);
+        assert_eq!(
+            state.node_index, 0,
+            "the train spawns on the chain's first named node"
+        );
+        assert_eq!(
+            state.previous_node_index(),
+            Some(2),
+            "on a looped chain the node behind the first node, moving forward, \
+             is the last node before the wrap closes, not `None`"
+        );
+    }
+
+    /// A proper looped *square* track (four distinct 90-degree corners,
+    /// one of them the wrap from the last node back to the first): the
+    /// interior three corners already blended before this fix
+    /// (`DEFAULT_YAW_BLEND_DISTANCE` clamped to the 400-unit segment
+    /// length), but the wrap corner used to snap its whole turn in one
+    /// tick, because [`TrackTrainState::previous_node_index`] reported
+    /// `None` there (see `previous_node_index_wraps_on_a_looped_chain_instead_of_reporting_none`)
+    /// and [`TrackTrainState::blend_yaw_after_node`] returns the new
+    /// segment's heading unblended whenever there is no previous segment
+    /// to blend from. Runs two and a half laps and asserts the worst
+    /// shortest-arc yaw change between two consecutive ticks — at *any*
+    /// corner, wrap included — stays well under the ninety degrees a
+    /// one-tick snap would produce.
+    #[test]
+    fn a_looped_square_tracks_worst_per_tick_yaw_step_stays_small() {
+        let entities = vec![
+            raw(&[
+                ("classname", "func_tracktrain"),
+                ("targetname", "tram"),
+                ("target", "a"),
+                ("speed", "100"),
+                ("height", "0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "a"),
+                ("target", "b"),
+                ("origin", "0 0 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "b"),
+                ("target", "c"),
+                ("origin", "400 0 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "c"),
+                ("target", "d"),
+                ("origin", "400 400 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "d"),
+                ("target", "a"),
+                ("origin", "0 400 0"),
+            ]),
+        ];
+        let registry = build_registry(&entities);
+        let mut state = train_state(&registry);
+        let train = train_component(&registry);
+        state.turn_on();
+
+        // One lap is 1600 units at 100 units/second: 16 seconds, 1600
+        // ticks at this test's 0.01-second step. Run two and a half laps.
+        let mut previous_yaw = state
+            .yaw_degrees(&train)
+            .expect("a horizontal square track always has a yaw");
+        let mut worst_step: f32 = 0.0;
+        for _ in 0..4000 {
+            state.advance(0.01);
+            let yaw = state
+                .yaw_degrees(&train)
+                .expect("a horizontal square track always has a yaw");
+            let step = ((yaw - previous_yaw + 180.0).rem_euclid(360.0) - 180.0).abs();
+            worst_step = worst_step.max(step);
+            previous_yaw = yaw;
+        }
+        assert!(
+            worst_step < 2.0,
+            "the worst single-tick yaw change over the whole loop (wrap corner \
+             included) should be a small fraction of a degree once every corner \
+             blends, not the ninety degrees a one-tick snap produces; got {worst_step}"
+        );
+    }
+
+    /// End-to-end version of `previous_node_index_wraps_on_a_looped_chain_instead_of_reporting_none`:
+    /// right at the instant the train wraps from the loop's last node back
+    /// onto its first, the reported yaw is the *incoming* heading (the
+    /// segment that led into the wrap), not the outgoing one — the same
+    /// blend-from-the-previous-segment behaviour every other corner already
+    /// got, rather than the instant snap the bug produced only at the wrap.
+    #[test]
+    fn yaw_blends_across_a_looped_chains_wrap_corner_too() {
+        let entities = vec![
+            raw(&[
+                ("classname", "func_tracktrain"),
+                ("targetname", "tram"),
+                ("target", "a"),
+                ("speed", "100"),
+                ("height", "0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "a"),
+                ("target", "b"),
+                ("origin", "0 0 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "b"),
+                ("target", "c"),
+                ("origin", "400 0 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "c"),
+                ("target", "d"),
+                ("origin", "400 400 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "d"),
+                ("target", "a"),
+                ("origin", "0 400 0"),
+            ]),
+        ];
+        let registry = build_registry(&entities);
+        let mut state = train_state(&registry);
+        let train = train_component(&registry);
+        state.turn_on();
+
+        // One lap is 1600 units at 100 units/second, 16 seconds; step
+        // until the train actually wraps from `d` (index 3) back onto `a`
+        // (index 0) rather than assuming a fixed tick count lands exactly
+        // on the boundary — `f32` accumulation over thousands of 0.01
+        // steps can drift a tick or two either side of it.
+        let mut wrapped = false;
+        for _ in 0..2000 {
+            let before = state.node_index;
+            state.advance(0.01);
+            if before != 0 && state.node_index == 0 {
+                wrapped = true;
+                break;
+            }
+        }
+        assert!(wrapped, "the train never wrapped back onto its first node");
+        assert!(
+            state.t.abs() < 1e-2,
+            "should be right at the wrapped node, got t = {}",
+            state.t
+        );
+
+        // `d` -> `a` points along `-Y`, i.e. 270 degrees; `a` -> `b` points
+        // along `+X`, i.e. 0 degrees. Right at the wrap the reported yaw
+        // should still read as the incoming `d` -> `a` heading, not have
+        // already snapped to the outgoing `a` -> `b` heading.
+        let yaw = state
+            .yaw_degrees(&train)
+            .expect("a horizontal square track always has a yaw");
+        let from_incoming = (yaw - 270.0 + 180.0).rem_euclid(360.0) - 180.0;
+        assert!(
+            from_incoming.abs() < 1.0,
+            "right at the wrap the yaw should still read as the incoming heading \
+             (270 degrees, i.e. -90), not the outgoing one; got {yaw}"
+        );
     }
 
     #[test]
