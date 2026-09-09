@@ -18,8 +18,14 @@
 use ohl_engine::test_support::{
     DOOR_NAME, LANDMARK, NEXT_MAP, SYNTHETIC_MAP, synthetic_map_bsp_with_extra_entity,
 };
-use ohl_engine::{AssetSource, Game, Input, MemoryAssets, TICK_SECONDS};
+use ohl_engine::{AssetSource, Game, Input, MemoryAssets, StudioAnim, TICK_SECONDS};
 use ohl_game::registry::{ClassName, Door, MoverState, TargetName};
+
+/// `monster_scientist`'s own documented default model path
+/// (`ohl_ai::monsters::table::MonsterKind::default_model_path`), published
+/// here so the fixture's carried guard — which names no explicit `model`
+/// keyvalue, the ordinary case for a `monster_*` entity — has one to load.
+const GUARD_MODEL: &str = "models/scientist.mdl";
 
 /// The `targetname` the source map's monster carries and the destination
 /// map's script names. Project-authored, like every other literal here.
@@ -59,7 +65,22 @@ fn assets() -> MemoryAssets {
             ),
         ),
     );
+    // The carried guard's own default studio model (see `GUARD_MODEL`'s doc
+    // comment): a minimal, valid, synthetic MDL10 fixture — not any
+    // payload-derived model — so the carry can be asserted past `Actor`
+    // attachment through to `StudioAnim` attachment.
+    let (mdl_bytes, _layout) = ohl_formats::test_support::build_minimal_mdl10();
+    assets.insert(GUARD_MODEL, mdl_bytes);
     assets
+}
+
+/// How many entities in `game`'s current level carry a [`StudioAnim`] — the
+/// same gate `render.rs`'s `collect_studio_instances` queries to decide
+/// what to draw a model for (see that function's own doc comment). Not a
+/// call into the (GPU-backed, not unit-testable) renderer itself, but the
+/// same ECS predicate it runs.
+fn studio_anim_count(game: &Game) -> usize {
+    game.registry().world.query::<&StudioAnim>().iter().count()
 }
 
 fn tick_n(game: &mut Game, n: u32) {
@@ -94,6 +115,11 @@ fn a_carried_monster_arrives_as_a_monster_the_destination_can_script() {
     let mut game = Game::load(&assets, SYNTHETIC_MAP).expect("the synthetic map loads");
     tick_n(&mut game, 5);
     assert_eq!(count_of(&game, "monster_scientist"), 1);
+    assert_eq!(
+        studio_anim_count(&game),
+        1,
+        "the source map's own guard is drawable before any carry happens"
+    );
 
     game.change_level(&assets, NEXT_MAP, LANDMARK)
         .expect("the destination map loads");
@@ -102,6 +128,20 @@ fn a_carried_monster_arrives_as_a_monster_the_destination_can_script() {
         count_of(&game, "monster_scientist"),
         1,
         "the carried monster must exist in the destination"
+    );
+    // The carried guard is simulated (an `Actor`, a brain, a running
+    // script) well before this fix; without it, it was never also drawable
+    // — `Level::attach_studio_models` is what a level change now runs for
+    // whatever `crate::transition::materialise_carried` just appended.
+    assert_eq!(
+        studio_anim_count(&game),
+        1,
+        "the carried guard must get a StudioAnim in the destination too"
+    );
+    assert_eq!(
+        game.prop_count(),
+        1,
+        "and count as one of this level's drawable studio placements"
     );
 
     // The script needs a monster to possess before it can complete, and it
@@ -151,7 +191,15 @@ fn a_materialised_carried_entity_survives_a_save_and_load() {
         "the carried monster must come back out of tag 36"
     );
     // And it must come back as a *monster*, not a husk: the destination's
-    // script still has to find an actor to possess.
+    // script still has to find an actor to possess...
+    assert_eq!(
+        studio_anim_count(&reloaded),
+        1,
+        "...and it must come back drawable too: `Game::from_save_with` runs \
+         `Level::attach_studio_models` for whatever tag 36's own \
+         `restore_carried_entities` just re-materialised, the same pass a \
+         live level change runs"
+    );
     tick_n(&mut reloaded, 240);
     assert!(
         reloaded.script_completion_count() > 0,

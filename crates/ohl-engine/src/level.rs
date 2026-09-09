@@ -691,6 +691,80 @@ impl Level {
         })
     }
 
+    /// Loads the studio models `self.defs[start..]` reference and attaches
+    /// a [`StudioAnim`] to the registry entity at each matching def index —
+    /// the same load-and-attach pass [`Self::from_bytes_with_ramp`] already
+    /// ran for this map's own defs (`load_studio_models`, plus the loop
+    /// that zips its `def_indices` against `props`), run again for
+    /// whatever a level change or a save load appended *after* that pass
+    /// already finished.
+    ///
+    /// A carried entity gets an `Actor`, a brain and its scripts from
+    /// `Systems::attach_level` because that stage re-runs over the whole,
+    /// now-extended `self.defs`/`Registry::entities` every time. The
+    /// studio-model pass does not: it only ever ran once, during the
+    /// initial `Level::load_with_ramp`/`from_bytes_with_ramp`, strictly
+    /// *before* `crate::transition::TransitionState::apply` ->
+    /// `crate::transition::materialise_carried` (a level change) or
+    /// `crate::save_state::restore_carried_entities` (a tag-36 save
+    /// restore) can append anything past `self.map_defs`. Without this
+    /// second pass a carried monster is simulated (walking, scripted,
+    /// alive) but never drawn: `render.rs`'s `collect_studio_instances`
+    /// only enumerates entities carrying a [`StudioAnim`], and nothing
+    /// after the initial load ever attached one to an entity created past
+    /// that point.
+    ///
+    /// Callers pass `self.map_defs` as `start`: that field is set once, at
+    /// construction, to the map's own def count, and `materialise_carried`
+    /// never changes it — so it always names exactly the boundary between
+    /// the destination's own defs (already covered by the initial pass)
+    /// and whatever arrived with the player (not yet covered). Reuses
+    /// whatever [`Self::studio_models`] the initial pass already loaded
+    /// (by lower-cased asset path), so a carried monster that shares its
+    /// species' model with something the destination map already places
+    /// does not load a second copy.
+    pub(crate) fn attach_studio_models(&mut self, source: &dyn AssetSource, start: usize) {
+        if start >= self.defs.len() {
+            return;
+        }
+        let mut by_path: BTreeMap<String, Option<usize>> = self
+            .studio_model_paths
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, path)| (path, Some(index)))
+            .collect();
+        let (props, def_indices, missing) = load_studio_models_into(
+            source,
+            &self.defs[start..],
+            start,
+            &mut by_path,
+            &mut self.studio_models,
+            &mut self.studio_model_paths,
+        );
+        self.missing_models += missing;
+        for (def_index, prop) in def_indices.iter().zip(&props) {
+            let Some(entity) = self.registry.entities.get(*def_index) else {
+                continue;
+            };
+            self.registry
+                .world
+                .insert_one(
+                    *entity,
+                    StudioAnim {
+                        model: prop.model,
+                        sequence: prop.sequence,
+                        cycle: prop.cycle,
+                        frame_rate: 1.0,
+                        body: prop.body,
+                        skin: prop.skin,
+                    },
+                )
+                .ok();
+        }
+        self.props.extend(props);
+    }
+
     /// Moves every attached brush hull to where its entity currently is,
     /// and records each one's velocity for [`Self::brush_velocity`].
     ///
@@ -1031,15 +1105,49 @@ fn external_texture_path(key: &str) -> Option<String> {
 /// Loads the studio models this map's monster and prop entities reference,
 /// skipping (and counting) the ones the payload does not publish.
 fn load_studio_models(source: &dyn AssetSource, defs: &[EntityDef]) -> StudioLoad {
-    let studio_limits = StudioLimits::default();
     let mut by_path: BTreeMap<String, Option<usize>> = BTreeMap::new();
     let mut models = Vec::new();
     let mut paths = Vec::new();
+    let (props, def_indices, missing) =
+        load_studio_models_into(source, defs, 0, &mut by_path, &mut models, &mut paths);
+    StudioLoad {
+        models,
+        paths,
+        props,
+        def_indices,
+        missing,
+    }
+}
+
+/// The shared per-def resolution [`load_studio_models`] and
+/// [`Level::attach_studio_models`] both run: `defs` is scanned starting at
+/// `base_index` in the level's own `defs` list (so the returned
+/// `def_indices` are always absolute, ready to zip against
+/// `Registry::entities`), and any model not already cached in `by_path`
+/// (keyed by its lower-cased asset path) is loaded and appended to
+/// `models`/`paths`.
+///
+/// Splitting this out is what lets [`Level::attach_studio_models`] extend
+/// the *same* `models`/`paths`/`by_path` cache a fresh map load already
+/// built, instead of duplicating the resolution rules (the default-model
+/// fallback, the `.mdl` extension check, [`MAX_STUDIO_MODELS`]) a second
+/// time for whatever a level change or a tag-36 save restore appends past
+/// the map's own defs.
+fn load_studio_models_into(
+    source: &dyn AssetSource,
+    defs: &[EntityDef],
+    base_index: usize,
+    by_path: &mut BTreeMap<String, Option<usize>>,
+    models: &mut Vec<StudioModel>,
+    paths: &mut Vec<String>,
+) -> (Vec<PropPlacement>, Vec<usize>, usize) {
+    let studio_limits = StudioLimits::default();
     let mut props = Vec::new();
     let mut def_indices = Vec::new();
     let mut missing = 0usize;
 
-    for (def_index, def) in defs.iter().enumerate() {
+    for (offset, def) in defs.iter().enumerate() {
+        let def_index = base_index + offset;
         if !wants_studio_model(&def.classname) {
             continue;
         }
@@ -1124,13 +1232,7 @@ fn load_studio_models(source: &dyn AssetSource, defs: &[EntityDef]) -> StudioLoa
         }
     }
 
-    StudioLoad {
-        models,
-        paths,
-        props,
-        def_indices,
-        missing,
-    }
+    (props, def_indices, missing)
 }
 
 #[cfg(test)]

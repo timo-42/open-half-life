@@ -6,6 +6,16 @@
 # `cargo xtask chain-walk`, handed the arrival point `c0a0-hop4.txt`
 # leaves the player at.
 #
+# M9.28 widened step 4's wait (below) from 600 ticks to 1800: that fix gave
+# the guard's own carried entity the studio model it had been missing (see
+# `docs/MILESTONES.md`), and the map's own scripted door-opening chain now
+# times itself against that model's real animation durations instead of
+# this project's fallback estimate — genuinely slower, not broken. 600
+# ticks, tuned against the fallback, was not enough margin once the real
+# timing applied; a local, uncommitted probe (reverted, same pattern
+# `docs/MILESTONES.md` M9.28 and earlier `.plan/` reports used) measured
+# 1500 ticks as sufficient and this keeps a wide margin above that.
+#
 # A line's leading number is a count of *ticks*, each one CAPTURE_STEP
 # (1/60 s) of simulated time — not seconds.
 #
@@ -38,7 +48,7 @@
 300 forward
 20 look 0 42
 300 forward
-600 wait
+1800 wait
 1 use
 300 wait
 200 forward
