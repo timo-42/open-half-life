@@ -1447,6 +1447,7 @@ impl Game {
             momentary_doors: Some(crate::save_state::snapshot_momentary_doors(&self.level)),
             breakables: Some(crate::save_state::snapshot_breakables(&self.level)),
             train_handover_yaw: Some(crate::save_state::snapshot_train_handover_yaw(&self.level)),
+            platrots: Some(crate::save_state::snapshot_platrots(&self.level)),
             // Written only when a level change actually materialised
             // something here, so a cold-loaded map's save carries no
             // section at all rather than an empty one.
@@ -1764,6 +1765,14 @@ impl Game {
         // when that chain defines none, so the two never disagree.
         if let Some(train_handover_yaw) = &save.train_handover_yaw {
             crate::save_state::restore_train_handover_yaw(&mut self.level, train_handover_yaw);
+        }
+        // `SECTION_PLATROT_STATE` (37, M9.33): the same spawn-order-zipped
+        // overlay for a `func_platrot`. Both halves of its pose — the
+        // travel and the spin — come back out of this one state/timer pair
+        // through `ohl_game::pose`, so nothing else has to be restored for
+        // the platform to be drawn, collided and ridden where it was.
+        if let Some(platrots) = &save.platrots {
+            crate::save_state::restore_platrots(&mut self.level, platrots);
         }
         // A load is a map load: the chapter title is announced again.
         self.pending.clear();

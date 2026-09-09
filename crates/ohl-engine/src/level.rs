@@ -831,12 +831,16 @@ impl Level {
             } else {
                 Vec3::ZERO
             };
-            // A rotating mover's own *translation* (always zero; see
-            // `crate::render::brush_offset`'s doc comment) reports a
-            // velocity above like any other brush; the rotational half of
-            // its motion — the only half that can carry a rider standing
-            // on a `func_rotating`/`func_door_rotating` — is recorded
-            // separately in `brush_rotation` just below.
+            // A rotating mover's own *translation* — zero for every
+            // rotating mover except a `func_platrot`, which translates and
+            // turns over the same trip — reports a velocity above like any
+            // other brush; the rotational half of its motion, the only half
+            // that can carry a rider standing on a `func_rotating`/
+            // `func_door_rotating`, is recorded separately in
+            // `brush_rotation` just below. A `func_platrot` rider is
+            // carried by both, which is why `Self::rotational_carry` takes
+            // this step's translation back off the pivot before it turns
+            // them.
             brush_velocity.insert(*brush, velocity);
             let (axis, angle_degrees, pivot) =
                 crate::render::brush_pose_rotation(registry, *entity);

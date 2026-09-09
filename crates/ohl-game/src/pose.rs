@@ -33,8 +33,8 @@ use glam::{Quat, Vec3};
 use hecs::Entity;
 
 use crate::registry::{
-    BrushCenter, Door, MomentaryDoor, MomentaryRotButton, MoverState, Pendulum, Platform, Pushable,
-    Registry, RotButton, Rotator, TrackChange, Transform,
+    BrushCenter, Door, MomentaryDoor, MomentaryRotButton, MoverState, Pendulum, PlatRot, Platform,
+    Pushable, Registry, RotButton, Rotator, TrackChange, Transform,
 };
 use crate::track_train::{TrackTrain, TrackTrainState};
 
@@ -111,6 +111,26 @@ pub fn platform_offset(registry: &Registry, entity: Entity) -> Vec3 {
         platform.movedir,
         platform.state,
         platform.timer,
+    )
+}
+
+/// How far a `func_platrot` has slid along its move direction, from the
+/// same shared `speed`/`travel_distance`/`state`/`timer` shape
+/// [`platform_offset`] reads for a `func_plat` (see [`mover_fraction`]):
+/// this entity translates *and* rotates over one trip, and this is the
+/// translating half. [`platrot_degrees`] is the other half, driven by the
+/// same fraction so the two can never come apart.
+#[must_use]
+pub fn platrot_offset(registry: &Registry, entity: Entity) -> Vec3 {
+    let Ok(platrot) = registry.world.get::<&PlatRot>(entity) else {
+        return Vec3::ZERO;
+    };
+    mover_offset(
+        platrot.speed,
+        platrot.travel_distance,
+        platrot.movedir,
+        platrot.state,
+        platrot.timer,
     )
 }
 
@@ -382,6 +402,7 @@ pub fn brush_offset(registry: &Registry, entity: Entity) -> Vec3 {
         + momentary_door_offset(registry, entity)
         + pushable_offset(registry, entity)
         + track_change_offset(registry, entity)
+        + platrot_offset(registry, entity)
 }
 
 /// How far a `func_door_rotating` has swung, in degrees, from the same
@@ -460,13 +481,49 @@ pub fn pendulum_degrees(registry: &Registry, entity: Entity) -> (Vec3, f32) {
         })
 }
 
+/// How far a `func_platrot` has turned, in degrees, from the *same*
+/// [`mover_fraction`] its own [`platrot_offset`] translates by: a
+/// `func_platrot` is documented as a lift that "will also rotate as it
+/// moves", so one fraction drives both halves and they arrive together by
+/// construction rather than by two doc comments claiming they do.
+///
+/// `Vec3::ZERO`/`0.0` for any entity without a [`PlatRot`], **and** for
+/// one whose `rotation` is zero: such a platform is a plain translating
+/// lift, and reporting no axis for it keeps it on exactly the same
+/// translate-only pose path a `func_plat` takes.
+#[must_use]
+pub fn platrot_degrees(registry: &Registry, entity: Entity) -> (Vec3, f32) {
+    let Ok(platrot) = registry.world.get::<&PlatRot>(entity) else {
+        return (Vec3::ZERO, 0.0);
+    };
+    if platrot.rotation_degrees == 0.0 {
+        return (Vec3::ZERO, 0.0);
+    }
+    let fraction = mover_fraction(
+        platrot.speed,
+        platrot.travel_distance,
+        platrot.state,
+        platrot.timer,
+    );
+    (platrot.axis, platrot.rotation_degrees * fraction)
+}
+
 /// The signed rotation axis and current angle (degrees) a rotating brush
 /// mover — `func_door_rotating`, `func_rotating`, `func_rot_button`,
-/// `momentary_rot_button`, or `func_pendulum`, mutually exclusive
-/// components on any one entity — is currently posed at. `Vec3::ZERO`/
-/// `0.0` (no rotation) for every other brush entity, so a caller can
-/// branch on `axis != Vec3::ZERO` to tell a rotating mover from a
-/// translating one.
+/// `momentary_rot_button`, `func_pendulum`, a
+/// `func_trackchange`/`func_trackautochange`, or a `func_platrot`,
+/// mutually exclusive components on any one entity — is currently posed
+/// at. `Vec3::ZERO`/`0.0` (no rotation) for every other brush entity, so a
+/// caller can branch on `axis != Vec3::ZERO` to tell a rotating mover from
+/// a translating one.
+///
+/// A `func_platrot` is the one entity here that is *both*: it reports a
+/// rotation through this function and a translation through
+/// [`brush_offset`] at the same time, and every consumer of a pose already
+/// composes the two (`ohl_engine::level::Level::sync_brush_collision`
+/// applies `set_brush_pose` with both, [`brush_center`] adds the offset
+/// after rotating). Do not read "reports a rotation" as "does not
+/// translate".
 #[must_use]
 pub fn mover_rotation(registry: &Registry, entity: Entity) -> (Vec3, f32) {
     let (axis, degrees) = door_rotation_degrees(registry, entity);
@@ -489,7 +546,11 @@ pub fn mover_rotation(registry: &Registry, entity: Entity) -> (Vec3, f32) {
     if axis != Vec3::ZERO {
         return (axis, degrees);
     }
-    track_change_degrees(registry, entity)
+    let (axis, degrees) = track_change_degrees(registry, entity);
+    if axis != Vec3::ZERO {
+        return (axis, degrees);
+    }
+    platrot_degrees(registry, entity)
 }
 
 /// The rotation a brush entity's geometry is currently posed at, as the

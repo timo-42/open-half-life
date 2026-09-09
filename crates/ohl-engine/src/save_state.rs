@@ -73,7 +73,7 @@ use ohl_combat::{EntityId as CombatEntityId, ProjectileKind};
 use ohl_game::hecs::Entity;
 use ohl_game::registry::{
     AutoTrigger, Breakable, ClassName, MakerActivation, MomentaryDoor, MomentaryRotButton,
-    MoverState, Pendulum, Pushable, RotButton, Rotator,
+    MoverState, Pendulum, PlatRot, Pushable, RotButton, Rotator,
 };
 use ohl_game::{TrackTrainState, TriggerCameraState};
 use serde::{Deserialize, Serialize};
@@ -1293,6 +1293,73 @@ pub(crate) fn restore_train_handover_yaw(level: &mut Level, snapshots: &[Option<
     for (entity, snapshot) in entities.iter().zip(snapshots) {
         if let Ok(mut state) = level.registry.world.get::<&mut TrackTrainState>(*entity) {
             state.set_handover_yaw(*snapshot);
+        }
+    }
+}
+
+// --- `SECTION_PLATROT_STATE` (37) -----------------------------------------
+
+/// A `func_platrot`'s own runtime state: its [`MoverState`] and the
+/// seconds left in it. Everything else about the entity
+/// (`speed`/`height`/`rotation`/the axis and Toggle spawnflags) is fixed at
+/// spawn and rebuilt identically by `attach_level` every load, so only
+/// these two need to round-trip — the same reasoning already recorded for
+/// [`MomentaryDoorSnapshot`] and [`BreakableSnapshot`].
+///
+/// The platform's *rotation* is deliberately not a field: it is derived
+/// from exactly this state and timer by `ohl_game::pose::platrot_degrees`,
+/// so saving it separately would create a second copy of the same fact
+/// that a load could disagree with.
+///
+/// Part of `SECTION_PLATROT_STATE` (tag 37; see
+/// `crate::save::SECTION_PLATROT_STATE` for why this is a **new** tag
+/// rather than a field on tags 18, 28 or 30).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PlatRotSnapshot {
+    /// `ohl_game::registry::PlatRot::state`.
+    pub state: MoverState,
+    /// `ohl_game::registry::PlatRot::timer`.
+    pub timer: f32,
+}
+
+/// The most entities one `SECTION_PLATROT_STATE` section records, matching
+/// [`MAX_SNAPSHOT_ENTITIES`] — the same per-registry-slot cap every other
+/// index-keyed section already uses.
+pub const MAX_SNAPSHOT_PLATROTS: usize = MAX_SNAPSHOT_ENTITIES;
+
+/// `SECTION_PLATROT_STATE` (37)'s whole payload: one optional
+/// [`PlatRotSnapshot`] per `Registry::entities` slot, in spawn order.
+/// `None` for an entity with no `PlatRot`.
+#[must_use]
+pub(crate) fn snapshot_platrots(level: &Level) -> Vec<Option<PlatRotSnapshot>> {
+    level
+        .registry
+        .entities
+        .iter()
+        .take(MAX_SNAPSHOT_PLATROTS)
+        .map(|entity| {
+            level
+                .registry
+                .world
+                .get::<&PlatRot>(*entity)
+                .ok()
+                .map(|platrot| PlatRotSnapshot {
+                    state: platrot.state,
+                    timer: platrot.timer,
+                })
+        })
+        .collect()
+}
+
+/// Restores [`snapshot_platrots`], zipped against
+/// `level.registry.entities` in spawn order.
+pub(crate) fn restore_platrots(level: &mut Level, snapshots: &[Option<PlatRotSnapshot>]) {
+    let entities = level.registry.entities.clone();
+    for (entity, snapshot) in entities.iter().zip(snapshots) {
+        let Some(snapshot) = snapshot else { continue };
+        if let Ok(mut component) = level.registry.world.get::<&mut PlatRot>(*entity) {
+            component.state = snapshot.state;
+            component.timer = snapshot.timer;
         }
     }
 }

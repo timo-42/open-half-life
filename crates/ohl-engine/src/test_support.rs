@@ -1753,6 +1753,60 @@ pub fn rotating_platform_entities() -> String {
 }
 
 // ---------------------------------------------------------------------
+// A `func_platrot` lift the player rides up *and* round
+// ---------------------------------------------------------------------
+
+/// The map name the `func_platrot` rider fixture is published under.
+pub const PLATROT_MAP: &str = "ohlplatrotsynth";
+
+/// The `targetname` of the fixture's `func_platrot`.
+pub const PLATROT_NAME: &str = "ohl_platrot";
+
+/// How far the fixture's `func_platrot` travels straight up (its `height`
+/// keyvalue).
+pub const PLATROT_HEIGHT: f32 = 128.0;
+
+/// How far round it turns over that same trip (its `rotation` keyvalue),
+/// in degrees. A quarter turn about the documented default `Z` axis leaves
+/// the square slab's own footprint exactly where it was, so a rider is
+/// carried to a different point *of the same platform* — which is what
+/// makes "carried by the rotation" and "carried by the translation"
+/// separable in one measurement.
+pub const PLATROT_ROTATION: f32 = 90.0;
+
+/// Units per second the fixture's platform travels at (its `speed`
+/// keyvalue), so the whole trip takes
+/// `PLATROT_HEIGHT / PLATROT_SPEED` seconds.
+pub const PLATROT_SPEED: f32 = 64.0;
+
+/// A `worldspawn`, an `info_player_start` standing on the turntable slab at
+/// [`ROTATING_PLATFORM_SPAWN_RADIUS`], and a `func_platrot` (submodel
+/// `*1`) built around its own origin brush at the world origin.
+///
+/// Reuses [`rotating_platform_bsp`]'s void world and square slab
+/// deliberately: the slab is centred on the pivot, so a quarter turn maps
+/// its footprint onto itself and a rider who is *not* carried round has
+/// nothing to blame it on but the carry — while the void underneath means a
+/// rider who is not carried *up* simply falls.
+///
+/// No `spawnflags`, so the documented "Toggle" flag is clear and the
+/// platform is started by the player stepping onto it (Sven Co-op wiki
+/// `func_platrot`; `docs/FORMAT_SOURCES.md`). No bytes here come from any
+/// game installation; see `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn platrot_entities() -> String {
+    format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\
+         \"origin\" \"{ROTATING_PLATFORM_SPAWN_RADIUS} 0 40\"\n\"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"func_platrot\"\n\"targetname\" \"{PLATROT_NAME}\"\n\
+         \"model\" \"*1\"\n\"speed\" \"{PLATROT_SPEED}\"\n\
+         \"height\" \"{PLATROT_HEIGHT}\"\n\"rotation\" \"{PLATROT_ROTATION}\"\n\
+         \"wait\" \"30\"\n\"origin\" \"0 0 0\"\n}}\n"
+    )
+}
+
+// ---------------------------------------------------------------------
 // A `func_rot_button` pressed through the real `use_pressed` input path
 // ---------------------------------------------------------------------
 
@@ -3462,6 +3516,155 @@ fn plan_shaft_bsp(next_map: &str, with_ladder: bool, lethal: bool) -> Vec<u8> {
         PLAN_LADDER_TRIGGER_MAX,
         [0.0; 3],
         trigger_heads,
+        2,
+        0,
+        0,
+    );
+
+    b.build()
+}
+
+/// The map name [`plan_platrot_bsp`] is registered under.
+pub const PLAN_PLATROT_MAP: &str = "ohlplanplatrotsynth";
+
+/// The `targetname` of that fixture's `func_platrot`.
+pub const PLAN_PLATROT_NAME: &str = "ohl_plan_platrot";
+
+/// How far its platform travels straight up (its `height` keyvalue).
+pub const PLAN_PLATROT_TRAVEL: f32 = 256.0;
+
+/// How far round it turns over the same trip (its `rotation` keyvalue).
+pub const PLAN_PLATROT_ROTATION: f32 = 90.0;
+
+/// Units per second its platform travels at (its `speed` keyvalue).
+pub const PLAN_PLATROT_SPEED: f32 = 100.0;
+
+/// The platrot fixture's bounding box.
+const PLAN_PLATROT_MIN: [f32; 3] = [-320.0, -192.0, -256.0];
+/// See [`PLAN_PLATROT_MIN`].
+const PLAN_PLATROT_MAX: [f32; 3] = [512.0, 192.0, 512.0];
+
+/// The floor the player starts on, its top at `z = 0`.
+const PLAN_PLATROT_FLOOR_MIN: [f32; 3] = [-320.0, -192.0, -256.0];
+/// See [`PLAN_PLATROT_FLOOR_MIN`].
+const PLAN_PLATROT_FLOOR_MAX: [f32; 3] = [-64.0, 192.0, 0.0];
+
+/// The ledge the lift serves, its top [`PLAN_PLATROT_TRAVEL`] above the
+/// starting floor and far too tall to step, jump, fall or climb to.
+const PLAN_PLATROT_LEDGE_MIN: [f32; 3] = [64.0, -192.0, -256.0];
+/// See [`PLAN_PLATROT_LEDGE_MIN`].
+const PLAN_PLATROT_LEDGE_MAX: [f32; 3] = [512.0, 192.0, 256.0];
+
+/// The platform at rest: a **square** slab centred on the world origin,
+/// which is also its own pivot. A quarter turn maps that square onto
+/// itself, so the ride's landing is on the platform whichever way the
+/// rotation is read — the thing under test is that the planner puts the
+/// player at the *rotated* point of it, not that the footprint moved.
+const PLAN_PLATROT_PLATFORM_MIN: [f32; 3] = [-64.0, -64.0, -240.0];
+/// See [`PLAN_PLATROT_PLATFORM_MIN`].
+const PLAN_PLATROT_PLATFORM_MAX: [f32; 3] = [64.0, 64.0, 16.0];
+
+/// The `func_button` wired to the platform: a panel on the starting
+/// floor's own shaft-side face, at the eye height of a player standing on
+/// the platform and within a `use` press of it, and clear of the
+/// platform's own footprint in `y` so the rising platform never reaches it.
+const PLAN_PLATROT_BUTTON_MIN: [f32; 3] = [-64.0, 80.0, 64.0];
+/// See [`PLAN_PLATROT_BUTTON_MIN`].
+const PLAN_PLATROT_BUTTON_MAX: [f32; 3] = [-56.0, 112.0, 96.0];
+
+/// The `trigger_changelevel` volume at the far end of the ledge.
+const PLAN_PLATROT_GOAL_MIN: [f32; 3] = [384.0, -64.0, 256.0];
+/// See [`PLAN_PLATROT_GOAL_MIN`].
+const PLAN_PLATROT_GOAL_MAX: [f32; 3] = [512.0, 64.0, 384.0];
+
+/// A shaft whose only way up is a `func_platrot`: a starting floor, a
+/// ledge [`PLAN_PLATROT_TRAVEL`] units above it with a
+/// `trigger_changelevel` on top, and a square platform bridging the two
+/// that travels up *and turns a quarter circle* when its `func_button` is
+/// pressed.
+///
+/// The counterpart of [`plan_lift_bsp`] for the one mover that rotates
+/// while it lifts: the route the planner reads back has to be planned from
+/// where the rider *ends up*, which is their boarding point rotated about
+/// the platform's axis and then raised, not the point directly above where
+/// they boarded.
+///
+/// No bytes here come from any game installation; see
+/// `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn plan_platrot_bsp(next_map: &str) -> Vec<u8> {
+    let entities = format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"-200 0 40\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"func_platrot\"\n\"targetname\" \"{PLAN_PLATROT_NAME}\"\n\
+         \"model\" \"*1\"\n\"speed\" \"{PLAN_PLATROT_SPEED}\"\n\
+         \"height\" \"{PLAN_PLATROT_TRAVEL}\"\n\
+         \"rotation\" \"{PLAN_PLATROT_ROTATION}\"\n\"wait\" \"20\"\n\
+         \"spawnflags\" \"1\"\n\"origin\" \"0 0 0\"\n}}\n\
+         {{\n\"classname\" \"func_button\"\n\"model\" \"*3\"\n\
+         \"target\" \"{PLAN_PLATROT_NAME}\"\n\"speed\" \"100\"\n\"wait\" \"5\"\n\
+         \"origin\" \"0 0 0\"\n}}\n\
+         {{\n\"classname\" \"trigger_changelevel\"\n\"model\" \"*2\"\n\
+         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n"
+    );
+
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(&entities);
+
+    let solid = [
+        CollisionBrush::half_space([0.0, 0.0, 1.0], PLAN_PLATROT_MIN[2]),
+        CollisionBrush::half_space([0.0, 0.0, -1.0], -PLAN_PLATROT_MAX[2]),
+        CollisionBrush::half_space([1.0, 0.0, 0.0], PLAN_PLATROT_MIN[0]),
+        CollisionBrush::half_space([-1.0, 0.0, 0.0], -PLAN_PLATROT_MAX[0]),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], PLAN_PLATROT_MIN[1]),
+        CollisionBrush::half_space([0.0, -1.0, 0.0], -PLAN_PLATROT_MAX[1]),
+        CollisionBrush::box_brush(PLAN_PLATROT_FLOOR_MIN, PLAN_PLATROT_FLOOR_MAX),
+        CollisionBrush::box_brush(PLAN_PLATROT_LEDGE_MIN, PLAN_PLATROT_LEDGE_MAX),
+    ];
+    let world_heads = b.push_collision_hulls(&solid);
+    let platform_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(
+        PLAN_PLATROT_PLATFORM_MIN,
+        PLAN_PLATROT_PLATFORM_MAX,
+    )]);
+    let goal_heads = b.push_collision_hulls(&[]);
+    let button_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(
+        PLAN_PLATROT_BUTTON_MIN,
+        PLAN_PLATROT_BUTTON_MAX,
+    )]);
+
+    b.push_model(
+        PLAN_PLATROT_MIN,
+        PLAN_PLATROT_MAX,
+        [0.0; 3],
+        world_heads,
+        2,
+        0,
+        0,
+    );
+    b.push_model(
+        PLAN_PLATROT_PLATFORM_MIN,
+        PLAN_PLATROT_PLATFORM_MAX,
+        [0.0; 3],
+        platform_heads,
+        2,
+        0,
+        0,
+    );
+    b.push_model(
+        PLAN_PLATROT_GOAL_MIN,
+        PLAN_PLATROT_GOAL_MAX,
+        [0.0; 3],
+        goal_heads,
+        2,
+        0,
+        0,
+    );
+    b.push_model(
+        PLAN_PLATROT_BUTTON_MIN,
+        PLAN_PLATROT_BUTTON_MAX,
+        [0.0; 3],
+        button_heads,
         2,
         0,
         0,

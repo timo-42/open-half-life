@@ -77,11 +77,11 @@
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
-use glam::Vec3;
+use glam::{Quat, Vec3};
 use ohl_game::hecs::Entity;
 use ohl_game::registry::{
-    BrushBounds, Button, ChangeLevel, ClassName, Door, MoverState, MultiManager, Platform, Target,
-    TargetName, TeleportTrigger, Trigger, TriggerHurt,
+    BrushBounds, Button, ChangeLevel, ClassName, Door, MoverState, MultiManager, PlatRot, Platform,
+    Target, TargetName, TeleportTrigger, Trigger, TriggerHurt,
 };
 use ohl_physics::{BrushId, CollisionModel, Hull};
 
@@ -1467,11 +1467,63 @@ struct RideCandidate {
     board_cost: u32,
     /// How far the mover travels, in world units.
     offset: Vec3,
+    /// The rigid rotation the mover applies over the same trip, as a
+    /// signed axis and an angle in degrees about the mover's own pivot,
+    /// for a `func_platrot`. `None` for every mover that only translates.
+    ///
+    /// A rider is carried by *both* halves, so the surface they end the
+    /// ride standing on is the platform's top surface rotated as well as
+    /// translated: the plan is read from that rotated landing, not from
+    /// the point directly above where they boarded.
+    rotation: Option<RideRotation>,
     /// How long it takes, in seconds.
     seconds: f32,
     /// The heading to press `use` along to start it, or `None` when
     /// standing on it is what starts it.
     use_yaw: Option<f32>,
+}
+
+/// One mover [`ride_candidates`] has decided is rideable *in principle*,
+/// before it asks whether any cell the walk reached can board and start it.
+#[derive(Debug, Clone, Copy)]
+struct RideMover {
+    /// The mover itself.
+    entity: Entity,
+    /// Its placed resting bounds, whose top surface a rider boards from.
+    bounds: BrushBounds,
+    /// How far it travels, in world units.
+    offset: Vec3,
+    /// How long that takes, in seconds.
+    seconds: f32,
+    /// The rotation it turns through over the same trip, as an axis and an
+    /// angle in degrees; `None` for a mover that only translates.
+    rotation: Option<(Vec3, f32)>,
+}
+
+/// The rigid rotation a `func_platrot` turns through over one trip.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RideRotation {
+    /// The signed rotation axis, as `ohl_game::pose::brush_pose_rotation`
+    /// reports it.
+    axis: Vec3,
+    /// The whole trip's rotation, in degrees.
+    degrees: f32,
+    /// The world-space point it turns about, *before* the trip's own
+    /// translation — the pose the boarding point was measured against, the
+    /// same order `ohl_engine::level::Level::rotational_carry` applies at
+    /// run time.
+    pivot: Vec3,
+}
+
+impl RideRotation {
+    /// Where the rigid rotation puts the world-space point `point`.
+    fn carry(self, point: Vec3) -> Vec3 {
+        if self.axis == Vec3::ZERO || self.degrees == 0.0 {
+            return point;
+        }
+        let rotation = Quat::from_axis_angle(self.axis.normalize(), self.degrees.to_radians());
+        self.pivot + rotation * (point - self.pivot)
+    }
 }
 
 /// Whether activating `source` fires `mover`: directly by name, or
@@ -1600,22 +1652,11 @@ fn ride_activation(game: &Game, mover: Entity, board: Vec3, eye: Vec3) -> Option
     best.map(|(_, yaw)| RideStart::Press { yaw })
 }
 
-/// Every translating brush mover this walk is *standing on* that it could
-/// also set going, with everything the round advance needs to ride it.
-///
-/// A lift at rest is floor: its top surface is one the ordinary walk
-/// steps onto and stands on, and the walk already reached it. What the
-/// walk cannot see is that the floor moves — so a shaft whose only way up
-/// is the lift in it reads as a sealed room, which is exactly what a
-/// bounded search stalling a few hundred units from a map's own level
-/// change looks like from the outside.
-///
-/// The candidates are ordered by boarding cost (cheapest first, with
-/// [`Cell`]'s own order settling a tie) so which ride a round takes does
-/// not depend on how a `HashMap` happened to iterate.
-fn ride_candidates(game: &Game, walk: &Walk, taken: &HashSet<u32>) -> Vec<RideCandidate> {
-    let eye = Vec3::Z * game.move_config().view_height_standing;
-    let mut movers: Vec<(Entity, BrushBounds, Vec3, f32)> = Vec::new();
+/// Every brush mover in `game` that is at rest and travels far enough
+/// in `z` to be worth riding at all, before anything is asked about
+/// whether the walk can board or start it.
+fn rideable_movers(game: &Game, taken: &HashSet<u32>) -> Vec<RideMover> {
+    let mut movers: Vec<RideMover> = Vec::new();
     for (entity, bounds) in &mut game.registry().world.query::<(Entity, &BrushBounds)>() {
         if taken.contains(&entity.id()) {
             continue;
@@ -1644,6 +1685,22 @@ fn ride_candidates(game: &Game, walk: &Walk, taken: &HashSet<u32>) -> Vec<RideCa
                             travel_seconds(platform.travel_distance, platform.speed),
                         )
                     })
+            })
+            // A `func_platrot` is a lift like the two above, and rides
+            // exactly like them — it just also turns while it does it,
+            // which is picked up separately below.
+            .or_else(|| {
+                game.registry()
+                    .world
+                    .get::<&PlatRot>(entity)
+                    .ok()
+                    .filter(|platrot| platrot.state == MoverState::Closed)
+                    .map(|platrot| {
+                        (
+                            platrot.movedir * platrot.travel_distance,
+                            travel_seconds(platrot.travel_distance, platrot.speed),
+                        )
+                    })
             });
         let Some((offset, seconds)) = travel else {
             continue;
@@ -1651,13 +1708,70 @@ fn ride_candidates(game: &Game, walk: &Walk, taken: &HashSet<u32>) -> Vec<RideCa
         if !offset.is_finite() || offset.z.abs() <= RIDE_MIN_LIFT || !(seconds.is_finite()) {
             continue;
         }
-        movers.push((entity, *bounds, offset, seconds));
+        // The whole trip's rotation, for a mover that has one: the pose
+        // `ohl_game::pose` would report at the far end of the travel, read
+        // from the component rather than restated here.
+        let rotation = game
+            .registry()
+            .world
+            .get::<&PlatRot>(entity)
+            .ok()
+            .map(|platrot| (platrot.axis, platrot.rotation_degrees))
+            .filter(|(axis, degrees)| {
+                *axis != Vec3::ZERO && *degrees != 0.0 && axis.is_finite() && degrees.is_finite()
+            });
+        movers.push(RideMover {
+            entity,
+            bounds: *bounds,
+            offset,
+            seconds,
+            rotation,
+        });
     }
+    movers
+}
+
+/// Every translating brush mover this walk is *standing on* that it could
+/// also set going, with everything the round advance needs to ride it.
+///
+/// A lift at rest is floor: its top surface is one the ordinary walk
+/// steps onto and stands on, and the walk already reached it. What the
+/// walk cannot see is that the floor moves — so a shaft whose only way up
+/// is the lift in it reads as a sealed room, which is exactly what a
+/// bounded search stalling a few hundred units from a map's own level
+/// change looks like from the outside.
+///
+/// The candidates are ordered by boarding cost (cheapest first, with
+/// [`Cell`]'s own order settling a tie) so which ride a round takes does
+/// not depend on how a `HashMap` happened to iterate.
+fn ride_candidates(game: &Game, walk: &Walk, taken: &HashSet<u32>) -> Vec<RideCandidate> {
+    let eye = Vec3::Z * game.move_config().view_height_standing;
+    let movers = rideable_movers(game, taken);
     let mut candidates: Vec<RideCandidate> = Vec::new();
-    for (entity, bounds, offset, seconds) in movers {
+    for RideMover {
+        entity,
+        bounds,
+        offset,
+        seconds,
+        rotation,
+    } in movers
+    {
         let Some(brush) = brush_for_entity(game, entity) else {
             continue;
         };
+        // The pivot is the mover's own compiled turning point in world
+        // space: `ohl_game::pose::brush_pose_rotation` reports a
+        // `func_platrot`'s pivot as `Vec3::ZERO` in its compiled frame
+        // (its geometry is built around its own origin brush), so in world
+        // space it is wherever the brush currently sits — which, for a
+        // mover at rest, is where it was placed.
+        let rotation = rotation.map(|(axis, degrees)| RideRotation {
+            axis,
+            degrees,
+            pivot: game
+                .collision()
+                .map_or(Vec3::ZERO, |collision| collision.brush_origin(brush)),
+        });
         // Every cell standing on the mover's own top surface, cheapest
         // first: which of them can *start* it is a question about where
         // its switch is, so the cheapest boarding point that can is the
@@ -1685,6 +1799,7 @@ fn ride_candidates(game: &Game, walk: &Walk, taken: &HashSet<u32>) -> Vec<RideCa
             board,
             board_cost,
             offset,
+            rotation,
             seconds,
             use_yaw,
         });
@@ -1987,12 +2102,28 @@ fn actions_for(
 fn take_ride(game: &mut Game, walk: &mut Walk, ridden: &mut HashSet<u32>, cap: usize) -> bool {
     let candidates = ride_candidates(game, walk, ridden);
     for candidate in candidates {
-        let landing = candidate.board + candidate.offset;
+        // Both halves of the ride, in the order the engine applies them:
+        // the rigid rotation about the pre-trip pivot, then the trip's own
+        // translation (`Level::rotational_carry` takes the step's
+        // translation back off the pivot for exactly this reason).
+        let landing = candidate
+            .rotation
+            .map_or(candidate.board, |rotation| rotation.carry(candidate.board))
+            + candidate.offset;
         let Some(collision) = game.collision_mut() else {
             return false;
         };
         let before = collision.brush_origin(candidate.brush);
-        collision.set_brush_origin(candidate.brush, before + candidate.offset);
+        match candidate.rotation {
+            Some(rotation) => collision.set_brush_pose(
+                candidate.brush,
+                before + candidate.offset,
+                Vec3::ZERO,
+                rotation.axis,
+                rotation.degrees,
+            ),
+            None => collision.set_brush_origin(candidate.brush, before + candidate.offset),
+        }
         // Where the mover ends up has to be somewhere a body can stand:
         // a lift whose far position is buried in the ceiling carries the
         // player nowhere, and planning it would strand the script.
@@ -2001,7 +2132,16 @@ fn take_ride(game: &mut Game, walk: &mut Walk, ridden: &mut HashSet<u32>, cap: u
             .start_solid
             && standing_on_floor(collision, landing);
         if !arrived {
-            collision.set_brush_origin(candidate.brush, before);
+            match candidate.rotation {
+                Some(rotation) => collision.set_brush_pose(
+                    candidate.brush,
+                    before,
+                    Vec3::ZERO,
+                    rotation.axis,
+                    0.0,
+                ),
+                None => collision.set_brush_origin(candidate.brush, before),
+            }
             continue;
         }
         ridden.insert(candidate.entity.id());
@@ -2215,8 +2355,9 @@ mod tests {
     use super::*;
     use crate::test_support::{
         LiftFixture, PLAN_COST_LEDGE_X, PLAN_COST_LEDGE_Z, PLAN_COST_MAP, PLAN_LADDER_DROP,
-        PLAN_LADDER_MAP, PLAN_LIFT_MAP, PLAN_LIFT_TRAVEL, PLAN_TURN_MAP, REACH_GAP_EDGE_X,
-        REACH_GAP_MAP, plan_cost_bsp, plan_ladder_bsp, plan_lift_bsp, plan_turn_bsp,
+        PLAN_LADDER_MAP, PLAN_LIFT_MAP, PLAN_LIFT_TRAVEL, PLAN_PLATROT_MAP, PLAN_PLATROT_ROTATION,
+        PLAN_PLATROT_SPEED, PLAN_PLATROT_TRAVEL, PLAN_TURN_MAP, REACH_GAP_EDGE_X, REACH_GAP_MAP,
+        plan_cost_bsp, plan_ladder_bsp, plan_lift_bsp, plan_platrot_bsp, plan_turn_bsp,
         reachability_gap_bsp, reachability_gap_entities,
     };
     use crate::{AssetSource, MemoryAssets};
@@ -2300,6 +2441,81 @@ mod tests {
             }
             Err(rejection) => assert_eq!(rejection.error, PlanError::GoalUnreachable),
         }
+    }
+
+    /// The same shaft with a `func_platrot` in it: a lift that turns a
+    /// quarter circle as it rises. The ride edge has to pick it up like
+    /// any other lift *and* plan from the rotated landing — the point the
+    /// rider is actually carried to, which is a quarter turn round the
+    /// platform's axis from where they boarded, not the point directly
+    /// above it.
+    #[test]
+    fn a_func_platrot_is_ridden_and_planned_from_its_rotated_landing() {
+        let mut game = {
+            let mut assets = MemoryAssets::new();
+            assets.insert(
+                &format!("maps/{PLAN_PLATROT_MAP}.bsp"),
+                plan_platrot_bsp("ohlplannext"),
+            );
+            Game::load(&assets as &dyn AssetSource, PLAN_PLATROT_MAP).expect("the fixture loads")
+        };
+
+        // What the candidate itself reports, before any plan is read back:
+        // the travel, the trip time, and the rotation that goes with it.
+        let walk = {
+            let start = plan_start(
+                game.collision().expect("the fixture has collision"),
+                Vec3::from_array(game.player_origin()),
+            );
+            let mut walk = Walk::new(start);
+            let bounds = EdgeBounds {
+                jump: JumpBounds::from_move_config(game.move_config()),
+                long_jump: None,
+                safe_drop: safe_drop_height(game.move_config()),
+                max_drop: survivable_drop_height(game.move_config(), game.player_health()),
+            };
+            walk.expand(
+                game.collision().expect("the fixture has collision"),
+                300_000,
+                bounds,
+            );
+            walk
+        };
+        let candidates = ride_candidates(&game, &walk, &HashSet::new());
+        let candidate = candidates
+            .first()
+            .copied()
+            .expect("the walk stands on the platrot and can press its button");
+        assert!(
+            (candidate.offset.z - PLAN_PLATROT_TRAVEL).abs() < 0.01,
+            "the whole documented travel: {:?}",
+            candidate.offset
+        );
+        let rotation = candidate
+            .rotation
+            .expect("a func_platrot turns as it lifts");
+        assert_eq!(rotation.axis, Vec3::Z, "no axis spawnflag means Z");
+        assert!((rotation.degrees - PLAN_PLATROT_ROTATION).abs() < 0.01);
+        // A quarter turn about `+Z` about the platform's own pivot: the
+        // landing is *not* the boarding point raised.
+        let landing = rotation.carry(candidate.board) + candidate.offset;
+        assert!(
+            landing.truncate().distance(candidate.board.truncate()) > 1.0,
+            "the landing is rotated away from the boarding point"
+        );
+        assert!(
+            (landing.z - (candidate.board.z + PLAN_PLATROT_TRAVEL)).abs() < 0.01,
+            "and raised by the whole travel"
+        );
+
+        let plan = plan_route(&mut game, &PlanConfig::default()).expect("the fixture plans");
+        assert!(plan.reaches_goal, "the route reaches the level change");
+        let (yaw, seconds) = ride_of(&plan).expect("the route rides the platrot");
+        assert!(yaw.is_some(), "the platform's button has to be pressed");
+        assert!(
+            (seconds - PLAN_PLATROT_TRAVEL / PLAN_PLATROT_SPEED).abs() < 0.01,
+            "the ride waits the platform's own travel time"
+        );
     }
 
     /// A ride costs more than a climb and less than a jump: it is an

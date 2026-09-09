@@ -49,8 +49,8 @@
 use glam::Vec3;
 use ohl_engine::save::{CarriedEntityDef, EngineHeader, TeleportStateSnapshot, ViewState};
 use ohl_engine::save_state::{
-    BreakableSnapshot, MomentaryDoorSnapshot, MonsterMakerSnapshot, MoverSnapshot, RotatorSnapshot,
-    ScriptRunnerSnapshot, TrackTrainSnapshot, TriggerCameraSnapshot,
+    BreakableSnapshot, MomentaryDoorSnapshot, MonsterMakerSnapshot, MoverSnapshot, PlatRotSnapshot,
+    RotatorSnapshot, ScriptRunnerSnapshot, TrackTrainSnapshot, TriggerCameraSnapshot,
 };
 use ohl_engine::test_support::{
     ROTATING_DOOR_MAP, ROTATING_DOOR_NAME, rotating_door_bsp, rotating_door_entities,
@@ -217,6 +217,15 @@ const GOLDEN_TAG_36: &[u8] = &[
     0x72, 0x69, 0x67, 0x69, 0x6e, 0x08, 0x31, 0x36, 0x20, 0x2d, 0x33, 0x32, 0x20, 0x30, 0x0a, 0x74,
     0x61, 0x72, 0x67, 0x65, 0x74, 0x6e, 0x61, 0x6d, 0x65, 0x09, 0x6f, 0x68, 0x6c, 0x5f, 0x67, 0x75,
     0x61, 0x72, 0x64, 0x00,
+];
+
+/// `SECTION_PLATROT_STATE` (37) at the shape this build writes: the exact
+/// bytes [`frozen_platrot_state`]'s value encodes to. **New golden, not a
+/// revision of any tag above**: tag 37 did not exist before M9.33, the same
+/// "a future package adding a tag would pin its own golden from scratch"
+/// case [`GOLDEN_TAG_31`]'s own comment anticipated.
+const GOLDEN_TAG_37: &[u8] = &[
+    0x03, 0x00, 0x01, 0x01, 0x00, 0x00, 0xa0, 0x3f, 0x01, 0x02, 0x00, 0x00, 0x00, 0x00,
 ];
 
 /// The value [`GOLDEN_TAG_36`] holds: one definition carrying the three
@@ -609,6 +618,35 @@ fn tag_36_carried_entities_keeps_its_frozen_wire_shape() {
 
     let decoded: Vec<CarriedEntityDef> =
         postcard::from_bytes(GOLDEN_TAG_36).expect("section 36 decodes");
+    assert_eq!(decoded, value);
+}
+
+/// The value [`GOLDEN_TAG_37`] holds: an empty slot, a platform part-way
+/// through its trip, and one parked at the top with no timer left — both
+/// arms of the `Option` and three of the four [`MoverState`] variants on
+/// the wire.
+fn frozen_platrot_state() -> Vec<Option<PlatRotSnapshot>> {
+    vec![
+        None,
+        Some(PlatRotSnapshot {
+            state: MoverState::Opening,
+            timer: 1.25,
+        }),
+        Some(PlatRotSnapshot {
+            state: MoverState::Open,
+            timer: 0.0,
+        }),
+    ]
+}
+
+#[test]
+fn tag_37_platrot_state_keeps_its_frozen_wire_shape() {
+    let value = frozen_platrot_state();
+    let encoded = postcard::to_allocvec(&value).expect("the section encodes");
+    assert_golden(&encoded, GOLDEN_TAG_37, 37);
+
+    let decoded: Vec<Option<PlatRotSnapshot>> =
+        postcard::from_bytes(GOLDEN_TAG_37).expect("section 37 decodes");
     assert_eq!(decoded, value);
 }
 
