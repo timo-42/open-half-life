@@ -5284,3 +5284,60 @@ second onto the destination car rather than starting on it. Settling a
 landmark-relative arrival would mean giving up the property that a boundary
 is a no-op for the physics state, so it is not done here; if that second is
 ever worth closing it wants its own argument, not this milestone's.
+
+## M9.24 (Rust): the chain walk reaches the opening chapter's last interior map
+
+The chain walk stood at distinct depth 5 (four routes, four level changes).
+This milestone extends it by one hop, `xtask/chain-routes/c0a0-hop4.txt`,
+authored from a per-tick probe (local, uncommitted; player origin,
+velocity, `on_ground`, whether `ground_brush` was attached, ride speed, and
+a zero-length trace's `start_solid`/`all_solid`/`brush_index` at the
+player's own standing-hull origin) of the fourth boundary's arrival.
+
+**What the probe found.** The passenger arrives short of the ride, exactly
+as `ride-door-timing.md`'s "Next" section already recorded for this
+boundary: the car drives off at its own speed without them, they fall for
+a few seconds, and stand on world geometry — never in solid, never
+frozen — for the rest of the route, until the map's own scripted ride
+reaches the far end of this section and fires the next level change by
+name. A route pressing nothing at all (one `wait` line, matching the shape
+of `c0a0-hop3.txt`) reaches that level change honestly.
+
+**Result.** `cargo xtask chain-walk` now reports distinct depth **6** (five
+routes, five level changes). The newly-reached sixth map is the last
+interior map `ohl_campaign::CHAPTER_MAPS` lists for "Black Mesa Inbound",
+where the opening chapter's tram ride ends at the station.
+
+**Blocked past this point.** A further hop (from this sixth map's own
+arrival point) was attempted and found genuinely blocked, not merely
+unauthored. The same per-tick probe shows the player's standing hull
+embedded in solid from the map's very first tick: velocity pinned at
+exactly one gravity step, `on_ground` never true, position never changing,
+and the targeted trace reporting `start_solid = true`, `all_solid = true`,
+`brush_index = None` — embedded in *world* geometry, not in a mover or any
+attached brush entity. A post-chain `--reachability-report` from this same
+arrival point confirms it independently: round 0 reports exactly one
+reachable cell, nothing on the frontier, and the map's own
+`trigger_changelevel` roughly 5,200 units away and unreachable.
+
+**Classification: placement.** This is the same family of bug M9.21 fixed
+(a spawn/arrival hull embedded in solid, which `categorize_position`'s
+ground probe can never resolve and which no trace can recover from), but
+at a boundary M9.21 deliberately left unsettled: the arrival here is
+landmark-relative, and `Game::from_level`'s settle-at-spawn nudge is only
+ever applied to an `info_player_start` placement (a fresh load, or a
+transition's landmark-less fallback) — see M9.21's own note that a
+landmark-relative arrival "must stay a pure offset" so that a boundary
+that lines the maps up exactly is a no-op for the physics state. At this
+particular boundary the offset instead lines the player up inside static
+world geometry. Not a missing entity, not an unrun trigger chain, not a
+mover/ride timing gap, and not scripted or monster gating — the map never
+runs a single simulated tick for this player before they are already
+stuck. Fixing it belongs with the settle-at-spawn machinery itself
+(whether, and how, to bound a nudge for a landmark-relative arrival
+without turning it into something other than a pure offset), not with a
+route file.
+
+**Gates**: fmt, `cargo test -p xtask`, policy, combat-smoke 37/37,
+`cargo xtask chain-walk` (distinct depth 6, five level changes, no
+re-entry).
