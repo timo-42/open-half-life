@@ -76,6 +76,53 @@ const TRACKTRAIN_NO_USER_CONTROL_FLAG: u32 = 2;
 /// short path segment.
 pub const DEFAULT_YAW_BLEND_DISTANCE: f32 = 256.0;
 
+/// The half turn between a `func_tracktrain`'s *direction of travel* and
+/// the rotation its own compiled brushwork has to be posed at, in degrees.
+///
+/// A track train's submodel is compiled once, at whatever orientation the
+/// map was authored with, and then turned every tick to follow its track.
+/// Turning it by the raw compass heading of its segment is only right if
+/// its brushwork was compiled pointing along `+X`; this project's own
+/// measurements say the opening ride's car was compiled pointing the other
+/// way, so the pose is the heading plus a half turn.
+///
+/// **`TODO(black-box)`**: project-determined, from the maps' own authored
+/// data rather than from any public page (none states which way a track
+/// train's geometry is compiled — `docs/FORMAT_SOURCES.md`, "Track trains
+/// and paths", records the gap). Three independent measurements, each
+/// taken from placed poses and keyvalues only, agree on the half turn (see
+/// `.plan/terminus-heading.md`):
+///
+/// 1. The map that parks the ride at its destination declares a sliding
+///    door leaf as a separate brush entity, placed by its own path nodes.
+///    The leaf's compiled box is a thin panel lying flush inside one long
+///    wall of the car's own compiled box. Posing the car at its heading
+///    plus this half turn drops that panel into the car's own compiled
+///    doorway to within a few units on every axis; posing it at the raw
+///    heading puts the panel through the opposite, solid wall.
+/// 2. That same map's `info_player_start` — where the map's own author
+///    stands a cold-loaded player — lands inside the car directly in front
+///    of that doorway, facing it, only with the half turn applied. Without
+///    it the player start falls at the car's far, doorless end, facing
+///    away.
+/// 3. The campaign's first map stands its player start inside the same
+///    compiled car too. With the half turn, that start is at the same
+///    doorway end of the car as the parked one above; without it, it is
+///    once again at the far end.
+///
+/// Applied to a heading the train's *own chain* derives. A heading handed
+/// over from another map ([`TrackTrainState::handover_yaw`]) is already a
+/// posed yaw and is used unchanged.
+pub const COMPILED_FACING_OFFSET_DEGREES: f32 = 180.0;
+
+/// `degrees` wrapped into `(-180, 180]`, the range every yaw this module
+/// reports is normalized to so a caller comparing two of them does not
+/// have to undo a wrap first.
+fn normalize_degrees(degrees: f32) -> f32 {
+    let wrapped = (degrees + 180.0).rem_euclid(360.0) - 180.0;
+    if wrapped <= -180.0 { 180.0 } else { wrapped }
+}
+
 /// The blend distance [`TrackTrainState::yaw_degrees`] actually uses for
 /// `train`: its own `wheels` keyvalue when positive (see
 /// [`TrackTrain::wheels`]'s doc comment), [`DEFAULT_YAW_BLEND_DISTANCE`]
@@ -572,13 +619,23 @@ impl TrackTrainState {
         self.first_node
     }
 
-    /// The train's yaw, in degrees (matching [`crate::registry::movedir_from_angles`]'s
-    /// convention: counter-clockwise around `+Z` from `+X`), facing along
-    /// the active segment toward the node it is heading for; `None` when
+    /// The rotation this train's compiled geometry is posed at, in degrees
+    /// (matching [`crate::registry::movedir_from_angles`]'s convention:
+    /// counter-clockwise around `+Z` from `+X`); `None` when
     /// `train.turns_to_face` is `false` (a plain `func_train`, which this
-    /// project leaves at its spawned `angles`) or the segment has no
-    /// horizontal extent (a purely vertical hop between two nodes, which
-    /// carries no defined yaw).
+    /// project leaves at its spawned `angles`) or the chain carries no
+    /// horizontal direction to derive one from and no heading was handed
+    /// over from another map.
+    ///
+    /// This is the train's *pose*, not its direction of travel: the two
+    /// differ by [`COMPILED_FACING_OFFSET_DEGREES`], the half turn between
+    /// the way the car's brushwork was compiled and the way it drives. See
+    /// that constant for the measurements the half turn rests on, and
+    /// [`Self::travel_heading_degrees`] for the direction of travel on its
+    /// own. Reporting the posed value here (rather than turning it at each
+    /// consumer) is deliberate: the renderer, the collision hull, a rigid
+    /// rider's carry, `brush_center` and the cross-level handover all read
+    /// this one number, and they have to agree.
     ///
     /// A train parked at the *end* of a non-looped chain (no node ahead of
     /// it to face) has no active segment for [`Self::other_index`] to
@@ -617,22 +674,40 @@ impl TrackTrainState {
         // A chain that defines no heading at all — a single-node chain, or
         // a purely vertical hop — falls back to whatever heading this train
         // arrived with from another map, and to nothing when it did not
-        // arrive from one. See [`Self::handover_yaw`].
+        // arrive from one. That carried value is already a posed yaw (it
+        // was read back out of this same method in the map the train came
+        // from), so it is used unchanged rather than turned again. See
+        // [`Self::handover_yaw`].
+        self.travel_heading_degrees(train)
+            .map(|heading| normalize_degrees(heading + COMPILED_FACING_OFFSET_DEGREES))
+            .or(self.handover_yaw)
+    }
+
+    /// The compass direction this train is travelling in, in degrees — the
+    /// heading of the segment it is on, or, for a train parked at the end
+    /// of its chain, of the segment that led into the node it is resting
+    /// at. `None` when the chain defines no horizontal direction at all: a
+    /// single-node chain, a purely vertical hop, or a train sitting at the
+    /// very start of a non-looped chain whose first segment is vertical.
+    ///
+    /// This is the train's *motion*, not its pose:
+    /// [`Self::yaw_degrees`] turns it by
+    /// [`COMPILED_FACING_OFFSET_DEGREES`] to get the rotation the car's
+    /// compiled brushwork is actually placed at.
+    fn travel_heading_degrees(&self, train: &TrackTrain) -> Option<f32> {
         if let Some(other) = self.other_index() {
-            let Some(after) = Self::yaw_from_direction(
+            let after = Self::yaw_from_direction(
                 self.chain.nodes[other].position - self.chain.nodes[self.node_index].position,
-            ) else {
-                return self.handover_yaw;
-            };
+            )?;
             Some(self.blend_yaw_after_node(train, other, after))
         } else {
-            let Some(last) = self.previous_node_index() else {
-                return self.handover_yaw;
-            };
+            // The parked-at-the-end case: the heading is measured from the
+            // neighbour behind the direction of travel to the current node,
+            // i.e. the very segment the train came to rest on.
+            let last = self.previous_node_index()?;
             Self::yaw_from_direction(
                 self.chain.nodes[self.node_index].position - self.chain.nodes[last].position,
             )
-            .or(self.handover_yaw)
         }
     }
 
@@ -1069,6 +1144,13 @@ mod tests {
         );
     }
 
+    /// The train's first segment runs along `+X`, so it *travels* at a
+    /// heading of `0` degrees — and is *posed* at `180`, a
+    /// [`COMPILED_FACING_OFFSET_DEGREES`] half turn from that, because a
+    /// car's brushwork is compiled pointing the other way down its own
+    /// track. See that constant for the measurements the half turn rests
+    /// on; the two are checked separately here so a future change to
+    /// either one cannot silently cancel the other out.
     #[test]
     fn spawns_on_first_node_facing_the_second() {
         let entities = three_node_track(&[]);
@@ -1076,7 +1158,8 @@ mod tests {
         let state = train_state(&registry);
         let train = train_component(&registry);
         assert_eq!(state.position(), Vec3::ZERO);
-        assert_eq!(state.yaw_degrees(&train), Some(0.0));
+        assert_eq!(state.travel_heading_degrees(&train), Some(0.0));
+        assert_eq!(state.yaw_degrees(&train), Some(180.0));
     }
 
     /// A train is placed on the *first node of its own path* at spawn:
@@ -1620,17 +1703,22 @@ mod tests {
         );
 
         // `d` -> `a` points along `-Y`, i.e. 270 degrees; `a` -> `b` points
-        // along `+X`, i.e. 0 degrees. Right at the wrap the reported yaw
-        // should still read as the incoming `d` -> `a` heading, not have
-        // already snapped to the outgoing `a` -> `b` heading.
-        let yaw = state
-            .yaw_degrees(&train)
-            .expect("a horizontal square track always has a yaw");
-        let from_incoming = (yaw - 270.0 + 180.0).rem_euclid(360.0) - 180.0;
+        // along `+X`, i.e. 0 degrees. Right at the wrap the reported
+        // heading should still read as the incoming `d` -> `a` one, not
+        // have already snapped to the outgoing `a` -> `b` one. Read as the
+        // *heading*, not the pose: this test is about which segment the
+        // wrap resolves to, and the constant
+        // [`COMPILED_FACING_OFFSET_DEGREES`] the pose adds on top is
+        // exactly the size of the mistake it is looking for, so mixing the
+        // two here would make it unfalsifiable.
+        let heading = state
+            .travel_heading_degrees(&train)
+            .expect("a horizontal square track always has a heading");
+        let from_incoming = (heading - 270.0 + 180.0).rem_euclid(360.0) - 180.0;
         assert!(
             from_incoming.abs() < 1.0,
-            "right at the wrap the yaw should still read as the incoming heading \
-             (270 degrees, i.e. -90), not the outgoing one; got {yaw}"
+            "right at the wrap the heading should still read as the incoming one \
+             (270 degrees, i.e. -90), not the outgoing one; got {heading}"
         );
     }
 
@@ -1669,10 +1757,21 @@ mod tests {
             "the train should have parked at the dead end"
         );
         assert_eq!(state.position(), Vec3::new(100.0, 100.0, 0.0));
+        // The segment it arrived on runs along `+Y`: a travel heading of
+        // `90` degrees, and a pose a
+        // [`COMPILED_FACING_OFFSET_DEGREES`] half turn from it. Both are
+        // pinned: the point of this test is the *persisted segment*, and
+        // reading only the posed value would leave a heading and a half
+        // turn free to cancel each other out.
         assert_eq!(
-            state.yaw_degrees(&train),
+            state.travel_heading_degrees(&train),
             Some(90.0),
             "a parked train must keep the heading of the segment it arrived on"
+        );
+        assert_eq!(
+            state.yaw_degrees(&train),
+            Some(-90.0),
+            "and must be posed a half turn from it, like a moving one"
         );
     }
 
@@ -1696,28 +1795,33 @@ mod tests {
         state.advance(1.0);
         assert_eq!(state.position(), Vec3::new(100.0, 0.0, 0.0));
         assert_eq!(
-            state.yaw_degrees(&train),
+            state.travel_heading_degrees(&train),
             Some(0.0),
-            "right at the node the reported yaw should still be the segment just left"
+            "right at the node the reported heading should still be the segment just left"
         );
 
         // Halfway across the (100-unit) blend window.
         state.advance(0.5);
         let halfway = state
-            .yaw_degrees(&train)
-            .expect("a horizontal segment always has a yaw");
+            .travel_heading_degrees(&train)
+            .expect("a horizontal segment always has a heading");
         assert!(
             (halfway - 45.0).abs() < 1e-3,
-            "halfway through the blend window the yaw should be halfway turned, got {halfway}"
+            "halfway through the blend window the heading should be halfway turned, got {halfway}"
         );
 
         // The rest of the segment, past the blend window.
         state.advance(0.5);
         assert_eq!(
-            state.yaw_degrees(&train),
+            state.travel_heading_degrees(&train),
             Some(90.0),
-            "past the blend window the yaw should match the new segment exactly"
+            "past the blend window the heading should match the new segment exactly"
         );
+        // The pose tracks the blended heading a
+        // [`COMPILED_FACING_OFFSET_DEGREES`] half turn behind it, all the
+        // way through: the blend happens on the heading, and the half turn
+        // is a constant, so the two can never drift apart mid-corner.
+        assert_eq!(state.yaw_degrees(&train), Some(-90.0));
     }
 
     /// A positive `wheels` keyvalue shortens the blend window from
@@ -1735,7 +1839,7 @@ mod tests {
         state.advance(1.0); // reach `node2` exactly
         state.advance(0.1); // 10 more units: the whole shortened window
         assert_eq!(
-            state.yaw_degrees(&train),
+            state.travel_heading_degrees(&train),
             Some(90.0),
             "a positive `wheels` keyvalue should shorten the blend window instead of \
              using the default"

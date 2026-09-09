@@ -171,9 +171,11 @@ fn the_passenger_is_inside_the_cars_footprint_at_every_step_of_the_bend() {
 /// This checks the whole ride through to well after the train parks: the
 /// passenger is never in solid, never sinks through the floor, and is
 /// always within the car's own footprint, both while it is still turning
-/// and once it has stopped — and that the reported pose itself is the
-/// second segment's heading (90 degrees, at [`BEND_TRAIN_END`]), not the
-/// zeroed one a stale `None` would still produce.
+/// and once it has stopped — and that the reported pose itself is the one
+/// the second segment gives (that segment is travelled at 90 degrees, at
+/// [`BEND_TRAIN_END`], and posed a
+/// `ohl_game::track_train::COMPILED_FACING_OFFSET_DEGREES` half turn from
+/// it, at -90), not the zeroed one a stale `None` would still produce.
 #[test]
 fn a_passenger_is_not_snapped_over_when_the_car_parks_at_the_end_of_the_bend() {
     let mut game = loaded();
@@ -225,9 +227,10 @@ fn a_passenger_is_not_snapped_over_when_the_car_parks_at_the_end_of_the_bend() {
         "the parked car should sit at the chain's last node: {final_pose:?}"
     );
     assert!(
-        (final_pose.yaw_degrees - 90.0).abs() < 1.0,
-        "a car parked at the end of a bend must keep the last segment's \
-         heading (90 degrees here), not snap back to unrotated: {final_pose:?}"
+        (final_pose.yaw_degrees + 90.0).abs() < 1.0,
+        "a car parked at the end of a bend must keep the pose the last segment \
+         gives it (-90 degrees here: a 90-degree heading, half-turned), not snap \
+         back to unrotated: {final_pose:?}"
     );
 }
 

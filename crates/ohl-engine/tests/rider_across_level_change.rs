@@ -227,8 +227,10 @@ fn a_ride_that_ends_in_the_destination_keeps_the_heading_it_arrived_with() {
     tick_n(&mut game, 60);
     let before_yaw = car_yaw(&game).expect("the source car is on a horizontal segment");
     assert!(
-        (before_yaw - 90.0).abs() < 0.01,
-        "the fixture's source chain runs along +Y, so its car faces 90 degrees, not {before_yaw}"
+        (before_yaw + 90.0).abs() < 0.01,
+        "the fixture's source chain runs along +Y, so its car travels at 90 degrees and \
+         is posed a `ohl_game::track_train::COMPILED_FACING_OFFSET_DEGREES` half turn \
+         from that, at -90 — not {before_yaw}"
     );
     let before_seat = seat(&game);
 

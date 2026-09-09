@@ -5619,3 +5619,86 @@ Three measurements for whoever takes it, and one hypothesis ruled out.
   the floor and only ~31 above it, far short of a standing hull. A rotation
   about Z produces neither figure, so at least part of the remaining
   enclosure is a pivot/reference-point question rather than an angular one.
+
+## M9.27 (Rust): the car was built facing the other way
+
+M9.26 left the arriving passenger sealed inside the parked ride and recorded
+the open question honestly: *how* the destination's copy of a shared ride is
+posed, and where its own doorway ends up. It also recorded that forcing the
+car's heading to +90, -90, 0 and 180 all left the passenger enclosed. That
+last observation was the clue: a map that **ends** a shared ride parks its
+car on a chain of one node, which defines no heading at all, so
+`TrackTrainState::yaw_degrees` never consulted a forced heading — it took the
+M9.25 handover fallback every time. The fault was never in the terminus
+branch's direction, and the terminus branch is unchanged here: it reports the
+direction of travel into the last node, and that direction is right.
+
+**Root cause: the pose, not the heading.** `yaw_degrees` returned the raw
+compass heading of the segment, and every consumer — the renderer, the
+collision hull, `brush_center`, the rigid rider carry, the cross-level
+handover — turned the car's *compiled brushwork* by it. That is only correct
+if the brushwork was compiled pointing along `+X`. Three measurements, all
+from the maps' own placed poses and keyvalues (no render, no screenshot, no
+judgement call), say it was compiled pointing the other way:
+
+1. The station map declares the car's sliding door leaf as a separate brush
+   entity on its own path nodes. The leaf's compiled box is a thin panel:
+   thinner across one long wall of the car's compiled box than along it, so
+   only one of the two candidate car poses gives it a wall to lie flush in.
+   That pose is the heading plus half a turn, and it drops the panel into the
+   car's own compiled doorway to within a few units on every axis. The other
+   puts it through the opposite, solid wall.
+2. That map's `info_player_start` lands inside the car directly in front of
+   that doorway, facing it, only with the half turn — otherwise at the car's
+   far, doorless end, facing away.
+3. The campaign's first map stands its player start inside the same compiled
+   car, and lands at the same doorway end under the same rule. Its ride also
+   begins with the car posed exactly unrotated, which is what building a car
+   in place at the head of its own track produces.
+
+`ohl_game::track_train::COMPILED_FACING_OFFSET_DEGREES` records the half
+turn; `yaw_degrees` now reports the *pose*, and the new
+`travel_heading_degrees` reports the direction of travel, unchanged. A
+heading handed across a level change is already a pose and is carried
+through untouched, so exactly one half turn is ever applied. Every test that
+asserted a yaw now pins the heading and the pose separately, so a future
+change cannot let a wrong heading and a wrong offset cancel out.
+
+**This supersedes M9.18's "which heading" finding.** That round chose between
+the two conventions by rendering a tram interior each way and comparing
+against public screenshots. The comparison had a confound: a passenger is
+carried by the car's pose, so turning the car half a turn moves the capture
+camera to the mirrored seat *and* turns it to face the mirrored way. Both
+builds render "an interior seen from one end", and picking between them
+against a promotional shot whose vantage is not the map's own spawn point is
+a judgement, not a measurement. `docs/FORMAT_SOURCES.md` keeps both records,
+append-only.
+
+**Result.** The passenger is no longer sealed in: a reachability walk from
+the arrival point goes from **75** reached cells to **7,187**, and the car
+stops being the frontier. `xtask/chain-routes/c0a0-hop5.txt` now waits out
+the map's own arrival sequence, steps out of the car onto the platform,
+follows the corridor to the door at its end — which the map's own guard, not
+a `use` press, opens — and crosses the level boundary beyond it. Chain-walk
+distinct depth is **7** (6 level changes, no re-entry, not frozen).
+
+**The z span was the same fault.** M9.26 recorded "a pure-z disagreement no
+yaw can explain": the doorway implied by the leaf spans z +2..+96 above the
+car's origin brush while the arriving passenger stood at +43..+65. The
+opening was never wrong; the *passenger* was. Standing in a car posed half a
+turn out, they were held up by the wrong part of its interior. With the pose
+right they settle at +43, feet at +7 — on the doorway's own sill — and walk
+straight out of it. What remains is the 8-unit z offset between the leaf's
+path node and a rigid assembly with the car: real, but too small to block a
+standing hull, and still not something a rotation about the world up axis
+could have produced either way.
+
+**Still open.** That 8-unit leaf offset, and the map's other
+`trigger_changelevel`, which loads with a 2-unit-tall bounding box — not a
+plausible authored trigger volume, so more likely a submodel-bounds gap than
+a map fact. Neither blocks the route: the leaf clears the doorway, and the
+boundary this route crosses fires normally. Recorded rather than guessed at.
+
+**Gates**: fmt, clippy (workspace/all-features and no-default),
+`cargo test --workspace`, policy, graph, combat-smoke 37/37, campaign-smoke
+93/93, `cargo xtask chain-walk` at depth 7.

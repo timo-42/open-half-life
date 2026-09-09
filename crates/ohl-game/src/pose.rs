@@ -744,9 +744,16 @@ mod tests {
         // Correct placement would be the train's own path position,
         // `(50, 0, 0)` — halfway from `node1` to `node2` at `speed 100`.
         // The documented-wrong sum instead adds that onto the unrelated
-        // compiled centre `(500, 300, 10)`.
+        // compiled centre `(500, 300, 10)`, first turned about the pivot
+        // this world-baked shape stands in with (its first node, the
+        // world origin here) by the car's own pose: the chain runs along
+        // `+X`, so the car travels at 0 degrees and is posed a
+        // `crate::track_train::COMPILED_FACING_OFFSET_DEGREES` half turn
+        // from that, taking `(500, 300)` to `(-500, -300)`. Turning an
+        // unrelated compiled midpoint is exactly as wrong as translating
+        // it was, and just as deliberately pinned here.
         assert!(
-            (center - Vec3::new(550.0, 300.0, 10.0)).length() < 1e-2,
+            (center - Vec3::new(-450.0, -300.0, 10.0)).length() < 1e-2,
             "expected the documented-wrong sum, got {center:?}"
         );
     }
@@ -829,8 +836,9 @@ mod tests {
         let entity = registry.find("car")[0];
         assert_eq!(
             super::track_train_transform(&registry, entity).1,
-            Some(0.0),
-            "the chain runs along +X, so the car faces 0 degrees"
+            Some(180.0),
+            "the chain runs along +X, so the car travels at 0 degrees and is posed a \
+             `ohl_game::track_train::COMPILED_FACING_OFFSET_DEGREES` half turn from that"
         );
     }
 }
