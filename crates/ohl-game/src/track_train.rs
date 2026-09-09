@@ -20,6 +20,8 @@
 //! a door's timer to place a brush submodel; see
 //! `crates/ohl-engine/src/render.rs`'s `door_offset`.
 
+use std::collections::HashSet;
+
 use glam::Vec3;
 use hecs::Entity;
 
@@ -478,6 +480,28 @@ pub struct TrackTrainState {
     cruise_speed: f32,
 }
 
+/// What [`TrackTrainState::plan_ride`] found: the train's own runtime
+/// state once it has arrived at its next stop, and how long the whole
+/// trip takes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrainRide {
+    /// This train's state once it has come to rest at the stop
+    /// [`TrackTrainState::plan_ride`] found — assign it straight onto the
+    /// live component to place the train there for real, exactly as
+    /// `ohl_engine::route_plan::take_ride` does for the ride it takes;
+    /// every other field ([`TrackTrainState::first_node_position`], any
+    /// carrier displacement, any cross-level handover yaw) is carried over
+    /// unchanged from the state the ride was planned from.
+    pub state: TrackTrainState,
+    /// How long the whole trip takes, in seconds: every segment's own
+    /// `distance / speed` (applying a `path_track`'s "New Train Speed"
+    /// override the moment it is passed), plus every `wait` the train
+    /// auto-continues through along the way. Does not include time spent
+    /// waiting at a "Wait for retrigger" stop — that stop is where this
+    /// ride ends.
+    pub seconds: f32,
+}
+
 impl TrackTrainState {
     /// Places a train at the first node of `chain`: physically on the
     /// track at the node's (height-adjusted) position, facing toward the
@@ -789,6 +813,100 @@ impl TrackTrainState {
     #[must_use]
     pub fn chain(&self) -> &PathChain {
         &self.chain
+    }
+
+    /// Whether this train is currently under way: started, and neither
+    /// parked at a documented "Wait for retrigger" node, a non-looped
+    /// chain's dead end, nor never started at all.
+    ///
+    /// Used by `ohl_engine::route_plan`'s ride planner to tell a train
+    /// worth *riding* — one sitting at rest with somewhere left to go —
+    /// from one already carrying itself there under its own power, which
+    /// the walk simply finds moving rather than having to plan a start
+    /// for; see [`Self::plan_ride`].
+    #[must_use]
+    pub fn moving(&self) -> bool {
+        self.moving
+    }
+
+    /// Follows this train's own chain forward from where it rests, without
+    /// moving it, to work out where it would come to a stop next and how
+    /// long that takes — the same per-node rules [`Self::advance_firing`]
+    /// applies tick by tick (a `path_track`'s "New Train Speed" override
+    /// the moment it is passed, its `wait` pause, its "Wait for retrigger"
+    /// stop), just summed directly rather than stepped through simulated
+    /// time.
+    ///
+    /// `None` for a train that is already moving (see [`Self::moving`]'s
+    /// own doc comment — nothing here has to plan a start for one that
+    /// already has one), one with no next node to go to at all (already
+    /// parked at a non-looped chain's dead end), one whose own `speed`
+    /// (or the `path_track` override that replaces it) is not currently
+    /// positive, or one whose chain loops back through an already-visited
+    /// node before it ever reaches a documented stop: a `path_track` loop
+    /// with no "Wait for retrigger" node anywhere on it never stops on its
+    /// own, so there is no finite arrival time a script could wait for —
+    /// this project reads that as "not a ride", the same way a lift whose
+    /// switch is out of reach is not one, rather than guessing an arrival
+    /// time no public documentation states. A non-looped chain that leads
+    /// back through a node still visits it at most once here, since a
+    /// straight chain has no way to revisit a node without looping.
+    #[must_use]
+    pub fn plan_ride(&self) -> Option<TrainRide> {
+        if self.moving {
+            return None;
+        }
+        let mut state = self.clone();
+        let mut speed = if state.cruise_speed.abs() > f32::EPSILON {
+            state.cruise_speed.abs()
+        } else {
+            state.speed
+        };
+        let mut seconds = 0.0f32;
+        let mut visited: HashSet<usize> = HashSet::from([state.node_index]);
+        let mut moved = false;
+        loop {
+            let other = if state.direction >= 0.0 {
+                state.chain.next_index(state.node_index)
+            } else {
+                state.chain.prev_index(state.node_index)
+            };
+            let Some(other) = other else {
+                break;
+            };
+            if !(speed.is_finite() && speed > 0.0) {
+                return None;
+            }
+            seconds += state.chain.segment_len(state.node_index, other) / speed;
+            state.node_index = other;
+            state.t = 0.0;
+            moved = true;
+            if !visited.insert(other) {
+                // Back to a node already passed on this very trip, with
+                // no stop anywhere along the way: a loop with no
+                // deterministic arrival time. See this method's own doc
+                // comment.
+                return None;
+            }
+            let node = &state.chain.nodes[other];
+            if let Some(speed_override) = node.speed {
+                speed = speed_override.abs();
+            }
+            if node.stop {
+                break;
+            }
+            if node.wait > 0.0 {
+                seconds += node.wait;
+            }
+        }
+        if !moved || !seconds.is_finite() {
+            return None;
+        }
+        state.speed = speed;
+        state.moving = false;
+        state.wait_timer = 0.0;
+        state.dead_end_fired = false;
+        Some(TrainRide { state, seconds })
     }
 
     /// Starts the train moving (in its current direction) if it is

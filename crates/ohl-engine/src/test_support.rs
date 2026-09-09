@@ -4342,3 +4342,206 @@ pub fn plan_lift_bsp(next_map: &str, fixture: LiftFixture) -> Vec<u8> {
 
     b.build()
 }
+
+// ---------------------------------------------------------------------
+// A route-planner ride on a resting func_train
+// ---------------------------------------------------------------------
+
+/// The map name [`plan_train_ride_bsp`] is registered under.
+pub const PLAN_TRAIN_RIDE_MAP: &str = "ohlplantrainridesynth";
+
+/// The `targetname` of the fixture's train, and of the touch volume that
+/// starts it. Project-authored, like every other literal in this module.
+pub const PLAN_TRAIN_RIDE_NAME: &str = "ohl_plan_train_ride";
+
+/// The fixture's bounding box: the same shaft-with-a-ledge shape
+/// [`plan_lift_bsp`] builds, with a `func_train` in the shaft instead of a
+/// `func_door`/`func_plat`.
+const PLAN_TRAIN_RIDE_MIN: [f32; 3] = [-192.0, -64.0, -256.0];
+/// See [`PLAN_TRAIN_RIDE_MIN`].
+const PLAN_TRAIN_RIDE_MAX: [f32; 3] = [512.0, 192.0, 512.0];
+
+/// The floor the player starts on: a slab whose top is the walked level.
+const PLAN_TRAIN_RIDE_FLOOR_MIN: [f32; 3] = [-192.0, -64.0, -256.0];
+/// See [`PLAN_TRAIN_RIDE_FLOOR_MIN`].
+const PLAN_TRAIN_RIDE_FLOOR_MAX: [f32; 3] = [0.0, 192.0, 0.0];
+
+/// The ledge the train serves, flush against the shaft's far face: its
+/// top is [`PLAN_TRAIN_RIDE_TRAVEL`] above the starting floor, too tall to
+/// step, jump or climb to, with no way round.
+const PLAN_TRAIN_RIDE_LEDGE_MIN: [f32; 3] = [128.0, -64.0, -256.0];
+/// See [`PLAN_TRAIN_RIDE_LEDGE_MIN`].
+const PLAN_TRAIN_RIDE_LEDGE_MAX: [f32; 3] = [512.0, 192.0, 256.0];
+
+/// The train itself at rest: a box bridging the shaft whose top sits one
+/// ordinary step above the starting floor, so the walk simply walks onto
+/// it, exactly like [`plan_lift_bsp`]'s own platform.
+const PLAN_TRAIN_RIDE_BOX_MIN: [f32; 3] = [0.0, -64.0, -240.0];
+/// See [`PLAN_TRAIN_RIDE_BOX_MIN`].
+const PLAN_TRAIN_RIDE_BOX_MAX: [f32; 3] = [128.0, 192.0, 16.0];
+
+/// How far apart the fixture's two `path_corner` nodes are, straight up.
+pub const PLAN_TRAIN_RIDE_TRAVEL: f32 = 256.0;
+
+/// The `func_train`'s `speed`, units/second.
+pub const PLAN_TRAIN_RIDE_SPEED: f32 = 100.0;
+
+/// The touch volume that starts the train, sitting on its own top
+/// surface: walking onto it is what fires it.
+const PLAN_TRAIN_RIDE_TRIGGER_MIN: [f32; 3] = [0.0, -64.0, 16.0];
+/// See [`PLAN_TRAIN_RIDE_TRIGGER_MIN`].
+const PLAN_TRAIN_RIDE_TRIGGER_MAX: [f32; 3] = [128.0, 192.0, 80.0];
+
+/// Where [`TrainRideFixture::OutOfReach`] puts that same volume instead:
+/// high above the shaft, where no walked cell ever stands in it and no
+/// `use` press reaches.
+const PLAN_TRAIN_RIDE_FAR_TRIGGER_MIN: [f32; 3] = [0.0, -64.0, 400.0];
+/// See [`PLAN_TRAIN_RIDE_FAR_TRIGGER_MIN`].
+const PLAN_TRAIN_RIDE_FAR_TRIGGER_MAX: [f32; 3] = [128.0, 192.0, 464.0];
+
+/// The `trigger_changelevel` volume at the far end of the ledge.
+const PLAN_TRAIN_RIDE_GOAL_MIN: [f32; 3] = [384.0, -64.0, 256.0];
+/// See [`PLAN_TRAIN_RIDE_GOAL_MIN`].
+const PLAN_TRAIN_RIDE_GOAL_MAX: [f32; 3] = [512.0, 192.0, 384.0];
+
+/// Which shape [`plan_train_ride_bsp`] builds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrainRideFixture {
+    /// A two-node, non-looped chain: the train rests at the first node
+    /// and dead-ends at the second, [`PLAN_TRAIN_RIDE_TRAVEL`] units
+    /// above it. A `trigger_multiple` lying on the train's own top
+    /// surface starts it, so walking onto it is what sets it going.
+    TouchStart,
+    /// The same chain as [`Self::TouchStart`], with its trigger volume
+    /// moved high above the shaft: nothing the player can stand on
+    /// touches it, and its own brush centre is far past any `use` press,
+    /// so there is no way to set the train going at all.
+    OutOfReach,
+    /// A two-node chain whose second node's own `target` resolves back to
+    /// the first, with no "Wait for retrigger" flag or `wait` anywhere on
+    /// it: the train never stops on its own once started, so there is no
+    /// deterministic arrival time to plan a ride to. The touch volume is
+    /// in reach, the same as [`Self::TouchStart`], so this isolates the
+    /// loop itself as the reason no ride is planned.
+    Loop,
+}
+
+/// A shaft with a `func_train` in it: a starting floor, a ledge
+/// [`PLAN_TRAIN_RIDE_TRAVEL`] units above it with a `trigger_changelevel`
+/// on top, and a train bridging the two that rides straight up when it is
+/// set going — the same shape [`plan_lift_bsp`] builds for a
+/// `func_door`/`func_plat` lift, with a resting `func_train` in place of
+/// the mover, so `crate::route_plan`'s ride edge is exercised against a
+/// `func_train`/`func_tracktrain` chain rather than a door's or a
+/// platform's own timer.
+///
+/// Nothing but the train connects the two levels: the ledge is far taller
+/// than a step, a jump or a survivable fall, and there is no ladder. So a
+/// route to the goal exists exactly when the walk can *ride* the train —
+/// see [`TrainRideFixture`] for the three shapes this builds.
+///
+/// No bytes here come from any game installation; see
+/// `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn plan_train_ride_bsp(next_map: &str, fixture: TrainRideFixture) -> Vec<u8> {
+    let speed = PLAN_TRAIN_RIDE_SPEED;
+    let travel = PLAN_TRAIN_RIDE_TRAVEL;
+    let train = if fixture == TrainRideFixture::Loop {
+        // A loop: node two's own `target` resolves back to node one, with
+        // no stop or wait anywhere on the chain.
+        format!(
+            "{{\n\"classname\" \"func_train\"\n\"targetname\" \"{PLAN_TRAIN_RIDE_NAME}\"\n\
+             \"model\" \"*1\"\n\"target\" \"ohl_ptr_node1\"\n\"speed\" \"{speed}\"\n\
+             \"height\" \"0\"\n\"origin\" \"0 0 0\"\n}}\n\
+             {{\n\"classname\" \"path_corner\"\n\"targetname\" \"ohl_ptr_node1\"\n\
+             \"target\" \"ohl_ptr_node2\"\n\"origin\" \"0 0 0\"\n}}\n\
+             {{\n\"classname\" \"path_corner\"\n\"targetname\" \"ohl_ptr_node2\"\n\
+             \"target\" \"ohl_ptr_node1\"\n\"origin\" \"0 0 {travel}\"\n}}\n"
+        )
+    } else {
+        // A dead end: node two carries no `target` of its own, so the
+        // chain simply ends there.
+        format!(
+            "{{\n\"classname\" \"func_train\"\n\"targetname\" \"{PLAN_TRAIN_RIDE_NAME}\"\n\
+             \"model\" \"*1\"\n\"target\" \"ohl_ptr_node1\"\n\"speed\" \"{speed}\"\n\
+             \"height\" \"0\"\n\"origin\" \"0 0 0\"\n}}\n\
+             {{\n\"classname\" \"path_corner\"\n\"targetname\" \"ohl_ptr_node1\"\n\
+             \"target\" \"ohl_ptr_node2\"\n\"origin\" \"0 0 0\"\n}}\n\
+             {{\n\"classname\" \"path_corner\"\n\"targetname\" \"ohl_ptr_node2\"\n\
+             \"origin\" \"0 0 {travel}\"\n}}\n"
+        )
+    };
+    let trigger = format!(
+        "{{\n\"classname\" \"trigger_multiple\"\n\"model\" \"*2\"\n\
+         \"target\" \"{PLAN_TRAIN_RIDE_NAME}\"\n\"wait\" \"4\"\n\"origin\" \"0 0 0\"\n}}\n"
+    );
+    let entities = format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"-96 64 40\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {train}{trigger}\
+         {{\n\"classname\" \"trigger_changelevel\"\n\"model\" \"*3\"\n\
+         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n"
+    );
+
+    let (trigger_min, trigger_max) = if fixture == TrainRideFixture::OutOfReach {
+        (
+            PLAN_TRAIN_RIDE_FAR_TRIGGER_MIN,
+            PLAN_TRAIN_RIDE_FAR_TRIGGER_MAX,
+        )
+    } else {
+        (PLAN_TRAIN_RIDE_TRIGGER_MIN, PLAN_TRAIN_RIDE_TRIGGER_MAX)
+    };
+
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(&entities);
+
+    let solid = [
+        CollisionBrush::half_space([0.0, 0.0, 1.0], PLAN_TRAIN_RIDE_MIN[2]),
+        CollisionBrush::half_space([0.0, 0.0, -1.0], -PLAN_TRAIN_RIDE_MAX[2]),
+        CollisionBrush::half_space([1.0, 0.0, 0.0], PLAN_TRAIN_RIDE_MIN[0]),
+        CollisionBrush::half_space([-1.0, 0.0, 0.0], -PLAN_TRAIN_RIDE_MAX[0]),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], PLAN_TRAIN_RIDE_MIN[1]),
+        CollisionBrush::half_space([0.0, -1.0, 0.0], -PLAN_TRAIN_RIDE_MAX[1]),
+        CollisionBrush::box_brush(PLAN_TRAIN_RIDE_FLOOR_MIN, PLAN_TRAIN_RIDE_FLOOR_MAX),
+        CollisionBrush::box_brush(PLAN_TRAIN_RIDE_LEDGE_MIN, PLAN_TRAIN_RIDE_LEDGE_MAX),
+    ];
+    let world_heads = b.push_collision_hulls(&solid);
+    let train_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(
+        PLAN_TRAIN_RIDE_BOX_MIN,
+        PLAN_TRAIN_RIDE_BOX_MAX,
+    )]);
+    let trigger_heads = b.push_collision_hulls(&[]);
+    let goal_heads = b.push_collision_hulls(&[]);
+
+    b.push_model(
+        PLAN_TRAIN_RIDE_MIN,
+        PLAN_TRAIN_RIDE_MAX,
+        [0.0; 3],
+        world_heads,
+        2,
+        0,
+        0,
+    );
+    b.push_model(
+        PLAN_TRAIN_RIDE_BOX_MIN,
+        PLAN_TRAIN_RIDE_BOX_MAX,
+        [0.0; 3],
+        train_heads,
+        2,
+        0,
+        0,
+    );
+    b.push_model(trigger_min, trigger_max, [0.0; 3], trigger_heads, 2, 0, 0);
+    b.push_model(
+        PLAN_TRAIN_RIDE_GOAL_MIN,
+        PLAN_TRAIN_RIDE_GOAL_MAX,
+        [0.0; 3],
+        goal_heads,
+        2,
+        0,
+        0,
+    );
+
+    b.build()
+}

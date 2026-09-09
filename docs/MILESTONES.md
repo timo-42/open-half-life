@@ -6218,3 +6218,56 @@ short of it). Neither is on the way to the level change.
 `--all-features`), `cargo test --workspace`, policy, graph, combat-smoke
 37/37, campaign-smoke 93/93, `--reachability-report` unchanged, and `cargo
 xtask chain-walk` at **distinct depth 11**.
+
+## M9.35 — A resting `func_train` is a ride candidate too
+
+The ride edge M9.32 gave the planner only ever looked at a closed
+`func_door`, a `func_plat` or a `func_platrot`: a resting `func_train`/
+`func_tracktrain` mid-chain was never offered as something to board and
+start, however far a reached cell stood from it. Review of the tenth
+chain map's own hop recorded exactly this gap: a `func_train` the search
+could reach, sitting there unconsidered because nothing asked whether it
+was a mover worth riding at all.
+
+**What a resting train's ride actually is.** A train is at rest — never
+already moving under its own power, which the walk simply finds carrying
+itself onward rather than something to plan a start for — and its own
+`path_corner`/`path_track` chain has to have a next node, or there is
+nowhere to ride it to. Given both, the new `TrackTrainState::plan_ride`
+follows that chain forward exactly the way the engine's own per-tick
+advance does — a node's "New Train Speed" override the moment it is
+passed, a `wait` pause added as latency the train auto-continues through,
+a documented "Wait for retrigger" node as a real stop — except summed
+directly rather than stepped through simulated time, so the whole trip's
+arrival position and travel time are known up front. A chain that never
+documents a stop at all, because it loops back through an already-visited
+node before reaching one, has no deterministic arrival time to wait for;
+that train is read the same way a lift whose switch is out of reach is
+read — not a ride, rather than a guess.
+
+**One ride, two ways to move.** A door, a platform and a `func_platrot`
+are moved for the ride by setting their own collision brush's pose
+directly, the way M9.32 and M9.33 already did. A train instead gets its
+live `TrackTrainState` assigned the state `plan_ride` found, and its
+brush pose is then re-derived from that state with the same
+`brush_offset`/`brush_pose_rotation` pair `ohl_engine::level`'s own
+per-tick sync already reads every train through — so a ridden train is
+placed exactly where the ordinary simulation would place it once it
+really arrives, not by a second, planner-only rule that could disagree
+with the first. Activation is unchanged: a touch volume wired to the
+train, or a `use` press on it or on a `func_button` wired to it, the same
+engine-level proximity test every other mover's ride already used.
+
+**Coverage.** Three synthetic fixtures pin the new edge: a two-node train
+the walk boards and rides to a ledge otherwise out of reach of any step,
+jump or climb, with the chain's own dead end (no documented stop) as the
+ride's terminus; the same train with its switch moved out of reach, which
+plans no ride at all; and a train whose chain loops back on itself with
+no stop anywhere, whose switch *is* in reach, isolating the loop itself —
+not the activation — as the reason nothing is planned, and confirming the
+search terminates rather than chasing an arrival that never comes.
+
+**Gates**: fmt, clippy (workspace, `--features dev-tools`, and
+`--all-features`), `cargo test --workspace`, policy, graph, combat-smoke
+37/37, `--reachability-report` byte-identical to the pre-change build, and
+`cargo xtask chain-walk` unchanged at **distinct depth 11**.
