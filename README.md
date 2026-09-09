@@ -364,7 +364,7 @@ cargo run --release -p ohl-app --features dev-tools -- \
 
 It runs the same bounded, deterministic walk over the live collision model
 (`ohl_engine::route_plan`), but keeps a parent link and an edge kind
-(walk/step/drop/jump/long jump) for every cell it reaches, so the cell the
+(walk/step/drop/jump/long jump/ladder climb) for every cell it reaches, so the cell the
 goal was found in can be walked back to the player's current position.
 That cell path is straightened against the player's own standing hull,
 merged into straight runs, and converted into `look`/`forward` lines, with
@@ -374,13 +374,41 @@ half-cell to thread a door frame, the route steps aside there too — a
 doorway a body fits through is not always one a grid-aligned step fits
 through.
 
+Two things a *route* has to answer that a triage report does not: how far
+the player may fall, and how they get down a shaft. A fall is bounded by
+the published fall-damage curve (`ohl_player::damage`) — by default the
+walk plans no fall costing more than half the health the player has when
+it plans, and never one down a ladder it could climb instead — because a
+fall that hurts spends health the rest of the campaign needs and a long
+enough one is simply fatal, after which the player stops moving and every
+later plan is the plan before it. A climbable volume is an edge of its
+own: the walk steps into one off a ledge, climbs it a cell at a time, and
+steps off at its foot, and the route says so as a turn to face the ladder
+and a held `forward` (up) or `back` (down) — the engine's own ladder step
+read back, not a second rule. A committed chunk always stops at its first
+climb, since `back` means "down the ladder" only while the player is on
+one.
+
+A `forward` run's tick count comes from replaying the engine's own ground
+move in one dimension: friction, acceleration toward top speed, and the
+coast the release leaves behind. Both halves matter, in opposite
+directions — "distance over top speed" undershoots because a player
+starting from rest never travels at top speed, and counting only the held
+ticks overshoots by the better part of a corridor's width, which is
+exactly what walks a planned route off a ledge the walk never planned to
+fall from.
+
 Nothing is written until the script has actually been **replayed**, in
 process, from the very state it was planned from, and that replay reached
 a level change. When the replay drifts — a run that clips a corner leaves
 every later segment aimed from the wrong place — the planner re-plans from
 the point the player actually reached and appends the continuation, up to
-`--plan-attempts N` times (24 by default). Only the first segment of a
-plan is committed per attempt, which is what makes this a closed loop
+`--plan-attempts N` times (24 by default), and refuses outright, with its
+own fixed reason, when the route walked so far has left the player dead.
+Only the first segment of a plan is committed per attempt (`--plan-segments
+N`; `0` commits a whole plan at a time, which is the better trade on a long
+route whose middle runs through places the search sees less of than its
+start does), which is what makes this a closed loop
 rather than one long open-loop guess — a plan committed whole inherits
 its own first segment's drift for every segment after it, and on real
 geometry that is the difference between a route that walks and one that
@@ -399,8 +427,8 @@ through the boundary it just came through, which `cargo xtask chain-walk`
 counts as a failure rather than progress.
 
 Like the report, the planner prints aggregates only — cells reached,
-rounds, segments, door presses, replay attempts, route length in simulated
-seconds — never a map name, coordinate or targetname, and the file it
+rounds, segments, ladder climbs, door presses, replay attempts, route
+length in simulated seconds — never a map name, coordinate or targetname, and the file it
 writes holds script commands and project-authored comment words only
 (`docs/CLEAN_ROOM.md`).
 

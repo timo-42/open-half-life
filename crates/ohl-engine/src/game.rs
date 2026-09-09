@@ -1016,6 +1016,20 @@ impl Game {
         self.controller.state.on_ladder
     }
 
+    /// Whether the walking player is standing on a floor
+    /// (`ohl_physics::PlayerState::on_ground`), rather than falling,
+    /// jumping or riding a mover's edge in mid-air.
+    ///
+    /// `crate::route_plan` plans from a *standing* position — its walk
+    /// starts by settling onto the floor beneath the point it is given —
+    /// so a caller planning one route after another asks this before it
+    /// plans again: a plan made while the player is still falling is
+    /// planned from a floor they have not reached yet.
+    #[must_use]
+    pub fn player_on_ground(&self) -> bool {
+        self.controller.state.on_ground
+    }
+
     /// Whether the walking player is at all submerged in a liquid: any
     /// [`ohl_physics::WaterLevel`] above [`ohl_physics::WaterLevel::Dry`]
     /// (feet, waist or eyes), the same state a real `func_water`/world

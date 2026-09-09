@@ -3235,3 +3235,101 @@ pub fn plan_turn_bsp(next_map: &str) -> Vec<u8> {
 
     b.build()
 }
+
+/// The map name [`plan_ladder_bsp`] is registered under.
+pub const PLAN_LADDER_MAP: &str = "ohlplanladdersynth";
+
+/// The shaft fixture's bounding box.
+const PLAN_LADDER_MIN: [f32; 3] = [-64.0, -64.0, 0.0];
+/// See [`PLAN_LADDER_MIN`].
+const PLAN_LADDER_MAX: [f32; 3] = [320.0, 192.0, 640.0];
+
+/// The shelf the player starts on: a solid block filling the west half of
+/// the box up to its top surface, so everything east of it is a shaft
+/// down to the floor.
+const PLAN_LADDER_SHELF_MIN: [f32; 3] = [-64.0, -64.0, 0.0];
+/// See [`PLAN_LADDER_SHELF_MIN`].
+const PLAN_LADDER_SHELF_MAX: [f32; 3] = [64.0, 192.0, 448.0];
+
+/// The climbable volume down the shelf's east face, from the shaft floor
+/// to the shelf's own top.
+const PLAN_LADDER_VOLUME_MIN: [f32; 3] = [64.0, -64.0, 0.0];
+/// See [`PLAN_LADDER_VOLUME_MIN`].
+const PLAN_LADDER_VOLUME_MAX: [f32; 3] = [96.0, 192.0, 448.0];
+
+/// The `trigger_changelevel` volume at the far end of the shaft floor.
+const PLAN_LADDER_TRIGGER_MIN: [f32; 3] = [192.0, -64.0, 0.0];
+/// See [`PLAN_LADDER_TRIGGER_MIN`].
+const PLAN_LADDER_TRIGGER_MAX: [f32; 3] = [320.0, 192.0, 128.0];
+
+/// The drop from the shelf to the shaft floor, in world units — taller
+/// than the height a player lands from unhurt, and taller than the one
+/// `crate::route_plan` plans a fall from at full health, so the only
+/// route down this fixture that costs no health is the ladder.
+pub const PLAN_LADDER_DROP: f32 = PLAN_LADDER_SHELF_MAX[2];
+
+/// A shelf over a shaft with a `trigger_changelevel` on the floor below
+/// it, and — when `with_ladder` — a climbable (`CONTENTS_LADDER`) volume
+/// down the shelf's east face: the shape `crate::route_plan`'s own ladder
+/// regression tests plan a route through.
+///
+/// Without the ladder the only way down is a [`PLAN_LADDER_DROP`]-unit
+/// fall, which is exactly what that module's drop bound refuses.
+///
+/// No bytes here come from any game installation; see
+/// `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn plan_ladder_bsp(next_map: &str, with_ladder: bool) -> Vec<u8> {
+    let entities = format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"-16 64 490\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"trigger_changelevel\"\n\"model\" \"*1\"\n\
+         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n"
+    );
+
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(&entities);
+
+    let solid = [
+        CollisionBrush::half_space([0.0, 0.0, 1.0], PLAN_LADDER_MIN[2]),
+        CollisionBrush::half_space([0.0, 0.0, -1.0], -PLAN_LADDER_MAX[2]),
+        CollisionBrush::half_space([1.0, 0.0, 0.0], PLAN_LADDER_MIN[0]),
+        CollisionBrush::half_space([-1.0, 0.0, 0.0], -PLAN_LADDER_MAX[0]),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], PLAN_LADDER_MIN[1]),
+        CollisionBrush::half_space([0.0, -1.0, 0.0], -PLAN_LADDER_MAX[1]),
+        CollisionBrush::box_brush(PLAN_LADDER_SHELF_MIN, PLAN_LADDER_SHELF_MAX),
+    ];
+    let ladder = [CollisionBrush::box_brush(
+        PLAN_LADDER_VOLUME_MIN,
+        PLAN_LADDER_VOLUME_MAX,
+    )];
+    let volumes: &[(i32, &[CollisionBrush])] = if with_ladder {
+        &[(ohl_physics::contents::LADDER, &ladder)]
+    } else {
+        &[]
+    };
+    let world_heads = b.push_collision_hulls_with_contents(&solid, volumes);
+    let trigger_heads = b.push_collision_hulls(&[]);
+
+    b.push_model(
+        PLAN_LADDER_MIN,
+        PLAN_LADDER_MAX,
+        [0.0; 3],
+        world_heads,
+        2,
+        0,
+        0,
+    );
+    b.push_model(
+        PLAN_LADDER_TRIGGER_MIN,
+        PLAN_LADDER_TRIGGER_MAX,
+        [0.0; 3],
+        trigger_heads,
+        2,
+        0,
+        0,
+    );
+
+    b.build()
+}

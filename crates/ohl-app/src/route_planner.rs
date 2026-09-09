@@ -49,6 +49,8 @@ use ohl_engine::{
     PlanRejection, RoutePlan, TICK_SECONDS,
 };
 
+use ohl_physics::MoveConfig;
+
 use crate::game_run::CAPTURE_STEP;
 use crate::script::Script;
 
@@ -73,6 +75,10 @@ pub const MAX_ATTEMPTS: usize = 96;
 /// before the loop replays and plans again ([`PlanOptions::segments_per_attempt`]).
 pub const DEFAULT_SEGMENTS_PER_ATTEMPT: usize = 1;
 
+/// The most segments one attempt may commit, so a caller cannot ask for
+/// a script that is one long open loop.
+pub const MAX_SEGMENTS_PER_ATTEMPT: usize = 16;
+
 /// How many ticks a turn-in-place line is given. Long enough that the
 /// turn is a smooth sweep rather than a snap (`look` spreads its
 /// degrees evenly across its own line), short enough to cost nothing.
@@ -87,6 +93,10 @@ const DOOR_WAIT_PADDING_TICKS: u32 = 12;
 /// trigger volume the last run has just entered gets a tick to fire in
 /// and any overshoot settles before the next attempt plans from here.
 const SETTLE_TICKS: u32 = 30;
+
+/// How many extra ticks a ladder climb is padded by; see
+/// [`ticks_for_climb`].
+const CLIMB_PADDING_TICKS: u32 = 12;
 
 /// The most ticks one `forward` line may schedule, so a nonsensical
 /// distance cannot produce a script that runs for hours.
@@ -115,7 +125,7 @@ const HEADER: &str = "\
 ";
 
 /// How to plan.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PlanOptions {
     /// How many plan/replay attempts the closed loop may take, bounded by
     /// [`MAX_ATTEMPTS`].
@@ -176,6 +186,8 @@ pub struct PlannedRoute {
     pub cells: usize,
     /// How many walk-forward segments the script holds.
     pub segments: usize,
+    /// How many ladder climbs the script holds.
+    pub climbs: usize,
     /// How many door presses the script holds.
     pub doors: usize,
     /// How many ticks the script schedules.
@@ -211,6 +223,12 @@ pub enum PlanFailure {
     /// The accepted script did not reach the goal on the caller's own
     /// live game, only on the restored snapshot.
     LiveReplayFailed,
+    /// The route so far left the player dead. A corpse does not walk, so
+    /// every further plan is the plan this one already was: there is
+    /// nothing left for the loop to try, and saying so is more honest
+    /// than spending every remaining attempt on a state that cannot
+    /// move.
+    PlayerDied,
     /// The route file could not be written.
     Unwritable,
 }
@@ -233,6 +251,7 @@ impl std::fmt::Display for PlanFailure {
             }
             Self::LiveReplayFailed => formatter
                 .write_str("the planned script reached the goal only on a restored snapshot"),
+            Self::PlayerDied => formatter.write_str("the route walked so far left the player dead"),
             Self::Unwritable => formatter.write_str("the route file could not be written"),
         }
     }
@@ -247,43 +266,131 @@ pub fn shortest_turn(from: f32, to: f32) -> f32 {
     if delta > 180.0 { delta - 360.0 } else { delta }
 }
 
-/// How many script ticks it takes to cover `distance` world units on
-/// foot, by replaying the engine's own ground-acceleration rule in one
-/// dimension from a standstill: the player accelerates at
-/// `accelerate * max_speed` per second up to `max_speed`, so a short run
-/// never reaches top speed and "distance over top speed" always
-/// undershoots it.
+/// How far the player coasts to a halt from `speed`, by replaying the
+/// engine's own ground-friction rule
+/// (`ohl_physics::MoveConfig::friction`/`stop_speed`) one tick at a time.
 ///
-/// Deliberately conservative (it assumes the player starts from rest at
-/// every segment, which a player who has just turned nearly does): a
-/// slight overshoot ends against the wall the next turn faces away from,
-/// while an undershoot leaves the next segment aimed from the wrong
-/// place.
+/// A `forward` line is a *held key*: the tick it stops on is not the tick
+/// the player stops on. Releasing at top speed still carries them the
+/// better part of a corridor's width, which is why a run planned by
+/// acceleration alone always ends past the point it was planned for.
 #[must_use]
-pub fn ticks_for_distance(distance: f32, max_speed: f32, accelerate: f32) -> u32 {
-    if !(distance.is_finite() && distance > 0.0) || max_speed <= 0.0 {
+pub fn coast_distance(speed: f32, config: &MoveConfig) -> f32 {
+    if !speed.is_finite() || speed <= 0.0 {
+        return 0.0;
+    }
+    let step = TICK_SECONDS;
+    let mut speed = speed;
+    let mut travelled = 0.0f32;
+    // Bounded by the friction rule itself: `stop_speed * friction` is a
+    // fixed floor on the per-tick drop, so this cannot run long. The
+    // guard is there so a degenerate config cannot loop forever.
+    for _ in 0..MAX_SEGMENT_TICKS {
+        if speed < 0.1 {
+            break;
+        }
+        let drop = speed.max(config.stop_speed) * config.friction * step;
+        speed = (speed - drop).max(0.0);
+        travelled += speed * step;
+    }
+    travelled
+}
+
+/// How many script ticks of held `forward` it takes to *stop* `distance`
+/// world units away, by replaying the engine's own ground move in one
+/// dimension from a standstill: friction, then acceleration toward
+/// `max_speed`, then the coast the release leaves behind
+/// ([`coast_distance`]).
+///
+/// Both halves matter, and for opposite reasons. "Distance over top
+/// speed" undershoots, because a player starting from rest never travels
+/// at top speed; counting only the held ticks *overshoots*, because the
+/// player keeps sliding once the key is released. A route is re-planned
+/// from wherever the player actually stands, so an undershoot costs one
+/// more segment — but an overshoot is what walks a planned route off a
+/// ledge, and the walk this route came from never planned the fall.
+///
+/// So the key is released on the last tick from which the coast still
+/// lands short of `distance`.
+#[must_use]
+pub fn ticks_for_distance(distance: f32, config: &MoveConfig) -> u32 {
+    if !(distance.is_finite() && distance > 0.0) || config.max_speed <= 0.0 {
         return 0;
     }
     let step = TICK_SECONDS;
     let mut speed = 0.0f32;
     let mut travelled = 0.0f32;
-    let mut seconds = 0.0f32;
-    while travelled < distance && seconds < f32::from(u16::MAX) {
-        speed = (speed + accelerate * max_speed * step).min(max_speed);
-        travelled += speed * step;
-        seconds += step;
+    let mut ticks = 0u32;
+    while ticks < MAX_SEGMENT_TICKS {
+        // Would one more held tick still leave the player stopping short
+        // of the target? A tick is only taken when the answer is yes: the
+        // key is released on the last tick whose own coast lands inside
+        // the distance, never on the first one that lands past it.
+        let drop = speed.max(config.stop_speed) * config.friction * step;
+        let next_speed = ((speed - drop).max(0.0) + config.accelerate * config.max_speed * step)
+            .min(config.max_speed);
+        let next_travelled = travelled + next_speed * step;
+        if ticks > 0 && next_travelled + coast_distance(next_speed, config) > distance {
+            break;
+        }
+        speed = next_speed;
+        travelled = next_travelled;
+        ticks += 1;
     }
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "a tick count bounded by MAX_SEGMENT_TICKS just below"
-    )]
-    let ticks = (seconds / CAPTURE_STEP).ceil() as u32;
     ticks.clamp(1, MAX_SEGMENT_TICKS)
 }
 
-/// The first `segments` walk-forward actions of `actions`, with every
-/// door press among them; `0` keeps the whole plan.
+/// How many script ticks of held `forward`/`back` it takes to climb
+/// `distance` world units along a ladder.
+///
+/// A climb has no acceleration and no friction to model: the engine's
+/// ladder step *sets* the velocity to the climb speed
+/// (`ohl_physics::MoveConfig::ladder_speed`) rather than accelerating
+/// toward it, so the count is the distance over that speed — the one
+/// place where the naive estimate is the right one. A few ticks of slack
+/// are added because a climb that stops short leaves the player hanging
+/// where the next segment cannot be walked from, while one that runs on
+/// simply presses them against the top or the foot of the ladder.
+#[must_use]
+pub fn ticks_for_climb(distance: f32, config: &MoveConfig) -> u32 {
+    if !(distance.is_finite() && distance > 0.0) || config.ladder_speed <= 0.0 {
+        return 0;
+    }
+    let seconds = distance / config.ladder_speed;
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a tick count clamped just below"
+    )]
+    let ticks = (seconds / CAPTURE_STEP).ceil() as u32;
+    ticks
+        .saturating_add(CLIMB_PADDING_TICKS)
+        .clamp(1, MAX_SEGMENT_TICKS)
+}
+
+/// `actions` truncated after its first ladder climb.
+///
+/// A climb is the one action whose commands mean something else entirely
+/// when the player is not where the plan thinks they are: `back` against
+/// a ladder descends it, and `back` on open floor walks away from
+/// everything the route just gained. So a climb always ends a committed
+/// chunk — the loop replays, sees where the player actually is (on the
+/// ladder, at its foot, or still on the ledge) and plans the rest from
+/// there.
+#[must_use]
+pub fn through_first_climb(actions: &[PlanAction]) -> &[PlanAction] {
+    match actions
+        .iter()
+        .position(|action| matches!(action, PlanAction::Climb { .. }))
+    {
+        Some(index) => &actions[..=index],
+        None => actions,
+    }
+}
+
+/// The first `segments` travelling actions of `actions` (a walk-forward
+/// run or a ladder climb), with every door press among them; `0` keeps
+/// the whole plan.
 #[must_use]
 pub fn first_segments(actions: &[PlanAction], segments: usize) -> &[PlanAction] {
     if segments == 0 {
@@ -291,7 +398,7 @@ pub fn first_segments(actions: &[PlanAction], segments: usize) -> &[PlanAction] 
     }
     let mut moves = 0usize;
     for (index, action) in actions.iter().enumerate() {
-        if matches!(action, PlanAction::Move { .. }) {
+        if matches!(action, PlanAction::Move { .. } | PlanAction::Climb { .. }) {
             moves += 1;
             if moves >= segments {
                 return &actions[..=index];
@@ -317,15 +424,10 @@ fn turn_toward(lines: &mut String, facing: f32, yaw: f32) -> f32 {
 /// Converts one planned route into script lines, starting from the yaw
 /// the player is currently facing.
 ///
-/// `max_speed`/`accelerate` come from the live
-/// `ohl_physics::MoveConfig` the game moves by, never restated here.
+/// The movement tunables come from the live `ohl_physics::MoveConfig` the
+/// game moves by, never restated here.
 #[must_use]
-pub fn script_text(
-    start_yaw: f32,
-    actions: &[PlanAction],
-    max_speed: f32,
-    accelerate: f32,
-) -> String {
+pub fn script_text(start_yaw: f32, actions: &[PlanAction], config: &MoveConfig) -> String {
     let mut lines = String::new();
     let mut facing = start_yaw.rem_euclid(360.0);
     for action in actions {
@@ -336,7 +438,7 @@ pub fn script_text(
                 jump,
             } => {
                 facing = turn_toward(&mut lines, facing, yaw);
-                let ticks = ticks_for_distance(distance, max_speed, accelerate);
+                let ticks = ticks_for_distance(distance, config);
                 if ticks == 0 {
                     continue;
                 }
@@ -344,6 +446,23 @@ pub fn script_text(
                     let _ = writeln!(lines, "{ticks} forward jump");
                 } else {
                     let _ = writeln!(lines, "{ticks} forward");
+                }
+            }
+            PlanAction::Climb { yaw, distance, up } => {
+                facing = turn_toward(&mut lines, facing, yaw);
+                let ticks = ticks_for_climb(distance, config);
+                if ticks == 0 {
+                    continue;
+                }
+                // Facing into the ladder, `forward` climbs and `back`
+                // descends: the engine's own ladder step resolves the
+                // wished-for direction against the volume's outward
+                // normal, and this is that rule read back, not a second
+                // one (`ohl_physics::movement`).
+                if up {
+                    let _ = writeln!(lines, "{ticks} forward");
+                } else {
+                    let _ = writeln!(lines, "{ticks} back");
                 }
             }
             PlanAction::UseDoor { yaw, open_seconds } => {
@@ -413,6 +532,13 @@ fn parse(text: &str) -> Result<Option<Script>, PlanFailure> {
 /// a planner run unbounded.
 const MAX_SETTLE_ROUNDS: usize = 64;
 
+/// How many ticks a planning attempt waits for the player to come back
+/// down before it plans (two simulated seconds). A route may legitimately
+/// step off a low ledge; the plan that follows it has to be made from
+/// where the player lands, not from the floor they are still falling
+/// toward.
+const LANDING_TICKS: u32 = 120;
+
 /// Stands still for `ticks`, returning `false` when a level change fired
 /// while waiting (nothing left to plan).
 fn idle(game: &mut Game, ticks: u32) -> bool {
@@ -453,6 +579,14 @@ fn restore(
 fn count_segments(text: &str) -> usize {
     text.lines()
         .filter(|line| line.split_ascii_whitespace().any(|word| word == "forward"))
+        .count()
+}
+
+/// How many ladder climbs a script holds: a `back` line is only ever a
+/// climb down, and an `up`/`down` line is never emitted at all.
+fn count_climbs(text: &str) -> usize {
+    text.lines()
+        .filter(|line| line.split_ascii_whitespace().any(|word| word == "back"))
         .count()
 }
 
@@ -531,6 +665,25 @@ impl Planner<'_> {
         if settle > 0 && !idle(&mut scratch, settle) {
             return Ok(None);
         }
+        // Never plan in mid-air: the engine's own search settles onto
+        // the floor below the player before it walks, so a plan made
+        // while they are still falling describes a route from a place
+        // they have not arrived at, and the script for it runs during
+        // the fall.
+        for _ in 0..LANDING_TICKS {
+            if scratch.player_on_ground() {
+                break;
+            }
+            if !idle(&mut scratch, 1) {
+                return Ok(None);
+            }
+        }
+        // A dead player stands still whatever the script says, so the
+        // search from here would plan the very same route again, every
+        // attempt, until the loop ran out — see [`PlanFailure::PlayerDied`].
+        if scratch.player_health() <= 0.0 {
+            return Err(PlanFailure::PlayerDied);
+        }
         Ok(Some(scratch))
     }
 
@@ -546,10 +699,7 @@ impl Planner<'_> {
                 return Ok(String::new());
             };
             let facing = scratch.camera().yaw;
-            let (max_speed, accelerate) = {
-                let move_config = scratch.move_config();
-                (move_config.max_speed, move_config.accelerate)
-            };
+            let move_config = *scratch.move_config();
             let plan = match ohl_engine::plan_route(&mut scratch, &self.options.plan) {
                 Ok(plan) => plan,
                 Err(rejection) if rejection.error == PlanError::GoalUnreachable => {
@@ -577,7 +727,8 @@ impl Planner<'_> {
             } else {
                 &plan.actions
             };
-            let text = script_text(facing, committed, max_speed, accelerate);
+            let committed = through_first_climb(committed);
+            let text = script_text(facing, committed, &move_config);
             // An identical chunk means the last one changed nothing: the
             // player is somewhere the same plan comes out of, which is
             // what standing in a map's own arrival sequence looks like
@@ -653,6 +804,7 @@ pub fn plan(
     }
     Ok(PlannedRoute {
         segments: count_segments(&text),
+        climbs: count_climbs(&text),
         doors: count_doors(&text),
         cells: planner.last.borrow().as_ref().map_or(0, |plan| plan.cells),
         attempts,
@@ -799,8 +951,7 @@ mod tests {
                 distance: 100.0,
                 jump: false,
             }],
-            320.0,
-            10.0,
+            &MoveConfig::default(),
         );
         assert!(text.starts_with("6 look 0 20.00\n"), "got {text:?}");
         assert!(text.contains(" forward\n"));
@@ -826,17 +977,127 @@ mod tests {
         assert_eq!(first_segments(&actions, 99), &actions);
     }
 
-    /// A run from a standstill never reaches top speed, so the tick count
-    /// has to exceed the naive "distance over top speed" estimate.
+    /// Where a `forward` line stops the player: held ticks plus the
+    /// coast the release leaves behind, replayed the same way the engine
+    /// moves them. The run must end *at or before* the distance it was
+    /// planned for — an overshoot is what walks a planned route off a
+    /// ledge — and not far short of it either.
     #[test]
-    fn a_short_run_is_given_more_ticks_than_top_speed_alone_implies() {
-        let naive = 100.0f32 / 320.0 / CAPTURE_STEP;
-        let ticks = f32::from(u16::try_from(ticks_for_distance(100.0, 320.0, 10.0)).unwrap_or(0));
+    fn a_run_stops_at_the_distance_it_was_planned_for() {
+        let config = MoveConfig::default();
+        // One held tick is the shortest run the grammar can schedule, so
+        // a run shorter than the distance that tick and its own coast
+        // cover overshoots by construction; every longer one must not.
+        let one_tick_speed = config.accelerate * config.max_speed * ohl_engine::TICK_SECONDS;
+        let floor =
+            one_tick_speed * ohl_engine::TICK_SECONDS + coast_distance(one_tick_speed, &config);
+        for distance in [16.0f32, 48.0, 100.0, 256.0, 1_024.0] {
+            let ticks = ticks_for_distance(distance, &config);
+            assert!(ticks >= 1, "every run holds at least one tick");
+            // Replay the held ticks, then let go.
+            let step = ohl_engine::TICK_SECONDS;
+            let mut speed = 0.0f32;
+            let mut travelled = 0.0f32;
+            for _ in 0..ticks {
+                let drop = speed.max(config.stop_speed) * config.friction * step;
+                speed = (speed - drop).max(0.0);
+                speed = (speed + config.accelerate * config.max_speed * step).min(config.max_speed);
+                travelled += speed * step;
+            }
+            let stopped = travelled + coast_distance(speed, &config);
+            assert!(
+                stopped <= distance.max(floor) + f32::EPSILON,
+                "a {distance}-unit run stopped {stopped} units on"
+            );
+            assert!(
+                stopped >= distance - coast_distance(config.max_speed, &config),
+                "a {distance}-unit run stopped only {stopped} units on"
+            );
+        }
+        assert_eq!(ticks_for_distance(0.0, &config), 0);
+        assert_eq!(ticks_for_distance(f32::NAN, &config), 0);
+    }
+
+    /// A climb is timed by the ladder's own constant speed, not by the
+    /// ground move's acceleration, and a longer climb takes longer.
+    #[test]
+    fn a_climb_is_timed_by_the_ladder_speed() {
+        let config = MoveConfig::default();
+        let short = ticks_for_climb(160.0, &config);
+        let long = ticks_for_climb(320.0, &config);
+        assert!(long > short, "twice the shaft, more ticks");
+        let seconds = f32::from(u16::try_from(short).unwrap_or(0)) * CAPTURE_STEP;
         assert!(
-            ticks > naive,
-            "expected more than the top-speed estimate ({naive}), got {ticks}"
+            seconds >= 1.0,
+            "a climb of the ladder speed's own distance takes at least a second, got {seconds}"
         );
-        assert_eq!(ticks_for_distance(0.0, 320.0, 10.0), 0);
-        assert_eq!(ticks_for_distance(f32::NAN, 320.0, 10.0), 0);
+        assert_eq!(ticks_for_climb(0.0, &config), 0);
+        assert_eq!(ticks_for_climb(f32::NAN, &config), 0);
+    }
+
+    /// A climb becomes a turn toward the ladder and a held key: forward
+    /// to go up it, back to come down, which is the engine's own ladder
+    /// step read back rather than a second rule.
+    #[test]
+    fn a_climb_becomes_a_turn_and_a_held_key() {
+        let config = MoveConfig::default();
+        let up = script_text(
+            0.0,
+            &[PlanAction::Climb {
+                yaw: 180.0,
+                distance: 160.0,
+                up: true,
+            }],
+            &config,
+        );
+        assert!(up.starts_with("6 look 0 180.00\n"), "got {up:?}");
+        assert!(up.contains(" forward\n"), "got {up:?}");
+        assert!(!up.contains(" back\n"), "got {up:?}");
+
+        let down = script_text(
+            180.0,
+            &[PlanAction::Climb {
+                yaw: 180.0,
+                distance: 160.0,
+                up: false,
+            }],
+            &config,
+        );
+        assert!(
+            !down.contains("look"),
+            "already facing the ladder: {down:?}"
+        );
+        assert!(down.contains(" back\n"), "got {down:?}");
+    }
+
+    /// A committed chunk never runs past a climb: `back` means "down the
+    /// ladder" only while the player is on one, and the loop has to see
+    /// whether they actually are.
+    #[test]
+    fn a_committed_chunk_stops_at_the_first_climb() {
+        let walk = PlanAction::Move {
+            yaw: 0.0,
+            distance: 64.0,
+            jump: false,
+        };
+        let climb = PlanAction::Climb {
+            yaw: 180.0,
+            distance: 160.0,
+            up: false,
+        };
+        let actions = [walk, walk, climb, walk, climb];
+        assert_eq!(through_first_climb(&actions).len(), 3);
+        assert_eq!(through_first_climb(&actions[..2]).len(), 2, "no climb");
+        assert_eq!(first_segments(&actions, 3).len(), 3, "a climb is a segment");
+    }
+
+    /// A route that leaves the player dead is refused with its own fixed
+    /// reason rather than replanned from a body that cannot move.
+    #[test]
+    fn a_dead_player_is_its_own_refusal() {
+        assert_eq!(
+            PlanFailure::PlayerDied.to_string(),
+            "the route walked so far left the player dead"
+        );
     }
 }

@@ -172,6 +172,23 @@ fn parse_plan_attempts(value: &str) -> Result<usize, String> {
     }
 }
 
+/// Parses `--plan-segments`, bounded the way the planner itself bounds
+/// it: at least one travelling segment per attempt, and no more than one
+/// plan's worth.
+#[cfg(feature = "dev-tools")]
+fn parse_plan_segments(value: &str) -> Result<usize, String> {
+    let message = format!(
+        "expected a whole number at most {} (0 commits a whole plan)",
+        crate::route_planner::MAX_SEGMENTS_PER_ATTEMPT
+    );
+    let parsed: usize = value.parse().map_err(|_| message.clone())?;
+    if parsed <= crate::route_planner::MAX_SEGMENTS_PER_ATTEMPT {
+        Ok(parsed)
+    } else {
+        Err(message)
+    }
+}
+
 /// `Open Half-Life <version>` command line.
 #[allow(
     clippy::struct_excessive_bools,
@@ -642,6 +659,26 @@ number greater than 0 and no more than 8.0."
         value_parser = parse_plan_attempts
     )]
     plan_attempts: Option<usize>,
+
+    /// Development only: with `--plan-route`, how many of one plan's own
+    /// travelling segments (a walk-forward run or a ladder climb) each
+    /// attempt commits to the script before it replays and plans again.
+    ///
+    /// One — the default — is the tightest closed loop there is: every
+    /// segment is walked and the next is planned from wherever the
+    /// player actually ended up. A larger number spends fewer replays on
+    /// a long route, at the cost of letting a segment's own drift carry
+    /// into the segments planned after it. Zero commits a whole plan at
+    /// a time, which is the right trade on a long route whose middle
+    /// runs through places the search sees less of than its start does.
+    #[cfg(feature = "dev-tools")]
+    #[arg(
+        long,
+        requires = "plan_route",
+        value_name = "N",
+        value_parser = parse_plan_segments
+    )]
+    plan_segments: Option<usize>,
 }
 
 /// Formats an event as `[level] message`, mirroring the C++ `ohl::core::log`
@@ -964,6 +1001,8 @@ fn run_game_flow(cli: &Cli) -> ExitCode {
         plan_goal: cli.plan_goal.as_deref(),
         #[cfg(feature = "dev-tools")]
         plan_attempts: cli.plan_attempts,
+        #[cfg(feature = "dev-tools")]
+        plan_segments: cli.plan_segments,
     }) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {

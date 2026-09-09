@@ -80,6 +80,60 @@ use crate::{Game, USE_RADIUS};
 /// The classname [`PlanConfig::default`] plans a route to.
 pub const DEFAULT_GOAL_CLASSNAME: &str = "trigger_changelevel";
 
+/// The tallest fall this walk plans by default, in world units: the
+/// height a player lands from at exactly
+/// [`ohl_player::damage::SAFE_FALL_SPEED`], and so the tallest one that costs
+/// them no health at all.
+///
+/// Derived, never restated: a fall from `h` lands at `sqrt(2 * g * h)`,
+/// so the safe height is `v^2 / (2 * g)` with `g` the live
+/// [`ohl_physics::MoveConfig::gravity`] this map is simulated with.
+///
+/// [`crate::reachability`]'s walk deliberately has no such bound — its
+/// question is whether a place can be *entered at all*, and a triage
+/// report that hid a route because the player would be hurt taking it
+/// would answer the wrong question. A route is different: it is a script
+/// a live player has to walk and survive. A fall past this height costs
+/// health the rest of the campaign needs, and a long enough one is
+/// simply fatal — after which the player stops moving, every later plan
+/// from that state is the plan before it, and the closed loop spends
+/// every remaining attempt on a corpse.
+#[must_use]
+pub fn safe_drop_height(config: &ohl_physics::MoveConfig) -> f32 {
+    if config.gravity <= 0.0 {
+        return f32::INFINITY;
+    }
+    ohl_player::damage::SAFE_FALL_SPEED * ohl_player::damage::SAFE_FALL_SPEED
+        / (2.0 * config.gravity)
+}
+
+/// The share of the player's current health one planned fall may cost:
+/// half of it. A route is a script a live player walks with the health
+/// the campaign has left them, so "survivable" is not a fixed height —
+/// it is a height that depends on how much health there is to spend, and
+/// the loop that plans a route re-plans after every committed run, so
+/// each new plan is bounded by the health the player has by then.
+pub const DROP_HEALTH_BUDGET: f32 = 0.5;
+
+/// The tallest fall the walk plans for a player at `health`, in world
+/// units: the height whose landing costs at most [`DROP_HEALTH_BUDGET`]
+/// of that health, and never less than [`safe_drop_height`].
+///
+/// Derived from `ohl_player`'s own published fall-damage curve
+/// (`D = (25/111) * (v - 580)`, `ohl_player::damage`), inverted for the
+/// speed a given damage budget allows and converted back to a height
+/// with the live gravity. Nothing here restates either constant.
+#[must_use]
+pub fn survivable_drop_height(config: &ohl_physics::MoveConfig, health: f32) -> f32 {
+    let safe = safe_drop_height(config);
+    let budget = health * DROP_HEALTH_BUDGET;
+    if !budget.is_finite() || budget <= 0.0 || config.gravity <= 0.0 {
+        return safe;
+    }
+    let speed = ohl_player::damage::SAFE_FALL_SPEED
+        + budget / ohl_player::damage::DAMAGE_PER_EXCESS_FALL_SPEED;
+    (speed * speed / (2.0 * config.gravity)).max(safe)
+}
 /// How far apart the floor beneath a candidate straight-line shortcut is
 /// sampled, in world units. A shortcut is only taken when every sample
 /// along it has floor within a step of the line: a clear hull trace alone
@@ -88,7 +142,7 @@ pub const STRAIGHT_LINE_SAMPLE: f32 = CELL_SIZE;
 
 /// How which edge one path step was reached by: what a script has to do
 /// to cross it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EdgeKind {
     /// A plain step onto a floor at (roughly) the same height.
     Walk,
@@ -102,6 +156,17 @@ pub enum EdgeKind {
     /// The long-jump edge, which needs an item and an input combination
     /// no route file expresses — see this module's own doc comment.
     LongJump,
+    /// A climb along a `func_ladder`-style volume: the player holds
+    /// `forward` while facing `face_yaw` (into the ladder) to go up, and
+    /// `back` from the same heading to go down, exactly as
+    /// `ohl_physics::movement`'s own ladder step resolves the wished-for
+    /// direction against the ladder's outward normal.
+    Ladder {
+        /// The heading that faces into the ladder, in degrees.
+        face_yaw: f32,
+        /// Whether this step climbed up rather than down.
+        up: bool,
+    },
 }
 
 impl EdgeKind {
@@ -141,6 +206,20 @@ pub enum PlanAction {
         /// Whether this is the walk's jump edge rather than ground
         /// movement.
         jump: bool,
+    },
+    /// Face `yaw` degrees (into a ladder) and climb `distance` world
+    /// units along it, up or down.
+    ///
+    /// The caller holds `forward` to climb up and `back` to climb down:
+    /// both are the same heading, resolved by the engine's own ladder
+    /// step against the volume's outward normal.
+    Climb {
+        /// The heading that faces into the ladder, in degrees.
+        yaw: f32,
+        /// How far to climb along it, in world units.
+        distance: f32,
+        /// Whether the climb goes up rather than down.
+        up: bool,
     },
     /// Face `yaw` degrees, press use once, and wait `open_seconds` for the
     /// door to finish opening (its own `delay` plus its travel time, both
@@ -195,18 +274,19 @@ pub struct RoutePlan {
 }
 
 impl RoutePlan {
-    /// How many [`PlanAction::Move`] segments the route holds.
+    /// How many travelling segments the route holds: every
+    /// [`PlanAction::Move`] and every [`PlanAction::Climb`].
     #[must_use]
     pub fn segments(&self) -> usize {
         self.actions
             .iter()
-            .filter(|action| matches!(action, PlanAction::Move { .. }))
+            .filter(|action| matches!(action, PlanAction::Move { .. } | PlanAction::Climb { .. }))
             .count()
     }
 }
 
 /// What to plan, and how much work the search may do.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PlanConfig {
     /// The per-round cell cap, exactly as
     /// [`crate::reachability::ReachabilityConfig::cell_cap`].
@@ -239,6 +319,15 @@ pub struct PlanConfig {
     /// planning fails with [`PlanError::UnsupportedEdge`] when the route
     /// found actually depends on one — see this module's own doc comment.
     pub assume_longjump: bool,
+    /// The tallest fall the walk may plan, in world units.
+    ///
+    /// `None` — the default — means [`survivable_drop_height`] for the
+    /// map's own gravity and the player's own current health: the route
+    /// never asks the player to take a fall that costs them more than
+    /// [`DROP_HEALTH_BUDGET`] of the health they have. A caller that
+    /// wants the older, unbounded behaviour (or a fixture that means to
+    /// test a particular drop) sets a height here.
+    pub max_drop: Option<f32>,
 }
 
 impl Default for PlanConfig {
@@ -250,6 +339,7 @@ impl Default for PlanConfig {
             goal_classname: DEFAULT_GOAL_CLASSNAME.to_string(),
             avoid_goal_maps: Vec::new(),
             assume_longjump: false,
+            max_drop: None,
         }
     }
 }
@@ -432,6 +522,134 @@ fn sidestep(
     None
 }
 
+/// How far one ladder edge climbs, in world units: one grid cell, so a
+/// climb is recorded at the same resolution as everything else the walk
+/// visits.
+const LADDER_STEP: f32 = CELL_SIZE;
+
+/// A probe body standing at `position`, for the two public ladder queries
+/// `ohl_physics` answers about a player (`in_ladder_volume`,
+/// `ladder_normal`). Only the origin and the standing hull matter to
+/// either.
+fn ladder_probe(position: Vec3) -> ohl_physics::PlayerState {
+    ohl_physics::PlayerState {
+        origin: position,
+        ..ohl_physics::PlayerState::default()
+    }
+}
+
+/// The heading that faces *into* the ladder from `position`, when a
+/// standing hull there touches a climbable volume at all.
+///
+/// The engine's own climb step (`ohl_physics::movement`'s ladder move)
+/// drives the player along the ladder by the wished-for direction's
+/// component against the volume's outward normal, so the one heading a
+/// script needs is the opposite of that normal — and it is the engine's
+/// own `ladder_normal` that reports it, never a second rule stated here.
+fn ladder_face_yaw(collision: &CollisionModel, position: Vec3) -> Option<f32> {
+    let probe = ladder_probe(position);
+    let normal = ohl_physics::ladder_normal(collision, &probe);
+    if normal == Vec3::ZERO {
+        return None;
+    }
+    Some((-normal.y).atan2(-normal.x).to_degrees())
+}
+
+/// One ladder edge from `position`: [`LADDER_STEP`] straight up or down,
+/// staying inside the climbable volume, or — going down — stepping off it
+/// onto the floor at its foot.
+///
+/// Returns the landing and the heading to face while climbing it.
+///
+/// This is the edge [`crate::reachability`]'s triage walk has no need of
+/// and this one cannot do without: a shaft with a ladder in it is a
+/// two-way connection for a player and a one-way fall for a walk that
+/// only knows how to step, jump and drop. Planning the fall instead of
+/// the climb costs the player the health the fall does — and a tall
+/// enough shaft costs them the campaign.
+fn ladder_edge(
+    collision: &CollisionModel,
+    position: Vec3,
+    up: bool,
+    max_drop: f32,
+) -> Option<(Vec3, f32)> {
+    let face_yaw = ladder_face_yaw(collision, position)?;
+    let step = if up { LADDER_STEP } else { -LADDER_STEP };
+    let moved = collision.trace(Hull::Standing, position, position + Vec3::Z * step);
+    if moved.start_solid || moved.blocked() {
+        return None;
+    }
+    let landing = moved.end_pos;
+    if ladder_face_yaw(collision, landing).is_some() {
+        return Some((landing, face_yaw));
+    }
+    // The climb left the volume. Going up that is the top of the ladder,
+    // which the ordinary walk steps off on its own; going down it is the
+    // ladder's foot, and the floor beneath it is where the player ends
+    // up standing.
+    if up {
+        return None;
+    }
+    let down = collision.trace(Hull::Standing, landing, landing - Vec3::Z * max_drop);
+    if down.start_solid || down.fraction >= 1.0 {
+        return None;
+    }
+    Some((down.end_pos, face_yaw))
+}
+
+/// The step that *mounts* a ladder: one grid cell across, into a place
+/// where a standing hull touches a climbable volume, with no floor
+/// underneath.
+///
+/// Stepping off a ledge into a shaft is a fall to a walk that only knows
+/// how to trace downward for a floor — and a fall past
+/// [`survivable_drop_height`] is no edge of this walk's. It is not a fall
+/// to a player: the engine attaches them to the ladder volume they touch
+/// on the way past and cancels their vertical speed
+/// (`ohl_physics::movement`'s ladder attachment). So a step whose landing
+/// is inside a ladder is accepted where the fall beneath it would not
+/// be, and the climb edges take over from there.
+fn ladder_mount(
+    collision: &CollisionModel,
+    position: Vec3,
+    direction: Vec3,
+    max_drop: f32,
+) -> Option<(Vec3, f32)> {
+    let hull = Hull::Standing;
+    // Straight out from where the player stands, not from the step-up
+    // height an ordinary edge starts at: the ladder they are about to
+    // grab ends at the ledge's own level, and a hull raised a step above
+    // it reaches out over the top of the volume instead of into it.
+    //
+    // One cell in is where a ladder mounted flush against the ledge is
+    // reached, two where one on the far face of a thicker wall is (and
+    // where a standing hull first stands clear of the ledge it stepped
+    // off). A cell *below* either is where the player actually meets the
+    // volume when they step off and drop before grabbing it. Whichever
+    // of those they could then climb from is the mount.
+    for cells in 1..=2 {
+        #[allow(clippy::cast_precision_loss, reason = "one or two grid cells")]
+        let reach = CELL_SIZE * cells as f32;
+        let across = collision.trace(hull, position, position + direction * reach);
+        if across.start_solid || across.fraction <= 0.0 {
+            continue;
+        }
+        for below in 0..=1 {
+            #[allow(clippy::cast_precision_loss, reason = "one grid cell")]
+            let landing = across.end_pos - Vec3::Z * (CELL_SIZE * below as f32);
+            let Some(face_yaw) = ladder_face_yaw(collision, landing) else {
+                continue;
+            };
+            if ladder_edge(collision, landing, false, max_drop).is_some()
+                || ladder_edge(collision, landing, true, max_drop).is_some()
+            {
+                return Some((landing, face_yaw));
+            }
+        }
+    }
+    None
+}
+
 /// Which [`EdgeKind`] an accepted plain-step outcome represents.
 fn plain_edge_kind(from: Vec3, to: Vec3, drop: f32) -> EdgeKind {
     if drop > DROP {
@@ -456,6 +674,21 @@ enum Crossing {
     Blocked(Option<BrushId>),
 }
 
+/// What one walk may cross: how far it can jump, how far it may fall,
+/// and how far it may fall *without paying for it* (see
+/// [`safe_drop_height`] and [`survivable_drop_height`]).
+#[derive(Debug, Clone, Copy)]
+struct EdgeBounds {
+    /// The ordinary jump edge's reach.
+    jump: JumpBounds,
+    /// The long jump's reach, when the caller allows that edge at all.
+    long_jump: Option<JumpBounds>,
+    /// The tallest fall this walk may plan.
+    max_drop: f32,
+    /// The tallest fall that costs the player no health.
+    safe_drop: f32,
+}
+
 /// Tries every edge this walk knows in one direction, in the order
 /// [`crate::reachability`]'s own walk tries them — plain step, then (new
 /// here) the same step from half a cell aside, then an ordinary jump,
@@ -464,23 +697,67 @@ fn cross(
     collision: &CollisionModel,
     position: Vec3,
     direction: Vec3,
-    jump: JumpBounds,
-    long_jump: Option<JumpBounds>,
+    bounds: EdgeBounds,
+    on_ladder: bool,
 ) -> Crossing {
+    let EdgeBounds {
+        jump,
+        long_jump,
+        max_drop,
+        safe_drop,
+    } = bounds;
     let hull = Hull::Standing;
+    // Hanging on a ladder, a fall that costs health is never the route:
+    // the climb is right there. Everywhere else the walk may plan a fall
+    // the player survives with health to spare — see
+    // [`survivable_drop_height`].
+    let max_drop = if on_ladder {
+        safe_drop.min(max_drop)
+    } else {
+        max_drop
+    };
     let plain = try_edge(collision, hull, position, direction, STEP_UP, CELL_SIZE);
     if let EdgeOutcome::Landed {
         position: landing,
         drop,
     } = plain
     {
+        // A landing further below than the player survives is no edge of
+        // this walk's (see [`survivable_drop_height`]) — unless there is
+        // a ladder to catch them on the way ([`ladder_mount`]). Failing
+        // that the whole direction is closed here: stepping aside into
+        // the same fall, or jumping down it, is the same fall.
+        if drop > max_drop {
+            // Hanging on a ladder there is nothing horizontal to do: the
+            // engine's ladder step turns a wished-for direction into a
+            // climb along the volume, never a step across it, so an edge
+            // from here that is not a climb is one no script can walk.
+            if !on_ladder
+                && let Some((landing, _)) = ladder_mount(collision, position, direction, max_drop)
+            {
+                return Crossing::Landed {
+                    landing,
+                    kind: EdgeKind::Walk,
+                    via: None,
+                };
+            }
+            return Crossing::Blocked(None);
+        }
         return Crossing::Landed {
             landing,
             kind: plain_edge_kind(position, landing, drop),
             via: None,
         };
     }
+    if on_ladder {
+        // See above: only the plain step off the ladder onto a floor is
+        // available here, and it has already been tried.
+        return Crossing::Blocked(None);
+    }
     if let Some((aside, landing, drop)) = sidestep(collision, hull, position, direction) {
+        if drop > max_drop {
+            return Crossing::Blocked(None);
+        }
         return Crossing::Landed {
             landing,
             kind: plain_edge_kind(position, landing, drop),
@@ -488,7 +765,8 @@ fn cross(
         };
     }
     if let EdgeOutcome::Landed {
-        position: landing, ..
+        position: landing,
+        drop,
     } = try_edge(
         collision,
         hull,
@@ -496,7 +774,8 @@ fn cross(
         direction,
         jump.ascend,
         jump.horizontal,
-    ) {
+    ) && drop <= max_drop
+    {
         return Crossing::Landed {
             landing,
             kind: EdgeKind::Jump,
@@ -505,7 +784,8 @@ fn cross(
     }
     if let Some(long) = long_jump
         && let EdgeOutcome::Landed {
-            position: landing, ..
+            position: landing,
+            drop,
         } = try_edge(
             collision,
             hull,
@@ -514,6 +794,7 @@ fn cross(
             long.ascend,
             long.horizontal,
         )
+        && drop <= max_drop
     {
         return Crossing::Landed {
             landing,
@@ -546,8 +827,7 @@ fn walk_with_parents(
     collision: &CollisionModel,
     start: Vec3,
     cap: usize,
-    jump: JumpBounds,
-    long_jump: Option<JumpBounds>,
+    bounds: EdgeBounds,
 ) -> Trace {
     let mut trace = Trace {
         landing: HashMap::new(),
@@ -562,6 +842,28 @@ fn walk_with_parents(
 
     while let Some(position) = queue.pop_front() {
         let from = cell_of(position);
+        let on_ladder = ladder_face_yaw(collision, position).is_some();
+        for up in [true, false] {
+            if !on_ladder {
+                break;
+            }
+            if trace.landing.len() >= cap {
+                return trace;
+            }
+            if let Some((landing, face_yaw)) = ladder_edge(collision, position, up, bounds.max_drop)
+            {
+                record(
+                    &mut trace,
+                    &mut queue,
+                    landing,
+                    ParentLink {
+                        from,
+                        kind: EdgeKind::Ladder { face_yaw, up },
+                        via: None,
+                    },
+                );
+            }
+        }
         for (dx, dy) in DIRECTIONS {
             if trace.landing.len() >= cap {
                 return trace;
@@ -570,7 +872,7 @@ fn walk_with_parents(
             if direction == Vec3::ZERO {
                 continue;
             }
-            match cross(collision, position, direction, jump, long_jump) {
+            match cross(collision, position, direction, bounds, on_ladder) {
                 Crossing::Landed { landing, kind, via } => {
                     record(
                         &mut trace,
@@ -928,6 +1230,28 @@ pub fn merge_collinear(path: &[PathPoint]) -> Vec<PlanAction> {
     let mut actions: Vec<PlanAction> = Vec::new();
     for window in path.windows(2) {
         let (from, to) = (window[0], window[1]);
+        if let EdgeKind::Ladder { face_yaw, up } = to.kind {
+            let climbed = (to.position.z - from.position.z).abs();
+            if climbed <= f32::EPSILON {
+                continue;
+            }
+            if let Some(PlanAction::Climb {
+                distance: last_distance,
+                up: last_up,
+                ..
+            }) = actions.last_mut()
+                && *last_up == up
+            {
+                *last_distance += climbed;
+                continue;
+            }
+            actions.push(PlanAction::Climb {
+                yaw: face_yaw,
+                distance: climbed,
+                up,
+            });
+            continue;
+        }
         let Some((yaw, distance)) = heading(from.position, to.position) else {
             continue;
         };
@@ -1010,6 +1334,14 @@ pub fn plan_route(game: &mut Game, config: &PlanConfig) -> Result<RoutePlan, Pla
     let long_jump = config
         .assume_longjump
         .then(|| JumpBounds::from_long_jump_config(game.move_config()));
+    let bounds = EdgeBounds {
+        jump,
+        long_jump,
+        safe_drop: safe_drop_height(game.move_config()),
+        max_drop: config
+            .max_drop
+            .unwrap_or_else(|| survivable_drop_height(game.move_config(), game.player_health())),
+    };
     let start = match game.collision() {
         Some(collision) => settle_start(collision, Vec3::from_array(game.player_origin())),
         None => return Err(PlanRejection::new(PlanError::NoCollision, 0, 0)),
@@ -1022,7 +1354,7 @@ pub fn plan_route(game: &mut Game, config: &PlanConfig) -> Result<RoutePlan, Pla
             let Some(collision) = game.collision() else {
                 return Err(PlanRejection::new(PlanError::NoCollision, cells, round));
             };
-            walk_with_parents(collision, start, config.cell_cap, jump, long_jump)
+            walk_with_parents(collision, start, config.cell_cap, bounds)
         };
         cells = trace.landing.len();
         let rounds = round + 1;
@@ -1104,7 +1436,10 @@ fn build_plan(
     } = *search;
     let eye = Vec3::Z * game.move_config().view_height_standing;
     let path = path_to(trace, start, target);
-    if path.iter().any(|point| point.kind == EdgeKind::LongJump) {
+    if path
+        .iter()
+        .any(|point| matches!(point.kind, EdgeKind::LongJump))
+    {
         return Err(PlanRejection::new(
             PlanError::UnsupportedEdge,
             cells,
@@ -1152,8 +1487,8 @@ fn build_plan(
 mod tests {
     use super::*;
     use crate::test_support::{
-        PLAN_TURN_MAP, REACH_GAP_EDGE_X, REACH_GAP_MAP, plan_turn_bsp, reachability_gap_bsp,
-        reachability_gap_entities,
+        PLAN_LADDER_DROP, PLAN_LADDER_MAP, PLAN_TURN_MAP, REACH_GAP_EDGE_X, REACH_GAP_MAP,
+        plan_ladder_bsp, plan_turn_bsp, reachability_gap_bsp, reachability_gap_entities,
     };
     use crate::{AssetSource, MemoryAssets};
 
@@ -1198,14 +1533,14 @@ mod tests {
                 assert!((distance - 48.0).abs() < 1e-3, "three cells merged");
                 assert!(!jump);
             }
-            PlanAction::UseDoor { .. } => panic!("no door in this path"),
+            _ => panic!("no door or climb in this path"),
         }
         match actions[1] {
             PlanAction::Move { yaw, distance, .. } => {
                 assert!((yaw - 90.0).abs() < 1e-3, "the second run heads along +y");
                 assert!((distance - 48.0).abs() < 1e-3);
             }
-            PlanAction::UseDoor { .. } => panic!("no door in this path"),
+            _ => panic!("no door or climb in this path"),
         }
     }
 
@@ -1271,7 +1606,7 @@ mod tests {
             .iter()
             .filter_map(|action| match action {
                 PlanAction::Move { yaw, .. } => Some(*yaw),
-                PlanAction::UseDoor { .. } => None,
+                _ => None,
             })
             .collect();
         assert!(
@@ -1541,5 +1876,128 @@ mod tests {
         assert!((pressed[0].open_seconds - 2.0).abs() < 1e-6);
         assert!((pressed[1].open_seconds - 3.0).abs() < 1e-6);
         assert_eq!(marks.usable_len, path.len(), "the whole path stays usable");
+    }
+    fn ladder_game(with_ladder: bool) -> Game {
+        let mut assets = MemoryAssets::new();
+        assets.insert(
+            &format!("maps/{PLAN_LADDER_MAP}.bsp"),
+            plan_ladder_bsp("ohlplannext", with_ladder),
+        );
+        Game::load(&assets as &dyn AssetSource, PLAN_LADDER_MAP).expect("the fixture loads")
+    }
+
+    /// The two heights the walk's drop bound is derived from, checked
+    /// against the figure the published fall-damage curve gives for the
+    /// default gravity: a landing at the safe speed is a 210.25-unit
+    /// fall, and a health budget only ever raises that bound.
+    #[test]
+    fn the_drop_bound_follows_the_published_fall_damage_curve() {
+        let config = ohl_physics::MoveConfig::default();
+        let safe = safe_drop_height(&config);
+        assert!((safe - 210.25).abs() < 0.5, "got {safe}");
+        let full = survivable_drop_height(&config, 100.0);
+        let hurt = survivable_drop_height(&config, 20.0);
+        assert!(full > safe, "a health budget buys a taller fall");
+        assert!(hurt < full, "less health buys less of one");
+        assert!(
+            survivable_drop_height(&config, 0.0) >= safe,
+            "a dead player's bound is still the unhurt height, never below it"
+        );
+    }
+
+    /// The shaft fixture, with its ladder: the plan gets down to the
+    /// trigger, and it gets there by *climbing*, not by taking a fall the
+    /// player would land from hurt.
+    #[test]
+    fn a_shaft_with_a_ladder_is_planned_as_a_climb_down() {
+        let mut game = ladder_game(true);
+        let plan = plan_route(&mut game, &PlanConfig::default()).expect("the shaft plans");
+        assert!(plan.reaches_goal, "the trigger is on the shaft floor");
+        let climbs: Vec<_> = plan
+            .actions
+            .iter()
+            .filter_map(|action| match action {
+                PlanAction::Climb { distance, up, .. } => Some((*distance, *up)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(climbs.len(), 1, "one climb, merged: {:?}", plan.actions);
+        let (distance, up) = climbs[0];
+        assert!(!up, "the route goes down the shaft");
+        let safe = safe_drop_height(game.move_config());
+        assert!(
+            distance >= PLAN_LADDER_DROP - safe - CELL_SIZE,
+            "the climb covers everything but a fall the player lands from \
+             unhurt (shaft {PLAN_LADDER_DROP}, safe {safe}), got {distance}"
+        );
+    }
+
+    /// The same shaft without the ladder: the only way down is a fall
+    /// taller than the player walks away from unhurt, so the plan refuses
+    /// it and walks as close as the shelf allows instead — until a caller
+    /// says how tall a fall it is willing to plan.
+    #[test]
+    fn a_shaft_without_a_ladder_is_not_planned_as_a_fall() {
+        let mut game = ladder_game(false);
+        let plan = plan_route(&mut game, &PlanConfig::default()).expect("a partial plan");
+        assert!(
+            !plan.reaches_goal,
+            "a fall of {PLAN_LADDER_DROP} units is not a route"
+        );
+
+        let mut game = ladder_game(false);
+        let plan = plan_route(
+            &mut game,
+            &PlanConfig {
+                max_drop: Some(PLAN_LADDER_DROP + CELL_SIZE),
+                ..PlanConfig::default()
+            },
+        )
+        .expect("the fall plans once it is allowed");
+        assert!(plan.reaches_goal, "the shaft floor is reachable by falling");
+    }
+
+    /// A climb is never merged into the run before or after it, and its
+    /// heading is the ladder's own, not the direction of travel.
+    #[test]
+    fn merge_keeps_a_climb_as_its_own_action() {
+        let path = [
+            PathPoint {
+                position: Vec3::new(0.0, 0.0, 64.0),
+                kind: EdgeKind::Walk,
+            },
+            PathPoint {
+                position: Vec3::new(16.0, 0.0, 64.0),
+                kind: EdgeKind::Walk,
+            },
+            PathPoint {
+                position: Vec3::new(16.0, 0.0, 48.0),
+                kind: EdgeKind::Ladder {
+                    face_yaw: 180.0,
+                    up: false,
+                },
+            },
+            PathPoint {
+                position: Vec3::new(16.0, 0.0, 32.0),
+                kind: EdgeKind::Ladder {
+                    face_yaw: 180.0,
+                    up: false,
+                },
+            },
+            PathPoint {
+                position: Vec3::new(32.0, 0.0, 32.0),
+                kind: EdgeKind::Walk,
+            },
+        ];
+        let actions = merge_collinear(&path);
+        assert_eq!(actions.len(), 3, "walk, climb, walk: {actions:?}");
+        match actions[1] {
+            PlanAction::Climb { yaw, distance, up } => {
+                assert!((yaw - 180.0).abs() < 1e-3, "the ladder's own heading");
+                assert!((distance - 32.0).abs() < 1e-3, "both steps merged");
+                assert!(!up);
+            }
+            _ => panic!("the middle action is the climb: {actions:?}"),
+        }
     }
 }
