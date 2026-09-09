@@ -951,10 +951,26 @@ pub struct Path {
 pub struct MultiManager {
     /// `(target, delay in seconds)`, in authored order.
     pub targets: Vec<(String, f32)>,
+    /// The documented "multithreaded" spawnflag
+    /// ([`SPAWNFLAG_MULTI_MANAGER_MULTITHREADED`]): this manager may be
+    /// activated again while it is still working through
+    /// [`Self::targets`], each activation running its own copy of the
+    /// schedule. `false` — the default — means a manager that is still
+    /// firing ignores a new activation outright; see
+    /// `crate::logic::Simulation::activate_with`.
+    pub multithreaded: bool,
 }
 
 /// The documented cap on one `multi_manager`'s fan-out targets.
 pub const MAX_MULTI_MANAGER_TARGETS: usize = 16;
+
+/// `multi_manager`'s documented "multithreaded" spawnflag. Sven Co-op's
+/// `multi_manager` page (fetched directly; `docs/FORMAT_SOURCES.md`)
+/// lists it as flag `1`: "If set, a single multi_manager can have
+/// multiple instances. That means, it can be activated while already
+/// running, causing a temporary copy of it to be created and run on its
+/// own."
+pub const SPAWNFLAG_MULTI_MANAGER_MULTITHREADED: u32 = 1;
 
 /// `trigger_once`/`trigger_multiple` and any other `trigger_*` this crate
 /// does not give a dedicated component to.
@@ -2208,7 +2224,17 @@ impl Registry {
                             targets.push((strip_multi_manager_suffix(key).to_string(), delay));
                         }
                     }
-                    world.insert_one(entity, MultiManager { targets }).ok();
+                    world
+                        .insert_one(
+                            entity,
+                            MultiManager {
+                                targets,
+                                multithreaded: def.spawnflags
+                                    & SPAWNFLAG_MULTI_MANAGER_MULTITHREADED
+                                    != 0,
+                            },
+                        )
+                        .ok();
                 }
                 "func_ladder" => {
                     world.insert_one(entity, Ladder).ok();

@@ -4979,3 +4979,69 @@ its own enough to open it again.
   travel distance and `speed` while its open state travels; and a
   `func_door_rotating` that keeps the swing side its activator chose. Each
   of the three new rules was verified to fail with its own arm disabled.
+
+## M9.21 (Rust): the door group the ride arrived at four seconds late
+
+Closes the "Still open" item M9.20 left above. The second door group near
+the end of the fourth map's loop was opened and auto-closed about four
+seconds before the car reached it. The wiring was followed correctly all
+along; two separate timing rules were wrong, and neither alone accounted
+for the gap.
+
+- **A `multi_manager` is single-threaded unless it declares the
+  "multithreaded" spawnflag.** Three identical `func_tracktrain`s share
+  one `path_track` chain here, staggered by a manager's own delays, and
+  every one of them fires the shared node's `message` as it passes. This
+  port ran a fresh copy of that manager's schedule each time, so the
+  manager that opens the door group and re-starts the stopped ride ran
+  three times, roughly a second apart. Because a `multi_manager` fire is a
+  toggle, the second copy's ride target *stopped* the ride again a second
+  after the first had released it, and the third started it once more —
+  1.7 s of stall the map never asked for, and the visible "extra stop near
+  the station" M9.20 recorded as worth checking. The published default is
+  the opposite: a manager still working through its targets ignores a new
+  activation, and only the `multithreaded` spawnflag (value 1) lets it run
+  more than one copy. Implemented as
+  `ohl_game::registry::MultiManager::multithreaded` plus a per-manager
+  busy timer in `ohl_game::logic::Simulation`; citations and the
+  save-shape `TODO(black-box)` are in `docs/FORMAT_SOURCES.md`.
+- **A stopped train resumes at its own `speed`.** The rest of the gap was
+  the ride crawling. Its track brakes it down through a documented "New
+  Train Speed" ramp on the approach to a scripted halt; the two nodes
+  after the halt declare no speed change at all. This port therefore
+  released the ride at the crawl the braking ramp had left it at, so it
+  needed nine seconds to cover a stretch the door group is only open five
+  seconds for — no `wait`, no manager delay and no second-train speed can
+  close a gap that large, because the door's opening and the ride's
+  release hang off the *same* manager and move together. The published
+  pages describe a train's `speed` as the train's own (maximum) speed and
+  a node's as an override applied "after reaching this point", so
+  `TrackTrainState::turn_on` now restarts a stopped train at its `speed` —
+  which is already exactly what `TrackTrainState::spawn` does for a train
+  with no `startspeed`. A train that is already moving is untouched.
+  `TODO(black-box)` and citations in `docs/FORMAT_SOURCES.md`.
+- **Result on the real chain.** Timeline of the ride's last stretch,
+  rounded to the second and measured from the ride's own start: the
+  manager fires once (was three times); the door group is told to open
+  6 s later and stands fully open 7 s later; the ride is released 7 s
+  later and now reaches the group 3 s after that, with about 2 s of the
+  door's own `wait` still to run. Before, it arrived 15 s after the
+  release — 3 s after the group had finished closing. The chain walk still
+  reports distinct depth 5 on 4 routes and 4 level changes, now in 233.6
+  simulated seconds (was 241.1), ending on "no further route".
+- **Tests**: `ohl_game::logic`'s
+  `a_released_ride_reaches_the_door_group_before_its_wait_expires` and
+  `a_multithreaded_manager_accepts_the_second_re_fire` run a synthetic
+  fixture with the same shape — a ride braked by a node override and
+  stopped at a scripted halt, two identical trains sharing one chain, and
+  the manager they both fire opening a `wait`-timed `func_door` and
+  releasing the ride — and each fails if either rule is reverted;
+  `ohl_game::track_train`'s `a_restarted_train_resumes_at_its_own_speed`
+  pins the restart speed on its own.
+- **Still open: the passenger is lost in the transition into this map**,
+  before the loop begins, so the ride now runs the loop and clears the
+  door group with nobody aboard. The arrival places the player short of
+  the car, which drives off at its `startspeed` without them; they stand
+  where they landed for the rest of the route and arrive in the fifth map
+  from there. That is a transition-placement question, not a map-logic
+  one, and is being picked up separately.

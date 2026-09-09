@@ -361,6 +361,12 @@ pub struct TrackTrainState {
     /// car by the whole distance between two tracks the moment a
     /// `func_trackchange` handed it over.
     first_node: Vec3,
+    /// This train's own `speed` keyvalue — the speed it runs at when it
+    /// is started from rest, before any `path_track` "New Train Speed"
+    /// override reassigns [`Self::speed`]. Map data, rebuilt identically
+    /// every load from the [`TrackTrain`] component, so it is not part of
+    /// [`Self::dynamic_state`].
+    cruise_speed: f32,
 }
 
 impl TrackTrainState {
@@ -392,6 +398,7 @@ impl TrackTrainState {
             carry_offset: Vec3::ZERO,
             carry_yaw: 0.0,
             first_node,
+            cruise_speed: train.speed,
         }
     }
 
@@ -538,8 +545,33 @@ impl TrackTrainState {
         &self.chain
     }
 
-    /// Starts the train moving (in its current direction) if it is stopped.
+    /// Starts the train moving (in its current direction) if it is
+    /// stopped, at its own `speed` keyvalue.
+    ///
+    /// A train started from rest runs at its `speed`, not at whatever a
+    /// `path_track` last assigned it before it stopped: the published
+    /// pages describe `speed` as the train's own speed ("Maximum speed of
+    /// the track train" — Sven Co-op's `func_tracktrain`) and a node's
+    /// "New Train Speed" as something that "overrides train speed after
+    /// reaching this point" (Sven Co-op's `path_track`), i.e. a property
+    /// of passing that node rather than of the train. [`Self::spawn`]
+    /// already starts a train with no `startspeed` at exactly this speed;
+    /// this keeps a train that has stopped and been re-triggered
+    /// consistent with one that never moved. Without it, a track whose
+    /// nodes brake the train down to a crawl on the way into a scripted
+    /// stop leaves it crawling for the whole of the rest of its run,
+    /// since nothing in the published behaviour ever restores the speed.
+    ///
+    /// **`TODO(black-box)`**: no reviewed public page states which speed
+    /// a stopped `func_tracktrain` resumes at, so this is a
+    /// project-determined reading of the two literals above (see
+    /// `docs/FORMAT_SOURCES.md`, "Track trains and paths"). A train that
+    /// is already moving is untouched, so an explicit "on" sent to a
+    /// running train still changes nothing.
     pub fn turn_on(&mut self) {
+        if !self.moving {
+            self.speed = self.cruise_speed.abs();
+        }
         self.moving = true;
     }
 
@@ -955,6 +987,36 @@ mod tests {
         assert_eq!(state.position(), Vec3::new(200.0, 0.0, 0.0));
     }
 
+    /// A train that a node's `speed` override slowed down, then stopped,
+    /// resumes at its own `speed` when it is started again — not at the
+    /// override the stop left behind (see [`TrackTrainState::turn_on`]).
+    #[test]
+    fn a_restarted_train_resumes_at_its_own_speed() {
+        let mut entities = three_node_track(&[("speed", "300")]);
+        entities[2].insert("speed".to_string(), "100".to_string());
+        let registry = build_registry(&entities);
+        let mut state = train_state(&registry);
+        let train = train_component(&registry);
+        state.turn_on();
+        assert!((state.speed - train.speed).abs() < f32::EPSILON);
+
+        // Cross the first node, which reassigns the train's speed.
+        state.advance(2.0);
+        assert!(
+            state.speed < train.speed,
+            "the node override should have slowed the train, got {}",
+            state.speed
+        );
+
+        state.turn_off();
+        state.turn_on();
+        assert!(
+            (state.speed - train.speed).abs() < f32::EPSILON,
+            "a restarted train should resume at its own speed, got {}",
+            state.speed
+        );
+    }
+
     #[test]
     fn stop_flag_halts_until_toggled() {
         let mut entities = three_node_track(&[("speed", "100")]);
@@ -1261,6 +1323,7 @@ mod tests {
                 carry_offset: Vec3::ZERO,
                 carry_yaw: 0.0,
                 first_node: Vec3::ZERO,
+                cruise_speed: speed,
             };
             for dt in steps {
                 state.advance(dt);

@@ -52,6 +52,19 @@
 # See docs/MILESTONES.md M9.20, and docs/FORMAT_SOURCES.md "Entity keyvalues
 # and map logic" (`trigger_auto`) and "Campaign flow".
 #
+# M9.21 closed the gap M9.20 recorded here: the second door group near the
+# end of the loop used to finish closing about four seconds before the car
+# reached it. A multi_manager that three identical trains all re-fired ran
+# three copies of its schedule instead of ignoring the re-fires, and the
+# ride was released from its scripted halt at the crawl its braking nodes
+# had left it at rather than at its own speed. See docs/MILESTONES.md
+# M9.21 and docs/FORMAT_SOURCES.md (multi_manager; "Track trains and
+# paths").
+#
+# Known gap: the passenger is lost in the transition *into* this map, so
+# the ride runs the loop with nobody aboard and the level change it fires
+# by name still ends the route.
+#
 # The trailing wait is slack: `run_chained` (crates/ohl-app/src/game_run.rs)
 # ends a route at the level change it reaches, so any ticks left over here
 # are never run.
