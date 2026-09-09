@@ -218,13 +218,38 @@ pub fn track_train_transform(registry: &Registry, entity: Entity) -> (Vec3, Opti
     // train no platform is carrying. See
     // `ohl_game::track_train::TrackTrainState::set_carry`.
     let (carry_offset, carry_yaw) = state.carry();
+    // A train that does not turn to face its path keeps the `angles` its
+    // own map spawned it at — the sentence `docs/FORMAT_SOURCES.md`
+    // ("Track trains and paths") already records for this entity: this
+    // project "turns a `func_tracktrain` to face its active segment but
+    // leaves a `func_train` at its spawned `angles`". Leaving it *at* them
+    // means posing it there; reporting no rotation at all instead poses it
+    // at zero, which is a different placement for every `func_train` whose
+    // map turned it. A `func_train`'s `angles` is free to mean an
+    // orientation, unlike a `func_door`'s (whose published meaning is the
+    // move direction, `movedir_from_angles`): a train's direction of travel
+    // comes from its `path_corner` chain, not from a keyvalue.
+    let authored_yaw = (!train.turns_to_face)
+        .then(|| authored_angles(registry, entity))
+        .filter(|yaw| yaw.is_finite() && *yaw != 0.0);
     (
         state.position() - reference + carry_offset,
         state
             .yaw_degrees(&train)
+            .or(authored_yaw)
             .map(|yaw| yaw + carry_yaw)
             .or((carry_yaw != 0.0).then_some(carry_yaw)),
     )
+}
+
+/// `entity`'s authored yaw, in degrees: the middle component of its
+/// `angles` keyvalue, in the same convention
+/// [`crate::registry::movedir_from_angles`] reads.
+fn authored_angles(registry: &Registry, entity: Entity) -> f32 {
+    registry
+        .world
+        .get::<&Transform>(entity)
+        .map_or(0.0, |transform| transform.angles.y)
 }
 
 /// The pieces every train placement is built from: its live state, its
@@ -723,6 +748,89 @@ mod tests {
         assert!(
             (center - Vec3::new(550.0, 300.0, 10.0)).length() < 1e-2,
             "expected the documented-wrong sum, got {center:?}"
+        );
+    }
+
+    /// Builds a one-train registry: a `func_train` (or `func_tracktrain`)
+    /// with an origin brush, on a two-node chain running along `+X`, with
+    /// `keys` merged into the train's own keyvalues.
+    fn registry_with_train(keys: &[(&str, &str)]) -> Registry {
+        let mut train = vec![
+            ("targetname", "car"),
+            ("target", "node1"),
+            ("model", "*1"),
+            ("origin", "0 0 0"),
+            ("height", "0"),
+        ];
+        train.extend_from_slice(keys);
+        let defs = parse_entities(
+            &[
+                raw(&train),
+                raw(&[
+                    ("classname", "path_corner"),
+                    ("targetname", "node1"),
+                    ("target", "node2"),
+                    ("origin", "0 0 0"),
+                ]),
+                raw(&[
+                    ("classname", "path_corner"),
+                    ("targetname", "node2"),
+                    ("origin", "100 0 0"),
+                ]),
+            ],
+            &Limits::default(),
+        );
+        let mut bounds = BTreeMap::new();
+        bounds.insert(1u32, ([-32.0, -4.0, 0.0], [32.0, 4.0, 64.0]));
+        let mut registry = Registry::build(&defs, &bounds, &Limits::default());
+        crate::track_train::spawn_all(&mut registry);
+        registry
+    }
+
+    /// A `func_train` is posed at the `angles` its own map spawned it at:
+    /// the published pages describe `func_tracktrain` as turning to face
+    /// its next node and `func_train` without that behaviour, so a
+    /// `func_train`'s `angles` is an orientation and nothing overrides it
+    /// (`docs/FORMAT_SOURCES.md`, "Track trains and paths"). Reporting no
+    /// rotation instead posed every turned `func_train` at zero — a door
+    /// leaf built across its own doorway rather than in it.
+    #[test]
+    fn a_func_train_keeps_the_angles_its_map_spawned_it_at() {
+        let registry = registry_with_train(&[("classname", "func_train"), ("angles", "0 90 0")]);
+        let entity = registry.find("car")[0];
+        let (_, yaw) = super::track_train_transform(&registry, entity);
+        assert_eq!(yaw, Some(90.0));
+        let (axis, degrees, _) = super::brush_pose_rotation(&registry, entity);
+        assert_eq!(axis, Vec3::Z);
+        assert!((degrees - 90.0).abs() < 1e-3);
+    }
+
+    /// The same train with no `angles` of its own is posed unrotated, as
+    /// before: an absent keyvalue is not an orientation.
+    #[test]
+    fn a_func_train_without_angles_is_still_posed_unrotated() {
+        let registry = registry_with_train(&[("classname", "func_train")]);
+        let entity = registry.find("car")[0];
+        assert_eq!(
+            super::track_train_transform(&registry, entity).1,
+            None,
+            "no keyvalue, no rotation"
+        );
+    }
+
+    /// A `func_tracktrain` still faces its active segment, whatever
+    /// `angles` its map spawned it at: the published behaviour this
+    /// project already implemented, which the `func_train` rule above must
+    /// not disturb.
+    #[test]
+    fn a_func_tracktrain_still_faces_its_segment_over_its_own_angles() {
+        let registry =
+            registry_with_train(&[("classname", "func_tracktrain"), ("angles", "0 90 0")]);
+        let entity = registry.find("car")[0];
+        assert_eq!(
+            super::track_train_transform(&registry, entity).1,
+            Some(0.0),
+            "the chain runs along +X, so the car faces 0 degrees"
         );
     }
 }

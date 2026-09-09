@@ -82,6 +82,18 @@ impl VisibilitySet {
         self.leaf_count
     }
 
+    /// Whether this set was built from real visibility data, as opposed to
+    /// the "everything sees everything" set a map compiled without
+    /// visibility (or one whose lump exceeded [`MAX_VIS_BYTES`]) falls back
+    /// to. A caller that must *not* treat "sees everything" as an answer —
+    /// `ohl_engine::transition`'s landmark-PVS eligibility test, which
+    /// would otherwise carry every named entity in such a map — asks this
+    /// first.
+    #[must_use]
+    pub fn is_decoded(&self) -> bool {
+        self.decoded
+    }
+
     /// Whether `to_leaf` is potentially visible from `from_leaf`.
     ///
     /// Leaf 0 is the shared "outside" leaf and has no visibility row, so a
@@ -173,5 +185,16 @@ mod tests {
         assert!(set.is_visible(2, 2));
         // Leaf 0 is the outside leaf and never culls.
         assert!(set.is_visible(0, 2));
+    }
+
+    /// A caller that must not read "sees everything" as an answer — the
+    /// landmark-PVS eligibility test in `ohl_engine::transition` — can tell
+    /// a decoded set from the fallback one.
+    #[test]
+    fn a_fallback_set_reports_itself_undecoded() {
+        assert!(!VisibilitySet::all_visible(4).is_decoded());
+        let set =
+            VisibilitySet::build(&[0b0000_0001u8, 0b0000_0011u8], &[-1, 0, 1]).expect("builds");
+        assert!(set.is_decoded());
     }
 }

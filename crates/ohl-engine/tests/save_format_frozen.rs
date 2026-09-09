@@ -47,7 +47,7 @@
 #![allow(clippy::needless_update)]
 
 use glam::Vec3;
-use ohl_engine::save::{EngineHeader, TeleportStateSnapshot, ViewState};
+use ohl_engine::save::{CarriedEntityDef, EngineHeader, TeleportStateSnapshot, ViewState};
 use ohl_engine::save_state::{
     BreakableSnapshot, MomentaryDoorSnapshot, MonsterMakerSnapshot, MoverSnapshot, RotatorSnapshot,
     ScriptRunnerSnapshot, TrackTrainSnapshot, TriggerCameraSnapshot,
@@ -205,6 +205,39 @@ const GOLDEN_TAG_34: &[u8] = &[
 const GOLDEN_TAG_35: &[u8] = &[
     0x03, 0x01, 0x00, 0x00, 0xb4, 0xc2, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3f,
 ];
+
+/// `SECTION_CARRIED_ENTITIES` (36) at the shape this build writes: the exact
+/// bytes [`frozen_carried_entities`]'s value encodes to. **New golden, not a
+/// revision of any tag above**: tag 36 did not exist before M9.26, the same
+/// "a future package adding a tag would pin its own golden from scratch"
+/// case [`GOLDEN_TAG_31`]'s own comment anticipated.
+const GOLDEN_TAG_36: &[u8] = &[
+    0x02, 0x03, 0x09, 0x63, 0x6c, 0x61, 0x73, 0x73, 0x6e, 0x61, 0x6d, 0x65, 0x11, 0x6d, 0x6f, 0x6e,
+    0x73, 0x74, 0x65, 0x72, 0x5f, 0x73, 0x63, 0x69, 0x65, 0x6e, 0x74, 0x69, 0x73, 0x74, 0x06, 0x6f,
+    0x72, 0x69, 0x67, 0x69, 0x6e, 0x08, 0x31, 0x36, 0x20, 0x2d, 0x33, 0x32, 0x20, 0x30, 0x0a, 0x74,
+    0x61, 0x72, 0x67, 0x65, 0x74, 0x6e, 0x61, 0x6d, 0x65, 0x09, 0x6f, 0x68, 0x6c, 0x5f, 0x67, 0x75,
+    0x61, 0x72, 0x64, 0x00,
+];
+
+/// The value [`GOLDEN_TAG_36`] holds: one definition carrying the three
+/// keys every re-created entity has a placement and an identity from, and
+/// one carrying none, so both a populated and an empty keyvalue list are on
+/// the wire. Every literal is project-authored (`ohl_guard`) or already
+/// cited per-literal in `docs/FORMAT_SOURCES.md`.
+fn frozen_carried_entities() -> Vec<CarriedEntityDef> {
+    vec![
+        CarriedEntityDef {
+            keyvalues: vec![
+                ("classname".to_string(), "monster_scientist".to_string()),
+                ("origin".to_string(), "16 -32 0".to_string()),
+                ("targetname".to_string(), "ohl_guard".to_string()),
+            ],
+        },
+        CarriedEntityDef {
+            keyvalues: Vec::new(),
+        },
+    ]
+}
 
 /// The value [`GOLDEN_TAG_35`] holds: a negative heading (the sign a real
 /// boundary hands over), an entity with none, and a fractional one, so both
@@ -565,6 +598,17 @@ fn tag_35_train_handover_yaw_keeps_its_frozen_wire_shape() {
 
     let decoded: Vec<Option<f32>> =
         postcard::from_bytes(GOLDEN_TAG_35).expect("section 35 decodes");
+    assert_eq!(decoded, value);
+}
+
+#[test]
+fn tag_36_carried_entities_keeps_its_frozen_wire_shape() {
+    let value = frozen_carried_entities();
+    let encoded = postcard::to_allocvec(&value).expect("the section encodes");
+    assert_golden(&encoded, GOLDEN_TAG_36, 36);
+
+    let decoded: Vec<CarriedEntityDef> =
+        postcard::from_bytes(GOLDEN_TAG_36).expect("section 36 decodes");
     assert_eq!(decoded, value);
 }
 

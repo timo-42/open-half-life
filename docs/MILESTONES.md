@@ -5459,3 +5459,163 @@ happens — and it is recorded here rather than guessed at.
 `cargo test --workspace`, policy, graph, combat-smoke 37/37, campaign-smoke
 93/93, `cargo xtask chain-walk` (distinct depth 6, five level changes, no
 re-entry).
+
+## M9.26 (Rust): the guard who never arrived, and the door leaf posed at zero
+
+M9.25 got the passenger to the sixth map aboard the parked ride and recorded
+the next blocker as a trigger/carry-sequencing question: nothing fired the
+car's sliding door (a `func_train` on a three-node chain) in a 150-second
+wait. It is a carry question, and this milestone answers it — plus a second,
+independent placement fault the answer uncovered. Measured with a local,
+uncommitted probe (reverted before committing) of the destination map's
+fire-chain dispatcher, its entity-name graph and its posed mover bounds:
+classnames, counts, activation order and elapsed seconds only.
+
+**What the map actually does.** In the first 150 seconds of the sixth map,
+exactly five activations happen: a `trigger_auto` fires a `multi_manager`,
+which fires a second one, which fires a `scripted_sequence` — and there the
+chain stops. The door is four links further on: that first
+`scripted_sequence`'s own `target` is a `multi_manager` that fires a
+`scripted_sentence` and a second `scripted_sequence`, whose `target` is the
+`multi_manager` that finally fires the door `func_train` (and the platform
+lights, and the announcement). Every link past the first is gated on a
+`scripted_sequence` **completing**.
+
+**Why the first one never completed.** All four of that map's
+`scripted_sequence`s name the same target monster by `targetname`, and the
+map declares **no monster of any classname at all**. The monster they name
+is declared by the *previous* map, which is exactly what a level transition
+is for: it has to cross. Two separate faults stopped it.
+
+1. **Eligibility.** The documented rule is that an entity travels when it is
+   inside a `trigger_transition` volume "or otherwise in the landmark's PVS"
+   (`docs/FORMAT_SOURCES.md`, "Campaign flow"). Neither map on that boundary
+   declares a transition volume, so this project fell back to
+   `DEFAULT_CARRY_RADIUS` — its own documented stand-in "for the PVS test
+   this engine does not run at level-change time". It can run it: the
+   visibility lump is already decoded for rendering
+   (`ohl_world::VisibilitySet`). The monster stands 1,493 units from the
+   landmark, so the 512-unit stand-in dropped it. The stand-in now answers
+   *only* for the cases a leaf query cannot — a set that could not be
+   materialised from the lump at all, a point outside the node tree, and a
+   point in leaf `0`, the shared outside/solid leaf that has neither a
+   visibility row nor a bit in anyone else's — and never as an `or` over the
+   top of a PVS answer of "no".
+
+   **What that widens, measured.** Eligible entities per boundary go
+   6 -> 17, 1 -> 11, 5 -> 31, 11 -> 56 and 2 -> 20 across the chain walk's
+   five boundaries. 110 entities become eligible only through the PVS path,
+   **23 of them brush entities** — so an earlier draft of this section's
+   claim that "brush entities keep exactly the rule they had" was wrong, and
+   is corrected here. What is true is narrower, and is now enforced: a brush
+   entity that becomes eligible this way adds nothing new to what already
+   travelled (a *modified* mover's state is captured before the eligibility
+   test at all, and an unmodified one applies its own resting state onto a
+   same-named counterpart), and it is never materialised. The strict
+   fallback is likewise a statement about the rule rather than a behaviour
+   change on this payload: measured over all five boundaries, no entity has
+   `pvs = false` with `distance <= 512`. `MAX_CARRIED_ENTITIES` (256) still
+   bounds the whole set; its truncation is silent and iteration-ordered.
+
+2. **Materialisation.** A carried entity the destination declares no
+   counterpart for was already re-created there — but only as a
+   `ClassName`, a `Transform` and its carried component snapshot. Every
+   later stage of a level's build reads
+   `ohl_engine::level::Level::defs` and writes onto the entity at the *same
+   index* (`ohl_ai::spawn::attach_monsters`, `AiState::register_brains`,
+   `collect_triggers`, `attach_scripts`, `attach_followers`, `nav::build`),
+   so an entity with no definition is invisible to all of them: the carried
+   monster arrived with no brain, no `Actor` and no hull, and the
+   destination's scripts searched for an actor that could not exist.
+   `CarriedEntity` now carries the source map's own keyvalues (bounded by
+   `MAX_CARRIED_KEYVALUES`), and `TransitionState::place` appends a real
+   `EntityDef` alongside the entity it spawns, so a re-created entity is
+   built exactly like one the destination declared itself. Its placement is
+   rewritten into the destination's coordinates and a `model` keyvalue
+   naming a *brush submodel* (`*N`) is dropped, since that index belongs to
+   the map that compiled it. A **brush** entity is not materialised at all:
+   the cited pages say a brush entity needs "a unique global name to be able
+   to be carried over", and that name is how the destination's own copy of
+   the brush is found — there is nothing left to create, because a brush
+   entity separated from the submodel its own map compiled is nothing. Of
+   the 56 entities the chain walk materialises, none is a brush entity:
+   `path_track` 31, `multi_manager` 9, `env_message` 7, `ambient_generic` 2,
+   `light` 2, `scripted_sequence` 2, and one each of `env_spark`,
+   `monster_generic` and `monster_barney`.
+
+3. **Survival.** A materialised entity is appended past the end of the map's
+   own entity list, and every index-keyed save section is "one entry per
+   registry entity, in spawn order" against a level a load rebuilds from the
+   entity lump alone. A quicksave taken after the arrival therefore came
+   back with no carried monster and a sequence that could never advance —
+   and that map's own opening chain fires a `trigger_autosave`, so it is the
+   ordinary case, not a corner. `SECTION_CARRIED_ENTITIES` (**tag 36**, new
+   and optional; no frozen section is touched) writes those definitions
+   down, and `crate::save_state::restore_carried_entities` rebuilds them
+   through the same `materialise_carried` a level change uses — before the
+   AI attaches, so a restored monster comes back as a monster rather than as
+   the husk this milestone exists to stop being. A save missing tag 36 loads
+   exactly as before.
+
+With all of that fixed, the map's own sequence runs: the guard is possessed, walks
+his 792 units to the mark, and the chain completes — announcement, platform
+lights, and the car's sliding door opening 26.6 seconds after arrival, with
+the door's own `path_corner` `message` firing its arrival sound two seconds
+later, exactly as authored.
+
+**The door leaf posed at zero.** With the door finally moving, the
+reachability walk still reported it as a frontier: the leaf's *pose* was
+wrong. `docs/FORMAT_SOURCES.md` already records that this project "turns a
+`func_tracktrain` to face its active segment but leaves a `func_train` at
+its spawned `angles`" — but `ohl_game::pose::track_train_transform` reported
+*no rotation at all* for a non-turning train, which poses it at zero rather
+than at its `angles`. That map's door leaf declares a 90-degree yaw, so it
+was built across its own doorway instead of in it, and slid to a stop inside
+the car. A `func_train`'s `angles` is free to mean an orientation, unlike a
+`func_door`'s (whose published meaning is the move direction,
+`movedir_from_angles`): a train's direction of travel comes from its
+`path_corner` chain, not from a keyvalue. With the leaf posed at its own
+`angles` it is no longer a frontier at all.
+
+**Gates**: fmt, clippy (workspace/all-features and no-default),
+`cargo test --workspace`, policy, graph, combat-smoke 37/37, campaign-smoke
+93/93, `cargo xtask chain-walk`.
+
+**Next.** Depth is still **6**, and no `c0a0-hop5.txt` is authored here.
+With the door open and out of the way, the reachability walk from the
+arrival point is still enclosed by the *car itself*: its hull is the only
+remaining frontier, and the walk finds no opening in it at the heading the
+ride arrives with, at the opposite heading, or unrotated. The passenger can
+walk the length of the car and no further. That is a separate question — how
+the destination's parked copy of a shared ride is posed, and where its own
+doorway ends up — recorded here with its measurements rather than guessed
+at, and being taken up on its own branch.
+
+Three measurements for whoever takes it, and one hypothesis ruled out.
+
+- **The two bodies are one compiled assembly.** Straight out of the BSP, no
+  posing involved: the car's submodel bounds are 288 x 150 x 137 about its
+  origin brush and the door leaf's are 57 x 11 x 94 about its own, lying
+  strictly inside the car's in x and z with the leaf's *maximum y exactly
+  equal to the car's*. The panel is flush with the car's +y face and thin
+  (11 units) along that face's own normal, which is only possible if the
+  submodel is stored **unrotated** relative to the car. So the leaf's
+  `angles` yaw of 90 is a genuine runtime rotation and this milestone's
+  `func_train` rule is not double-rotating it — worth ruling out, because a
+  submodel that already carried its authored orientation would have produced
+  the same symptom.
+- **The yaw disagreement is real, and is not the leaf's.** The two `origin`
+  keyvalues differ by (-97, +73, +45) and the two path nodes the entities
+  are placed at differ by (-72, -101, +53). Neither quantity is touched by
+  any posing rule this project applies, and the two agree only if the car is
+  turned by **+90** — while the destination map's own chain runs into its
+  terminus heading **-90**, which is also the heading the ride arrives with.
+  That is a question about how a parked `func_tracktrain`'s heading is
+  derived.
+- **And a pure-z disagreement no yaw can explain.** Those same two offsets
+  disagree by 8 units in z, and the doorway implied by the leaf spans
+  z +2..+96 above the car's origin brush while the car's own floor (where
+  the arriving passenger stands) is at +43..+65 — an opening ~41 units below
+  the floor and only ~31 above it, far short of a standing hull. A rotation
+  about Z produces neither figure, so at least part of the remaining
+  enclosure is a pivot/reference-point question rather than an angular one.

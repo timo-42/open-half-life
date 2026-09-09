@@ -1425,6 +1425,13 @@ impl Game {
             momentary_doors: Some(crate::save_state::snapshot_momentary_doors(&self.level)),
             breakables: Some(crate::save_state::snapshot_breakables(&self.level)),
             train_handover_yaw: Some(crate::save_state::snapshot_train_handover_yaw(&self.level)),
+            // Written only when a level change actually materialised
+            // something here, so a cold-loaded map's save carries no
+            // section at all rather than an empty one.
+            carried_entities: {
+                let defs = crate::save_state::snapshot_carried_entities(&self.level);
+                (!defs.is_empty()).then_some(defs)
+            },
             teleport_state: Some({
                 let state = self.level.simulation.teleport_state_snapshot();
                 crate::save::TeleportStateSnapshot {
@@ -1494,7 +1501,19 @@ impl Game {
             difficulty: save.difficulty(),
             overbright: config.overbright,
         };
-        let mut game = Self::load_with(source, &save.header.map, &config)?;
+        // The level is built, then every entity a level change materialised
+        // in it is rebuilt on top (tag 36), and only then does the rest of
+        // the game attach: `Systems::attach_level` is what gives a carried
+        // monster its brain, its `Actor` and its place in this map's own
+        // `scripted_sequence` bookkeeping, and it reads the definition list
+        // those entities were just appended to. Doing it after the attach
+        // would restore the entity and leave it inert, which is the husk
+        // this section exists to stop being.
+        let mut level = Level::load_with_ramp(source, &save.header.map, config.light_ramp())?;
+        if let Some(carried) = save.carried_entities.as_deref() {
+            crate::save_state::restore_carried_entities(&mut level, carried);
+        }
+        let mut game = Self::from_level(level, source, config);
         game.restore(save);
         Ok(game)
     }

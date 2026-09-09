@@ -325,6 +325,16 @@ pub struct Level {
     /// pickups and navigation seeds can read the same definitions the
     /// registry was built from.
     pub defs: Vec<EntityDef>,
+    /// How many of [`Self::defs`] the *map itself* declared.
+    ///
+    /// Always the whole list on a fresh load. A level change materialises
+    /// every carried entity the destination declares no counterpart for as
+    /// one of this level's own entities, appending its definition here (see
+    /// `crate::transition::materialise_carried`), so anything past this
+    /// index arrived with the player rather than out of the entity lump —
+    /// which is exactly the set a save has to write down, because reloading
+    /// the map alone rebuilds only the lump's own entities.
+    pub map_defs: usize,
     /// The single client entity, carrying [`PlayerTag`]. It is deliberately
     /// *not* in [`Registry::entities`]: that list is index-aligned with
     /// `defs`, and a save references entities by their index in it.
@@ -675,6 +685,7 @@ impl Level {
             missing_sprites,
             unbuildable_submodels,
             dropped_faces,
+            map_defs: defs.len(),
             defs,
             player,
         })

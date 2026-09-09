@@ -130,6 +130,7 @@ prop_compose! {
         offset in proptest::option::of((finite(), finite(), finite())),
         snapshot in snapshot(),
         track_train in proptest::option::of(track_train_carry()),
+        keyvalues in proptest::collection::vec(("[a-z_]{1,8}", "[a-z_0-9 -]{0,12}"), 0..4),
     ) -> CarriedEntity {
         CarriedEntity {
             classname,
@@ -139,6 +140,7 @@ prop_compose! {
             offset: offset.map(|(x, y, z)| [x, y, z]),
             snapshot,
             track_train,
+            keyvalues,
         }
     }
 }

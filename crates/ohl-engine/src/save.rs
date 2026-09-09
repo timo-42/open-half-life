@@ -36,11 +36,13 @@
 //! | 33 | [`SECTION_BREAKABLE_STATE`] | `Vec<Option<`[`BreakableSnapshot`]`>>`, one per registry entity, in spawn order: `func_breakable`/`func_pushable` remaining hit points, broken flag and push offset (M9.10) |
 //! | 34 | [`SECTION_TELEPORT_STATE`] | [`TeleportStateSnapshot`]: the `trigger_teleport` touch-edge bookkeeping and the `multisource` master fire counts (M9) |
 //! | 35 | [`SECTION_TRAIN_HANDOVER_YAW`] | `Vec<Option<f32>>`, one per registry entity, in spawn order: the heading a `func_tracktrain` was handed across a level change with, for a chain that defines none of its own (M9.25) |
+//! | 36 | [`SECTION_CARRIED_ENTITIES`] | `Vec<`[`CarriedEntityDef`]`>`: the entity definitions a level change materialised in this map, in the order they were appended, for entities the map itself never declared (M9.26) |
 //!
-//! Tags 23-31 and 33-35 are read as `None`/a default when absent, so a
+//! Tags 23-31 and 33-36 are read as `None`/a default when absent, so a
 //! save written before M7.9 P4b (tags 23-27), M7.13 (tag 28), M9.5 (tag 29),
 //! M9.6 (tag 30), M9.8 (tag 31), M9.10 (tag 33), the teleport/master
-//! package (tag 34) or M9.25 (tag 35) still loads (`.plan/m79-design.md` §6); a
+//! package (tag 34), M9.25 (tag 35) or M9.26 (tag 36) still loads
+//! (`.plan/m79-design.md` §6); a
 //! section that is present but fails to decode fails the whole read closed
 //! ([`crate::EngineError::SaveUnreadable`]), same as every other section.
 //!
@@ -251,6 +253,49 @@ pub const SECTION_TELEPORT_STATE: u32 = 34;
 /// number: 32 is reserved for `ohl-player`'s own snapshot.
 pub const SECTION_TRAIN_HANDOVER_YAW: u32 = 35;
 
+/// Tag 36: the entity definitions a level change materialised in this map
+/// (M9.26).
+///
+/// A `trigger_changelevel` re-creates every carried entity the destination
+/// map declares no counterpart for, as one of that map's own entities:
+/// `crate::transition::materialise_carried` appends its definition to
+/// `crate::level::Level::defs` and its entity to `Registry::entities`, which
+/// are index-parallel. A save is written and read against *that* list — tags
+/// 18, 24, 25, 28-31 and 33-35 are all "one entry per registry entity, in
+/// spawn order" — but a load rebuilds the level from the map's own entity
+/// lump, which contains none of them. Without this section every one of
+/// those zips silently stops short at the map's own last entity, and the
+/// re-created entities are simply gone: a quicksave taken after arriving in
+/// a map whose scripted arrival sequence is written around a monster that
+/// crossed with the player loads back with no monster and a sequence that
+/// can never advance. That map's own opening chain fires a
+/// `trigger_autosave`, so it is not a hypothetical.
+///
+/// Only what the destination needs to rebuild the entity travels: its
+/// keyvalues (the same bounded set `crate::transition::CarriedEntity`
+/// carries, placement already rewritten into this map's coordinates). Its
+/// *state* is not here — it is in tag 18 and its neighbours, at the index
+/// this section restores it into.
+///
+/// A new tag rather than an addition to [`SECTION_ENTITY_REGISTRY`] (18),
+/// which is shipped and frozen at its own wire shape (see this module's
+/// "Frozen section shapes"): widening `EntitySnapshot` would invalidate
+/// every save already written. Tag 36 is the next free number.
+pub const SECTION_CARRIED_ENTITIES: u32 = 36;
+
+/// One entity definition [`SECTION_CARRIED_ENTITIES`] (36) carries.
+///
+/// The keyvalues only, as authored pairs: `crate::transition`'s
+/// `materialise_carried` rebuilds the entity from
+/// `ohl_game::keyvalues::parse_entity`, exactly as the transition that
+/// first re-created it did, so a save and a level change take the same
+/// path and can never drift apart.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct CarriedEntityDef {
+    /// The entity's keyvalues, in key order.
+    pub keyvalues: Vec<(String, String)>,
+}
+
 /// [`SECTION_TELEPORT_STATE`] (34)'s whole payload.
 ///
 /// Both halves are keyed by `hecs` bit pattern rather than by spawn order,
@@ -416,6 +461,12 @@ pub struct GameSave {
     /// every train except one parked on a single-node chain. See
     /// [`SECTION_TRAIN_HANDOVER_YAW`].
     pub train_handover_yaw: Option<Vec<Option<f32>>>,
+    /// The entity definitions a level change materialised in this map, in
+    /// the order they were appended (M9.26). `None` for a save missing tag
+    /// 36 — an older save simply comes back with the map's own entities and
+    /// nothing else, which is exactly what every build before M9.26 did.
+    /// See [`SECTION_CARRIED_ENTITIES`].
+    pub carried_entities: Option<Vec<CarriedEntityDef>>,
 }
 
 impl GameSave {
@@ -494,6 +545,9 @@ impl GameSave {
             if let Some(train_handover_yaw) = &self.train_handover_yaw {
                 writer.add_section_serde(SECTION_TRAIN_HANDOVER_YAW, train_handover_yaw)?;
             }
+            if let Some(carried_entities) = &self.carried_entities {
+                writer.add_section_serde(SECTION_CARRIED_ENTITIES, carried_entities)?;
+            }
             Ok(())
         };
         write(&mut writer).map_err(|_| crate::EngineError::SaveUnwritable)?;
@@ -552,6 +606,11 @@ impl GameSave {
                 SECTION_TRAIN_HANDOVER_YAW,
                 crate::save_state::MAX_SNAPSHOT_TRAIN_HANDOVER_YAW,
             )?,
+            carried_entities: optional_bounded_seq_section(
+                &reader,
+                SECTION_CARRIED_ENTITIES,
+                crate::save_state::MAX_SNAPSHOT_CARRIED_DEFS,
+            )?,
         })
     }
 }
@@ -608,8 +667,18 @@ fn optional_bounded_vec_section<T: serde::de::DeserializeOwned>(
     tag: u32,
     max_len: usize,
 ) -> crate::Result<Option<Vec<Option<T>>>> {
+    optional_bounded_seq_section::<Option<T>>(reader, tag, max_len)
+}
+
+/// As [`optional_bounded_vec_section`], for a section whose elements are
+/// not themselves optional (tag 36).
+fn optional_bounded_seq_section<T: serde::de::DeserializeOwned>(
+    reader: &ohl_save::SaveReader<'_>,
+    tag: u32,
+    max_len: usize,
+) -> crate::Result<Option<Vec<T>>> {
     match reader.section(tag) {
-        Ok(bytes) => bounded_vec::deserialize_bounded_vec(bytes, max_len)
+        Ok(bytes) => bounded_vec::deserialize_bounded_vec::<T>(bytes, max_len)
             .map(Some)
             .map_err(|_| crate::EngineError::SaveUnreadable),
         Err(ohl_save::SaveError::SectionNotFound) => Ok(None),
@@ -644,10 +713,15 @@ mod bounded_vec {
     /// exactly that hole; `crates/ohl-engine/tests/save_format_frozen.rs`'s
     /// `a_bounded_vec_section_with_trailing_bytes_fails_closed` pins the
     /// fix.
+    ///
+    /// `T` is the *element* type: the `Vec<Option<..>>` sections every
+    /// index-keyed tag uses instantiate it as `Option<Snapshot>`, and a
+    /// section whose elements are not optional (tag 36) instantiates it as
+    /// the element itself. The bound is on elements either way.
     pub(super) fn deserialize_bounded_vec<'de, T: serde::de::Deserialize<'de>>(
         bytes: &'de [u8],
         max_len: usize,
-    ) -> postcard::Result<Vec<Option<T>>> {
+    ) -> postcard::Result<Vec<T>> {
         let mut deserializer = postcard::Deserializer::from_bytes(bytes);
         let values = deserializer.deserialize_seq(BoundedVecVisitor {
             max_len,
@@ -669,7 +743,7 @@ mod bounded_vec {
     }
 
     impl<'de, T: serde::de::Deserialize<'de>> Visitor<'de> for BoundedVecVisitor<T> {
-        type Value = Vec<Option<T>>;
+        type Value = Vec<T>;
 
         fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             write!(formatter, "a sequence of at most {} elements", self.max_len)
@@ -680,7 +754,7 @@ mod bounded_vec {
             // it to cap (never to exceed) `self.max_len`'s own allocation.
             let capacity = seq.size_hint().unwrap_or(0).min(self.max_len);
             let mut values = Vec::with_capacity(capacity);
-            while let Some(value) = seq.next_element::<Option<T>>()? {
+            while let Some(value) = seq.next_element::<T>()? {
                 if values.len() >= self.max_len {
                     return Err(serde::de::Error::invalid_length(values.len() + 1, &self));
                 }

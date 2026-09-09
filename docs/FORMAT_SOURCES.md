@@ -2212,10 +2212,101 @@ documented as such in the code:
   only chooses what goes in the sections: engine header (map, chapter title,
   difficulty, elapsed) `16`, player carry `17`, entity registry `18`,
   simulation `19`, global state `20`, light-style time `21`, view `22`.
-- `DEFAULT_CARRY_RADIUS` (512 units): a stand-in for the documented
+- `DEFAULT_CARRY_RADIUS` (512 units): the *fallback* half of the documented
   "inside the transition volume, or in the landmark's PVS" eligibility rule,
   used only when a map declares no `trigger_transition` volume for the
-  landmark.
+  landmark **and** the PVS half of the rule cannot be answered (M9.26). The
+  PVS half itself is now run rather than approximated
+  (`ohl_engine::transition::in_landmark_pvs`): the visibility lump this
+  project already decodes for rendering (`ohl_world::VisibilitySet`) answers
+  a plain leaf-to-leaf query between the landmark's leaf and the entity's.
+  The PVS answer *is* the rule whenever there is one; the radius answers
+  only for the three cases a leaf query cannot, because it means nothing in
+  them (`landmark_pvs_answer`, unit-tested for all three): a set this
+  project could not materialise from the lump at all, which answers
+  "visible" for every pair and would carry every named entity in the map
+  (`ohl_world::VisibilitySet::is_decoded` is what tells the two apart); a
+  point outside the world's node tree; and a point in leaf `0`, the shared
+  outside/solid leaf, which has neither a visibility row of its own nor a
+  bit in anyone else's. It is deliberately *not* an `or` over the top of the
+  PVS answer: an entity the PVS test has already answered "no" for does not
+  get a second chance from the radius. Measured over this campaign's five
+  boundaries, the two readings never disagree in that direction (0 entities
+  with `pvs = false` and `distance <= 512`), so the strict form is a
+  statement about the rule rather than a behaviour change; the discriminating
+  coverage is synthetic
+  (`crates/ohl-engine/tests/landmark_pvs_carry.rs`, a two-leaf fixture with
+  a hand-written visibility lump).
+
+  **What it widens, measured.** Eligible entities per boundary across the
+  chain walk go 6 -> 17, 1 -> 11, 5 -> 31, 11 -> 56 and 2 -> 20 (radius
+  alone -> this rule). The classnames that become eligible only through the
+  PVS path are `path_track` 49, `func_door` 16, `light` 13,
+  `multi_manager` 7, `env_message` 7, `light_spot` 4, `func_tracktrain` 4,
+  `ambient_generic` 3, `func_door_rotating` 2, `scripted_sequence` 2, and
+  one each of `monster_generic`, `monster_barney` and `func_wall`. A brush
+  entity that becomes eligible this way adds nothing new to what already
+  travelled: a *modified* mover's state is captured before the eligibility
+  test at all (the `movers` list), and an unmodified one applies its own
+  resting state onto a same-named counterpart. It is also never
+  *materialised* — see the next item. `MAX_CARRIED_ENTITIES` (256) still
+  bounds the whole set, and its truncation is silent and
+  iteration-ordered. Measured need: on this
+  campaign's last tram boundary the destination map declares four
+  `scripted_sequence`s and no monster of any classname; the monster all four
+  name by `targetname` is declared by the source map, 1,493 units from the
+  landmark, and the 512-unit stand-in dropped it — leaving the destination's
+  whole arrival sequence (which ends by opening the ride's own door) waiting
+  on a script that could never complete. Guarded by
+  `crates/ohl-engine/tests/carried_monster_scripts.rs`.
+- **A re-created entity is one of the destination's own entities (M9.26).**
+  A carried entity the destination declares no counterpart for is
+  materialised there (`TransitionState::place`). Materialising it as a
+  `ClassName`, a `Transform` and its carried component snapshot is not
+  enough: every later stage of a level's build reads
+  `ohl_engine::level::Level::defs` and writes onto the entity at the *same
+  index* — `ohl_ai::spawn::attach_monsters`, `AiState::register_brains`,
+  `collect_triggers`, `attach_scripts`, `attach_followers`, and the
+  navigation graph — so an entity with no definition is invisible to all of
+  them, and a carried monster arrives with no brain, no `Actor` and no hull.
+  `CarriedEntity::keyvalues` therefore carries the source map's own
+  keyvalues (bounded by `MAX_CARRIED_KEYVALUES`) and `place` appends a
+  matching `EntityDef` in the same slot. Only the placement is rewritten,
+  into the destination's coordinates; a `model` keyvalue naming a brush
+  submodel (`*N`) is dropped, since that index belongs to the map that
+  compiled it and the destination numbers its own submodels its own way.
+  Project-determined, `TODO(black-box)`: no public page states what an
+  engine rebuilds a transferred entity from.
+
+  **A brush entity is never materialised.** The same TWHL level-transition
+  pages cited above state that a brush entity "needs a unique global name to
+  be able to be carried over" (reviewed 2026-09-09, via the same
+  search-engine result summaries the other 403-to-automated-fetch pages are
+  recorded through), and a `globalname` is precisely how the *destination's
+  own* copy of that brush is found. There is nothing left to create: a brush
+  entity is its submodel, the `*N` index naming it belongs to the map that
+  compiled it, and a map that never compiled one has no geometry for the
+  entity to be. So an eligible brush entity the destination declares no
+  counterpart for applies no state and is not re-created — it would arrive
+  as a modelless husk that every build stage would then act on. Measured
+  across the chain walk, this is what keeps the widened eligibility above
+  from materialising 23 brush entities; the 56 that are materialised are
+  `path_track` 31, `multi_manager` 9, `env_message` 7, `ambient_generic` 2,
+  `light` 2, `scripted_sequence` 2, and one each of `env_spark`,
+  `monster_generic` and `monster_barney`. Guarded by
+  `an_eligible_brush_entity_is_never_materialised_in_the_destination`.
+
+  **And it has to survive a save.** Every index-keyed save section (tags 18,
+  24, 25, 28-31, 33-35) is "one entry per registry entity, in spawn order",
+  and a load rebuilds the level from the map's own entity lump — which
+  contains none of the materialised entities. `SECTION_CARRIED_ENTITIES`
+  (tag 36) therefore writes their definitions down, and
+  `crate::save_state::restore_carried_entities` rebuilds them through the
+  same `materialise_carried` a level change uses, before the AI attaches
+  and before any section is zipped. Without it a quicksave taken after
+  arriving in a map whose scripted arrival sequence is written around a
+  carried monster reloads with no monster and a sequence that can never
+  advance — and that map's own opening chain fires a `trigger_autosave`.
 - `DEFAULT_HOLD_SECONDS` (4 s): the hold time used when a `titles.txt` entry
   sets no `$holdtime` and the entity overrides none.
 
@@ -2869,6 +2960,22 @@ counterpart in `ohl-ai`'s sound classification and is recorded as
     real world trains behave", and describe plain `func_train` without that
     behaviour, which is why this project turns a `func_tracktrain` to face
     its active segment but leaves a `func_train` at its spawned `angles`.
+    **Leaving it at them means posing it there (M9.26.)**
+    `ohl_game::pose::track_train_transform` used to report *no rotation at
+    all* for a non-turning train, which poses it at zero — a different
+    placement for every `func_train` whose map turned it. It now reports the
+    train's own `angles` yaw. A `func_train`'s `angles` is free to mean an
+    orientation, unlike a `func_door`'s (whose published meaning is the move
+    direction, `movedir_from_angles`): a train's direction of travel comes
+    from its `path_corner` chain, not from a keyvalue. Measured need: the
+    last map of this campaign's opening ride builds the car's sliding door
+    as a `func_train` declaring a 90-degree yaw, and posed at zero it stood
+    across its own doorway and slid to a stop inside the car, where the
+    reachability walk reported it as a frontier the passenger could not pass.
+    Guarded by `ohl_game::pose`'s own
+    `a_func_train_keeps_the_angles_its_map_spawned_it_at`,
+    `a_func_train_without_angles_is_still_posed_unrotated` and
+    `a_func_tracktrain_still_faces_its_segment_over_its_own_angles`.
   - `path_track`/`path_corner`'s documented keyvalues: `target` (the next
     node), `wait` (seconds the follower pauses at this node before
     auto-continuing), and `path_track`'s own `speed` ("New Train Speed": "as

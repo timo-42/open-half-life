@@ -29,6 +29,7 @@ use std::collections::BTreeMap;
 
 use glam::Vec3;
 use ohl_game::hecs::Entity;
+use ohl_game::keyvalues::{EntityDef, Limits as KeyvalueLimits};
 use ohl_game::registry::{
     BrushBounds, Button, ClassName, Door, EnvGlobal, GlobalName, GlobalStateValue, Landmark, Light,
     Message, MoverState, Platform, Registry, RenderPropsComponent, Rotator, SpawnFlags, Target,
@@ -53,6 +54,11 @@ pub const DEFAULT_CARRY_RADIUS: f32 = 512.0;
 /// The largest number of entities one transition carries, so a map full of
 /// named entities cannot make a transition unbounded.
 pub const MAX_CARRIED_ENTITIES: usize = 256;
+
+/// The largest number of keyvalues carried per entity, so a transition
+/// stays bounded however many keys a map hangs on one entity. Matches
+/// `ohl_game::keyvalues::Limits`' own per-entity default.
+pub const MAX_CARRIED_KEYVALUES: usize = 64;
 
 /// The player state a transition (and a save file) carries.
 ///
@@ -468,6 +474,23 @@ pub struct CarriedEntity {
     /// is one that was following a path. Applied only through the
     /// `globalname` correlation; see [`TrackTrainCarry`].
     pub track_train: Option<TrackTrainCarry>,
+    /// The source map's own keyvalues for this entity, bounded by
+    /// [`MAX_CARRIED_KEYVALUES`].
+    ///
+    /// Carried for the one case that has no destination data to fall back
+    /// on: an entity the destination map declares no counterpart for, which
+    /// [`TransitionState::place`] re-creates there. Re-creating it from a
+    /// classname and a position alone produced an entity the destination's
+    /// own spawn pipeline had never heard of — it is not in
+    /// `ohl_engine::level::Level::defs`, so `AiState::attach_level` never
+    /// gives a carried monster its brain, its `Actor`, or a place in the
+    /// destination's own `scripted_sequence` bookkeeping, and a destination
+    /// whose scripts are written around that monster waits for it forever.
+    /// With its keyvalues the transition can append a real
+    /// `ohl_game::keyvalues::EntityDef` and let the destination build it
+    /// exactly like one of its own.
+    #[serde(default)]
+    pub keyvalues: Vec<(String, String)>,
 }
 
 /// One named mover's state, carried so the previous map's doors and buttons
@@ -776,6 +799,106 @@ fn transition_volumes(registry: &Registry, landmark: &str) -> Vec<BrushBounds> {
     volumes
 }
 
+/// The destination-map entity definition of a carried entity the
+/// destination declares no counterpart for, placed at `position` and facing
+/// `angles`.
+///
+/// Built from the source map's own keyvalues (see
+/// [`CarriedEntity::keyvalues`]) so every key the destination's spawn
+/// pipeline reads — a monster's model, skin, squad, spawnflags, a script's
+/// own choices — arrives with it, with only the placement rewritten into
+/// the destination's coordinates. A transition captured before those
+/// keyvalues travelled (an older save) still yields a usable definition
+/// from the classname, names and placement alone.
+fn carried_def(carried: &CarriedEntity, position: Vec3, angles: Vec3) -> EntityDef {
+    let mut pairs: std::collections::BTreeMap<String, String> =
+        carried.keyvalues.iter().cloned().collect();
+    pairs.insert("classname".to_string(), carried.classname.clone());
+    pairs.insert(
+        "origin".to_string(),
+        format!("{} {} {}", position.x, position.y, position.z),
+    );
+    pairs.insert(
+        "angles".to_string(),
+        format!("{} {} {}", angles.x, angles.y, angles.z),
+    );
+    // `angle` is the older scalar spelling of the same key and would win a
+    // disagreement with the placement just written, so it is dropped.
+    pairs.remove("angle");
+    // A `model` keyvalue naming a *brush submodel* (`*N`) is an index into
+    // the map that compiled it. The destination compiled its own submodels
+    // and numbers them its own way, so carrying the index over would hand
+    // the re-created entity an unrelated piece of the destination's world
+    // to be collided and drawn as. A studio/sprite model path is a plain
+    // asset reference and travels.
+    if pairs
+        .get("model")
+        .is_some_and(|model| model.starts_with('*'))
+    {
+        pairs.remove("model");
+    }
+    for (key, value) in [
+        ("targetname", carried.targetname.as_ref()),
+        ("target", carried.target.as_ref()),
+        ("globalname", carried.globalname.as_ref()),
+    ] {
+        match value {
+            Some(value) => pairs.insert(key.to_string(), value.clone()),
+            None => pairs.remove(key),
+        };
+    }
+    ohl_game::keyvalues::parse_entity(&pairs, &KeyvalueLimits::default())
+}
+
+/// Whether `position` lies in the potentially-visible set of the landmark
+/// at `origin`, or `None` when this map cannot answer the question.
+///
+/// The documented eligibility rule for a level change is that an entity
+/// must be "inside the volume, or otherwise in the landmark's PVS"
+/// (`docs/FORMAT_SOURCES.md`, "Campaign flow"). The PVS half of it is a
+/// plain leaf-to-leaf query against the visibility lump this project
+/// already decodes for rendering (`ohl_world::VisibilitySet`), so it is
+/// answered here rather than approximated.
+///
+/// `None` — "ask [`DEFAULT_CARRY_RADIUS`] instead" — in the three cases
+/// where a leaf query means nothing:
+///
+/// - the map carries no usable visibility data at all, where the set
+///   answers "visible" for every pair and would carry every named entity
+///   in the map;
+/// - either point falls outside the world's node tree;
+/// - either point lands in leaf `0`, the shared outside/solid leaf, which
+///   has neither a visibility row nor a bit in anyone else's. A brush
+///   entity's own reference point (`entity_position`, the centre of its
+///   compiled brush) is normally *inside* that brush, so this is the usual
+///   answer for one, and a brush entity keeps exactly the radius rule it
+///   had before.
+fn in_landmark_pvs(world: &ohl_world::WorldModel, origin: Vec3, position: Vec3) -> Option<bool> {
+    landmark_pvs_answer(
+        world.visibility(),
+        world.leaf_at(origin.to_array()),
+        world.leaf_at(position.to_array()),
+    )
+}
+
+/// [`in_landmark_pvs`]'s decision, with the two leaf lookups already made:
+/// the whole rule, and every case it declines to answer, in one pure
+/// function so each is unit-testable without a world to trace against.
+fn landmark_pvs_answer(
+    vis: &ohl_world::VisibilitySet,
+    from: Option<usize>,
+    to: Option<usize>,
+) -> Option<bool> {
+    if !vis.is_decoded() {
+        return None;
+    }
+    let (from, to) = (from?, to?);
+    if from == 0 || to == 0 {
+        return None;
+    }
+    Some(vis.is_visible(from, to))
+}
+
 impl TransitionState {
     /// Captures what travels from `level` through the landmark named
     /// `landmark`.
@@ -816,7 +939,7 @@ impl TransitionState {
         // qualifies and why, and the capture below for why it is recorded
         // ahead of the entity-eligibility rules rather than under them.
         let mut rider = None;
-        for entity in &registry.entities {
+        for (index, entity) in registry.entities.iter().enumerate() {
             let entity = *entity;
             let Some(classname) = registry
                 .world
@@ -891,7 +1014,20 @@ impl TransitionState {
                 // at all; only an entity the destination correlates by name
                 // travels, so the radius test is skipped rather than
                 // measured against an invented origin.
-                origin.is_none_or(|origin| position.distance(origin) <= DEFAULT_CARRY_RADIUS)
+                //
+                // With a landmark, the documented rule is "inside the
+                // volume, or otherwise in the landmark's PVS"; the radius
+                // is only this project's stand-in for the half of it this
+                // engine could not run. It can run it now (see
+                // [`in_landmark_pvs`]), so the PVS answer *is* the rule
+                // whenever there is one, and the stand-in answers only for
+                // the entities that test declines to — not as an `or` over
+                // the top of it, which would carry an entity the PVS test
+                // had already answered "no" for.
+                origin.is_none_or(|origin| {
+                    in_landmark_pvs(&level.world, origin, position)
+                        .unwrap_or_else(|| position.distance(origin) <= DEFAULT_CARRY_RADIUS)
+                })
             } else {
                 volumes.iter().any(|volume| volume.contains(position))
             };
@@ -910,6 +1046,13 @@ impl TransitionState {
                 offset: origin.map(|origin| (position - origin).to_array()),
                 snapshot,
                 track_train: capture_track_train(registry, entity),
+                keyvalues: level.defs.get(index).map_or_else(Vec::new, |def| {
+                    def.keyvalues
+                        .iter()
+                        .take(MAX_CARRIED_KEYVALUES)
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect()
+                }),
             });
         }
 
@@ -1070,6 +1213,24 @@ impl TransitionState {
                 return;
             }
         }
+        // A brush entity is never *created* from nothing in the
+        // destination. The cited level-transition pages say a brush entity
+        // needs "a unique global name to be able to be carried over"
+        // (`docs/FORMAT_SOURCES.md`, "Campaign flow"), and a `globalname`
+        // is how the destination's *own* copy of that brush is found — the
+        // two branches above. There is nothing left to create here: a
+        // brush entity is its submodel, the `*N` index naming it belongs to
+        // the map that compiled it, and a destination that never compiled
+        // one has no geometry for this entity to be. So an eligible brush
+        // entity the destination does not declare applies no state and is
+        // not materialised, rather than arriving as a modelless husk.
+        if carried
+            .keyvalues
+            .iter()
+            .any(|(key, value)| key == "model" && value.starts_with('*'))
+        {
+            return;
+        }
         let (Some(origin), Some(offset)) = (origin, carried.offset) else {
             return;
         };
@@ -1078,34 +1239,129 @@ impl TransitionState {
             .snapshot
             .transform
             .map_or(Vec3::ZERO, |transform| transform.angles);
-        let entity = level.registry.world.spawn((
-            ClassName(carried.classname.clone()),
-            Transform {
-                origin: position,
-                angles,
-            },
-        ));
-        if let Some(name) = carried.targetname.clone() {
-            level
-                .registry
-                .world
-                .insert_one(entity, TargetName(name))
-                .ok();
-        }
-        if let Some(target) = carried.target.clone() {
-            level.registry.world.insert_one(entity, Target(target)).ok();
-        }
-        if let Some(globalname) = carried.globalname.clone() {
-            level
-                .registry
-                .world
-                .insert_one(entity, GlobalName(globalname))
-                .ok();
-        }
+        let Some(entity) = materialise_carried(level, &carried_def(carried, position, angles))
+        else {
+            return;
+        };
+        // The carried *state* on top of the definition. `transform` is
+        // dropped: `carried_def` already wrote the destination-relative
+        // placement into the definition the entity was built from, and the
+        // snapshot's own is the source map's.
         let mut snapshot = carried.snapshot.clone();
         snapshot.transform = None;
         snapshot.apply(&mut level.registry, entity);
-        level.registry.entities.push(entity);
-        level.registry.index(entity, carried.targetname.as_deref());
+    }
+}
+
+/// Builds one entity the destination map never declared, from the entity
+/// *definition* a transition (or a save) carries for it, and returns it.
+///
+/// A re-created entity is one of the destination map's entities from here
+/// on, so it gets an entry in [`Level::defs`] as well as one in
+/// `Registry::entities`: the two are index-parallel, and every later stage
+/// of a level's build reads a def and writes onto the entity at its index
+/// (`ohl_ai::spawn::attach_monsters`, `crate::ai::AiState`'s
+/// `register_brains`/`collect_triggers`/`attach_scripts`/`attach_followers`,
+/// and the navigation graph). Without one a carried monster arrives as a
+/// husk: no brain, no `Actor`, no hull — and a destination map whose own
+/// `scripted_sequence`s name that monster waits for an actor that can never
+/// exist.
+///
+/// Appends nothing, and returns `None`, unless the two vectors are still
+/// aligned, so this can never be what misaligns them.
+///
+/// Only the components `Registry::build` derives from the same four
+/// keyvalues are inserted here — a re-created entity is not a brush entity
+/// (`carried_def` drops a `*N` submodel `model`, whose index belongs to the
+/// map that compiled it), so it needs no `BrushModel`/`BrushBounds`, and
+/// every other component it should carry comes either from its
+/// [`EntitySnapshot`] or from the build stages above.
+pub(crate) fn materialise_carried(level: &mut Level, def: &EntityDef) -> Option<Entity> {
+    if level.defs.len() != level.registry.entities.len() {
+        return None;
+    }
+    let entity = level.registry.world.spawn((
+        ClassName(def.classname.clone()),
+        Transform {
+            origin: Vec3::from_array(def.origin),
+            angles: Vec3::from_array(def.angles),
+        },
+        SpawnFlags(def.spawnflags),
+    ));
+    if let Some(name) = def.targetname.clone() {
+        level
+            .registry
+            .world
+            .insert_one(entity, TargetName(name))
+            .ok();
+    }
+    if let Some(target) = def.target.clone() {
+        level.registry.world.insert_one(entity, Target(target)).ok();
+    }
+    if let Some(globalname) = def
+        .keyvalues
+        .get("globalname")
+        .filter(|value| !value.is_empty())
+    {
+        level
+            .registry
+            .world
+            .insert_one(entity, GlobalName(globalname.clone()))
+            .ok();
+    }
+    level.defs.push(def.clone());
+    level.registry.entities.push(entity);
+    level.registry.index(entity, def.targetname.as_deref());
+    Some(entity)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::landmark_pvs_answer;
+    use ohl_world::VisibilitySet;
+
+    /// A set built from real rows: leaf 1 sees only itself, leaf 2 only
+    /// itself. Bit `n` of a row names leaf `n + 1`, the lump's own
+    /// leaf-1-based numbering.
+    fn split_set() -> VisibilitySet {
+        VisibilitySet::build(&[0b0000_0001, 0b0000_0010], &[-1, 0, 1]).expect("the rows decode")
+    }
+
+    /// The rule itself: the PVS answers, in both directions.
+    #[test]
+    fn a_decoded_set_answers_both_ways() {
+        let vis = split_set();
+        assert_eq!(landmark_pvs_answer(&vis, Some(1), Some(1)), Some(true));
+        assert_eq!(landmark_pvs_answer(&vis, Some(1), Some(2)), Some(false));
+        assert_eq!(landmark_pvs_answer(&vis, Some(2), Some(2)), Some(true));
+    }
+
+    /// The first documented fallback: a map whose visibility data this
+    /// project could not materialise at all answers "visible" for every
+    /// pair, which is not an answer — the caller must ask
+    /// `DEFAULT_CARRY_RADIUS` instead rather than carry every named entity
+    /// in the map.
+    #[test]
+    fn an_undecoded_set_declines_to_answer() {
+        let vis = VisibilitySet::all_visible(3);
+        assert_eq!(landmark_pvs_answer(&vis, Some(1), Some(2)), None);
+    }
+
+    /// The second: either point outside the world's node tree.
+    #[test]
+    fn a_point_outside_the_node_tree_declines_to_answer() {
+        let vis = split_set();
+        assert_eq!(landmark_pvs_answer(&vis, None, Some(1)), None);
+        assert_eq!(landmark_pvs_answer(&vis, Some(1), None), None);
+    }
+
+    /// The third: leaf `0`, the shared outside/solid leaf, which has
+    /// neither a visibility row of its own nor a bit in anyone else's — and
+    /// is where a brush entity's own compiled centre normally sits.
+    #[test]
+    fn the_outside_leaf_declines_to_answer() {
+        let vis = split_set();
+        assert_eq!(landmark_pvs_answer(&vis, Some(0), Some(1)), None);
+        assert_eq!(landmark_pvs_answer(&vis, Some(1), Some(0)), None);
     }
 }
