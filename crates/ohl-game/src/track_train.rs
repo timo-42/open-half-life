@@ -61,6 +61,43 @@ const PATH_TRACK_STOP_FLAG: u32 = 1;
 /// fetches); treat it the same way as [`PATH_TRACK_STOP_FLAG`].
 const TRACKTRAIN_NO_USER_CONTROL_FLAG: u32 = 2;
 
+/// How far (world units) past a node [`TrackTrainState::yaw_degrees`]
+/// keeps blending from the previous segment's heading into the new one,
+/// for a train whose `wheels` keyvalue is `0` (unset).
+///
+/// TODO(black-box): a project-determined choice, not a documented engine
+/// constant — see [`TrackTrain::wheels`]'s doc comment for why blending
+/// exists at all. Picked large enough that a rider seated a typical car's
+/// half-width or so off a `func_tracktrain`'s pivot is not swept through a
+/// sharp turn faster than a small multiple of the train's own travel
+/// speed (`crates/ohl-engine/tests/track_train_bend.rs`'s
+/// `a_riders_reported_speed_never_exceeds_the_cars_own_by_more_than_a_small_bound`
+/// checks this bound directly), while still resolving well within a
+/// short path segment.
+pub const DEFAULT_YAW_BLEND_DISTANCE: f32 = 256.0;
+
+/// The blend distance [`TrackTrainState::yaw_degrees`] actually uses for
+/// `train`: its own `wheels` keyvalue when positive (see
+/// [`TrackTrain::wheels`]'s doc comment), [`DEFAULT_YAW_BLEND_DISTANCE`]
+/// otherwise.
+fn yaw_blend_distance(train: &TrackTrain) -> f32 {
+    if train.wheels.is_finite() && train.wheels > 0.0 {
+        train.wheels
+    } else {
+        DEFAULT_YAW_BLEND_DISTANCE
+    }
+}
+
+/// The shortest-arc interpolation from `a` to `b` (both degrees), `frac`
+/// of the way there; matches the wrap-safe delta
+/// `ohl_engine::level`'s own `angular_velocity` helper takes across the
+/// same 360-degree wrap, so a train whose heading passes through the
+/// `0`/`360` seam blends the short way round rather than the long one.
+fn lerp_angle_degrees(a: f32, b: f32, frac: f32) -> f32 {
+    let delta = (b - a + 180.0).rem_euclid(360.0) - 180.0;
+    a + delta * frac.clamp(0.0, 1.0)
+}
+
 /// One `path_corner`/`path_track` node, resolved into world space (its
 /// `height` offset, when the owning train supplied one, already added to
 /// `position`).
@@ -263,10 +300,16 @@ pub struct TrackTrain {
     /// `wheels`: documented "front wheel" distance used to compute heading
     /// lag on corners.
     ///
-    /// TODO(black-box): recorded but not applied; [`TrackTrainState::yaw_degrees`]
-    /// faces the current segment directly rather than modelling a
-    /// wheel-offset turn lag, since no public source documents that
-    /// formula.
+    /// TODO(black-box): no public source documents the exact wheel-offset
+    /// turn-lag formula, so [`TrackTrainState::yaw_degrees`] does not model
+    /// one; but a positive value here *is* read as how far past a node the
+    /// hull's heading should take to finish turning onto the next segment,
+    /// rather than turning through the whole angle between segments in the
+    /// single tick the train reaches the node — see
+    /// [`TrackTrainState::yaw_degrees`]'s own doc comment for why a hard
+    /// snap is a problem worth avoiding even without a documented lag
+    /// formula to replace it with, and `DEFAULT_YAW_BLEND_DISTANCE` for the
+    /// distance used when this is left at `0`.
     pub wheels: f32,
     /// The documented "No User Control" spawnflag. See
     /// [`TRACKTRAIN_NO_USER_CONTROL_FLAG`]; recorded but unused, since this
@@ -508,27 +551,93 @@ impl TrackTrainState {
     /// was in effect right up to the step the train stopped advancing —
     /// so it agrees exactly with the yaw this method reported the instant
     /// before the train parked.
+    ///
+    /// A train mid-chain does not snap onto a new segment's heading the
+    /// instant it reaches the node either: for the first
+    /// [`yaw_blend_distance`] units of the new segment, the reported yaw is
+    /// blended from the *previous* segment's heading toward this one
+    /// (shortest way round the compass), reaching the new segment's own
+    /// heading exactly at that distance and holding it for the rest of the
+    /// segment. Reported yaw is the *only* thing that turns a
+    /// `func_tracktrain`'s hull — [`crate::pose::brush_pose_rotation`]'s
+    /// collision pose, the renderer's draw pose and a rigid-carried rider's
+    /// own turn (`ohl_engine`'s `Level::rotational_carry`) all read this
+    /// one value — so blending it here is enough to turn a sharp corner
+    /// into a short, smooth swing everywhere at once rather than a single
+    /// simulation tick's worth of rotation applied instantaneously: see
+    /// [`TrackTrain::wheels`]'s doc comment for why that single-tick jump
+    /// was worth avoiding, and [`DEFAULT_YAW_BLEND_DISTANCE`] for where the
+    /// distance comes from.
     #[must_use]
     pub fn yaw_degrees(&self, train: &TrackTrain) -> Option<f32> {
         if !train.turns_to_face {
             return None;
         }
-        let direction = if let Some(other) = self.other_index() {
-            self.chain.nodes[other].position - self.chain.nodes[self.node_index].position
+        if let Some(other) = self.other_index() {
+            let after = Self::yaw_from_direction(
+                self.chain.nodes[other].position - self.chain.nodes[self.node_index].position,
+            )?;
+            Some(self.blend_yaw_after_node(train, other, after))
         } else {
-            let last = if self.direction >= 0.0 {
-                self.node_index.checked_sub(1)
-            } else {
-                self.node_index
-                    .checked_add(1)
-                    .filter(|&index| index < self.chain.nodes.len())
-            }?;
-            self.chain.nodes[self.node_index].position - self.chain.nodes[last].position
-        };
-        if direction.x.abs() < f32::EPSILON && direction.y.abs() < f32::EPSILON {
-            return None;
+            let last = self.previous_node_index()?;
+            Self::yaw_from_direction(
+                self.chain.nodes[self.node_index].position - self.chain.nodes[last].position,
+            )
         }
-        Some(direction.y.atan2(direction.x).to_degrees())
+    }
+
+    /// The node behind [`Self::node_index`] in the direction the train is
+    /// (or, if parked, was) travelling: the departure point of the segment
+    /// that led into the current node. `None` at the start of a non-looped
+    /// chain, where no such node exists.
+    fn previous_node_index(&self) -> Option<usize> {
+        if self.direction >= 0.0 {
+            self.node_index.checked_sub(1)
+        } else {
+            self.node_index
+                .checked_add(1)
+                .filter(|&index| index < self.chain.nodes.len())
+        }
+    }
+
+    /// The compass yaw (degrees) `direction` points along, or `None` for a
+    /// purely vertical hop with no horizontal extent to derive one from.
+    fn yaw_from_direction(direction: Vec3) -> Option<f32> {
+        if direction.x.abs() < f32::EPSILON && direction.y.abs() < f32::EPSILON {
+            None
+        } else {
+            Some(direction.y.atan2(direction.x).to_degrees())
+        }
+    }
+
+    /// [`Self::yaw_degrees`]'s blend: `after` (the active segment's own
+    /// heading, `node_index` toward `other`) unchanged once the train is
+    /// [`yaw_blend_distance`] units past `node_index`, or the shortest-arc
+    /// interpolation from the previous segment's heading toward `after`
+    /// before that — see [`Self::yaw_degrees`]'s doc comment.
+    fn blend_yaw_after_node(&self, train: &TrackTrain, other: usize, after: f32) -> f32 {
+        let Some(previous) = self.previous_node_index() else {
+            // The first segment of a non-looped chain: nothing came before
+            // it to blend from.
+            return after;
+        };
+        let Some(before) = Self::yaw_from_direction(
+            self.chain.nodes[self.node_index].position - self.chain.nodes[previous].position,
+        ) else {
+            // The segment that led here was a vertical hop with no
+            // heading of its own; there is nothing to blend from.
+            return after;
+        };
+        let segment_len = self.chain.segment_len(self.node_index, other);
+        let window = yaw_blend_distance(train).min(segment_len);
+        if window <= f32::EPSILON {
+            return after;
+        }
+        let travelled = self.t.clamp(0.0, 1.0) * segment_len;
+        if travelled >= window {
+            return after;
+        }
+        lerp_angle_degrees(before, after, travelled / window)
     }
 
     /// The [`PathChain`] this train follows, so a caller that has to
@@ -1286,6 +1395,72 @@ mod tests {
             state.yaw_degrees(&train),
             Some(90.0),
             "a parked train must keep the heading of the segment it arrived on"
+        );
+    }
+
+    /// Right at `node2` the reported yaw still reads as the segment the
+    /// train just left (`0` degrees, `node1` -> `node2`); by the time the
+    /// train is fully past the blend window it reads as the new segment's
+    /// own heading (`90` degrees, `node2` -> `node3`); halfway across the
+    /// window (which is clamped to the whole 100-unit second segment here,
+    /// shorter than [`DEFAULT_YAW_BLEND_DISTANCE`]) it reads exactly
+    /// halfway between the two. See [`TrackTrainState::yaw_degrees`]'s doc
+    /// comment for why the heading blends at all rather than snapping.
+    #[test]
+    fn yaw_blends_from_the_previous_segment_across_the_window() {
+        let entities = bent_track(&[("speed", "100"), ("startspeed", "100")]);
+        let registry = build_registry(&entities);
+        let mut state = train_state(&registry);
+        let train = train_component(&registry);
+        state.turn_on();
+
+        // 100 units at 100 units/second reaches `node2` exactly.
+        state.advance(1.0);
+        assert_eq!(state.position(), Vec3::new(100.0, 0.0, 0.0));
+        assert_eq!(
+            state.yaw_degrees(&train),
+            Some(0.0),
+            "right at the node the reported yaw should still be the segment just left"
+        );
+
+        // Halfway across the (100-unit) blend window.
+        state.advance(0.5);
+        let halfway = state
+            .yaw_degrees(&train)
+            .expect("a horizontal segment always has a yaw");
+        assert!(
+            (halfway - 45.0).abs() < 1e-3,
+            "halfway through the blend window the yaw should be halfway turned, got {halfway}"
+        );
+
+        // The rest of the segment, past the blend window.
+        state.advance(0.5);
+        assert_eq!(
+            state.yaw_degrees(&train),
+            Some(90.0),
+            "past the blend window the yaw should match the new segment exactly"
+        );
+    }
+
+    /// A positive `wheels` keyvalue shortens the blend window from
+    /// [`DEFAULT_YAW_BLEND_DISTANCE`] to itself; see [`TrackTrain::wheels`]'s
+    /// doc comment.
+    #[test]
+    fn a_positive_wheels_keyvalue_shortens_the_blend_window() {
+        let entities = bent_track(&[("speed", "100"), ("startspeed", "100"), ("wheels", "10")]);
+        let registry = build_registry(&entities);
+        let mut state = train_state(&registry);
+        let train = train_component(&registry);
+        assert!((train.wheels - 10.0).abs() < f32::EPSILON);
+        state.turn_on();
+
+        state.advance(1.0); // reach `node2` exactly
+        state.advance(0.1); // 10 more units: the whole shortened window
+        assert_eq!(
+            state.yaw_degrees(&train),
+            Some(90.0),
+            "a positive `wheels` keyvalue should shorten the blend window instead of \
+             using the default"
         );
     }
 

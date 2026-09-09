@@ -932,27 +932,51 @@ impl Game {
         &self.controller.config
     }
 
-    /// The speed of the attached brush entity the player is currently
-    /// standing on (a moving `func_train`/`func_tracktrain`/`func_plat`/
-    /// lift `func_door`, or a rotating `func_rotating`/`func_door_rotating`
-    /// measured at the player's own feet), or `0.0` while airborne,
-    /// standing on worldspawn geometry, or standing on a mover that is not
-    /// currently moving.
+    /// The speed of the ride the player is currently getting from whatever
+    /// they are standing on (a moving `func_train`/`func_tracktrain`/
+    /// `func_plat`/lift `func_door`, or a rotating `func_rotating`/
+    /// `func_door_rotating` measured at the player's own feet), or `0.0`
+    /// while airborne, standing on worldspawn geometry, or standing on a
+    /// mover that is not currently moving.
     ///
-    /// Reads exactly what `Systems::player_move`'s own `base_velocity`
-    /// lookup does — [`ohl_physics::PlayerState::ground_brush`] and
-    /// [`crate::level::Level::brush_ride_velocity`] at the player's own
-    /// origin, so a spinning `func_rotating`/swinging
-    /// `func_door_rotating` under the player counts as a ride at the speed
-    /// it actually carries them at — so a host (or a script log) can
-    /// report "the player is riding a mover" from the same data the
-    /// physics step already computed, without re-deriving it.
+    /// This is the brush's whole-body translation ([`crate::level::Level::brush_velocity`])
+    /// plus, for a rotating mover, the *actual chord* the rider's own seat
+    /// was carried through this tick ([`crate::level::Level::rotational_carry`])
+    /// divided by `dt` — not the instantaneous tangential rate `omega x r`
+    /// a spin's angle-per-tick would suggest at the limit of a vanishingly
+    /// small step. The two agree to within a rounding error for an
+    /// ordinarily slow `func_rotating`/`func_door_rotating` turn
+    /// (`chord ~= r * dtheta` for small `dtheta`), so this reads the same
+    /// either way there; it matters for a `func_tracktrain`, whose hull
+    /// used to turn by the *whole* angle between two path segments in the
+    /// single tick it reached the node between them
+    /// (`ohl_game::track_train::TrackTrainState::yaw_degrees`'s blend, see
+    /// its own doc comment, is what actually spreads that turn over
+    /// several ticks now). At that size of a heading change the chord runs
+    /// meaningfully short of the arc, so this method reading the rigid
+    /// step's own chord rather than re-deriving an arc-rate from the same
+    /// angle (as it used to, e.g. `docs/MILESTONES.md`'s recorded 1.5k-5.8k
+    /// u/s spikes, "the yaw-snap ride-speed spike, resolved") reports what
+    /// the rider was actually carried by rather than an overestimate of
+    /// it, on top of the blend making that carry small at every tick to
+    /// begin with. See `crates/ohl-engine/tests/track_train_bend.rs`'s
+    /// `a_riders_reported_speed_never_exceeds_the_cars_own_by_more_than_a_small_bound`
+    /// for the regression this pair of changes closed.
     #[must_use]
     pub fn ground_mover_speed(&self) -> f32 {
         self.controller.state.ground_brush.map_or(0.0, |brush| {
-            self.level
-                .brush_ride_velocity(brush, self.controller.state.origin)
-                .length()
+            let translation = self
+                .level
+                .brush_velocity
+                .get(&brush)
+                .copied()
+                .unwrap_or(Vec3::ZERO);
+            let origin = self.controller.state.origin;
+            let rotational = self
+                .level
+                .rotational_carry(brush, origin, TICK_SECONDS)
+                .map_or(Vec3::ZERO, |carried| (carried - origin) / TICK_SECONDS);
+            (translation + rotational).length()
         })
     }
 

@@ -281,3 +281,52 @@ fn a_refused_carry_leaves_the_rider_behind_instead_of_embedding_them() {
          being left behind by the refused carry"
     );
 }
+
+/// `Game::ground_mover_speed`'s reading of a rider going round this
+/// fixture's corner never balloons past a small multiple of the car's own
+/// travel speed.
+///
+/// Before `TrackTrainState::yaw_degrees` blended a corner's heading change
+/// over `ohl_game::track_train::DEFAULT_YAW_BLEND_DISTANCE` (see that
+/// constant's doc comment), a `func_tracktrain` turned through the whole
+/// angle between two path segments in the single tick it changed segment
+/// on, and a rider seated `BEND_SEAT_OFFSET_X` units off the car's pivot
+/// was carried through that turn's whole chord in one
+/// `ohl_physics::controller::TICK_SECONDS` step — a real, if brief, spike
+/// in how fast their seat actually moved, on the order of the chord
+/// (`2 * BEND_SEAT_OFFSET_X * sin(45 degrees)`) divided by that one tick's
+/// duration, tens of times the car's own 100 units/second. Blending the
+/// heading change over a short distance spreads that same total turn
+/// across many ticks instead, so no single tick's chord is large. This
+/// steps at the physics engine's own fixed tick (rather than this file's
+/// other tests' `1.0 / 60.0`, which does not divide evenly into
+/// `ohl_physics::controller::TICK_SECONDS` and so can coalesce more than
+/// one physics step into a single `Game::tick` call, hiding exactly the
+/// single-tick spike this test exists to catch) so every simulation step
+/// through the corner is actually observed.
+#[test]
+fn a_riders_reported_speed_never_exceeds_the_cars_own_by_more_than_a_small_bound() {
+    let tick_seconds = ohl_physics::controller::TICK_SECONDS;
+    let mut game = loaded();
+
+    for _ in 0..40 {
+        game.tick(tick_seconds, &Input::default());
+    }
+
+    let total =
+        BEND_TRAIN_CORNER[0] - BEND_TRAIN_ORIGIN[0] + BEND_TRAIN_END[1] - BEND_TRAIN_CORNER[1];
+    let seconds = total / BEND_TRAIN_SPEED + 2.0;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let steps = (seconds / tick_seconds).round() as u32;
+
+    let bound = BEND_TRAIN_SPEED * 2.0;
+    for step in 0..steps {
+        game.tick(tick_seconds, &Input::default());
+        let reported = game.ground_mover_speed();
+        assert!(
+            reported <= bound,
+            "step {step}: ground_mover_speed reported {reported}, more than {bound} \
+             (twice the car's own {BEND_TRAIN_SPEED} units/second travel speed)"
+        );
+    }
+}

@@ -2979,12 +2979,20 @@ Everything not directly stated by the pages above is marked
 rather than guessed at silently: a negative `startspeed` meaning "start
 moving in reverse" is this project's own reading of "the speed the train
 starts at" (chosen for consistency with every other triggered mover in this
-crate, which does not move until activated); `bank`, `dmg` and `wheels` are
-recorded on `TrackTrain` but not applied to the placed transform or to any
-collision/damage model, since no public source documents the exact
-roll-vs-turn, crush-detection, or wheel-offset-heading-lag formulas, and
-guessing one would silently misrender or misbehave rather than fail loudly.
-No SDK source or decompiled logic was consulted for any of the above.
+crate, which does not move until activated); `bank` and `dmg` are recorded
+on `TrackTrain` but not applied to the placed transform or to any
+damage model, since no public source documents the exact roll-vs-turn or
+crush-detection formulas, and guessing one would silently misrender or
+misbehave rather than fail loudly. `wheels` is likewise undocumented as an
+exact formula, but a positive value on it *is* read as the distance past a
+node `TrackTrainState::yaw_degrees` takes to finish turning the hull onto
+the next segment, rather than turning through the whole angle in the
+single tick the train reaches the node — `DEFAULT_YAW_BLEND_DISTANCE` is
+used when it is left at `0` — a project-determined choice made to avoid a
+real one-tick spike in how fast a rider's seat moved through a sharp
+corner (`docs/MILESTONES.md`, "the yaw-snap ride-speed spike, resolved"),
+not a claimed match to the wheel-offset-heading-lag formula itself. No SDK
+source or decompiled logic was consulted for any of the above.
 
 Project behaviour supported: `crates/ohl-game/src/track_train.rs` resolves a
 `func_train`/`func_tracktrain`'s `target` into a bounded `PathChain` of
@@ -4098,6 +4106,17 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
     traps them. `Game::ground_mover_speed` (what the dev-tools script log's
     "The player is riding a mover." line reads) now measures the same
     combined ride, so a rotating floor counts as one.
+
+    `Game::ground_mover_speed` was later changed (`docs/MILESTONES.md`,
+    "the yaw-snap ride-speed spike, resolved") to measure the actual chord
+    `Level::rotational_carry` moves the rider's own point through divided
+    by `dt`, rather than the instantaneous tangential rate above. The two
+    agree closely for an ordinary slow rotation (the chord approaches the
+    arc as the per-tick angle shrinks), so this changed nothing for a
+    `func_rotating`/`func_door_rotating` rider in practice; it matters for
+    a `func_tracktrain`, whose hull turns by a whole segment's angle in the
+    single tick it reaches a path node, where the arc-based formula
+    overstated how far the rider's seat actually moved that tick.
 
     A rotating floor also exposed a numerical gap in the ground probe,
     fixed here and recorded as project behaviour: a player resting on a
