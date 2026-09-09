@@ -64,6 +64,15 @@ struct Args {
     #[arg(long, value_name = "N")]
     attempts: Option<usize>,
 
+    /// How many of one plan's own travelling segments each attempt
+    /// commits before it replays and plans again (`--plan-segments`).
+    ///
+    /// Worth raising on a hop whose map answers a one-segment loop with
+    /// the same plan every time: committing a few segments at once walks
+    /// the player somewhere the next plan is genuinely different from.
+    #[arg(long, value_name = "N")]
+    segments: Option<usize>,
+
     /// The search's per-round cell cap.
     #[arg(long, value_name = "N", default_value_t = 300_000)]
     cell_cap: usize,
@@ -262,6 +271,9 @@ pub fn run(root: &Path, raw_args: &[String]) -> ExitCode {
     }
     if let Some(attempts) = args.attempts {
         command.arg("--plan-attempts").arg(attempts.to_string());
+    }
+    if let Some(segments) = args.segments {
+        command.arg("--plan-segments").arg(segments.to_string());
     }
 
     let started = Instant::now();

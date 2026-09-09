@@ -1456,7 +1456,7 @@ struct SwitchedMover {
 }
 
 /// Every Toggle `func_platrot` on this round's frontier that some reached
-/// cell can switch out of the way, in the shape [`attribute_doors`] presses
+/// cell can switch out of the way, in the shape [`plan_presses`] presses
 /// a door with.
 ///
 /// A platform the walk is *standing on* is excluded for the same reason a
@@ -2046,22 +2046,105 @@ struct DoorMarks {
     usable_len: usize,
 }
 
-/// Attributes each opened door to the path point the route should press
-/// it from: the last point standing within [`USE_RADIUS`] of the leaf's
-/// centre before the path first crosses the leaf's own closed volume.
+/// One step aside a route takes to press a switch it would otherwise walk
+/// straight past.
+#[derive(Debug, Clone, Copy)]
+struct PressDetour {
+    /// The index, in the path this detour was measured against, that the
+    /// route leaves from and comes straight back to.
+    at: usize,
+    /// Where it stands to make the press.
+    stand: Vec3,
+}
+
+/// Where a route should step aside to press `door`, when no point of the
+/// path itself stands within [`USE_RADIUS`] of that door's press centre
+/// before the path crosses its closed volume.
 ///
-/// A leaf the path crosses without ever standing in reach of truncates
-/// the route there rather than failing it: walking *up to* a door is
-/// progress, and the next plan — made from a point that is now beside the
-/// leaf — is the one that presses it. A path truncated to nothing is how
-/// a caller learns that this door is the thing to wait at.
+/// The search opens a mover as soon as *any* reached cell can press it
+/// ([`openable_doors`], [`switched_movers`]) and then walks on through
+/// the space it stops filling. Nothing makes the cheapest path to the
+/// goal pass the switch: a button in an alcove beside a corridor, or the
+/// one wired to a `func_platrot` standing in a doorway, is routinely a
+/// few tens of units off the line the walk takes. Without this the route
+/// is truncated where it crosses the leaf, and the caller is told the map
+/// is blocked at a door that is in fact already pressable.
 ///
-/// Two doors can attribute to the same path index (their leaves both come
-/// into reach from the same point); both are kept, in `doors`' own order,
-/// rather than the second silently overwriting the first.
-fn attribute_doors(path: &[PathPoint], doors: &[OpenedDoor], eye: Vec3) -> DoorMarks {
-    let mut presses: HashMap<usize, Vec<OpenedDoor>> = HashMap::new();
-    let mut usable_len = path.len();
+/// So the detour is chosen the way a player would take it: the shortest
+/// out-and-back, from some point of the path *before* the crossing to
+/// some reached cell in press range, whose straight line is walkable in
+/// both directions ([`straight_line_is_walkable`]) and does not run into
+/// the very leaf that is still shut. `None` when no such pair exists,
+/// which truncates the route exactly as before.
+fn press_detour(
+    collision: &CollisionModel,
+    trace: &Trace,
+    path: &[PathPoint],
+    door: &OpenedDoor,
+    crossing: usize,
+    eye: Vec3,
+) -> Option<PressDetour> {
+    // Sorted rather than taken in the `HashMap`'s own iteration order, so
+    // two runs over the same map choose the same detour.
+    let mut cells: Vec<Cell> = trace
+        .landing
+        .iter()
+        .filter(|(_, position)| (**position + eye).distance(door.center) <= USE_RADIUS)
+        .filter(|(_, position)| !bounds_contains_with_margin(&door.bounds, **position))
+        .map(|(cell, _)| *cell)
+        .collect();
+    cells.sort_unstable();
+    let mut best: Option<(f32, PressDetour)> = None;
+    for (at, point) in path[..crossing].iter().enumerate() {
+        if !point.kind.is_ground_movement() && at > 0 {
+            // The route has to be able to come back to this point and
+            // carry on from it; a jump, a fall, a climb or a ride is a
+            // committed motion whose take-off cannot be re-entered.
+            continue;
+        }
+        for cell in &cells {
+            let Some(stand) = trace.landing.get(cell).copied() else {
+                continue;
+            };
+            let aside = point.position.distance(stand);
+            if best
+                .as_ref()
+                .is_some_and(|(shortest, _)| aside >= *shortest)
+            {
+                continue;
+            }
+            if !straight_line_is_walkable(collision, point.position, stand)
+                || !straight_line_is_walkable(collision, stand, point.position)
+            {
+                continue;
+            }
+            best = Some((aside, PressDetour { at, stand }));
+        }
+    }
+    best.map(|(_, detour)| detour)
+}
+
+/// Attributes every opened door to a press, stepping the route aside
+/// ([`press_detour`]) wherever the path itself never comes into range,
+/// and returns the path the route actually walks together with those
+/// presses.
+///
+/// A door that can be pressed neither from the path nor from a step aside
+/// truncates the route where it crosses that leaf, exactly as before:
+/// walking *up to* a door is progress, and the next plan — made from a
+/// point that is now beside the leaf — is the one that presses it.
+fn plan_presses(
+    collision: &CollisionModel,
+    trace: &Trace,
+    path: &[PathPoint],
+    doors: &[OpenedDoor],
+    eye: Vec3,
+) -> (Vec<PathPoint>, DoorMarks) {
+    // Each door's press against the path as it stands: an index on the
+    // path itself, a step aside, or neither (which truncates).
+    let mut on_path: Vec<(usize, OpenedDoor)> = Vec::new();
+    let mut detours: Vec<(PressDetour, OpenedDoor)> = Vec::new();
+    let mut truncate_at: Option<usize> = None;
     for door in doors {
         let Some(crossing) = path
             .iter()
@@ -2069,19 +2152,54 @@ fn attribute_doors(path: &[PathPoint], doors: &[OpenedDoor], eye: Vec3) -> DoorM
         else {
             continue;
         };
-        match path[..crossing]
+        if let Some(press) = path[..crossing]
             .iter()
             .rposition(|point| (point.position + eye).distance(door.center) <= USE_RADIUS)
         {
-            Some(press) => presses.entry(press).or_default().push(*door),
-            None => usable_len = usable_len.min(crossing),
+            on_path.push((press, *door));
+        } else if let Some(detour) = press_detour(collision, trace, path, door, crossing, eye) {
+            detours.push((detour, *door));
+        } else {
+            truncate_at = Some(truncate_at.map_or(crossing, |at: usize| at.min(crossing)));
         }
     }
-    presses.retain(|index, _| *index < usable_len);
-    DoorMarks {
-        presses,
-        usable_len,
+    detours.sort_by_key(|(detour, _)| detour.at);
+
+    // Rebuild the path with each step aside spliced in after the point it
+    // leaves from, remapping every index measured against the old one.
+    let mut walked: Vec<PathPoint> = Vec::with_capacity(path.len() + detours.len() * 2);
+    let mut remap: Vec<usize> = Vec::with_capacity(path.len());
+    let mut presses: HashMap<usize, Vec<OpenedDoor>> = HashMap::new();
+    let mut next = 0usize;
+    for (index, point) in path.iter().enumerate() {
+        remap.push(walked.len());
+        walked.push(*point);
+        while next < detours.len() && detours[next].0.at == index {
+            let (detour, door) = detours[next];
+            walked.push(PathPoint {
+                position: detour.stand,
+                kind: EdgeKind::Walk,
+            });
+            presses.entry(walked.len() - 1).or_default().push(door);
+            walked.push(PathPoint {
+                position: point.position,
+                kind: EdgeKind::Walk,
+            });
+            next += 1;
+        }
     }
+    for (index, door) in on_path {
+        presses.entry(remap[index]).or_default().push(door);
+    }
+    let usable_len = truncate_at.map_or(walked.len(), |at| remap[at]);
+    presses.retain(|index, _| *index < usable_len);
+    (
+        walked,
+        DoorMarks {
+            presses,
+            usable_len,
+        },
+    )
 }
 
 /// Whether a straight standing-hull line from `from` to `to` is walkable:
@@ -2582,15 +2700,18 @@ fn build_plan(
             rounds,
         ));
     }
-    let DoorMarks {
-        presses,
-        usable_len,
-    } = attribute_doors(&path, doors, eye);
-    let reaches_goal = reaches_goal && usable_len == path.len();
-    let path = &path[..usable_len];
     let Some(collision) = game.collision() else {
         return Err(PlanRejection::new(PlanError::NoCollision, cells, rounds));
     };
+    let (
+        walked,
+        DoorMarks {
+            presses,
+            usable_len,
+        },
+    ) = plan_presses(collision, trace, &path, doors, eye);
+    let reaches_goal = reaches_goal && usable_len == walked.len();
+    let path = &walked[..usable_len];
     let start_distance = goals
         .iter()
         .map(|goal| start.distance(goal.center))
@@ -2624,13 +2745,13 @@ mod tests {
     use super::*;
     use crate::test_support::{
         LiftFixture, PLAN_COST_LEDGE_X, PLAN_COST_LEDGE_Z, PLAN_COST_MAP, PLAN_LADDER_DROP,
-        PLAN_LADDER_MAP, PLAN_LIFT_MAP, PLAN_LIFT_TRAVEL, PLAN_PLATROT_GATE_MAP,
-        PLAN_PLATROT_GATE_NAME, PLAN_PLATROT_GATE_SPEED, PLAN_PLATROT_GATE_TRAVEL,
-        PLAN_PLATROT_MAP, PLAN_PLATROT_ROTATION, PLAN_PLATROT_SPEED, PLAN_PLATROT_TRAVEL,
-        PLAN_STOOD_ON_MAP, PLAN_STOOD_ON_NAME, PLAN_STOOD_ON_PILLAR_NAME, PLAN_TURN_MAP,
-        REACH_GAP_EDGE_X, REACH_GAP_MAP, plan_cost_bsp, plan_ladder_bsp, plan_lift_bsp,
-        plan_platrot_bsp, plan_platrot_gate_bsp, plan_stood_on_lift_bsp, plan_turn_bsp,
-        reachability_gap_bsp, reachability_gap_entities,
+        PLAN_LADDER_MAP, PLAN_LIFT_MAP, PLAN_LIFT_TRAVEL, PLAN_PLATROT_ALCOVE_MAP,
+        PLAN_PLATROT_GATE_MAP, PLAN_PLATROT_GATE_NAME, PLAN_PLATROT_GATE_SPEED,
+        PLAN_PLATROT_GATE_TRAVEL, PLAN_PLATROT_MAP, PLAN_PLATROT_ROTATION, PLAN_PLATROT_SPEED,
+        PLAN_PLATROT_TRAVEL, PLAN_STOOD_ON_MAP, PLAN_STOOD_ON_NAME, PLAN_STOOD_ON_PILLAR_NAME,
+        PLAN_TURN_MAP, REACH_GAP_EDGE_X, REACH_GAP_MAP, plan_cost_bsp, plan_ladder_bsp,
+        plan_lift_bsp, plan_platrot_alcove_bsp, plan_platrot_bsp, plan_platrot_gate_bsp,
+        plan_stood_on_lift_bsp, plan_turn_bsp, reachability_gap_bsp, reachability_gap_entities,
     };
     use crate::{AssetSource, MemoryAssets};
 
@@ -3479,13 +3600,122 @@ mod tests {
         assert_eq!(goal_forward, cell_a);
     }
 
+    /// A trace that has reached nothing: no cell is in reach of anything,
+    /// so no [`press_detour`] is possible from it.
+    fn empty_trace() -> Trace {
+        Trace {
+            landing: HashMap::new(),
+            parent: HashMap::new(),
+            order: Vec::new(),
+            frontier: HashSet::new(),
+        }
+    }
+
+    /// The alcove fixture: the gate corridor with its button moved into a
+    /// recess the direct path to the goal never enters.
+    fn alcove_game() -> Game {
+        let mut assets = MemoryAssets::new();
+        assets.insert(
+            &format!("maps/{PLAN_PLATROT_ALCOVE_MAP}.bsp"),
+            plan_platrot_alcove_bsp("ohlplannext"),
+        );
+        Game::load(&assets as &dyn AssetSource, PLAN_PLATROT_ALCOVE_MAP).expect("the fixture loads")
+    }
+
+    /// A switch the cheapest path to the goal walks straight past — the
+    /// alcove fixture's button — is pressed from a step aside, and the
+    /// route reaches the goal.
+    ///
+    /// This is what the tenth chain map is blocked on: the search opens a
+    /// mover as soon as *any* reached cell can press it, and then walks
+    /// on through the space it stops filling, but the path it walks need
+    /// never come within `USE_RADIUS` of the switch. Truncating there
+    /// reports a map as blocked at a door it can already reach.
+    #[test]
+    fn a_switch_off_the_path_is_pressed_from_a_step_aside() {
+        let mut game = alcove_game();
+        let plan = plan_route(&mut game, &PlanConfig::default()).expect("a route is planned");
+        assert!(
+            plan.reaches_goal,
+            "the whole path is usable once the button is pressed from the alcove"
+        );
+        assert_eq!(
+            plan.actions
+                .iter()
+                .filter(|action| matches!(action, PlanAction::UseDoor { .. }))
+                .count(),
+            1,
+            "one press, of the one switch the corridor has"
+        );
+    }
+
+    /// The same fixture, one layer down: the path itself never stands in
+    /// reach of the button, the step aside is what finds a press for it,
+    /// and without a trace to step aside into the very same path is
+    /// truncated — which is the bug this fixture exists for.
+    #[test]
+    fn without_a_step_aside_the_same_path_is_truncated() {
+        let mut game = alcove_game();
+        let start = {
+            let collision = game.collision().expect("the fixture has collision");
+            plan_start(collision, Vec3::from_array(game.player_origin()))
+        };
+        let bounds = default_bounds(&game);
+        let mut walk = walk_of(&game);
+        let mut doors: Vec<OpenedDoor> = Vec::new();
+        let mut taken = HashSet::new();
+        assert!(
+            take_switch(&mut game, &walk.trace, &mut taken, &mut doors, (0, 1))
+                .expect("the fixture has collision"),
+            "the walk is stopped by the column and can reach its button"
+        );
+        walk.requeue_all();
+        {
+            let collision = game.collision().expect("the fixture has collision");
+            walk.expand(collision, 300_000, bounds);
+        }
+
+        let goals = goal_volumes(&game, &PlanConfig::default());
+        let goal = pick_goal_cell(&walk.trace, &goals).expect("the goal is reached once switched");
+        let path = path_to(&walk.trace, start, goal);
+        let eye = Vec3::Z * game.move_config().view_height_standing;
+        let door = *doors.first().expect("the column was switched");
+        assert!(
+            !path
+                .iter()
+                .any(|point| (point.position + eye).distance(door.center) <= USE_RADIUS),
+            "the alcove's button is off the path the walk takes"
+        );
+
+        let collision = game.collision().expect("the fixture has collision");
+        let (walked, marks) = plan_presses(collision, &walk.trace, &path, &doors, eye);
+        assert_eq!(
+            walked.len(),
+            path.len() + 2,
+            "one step aside is two extra points: out to the button and back"
+        );
+        assert_eq!(marks.usable_len, walked.len(), "nothing is truncated");
+        assert_eq!(
+            marks.presses.values().map(Vec::len).sum::<usize>(),
+            1,
+            "and the press is attributed to the point that steps aside"
+        );
+
+        let (plain, plain_marks) = plan_presses(collision, &empty_trace(), &path, &doors, eye);
+        assert_eq!(plain.len(), path.len());
+        assert!(
+            plain_marks.usable_len < plain.len(),
+            "without a cell to step aside to the route truncates at the column, which is the bug"
+        );
+    }
+
     /// Two doors can both be attributed to the same path point (their own
     /// `USE_RADIUS` proximity is satisfied from the same place). Both have
     /// to be pressed, or the route walks up to a door that never opened —
     /// the `HashMap<usize, OpenedDoor>` this used to be silently kept only
     /// the second.
     #[test]
-    fn attribute_doors_keeps_both_doors_sharing_a_press_index() {
+    fn plan_presses_keeps_both_doors_sharing_a_press_index() {
         let path = [
             point(0.0, 0.0, EdgeKind::Walk),
             point(100.0, 0.0, EdgeKind::Walk),
@@ -3508,7 +3738,18 @@ mod tests {
             open_seconds: 3.0,
         };
 
-        let marks = attribute_doors(&path, &[door_a, door_b], Vec3::ZERO);
+        // An empty trace has no cell to step aside to, so this exercises
+        // the attribution against the path itself and nothing else.
+        let game = turn_game();
+        let collision = game.collision().expect("the fixture has collision");
+        let (walked, marks) = plan_presses(
+            collision,
+            &empty_trace(),
+            &path,
+            &[door_a, door_b],
+            Vec3::ZERO,
+        );
+        assert_eq!(walked.len(), path.len(), "no step aside was available");
         let pressed = marks
             .presses
             .get(&0)
