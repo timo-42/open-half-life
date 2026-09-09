@@ -151,3 +151,118 @@ fn stopping_the_turntable_stops_the_ride() {
         "a stopped turntable should not read as a mover being ridden"
     );
 }
+
+/// `Game::ground_mover_speed`'s reading of a rider riding a rotating brush
+/// matches what the physics step actually carried them by: the rider's
+/// own raw per-tick displacement (their eye position's, since they stand
+/// fixed on the disc with no input of their own) divided by `dt`.
+///
+/// This pins the specific formula `ground_mover_speed` uses — the chord
+/// `Level::rotational_carry` moves the rider's own point through this
+/// tick, not the instantaneous tangential rate `omega x r` a spin's
+/// angle-per-tick would suggest — against the ride's own observed effect,
+/// rather than against another re-derivation of the same rotation state
+/// that would agree with a wrong formula just as readily as a right one.
+/// Restoring the old `brush_ride_velocity`-only body (translation plus the
+/// instantaneous tangential rate) still passes every other test in this
+/// file, since a `func_rotating`'s own per-tick angle is small enough that
+/// the two formulas agree to a fraction of a unit/second here; this test
+/// exists specifically to keep that agreement pinned rather than assumed.
+#[test]
+fn ground_mover_speed_matches_the_riders_own_observed_per_tick_displacement() {
+    let mut game = game();
+    ride(&mut game, 0.2);
+
+    let mut previous = game.eye_position();
+    let mut worst_diff: f32 = 0.0;
+    for _ in 0..100 {
+        game.tick(STEP, &Input::default());
+        let here = game.eye_position();
+        let dx = here[0] - previous[0];
+        let dy = here[1] - previous[1];
+        let dz = here[2] - previous[2];
+        let observed = (dx * dx + dy * dy + dz * dz).sqrt() / STEP;
+        let reported = game.ground_mover_speed();
+        worst_diff = worst_diff.max((observed - reported).abs());
+        previous = here;
+    }
+    assert!(
+        worst_diff < 1.0,
+        "ground_mover_speed should track the rider's own observed per-tick \
+         displacement over dt to within a rounding error, not diverge from it; \
+         worst difference seen was {worst_diff} units/second"
+    );
+}
+
+/// The same reading, but with the turntable's spin cranked up so a single
+/// tick turns it through a large angle — the same size of single-tick
+/// heading change a `func_tracktrain` corner used to produce before yaw
+/// blending (`crates/ohl-game/src/track_train.rs`'s `DEFAULT_YAW_BLEND_DISTANCE`),
+/// which is exactly the case that makes the old, naive `omega x r`
+/// tangential-rate formula overstate how far a rider was actually carried:
+/// the chord of a 90-degree arc is only about 90% of the arc length, and
+/// the gap widens as the angle grows. `ground_mover_speed_matches_the_riders_own_observed_per_tick_displacement`
+/// above cannot tell the two formulas apart, since an ordinary turntable's
+/// per-tick angle is small enough that they agree; this test forces a
+/// large one so a regression back to the arc-rate formula is caught.
+#[test]
+fn ground_mover_speed_matches_the_chord_even_for_a_large_single_tick_turn() {
+    let mut game = game();
+    ride(&mut game, 0.2);
+
+    // 9000 degrees/second at this file's 0.01-second tick is 90 degrees
+    // per tick — comfortably under the 180-degree ambiguity limit of the
+    // shortest-arc delta `Level`'s own angular-velocity bookkeeping takes,
+    // but a large enough single-tick turn that the arc and the chord
+    // clearly disagree.
+    {
+        let registry = game.registry();
+        let entity = *registry
+            .find(ROTATING_PLATFORM_NAME)
+            .first()
+            .expect("the fixture declares one named turntable");
+        registry
+            .world
+            .get::<&mut Rotator>(entity)
+            .expect("the named entity is a func_rotating")
+            .speed = 9000.0;
+    }
+
+    // `Systems::player_move`'s own `Level::sync_brush_collision` call
+    // always poses a mover where *last* step's map logic left it (see
+    // that call's doc comment in `crates/ohl-engine/src/systems.rs`), so
+    // the speed change above only reaches the pose this test measures
+    // against one tick from now: this tick's map logic (phase 12) is what
+    // actually turns the disc through the new, larger angle, which the
+    // *next* tick's `sync_brush_collision` then sees against the smaller
+    // angle recorded before the change. One settling tick lets that catch
+    // up before the measured tick below.
+    game.tick(STEP, &Input::default());
+
+    let before = game.eye_position();
+    game.tick(STEP, &Input::default());
+    let after = game.eye_position();
+    let dx = after[0] - before[0];
+    let dy = after[1] - before[1];
+    let dz = after[2] - before[2];
+    let observed = (dx * dx + dy * dy + dz * dz).sqrt() / STEP;
+    let reported = game.ground_mover_speed();
+
+    // Sanity on the test itself: the naive arc-rate estimate for a rider
+    // at this fixture's spawn radius really is meaningfully larger than
+    // what the rider was actually carried by this tick, so this test can
+    // actually tell the two formulas apart.
+    let arc_rate = ROTATING_PLATFORM_SPAWN_RADIUS * 90f32.to_radians() / STEP;
+    assert!(
+        arc_rate > observed * 1.05,
+        "this fixture's turn is not large enough to distinguish the chord from \
+         the arc-rate estimate: arc_rate {arc_rate}, observed {observed}"
+    );
+
+    assert!(
+        (reported - observed).abs() < observed * 0.05 + 1.0,
+        "ground_mover_speed should match the rider's own observed chord for a \
+         large single-tick turn, not the larger arc-rate estimate; \
+         reported {reported}, observed {observed}, naive arc-rate would be {arc_rate}"
+    );
+}

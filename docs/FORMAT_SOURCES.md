@@ -2984,14 +2984,16 @@ on `TrackTrain` but not applied to the placed transform or to any
 damage model, since no public source documents the exact roll-vs-turn or
 crush-detection formulas, and guessing one would silently misrender or
 misbehave rather than fail loudly. `wheels` is likewise undocumented as an
-exact formula, but a positive value on it *is* read as the distance past a
-node `TrackTrainState::yaw_degrees` takes to finish turning the hull onto
-the next segment, rather than turning through the whole angle in the
-single tick the train reaches the node — `DEFAULT_YAW_BLEND_DISTANCE` is
-used when it is left at `0` — a project-determined choice made to avoid a
-real one-tick spike in how fast a rider's seat moved through a sharp
-corner (`docs/MILESTONES.md`, "the yaw-snap ride-speed spike, resolved"),
-not a claimed match to the wheel-offset-heading-lag formula itself. No SDK
+exact formula, but a positive value on it (in map units, the same distance
+unit `speed`'s per-second rate and `height`'s offset are both given in)
+*is* read as the distance past a node `TrackTrainState::yaw_degrees` takes
+to finish turning the hull onto the next segment, rather than turning
+through the whole angle in the single tick the train reaches the node —
+`DEFAULT_YAW_BLEND_DISTANCE` is used when it is left at `0` — a
+project-determined choice made to avoid a real one-tick spike in how fast
+a rider's seat moved through a sharp corner (`docs/MILESTONES.md`, "the
+yaw-snap ride-speed spike, resolved"), not a claimed match to the
+wheel-offset-heading-lag formula itself. No SDK
 source or decompiled logic was consulted for any of the above.
 
 Project behaviour supported: `crates/ohl-game/src/track_train.rs` resolves a
@@ -4113,10 +4115,12 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
     by `dt`, rather than the instantaneous tangential rate above. The two
     agree closely for an ordinary slow rotation (the chord approaches the
     arc as the per-tick angle shrinks), so this changed nothing for a
-    `func_rotating`/`func_door_rotating` rider in practice; it matters for
-    a `func_tracktrain`, whose hull turns by a whole segment's angle in the
-    single tick it reaches a path node, where the arc-based formula
-    overstated how far the rider's seat actually moved that tick.
+    `func_rotating`/`func_door_rotating` rider in practice; it mattered for
+    a `func_tracktrain`, whose hull used to turn by a whole segment's angle
+    in the single tick it reached a path node (see "Track trains and
+    paths"' `wheels`/`DEFAULT_YAW_BLEND_DISTANCE` item above), where the
+    arc-based formula overstated how far the rider's seat actually moved
+    that tick.
 
     A rotating floor also exposed a numerical gap in the ground probe,
     fixed here and recorded as project behaviour: a player resting on a
