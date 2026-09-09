@@ -401,6 +401,24 @@ pub struct Simulation {
     /// [`Self::seed_teleport_arrival`]. Scratch state for one step, so it
     /// is never persisted; see [`Self::teleport_touching`], which is.
     arrived_at: Option<Vec3>,
+    /// Per-`multi_manager` "still working through its own targets" timer,
+    /// in seconds: how long is left until the last target this manager
+    /// scheduled has fired. A manager whose timer is still running
+    /// ignores a new activation outright unless it declares the
+    /// documented "multithreaded" spawnflag
+    /// ([`crate::registry::SPAWNFLAG_MULTI_MANAGER_MULTITHREADED`]); see
+    /// [`Self::activate_with`] and `docs/FORMAT_SOURCES.md`
+    /// (`multi_manager`).
+    ///
+    /// Simulation bookkeeping rather than map data, so it lives here
+    /// beside [`Self::trigger_state`] rather than on the component.
+    /// **`TODO(black-box)`**: not part of [`SimulationState`], whose wire
+    /// shape (save tag 19) is frozen, so a manager that was mid-schedule
+    /// when a save was taken comes back idle and will accept the next
+    /// activation. The fires it had already queued are saved, so nothing
+    /// is lost either way; only a re-activation in that window behaves
+    /// differently.
+    multi_manager_busy: std::collections::BTreeMap<Entity, f32>,
 }
 
 /// Half-extents of the player's standing box, used only by
@@ -636,6 +654,10 @@ impl Simulation {
         for state in self.trigger_state.values_mut() {
             state.cooldown = (state.cooldown - dt).max(0.0);
         }
+        self.multi_manager_busy.retain(|_, busy| {
+            *busy -= dt;
+            *busy > 0.0
+        });
         events
     }
 
@@ -917,9 +939,36 @@ impl Simulation {
             .world
             .get::<&MultiManager>(entity)
             .ok()
-            .map(|mm| mm.targets.clone())
+            .map(|mm| MultiManager::clone(&mm))
         {
-            for (target, delay) in mm {
+            // The documented single-threaded default: a `multi_manager`
+            // that is still working through its own schedule ignores a
+            // new activation. Only the published "multithreaded"
+            // spawnflag lets one manager run more than one copy of its
+            // schedule at a time ("it can be activated while already
+            // running, causing a temporary copy of it to be created and
+            // run on its own" — Sven Co-op's `multi_manager` page; TWHL's
+            // own page describes the default as ignoring the new call and
+            // carrying on with its work order). See
+            // `docs/FORMAT_SOURCES.md`, `multi_manager`.
+            //
+            // This project models the "temporary copy" as simply not
+            // being blocked: a multithreaded manager schedules a second,
+            // independent set of fires, which is the same observable
+            // result as a clone that fires the same targets at the same
+            // offsets and then removes itself.
+            if !mm.multithreaded && self.multi_manager_busy.contains_key(&entity) {
+                return;
+            }
+            let busy = mm
+                .targets
+                .iter()
+                .map(|(_, delay)| delay.max(0.0))
+                .fold(0.0_f32, f32::max);
+            if busy > 0.0 {
+                self.multi_manager_busy.insert(entity, busy);
+            }
+            for (target, delay) in mm.targets {
                 self.fire(target, activator, delay);
             }
             return;
@@ -3528,6 +3577,204 @@ mod tests {
         assert_eq!(
             registry.world.get::<&Door>(b).unwrap().state,
             MoverState::Open
+        );
+    }
+
+    /// The synthetic shape of the ride/door timing bug this test guards
+    /// (see `docs/FORMAT_SOURCES.md`, `multi_manager` and "Track trains
+    /// and paths"): a `func_tracktrain` whose track brakes it to a crawl
+    /// and then stops it at a scripted halt, a second pair of identical
+    /// trains sharing one `path_track` chain, and a `multi_manager` those
+    /// two trains both fire from the same shared node — which opens a
+    /// `func_door` and, one second later, restarts the ride.
+    ///
+    /// `multithreaded` sets the manager's documented spawnflag, so the
+    /// same fixture can be run with and without the published
+    /// single-threaded default.
+    fn ride_door_entities(multithreaded: bool) -> Vec<RawEntity> {
+        let mut manager = vec![
+            ("classname", "multi_manager"),
+            ("targetname", "mm_doors"),
+            ("door", "1"),
+            ("ride", "2"),
+        ];
+        if multithreaded {
+            manager.push(("spawnflags", "1"));
+        }
+        vec![
+            raw(&[
+                ("classname", "func_tracktrain"),
+                ("targetname", "ride"),
+                ("target", "rp0"),
+                ("speed", "300"),
+                ("startspeed", "300"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "rp0"),
+                ("target", "rp1"),
+                ("origin", "0 0 0"),
+            ]),
+            // The braking node: from here the ride runs at a third of its
+            // own speed, which is what it must *not* still be doing once
+            // the halt below has released it.
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "rp1"),
+                ("target", "rp2"),
+                ("origin", "300 0 0"),
+                ("speed", "100"),
+                ("message", "mm_start"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "rp2"),
+                ("target", "rp3"),
+                ("origin", "400 0 0"),
+                ("message", "mm_stop"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "rp3"),
+                ("target", "rp4"),
+                ("origin", "850 0 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "rp4"),
+                ("origin", "950 0 0"),
+            ]),
+            raw(&[
+                ("classname", "func_tracktrain"),
+                ("targetname", "t2a"),
+                ("target", "sp0"),
+                ("speed", "200"),
+            ]),
+            raw(&[
+                ("classname", "func_tracktrain"),
+                ("targetname", "t2b"),
+                ("target", "sp0"),
+                ("speed", "200"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "sp0"),
+                ("target", "sp1"),
+                ("origin", "0 100 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "sp1"),
+                ("target", "sp2"),
+                ("origin", "200 100 0"),
+                ("message", "mm_doors"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "sp2"),
+                ("origin", "300 100 0"),
+            ]),
+            raw(&[
+                ("classname", "multi_manager"),
+                ("targetname", "mm_start"),
+                ("t2a", "0"),
+                ("t2b", "0.5"),
+            ]),
+            raw(&[
+                ("classname", "multi_manager"),
+                ("targetname", "mm_stop"),
+                ("ride", "0"),
+            ]),
+            raw(&manager),
+            raw(&[
+                ("classname", "func_door"),
+                ("targetname", "door"),
+                ("speed", "100"),
+                ("wait", "3"),
+                ("angle", "0"),
+            ]),
+        ]
+    }
+
+    /// Runs [`ride_door_entities`] for `seconds` and reports
+    /// `(door open cycles, whether the ride reached its node 3 while the
+    /// door was open, the ride's speed once it was released)`.
+    fn run_ride_door(multithreaded: bool, seconds: f32) -> (usize, bool, f32) {
+        let entities = ride_door_entities(multithreaded);
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let mut sim = Simulation::new();
+        let door = registry.find("door")[0];
+        let ride = registry.find("ride")[0];
+
+        let step = 1.0 / 60.0;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a fixed, positive tick count for a test fixture"
+        )]
+        let steps = (seconds / step) as usize;
+        let mut opens = 0;
+        let mut was_closed = true;
+        let mut arrived_open = false;
+        let mut released_speed = 0.0;
+        let mut reached = false;
+        let mut previously_stopped = false;
+        for _ in 0..steps {
+            sim.tick(&mut registry, step);
+            let state = registry.world.get::<&Door>(door).unwrap().state;
+            if was_closed && state != MoverState::Closed {
+                opens += 1;
+            }
+            was_closed = state == MoverState::Closed;
+            let train = registry.world.get::<&TrackTrainState>(ride).unwrap();
+            let (node, _, _, speed, moving, _) = train.dynamic_state();
+            if previously_stopped && moving {
+                released_speed = speed;
+            }
+            previously_stopped = !moving;
+            if node >= 3 && !reached {
+                reached = true;
+                arrived_open = state == MoverState::Open;
+            }
+        }
+        (opens, arrived_open, released_speed)
+    }
+
+    /// The regression this whole fixture exists for: with the published
+    /// single-threaded default, the second train's re-fire of the shared
+    /// node's `multi_manager` is ignored, the ride is released exactly
+    /// once, it resumes at its own `speed` rather than at the crawl its
+    /// braking node left it at, and it reaches the door's node while the
+    /// door is still open.
+    #[test]
+    fn a_released_ride_reaches_the_door_group_before_its_wait_expires() {
+        let (opens, arrived_open, released_speed) = run_ride_door(false, 12.0);
+        assert_eq!(
+            opens, 1,
+            "a running multi_manager must ignore the second train's re-fire"
+        );
+        assert!(
+            (released_speed - 300.0).abs() < 0.5,
+            "the released ride should resume at its own speed, got {released_speed}"
+        );
+        assert!(
+            arrived_open,
+            "the ride should reach the door group while it is still open"
+        );
+    }
+
+    /// The documented "multithreaded" spawnflag, on the same fixture: the
+    /// manager now accepts the second train's re-fire, so a second copy
+    /// of its schedule runs and toggles the ride back off — which is
+    /// exactly the drift the default must not produce.
+    #[test]
+    fn a_multithreaded_manager_accepts_the_second_re_fire() {
+        let (opens, arrived_open, _) = run_ride_door(true, 12.0);
+        assert_eq!(opens, 1, "the door was already open for the second copy");
+        assert!(
+            !arrived_open,
+            "the second copy's ride toggle should have stalled the ride"
         );
     }
 

@@ -1392,6 +1392,33 @@ medium appears in the code, tests, fixtures or this file.
   requirement to match an `info_landmark` of the same name in the
   destination map; `path_corner`/`path_track`'s `target` (next node) and
   `wait`.
+- **`multi_manager` is single-threaded unless it says otherwise.**
+  [Sven Co-op wiki: multi_manager](https://wiki.svencoop.com/Multi_manager)
+  (fetched directly, reviewed 2026-09-09) lists a "multithreaded"
+  spawnflag with the value `1`: "If set, a single multi_manager can have
+  multiple instances. That means, it can be activated while already
+  running, causing a temporary copy of it to be created and run on its
+  own." A search-engine result summary of TWHL's own
+  (403-to-automated-fetch) `multi_manager` page, reviewed the same day,
+  states the default the other way round: a multi_manager "will stop
+  accepting input calls while it's in the process of firing its targets",
+  and "if the multi_manager is called again before it has finished its
+  work-order, it will ignore the new call and will just carry on with its
+  work". Implemented as `ohl_game::registry::MultiManager::multithreaded`
+  (from `SPAWNFLAG_MULTI_MANAGER_MULTITHREADED`) plus a per-manager busy
+  timer in `ohl_game::logic::Simulation`: a manager that is still working
+  through its own schedule ignores a new activation, and a multithreaded
+  one simply is not blocked, which is the same observable result as a
+  clone that fires the same targets at the same offsets and then removes
+  itself. Before this, every re-fire ran a *second* copy of the schedule:
+  two identical `func_tracktrain`s sharing one `path_track` chain both
+  fire the shared node's `message`, so a manager that opens a door group
+  and re-starts a stopped ride ran twice, and the second copy's ride
+  toggle stopped the ride again seconds after the first had released it.
+  **`TODO(black-box)`**: the busy timer is not part of the frozen save
+  tag 19 wire shape, so a manager that was mid-schedule when a save was
+  taken comes back idle; the fires it had already queued are saved either
+  way, so only a re-activation inside that window behaves differently.
 - A map's `info_player_start` is a point entity, and nothing requires it to
   sit on the floor: the engine spawns the player at it and lets them fall.
   `ohl_engine::reachability`'s bounded walk is a fixed-position grid step,
@@ -2822,6 +2849,33 @@ counterpart in `ohl-ai`'s sound classification and is recorded as
     project implements only the "no next node" half of the cited sentence;
     the "next stop target has been disabled" half needs `path_track`'s
     Disabled spawnflag, which is not implemented. TODO(black-box).
+  - **Which speed a stopped train resumes at.** Sven Co-op's
+    [`func_tracktrain`](https://wiki.svencoop.com/Func_tracktrain) page
+    (fetched directly, reviewed 2026-09-09) describes the entity's own
+    `speed` as "Maximum speed of the track train. If player controllable,
+    this is a maximum speed level of the train", and its initial speed as
+    "a starting speed of func_tracktrain"; the same site's
+    [`path_track`](https://wiki.svencoop.com/Path_track) page (fetched
+    directly, same day) describes "New Train Speed" as something that
+    "Overrides train speed after reaching this point". No reviewed page
+    states which speed a train that has been *stopped* (by a
+    `multi_manager`/`trigger_*` switching it off, or by a "Wait for
+    retrigger" node) runs at once it is started again.
+    **`TODO(black-box)`**: this project reads the two literals above as
+    making a node's speed a property of passing that node rather than of
+    the train, so `ohl_game::track_train::TrackTrainState::turn_on`
+    restarts a stopped train at its own `speed` — which is already
+    exactly what `TrackTrainState::spawn` does for a train with no
+    `startspeed`, so a train that stopped and one that never moved now
+    behave the same. A train that is already moving is untouched. Taken
+    the other way (keep the last override), a track that brakes its train
+    down to a crawl on the approach to a scripted halt leaves it crawling
+    for the whole of the rest of its run, since nothing in the published
+    behaviour ever restores a speed a train no longer has — the same
+    failure mode the zero-`speed` reading above avoids. Guarded by
+    `ohl_game::track_train`'s `a_restarted_train_resumes_at_its_own_speed`
+    and by `ohl_game::logic`'s
+    `a_released_ride_reaches_the_door_group_before_its_wait_expires`.
   - `path_track`'s documented `altpath` (branch path) keyvalue exists in
     the public documentation but is **not implemented**; see the
     `TODO(black-box)` on `ohl_game::track_train::PathChain` (branching) —
