@@ -155,10 +155,19 @@ pub fn assemble_chain(routes_dir: &Path, start: &str) -> Result<Vec<PathBuf>, As
 /// any `--min-depth` by ping-ponging across a single boundary.
 pub const RE_ENTERED_LINE: &str = "The chain walk re-entered a map it had already visited.";
 
-/// The three fixed terminal lines `crates/ohl-app/src/game_run.rs`'s
+/// The fixed line `run_chained` logs when a route's level change was
+/// followed with the player already dead. Always a failure here, whatever
+/// depth was reached: a map that fires its own level change by name does
+/// so whether or not the player survived to see it, and a depth aggregate
+/// that counted a corpse being carried across a boundary would be worth
+/// nothing.
+pub const ARRIVED_DEAD_LINE: &str = "The chain walk arrived dead.";
+
+/// The four fixed terminal lines `crates/ohl-app/src/game_run.rs`'s
 /// `run_chained` ends a chain walk with, in the order this module looks
 /// for them.
-const TERMINAL_LINES: [&str; 3] = [
+const TERMINAL_LINES: [&str; 4] = [
+    ARRIVED_DEAD_LINE,
     RE_ENTERED_LINE,
     "The chain walk stopped.",
     "The chain walk has no further route.",
@@ -182,6 +191,9 @@ pub struct ChainReport {
     /// Whether the walk ended by re-entering a map it had already
     /// visited, which fails this command regardless of depth.
     pub re_entered: bool,
+    /// Whether the walk followed a level change with the player already
+    /// dead, which fails this command regardless of depth.
+    pub arrived_dead: bool,
     /// How many "A level change was followed." lines the run logged: one
     /// per hop, a cross-check on `depth`.
     pub hops: usize,
@@ -212,6 +224,7 @@ pub fn parse_report(stderr: &str) -> ChainReport {
             .into_iter()
             .find(|line| stderr.contains(line)),
         re_entered: stderr.contains(RE_ENTERED_LINE),
+        arrived_dead: stderr.contains(ARRIVED_DEAD_LINE),
         hops: stderr
             .lines()
             .filter(|line| line.contains("A level change was followed."))
@@ -264,10 +277,11 @@ pub fn write_summary(
 }
 
 /// Whether a chain run counts as a pass: it entered at least `min_depth`
-/// *distinct* maps and never re-entered one it had already been in.
+/// *distinct* maps, never re-entered one it had already been in, and
+/// never followed a level change with the player already dead.
 #[must_use]
 pub fn passed(report: &ChainReport, min_depth: usize) -> bool {
-    report.depth >= min_depth && !report.re_entered
+    report.depth >= min_depth && !report.re_entered && !report.arrived_dead
 }
 
 pub const APP_BIN_NAME: &str = "open-half-life";
@@ -507,6 +521,28 @@ mod tests {
         assert!(!report.re_entered);
     }
 
+    /// A dead arrival fails whatever depth was reached: a map that fires
+    /// its own level change by name does so with or without a live
+    /// player, and the depth aggregate must not grow off a corpse.
+    #[test]
+    fn a_walk_that_arrived_dead_fails_however_deep_it_got() {
+        let stderr = "[info] A level change was followed.\n\
+             [info] The player died.\n\
+             [info] The chain walk arrived dead.\n\
+             [info] Chain walk depth: 12.\n\
+             [info] Chain walk simulated seconds: 660.8.\n";
+        let report = parse_report(stderr);
+        assert!(report.arrived_dead);
+        assert_eq!(report.stopped_at, Some(ARRIVED_DEAD_LINE));
+        assert!(
+            !passed(&report, 2),
+            "a dead arrival is a failure at any depth"
+        );
+        let summary = write_summary("c0a0", 11, &report, 2, Duration::from_secs(9));
+        assert!(summary.contains("| Result | Fail |"));
+        assert!(summary.contains("| Stopped at | The chain walk arrived dead. |"));
+    }
+
     #[test]
     fn a_run_that_logged_nothing_parses_as_depth_zero() {
         let report = parse_report("");
@@ -522,6 +558,7 @@ mod tests {
             seconds: 61.5,
             stopped_at: Some("The chain walk stopped."),
             re_entered: false,
+            arrived_dead: false,
             hops: 1,
         };
         let summary = write_summary("c0a0", 2, &report, 2, Duration::from_secs(9));
@@ -542,6 +579,7 @@ mod tests {
             seconds: 3.0,
             stopped_at: Some("The chain walk stopped."),
             re_entered: false,
+            arrived_dead: false,
             hops: 0,
         };
         let summary = write_summary("c0a0", 2, &report, 2, Duration::from_secs(1));
@@ -558,6 +596,7 @@ mod tests {
             seconds: 42.1,
             stopped_at: Some(RE_ENTERED_LINE),
             re_entered: true,
+            arrived_dead: false,
             hops: 2,
         };
         assert!(!passed(&report, 2));

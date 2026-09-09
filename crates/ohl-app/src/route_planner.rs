@@ -460,7 +460,15 @@ pub fn first_segments(actions: &[PlanAction], segments: usize) -> &[PlanAction] 
         ) {
             moves += 1;
             if moves >= segments {
-                return &actions[..=index];
+                // A planned wait belongs to the action before it — the
+                // script it stands still for was started by walking into
+                // the volume that run ended in — so it is committed with
+                // it rather than left for the next attempt to re-plan.
+                let mut end = index;
+                while matches!(actions.get(end + 1), Some(PlanAction::Wait { .. })) {
+                    end += 1;
+                }
+                return &actions[..=end];
             }
         }
     }
@@ -557,6 +565,19 @@ pub fn script_text(start_yaw: f32, actions: &[PlanAction], config: &MoveConfig) 
                 let wait = wait
                     .saturating_add(RIDE_PADDING_TICKS)
                     .min(MAX_SEGMENT_TICKS);
+                let _ = writeln!(lines, "{wait} wait");
+            }
+            PlanAction::Wait { seconds } => {
+                // Nothing is held: the route has arrived somewhere a
+                // script takes over from, and standing still *is* the
+                // action (`ohl_engine::route_plan`'s scripted goal).
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a planned wait, clamped just below"
+                )]
+                let wait = (seconds.max(0.0) / CAPTURE_STEP).ceil() as u32;
+                let wait = wait.clamp(1, MAX_SEGMENT_TICKS);
                 let _ = writeln!(lines, "{wait} wait");
             }
             PlanAction::UseDoor { yaw, open_seconds } => {
@@ -680,7 +701,14 @@ fn run_ticks(game: &mut Game, script: &Script, avoid: &[String]) -> bool {
             }
         }
         if let Some(reached) = reached {
-            return reached;
+            // A level change a corpse crossed is not a route. A map may
+            // fire its own level change by name (see
+            // `ohl_engine::route_plan`'s scripted goals), which happens
+            // whether or not the player who started that chain is still
+            // alive — so "the change fired" and "the player got there"
+            // are two different questions, and only the second one is
+            // worth writing a route file for.
+            return reached && game.player_health() > 0.0;
         }
     }
     false
@@ -955,8 +983,9 @@ mod tests {
     use super::*;
     use ohl_engine::MemoryAssets;
     use ohl_engine::test_support::{
-        LiftFixture, PLAN_LADDER_MAP, PLAN_LIFT_MAP, PLAN_TURN_MAP, plan_ladder_bsp, plan_lift_bsp,
-        plan_pit_bsp, plan_turn_bsp,
+        LiftFixture, PLAN_LADDER_MAP, PLAN_LIFT_MAP, PLAN_SCRIPTED_MAP, PLAN_TURN_MAP,
+        ScriptedStart, plan_ladder_bsp, plan_lift_bsp, plan_pit_bsp, plan_scripted_goal_bsp,
+        plan_turn_bsp,
     };
 
     fn fixture() -> (MemoryAssets, Game) {
@@ -973,6 +1002,56 @@ mod tests {
     /// door, the planner writes a script that *actually walks it* — the
     /// replay reaches the level change, which is the only reason a route
     /// is ever written.
+    /// A level change a corpse crossed is not a route. The fixture's
+    /// chain fires the change by name after its own delay, and the whole
+    /// corridor is lethal, so the player who set it going is dead by the
+    /// time it fires. The planner must write nothing.
+    #[test]
+    fn a_replay_that_reaches_the_level_change_dead_is_refused() {
+        let mut assets = MemoryAssets::new();
+        assets.insert(
+            &format!("maps/{PLAN_SCRIPTED_MAP}.bsp"),
+            plan_scripted_goal_bsp("ohlplannext", ScriptedStart::ByLethalTrigger),
+        );
+        let mut game =
+            Game::load(&assets as &dyn AssetSource, PLAN_SCRIPTED_MAP).expect("the fixture loads");
+        let outcome = plan(
+            &mut game,
+            &assets as &dyn AssetSource,
+            &PlanOptions::default(),
+        );
+        assert!(
+            outcome.is_err(),
+            "a change that fired over a corpse must not become a route file"
+        );
+    }
+
+    /// The same fixture with nothing lethal in it: the chain is started,
+    /// waited out, and the change fires with the player still alive — so
+    /// the very same shape of route *is* written. Without this the test
+    /// above would pass for the wrong reason.
+    #[test]
+    fn a_replay_that_reaches_the_level_change_alive_is_accepted() {
+        let mut assets = MemoryAssets::new();
+        assets.insert(
+            &format!("maps/{PLAN_SCRIPTED_MAP}.bsp"),
+            plan_scripted_goal_bsp("ohlplannext", ScriptedStart::ByTrigger),
+        );
+        let mut game =
+            Game::load(&assets as &dyn AssetSource, PLAN_SCRIPTED_MAP).expect("the fixture loads");
+        let route = plan(
+            &mut game,
+            &assets as &dyn AssetSource,
+            &PlanOptions::default(),
+        )
+        .expect("the scripted fixture's route plans, replays and validates");
+        assert!(
+            route.text.contains(" wait\n"),
+            "the script waits the chain out"
+        );
+        Script::parse(route.text.as_bytes()).expect("the written script parses");
+    }
+
     #[test]
     fn a_planned_route_replays_to_the_level_change() {
         let (assets, mut game) = fixture();
@@ -1185,6 +1264,36 @@ mod tests {
         assert_eq!(first_segments(&actions, 1).len(), 1);
         assert_eq!(first_segments(&actions, 0), &actions, "0 keeps the plan");
         assert_eq!(first_segments(&actions, 99), &actions);
+
+        // A planned wait belongs to the run before it: cutting the plan
+        // at that run has to take the wait with it, or the script stops
+        // the moment it arrives at the volume it was walking into.
+        let wait = PlanAction::Wait { seconds: 12.0 };
+        let scripted = [step, step, wait, step];
+        assert_eq!(
+            first_segments(&scripted, 2).len(),
+            3,
+            "the wait after the last committed run comes too"
+        );
+    }
+
+    /// A planned wait is a `wait` line and nothing else: the player holds
+    /// no key while the script they started runs.
+    #[test]
+    fn a_planned_wait_is_written_as_a_wait_line() {
+        let config = MoveConfig::default();
+        let text = script_text(0.0, &[PlanAction::Wait { seconds: 2.0 }], &config);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "the wait, then the trailing settle");
+        let ticks: u32 = lines[0]
+            .strip_suffix(" wait")
+            .expect("a wait line")
+            .parse()
+            .expect("a tick count");
+        assert!(
+            (f64::from(ticks) * f64::from(CAPTURE_STEP)) >= 2.0,
+            "the line waits at least as long as the plan asked for"
+        );
     }
 
     /// Where a `forward` line stops the player: held ticks plus the

@@ -6271,3 +6271,112 @@ search terminates rather than chasing an arrival that never comes.
 `--all-features`), `cargo test --workspace`, policy, graph, combat-smoke
 37/37, `--reachability-report` byte-identical to the pre-change build, and
 `cargo xtask chain-walk` unchanged at **distinct depth 11**.
+
+## M9.36 — The level change nobody can walk into: a master that relays, and a route that waits
+
+The eleventh hop was measured twice and read wrong twice. The first reading
+called it a plateau of the walk — a missing edge kind, some ledge or vent
+the route model could not cross — because the bounded search settled
+fifteen to seventeen hundred units short of the level change with its
+frontier holding two switches it could not press. Instrumenting the
+plateau directly says otherwise, and the two frontier switches turn out to
+be wired to a set piece that has nothing to do with the exit.
+
+**The goal is not a place.** The eleventh map's forward `trigger_changelevel`
+is a small volume parked in mid-air, roughly eight hundred and sixty units
+above the only floor beneath it, in a room whose walls no walk can climb.
+Nothing reaches it because there is nothing to reach: the volume is not
+where the player goes. It carries a `targetname`, and a chain of
+`multi_manager`s and `multisource` masters fifteen links long fires it by
+name, about sixty-four seconds after a `trigger_once` in the middle of the
+map is crossed — a volume the walk had been standing in for ten rounds
+already. A level change is an ordinary named entity as well as a volume,
+and this map ends by firing one.
+
+**A master is a relay, not only a gate.** Even started, that chain stopped
+dead at its first `multisource`. This project models a `multisource` as the
+published "AND gate" — an entity's `master` keyvalue works only once every
+entity naming the master has fired it — and stopped there; the other half
+of the same cited sentence, that a satisfied master "only triggers its
+target(s)", was recorded as a known gap under "Masters (`multisource`)"
+in `docs/FORMAT_SOURCES.md`. It is implemented now: a `multisource` fans
+out to its own `target` on the fire that reaches its required count, and
+never again, so a master triggered further does not re-run the chain
+behind it. That gap is what a map driving a sequence *through* a master
+looks like from the outside — a set piece that starts, plays its first few
+seconds, and never finishes.
+
+**A route that ends by waiting.** The planner learned the same distinction.
+When its own goal volume turns out to be one no reached cell stands in, it
+now asks which volumes, if the player walked into them, would end up firing
+that goal by name — walking the "what fires this" graph backwards through
+`target` keyvalues and `multi_manager` fan-outs, bounded in depth and in
+names visited — and plans a route into the nearest such volume instead,
+ending in a wait as long as the chain's own accumulated delays plus a
+margin. A chain whose delays add up to more than the planner's own bound is
+not planned as a wait at all. Nothing else changes: a level change the
+player can simply walk into is still planned as a walk into it, since the
+scripted goals are consulted only where the search would otherwise have
+given up. `PlanAction` gained a `Wait`, which the script writer emits as a
+`wait` line and the segment-committing loop keeps with the run before it.
+
+**Not depth 12: the change fires over a corpse.** With both in place the
+planner did write a replay-validated eleventh route, and `chain-walk`
+reported distinct depth 12 — until the arrival was looked at. The player
+was dead. A level change fired by name fires whether or not whoever
+started the chain survived it, and this map's chain teleports the player
+through two stops in the alien world on its way to the end; per-tick
+instrumentation puts ten hits of ten damage on them there, typed as
+ordinary bullet damage from two hostile monsters, from ninety-nine health
+to nothing about six seconds into the wait. The change then fired, the
+walk followed it, and the depth aggregate counted a corpse being carried
+across a boundary.
+
+So two gates were added, and the route was withdrawn rather than shipped.
+The planner's own replay now accepts a script only when the player is
+**alive** at the level change it fired — "the change fired" and "the
+player got there" are different questions, and only the second is worth a
+route file. `cargo xtask chain-walk` grew a fourth fixed terminal line,
+"The chain walk arrived dead.", which ends the walk as a **failure**
+whatever depth was reached and leaves the map arrived at dead out of the
+count, exactly as a re-entry already does and for the same reason: an
+aggregate that can be grown off a corpse is worth nothing. Replayed
+against the withdrawn route, the harness now reports depth 11 and Fail.
+
+**A wait never stands in damage.** Separately, and regardless of this
+map, a route that ends by standing still for a minute must not spend that
+minute being hurt. The volume that starts a chain may itself be a place
+that damages whoever stands in it; touching it is what sets the chain
+going, and where the player stands afterwards is their own business. So
+the planner now asks the same two questions the systems phase asks — is a
+`trigger_hurt`'s own proximity test catching this position, and are the
+contents here a hostile liquid — and, when the answer is yes, steps out to
+the nearest reached cell that a straight walk reaches and that is not, and
+waits there. The step out is emitted as its own action rather than as one
+more path point: the path is straightened before it becomes actions, and a
+straightened out-and-back is a route that never touches the volume it went
+there to set off.
+
+**Chain depth stays 11.** No eleventh route ships. Every attempt the
+planner made reached the volume that starts the map's chain, and every one
+of them ended with the player dead before the level change fired; with the
+liveness gate in place, none validated, and nothing was written. That is
+the honest number, and the two gates make sure it cannot quietly become
+twelve again.
+
+Two readings from the earlier measurement are corrected here rather than
+rewritten in place. The two `func_button`s the frontier reported as "not
+use-openable" were never out of reach: the reachability report only ever
+marks a *door* use-openable, so a button on the frontier is reported that
+way whatever its distance, and both of these sit well inside the use
+radius. They fire a pair of retinal scanners that deny access and are not
+on the way to anything. The `func_door` that "stops being use-openable" is
+the second leaf of a two-piece door whose first leaf the walk had already
+opened; the second leaf is out of use range from the floor, and it is not
+what gates the exit either.
+
+**Gates**: fmt, clippy (workspace, `--features dev-tools`, and
+`--all-features`), `cargo test --workspace`, policy, graph, combat-smoke
+37/37, campaign-smoke 93/93, `--reachability-report` unchanged against a
+build of the base, and `cargo xtask chain-walk` at **distinct depth 11**,
+Pass.

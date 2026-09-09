@@ -756,6 +756,22 @@ const CHAIN_NO_FURTHER_ROUTE: &str = "The chain walk has no further route.";
 /// never which one.
 const CHAIN_RE_ENTERED: &str = "The chain walk re-entered a map it had already visited.";
 
+/// The fixed line a chain walk logs when a route's level change was
+/// followed with the player already dead.
+///
+/// A map may fire its own `trigger_changelevel` by name rather than wait
+/// for the player to walk into it (`ohl_engine::route_plan`'s scripted
+/// goals), and a chain of `multi_manager`s does that whether or not the
+/// player who set it going survived to see it. Counting such a hop as
+/// progress would let the depth aggregate grow off a corpse being carried
+/// across a boundary, so a dead arrival ends the chain as a failure — the
+/// same shape a re-entry ([`CHAIN_RE_ENTERED`]) already has, and for the
+/// same reason: the aggregate has to stay worth something.
+///
+/// Name-free like every other line here: it reports *that* the walk
+/// arrived dead, never where.
+const CHAIN_ARRIVED_DEAD: &str = "The chain walk arrived dead.";
+
 /// The fixed line `--plan-route` logs, and the fixed error [`run`] returns,
 /// instead of planning after a chain that stopped short
 /// ([`CHAIN_STOPPED`]) or re-entered a map ([`CHAIN_RE_ENTERED`]).
@@ -823,6 +839,7 @@ fn run_chained(
     let mut ticks: u64 = 0;
     let mut stopped = false;
     let mut re_entered = false;
+    let mut arrived_dead = false;
     for script in &scripts {
         // A fresh log per route, so every milestone line is observed from
         // this map's own arrival point rather than from the chain's start.
@@ -843,6 +860,10 @@ fn run_chained(
             stopped = true;
             break;
         }
+        if game.player_health() <= 0.0 {
+            arrived_dead = true;
+            break;
+        }
         let arrived = game.map().to_ascii_lowercase();
         if visited.contains(&arrived) {
             re_entered = true;
@@ -854,7 +875,9 @@ fn run_chained(
     if args.script_log {
         tracing::info!("Scripted input finished.");
     }
-    if re_entered {
+    if arrived_dead {
+        tracing::info!("{CHAIN_ARRIVED_DEAD}");
+    } else if re_entered {
         tracing::info!("{CHAIN_RE_ENTERED}");
     } else if stopped {
         tracing::info!("{CHAIN_STOPPED}");
@@ -877,7 +900,7 @@ fn run_chained(
     // re-entered a map): `--plan-route` refuses to plan at all when it
     // did not, rather than plan from an interrupted route's stall point
     // (see `PLAN_REFUSED_INCOMPLETE_CHAIN`).
-    Ok((visited, !stopped && !re_entered))
+    Ok((visited, !stopped && !re_entered && !arrived_dead))
 }
 
 /// Renders exactly one frame and writes it as a PNG. Shared by
