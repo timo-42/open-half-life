@@ -5955,3 +5955,67 @@ this one.
 **Gates**: fmt, clippy (workspace/all-features and `--features dev-tools`),
 `cargo test --workspace` and `--all-features`, policy, graph, combat-smoke
 37/37, `cargo xtask chain-walk` at depth 9.
+
+## M9.31 --- The ninth hop: a climber's plan, and a walk that prices its edges
+
+The enclosure M9.30 left the planner in was reproduced and taken apart.
+It was not a map the walk could not cross. It was three things about the
+walk itself, each measurable from the outside, and with all three fixed
+the chain walks one map deeper than it ever has.
+
+**A plan for a climber started on the shaft floor.** Every plan settles
+its start onto the floor beneath the player before it walks, which is
+right for a body mid-step or mid-fall and exactly wrong for one hanging
+on a ladder: the engine deliberately reports no ground at all while the
+player is attached, so the floor beneath them is the bottom of the shaft
+they are half-way up. Instrumented, the planner was reading a start some
+eight hundred units below the player and planning a route from there.
+Every action of it described a route for a body nowhere near it, and the
+first held key let go of the ladder and took the whole fall the climb
+existed to avoid. A player inside a climbable volume now plans from where
+they hang.
+
+**Hanging on a ladder, the walk still offered horizontal steps.** The
+engine's ladder step turns every wished-for direction into motion *along*
+the volume — pushing into its face climbs, pulling away descends, the
+rest slides sideways across it — so a planned step off a ladder into open
+air is a line the player cannot walk. Running one anyway slid the climber
+a few units sideways, onto a stretch of the same ladder whose next step
+down was a ledge rather than a shaft, which is precisely the hundred-cell
+enclosure the last milestone ended in. A climber is now offered nothing
+but the climb, unless they are *standing* in the volume — at its foot, or
+on the ledge its top runs out at — where stepping off is how the walk
+leaves a shaft at all.
+
+**The walk priced every edge the same.** It was breadth-first, which
+measures a route in grid steps, and counted that way stepping off a ledge
+is the shortest way to anywhere below it: the fall wins over the stairs
+beside it every time. The planner's frontier is now expanded
+cheapest-first, with a fall costing many ordinary steps and more the
+taller it is, a climb and a jump a small multiple of one, and a plain
+step one. A fall is now what is left when nothing else reaches, which is
+what it always should have been. The triage report's own walk is
+deliberately untouched and its output is byte-identical: "can this be
+entered at all" is a different question, and a cheaper, coarser walk is
+the right answer to it.
+
+Two smaller repairs came out of the same measurements. The ladder mount
+is consulted where a step was *blocked outright*, not only where it
+landed too far below to survive — a ladder down a hole beside a wall is
+reached by walking into the wall, and its volume never touches the floor
+being walked. And among the mounts it finds, one whose own facing agrees
+with the direction stepped is preferred: a facing at right angles to the
+step is a hull corner grazing the side of a slab, and the climb from
+there runs out at the first ledge beside the shaft.
+
+The ninth hop's route was then planned, replay-validated and written, and
+the chain walks ten distinct maps deep. Planning the tenth was attempted
+and refused: from the tenth map's arrival point the bounded search
+reaches a few thousand cells and closes to within a few hundred units of
+that map's own level change without ever reaching it, which is a fresh
+question rather than this one recurring, and the next thing to look at.
+
+**Gates**: fmt, clippy (workspace/all-features and `--features dev-tools`),
+`cargo test --workspace`, policy, graph, combat-smoke 37/37,
+`--reachability-report` byte-identical to main on a campaign map, and
+`cargo xtask chain-walk` at depth 10.
