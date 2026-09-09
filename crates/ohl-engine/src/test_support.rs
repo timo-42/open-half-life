@@ -3131,3 +3131,107 @@ const PLAYER_STANDING_HALF_HEIGHT: f32 = 36.0;
 
 /// Half the parked block's compiled height.
 const RIDER_BLOCK_HALF_HEIGHT: f32 = 62.0;
+
+// ---------------------------------------------------------------------
+// An L-shaped corridor with a turn and a closed door in it: the route
+// planner's own end-to-end fixture (`crate::route_plan`)
+// ---------------------------------------------------------------------
+
+/// The map name the route planner's corridor fixture is published under.
+pub const PLAN_TURN_MAP: &str = "ohlplanturnsynth";
+
+/// The `targetname` of the fixture's blocking `func_door`.
+pub const PLAN_TURN_DOOR_NAME: &str = "ohl_plan_door";
+
+/// The fixture's bounding box: an L carved out of it by one solid filler
+/// block, so a walk from the player start has to run along the first leg,
+/// turn ninety degrees into the second, and carry on.
+const PLAN_TURN_MIN: [f32; 3] = [-64.0, -64.0, 0.0];
+/// See [`PLAN_TURN_MIN`].
+const PLAN_TURN_MAX: [f32; 3] = [256.0, 448.0, 448.0];
+
+/// The solid block that turns the fixture's bounding box into an L: it
+/// fills everything but the first leg (`x` up to the corner) and the
+/// second (`y` past it).
+const PLAN_TURN_FILLER_MIN: [f32; 3] = [-64.0, 64.0, 0.0];
+/// See [`PLAN_TURN_FILLER_MIN`].
+const PLAN_TURN_FILLER_MAX: [f32; 3] = [128.0, 448.0, 448.0];
+
+/// The closed door leaf, across the second leg with an eight-unit margin
+/// to each wall (the same margin [`REACH_DOOR_MINS`] leaves), full
+/// corridor height so nothing steps or jumps over it.
+const PLAN_TURN_DOOR_MIN: [f32; 3] = [136.0, 240.0, 0.0];
+/// See [`PLAN_TURN_DOOR_MIN`].
+const PLAN_TURN_DOOR_MAX: [f32; 3] = [248.0, 256.0, 192.0];
+
+/// The `trigger_changelevel` volume at the far end of the second leg.
+const PLAN_TURN_TRIGGER_MIN: [f32; 3] = [128.0, 384.0, 0.0];
+/// See [`PLAN_TURN_TRIGGER_MIN`].
+const PLAN_TURN_TRIGGER_MAX: [f32; 3] = [256.0, 448.0, 192.0];
+
+/// An L-shaped corridor (bounding box [`PLAN_TURN_MIN`]/[`PLAN_TURN_MAX`]
+/// with the solid filler block [`PLAN_TURN_FILLER_MIN`]/
+/// [`PLAN_TURN_FILLER_MAX`] carving the L), a real solid submodel 1 for a
+/// plain translating door leaf across the second leg, and a non-solid
+/// submodel 2 beyond the door for a `trigger_changelevel` volume — the
+/// shape `crate::route_plan`'s own regression tests plan a route through:
+/// a straight run, a ninety-degree turn, a door press, and a final run
+/// into the trigger.
+///
+/// The door slides straight up (`angle -1`, the documented "up" sentinel)
+/// clear of the corridor's own ceiling and never auto-closes (`wait -1`).
+/// No bytes here come from any game installation; see
+/// `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn plan_turn_bsp(next_map: &str) -> Vec<u8> {
+    let entities = format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"0 0 40\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"func_door\"\n\"targetname\" \"{PLAN_TURN_DOOR_NAME}\"\n\
+         \"model\" \"*1\"\n\"speed\" \"100\"\n\"wait\" \"-1\"\n\"angle\" \"-1\"\n\
+         \"origin\" \"0 0 0\"\n}}\n\
+         {{\n\"classname\" \"trigger_changelevel\"\n\"model\" \"*2\"\n\
+         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n"
+    );
+
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(&entities);
+
+    let world_heads = b.push_collision_hulls(&[
+        CollisionBrush::half_space([0.0, 0.0, 1.0], PLAN_TURN_MIN[2]),
+        CollisionBrush::half_space([0.0, 0.0, -1.0], -PLAN_TURN_MAX[2]),
+        CollisionBrush::half_space([1.0, 0.0, 0.0], PLAN_TURN_MIN[0]),
+        CollisionBrush::half_space([-1.0, 0.0, 0.0], -PLAN_TURN_MAX[0]),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], PLAN_TURN_MIN[1]),
+        CollisionBrush::half_space([0.0, -1.0, 0.0], -PLAN_TURN_MAX[1]),
+        CollisionBrush::box_brush(PLAN_TURN_FILLER_MIN, PLAN_TURN_FILLER_MAX),
+    ]);
+    let door_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(
+        PLAN_TURN_DOOR_MIN,
+        PLAN_TURN_DOOR_MAX,
+    )]);
+    let trigger_heads = b.push_collision_hulls(&[]);
+
+    b.push_model(PLAN_TURN_MIN, PLAN_TURN_MAX, [0.0; 3], world_heads, 2, 0, 0);
+    b.push_model(
+        PLAN_TURN_DOOR_MIN,
+        PLAN_TURN_DOOR_MAX,
+        [0.0; 3],
+        door_heads,
+        2,
+        0,
+        0,
+    );
+    b.push_model(
+        PLAN_TURN_TRIGGER_MIN,
+        PLAN_TURN_TRIGGER_MAX,
+        [0.0; 3],
+        trigger_heads,
+        2,
+        0,
+        0,
+    );
+
+    b.build()
+}

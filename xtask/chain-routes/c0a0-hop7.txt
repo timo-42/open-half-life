@@ -1,0 +1,54 @@
+# A machine-planned chain-walk route (--plan-route / cargo xtask
+# plan-chain-hop), not a hand-authored one.
+#
+# A bounded breadth-first walk over this map's live collision model
+# (ohl_engine::route_plan, the same edge model --reachability-report
+# triages with) found a path from the arrival point this route starts at
+# to the map's own level-change trigger, straightened it into runs,
+# converted the runs into the lines below, and replayed them in-process
+# until the level change actually fired. The route below is the one that
+# fired; nothing else was written.
+#
+# Commands only: no name, path or coordinate from any payload appears
+# here, and none was ever printed (docs/CLEAN_ROOM.md). The planner's own
+# search coordinates never left the process that produced this file.
+#
+# A line's leading number is a count of ticks, each one CAPTURE_STEP
+# (1/60 s) of simulated time -- not seconds.
+
+6 look 0 10.64
+21 forward
+30 wait
+6 look 0 2.19
+59 forward
+30 wait
+6 look 0 80.75
+32 forward
+30 wait
+6 look 0 -85.60
+176 forward
+30 wait
+6 look 0 91.53
+111 forward
+30 wait
+6 look 0 80.17
+57 forward
+30 wait
+6 look 0 -27.88
+1 use
+89 wait
+6 look 0 31.78
+30 forward
+30 wait
+6 look 0 -34.54
+1 use
+89 wait
+6 look 0 34.54
+30 forward
+30 wait
+6 look 0 -107.76
+11 forward
+30 wait
+6 look 0 143.62
+23 forward
+30 wait

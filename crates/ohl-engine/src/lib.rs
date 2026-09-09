@@ -72,6 +72,11 @@ pub mod transition;
 // own doc comment.
 pub mod reachability;
 
+// The route planner (M9): the same bounded walk `reachability` triages
+// with, but recording how the player gets there rather than only whether
+// they can. See that module's own doc comment.
+pub mod route_plan;
+
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
@@ -88,6 +93,7 @@ pub use reachability::{
     compute_reachability_report,
 };
 pub use render::{RenderResourceStats, RenderTarget};
+pub use route_plan::{PlanAction, PlanConfig, PlanError, PlanRejection, RoutePlan, plan_route};
 pub use save::GameSave;
 pub use start_inventory::{StartInventoryError, StartInventoryItem, parse_start_inventory};
 pub use systems::{QueuedDamage, Systems, SystemsConfig};

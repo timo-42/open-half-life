@@ -35,7 +35,7 @@ const INITIAL_SIZE: (u32, u32) = (1280, 720);
 
 /// The fixed step headless capture advances the simulation by, so a capture
 /// is reproducible regardless of how fast the host renders it.
-const CAPTURE_STEP: f32 = 1.0 / 60.0;
+pub(crate) const CAPTURE_STEP: f32 = 1.0 / 60.0;
 
 /// How often the frame-rate line is logged.
 const FPS_INTERVAL: Duration = Duration::from_secs(2);
@@ -257,6 +257,21 @@ pub struct GameArgs<'a> {
     /// map loads. See `ohl_engine::parse_start_inventory`.
     #[cfg(feature = "dev-tools")]
     pub start_inventory: Option<&'a str>,
+    /// Where `--plan-route` (`dev-tools` only) writes the route file it
+    /// planned and validated. `None` leaves the planner unrun.
+    #[cfg(feature = "dev-tools")]
+    pub plan_route: Option<&'a Path>,
+    /// The classname `--plan-goal` plans a route to instead of
+    /// `trigger_changelevel` (`dev-tools` only). Ignored without
+    /// `plan_route`.
+    #[cfg(feature = "dev-tools")]
+    pub plan_goal: Option<&'a str>,
+    /// How many plan/replay attempts `--plan-attempts` allows
+    /// (`dev-tools` only). `None` keeps
+    /// `crate::route_planner::DEFAULT_ATTEMPTS`. Ignored without
+    /// `plan_route`.
+    #[cfg(feature = "dev-tools")]
+    pub plan_attempts: Option<usize>,
 }
 
 /// The fixed line a run prints once, right after a successful load, when
@@ -359,6 +374,13 @@ recognise (expected a comma-separated list of weapon_*/ammo_* classnames)"
     }
 
     #[cfg(feature = "dev-tools")]
+    if let Some(path) = args.plan_route
+        && args.chain_script.is_empty()
+    {
+        return run_route_planner(&mut game, &source, args, path, &[]);
+    }
+
+    #[cfg(feature = "dev-tools")]
     if args.reachability_report && args.chain_script.is_empty() {
         run_reachability_report(
             &mut game,
@@ -372,23 +394,33 @@ recognise (expected a comma-separated list of weapon_*/ammo_* classnames)"
     }
 
     if !args.chain_script.is_empty() {
-        let result = run_chained(&mut game, &source, args, args.chain_script);
+        let visited = run_chained(&mut game, &source, args, args.chain_script)?;
         // `compute_reachability_report` walks out from the player's
         // *current* origin, so running it here reports the map the chain
         // ended in, from the point the chain left the player standing —
         // the arrival-point triage a cold `--map <name>` load cannot do.
+        // The route planner starts from that same point, for the same
+        // reason: a route for the map the chain ended in can only be
+        // authored from where the chain left the player.
         #[cfg(feature = "dev-tools")]
-        if args.reachability_report && result.is_ok() {
-            run_reachability_report(
-                &mut game,
-                args.reachability_assume_armed,
-                args.reachability_assume_longjump,
-                args.reachability_assume_pendulum_wait,
-                args.reachability_cell_cap,
-                args.reachability_round_cap,
-            );
+        {
+            if args.reachability_report {
+                run_reachability_report(
+                    &mut game,
+                    args.reachability_assume_armed,
+                    args.reachability_assume_longjump,
+                    args.reachability_assume_pendulum_wait,
+                    args.reachability_cell_cap,
+                    args.reachability_round_cap,
+                );
+            }
+            if let Some(path) = args.plan_route {
+                return run_route_planner(&mut game, &source, args, path, &visited);
+            }
         }
-        return result;
+        #[cfg(not(feature = "dev-tools"))]
+        drop(visited);
+        return Ok(());
     }
 
     if let Some(script_path) = args.script {
@@ -746,7 +778,7 @@ fn run_chained(
     source: &AssetFsSource,
     args: &GameArgs<'_>,
     routes: &[PathBuf],
-) -> Result<(), &'static str> {
+) -> Result<Vec<String>, &'static str> {
     let mut scripts = Vec::with_capacity(routes.len());
     for path in routes {
         let bytes = std::fs::read(path).map_err(|_| "the script file could not be read")?;
@@ -813,7 +845,11 @@ fn run_chained(
     #[allow(clippy::cast_precision_loss, reason = "a tick count for a report line")]
     let seconds = ticks as f32 * CAPTURE_STEP;
     tracing::info!("Chain walk simulated seconds: {seconds:.1}.");
-    Ok(())
+    // The visited list itself is returned, never logged: `--plan-route`
+    // uses it to avoid planning a route straight back through the
+    // boundary the chain just arrived through (see
+    // `ohl_engine::PlanConfig::avoid_goal_maps`).
+    Ok(visited)
 }
 
 /// Renders exactly one frame and writes it as a PNG. Shared by
@@ -849,6 +885,84 @@ fn write_screenshot(game: &mut Game, path: &Path, pose: &CapturePose) -> Result<
     tracing::info!("Screenshot written.");
     Ok(())
 }
+
+/// Development only: plans, validates and writes a route file
+/// (`--plan-route`), and reports what it took.
+///
+/// Every line printed here is a fixed string or a bounded aggregate — how
+/// many grid cells the search reached, how many walk-forward segments and
+/// door presses the route holds, how many plan/replay attempts it took,
+/// and how many simulated seconds it runs for. Never a map name, a
+/// coordinate or a targetname (`docs/CLEAN_ROOM.md`); the route file
+/// itself holds script commands and project-authored comment words only.
+#[cfg(feature = "dev-tools")]
+fn run_route_planner(
+    game: &mut Game,
+    source: &AssetFsSource,
+    args: &GameArgs<'_>,
+    path: &Path,
+    visited: &[String],
+) -> Result<(), &'static str> {
+    let default_config = ohl_engine::ReachabilityConfig::default();
+    let options = crate::route_planner::PlanOptions {
+        attempts: args
+            .plan_attempts
+            .unwrap_or(crate::route_planner::DEFAULT_ATTEMPTS),
+        settle_rounds: crate::route_planner::DEFAULT_SETTLE_ROUNDS,
+        segments_per_attempt: crate::route_planner::DEFAULT_SEGMENTS_PER_ATTEMPT,
+        plan: ohl_engine::PlanConfig {
+            cell_cap: args
+                .reachability_cell_cap
+                .unwrap_or(default_config.cell_cap),
+            max_rounds: args
+                .reachability_round_cap
+                .unwrap_or(default_config.max_rounds),
+            goal_classname: args
+                .plan_goal
+                .unwrap_or(ohl_engine::route_plan::DEFAULT_GOAL_CLASSNAME)
+                .to_string(),
+            // A map the chain has already been in is not somewhere a new
+            // route should lead: walking back through the boundary just
+            // arrived through is how a chain walk fails, not how it gets
+            // deeper (`xtask/src/chain_walk.rs`). Held in memory only,
+            // never logged, exactly like `run_chained`'s own copy.
+            avoid_goal_maps: visited.to_vec(),
+            assume_longjump: args.reachability_assume_longjump,
+        },
+    };
+
+    tracing::info!("Route planner: planning.");
+    let route = match crate::route_planner::plan(game, source, &options) {
+        Ok(route) => route,
+        Err(failure) => {
+            // A fixed, self-describing reason; none of them carries
+            // anything map-derived.
+            tracing::error!("Route planner: {failure}.");
+            return Err(ROUTE_PLAN_FAILED);
+        }
+    };
+    tracing::info!("Route plan cells: {}.", route.cells);
+    tracing::info!("Route plan segments: {}.", route.segments);
+    tracing::info!("Route plan door presses: {}.", route.doors);
+    tracing::info!("Route plan replay attempts: {}.", route.attempts);
+    tracing::info!("Route plan simulated seconds: {:.1}.", route.seconds());
+    if crate::route_planner::write_route(path, &route).is_err() {
+        return Err("the planned route file could not be written");
+    }
+    tracing::info!("{ROUTE_PLAN_WRITTEN}");
+    Ok(())
+}
+
+/// The fixed error a failed plan ends the run with. The reason itself is
+/// logged separately (and is equally fixed); this is what the process
+/// exits on.
+#[cfg(feature = "dev-tools")]
+const ROUTE_PLAN_FAILED: &str = "no route to the goal could be planned and validated";
+
+/// The fixed line a written route ends the planner with, in the shape
+/// `xtask/src/plan_chain_hop.rs` looks for.
+#[cfg(feature = "dev-tools")]
+pub const ROUTE_PLAN_WRITTEN: &str = "Route plan written.";
 
 /// Development only: runs `ohl_engine::reachability`'s bounded walk from
 /// the map's player start and prints its report.

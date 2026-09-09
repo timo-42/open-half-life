@@ -351,6 +351,64 @@ cargo run --release -p ohl-app --features dev-tools -- \
   --reachability-assume-armed --reachability-cell-cap 300000
 ```
 
+The same `dev-tools` build also carries `--plan-route PATH`, which turns
+that walk into an actual route. `--reachability-report` answers "can the
+player get there"; `--plan-route` answers "how", and writes the answer out
+as a scripted-input route file:
+
+```sh
+cargo run --release -p ohl-app --features dev-tools -- \
+  --payload-root /path/to/payload --map c1a0 \
+  --plan-route /tmp/planned.txt --reachability-cell-cap 300000
+```
+
+It runs the same bounded, deterministic walk over the live collision model
+(`ohl_engine::route_plan`), but keeps a parent link and an edge kind
+(walk/step/drop/jump/long jump) for every cell it reaches, so the cell the
+goal was found in can be walked back to the player's current position.
+That cell path is straightened against the player's own standing hull,
+merged into straight runs, and converted into `look`/`forward` lines, with
+a `use` press and the door's own documented open time wherever a closed
+door has to be opened on the way. Where the walk needs a lateral
+half-cell to thread a door frame, the route steps aside there too — a
+doorway a body fits through is not always one a grid-aligned step fits
+through.
+
+Nothing is written until the script has actually been **replayed**, in
+process, from the very state it was planned from, and that replay reached
+a level change. When the replay drifts — a run that clips a corner leaves
+every later segment aimed from the wrong place — the planner re-plans from
+the point the player actually reached and appends the continuation, up to
+`--plan-attempts N` times (24 by default). Only the first segment of a
+plan is committed per attempt, which is what makes this a closed loop
+rather than one long open-loop guess — a plan committed whole inherits
+its own first segment's drift for every segment after it, and on real
+geometry that is the difference between a route that walks and one that
+grinds along a wall. A search that finds no route at all waits a
+few seconds and looks again before giving up, since a map that opens its
+own way out on a schedule has no route at the instant the player arrives
+and one a moment later. The accepted script is replayed once more on the
+live game before the file is written.
+
+`--plan-goal CLASSNAME` plans to the nearest reachable brush entity of
+that classname instead of to a `trigger_changelevel`. After
+`--chain-script`, a level-change trigger whose own destination is a map
+the chain has already been in is skipped as a goal: it is usually the
+closest one to the arrival point, and a route to it walks straight back
+through the boundary it just came through, which `cargo xtask chain-walk`
+counts as a failure rather than progress.
+
+Like the report, the planner prints aggregates only — cells reached,
+rounds, segments, door presses, replay attempts, route length in simulated
+seconds — never a map name, coordinate or targetname, and the file it
+writes holds script commands and project-authored comment words only
+(`docs/CLEAN_ROOM.md`).
+
+Combined with `--chain-script`, the plan starts from wherever the chain's
+last route left the player standing, which is the only state the *next*
+chain route can honestly be authored from. `cargo xtask plan-chain-hop`
+(below) is that combination as one command.
+
 Also `dev-tools` only: `--start-inventory LIST` gives the player named
 weapons and ammo right after the map loads, so a single-map probe or
 scripted scenario can model the inventory a real campaign run would have
@@ -385,6 +443,7 @@ cargo run --release -p ohl-app --features dev-tools -- \
 cargo xtask campaign-smoke --payload-root /path/to/payload   # every campaign map, headless-screenshotted
 cargo xtask combat-smoke --payload-root /path/to/payload     # every xtask/smoke-scenarios/*.txt scripted scenario
 cargo xtask chain-walk --payload-root /path/to/payload       # the chained campaign walk (xtask/chain-routes/)
+cargo xtask plan-chain-hop --payload-root /path/to/payload   # plan the chain's next route with the route planner
 ```
 
 `cargo xtask chain-walk` assembles a chain from `xtask/chain-routes/`
@@ -399,6 +458,16 @@ a map it had already visited at any depth. The shipped chain reaches four
 distinct maps and ends on "The chain walk has no further route." — it
 runs out of authored routes, not out of map. `--start NAME` walks a different
 chain, and must name a map from `ohl-campaign`'s own cited table.
+
+`cargo xtask plan-chain-hop` assembles that same chain, runs it in one
+process, and hands the arrival point it ends at to `--plan-route`: it
+writes the *next* hop's route file (by default `<start>-hop<n>.txt`, the
+file `chain-walk` would pick up next; `--out PATH` overrides it) and
+prints the same aggregate-only kind of summary. It exits non-zero when no
+planned script replayed to the level change, in which case nothing is
+written at all — a route only ships once the binary has actually walked
+it. `--attempts`, `--goal`, `--cell-cap` and `--round-cap` pass the
+planner's own bounds through.
 
 Route files are named by their position in the chain rather than by the
 map they run on, past the first: which map a level change lands in is a
