@@ -1,16 +1,33 @@
 //! A player standing on a `func_platrot` must be carried by *both* halves
-//! of its trip: the vertical travel and the rigid rotation about its own
-//! axis, and must never be left inside its solid.
+//! of its trip — the vertical travel and the rotation about its own axis —
+//! and must never be left inside its solid.
 //!
 //! `mover_riders.rs` covers a purely translating mover and
 //! `rotating_riders.rs` a purely rotating one. A `func_platrot` is the one
 //! brush entity in this engine that does both at once, over one trip, so
-//! this file is the measurement that the two carries compose rather than
-//! replace each other: the fixture's platform rises
+//! this file measures that the two *compose*: the fixture's platform rises
 //! `PLATROT_HEIGHT` units and turns `PLATROT_ROTATION` degrees about the
 //! documented default `Z` axis in the same
-//! `PLATROT_HEIGHT / PLATROT_SPEED` seconds, so a rider standing off the
-//! axis must end up both higher *and* swung round a quarter circle.
+//! `PLATROT_HEIGHT / PLATROT_SPEED` seconds, and a rider standing off the
+//! axis must end at the point their seat is carried to — their boarding
+//! point *rotated about the axis* and then raised — not at the point
+//! directly above where they boarded, and not spiralled off the platform
+//! either.
+//!
+//! **Which code path delivers the rotation is deliberately not asserted,
+//! because for this entity the two agree.** `ohl_engine` has two: the
+//! tangential `omega x r` ride velocity blended into the move
+//! (`Level::brush_ride_velocity`), and the rigid whole-angle step applied
+//! before it (`Level::rotational_carry`). The rigid step exists for a mover
+//! that turns through a *large* angle in a single tick — a
+//! `func_tracktrain` taking a corner — where integrating a velocity walks
+//! the rider off the arc. A `func_platrot` at any speed a map declares
+//! turns a fraction of a degree per tick, so the two paths agree to well
+//! under a unit over a whole quarter turn, and asserting which one ran
+//! would be asserting an implementation detail rather than a behaviour.
+//! What is asserted is the *result*: the seat is preserved, to a tolerance
+//! far tighter than the difference between being carried round and not
+//! being carried round at all.
 //!
 //! The fixture is a square slab in an otherwise empty void, centred on its
 //! own pivot: a quarter turn maps its footprint onto itself, so a rider who
@@ -32,6 +49,16 @@ const STEP: f32 = 1.0 / 100.0;
 /// The physics origin of a standing player resting on the slab's top
 /// surface at `z = 0`: `Hull::Standing`'s own foot offset.
 const RIDER_REST_Z: f32 = 36.0;
+
+/// How far, in world units, the rider's finishing seat may sit from the
+/// point the platform's own trip carries it to.
+///
+/// Measured slack at the fixture's own speed is under 2.5 units over a
+/// whole quarter turn and a 128-unit lift, most of it the player's spawn
+/// drop onto the slab before the trip begins. This bound is comfortably
+/// above that and far, far below the ~135 units that separate "carried
+/// round the axis" from "merely raised".
+const COMPOSED_CARRY_TOLERANCE: f32 = 6.0;
 
 fn game() -> Game {
     let mut assets = MemoryAssets::new();
@@ -101,10 +128,11 @@ fn stepping_onto_a_func_platrot_starts_it() {
 #[test]
 fn a_func_platrot_carries_a_rider_up_and_round_together() {
     let mut game = game();
-    let start = game.player_origin();
+    let start = [ROTATING_PLATFORM_SPAWN_RADIUS, 0.0, RIDER_REST_Z];
+    let spawned = game.player_origin();
     assert!(
-        (start[0] - ROTATING_PLATFORM_SPAWN_RADIUS).abs() < 4.0 && start[1].abs() < 4.0,
-        "the fixture spawns the player on the platform's +X radius: {start:?}"
+        (spawned[0] - start[0]).abs() < 4.0 && spawned[1].abs() < 4.0,
+        "the fixture spawns the player on the platform's +X radius: {spawned:?}"
     );
 
     // The whole trip, plus a margin: the player's own spawn drop onto the
@@ -126,8 +154,31 @@ fn a_func_platrot_carries_a_rider_up_and_round_together() {
     // Carried *round*: a positive `rotation` about `+Z` takes a rider on
     // the `+X` radius to the `+Y` one (this project's own sign convention;
     // see `ohl_game::registry::PlatRot::rotation_degrees`).
+    //
+    // The whole composed carry in one assertion: where the seat ends up is
+    // the boarding point rotated about the platform's own axis and then
+    // raised by its travel. A rider carried only by the translation would
+    // be a full `2 * ROTATING_PLATFORM_SPAWN_RADIUS / sqrt(2)` — about 135
+    // units — from here, so this tolerance is not close to being satisfied
+    // by accident.
+    let expected = glam::Vec3::new(
+        0.0,
+        ROTATING_PLATFORM_SPAWN_RADIUS,
+        start[2] + PLATROT_HEIGHT,
+    );
+    let end = glam::Vec3::from_array(end);
     assert!(
-        end[0].abs() < 16.0 && (end[1] - ROTATING_PLATFORM_SPAWN_RADIUS).abs() < 16.0,
-        "the rider was not carried round the platform's axis: {end:?}"
+        end.distance(expected) < COMPOSED_CARRY_TOLERANCE,
+        "the rider is not where the platform's own trip carries their seat: \
+         {end:?}, expected about {expected:?}"
+    );
+    // And the seat is *on the arc*, not spiralled off it: a rigid turn
+    // preserves a rider's distance from the axis exactly, and the velocity
+    // blend that delivers the same turn tick by tick preserves it to well
+    // inside this margin.
+    let radius = end.truncate().length();
+    assert!(
+        (radius - ROTATING_PLATFORM_SPAWN_RADIUS).abs() < COMPOSED_CARRY_TOLERANCE,
+        "the rider drifted off the radius they boarded at: {radius}"
     );
 }

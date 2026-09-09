@@ -838,9 +838,17 @@ impl Level {
             // that can carry a rider standing on a `func_rotating`/
             // `func_door_rotating`, is recorded separately in
             // `brush_rotation` just below. A `func_platrot` rider is
-            // carried by both, which is why `Self::rotational_carry` takes
-            // this step's translation back off the pivot before it turns
-            // them.
+            // carried by both halves of its trip, which is why
+            // `Self::rotational_carry` takes this step's translation back
+            // off the pivot before it turns them — that correction is what
+            // lets the rigid step and the translation compose at all,
+            // though for a platform turning a fraction of a degree per tick
+            // the tangential velocity in `Self::brush_ride_velocity` would
+            // land the rider in the same place on its own. The rigid step
+            // earns its keep on a mover that turns through a large angle in
+            // one tick; see `crates/ohl-engine/tests/platrot_rider.rs`,
+            // which measures the composed result rather than which of the
+            // two delivered it.
             brush_velocity.insert(*brush, velocity);
             let (axis, angle_degrees, pivot) =
                 crate::render::brush_pose_rotation(registry, *entity);

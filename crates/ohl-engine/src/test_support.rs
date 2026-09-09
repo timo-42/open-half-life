@@ -7,6 +7,7 @@ use ohl_formats::test_support::{
     BRUSH_FLOOR_HALF_EXTENT, BRUSH_FLOOR_TOP_Z, Bsp30Builder, CollisionBrush,
     collision_room_brushes,
 };
+use ohl_game::registry::SPAWNFLAG_PLATROT_TOGGLE;
 
 /// One quad in the fixture: its four corners in winding order, and the
 /// texture slot it draws with.
@@ -3591,14 +3592,17 @@ const PLAN_PLATROT_GATE_GOAL_MAX: [f32; 3] = [512.0, 48.0, 128.0];
 /// column's own footprint as the only way through, so a route to the goal
 /// exists only if the switch is planned.
 ///
-/// The documented "Toggle" spawnflag is set, so the column stays down once
-/// it has been sent there rather than coming back up on a `wait` and
-/// closing the corridor behind the player.
+/// `toggle` sets the documented "Toggle" spawnflag, so the column stays down
+/// once it has been sent there rather than coming back up on a `wait` and
+/// closing the corridor behind the player. Clearing it builds the same
+/// corridor around a platform `crate::route_plan::switched_movers`
+/// deliberately refuses to plan through, which is the discriminating case
+/// for that rule.
 ///
 /// No bytes here come from any game installation; see
 /// `docs/CLEAN_ROOM.md`.
 #[must_use]
-pub fn plan_platrot_gate_bsp(next_map: &str) -> Vec<u8> {
+pub fn plan_platrot_gate_bsp(next_map: &str, toggle: bool) -> Vec<u8> {
     let entities = format!(
         "{{\n\"classname\" \"worldspawn\"\n}}\n\
          {{\n\"classname\" \"info_player_start\"\n\"origin\" \"-256 0 40\"\n\
@@ -3606,12 +3610,13 @@ pub fn plan_platrot_gate_bsp(next_map: &str) -> Vec<u8> {
          {{\n\"classname\" \"func_platrot\"\n\"targetname\" \"{PLAN_PLATROT_GATE_NAME}\"\n\
          \"model\" \"*1\"\n\"speed\" \"{PLAN_PLATROT_GATE_SPEED}\"\n\
          \"height\" \"-{PLAN_PLATROT_GATE_TRAVEL}\"\n\"rotation\" \"90\"\n\
-         \"spawnflags\" \"1\"\n\"origin\" \"0 0 0\"\n}}\n\
+         \"spawnflags\" \"{}\"\n\"origin\" \"0 0 0\"\n}}\n\
          {{\n\"classname\" \"func_button\"\n\"model\" \"*3\"\n\
          \"target\" \"{PLAN_PLATROT_GATE_NAME}\"\n\"speed\" \"100\"\n\"wait\" \"5\"\n\
          \"origin\" \"0 0 0\"\n}}\n\
          {{\n\"classname\" \"trigger_changelevel\"\n\"model\" \"*2\"\n\
-         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n"
+         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n",
+        u32::from(toggle) * SPAWNFLAG_PLATROT_TOGGLE,
     );
 
     let mut b = Bsp30Builder::new();
@@ -3692,6 +3697,10 @@ pub const PLAN_STOOD_ON_MAP: &str = "ohlplanstoodonsynth";
 /// its own roof that starts it.
 pub const PLAN_STOOD_ON_NAME: &str = "ohl_plan_stood_on";
 
+/// The `targetname` of that fixture's second brush entity, the `func_wall`
+/// pillar (see [`PLAN_STOOD_ON_PILLAR_MIN`]).
+pub const PLAN_STOOD_ON_PILLAR_NAME: &str = "ohl_plan_pillar";
+
 /// The fixture's bounding box.
 const PLAN_STOOD_ON_MIN: [f32; 3] = [-320.0, -256.0, -256.0];
 /// See [`PLAN_STOOD_ON_MIN`].
@@ -3758,6 +3767,18 @@ const PLAN_STOOD_ON_TRIGGER_MIN: [f32; 3] = [0.0, -64.0, 96.0];
 /// See [`PLAN_STOOD_ON_TRIGGER_MIN`].
 const PLAN_STOOD_ON_TRIGGER_MAX: [f32; 3] = [64.0, 64.0, 160.0];
 
+/// A second brush entity, well away from everything else: a plain
+/// `func_wall` pillar standing on the open floor.
+///
+/// It is there so the fixture has *another* attached collision brush to
+/// name — `crate::route_plan`'s "which brush is holding this landing up"
+/// rule can only be shown to discriminate against a brush that genuinely
+/// exists, and the world model itself is never attached as one (it is the
+/// collision model). Nothing routes near it.
+const PLAN_STOOD_ON_PILLAR_MIN: [f32; 3] = [-304.0, 192.0, -256.0];
+/// See [`PLAN_STOOD_ON_PILLAR_MIN`].
+const PLAN_STOOD_ON_PILLAR_MAX: [f32; 3] = [-272.0, 224.0, 32.0];
+
 /// The `trigger_changelevel` volume at the far end of the ledge.
 const PLAN_STOOD_ON_GOAL_MIN: [f32; 3] = [384.0, -64.0, PLAN_STOOD_ON_LEDGE_MAX[2]];
 /// See [`PLAN_STOOD_ON_GOAL_MIN`].
@@ -3791,7 +3812,9 @@ pub fn plan_stood_on_lift_bsp(next_map: &str) -> Vec<u8> {
          {{\n\"classname\" \"trigger_multiple\"\n\"model\" \"*2\"\n\
          \"target\" \"{PLAN_STOOD_ON_NAME}\"\n\"wait\" \"4\"\n\"origin\" \"0 0 0\"\n}}\n\
          {{\n\"classname\" \"trigger_changelevel\"\n\"model\" \"*3\"\n\
-         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n"
+         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n\
+         {{\n\"classname\" \"func_wall\"\n\"targetname\" \"{PLAN_STOOD_ON_PILLAR_NAME}\"\n\
+         \"model\" \"*4\"\n\"origin\" \"0 0 0\"\n}}\n"
     );
 
     let mut b = Bsp30Builder::new();
@@ -3820,6 +3843,10 @@ pub fn plan_stood_on_lift_bsp(next_map: &str) -> Vec<u8> {
     )]);
     let trigger_heads = b.push_collision_hulls(&[]);
     let goal_heads = b.push_collision_hulls(&[]);
+    let pillar_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(
+        PLAN_STOOD_ON_PILLAR_MIN,
+        PLAN_STOOD_ON_PILLAR_MAX,
+    )]);
 
     b.push_model(
         PLAN_STOOD_ON_MIN,
@@ -3853,6 +3880,16 @@ pub fn plan_stood_on_lift_bsp(next_map: &str) -> Vec<u8> {
         PLAN_STOOD_ON_GOAL_MAX,
         [0.0; 3],
         goal_heads,
+        2,
+        0,
+        0,
+    );
+
+    b.push_model(
+        PLAN_STOOD_ON_PILLAR_MIN,
+        PLAN_STOOD_ON_PILLAR_MAX,
+        [0.0; 3],
+        pillar_heads,
         2,
         0,
         0,

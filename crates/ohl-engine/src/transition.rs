@@ -644,11 +644,6 @@ fn entity_position(registry: &Registry, entity: Entity) -> Option<Vec3> {
         .map(|transform| transform.origin)
 }
 
-/// The ride state of `entity`, when it is a `func_train`/`func_tracktrain`
-/// that resolved a path chain, with the node it is at recorded by name.
-/// `None` for any other entity, and for a train whose current node carries
-/// no `targetname` (nothing in the destination could then be correlated
-/// with it).
 /// Records one named mover's state for the next map, when it has any
 /// worth recording.
 ///
@@ -699,6 +694,11 @@ fn restore_platrot(registry: &mut Registry, entity: Entity, carried: PlatRot) {
     }
 }
 
+/// The ride state of `entity`, when it is a `func_train`/`func_tracktrain`
+/// that resolved a path chain, with the node it is at recorded by name.
+/// `None` for any other entity, and for a train whose current node carries
+/// no `targetname` (nothing in the destination could then be correlated
+/// with it).
 fn capture_track_train(registry: &Registry, entity: Entity) -> Option<TrackTrainCarry> {
     let state = registry.world.get::<&TrackTrainState>(entity).ok()?;
     let yaw = registry
