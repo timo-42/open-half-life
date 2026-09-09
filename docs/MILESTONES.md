@@ -6203,3 +6203,49 @@ short of it). Neither is on the way to the level change.
 `--all-features`), `cargo test --workspace`, policy, graph, combat-smoke
 37/37, campaign-smoke 93/93, `--reachability-report` unchanged, and `cargo
 xtask chain-walk` at **distinct depth 11**.
+
+## M9.35 — The eleventh hop: a real plateau, not another truncation
+
+`cargo xtask plan-chain-hop --attempts 60 --segments 3` was asked for the
+eleventh hop's route. It refused: no script replayed to the goal, and
+nothing was written. The previous milestone's lesson — before calling a
+map blocked, check whether `pick_goal_cell` actually reaches the goal and
+whether a plan was merely truncated — was applied directly, and this time
+the answer is different: `pick_goal_cell` genuinely never returns a cell
+for the real goal, in any settle round the planner's own retry loop tried.
+This is the plateau branch firing for real, not the door-attribution
+truncation the previous milestone found hiding behind it.
+
+The bounded walk from the eleventh map's arrival point reaches on the
+order of six thousand cells and two to six rounds of opened doors before
+settling within roughly fifteen to seventeen hundred units of the level
+change, never inside it. A basic-model reachability read from the same
+point (no assumed weapon, long jump or pendulum wait — the planner's own
+default assumptions) plateaus far short of that, at a little over two
+thousand cells after one door opens, its frontier left holding two
+`func_button` entities neither reachable-model calls use-openable from
+any cell either model reaches, and one `func_door` that stops being
+use-openable once nothing further can open it. Neither the cell cap nor
+the round cap is the limiting factor at either plateau; both stop hundreds
+of thousands of cells and several rounds short of their caps.
+
+One targeted probe, `--plan-route --plan-goal func_button`, asked the
+fuller walk model to aim at a frontier button directly instead of at the
+level change. It gets substantially closer — within a few tens to a few
+hundred units, against the fifteen-plus-hundred still separating the
+walk from the real goal — but still never lands a cell inside that
+button's own press margin, in any of six attempts. That is suggestive of
+a switch the walk can approach but not yet stand close enough to (or on
+the right kind of ground to) press — consistent with, but not proof of, a
+still-missing edge kind — and it does not establish that this particular
+button is what the real goal is gated behind. A stronger claim would need
+more than the one probe this milestone budgeted.
+
+No engine or planner code changed. The chain still reaches **distinct
+depth 11**; the eleventh hop remains unauthored, and the next thing to
+look at is what edge kind, if any, would let the walk stand close enough
+to a frontier switch to press it — not another look at door attribution,
+which this milestone's own measurement rules out.
+
+**Gates**: fmt, `cargo test -p xtask`, policy, combat-smoke 37/37, `cargo
+xtask chain-walk` at **distinct depth 11** (unchanged).
