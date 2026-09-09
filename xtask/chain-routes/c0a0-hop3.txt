@@ -1,0 +1,59 @@
+# M9.20 chain-walk route 3: the map the *third* level change out of
+# ohl_campaign::STARTMAP ("c0a0") lands in, walked from its arrival point.
+#
+# Project-authored; no bytes here come from any game installation (see
+# docs/CLEAN_ROOM.md). Named by its position in the chain rather than by
+# the map it runs on, for the reason recorded in c0a0-hop1.txt and in
+# xtask/src/chain_walk.rs's module documentation.
+#
+# A line's leading number is a count of *ticks*, each one CAPTURE_STEP
+# (1/60 s) of simulated time — not seconds.
+#
+# Route, in words only (no entity name, path or coordinate from any
+# payload): the player presses nothing at all, and this route's whole
+# content is waiting for the map to run its own scripted ride, which ends
+# by firing a level change by name — the same shape c0a0-hop2.txt ends on,
+# and where `run_chained` ends the route.
+#
+# READ THIS BEFORE TRUSTING THE ROUTE: unlike the three routes before it,
+# **the player is not on the ride during this one.** A per-tick probe of
+# `PlayerState::ground_brush` puts them on a `func_tracktrain` for 100% of
+# hop2 and for 0% of this route: they arrive just past the back of the
+# destination map's car, fall for about nine tenths of a second, and stand
+# on world geometry until the ride they are no longer on reaches its level
+# change. The route is honest — nothing is pressed, nothing is teleported,
+# and the level change is one the map itself fires — but it is a bystander's
+# route, not a passenger's, and the depth it earns should be read that way.
+# docs/MILESTONES.md M9.20 records the measurement and the mechanism (the
+# passenger rides too far back in the car to survive the heading and
+# position mismatch at this boundary), and names the two upstream fixes it
+# needs: world-baked spawn placement, and the documented `wheels`
+# heading-lag keyvalue this port records but does not apply.
+#
+# M9.19 could not get here at all. Two separate faults sealed the arrival
+# point at a single reachable cell with no frontier entity of any kind, and
+# either one alone was enough to do it:
+#
+#   - The whole carried ride state was discarded whenever the destination
+#     map declared no `path_track` of the carried node's name — which is
+#     this boundary — so the destination's own copy of the car ran on its
+#     spawn speed instead of arriving parked as its map is authored around.
+#   - This map — alone among the four the chain has entered — starts its own
+#     copy of the ride with a `trigger_auto` that declares the documented
+#     `triggerstate` keyvalue as "On", and this port read every fire as a
+#     plain toggle, so the one thing in the map whose job is to *start* the
+#     car switched it off instead.
+#
+# A third fault surfaced once the ride ran: a door group standing across the
+# tunnel reported itself open while its collision hull sat closed, because a
+# mover carried across a level change overwrote the destination map's own
+# compiled keyvalues instead of only its state.
+#
+# See docs/MILESTONES.md M9.20, and docs/FORMAT_SOURCES.md "Entity keyvalues
+# and map logic" (`trigger_auto`) and "Campaign flow".
+#
+# The trailing wait is slack: `run_chained` (crates/ohl-app/src/game_run.rs)
+# ends a route at the level change it reaches, so any ticks left over here
+# are never run.
+
+9000 wait

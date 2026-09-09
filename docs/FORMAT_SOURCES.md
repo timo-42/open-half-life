@@ -2011,6 +2011,60 @@ consulted, and the M8 research pass that collected them is recorded in
   of the moving car before they landed. Pinned by that same test file's
   `the_player_arrives_at_their_own_origin_offset_not_their_eye`.
 
+  **Only a mover's runtime state travels, never its compiled keyvalues
+  (M9.20).** The rule above is about *which entity in the destination is
+  the same entity*; it says nothing about replacing that entity's own
+  brush. `ohl_engine::transition::EntitySnapshot::apply_onto_existing` is
+  therefore what a carried `func_door`/`func_button`/`func_plat`/
+  `func_rotating` is applied through whenever the destination already
+  declares the entity — by `globalname`, or by the `targetname` fallback
+  this project also accepts — and it writes only the open/closed/pressed/
+  spinning state and the timer driving it. `speed`, `wait`, `lip`, move
+  direction, travel distance, damage, health, delay, sounds and the
+  rotation axis stay the destination map's own, for exactly the reason
+  `Transform` has never travelled: they are facts about the brush the
+  destination compiled. The full snapshot is still applied when the
+  transition *creates* an entity the destination does not declare, which is
+  the only case with no destination data to keep. Guarded by
+  `crates/ohl-engine/tests/trigger_state_and_carry.rs`.
+
+  Why it matters, black-box: two maps in one chapter routinely give
+  unrelated doors the same `targetname`, and a four-leaf door whose leaves
+  slide up, down, left and right was handed all four of another map's
+  same-named leaves' "slides down 172 units" — parking a solid hull across
+  the very gap its own map compiled it to clear, in the path of a scripted
+  ride, where it scraped the ride's passenger off.
+
+  **The one hybrid field.** `Door::rotation_axis` is not purely compiled:
+  its *axis* is the spawnflag/`distance` choice
+  (`ohl_game::registry::RotatingDoorSwing::base_axis`), but its *sign* is
+  rewritten at every closed-to-opening edge so a `func_door_rotating`
+  swings away from whoever opened it (see "a rotating door opens away from
+  its activator" above). So `apply_onto_existing` carries that sign — and
+  only the sign — onto the destination leaf's own axis, when both doors are
+  rotating ones. Dropping the whole field instead would *mirror* a
+  carried-open leaf onto the wrong side of its own frame, which is the same
+  fault this method exists to stop, reflected rather than translated.
+  Guarded by `a_carried_rotating_door_keeps_the_swing_side_its_activator_chose`.
+
+  **A carried train's ride outlives a chain it cannot be named onto
+  (M9.20).** `restore_track_train` re-seats a carried
+  `func_train`/`func_tracktrain` on the destination's copy of the node it
+  carries by name, rebuilding the chain from that node when the
+  destination's own `target` chain does not contain it. When the
+  destination map declares no node of that name *at all*, there is nothing
+  to correlate a position with — but a train's `speed`, `direction`,
+  `moving` and `wait` are not a position. Discarding them along with the
+  position (which is what this project did before M9.20) left the
+  destination's copy running on its own `startspeed`, as if the ride that
+  had just arrived had never happened: a map that parks its ride exactly at
+  the boundary and lets the *next* map start it again (`trigger_auto`'s
+  `triggerstate`, above) got a train already rolling at a speed no keyvalue
+  in either map asked for. The destination's own chain and its own place
+  along it are kept — that is still the only placement either map agrees on
+  — and only the motion travels. Guarded by
+  `a_carried_rides_motion_survives_a_destination_chain_it_cannot_be_named_onto`.
+
 - [TWHL "Tutorial: Globals"](https://twhl.info/wiki/page/Tutorial:_Globals):
   `env_global`/global state variables are the documented cross-level state
   mechanism, with a named variable that is off, on, or dead.
@@ -3281,6 +3335,71 @@ entity"; spawnflag `1` "Remove On fire" — "the trigger_auto will be removed
 from the game after firing". Implemented as
 `ohl_game::registry::AutoTrigger`, fired by `Simulation::tick` in ascending
 entity order.
+
+**`triggerstate` ("Trigger State"), M9.20.** The same entity carries a
+documented keyvalue that chooses *which use type* it sends to what it names,
+rather than what it names. Sven Co-op's own wiki entry for the entity
+([wiki.svencoop.com: Trigger_auto](https://wiki.svencoop.com/Trigger_auto),
+fetched directly, reviewed 2026-09-09) states it as "Changes state in which
+target will be triggered. On- turns entity on; Off- Turns entity off;
+Toggle- turns entity On when it's Off and vice versa", and Sven Co-op
+Manor's mirror of the same entity
+([svenmanor.com: trigger_auto](https://www.svenmanor.com/entity-guide/trigger_auto),
+fetched directly, same date) gives the value mapping — `0` Off, `1` On,
+`2` Toggle — and adds, on the `target` key itself, that the "Trigger
+use-type is defined in 'Trigger State' keyvalue". `trigger_relay` carries
+the identical key and value list
+([svenmanor.com: trigger_relay](https://www.svenmanor.com/entity-guide/trigger_relay),
+fetched directly, same date): "Set the use-type with which the trigger_relay
+will trigger its targets."
+
+Implemented as `ohl_game::registry::TriggerUse`/`TriggerUseType`, attached
+to those two classnames only and only when the entity actually declares the
+key, and carried on `ohl_game::logic::Fire::use_type` from
+`Simulation::fire_typed` through to `Simulation::activate_with`.
+
+- **Which entities act on it.** Only `func_train`/`func_tracktrain`, whose
+  own published keyvalues describe an explicit on and an explicit off
+  (`speed`/`startspeed` start it; `path_track`'s "Wait for retrigger" stops
+  it), so `TrackTrainState::{turn_on, turn_off, toggle}` already existed as
+  three distinct answers. Every other state machine in `activate_with`
+  keeps toggling whatever it is sent, which is what a search-engine summary
+  of the (403-to-automated-fetch) [TWHL `trigger_relay`](https://twhl.info/wiki/page/trigger_relay)
+  page, reviewed 2026-09-09, describes as the common case: many entities
+  "are not coded to respect this signal, and just toggle its state", with
+  `func_door` named there as an entity that "ignores trigger state and just
+  toggles regardless". `TODO(black-box)`: which of the remaining classnames
+  do respect it is not published anywhere this project may use, so this
+  project changes none of them.
+- **How far it travels.** To the entities the declaring trigger's own
+  `target` names, and no further: a `multi_manager` fan-out fired that way
+  re-fires its own targets as plain toggles. No reviewed page states that
+  the use type propagates down a fire chain. `TODO(black-box)`.
+- **Save/load gap.** `ohl_game::logic::PendingFire` backs save tag 19, whose
+  wire shape is frozen, so a use-typed fire still queued when a save is
+  taken comes back as a plain toggle. Recorded rather than papered over;
+  the window is the declaring trigger's own `delay`.
+- **The documented default is knowingly not followed.** The Sven Co-op
+  Manor `trigger_relay` page cited above continues: "This is set to 'Off'
+  by default, make sure to change this if you want it to be anything else."
+  This project reads an *absent* key as `Toggle` instead. Following the
+  published default would turn every un-keyed fire in every map into an
+  off, which is a far larger behaviour change than the evidence here
+  supports — the TWHL page quoted below says most entities ignore the use
+  type and just toggle regardless, so an "Off" default would be
+  unobservable for those and a regression for the rest, and no page states
+  a default for `trigger_auto` at all. `TODO(black-box)`, recorded on
+  `ohl_game::registry::TriggerUse::from_keyvalue`.
+
+Why it matters, black-box: a real campaign map that starts its own copy of
+a ride at level load declares this key as On. Read as a toggle, that
+start-of-map trigger *stops* a ride that arrived across a level change
+still moving (`ohl_engine::transition`'s `TrackTrainCarry`), and if nothing
+else in the map names the train, the passenger is sealed on a parked car —
+a reachability walk from there finds a single reachable cell and no frontier
+entity at all. Guarded by
+`crates/ohl-engine/tests/trigger_state_and_carry.rs` and by the chained
+campaign walk (`cargo xtask chain-walk`).
 
 ### `TODO(black-box)` items
 

@@ -15,7 +15,8 @@ use crate::registry::{
     AutoTrigger, Breakable, BrushBounds, Button, ChangeLevel, Door, DoorPassable, DoorUseOnly,
     Master, Message, MomentaryDoor, MomentaryRotButton, MoverState, MultiManager, MultiSource,
     Pendulum, Platform, Registry, RotButton, RotatingDoorSwing, Rotator, Target, TargetName,
-    TeleportTrigger, TrackChange, TrackChangeLinks, Transform, Trigger, TriggerHurt,
+    TeleportTrigger, TrackChange, TrackChangeLinks, Transform, Trigger, TriggerHurt, TriggerUse,
+    TriggerUseType,
 };
 use crate::track_train::{PathChain, TrackTrainState};
 
@@ -156,6 +157,17 @@ const DOOR_TOUCH_MARGIN: f32 = 4.0;
 pub struct Fire {
     /// The `targetname` to look up and activate.
     pub target: String,
+    /// Which documented use type this fire carries — the `triggerstate`
+    /// of the entity that scheduled it (see
+    /// [`crate::registry::TriggerUse`]). [`TriggerUse::Toggle`] for every
+    /// fire whose sender declared no `triggerstate`, which is what this
+    /// project sent for all of them before the key was read.
+    ///
+    /// Deliberately *not* carried in [`PendingFire`]: that type backs save
+    /// tag 19, whose wire shape is frozen (see [`Self::snapshot`]), so a
+    /// fire still queued when a save is taken comes back as a plain
+    /// toggle. Recorded as a known gap in `docs/FORMAT_SOURCES.md`.
+    pub use_type: TriggerUse,
     /// The entity that caused this, if any (propagated so a fired door,
     /// for instance, could in principle attribute damage or a `use`
     /// originator; unused by the state machines below today).
@@ -420,6 +432,20 @@ impl Simulation {
     /// queued, further `fire` calls are dropped rather than growing
     /// unbounded, matching how a real map cannot queue infinite work either.
     pub fn fire(&mut self, target: impl Into<String>, activator: Option<Entity>, delay: f32) {
+        self.fire_typed(target, activator, delay, TriggerUse::Toggle);
+    }
+
+    /// As [`Self::fire`], but sending the documented use type `use_type`
+    /// rather than the plain toggle every other caller sends: the
+    /// `triggerstate` of a `trigger_auto`/`trigger_relay`
+    /// (see [`crate::registry::TriggerUse`]).
+    pub fn fire_typed(
+        &mut self,
+        target: impl Into<String>,
+        activator: Option<Entity>,
+        delay: f32,
+        use_type: TriggerUse,
+    ) {
         if self.pending.len() >= MAX_PENDING_EVENTS {
             return;
         }
@@ -427,6 +453,7 @@ impl Simulation {
             target: target.into(),
             activator,
             delay: delay.max(0.0),
+            use_type,
         });
     }
 
@@ -651,7 +678,7 @@ impl Simulation {
     /// is set. Runs before the queue, so a zero-delay auto trigger is
     /// dispatched by the same tick that armed it.
     fn fire_auto_triggers(&mut self, registry: &mut Registry) {
-        let mut ready: Vec<(Entity, String, f32, bool)> = registry
+        let mut ready: Vec<(Entity, String, f32, bool, TriggerUse)> = registry
             .world
             .query::<(Entity, &AutoTrigger, &Target)>()
             .iter()
@@ -662,18 +689,19 @@ impl Simulation {
                     target.0.clone(),
                     auto.delay.max(0.0),
                     auto.remove_on_fire,
+                    Self::use_type_of(registry, entity),
                 )
             })
             .collect();
         if ready.is_empty() {
             return;
         }
-        ready.sort_unstable_by_key(|(entity, _, _, _)| entity.id());
-        for (entity, target, delay, remove) in ready {
+        ready.sort_unstable_by_key(|(entity, _, _, _, _)| entity.id());
+        for (entity, target, delay, remove, use_type) in ready {
             if let Ok(auto) = registry.world.query_one_mut::<&mut AutoTrigger>(entity) {
                 auto.fired = true;
             }
-            self.fire(target, Some(entity), delay);
+            self.fire_typed(target, Some(entity), delay, use_type);
             if remove {
                 registry.world.despawn(entity).ok();
             }
@@ -692,7 +720,7 @@ impl Simulation {
             let fire = self.pending.swap_remove(index);
             let targets: Vec<Entity> = registry.find(&fire.target).to_vec();
             for target in targets {
-                self.activate(registry, target, fire.activator, events);
+                self.activate_with(registry, target, fire.activator, fire.use_type, events);
             }
             fired += 1;
         }
@@ -704,6 +732,23 @@ impl Simulation {
         registry: &mut Registry,
         entity: Entity,
         activator: Option<Entity>,
+        events: &mut Vec<Event>,
+    ) {
+        self.activate_with(registry, entity, activator, TriggerUse::Toggle, events);
+    }
+
+    /// [`Self::activate`] carrying an explicit use type: what a
+    /// `trigger_auto`/`trigger_relay` with a documented `triggerstate`
+    /// sends. Only the state machines whose own published keyvalues
+    /// describe an explicit on/off act on it; see the `TrackTrainState`
+    /// arm below.
+    #[allow(clippy::too_many_lines)]
+    fn activate_with(
+        &mut self,
+        registry: &mut Registry,
+        entity: Entity,
+        activator: Option<Entity>,
+        use_type: TriggerUse,
         events: &mut Vec<Event>,
     ) {
         // The documented `master` gate: an entity whose `master` names a
@@ -762,10 +807,17 @@ impl Simulation {
                 // the axis at any other point in the cycle would teleport
                 // a part-open leaf to the mirrored pose. Writing it into
                 // `Door::rotation_axis` is also what makes the choice
-                // survive a save/load and a level transition — that field
-                // already round-trips through the entity snapshot every
-                // save section and `crate::transition` carry — with no new
-                // state to persist.
+                // survive a save/load with no new state to persist — that
+                // field round-trips whole through the entity snapshot a
+                // save section holds.
+                //
+                // A level change is the one place the whole field does
+                // *not* travel: `Door` is otherwise all compiled keyvalues,
+                // and a destination map's same-named leaf must keep its own
+                // (see `ohl_engine::transition::EntitySnapshot::
+                // apply_onto_existing`). This field is the one hybrid in
+                // it, so that method carries the *sign* chosen here onto
+                // the destination's own axis and nothing else.
                 if let Some(axis) = swing_axis {
                     door.rotation_axis = Some(axis);
                 }
@@ -828,7 +880,21 @@ impl Simulation {
             return;
         }
         if let Ok(train) = registry.world.query_one_mut::<&mut TrackTrainState>(entity) {
-            train.toggle();
+            // The one state machine in this crate whose published
+            // keyvalues name an explicit on and an explicit off (`speed`/
+            // `startspeed` start it, "Wait for retrigger" stops it), so
+            // the documented `triggerstate` use type means something
+            // concrete here. Everything else in this method keeps
+            // toggling whatever it is sent, which is what the cited TWHL
+            // `trigger_relay` page describes as the common case ("many
+            // entities are not coded to respect this signal, and just
+            // toggle"). See `docs/FORMAT_SOURCES.md`, "Entity keyvalues
+            // and map logic".
+            match use_type {
+                TriggerUse::On => train.turn_on(),
+                TriggerUse::Off => train.turn_off(),
+                TriggerUse::Toggle => train.toggle(),
+            }
             return;
         }
         if registry.world.get::<&TrackChange>(entity).is_ok() {
@@ -1029,6 +1095,11 @@ impl Simulation {
                 target: fire.target.clone(),
                 activator: fire.activator.and_then(Entity::from_bits),
                 delay: fire.delay.max(0.0),
+                // Save tag 19's frozen wire shape carries no use type; a
+                // restored fire is the plain toggle this project sent for
+                // every fire before `triggerstate` was read. See
+                // [`Fire::use_type`].
+                use_type: TriggerUse::Toggle,
             })
             .collect();
         self.trigger_state = state
@@ -1156,11 +1227,23 @@ impl Simulation {
         // know the fired entity is a destination rather than something to
         // switch on. See [`TeleportTrigger`].
         let is_teleport = registry.world.get::<&TeleportTrigger>(entity).is_ok();
+        let use_type = Self::use_type_of(registry, entity);
         if let Ok(target) = registry.world.get::<&crate::registry::Target>(entity) {
             let activator = if is_teleport { Some(entity) } else { activator };
-            self.fire(target.0.clone(), activator, trigger.delay);
+            self.fire_typed(target.0.clone(), activator, trigger.delay, use_type);
         }
         true
+    }
+
+    /// The documented use type `entity` sends when it fires its `target`:
+    /// its own `triggerstate` when it declares one (a `trigger_auto` or a
+    /// `trigger_relay`; see [`crate::registry::TriggerUse`]), and the
+    /// plain toggle every other entity sends otherwise.
+    fn use_type_of(registry: &Registry, entity: Entity) -> TriggerUse {
+        registry
+            .world
+            .get::<&TriggerUseType>(entity)
+            .map_or(TriggerUse::Toggle, |use_type| use_type.0)
     }
 
     /// The signed rotation axis `entity` — when it is a

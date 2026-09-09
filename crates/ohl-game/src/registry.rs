@@ -1113,6 +1113,65 @@ pub struct AutoTrigger {
     pub fired: bool,
 }
 
+/// The documented `triggerstate` ("Trigger State") keyvalue of
+/// `trigger_auto` and `trigger_relay`: *which* use type the entity sends
+/// to the target it names, rather than what it targets.
+///
+/// Sven Co-op's own wiki entry for `trigger_auto`
+/// (`docs/FORMAT_SOURCES.md`, "Entity keyvalues and map logic") documents
+/// the key as "Changes state in which target will be triggered. On- turns
+/// entity on; Off- Turns entity off; Toggle- turns entity On when it's Off
+/// and vice versa", and Sven Co-op Manor's mirror of both entities gives
+/// the three values as `0` Off, `1` On and `2` Toggle, adding for
+/// `trigger_auto` that the "Trigger use-type is defined in 'Trigger State'
+/// keyvalue".
+///
+/// A firing entity that declares no `triggerstate` keeps this project's
+/// original behaviour, [`Self::Toggle`], so nothing that never named the
+/// key changes. **That is knowingly not the documented default**: the same
+/// Sven Co-op Manor `trigger_relay` page continues "This is set to 'Off' by
+/// default, make sure to change this if you want it to be anything else."
+/// Following it would turn every existing un-keyed fire in every map into
+/// an *off*, which is a far larger behaviour change than this project has
+/// evidence for — the cited TWHL page says most entities ignore the use
+/// type and just toggle regardless, so an "Off" default would be
+/// unobservable for them and a regression for the rest. Recorded as a
+/// `TODO(black-box)` divergence in `docs/FORMAT_SOURCES.md` rather than
+/// silently followed or silently ignored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TriggerUse {
+    /// `0` — "turns entity off".
+    Off,
+    /// `1` — "turns entity on".
+    On,
+    /// `2` — "turns entity On when it's Off and vice versa"; also what an
+    /// entity that declares no `triggerstate` sends.
+    #[default]
+    Toggle,
+}
+
+impl TriggerUse {
+    /// The documented value mapping above. Anything else — an absent key,
+    /// a blank one, a number outside `0..=2` — is [`Self::Toggle`], which
+    /// is both the documented "normal trigger" behaviour and what this
+    /// project did before the key was read at all.
+    #[must_use]
+    pub fn from_keyvalue(raw: Option<&str>) -> Self {
+        match raw.map(str::trim) {
+            Some("0") => Self::Off,
+            Some("1") => Self::On,
+            _ => Self::Toggle,
+        }
+    }
+}
+
+/// The use type a `trigger_auto`/`trigger_relay` sends, when it declares a
+/// `triggerstate` at all. Absent on every other entity, and on one that
+/// leaves the key unset, so `Simulation` reads a missing component as
+/// [`TriggerUse::Toggle`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TriggerUseType(pub TriggerUse);
+
 /// Marks a `multisource`: the published "master" entity, documented as an
 /// AND gate that "only triggers its target(s) if all entities targeting it
 /// are in the 'ON' state".
@@ -1613,6 +1672,24 @@ impl Registry {
                 .filter(|value| !value.is_empty())
             {
                 world.insert_one(entity, GlobalName(global.clone())).ok();
+            }
+            // The documented `triggerstate` of the two entities whose
+            // published pages carry it: `trigger_auto` and
+            // `trigger_relay` (see [`TriggerUse`]). Read here rather than
+            // in either classname's own arm below because the key means
+            // the same thing on both, and attached only when the entity
+            // actually declares it, so an entity that does not is read as
+            // the documented default by its absence.
+            if matches!(def.classname.as_str(), "trigger_auto" | "trigger_relay")
+                && let Some(raw) = def
+                    .keyvalues
+                    .get("triggerstate")
+                    .map(|value| value.trim())
+                    .filter(|value| !value.is_empty())
+            {
+                world
+                    .insert_one(entity, TriggerUseType(TriggerUse::from_keyvalue(Some(raw))))
+                    .ok();
             }
 
             match def.classname.as_str() {
