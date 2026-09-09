@@ -633,6 +633,26 @@ const MAX_SETTLE_ROUNDS: usize = 64;
 /// toward.
 const LANDING_TICKS: u32 = 120;
 
+/// Whether `event` is a level change into a map the caller is willing to
+/// arrive in.
+///
+/// The search already refuses to *aim* at a boundary leading back into a
+/// map the chain has been in ([`ohl_engine::PlanConfig::avoid_goal_maps`]),
+/// but a route walked toward some other goal can still cross one on the
+/// way — a partial plan walking as close to the goal as this map allows is
+/// exactly the shape that does. Accepting that as "the goal was reached"
+/// writes a route whose only effect is to send the chain walk back where it
+/// came from, which is how a chain fails rather than how it gets deeper.
+/// So arriving somewhere the caller asked to avoid is not arriving.
+fn reaches_new_map(event: &GameEvent, avoid: &[String]) -> bool {
+    let GameEvent::LevelChange { map, .. } = event else {
+        return false;
+    };
+    !avoid
+        .iter()
+        .any(|visited| visited.eq_ignore_ascii_case(map))
+}
+
 /// Stands still for `ticks`, returning `false` when a level change fired
 /// while waiting (nothing left to plan).
 fn idle(game: &mut Game, ticks: u32) -> bool {
@@ -648,13 +668,19 @@ fn idle(game: &mut Game, ticks: u32) -> bool {
 }
 
 /// Ticks `script` through `game`, stopping at the first level change (it
-/// is never followed: reaching it is the whole answer).
-fn run_ticks(game: &mut Game, script: &Script) -> bool {
+/// is never followed: reaching it is the whole answer) — and reporting
+/// success only for one into a map `avoid` does not name
+/// ([`reaches_new_map`]).
+fn run_ticks(game: &mut Game, script: &Script, avoid: &[String]) -> bool {
     for input in script.inputs() {
+        let mut reached = None;
         for event in game.tick(CAPTURE_STEP, input) {
             if matches!(event, GameEvent::LevelChange { .. }) {
-                return true;
+                reached = Some(reaches_new_map(&event, avoid));
             }
+        }
+        if let Some(reached) = reached {
+            return reached;
         }
     }
     false
@@ -747,7 +773,7 @@ impl Planner<'_> {
         // search would see.
         let mut scratch = restore(self.source, self.base, self.config)?;
         if let Some(script) = parse(prefix)?
-            && run_ticks(&mut scratch, &script)
+            && run_ticks(&mut scratch, &script, &self.options.plan.avoid_goal_maps)
         {
             return Ok(None);
         }
@@ -860,7 +886,7 @@ impl Planner<'_> {
         let Ok(mut scratch) = restore(self.source, self.base, self.config) else {
             return false;
         };
-        run_ticks(&mut scratch, &script)
+        run_ticks(&mut scratch, &script, &self.options.plan.avoid_goal_maps)
     }
 }
 
@@ -897,7 +923,7 @@ pub fn plan(
     )?;
     let script = parse(&text)?.ok_or(PlanFailure::NoProgress)?;
     let ticks = script.len() as u64;
-    if !run_ticks(game, &script) {
+    if !run_ticks(game, &script, &options.plan.avoid_goal_maps) {
         return Err(PlanFailure::LiveReplayFailed);
     }
     Ok(PlannedRoute {
@@ -990,7 +1016,7 @@ mod tests {
         let script = Script::parse(route.text.as_bytes()).expect("the written script parses");
         let mut fresh = Game::load(&assets as &dyn AssetSource, PLAN_LIFT_MAP).expect("loads");
         assert!(
-            run_ticks(&mut fresh, &script),
+            run_ticks(&mut fresh, &script, &[]),
             "the planned ride reaches the level change from the same start"
         );
     }
@@ -1068,7 +1094,7 @@ mod tests {
 
         let mut fresh = Game::load(&assets as &dyn AssetSource, PLAN_TURN_MAP).expect("loads");
         assert!(
-            run_ticks(&mut fresh, &script),
+            run_ticks(&mut fresh, &script, &[]),
             "the written route reaches the level change from the same start"
         );
     }
@@ -1473,5 +1499,28 @@ mod tests {
             text.contains(" forward\n") && !text.contains(" back\n"),
             "a climb up is a held forward, which is why the text cannot be counted: {text:?}"
         );
+    }
+
+    /// A level change into a map the caller asked to avoid is not arriving
+    /// anywhere: the search already refuses to *aim* at one, and accepting
+    /// a route that walks through one anyway writes a script whose only
+    /// effect is to send the chain walk back where it came from.
+    #[test]
+    fn arriving_in_a_map_the_caller_avoids_is_not_arriving() {
+        let forward = ohl_engine::GameEvent::LevelChange {
+            map: "ohlplannext".to_string(),
+            landmark: "ohl_landmark".to_string(),
+        };
+        let back = ohl_engine::GameEvent::LevelChange {
+            map: "OhlPlanPrev".to_string(),
+            landmark: "ohl_landmark".to_string(),
+        };
+        let avoid = vec!["ohlplanprev".to_string()];
+
+        assert!(super::reaches_new_map(&forward, &avoid));
+        // Map names are compared without regard to case, the same way the
+        // chain walk's own visited list records them.
+        assert!(!super::reaches_new_map(&back, &avoid));
+        assert!(super::reaches_new_map(&back, &[]));
     }
 }

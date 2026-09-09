@@ -3524,6 +3524,167 @@ fn plan_shaft_bsp(next_map: &str, with_ladder: bool, lethal: bool) -> Vec<u8> {
     b.build()
 }
 
+/// The map name [`plan_platrot_gate_bsp`] is registered under.
+pub const PLAN_PLATROT_GATE_MAP: &str = "ohlplangatesynth";
+
+/// The `targetname` of that fixture's `func_platrot`.
+pub const PLAN_PLATROT_GATE_NAME: &str = "ohl_plan_gate";
+
+/// How far its column travels — straight *down*, out of the corridor it
+/// fills (its `height` keyvalue is this, negated).
+pub const PLAN_PLATROT_GATE_TRAVEL: f32 = 256.0;
+
+/// Units per second it travels at (its `speed` keyvalue).
+pub const PLAN_PLATROT_GATE_SPEED: f32 = 100.0;
+
+/// The gate fixture's bounding box.
+const PLAN_PLATROT_GATE_MIN: [f32; 3] = [-320.0, -128.0, -512.0];
+/// See [`PLAN_PLATROT_GATE_MIN`].
+const PLAN_PLATROT_GATE_MAX: [f32; 3] = [512.0, 128.0, 256.0];
+
+/// The corridor floor, its top at `z = 0`, running the whole length.
+const PLAN_PLATROT_GATE_FLOOR_MIN: [f32; 3] = [-320.0, -128.0, -512.0];
+/// See [`PLAN_PLATROT_GATE_FLOOR_MIN`].
+const PLAN_PLATROT_GATE_FLOOR_MAX: [f32; 3] = [512.0, 128.0, 0.0];
+
+/// The corridor's two side walls, which leave the column's own footprint
+/// as the only way from one end to the other.
+const PLAN_PLATROT_GATE_WALL_SOUTH_MIN: [f32; 3] = [-320.0, -128.0, -512.0];
+/// See [`PLAN_PLATROT_GATE_WALL_SOUTH_MIN`].
+const PLAN_PLATROT_GATE_WALL_SOUTH_MAX: [f32; 3] = [512.0, -48.0, 256.0];
+/// See [`PLAN_PLATROT_GATE_WALL_SOUTH_MIN`].
+const PLAN_PLATROT_GATE_WALL_NORTH_MIN: [f32; 3] = [-320.0, 48.0, -512.0];
+/// See [`PLAN_PLATROT_GATE_WALL_SOUTH_MIN`].
+const PLAN_PLATROT_GATE_WALL_NORTH_MAX: [f32; 3] = [512.0, 128.0, 256.0];
+
+/// The column filling the corridor: a **square** block centred on the
+/// world origin, which is also its own pivot, so its quarter turn maps its
+/// footprint onto itself and only the travel clears the way.
+const PLAN_PLATROT_GATE_COLUMN_MIN: [f32; 3] = [-48.0, -48.0, 0.0];
+/// See [`PLAN_PLATROT_GATE_COLUMN_MIN`].
+const PLAN_PLATROT_GATE_COLUMN_MAX: [f32; 3] = [48.0, 48.0, 128.0];
+
+/// The `func_button` wired to the column: a panel set into the south wall,
+/// at exactly the eye height of a player walking the corridor and well
+/// back from the column, so the route presses it on its way past rather
+/// than having to detour to it — which is how a route that crosses a
+/// switched brush without ever standing in reach of its switch gets
+/// truncated instead ([`crate::route_plan`]'s own door attribution).
+const PLAN_PLATROT_GATE_BUTTON_MIN: [f32; 3] = [-176.0, -56.0, 48.0];
+/// See [`PLAN_PLATROT_GATE_BUTTON_MIN`].
+const PLAN_PLATROT_GATE_BUTTON_MAX: [f32; 3] = [-144.0, -48.0, 80.0];
+
+/// The `trigger_changelevel` volume at the far end of the corridor.
+const PLAN_PLATROT_GATE_GOAL_MIN: [f32; 3] = [384.0, -48.0, 0.0];
+/// See [`PLAN_PLATROT_GATE_GOAL_MIN`].
+const PLAN_PLATROT_GATE_GOAL_MAX: [f32; 3] = [512.0, 48.0, 128.0];
+
+/// A corridor with a `func_platrot` column standing in it and a
+/// `func_button` on the wall that sends the column down out of the way.
+///
+/// This is the shape a `func_platrot` normally takes, and it is not a
+/// lift: nothing stands on the column and nothing rides it, it is simply
+/// in the way, and pressing its switch clears the space it filled. That
+/// makes it a door as far as a route is concerned — one press, one wait,
+/// then walk through — which is exactly how
+/// `crate::route_plan::switched_movers` plans it. The side walls leave the
+/// column's own footprint as the only way through, so a route to the goal
+/// exists only if the switch is planned.
+///
+/// The documented "Toggle" spawnflag is set, so the column stays down once
+/// it has been sent there rather than coming back up on a `wait` and
+/// closing the corridor behind the player.
+///
+/// No bytes here come from any game installation; see
+/// `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn plan_platrot_gate_bsp(next_map: &str) -> Vec<u8> {
+    let entities = format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"-256 0 40\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"func_platrot\"\n\"targetname\" \"{PLAN_PLATROT_GATE_NAME}\"\n\
+         \"model\" \"*1\"\n\"speed\" \"{PLAN_PLATROT_GATE_SPEED}\"\n\
+         \"height\" \"-{PLAN_PLATROT_GATE_TRAVEL}\"\n\"rotation\" \"90\"\n\
+         \"spawnflags\" \"1\"\n\"origin\" \"0 0 0\"\n}}\n\
+         {{\n\"classname\" \"func_button\"\n\"model\" \"*3\"\n\
+         \"target\" \"{PLAN_PLATROT_GATE_NAME}\"\n\"speed\" \"100\"\n\"wait\" \"5\"\n\
+         \"origin\" \"0 0 0\"\n}}\n\
+         {{\n\"classname\" \"trigger_changelevel\"\n\"model\" \"*2\"\n\
+         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n"
+    );
+
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(&entities);
+
+    let solid = [
+        CollisionBrush::half_space([0.0, 0.0, 1.0], PLAN_PLATROT_GATE_MIN[2]),
+        CollisionBrush::half_space([0.0, 0.0, -1.0], -PLAN_PLATROT_GATE_MAX[2]),
+        CollisionBrush::half_space([1.0, 0.0, 0.0], PLAN_PLATROT_GATE_MIN[0]),
+        CollisionBrush::half_space([-1.0, 0.0, 0.0], -PLAN_PLATROT_GATE_MAX[0]),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], PLAN_PLATROT_GATE_MIN[1]),
+        CollisionBrush::half_space([0.0, -1.0, 0.0], -PLAN_PLATROT_GATE_MAX[1]),
+        CollisionBrush::box_brush(PLAN_PLATROT_GATE_FLOOR_MIN, PLAN_PLATROT_GATE_FLOOR_MAX),
+        CollisionBrush::box_brush(
+            PLAN_PLATROT_GATE_WALL_SOUTH_MIN,
+            PLAN_PLATROT_GATE_WALL_SOUTH_MAX,
+        ),
+        CollisionBrush::box_brush(
+            PLAN_PLATROT_GATE_WALL_NORTH_MIN,
+            PLAN_PLATROT_GATE_WALL_NORTH_MAX,
+        ),
+    ];
+    let world_heads = b.push_collision_hulls(&solid);
+    let column_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(
+        PLAN_PLATROT_GATE_COLUMN_MIN,
+        PLAN_PLATROT_GATE_COLUMN_MAX,
+    )]);
+    let goal_heads = b.push_collision_hulls(&[]);
+    let button_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(
+        PLAN_PLATROT_GATE_BUTTON_MIN,
+        PLAN_PLATROT_GATE_BUTTON_MAX,
+    )]);
+
+    b.push_model(
+        PLAN_PLATROT_GATE_MIN,
+        PLAN_PLATROT_GATE_MAX,
+        [0.0; 3],
+        world_heads,
+        2,
+        0,
+        0,
+    );
+    b.push_model(
+        PLAN_PLATROT_GATE_COLUMN_MIN,
+        PLAN_PLATROT_GATE_COLUMN_MAX,
+        [0.0; 3],
+        column_heads,
+        2,
+        0,
+        0,
+    );
+    b.push_model(
+        PLAN_PLATROT_GATE_GOAL_MIN,
+        PLAN_PLATROT_GATE_GOAL_MAX,
+        [0.0; 3],
+        goal_heads,
+        2,
+        0,
+        0,
+    );
+    b.push_model(
+        PLAN_PLATROT_GATE_BUTTON_MIN,
+        PLAN_PLATROT_GATE_BUTTON_MAX,
+        [0.0; 3],
+        button_heads,
+        2,
+        0,
+        0,
+    );
+
+    b.build()
+}
+
 /// The map name [`plan_stood_on_lift_bsp`] is registered under.
 pub const PLAN_STOOD_ON_MAP: &str = "ohlplanstoodonsynth";
 

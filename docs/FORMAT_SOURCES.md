@@ -6047,3 +6047,34 @@ included: across the **93** cited campaign/hazard-course map names, **2**
 maps declare a `func_platrot` at all, **4** in total. Over the wider 102-name
 list that also includes `CHAPTER_MAPS`' interior maps: **3** maps, **5** in
 total.
+
+### Addendum: switching a `func_platrot` out of the way
+
+Appended with the item above; nothing before it is revised.
+
+A `func_platrot` in a published map is routinely **not** a lift. With the
+documented "Toggle" spawnflag it is a column filling a doorway that one
+activation sends to its other resting pose and leaves there — and the thing
+a route wants from it is not a ride but the space it stops occupying.
+`ohl_engine::route_plan::switched_movers` is that round advance: a
+`func_platrot` on the walk's frontier, at rest, that some reached cell can
+fire (the mover itself, or a `func_button` wired to it — the same two
+switches the ride edge already measures) has its collision pose moved to
+the far end of its travel, and is then planned exactly as an opened door
+is: one `use` press at the switch, one wait of the platform's own
+`distance / speed`, then walk through where it stood.
+
+No public page is being interpreted here beyond the keyvalues cited above;
+this is planner behaviour, and it is stated as project behaviour. Two rules
+it follows, both recorded rather than derived: a platform the walk is
+*standing on* is never switched (that is a ride, and moving it takes the
+ground out from under the route), and a mover is switched at most once per
+search.
+
+A route is also only accepted once its replay reaches a level change into a
+map the caller has **not** already been in
+(`ohl_app::route_planner::reaches_new_map`). The search already refuses to
+aim at a boundary leading back into a visited map, but a partial plan
+walking as close to the goal as a map allows can cross one on the way, and
+accepting that as "the goal was reached" writes a route whose only effect
+is to send the chain walk back where it came from.
