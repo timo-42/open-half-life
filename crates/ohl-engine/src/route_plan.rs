@@ -206,6 +206,16 @@ pub enum PlanAction {
         /// Whether this is the walk's jump edge rather than ground
         /// movement.
         jump: bool,
+        /// How far the player falls at the *end* of this run, in world
+        /// units, and so how long they are in the air before the next
+        /// action can begin. Zero for a run that ends on the floor it
+        /// started on.
+        ///
+        /// The walk plans from a landed position ([`crate::reachability`]'s
+        /// own settle rule); a script that walks on before the player has
+        /// landed does not. The caller turns this into the wait that the
+        /// fall itself takes.
+        fall: f32,
     },
     /// Face `yaw` degrees (into a ladder) and climb `distance` world
     /// units along it, up or down.
@@ -1256,21 +1266,32 @@ pub fn merge_collinear(path: &[PathPoint]) -> Vec<PlanAction> {
             continue;
         };
         let jump = matches!(to.kind, EdgeKind::Jump | EdgeKind::LongJump);
+        // A one-way fall ends the run it belongs to: the player is in the
+        // air when it finishes, and how long for is what `fall` records.
+        let fall = if matches!(to.kind, EdgeKind::Drop) {
+            (from.position.z - to.position.z).max(0.0)
+        } else {
+            0.0
+        };
         if let Some(PlanAction::Move {
             yaw: last_yaw,
             distance: last_distance,
             jump: false,
+            fall: last_fall,
         }) = actions.last_mut()
             && !jump
+            && *last_fall <= 0.0
             && (*last_yaw - yaw).abs() <= HEADING_EPSILON
         {
             *last_distance += distance;
+            *last_fall = fall;
             continue;
         }
         actions.push(PlanAction::Move {
             yaw,
             distance,
             jump,
+            fall,
         });
     }
     actions
@@ -1528,6 +1549,7 @@ mod tests {
                 yaw,
                 distance,
                 jump,
+                ..
             } => {
                 assert!(yaw.abs() < 1e-3, "the first run heads along +x");
                 assert!((distance - 48.0).abs() < 1e-3, "three cells merged");

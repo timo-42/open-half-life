@@ -3242,7 +3242,7 @@ pub const PLAN_LADDER_MAP: &str = "ohlplanladdersynth";
 /// The shaft fixture's bounding box.
 const PLAN_LADDER_MIN: [f32; 3] = [-64.0, -64.0, 0.0];
 /// See [`PLAN_LADDER_MIN`].
-const PLAN_LADDER_MAX: [f32; 3] = [320.0, 192.0, 640.0];
+const PLAN_LADDER_MAX: [f32; 3] = [640.0, 192.0, 640.0];
 
 /// The shelf the player starts on: a solid block filling the west half of
 /// the box up to its top surface, so everything east of it is a shaft
@@ -3258,9 +3258,9 @@ const PLAN_LADDER_VOLUME_MIN: [f32; 3] = [64.0, -64.0, 0.0];
 const PLAN_LADDER_VOLUME_MAX: [f32; 3] = [96.0, 192.0, 448.0];
 
 /// The `trigger_changelevel` volume at the far end of the shaft floor.
-const PLAN_LADDER_TRIGGER_MIN: [f32; 3] = [192.0, -64.0, 0.0];
+const PLAN_LADDER_TRIGGER_MIN: [f32; 3] = [512.0, -64.0, 0.0];
 /// See [`PLAN_LADDER_TRIGGER_MIN`].
-const PLAN_LADDER_TRIGGER_MAX: [f32; 3] = [320.0, 192.0, 128.0];
+const PLAN_LADDER_TRIGGER_MAX: [f32; 3] = [640.0, 192.0, 128.0];
 
 /// The drop from the shelf to the shaft floor, in world units — taller
 /// than the height a player lands from unhurt, and taller than the one
@@ -3280,12 +3280,53 @@ pub const PLAN_LADDER_DROP: f32 = PLAN_LADDER_SHELF_MAX[2];
 /// `docs/CLEAN_ROOM.md`.
 #[must_use]
 pub fn plan_ladder_bsp(next_map: &str, with_ladder: bool) -> Vec<u8> {
+    plan_shaft_bsp(next_map, with_ladder, false)
+}
+
+/// The same shelf and shaft as [`plan_ladder_bsp`], with no ladder and a
+/// lethal `trigger_hurt` on the shaft floor: a pit that kills whoever
+/// walks off the shelf into it.
+///
+/// What it is for: a route planner that walks the player somewhere fatal
+/// has to *say* so rather than keep planning from a body that cannot
+/// move, and the only way to test that is to have somewhere fatal to
+/// walk to.
+///
+/// No bytes here come from any game installation; see
+/// `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn plan_pit_bsp(next_map: &str) -> Vec<u8> {
+    plan_shaft_bsp(next_map, false, true)
+}
+
+/// The builder behind [`plan_ladder_bsp`] and [`plan_pit_bsp`].
+fn plan_shaft_bsp(next_map: &str, with_ladder: bool, lethal: bool) -> Vec<u8> {
+    // Three point volumes, a radius apart along the shaft floor, so
+    // wherever a player who stepped off the shelf comes down they land in
+    // one of them: the pit is meant to be fatal, not fatal-if-aimed.
+    use std::fmt::Write as _;
+
+    let mut hurt = String::new();
+    if lethal {
+        // Three point volumes, a radius apart along the shaft floor, so
+        // wherever a player who stepped off the shelf comes down they
+        // land in one of them: the pit is meant to be fatal, not
+        // fatal-if-aimed.
+        for x in [160.0f32, 288.0, 416.0] {
+            let _ = write!(
+                hurt,
+                "{{\n\"classname\" \"trigger_hurt\"\n\
+                 \"origin\" \"{x} 64 36\"\n\"dmg\" \"500\"\n}}\n"
+            );
+        }
+    }
     let entities = format!(
         "{{\n\"classname\" \"worldspawn\"\n}}\n\
          {{\n\"classname\" \"info_player_start\"\n\"origin\" \"-16 64 490\"\n\
          \"angle\" \"0\"\n}}\n\
          {{\n\"classname\" \"trigger_changelevel\"\n\"model\" \"*1\"\n\
-         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n"
+         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n\
+         {hurt}"
     );
 
     let mut b = Bsp30Builder::new();
