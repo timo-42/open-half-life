@@ -3236,6 +3236,104 @@ pub fn plan_turn_bsp(next_map: &str) -> Vec<u8> {
     b.build()
 }
 
+/// The map name [`plan_cost_bsp`] is registered under.
+pub const PLAN_COST_MAP: &str = "ohlplancostsynth";
+
+/// The two-level fixture's bounding box.
+const PLAN_COST_MIN: [f32; 3] = [-64.0, -64.0, 0.0];
+/// See [`PLAN_COST_MIN`].
+const PLAN_COST_MAX: [f32; 3] = [448.0, 256.0, 384.0];
+
+/// The upper level: a slab filling the west end of the box, whose top is
+/// [`PLAN_COST_LEDGE_Z`] above the lower floor.
+const PLAN_COST_SHELF_MIN: [f32; 3] = [-64.0, -64.0, 0.0];
+/// See [`PLAN_COST_SHELF_MIN`].
+const PLAN_COST_SHELF_MAX: [f32; 3] = [192.0, 256.0, 128.0];
+
+/// How far the upper level stands above the lower one, in world units:
+/// further than [`crate::reachability::DROP`], so stepping off it is a
+/// one-way fall rather than a step down, and well inside the height a
+/// player lands from unhurt, so the walk is free to plan it.
+pub const PLAN_COST_LEDGE_Z: f32 = PLAN_COST_SHELF_MAX[2];
+
+/// Where the upper level ends and the fall begins.
+pub const PLAN_COST_LEDGE_X: f32 = PLAN_COST_SHELF_MAX[0];
+
+/// The strip of the map the staircase occupies, when there is one.
+const PLAN_COST_STAIR_Y_MIN: f32 = 192.0;
+/// How many steps the staircase has, and how tall/deep each one is.
+const PLAN_COST_STAIR_COUNT: i32 = 7;
+/// See [`PLAN_COST_STAIR_COUNT`].
+const PLAN_COST_STAIR_SIZE: f32 = 16.0;
+
+/// The `trigger_changelevel` volume at the far end of the lower floor.
+const PLAN_COST_TRIGGER_MIN: [f32; 3] = [384.0, -64.0, 0.0];
+/// See [`PLAN_COST_TRIGGER_MIN`].
+const PLAN_COST_TRIGGER_MAX: [f32; 3] = [448.0, 256.0, 128.0];
+
+/// Two levels joined two ways: a [`PLAN_COST_LEDGE_Z`]-unit ledge the
+/// player may simply step off, and — when `with_stairs` — a staircase down
+/// one side, taking many more steps to walk but costing no fall at all.
+/// The goal sits on the lower floor, reachable either way.
+///
+/// This is the shape `crate::route_plan`'s cost-ordered walk is measured
+/// against: counted in grid steps the fall is much the shorter route, so a
+/// breadth-first walk takes it every time; counted in what it costs a body,
+/// the staircase wins, and the fall is what is left when the staircase is
+/// not there.
+///
+/// No bytes here come from any game installation; see `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn plan_cost_bsp(next_map: &str, with_stairs: bool) -> Vec<u8> {
+    let entities = format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"0 0 170\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"trigger_changelevel\"\n\"model\" \"*1\"\n\
+         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n"
+    );
+
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(&entities);
+
+    let mut solid = vec![
+        CollisionBrush::half_space([0.0, 0.0, 1.0], PLAN_COST_MIN[2]),
+        CollisionBrush::half_space([0.0, 0.0, -1.0], -PLAN_COST_MAX[2]),
+        CollisionBrush::half_space([1.0, 0.0, 0.0], PLAN_COST_MIN[0]),
+        CollisionBrush::half_space([-1.0, 0.0, 0.0], -PLAN_COST_MAX[0]),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], PLAN_COST_MIN[1]),
+        CollisionBrush::half_space([0.0, -1.0, 0.0], -PLAN_COST_MAX[1]),
+        CollisionBrush::box_brush(PLAN_COST_SHELF_MIN, PLAN_COST_SHELF_MAX),
+    ];
+    if with_stairs {
+        for step in 0..PLAN_COST_STAIR_COUNT {
+            #[allow(clippy::cast_precision_loss, reason = "a small step index")]
+            let index = step as f32;
+            let x = PLAN_COST_LEDGE_X + index * PLAN_COST_STAIR_SIZE;
+            let top = PLAN_COST_LEDGE_Z - (index + 1.0) * PLAN_COST_STAIR_SIZE;
+            solid.push(CollisionBrush::box_brush(
+                [x, PLAN_COST_STAIR_Y_MIN, PLAN_COST_MIN[2]],
+                [x + PLAN_COST_STAIR_SIZE, PLAN_COST_MAX[1], top],
+            ));
+        }
+    }
+    let world_heads = b.push_collision_hulls(&solid);
+    let trigger_heads = b.push_collision_hulls(&[]);
+
+    b.push_model(PLAN_COST_MIN, PLAN_COST_MAX, [0.0; 3], world_heads, 2, 0, 0);
+    b.push_model(
+        PLAN_COST_TRIGGER_MIN,
+        PLAN_COST_TRIGGER_MAX,
+        [0.0; 3],
+        trigger_heads,
+        2,
+        0,
+        0,
+    );
+
+    b.build()
+}
+
 /// The map name [`plan_ladder_bsp`] is registered under.
 pub const PLAN_LADDER_MAP: &str = "ohlplanladdersynth";
 
