@@ -5702,3 +5702,59 @@ boundary this route crosses fires normally. Recorded rather than guessed at.
 **Gates**: fmt, clippy (workspace/all-features and no-default),
 `cargo test --workspace`, policy, graph, combat-smoke 37/37, campaign-smoke
 93/93, `cargo xtask chain-walk` at depth 7.
+
+## M9.28 (Rust): the next chapter's own frontier holds past the doorway
+
+Built on M9.27's fixed car pose (chain-walk distinct depth 7). This wave
+tried to extend the chained campaign walk one hop further, from the
+arrival point the sixth route (`c0a0-hop5.txt`) leaves the player at —
+on foot, at a landmark in the following chapter's opening map, matching
+that route's own comment ("crosses into the next chapter").
+
+**The post-chain `--reachability-report`, run from that arrival point
+with `--reachability-assume-armed --reachability-assume-longjump
+--reachability-assume-pendulum-wait` and a raised cell cap, is
+encouraging**: round 0 opens two `func_door`s, round 1 opens two more
+plus a `func_door_rotating`, and by round 2 (5,498 cells)
+`trigger_changelevel` is already reported reachable — well before the
+round where `func_breakable`/`func_pushable` handling would matter. By
+the walk's own model, nothing about this map's frontier composition
+looks closed off: it is door-and-corridor terrain, the kind every earlier
+hop in this chain has already crossed.
+
+**A live route was not found this wave.** A local, uncommitted per-tick
+probe replayed the six existing chain routes through the real
+`Game::tick` path and then tried two navigation techniques from the
+arrival point toward the map's own `trigger_changelevel`: a greedy
+turn-toward-target walk (which grinds along whatever wall the straight
+line meets first, never converging within several thousand simulated
+ticks), and a coarse single-layer flood-fill over the walk's own
+`CELL_SIZE` grid (using only point-in-solid tests, no door/mover
+awareness beyond a proximity `use` press) turned into a waypoint chase.
+The waypoint chase does make real progress — it opens a nearby door
+along the way (confirmed by the door's own `MoverState` going
+`Closed` -> `Opening` -> `Open` under the probe's `use` press) — but
+still stalls roughly forty map units short of the target with no closer
+cell the flood-fill's point-sampling could find passable, most likely
+either a doorway or step narrower than the probe's single-point,
+single-z-layer sampling can thread, or a second obstruction past the one
+door it did open that its 2D-only search never modelled.
+
+**Classification: (e) — a testing-methodology gap in this wave's own
+probe, not a confirmed frontier the shipped `--reachability-report`
+walk (which does model doors, breakables, pushables and drops/jumps in
+three dimensions) reports as closed.** The engine-level reachability
+walk's own round-by-round report is the stronger signal here and it says
+this hop is open; a full navigation autopilot with real hull-width
+collision sampling and multi-layer z search (the technique
+`.plan/progress-probe-2.md`/`-6.md` used for their own teleport-and-press
+probes, extended to continuous walking rather than teleporting) was not
+built within this wave's budget. No `c0a0-hop6.txt` was committed: this
+project only ships a route once it has actually been walked start to
+level-change by the real binary, not assembled from an aggregate report.
+
+**Chain-walk distinct depth stays 7** (6 level changes, no re-entry, not
+frozen), unchanged from M9.27.
+
+**Gates**: fmt, `cargo test -p xtask`, policy, combat-smoke 37/37,
+`cargo xtask chain-walk` at depth 7 (not yet 8 — see above).
