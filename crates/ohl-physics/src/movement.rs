@@ -643,6 +643,47 @@ fn unstick_from_ground(model: &CollisionModel, state: &mut PlayerState, config: 
     }
 }
 
+/// Settles a player who has just been *placed* (a fresh `info_player_start`
+/// spawn) into a position the rest of the step can reason about: frees a
+/// hull that was placed inside solid, then resolves
+/// [`PlayerState::on_ground`]/[`PlayerState::ground_brush`] straight away
+/// rather than waiting for the first move to do it.
+///
+/// Both halves matter for a map that spawns the player *inside a mover*,
+/// which is how a campaign opening that starts the player aboard a
+/// `func_tracktrain` is authored. A spawn point is authored against the
+/// hull the original engine compiles, and this project's own clip tree is
+/// not bit-identical to it (see `docs/FORMAT_SOURCES.md`, "Collision hulls
+/// and player movement"): a placement the map intends as "standing in the
+/// car" can come back embedded here by a few units. An embedded player is
+/// not merely cosmetically stuck — [`categorize_position`]'s probe reports
+/// no ground brush at all while `start_solid` holds, so the host's
+/// `base_velocity` lookup finds nothing, and the *move* cannot free them
+/// either, because every trace out of solid is refused. The car then pulls
+/// out from under a passenger who never moves at all, and they are left
+/// wherever the mover's geometry finally stops overlapping them.
+///
+/// The unstick is the same bounded upward nudge a landing already uses
+/// ([`unstick_from_ground`]) with the same bound and step, so no new rule
+/// enters the physics: the only new thing here is *when* it runs. The
+/// second half is a plain [`categorize_position`], which is what makes the
+/// mover under a freshly spawned rider their ground brush on the very
+/// first step, so the ride starts with the mover's first tick of motion
+/// rather than after a fall.
+///
+/// A player placed in mid-air is left in mid-air (nothing is stuck, the
+/// probe finds no ground) and falls exactly as before; a spot that is
+/// solid all the way through the bound is left alone, exactly as
+/// [`unstick_from_ground`] leaves it.
+///
+/// Project-owned and `TODO(black-box)`, like the nudge it reuses: no
+/// public source describes a spawn-time settle. Recorded in
+/// `docs/FORMAT_SOURCES.md` under "Riding movers".
+pub fn settle_at_spawn(model: &CollisionModel, state: &mut PlayerState, config: &MoveConfig) {
+    unstick_from_ground(model, state, config);
+    categorize_position(model, state, config);
+}
+
 /// How deep the player is in a liquid and which liquid it is, sampled from
 /// the BSP leaf contents at the feet, the origin and the eye, exactly the
 /// three heights the documented `waterlevel` 0..3 scale distinguishes.

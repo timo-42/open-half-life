@@ -164,12 +164,38 @@ impl Game {
     }
 
     fn from_level(mut level: Level, source: &dyn AssetSource, config: GameConfig) -> Self {
-        let camera = level
+        let mut camera = level
             .spawn
             .map_or_else(FreeFlyCamera::default, FreeFlyCamera::at_spawn);
-        let controller = level.spawn.map_or_else(PlayerController::default, |spawn| {
+        let mut controller = level.spawn.map_or_else(PlayerController::default, |spawn| {
             PlayerController::spawn_at(Vec3::from_array(spawn.origin), spawn.yaw, spawn.pitch)
         });
+        // A map may spawn the player standing *inside* one of its movers —
+        // a campaign opening that starts them aboard a `func_tracktrain`
+        // is authored exactly that way. Without the settle the passenger
+        // is embedded in the car rather than standing in it, which is not
+        // merely cosmetic: an embedded hull has no ground brush, so the
+        // ride never starts, and no trace out of solid succeeds, so they
+        // cannot fall free either. See `ohl_physics::settle_at_spawn`.
+        //
+        // Only for an `info_player_start` placement, which is why this is
+        // gated on the spawn point and not merely on the map having
+        // collision at all: a map with no spawn leaves the controller at
+        // `PlayerController::default`'s world origin, a placement no map
+        // authored and nothing should nudge. Every mover's hull is already
+        // where the map logic puts it — `Level`'s own
+        // `attach_brush_collision_with` attaches each brush at
+        // `origin + ohl_game::pose::brush_offset(..)` while the level
+        // loads, and nothing has moved a `Transform` since — so there is
+        // nothing to re-pose here first. (The transition path's own
+        // `sync_brush_collision(0.0)` *is* load-bearing, for the opposite
+        // reason: there the carry has just moved movers after attach.)
+        if level.spawn.is_some()
+            && let Some(collision) = level.collision.as_ref()
+        {
+            controller.settle_at_spawn(collision);
+            camera.position = controller.eye_position().to_array();
+        }
         let mut globals = GlobalStateTable::new();
         globals.seed_from(&level.registry);
         let pending = chapter_title_event(&level.name).into_iter().collect();
@@ -1263,6 +1289,24 @@ impl Game {
             });
             self.controller =
                 PlayerController::spawn_at(position, transition.yaw, transition.pitch);
+        } else if self.level.spawn.is_some()
+            && let Some(collision) = self.level.collision.as_ref()
+        {
+            // No landmark to place against, so this is the destination's
+            // own `info_player_start` and nothing else — exactly the
+            // placement `Self::from_level` makes, and it gets exactly the
+            // same spawn settle (`ohl_physics::settle_at_spawn`), against
+            // hulls the `sync_brush_collision(0.0)` above has already
+            // re-posed after the carry moved them. Gated on the spawn
+            // point for the same reason `from_level` is: with no
+            // `info_player_start` the controller is
+            // `PlayerController::default`'s world origin, which no map
+            // authored. A *landmark-relative* arrival deliberately gets no
+            // settle either: that placement is a pure offset from where
+            // the player stood in the source map, and nudging it would
+            // make a boundary stop being a no-op for the physics state.
+            self.controller.settle_at_spawn(collision);
+            self.camera.position = self.controller.eye_position().to_array();
         }
         self.pending.extend(chapter_title_event(&self.level.name));
         Ok(())
