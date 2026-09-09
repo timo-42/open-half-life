@@ -1808,6 +1808,138 @@ pub fn platrot_entities() -> String {
 }
 
 // ---------------------------------------------------------------------
+// A `func_platrot` lift over a long, multi-turn trip, with a rider seated
+// off the arm's own centreline
+// ---------------------------------------------------------------------
+
+/// The map name the long-ride `func_platrot` fixture is published under.
+pub const PLATROT_LONG_MAP: &str = "ohlplatrotlongsynth";
+
+/// The `targetname` of the long-ride fixture's `func_platrot`.
+pub const PLATROT_LONG_NAME: &str = "ohl_platrot_long";
+
+/// How far the long-ride fixture's platform travels straight up (its
+/// `height` keyvalue) — a long, multi-turn trip chosen for this fixture,
+/// not derived from any game installation.
+pub const PLATROT_LONG_HEIGHT: f32 = 976.0;
+
+/// How far round the long-ride fixture's platform turns over that same
+/// trip (its `rotation` keyvalue): two full turns, so a rider's seat
+/// crosses every quadrant of the cross-shaped platform eight times over
+/// the trip rather than the quarter turn the other `func_platrot` fixture
+/// exercises.
+pub const PLATROT_LONG_ROTATION: f32 = 720.0;
+
+/// Units per second the long-ride fixture's platform travels at (its
+/// `speed` keyvalue), so the whole trip takes
+/// `PLATROT_LONG_HEIGHT / PLATROT_LONG_SPEED` seconds (about 19.5).
+pub const PLATROT_LONG_SPEED: f32 = 50.0;
+
+/// Half the width of each arm of the long-ride fixture's cross-shaped
+/// platform (its short dimension, `X` for the arm running along `Y` and
+/// vice versa).
+pub const PLATROT_LONG_ARM_HALF_WIDTH: f32 = 32.0;
+
+/// How far each arm of the long-ride fixture's cross-shaped platform
+/// extends from the pivot along its own long axis.
+pub const PLATROT_LONG_ARM_LENGTH: f32 = 150.0;
+
+/// Where the long-ride fixture's `info_player_start` sits along `X`: on the
+/// `+X` arm, well inside [`PLATROT_LONG_ARM_LENGTH`].
+pub const PLATROT_LONG_RADIUS: f32 = 60.0;
+
+/// How far off the `+X` arm's own centreline (`Y`) the long-ride fixture's
+/// `info_player_start` sits: close enough to
+/// [`PLATROT_LONG_ARM_HALF_WIDTH`] that only [`PLATROT_LONG_LATERAL_MARGIN`]
+/// units of the rider's own seat, in the platform's rotating frame, ever
+/// separate them from open air — so any drift in the rigid carry, however
+/// small, shows up as a fall rather than being absorbed by slack in the
+/// footprint.
+pub const PLATROT_LONG_LATERAL: f32 = 20.0;
+
+/// [`PLATROT_LONG_ARM_HALF_WIDTH`] less [`PLATROT_LONG_LATERAL`]: how much
+/// lateral drift, in the platform's own rotating frame, the long-ride
+/// fixture's seated rider can tolerate before stepping off the arm into the
+/// open notch between arms.
+pub const PLATROT_LONG_LATERAL_MARGIN: f32 = PLATROT_LONG_ARM_HALF_WIDTH - PLATROT_LONG_LATERAL;
+
+/// A world with no floor at all (an open void, exactly like
+/// [`rotating_platform_bsp`]) whose only solid is a **cross**-shaped
+/// platform compiled as submodel `*1`, relative to its own origin brush at
+/// the world origin: the union of two overlapping bars, one running along
+/// `X` and one along `Y`, each [`PLATROT_LONG_ARM_HALF_WIDTH`] `*` 2 wide
+/// and reaching [`PLATROT_LONG_ARM_LENGTH`] out from the pivot in every
+/// direction.
+///
+/// Unlike [`rotating_platform_bsp`]'s full square slab — which a quarter
+/// turn maps onto itself with no gap anywhere on it — this footprint has
+/// open notches between its four arms at every angle that is not a
+/// multiple of 90 degrees, closer to the silhouette a real screw-shaft
+/// `func_platrot` sweeps out. A rider seated in the platform's own
+/// rotating frame near an arm's edge
+/// (see [`PLATROT_LONG_LATERAL`]) stays over solid ground for the whole
+/// trip only if the rigid carry keeps their *local* seat fixed to within
+/// [`PLATROT_LONG_LATERAL_MARGIN`] at every one of the trip's roughly 1170
+/// ticks — a footprint with no gap could not tell a real defect from no
+/// defect at all here, which is why this fixture does not reuse
+/// [`rotating_platform_bsp`]'s square slab.
+///
+/// No bytes here come from any game installation; see
+/// `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn platrot_long_bsp(entities: &str) -> Vec<u8> {
+    let half_extent = PLATROT_LONG_ARM_LENGTH;
+    let mins = [-half_extent, -half_extent, -16.0];
+    let maxs = [half_extent, half_extent, 0.0];
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(entities);
+    let world_heads = b.push_collision_hulls(&[]);
+    b.push_model([-4096.0; 3], [4096.0; 3], [0.0; 3], world_heads, 2, 0, 0);
+    let arm_x = CollisionBrush::box_brush(
+        [
+            -PLATROT_LONG_ARM_LENGTH,
+            -PLATROT_LONG_ARM_HALF_WIDTH,
+            -16.0,
+        ],
+        [PLATROT_LONG_ARM_LENGTH, PLATROT_LONG_ARM_HALF_WIDTH, 0.0],
+    );
+    let arm_y = CollisionBrush::box_brush(
+        [
+            -PLATROT_LONG_ARM_HALF_WIDTH,
+            -PLATROT_LONG_ARM_LENGTH,
+            -16.0,
+        ],
+        [PLATROT_LONG_ARM_HALF_WIDTH, PLATROT_LONG_ARM_LENGTH, 0.0],
+    );
+    let cross_heads = b.push_collision_hulls(&[arm_x, arm_y]);
+    b.push_model(mins, maxs, [0.0; 3], cross_heads, 2, 0, 0);
+    b.build()
+}
+
+/// A `worldspawn`, an `info_player_start` seated on the `+X` arm of the
+/// long-ride fixture's cross-shaped platform at
+/// ([`PLATROT_LONG_RADIUS`], [`PLATROT_LONG_LATERAL`]) — off the arm's own
+/// centreline, close to its edge — and a `func_platrot` (submodel `*1`)
+/// travelling [`PLATROT_LONG_HEIGHT`] at [`PLATROT_LONG_SPEED`] while
+/// turning [`PLATROT_LONG_ROTATION`] about the documented default `Z` axis.
+///
+/// No `spawnflags`, so the platform is started by the player stepping onto
+/// it, exactly like [`platrot_entities`]. No bytes here come from any game
+/// installation; see `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn platrot_long_entities() -> String {
+    format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\
+         \"origin\" \"{PLATROT_LONG_RADIUS} {PLATROT_LONG_LATERAL} 40\"\n\"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"func_platrot\"\n\"targetname\" \"{PLATROT_LONG_NAME}\"\n\
+         \"model\" \"*1\"\n\"speed\" \"{PLATROT_LONG_SPEED}\"\n\
+         \"height\" \"{PLATROT_LONG_HEIGHT}\"\n\"rotation\" \"{PLATROT_LONG_ROTATION}\"\n\
+         \"wait\" \"30\"\n\"origin\" \"0 0 0\"\n}}\n"
+    )
+}
+
+// ---------------------------------------------------------------------
 // A `func_rot_button` pressed through the real `use_pressed` input path
 // ---------------------------------------------------------------------
 
