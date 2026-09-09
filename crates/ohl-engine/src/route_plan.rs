@@ -329,6 +329,7 @@ impl std::error::Error for PlanRejection {}
 
 /// One goal volume: its bounds, and its centre (the point a reached cell
 /// is scored against).
+#[derive(Clone, Copy)]
 struct GoalVolume {
     bounds: BrushBounds,
     center: Vec3,
@@ -625,11 +626,28 @@ fn goal_volumes(game: &Game, config: &PlanConfig) -> Vec<GoalVolume> {
     volumes
 }
 
+/// Whether `(score, cell)` should replace the current `best`: a strictly
+/// closer score always wins, and an exact tie is settled by [`Cell`]'s own
+/// lexicographic order rather than by whichever candidate a `HashMap`
+/// happened to hand back first. That makes the choice reproducible: two
+/// runs over the same map, however their hash tables happened to iterate,
+/// pick the same cell.
+fn improves(best: Option<(f32, Cell)>, score: f32, cell: Cell) -> bool {
+    match best {
+        None => true,
+        Some((best_score, best_cell)) => match score.total_cmp(&best_score) {
+            std::cmp::Ordering::Less => true,
+            std::cmp::Ordering::Greater => false,
+            std::cmp::Ordering::Equal => cell < best_cell,
+        },
+    }
+}
+
 /// The reached cell closest to any goal volume's centre, for a partial
 /// plan: where to stand and look again when nothing reaches the goal
 /// itself. `None` when the walk reached nothing but its own start.
 fn pick_nearest_cell(trace: &Trace, goals: &[GoalVolume], start: Cell) -> Option<Cell> {
-    let mut best: Option<(Cell, f32)> = None;
+    let mut best: Option<(f32, Cell)> = None;
     for (cell, position) in &trace.landing {
         if *cell == start {
             continue;
@@ -641,11 +659,11 @@ fn pick_nearest_cell(trace: &Trace, goals: &[GoalVolume], start: Cell) -> Option
         else {
             continue;
         };
-        if best.is_none_or(|(_, best_score)| score < best_score) {
-            best = Some((*cell, score));
+        if improves(best, score, *cell) {
+            best = Some((score, *cell));
         }
     }
-    best.map(|(cell, _)| cell)
+    best.map(|(_, cell)| cell)
 }
 
 /// The reached cell to walk back from: whichever cell inside a goal
@@ -654,19 +672,19 @@ fn pick_nearest_cell(trace: &Trace, goals: &[GoalVolume], start: Cell) -> Option
 /// cell (which is where a margin-expanded containment test would
 /// otherwise be happiest).
 fn pick_goal_cell(trace: &Trace, goals: &[GoalVolume]) -> Option<Cell> {
-    let mut best: Option<(Cell, f32)> = None;
+    let mut best: Option<(f32, Cell)> = None;
     for (cell, position) in &trace.landing {
         for goal in goals {
             if !bounds_contains_with_margin(&goal.bounds, *position) {
                 continue;
             }
             let score = position.distance(goal.center);
-            if best.is_none_or(|(_, best_score)| score < best_score) {
-                best = Some((*cell, score));
+            if improves(best, score, *cell) {
+                best = Some((score, *cell));
             }
         }
     }
-    best.map(|(cell, _)| cell)
+    best.map(|(_, cell)| cell)
 }
 
 /// Walks `trace`'s parent links back from `goal` and returns the path
@@ -713,7 +731,14 @@ fn path_to(trace: &Trace, start: Vec3, goal: Cell) -> Vec<PathPoint> {
 fn openable_doors(game: &Game, trace: &Trace) -> Vec<(BrushId, OpenedDoor)> {
     let eye = Vec3::Z * game.move_config().view_height_standing;
     let mut doors = Vec::new();
-    for brush in &trace.frontier {
+    // Sorted rather than walked in the `HashSet`'s own iteration order: the
+    // order these are detached in becomes the order they land in
+    // `plan_route`'s own `doors: Vec<OpenedDoor>`, which is otherwise a
+    // second source of per-process randomness on top of the tiebreak
+    // `pick_goal_cell`/`pick_nearest_cell` fix above.
+    let mut frontier: Vec<BrushId> = trace.frontier.iter().copied().collect();
+    frontier.sort_unstable();
+    for brush in &frontier {
         let Some(entity) = entity_for_brush(game, *brush) else {
             continue;
         };
@@ -756,8 +781,12 @@ fn openable_doors(game: &Game, trace: &Trace) -> Vec<(BrushId, OpenedDoor)> {
 /// Where a route presses the doors it crosses, and how far of it can be
 /// walked at all.
 struct DoorMarks {
-    /// The door to press at each path index.
-    presses: HashMap<usize, OpenedDoor>,
+    /// The doors to press at each path index, in the order they were
+    /// attributed. More than one door can share a press index — two
+    /// doors whose own [`USE_RADIUS`] proximity happens to be satisfied
+    /// from the same path point — and all of them have to be pressed, or
+    /// the route silently walks up to a door that never opened.
+    presses: HashMap<usize, Vec<OpenedDoor>>,
     /// How much of the path is usable: shorter than the path itself when
     /// it crosses a leaf no point on it stands in reach of, in which case
     /// the route stops at the last point before that leaf.
@@ -773,8 +802,12 @@ struct DoorMarks {
 /// progress, and the next plan — made from a point that is now beside the
 /// leaf — is the one that presses it. A path truncated to nothing is how
 /// a caller learns that this door is the thing to wait at.
+///
+/// Two doors can attribute to the same path index (their leaves both come
+/// into reach from the same point); both are kept, in `doors`' own order,
+/// rather than the second silently overwriting the first.
 fn attribute_doors(path: &[PathPoint], doors: &[OpenedDoor], eye: Vec3) -> DoorMarks {
-    let mut presses: HashMap<usize, OpenedDoor> = HashMap::new();
+    let mut presses: HashMap<usize, Vec<OpenedDoor>> = HashMap::new();
     let mut usable_len = path.len();
     for door in doors {
         let Some(crossing) = path
@@ -787,9 +820,7 @@ fn attribute_doors(path: &[PathPoint], doors: &[OpenedDoor], eye: Vec3) -> DoorM
             .iter()
             .rposition(|point| (point.position + eye).distance(door.center) <= USE_RADIUS)
         {
-            Some(press) => {
-                presses.insert(press, *door);
-            }
+            Some(press) => presses.entry(press).or_default().push(*door),
             None => usable_len = usable_len.min(crossing),
         }
     }
@@ -925,24 +956,26 @@ pub fn merge_collinear(path: &[PathPoint]) -> Vec<PlanAction> {
 fn actions_for(
     collision: &CollisionModel,
     path: &[PathPoint],
-    marks: &HashMap<usize, OpenedDoor>,
+    marks: &HashMap<usize, Vec<OpenedDoor>>,
     eye: Vec3,
 ) -> Vec<PlanAction> {
     let mut actions = Vec::new();
     let mut chunk_start = 0usize;
     for index in 0..path.len() {
-        let Some(door) = marks.get(&index) else {
+        let Some(doors) = marks.get(&index) else {
             continue;
         };
         actions.extend(merge_collinear(&string_pull(
             collision,
             &path[chunk_start..=index],
         )));
-        let yaw = heading(path[index].position + eye, door.center).map_or(0.0, |(yaw, _)| yaw);
-        actions.push(PlanAction::UseDoor {
-            yaw,
-            open_seconds: door.open_seconds,
-        });
+        for door in doors {
+            let yaw = heading(path[index].position + eye, door.center).map_or(0.0, |(yaw, _)| yaw);
+            actions.push(PlanAction::UseDoor {
+                yaw,
+                open_seconds: door.open_seconds,
+            });
+        }
         chunk_start = index;
     }
     actions.extend(merge_collinear(&string_pull(
@@ -1107,7 +1140,7 @@ fn build_plan(
         cells,
         rounds,
         path_points: path.len(),
-        doors: presses.len(),
+        doors: presses.values().map(Vec::len).sum(),
         reaches_goal,
         goal_distance_rounded: round_distance(goal_distance),
         start_distance_rounded: round_distance(start_distance),
@@ -1118,7 +1151,7 @@ fn build_plan(
 mod tests {
     use super::*;
     use crate::test_support::{
-        PLAN_TURN_MAP, REACH_GAP_MAP, plan_turn_bsp, reachability_gap_bsp,
+        PLAN_TURN_MAP, REACH_GAP_EDGE_X, REACH_GAP_MAP, plan_turn_bsp, reachability_gap_bsp,
         reachability_gap_entities,
     };
     use crate::{AssetSource, MemoryAssets};
@@ -1340,5 +1373,172 @@ mod tests {
             Err(PlanError::UnsupportedEdge),
             "the walk crosses it, but no script can"
         );
+    }
+
+    /// The floor sample in [`straight_line_is_walkable`] is the only thing
+    /// standing between a shortcut and a pit: the hull trace alone finds
+    /// nothing between two points either side of the gap fixture's
+    /// floorless pit (there is no wall over open air), so a direct cut is
+    /// clear to it and would be accepted without the floor sample. This is
+    /// load-bearing: commenting out the floor-sample loop (the `for index
+    /// in 1..=samples` block) and running this test alone reproduces the
+    /// review's own probe — the shortcut is accepted and the assertion
+    /// below fails.
+    #[test]
+    fn string_pull_rejects_a_shortcut_over_the_floorless_pit() {
+        let gap_width = 200.0;
+        let mut assets = MemoryAssets::new();
+        assets.insert(
+            &format!("maps/{REACH_GAP_MAP}.bsp"),
+            reachability_gap_bsp(gap_width, &reachability_gap_entities("ohlplannext")),
+        );
+        let game =
+            Game::load(&assets as &dyn AssetSource, REACH_GAP_MAP).expect("the fixture loads");
+        let collision = game.collision().expect("the fixture has collision hulls");
+
+        // `z = 40`, matching every fixture's own `info_player_start`
+        // convention: the player origin sits [`Hull::Standing`]'s own
+        // 36-unit foot offset above the floor it stands on, not at the
+        // floor's own height.
+        //
+        // `string_pull` always keeps the very next point unconditionally
+        // (it trusts that a genuine walked edge is walkable) and only
+        // *drops* a point when a straight line all the way past it is
+        // also confirmed walkable, so the shortcut this test is about has
+        // to be offered a real point to skip: `near_edge`, right at the
+        // gap's own near lip, still on solid floor either side of it, but
+        // stranded in the middle of a `from -> far` line that crosses the
+        // pit directly.
+        let from = PathPoint {
+            position: Vec3::new(REACH_GAP_EDGE_X - 40.0, 0.0, 40.0),
+            kind: EdgeKind::Walk,
+        };
+        let near_edge = PathPoint {
+            position: Vec3::new(REACH_GAP_EDGE_X - 8.0, 0.0, 40.0),
+            kind: EdgeKind::Walk,
+        };
+        let far = PathPoint {
+            position: Vec3::new(REACH_GAP_EDGE_X + gap_width + 8.0, 0.0, 40.0),
+            kind: EdgeKind::Walk,
+        };
+
+        let pulled = string_pull(collision, &[from, near_edge, far]);
+        assert_eq!(
+            pulled.len(),
+            3,
+            "no floor spans the pit, so the direct from -> far cut has to be rejected and \
+             near_edge kept on the path"
+        );
+        assert_eq!(pulled[0].position, from.position);
+        assert_eq!(pulled[1].position, near_edge.position);
+        assert_eq!(pulled[2].position, far.position);
+    }
+
+    /// A bare `Trace` with only the fields [`pick_nearest_cell`] and
+    /// [`pick_goal_cell`] read, for testing their own tiebreak in
+    /// isolation.
+    fn trace_with_landing(landing: HashMap<Cell, Vec3>) -> Trace {
+        Trace {
+            landing,
+            parent: HashMap::new(),
+            order: Vec::new(),
+            frontier: HashSet::new(),
+        }
+    }
+
+    /// `pick_nearest_cell` and `pick_goal_cell` used to settle an exact
+    /// score tie however their `HashMap` happened to iterate — different
+    /// across processes, since the default hasher is randomly keyed per
+    /// process. Building the same tie from two different insertion orders
+    /// has to still pick the same cell, and that cell has to be the one
+    /// [`Cell`]'s own lexicographic order picks, not an arbitrary one.
+    #[test]
+    fn pick_nearest_and_goal_cell_break_ties_the_same_way_regardless_of_insertion_order() {
+        let goal = GoalVolume {
+            bounds: BrushBounds {
+                mins: Vec3::new(-100.0, -100.0, -100.0),
+                maxs: Vec3::new(100.0, 100.0, 100.0),
+            },
+            center: Vec3::ZERO,
+        };
+        let position_a = Vec3::new(-50.0, 0.0, 0.0);
+        let position_b = Vec3::new(50.0, 0.0, 0.0);
+        let cell_a = cell_of(position_a);
+        let cell_b = cell_of(position_b);
+        assert!(cell_a < cell_b, "the fixture assumes this ordering");
+        let start = cell_of(Vec3::new(0.0, 500.0, 0.0));
+
+        let forward: HashMap<Cell, Vec3> = [(cell_a, position_a), (cell_b, position_b)]
+            .into_iter()
+            .collect();
+        let backward: HashMap<Cell, Vec3> = [(cell_b, position_b), (cell_a, position_a)]
+            .into_iter()
+            .collect();
+
+        let nearest_forward =
+            pick_nearest_cell(&trace_with_landing(forward.clone()), &[goal], start)
+                .expect("a nearest cell is picked");
+        let nearest_backward =
+            pick_nearest_cell(&trace_with_landing(backward.clone()), &[goal], start)
+                .expect("a nearest cell is picked");
+        assert_eq!(
+            nearest_forward, nearest_backward,
+            "the tie is broken the same way regardless of the map's own insertion order"
+        );
+        assert_eq!(
+            nearest_forward, cell_a,
+            "the smaller cell (by Cell's own Ord) wins the exact tie"
+        );
+
+        let goal_forward =
+            pick_goal_cell(&trace_with_landing(forward), &[goal]).expect("a goal cell is picked");
+        let goal_backward =
+            pick_goal_cell(&trace_with_landing(backward), &[goal]).expect("a goal cell is picked");
+        assert_eq!(goal_forward, goal_backward);
+        assert_eq!(goal_forward, cell_a);
+    }
+
+    /// Two doors can both be attributed to the same path point (their own
+    /// `USE_RADIUS` proximity is satisfied from the same place). Both have
+    /// to be pressed, or the route walks up to a door that never opened —
+    /// the `HashMap<usize, OpenedDoor>` this used to be silently kept only
+    /// the second.
+    #[test]
+    fn attribute_doors_keeps_both_doors_sharing_a_press_index() {
+        let path = [
+            point(0.0, 0.0, EdgeKind::Walk),
+            point(100.0, 0.0, EdgeKind::Walk),
+            point(200.0, 0.0, EdgeKind::Walk),
+        ];
+        let door_a = OpenedDoor {
+            center: Vec3::new(30.0, 0.0, 0.0),
+            bounds: BrushBounds {
+                mins: Vec3::new(90.0, -10.0, -10.0),
+                maxs: Vec3::new(110.0, 10.0, 10.0),
+            },
+            open_seconds: 2.0,
+        };
+        let door_b = OpenedDoor {
+            center: Vec3::new(0.0, 30.0, 0.0),
+            bounds: BrushBounds {
+                mins: Vec3::new(190.0, -10.0, -10.0),
+                maxs: Vec3::new(210.0, 10.0, 10.0),
+            },
+            open_seconds: 3.0,
+        };
+
+        let marks = attribute_doors(&path, &[door_a, door_b], Vec3::ZERO);
+        let pressed = marks
+            .presses
+            .get(&0)
+            .expect("both doors are attributed to the same path point");
+        assert_eq!(
+            pressed.len(),
+            2,
+            "neither door silently overwrites the other"
+        );
+        assert!((pressed[0].open_seconds - 2.0).abs() < 1e-6);
+        assert!((pressed[1].open_seconds - 3.0).abs() < 1e-6);
+        assert_eq!(marks.usable_len, path.len(), "the whole path stays usable");
     }
 }
