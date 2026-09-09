@@ -6085,3 +6085,64 @@ walk.
 `--all-features`), `cargo test --workspace`, policy, graph, combat-smoke
 37/37, `--reachability-report` byte-identical to main on a campaign map,
 and `cargo xtask chain-walk` at depth 10.
+
+## M9.33 — `func_platrot`, and the tenth hop measured again
+
+The tenth chain map's own way onward turned out to be a brush entity this
+engine had no component for: a platform that travels **and** rotates over
+one trip. It loaded as a plain solid brush, so it never moved, every switch
+wired to it fired into nothing, and the walk read the region it gates as a
+sealed room. That entity now exists.
+
+Its two halves are one fact. A single progress fraction drives both the
+travel and the spin, so they cannot come apart, and both are reported
+through the one place this project answers "where is this brush right now"
+— which means the renderer, the collision hull, the `use`-proximity point
+and a rider's carry all agree by construction rather than by four copies of
+the same arithmetic. A rider is carried by the translation and by the same
+rigid rotational step a track train through a bend already used; the
+physics needed no change at all, because it was already written for a brush
+that does both.
+
+Activation follows the documentation that was found for it: stepping onto
+one starts it, unless the "Toggle" spawnflag is set, in which case every
+trip in either direction is one activation and it never comes back on its
+own. Eight further places where the public pages are silent are recorded in
+`docs/FORMAT_SOURCES.md` as this project's own choices — including one
+claim, found only in a search-engine summary, deliberately **not** adopted.
+Its state travels through a new optional save tag and across a level change
+beside the frozen snapshot rather than inside it.
+
+**Two ways a route can use one.** The ride edge from the last milestone
+picks it up like any other lift and plans from the *rotated* landing: where
+a rider is actually carried to, a quarter turn round the platform's axis
+from where they boarded, not the point directly above it. But the shape a
+published map more often builds is a column standing in a doorway that a
+button sends out of the way, which nobody stands on and nobody rides. That
+is a door as far as a route is concerned — one press, one wait, walk
+through — and it is now planned as one.
+
+**The tenth hop: measured again, and still refused.** With the entity
+implemented, the reached region of the stalled map roughly **doubles**
+(about 2,200 grid cells to about 4,470): the switch really is what those
+buttons fire, and the space behind the column really does open. The map's
+platform is not a lift the walk can board — it is a Toggle column beside
+the walked floor, travelling downward and turning a quarter circle — so the
+ride edge finds no candidate there, exactly as the last milestone found for
+`func_plat`. What the enlarged region still does not contain is the level
+change: the search plateaus about 1,250 units short of it, with no door
+left to open, no platform left to switch and nothing left to ride. So there
+is still **no `c0a0-hop9.txt`** — the planner never writes an unvalidated
+route — and `cargo xtask chain-walk` still reports **distinct depth 10**.
+
+One route *was* produced on the way to that answer and then refused, which
+is worth recording: a partial plan walked into a boundary leading back into
+a map the chain had already been in. The search had always declined to aim
+at such a boundary; the replay had not been checking where it actually
+arrived. It does now, and a route that only sends the chain back where it
+came from is no longer a route.
+
+**Gates**: fmt, clippy (workspace, `--features dev-tools`, and
+`--all-features`), `cargo test --workspace`, policy, graph, combat-smoke
+37/37, campaign-smoke 93/93, and `cargo xtask chain-walk` at depth 10.
+

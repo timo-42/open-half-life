@@ -1420,6 +1420,141 @@ fn openable_doors(game: &Game, trace: &Trace, ridden: &HashSet<u32>) -> Vec<(Bru
     doors
 }
 
+/// A brush mover the walk cannot open and cannot ride, but *can* switch:
+/// a `func_platrot` at rest whose own travel takes it out of the way.
+///
+/// This is the third thing a round advance knows how to do, beside opening
+/// a door and riding a lift, and it is the one a `func_platrot` normally
+/// needs. Such a platform is routinely not a lift at all — a column filling
+/// a doorway, whose documented "Toggle" spawnflag means one activation
+/// sends it to its other resting pose and leaves it there. Nothing stands
+/// on it and nothing rides it; what changes is that the space it used to
+/// fill is now empty, which is exactly what opening a door does.
+///
+/// So it is planned exactly like an opened door, and reuses
+/// [`OpenedDoor`]'s own attribution unchanged: the volume the route walks
+/// through is the platform's *resting* bounds, and the point the press is
+/// made from is whatever switch fires it — the mover itself, or a
+/// `func_button` wired to it, the same two [`ride_activation`] measures. A
+/// touch-started platform is deliberately not handled here: it needs no
+/// press, and this advance has nothing but a press to offer.
+#[derive(Debug, Clone, Copy)]
+struct SwitchedMover {
+    /// The mover's own entity, so one search switches it at most once.
+    entity: Entity,
+    /// Its attached collision hull, which this advance re-poses.
+    brush: BrushId,
+    /// How far it travels, in world units.
+    offset: Vec3,
+    /// The signed rotation axis it turns about, or `Vec3::ZERO`.
+    axis: Vec3,
+    /// How far round it turns, in degrees.
+    degrees: f32,
+    /// The press that fires it and the volume it clears, in the shape the
+    /// route planner already presses a door with.
+    door: OpenedDoor,
+}
+
+/// Every `func_platrot` on this round's frontier that some reached cell can
+/// switch out of the way, in the shape [`attribute_doors`] presses a door
+/// with.
+///
+/// A platform the walk is *standing on* is excluded for the same reason a
+/// door it is standing on is: moving it takes the ground out from under
+/// the route. That platform is a ride, and [`ride_candidates`] is where it
+/// belongs.
+fn switched_movers(game: &Game, trace: &Trace, taken: &HashSet<u32>) -> Vec<SwitchedMover> {
+    let eye = Vec3::Z * game.move_config().view_height_standing;
+    let mut frontier: Vec<BrushId> = trace.frontier.iter().copied().collect();
+    frontier.sort_unstable();
+    let mut switched = Vec::new();
+    for brush in frontier {
+        let Some(entity) = entity_for_brush(game, brush) else {
+            continue;
+        };
+        if taken.contains(&entity.id()) {
+            continue;
+        }
+        let Some(platrot) = game
+            .registry()
+            .world
+            .get::<&PlatRot>(entity)
+            .ok()
+            .map(|platrot| *platrot)
+            .filter(|platrot| platrot.state == MoverState::Closed)
+        else {
+            continue;
+        };
+        let offset = platrot.movedir * platrot.travel_distance;
+        if !offset.is_finite() || offset.length() <= f32::EPSILON {
+            continue;
+        }
+        let Ok(bounds) = game.registry().world.get::<&BrushBounds>(entity) else {
+            continue;
+        };
+        if let Some(collision) = game.collision()
+            && walk_stands_on(collision, trace, brush, &bounds)
+        {
+            continue;
+        }
+        let Some(center) = switch_center(game, entity, trace, eye) else {
+            continue;
+        };
+        switched.push(SwitchedMover {
+            entity,
+            brush,
+            offset,
+            axis: platrot.axis,
+            degrees: platrot.rotation_degrees,
+            door: OpenedDoor {
+                center,
+                bounds: *bounds,
+                open_seconds: travel_seconds(platrot.travel_distance, platrot.speed),
+            },
+        });
+    }
+    switched
+}
+
+/// The brush centre of the nearest switch that fires `mover` and stands
+/// within [`USE_RADIUS`] of a cell this walk reached: the mover itself, or
+/// a `func_button` wired to it. `None` when nothing the walk has reached
+/// can fire it.
+fn switch_center(game: &Game, mover: Entity, trace: &Trace, eye: Vec3) -> Option<Vec3> {
+    let mut best: Option<(f32, Vec3)> = None;
+    let mut consider = |entity: Entity| {
+        let Some(center) = ohl_game::pose::brush_center(game.registry(), entity) else {
+            return;
+        };
+        let Some(distance) = trace
+            .order
+            .iter()
+            .map(|position| (*position + eye).distance(center))
+            .filter(|distance| *distance <= USE_RADIUS)
+            .min_by(f32::total_cmp)
+        else {
+            return;
+        };
+        if best.is_none_or(|(closest, _)| distance < closest) {
+            best = Some((distance, center));
+        }
+    };
+    consider(mover);
+    let buttons: Vec<Entity> = game
+        .registry()
+        .world
+        .query::<(Entity, &Button)>()
+        .iter()
+        .map(|(entity, _)| entity)
+        .collect();
+    for button in buttons {
+        if fires_mover(game, button, mover) {
+            consider(button);
+        }
+    }
+    best.map(|(_, center)| center)
+}
+
 /// Whether any cell this walk reached is standing on `brush` itself — the
 /// difference between a brush that blocks the route and one that carries
 /// it.
@@ -2220,6 +2355,43 @@ fn take_ride(game: &mut Game, walk: &mut Walk, ridden: &mut HashSet<u32>, cap: u
     false
 }
 
+/// Moves every `func_platrot` a reached cell can switch out of the way to
+/// the far end of its own travel, recording each as a press the route
+/// makes on the way past ([`switched_movers`]).
+///
+/// Returns whether anything moved. A mover is switched at most once per
+/// search, sharing the `taken` set with [`take_ride`]: a platform is
+/// either something to ride or something to get out of the way, never both.
+///
+/// # Errors
+/// [`PlanError::NoCollision`], the same failure every other round advance
+/// reports when the collision model has gone.
+fn take_switch(
+    game: &mut Game,
+    trace: &Trace,
+    taken: &mut HashSet<u32>,
+    doors: &mut Vec<OpenedDoor>,
+    reached: (usize, usize),
+) -> Result<bool, PlanRejection> {
+    let switched = switched_movers(game, trace, taken);
+    if switched.is_empty() {
+        return Ok(false);
+    }
+    let (cells, rounds) = reached;
+    let Some(collision) = game.collision_mut() else {
+        return Err(PlanRejection::new(PlanError::NoCollision, cells, rounds));
+    };
+    for mover in &switched {
+        let origin = collision.brush_origin(mover.brush) + mover.offset;
+        collision.set_brush_pose(mover.brush, origin, Vec3::ZERO, mover.axis, mover.degrees);
+    }
+    for mover in switched {
+        taken.insert(mover.entity.id());
+        doors.push(mover.door);
+    }
+    Ok(true)
+}
+
 /// Plans a route from `game`'s current player position to the nearest
 /// reachable cell inside a [`PlanConfig::goal_classname`] volume.
 ///
@@ -2291,9 +2463,17 @@ pub fn plan_route(game: &mut Game, config: &PlanConfig) -> Result<RoutePlan, Pla
             walk.requeue_all();
             continue;
         }
-        // No door left to open, and the goal not reached: the last thing
-        // this walk knows how to do is ride a mover it is standing on
-        // ([`take_ride`]).
+        // No door left to open: a `func_platrot` blocking the way that a
+        // reachable switch moves out of it is the next thing to try
+        // ([`switched_movers`]). It is planned exactly like a door — one
+        // press, one wait — because from the route's point of view that is
+        // what it is.
+        if take_switch(game, &walk.trace, &mut ridden, &mut doors, (cells, rounds))? {
+            walk.requeue_all();
+            continue;
+        }
+        // Nothing left to switch either: the last thing this walk knows how
+        // to do is ride a mover it is standing on ([`take_ride`]).
         if take_ride(game, &mut walk, &mut ridden, config.cell_cap) {
             walk.requeue_all();
             continue;
@@ -2409,11 +2589,12 @@ mod tests {
     use super::*;
     use crate::test_support::{
         LiftFixture, PLAN_COST_LEDGE_X, PLAN_COST_LEDGE_Z, PLAN_COST_MAP, PLAN_LADDER_DROP,
-        PLAN_LADDER_MAP, PLAN_LIFT_MAP, PLAN_LIFT_TRAVEL, PLAN_PLATROT_MAP, PLAN_PLATROT_ROTATION,
-        PLAN_PLATROT_SPEED, PLAN_PLATROT_TRAVEL, PLAN_STOOD_ON_MAP, PLAN_STOOD_ON_NAME,
-        PLAN_TURN_MAP, REACH_GAP_EDGE_X, REACH_GAP_MAP, plan_cost_bsp, plan_ladder_bsp,
-        plan_lift_bsp, plan_platrot_bsp, plan_stood_on_lift_bsp, plan_turn_bsp,
-        reachability_gap_bsp, reachability_gap_entities,
+        PLAN_LADDER_MAP, PLAN_LIFT_MAP, PLAN_LIFT_TRAVEL, PLAN_PLATROT_GATE_MAP,
+        PLAN_PLATROT_GATE_NAME, PLAN_PLATROT_GATE_SPEED, PLAN_PLATROT_GATE_TRAVEL,
+        PLAN_PLATROT_MAP, PLAN_PLATROT_ROTATION, PLAN_PLATROT_SPEED, PLAN_PLATROT_TRAVEL,
+        PLAN_STOOD_ON_MAP, PLAN_STOOD_ON_NAME, PLAN_TURN_MAP, REACH_GAP_EDGE_X, REACH_GAP_MAP,
+        plan_cost_bsp, plan_ladder_bsp, plan_lift_bsp, plan_platrot_bsp, plan_platrot_gate_bsp,
+        plan_stood_on_lift_bsp, plan_turn_bsp, reachability_gap_bsp, reachability_gap_entities,
     };
     use crate::{AssetSource, MemoryAssets};
 
@@ -2725,6 +2906,94 @@ mod tests {
         assert!(
             !openable_doors(&game, &walk.trace, &HashSet::new()).is_empty(),
             "and without that rule it would be opened, which is the bug"
+        );
+    }
+
+    /// A `func_platrot` standing in the only corridor there is, with a
+    /// `func_button` on the wall that sends it down out of the way, is
+    /// planned as a press and a wait — a door in all but classname. The
+    /// column is not ridden and nothing stands on it; what the route uses
+    /// is the space it stops filling.
+    #[test]
+    fn a_func_platrot_in_the_way_is_planned_as_a_press() {
+        let mut game = {
+            let mut assets = MemoryAssets::new();
+            assets.insert(
+                &format!("maps/{PLAN_PLATROT_GATE_MAP}.bsp"),
+                plan_platrot_gate_bsp("ohlplannext"),
+            );
+            Game::load(&assets as &dyn AssetSource, PLAN_PLATROT_GATE_MAP)
+                .expect("the fixture loads")
+        };
+        let column = *game
+            .registry()
+            .find(PLAN_PLATROT_GATE_NAME)
+            .first()
+            .expect("the fixture declares one named func_platrot");
+
+        // What the advance itself reports, before any plan is read back.
+        let walk = walk_of(&game);
+        let switched = switched_movers(&game, &walk.trace, &HashSet::new());
+        let mover = switched
+            .first()
+            .copied()
+            .expect("the walk is stopped by the column and can reach its button");
+        assert_eq!(mover.entity, column);
+        assert!(
+            (mover.offset.z + PLAN_PLATROT_GATE_TRAVEL).abs() < 0.01,
+            "the column's whole documented travel, downward: {:?}",
+            mover.offset
+        );
+        assert_eq!(mover.axis, Vec3::Z);
+        assert!(
+            (mover.door.open_seconds - PLAN_PLATROT_GATE_TRAVEL / PLAN_PLATROT_GATE_SPEED).abs()
+                < 0.01
+        );
+        // The press is made at the *button*, not at the column: a player
+        // in front of a column filling a corridor is nowhere near its
+        // centre.
+        let column_center =
+            ohl_game::pose::brush_center(game.registry(), column).expect("it has a centre");
+        assert!(
+            mover.door.center.distance(column_center) > USE_RADIUS,
+            "the switch is the button on the wall, not the column itself"
+        );
+
+        let plan = plan_route(&mut game, &PlanConfig::default()).expect("the fixture plans");
+        assert!(plan.reaches_goal, "the route reaches the level change");
+        assert_eq!(plan.doors, 1, "one press, at the button");
+        assert!(
+            plan.actions.iter().any(|action| matches!(
+                action,
+                PlanAction::UseDoor { open_seconds, .. }
+                    if (*open_seconds - PLAN_PLATROT_GATE_TRAVEL / PLAN_PLATROT_GATE_SPEED).abs()
+                        < 0.01
+            )),
+            "and waits the column's own travel time"
+        );
+        assert!(
+            ride_of(&plan).is_none(),
+            "a column nobody stands on is not a ride"
+        );
+    }
+
+    /// A `func_platrot` the walk *is* standing on is never switched out
+    /// from under it: that platform is a ride, and the ride edge is where
+    /// it belongs.
+    #[test]
+    fn a_func_platrot_the_walk_stands_on_is_not_switched() {
+        let game = {
+            let mut assets = MemoryAssets::new();
+            assets.insert(
+                &format!("maps/{PLAN_PLATROT_MAP}.bsp"),
+                plan_platrot_bsp("ohlplannext"),
+            );
+            Game::load(&assets as &dyn AssetSource, PLAN_PLATROT_MAP).expect("the fixture loads")
+        };
+        let walk = walk_of(&game);
+        assert!(
+            switched_movers(&game, &walk.trace, &HashSet::new()).is_empty(),
+            "the lift fixture's platform is boarded, not switched"
         );
     }
 
