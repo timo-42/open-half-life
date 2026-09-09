@@ -85,7 +85,7 @@ pub struct QueuedDamage {
 /// radius of a point; see `crate::pickups::PICKUP_TOUCH_RADIUS` for the same
 /// simplification applied to pickups.
 // TODO(black-box): replace with a real volume-overlap test.
-const TRIGGER_HURT_RADIUS: f32 = 128.0;
+pub(crate) const TRIGGER_HURT_RADIUS: f32 = 128.0;
 
 /// Everything about the step list a host chooses rather than the map.
 #[derive(Debug, Clone, Copy, PartialEq)]

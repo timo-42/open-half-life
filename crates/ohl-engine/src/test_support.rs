@@ -4677,3 +4677,191 @@ pub fn plan_train_ride_bsp(next_map: &str, fixture: TrainRideFixture) -> Vec<u8>
 
     b.build()
 }
+
+// ---------------------------------------------------------------------
+// A level change a script fires, rather than one the player walks into
+// ---------------------------------------------------------------------
+
+/// The map name [`plan_scripted_goal_bsp`] is registered under.
+pub const PLAN_SCRIPTED_MAP: &str = "ohlplanscriptedsynth";
+
+/// The `targetname` of the fixture's `trigger_changelevel`: a level change
+/// with a name, which is what makes it something another entity can fire.
+pub const PLAN_SCRIPTED_GOAL_NAME: &str = "ohl_scripted_change";
+
+/// The `targetname` of the `multisource` between the fixture's script and
+/// its level change, so the fixture exercises a chain that runs *through*
+/// a master rather than only one that gates on it.
+pub const PLAN_SCRIPTED_MASTER_NAME: &str = "ohl_scripted_gate";
+
+/// The `targetname` of the `multi_manager` the fixture's trigger starts.
+pub const PLAN_SCRIPTED_RELAY_NAME: &str = "ohl_scripted_relay";
+
+/// The delay, in seconds, the fixture's `multi_manager` fires its own
+/// target after: the whole chain's own length, and so the wait a planned
+/// route has to end with (plus
+/// [`crate::route_plan::SCRIPTED_GOAL_WAIT_MARGIN`]).
+pub const PLAN_SCRIPTED_DELAY: f32 = 2.0;
+
+/// The corridor's own extent.
+const PLAN_SCRIPTED_MIN: [f32; 3] = [-256.0, -96.0, 0.0];
+/// See [`PLAN_SCRIPTED_MIN`].
+const PLAN_SCRIPTED_MAX: [f32; 3] = [256.0, 96.0, 256.0];
+
+/// The volume that starts the script: a `trigger_once` across the middle
+/// of the corridor, which a walking player crosses.
+const PLAN_SCRIPTED_TRIGGER_MIN: [f32; 3] = [0.0, -96.0, 0.0];
+/// See [`PLAN_SCRIPTED_TRIGGER_MIN`].
+const PLAN_SCRIPTED_TRIGGER_MAX: [f32; 3] = [64.0, 96.0, 96.0];
+
+/// The level change's own volume: parked high in the air, well past a
+/// standing player's jump, so no route can ever walk into it. That is the
+/// shape this fixture exists for — a level change whose volume is not a
+/// place at all, only the thing the script ends by firing.
+const PLAN_SCRIPTED_GOAL_MIN: [f32; 3] = [128.0, -32.0, 200.0];
+/// See [`PLAN_SCRIPTED_GOAL_MIN`].
+const PLAN_SCRIPTED_GOAL_MAX: [f32; 3] = [192.0, 32.0, 212.0];
+
+/// Whether [`plan_scripted_goal_bsp`] gives its script a starting volume.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScriptedStart {
+    /// A `trigger_once` across the corridor: walking into it starts the
+    /// chain that ends by firing the level change.
+    ByTrigger,
+    /// Nothing at all fires the chain: the same unreachable level change
+    /// with no way to set it going.
+    Unstartable,
+    /// The same `trigger_once`, with a `trigger_hurt` sitting on it: the
+    /// volume that starts the chain is a place that damages whoever
+    /// stands in it, so a route may touch it but must not wait there.
+    ByHazardousTrigger,
+    /// The same `trigger_once` with the *whole corridor* lethal: there is
+    /// nowhere safe to step out to, so whoever starts the chain dies
+    /// before it ends. The level change still fires — a chain fires by
+    /// name whether or not the player survived it — which is exactly the
+    /// case a replay has to refuse.
+    ByLethalTrigger,
+}
+
+/// The `dmg` the hazardous fixture's `trigger_hurt` carries: enough that
+/// standing in it for the chain's own wait would be fatal.
+pub const PLAN_SCRIPTED_HURT_DAMAGE: f32 = 20.0;
+
+/// Where that `trigger_hurt` sits: the middle of the starting volume, so
+/// the engine's own proximity test catches a player standing in it.
+pub const PLAN_SCRIPTED_HURT_ORIGIN: [f32; 3] = [32.0, 0.0, 40.0];
+
+/// The `dmg` each of [`ScriptedStart::ByLethalTrigger`]'s volumes carries:
+/// enough that a player who cannot step out of the damage is dead well
+/// before the chain's own delay elapses.
+pub const PLAN_SCRIPTED_LETHAL_DAMAGE: f32 = 200.0;
+
+/// A plain corridor holding a `trigger_changelevel` no player can ever
+/// stand in, and (for [`ScriptedStart::ByTrigger`]) the script that fires
+/// it by name.
+///
+/// A level change is an ordinary named entity as well as a volume, and a
+/// map may fire it from a set piece rather than let the player walk into
+/// it — leaving its own volume wherever the mapper parked it, which can be
+/// nowhere anybody can stand. Planned as a volume to walk into, such a
+/// goal is simply unreachable. The chain here is the shape a published map
+/// wires one with: a trigger fires a `multi_manager`, which fires a
+/// `multisource` after its own delay, which fires the level change.
+///
+/// No bytes here come from any game installation; see
+/// `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn plan_scripted_goal_bsp(next_map: &str, start: ScriptedStart) -> Vec<u8> {
+    let trigger = format!(
+        "{{\n\"classname\" \"trigger_once\"\n\"model\" \"*1\"\n\
+         \"target\" \"{PLAN_SCRIPTED_RELAY_NAME}\"\n\"origin\" \"0 0 0\"\n}}\n"
+    );
+    let script = match start {
+        ScriptedStart::ByTrigger => trigger,
+        ScriptedStart::Unstartable => String::new(),
+        ScriptedStart::ByLethalTrigger => {
+            use std::fmt::Write as _;
+            let mut text = trigger.clone();
+            for x in [-256, -128, 0, 128, 256] {
+                let _ = write!(
+                    text,
+                    "{{\n\"classname\" \"trigger_hurt\"\n\
+                     \"dmg\" \"{PLAN_SCRIPTED_LETHAL_DAMAGE}\"\n\
+                     \"origin\" \"{x} 0 40\"\n}}\n"
+                );
+            }
+            text
+        }
+        ScriptedStart::ByHazardousTrigger => format!(
+            "{trigger}\
+             {{\n\"classname\" \"trigger_hurt\"\n\
+             \"dmg\" \"{PLAN_SCRIPTED_HURT_DAMAGE}\"\n\
+             \"origin\" \"{hx} {hy} {hz}\"\n}}\n",
+            hx = PLAN_SCRIPTED_HURT_ORIGIN[0],
+            hy = PLAN_SCRIPTED_HURT_ORIGIN[1],
+            hz = PLAN_SCRIPTED_HURT_ORIGIN[2],
+        ),
+    };
+    let entities = format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"-200 0 40\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {script}\
+         {{\n\"classname\" \"multi_manager\"\n\
+         \"targetname\" \"{PLAN_SCRIPTED_RELAY_NAME}\"\n\
+         \"{PLAN_SCRIPTED_MASTER_NAME}\" \"{PLAN_SCRIPTED_DELAY}\"\n\
+         \"origin\" \"0 0 64\"\n}}\n\
+         {{\n\"classname\" \"multisource\"\n\
+         \"targetname\" \"{PLAN_SCRIPTED_MASTER_NAME}\"\n\
+         \"target\" \"{PLAN_SCRIPTED_GOAL_NAME}\"\n\"origin\" \"0 0 64\"\n}}\n\
+         {{\n\"classname\" \"trigger_changelevel\"\n\"model\" \"*2\"\n\
+         \"targetname\" \"{PLAN_SCRIPTED_GOAL_NAME}\"\n\
+         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n"
+    );
+
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(&entities);
+
+    let world_heads = b.push_collision_hulls(&[
+        CollisionBrush::half_space([0.0, 0.0, 1.0], PLAN_SCRIPTED_MIN[2]),
+        CollisionBrush::half_space([0.0, 0.0, -1.0], -PLAN_SCRIPTED_MAX[2]),
+        CollisionBrush::half_space([1.0, 0.0, 0.0], PLAN_SCRIPTED_MIN[0]),
+        CollisionBrush::half_space([-1.0, 0.0, 0.0], -PLAN_SCRIPTED_MAX[0]),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], PLAN_SCRIPTED_MIN[1]),
+        CollisionBrush::half_space([0.0, -1.0, 0.0], -PLAN_SCRIPTED_MAX[1]),
+    ]);
+    // Both submodels are volumes, not obstacles: bare hull heads, like
+    // every other trigger volume in this module.
+    let trigger_heads = b.push_collision_hulls(&[]);
+    let goal_heads = b.push_collision_hulls(&[]);
+
+    b.push_model(
+        PLAN_SCRIPTED_MIN,
+        PLAN_SCRIPTED_MAX,
+        [0.0; 3],
+        world_heads,
+        2,
+        0,
+        0,
+    );
+    b.push_model(
+        PLAN_SCRIPTED_TRIGGER_MIN,
+        PLAN_SCRIPTED_TRIGGER_MAX,
+        [0.0; 3],
+        trigger_heads,
+        2,
+        0,
+        0,
+    );
+    b.push_model(
+        PLAN_SCRIPTED_GOAL_MIN,
+        PLAN_SCRIPTED_GOAL_MAX,
+        [0.0; 3],
+        goal_heads,
+        2,
+        0,
+        0,
+    );
+
+    b.build()
+}

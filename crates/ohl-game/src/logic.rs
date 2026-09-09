@@ -806,9 +806,27 @@ impl Simulation {
         if !self.master_is_active(registry, entity) {
             return;
         }
-        if registry.world.get::<&MultiSource>(entity).is_ok() {
+        if let Ok(source) = registry.world.get::<&MultiSource>(entity) {
+            let own_delay = source.delay;
+            drop(source);
             let fires = self.master_fires.entry(entity).or_default();
             *fires = fires.saturating_add(1);
+            let now = *fires;
+            // "It only triggers its target(s) if all entities targeting it
+            // are in the 'ON' state" (TWHL `multisource`,
+            // `docs/FORMAT_SOURCES.md`, "Masters (`multisource`)"): the
+            // gate is also a relay. It fans out on the fire that *reaches*
+            // the required count and never again, so a master that keeps
+            // being triggered afterwards does not re-fire the chain behind
+            // it — the same latch [`Self::master_is_active`] reads the
+            // count with, expressed as a single transition.
+            if now == Self::multisource_required(registry, entity)
+                && let Ok(target) = registry.world.get::<&Target>(entity)
+            {
+                let name = target.0.clone();
+                drop(target);
+                self.fire_typed(name, activator, own_delay, use_type);
+            }
             return;
         }
 
@@ -1273,24 +1291,40 @@ impl Simulation {
         if sources.is_empty() {
             return true;
         }
+        sources.into_iter().any(|source| {
+            let required = Self::multisource_required(registry, source);
+            self.master_fires
+                .get(&source)
+                .is_some_and(|fires| *fires >= required)
+        })
+    }
+
+    /// How many fires `source`, a `multisource`, needs before it counts as
+    /// active: how many entities name it, counted from the map's own
+    /// graph — both ways one entity can name another, a `target` keyvalue
+    /// and a `multi_manager`'s fan-out keyvalues (which are targets by a
+    /// different spelling, and the common way a map drives a master).
+    ///
+    /// One at the least: a `multisource` no entity targets at all is a
+    /// master nothing has ever triggered, not one that is open from the
+    /// start. See [`Self::master_is_active`]'s own doc comment.
+    fn multisource_required(registry: &Registry, source: Entity) -> usize {
+        let Ok(name) = registry.world.get::<&TargetName>(source) else {
+            return 1;
+        };
         let by_target = registry
             .world
             .query::<(Entity, &Target)>()
             .iter()
-            .filter(|(_, target)| target.0 == master.0)
+            .filter(|(_, target)| target.0 == name.0)
             .count();
         let by_fan_out = registry
             .world
             .query::<(Entity, &MultiManager)>()
             .iter()
-            .filter(|(_, manager)| manager.targets.iter().any(|(name, _)| *name == master.0))
+            .filter(|(_, manager)| manager.targets.iter().any(|(fired, _)| *fired == name.0))
             .count();
-        let required = by_target.saturating_add(by_fan_out).max(1);
-        sources.into_iter().any(|source| {
-            self.master_fires
-                .get(&source)
-                .is_some_and(|fires| *fires >= required)
-        })
+        by_target.saturating_add(by_fan_out).max(1)
     }
 
     /// Activates one `trigger_*` volume, returning whether it actually
@@ -2476,6 +2510,123 @@ mod tests {
             sim.tick(registry, step);
             elapsed += step;
         }
+    }
+
+    /// The other half of the published `multisource` sentence: a satisfied
+    /// master "only triggers its target(s)" — so it is a relay as well as
+    /// a gate. Two entities target this one, and it targets a door: the
+    /// door must stay shut until both have fired the master, must open on
+    /// the fire that completes it, and must not be fired again by a third.
+    #[test]
+    fn a_multisource_fires_its_own_target_once_all_its_targeters_have() {
+        let entities = vec![
+            raw(&[
+                ("classname", "multisource"),
+                ("targetname", "gate1"),
+                ("target", "door1"),
+            ]),
+            raw(&[
+                ("classname", "trigger_relay"),
+                ("targetname", "first"),
+                ("target", "gate1"),
+            ]),
+            raw(&[
+                ("classname", "trigger_relay"),
+                ("targetname", "second"),
+                ("target", "gate1"),
+            ]),
+            raw(&[
+                ("classname", "func_door"),
+                ("targetname", "door1"),
+                ("speed", "100"),
+                ("wait", "-1"),
+                ("angle", "0"),
+            ]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let mut sim = Simulation::new();
+        let master = registry.find("gate1")[0];
+        let door = registry.find("door1")[0];
+        let mut events = Vec::new();
+
+        sim.activate(&mut registry, master, None, &mut events);
+        tick_for(&mut sim, &mut registry, 0.5, 0.05);
+        assert_eq!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Closed,
+            "one targeter of two is not all of them: the master must not have fired its target"
+        );
+
+        sim.activate(&mut registry, master, None, &mut events);
+        tick_for(&mut sim, &mut registry, 0.5, 0.05);
+        assert_eq!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Open,
+            "with both targeters fired the master must trigger its own target"
+        );
+
+        // A `wait -1` door stays open, so shut it by hand: a master that
+        // re-fired the chain behind it every time it was triggered again
+        // would re-open it.
+        registry
+            .world
+            .query_one_mut::<&mut Door>(door)
+            .map(|door| door.state = MoverState::Closed)
+            .expect("the fixture's door exists");
+        sim.activate(&mut registry, master, None, &mut events);
+        tick_for(&mut sim, &mut registry, 0.5, 0.05);
+        assert_eq!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Closed,
+            "a master already active must not fire its target again"
+        );
+    }
+
+    /// A `multisource`'s own `delay` schedules its fan-out, the same way
+    /// the key does for every other entity that triggers a target.
+    #[test]
+    fn a_multisource_fires_its_target_after_its_own_delay() {
+        let entities = vec![
+            raw(&[
+                ("classname", "multisource"),
+                ("targetname", "gate1"),
+                ("target", "door1"),
+                ("delay", "1"),
+            ]),
+            raw(&[
+                ("classname", "trigger_relay"),
+                ("targetname", "first"),
+                ("target", "gate1"),
+            ]),
+            raw(&[
+                ("classname", "func_door"),
+                ("targetname", "door1"),
+                ("speed", "100"),
+                ("wait", "-1"),
+                ("angle", "0"),
+            ]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let mut sim = Simulation::new();
+        let master = registry.find("gate1")[0];
+        let door = registry.find("door1")[0];
+        let mut events = Vec::new();
+
+        sim.activate(&mut registry, master, None, &mut events);
+        tick_for(&mut sim, &mut registry, 0.5, 0.05);
+        assert_eq!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Closed,
+            "the fan-out waits the master's own delay out"
+        );
+        tick_for(&mut sim, &mut registry, 1.0, 0.05);
+        assert_eq!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Open,
+            "past that delay the master fires its target"
+        );
     }
 
     #[test]

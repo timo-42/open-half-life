@@ -1274,8 +1274,17 @@ pub struct TriggerUseType(pub TriggerUse);
 /// carries. Which entities target it is not stored here — it is the
 /// `targetname` index run backwards, which `ohl_game::logic::Simulation`
 /// computes from the registry when it evaluates a [`Master`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MultiSource;
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MultiSource {
+    /// Seconds between this master going active and it firing its own
+    /// `target`: the ordinary `delay` keyvalue, documented as "the time in
+    /// seconds before an entity should trigger its target after being
+    /// triggered itself" (`docs/FORMAT_SOURCES.md`, "Teleport volumes",
+    /// where that general wording is quoted). Nothing about a
+    /// `multisource` exempts it from the key every triggering entity
+    /// carries, so it is read here rather than assumed to be zero.
+    pub delay: f32,
+}
 
 /// An entity's `master` keyvalue: "the name of a `multisource` (or
 /// `game_team_master`) entity. A master must usually be active in order
@@ -2425,7 +2434,14 @@ impl Registry {
                     world.insert_one(entity, hurt).ok();
                 }
                 "multisource" => {
-                    world.insert_one(entity, MultiSource).ok();
+                    world
+                        .insert_one(
+                            entity,
+                            MultiSource {
+                                delay: numeric(def, "delay", 0.0).max(0.0),
+                            },
+                        )
+                        .ok();
                 }
                 "trigger_teleport" => {
                     world

@@ -274,6 +274,16 @@ pub enum PlanAction {
         /// How long the door takes to open, in seconds.
         open_seconds: f32,
     },
+    /// Stand still for `seconds`, holding nothing.
+    ///
+    /// This is what a route ends with when the thing it was planned to
+    /// reach is fired by a script rather than walked into
+    /// ([`scripted_goals`]): the player steps into the volume that starts
+    /// the chain, and the chain does the rest in its own time.
+    Wait {
+        /// How long to stand still, in seconds.
+        seconds: f32,
+    },
     /// Ride the brush mover the player is standing on to its other
     /// resting position: set it going (a `use` press facing `yaw`, or
     /// nothing at all when standing on it already fired the touch volume
@@ -483,10 +493,15 @@ impl std::error::Error for PlanRejection {}
 
 /// One goal volume: its bounds, and its centre (the point a reached cell
 /// is scored against).
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct GoalVolume {
     bounds: BrushBounds,
     center: Vec3,
+    /// `None` for the goal entity's own volume — a route reaches it by
+    /// standing in it. `Some(seconds)` for a volume that merely *starts*
+    /// the script that fires the goal ([`scripted_goals`]): the route
+    /// reaches it by standing in it and then waiting that long.
+    wait_seconds: Option<f32>,
 }
 
 /// A door this walk opened between rounds, with everything the route
@@ -1236,14 +1251,298 @@ fn goal_volumes(game: &Game, config: &PlanConfig) -> Vec<GoalVolume> {
         }
         volumes.push(GoalVolume {
             bounds: *bounds,
-            center: Vec3::new(
-                f32::midpoint(bounds.mins.x, bounds.maxs.x),
-                f32::midpoint(bounds.mins.y, bounds.maxs.y),
-                f32::midpoint(bounds.mins.z, bounds.maxs.z),
-            ),
+            center: center_of(bounds),
+            wait_seconds: None,
         });
     }
     volumes
+}
+
+/// The midpoint of a brush volume.
+fn center_of(bounds: &BrushBounds) -> Vec3 {
+    Vec3::new(
+        f32::midpoint(bounds.mins.x, bounds.maxs.x),
+        f32::midpoint(bounds.mins.y, bounds.maxs.y),
+        f32::midpoint(bounds.mins.z, bounds.maxs.z),
+    )
+}
+
+/// How many links back the "what fires this" search may follow.
+///
+/// A published map wires a set piece as a chain of `multi_manager`s and
+/// `multisource`s several deep; this is a bound on the work, not a
+/// measured property of any map.
+const SCRIPTED_GOAL_DEPTH: usize = 24;
+
+/// The most targetnames that search may visit, whatever the depth: a
+/// second bound, so a map whose names fire each other in a cycle cannot
+/// make the search run long.
+const SCRIPTED_GOAL_VISITS: usize = 512;
+
+/// The longest wait a scripted goal may be planned with, in seconds. A
+/// chain whose own delays add up to more than this is not planned as a
+/// wait at all — a route file that stands still for minutes is not a
+/// route anybody can validate.
+pub const SCRIPTED_GOAL_MAX_WAIT: f32 = 180.0;
+
+/// Seconds added to a scripted goal's own accumulated delay, so a route
+/// that arrives a moment late still outlasts the chain. This project's
+/// own margin.
+pub const SCRIPTED_GOAL_WAIT_MARGIN: f32 = 10.0;
+
+/// Whether `source` fires `name` directly, and how many seconds later.
+///
+/// The two documented ways one entity fires another by name: its own
+/// `target` keyvalue (fired after that entity's own `delay`, where it has
+/// one), and a `multi_manager`'s list of `(target, delay)` pairs. A
+/// `multisource` needs no case of its own — it fires whatever its own
+/// `target` names, and is itself fired by whoever targets *it*, which is
+/// the first case applied one link further back.
+fn fire_delay(game: &Game, source: Entity, name: &str) -> Option<f32> {
+    let registry = game.registry();
+    let own_delay = registry
+        .world
+        .get::<&Trigger>(source)
+        .map_or(0.0, |trigger| trigger.delay.max(0.0));
+    if registry
+        .world
+        .get::<&Target>(source)
+        .is_ok_and(|target| target.0.eq_ignore_ascii_case(name))
+    {
+        return Some(own_delay);
+    }
+    registry
+        .world
+        .get::<&MultiManager>(source)
+        .ok()
+        .and_then(|manager| {
+            manager
+                .targets
+                .iter()
+                .filter(|(fired, _)| fired.eq_ignore_ascii_case(name))
+                .map(|(_, delay)| delay.max(0.0))
+                .max_by(f32::total_cmp)
+        })
+        .map(|delay| delay + own_delay)
+}
+
+/// Whether `entity` is a touch volume a walking player sets off: the same
+/// shape [`ride_activation`] already reads a lift's own starting trigger
+/// with — a `Trigger` with a brush volume, and none of the three kinds
+/// whose touch means something other than "fire `target`".
+fn touch_volume(game: &Game, entity: Entity) -> Option<BrushBounds> {
+    let registry = game.registry();
+    if registry.world.get::<&Trigger>(entity).is_err()
+        || registry.world.get::<&TriggerHurt>(entity).is_ok()
+        || registry.world.get::<&ChangeLevel>(entity).is_ok()
+        || registry.world.get::<&TeleportTrigger>(entity).is_ok()
+    {
+        return None;
+    }
+    registry
+        .world
+        .get::<&BrushBounds>(entity)
+        .ok()
+        .map(|bounds| *bounds)
+}
+
+/// Every touch volume that, once the player steps into it, ends up firing
+/// `name` — with how long the chain between the two takes.
+///
+/// A `trigger_changelevel` is not always a volume the player walks into.
+/// It is an ordinary named entity as well, and a map may fire it by name
+/// from a set piece the player only has to *start*: a trigger crossed at
+/// the near end of a room sets a chain of `multi_manager`s going, and the
+/// level change is one more name at the end of it, its own volume left
+/// wherever the mapper parked it — which can be nowhere a player can
+/// stand at all. Planned as a volume to walk into, such a goal is simply
+/// unreachable, and the planner reports the map blocked with nothing left
+/// to open.
+///
+/// So this walks the "what fires this" graph backwards from `name`,
+/// bounded by [`SCRIPTED_GOAL_DEPTH`] and [`SCRIPTED_GOAL_VISITS`],
+/// accumulating each link's own delay, and returns every touch volume it
+/// finds on the way. The result is sorted by volume, so two runs over the
+/// same map plan the same route.
+///
+/// This deliberately **over-approximates**. A `multisource` is an AND gate
+/// — it fires its own target only once *every* entity naming it has fired
+/// it (`ohl_game::logic::Simulation`'s own rule) — and this backward walk
+/// treats every one of those entities as if reaching it alone were enough.
+/// A volume it returns therefore *may* start the chain rather than *must*,
+/// and the accumulated delay is the shortest path's, not the longest.
+/// Nothing here has to be exact: a route is only ever written after a
+/// replay from the planner's own snapshot has walked it and seen the level
+/// change fire with the player still alive, so a volume that turns out not
+/// to start the chain simply fails to validate and costs one attempt.
+fn scripted_starts(game: &Game, name: &str) -> Vec<(BrushBounds, f32)> {
+    let mut found: Vec<(BrushBounds, f32)> = Vec::new();
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut frontier: Vec<(String, f32)> = vec![(name.to_ascii_lowercase(), 0.0)];
+    for _ in 0..SCRIPTED_GOAL_DEPTH {
+        let mut next: Vec<(String, f32)> = Vec::new();
+        for (fired, so_far) in &frontier {
+            if visited.len() >= SCRIPTED_GOAL_VISITS || !visited.insert(fired.clone()) {
+                continue;
+            }
+            let sources: Vec<Entity> = game
+                .registry()
+                .world
+                .query::<(Entity, &ClassName)>()
+                .iter()
+                .map(|(entity, _)| entity)
+                .collect();
+            for source in sources {
+                let Some(delay) = fire_delay(game, source, fired) else {
+                    continue;
+                };
+                let total = so_far + delay;
+                if let Some(bounds) = touch_volume(game, source) {
+                    found.push((bounds, total));
+                }
+                if let Ok(own) = game.registry().world.get::<&TargetName>(source) {
+                    next.push((own.0.to_ascii_lowercase(), total));
+                }
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        frontier = next;
+    }
+    found.sort_by(|(left, left_wait), (right, right_wait)| {
+        left.mins
+            .x
+            .total_cmp(&right.mins.x)
+            .then(left.mins.y.total_cmp(&right.mins.y))
+            .then(left.mins.z.total_cmp(&right.mins.z))
+            .then(left_wait.total_cmp(right_wait))
+    });
+    found.dedup_by(|left, right| left.0 == right.0);
+    found
+}
+
+/// Every volume that starts a script which fires one of this plan's goal
+/// entities, in the shape [`pick_goal_cell`] already picks a goal cell
+/// out of ([`scripted_starts`]).
+///
+/// Consulted only where the goal's own volume turned out to be one no
+/// reached cell stands in — see [`plan_route`]. A level change the player
+/// can simply walk into is still planned as a walk into it, wait or no
+/// wait.
+fn scripted_goals(game: &Game, config: &PlanConfig) -> Vec<GoalVolume> {
+    let mut names: Vec<String> = Vec::new();
+    for (entity, name) in &mut game.registry().world.query::<(Entity, &ClassName)>() {
+        if !name.0.eq_ignore_ascii_case(&config.goal_classname) {
+            continue;
+        }
+        let avoided = game
+            .registry()
+            .world
+            .get::<&ChangeLevel>(entity)
+            .is_ok_and(|change| {
+                config
+                    .avoid_goal_maps
+                    .iter()
+                    .any(|avoid| avoid.eq_ignore_ascii_case(&change.map))
+            });
+        if avoided {
+            continue;
+        }
+        if let Ok(targetname) = game.registry().world.get::<&TargetName>(entity) {
+            names.push(targetname.0.clone());
+        }
+    }
+    names.sort_unstable();
+    names.dedup();
+    let mut volumes = Vec::new();
+    for name in names {
+        for (bounds, wait) in scripted_starts(game, &name) {
+            let wait = wait + SCRIPTED_GOAL_WAIT_MARGIN;
+            if !wait.is_finite() || wait > SCRIPTED_GOAL_MAX_WAIT {
+                continue;
+            }
+            volumes.push(GoalVolume {
+                bounds,
+                center: center_of(&bounds),
+                wait_seconds: Some(wait),
+            });
+        }
+    }
+    volumes
+}
+
+/// Whether a player standing at `position` would be taking damage there.
+///
+/// Two things hurt a body that is simply standing still, and both are read
+/// back from the systems phase rather than restated: a `trigger_hurt`
+/// whose own proximity test ([`crate::systems::TRIGGER_HURT_RADIUS`])
+/// catches the player's origin, and a cell whose contents are a hostile
+/// liquid — `ohl_physics::contents::SLIME` or `LAVA`, the two
+/// `ohl_player`'s contact damage charges for. Ordinary water is not a
+/// hazard (it drowns only a *submerged* player, which a standing one is
+/// not).
+///
+/// Used for one thing only: a route that ends by standing still for a
+/// minute while a script runs ([`scripted_goals`]) must not spend that
+/// minute being hurt. Nothing else in this planner consults it, and no
+/// walk edge is removed by it — a hazard is still crossable, it is only
+/// not somewhere to wait.
+fn hazardous_to_stand_at(game: &Game, collision: &CollisionModel, position: Vec3) -> bool {
+    let contents = collision.contents_at(Hull::Point, position);
+    if contents == ohl_physics::contents::SLIME || contents == ohl_physics::contents::LAVA {
+        return true;
+    }
+    game.registry()
+        .world
+        .query::<(&TriggerHurt, &ohl_game::registry::Transform)>()
+        .iter()
+        .any(|(hurt, transform)| {
+            hurt.damage_per_second > 0.0
+                && transform.origin.distance(position) <= crate::systems::TRIGGER_HURT_RADIUS
+        })
+}
+
+/// The nearest reached cell to `from` that is safe to stand still in
+/// ([`hazardous_to_stand_at`]) and that a straight walk reaches from
+/// `from`, or `None` when `from` itself is safe or nothing better is in
+/// reach.
+///
+/// The chain a scripted goal starts is set going by *touching* its volume;
+/// where the player stands afterwards is their own business. So when that
+/// volume turns out to be a place that hurts, the route steps out of it
+/// and waits next door rather than standing in the damage for the whole
+/// chain.
+fn safe_wait_cell(
+    game: &Game,
+    collision: &CollisionModel,
+    trace: &Trace,
+    from: Vec3,
+) -> Option<Vec3> {
+    if !hazardous_to_stand_at(game, collision, from) {
+        return None;
+    }
+    let mut candidates: Vec<(Cell, Vec3)> = trace
+        .landing
+        .iter()
+        .map(|(cell, position)| (*cell, *position))
+        .collect();
+    candidates.sort_unstable_by_key(|(cell, _)| *cell);
+    let mut best: Option<(f32, Vec3)> = None;
+    for (_, position) in candidates {
+        let distance = from.distance(position);
+        if best.is_some_and(|(shortest, _)| distance >= shortest) {
+            continue;
+        }
+        if hazardous_to_stand_at(game, collision, position) {
+            continue;
+        }
+        if !straight_line_is_walkable(collision, from, position) {
+            continue;
+        }
+        best = Some((distance, position));
+    }
+    best.map(|(_, position)| position)
 }
 
 /// Whether `(score, cell)` should replace the current `best`: a strictly
@@ -2828,6 +3127,27 @@ pub fn plan_route(game: &mut Game, config: &PlanConfig) -> Result<RoutePlan, Pla
             walk.requeue_all();
             continue;
         }
+        // Nothing reaches the goal and nothing left to try — but a
+        // level change is not always a volume the player walks into. It
+        // may be an ordinary named entity a set piece fires, its own
+        // volume parked somewhere nobody can stand
+        // ([`scripted_starts`]). Before settling for a partial route, ask
+        // whether some volume this walk *has* reached starts the chain
+        // that fires it, and if so plan a route into that instead, with
+        // the chain's own delay as a wait on the end.
+        let scripted = scripted_goals(game, config);
+        if !scripted.is_empty()
+            && let Some(goal) = pick_goal_cell(&walk.trace, &scripted)
+        {
+            let mut all = goals.clone();
+            all.extend(scripted);
+            let search = Search {
+                start,
+                goals: &all,
+                doors: &doors,
+            };
+            return build_plan(game, &search, &walk.trace, goal, (cells, rounds), true);
+        }
         // Nothing reaches the goal and nothing left to try: walk as
         // close to it as this map lets us and let the caller look
         // again from there (see `RoutePlan::reaches_goal`).
@@ -2925,8 +3245,42 @@ fn build_plan(
                 .unwrap_or(f32::MAX)
         })
     };
+    // A goal whose volume only *starts* the script that fires the real
+    // one is reached by standing in it and waiting the chain out — but
+    // not while being hurt.
+    let wait_seconds = if reaches_goal {
+        path.last().and_then(|point| {
+            goals
+                .iter()
+                .filter(|goal| bounds_contains_with_margin(&goal.bounds, point.position))
+                .filter_map(|goal| goal.wait_seconds)
+                .max_by(f32::total_cmp)
+        })
+    } else {
+        None
+    };
+    let mut actions = actions_for(collision, path, &presses, eye);
+    if let Some(seconds) = wait_seconds {
+        // The step out of a volume that hurts is appended as its own
+        // action rather than as one more path point: the path is
+        // straightened before it becomes actions ([`string_pull`]), and a
+        // straightened out-and-back is a route that never touches the
+        // volume it went there to set off.
+        if let Some(point) = path.last()
+            && let Some(stand) = safe_wait_cell(game, collision, trace, point.position)
+            && let Some((yaw, _)) = heading(point.position, stand)
+        {
+            actions.push(PlanAction::Move {
+                yaw,
+                distance: point.position.distance(stand),
+                jump: false,
+                fall: 0.0,
+            });
+        }
+        actions.push(PlanAction::Wait { seconds });
+    }
     Ok(RoutePlan {
-        actions: actions_for(collision, path, &presses, eye),
+        actions,
         cells,
         rounds,
         path_points: path.len(),
@@ -2945,12 +3299,13 @@ mod tests {
         PLAN_LADDER_MAP, PLAN_LIFT_MAP, PLAN_LIFT_TRAVEL, PLAN_PLATROT_ALCOVE_MAP,
         PLAN_PLATROT_GATE_MAP, PLAN_PLATROT_GATE_NAME, PLAN_PLATROT_GATE_SPEED,
         PLAN_PLATROT_GATE_TRAVEL, PLAN_PLATROT_MAP, PLAN_PLATROT_ROTATION, PLAN_PLATROT_SPEED,
-        PLAN_PLATROT_TRAVEL, PLAN_STOOD_ON_MAP, PLAN_STOOD_ON_NAME, PLAN_STOOD_ON_PILLAR_NAME,
-        PLAN_TRAIN_RIDE_MAP, PLAN_TRAIN_RIDE_SPEED, PLAN_TRAIN_RIDE_TRAVEL, PLAN_TURN_MAP,
-        REACH_GAP_EDGE_X, REACH_GAP_MAP, TrainRideFixture, plan_cost_bsp, plan_ladder_bsp,
+        PLAN_PLATROT_TRAVEL, PLAN_SCRIPTED_DELAY, PLAN_SCRIPTED_HURT_ORIGIN, PLAN_SCRIPTED_MAP,
+        PLAN_STOOD_ON_MAP, PLAN_STOOD_ON_NAME, PLAN_STOOD_ON_PILLAR_NAME, PLAN_TRAIN_RIDE_MAP,
+        PLAN_TRAIN_RIDE_SPEED, PLAN_TRAIN_RIDE_TRAVEL, PLAN_TURN_MAP, REACH_GAP_EDGE_X,
+        REACH_GAP_MAP, ScriptedStart, TrainRideFixture, plan_cost_bsp, plan_ladder_bsp,
         plan_lift_bsp, plan_platrot_alcove_bsp, plan_platrot_bsp, plan_platrot_gate_bsp,
-        plan_stood_on_lift_bsp, plan_train_ride_bsp, plan_turn_bsp, reachability_gap_bsp,
-        reachability_gap_entities,
+        plan_scripted_goal_bsp, plan_stood_on_lift_bsp, plan_train_ride_bsp, plan_turn_bsp,
+        reachability_gap_bsp, reachability_gap_entities,
     };
     use crate::{AssetSource, MemoryAssets};
 
@@ -3611,6 +3966,117 @@ mod tests {
     /// The end-to-end shape this module exists for: a corridor with a
     /// turn and a closed door in it plans a route that turns, presses the
     /// door, and carries on to the level-change trigger.
+    fn scripted_game(start: ScriptedStart) -> Game {
+        let mut assets = MemoryAssets::new();
+        assets.insert(
+            &format!("maps/{PLAN_SCRIPTED_MAP}.bsp"),
+            plan_scripted_goal_bsp("ohlplannext", start),
+        );
+        Game::load(&assets as &dyn AssetSource, PLAN_SCRIPTED_MAP).expect("the fixture loads")
+    }
+
+    /// A level change parked in the air, fired by name at the end of a
+    /// chain a `trigger_once` starts: the route is a walk into that
+    /// trigger and a wait as long as the chain takes.
+    #[test]
+    fn a_level_change_a_script_fires_is_planned_as_a_walk_into_its_trigger_and_a_wait() {
+        let plan = plan_route(
+            &mut scripted_game(ScriptedStart::ByTrigger),
+            &PlanConfig::default(),
+        )
+        .expect("a route is found");
+        assert!(
+            plan.reaches_goal,
+            "starting the script that fires the level change is reaching the goal"
+        );
+        let Some(PlanAction::Wait { seconds }) = plan.actions.last() else {
+            panic!("the route ends by standing still while the script runs");
+        };
+        assert!(
+            (*seconds - (PLAN_SCRIPTED_DELAY + SCRIPTED_GOAL_WAIT_MARGIN)).abs() < 0.01,
+            "the wait is the chain's own delay plus this planner's margin"
+        );
+        assert!(
+            plan.actions
+                .iter()
+                .any(|action| matches!(action, PlanAction::Move { .. })),
+            "the route walks into the trigger rather than waiting where it stands"
+        );
+        assert_eq!(
+            plan.actions
+                .iter()
+                .filter(|action| matches!(action, PlanAction::Wait { .. }))
+                .count(),
+            1,
+            "one wait, on the end"
+        );
+    }
+
+    /// The starting volume itself can be a place that hurts. The route may
+    /// still touch it — that is what sets the chain going — but it must
+    /// not spend the whole wait standing in the damage, so it steps out
+    /// to a cell the same walk reached and waits there.
+    #[test]
+    fn a_wait_never_stands_in_a_volume_that_hurts() {
+        let mut game = scripted_game(ScriptedStart::ByHazardousTrigger);
+        let hurt = Vec3::from_array(PLAN_SCRIPTED_HURT_ORIGIN);
+        {
+            let collision = game.collision().expect("the fixture has collision");
+            assert!(
+                hazardous_to_stand_at(&game, collision, hurt),
+                "the fixture's own trigger_hurt has to be found where it stands"
+            );
+            assert!(
+                !hazardous_to_stand_at(&game, collision, hurt + Vec3::X * 256.0),
+                "the far end of the corridor is not in reach of it"
+            );
+        }
+        let plan = plan_route(&mut game, &PlanConfig::default()).expect("a route is found");
+        assert!(plan.reaches_goal);
+        assert!(matches!(plan.actions.last(), Some(PlanAction::Wait { .. })));
+        let safe = plan_route(
+            &mut scripted_game(ScriptedStart::ByTrigger),
+            &PlanConfig::default(),
+        )
+        .expect("a route is found");
+        let travelled = |plan: &RoutePlan| -> f32 {
+            plan.actions
+                .iter()
+                .filter_map(|action| match action {
+                    PlanAction::Move { distance, .. } => Some(*distance),
+                    _ => None,
+                })
+                .sum()
+        };
+        assert!(
+            travelled(&plan) > travelled(&safe) + crate::systems::TRIGGER_HURT_RADIUS / 2.0,
+            "stepping out of the damage walks meaningfully further than not having to"
+        );
+    }
+
+    /// The same unreachable level change with nothing to start its chain
+    /// is still unreachable: the route walks as close as it can and says
+    /// so, rather than waiting for a script no player can set going.
+    #[test]
+    fn a_level_change_nothing_can_start_is_still_not_reached() {
+        let plan = plan_route(
+            &mut scripted_game(ScriptedStart::Unstartable),
+            &PlanConfig::default(),
+        )
+        .expect("a partial route is found");
+        assert!(
+            !plan.reaches_goal,
+            "no volume starts the chain, so nothing reaches the level change"
+        );
+        assert!(
+            !plan
+                .actions
+                .iter()
+                .any(|action| matches!(action, PlanAction::Wait { .. })),
+            "a route that reaches nothing has nothing to wait for"
+        );
+    }
+
     #[test]
     fn plans_a_route_through_a_turn_and_a_door() {
         let plan = plan_route(&mut turn_game(), &PlanConfig::default()).expect("a route is found");
@@ -3831,6 +4297,7 @@ mod tests {
                 maxs: Vec3::new(100.0, 100.0, 100.0),
             },
             center: Vec3::ZERO,
+            wait_seconds: None,
         };
         let position_a = Vec3::new(-50.0, 0.0, 0.0);
         let position_b = Vec3::new(50.0, 0.0, 0.0);

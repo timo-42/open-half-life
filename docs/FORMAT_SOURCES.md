@@ -3441,7 +3441,21 @@ names it; a `master` naming nothing this map declares, or naming something
 that is not a `multisource`, is not a gate at all and the entity works
 normally.
 
-**`TODO(black-box)`**: three gaps, all of them pre-existing behaviour this
+The other half of the same sentence — that a satisfied `multisource` "only
+triggers its target(s)" — is implemented too: a `multisource` is a relay as
+well as a gate. `Simulation::activate` fans out to the `multisource`'s own
+`target` on the fire that *reaches* its required count, and never again, so
+a master that keeps being triggered afterwards does not re-run the chain
+behind it. The fan-out is scheduled after the entity's own `delay` — "the
+time in seconds before an entity should trigger its target after being
+triggered itself", the general wording quoted under "Teleport volumes"
+above — since nothing about a `multisource` exempts it from the key every
+triggering entity carries. This is what lets a map drive a sequence *through* a master
+rather than only gate on one — a shape a published map uses to end a set
+piece by firing a named `trigger_changelevel`, which no player can reach on
+foot.
+
+**`TODO(black-box)`**: two gaps, both of them pre-existing behaviour this
 section narrows rather than widens.
 
 - The cited text is about entities being "in the 'ON' state", and this
@@ -3449,14 +3463,6 @@ section narrows rather than widens.
   master here latches once its fire count is reached, where the published
   text says a targeter turning off ("such as a button turning off") shuts
   the master again.
-- The other half of the cited sentence — that a satisfied `multisource`
-  "only triggers its target(s)", i.e. that it fires its own `target` when
-  it goes active — is not implemented: `Simulation::activate` counts a
-  `multisource` fire and stops there, never fanning out. That matches the
-  behaviour before this section existed (a `multisource` was an unhandled
-  classname that did nothing at all), so nothing regresses, but a map
-  driving a chain *through* a master rather than only gating on one still
-  will not run.
 - `game_team_master` (the other entity a `master` may name) and the
   `globalstate` key the same page mentions are not modelled either.
 
