@@ -3524,6 +3524,182 @@ fn plan_shaft_bsp(next_map: &str, with_ladder: bool, lethal: bool) -> Vec<u8> {
     b.build()
 }
 
+/// The map name [`plan_stood_on_lift_bsp`] is registered under.
+pub const PLAN_STOOD_ON_MAP: &str = "ohlplanstoodonsynth";
+
+/// The `targetname` of that fixture's lift, and of the trigger volume on
+/// its own roof that starts it.
+pub const PLAN_STOOD_ON_NAME: &str = "ohl_plan_stood_on";
+
+/// The fixture's bounding box.
+const PLAN_STOOD_ON_MIN: [f32; 3] = [-320.0, -256.0, -256.0];
+/// See [`PLAN_STOOD_ON_MIN`].
+const PLAN_STOOD_ON_MAX: [f32; 3] = [512.0, 256.0, 512.0];
+
+/// The floor the player starts on, its top at `z = 0`. It stops at the
+/// shaft the car hangs over.
+const PLAN_STOOD_ON_FLOOR_MIN: [f32; 3] = [-320.0, -256.0, -256.0];
+/// See [`PLAN_STOOD_ON_FLOOR_MIN`].
+const PLAN_STOOD_ON_FLOOR_MAX: [f32; 3] = [0.0, 256.0, 0.0];
+
+/// A flight of ordinary one-step blocks standing on that floor, over only
+/// half of it in `y`, climbing to one step below the car's roof. This is
+/// what makes the fixture's whole point: from the top of the flight the
+/// walk *stands on* the car, and from the open floor beside it — where
+/// the car's underside is a low ceiling a standing hull runs into — the
+/// same car is a wall the walk is *stopped by*.
+const PLAN_STOOD_ON_STEP_Y: (f32, f32) = (-64.0, 0.0);
+/// The flight's treads, as `(x start, x end, top)`. Each is one
+/// `crate::reachability::STEP_UP` above the last, so the walk climbs them
+/// without ever needing a jump.
+const PLAN_STOOD_ON_STEPS: [(f32, f32, f32); 5] = [
+    (-160.0, -128.0, 16.0),
+    (-128.0, -96.0, 32.0),
+    (-96.0, -64.0, 48.0),
+    (-64.0, -32.0, 64.0),
+    (-32.0, 0.0, 80.0),
+];
+
+/// The lift car, hanging over the shaft: its roof is one step above the
+/// top of the flight, and its underside is far too low for a standing hull
+/// on the open floor to pass under and far too high for one to step or
+/// jump over.
+const PLAN_STOOD_ON_LIFT_MIN: [f32; 3] = [0.0, -64.0, 40.0];
+/// See [`PLAN_STOOD_ON_LIFT_MIN`].
+const PLAN_STOOD_ON_LIFT_MAX: [f32; 3] = [64.0, 64.0, 96.0];
+
+/// The car's `lip`: how much of its own height it stops short of
+/// travelling. Deliberately large enough that the risen car still overhangs
+/// the floor it was blocking — a mover that has been ridden and is *still*
+/// on the walk's frontier is exactly the case
+/// `crate::route_plan::openable_doors`' ridden-mover rule exists for.
+const PLAN_STOOD_ON_LIP: f32 = 30.0;
+
+/// How far that car travels: its own compiled height less its `lip`, which
+/// is what a `func_door` derives its travel from.
+pub const PLAN_STOOD_ON_TRAVEL: f32 =
+    PLAN_STOOD_ON_LIFT_MAX[2] - PLAN_STOOD_ON_LIFT_MIN[2] - PLAN_STOOD_ON_LIP;
+
+/// The ledge the lift serves, level with where the car's roof ends up and
+/// a whole travel above where it starts — so nothing but the ride reaches
+/// it.
+const PLAN_STOOD_ON_LEDGE_MIN: [f32; 3] = [64.0, -256.0, -256.0];
+/// See [`PLAN_STOOD_ON_LEDGE_MIN`].
+const PLAN_STOOD_ON_LEDGE_MAX: [f32; 3] = [
+    512.0,
+    256.0,
+    PLAN_STOOD_ON_LIFT_MAX[2] + PLAN_STOOD_ON_TRAVEL,
+];
+
+/// The touch volume on the car's own roof: standing on it is what sets it
+/// going.
+const PLAN_STOOD_ON_TRIGGER_MIN: [f32; 3] = [0.0, -64.0, 96.0];
+/// See [`PLAN_STOOD_ON_TRIGGER_MIN`].
+const PLAN_STOOD_ON_TRIGGER_MAX: [f32; 3] = [64.0, 64.0, 160.0];
+
+/// The `trigger_changelevel` volume at the far end of the ledge.
+const PLAN_STOOD_ON_GOAL_MIN: [f32; 3] = [384.0, -64.0, PLAN_STOOD_ON_LEDGE_MAX[2]];
+/// See [`PLAN_STOOD_ON_GOAL_MIN`].
+const PLAN_STOOD_ON_GOAL_MAX: [f32; 3] = [512.0, 64.0, PLAN_STOOD_ON_LEDGE_MAX[2] + 128.0];
+
+/// A shaft with a lift the walk both **stands on** and is **blocked by**.
+///
+/// [`plan_lift_bsp`]'s own platform never blocks anything: its roof is one
+/// step up from the floor all the way round, so the walk simply steps onto
+/// it and the lift never lands on the frontier at all — which means the
+/// "a door the walk is standing on is not an obstacle" rule in
+/// `crate::route_plan::openable_doors` is never reached there. Here the
+/// car overhangs the shaft: from the open floor a standing hull runs into
+/// its underside, and from the flight of steps beside it the walk climbs
+/// onto its roof. Both are true of the same brush in the same round, and
+/// its own brush centre is level with the eye of a player standing on that
+/// floor and well within a `use` press of them — so the only thing that
+/// can keep it off the openable list is the rule under test.
+///
+/// No bytes here come from any game installation; see
+/// `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn plan_stood_on_lift_bsp(next_map: &str) -> Vec<u8> {
+    let entities = format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"-256 128 40\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"func_door\"\n\"targetname\" \"{PLAN_STOOD_ON_NAME}\"\n\
+         \"model\" \"*1\"\n\"speed\" \"100\"\n\"wait\" \"-1\"\n\"angle\" \"-1\"\n\
+         \"lip\" \"{PLAN_STOOD_ON_LIP}\"\n\"origin\" \"0 0 0\"\n}}\n\
+         {{\n\"classname\" \"trigger_multiple\"\n\"model\" \"*2\"\n\
+         \"target\" \"{PLAN_STOOD_ON_NAME}\"\n\"wait\" \"4\"\n\"origin\" \"0 0 0\"\n}}\n\
+         {{\n\"classname\" \"trigger_changelevel\"\n\"model\" \"*3\"\n\
+         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n"
+    );
+
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(&entities);
+
+    let mut solid = vec![
+        CollisionBrush::half_space([0.0, 0.0, 1.0], PLAN_STOOD_ON_MIN[2]),
+        CollisionBrush::half_space([0.0, 0.0, -1.0], -PLAN_STOOD_ON_MAX[2]),
+        CollisionBrush::half_space([1.0, 0.0, 0.0], PLAN_STOOD_ON_MIN[0]),
+        CollisionBrush::half_space([-1.0, 0.0, 0.0], -PLAN_STOOD_ON_MAX[0]),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], PLAN_STOOD_ON_MIN[1]),
+        CollisionBrush::half_space([0.0, -1.0, 0.0], -PLAN_STOOD_ON_MAX[1]),
+        CollisionBrush::box_brush(PLAN_STOOD_ON_FLOOR_MIN, PLAN_STOOD_ON_FLOOR_MAX),
+        CollisionBrush::box_brush(PLAN_STOOD_ON_LEDGE_MIN, PLAN_STOOD_ON_LEDGE_MAX),
+    ];
+    for (x0, x1, top) in PLAN_STOOD_ON_STEPS {
+        solid.push(CollisionBrush::box_brush(
+            [x0, PLAN_STOOD_ON_STEP_Y.0, PLAN_STOOD_ON_MIN[2]],
+            [x1, PLAN_STOOD_ON_STEP_Y.1, top],
+        ));
+    }
+    let world_heads = b.push_collision_hulls(&solid);
+    let lift_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(
+        PLAN_STOOD_ON_LIFT_MIN,
+        PLAN_STOOD_ON_LIFT_MAX,
+    )]);
+    let trigger_heads = b.push_collision_hulls(&[]);
+    let goal_heads = b.push_collision_hulls(&[]);
+
+    b.push_model(
+        PLAN_STOOD_ON_MIN,
+        PLAN_STOOD_ON_MAX,
+        [0.0; 3],
+        world_heads,
+        2,
+        0,
+        0,
+    );
+    b.push_model(
+        PLAN_STOOD_ON_LIFT_MIN,
+        PLAN_STOOD_ON_LIFT_MAX,
+        [0.0; 3],
+        lift_heads,
+        2,
+        0,
+        0,
+    );
+    b.push_model(
+        PLAN_STOOD_ON_TRIGGER_MIN,
+        PLAN_STOOD_ON_TRIGGER_MAX,
+        [0.0; 3],
+        trigger_heads,
+        2,
+        0,
+        0,
+    );
+    b.push_model(
+        PLAN_STOOD_ON_GOAL_MIN,
+        PLAN_STOOD_ON_GOAL_MAX,
+        [0.0; 3],
+        goal_heads,
+        2,
+        0,
+        0,
+    );
+
+    b.build()
+}
+
 /// The map name [`plan_platrot_bsp`] is registered under.
 pub const PLAN_PLATROT_MAP: &str = "ohlplanplatrotsynth";
 
@@ -3788,8 +3964,11 @@ pub fn plan_lift_bsp(next_map: &str, fixture: LiftFixture) -> Vec<u8> {
              \"lip\" \"0\"\n\"origin\" \"0 0 0\"\n}}\n"
         ),
     };
-    // The `func_plat` is started by a press on itself, so it gets no
-    // touch volume; the other two get one, in or out of reach.
+    // The `func_plat` is started by a press on the `func_button` beside
+    // it — never by one on the platform itself, which a player standing on
+    // it can never reach; see [`LiftFixture::ButtonPlat`]'s own doc
+    // comment. So it gets no touch volume at all; the other two get one,
+    // in or out of reach.
     let trigger = if fixture == LiftFixture::ButtonPlat {
         String::new()
     } else {
