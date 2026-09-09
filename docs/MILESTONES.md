@@ -6161,3 +6161,60 @@ came from is no longer a route.
 `--all-features`), `cargo test --workspace`, policy, graph, combat-smoke
 37/37, campaign-smoke 93/93, and `cargo xtask chain-walk` at depth 10.
 
+
+## M9.34 — The switch the route walked past: a step aside, and the tenth hop
+
+**The tenth map was never blocked.** The previous milestone recorded the
+search plateauing about 1,250 units short of the level change with nothing
+left to open, switch or ride. That was the wrong diagnosis, and this
+milestone is the measurement that overturned it: with the switch advance in
+place, the search *does* reach the level change. It had been reaching it
+all along. What failed was not the walk but the last step of turning that
+walk into a script.
+
+**What actually happened.** A round advance opens a mover as soon as *any*
+reached cell can press it — that is the honest test, because the walk is
+free to go and stand at the switch — and then walks on through the space it
+stops filling. But a route is one path, and the *cheapest* path to the goal
+is under no obligation to pass the switch. So the planner's own door
+attribution, which looks for the last point of that path standing within
+`USE_RADIUS` of the mover's press centre, found nothing to attribute the
+press to and truncated the route where it crossed the leaf. The tenth map's
+column is switched by a button a little over a hull's width off the line
+the walk takes: measured here at 90 units from the nearest point of a
+241-point path, against a 64-unit use radius. The route was cut at that
+point — 104 points of 241 — and the caller was told the map was blocked at
+a switch it could already reach. Every earlier map in the chain happened to
+have its switches *on* the route, which is why this never showed before.
+
+**A step aside.** When a route crosses a leaf it never comes into range of,
+the planner now sends it the way a player would go: out to a reached cell
+that *is* in range, one press, and straight back to the point it left
+from. The pair is chosen as the shortest such out-and-back whose straight
+line is walkable in both directions and does not run into the leaf that is
+still shut, from a point of the path before the crossing that the route can
+re-enter — never off a jump, a fall, a climb or a ride, which are committed
+motions with no way back to their take-off. A leaf that even a step aside
+cannot press still truncates the route exactly as before: walking *up to* a
+door is progress, and the plan made from beside it is the one that presses
+it.
+
+**Depth 11.** With that in place the planner wrote a validated
+`c0a0-hop9.txt` — replayed in-process until the level change actually
+fired, as every route in `xtask/chain-routes/` is — and `cargo xtask
+chain-walk` now reports **distinct depth 11**, its first new map since
+M9.29. `cargo xtask plan-chain-hop` gained a `--segments` passthrough on
+the way: this hop's map answers a one-segment closed loop with the same
+plan every time, and committing a few segments per attempt walks the player
+somewhere the next plan is genuinely different from.
+
+Two things the enlarged region still does *not* contain are worth writing
+down, because both were offered as the cause and neither was: the map's own
+platform is not boardable from the walked floor, and its `func_train` is
+not reachable at all (a probe with `--plan-goal` stalls about 440 units
+short of it). Neither is on the way to the level change.
+
+**Gates**: fmt, clippy (workspace, `--features dev-tools`, and
+`--all-features`), `cargo test --workspace`, policy, graph, combat-smoke
+37/37, campaign-smoke 93/93, `--reachability-report` unchanged, and `cargo
+xtask chain-walk` at **distinct depth 11**.
