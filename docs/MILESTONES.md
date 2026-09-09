@@ -5934,6 +5934,16 @@ a route ends up somewhere it was never planned to be — over a ledge, for
 instance. The count now releases the key on the last tick whose own coast
 still lands short of the distance.
 
+Three things the review asked for on top: the fall a run ends on is now
+written into the script as a wait of its own length, derived from the
+map's gravity, so the chunk after it replays from the landing the plan
+was made from rather than from mid-fall; the ladder-climb count is taken
+from the plan rather than from the script text, which cannot tell a climb
+*up* from a walk (both are a held `forward`); and the two behaviours that
+had no discriminating test — the refusal of a route that has left the
+player dead, and the wait for the player to land before planning — are
+pinned by a lethal-pit fixture and a "plans from the landed floor" one.
+
 The hop itself is still not written. With these three, the planner's
 player survives the descent and gets a third of the way along the route
 instead of dying part-way, and the search reaches the goal from every

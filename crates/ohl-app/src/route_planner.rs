@@ -98,6 +98,11 @@ const SETTLE_TICKS: u32 = 30;
 /// [`ticks_for_climb`].
 const CLIMB_PADDING_TICKS: u32 = 12;
 
+/// How many extra ticks a planned fall's wait is padded by, on top of the
+/// fall's own time: the player leaves the ledge a moment after the run's
+/// last tick, and a landing is worth a moment's slack of its own.
+const FALL_WAIT_PADDING_TICKS: u32 = 12;
+
 /// The most ticks one `forward` line may schedule, so a nonsensical
 /// distance cannot produce a script that runs for hours.
 const MAX_SEGMENT_TICKS: u32 = 6_000;
@@ -186,7 +191,9 @@ pub struct PlannedRoute {
     pub cells: usize,
     /// How many walk-forward segments the script holds.
     pub segments: usize,
-    /// How many ladder climbs the script holds.
+    /// How many ladder climbs the script holds, counted from the planned
+    /// actions: a climb up is a held `forward` in the text, the same line
+    /// a walk-forward run emits.
     pub climbs: usize,
     /// How many door presses the script holds.
     pub doors: usize,
@@ -368,6 +375,46 @@ pub fn ticks_for_climb(distance: f32, config: &MoveConfig) -> u32 {
         .clamp(1, MAX_SEGMENT_TICKS)
 }
 
+/// How many script ticks a fall of `height` world units takes, by the
+/// engine's own gravity (`ohl_physics::MoveConfig::gravity`), plus a
+/// margin.
+///
+/// A `forward` line stops when its ticks run out, not when the player
+/// lands: a run that ends by stepping off a ledge leaves them in the air,
+/// and the next line — a turn, another run, a `use` press — would run
+/// while they are still falling, from a place the plan never described.
+/// The plan says how far that fall is (`PlanAction::Move::fall`, measured
+/// by the walk that planned it), and a fall from `h` under constant
+/// gravity takes `sqrt(2h/g)`.
+#[must_use]
+pub fn ticks_for_fall(height: f32, config: &MoveConfig) -> u32 {
+    if !(height.is_finite() && height > 0.0) || config.gravity <= 0.0 {
+        return 0;
+    }
+    let seconds = (2.0 * height / config.gravity).sqrt();
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a tick count clamped just below"
+    )]
+    let ticks = (seconds / CAPTURE_STEP).ceil() as u32;
+    ticks
+        .saturating_add(FALL_WAIT_PADDING_TICKS)
+        .clamp(1, MAX_SEGMENT_TICKS)
+}
+
+/// How many ladder climbs `actions` holds — counted from the plan, not
+/// from the script text it becomes: a climb *up* is a held `forward`,
+/// exactly like a walk-forward run, so the text cannot tell the two
+/// apart.
+#[must_use]
+pub fn count_climb_actions(actions: &[PlanAction]) -> usize {
+    actions
+        .iter()
+        .filter(|action| matches!(action, PlanAction::Climb { .. }))
+        .count()
+}
+
 /// `actions` truncated after its first ladder climb.
 ///
 /// A climb is the one action whose commands mean something else entirely
@@ -436,6 +483,7 @@ pub fn script_text(start_yaw: f32, actions: &[PlanAction], config: &MoveConfig) 
                 yaw,
                 distance,
                 jump,
+                fall,
             } => {
                 facing = turn_toward(&mut lines, facing, yaw);
                 let ticks = ticks_for_distance(distance, config);
@@ -446,6 +494,13 @@ pub fn script_text(start_yaw: f32, actions: &[PlanAction], config: &MoveConfig) 
                     let _ = writeln!(lines, "{ticks} forward jump");
                 } else {
                     let _ = writeln!(lines, "{ticks} forward");
+                }
+                // A run that ends by stepping off a ledge is not over
+                // when its ticks are: the plan after it was made from
+                // where the player lands ([`ticks_for_fall`]).
+                let landing = ticks_for_fall(fall, config);
+                if landing > 0 {
+                    let _ = writeln!(lines, "{landing} wait");
                 }
             }
             PlanAction::Climb { yaw, distance, up } => {
@@ -582,14 +637,6 @@ fn count_segments(text: &str) -> usize {
         .count()
 }
 
-/// How many ladder climbs a script holds: a `back` line is only ever a
-/// climb down, and an `up`/`down` line is never emitted at all.
-fn count_climbs(text: &str) -> usize {
-    text.lines()
-        .filter(|line| line.split_ascii_whitespace().any(|word| word == "back"))
-        .count()
-}
-
 /// How many `use` presses a script holds.
 fn count_doors(text: &str) -> usize {
     text.lines()
@@ -619,6 +666,9 @@ struct Planner<'a> {
     options: &'a PlanOptions,
     /// The last plan made, for the caller's aggregates.
     last: RefCell<Option<RoutePlan>>,
+    /// How many ladder climbs the committed script holds so far, counted
+    /// from the actions themselves ([`count_climb_actions`]).
+    climbs: RefCell<usize>,
     /// The last chunk of commands committed. A plan that produces the
     /// very same chunk again has stopped making progress — the player
     /// walked it and ended up somewhere it plans identically from — and
@@ -744,6 +794,7 @@ impl Planner<'_> {
                 continue;
             }
             Self::report(&plan);
+            *self.climbs.borrow_mut() += count_climb_actions(committed);
             self.previous.borrow_mut().clone_from(&text);
             *self.last.borrow_mut() = Some(plan);
             waited.push_str(&text);
@@ -790,6 +841,7 @@ pub fn plan(
         options,
         last: RefCell::new(None),
         previous: RefCell::new(String::new()),
+        climbs: RefCell::new(0),
     };
 
     let (text, attempts) = refine(
@@ -804,7 +856,7 @@ pub fn plan(
     }
     Ok(PlannedRoute {
         segments: count_segments(&text),
-        climbs: count_climbs(&text),
+        climbs: *planner.climbs.borrow(),
         doors: count_doors(&text),
         cells: planner.last.borrow().as_ref().map_or(0, |plan| plan.cells),
         attempts,
@@ -830,7 +882,9 @@ pub fn write_route(path: &Path, route: &PlannedRoute) -> Result<(), PlanFailure>
 mod tests {
     use super::*;
     use ohl_engine::MemoryAssets;
-    use ohl_engine::test_support::{PLAN_TURN_MAP, plan_turn_bsp};
+    use ohl_engine::test_support::{
+        PLAN_LADDER_MAP, PLAN_TURN_MAP, plan_ladder_bsp, plan_pit_bsp, plan_turn_bsp,
+    };
 
     fn fixture() -> (MemoryAssets, Game) {
         let mut assets = MemoryAssets::new();
@@ -950,6 +1004,7 @@ mod tests {
                 yaw: 10.0,
                 distance: 100.0,
                 jump: false,
+                fall: 0.0,
             }],
             &MoveConfig::default(),
         );
@@ -965,6 +1020,7 @@ mod tests {
             yaw: 0.0,
             distance: 64.0,
             jump: false,
+            fall: 0.0,
         };
         let door = PlanAction::UseDoor {
             yaw: 0.0,
@@ -1079,6 +1135,7 @@ mod tests {
             yaw: 0.0,
             distance: 64.0,
             jump: false,
+            fall: 0.0,
         };
         let climb = PlanAction::Climb {
             yaw: 180.0,
@@ -1098,6 +1155,195 @@ mod tests {
         assert_eq!(
             PlanFailure::PlayerDied.to_string(),
             "the route walked so far left the player dead"
+        );
+    }
+    /// The shelf-over-a-shaft fixture, with a `bsp` chosen by the caller
+    /// (with its ladder, or with the lethal pit at its foot).
+    fn shaft_fixture(bsp: Vec<u8>) -> (MemoryAssets, Game) {
+        let mut assets = MemoryAssets::new();
+        assets.insert(&format!("maps/{PLAN_LADDER_MAP}.bsp"), bsp);
+        let game = Game::load(&assets as &dyn AssetSource, PLAN_LADDER_MAP).expect("fixture loads");
+        (assets, game)
+    }
+
+    /// A planner over `game`, with nothing planned yet: what the two
+    /// `state_after` tests below drive directly.
+    fn planner_over<'a>(
+        game: &mut Game,
+        source: &'a dyn AssetSource,
+        base: &'a ohl_engine::GameSave,
+        options: &'a PlanOptions,
+    ) -> Planner<'a> {
+        Planner {
+            source,
+            base,
+            config: GameConfig {
+                difficulty: game.difficulty(),
+                overbright: game.overbright(),
+            },
+            options,
+            last: RefCell::new(None),
+            previous: RefCell::new(String::new()),
+            climbs: RefCell::new(0),
+        }
+    }
+
+    /// The script that walks this fixture's player off the shelf: they
+    /// spawn facing along the shaft, so one short run is all it takes —
+    /// short enough that they land at the shelf's foot rather than
+    /// sailing on into the level-change volume at the far end.
+    const OFF_THE_SHELF: &str = "30 forward\n";
+
+    /// A route that has walked the player into something fatal is
+    /// refused with its own reason. Without that, the next search runs
+    /// from a body that cannot move, plans exactly what it planned last
+    /// time, and every remaining attempt goes to it.
+    #[test]
+    fn a_route_that_kills_the_player_is_refused_from_the_state_it_left() {
+        let (assets, mut game) = shaft_fixture(plan_pit_bsp("ohlplannext"));
+        let source = &assets as &dyn AssetSource;
+        let base = game.to_save(0);
+        let options = PlanOptions::default();
+        let planner = planner_over(&mut game, source, &base, &options);
+
+        // Long enough for the fall, the landing and the pit's own hits.
+        let fatal = format!("{OFF_THE_SHELF}240 wait\n");
+        assert_eq!(
+            planner.state_after(&fatal, 0).err(),
+            Some(PlanFailure::PlayerDied)
+        );
+        // The same prefix without the walk leaves the player alive on the
+        // shelf, so it is the pit that is being detected, not the fixture.
+        let scratch = planner
+            .state_after("60 wait\n", 0)
+            .expect("standing still is survivable")
+            .expect("nothing reached a level change");
+        assert!(scratch.player_health() > 0.0);
+    }
+
+    /// A plan is never made in mid-air: an attempt waits for the player
+    /// to land first, because the walk it plans with starts by settling
+    /// onto the floor beneath them — a floor they have not reached yet
+    /// while they are still falling.
+    #[test]
+    fn a_state_to_plan_from_is_always_a_landed_one() {
+        // No ladder in this one: the player falls the shaft's own height
+        // and lands, which is the state the wait exists to reach. (With
+        // a ladder they would grab it on the way past and hang there,
+        // which is neither falling nor standing.)
+        let (assets, mut game) = shaft_fixture(plan_ladder_bsp("ohlplannext", false));
+        let source = &assets as &dyn AssetSource;
+        let base = game.to_save(0);
+        let options = PlanOptions::default();
+        let planner = planner_over(&mut game, source, &base, &options);
+
+        // The run ends the moment the player leaves the shelf, so without
+        // the wait this state is a falling one, hundreds of units above
+        // the floor the plan would be made from.
+        let scratch = planner
+            .state_after(OFF_THE_SHELF, 0)
+            .expect("the shaft is survivable")
+            .expect("nothing reached a level change");
+        assert!(
+            scratch.player_on_ground(),
+            "the attempt planned from mid-air"
+        );
+        let landed = scratch.player_origin()[2];
+        assert!(
+            landed < 200.0,
+            "the player is on the shaft floor, not still up by the shelf (z {landed})"
+        );
+    }
+
+    /// [`Game::player_on_ground`] is what that wait watches: a player
+    /// dropped in above their own floor is airborne until they reach it.
+    #[test]
+    fn a_falling_player_is_not_on_the_ground() {
+        let (_assets, mut game) = shaft_fixture(plan_ladder_bsp("ohlplannext", true));
+        assert!(
+            !game.player_on_ground(),
+            "this fixture spawns the player above the shelf, as maps do"
+        );
+        let input = ohl_engine::Input::default();
+        for _ in 0..30 {
+            let _ = game.tick(CAPTURE_STEP, &input);
+        }
+        assert!(game.player_on_ground(), "they land on the shelf");
+    }
+
+    /// A run that ends by stepping off a ledge is not over when its ticks
+    /// are: the script waits out the fall the plan measured, so the next
+    /// chunk replays from the landing the plan was made from.
+    #[test]
+    fn a_run_that_ends_in_a_fall_waits_the_fall_out() {
+        let config = MoveConfig::default();
+        let flat = script_text(
+            0.0,
+            &[PlanAction::Move {
+                yaw: 0.0,
+                distance: 64.0,
+                jump: false,
+                fall: 0.0,
+            }],
+            &config,
+        );
+        let dropping = script_text(
+            0.0,
+            &[PlanAction::Move {
+                yaw: 0.0,
+                distance: 64.0,
+                jump: false,
+                fall: 192.0,
+            }],
+            &config,
+        );
+        let waits = |text: &str| text.lines().filter(|line| line.ends_with(" wait")).count();
+        assert_eq!(waits(&flat), 1, "only the trailing settle: {flat:?}");
+        assert_eq!(waits(&dropping), 2, "the fall's own wait too: {dropping:?}");
+
+        // The wait is the fall's own time under this build's gravity, not
+        // a fixed number: a taller fall waits longer, and 192 units takes
+        // more than the trailing settle covers.
+        let ticks = ticks_for_fall(192.0, &config);
+        assert!(ticks > SETTLE_TICKS, "{ticks} vs {SETTLE_TICKS}");
+        assert!(ticks_for_fall(768.0, &config) > ticks);
+        assert_eq!(ticks_for_fall(0.0, &config), 0);
+        assert_eq!(ticks_for_fall(f32::NAN, &config), 0);
+        let seconds = f32::from(u16::try_from(ticks).unwrap_or(0)) * CAPTURE_STEP;
+        let expected = (2.0 * 192.0 / config.gravity).sqrt();
+        assert!(
+            seconds >= expected,
+            "a {expected}s fall is waited out, got {seconds}s"
+        );
+    }
+
+    /// A climb counts as a climb whichever way it goes: up one is a held
+    /// `forward`, the same line a walk-forward run emits, so counting the
+    /// text alone reports every upward climb as a walk.
+    #[test]
+    fn climbs_are_counted_from_the_plan_not_from_the_text() {
+        let up = PlanAction::Climb {
+            yaw: 0.0,
+            distance: 64.0,
+            up: true,
+        };
+        let down = PlanAction::Climb {
+            yaw: 0.0,
+            distance: 64.0,
+            up: false,
+        };
+        let walk = PlanAction::Move {
+            yaw: 0.0,
+            distance: 64.0,
+            jump: false,
+            fall: 0.0,
+        };
+        assert_eq!(count_climb_actions(&[up, walk, down]), 2);
+        assert_eq!(count_climb_actions(&[walk]), 0);
+        let text = script_text(0.0, &[up], &MoveConfig::default());
+        assert!(
+            text.contains(" forward\n") && !text.contains(" back\n"),
+            "a climb up is a held forward, which is why the text cannot be counted: {text:?}"
         );
     }
 }
