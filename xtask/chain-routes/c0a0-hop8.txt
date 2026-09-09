@@ -1,7 +1,7 @@
 # A machine-planned chain-walk route (--plan-route / cargo xtask
 # plan-chain-hop), not a hand-authored one.
 #
-# A bounded breadth-first walk over this map's live collision model
+# A bounded, cost-ordered walk over this map's live collision model
 # (ohl_engine::route_plan, the same edge model --reachability-report
 # triages with) found a path from the arrival point this route starts at
 # to the map's own level-change trigger, straightened it into runs,
