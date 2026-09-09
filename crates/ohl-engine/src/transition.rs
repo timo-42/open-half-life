@@ -33,8 +33,8 @@ use ohl_game::hecs::Entity;
 use ohl_game::keyvalues::{EntityDef, Limits as KeyvalueLimits};
 use ohl_game::registry::{
     BrushBounds, Button, ClassName, Door, EnvGlobal, GlobalName, GlobalStateValue, Landmark, Light,
-    Message, MoverState, Platform, Registry, RenderPropsComponent, Rotator, SpawnFlags, Target,
-    TargetName, Transform, TransitionVolume, Trigger,
+    Message, MoverState, PlatRot, Platform, Registry, RenderPropsComponent, Rotator, SpawnFlags,
+    Target, TargetName, Transform, TransitionVolume, Trigger,
 };
 use ohl_game::track_train::{PathChain, TrackTrain, TrackTrainState};
 use serde::{Deserialize, Serialize};
@@ -476,6 +476,16 @@ pub struct CarriedEntity {
     /// is one that was following a path. Applied only through the
     /// `globalname` correlation; see [`TrackTrainCarry`].
     pub track_train: Option<TrackTrainCarry>,
+    /// The runtime state of a `func_platrot`, when this entity is one.
+    ///
+    /// Kept beside [`Self::snapshot`] rather than inside it for the reason
+    /// [`TrackTrainCarry`] records: [`EntitySnapshot`] *is* tag 18 of the
+    /// save container and frozen at its current shape (see `crate::save`),
+    /// so a `func_platrot` field on it would invalidate every save already
+    /// written. Its own save-path counterpart is
+    /// [`crate::save_state::PlatRotSnapshot`] (tag 37).
+    #[serde(default)]
+    pub platrot: Option<PlatRot>,
     /// The source map's own keyvalues for this entity, bounded by
     /// [`MAX_CARRIED_KEYVALUES`].
     ///
@@ -503,6 +513,11 @@ pub struct MoverSnapshot {
     pub targetname: String,
     /// Its component state.
     pub snapshot: EntitySnapshot,
+    /// A `func_platrot`'s own state, when this mover is one — kept out of
+    /// [`Self::snapshot`] for the reason [`CarriedEntity::platrot`]
+    /// records (that type is the save container's frozen tag 18).
+    #[serde(default)]
+    pub platrot: Option<PlatRot>,
 }
 
 /// The `globalname`/`env_global` state table: named variables that are off,
@@ -634,6 +649,56 @@ fn entity_position(registry: &Registry, entity: Entity) -> Option<Vec3> {
 /// `None` for any other entity, and for a train whose current node carries
 /// no `targetname` (nothing in the destination could then be correlated
 /// with it).
+/// Records one named mover's state for the next map, when it has any
+/// worth recording.
+///
+/// A `func_platrot`'s state travels *beside* the snapshot rather than
+/// inside it (see [`CarriedEntity::platrot`]), so "has this mover moved?"
+/// is a question about both halves, not just about
+/// [`EntitySnapshot::is_modified_mover`].
+fn push_mover(
+    movers: &mut Vec<MoverSnapshot>,
+    targetname: String,
+    snapshot: &EntitySnapshot,
+    platrot: Option<PlatRot>,
+) {
+    if !snapshot.is_modified_mover() && platrot.is_none() {
+        return;
+    }
+    movers.push(MoverSnapshot {
+        targetname,
+        snapshot: snapshot.clone(),
+        platrot,
+    });
+}
+
+/// A `func_platrot`'s runtime state, when `entity` is one that has been
+/// moved from its authored resting pose. `None` for every other entity,
+/// and for a platform still sitting exactly where it spawned — which is
+/// the same "only a modified mover is worth carrying" rule
+/// [`EntitySnapshot::is_modified_mover`] applies to the components it
+/// covers.
+fn capture_platrot(registry: &Registry, entity: Entity) -> Option<PlatRot> {
+    registry
+        .world
+        .get::<&PlatRot>(entity)
+        .ok()
+        .map(|platrot| *platrot)
+        .filter(|platrot| platrot.state != MoverState::Closed || platrot.timer != 0.0)
+}
+
+/// Applies [`capture_platrot`]'s state onto the destination map's own
+/// counterpart. Only the state machine travels: the destination's own
+/// `height`/`rotation`/`speed`/spawnflags stay as that map authored them,
+/// exactly as [`EntitySnapshot::apply_onto_existing`] already does for a
+/// door or a platform.
+fn restore_platrot(registry: &mut Registry, entity: Entity, carried: PlatRot) {
+    if let Ok(mut platrot) = registry.world.get::<&mut PlatRot>(entity) {
+        platrot.state = carried.state;
+        platrot.timer = carried.timer;
+    }
+}
+
 fn capture_track_train(registry: &Registry, entity: Entity) -> Option<TrackTrainCarry> {
     let state = registry.world.get::<&TrackTrainState>(entity).ok()?;
     let yaw = registry
@@ -1000,13 +1065,9 @@ impl TransitionState {
                 });
             }
 
-            if let Some(name) = targetname.clone()
-                && snapshot.is_modified_mover()
-            {
-                movers.push(MoverSnapshot {
-                    targetname: name,
-                    snapshot: snapshot.clone(),
-                });
+            let platrot = capture_platrot(registry, entity);
+            if let Some(name) = targetname.clone() {
+                push_mover(&mut movers, name, &snapshot, platrot);
             }
 
             // Only a named or globally correlated entity travels: an
@@ -1055,6 +1116,7 @@ impl TransitionState {
                 offset: origin.map(|origin| (position - origin).to_array()),
                 snapshot,
                 track_train: capture_track_train(registry, entity),
+                platrot,
                 keyvalues: level.defs.get(index).map_or_else(Vec::new, |def| {
                     def.keyvalues
                         .iter()
@@ -1106,6 +1168,9 @@ impl TransitionState {
                 mover
                     .snapshot
                     .apply_onto_existing(&mut level.registry, entity);
+                if let Some(carried) = mover.platrot {
+                    restore_platrot(&mut level.registry, entity, carried);
+                }
             }
         }
 
@@ -1205,6 +1270,9 @@ impl TransitionState {
                     if let Some(carry) = carried.track_train.as_ref() {
                         restore_track_train(&mut level.registry, entity, carry);
                     }
+                    if let Some(carry) = carried.platrot {
+                        restore_platrot(&mut level.registry, entity, carry);
+                    }
                 }
                 return;
             }
@@ -1218,6 +1286,9 @@ impl TransitionState {
                     carried
                         .snapshot
                         .apply_onto_existing(&mut level.registry, entity);
+                    if let Some(carry) = carried.platrot {
+                        restore_platrot(&mut level.registry, entity, carry);
+                    }
                 }
                 return;
             }
@@ -1377,5 +1448,71 @@ mod tests {
         let vis = split_set();
         assert_eq!(landmark_pvs_answer(&vis, Some(0), Some(1)), None);
         assert_eq!(landmark_pvs_answer(&vis, Some(1), Some(0)), None);
+    }
+
+    /// A `func_platrot`'s state travels across a level change: it is
+    /// captured only when the platform has been moved from its authored
+    /// resting pose, and applied onto the destination's own counterpart
+    /// without touching that map's authored keys.
+    #[test]
+    fn a_func_platrot_carries_its_state_but_not_its_keyvalues() {
+        use std::collections::BTreeMap;
+
+        use ohl_game::keyvalues::{Limits, parse_entities};
+        use ohl_game::registry::{MoverState, PlatRot, Registry};
+
+        use super::{capture_platrot, restore_platrot};
+
+        let entities = |height: &str| {
+            let raw: Vec<ohl_formats::bsp30::Entity> = vec![
+                [
+                    ("classname".to_string(), "func_platrot".to_string()),
+                    ("targetname".to_string(), "pr1".to_string()),
+                    ("model".to_string(), "*1".to_string()),
+                    ("speed".to_string(), "64".to_string()),
+                    ("height".to_string(), height.to_string()),
+                    ("rotation".to_string(), "90".to_string()),
+                ]
+                .into_iter()
+                .collect(),
+            ];
+            let defs = parse_entities(&raw, &Limits::default());
+            let mut bounds = BTreeMap::new();
+            bounds.insert(1u32, ([-64.0, -64.0, -16.0], [64.0, 64.0, 0.0]));
+            Registry::build(&defs, &bounds, &Limits::default())
+        };
+
+        // Source: a platform half way up.
+        let source = entities("128");
+        let entity = source.find("pr1")[0];
+        assert_eq!(
+            capture_platrot(&source, entity),
+            None,
+            "a platform still at rest is not worth carrying"
+        );
+        {
+            let mut platrot = source
+                .world
+                .get::<&mut PlatRot>(entity)
+                .expect("the fixture entity is a func_platrot");
+            platrot.state = MoverState::Opening;
+            platrot.timer = 1.0;
+        }
+        let carried = capture_platrot(&source, entity).expect("a moved platform is carried");
+
+        // Destination: the same name, its own `height`.
+        let mut destination = entities("512");
+        let there = destination.find("pr1")[0];
+        restore_platrot(&mut destination, there, carried);
+        let platrot = *destination
+            .world
+            .get::<&PlatRot>(there)
+            .expect("the destination entity is a func_platrot");
+        assert_eq!(platrot.state, MoverState::Opening);
+        assert!((platrot.timer - 1.0).abs() < f32::EPSILON);
+        assert!(
+            (platrot.travel_distance - 512.0).abs() < f32::EPSILON,
+            "the destination keeps its own authored travel"
+        );
     }
 }

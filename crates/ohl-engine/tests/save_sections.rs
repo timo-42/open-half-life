@@ -21,14 +21,16 @@
 use ohl_combat::{ProjectileKind, WeaponId, hud_slot};
 use ohl_engine::test_support::{
     AI_MAP, BREAKABLE_MAP, BREAKABLE_OBSTACLE_MAXS, MOMENTARY_DOOR_MAP, MOMENTARY_DOOR_NAME,
-    OBSTACLE_NAME, ROT_BUTTON_MAP, ROT_BUTTON_NAME, ROTATING_DOOR_MAP, SCRIPT_MAP, actor_origin,
-    ai_room_bsp, breakable_corridor_entities, entity_block, entity_of_classname,
-    momentary_door_bsp, momentary_door_entities, monster_entities, obstacle_corridor_bsp,
-    queue_monster_damage, rot_button_bsp, rotating_door_bsp, rotating_door_entities, script_game,
-    script_room_bsp, script_room_entities,
+    OBSTACLE_NAME, PLATROT_MAP, PLATROT_NAME, ROT_BUTTON_MAP, ROT_BUTTON_NAME, ROTATING_DOOR_MAP,
+    SCRIPT_MAP, actor_origin, ai_room_bsp, breakable_corridor_entities, entity_block,
+    entity_of_classname, momentary_door_bsp, momentary_door_entities, monster_entities,
+    obstacle_corridor_bsp, platrot_entities, queue_monster_damage, rot_button_bsp,
+    rotating_door_bsp, rotating_door_entities, rotating_platform_bsp, script_game, script_room_bsp,
+    script_room_entities,
 };
 use ohl_engine::{AssetSource, EngineError, Game, GameEvent, Input, MemoryAssets, TICK_SECONDS};
 use ohl_formats::test_support::build_minimal_mdl10;
+use ohl_game::registry::{MoverState, PlatRot};
 
 /// A room with a player start, a weapon and its ammo within pickup range of
 /// the spawn, and one monster the test kills directly (`queue_monster_damage`)
@@ -1954,4 +1956,113 @@ fn a_remove_on_fire_trigger_auto_that_already_fired_does_not_refire_after_a_load
         entity_after_load.is_none(),
         "the entity itself must stay despawned, confirming *why* it cannot refire"
     );
+}
+
+/// A `func_platrot` caught part-way through its trip round-trips its state
+/// and its timer — the discriminating case `SECTION_PLATROT_STATE` (37,
+/// M9.33, `docs/FORMAT_SOURCES.md`, `func_platrot`) exists for: a fresh
+/// `attach_level` spawns every platform back at `MoverState::Closed` with a
+/// zero timer, so both halves of the platform's pose (its travel *and* its
+/// rotation, which are derived from exactly this pair) come back wrong
+/// unless tag 37's own restore call actually runs.
+///
+/// The platform is started the way the cited page says it is started — by
+/// the player standing on it — through the real `Game` loop, never by
+/// forcing a component.
+#[test]
+fn a_func_platrot_round_trips_its_travel_and_its_spin() {
+    let mut assets = MemoryAssets::new();
+    assets.insert(
+        &format!("maps/{PLATROT_MAP}.bsp"),
+        rotating_platform_bsp(&platrot_entities()),
+    );
+    let mut game = Game::load(&assets as &dyn AssetSource, PLATROT_MAP).expect("the fixture loads");
+
+    // Part-way up: well short of the fixture's own two-second trip.
+    for _ in 0..60 {
+        game.tick(TICK_SECONDS, &Input::default());
+    }
+    let entity = *game
+        .registry()
+        .find(PLATROT_NAME)
+        .first()
+        .expect("the fixture declares one named func_platrot");
+    let before = *game
+        .registry()
+        .world
+        .get::<&PlatRot>(entity)
+        .expect("the named entity is a func_platrot");
+    assert_eq!(
+        before.state,
+        MoverState::Opening,
+        "the player standing on it should have it part-way up"
+    );
+    assert!(before.timer > 0.0, "timer was {}", before.timer);
+    let pose_before = ohl_game::pose::platrot_degrees(game.registry(), entity);
+    assert!(
+        pose_before.1 > 0.0,
+        "it should have turned some way already"
+    );
+
+    let bytes = game.save_bytes(1_700_000_000).expect("the save is written");
+    let reloaded = Game::load_bytes(&assets, &bytes).expect("the save loads");
+    let reloaded_entity = *reloaded
+        .registry()
+        .find(PLATROT_NAME)
+        .first()
+        .expect("the fixture's func_platrot reloads");
+    let after = *reloaded
+        .registry()
+        .world
+        .get::<&PlatRot>(reloaded_entity)
+        .expect("the reloaded entity still carries a PlatRot");
+    assert_eq!(after.state, before.state);
+    assert!((after.timer - before.timer).abs() < 1e-6);
+    assert_eq!(
+        ohl_game::pose::platrot_degrees(reloaded.registry(), reloaded_entity),
+        pose_before,
+        "the whole pose follows from the state and the timer"
+    );
+}
+
+/// A save written by a build before `SECTION_PLATROT_STATE` (37) existed —
+/// the tag simply absent, reproduced by clearing `GameSave::platrots`
+/// before encoding, the same technique the pre-tag-30 and pre-tag-31 tests
+/// above already use — must still load, with the platform back at its
+/// spawn-time resting pose.
+#[test]
+fn a_save_from_before_section_37_existed_still_loads() {
+    let mut assets = MemoryAssets::new();
+    assets.insert(
+        &format!("maps/{PLATROT_MAP}.bsp"),
+        rotating_platform_bsp(&platrot_entities()),
+    );
+    let mut game = Game::load(&assets as &dyn AssetSource, PLATROT_MAP).expect("the fixture loads");
+    for _ in 0..60 {
+        game.tick(TICK_SECONDS, &Input::default());
+    }
+
+    let mut save = game.to_save(1_700_000_000);
+    save.platrots = None;
+    let bytes = save
+        .to_bytes()
+        .expect("a save missing SECTION_PLATROT_STATE still encodes");
+
+    let reloaded = Game::load_bytes(&assets, &bytes).expect("a pre-tag-37 save still loads");
+    let entity = *reloaded
+        .registry()
+        .find(PLATROT_NAME)
+        .first()
+        .expect("the fixture's func_platrot reloads");
+    let platrot = *reloaded
+        .registry()
+        .world
+        .get::<&PlatRot>(entity)
+        .expect("the reloaded entity still carries a PlatRot");
+    assert_eq!(
+        platrot.state,
+        MoverState::Closed,
+        "a pre-tag-37 save must leave the platform at its spawn-time resting pose"
+    );
+    assert_eq!(platrot.timer, 0.0);
 }

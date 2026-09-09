@@ -7,7 +7,7 @@ use ohl_engine::transition::{
     CarriedEntity, EntitySnapshot, GlobalStateTable, MoverSnapshot, PlayerCarryState, RiderSeat,
     TrackTrainCarry, TransitionState,
 };
-use ohl_game::registry::{Door, GlobalStateValue, MoverState, Rotator, Transform};
+use ohl_game::registry::{Door, GlobalStateValue, MoverState, PlatRot, Rotator, Transform};
 use proptest::prelude::*;
 
 /// The application section tag the round trip stores the state under; any
@@ -122,6 +122,36 @@ prop_compose! {
 }
 
 prop_compose! {
+    /// A `func_platrot`'s carried runtime state.
+    fn platrot()(
+        speed in finite(),
+        wait in finite(),
+        movedir in (finite(), finite(), finite()),
+        travel_distance in finite(),
+        axis in (finite(), finite(), finite()),
+        rotation_degrees in finite(),
+        toggle in proptest::bool::ANY,
+        movesnd in any::<u8>(),
+        stopsnd in any::<u8>(),
+        state in mover_state(),
+        timer in finite(),
+    ) -> PlatRot {
+        PlatRot {
+            speed,
+            wait,
+            movedir: glam::Vec3::new(movedir.0, movedir.1, movedir.2),
+            travel_distance,
+            axis: glam::Vec3::new(axis.0, axis.1, axis.2),
+            rotation_degrees,
+            toggle,
+            sounds: (movesnd, stopsnd),
+            state,
+            timer,
+        }
+    }
+}
+
+prop_compose! {
     fn carried()(
         classname in "[a-z_]{1,16}",
         targetname in proptest::option::of("[a-z_]{1,16}"),
@@ -131,6 +161,7 @@ prop_compose! {
         snapshot in snapshot(),
         track_train in proptest::option::of(track_train_carry()),
         keyvalues in proptest::collection::vec(("[a-z_]{1,8}", "[a-z_0-9 -]{0,12}"), 0..4),
+        platrot in proptest::option::of(platrot()),
     ) -> CarriedEntity {
         CarriedEntity {
             classname,
@@ -140,6 +171,7 @@ prop_compose! {
             offset: offset.map(|(x, y, z)| [x, y, z]),
             snapshot,
             track_train,
+            platrot,
             keyvalues,
         }
     }
@@ -172,7 +204,7 @@ prop_compose! {
         extra in proptest::collection::vec(any::<u8>(), 0..32),
         entities in proptest::collection::vec(carried(), 0..8),
         movers in proptest::collection::vec(
-            ("[a-z_]{1,16}", snapshot()),
+            ("[a-z_]{1,16}", snapshot(), proptest::option::of(platrot())),
             0..4,
         ),
         globals in proptest::collection::vec(("[a-z_]{1,16}", global_value()), 0..8),
@@ -192,7 +224,11 @@ prop_compose! {
             globals: table,
             movers: movers
                 .into_iter()
-                .map(|(targetname, snapshot)| MoverSnapshot { targetname, snapshot })
+                .map(|(targetname, snapshot, platrot)| MoverSnapshot {
+                    targetname,
+                    snapshot,
+                    platrot,
+                })
                 .collect(),
             rider,
         }

@@ -312,6 +312,76 @@ pub struct Platform {
     pub timer: f32,
 }
 
+/// `func_platrot`: a lift that translates *and* rotates over the same
+/// travel — [`Platform`]'s vertical trip with a rotation of `rotation`
+/// degrees about its own origin brush applied in lock-step with it.
+///
+/// Sourced from the Sven Co-op wiki's `func_platrot` page, fetched
+/// directly (`docs/FORMAT_SOURCES.md`, "Entity keyvalues and map logic"),
+/// per keyvalue: `height` "Travel altitude" / "How many units func_plat
+/// travels up to the top"; `rotation` "Spin amount" / "Total amount of
+/// degrees this entity spins from it's starting to ending position";
+/// `speed` "Movement-speed in units per second"; and spawnflags `1`
+/// Toggle, `64` X Axis, `128` Y Axis ([`SPAWNFLAG_PLATROT_TOGGLE`] and
+/// friends).
+///
+/// Kept as its own component rather than folding into [`Platform`]: a
+/// `Platform` has no axis or spin to carry, its own `movedir` is derived
+/// the opposite way round (see [`Platform::movedir`]'s doc comment), and
+/// widening it would move save tag 18's frozen wire shape — see
+/// `ohl_engine::save`'s "Frozen section shapes".
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct PlatRot {
+    /// `speed`, units per second of the *translation*; the rotation is
+    /// spread over the same trip so both finish together.
+    ///
+    /// The cited page labels this key "Speed of rotation" and then
+    /// describes it as "Movement-speed in units per second"; a degrees-
+    /// per-second reading cannot be reconciled with the page's own
+    /// description, nor with the entity being documented as a `func_plat`
+    /// that "will also rotate as it moves". This project therefore reads
+    /// `speed` as the translation's units per second and derives the
+    /// rotation rate from it, and records the label/description conflict
+    /// rather than claiming the page settles it.
+    pub speed: f32,
+    /// Seconds the platform waits at the top before returning, when it is
+    /// not a [`Self::toggle`] platform. No cited page states a `wait`
+    /// keyvalue for `func_platrot`; this project reads it exactly as
+    /// [`Platform::wait`] does, since the cited page describes the
+    /// non-Toggle entity as a `func_plat` that also rotates and the
+    /// `func_plat` page describes the lift auto-returning from the top.
+    pub wait: f32,
+    /// Unit vector the platform travels along: `+Z` for a positive
+    /// `height` ("Travel altitude (can be negative)"), `-Z` for a negative
+    /// one.
+    pub movedir: Vec3,
+    /// The distance travelled, from `height` when present, else the
+    /// bounding-box-derived distance minus `lip` — the same fallback
+    /// [`Platform`] uses for a `func_plat` with no explicit height.
+    pub travel_distance: f32,
+    /// Signed unit rotation axis, from the X/Y axis spawnflags (`Z` when
+    /// neither is set). No "Reverse direction" spawnflag is documented for
+    /// this entity, so nothing bakes a sign into it.
+    pub axis: Vec3,
+    /// `rotation`, "Spin amount": total degrees turned between the
+    /// platform's two resting poses. A positive value turns
+    /// anticlockwise about [`Self::axis`]; no cited page states the sign
+    /// convention, so this is project behaviour.
+    pub rotation_degrees: f32,
+    /// The documented "Toggle" spawnflag: the lift is no longer started by
+    /// stepping on it and no longer returns from the top on its own —
+    /// every trip, in either direction, is one activation.
+    pub toggle: bool,
+    /// `movesnd`/`stopsnd` indices into the built-in platform sound table,
+    /// the same pair [`Platform::sounds`] carries.
+    pub sounds: (u8, u8),
+    /// Current animation state.
+    pub state: MoverState,
+    /// Seconds remaining in the current state's motion or wait.
+    pub timer: f32,
+}
+
 /// `func_rotating`: a brush that spins continuously about a fixed axis
 /// through its origin keyvalue, rather than opening/closing between two
 /// resting poses like [`Door`]. TWHL wiki `func_rotating` (`docs/
@@ -1501,6 +1571,20 @@ pub const SPAWNFLAG_PENDULUM_X_AXIS: u32 = 64;
 /// [`SPAWNFLAG_PENDULUM_X_AXIS`] set means the documented default, `Z`.
 pub const SPAWNFLAG_PENDULUM_Y_AXIS: u32 = 128;
 
+/// `func_platrot`'s "Toggle" spawnflag, value `1`: the Sven Co-op wiki's
+/// `func_platrot` page (`docs/FORMAT_SOURCES.md`, "Entity keyvalues and map
+/// logic"; fetched directly) lists it as "1 | Toggle | If selected, the
+/// lift is no more automatically called from top and activated by stepping
+/// on it."
+pub const SPAWNFLAG_PLATROT_TOGGLE: u32 = 1;
+/// `func_platrot`'s "X Axis" spawnflag, value `64`: "Enable this to make
+/// platform rotate around x axis instead of z axis" (same page).
+pub const SPAWNFLAG_PLATROT_X_AXIS: u32 = 64;
+/// `func_platrot`'s "Y Axis" spawnflag, value `128`: "Enable this to make
+/// platform rotate around y axis instead of z axis" (same page). Neither
+/// flag set means the documented default, `Z`.
+pub const SPAWNFLAG_PLATROT_Y_AXIS: u32 = 128;
+
 /// The signed unit rotation axis a `func_door_rotating`/`func_rotating`
 /// spawnflag selection and a `reverse` bit describe: `x_axis`/`y_axis`
 /// choose which world axis (`Z` when neither is set, the documented
@@ -2039,6 +2123,55 @@ impl Registry {
                         timer: 0.0,
                     };
                     world.insert_one(entity, platform).ok();
+                }
+                // `func_platrot`: Sven Co-op wiki `func_platrot` (`docs/
+                // FORMAT_SOURCES.md`, "Entity keyvalues and map logic").
+                "func_platrot" => {
+                    let flags = def.spawnflags;
+                    let lip = def
+                        .keyvalues
+                        .get("lip")
+                        .and_then(|v| v.trim().parse::<f32>().ok())
+                        .unwrap_or(0.0);
+                    // "Travel altitude (can be negative)": the sign is the
+                    // direction, so the platform travels straight up for a
+                    // positive `height` and straight down for a negative
+                    // one. A `func_platrot` with no `height` at all falls
+                    // back to the same bounding-box-derived distance a
+                    // `func_plat` does, along `+Z`.
+                    let height = def
+                        .keyvalues
+                        .get("height")
+                        .and_then(|v| v.trim().parse::<f32>().ok());
+                    let movedir = if height.is_some_and(|height| height < 0.0) {
+                        -Vec3::Z
+                    } else {
+                        Vec3::Z
+                    };
+                    let travel = height.map_or_else(
+                        || brush_travel_distance(def, movedir, lip, model_bounds),
+                        f32::abs,
+                    );
+                    let platrot = PlatRot {
+                        speed: numeric(def, "speed", 50.0).abs(),
+                        wait: numeric(def, "wait", 3.0),
+                        movedir,
+                        travel_distance: travel.max(0.0),
+                        axis: rotation_axis(
+                            flags & SPAWNFLAG_PLATROT_X_AXIS != 0,
+                            flags & SPAWNFLAG_PLATROT_Y_AXIS != 0,
+                            false,
+                        ),
+                        rotation_degrees: numeric(def, "rotation", 0.0),
+                        toggle: flags & SPAWNFLAG_PLATROT_TOGGLE != 0,
+                        sounds: (
+                            clamp_u8(numeric(def, "movesnd", 0.0)),
+                            clamp_u8(numeric(def, "stopsnd", 0.0)),
+                        ),
+                        state: MoverState::Closed,
+                        timer: 0.0,
+                    };
+                    world.insert_one(entity, platrot).ok();
                 }
                 "light" | "light_spot" | "light_environment" => {
                     let (brightness, color) = parse_light_value(

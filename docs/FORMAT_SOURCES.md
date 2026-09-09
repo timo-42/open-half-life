@@ -5930,3 +5930,120 @@ cited name in `STARTMAP`, `TRAINMAP`, `HAZARD_COURSE_MAPS`, `CHAPTERS`, and
 reports absent through the same code path, and `STARTMAP` was independently
 confirmed present, ruling out a check that trivially always returns one
 answer.)
+
+## `func_platrot` (a lift that turns as it lifts)
+
+Appended for M9.33. Nothing above this heading is revised; this section
+records one new entity and the project behaviour chosen where its public
+documentation is silent.
+
+**Sources.** The Sven Co-op wiki's
+[func_platrot](https://wiki.svencoop.com/Func_platrot) page and its
+[func_plat](https://wiki.svencoop.com/Func_plat) page, both **fetched
+directly** (reviewed 2026-09-09) — the same access the `multi_manager`
+citation above already records for that wiki, and unlike TWHL's own
+`func_platrot` page, which returned HTTP 403 to a direct fetch from this
+environment exactly as every other TWHL page cited in this file does. Where
+a TWHL statement is used below it is labelled as a **search-engine result
+summary**, never as a direct fetch. A third public GoldSrc entity guide,
+[ds-servers' `func_platrot`
+page](https://en.ds-servers.com/tutorials/mapping/goldsrc/entities/func/func-platrot.html),
+was also fetched directly and is cited only where it corroborates the two
+above.
+
+**Per-literal keyvalues**, each quoted from the directly-fetched Sven
+Co-op `func_platrot` page's own keyvalue table:
+
+- `height` — "Travel altitude", "How many units func_plat travels up to the
+  top". The TWHL search summary adds "(can be negative)", with a default of
+  `0`.
+- `rotation` — "Spin amount", "Total amount of degrees this entity spins
+  from it's starting to ending position". TWHL search summary: default `0`.
+- `speed` — labelled "Speed of rotation" and described "Movement-speed in
+  units per second". TWHL search summary: default `50`.
+- `dmg` — "Damage to deal when entity is blocked."
+- `movesnd` / `stopsnd` — "Sound that is played while the platform is
+  moving" / "Sound which is played once as the train stops moving."
+
+**Per-literal spawnflags**, from the same table:
+
+- `1` **Toggle** — "If selected, the lift is no more automatically called
+  from top and activated by stepping on it." ds-servers, same flag: "the
+  platform remains elevated after rising and requires reactivation to
+  descend."
+- `64` **X Axis** — "Enable this to make platform rotate around x axis
+  instead of z axis."
+- `128` **Y Axis** — "Enable this to make platform rotate around y axis
+  instead of z axis." Neither flag set is therefore the documented default,
+  `Z`.
+
+**What the entity is.** A TWHL search summary states it as one sentence:
+the entity "lets you create a platform that will move to its raised
+position when you walk onto it, and differs from func_plat in that it will
+also rotate as it moves". The `func_plat` page (fetched directly) states
+the same activation for the plain lift — "moves up automatically when a
+player steps on it" — and states its Toggle flag as removing that
+automatic behaviour.
+
+**Implemented** as `ohl_game::registry::PlatRot` (a component of its own,
+not a widened `Platform`), `ohl_game::logic::Simulation::advance_platrots`/
+`touch_platrots`, `ohl_game::pose::platrot_offset`/`platrot_degrees`, save
+tag 37 (`ohl_engine::save::SECTION_PLATROT_STATE`) and the level-change
+carry `ohl_engine::transition::CarriedEntity::platrot`. Both halves of its
+pose are derived from one progress fraction, so the renderer, the collision
+hull, the `use`-proximity point and a rider's carry all read one answer
+(`ohl_game::pose`'s single-answer rule); the rider is carried by the
+translation and by the rigid rotational step already used for a
+`func_tracktrain` through a bend (`ohl_engine::level::Level::
+rotational_carry`, "Riding movers" above).
+
+**Project behaviour, where the cited pages are silent** — recorded here
+rather than stated as documented fact:
+
+1. **`speed` is the translation's units per second**, and the rotation is
+   spread over the same trip so both arrive together. The page's own
+   label ("Speed of rotation") and its own description ("Movement-speed in
+   units per second") disagree; the description is the reading taken,
+   because a degrees-per-second `speed` cannot be reconciled with the
+   entity being documented as a `func_plat` that "will also rotate as it
+   moves". The conflict is recorded, not resolved by this project.
+2. **A positive `rotation` turns anticlockwise about the selected axis**
+   (`+Z` by default). No cited page states a sign convention, and this
+   entity has no documented "Reverse direction" spawnflag.
+3. **`wait`** is read exactly as `func_plat`'s is (default `3`). No cited
+   page lists a `wait` keyvalue for `func_platrot`; the non-Toggle
+   platform is documented as auto-returning from the top, and this is how
+   long it takes to do it.
+4. **A `func_platrot` responds to a `use` press.** Its documented
+   activations are stepping onto it and (with Toggle) being triggered.
+   `ohl_engine::route_plan`'s ride edge offers a press on the mover itself
+   as one of the three ways it plans a ride, so the engine accepts one
+   (`ohl_game::logic::find_usable_within`) rather than planning a route it
+   cannot then carry out. A plain `func_plat` is deliberately *not*
+   changed to match.
+5. **Touch uses `DOOR_TOUCH_MARGIN`**: a player standing on a platform is
+   held `ohl_physics::hull::DIST_EPSILON` clear of its top face, so the
+   overlap test is inflated by the same already-recorded margin
+   `Simulation::touch_doors` uses, or the one contact this entity responds
+   to would never register.
+6. **A platform already travelling ignores an activation** rather than
+   reversing mid-trip — the same rule already recorded for
+   `func_trackchange` (`Simulation::start_track_change`).
+7. **Not adopted**: a TWHL search summary states that with Toggle set "the
+   entity starts on its open position with rotation already applied". The
+   two directly-fetched pages describe Toggle only as removing the
+   step-on start and the automatic return, and say nothing about the
+   spawn pose; a platform that spawns *displaced* from its compiled
+   geometry is a large claim to take on a summary alone, so this project
+   spawns a Toggle platform at rest and lets each activation send it to
+   the other end. `TODO(black-box)` if a directly-fetchable source for the
+   summary's wording is ever found.
+8. **`dmg` is not modelled**, exactly as it is not for `func_plat` today.
+
+**Aggregate** (`docs/CLEAN_ROOM.md` rule 5: a bounded count, no map names
+and no per-map figures), measured through `ohl_assets::AssetFs` over the
+same locally imported payload the correction above uses, PAK archives
+included: across the **93** cited campaign/hazard-course map names, **2**
+maps declare a `func_platrot` at all, **4** in total. Over the wider 102-name
+list that also includes `CHAPTER_MAPS`' interior maps: **3** maps, **5** in
+total.

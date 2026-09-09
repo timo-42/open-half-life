@@ -37,11 +37,13 @@
 //! | 34 | [`SECTION_TELEPORT_STATE`] | [`TeleportStateSnapshot`]: the `trigger_teleport` touch-edge bookkeeping and the `multisource` master fire counts (M9) |
 //! | 35 | [`SECTION_TRAIN_HANDOVER_YAW`] | `Vec<Option<f32>>`, one per registry entity, in spawn order: the heading a `func_tracktrain` was handed across a level change with, for a chain that defines none of its own (M9.25) |
 //! | 36 | [`SECTION_CARRIED_ENTITIES`] | `Vec<`[`CarriedEntityDef`]`>`: the entity definitions a level change materialised in this map, in the order they were appended, for entities the map itself never declared (M9.26) |
+//! | 37 | [`SECTION_PLATROT_STATE`] | `Vec<Option<`[`PlatRotSnapshot`]`>>`, one per registry entity, in spawn order: `func_platrot` runtime state (M9.33) |
 //!
-//! Tags 23-31 and 33-36 are read as `None`/a default when absent, so a
+//! Tags 23-31 and 33-37 are read as `None`/a default when absent, so a
 //! save written before M7.9 P4b (tags 23-27), M7.13 (tag 28), M9.5 (tag 29),
 //! M9.6 (tag 30), M9.8 (tag 31), M9.10 (tag 33), the teleport/master
-//! package (tag 34), M9.25 (tag 35) or M9.26 (tag 36) still loads
+//! package (tag 34), M9.25 (tag 35), M9.26 (tag 36) or M9.33 (tag 37)
+//! still loads
 //! (§6 of the M7.9 design plan, recorded in local design notes and not
 //! part of the repository); a
 //! section that is present but fails to decode fails the whole read closed
@@ -284,6 +286,31 @@ pub const SECTION_TRAIN_HANDOVER_YAW: u32 = 35;
 /// every save already written. Tag 36 is the next free number.
 pub const SECTION_CARRIED_ENTITIES: u32 = 36;
 
+/// Tag 37: a `func_platrot`'s runtime state, one optional entry per
+/// registry entity in spawn order (M9.33, `docs/FORMAT_SOURCES.md`,
+/// `func_platrot`).
+///
+/// A `func_platrot` is a lift that translates *and* rotates over one trip,
+/// and both halves of its pose are derived from the one
+/// [`crate::save_state::PlatRotSnapshot`] this section carries. Without it
+/// a save taken with a platform part-way up — or, with the documented
+/// "Toggle" spawnflag, parked at the top with nothing to bring it back
+/// down on its own — loads with that platform snapped back to its spawn
+/// pose, which for a Toggle platform is not a pose any activation can
+/// return it to and, for a player standing on it, is a floor that has moved
+/// out from under them.
+///
+/// A new tag rather than a field on [`SECTION_ENTITY_REGISTRY`] (18),
+/// [`SECTION_MOVER_STATE`] (28) or [`SECTION_ROTATING_MOVER_STATE`] (30),
+/// each of which already carries a mover's state: all three are shipped and
+/// frozen at their own wire shapes (see this module's "Frozen section
+/// shapes"), so widening any of them — including
+/// `crate::transition::EntitySnapshot`, which *is* tag 18 — would
+/// invalidate every save already written. That is the same reasoning tags
+/// 30, 31, 33, 34 and 35 each recorded. Tag 37 is the next free number: 32
+/// is reserved for `ohl-player`'s own snapshot.
+pub const SECTION_PLATROT_STATE: u32 = 37;
+
 /// One entity definition [`SECTION_CARRIED_ENTITIES`] (36) carries.
 ///
 /// The keyvalues only, as authored pairs: `crate::transition`'s
@@ -462,6 +489,9 @@ pub struct GameSave {
     /// every train except one parked on a single-node chain. See
     /// [`SECTION_TRAIN_HANDOVER_YAW`].
     pub train_handover_yaw: Option<Vec<Option<f32>>>,
+    /// `func_platrot` runtime state, one optional entry per registry
+    /// entity in spawn order ([`SECTION_PLATROT_STATE`], 37).
+    pub platrots: Option<Vec<Option<crate::save_state::PlatRotSnapshot>>>,
     /// The entity definitions a level change materialised in this map, in
     /// the order they were appended (M9.26). `None` for a save missing tag
     /// 36 — an older save simply comes back with the map's own entities and
@@ -546,6 +576,9 @@ impl GameSave {
             if let Some(train_handover_yaw) = &self.train_handover_yaw {
                 writer.add_section_serde(SECTION_TRAIN_HANDOVER_YAW, train_handover_yaw)?;
             }
+            if let Some(platrots) = &self.platrots {
+                writer.add_section_serde(SECTION_PLATROT_STATE, platrots)?;
+            }
             if let Some(carried_entities) = &self.carried_entities {
                 writer.add_section_serde(SECTION_CARRIED_ENTITIES, carried_entities)?;
             }
@@ -611,6 +644,11 @@ impl GameSave {
                 &reader,
                 SECTION_CARRIED_ENTITIES,
                 crate::save_state::MAX_SNAPSHOT_CARRIED_DEFS,
+            )?,
+            platrots: optional_bounded_vec_section(
+                &reader,
+                SECTION_PLATROT_STATE,
+                crate::save_state::MAX_SNAPSHOT_PLATROTS,
             )?,
         })
     }

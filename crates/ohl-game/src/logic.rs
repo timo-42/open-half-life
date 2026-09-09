@@ -14,9 +14,9 @@ use hecs::Entity;
 use crate::registry::{
     AutoTrigger, Breakable, BrushBounds, Button, ChangeLevel, Door, DoorPassable, DoorUseOnly,
     Master, Message, MomentaryDoor, MomentaryRotButton, MoverState, MultiManager, MultiSource,
-    Pendulum, Platform, Registry, RotButton, RotatingDoorSwing, Rotator, Target, TargetName,
-    TeleportTrigger, TrackChange, TrackChangeLinks, Transform, Trigger, TriggerHurt, TriggerUse,
-    TriggerUseType,
+    Pendulum, PlatRot, Platform, Registry, RotButton, RotatingDoorSwing, Rotator, Target,
+    TargetName, TeleportTrigger, TrackChange, TrackChangeLinks, Transform, Trigger, TriggerHurt,
+    TriggerUse, TriggerUseType,
 };
 use crate::track_train::{PathChain, TrackTrainState};
 
@@ -78,6 +78,22 @@ pub fn find_usable_within(registry: &Registry, position: Vec3, radius: f32) -> O
         if !button.touch {
             consider(entity, transform);
         }
+    }
+    // A `func_platrot`. No cited page states that a player may press one
+    // directly — its documented activations are stepping onto it and, with
+    // the "Toggle" spawnflag, being triggered — but `ohl_engine`'s route
+    // planner offers a `use` press on the mover itself as one of the three
+    // ways it plans a ride, and a plan the engine cannot then carry out is
+    // worse than either answer. Project behaviour, recorded in
+    // `docs/FORMAT_SOURCES.md` under `func_platrot`. A plain [`Platform`]
+    // is deliberately *not* added here: changing what a `func_plat` responds
+    // to is a separate behaviour change with its own evidence to gather.
+    for (entity, transform) in &mut registry
+        .world
+        .query::<(Entity, &Transform)>()
+        .with::<&PlatRot>()
+    {
+        consider(entity, transform);
     }
     best.map(|(entity, _)| entity)
 }
@@ -316,6 +332,13 @@ pub struct Simulation {
     /// standing in the same door's touch volume, never opens one that
     /// should stay shut.
     door_touch: std::collections::BTreeMap<Entity, bool>,
+    /// Per-`func_platrot` last-observed touch state, for
+    /// [`Self::touch_platrots`]'s edge trigger — the same shape as
+    /// [`Self::rot_button_touch`], and deliberately not part of the frozen
+    /// [`SimulationState`] for the same reason: a stale `false` starts a
+    /// resting platform the player is standing on, which is what stepping
+    /// onto it does anyway, and never starts one that is already up.
+    platrot_touch: std::collections::BTreeMap<Entity, bool>,
     /// Whether [`Self::fire_player_spawn`] has already run. Not carried in
     /// [`SimulationState`]: matches this project's existing convention for
     /// `trigger_auto`'s own one-shot `fired` flag (an ECS component field,
@@ -576,6 +599,7 @@ impl Simulation {
         self.touch_changelevel_triggers(registry, player_mins, player_maxs, events);
         self.touch_rot_buttons(registry, player_mins, player_maxs);
         self.touch_breakables(registry, player_mins, player_maxs);
+        self.touch_platrots(registry, player_mins, player_maxs);
         fired
     }
 
@@ -643,6 +667,7 @@ impl Simulation {
         self.advance_buttons(registry, dt, &mut events);
         self.advance_rot_buttons(registry, dt);
         Self::advance_platforms(registry, dt);
+        Self::advance_platrots(registry, dt);
         Self::advance_rotators(registry, dt);
         Self::advance_pendulums(registry, dt);
         self.advance_trains(registry, dt);
@@ -898,6 +923,30 @@ impl Simulation {
             if platform.state == MoverState::Closed {
                 platform.state = MoverState::Opening;
                 platform.timer = 0.0;
+            }
+            return;
+        }
+        // A `func_platrot`. Without the documented "Toggle" spawnflag this
+        // is a `func_plat` that also rotates: an activation sends it up,
+        // and `Self::advance_platrots` brings it back down on its own. With
+        // it, "the lift is no more automatically called from top" (Sven
+        // Co-op wiki `func_platrot`, `docs/FORMAT_SOURCES.md`), so every
+        // trip in either direction is one activation and this arm has to
+        // start the return trip too. A platform already travelling ignores
+        // the activation rather than reversing mid-trip, the same rule
+        // `Self::start_track_change` already records for the other
+        // travelling platform in this crate.
+        if let Ok(platrot) = registry.world.query_one_mut::<&mut PlatRot>(entity) {
+            match platrot.state {
+                MoverState::Closed => {
+                    platrot.state = MoverState::Opening;
+                    platrot.timer = 0.0;
+                }
+                MoverState::Open if platrot.toggle => {
+                    platrot.state = MoverState::Closing;
+                    platrot.timer = travel_time(platrot.travel_distance, platrot.speed);
+                }
+                _ => {}
             }
             return;
         }
@@ -1775,6 +1824,59 @@ impl Simulation {
         }
     }
 
+    /// Starts every resting `func_platrot` without the documented "Toggle"
+    /// spawnflag whose brush volume, inflated by [`DOOR_TOUCH_MARGIN`],
+    /// overlaps `[player_mins, player_maxs]`.
+    ///
+    /// The Sven Co-op wiki's `func_platrot` page (`docs/FORMAT_SOURCES.md`,
+    /// "Entity keyvalues and map logic") describes the entity as a
+    /// platform "that will move to its raised position when you walk onto
+    /// it", and states the Toggle flag as removing exactly that: "the lift
+    /// is no more automatically called from top and activated by stepping
+    /// on it". So a non-Toggle platform starts on touch, and a Toggle one
+    /// only ever on an activation.
+    ///
+    /// Edge-triggered like [`Self::touch_rot_buttons`], and the same
+    /// [`DOOR_TOUCH_MARGIN`] inflation [`Self::touch_doors`] uses: a player
+    /// *standing on* a platform is held `ohl_physics::hull::DIST_EPSILON`
+    /// clear of its top face by ordinary collision, so an un-inflated
+    /// overlap test would never see them at all — which is the one contact
+    /// this entity is documented to respond to.
+    pub fn touch_platrots(
+        &mut self,
+        registry: &mut Registry,
+        player_mins: Vec3,
+        player_maxs: Vec3,
+    ) {
+        let margin = Vec3::splat(DOOR_TOUCH_MARGIN);
+        let mut candidates: Vec<(Entity, bool)> = registry
+            .world
+            .query::<(Entity, &PlatRot, &BrushBounds)>()
+            .iter()
+            .filter(|(_, platrot, _)| !platrot.toggle)
+            .map(|(entity, _, bounds)| {
+                (
+                    entity,
+                    aabb_overlaps(
+                        player_mins,
+                        player_maxs,
+                        bounds.mins - margin,
+                        bounds.maxs + margin,
+                    ),
+                )
+            })
+            .collect();
+        candidates.sort_unstable_by_key(|(entity, _)| entity.id());
+        for (entity, overlapping) in candidates {
+            let state = self.platrot_touch.entry(entity).or_default();
+            let rising_edge = overlapping && !*state;
+            *state = overlapping;
+            if rising_edge {
+                self.activate(registry, entity, None, &mut Vec::new());
+            }
+        }
+    }
+
     /// Drives the `momentary_rot_button` currently found by proximity while
     /// `use` is held (`held_entity`, from a caller-run
     /// [`find_usable_within`]-style search that also matches this
@@ -2005,6 +2107,53 @@ impl Simulation {
                         platform.timer -= dt;
                     } else {
                         platform.state = MoverState::Closed;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Advances every `func_platrot`: the same
+    /// open/wait/close/closed cycle [`Self::advance_platforms`] runs for a
+    /// `func_plat`, except that a platform with the documented "Toggle"
+    /// spawnflag never leaves [`MoverState::Open`] on its own — it waits
+    /// there for the next activation (Sven Co-op wiki `func_platrot`,
+    /// `docs/FORMAT_SOURCES.md`).
+    ///
+    /// The rotation is not advanced here at all: it is derived from this
+    /// state machine's own progress fraction by
+    /// [`crate::pose::platrot_degrees`], so the translation and the spin
+    /// cannot drift apart.
+    fn advance_platrots(registry: &mut Registry, dt: f32) {
+        for platrot in registry.world.query_mut::<&mut PlatRot>() {
+            match platrot.state {
+                MoverState::Closed => {}
+                MoverState::Opening => {
+                    if platrot.timer <= 0.0 {
+                        platrot.timer = travel_time(platrot.travel_distance, platrot.speed);
+                    }
+                    platrot.timer -= dt;
+                    if platrot.timer <= 0.0 {
+                        platrot.state = MoverState::Open;
+                        platrot.timer = if platrot.toggle { 0.0 } else { platrot.wait };
+                    }
+                }
+                MoverState::Open => {
+                    if platrot.toggle {
+                        continue;
+                    }
+                    if platrot.timer > 0.0 {
+                        platrot.timer -= dt;
+                    } else {
+                        platrot.state = MoverState::Closing;
+                        platrot.timer = travel_time(platrot.travel_distance, platrot.speed);
+                    }
+                }
+                MoverState::Closing => {
+                    if platrot.timer > 0.0 {
+                        platrot.timer -= dt;
+                    } else {
+                        platrot.state = MoverState::Closed;
                     }
                 }
             }
@@ -2310,7 +2459,7 @@ fn travel_time(distance: f32, speed: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::keyvalues::{Limits, parse_entities};
-    use crate::registry::Registry;
+    use crate::registry::{Registry, SPAWNFLAG_PLATROT_TOGGLE};
     use ohl_formats::bsp30::Entity as RawEntity;
     use std::collections::BTreeMap;
 
@@ -4373,5 +4522,202 @@ mod tests {
                 landmark: "next_landmark".to_string(),
             })]
         );
+    }
+
+    /// A `func_platrot` fixture: one platform, submodel `*1`, with the
+    /// given `spawnflags`.
+    fn platrot_registry(spawnflags: &str) -> Registry {
+        let entities = vec![raw(&[
+            ("classname", "func_platrot"),
+            ("targetname", "pr1"),
+            ("model", "*1"),
+            ("speed", "64"),
+            ("height", "128"),
+            ("rotation", "90"),
+            ("wait", "3"),
+            ("spawnflags", spawnflags),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut bounds = BTreeMap::new();
+        bounds.insert(1u32, ([-64.0, -64.0, -16.0], [64.0, 64.0, 0.0]));
+        Registry::build(&defs, &bounds, &Limits::default())
+    }
+
+    /// The whole documented cycle of a `func_platrot` without the "Toggle"
+    /// spawnflag: an activation sends it up, it waits at the top, and it
+    /// comes back down on its own — the same shape `func_plat` has, which
+    /// is exactly what the cited page describes the entity as.
+    #[test]
+    fn a_plain_func_platrot_travels_waits_and_returns() {
+        let mut registry = platrot_registry("0");
+        let mut sim = Simulation::new();
+        let entity = registry.find("pr1")[0];
+        let state = |registry: &Registry| {
+            registry
+                .world
+                .get::<&PlatRot>(entity)
+                .expect("the fixture entity is a func_platrot")
+                .state
+        };
+        assert_eq!(state(&registry), MoverState::Closed);
+        sim.activate(&mut registry, entity, None, &mut Vec::new());
+        assert_eq!(state(&registry), MoverState::Opening);
+        // 128 units at 64 units per second: two seconds up.
+        tick_for(&mut sim, &mut registry, 1.0, 1.0 / 60.0);
+        assert_eq!(state(&registry), MoverState::Opening);
+        tick_for(&mut sim, &mut registry, 1.1, 1.0 / 60.0);
+        assert_eq!(state(&registry), MoverState::Open);
+        // Then the three-second `wait`, and two seconds back down.
+        tick_for(&mut sim, &mut registry, 3.1, 1.0 / 60.0);
+        assert_eq!(state(&registry), MoverState::Closing);
+        tick_for(&mut sim, &mut registry, 2.1, 1.0 / 60.0);
+        assert_eq!(state(&registry), MoverState::Closed);
+    }
+
+    /// With the documented "Toggle" spawnflag the platform stays at the
+    /// top: "the lift is no more automatically called from top", so only a
+    /// second activation brings it back.
+    #[test]
+    fn a_toggle_func_platrot_stays_up_until_it_is_activated_again() {
+        let mut registry = platrot_registry(&SPAWNFLAG_PLATROT_TOGGLE.to_string());
+        let mut sim = Simulation::new();
+        let entity = registry.find("pr1")[0];
+        let state = |registry: &Registry| {
+            registry
+                .world
+                .get::<&PlatRot>(entity)
+                .expect("the fixture entity is a func_platrot")
+                .state
+        };
+        sim.activate(&mut registry, entity, None, &mut Vec::new());
+        tick_for(&mut sim, &mut registry, 2.1, 1.0 / 60.0);
+        assert_eq!(state(&registry), MoverState::Open);
+        // However long nothing touches it, it stays there.
+        tick_for(&mut sim, &mut registry, 60.0, 1.0 / 60.0);
+        assert_eq!(state(&registry), MoverState::Open);
+        sim.activate(&mut registry, entity, None, &mut Vec::new());
+        assert_eq!(state(&registry), MoverState::Closing);
+        tick_for(&mut sim, &mut registry, 2.1, 1.0 / 60.0);
+        assert_eq!(state(&registry), MoverState::Closed);
+    }
+
+    /// Stepping onto one starts it — and, with "Toggle" set, does not.
+    #[test]
+    fn touch_starts_only_a_func_platrot_without_the_toggle_spawnflag() {
+        for (spawnflags, started) in [("0", true), ("1", false)] {
+            let mut registry = platrot_registry(spawnflags);
+            let mut sim = Simulation::new();
+            let entity = registry.find("pr1")[0];
+            sim.touch_platrots(
+                &mut registry,
+                Vec3::new(-16.0, -16.0, 0.0),
+                Vec3::new(16.0, 16.0, 72.0),
+            );
+            let state = registry
+                .world
+                .get::<&PlatRot>(entity)
+                .expect("the fixture entity is a func_platrot")
+                .state;
+            assert_eq!(
+                state != MoverState::Closed,
+                started,
+                "spawnflags {spawnflags} should {} start on touch",
+                if started { "" } else { "not" }
+            );
+        }
+    }
+
+    /// A player standing well clear of the platform does not start it.
+    #[test]
+    fn touch_ignores_a_func_platrot_nobody_is_standing_on() {
+        let mut registry = platrot_registry("0");
+        let mut sim = Simulation::new();
+        let entity = registry.find("pr1")[0];
+        sim.touch_platrots(
+            &mut registry,
+            Vec3::new(500.0, 500.0, 500.0),
+            Vec3::new(532.0, 532.0, 572.0),
+        );
+        assert_eq!(
+            registry
+                .world
+                .get::<&PlatRot>(entity)
+                .expect("the fixture entity is a func_platrot")
+                .state,
+            MoverState::Closed
+        );
+    }
+
+    /// The translation and the rotation are two readings of one progress
+    /// fraction, so they are in lock-step at every point of the trip and
+    /// arrive together.
+    #[test]
+    fn the_pose_translates_and_rotates_by_the_same_fraction() {
+        let mut registry = platrot_registry("0");
+        let mut sim = Simulation::new();
+        let entity = registry.find("pr1")[0];
+        let read = |registry: &Registry| {
+            (
+                crate::pose::platrot_offset(registry, entity),
+                crate::pose::platrot_degrees(registry, entity),
+            )
+        };
+        // At rest the axis is already reported (it is a fixed property of
+        // the entity, not of its progress) with a zero angle.
+        assert_eq!(read(&registry), (Vec3::ZERO, (Vec3::Z, 0.0)));
+
+        sim.activate(&mut registry, entity, None, &mut Vec::new());
+        // A quarter of the two-second trip.
+        tick_for(&mut sim, &mut registry, 0.5, 1.0 / 60.0);
+        let (offset, (axis, degrees)) = read(&registry);
+        assert_eq!(axis, Vec3::Z);
+        assert!((offset.z - 32.0).abs() < 0.5, "offset {offset:?}");
+        assert!((degrees - 22.5).abs() < 0.5, "degrees {degrees}");
+
+        // Halfway.
+        tick_for(&mut sim, &mut registry, 0.5, 1.0 / 60.0);
+        let (offset, (_, degrees)) = read(&registry);
+        assert!((offset.z - 64.0).abs() < 0.5, "offset {offset:?}");
+        assert!((degrees - 45.0).abs() < 0.5, "degrees {degrees}");
+
+        // Arrived: the full travel and the full spin, together.
+        tick_for(&mut sim, &mut registry, 1.1, 1.0 / 60.0);
+        let (offset, (_, degrees)) = read(&registry);
+        assert!((offset.z - 128.0).abs() < 0.01, "offset {offset:?}");
+        assert!((degrees - 90.0).abs() < 0.01, "degrees {degrees}");
+    }
+
+    /// A `func_platrot` with no `rotation` at all is a plain translating
+    /// lift, and reports no axis — so every consumer of a pose treats it
+    /// exactly as it treats a `func_plat`.
+    #[test]
+    fn a_func_platrot_with_no_rotation_reports_no_axis() {
+        let entities = vec![raw(&[
+            ("classname", "func_platrot"),
+            ("targetname", "pr1"),
+            ("model", "*1"),
+            ("speed", "64"),
+            ("height", "-128"),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut bounds = BTreeMap::new();
+        bounds.insert(1u32, ([-64.0, -64.0, -16.0], [64.0, 64.0, 0.0]));
+        let registry = Registry::build(&defs, &bounds, &Limits::default());
+        let entity = registry.find("pr1")[0];
+        let platrot = *registry
+            .world
+            .get::<&PlatRot>(entity)
+            .expect("the fixture entity is a func_platrot");
+        assert_eq!(
+            platrot.movedir,
+            -Vec3::Z,
+            "a negative height travels downward"
+        );
+        assert!((platrot.travel_distance - 128.0).abs() < f32::EPSILON);
+        assert_eq!(
+            crate::pose::platrot_degrees(&registry, entity),
+            (Vec3::ZERO, 0.0)
+        );
+        assert_eq!(crate::pose::mover_rotation(&registry, entity).0, Vec3::ZERO);
     }
 }
