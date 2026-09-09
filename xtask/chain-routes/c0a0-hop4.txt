@@ -1,4 +1,4 @@
-# M9.22 chain-walk route 4: the map the *fourth* level change out of
+# M9.24 chain-walk route 4: the map the *fourth* level change out of
 # ohl_campaign::STARTMAP ("c0a0") lands in, walked from its arrival point.
 #
 # Project-authored; no bytes here come from any game installation (see
@@ -10,14 +10,13 @@
 # (1/60 s) of simulated time — not seconds.
 #
 # Route, in words only (no entity name, path or coordinate from any
-# payload): the player presses nothing at all. A per-tick probe
-# (local, uncommitted) found the arrival short of the ride, which drives
-# off without them; they fall onto world geometry within a few seconds
-# and stand there — never in solid, never frozen — until the map's own
-# scripted ride reaches the far end of this section and fires the next
-# level change by name, which is where `run_chained` ends the route. The
-# same bystander shape ride-door-timing.md already recorded for the
-# boundary just before this one.
+# payload): the player presses nothing at all. A per-tick probe (local,
+# uncommitted) of the arrival found the player already `on_ground` with
+# zero velocity and a constant position from the route's very first tick —
+# standing on world geometry, never in solid, never observed to fall.
+# Nothing further moves the player for the rest of the route; the level
+# change that ends it is fired by the map's own scripted ride reaching the
+# far end of this section, by name, not by anything this route presses.
 #
 # The trailing wait is slack: `run_chained` (crates/ohl-app/src/game_run.rs)
 # ends a route at the level change it reaches, so any ticks left over here

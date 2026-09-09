@@ -5294,14 +5294,19 @@ velocity, `on_ground`, whether `ground_brush` was attached, ride speed, and
 a zero-length trace's `start_solid`/`all_solid`/`brush_index` at the
 player's own standing-hull origin) of the fourth boundary's arrival.
 
-**What the probe found.** The passenger arrives short of the ride, exactly
-as `ride-door-timing.md`'s "Next" section already recorded for this
-boundary: the car drives off at its own speed without them, they fall for
-a few seconds, and stand on world geometry — never in solid, never
-frozen — for the rest of the route, until the map's own scripted ride
-reaches the far end of this section and fires the next level change by
-name. A route pressing nothing at all (one `wait` line, matching the shape
-of `c0a0-hop3.txt`) reaches that level change honestly.
+**What the probe found.** From the very first simulated tick of this
+arrival the player is already `on_ground` with zero velocity and a
+constant position — standing on world geometry, never in solid, never
+observed to fall. Nothing moves them for the rest of the route; the level
+change that ends it is fired by the map's own scripted ride reaching the
+far end of this section, by name, not by anything a route presses. (This
+map's arrival is distinct from the boundary just before it: M9.21 already
+measured that earlier route, from `c0a0-hop3.txt`'s own arrival, at 91.5%
+of its ticks with the player aboard the ride's own `func_tracktrain`, so
+that route is not a case of the player standing apart from a mover that
+left without them — the same measurement re-confirmed here.) A route
+pressing nothing at all (one `wait` line) reaches this boundary's level
+change honestly.
 
 **Result.** `cargo xtask chain-walk` now reports distinct depth **6** (five
 routes, five level changes). The newly-reached sixth map is the last
