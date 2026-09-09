@@ -3580,6 +3580,79 @@ mod tests {
         );
     }
 
+    /// PR #146's review flagged that only the two committed re-entrancy
+    /// cases (busy re-fire ignored, multithreaded re-fire accepted) had
+    /// tests, and that the third case — a manager whose schedule has
+    /// **completed** accepting a brand new activation — did not, even
+    /// though it is the one a map re-firing the same `multi_manager`
+    /// later in a level would actually hit. This pins that case: `mm1`'s
+    /// one-second schedule delay makes it busy for 1s after each
+    /// activation (see the `!mm.multithreaded &&
+    /// self.multi_manager_busy.contains_key(&entity)` check in
+    /// `Simulation::activate`), so a re-fire at 0.5s (still busy) must be
+    /// ignored, and one at 5s (long after the schedule finished) must
+    /// open the door a second time.
+    #[test]
+    fn a_completed_multi_manager_schedule_accepts_a_new_activation() {
+        let entities = vec![
+            raw(&[
+                ("classname", "multi_manager"),
+                ("targetname", "mm1"),
+                ("door", "1"),
+            ]),
+            raw(&[
+                ("classname", "func_door"),
+                ("targetname", "door"),
+                ("speed", "100"),
+                ("wait", "1"),
+                ("angle", "0"),
+            ]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let mut sim = Simulation::new();
+        let mm = registry.find("mm1")[0];
+        let door = registry.find("door")[0];
+        let mut events = Vec::new();
+
+        let step = 0.05;
+        let mut elapsed = 0.0_f32;
+        let mut opens = 0;
+        let mut was_closed = true;
+        let mut fired_initial = false;
+        let mut fired_busy_reprobe = false;
+        let mut fired_after_completion = false;
+        while elapsed < 8.0 {
+            if !fired_initial {
+                sim.use_entity(&mut registry, mm, None, &mut events);
+                fired_initial = true;
+            }
+            if !fired_busy_reprobe && elapsed >= 0.5 {
+                // Still mid-schedule (busy for 1s): must be ignored.
+                sim.use_entity(&mut registry, mm, None, &mut events);
+                fired_busy_reprobe = true;
+            }
+            if !fired_after_completion && elapsed >= 5.0 {
+                // Long past the 1s schedule: must be accepted.
+                sim.use_entity(&mut registry, mm, None, &mut events);
+                fired_after_completion = true;
+            }
+            sim.tick(&mut registry, step);
+            elapsed += step;
+            let state = registry.world.get::<&Door>(door).unwrap().state;
+            if was_closed && state != MoverState::Closed {
+                opens += 1;
+            }
+            was_closed = state == MoverState::Closed;
+        }
+        assert_eq!(
+            opens, 2,
+            "the 0.5s re-fire mid-schedule must be ignored, but the one at \
+             5s (after the schedule has completed) must open the door a \
+             second time"
+        );
+    }
+
     /// The synthetic shape of the ride/door timing bug this test guards
     /// (see `docs/FORMAT_SOURCES.md`, `multi_manager` and "Track trains
     /// and paths"): a `func_tracktrain` whose track brakes it to a crawl

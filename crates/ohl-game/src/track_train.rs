@@ -568,8 +568,18 @@ impl TrackTrainState {
     /// `docs/FORMAT_SOURCES.md`, "Track trains and paths"). A train that
     /// is already moving is untouched, so an explicit "on" sent to a
     /// running train still changes nothing.
+    ///
+    /// A `speed 0` train — one whose own "Maximum speed" keyvalue is
+    /// zero, but which still moves under a non-zero `startspeed` or a
+    /// `path_track` "New Train Speed" override — is left at whatever
+    /// speed it was already carrying instead of being snapped to `0`:
+    /// `speed` names the train's own cruise speed on the two cited pages,
+    /// not "the speed to resume at", and restoring a literal `0` would
+    /// turn `moving` back on while leaving the train parked at its
+    /// current node forever, which is exactly the stuck-crawl failure
+    /// this method exists to prevent, just at the opposite extreme.
     pub fn turn_on(&mut self) {
-        if !self.moving {
+        if !self.moving && self.cruise_speed.abs() > f32::EPSILON {
             self.speed = self.cruise_speed.abs();
         }
         self.moving = true;
@@ -1014,6 +1024,58 @@ mod tests {
             (state.speed - train.speed).abs() < f32::EPSILON,
             "a restarted train should resume at its own speed, got {}",
             state.speed
+        );
+    }
+
+    /// A `speed 0` train that only moves under its `startspeed` (or a
+    /// `path_track` override) must not be snapped to `speed 0` the moment
+    /// it is stopped and re-triggered: that would set `moving = true` at
+    /// `speed 0`, which never advances and parks the train forever. This
+    /// pins the exact probe from the PR #146 review: halted at node index
+    /// 1 with `speed == 300` (a `func_tracktrain`'s own "Maximum speed"
+    /// keyvalue does not override a resumed train's carried speed; see
+    /// [`TrackTrainState::turn_on`]), toggling it back on must resume at
+    /// that same 300, not reset to the train's `speed 0` keyvalue.
+    #[test]
+    fn a_zero_speed_train_restarts_at_its_carried_speed_not_zero() {
+        let mut entities = three_node_track(&[("speed", "0"), ("startspeed", "300")]);
+        // node2's "Wait for retrigger" spawnflag.
+        entities[2].insert("spawnflags".to_string(), "1".to_string());
+        let registry = build_registry(&entities);
+        let mut state = train_state(&registry);
+
+        // `startspeed` alone puts the train in motion at spawn.
+        assert!(state.moving);
+        assert!((state.speed - 300.0).abs() < f32::EPSILON);
+
+        for _ in 0..50 {
+            state.advance(0.01);
+        }
+        assert_eq!(state.position(), Vec3::new(100.0, 0.0, 0.0));
+        assert!(!state.moving);
+        assert_eq!(state.node_index, 1);
+        assert!(
+            (state.speed - 300.0).abs() < f32::EPSILON,
+            "halting should not touch the carried speed, got {}",
+            state.speed
+        );
+
+        state.toggle();
+        assert!(state.moving);
+        assert!(
+            (state.speed - 300.0).abs() < f32::EPSILON,
+            "a speed-0 train resumed from a stop must keep its carried \
+             speed of 300, not reset to its own speed 0, got {}",
+            state.speed
+        );
+
+        for _ in 0..50 {
+            state.advance(0.01);
+        }
+        assert_eq!(
+            state.position(),
+            Vec3::new(200.0, 0.0, 0.0),
+            "the train must keep advancing past node 1 instead of parking there"
         );
     }
 
