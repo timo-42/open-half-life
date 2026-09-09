@@ -3469,3 +3469,203 @@ fn plan_shaft_bsp(next_map: &str, with_ladder: bool, lethal: bool) -> Vec<u8> {
 
     b.build()
 }
+
+/// The map name [`plan_lift_bsp`] is registered under.
+pub const PLAN_LIFT_MAP: &str = "ohlplanliftsynth";
+
+/// The `targetname` of the fixture's lift, and of the trigger volume that
+/// starts it. Project-authored, like every other literal in this module.
+pub const PLAN_LIFT_NAME: &str = "ohl_plan_lift";
+
+/// The lift fixture's bounding box: a shaft with a landing floor at one
+/// end and a tall ledge at the other.
+const PLAN_LIFT_MIN: [f32; 3] = [-192.0, -64.0, -256.0];
+/// See [`PLAN_LIFT_MIN`].
+const PLAN_LIFT_MAX: [f32; 3] = [512.0, 192.0, 512.0];
+
+/// The floor the player starts on: a slab whose top is the walked level.
+const PLAN_LIFT_FLOOR_MIN: [f32; 3] = [-192.0, -64.0, -256.0];
+/// See [`PLAN_LIFT_FLOOR_MIN`].
+const PLAN_LIFT_FLOOR_MAX: [f32; 3] = [0.0, 192.0, 0.0];
+
+/// The ledge the lift serves, flush against the platform's far face:
+/// its top is [`PLAN_LIFT_TRAVEL`] above the starting floor, too tall to
+/// step, jump or climb to, with no way round.
+const PLAN_LIFT_LEDGE_MIN: [f32; 3] = [128.0, -64.0, -256.0];
+/// See [`PLAN_LIFT_LEDGE_MIN`].
+const PLAN_LIFT_LEDGE_MAX: [f32; 3] = [512.0, 192.0, 256.0];
+
+/// The lift itself at rest: a platform bridging the shaft whose top sits
+/// one ordinary step above the starting floor, so the walk simply walks
+/// onto it.
+const PLAN_LIFT_PLATFORM_MIN: [f32; 3] = [0.0, -64.0, -240.0];
+/// See [`PLAN_LIFT_PLATFORM_MIN`].
+const PLAN_LIFT_PLATFORM_MAX: [f32; 3] = [128.0, 192.0, 16.0];
+
+/// The `func_button` [`LiftFixture::ButtonPlat`] wires to its platform: a
+/// small panel on the ledge's own face, at the height the eye of a player
+/// standing on the platform is, and within a `use` press of the platform's
+/// far end.
+const PLAN_LIFT_BUTTON_MIN: [f32; 3] = [120.0, 48.0, 64.0];
+/// See [`PLAN_LIFT_BUTTON_MIN`].
+const PLAN_LIFT_BUTTON_MAX: [f32; 3] = [128.0, 80.0, 96.0];
+
+/// How far the lift travels, straight up.
+pub const PLAN_LIFT_TRAVEL: f32 = 256.0;
+
+/// The touch volume that starts the lift, sitting on the lift's own top
+/// surface: walking onto the platform is what fires it.
+const PLAN_LIFT_TRIGGER_MIN: [f32; 3] = [0.0, -64.0, 16.0];
+/// See [`PLAN_LIFT_TRIGGER_MIN`].
+const PLAN_LIFT_TRIGGER_MAX: [f32; 3] = [128.0, 192.0, 80.0];
+
+/// Where [`LiftFixture::OutOfReach`] puts that same volume instead: high
+/// above the shaft, where no walked cell ever stands in it and no `use`
+/// press reaches.
+const PLAN_LIFT_FAR_TRIGGER_MIN: [f32; 3] = [0.0, -64.0, 400.0];
+/// See [`PLAN_LIFT_FAR_TRIGGER_MIN`].
+const PLAN_LIFT_FAR_TRIGGER_MAX: [f32; 3] = [128.0, 192.0, 464.0];
+
+/// The `trigger_changelevel` volume at the far end of the ledge.
+const PLAN_LIFT_GOAL_MIN: [f32; 3] = [384.0, -64.0, 256.0];
+/// See [`PLAN_LIFT_GOAL_MIN`].
+const PLAN_LIFT_GOAL_MAX: [f32; 3] = [512.0, 192.0, 384.0];
+
+/// Which lift [`plan_lift_bsp`] builds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiftFixture {
+    /// A `func_door` used as a lift (`wait -1`, so it stays where it
+    /// goes), started by a `trigger_multiple` volume lying on its own top
+    /// surface: walking onto the platform is what sets it going.
+    TouchDoor,
+    /// A `func_plat` with no touch volume at all, started by a `use`
+    /// press on the `func_button` beside it, and returning on its own
+    /// once its `wait` is up.
+    ///
+    /// A press on the platform *itself* is deliberately not what this
+    /// tests: a standing player's eye is a whole [`crate::USE_RADIUS`]
+    /// above their feet, so the brush centre of the thing they are
+    /// standing on is never within a press of them. A lift the player
+    /// rides is switched from beside it, and that is what this builds.
+    ButtonPlat,
+    /// The same lift as [`Self::TouchDoor`], with its trigger volume
+    /// moved high above the shaft: nothing the player can stand on
+    /// touches it, its own brush centre is far below any `use` press, and
+    /// so there is no way to set it going at all.
+    OutOfReach,
+}
+
+/// A shaft with a lift in it: a starting floor, a ledge
+/// [`PLAN_LIFT_TRAVEL`] units above it with a `trigger_changelevel` on
+/// top, and a platform bridging the two that travels straight up when it
+/// is set going.
+///
+/// Nothing but the lift connects the two levels: the ledge is far taller
+/// than a step, a jump or a survivable fall, and there is no ladder. So a
+/// route to the goal exists exactly when the walk can *ride* — which is
+/// what `crate::route_plan`'s ride edge is measured against, in all three
+/// of the shapes [`LiftFixture`] describes.
+///
+/// No bytes here come from any game installation; see
+/// `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn plan_lift_bsp(next_map: &str, fixture: LiftFixture) -> Vec<u8> {
+    let mover = match fixture {
+        LiftFixture::ButtonPlat => format!(
+            "{{\n\"classname\" \"func_plat\"\n\"targetname\" \"{PLAN_LIFT_NAME}\"\n\
+             \"model\" \"*1\"\n\"speed\" \"100\"\n\"wait\" \"20\"\n\"angle\" \"-1\"\n\
+             \"height\" \"{PLAN_LIFT_TRAVEL}\"\n\"origin\" \"0 0 0\"\n}}\n\
+             {{\n\"classname\" \"func_button\"\n\"model\" \"*4\"\n\
+             \"target\" \"{PLAN_LIFT_NAME}\"\n\"speed\" \"100\"\n\"wait\" \"5\"\n\
+             \"origin\" \"0 0 0\"\n}}\n"
+        ),
+        LiftFixture::TouchDoor | LiftFixture::OutOfReach => format!(
+            "{{\n\"classname\" \"func_door\"\n\"targetname\" \"{PLAN_LIFT_NAME}\"\n\
+             \"model\" \"*1\"\n\"speed\" \"100\"\n\"wait\" \"-1\"\n\"angle\" \"-1\"\n\
+             \"lip\" \"0\"\n\"origin\" \"0 0 0\"\n}}\n"
+        ),
+    };
+    // The `func_plat` is started by a press on itself, so it gets no
+    // touch volume; the other two get one, in or out of reach.
+    let trigger = if fixture == LiftFixture::ButtonPlat {
+        String::new()
+    } else {
+        format!(
+            "{{\n\"classname\" \"trigger_multiple\"\n\"model\" \"*2\"\n\
+             \"target\" \"{PLAN_LIFT_NAME}\"\n\"wait\" \"4\"\n\"origin\" \"0 0 0\"\n}}\n"
+        )
+    };
+    let entities = format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"-96 64 40\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {mover}{trigger}\
+         {{\n\"classname\" \"trigger_changelevel\"\n\"model\" \"*3\"\n\
+         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n"
+    );
+
+    let (trigger_min, trigger_max) = if fixture == LiftFixture::OutOfReach {
+        (PLAN_LIFT_FAR_TRIGGER_MIN, PLAN_LIFT_FAR_TRIGGER_MAX)
+    } else {
+        (PLAN_LIFT_TRIGGER_MIN, PLAN_LIFT_TRIGGER_MAX)
+    };
+
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(&entities);
+
+    let solid = [
+        CollisionBrush::half_space([0.0, 0.0, 1.0], PLAN_LIFT_MIN[2]),
+        CollisionBrush::half_space([0.0, 0.0, -1.0], -PLAN_LIFT_MAX[2]),
+        CollisionBrush::half_space([1.0, 0.0, 0.0], PLAN_LIFT_MIN[0]),
+        CollisionBrush::half_space([-1.0, 0.0, 0.0], -PLAN_LIFT_MAX[0]),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], PLAN_LIFT_MIN[1]),
+        CollisionBrush::half_space([0.0, -1.0, 0.0], -PLAN_LIFT_MAX[1]),
+        CollisionBrush::box_brush(PLAN_LIFT_FLOOR_MIN, PLAN_LIFT_FLOOR_MAX),
+        CollisionBrush::box_brush(PLAN_LIFT_LEDGE_MIN, PLAN_LIFT_LEDGE_MAX),
+    ];
+    let world_heads = b.push_collision_hulls(&solid);
+    let lift_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(
+        PLAN_LIFT_PLATFORM_MIN,
+        PLAN_LIFT_PLATFORM_MAX,
+    )]);
+    let trigger_heads = b.push_collision_hulls(&[]);
+    let goal_heads = b.push_collision_hulls(&[]);
+
+    b.push_model(PLAN_LIFT_MIN, PLAN_LIFT_MAX, [0.0; 3], world_heads, 2, 0, 0);
+    b.push_model(
+        PLAN_LIFT_PLATFORM_MIN,
+        PLAN_LIFT_PLATFORM_MAX,
+        [0.0; 3],
+        lift_heads,
+        2,
+        0,
+        0,
+    );
+    b.push_model(trigger_min, trigger_max, [0.0; 3], trigger_heads, 2, 0, 0);
+    b.push_model(
+        PLAN_LIFT_GOAL_MIN,
+        PLAN_LIFT_GOAL_MAX,
+        [0.0; 3],
+        goal_heads,
+        2,
+        0,
+        0,
+    );
+    if fixture == LiftFixture::ButtonPlat {
+        let button_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(
+            PLAN_LIFT_BUTTON_MIN,
+            PLAN_LIFT_BUTTON_MAX,
+        )]);
+        b.push_model(
+            PLAN_LIFT_BUTTON_MIN,
+            PLAN_LIFT_BUTTON_MAX,
+            [0.0; 3],
+            button_heads,
+            2,
+            0,
+            0,
+        );
+    }
+
+    b.build()
+}

@@ -6019,3 +6019,68 @@ question rather than this one recurring, and the next thing to look at.
 `cargo test --workspace`, policy, graph, combat-smoke 37/37,
 `--reachability-report` byte-identical to main on a campaign map, and
 `cargo xtask chain-walk` at depth 10.
+
+## M9.32 --- A lift is floor that moves: the planner's ride edge
+
+The route planner could walk, step, fall, jump and climb. It could not
+ride. A brush mover at rest is floor — the walk steps onto a lift and
+stands on it exactly as it stands anywhere else — and the one thing the
+walk could not see is that this particular floor moves, so a shaft whose
+only way up is the lift in it reads as a sealed room and the search stops
+there with nothing on its frontier to blame.
+
+`PlanAction::Ride` closes that. A `func_door` used as a lift or a
+`func_plat`, at rest, whose travel gains or loses more height than the
+walk climbs for free, is an edge from the surface it rests on to the
+surface it travels to — provided the walk can also *start* it from where
+it boards. Three ways, each read back from this project's own live map
+logic rather than restated: a touch volume wired to the mover that the
+boarding cell stands inside (walking on is what fires it), a `use` press
+on the mover itself, or a `use` press on the `func_button` wired to it,
+both measured by the same use-proximity rule the engine dispatches a
+press with, and both followed one `multi_manager` hop deep and no
+further. Which boarding cell the plan uses is decided by *where the
+switch is*: the cheapest reached cell on the platform that can actually
+start it, not the cheapest cell full stop. A press a standing player
+cannot reach is not an edge, and the walk stops at the shaft rather than
+planning a ride it cannot begin.
+
+The route says a ride as at most one `use` press and a wait as long as
+the mover's own `distance / speed`. Nothing is held: the mover does the
+travelling and carries the player, which the physics already models. A
+ride costs more than a climb and less than a jump — an ordinary way to
+get about that commits the player to a machine — and, like a climb, ends
+its committed chunk, because everything planned after it describes a body
+standing on a platform that has moved. A mover is ridden at most once per
+search.
+
+Two consequences fell out of it. The planner's walk now **persists across
+the search's rounds** instead of being rebuilt from the start each time:
+opening a door only ever adds floor, so re-walking found a superset and
+lost nothing, but riding a mover *moves* the floor the ride departs from,
+and a walk that began again from the map's entrance could no longer reach
+the cell the ride leaves from — which is the parent chain the route is
+read back along. And a closed door the walk is **standing on** is no
+longer opened as an obstacle: detaching it takes the ground out from
+under the route. A door like that is a lift, and the way past it is to
+ride it.
+
+**The tenth hop was measured, not guessed at, and it is still refused.**
+Local instrumentation over the stalled search (uncommitted, reverted
+before the commit) reported the region's extent, its frontier classnames,
+every mover in the map with its state, travel, `wait` and distance from a
+reached cell, and — for every switch the walk could reach — what pressing
+it would fire. The recorded suspicion from the last milestone, a tall lift
+`func_door` with a floor trigger, is *not* what this map stalls on: it has
+no `func_plat` at all, no closed mover whose top surface the walk stands
+on, and so the ride edge finds no candidate here. What the reachable
+switches fire is a rotating-platform brush entity this engine does not
+implement at all — no mover component, so the walk reads it as a static
+wall and no press of its own switch moves it — and, at the far end of the
+map, a group of ordinary horizontal doors. The chain still walks ten distinct maps deep. The next thing to
+look at is the entity, not the walk.
+
+**Gates**: fmt, clippy (workspace, `--features dev-tools`, and
+`--all-features`), `cargo test --workspace`, policy, graph, combat-smoke
+37/37, `--reachability-report` byte-identical to main on a campaign map,
+and `cargo xtask chain-walk` at depth 10.

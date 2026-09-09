@@ -364,8 +364,9 @@ cargo run --release -p ohl-app --features dev-tools -- \
 
 It runs the same bounded, deterministic walk over the live collision model
 (`ohl_engine::route_plan`), but keeps a parent link and an edge kind
-(walk/step/drop/jump/long jump/ladder climb) for every cell it reaches, so the cell the
-goal was found in can be walked back to the player's current position.
+(walk/step/drop/jump/long jump/ladder climb/mover ride) for every cell it
+reaches, so the cell the goal was found in can be walked back to the
+player's current position.
 That cell path is straightened against the player's own standing hull,
 merged into straight runs, and converted into `look`/`forward` lines, with
 a `use` press and the door's own documented open time wherever a closed
@@ -389,17 +390,40 @@ read back, not a second rule. A committed chunk always stops at its first
 climb, since `back` means "down the ladder" only while the player is on
 one.
 
+A brush mover the walk is standing on is a third such edge. A lift at rest
+is floor — the walk steps onto it and stands there like anywhere else —
+and what the walk cannot see is that the floor moves, so a shaft whose
+only way up is the lift in it reads as a sealed room. The ride edge closes
+that: a `func_door` used as a lift or a `func_plat`, at rest, whose travel
+gains or loses more height than a step, is ridden from the surface it
+rests on to the surface it travels to, provided the walk can also *start*
+it from where it boards — by standing in a touch volume wired to it, or by
+a `use` press on the mover itself or on the `func_button` wired to it,
+both measured by the engine's own use-proximity rule. The route says so as
+at most one `use` press and a wait as long as the mover's own
+`distance / speed`; nothing is held, because the mover does the
+travelling and carries the player with it. A ride costs more than a climb
+and less than a jump, and — like a climb — always ends a committed chunk,
+because everything planned after it describes a body standing on a
+platform that has moved. A mover is ridden at most once per search: a
+`wait -1` lift stays where it went, and one that returns on its own is not
+worth a second trip. This is also why the walk now persists across the
+search's rounds rather than starting over each time: opening a door only
+ever adds floor, but riding a mover *moves* the floor the ride departs
+from, and a walk that began again from the map's entrance could no longer
+reach it.
+
 A run that ends by stepping off a ledge is not over when its ticks are:
 the plan measures that fall, and the script waits it out (`sqrt(2h/g)`
 under the map's own gravity, plus a margin) so the next chunk replays
 from the landing it was planned from. A `forward` run's tick count comes
 from replaying the engine's own ground move in one dimension: friction,
-acceleration toward top speed, and the coast the release leaves behind. Both halves matter, in opposite
-directions — "distance over top speed" undershoots because a player
-starting from rest never travels at top speed, and counting only the held
-ticks overshoots by the better part of a corridor's width, which is
-exactly what walks a planned route off a ledge the walk never planned to
-fall from.
+acceleration toward top speed, and the coast the release leaves behind.
+Both halves matter, in opposite directions — "distance over top speed"
+undershoots because a player starting from rest never travels at top
+speed, and counting only the held ticks overshoots by the better part of
+a corridor's width, which is exactly what walks a planned route off a
+ledge the walk never planned to fall from.
 
 Nothing is written until the script has actually been **replayed**, in
 process, from the very state it was planned from, and that replay reached
