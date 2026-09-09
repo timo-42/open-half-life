@@ -35,6 +35,18 @@ mod dev_bsp;
 mod dev_mdl;
 mod frame_profile;
 mod game_run;
+// The route planner's script conversion, closed-loop validation and file
+// writer. Only the `--plan-route` flag that drives it is `dev-tools`; the
+// module itself is compiled (and tested) unconditionally, exactly like
+// `ohl_engine::route_plan`, the search it converts.
+#[cfg_attr(
+    not(feature = "dev-tools"),
+    allow(
+        dead_code,
+        reason = "only --plan-route calls it, and that flag is dev-tools only"
+    )
+)]
+mod route_planner;
 mod script;
 mod script_log;
 
@@ -143,6 +155,23 @@ fn parse_reachability_round_cap(value: &str) -> Result<usize, String> {
     }
 }
 
+/// Validates `--plan-attempts`: a whole number greater than 0 and no
+/// larger than [`crate::route_planner::MAX_ATTEMPTS`] (that constant's own
+/// doc comment explains why the closed loop is bounded).
+#[cfg(feature = "dev-tools")]
+fn parse_plan_attempts(value: &str) -> Result<usize, String> {
+    let message = format!(
+        "expected a whole number greater than 0 and at most {}",
+        crate::route_planner::MAX_ATTEMPTS
+    );
+    let parsed: usize = value.parse().map_err(|_| message.clone())?;
+    if parsed > 0 && parsed <= crate::route_planner::MAX_ATTEMPTS {
+        Ok(parsed)
+    } else {
+        Err(message)
+    }
+}
+
 /// `Open Half-Life <version>` command line.
 #[allow(
     clippy::struct_excessive_bools,
@@ -152,6 +181,17 @@ confuse for one another"
 #[derive(Debug, Parser)]
 #[command(name = "Open Half-Life", version = VERSION, about = None, long_about = None)]
 #[command(group(clap::ArgGroup::new("scripted").args(["script", "chain_script"])))]
+// Both dev-tools walks over the live collision model share the cell and
+// round caps below, so those flags require *one of* them rather than the
+// report specifically.
+#[cfg_attr(
+    feature = "dev-tools",
+    command(group(
+        clap::ArgGroup::new("collision_walk")
+            .args(["reachability_report", "plan_route"])
+            .multiple(true)
+    ))
+)]
 struct Cli {
     /// Path to a Half-Life installation ISO.
     #[arg(long, conflicts_with = "path")]
@@ -504,7 +544,7 @@ number greater than 0 and no more than 8.0."
     #[cfg(feature = "dev-tools")]
     #[arg(
         long,
-        requires = "reachability_report",
+        requires = "collision_walk",
         value_name = "N",
         value_parser = parse_reachability_cell_cap
     )]
@@ -519,7 +559,7 @@ number greater than 0 and no more than 8.0."
     #[cfg(feature = "dev-tools")]
     #[arg(
         long,
-        requires = "reachability_report",
+        requires = "collision_walk",
         value_name = "N",
         value_parser = parse_reachability_round_cap
     )]
@@ -550,6 +590,57 @@ number greater than 0 and no more than 8.0."
     #[cfg(feature = "dev-tools")]
     #[arg(long, value_name = "LIST")]
     start_inventory: Option<String>,
+
+    /// Development only: plans a route from the player's current position
+    /// to the nearest reachable `trigger_changelevel` (or a
+    /// `--plan-goal` classname), converts it into a scripted-input route
+    /// file, validates it by replaying it in-process until the level
+    /// change actually fires, and writes it to PATH.
+    ///
+    /// The search is the same bounded, deterministic walk over the live
+    /// collision model `--reachability-report` triages with
+    /// (`ohl_engine::route_plan`), but it records how the walk got
+    /// somewhere rather than only that it could: the cell path is
+    /// straightened, merged into runs, and turned into `look`/`forward`
+    /// lines, with a `use` press and the door's own open time wherever a
+    /// closed door has to be opened. Nothing is written unless a replay
+    /// from the very state the plan started at reached the level change;
+    /// when a replay drifts, the planner re-plans from the drift point
+    /// and appends the continuation (up to `--plan-attempts` times).
+    ///
+    /// Combined with `--chain-script` the plan starts from wherever the
+    /// chain's last route left the player standing — the arrival point a
+    /// cold `--map <name>` load cannot reproduce, and the only place the
+    /// next chain-walk route can honestly be authored from.
+    ///
+    /// Prints aggregates only (cells, segments, replay attempts,
+    /// seconds): never a map name, a coordinate or a targetname
+    /// (`docs/CLEAN_ROOM.md`), and the written file holds script commands
+    /// and project-authored comment words only. Compiled in solely by the
+    /// non-default `dev-tools` cargo feature.
+    #[cfg(feature = "dev-tools")]
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["benchmark_seconds", "profile_frames", "script", "headless_screenshot"])]
+    plan_route: Option<PathBuf>,
+
+    /// Development only: with `--plan-route`, plans a route to the
+    /// nearest reachable brush entity of this classname instead of to a
+    /// `trigger_changelevel`. Only an entity with a brush volume can be a
+    /// goal.
+    #[cfg(feature = "dev-tools")]
+    #[arg(long, value_name = "CLASSNAME", requires = "plan_route")]
+    plan_goal: Option<String>,
+
+    /// Development only: with `--plan-route`, how many plan/replay
+    /// attempts the closed loop may take before giving up. Each attempt
+    /// re-plans from wherever the previous attempt's replay drifted to.
+    #[cfg(feature = "dev-tools")]
+    #[arg(
+        long,
+        requires = "plan_route",
+        value_name = "N",
+        value_parser = parse_plan_attempts
+    )]
+    plan_attempts: Option<usize>,
 }
 
 /// Formats an event as `[level] message`, mirroring the C++ `ohl::core::log`
@@ -786,6 +877,11 @@ fn run(cli: Cli) -> ExitCode {
     #[cfg(not(feature = "dev-tools"))]
     let reachability_report = false;
 
+    #[cfg(feature = "dev-tools")]
+    let plan_route = cli.plan_route.is_some();
+    #[cfg(not(feature = "dev-tools"))]
+    let plan_route = false;
+
     if cli.play
         || cli.training
         || cli.map.is_some()
@@ -796,6 +892,7 @@ fn run(cli: Cli) -> ExitCode {
         || cli.script.is_some()
         || !cli.chain_script.is_empty()
         || reachability_report
+        || plan_route
     {
         return run_game_flow(&cli);
     }
@@ -860,6 +957,12 @@ fn run_game_flow(cli: &Cli) -> ExitCode {
         reachability_round_cap: cli.reachability_round_cap,
         #[cfg(feature = "dev-tools")]
         start_inventory: cli.start_inventory.as_deref(),
+        #[cfg(feature = "dev-tools")]
+        plan_route: cli.plan_route.as_deref(),
+        #[cfg(feature = "dev-tools")]
+        plan_goal: cli.plan_goal.as_deref(),
+        #[cfg(feature = "dev-tools")]
+        plan_attempts: cli.plan_attempts,
     }) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {

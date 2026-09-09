@@ -5719,3 +5719,93 @@ boundary this route crosses fires normally. Recorded rather than guessed at.
 **Gates**: fmt, clippy (workspace/all-features and no-default),
 `cargo test --workspace`, policy, graph, combat-smoke 37/37, campaign-smoke
 93/93, `cargo xtask chain-walk` at depth 7.
+
+## M9.29 — an in-engine route planner, and two routes it authored
+
+`--reachability-report` has answered "can the player get there" since M9.9.
+It has never answered "how", and every chain-walk route so far was
+hand-authored against that aggregate. `.plan/chain-hop6.md` records where
+that ends: two hand-written navigation probes, a greedy heading walk and a
+coarse waypoint chase, both failing to walk a route the report says exists
+— the first grinding along the first wall its straight line meets, the
+second stalling short of the trigger.
+
+This milestone makes the engine answer the second question too.
+`ohl_engine::route_plan` runs the same bounded, deterministic walk over the
+same live collision model, with the same step/jump/drop edges and the same
+"open a closed, use-openable door and walk again" round advance, but keeps
+a parent link and an edge kind for every cell it reaches. The cell the goal
+was found in is walked back to the player's own position, straightened
+against the standing hull with a floor sample under every step of each
+candidate shortcut, and merged into straight runs. `--plan-route PATH`
+(`dev-tools`) converts those runs into the project's own scripted-input
+grammar — a relative `look`, a `forward` line whose tick count comes from
+replaying the engine's own ground-acceleration rule rather than from
+"distance over top speed", a `use` press and the door's own documented open
+time where a door has to be opened — and `cargo xtask plan-chain-hop` runs
+the existing chain first, so the plan starts at the arrival point the next
+route has to be authored from.
+
+Four things make it a planner rather than a guess.
+
+**Nothing is written until it has been walked.** Every candidate script is
+replayed in process from the very state it was planned from, restored fresh
+from a save snapshot each time; the file is written only after a replay
+reached the level change, and then only after the accepted script has been
+replayed once more on the live game.
+
+**A drift is planned away, one segment at a time.** When a replay does not
+arrive, the planner plans again from the point the player actually reached
+and appends the continuation. Only the *first* segment of any plan is
+committed per attempt: a plan committed whole inherits its own first
+segment's drift for every segment after it, and measured against the
+payload that is exactly the difference between converging and not. The same
+hop that never converged while three segments were committed at a time
+converged in eighteen attempts committing one.
+
+**A refusal is an answer.** A goal the walk cannot reach yields a partial
+route to the closest reachable point instead of nothing; a search that
+finds nothing, or that plans the very same commands it planned last time,
+waits and looks again before giving up (a map that opens its own way out on
+a schedule has no route the instant the player arrives and one a moment
+later — and standing in a map's own arrival sequence looks exactly like a
+plan that never changes). A door the route crosses without ever standing in
+reach of truncates the route there rather than walking through a shut leaf.
+An edge no script can express — today the long jump — refuses the plan
+outright with a fixed reason.
+
+**A goal it must not walk to.** A map's own level-change triggers include
+the one the player just arrived through, and it is usually the closest one
+to them. After a chain, the planner is handed the maps that chain has
+already entered and skips any trigger leading back into one; without that,
+the first hop it planned was a one-second walk straight back through the
+boundary it had just crossed, which `cargo xtask chain-walk` counts as a
+re-entry failure rather than progress. Those names stay in memory, exactly
+as `run_chained`'s own visited list does.
+
+**Two routes, authored by the tool, shipped.** `c0a0-hop6.txt` (18 runs,
+26.7 simulated seconds, converged in 18 plan/replay attempts over a search
+of about 5,560 cells) and `c0a0-hop7.txt` (10 runs and two door presses,
+18.4 seconds, 10 attempts, about 5,700 cells) are the first route files in
+this repository no one hand-authored. Both were then walked by
+`cargo xtask chain-walk` itself, which now reaches **9** distinct maps,
+up from 7. The hop after those two was attempted the same way and refused:
+no plan's replay reached that map's own trigger, so nothing was written.
+
+Cold-loaded single maps plan too — a route was planned, replayed and
+written for two campaign maps outside the chain, and one of those files was
+replayed independently through the ordinary `--script` path from a cold
+load and followed its level change.
+
+**And one earlier measurement revisited.** A doorway a body fits through by
+a hand's width is not one a 16-unit grid-aligned step fits through, so this
+walk retries a blocked step from half a cell to either side and keeps the
+point it stepped aside to on the route. That edge alone opened an arrival
+point M9.26 had measured as 73 reachable cells to about 6,200 — the walk's
+own grid, not the map, was the enclosure there. `--reachability-report`'s
+walk is deliberately left as it was: coarse triage and a walkable route are
+different questions, and only the second has to be crossable by a body.
+
+**Gates**: fmt, clippy (workspace/all-features and `--features dev-tools`),
+`cargo test --workspace` and `--all-features`, policy, graph, combat-smoke
+37/37, `cargo xtask chain-walk` at depth 9.

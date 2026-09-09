@@ -133,7 +133,7 @@ pub const MAX_CELL_CAP: usize = 2_000_000;
 pub const MAX_ROUND_CAP: usize = 64;
 
 /// The eight compass directions the walk tries from every visited cell.
-const DIRECTIONS: [(f32, f32); 8] = [
+pub(crate) const DIRECTIONS: [(f32, f32); 8] = [
     (1.0, 0.0),
     (1.0, 1.0),
     (0.0, 1.0),
@@ -334,14 +334,14 @@ pub struct ReachabilityReport {
 
 /// One 16-unit grid cell, quantized from a world position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct Cell(i32, i32, i32);
+pub(crate) struct Cell(i32, i32, i32);
 
 // A published GoldSrc map's coordinates fit comfortably within `i16`, so
 // dividing by `CELL_SIZE` and rounding never approaches `i32`'s range; the
 // truncation clippy warns about cannot occur for any position this walk
 // ever visits.
 #[allow(clippy::cast_possible_truncation)]
-fn cell_of(position: Vec3) -> Cell {
+pub(crate) fn cell_of(position: Vec3) -> Cell {
     Cell(
         (position.x / CELL_SIZE).round() as i32,
         (position.y / CELL_SIZE).round() as i32,
@@ -372,18 +372,18 @@ struct WalkResult {
 /// the live [`ohl_physics::MoveConfig`] a walk runs against rather than
 /// restated as fixed numbers (see this module's own doc comment).
 #[derive(Debug, Clone, Copy)]
-struct JumpBounds {
+pub(crate) struct JumpBounds {
     /// Tallest obstruction a jump edge may ascend over: the standing
     /// step-up plus the jump apex height (`v² / (2g)`).
-    ascend: f32,
+    pub(crate) ascend: f32,
     /// Furthest horizontal distance a jump edge may cross in one hop: run
     /// speed times a full jump's airtime (`2v / g`). A coarse, documented
     /// approximation of a running jump's actual range, not a simulated arc.
-    horizontal: f32,
+    pub(crate) horizontal: f32,
 }
 
 impl JumpBounds {
-    fn from_move_config(config: &ohl_physics::MoveConfig) -> Self {
+    pub(crate) fn from_move_config(config: &ohl_physics::MoveConfig) -> Self {
         let apex_height = config.jump_velocity * config.jump_velocity / (2.0 * config.gravity);
         let airtime = 2.0 * config.jump_velocity / config.gravity;
         Self {
@@ -403,7 +403,7 @@ impl JumpBounds {
     /// this bound's airtime and its horizontal reach are derived from the
     /// long jump's own two published constants alone, never from
     /// `max_speed`.
-    fn from_long_jump_config(config: &ohl_physics::MoveConfig) -> Self {
+    pub(crate) fn from_long_jump_config(config: &ohl_physics::MoveConfig) -> Self {
         let apex_height =
             config.long_jump_up_speed * config.long_jump_up_speed / (2.0 * config.gravity);
         let airtime = 2.0 * config.long_jump_up_speed / config.gravity;
@@ -417,7 +417,7 @@ impl JumpBounds {
 /// One edge attempt's outcome: either a new landing (with how far below
 /// the starting cell it fell), or a reason it failed.
 #[derive(Clone, Copy)]
-enum EdgeOutcome {
+pub(crate) enum EdgeOutcome {
     Landed { position: Vec3, drop: f32 },
     BlockedUp,
     BlockedAcross(Option<BrushId>),
@@ -427,7 +427,7 @@ enum EdgeOutcome {
 /// Tries one ascend/move/drop edge from `position` in direction
 /// `horizontal_dir`, ascending at most `ascend`, moving `horizontal_dist`
 /// across, then descending at most [`MAX_FALL`] to find a new floor.
-fn try_edge(
+pub(crate) fn try_edge(
     collision: &CollisionModel,
     hull: Hull,
     position: Vec3,
@@ -479,7 +479,7 @@ fn try_edge(
 /// (a spawn over a pit, or a map with no usable geometry beneath it) or
 /// when the start point is already embedded in solid: neither is this
 /// function's to invent a position for.
-fn settle_start(collision: &CollisionModel, start: Vec3) -> Vec3 {
+pub(crate) fn settle_start(collision: &CollisionModel, start: Vec3) -> Vec3 {
     let down = collision.trace(Hull::Standing, start, start - Vec3::Z * MAX_FALL);
     if down.start_solid || down.fraction >= 1.0 {
         return start;
@@ -611,7 +611,7 @@ fn walk(
 /// The classname of `entity`, or an empty string when it somehow has none
 /// (never expected in practice — every spawned entity carries
 /// [`ClassName`] — but this module never panics on map-derived data).
-fn classname_of(game: &Game, entity: Entity) -> String {
+pub(crate) fn classname_of(game: &Game, entity: Entity) -> String {
     game.registry()
         .world
         .get::<&ClassName>(entity)
@@ -620,7 +620,7 @@ fn classname_of(game: &Game, entity: Entity) -> String {
 }
 
 /// The entity a brush hull belongs to, via [`Game::brush_collision`].
-fn entity_for_brush(game: &Game, brush: BrushId) -> Option<Entity> {
+pub(crate) fn entity_for_brush(game: &Game, brush: BrushId) -> Option<Entity> {
     game.brush_collision()
         .iter()
         .find(|(_, id)| *id == brush)
@@ -648,7 +648,7 @@ fn round_distance(value: f32) -> f32 {
 /// Whether `position` lies inside `bounds`, expanded by half a grid cell
 /// in every direction so a floor-snapped walk landing exactly at a
 /// trigger volume's own boundary still counts as reaching it.
-fn bounds_contains_with_margin(bounds: &BrushBounds, position: Vec3) -> bool {
+pub(crate) fn bounds_contains_with_margin(bounds: &BrushBounds, position: Vec3) -> bool {
     let margin = Vec3::splat(CELL_SIZE / 2.0);
     let mins = bounds.mins - margin;
     let maxs = bounds.maxs + margin;

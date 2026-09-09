@@ -269,10 +269,10 @@ pub fn passed(report: &ChainReport, min_depth: usize) -> bool {
     report.depth >= min_depth && !report.re_entered
 }
 
-const APP_BIN_NAME: &str = "open-half-life";
+pub const APP_BIN_NAME: &str = "open-half-life";
 
 /// Builds the release `open-half-life` binary and returns its path.
-fn build_release_binary(root: &Path) -> Result<PathBuf, &'static str> {
+pub fn build_release_binary(root: &Path) -> Result<PathBuf, &'static str> {
     let status = Command::new("cargo")
         .args(["build", "-p", "ohl-app", "--release"])
         .current_dir(root)
@@ -307,7 +307,14 @@ fn run_chain(
         command.arg("--chain-script").arg(route);
     }
     command.arg("--script-log");
+    capture_stderr(command, timeout)
+}
 
+/// Runs `command` with a deadline and returns whatever it wrote to
+/// stderr, killing it if the deadline passes. Shared with
+/// `crate::plan_chain_hop`, which drives the same binary with a different
+/// argument list and reads the same kind of fixed report lines from it.
+pub fn capture_stderr(mut command: Command, timeout: Duration) -> String {
     let Ok(mut child) = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())

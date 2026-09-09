@@ -12,6 +12,9 @@
 //! - `cargo xtask chain-walk` walks the campaign as a chain: one scripted
 //!   route per map, each one starting where the previous route's level
 //!   change put the player down, and reports how many maps deep it got.
+//! - `cargo xtask plan-chain-hop` runs the existing chain routes and then
+//!   plans the *next* one with the in-engine route planner, writing it only
+//!   if its replay actually reached the level change.
 //! - `cargo xtask dist` builds the release binary (and, on Linux x86-64 and
 //!   macOS, the parser worker image) and assembles a versioned,
 //!   self-contained release folder plus a `.tar.gz`/`.zip` archive under
@@ -22,6 +25,7 @@ mod chain_walk;
 mod combat_smoke;
 mod dist;
 mod graph;
+mod plan_chain_hop;
 mod policy;
 mod worker_image;
 
@@ -108,10 +112,15 @@ fn main() -> ExitCode {
             let rest: Vec<String> = std::env::args().skip(2).collect();
             chain_walk::run(&root, &rest)
         }
+        Some("plan-chain-hop") => {
+            let rest: Vec<String> = std::env::args().skip(2).collect();
+            plan_chain_hop::run(&root, &rest)
+        }
         other => {
             eprintln!(
                 "usage: cargo xtask \
-<policy|graph|worker-image|dist|campaign-smoke|combat-smoke|chain-walk>"
+<policy|graph|worker-image|dist|campaign-smoke|combat-smoke|chain-walk|\
+plan-chain-hop>"
             );
             if let Some(other) = other {
                 eprintln!("unknown subcommand: {other}");
