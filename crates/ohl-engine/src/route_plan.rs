@@ -1347,7 +1347,7 @@ fn path_to(trace: &Trace, start: Vec3, goal: Cell) -> Vec<PathPoint> {
 /// origin plus the standing view height) rather than their feet, because
 /// that is the position the engine's own use press is dispatched from
 /// (`ohl_engine::Systems`).
-fn openable_doors(game: &Game, trace: &Trace) -> Vec<(BrushId, OpenedDoor)> {
+fn openable_doors(game: &Game, trace: &Trace, ridden: &HashSet<u32>) -> Vec<(BrushId, OpenedDoor)> {
     let eye = Vec3::Z * game.move_config().view_height_standing;
     let mut doors = Vec::new();
     // Sorted rather than walked in the `HashSet`'s own iteration order: the
@@ -1361,6 +1361,18 @@ fn openable_doors(game: &Game, trace: &Trace) -> Vec<(BrushId, OpenedDoor)> {
         let Some(entity) = entity_for_brush(game, *brush) else {
             continue;
         };
+        // A mover this search has already *ridden* is never opened as an
+        // obstacle again, however the walk now stands relative to it.
+        // `take_ride` moves the ridden brush's collision hull and leaves
+        // its `BrushBounds`, its pose and its own state machine at rest —
+        // the walk plans against the moved hull and the route replays the
+        // real mover — so from a later round the brush no longer looks
+        // like floor anything stands on, and nothing else would stop this
+        // pass from detaching the very platform the route is standing on
+        // at the far end of the ride.
+        if ridden.contains(&entity.id()) {
+            continue;
+        }
         let Ok(door) = game.registry().world.get::<&Door>(entity) else {
             continue;
         };
@@ -1379,7 +1391,9 @@ fn openable_doors(game: &Game, trace: &Trace) -> Vec<(BrushId, OpenedDoor)> {
         // reached by walking through the space it used to fill. A door
         // like that is a lift, and the way past it is to ride it
         // ([`ride_candidates`]).
-        if walk_stands_on(trace, &bounds) {
+        if let Some(collision) = game.collision()
+            && walk_stands_on(collision, trace, *brush, &bounds)
+        {
             continue;
         }
         if !trace
@@ -1406,15 +1420,55 @@ fn openable_doors(game: &Game, trace: &Trace) -> Vec<(BrushId, OpenedDoor)> {
     doors
 }
 
-/// Whether any cell this walk reached is standing on `bounds`' own top
-/// surface — the difference between a brush that blocks the route and one
-/// that carries it.
-fn walk_stands_on(trace: &Trace, bounds: &BrushBounds) -> bool {
+/// Whether any cell this walk reached is standing on `brush` itself — the
+/// difference between a brush that blocks the route and one that carries
+/// it.
+///
+/// Two questions, in cost order. `bounds`' own top surface answers the
+/// cheap one: a landing whose feet are not on this brush's resting top
+/// plane, or which is outside its footprint, is not standing on it and
+/// nothing further need be traced. The one that *decides* it is which
+/// brush is under those feet, which only a trace can answer: a landing on
+/// a floor that merely happens to pass under a door's footprint at the
+/// same height would otherwise read as "standing on the door", and the
+/// door would then never be opened as an obstacle at all. So the surviving
+/// candidates are traced straight down, one short hull trace each, and the
+/// brush that stops the trace has to be this one.
+///
+/// A landing the trace starts *inside* solid is not standing on anything:
+/// that is a cell the walk reached against geometry that has since moved
+/// (`take_ride` moves a ridden mover's hull and leaves its resting
+/// `BrushBounds` behind), and reading it as "standing on" would keep a
+/// brush off the openable list on the strength of a position the player
+/// can no longer occupy.
+fn walk_stands_on(
+    collision: &CollisionModel,
+    trace: &Trace,
+    brush: BrushId,
+    bounds: &BrushBounds,
+) -> bool {
     trace
         .landing
         .values()
-        .any(|landing| on_surface(*landing, bounds, Vec3::ZERO))
+        .filter(|landing| on_surface(**landing, bounds, Vec3::ZERO))
+        .any(|landing| {
+            let down = collision.trace(
+                Hull::Standing,
+                *landing,
+                *landing - Vec3::Z * STAND_ON_PROBE,
+            );
+            !down.start_solid && down.brush_index == Some(brush)
+        })
 }
+
+/// How far [`walk_stands_on`] traces down from a landing to find what is
+/// holding it up, in world units. The landing is already on the candidate
+/// brush's own top plane to within [`RIDE_SURFACE_TOLERANCE`], so this only
+/// has to cover that tolerance and the epsilon ordinary collision backs a
+/// resting hull off a floor by; it is deliberately far shorter than
+/// [`STEP_UP`], so a trace cannot reach past the surface the walk is
+/// actually standing on to something below it.
+const STAND_ON_PROBE: f32 = RIDE_SURFACE_TOLERANCE * 2.0;
 
 /// Whether a standing hull whose origin is `landing` has its *feet* on
 /// `bounds`' own top surface, and stands `inset` inside its footprint.
@@ -2225,7 +2279,7 @@ pub fn plan_route(game: &mut Game, config: &PlanConfig) -> Result<RoutePlan, Pla
             return build_plan(game, &search, &walk.trace, goal, (cells, rounds), true);
         }
 
-        let openable = openable_doors(game, &walk.trace);
+        let openable = openable_doors(game, &walk.trace, &ridden);
         if !openable.is_empty() {
             let Some(collision) = game.collision_mut() else {
                 return Err(PlanRejection::new(PlanError::NoCollision, cells, rounds));
@@ -2356,8 +2410,9 @@ mod tests {
     use crate::test_support::{
         LiftFixture, PLAN_COST_LEDGE_X, PLAN_COST_LEDGE_Z, PLAN_COST_MAP, PLAN_LADDER_DROP,
         PLAN_LADDER_MAP, PLAN_LIFT_MAP, PLAN_LIFT_TRAVEL, PLAN_PLATROT_MAP, PLAN_PLATROT_ROTATION,
-        PLAN_PLATROT_SPEED, PLAN_PLATROT_TRAVEL, PLAN_TURN_MAP, REACH_GAP_EDGE_X, REACH_GAP_MAP,
-        plan_cost_bsp, plan_ladder_bsp, plan_lift_bsp, plan_platrot_bsp, plan_turn_bsp,
+        PLAN_PLATROT_SPEED, PLAN_PLATROT_TRAVEL, PLAN_STOOD_ON_MAP, PLAN_STOOD_ON_NAME,
+        PLAN_TURN_MAP, REACH_GAP_EDGE_X, REACH_GAP_MAP, plan_cost_bsp, plan_ladder_bsp,
+        plan_lift_bsp, plan_platrot_bsp, plan_stood_on_lift_bsp, plan_turn_bsp,
         reachability_gap_bsp, reachability_gap_entities,
     };
     use crate::{AssetSource, MemoryAssets};
@@ -2379,6 +2434,51 @@ mod tests {
             plan_lift_bsp("ohlplannext", fixture),
         );
         Game::load(&assets as &dyn AssetSource, PLAN_LIFT_MAP).expect("the fixture loads")
+    }
+
+    /// The edge bounds the planner's own default config walks with.
+    fn default_bounds(game: &Game) -> EdgeBounds {
+        EdgeBounds {
+            jump: JumpBounds::from_move_config(game.move_config()),
+            long_jump: None,
+            safe_drop: safe_drop_height(game.move_config()),
+            max_drop: survivable_drop_height(game.move_config(), game.player_health()),
+        }
+    }
+
+    /// One expanded walk from `game`'s player start.
+    fn walk_of(game: &Game) -> Walk {
+        let collision = game.collision().expect("the fixture has collision");
+        let mut walk = Walk::new(plan_start(
+            collision,
+            Vec3::from_array(game.player_origin()),
+        ));
+        walk.expand(collision, 300_000, default_bounds(game));
+        walk
+    }
+
+    /// The stood-on-lift fixture: a shaft with a lift the walk both
+    /// stands on and is blocked by (see `plan_stood_on_lift_bsp`).
+    fn stood_on_game() -> Game {
+        let mut assets = MemoryAssets::new();
+        assets.insert(
+            &format!("maps/{PLAN_STOOD_ON_MAP}.bsp"),
+            plan_stood_on_lift_bsp("ohlplannext"),
+        );
+        Game::load(&assets as &dyn AssetSource, PLAN_STOOD_ON_MAP).expect("the fixture loads")
+    }
+
+    /// That fixture's own mover, as an attached brush and an entity.
+    fn the_lift(game: &Game) -> (BrushId, Entity) {
+        let entity = *game
+            .registry()
+            .find(PLAN_STOOD_ON_NAME)
+            .first()
+            .expect("the fixture declares one named lift");
+        (
+            brush_for_entity(game, entity).expect("the lift has an attached brush"),
+            entity,
+        )
     }
 
     /// The ride action a plan holds, if it holds one.
@@ -2515,6 +2615,116 @@ mod tests {
         assert!(
             (seconds - PLAN_PLATROT_TRAVEL / PLAN_PLATROT_SPEED).abs() < 0.01,
             "the ride waits the platform's own travel time"
+        );
+    }
+
+    /// A `func_door` used as a lift that the walk is **standing on** is
+    /// never opened as an obstacle: detaching it takes the ground out from
+    /// under the route. Nothing else about that door excludes it — it is
+    /// closed, it is on the frontier, and a reached cell stands well within
+    /// a `use` press of it — so this bites only because
+    /// [`walk_stands_on`] says so.
+    #[test]
+    fn a_lift_the_walk_stands_on_is_not_opened_as_a_door() {
+        let game = stood_on_game();
+        let walk = walk_of(&game);
+        let (brush, entity) = the_lift(&game);
+
+        assert!(
+            walk.trace.frontier.contains(&brush),
+            "the lift's own sides are what stop the walk"
+        );
+        assert_eq!(
+            game.registry()
+                .world
+                .get::<&Door>(entity)
+                .expect("the fixture's lift is a func_door")
+                .state,
+            MoverState::Closed,
+            "and it is closed"
+        );
+        let eye = Vec3::Z * game.move_config().view_height_standing;
+        let center =
+            ohl_game::pose::brush_center(game.registry(), entity).expect("the lift has a centre");
+        assert!(
+            walk.trace
+                .order
+                .iter()
+                .any(|position| (*position + eye).distance(center) <= USE_RADIUS),
+            "and a reached cell is within a use press of it"
+        );
+
+        assert!(
+            openable_doors(&game, &walk.trace, &HashSet::new()).is_empty(),
+            "a lift the walk is standing on is floor, not an obstacle"
+        );
+    }
+
+    /// The lift's *own* footprint decides it, not a height coincidence:
+    /// the same walk, asked about a brush it merely happens to be level
+    /// with, is not "standing on" it.
+    #[test]
+    fn standing_on_is_decided_by_which_brush_holds_the_walk_up() {
+        let game = stood_on_game();
+        let walk = walk_of(&game);
+        let (brush, entity) = the_lift(&game);
+        let bounds = *game
+            .registry()
+            .world
+            .get::<&BrushBounds>(entity)
+            .expect("the lift has placed bounds");
+        let collision = game.collision().expect("the fixture has collision");
+
+        assert!(
+            walk_stands_on(collision, &walk.trace, brush, &bounds),
+            "the walk really is standing on the lift"
+        );
+        // The same bounds, attributed to some other brush id: the
+        // geometric test still passes and the trace decides against it.
+        let other = walk
+            .trace
+            .frontier
+            .iter()
+            .copied()
+            .find(|other| *other != brush);
+        if let Some(other) = other {
+            assert!(
+                !walk_stands_on(collision, &walk.trace, other, &bounds),
+                "a brush that is not what holds the walk up is not stood on"
+            );
+        }
+    }
+
+    /// A mover this search has ridden is never afterwards opened as a
+    /// door. `take_ride` moves the ridden hull and leaves the entity's own
+    /// bounds and state at rest, so from the next round the walk no longer
+    /// stands on it — and detaching it then would take the platform out
+    /// from under the far end of the ride that has already been planned.
+    #[test]
+    fn a_ridden_mover_is_never_opened_as_a_door_afterwards() {
+        let mut game = stood_on_game();
+        let mut walk = walk_of(&game);
+        let (_, entity) = the_lift(&game);
+
+        let mut ridden = HashSet::new();
+        assert!(
+            take_ride(&mut game, &mut walk, &mut ridden, 300_000),
+            "the fixture's lift is rideable"
+        );
+        assert!(ridden.contains(&entity.id()));
+        walk.requeue_all();
+        {
+            let collision = game.collision().expect("the fixture has collision");
+            walk.expand(collision, 300_000, default_bounds(&game));
+        }
+
+        assert!(
+            openable_doors(&game, &walk.trace, &ridden).is_empty(),
+            "a ridden mover is not an obstacle to open"
+        );
+        assert!(
+            !openable_doors(&game, &walk.trace, &HashSet::new()).is_empty(),
+            "and without that rule it would be opened, which is the bug"
         );
     }
 

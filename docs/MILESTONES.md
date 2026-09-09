@@ -6077,8 +6077,9 @@ on, and so the ride edge finds no candidate here. What the reachable
 switches fire is a rotating-platform brush entity this engine does not
 implement at all — no mover component, so the walk reads it as a static
 wall and no press of its own switch moves it — and, at the far end of the
-map, a group of ordinary horizontal doors. The chain still walks ten distinct maps deep. The next thing to
-look at is the entity, not the walk.
+map, a group of ordinary horizontal doors. The chain still walks ten
+distinct maps deep. The next thing to look at is the entity, not the
+walk.
 
 **Gates**: fmt, clippy (workspace, `--features dev-tools`, and
 `--all-features`), `cargo test --workspace`, policy, graph, combat-smoke
