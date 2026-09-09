@@ -98,6 +98,13 @@ const SETTLE_TICKS: u32 = 30;
 /// [`ticks_for_climb`].
 const CLIMB_PADDING_TICKS: u32 = 12;
 
+/// How many extra ticks a ride is padded by, on top of the mover's own
+/// travel time: the `use` press itself takes a tick, a mover fired by a
+/// touch volume needs one to notice the player, and a platform that has
+/// only just come to rest is worth a moment's slack before the next line
+/// walks off it.
+const RIDE_PADDING_TICKS: u32 = 24;
+
 /// How many extra ticks a planned fall's wait is padded by, on top of the
 /// fall's own time: the player leaves the ledge a moment after the run's
 /// last tick, and a landing is worth a moment's slack of its own.
@@ -415,20 +422,22 @@ pub fn count_climb_actions(actions: &[PlanAction]) -> usize {
         .count()
 }
 
-/// `actions` truncated after its first ladder climb.
+/// `actions` truncated after its first ladder climb or ride.
 ///
-/// A climb is the one action whose commands mean something else entirely
-/// when the player is not where the plan thinks they are: `back` against
-/// a ladder descends it, and `back` on open floor walks away from
-/// everything the route just gained. So a climb always ends a committed
-/// chunk — the loop replays, sees where the player actually is (on the
-/// ladder, at its foot, or still on the ledge) and plans the rest from
-/// there.
+/// A climb is one of the two actions whose commands mean something else
+/// entirely when the player is not where the plan thinks they are: `back`
+/// against a ladder descends it, and `back` on open floor walks away from
+/// everything the route just gained. A ride is the other: the plan after
+/// it describes a body standing on a platform that has moved, and if the
+/// press missed, or the player was a step off the platform when it went,
+/// every line after it runs somewhere else entirely. So either one ends a
+/// committed chunk — the loop replays, sees where the player actually is,
+/// and plans the rest from there.
 #[must_use]
-pub fn through_first_climb(actions: &[PlanAction]) -> &[PlanAction] {
+pub fn through_first_commitment(actions: &[PlanAction]) -> &[PlanAction] {
     match actions
         .iter()
-        .position(|action| matches!(action, PlanAction::Climb { .. }))
+        .position(|action| matches!(action, PlanAction::Climb { .. } | PlanAction::Ride { .. }))
     {
         Some(index) => &actions[..=index],
         None => actions,
@@ -436,8 +445,8 @@ pub fn through_first_climb(actions: &[PlanAction]) -> &[PlanAction] {
 }
 
 /// The first `segments` travelling actions of `actions` (a walk-forward
-/// run or a ladder climb), with every door press among them; `0` keeps
-/// the whole plan.
+/// run, a ladder climb or a ride), with every door press among them; `0`
+/// keeps the whole plan.
 #[must_use]
 pub fn first_segments(actions: &[PlanAction], segments: usize) -> &[PlanAction] {
     if segments == 0 {
@@ -445,7 +454,10 @@ pub fn first_segments(actions: &[PlanAction], segments: usize) -> &[PlanAction] 
     }
     let mut moves = 0usize;
     for (index, action) in actions.iter().enumerate() {
-        if matches!(action, PlanAction::Move { .. } | PlanAction::Climb { .. }) {
+        if matches!(
+            action,
+            PlanAction::Move { .. } | PlanAction::Climb { .. } | PlanAction::Ride { .. }
+        ) {
             moves += 1;
             if moves >= segments {
                 return &actions[..=index];
@@ -519,6 +531,33 @@ pub fn script_text(start_yaw: f32, actions: &[PlanAction], config: &MoveConfig) 
                 } else {
                     let _ = writeln!(lines, "{ticks} back");
                 }
+            }
+            PlanAction::Ride {
+                yaw,
+                travel_seconds,
+            } => {
+                // A mover with a `use_yaw` needs a press — on itself, or
+                // on the button wired to it. One without it is already
+                // going: standing on it is what fired the touch volume
+                // that starts it (`ohl_engine::route_plan`'s own
+                // `ride_activation`).
+                if let Some(yaw) = yaw {
+                    facing = turn_toward(&mut lines, facing, yaw);
+                    lines.push_str("1 use\n");
+                }
+                // Nothing is held while riding: the mover carries the
+                // player (`ohl_physics::movement`'s rider velocity), so
+                // the wait *is* the ride.
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a mover's own travel time, clamped just below"
+                )]
+                let wait = (travel_seconds.max(0.0) / CAPTURE_STEP).ceil() as u32;
+                let wait = wait
+                    .saturating_add(RIDE_PADDING_TICKS)
+                    .min(MAX_SEGMENT_TICKS);
+                let _ = writeln!(lines, "{wait} wait");
             }
             PlanAction::UseDoor { yaw, open_seconds } => {
                 facing = turn_toward(&mut lines, facing, yaw);
@@ -784,7 +823,7 @@ impl Planner<'_> {
             } else {
                 &plan.actions
             };
-            let committed = through_first_climb(committed);
+            let committed = through_first_commitment(committed);
             let text = script_text(facing, committed, &move_config);
             // An identical chunk means the last one changed nothing: the
             // player is somewhere the same plan comes out of, which is
@@ -890,7 +929,8 @@ mod tests {
     use super::*;
     use ohl_engine::MemoryAssets;
     use ohl_engine::test_support::{
-        PLAN_LADDER_MAP, PLAN_TURN_MAP, plan_ladder_bsp, plan_pit_bsp, plan_turn_bsp,
+        LiftFixture, PLAN_LADDER_MAP, PLAN_LIFT_MAP, PLAN_TURN_MAP, plan_ladder_bsp, plan_lift_bsp,
+        plan_pit_bsp, plan_turn_bsp,
     };
 
     fn fixture() -> (MemoryAssets, Game) {
@@ -924,6 +964,87 @@ mod tests {
         assert!(route.text.contains(" use\n"), "the script presses the door");
         assert!(route.text.contains("look 0 "), "the script turns");
         Script::parse(route.text.as_bytes()).expect("the written script parses");
+    }
+
+    /// The ride edge, end to end: a shaft whose ledge is only reachable
+    /// by the lift in it. The planner boards the platform, the touch
+    /// volume under the player's feet sets it going, the script waits the
+    /// mover's own travel time out, and the replay walks off the top and
+    /// into the level change. Nothing else in this fixture reaches the
+    /// goal at all, so a route existing *is* the ride working.
+    #[test]
+    fn a_planned_ride_replays_to_the_level_change() {
+        let mut assets = MemoryAssets::new();
+        assets.insert(
+            &format!("maps/{PLAN_LIFT_MAP}.bsp"),
+            plan_lift_bsp("ohlplannext", LiftFixture::TouchDoor),
+        );
+        let mut game = Game::load(&assets as &dyn AssetSource, PLAN_LIFT_MAP).expect("loads");
+        let route = plan(
+            &mut game,
+            &assets as &dyn AssetSource,
+            &PlanOptions::default(),
+        )
+        .expect("the lift fixture's route plans, replays and validates");
+        assert!(route.ticks > 0);
+        let script = Script::parse(route.text.as_bytes()).expect("the written script parses");
+        let mut fresh = Game::load(&assets as &dyn AssetSource, PLAN_LIFT_MAP).expect("loads");
+        assert!(
+            run_ticks(&mut fresh, &script),
+            "the planned ride reaches the level change from the same start"
+        );
+    }
+
+    /// A ride ends a committed chunk exactly as a climb does: everything
+    /// planned after it describes a body standing on a platform that has
+    /// moved.
+    #[test]
+    fn a_ride_ends_a_committed_chunk() {
+        let walk = PlanAction::Move {
+            yaw: 0.0,
+            distance: 32.0,
+            jump: false,
+            fall: 0.0,
+        };
+        let ride = PlanAction::Ride {
+            yaw: None,
+            travel_seconds: 2.5,
+        };
+        let actions = [walk, ride, walk];
+        assert_eq!(through_first_commitment(&actions).len(), 2);
+    }
+
+    /// A ride with no press is a bare wait; one with a press turns, presses
+    /// once and then waits. Neither holds a movement key: the mover does
+    /// the travelling.
+    #[test]
+    fn a_ride_becomes_a_wait_and_at_most_one_press() {
+        let config = MoveConfig::default();
+        let bare = script_text(
+            0.0,
+            &[PlanAction::Ride {
+                yaw: None,
+                travel_seconds: 1.0,
+            }],
+            &config,
+        );
+        assert!(!bare.contains("use"), "nothing to press");
+        assert!(!bare.contains("forward"), "nothing is held while riding");
+        assert!(bare.contains(" wait"), "the ride is a wait");
+        let pressed = script_text(
+            0.0,
+            &[PlanAction::Ride {
+                yaw: Some(90.0),
+                travel_seconds: 1.0,
+            }],
+            &config,
+        );
+        assert!(pressed.contains("look 0 "), "the press turns first");
+        assert_eq!(
+            pressed.matches("1 use").count(),
+            1,
+            "a ride presses exactly once"
+        );
     }
 
     /// A route is written only after a replay reached the goal, so the
@@ -1150,8 +1271,8 @@ mod tests {
             up: false,
         };
         let actions = [walk, walk, climb, walk, climb];
-        assert_eq!(through_first_climb(&actions).len(), 3);
-        assert_eq!(through_first_climb(&actions[..2]).len(), 2, "no climb");
+        assert_eq!(through_first_commitment(&actions).len(), 3);
+        assert_eq!(through_first_commitment(&actions[..2]).len(), 2, "no climb");
         assert_eq!(first_segments(&actions, 3).len(), 3, "a climb is a segment");
     }
 

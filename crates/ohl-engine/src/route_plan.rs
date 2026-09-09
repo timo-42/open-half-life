@@ -79,7 +79,10 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use glam::Vec3;
 use ohl_game::hecs::Entity;
-use ohl_game::registry::{BrushBounds, ChangeLevel, ClassName, Door, MoverState};
+use ohl_game::registry::{
+    BrushBounds, Button, ChangeLevel, ClassName, Door, MoverState, MultiManager, Platform, Target,
+    TargetName, TeleportTrigger, Trigger, TriggerHurt,
+};
 use ohl_physics::{BrushId, CollisionModel, Hull};
 
 use crate::reachability::{
@@ -178,6 +181,18 @@ pub enum EdgeKind {
         /// Whether this step climbed up rather than down.
         up: bool,
     },
+    /// A ride on a translating brush mover — a `func_door` used as a lift,
+    /// or a `func_plat` — from the surface it rests on to the surface it
+    /// travels to. See [`ride_candidates`].
+    Ride {
+        /// The heading to face while pressing `use` to set the mover
+        /// going, in degrees; `None` when standing on it is what starts
+        /// it (a touch volume overlapping its own footprint).
+        use_yaw: Option<f32>,
+        /// How long the mover takes to get there, in seconds: its own
+        /// documented `delay` plus `travel distance / speed`.
+        travel_seconds: f32,
+    },
 }
 
 impl EdgeKind {
@@ -226,6 +241,13 @@ pub enum PlanAction {
         /// own settle rule); a script that walks on before the player has
         /// landed does not. The caller turns this into the wait that the
         /// fall itself takes.
+        ///
+        /// Which *edge* ended the run deliberately does not decide this.
+        /// Any run whose landing is more than [`STEP_UP`] below its
+        /// take-off leaves the player in the air — a jump across a gap
+        /// onto a lower ledge, a one-way fall, and a plain step off a lip
+        /// too tall to step down all alike — and the wait is how long
+        /// that height takes under the map's own gravity.
         fall: f32,
     },
     /// Face `yaw` degrees (into a ladder) and climb `distance` world
@@ -250,6 +272,21 @@ pub enum PlanAction {
         yaw: f32,
         /// How long the door takes to open, in seconds.
         open_seconds: f32,
+    },
+    /// Ride the brush mover the player is standing on to its other
+    /// resting position: set it going (a `use` press facing `yaw`, or
+    /// nothing at all when standing on it already fired the touch volume
+    /// that starts it) and wait `travel_seconds` for it to arrive.
+    ///
+    /// The player is carried by the mover itself
+    /// (`ohl_physics::movement`'s own rider velocity), so there is
+    /// nothing to hold: the wait *is* the action.
+    Ride {
+        /// The heading to face while pressing use, in degrees; `None`
+        /// when the mover needs no press.
+        yaw: Option<f32>,
+        /// How long the mover takes to travel, in seconds.
+        travel_seconds: f32,
     },
 }
 
@@ -301,7 +338,12 @@ impl RoutePlan {
     pub fn segments(&self) -> usize {
         self.actions
             .iter()
-            .filter(|action| matches!(action, PlanAction::Move { .. } | PlanAction::Climb { .. }))
+            .filter(|action| {
+                matches!(
+                    action,
+                    PlanAction::Move { .. } | PlanAction::Climb { .. } | PlanAction::Ride { .. }
+                )
+            })
             .count()
     }
 }
@@ -892,7 +934,7 @@ fn cross(
 }
 
 /// What one edge costs the walk, in the arbitrary units
-/// [`walk_with_parents`] orders its frontier by.
+/// [`Walk::expand`] orders its frontier by.
 ///
 /// The walk this planner inherited was breadth-first, which measures a
 /// route in *steps* and so treats every way of covering one grid cell as
@@ -913,6 +955,11 @@ fn cross(
 const COST_WALK: u32 = 1;
 /// See [`COST_WALK`].
 const COST_CLIMB: u32 = 2;
+/// See [`COST_WALK`]: a ride is a mover doing the travelling, which costs
+/// the player nothing but the wait — dearer than a climb, because it
+/// commits them to a machine and a script cannot take it back, and
+/// cheaper than a jump they might miss.
+const COST_RIDE: u32 = 3;
 /// See [`COST_WALK`].
 const COST_JUMP: u32 = 4;
 /// See [`COST_WALK`].
@@ -925,6 +972,7 @@ fn edge_cost(kind: EdgeKind, from: Vec3, to: Vec3) -> u32 {
     match kind {
         EdgeKind::Walk | EdgeKind::Step => COST_WALK,
         EdgeKind::Ladder { .. } => COST_CLIMB,
+        EdgeKind::Ride { .. } => COST_RIDE,
         EdgeKind::Jump | EdgeKind::LongJump => COST_JUMP,
         EdgeKind::Drop => {
             #[allow(
@@ -986,89 +1034,138 @@ fn relax(
 /// [`EdgeKind`] per cell — expanded cheapest-first ([`edge_cost`]) rather
 /// than breadth-first, so the route that comes back out is the one a
 /// player would take rather than the one with the fewest grid steps.
-fn walk_with_parents(
-    collision: &CollisionModel,
-    start: Vec3,
-    cap: usize,
-    bounds: EdgeBounds,
-) -> Trace {
-    let mut trace = Trace {
-        landing: HashMap::new(),
-        parent: HashMap::new(),
-        order: Vec::new(),
-        frontier: HashSet::new(),
-    };
-    let mut cost: HashMap<Cell, u32> = HashMap::new();
-    let mut queue: BinaryHeap<Frontier> = BinaryHeap::new();
-    let start_cell = cell_of(start);
-    trace.landing.insert(start_cell, start);
-    trace.order.push(start);
-    cost.insert(start_cell, 0);
-    queue.push(Reverse((0, start_cell)));
+///
+/// Unlike the walk this planner inherited, one `Walk` lives across all of
+/// [`plan_route`]'s rounds rather than being thrown away and rebuilt from
+/// the start each time. It has to: a round that opens a door only ever
+/// *adds* floor, so re-walking from scratch found a superset and lost
+/// nothing — but a round that rides a mover **moves** the floor the
+/// player boarded it on, and a walk that started again from the map's
+/// entrance would no longer be able to reach the cell the ride departs
+/// from, breaking the very parent chain the route is read back along. So
+/// each round re-expands every cell it already knows against the new
+/// geometry ([`Walk::requeue_all`]) and keeps what it learned from the
+/// old.
+struct Walk {
+    /// Everything reached so far, with its parent links.
+    trace: Trace,
+    /// The cheapest known cost to each reached cell.
+    cost: HashMap<Cell, u32>,
+    /// The cells still to expand from.
+    queue: BinaryHeap<Frontier>,
+}
 
-    while let Some(Reverse((spent, from))) = queue.pop() {
-        // A cell can sit in the heap more than once, once per time it was
-        // reached more cheaply; only the cheapest entry is the live one.
-        if cost.get(&from).copied() != Some(spent) {
-            continue;
-        }
-        let Some(position) = trace.landing.get(&from).copied() else {
-            continue;
+impl Walk {
+    /// A walk that has reached nothing but `start`.
+    fn new(start: Vec3) -> Self {
+        let mut walk = Self {
+            trace: Trace {
+                landing: HashMap::new(),
+                parent: HashMap::new(),
+                order: Vec::new(),
+                frontier: HashSet::new(),
+            },
+            cost: HashMap::new(),
+            queue: BinaryHeap::new(),
         };
-        let on_ladder = ladder_face_yaw(collision, position).is_some();
-        for up in [true, false] {
-            if !on_ladder {
-                break;
-            }
-            if trace.landing.len() >= cap {
-                return trace;
-            }
-            if let Some((landing, face_yaw)) = ladder_edge(collision, position, up, bounds.max_drop)
-            {
-                let kind = EdgeKind::Ladder { face_yaw, up };
-                relax(
-                    &mut trace,
-                    &mut cost,
-                    &mut queue,
-                    cap,
-                    landing,
-                    ParentLink {
-                        from,
-                        kind,
-                        via: None,
-                    },
-                    spent.saturating_add(edge_cost(kind, position, landing)),
-                );
-            }
+        let cell = cell_of(start);
+        walk.trace.landing.insert(cell, start);
+        walk.trace.order.push(start);
+        walk.cost.insert(cell, 0);
+        walk.queue.push(Reverse((0, cell)));
+        walk
+    }
+
+    /// Queues every cell reached so far, so the next [`Self::expand`]
+    /// re-examines all of them against geometry a round advance has just
+    /// changed.
+    fn requeue_all(&mut self) {
+        for (cell, cost) in &self.cost {
+            self.queue.push(Reverse((*cost, *cell)));
         }
-        for (dx, dy) in DIRECTIONS {
-            if trace.landing.len() >= cap {
-                return trace;
-            }
-            let direction = Vec3::new(dx, dy, 0.0).normalize_or_zero();
-            if direction == Vec3::ZERO {
+    }
+
+    /// Records one cell reached by a round advance rather than by an
+    /// edge of this walk's own — today, the far end of a ride.
+    fn seed(&mut self, cap: usize, landing: Vec3, link: ParentLink, total: u32) {
+        relax(
+            &mut self.trace,
+            &mut self.cost,
+            &mut self.queue,
+            cap,
+            landing,
+            link,
+            total,
+        );
+    }
+
+    /// Drains the frontier, crossing every edge this walk knows from
+    /// every queued cell.
+    ///
+    /// The blocking-brush set ([`Trace::frontier`]) is rebuilt from
+    /// scratch here rather than accumulated: it answers "what is stopping
+    /// the walk *now*", and a door this round has already opened is not.
+    fn expand(&mut self, collision: &CollisionModel, cap: usize, bounds: EdgeBounds) {
+        self.trace.frontier.clear();
+        while let Some(Reverse((spent, from))) = self.queue.pop() {
+            // A cell can sit in the heap more than once, once per time it
+            // was reached more cheaply; only the cheapest entry is the
+            // live one.
+            if self.cost.get(&from).copied() != Some(spent) {
                 continue;
             }
-            match cross(collision, position, direction, bounds, on_ladder) {
-                Crossing::Landed { landing, kind, via } => {
-                    relax(
-                        &mut trace,
-                        &mut cost,
-                        &mut queue,
+            let Some(position) = self.trace.landing.get(&from).copied() else {
+                continue;
+            };
+            let on_ladder = ladder_face_yaw(collision, position).is_some();
+            for up in [true, false] {
+                if !on_ladder {
+                    break;
+                }
+                if self.trace.landing.len() >= cap {
+                    return;
+                }
+                if let Some((landing, face_yaw)) =
+                    ladder_edge(collision, position, up, bounds.max_drop)
+                {
+                    let kind = EdgeKind::Ladder { face_yaw, up };
+                    self.seed(
                         cap,
                         landing,
-                        ParentLink { from, kind, via },
+                        ParentLink {
+                            from,
+                            kind,
+                            via: None,
+                        },
                         spent.saturating_add(edge_cost(kind, position, landing)),
                     );
                 }
-                Crossing::Blocked(Some(brush)) => {
-                    trace.frontier.insert(brush);
+            }
+            for (dx, dy) in DIRECTIONS {
+                if self.trace.landing.len() >= cap {
+                    return;
                 }
-                Crossing::Blocked(None) => {}
+                let direction = Vec3::new(dx, dy, 0.0).normalize_or_zero();
+                if direction == Vec3::ZERO {
+                    continue;
+                }
+                match cross(collision, position, direction, bounds, on_ladder) {
+                    Crossing::Landed { landing, kind, via } => {
+                        self.seed(
+                            cap,
+                            landing,
+                            ParentLink { from, kind, via },
+                            spent.saturating_add(edge_cost(kind, position, landing)),
+                        );
+                    }
+                    Crossing::Blocked(Some(brush)) => {
+                        self.trace.frontier.insert(brush);
+                    }
+                    Crossing::Blocked(None) => {}
+                }
             }
         }
     }
-    trace
 }
 
 /// Where a plan starts from: the floor beneath the player
@@ -1276,6 +1373,15 @@ fn openable_doors(game: &Game, trace: &Trace) -> Vec<(BrushId, OpenedDoor)> {
         let Ok(bounds) = game.registry().world.get::<&BrushBounds>(entity) else {
             continue;
         };
+        // A door the walk is *standing on* is floor, not an obstacle.
+        // Detaching it — which is all this round advance does — takes the
+        // ground out from under the route, and the cells behind it are
+        // reached by walking through the space it used to fill. A door
+        // like that is a lift, and the way past it is to ride it
+        // ([`ride_candidates`]).
+        if walk_stands_on(trace, &bounds) {
+            continue;
+        }
         if !trace
             .order
             .iter()
@@ -1298,6 +1404,317 @@ fn openable_doors(game: &Game, trace: &Trace) -> Vec<(BrushId, OpenedDoor)> {
         ));
     }
     doors
+}
+
+/// Whether any cell this walk reached is standing on `bounds`' own top
+/// surface — the difference between a brush that blocks the route and one
+/// that carries it.
+fn walk_stands_on(trace: &Trace, bounds: &BrushBounds) -> bool {
+    trace
+        .landing
+        .values()
+        .any(|landing| on_surface(*landing, bounds, Vec3::ZERO))
+}
+
+/// Whether a standing hull whose origin is `landing` has its *feet* on
+/// `bounds`' own top surface, and stands `inset` inside its footprint.
+///
+/// The walk records an origin, not a foot: [`Hull::Standing`]'s own
+/// documented [`Hull::foot_offset`] is the distance between the two, and
+/// reading it back here is what keeps this test in step with the hull the
+/// walk actually traces with rather than restating its height.
+fn on_surface(landing: Vec3, bounds: &BrushBounds, inset: Vec3) -> bool {
+    let foot = landing.z - Hull::Standing.foot_offset();
+    (foot - bounds.maxs.z).abs() <= RIDE_SURFACE_TOLERANCE
+        && landing.x >= bounds.mins.x + inset.x
+        && landing.x <= bounds.maxs.x - inset.x
+        && landing.y >= bounds.mins.y + inset.y
+        && landing.y <= bounds.maxs.y - inset.y
+}
+
+/// The least height a mover's travel must gain or lose before this walk
+/// treats it as something to *ride*, in world units: more than the step
+/// the walk climbs for free ([`STEP_UP`]). A mover that moves less than
+/// that changes nothing about where the player can get to, and a mover
+/// that only slides sideways is a door — this edge is deliberately about
+/// height, which is the thing a step, a jump and a climb cannot always
+/// buy.
+const RIDE_MIN_LIFT: f32 = STEP_UP;
+
+/// How close a reached cell's landing must be to a mover's own top
+/// surface to count as *standing on it*, in world units.
+const RIDE_SURFACE_TOLERANCE: f32 = 1.0;
+
+/// How far inside a mover's own footprint a boarding cell must sit, in
+/// world units, so the player is on the platform rather than clipping its
+/// outermost edge: half a grid cell, the same margin
+/// [`crate::reachability::bounds_contains_with_margin`] is generous by.
+const RIDE_FOOTPRINT_INSET: f32 = CELL_SIZE / 2.0;
+
+/// A ride this round found: a translating brush mover the walk is
+/// standing on, a way to set it going, and where it goes.
+#[derive(Debug, Clone, Copy)]
+struct RideCandidate {
+    /// The mover itself.
+    entity: Entity,
+    /// Its attached collision hull, which the round advance moves.
+    brush: BrushId,
+    /// The cell the player boards from, and its cost.
+    board_cell: Cell,
+    /// The landing on the mover's own top surface.
+    board: Vec3,
+    /// What the ride costs to get to, before the ride's own cost.
+    board_cost: u32,
+    /// How far the mover travels, in world units.
+    offset: Vec3,
+    /// How long it takes, in seconds.
+    seconds: f32,
+    /// The heading to press `use` along to start it, or `None` when
+    /// standing on it is what starts it.
+    use_yaw: Option<f32>,
+}
+
+/// Whether activating `source` fires `mover`: directly by name, or
+/// through one `multi_manager` hop (the fan-out entity a published map
+/// routes a button through when one press has to move several things).
+///
+/// Deeper chains are deliberately not followed: every further hop is
+/// another entity whose own published behaviour this walk would have to
+/// model, and a route that guesses wrong is a script that stands waiting
+/// for a lift that never comes.
+fn fires_mover(game: &Game, source: Entity, mover: Entity) -> bool {
+    let Ok(mover_name) = game.registry().world.get::<&TargetName>(mover) else {
+        return false;
+    };
+    let Ok(target) = game.registry().world.get::<&Target>(source) else {
+        return false;
+    };
+    if target.0.eq_ignore_ascii_case(&mover_name.0) {
+        return true;
+    }
+    for (relay, name) in &mut game.registry().world.query::<(Entity, &TargetName)>() {
+        if !name.0.eq_ignore_ascii_case(&target.0) {
+            continue;
+        }
+        if game
+            .registry()
+            .world
+            .get::<&MultiManager>(relay)
+            .is_ok_and(|manager| {
+                manager
+                    .targets
+                    .iter()
+                    .any(|(fired, _)| fired.eq_ignore_ascii_case(&mover_name.0))
+            })
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// How a mover the walk is standing on can be set going.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum RideStart {
+    /// Standing on it is what starts it: a touch volume overlapping the
+    /// platform's own footprint, wired to the mover.
+    Board,
+    /// A `use` press facing `yaw` degrees — on the mover itself, or on the
+    /// `func_button` wired to it.
+    Press {
+        /// The heading to face while pressing, in degrees.
+        yaw: f32,
+    },
+}
+
+impl RideStart {
+    /// The heading a script has to face to start the mover, or `None` when
+    /// there is nothing to press.
+    fn use_yaw(self) -> Option<f32> {
+        match self {
+            Self::Board => None,
+            Self::Press { yaw } => Some(yaw),
+        }
+    }
+}
+
+/// How a mover standing at `board` can be set going, or `None` for a lift
+/// whose switch is somewhere the walk has not reached.
+///
+/// The three ways are the three a published map wires a lift with, and
+/// each is read back from this project's own live map logic rather than
+/// restated: a `trigger_multiple`/`trigger_once` volume fires when the
+/// player's box overlaps it (`ohl_game::logic::Simulation::touch_triggers`),
+/// and a `use` press dispatches to whatever brush centre lies within
+/// [`USE_RADIUS`] of the player's eye (`ohl_game::find_usable_within`) —
+/// the mover itself, or a `func_button` wired to it.
+fn ride_activation(game: &Game, mover: Entity, board: Vec3, eye: Vec3) -> Option<RideStart> {
+    // Standing on it is enough: a touch volume the boarding cell is
+    // inside of, wired to this mover.
+    let touched: Vec<Entity> = game
+        .registry()
+        .world
+        .query::<(Entity, &Trigger, &BrushBounds)>()
+        .without::<&TriggerHurt>()
+        .without::<&ChangeLevel>()
+        .without::<&TeleportTrigger>()
+        .iter()
+        .filter(|(_, _, bounds)| bounds_contains_with_margin(bounds, board))
+        .map(|(entity, _, _)| entity)
+        .collect();
+    for trigger in touched {
+        if fires_mover(game, trigger, mover) {
+            return Some(RideStart::Board);
+        }
+    }
+    // A press: on the mover itself, or on a `func_button` wired to it.
+    let mut best: Option<(f32, f32)> = None;
+    let mut consider = |entity: Entity| {
+        let Some(center) = ohl_game::pose::brush_center(game.registry(), entity) else {
+            return;
+        };
+        let distance = (board + eye).distance(center);
+        if distance > USE_RADIUS {
+            return;
+        }
+        let Some((yaw, _)) = heading(board + eye, center) else {
+            return;
+        };
+        if best.is_none_or(|(closest, _)| distance < closest) {
+            best = Some((distance, yaw));
+        }
+    };
+    consider(mover);
+    let buttons: Vec<Entity> = game
+        .registry()
+        .world
+        .query::<(Entity, &Button)>()
+        .iter()
+        .map(|(entity, _)| entity)
+        .collect();
+    for button in buttons {
+        if fires_mover(game, button, mover) {
+            consider(button);
+        }
+    }
+    best.map(|(_, yaw)| RideStart::Press { yaw })
+}
+
+/// Every translating brush mover this walk is *standing on* that it could
+/// also set going, with everything the round advance needs to ride it.
+///
+/// A lift at rest is floor: its top surface is one the ordinary walk
+/// steps onto and stands on, and the walk already reached it. What the
+/// walk cannot see is that the floor moves — so a shaft whose only way up
+/// is the lift in it reads as a sealed room, which is exactly what a
+/// bounded search stalling a few hundred units from a map's own level
+/// change looks like from the outside.
+///
+/// The candidates are ordered by boarding cost (cheapest first, with
+/// [`Cell`]'s own order settling a tie) so which ride a round takes does
+/// not depend on how a `HashMap` happened to iterate.
+fn ride_candidates(game: &Game, walk: &Walk, taken: &HashSet<u32>) -> Vec<RideCandidate> {
+    let eye = Vec3::Z * game.move_config().view_height_standing;
+    let mut movers: Vec<(Entity, BrushBounds, Vec3, f32)> = Vec::new();
+    for (entity, bounds) in &mut game.registry().world.query::<(Entity, &BrushBounds)>() {
+        if taken.contains(&entity.id()) {
+            continue;
+        }
+        let travel = game
+            .registry()
+            .world
+            .get::<&Door>(entity)
+            .ok()
+            .filter(|door| door.state == MoverState::Closed && door.rotation_axis.is_none())
+            .map(|door| {
+                (
+                    door.movedir * door.travel_distance,
+                    door.delay.max(0.0) + travel_seconds(door.travel_distance, door.speed),
+                )
+            })
+            .or_else(|| {
+                game.registry()
+                    .world
+                    .get::<&Platform>(entity)
+                    .ok()
+                    .filter(|platform| platform.state == MoverState::Closed)
+                    .map(|platform| {
+                        (
+                            platform.movedir * platform.travel_distance,
+                            travel_seconds(platform.travel_distance, platform.speed),
+                        )
+                    })
+            });
+        let Some((offset, seconds)) = travel else {
+            continue;
+        };
+        if !offset.is_finite() || offset.z.abs() <= RIDE_MIN_LIFT || !(seconds.is_finite()) {
+            continue;
+        }
+        movers.push((entity, *bounds, offset, seconds));
+    }
+    let mut candidates: Vec<RideCandidate> = Vec::new();
+    for (entity, bounds, offset, seconds) in movers {
+        let Some(brush) = brush_for_entity(game, entity) else {
+            continue;
+        };
+        // Every cell standing on the mover's own top surface, cheapest
+        // first: which of them can *start* it is a question about where
+        // its switch is, so the cheapest boarding point that can is the
+        // one to plan, not the cheapest one full stop.
+        let inset = Vec3::splat(RIDE_FOOTPRINT_INSET);
+        let mut surface: Vec<(u32, Cell, Vec3)> = walk
+            .trace
+            .landing
+            .iter()
+            .filter(|(_, landing)| on_surface(**landing, &bounds, inset))
+            .filter_map(|(cell, landing)| walk.cost.get(cell).map(|cost| (*cost, *cell, *landing)))
+            .collect();
+        surface.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        let boarded = surface.into_iter().find_map(|(cost, cell, landing)| {
+            ride_activation(game, entity, landing, eye).map(|start| (cost, cell, landing, start))
+        });
+        let Some((board_cost, board_cell, board, start)) = boarded else {
+            continue;
+        };
+        let use_yaw = start.use_yaw();
+        candidates.push(RideCandidate {
+            entity,
+            brush,
+            board_cell,
+            board,
+            board_cost,
+            offset,
+            seconds,
+            use_yaw,
+        });
+    }
+    candidates.sort_by(|a, b| {
+        a.board_cost
+            .cmp(&b.board_cost)
+            .then(a.board_cell.cmp(&b.board_cell))
+    });
+    candidates
+}
+
+/// How long a translating mover takes to travel `distance` at `speed`, in
+/// seconds — the same `distance / speed` `ohl_game::logic`'s own mover
+/// state machine advances its timer by, never a second rule stated here.
+fn travel_seconds(distance: f32, speed: f32) -> f32 {
+    if speed > 0.0 {
+        distance.abs() / speed
+    } else {
+        0.0
+    }
+}
+
+/// The attached collision hull `entity`'s brushes were given, the inverse
+/// of [`crate::reachability::entity_for_brush`].
+fn brush_for_entity(game: &Game, entity: Entity) -> Option<BrushId> {
+    game.brush_collision()
+        .iter()
+        .find(|(owner, _)| *owner == entity)
+        .map(|(_, brush)| *brush)
 }
 
 /// Where a route presses the doors it crosses, and how far of it can be
@@ -1449,6 +1866,17 @@ pub fn merge_collinear(path: &[PathPoint]) -> Vec<PlanAction> {
     let mut actions: Vec<PlanAction> = Vec::new();
     for window in path.windows(2) {
         let (from, to) = (window[0], window[1]);
+        if let EdgeKind::Ride {
+            use_yaw,
+            travel_seconds,
+        } = to.kind
+        {
+            actions.push(PlanAction::Ride {
+                yaw: use_yaw,
+                travel_seconds,
+            });
+            continue;
+        }
         if let EdgeKind::Ladder { face_yaw, up } = to.kind {
             let climbed = (to.position.z - from.position.z).abs();
             if climbed <= f32::EPSILON {
@@ -1545,6 +1973,59 @@ fn actions_for(
     actions
 }
 
+/// Takes the cheapest ride [`ride_candidates`] offers, moving the mover's
+/// own collision hull to where it travels to and seeding the walk with
+/// the cell the player arrives standing on.
+///
+/// Returns whether a ride was taken. A mover is only ever ridden once per
+/// search: a `wait -1` lift stays where it went, and one that returns is
+/// not worth planning a second trip on.
+///
+/// This is the one round advance that *moves* geometry rather than
+/// removing it, which is why the walk persists across rounds — see
+/// [`Walk`].
+fn take_ride(game: &mut Game, walk: &mut Walk, ridden: &mut HashSet<u32>, cap: usize) -> bool {
+    let candidates = ride_candidates(game, walk, ridden);
+    for candidate in candidates {
+        let landing = candidate.board + candidate.offset;
+        let Some(collision) = game.collision_mut() else {
+            return false;
+        };
+        let before = collision.brush_origin(candidate.brush);
+        collision.set_brush_origin(candidate.brush, before + candidate.offset);
+        // Where the mover ends up has to be somewhere a body can stand:
+        // a lift whose far position is buried in the ceiling carries the
+        // player nowhere, and planning it would strand the script.
+        let arrived = !collision
+            .trace(Hull::Standing, landing, landing)
+            .start_solid
+            && standing_on_floor(collision, landing);
+        if !arrived {
+            collision.set_brush_origin(candidate.brush, before);
+            continue;
+        }
+        ridden.insert(candidate.entity.id());
+        let kind = EdgeKind::Ride {
+            use_yaw: candidate.use_yaw,
+            travel_seconds: candidate.seconds,
+        };
+        walk.seed(
+            cap,
+            landing,
+            ParentLink {
+                from: candidate.board_cell,
+                kind,
+                via: None,
+            },
+            candidate
+                .board_cost
+                .saturating_add(edge_cost(kind, candidate.board, landing)),
+        );
+        return true;
+    }
+    false
+}
+
 /// Plans a route from `game`'s current player position to the nearest
 /// reachable cell inside a [`PlanConfig::goal_classname`] volume.
 ///
@@ -1583,51 +2064,62 @@ pub fn plan_route(game: &mut Game, config: &PlanConfig) -> Result<RoutePlan, Pla
     };
 
     let mut doors: Vec<OpenedDoor> = Vec::new();
+    let mut ridden: HashSet<u32> = HashSet::new();
     let mut cells = 0usize;
+    let mut walk = Walk::new(start);
     for round in 0..config.max_rounds.max(1) {
-        let trace = {
+        {
             let Some(collision) = game.collision() else {
                 return Err(PlanRejection::new(PlanError::NoCollision, cells, round));
             };
-            walk_with_parents(collision, start, config.cell_cap, bounds)
-        };
-        cells = trace.landing.len();
+            walk.expand(collision, config.cell_cap, bounds);
+        }
+        cells = walk.trace.landing.len();
         let rounds = round + 1;
-        if let Some(goal) = pick_goal_cell(&trace, &goals) {
+        if let Some(goal) = pick_goal_cell(&walk.trace, &goals) {
             let search = Search {
                 start,
                 goals: &goals,
                 doors: &doors,
             };
-            return build_plan(game, &search, &trace, goal, (cells, rounds), true);
+            return build_plan(game, &search, &walk.trace, goal, (cells, rounds), true);
         }
 
-        let openable = openable_doors(game, &trace);
-        if openable.is_empty() {
-            // Nothing reaches the goal and no door left to open: walk as
-            // close to it as this map lets us and let the caller look
-            // again from there (see `RoutePlan::reaches_goal`).
-            let Some(nearest) = pick_nearest_cell(&trace, &goals, cell_of(start)) else {
-                return Err(PlanRejection::new(
-                    PlanError::GoalUnreachable,
-                    cells,
-                    rounds,
-                ));
+        let openable = openable_doors(game, &walk.trace);
+        if !openable.is_empty() {
+            let Some(collision) = game.collision_mut() else {
+                return Err(PlanRejection::new(PlanError::NoCollision, cells, rounds));
             };
-            let search = Search {
-                start,
-                goals: &goals,
-                doors: &doors,
-            };
-            return build_plan(game, &search, &trace, nearest, (cells, rounds), false);
+            for (brush, door) in openable {
+                collision.detach_brush(brush);
+                doors.push(door);
+            }
+            walk.requeue_all();
+            continue;
         }
-        let Some(collision) = game.collision_mut() else {
-            return Err(PlanRejection::new(PlanError::NoCollision, cells, rounds));
+        // No door left to open, and the goal not reached: the last thing
+        // this walk knows how to do is ride a mover it is standing on
+        // ([`take_ride`]).
+        if take_ride(game, &mut walk, &mut ridden, config.cell_cap) {
+            walk.requeue_all();
+            continue;
+        }
+        // Nothing reaches the goal and nothing left to try: walk as
+        // close to it as this map lets us and let the caller look
+        // again from there (see `RoutePlan::reaches_goal`).
+        let Some(nearest) = pick_nearest_cell(&walk.trace, &goals, cell_of(start)) else {
+            return Err(PlanRejection::new(
+                PlanError::GoalUnreachable,
+                cells,
+                rounds,
+            ));
         };
-        for (brush, door) in openable {
-            collision.detach_brush(brush);
-            doors.push(door);
-        }
+        let search = Search {
+            start,
+            goals: &goals,
+            doors: &doors,
+        };
+        return build_plan(game, &search, &walk.trace, nearest, (cells, rounds), false);
     }
     Err(PlanRejection::new(
         PlanError::GoalUnreachable,
@@ -1722,9 +2214,10 @@ fn build_plan(
 mod tests {
     use super::*;
     use crate::test_support::{
-        PLAN_COST_LEDGE_X, PLAN_COST_LEDGE_Z, PLAN_COST_MAP, PLAN_LADDER_DROP, PLAN_LADDER_MAP,
-        PLAN_TURN_MAP, REACH_GAP_EDGE_X, REACH_GAP_MAP, plan_cost_bsp, plan_ladder_bsp,
-        plan_turn_bsp, reachability_gap_bsp, reachability_gap_entities,
+        LiftFixture, PLAN_COST_LEDGE_X, PLAN_COST_LEDGE_Z, PLAN_COST_MAP, PLAN_LADDER_DROP,
+        PLAN_LADDER_MAP, PLAN_LIFT_MAP, PLAN_LIFT_TRAVEL, PLAN_TURN_MAP, REACH_GAP_EDGE_X,
+        REACH_GAP_MAP, plan_cost_bsp, plan_ladder_bsp, plan_lift_bsp, plan_turn_bsp,
+        reachability_gap_bsp, reachability_gap_entities,
     };
     use crate::{AssetSource, MemoryAssets};
 
@@ -1735,6 +2228,135 @@ mod tests {
             plan_turn_bsp("ohlplannext"),
         );
         Game::load(&assets as &dyn AssetSource, PLAN_TURN_MAP).expect("the fixture loads")
+    }
+
+    /// Loads the lift fixture in one of its three shapes.
+    fn lift_game(fixture: LiftFixture) -> Game {
+        let mut assets = MemoryAssets::new();
+        assets.insert(
+            &format!("maps/{PLAN_LIFT_MAP}.bsp"),
+            plan_lift_bsp("ohlplannext", fixture),
+        );
+        Game::load(&assets as &dyn AssetSource, PLAN_LIFT_MAP).expect("the fixture loads")
+    }
+
+    /// The ride action a plan holds, if it holds one.
+    fn ride_of(plan: &RoutePlan) -> Option<(Option<f32>, f32)> {
+        plan.actions.iter().find_map(|action| match action {
+            PlanAction::Ride {
+                yaw,
+                travel_seconds,
+            } => Some((*yaw, *travel_seconds)),
+            _ => None,
+        })
+    }
+
+    /// A shaft whose only way up is a `func_door` used as a lift, started
+    /// by a touch volume lying on the platform's own top surface: the
+    /// walk boards it, standing on it is what sets it going, and the
+    /// route carries on from where it stops. Without the ride edge the
+    /// ledge is simply out of reach.
+    #[test]
+    fn a_touch_started_lift_is_planned_as_a_ride() {
+        let mut game = lift_game(LiftFixture::TouchDoor);
+        let plan = plan_route(&mut game, &PlanConfig::default()).expect("the fixture plans");
+        assert!(plan.reaches_goal, "the route reaches the level change");
+        let (yaw, seconds) = ride_of(&plan).expect("the route rides the lift");
+        assert_eq!(yaw, None, "standing on it is what starts it");
+        // The mover's own documented travel time: distance over speed.
+        assert!(
+            (seconds - PLAN_LIFT_TRAVEL / 100.0).abs() < 0.01,
+            "the ride waits the mover's own travel time"
+        );
+    }
+
+    /// The same shaft with a `func_plat` and no touch volume at all: the
+    /// only way to set it going is a `use` press on the `func_button`
+    /// beside it, and the ride carries the heading to press it along.
+    #[test]
+    fn a_button_started_platform_is_planned_as_a_ride() {
+        let mut game = lift_game(LiftFixture::ButtonPlat);
+        let plan = plan_route(&mut game, &PlanConfig::default()).expect("the fixture plans");
+        assert!(plan.reaches_goal, "the route reaches the level change");
+        let (yaw, seconds) = ride_of(&plan).expect("the route rides the platform");
+        assert!(yaw.is_some(), "the platform's button has to be pressed");
+        assert!(
+            (seconds - PLAN_LIFT_TRAVEL / 100.0).abs() < 0.01,
+            "the ride waits the platform's own travel time"
+        );
+    }
+
+    /// A lift whose trigger volume is somewhere nothing can stand, with
+    /// no button and its own brush centre far out of `use` range, is no
+    /// edge at all: the walk stops at the shaft rather than planning a
+    /// ride it cannot start.
+    #[test]
+    fn a_lift_nobody_can_start_is_no_edge_at_all() {
+        let mut game = lift_game(LiftFixture::OutOfReach);
+        match plan_route(&mut game, &PlanConfig::default()) {
+            Ok(plan) => {
+                assert!(!plan.reaches_goal, "the goal stays out of reach");
+                assert!(ride_of(&plan).is_none(), "no ride is planned");
+            }
+            Err(rejection) => assert_eq!(rejection.error, PlanError::GoalUnreachable),
+        }
+    }
+
+    /// A ride costs more than a climb and less than a jump: it is an
+    /// ordinary way to get about that commits the player to a machine.
+    #[test]
+    fn a_ride_costs_between_a_climb_and_a_jump() {
+        let low = Vec3::ZERO;
+        let ride = edge_cost(
+            EdgeKind::Ride {
+                use_yaw: None,
+                travel_seconds: 1.0,
+            },
+            low,
+            low,
+        );
+        assert!(
+            edge_cost(
+                EdgeKind::Ladder {
+                    face_yaw: 0.0,
+                    up: true
+                },
+                low,
+                low
+            ) < ride
+                && ride < edge_cost(EdgeKind::Jump, low, low),
+            "a ride sits between a climb and a jump"
+        );
+    }
+
+    /// A ride is never straightened away and never merged into the run
+    /// before it: it is a wait in one place, not a distance travelled.
+    #[test]
+    fn merge_keeps_a_ride_as_its_own_action() {
+        let actions = merge_collinear(&[
+            point_at(0.0, 0.0, 0.0, EdgeKind::Walk),
+            point_at(16.0, 0.0, 0.0, EdgeKind::Walk),
+            point_at(
+                16.0,
+                0.0,
+                256.0,
+                EdgeKind::Ride {
+                    use_yaw: Some(90.0),
+                    travel_seconds: 2.5,
+                },
+            ),
+            point_at(32.0, 0.0, 256.0, EdgeKind::Walk),
+        ]);
+        assert_eq!(actions.len(), 3, "a run, the ride, and the run after it");
+        assert!(matches!(actions[0], PlanAction::Move { .. }));
+        assert_eq!(
+            actions[1],
+            PlanAction::Ride {
+                yaw: Some(90.0),
+                travel_seconds: 2.5
+            }
+        );
+        assert!(matches!(actions[2], PlanAction::Move { .. }));
     }
 
     fn point(x: f32, y: f32, kind: EdgeKind) -> PathPoint {
@@ -2268,9 +2890,10 @@ mod tests {
         };
         let collision = game.collision().expect("the fixture has collision");
         let start = plan_start(collision, Vec3::from_array(game.player_origin()));
-        let trace = walk_with_parents(collision, start, config.cell_cap, bounds);
-        let goal = pick_goal_cell(&trace, &goals).expect("the goal is reachable");
-        path_to(&trace, start, goal)
+        let mut walk = Walk::new(start);
+        walk.expand(collision, config.cell_cap, bounds);
+        let goal = pick_goal_cell(&walk.trace, &goals).expect("the goal is reachable");
+        path_to(&walk.trace, start, goal)
     }
 
     /// A ladder edge always costs more than a plain step and less than a
@@ -2538,5 +3161,36 @@ mod tests {
             panic!("a move")
         };
         assert!(fall <= 0.0, "a step down is a step, got {fall}");
+    }
+
+    /// And the deliberate middle of that rule, which is easy to read as an
+    /// oversight: a plain [`EdgeKind::Walk`] whose landing is further than
+    /// [`STEP_UP`] below its take-off — but not far enough below to be
+    /// classified a [`EdgeKind::Drop`] — *does* end its run with a landing
+    /// wait.
+    ///
+    /// That is on purpose, and it is the edge kind that decides nothing:
+    /// what puts the player in the air is the height, and a walk edge that
+    /// steps off a two-foot lip leaves them airborne for exactly as long
+    /// as a jump or a drop of the same height would. Narrowing the wait to
+    /// jumps and drops would let the run after it replay from a point the
+    /// player has not landed at yet, which is the whole defect the wait
+    /// exists to close.
+    #[test]
+    fn a_plain_walk_that_descends_past_the_step_bound_still_waits() {
+        let descent = STEP_UP + 16.0;
+        assert!(descent < DROP, "still classified a plain walk, not a drop");
+        let path = [
+            point_at(0.0, 0.0, descent, EdgeKind::Walk),
+            point_at(16.0, 0.0, 0.0, EdgeKind::Walk),
+        ];
+        let actions = merge_collinear(&path);
+        let PlanAction::Move { fall, .. } = actions[0] else {
+            panic!("a move")
+        };
+        assert!(
+            (fall - descent).abs() < 1e-3,
+            "the run waits out the descent it ends with, got {fall}"
+        );
     }
 }
