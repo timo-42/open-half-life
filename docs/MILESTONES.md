@@ -5045,3 +5045,114 @@ for the gap.
   where they landed for the rest of the route and arrive in the fifth map
   from there. That is a transition-placement question, not a map-logic
   one, and is being picked up separately.
+## M9.22 (Rust): the yaw-snap ride-speed spike, resolved
+
+Closes the "Follow-up, older than this branch: single-tick ride-speed
+spikes at a node" item M9.19 recorded above (M9.20/M9.21, above, landed a separate fix to the same map in the meantime; this one is independent).
+
+**What a per-tick probe found.** A local, uncommitted probe stepped the
+`crates/ohl-engine/tests/track_train_bend.rs` fixture at the physics
+engine's own fixed tick (`ohl_physics::controller::TICK_SECONDS`, not the
+`1.0 / 60.0` most tests use, which does not divide evenly into it and can
+coalesce more than one physics step into a single `Game::tick` call,
+hiding the very spike being hunted) and logged `Game::ground_mover_speed`
+alongside the player's own raw position delta divided by `dt` every tick.
+Both read the same large number — several thousand units/second — on the
+exact tick a `func_tracktrain` changed path segment, and nowhere else.
+That ruled out a pure reporting bug (the earlier guess that
+`ground_mover_speed` was dividing a rigid rotational step by `dt` as if it
+were an ongoing rate, while the player's actual motion stayed modest): the
+rider's seat really was being carried through the corner's whole chord in
+one tick, because `TrackTrainState::yaw_degrees` turned the car's hull
+through the entire angle between two path segments the instant it reached
+the node between them (recorded, not newly introduced, by M9.18's rigid
+per-tick carry). `PlayerController::velocity` itself was never touched —
+only the rider's position was rotated, so nothing persisted into later
+ticks or launched the player onward — but the one-tick chord was still a
+real, large jump in where they were, and `Game::ground_mover_speed`
+faithfully reported it.
+
+**The fix.** `TrackTrainState::yaw_degrees` now blends a corner's heading
+change over a short distance of the new segment (a train's `wheels`
+keyvalue when positive, `ohl_game::track_train::DEFAULT_YAW_BLEND_DISTANCE`
+otherwise — see that constant's and `TrackTrain::wheels`'s doc comments;
+no public source documents `wheels`' real turn-lag formula, so this is a
+project-determined choice, not a claimed match to it) rather than
+reporting the new segment's exact heading the instant the train reaches
+the node. Every consumer of a `func_tracktrain`'s heading —
+`ohl_engine::render`'s draw pose, `Level::sync_brush_collision`'s
+collision pose, and a rigid-carried rider's own turn — reads this one
+function, so blending it there is enough to turn a sharp corner into a
+short, smooth swing everywhere at once, with no separate change needed to
+keep render, collision and the rider's ride in agreement.
+`Game::ground_mover_speed` itself was also changed to measure the actual
+per-tick chord `Level::rotational_carry` produces (translation plus the
+rotational step's own displacement over `dt`) rather than the
+instantaneous tangential rate a spin's angle-per-tick would suggest at the
+limit of a vanishingly small step — the two agree closely for an ordinary
+slow `func_rotating`/`func_door_rotating` turn, but only the chord measures
+what a sharp corner's one-tick heading change actually moved a rider by.
+
+- **New regression test**:
+  `crates/ohl-engine/tests/track_train_bend.rs`'s
+  `a_riders_reported_speed_never_exceeds_the_cars_own_by_more_than_a_small_bound`
+  steps the bend fixture at the engine's own fixed tick through a full
+  corner and asserts `Game::ground_mover_speed` never exceeds twice the
+  car's own travel speed. `crates/ohl-game/src/track_train.rs` adds unit
+  tests for the blend itself (`yaw_blends_from_the_previous_segment_across_the_window`,
+  `a_positive_wheels_keyvalue_shortens_the_blend_window`) and
+  `crates/ohl-engine/src/level.rs`'s
+  `render_and_collision_agree_on_a_turning_track_train_pose` was extended
+  to sample far enough past the corner to see the blend actually finish,
+  since it now takes longer than one tick. The existing bend, rotating-rider
+  and track-change fixtures (M9.18, M9.19) were re-run unchanged and still
+  pass, confirming a rider is neither scraped nor dropped by the blended
+  turn. `cargo xtask combat-smoke` (37/37) and `cargo xtask chain-walk`
+  (same chain depth as before this change) were both re-run against the
+  local payload.
+- **Review follow-up: the blend missed a looped chain's own wrap
+  corner.** `TrackTrainState::previous_node_index` (what both the blend
+  above and the parked-at-the-end fallback read "the previous segment's
+  heading" through) used raw `checked_sub`/`checked_add` arithmetic
+  instead of the chain's own looped-aware `PathChain::prev_index`/
+  `next_index` pair that `other_index` (the node *ahead*) already used one
+  screen above it. So a *looped* chain's wrap node — `node_index == 0`
+  moving forward, where a non-looped chain truly has no previous node —
+  reported `None` there too, and the blend fell back to the new segment's
+  heading unblended: every interior corner of a loop blended correctly,
+  but the wrap corner kept snapping its whole turn in one tick, on exactly
+  the kind of track (a loop) this fix exists for. Swapped to the same
+  looped-aware pair `other_index` uses; verified locally that a probe of a
+  400x400 looped square over 2.5 laps drops from a 90-degree one-tick step
+  at the wrap to about 0.35 degrees, matching every other corner. New
+  tests: `crates/ohl-game/src/track_train.rs`'s
+  `previous_node_index_wraps_on_a_looped_chain_instead_of_reporting_none`
+  (direct, unit-level), `a_looped_square_tracks_worst_per_tick_yaw_step_stays_small`
+  (a proper four-corner loop, worst per-tick yaw step over 2.5 laps bounded
+  well under a one-tick snap) and `yaw_blends_across_a_looped_chains_wrap_corner_too`
+  (the yaw right at the wrap reads as the incoming heading, not the
+  outgoing one) — all three verified to fail against the pre-fix
+  arithmetic and pass against the fix. As a side effect, a train parked
+  exactly at a looped chain's wrap node now also resolves a previous
+  segment to blend from, where it previously had none to find.
+- **Review follow-up: a discriminating test for the `ground_mover_speed`
+  rewrite.** Nothing pinned that the metric now reads the actual chord
+  rather than the old instantaneous tangential rate, because an ordinary
+  `func_rotating` turntable's per-tick angle is small enough that the two
+  formulas already agree — the yaw blend above, not the metric rewrite,
+  is what carries the existing regression tests. Added
+  `crates/ohl-engine/tests/rotating_riders.rs`'s
+  `ground_mover_speed_matches_the_chord_even_for_a_large_single_tick_turn`,
+  which cranks a turntable's spin to a large single-tick angle (comparable
+  to a `func_tracktrain` corner's own pre-blend snap) where the chord and
+  the arc-rate clearly disagree, and a companion
+  `ground_mover_speed_matches_the_riders_own_observed_per_tick_displacement`
+  pinning the ordinary case too. Both verified against restoring the old
+  `brush_ride_velocity`-only body.
+- **Review follow-up: doc nits.** `docs/FORMAT_SOURCES.md`'s "Riding
+  movers" paragraph said a `func_tracktrain`'s hull "turns" (present tense)
+  by a whole segment's angle in one tick — true before this milestone,
+  stale after it; reworded to the past tense with a pointer to the fix.
+  `wheels`' unit was unstated where this milestone's own prose introduced
+  it (unlike the neighbouring `speed`/`height` entries, which both say
+  theirs); now states it is in map units.

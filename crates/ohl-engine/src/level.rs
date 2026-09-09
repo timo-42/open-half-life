@@ -1711,10 +1711,15 @@ mod tests {
         let entity = level.registry.find(crate::test_support::BEND_TRAIN_NAME)[0];
         let step = 1.0 / 60.0;
         // The corner is 300 units out at 100 units/second, so three
-        // seconds of stepping crosses it: sample a spread of progress
-        // values either side.
+        // seconds of stepping crosses it; `TrackTrainState::yaw_degrees`
+        // then blends the heading change over
+        // `ohl_game::track_train::DEFAULT_YAW_BLEND_DISTANCE` (256 units)
+        // of the second segment, another 2.56 seconds, before it reads as
+        // the second segment's own heading exactly — sample well past
+        // that so the run really does see the fully-turned pose, not just
+        // partway through the blend.
         let mut seen_yaws: Vec<f32> = Vec::new();
-        for tick in 0..300 {
+        for tick in 0..400 {
             level.simulation.tick(&mut level.registry, step);
             level.sync_brush_collision(step);
             if tick % 20 != 0 {
