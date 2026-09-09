@@ -113,7 +113,7 @@ const HEADER: &str = "\
 # A machine-planned chain-walk route (--plan-route / cargo xtask
 # plan-chain-hop), not a hand-authored one.
 #
-# A bounded breadth-first walk over this map's live collision model
+# A bounded, cost-ordered walk over this map's live collision model
 # (ohl_engine::route_plan, the same edge model --reachability-report
 # triages with) found a path from the arrival point this route starts at
 # to the map's own level-change trigger, straightened it into runs,
@@ -721,7 +721,14 @@ impl Planner<'_> {
         // they have not arrived at, and the script for it runs during
         // the fall.
         for _ in 0..LANDING_TICKS {
-            if scratch.player_on_ground() {
+            // A climber never lands: `ohl_physics::movement` deliberately
+            // reports no ground while the player is attached to a ladder,
+            // so waiting for one here would spend the whole wait every
+            // attempt and still plan from a body hanging in a shaft.
+            // Hanging on a ladder *is* an arrived state, and
+            // `ohl_engine::route_plan` plans from it directly rather than
+            // from the floor far below.
+            if scratch.player_on_ground() || scratch.player_on_ladder() {
                 break;
             }
             if !idle(&mut scratch, 1) {

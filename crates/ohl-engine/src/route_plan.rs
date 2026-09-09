@@ -20,7 +20,17 @@
 //! same "detach a closed, use-openable door and walk again" round advance
 //! — but keeps a parent link and an [`EdgeKind`] for every cell it
 //! reaches, so the cell the goal was found in can be walked back to the
-//! start. The resulting cell path is then:
+//! start.
+//!
+//! It also expands that frontier *cheapest-first* rather than
+//! breadth-first ([`edge_cost`]), which triage has no need of and a route
+//! cannot do without: counted in grid steps, stepping off a ledge is the
+//! shortest way to anywhere below it, and a walk that measures a route in
+//! steps takes the fall every time. Counted in what each edge costs a
+//! body, the stairs beside it win and the fall is what is left when
+//! nothing else reaches.
+//!
+//! The resulting cell path is then:
 //!
 //! 1. **split at door presses.** A door this walk opened between rounds
 //!    is attributed to the path point the path last stands on within
@@ -30,7 +40,7 @@
 //!    path crosses with no such point truncates the route there instead
 //!    of being walked through while shut: the route walks up to the leaf,
 //!    and the plan made from *there* is the one that presses it.
-//! 2. **string-pulled.** A breadth-first grid path zigzags between the
+//! 2. **string-pulled.** A grid path zigzags between the
 //!    eight compass directions; a walker following it turns every few
 //!    units. Each chunk between door presses is greedily shortened to the
 //!    furthest later point a standing-hull trace reaches in a straight
@@ -64,7 +74,8 @@
 //! obstacle a script can honestly clear, so anything else simply leaves
 //! the goal [`PlanError::GoalUnreachable`].
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use glam::Vec3;
 use ohl_game::hecs::Entity;
@@ -626,6 +637,7 @@ fn ladder_mount(
     max_drop: f32,
 ) -> Option<(Vec3, f32)> {
     let hull = Hull::Standing;
+    let mut fallback: Option<(Vec3, f32)> = None;
     // Straight out from where the player stands, not from the step-up
     // height an ordinary edge starts at: the ladder they are about to
     // grab ends at the ledge's own level, and a hull raised a step above
@@ -634,30 +646,65 @@ fn ladder_mount(
     // One cell in is where a ladder mounted flush against the ledge is
     // reached, two where one on the far face of a thicker wall is (and
     // where a standing hull first stands clear of the ledge it stepped
-    // off). A cell *below* either is where the player actually meets the
-    // volume when they step off and drop before grabbing it. Whichever
-    // of those they could then climb from is the mount.
-    for cells in 1..=2 {
-        #[allow(clippy::cast_precision_loss, reason = "one or two grid cells")]
+    // off). Cells *below* either are where the player actually meets the
+    // volume when they step off and drop before grabbing it — as far down
+    // as [`MOUNT_PROBE_BELOW`], because a shaft's ladder need not start
+    // level with the ledge beside it. Whichever of those they could then
+    // climb from is a mount.
+    for cells in 1..=MOUNT_PROBE_CELLS {
+        #[allow(clippy::cast_precision_loss, reason = "a small grid-cell count")]
         let reach = CELL_SIZE * cells as f32;
         let across = collision.trace(hull, position, position + direction * reach);
         if across.start_solid || across.fraction <= 0.0 {
             continue;
         }
-        for below in 0..=1 {
-            #[allow(clippy::cast_precision_loss, reason = "one grid cell")]
+        for below in 0..=MOUNT_PROBE_BELOW {
+            #[allow(clippy::cast_precision_loss, reason = "a small grid-cell count")]
             let landing = across.end_pos - Vec3::Z * (CELL_SIZE * below as f32);
             let Some(face_yaw) = ladder_face_yaw(collision, landing) else {
                 continue;
             };
-            if ladder_edge(collision, landing, false, max_drop).is_some()
-                || ladder_edge(collision, landing, true, max_drop).is_some()
+            if ladder_edge(collision, landing, false, max_drop).is_none()
+                && ladder_edge(collision, landing, true, max_drop).is_none()
             {
+                continue;
+            }
+            // A player grabs a ladder by stepping *into* its face, so the
+            // heading that faces the volume should be the heading they
+            // stepped along. Where it is not, the hull has caught the
+            // volume edge-on — a corner graze against the side of a slab,
+            // whose reported facing is at right angles to the real one and
+            // whose climb runs out at the first ledge beside the shaft.
+            // Such a landing is still a mount, but only for want of a
+            // better one.
+            if mount_faces_the_step(face_yaw, direction) {
                 return Some((landing, face_yaw));
+            }
+            if fallback.is_none() {
+                fallback = Some((landing, face_yaw));
             }
         }
     }
-    None
+    fallback
+}
+
+/// How far across [`ladder_mount`] probes for a climbable volume, in grid
+/// cells, and how far below the step it looks for one.
+const MOUNT_PROBE_CELLS: i32 = 2;
+/// See [`MOUNT_PROBE_CELLS`].
+const MOUNT_PROBE_BELOW: i32 = 2;
+
+/// How far a mount's own facing may differ from the heading the player
+/// stepped along and still count as "stepped into the ladder", in degrees.
+const MOUNT_FACING_TOLERANCE: f32 = 45.0;
+
+/// Whether a candidate mount's facing ([`ladder_face_yaw`]) agrees with
+/// the direction the step went in, within [`MOUNT_FACING_TOLERANCE`].
+fn mount_faces_the_step(face_yaw: f32, direction: Vec3) -> bool {
+    let stepped = direction.y.atan2(direction.x).to_degrees();
+    let delta = (face_yaw - stepped).rem_euclid(360.0);
+    let delta = if delta > 180.0 { delta - 360.0 } else { delta };
+    delta.abs() <= MOUNT_FACING_TOLERANCE
 }
 
 /// Which [`EdgeKind`] an accepted plain-step outcome represents.
@@ -726,6 +773,23 @@ fn cross(
     } else {
         max_drop
     };
+    // Hanging on a ladder there is nothing horizontal to do at all. The
+    // engine's ladder step turns every wished-for direction into motion
+    // *along* the volume — into its face climbs, away from it descends,
+    // the rest slides sideways across it (`ohl_physics::movement`'s ladder
+    // move) — so a planned step off a ladder into open air is a line the
+    // player cannot walk: they climb, or slide, or stay. Planning one is
+    // how a climber ends up a few units to the side of where the plan
+    // thinks they are, on a stretch of ladder whose next step down is a
+    // ledge rather than a shaft.
+    //
+    // A player *standing* in a climbable volume — at its foot, or on the
+    // ledge its top runs out at — is a different case: there is floor
+    // under them, and stepping off it is exactly how the walk arrives at
+    // and leaves a ladder in the first place.
+    if on_ladder && !standing_on_floor(collision, position) {
+        return Crossing::Blocked(None);
+    }
     let plain = try_edge(collision, hull, position, direction, STEP_UP, CELL_SIZE);
     if let EdgeOutcome::Landed {
         position: landing,
@@ -738,13 +802,7 @@ fn cross(
         // that the whole direction is closed here: stepping aside into
         // the same fall, or jumping down it, is the same fall.
         if drop > max_drop {
-            // Hanging on a ladder there is nothing horizontal to do: the
-            // engine's ladder step turns a wished-for direction into a
-            // climb along the volume, never a step across it, so an edge
-            // from here that is not a climb is one no script can walk.
-            if !on_ladder
-                && let Some((landing, _)) = ladder_mount(collision, position, direction, max_drop)
-            {
+            if let Some((landing, _)) = ladder_mount(collision, position, direction, max_drop) {
                 return Crossing::Landed {
                     landing,
                     kind: EdgeKind::Walk,
@@ -760,8 +818,8 @@ fn cross(
         };
     }
     if on_ladder {
-        // See above: only the plain step off the ladder onto a floor is
-        // available here, and it has already been tried.
+        // See above: standing in a climbable volume, only the plain step
+        // off it onto a floor is available, and it has already been tried.
         return Crossing::Blocked(None);
     }
     if let Some((aside, landing, drop)) = sidestep(collision, hull, position, direction) {
@@ -772,6 +830,21 @@ fn cross(
             landing,
             kind: plain_edge_kind(position, landing, drop),
             via: Some(aside),
+        };
+    }
+    // A step that was blocked outright — into the wall a ladder is bolted
+    // to, or into the frame of the hole a shaft's ladder runs down — can
+    // still be a mount: [`ladder_mount`] reaches past the hull's own stop
+    // point and a cell or two below it. Until now the mount was consulted
+    // only where the step *landed* too far below to survive, which sees a
+    // ladder whose volume runs to the floor and misses every one that does
+    // not. It is tried before the jump because grabbing a ladder is the
+    // cheaper and safer of the two.
+    if let Some((landing, _)) = ladder_mount(collision, position, direction, max_drop) {
+        return Crossing::Landed {
+            landing,
+            kind: EdgeKind::Walk,
+            via: None,
         };
     }
     if let EdgeOutcome::Landed {
@@ -818,21 +891,101 @@ fn cross(
     })
 }
 
-/// Records one newly reached cell, ignoring a cell already visited (the
-/// first way a cell is reached is the shortest, breadth-first).
-fn record(trace: &mut Trace, queue: &mut VecDeque<Vec3>, landing: Vec3, link: ParentLink) {
-    if let std::collections::hash_map::Entry::Vacant(entry) = trace.landing.entry(cell_of(landing))
-    {
-        entry.insert(landing);
-        trace.parent.insert(cell_of(landing), link);
-        trace.order.push(landing);
-        queue.push_back(landing);
+/// What one edge costs the walk, in the arbitrary units
+/// [`walk_with_parents`] orders its frontier by.
+///
+/// The walk this planner inherited was breadth-first, which measures a
+/// route in *steps* and so treats every way of covering one grid cell as
+/// interchangeable. A body does not: walking a corridor, climbing a
+/// ladder and stepping off a ledge are three different prices, and the
+/// cheapest-in-steps route to a place below is almost always the fall.
+/// Ordering the frontier by cost instead makes the walk prefer the route
+/// a player would take, and leaves a survivable fall as what it should be
+/// — the thing tried when nothing else reaches.
+///
+/// The numbers are this project's own, and only their ratios mean
+/// anything: a fall starts at [`COST_FALL`] ordinary steps and grows with
+/// its own height, so no detour a bounded search can walk is worse than
+/// dropping off the edge, while a climb ([`COST_CLIMB`]) and a jump
+/// ([`COST_JUMP`]) cost a small multiple of a step rather than a
+/// prohibitive one — both are ordinary ways to get about, just not ones
+/// to spend on a shortcut.
+const COST_WALK: u32 = 1;
+/// See [`COST_WALK`].
+const COST_CLIMB: u32 = 2;
+/// See [`COST_WALK`].
+const COST_JUMP: u32 = 4;
+/// See [`COST_WALK`].
+const COST_FALL: u32 = 64;
+/// See [`COST_WALK`]: what each further grid cell of a fall's height adds.
+const COST_FALL_PER_CELL: u32 = 1;
+
+/// What crossing `kind` from `from` to `to` costs; see [`COST_WALK`].
+fn edge_cost(kind: EdgeKind, from: Vec3, to: Vec3) -> u32 {
+    match kind {
+        EdgeKind::Walk | EdgeKind::Step => COST_WALK,
+        EdgeKind::Ladder { .. } => COST_CLIMB,
+        EdgeKind::Jump | EdgeKind::LongJump => COST_JUMP,
+        EdgeKind::Drop => {
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a fall's height in grid cells, over a published map's own scale"
+            )]
+            let cells = ((from.z - to.z).max(0.0) / CELL_SIZE) as u32;
+            COST_FALL.saturating_add(cells.saturating_mul(COST_FALL_PER_CELL))
+        }
     }
+}
+
+/// One cell of the ordered walk's frontier: what it cost to get there,
+/// and which cell it is. [`Cell`]'s own order settles a tie, so two runs
+/// over the same map expand the same cell next however their hash tables
+/// happened to iterate — the same reproducibility [`improves`] gives the
+/// choice of goal cell.
+type Frontier = Reverse<(u32, Cell)>;
+
+/// Records a cell reached for `total`, when that is the cheapest way there
+/// so far. A cell reached for the first time is added; one reached again
+/// more cheaply keeps its new parent, its new landing and its new cost,
+/// and is queued again for its neighbours to be re-examined from.
+///
+/// The visit-order list [`Trace::order`] only ever grows on first arrival:
+/// it answers "did the walk stand within reach of this door", and standing
+/// somewhere twice is not standing somewhere new.
+fn relax(
+    trace: &mut Trace,
+    cost: &mut HashMap<Cell, u32>,
+    queue: &mut BinaryHeap<Frontier>,
+    cap: usize,
+    landing: Vec3,
+    link: ParentLink,
+    total: u32,
+) {
+    let cell = cell_of(landing);
+    match cost.get(&cell) {
+        Some(best) if *best <= total => return,
+        Some(_) => {
+            trace.landing.insert(cell, landing);
+        }
+        None => {
+            if trace.landing.len() >= cap {
+                return;
+            }
+            trace.landing.insert(cell, landing);
+            trace.order.push(landing);
+        }
+    }
+    cost.insert(cell, total);
+    trace.parent.insert(cell, link);
+    queue.push(Reverse((total, cell)));
 }
 
 /// The walk itself: [`cross`]'s edge ladder from every visited cell in
 /// all eight compass directions, recording a parent link and an
-/// [`EdgeKind`] per cell.
+/// [`EdgeKind`] per cell — expanded cheapest-first ([`edge_cost`]) rather
+/// than breadth-first, so the route that comes back out is the one a
+/// player would take rather than the one with the fewest grid steps.
 fn walk_with_parents(
     collision: &CollisionModel,
     start: Vec3,
@@ -845,13 +998,23 @@ fn walk_with_parents(
         order: Vec::new(),
         frontier: HashSet::new(),
     };
-    let mut queue = VecDeque::new();
-    trace.landing.insert(cell_of(start), start);
+    let mut cost: HashMap<Cell, u32> = HashMap::new();
+    let mut queue: BinaryHeap<Frontier> = BinaryHeap::new();
+    let start_cell = cell_of(start);
+    trace.landing.insert(start_cell, start);
     trace.order.push(start);
-    queue.push_back(start);
+    cost.insert(start_cell, 0);
+    queue.push(Reverse((0, start_cell)));
 
-    while let Some(position) = queue.pop_front() {
-        let from = cell_of(position);
+    while let Some(Reverse((spent, from))) = queue.pop() {
+        // A cell can sit in the heap more than once, once per time it was
+        // reached more cheaply; only the cheapest entry is the live one.
+        if cost.get(&from).copied() != Some(spent) {
+            continue;
+        }
+        let Some(position) = trace.landing.get(&from).copied() else {
+            continue;
+        };
         let on_ladder = ladder_face_yaw(collision, position).is_some();
         for up in [true, false] {
             if !on_ladder {
@@ -862,15 +1025,19 @@ fn walk_with_parents(
             }
             if let Some((landing, face_yaw)) = ladder_edge(collision, position, up, bounds.max_drop)
             {
-                record(
+                let kind = EdgeKind::Ladder { face_yaw, up };
+                relax(
                     &mut trace,
+                    &mut cost,
                     &mut queue,
+                    cap,
                     landing,
                     ParentLink {
                         from,
-                        kind: EdgeKind::Ladder { face_yaw, up },
+                        kind,
                         via: None,
                     },
+                    spent.saturating_add(edge_cost(kind, position, landing)),
                 );
             }
         }
@@ -884,11 +1051,14 @@ fn walk_with_parents(
             }
             match cross(collision, position, direction, bounds, on_ladder) {
                 Crossing::Landed { landing, kind, via } => {
-                    record(
+                    relax(
                         &mut trace,
+                        &mut cost,
                         &mut queue,
+                        cap,
                         landing,
                         ParentLink { from, kind, via },
+                        spent.saturating_add(edge_cost(kind, position, landing)),
                     );
                 }
                 Crossing::Blocked(Some(brush)) => {
@@ -899,6 +1069,45 @@ fn walk_with_parents(
         }
     }
     trace
+}
+
+/// Where a plan starts from: the floor beneath the player
+/// ([`crate::reachability::settle_start`]) — unless they are hanging on a
+/// climbable volume, in which case it is simply where they hang.
+///
+/// Settling is what makes a plan reproducible for a player who is a few
+/// units above the floor, mid-step or mid-fall: every edge this walk knows
+/// starts from a standing position, so the search asks "which floor is
+/// under this" first. For a climber that question has the wrong answer. A
+/// player attached to a ladder is deliberately not standing on anything
+/// (`ohl_physics::movement` suppresses the ground probe while they are
+/// attached), and the floor under them is the bottom of the shaft they are
+/// half-way up — the one place the plan must not begin at. Every action
+/// planned from it describes a route for a body that is nowhere near it,
+/// and the first held key of that route lets go of the ladder and takes
+/// the whole fall the climb existed to avoid.
+///
+/// The walk itself needs nothing else: it already recognises a cell inside
+/// a climbable volume and offers the climb edges from it
+/// ([`ladder_edge`]).
+fn plan_start(collision: &CollisionModel, origin: Vec3) -> Vec3 {
+    if ladder_face_yaw(collision, origin).is_some() {
+        return origin;
+    }
+    settle_start(collision, origin)
+}
+
+/// Whether a standing hull at `position` has floor within one [`STEP_UP`]
+/// beneath it: the difference between a player *standing* in a climbable
+/// volume (at its foot, or on the ledge at its top) and one *hanging*
+/// half-way up it.
+///
+/// The engine makes no such distinction — it reports no ground at all
+/// while the player is attached (`ohl_physics::movement`) — but the
+/// geometry still does, and the walk needs it: see [`cross`].
+fn standing_on_floor(collision: &CollisionModel, position: Vec3) -> bool {
+    let down = collision.trace(Hull::Standing, position, position - Vec3::Z * STEP_UP);
+    !down.start_solid && down.fraction < 1.0
 }
 
 /// Every entity of `classname` that declares a brush volume, minus any
@@ -1364,7 +1573,7 @@ pub fn plan_route(game: &mut Game, config: &PlanConfig) -> Result<RoutePlan, Pla
             .unwrap_or_else(|| survivable_drop_height(game.move_config(), game.player_health())),
     };
     let start = match game.collision() {
-        Some(collision) => settle_start(collision, Vec3::from_array(game.player_origin())),
+        Some(collision) => plan_start(collision, Vec3::from_array(game.player_origin())),
         None => return Err(PlanRejection::new(PlanError::NoCollision, 0, 0)),
     };
 
@@ -1508,8 +1717,9 @@ fn build_plan(
 mod tests {
     use super::*;
     use crate::test_support::{
-        PLAN_LADDER_DROP, PLAN_LADDER_MAP, PLAN_TURN_MAP, REACH_GAP_EDGE_X, REACH_GAP_MAP,
-        plan_ladder_bsp, plan_turn_bsp, reachability_gap_bsp, reachability_gap_entities,
+        PLAN_COST_LEDGE_X, PLAN_COST_LEDGE_Z, PLAN_COST_MAP, PLAN_LADDER_DROP, PLAN_LADDER_MAP,
+        PLAN_TURN_MAP, REACH_GAP_EDGE_X, REACH_GAP_MAP, plan_cost_bsp, plan_ladder_bsp,
+        plan_turn_bsp, reachability_gap_bsp, reachability_gap_entities,
     };
     use crate::{AssetSource, MemoryAssets};
 
@@ -1529,7 +1739,7 @@ mod tests {
         }
     }
 
-    /// The merge is the step that turns a breadth-first grid path into a
+    /// The merge is the step that turns a grid path into a
     /// script: a straight run of points sharing one heading has to become
     /// exactly one segment, and a turn has to end it.
     #[test]
@@ -2021,5 +2231,254 @@ mod tests {
             }
             _ => panic!("the middle action is the climb: {actions:?}"),
         }
+    }
+
+    fn cost_game(with_stairs: bool) -> Game {
+        let mut assets = MemoryAssets::new();
+        assets.insert(
+            &format!("maps/{PLAN_COST_MAP}.bsp"),
+            plan_cost_bsp("ohlplannext", with_stairs),
+        );
+        Game::load(&assets as &dyn AssetSource, PLAN_COST_MAP).expect("the fixture loads")
+    }
+
+    /// The path the walk's own parent links produce from the fixture's
+    /// start to the cell it accepts as the goal.
+    fn path_through(game: &mut Game) -> Vec<PathPoint> {
+        let config = PlanConfig::default();
+        let goals = goal_volumes(game, &config);
+        assert!(!goals.is_empty(), "the fixture declares a goal");
+        let bounds = EdgeBounds {
+            jump: JumpBounds::from_move_config(game.move_config()),
+            long_jump: None,
+            safe_drop: safe_drop_height(game.move_config()),
+            max_drop: survivable_drop_height(game.move_config(), game.player_health()),
+        };
+        let collision = game.collision().expect("the fixture has collision");
+        let start = plan_start(collision, Vec3::from_array(game.player_origin()));
+        let trace = walk_with_parents(collision, start, config.cell_cap, bounds);
+        let goal = pick_goal_cell(&trace, &goals).expect("the goal is reachable");
+        path_to(&trace, start, goal)
+    }
+
+    /// A ladder edge always costs more than a plain step and less than a
+    /// fall, and a fall's own cost grows with its height: the ordering the
+    /// walk's frontier is sorted by, stated once as a test so a later
+    /// tweak to one constant cannot silently invert it.
+    #[test]
+    fn a_fall_costs_far_more_than_any_other_edge() {
+        let high = Vec3::new(0.0, 0.0, 256.0);
+        let low = Vec3::ZERO;
+        let walk = edge_cost(EdgeKind::Walk, low, low);
+        let climb = edge_cost(
+            EdgeKind::Ladder {
+                face_yaw: 0.0,
+                up: false,
+            },
+            high,
+            high - Vec3::Z * CELL_SIZE,
+        );
+        let jump = edge_cost(EdgeKind::Jump, low, low);
+        let short_fall = edge_cost(EdgeKind::Drop, Vec3::new(0.0, 0.0, 80.0), low);
+        let long_fall = edge_cost(EdgeKind::Drop, high, low);
+        assert!(walk < climb, "a climb is dearer than a step");
+        assert!(climb < jump, "a jump is dearer than a climb");
+        assert!(
+            jump * 8 < short_fall,
+            "even the shortest planned fall is worth many ordinary edges, \
+             got jump {jump} and fall {short_fall}"
+        );
+        assert!(
+            short_fall < long_fall,
+            "a taller fall costs more, got {short_fall} then {long_fall}"
+        );
+    }
+
+    /// The whole point of ordering the walk by cost: where a fall and a
+    /// staircase both reach the same floor, the route walks down.
+    ///
+    /// A breadth-first walk cannot do this. Counted in grid steps the fall
+    /// is one edge and the staircase is a detour of dozens, so the fall
+    /// wins every time — which is how a planned route ends up stepping off
+    /// ledges it never needed to.
+    #[test]
+    fn a_survivable_fall_is_not_planned_when_a_staircase_reaches_the_same_floor() {
+        let mut game = cost_game(true);
+        let safe = safe_drop_height(game.move_config());
+        assert!(
+            PLAN_COST_LEDGE_Z < safe,
+            "the fixture's ledge is one the walk is allowed to step off \
+             ({PLAN_COST_LEDGE_Z} against {safe})"
+        );
+        let path = path_through(&mut game);
+        assert!(
+            !path.iter().any(|point| point.kind == EdgeKind::Drop),
+            "the route walks down rather than stepping off: {:?}",
+            path.iter().map(|point| point.kind).collect::<Vec<_>>()
+        );
+        assert!(
+            path.iter()
+                .any(|point| point.position.x > PLAN_COST_LEDGE_X),
+            "the route does reach the lower floor"
+        );
+    }
+
+    /// The other half of the same rule: a fall the walk refused to plan
+    /// when there was a staircase is exactly what it plans once there is
+    /// not. Cost ordering makes a fall a last resort, never an unusable
+    /// edge.
+    #[test]
+    fn the_same_fall_is_planned_once_nothing_else_reaches_that_floor() {
+        let mut game = cost_game(false);
+        let path = path_through(&mut game);
+        assert!(
+            path.iter().any(|point| point.kind == EdgeKind::Drop),
+            "with no staircase the ledge is the only way down: {:?}",
+            path.iter().map(|point| point.kind).collect::<Vec<_>>()
+        );
+    }
+
+    /// A plan made for a player hanging on a ladder has to start where
+    /// they hang. Settling first would start it on the shaft floor far
+    /// below — a place they are not, cannot walk from, and only reach by
+    /// letting go.
+    #[test]
+    fn a_climber_plans_from_where_they_hang_not_from_the_floor_below() {
+        let game = ladder_game(true);
+        let collision = game.collision().expect("the fixture has collision");
+        let hanging = Vec3::new(80.0, 64.0, PLAN_LADDER_DROP / 2.0);
+        assert!(
+            ladder_face_yaw(collision, hanging).is_some(),
+            "the fixture's shaft has a climbable volume half-way up it"
+        );
+        assert_eq!(
+            plan_start(collision, hanging),
+            hanging,
+            "a climber's plan starts where they hang"
+        );
+        let settled = settle_start(collision, hanging);
+        assert!(
+            settled.z < hanging.z - PLAN_LADDER_DROP / 4.0,
+            "and settling would have started it far below, at {settled:?}"
+        );
+    }
+
+    /// Hanging on a ladder there is no horizontal edge at all: the
+    /// engine's ladder step turns every wished-for direction into motion
+    /// along the volume, so a planned step off it into open air is a line
+    /// the player cannot walk.
+    #[test]
+    fn a_hanging_climber_is_offered_no_horizontal_edge() {
+        let game = ladder_game(true);
+        let collision = game.collision().expect("the fixture has collision");
+        let bounds = EdgeBounds {
+            jump: JumpBounds::from_move_config(game.move_config()),
+            long_jump: None,
+            safe_drop: safe_drop_height(game.move_config()),
+            max_drop: survivable_drop_height(game.move_config(), game.player_health()),
+        };
+        let hanging = Vec3::new(80.0, 64.0, PLAN_LADDER_DROP / 2.0);
+        assert!(!standing_on_floor(collision, hanging), "nothing under them");
+        for (dx, dy) in DIRECTIONS {
+            let direction = Vec3::new(dx, dy, 0.0).normalize_or_zero();
+            assert!(
+                matches!(
+                    cross(collision, hanging, direction, bounds, true),
+                    Crossing::Blocked(_)
+                ),
+                "a hanging climber walks nowhere, tried {direction:?}"
+            );
+        }
+        assert!(
+            ladder_edge(collision, hanging, false, bounds.max_drop).is_some(),
+            "the climb itself is still there"
+        );
+
+        // Standing in the same volume with floor underfoot is the other
+        // case: that is the ladder's own foot, and stepping off it is how
+        // the walk leaves a shaft.
+        let foot = settle_start(collision, hanging);
+        assert!(standing_on_floor(collision, foot), "floor under them");
+        assert!(
+            DIRECTIONS.iter().any(|(dx, dy)| {
+                let direction = Vec3::new(*dx, *dy, 0.0).normalize_or_zero();
+                matches!(
+                    cross(collision, foot, direction, bounds, true),
+                    Crossing::Landed { .. }
+                )
+            }),
+            "a climber standing at the foot of a ladder can still walk off it"
+        );
+    }
+
+    /// A ladder is grabbed by stepping into its face, so a mount whose
+    /// reported facing is at right angles to the step is a hull corner
+    /// grazing the *side* of the volume — a place a climb starts from and
+    /// runs out at the first ledge beside the shaft. Such a landing is
+    /// only ever a fallback.
+    #[test]
+    fn a_mount_prefers_the_ladder_it_was_stepped_into() {
+        let east = Vec3::X;
+        assert!(mount_faces_the_step(0.0, east), "stepped straight into it");
+        assert!(
+            mount_faces_the_step(MOUNT_FACING_TOLERANCE - 1.0, east),
+            "a little off is still into it"
+        );
+        assert!(
+            !mount_faces_the_step(90.0, east),
+            "a facing at right angles to the step is a corner graze"
+        );
+        assert!(
+            !mount_faces_the_step(180.0, east),
+            "and one facing back the way they came is not a mount either"
+        );
+        let north = Vec3::Y;
+        assert!(mount_faces_the_step(90.0, north));
+        assert!(!mount_faces_the_step(0.0, north));
+    }
+
+    /// The mount is consulted where the step was *blocked*, not only where
+    /// it landed too far below to survive: a ladder down a hole beside a
+    /// wall is reached by walking into the wall, and its volume never
+    /// touches the floor the walk is standing on.
+    #[test]
+    fn a_blocked_step_toward_a_ladder_is_still_a_mount() {
+        let game = ladder_game(true);
+        let collision = game.collision().expect("the fixture has collision");
+        let bounds = EdgeBounds {
+            jump: JumpBounds::from_move_config(game.move_config()),
+            long_jump: None,
+            safe_drop: safe_drop_height(game.move_config()),
+            max_drop: survivable_drop_height(game.move_config(), game.player_health()),
+        };
+        // On the shaft floor, standing where a step west carries the hull
+        // part of the way to the shelf's own face and then stops against
+        // it. The climbable volume runs up that face: the ladder is
+        // reached by walking into the wall it is bolted to, and the step
+        // that walks into it lands nowhere at all.
+        let at_the_wall = settle_start(collision, Vec3::new(88.0, 64.0, 64.0));
+        let west = -Vec3::X;
+        assert!(
+            matches!(
+                try_edge(
+                    collision,
+                    Hull::Standing,
+                    at_the_wall,
+                    west,
+                    STEP_UP,
+                    CELL_SIZE
+                ),
+                EdgeOutcome::BlockedAcross(_)
+            ),
+            "the plain step west is blocked by the shelf"
+        );
+        let Crossing::Landed { landing, .. } = cross(collision, at_the_wall, west, bounds, false)
+        else {
+            panic!("the blocked step is offered as a mount instead");
+        };
+        assert!(
+            ladder_face_yaw(collision, landing).is_some(),
+            "and the mount lands on the ladder, at {landing:?}"
+        );
     }
 }
