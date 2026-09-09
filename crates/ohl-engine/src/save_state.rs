@@ -80,6 +80,7 @@ use serde::{Deserialize, Serialize};
 use crate::components::{MonsterMaker, Owner};
 use crate::ids::{entity_id, entity_of};
 use crate::level::Level;
+use crate::save::CarriedEntityDef;
 
 /// The most entities one `SECTION_ENTITY_COMBAT`/`SECTION_AI` section
 /// records. Both sections hold exactly one entry per
@@ -1291,6 +1292,58 @@ pub(crate) fn restore_train_handover_yaw(level: &mut Level, snapshots: &[Option<
         if let Ok(mut state) = level.registry.world.get::<&mut TrackTrainState>(*entity) {
             state.set_handover_yaw(*snapshot);
         }
+    }
+}
+
+// --- `SECTION_CARRIED_ENTITIES` (36) --------------------------------------
+
+/// The most entity definitions one `SECTION_CARRIED_ENTITIES` section
+/// records, matching `crate::transition::MAX_CARRIED_ENTITIES` — one
+/// transition cannot carry more than that, and a map can only accumulate
+/// them one transition at a time.
+pub const MAX_SNAPSHOT_CARRIED_DEFS: usize = crate::transition::MAX_CARRIED_ENTITIES;
+
+/// `SECTION_CARRIED_ENTITIES` (36)'s whole payload: the entity definitions a
+/// level change materialised in this level, in the order they were
+/// appended.
+///
+/// Everything past [`Level::map_defs`] — the map's own entity lump ends
+/// there, so anything after it arrived with the player. Empty for every
+/// level nothing was carried into, which is every cold load and most
+/// boundaries; the caller writes no section at all then.
+#[must_use]
+pub(crate) fn snapshot_carried_entities(level: &Level) -> Vec<CarriedEntityDef> {
+    level
+        .defs
+        .iter()
+        .skip(level.map_defs)
+        .take(MAX_SNAPSHOT_CARRIED_DEFS)
+        .map(|def| CarriedEntityDef {
+            keyvalues: def
+                .keyvalues
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        })
+        .collect()
+}
+
+/// Rebuilds every entity [`snapshot_carried_entities`] recorded, in the
+/// same order, through the same `crate::transition::materialise_carried`
+/// a level change uses.
+///
+/// Must run *before* any spawn-order-zipped section is applied and before
+/// the AI attaches this level, for the same reason
+/// `crate::ai::AiState::restore_maker_children` must: those sections are
+/// index-keyed against `Registry::entities`, and a freshly loaded map's
+/// list stops at the map's own last entity.
+pub(crate) fn restore_carried_entities(level: &mut Level, snapshots: &[CarriedEntityDef]) {
+    let limits = ohl_game::keyvalues::Limits::default();
+    for snapshot in snapshots.iter().take(MAX_SNAPSHOT_CARRIED_DEFS) {
+        let pairs: std::collections::BTreeMap<String, String> =
+            snapshot.keyvalues.iter().cloned().collect();
+        let def = ohl_game::keyvalues::parse_entity(&pairs, &limits);
+        crate::transition::materialise_carried(level, &def);
     }
 }
 

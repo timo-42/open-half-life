@@ -331,6 +331,132 @@ pub fn ai_room_bsp(entities: &str, interior_wall: bool) -> Vec<u8> {
     b.build()
 }
 
+/// The map name the two-leaf visibility fixture is published under.
+pub const PVS_MAP: &str = "ohlpvssynth";
+
+/// The map name that fixture's own `trigger_changelevel` names.
+pub const PVS_NEXT_MAP: &str = "ohlpvssynth2";
+
+/// Builds a wide, flat, closed room split into **two leaves** by the
+/// `x = 0` plane, with a hand-written visibility lump: leaf 1 (`x >= 0`)
+/// sees only itself and leaf 2 (`x < 0`) sees only itself.
+///
+/// The room is 2,048 units across, deliberately wider than
+/// `crate::transition::DEFAULT_CARRY_RADIUS`, so a test can place an entity
+/// *beyond* the radius and still inside the landmark's own leaf — the case
+/// the documented "inside the transition volume, or otherwise in the
+/// landmark's PVS" eligibility rule exists for, and the one a radius alone
+/// can never express. `visible_everywhere` writes the "every leaf sees every
+/// leaf" lump instead, for the counterpart case.
+///
+/// Project-authored geometry and visibility bits; no bytes here come from
+/// any game installation.
+#[must_use]
+pub fn pvs_room_bsp(entities: &str, visible_everywhere: bool) -> Vec<u8> {
+    const HALF: f32 = 1024.0;
+    const HEIGHT: f32 = 256.0;
+
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(entities);
+
+    b.push_plane([0.0, 0.0, 1.0], 0.0, 2);
+    b.push_plane([1.0, 0.0, 0.0], 0.0, 0);
+    let split_plane = 1u32;
+    b.push_edge(0, 0);
+
+    b.add_embedded_texture("ohlfloor", 64, 64, 210);
+
+    let floor: [[f32; 3]; 4] = [
+        [-HALF, -HALF, 0.0],
+        [HALF, -HALF, 0.0],
+        [HALF, HALF, 0.0],
+        [-HALF, HALF, 0.0],
+    ];
+    for corner in floor {
+        b.push_vertex(corner);
+    }
+    for corner in 0..4u16 {
+        b.push_edge(corner, (corner + 1) % 4);
+    }
+    for step in 0..4 {
+        b.push_surfedge(1 + step);
+    }
+    b.push_texinfo([1.0, 0.0, 0.0], 0.0, [0.0, 1.0, 0.0], 0.0, 0, 0);
+    let offset = i32::try_from(b.lighting.len()).expect("fits");
+    for sample in 0..900 {
+        let level = 96 + u8::try_from((sample * 7) % 128).unwrap_or(0);
+        b.push_lighting_rgb(level, level, level);
+    }
+    b.push_face(0, 0, 0, 4, 0, [0, 0xFF, 0xFF, 0xFF], offset);
+    b.push_marksurface(0);
+
+    // One decompressed row per leaf, one byte each (three leaves fit in a
+    // byte). Bit `n` of a row names leaf `n + 1`, the lump's own
+    // leaf-1-based bit numbering: `0b01` is "sees leaf 1", `0b10` is "sees
+    // leaf 2". Leaf 1's row is at offset 0 and leaf 2's at offset 1.
+    if visible_everywhere {
+        b.visibility.push(0b0000_0011);
+        b.visibility.push(0b0000_0011);
+    } else {
+        b.visibility.push(0b0000_0001);
+        b.visibility.push(0b0000_0010);
+    }
+
+    let extent: i16 = 1024;
+    let height: i16 = 256;
+    b.push_leaf(-2, -1, [0, 0, 0], [0, 0, 0], 0, 0, [0, 0, 0, 0]);
+    b.push_leaf(
+        -1,
+        0,
+        [-extent, -extent, 0],
+        [extent, extent, height],
+        0,
+        1,
+        [0, 0, 0, 0],
+    );
+    b.push_leaf(
+        -1,
+        1,
+        [-extent, -extent, 0],
+        [extent, extent, height],
+        0,
+        1,
+        [0, 0, 0, 0],
+    );
+    // Front child (the `x >= 0` side) is leaf 1, back child leaf 2.
+    b.push_node(
+        split_plane,
+        -2,
+        -3,
+        [-extent, -extent, 0],
+        [extent, extent, height],
+        0,
+        2,
+    );
+
+    let brushes = vec![
+        CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+        CollisionBrush::half_space([0.0, 0.0, -1.0], -HEIGHT),
+        CollisionBrush::half_space([-1.0, 0.0, 0.0], -HALF),
+        CollisionBrush::half_space([1.0, 0.0, 0.0], -HALF),
+        CollisionBrush::half_space([0.0, -1.0, 0.0], -HALF),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], -HALF),
+    ];
+    let head_nodes = b.push_collision_hulls(&brushes);
+
+    b.push_model(
+        [-HALF, -HALF, 0.0],
+        [HALF, HALF, HEIGHT],
+        [0.0, 0.0, 0.0],
+        head_nodes,
+        1,
+        0,
+        1,
+    );
+
+    b.build()
+}
+
 /// The map name the touch-trigger fixture is published under.
 pub const TOUCH_DOOR_MAP: &str = "ohltouchdoorsynth";
 
