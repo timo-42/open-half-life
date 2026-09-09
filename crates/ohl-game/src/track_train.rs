@@ -406,6 +406,23 @@ pub struct TrackTrainState {
     /// car by the whole distance between two tracks the moment a
     /// `func_trackchange` handed it over.
     first_node: Vec3,
+    /// A heading, in degrees, this train arrived with from another map,
+    /// used only when its own chain cannot define one at all.
+    ///
+    /// A `func_tracktrain` faces along the segment it is on, and
+    /// [`Self::yaw_degrees`] already keeps the heading of the last segment
+    /// travelled for a train parked at the end of a chain. Neither works
+    /// for a chain with *one* node: a map that ends a shared ride parks
+    /// its own copy of the car on a single `path_track` and never moves it
+    /// again, so there is no segment anywhere in that chain to measure a
+    /// heading from, and the car would be posed unrotated — across the
+    /// track its compiled geometry was authored along. The only place a
+    /// heading can come from then is the map the car arrived from, which
+    /// is what this carries. `None` for every train that was not handed
+    /// across a level change, and ignored the moment the chain does define
+    /// a heading of its own. See `ohl_engine::transition`'s
+    /// `TrackTrainCarry::yaw`.
+    handover_yaw: Option<f32>,
     /// This train's own `speed` keyvalue — the speed it runs at when it
     /// is started from rest, before any `path_track` "New Train Speed"
     /// override reassigns [`Self::speed`]. Map data, rebuilt identically
@@ -442,6 +459,7 @@ impl TrackTrainState {
             dead_end_fired: false,
             carry_offset: Vec3::ZERO,
             carry_yaw: 0.0,
+            handover_yaw: None,
             first_node,
             cruise_speed: train.speed,
         }
@@ -471,6 +489,27 @@ impl TrackTrainState {
         } else {
             0.0
         };
+    }
+
+    /// The heading this train arrived with from another map, when it has
+    /// one; see [`Self::handover_yaw`]'s own documentation.
+    ///
+    /// Read by `ohl_engine`'s `SECTION_TRAIN_HANDOVER_YAW` (tag 35), which
+    /// persists it: for a car parked on a single-node chain it is the
+    /// *only* heading that car has, so a save that dropped it would reload
+    /// the car unrotated — and a passenger standing on it would be
+    /// standing beside it instead.
+    #[must_use]
+    pub fn handover_yaw(&self) -> Option<f32> {
+        self.handover_yaw
+    }
+
+    /// Records the heading this train arrived with from another map, used
+    /// only when its own chain cannot define one; see
+    /// [`Self::handover_yaw`]'s own documentation. A non-finite value is
+    /// discarded rather than stored.
+    pub fn set_handover_yaw(&mut self, yaw_degrees: Option<f32>) {
+        self.handover_yaw = yaw_degrees.filter(|yaw| yaw.is_finite());
     }
 
     /// Puts this train on `chain`, at its first node, facing along its
@@ -575,16 +614,25 @@ impl TrackTrainState {
         if !train.turns_to_face {
             return None;
         }
+        // A chain that defines no heading at all — a single-node chain, or
+        // a purely vertical hop — falls back to whatever heading this train
+        // arrived with from another map, and to nothing when it did not
+        // arrive from one. See [`Self::handover_yaw`].
         if let Some(other) = self.other_index() {
-            let after = Self::yaw_from_direction(
+            let Some(after) = Self::yaw_from_direction(
                 self.chain.nodes[other].position - self.chain.nodes[self.node_index].position,
-            )?;
+            ) else {
+                return self.handover_yaw;
+            };
             Some(self.blend_yaw_after_node(train, other, after))
         } else {
-            let last = self.previous_node_index()?;
+            let Some(last) = self.previous_node_index() else {
+                return self.handover_yaw;
+            };
             Self::yaw_from_direction(
                 self.chain.nodes[self.node_index].position - self.chain.nodes[last].position,
             )
+            .or(self.handover_yaw)
         }
     }
 
@@ -1789,6 +1837,7 @@ mod tests {
                 dead_end_fired: false,
                 carry_offset: Vec3::ZERO,
                 carry_yaw: 0.0,
+                handover_yaw: None,
                 first_node: Vec3::ZERO,
                 cruise_speed: speed,
             };

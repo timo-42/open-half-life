@@ -1911,6 +1911,75 @@ at the end of this section.
   ground brush on the very first step. Project-owned and `TODO(black-box)`,
   like the nudge it reuses.
 
+  *Crossing a boundary aboard a mover (M9.25).* The documented placement
+  rule for a `trigger_changelevel` is the landmark offset (see "Campaign
+  flow" above): the arriving player keeps the offset from the destination's
+  `info_landmark` they had from the source map's own. That rule assumes
+  whatever they were standing on sits in the same place relative to the
+  landmark in both maps — true of world geometry, and false of a shared
+  ride, whose destination copy is placed by the destination map's own
+  `path_track` chain (`ohl_engine::transition`'s `restore_track_train`,
+  itself built on the `path_track` `targetname` correlation documented
+  under "Track trains and paths"). Nothing public states what an engine
+  does with a passenger who is aboard a mover at the instant of a level
+  change, so this is **project-determined**, `TODO(black-box)`: when the
+  player's ground brush is a *ride* — an entity carrying a
+  `TrackTrainState`, i.e. a `func_train`/`func_tracktrain` — their seat
+  *relative to that ride* is what crosses, expressed in the ride's own
+  frame (the offset from `ohl_game::pose::brush_center`, turned back
+  through the yaw `ohl_game::pose::track_train_transform` reports — the
+  same single pose answer the renderer, the collision hull and the ride
+  velocity already read, per "One transform for everything" above), and it
+  takes precedence over the raw offset. Only a ride qualifies, because a
+  train is the one brush entity whose placement comes from a `path_track`
+  chain rather than from where its geometry was compiled: every other
+  mover is placed by its own compiled bounds plus its `origin` keyvalue in
+  the destination's own coordinates, which is what the landmark offset
+  already agrees with. It is a precedence rule, not a replacement: a
+  player on world geometry, on a non-ride brush entity, on a ride the
+  destination map does not declare, or crossing a boundary with no
+  landmark at all is placed exactly as before.
+  `ohl_engine::transition::RiderSeat`.
+
+  The heading such a ride was handed over with is *save state*
+  (`ohl_engine::save::SECTION_TRAIN_HANDOVER_YAW`, tag 35): for a car
+  parked on a single-node chain it is the only heading that car has, so a
+  save that dropped it would reload the car unrotated and leave the
+  passenger standing beside it. A new tag rather than a field on the
+  frozen tag 28, per this project's own save-compatibility rule.
+
+  *An arrival the offset lands in solid (M9.25).* A landmark-relative
+  arrival deliberately gets no settle, so that a boundary whose two maps
+  line up is a no-op for the physics state — except when the offset put
+  the standing hull inside solid, which is not a state the offset rule can
+  preserve anyway: `categorize_position` reports no ground brush while
+  `start_solid` holds, no traced move out of solid succeeds, and the
+  player is frozen where they landed rather than standing at an offset
+  from anything. `ohl_physics::settle_if_embedded` runs the same bounded
+  upward nudge and step as `settle_at_spawn`, and *only* when that
+  embedded test fails, so every arrival that is not embedded is left
+  bit-for-bit where the offset put it. An arrival that is solid all the
+  way through the bound is still left alone, exactly as
+  `unstick_from_ground` leaves it. Project-owned and `TODO(black-box)`,
+  like the nudge and the spawn-time settle it reuses.
+
+  *A ride that ends in the destination (M9.25).* A `func_tracktrain` faces
+  along the segment it is on, and `TrackTrainState::yaw_degrees` already
+  keeps the heading of the last segment travelled for a train parked at
+  the end of a chain (see "Track trains and paths"). Neither rule can say
+  anything about a chain of *one* node, which is how a map that **ends** a
+  shared ride authors its own copy of the car: parked at the station, with
+  no segment anywhere in its chain. Such a car has no heading of its own
+  and would be posed unrotated — across the track its geometry was
+  compiled along — so a passenger arriving in their seat lands beside it
+  rather than on it. Nothing public states what an engine does here, so
+  this project carries the heading the ride arrived with
+  (`ohl_engine::transition::TrackTrainCarry::yaw` and `RiderSeat::yaw`,
+  applied through `TrackTrainState::set_handover_yaw`) and uses it
+  strictly as the last fallback: any chain that defines a heading at all
+  still wins, so this changes nothing for a ride that continues.
+  Project-determined, `TODO(black-box)`.
+
 ### Black-box placeholders
 
 These have no reachable public source and are neutral defaults, each marked

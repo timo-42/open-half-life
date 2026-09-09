@@ -95,7 +95,7 @@ pub use text::{AssetPath, MessageBlock, SentenceLookup, TitleLibrary};
 pub use tick::{MAX_TICKS_PER_FRAME, TICK_SECONDS, TickClock};
 pub use transition::{
     DEFAULT_CARRY_RADIUS, DefaultPlayerCarry, GlobalStateTable, PlayerCarry, PlayerCarryState,
-    TransitionState,
+    RiderSeat, TransitionState,
 };
 
 /// How far the mouse turns the player, in degrees per pixel.

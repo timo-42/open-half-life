@@ -357,6 +357,92 @@ pub struct TrackTrainCarry {
     pub moving: bool,
     /// Seconds left in a `path_track`'s `wait` pause.
     pub wait_timer: f32,
+    /// The heading, in degrees, the source map's copy of the train was
+    /// posed at, when it had one.
+    ///
+    /// A `func_tracktrain` faces along the segment it is on, so this is
+    /// normally the destination map's own business — and it is left as
+    /// such whenever the destination's chain defines a heading at all. A
+    /// map that *ends* a shared ride, though, parks its own copy of the
+    /// car on a single `path_track` and never moves it again: that chain
+    /// has no segment anywhere in it, so the car has no heading of its own
+    /// and would be posed unrotated, across the track its compiled
+    /// geometry was authored along, dropping the arriving passenger
+    /// through the floor of a car that is no longer under them. The only
+    /// place a heading can come from then is the map the ride arrived
+    /// from. Applied only as that last fallback; see
+    /// `ohl_game::track_train::TrackTrainState::set_handover_yaw`.
+    #[serde(default)]
+    pub yaw: Option<f32>,
+}
+
+/// Where the player was sitting or standing *on a ride* at the instant a
+/// level change fired, expressed in that ride's own frame.
+///
+/// The documented placement rule for a transition is the landmark offset
+/// (`docs/FORMAT_SOURCES.md`, "Campaign flow"): the arriving player keeps
+/// the offset from the destination's `info_landmark` they had from the
+/// source map's own. That rule assumes the thing they were standing on is
+/// in the same place relative to the landmark in both maps, which is true
+/// of world geometry and false of a `func_tracktrain`: the destination's
+/// copy of a shared ride is placed by its *own* `path_track` chain (see
+/// [`restore_track_train`]), whose head sits wherever that map's author put
+/// it and points along whatever heading that map's first segment has.
+/// Applying the landmark offset to a rider therefore moves them by however
+/// far the two chains disagree — measured on the campaign's own tram
+/// boundaries as tens of units and around a dozen degrees, which is enough
+/// to put a passenger through the car's interior wall.
+///
+/// So when the player's ground brush at the moment of the change *is* such
+/// a ride, this project carries their seat relative to it instead, and the
+/// arrival is placed from wherever the destination's own copy of it ends
+/// up. The seat is recorded in the ride's frame — the offset from its posed
+/// centre (`ohl_game::pose::brush_center`), turned back through the ride's
+/// own yaw (`ohl_game::pose::track_train_transform`) — so a destination car
+/// facing a different way seats the passenger in the same part of the car
+/// rather than the same part of the world.
+///
+/// **Only a ride qualifies**, meaning an entity carrying a
+/// [`TrackTrainState`] (`func_train`/`func_tracktrain`). That is not a
+/// convenience restriction: a train is the one brush entity whose placement
+/// comes from a `path_track` chain rather than from where its geometry was
+/// compiled. Every other mover — a `func_door`, `func_plat`, `func_wall` —
+/// is placed by its own compiled bounds plus its `origin` keyvalue in the
+/// destination map's own coordinates, which is exactly what the landmark
+/// offset already agrees with, so measuring against one instead would
+/// replace a rule that works with one that merely happens to. A player
+/// standing on any of those keeps the documented offset.
+///
+/// Project-determined, `TODO(black-box)`: no public page states what an
+/// engine does with a passenger aboard a mover at a level change. It is a
+/// *precedence* rule over the documented offset, not a replacement — a
+/// player standing on world geometry, on a non-ride brush entity, or on a
+/// ride the destination map does not declare, is placed by the landmark
+/// offset exactly as before. Recorded in `docs/FORMAT_SOURCES.md` under
+/// "Riding movers".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RiderSeat {
+    /// The ridden ride's `globalname`, the documented cross-level
+    /// correlation key, when it has one.
+    pub globalname: Option<String>,
+    /// The ridden entity's `targetname`, used when it has no `globalname`.
+    pub targetname: Option<String>,
+    /// The player's origin minus the mover's posed centre, turned back
+    /// through the mover's own yaw so it is expressed in the mover's frame.
+    pub seat: [f32; 3],
+    /// The heading, in degrees, the ridden mover itself was posed at.
+    ///
+    /// Needed because the destination's copy of a ride that *ends* there
+    /// is parked on a single `path_track` and so has no segment to take a
+    /// heading from at all (see
+    /// `ohl_game::track_train::TrackTrainState::set_handover_yaw`): it
+    /// would be posed unrotated, across the track its geometry was
+    /// authored along, and the seat computed against it would be nowhere
+    /// near its floor. The car a passenger arrives on therefore faces the
+    /// way it faced when they boarded it, and only when its own chain
+    /// cannot say otherwise.
+    #[serde(default)]
+    pub yaw: Option<f32>,
 }
 
 /// One entity travelling to the next map.
@@ -484,6 +570,10 @@ pub struct TransitionState {
     pub globals: GlobalStateTable,
     /// The source map's modified door/button/platform states.
     pub movers: Vec<MoverSnapshot>,
+    /// Where the player was standing on a carried mover, when they were.
+    /// Takes precedence over [`Self::player_offset`]; see [`RiderSeat`].
+    #[serde(default)]
+    pub rider: Option<RiderSeat>,
 }
 
 /// Whether `entity` is one of the entities a transition never carries: the
@@ -521,6 +611,11 @@ fn entity_position(registry: &Registry, entity: Entity) -> Option<Vec3> {
 /// with it).
 fn capture_track_train(registry: &Registry, entity: Entity) -> Option<TrackTrainCarry> {
     let state = registry.world.get::<&TrackTrainState>(entity).ok()?;
+    let yaw = registry
+        .world
+        .get::<&TrackTrain>(entity)
+        .ok()
+        .and_then(|train| state.yaw_degrees(&train));
     let (node_index, t, direction, speed, moving, wait_timer) = state.dynamic_state();
     let node_entity = state.chain().nodes.get(node_index)?.entity;
     let node = registry
@@ -536,6 +631,7 @@ fn capture_track_train(registry: &Registry, entity: Entity) -> Option<TrackTrain
         speed,
         moving,
         wait_timer,
+        yaw,
     })
 }
 
@@ -621,7 +717,48 @@ fn restore_track_train(registry: &mut Registry, entity: Entity, carry: &TrackTra
         carry.moving,
         carry.wait_timer,
     );
+    // Only as a last fallback: `yaw_degrees` uses it exactly when the
+    // destination's own chain defines no heading anywhere. See
+    // [`TrackTrainCarry::yaw`].
+    state.set_handover_yaw(carry.yaw);
     registry.world.insert_one(entity, state).ok();
+}
+
+/// The yaw, in degrees, `ohl_game::pose::brush_pose_rotation` poses
+/// `entity`'s collision hull and drawn geometry at — a `func_tracktrain`'s
+/// segment heading, and `0.0` for any mover that carries no yaw of its own.
+/// The one number a seat has to be expressed against so that a destination
+/// map's copy of a ride, pointing a different way, still seats a passenger
+/// in the same part of the car.
+fn mover_yaw_degrees(registry: &Registry, entity: Entity) -> f32 {
+    ohl_game::pose::track_train_transform(registry, entity)
+        .1
+        .unwrap_or(0.0)
+}
+
+/// `offset` turned about the world up axis by `degrees`, matching
+/// `ohl_game::registry::movedir_from_angles`' convention (the same one
+/// `TrackTrainState::yaw_degrees` reports in).
+fn turn_about_z(offset: Vec3, degrees: f32) -> Vec3 {
+    glam::Quat::from_rotation_z(degrees.to_radians()) * offset
+}
+
+/// `origin` expressed in `entity`'s own posed frame: the offset from its
+/// centre, turned back through its yaw. `None` for an entity with no brush
+/// centre (a point entity, or one whose submodel bounds were unavailable).
+fn seat_in_mover_frame(registry: &Registry, entity: Entity, origin: Vec3) -> Option<Vec3> {
+    let center = ohl_game::pose::brush_center(registry, entity)?;
+    Some(turn_about_z(
+        origin - center,
+        -mover_yaw_degrees(registry, entity),
+    ))
+}
+
+/// The inverse of [`seat_in_mover_frame`]: where a seat recorded in one
+/// map's copy of a mover lands on another map's copy of it.
+fn seat_to_world(registry: &Registry, entity: Entity, seat: Vec3) -> Option<Vec3> {
+    let center = ohl_game::pose::brush_center(registry, entity)?;
+    Some(center + turn_about_z(seat, mover_yaw_degrees(registry, entity)))
 }
 
 /// The `trigger_transition` volumes named after `landmark`.
@@ -652,6 +789,12 @@ impl TransitionState {
     /// that needs no placement (mover states, globals, and entities the
     /// destination correlates by `globalname`/`targetname`) still travels.
     #[must_use]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "every argument is one independent piece of what a level \
+                  change carries; bundling them into a struct would only move \
+                  the same list to the call site"
+    )]
     pub(crate) fn capture(
         level: &Level,
         landmark: &str,
@@ -660,6 +803,7 @@ impl TransitionState {
         pitch: f32,
         player: PlayerCarryState,
         globals: &GlobalStateTable,
+        ridden: Option<Entity>,
     ) -> Self {
         let origin = level.landmark_origin(landmark);
         let registry = &level.registry;
@@ -667,6 +811,11 @@ impl TransitionState {
 
         let mut entities = Vec::new();
         let mut movers = Vec::new();
+        // The ride the player was standing on at the instant of the
+        // change, if they were standing on one; see [`RiderSeat`] for what
+        // qualifies and why, and the capture below for why it is recorded
+        // ahead of the entity-eligibility rules rather than under them.
+        let mut rider = None;
         for entity in &registry.entities {
             let entity = *entity;
             let Some(classname) = registry
@@ -691,6 +840,33 @@ impl TransitionState {
                 .ok()
                 .map(|name| name.0.clone());
             let snapshot = EntitySnapshot::capture(registry, entity);
+
+            // The player's own seat, recorded *before* the eligibility
+            // rules below: those decide which entities travel, and this is
+            // not one — it is part of the player's own placement, and the
+            // player always travels. All the destination needs to
+            // reproduce it is a counterpart of the same name. (The ride
+            // this campaign's last boundary hands over sits well outside
+            // the landmark's carry radius, so gating the seat on
+            // eligibility would lose exactly the case it exists for.)
+            //
+            // Restricted to a *ride* — an entity with a
+            // [`TrackTrainState`], i.e. a `func_train`/`func_tracktrain` —
+            // and not to any named brush the player happens to stand on;
+            // see [`RiderSeat`] for why that is the whole of the rule's
+            // justification.
+            if ridden == Some(entity)
+                && registry.world.get::<&TrackTrainState>(entity).is_ok()
+                && (targetname.is_some() || globalname.is_some())
+                && let Some(seat) = seat_in_mover_frame(registry, entity, eye)
+            {
+                rider = Some(RiderSeat {
+                    globalname: globalname.clone(),
+                    targetname: targetname.clone(),
+                    seat: seat.to_array(),
+                    yaw: Some(mover_yaw_degrees(registry, entity)),
+                });
+            }
 
             if let Some(name) = targetname.clone()
                 && snapshot.is_modified_mover()
@@ -746,6 +922,7 @@ impl TransitionState {
             entities,
             globals: globals.clone(),
             movers,
+            rider,
         }
     }
 
@@ -796,7 +973,53 @@ impl TransitionState {
             level.registry.world.despawn(entity).ok();
         }
 
-        self.player_position(origin)
+        // A rider's seat on a mover that travelled with them takes
+        // precedence over the raw landmark offset; see [`RiderSeat`]. Only
+        // once the destination's copy of that mover has been put where the
+        // source's was (the loops above), and only when the landmark
+        // placement this replaces exists at all — a boundary with no
+        // landmark keeps its documented `info_player_start` fallback.
+        self.rider_position(&mut level.registry, origin)
+            .or_else(|| self.player_position(origin))
+    }
+
+    /// Where the arriving player's seat on a carried mover lands in the
+    /// destination map, or `None` when they were not riding one, when the
+    /// destination declares no counterpart for it, or when this boundary
+    /// has no landmark placement for the rule to take precedence over.
+    ///
+    /// The counterpart is looked up by `globalname` first — the documented
+    /// cross-level correlation key — and by `targetname` only when the
+    /// ridden entity carried no `globalname`, which is the same order
+    /// [`Self::place`] applies a carried entity's own state in.
+    fn rider_position(&self, registry: &mut Registry, origin: Option<Vec3>) -> Option<Vec3> {
+        if origin.is_none() || self.player_offset.is_none() {
+            return None;
+        }
+        let rider = self.rider.as_ref()?;
+        let entity = if let Some(globalname) = rider.globalname.as_ref() {
+            let mut found = None;
+            for (entity, name) in &mut registry.world.query::<(Entity, &GlobalName)>() {
+                if &name.0 == globalname {
+                    found = Some(entity);
+                    break;
+                }
+            }
+            found
+        } else {
+            registry.find(rider.targetname.as_deref()?).first().copied()
+        }?;
+        // The car a passenger arrives on faces the way it faced when they
+        // boarded it, and only when its own chain cannot say otherwise —
+        // otherwise the seat below is measured against a car posed across
+        // its own track. See [`RiderSeat::yaw`].
+        if let Ok(mut state) = registry.world.get::<&mut TrackTrainState>(entity)
+            && let Ok(train) = registry.world.get::<&TrackTrain>(entity)
+            && state.yaw_degrees(&train).is_none()
+        {
+            state.set_handover_yaw(rider.yaw);
+        }
+        seat_to_world(registry, entity, Vec3::from_array(rider.seat))
     }
 
     /// The player's world position in the destination, which needs both a

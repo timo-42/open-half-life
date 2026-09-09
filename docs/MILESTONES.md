@@ -5278,13 +5278,6 @@ chain head is offset the other way would still lose them; the underlying
 gaps (the ~26-unit chain-head offset and the ~14-degree heading difference
 at that boundary) are unchanged.
 
-The other 64 ticks are the fourth route's arrival: a landmark-relative
-placement deliberately gets no settle, so the passenger falls about a
-second onto the destination car rather than starting on it. Settling a
-landmark-relative arrival would mean giving up the property that a boundary
-is a no-op for the physics state, so it is not done here; if that second is
-ever worth closing it wants its own argument, not this milestone's.
-
 ## M9.24 (Rust): the chain walk reaches the opening chapter's last interior map
 
 The chain walk stood at distinct depth 5 (four routes, four level changes).
@@ -5325,13 +5318,13 @@ arrival point confirms it independently: round 0 reports exactly one
 reachable cell, nothing on the frontier, and the map's own
 `trigger_changelevel` roughly 5,200 units away and unreachable.
 
-**Classification: placement.** This is the same family of bug M9.21 fixed
+**Classification: placement.** This is the same family of bug M9.23 fixed
 (a spawn/arrival hull embedded in solid, which `categorize_position`'s
 ground probe can never resolve and which no trace can recover from), but
-at a boundary M9.21 deliberately left unsettled: the arrival here is
+at a boundary M9.23 deliberately left unsettled: the arrival here is
 landmark-relative, and `Game::from_level`'s settle-at-spawn nudge is only
 ever applied to an `info_player_start` placement (a fresh load, or a
-transition's landmark-less fallback) — see M9.21's own note that a
+transition's landmark-less fallback) — see M9.23's own note that a
 landmark-relative arrival "must stay a pure offset" so that a boundary
 that lines the maps up exactly is a no-op for the physics state. At this
 particular boundary the offset instead lines the player up inside static
@@ -5345,4 +5338,124 @@ route file.
 
 **Gates**: fmt, `cargo test -p xtask`, policy, combat-smoke 37/37,
 `cargo xtask chain-walk` (distinct depth 6, five level changes, no
+re-entry).
+
+## M9.25 (Rust): a passenger crosses a boundary in their seat, not at an offset
+
+M9.23 settled a player the map spawns inside a mover; M9.24 then found the
+next two arrivals still placing them badly and classified both as
+"placement". This milestone fixes the placement rule itself. Measured with a
+per-tick probe (local, uncommitted, reverted before committing: player
+origin, velocity, `on_ground`, `PlayerState::ground_brush` resolved back to
+its entity, the ridden car's posed centre/heading/chain state, and a
+zero-length trace's `start_solid`/`all_solid`/`brush_index` at the player's
+own standing-hull origin).
+
+**The rule.** `ohl_engine::transition::RiderSeat`: when the player's ground
+brush at the instant of a `trigger_changelevel` is a named *ride* (an entity
+carrying a `TrackTrainState`, i.e. a `func_train`/`func_tracktrain`), their
+*seat relative to that ride* is what crosses, and it takes precedence over
+the documented landmark offset. Only a ride qualifies, and that is the whole
+of the rule's justification: a train is the one brush entity whose placement
+comes from a `path_track` chain rather than from where its geometry was
+compiled, so it is the only one the landmark offset can disagree with. Every
+other mover is placed by its own compiled bounds plus its `origin` keyvalue
+in the destination map's own coordinates, which is exactly what the offset
+already agrees with, so a player standing on a named `func_door`,
+`func_plat` or `func_wall` keeps the documented offset. The seat is recorded in the mover's own
+frame — the offset from its posed centre (`ohl_game::pose::brush_center`),
+turned back through the mover's own yaw
+(`ohl_game::pose::track_train_transform`) — so a destination copy of the
+ride that faces a different way still seats the passenger in the same part
+of the car.
+
+Why the offset alone cannot do it: it assumes whatever the player stood on
+sits in the same place relative to the landmark in both maps. That is true
+of world geometry and false of a shared ride, whose destination copy is
+placed by the destination map's own `path_track` chain
+(`restore_track_train`). On this campaign's tram boundaries the two chains
+disagree by tens of units and about a dozen degrees, which was enough to
+push a passenger through the car's interior wall. The seat is captured
+*before* the transition-volume/radius eligibility test, deliberately: that
+test decides which entities travel, and a seat is not an entity — it is part
+of the player's own placement, and the player always travels. All the
+destination needs to reproduce it is a counterpart of the same name.
+
+A player standing on world geometry, on a mover the destination map does not
+declare, or crossing a boundary with no landmark at all is placed exactly as
+before.
+
+**A ride that ends in the destination.** The last map of a shared ride parks
+its own copy of the car on a chain of exactly **one** `path_track` — no
+segment anywhere in it, so `TrackTrainState::yaw_degrees` has neither a
+segment ahead nor a segment behind to measure from and the car is posed
+*unrotated*, across the track its geometry was compiled along. Measured on
+the real boundary: the source car reported a heading of -90 degrees, the
+destination's copy reported none, and the arriving passenger's seat landed
+in open air with nothing within 256 units below them. The heading the ride
+arrived with is therefore carried
+(`TrackTrainCarry::yaw`/`RiderSeat::yaw` -> `set_handover_yaw`) and used
+strictly as `yaw_degrees`' last fallback: any chain that defines a heading
+at all still wins, so a ride that continues is unaffected.
+
+That heading is **save state**, and gets its own section:
+`SECTION_TRAIN_HANDOVER_YAW` (tag **35**), one optional `f32` per registry
+entity in spawn order. For a car parked on a single-node chain it is the
+only heading that car has, and it is load-bearing *player* placement — a
+quicksave taken on that arrival and reloaded would otherwise pose the car
+unrotated and drop the passenger through where its floor used to be, which
+is the same bug this milestone fixes, one save later. A new tag rather than
+a field on `TrackTrainSnapshot`: tag 28 is shipped and frozen at its own
+wire shape, so new persisted state always gets its own optional tag (tag 32
+stays reserved for `ohl-player`). Absent, the section reads as `None` and a
+save written before M9.25 loads exactly as it did.
+
+**And the embedded case.** `ohl_physics::settle_if_embedded`: a
+landmark-relative arrival still gets no nudge — unless the offset put the
+standing hull *inside* solid, which is not an offset the physics state can
+carry across at all (no ground brush resolves while `start_solid` holds, and
+no traced move out of solid succeeds, so the player is frozen where they
+landed rather than standing at an offset from anything). Only then, and only
+with the same bounded upward nudge and step a landing already uses
+(`UNSTICK_MAX_NUDGE`/`UNSTICK_STEP`), followed by `settle_at_spawn`'s
+immediate `categorize_position`. Every boundary that lines up is left
+bit-for-bit where the offset put it, which the new tests pin directly.
+
+**Result.** Per-route aboard fraction over `cargo xtask chain-walk` (ticks
+with a `func_tracktrain` as the ground brush, over ticks run; the missing
+tick in each is the level-change tick itself):
+
+| route | before | after |
+|---|---|---|
+| 0 | 2309/2310 | 2309/2310 |
+| 1 | 2601/2602 | 2601/2602 |
+| 2 | 5144/5145 | 5144/5145 |
+| 3 | 4015/4016 | **4015/4016** |
+| 4 | **0/3261** | **3260/3261** |
+
+The passenger used to arrive in the fifth map beside the ride and stand
+there for the whole 54 seconds; they now arrive in their seat and ride it to
+the station. The sixth map's arrival, which M9.24 recorded as a hull
+embedded in *world* solid (`start_solid`, `all_solid`, `brush_index = None`,
+one reachable cell, its `trigger_changelevel` ~5,200 units away and a
+vertical scan finding no free standing offset anywhere in the 512 units
+above), is gone with it: the passenger now arrives standing on that map's
+own parked car, alive, with **eleven** reachable cells and the
+`trigger_changelevel` ~630 units away.
+
+**Next.** Depth is unchanged at **6**: no `c0a0-hop5.txt` was authored,
+because there is still no honest route out of the sixth map's arrival. The
+blocker is no longer placement. The passenger arrives aboard the parked car
+and the reachability walk's frontier is the ride itself — a `func_train`
+whose bounds are a single door-leaf-shaped brush on a three-node chain, and
+the map's own `func_tracktrain`. Nothing fires either in a 150-second wait,
+and the map declares no `func_door` at all, so the car's own sliding door
+never opens and the passenger cannot step out. That is a
+trigger/carry-sequencing question — the ride is handed over already stopped
+on its single node, so whatever the map keys its arrival sequence off never
+happens — and it is recorded here rather than guessed at.
+
+**Gates**: fmt, clippy (workspace/all-features and no-default),
+`cargo test --workspace`, policy, graph, combat-smoke 37/37, campaign-smoke
+93/93, `cargo xtask chain-walk` (distinct depth 6, five level changes, no
 re-entry).

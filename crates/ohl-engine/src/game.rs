@@ -1195,7 +1195,26 @@ impl Game {
             // existed; see `Systems::capture_carry`'s doc comment.
             self.systems.capture_carry(),
             &self.globals,
+            self.ridden_entity(),
         )
+    }
+
+    /// The brush entity the walking player is standing on right now, or
+    /// `None` while airborne or standing on worldspawn geometry.
+    ///
+    /// Exactly the lookup [`Self::ground_mover_speed`] keys off — the
+    /// physics step's own [`ohl_physics::PlayerState::ground_brush`],
+    /// resolved back to its registry entity through
+    /// [`crate::level::Level::brush_collision`] — so "the player is riding
+    /// this mover" means the same thing here as it does to the ride
+    /// velocity they are actually being carried at.
+    fn ridden_entity(&self) -> Option<ohl_game::hecs::Entity> {
+        let brush = self.controller.state.ground_brush?;
+        self.level
+            .brush_collision
+            .iter()
+            .find(|(_, id)| *id == brush)
+            .map(|(entity, _)| *entity)
     }
 
     /// Loads `map` and applies `transition` to it, placing the player (and
@@ -1289,6 +1308,20 @@ impl Game {
             });
             self.controller =
                 PlayerController::spawn_at(position, transition.yaw, transition.pitch);
+            // A landmark-relative arrival stays a pure offset — except when
+            // the offset put the player *inside* solid, which is not an
+            // offset the physics state can carry across at all: no ground
+            // brush resolves while `start_solid` holds, and no traced move
+            // out of solid succeeds, so they are frozen where they landed.
+            // `ohl_physics::settle_if_embedded` runs the same bounded
+            // upward nudge a spawn (and a landing) already uses, and only
+            // when that test fails, so every boundary whose two maps line
+            // up is left bit-for-bit where the offset put it.
+            if let Some(collision) = self.level.collision.as_ref()
+                && self.controller.settle_if_embedded(collision)
+            {
+                self.camera.position = self.controller.eye_position().to_array();
+            }
         } else if self.level.spawn.is_some()
             && let Some(collision) = self.level.collision.as_ref()
         {
@@ -1391,6 +1424,7 @@ impl Game {
             }),
             momentary_doors: Some(crate::save_state::snapshot_momentary_doors(&self.level)),
             breakables: Some(crate::save_state::snapshot_breakables(&self.level)),
+            train_handover_yaw: Some(crate::save_state::snapshot_train_handover_yaw(&self.level)),
             teleport_state: Some({
                 let state = self.level.simulation.teleport_state_snapshot();
                 crate::save::TeleportStateSnapshot {
@@ -1674,6 +1708,13 @@ impl Game {
                 &teleport_state.teleport_touch,
                 &teleport_state.master_fires,
             );
+        }
+        // `SECTION_TRAIN_HANDOVER_YAW` (35, M9.25): the same
+        // spawn-order-zipped overlay, applied after tag 28 has put every
+        // train back on its chain — the carried heading is only ever read
+        // when that chain defines none, so the two never disagree.
+        if let Some(train_handover_yaw) = &save.train_handover_yaw {
+            crate::save_state::restore_train_handover_yaw(&mut self.level, train_handover_yaw);
         }
         // A load is a map load: the chapter title is announced again.
         self.pending.clear();

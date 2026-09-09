@@ -4,7 +4,7 @@
 //! The values are generated, not sampled from any game data.
 
 use ohl_engine::transition::{
-    CarriedEntity, EntitySnapshot, GlobalStateTable, MoverSnapshot, PlayerCarryState,
+    CarriedEntity, EntitySnapshot, GlobalStateTable, MoverSnapshot, PlayerCarryState, RiderSeat,
     TrackTrainCarry, TransitionState,
 };
 use ohl_game::registry::{Door, GlobalStateValue, MoverState, Rotator, Transform};
@@ -115,8 +115,9 @@ prop_compose! {
         speed in finite(),
         moving in proptest::bool::ANY,
         wait_timer in finite(),
+        yaw in proptest::option::of(finite()),
     ) -> TrackTrainCarry {
-        TrackTrainCarry { node, t, direction, speed, moving, wait_timer }
+        TrackTrainCarry { node, t, direction, speed, moving, wait_timer, yaw }
     }
 }
 
@@ -143,6 +144,22 @@ prop_compose! {
 }
 
 prop_compose! {
+    fn rider_seat()(
+        globalname in proptest::option::of("[a-z_]{1,16}"),
+        targetname in proptest::option::of("[a-z_]{1,16}"),
+        seat in (finite(), finite(), finite()),
+        yaw in proptest::option::of(finite()),
+    ) -> RiderSeat {
+        RiderSeat {
+            globalname,
+            targetname,
+            seat: [seat.0, seat.1, seat.2],
+            yaw,
+        }
+    }
+}
+
+prop_compose! {
     fn transition()(
         landmark in "[a-z_]{1,16}",
         offset in proptest::option::of((finite(), finite(), finite())),
@@ -157,6 +174,7 @@ prop_compose! {
             0..4,
         ),
         globals in proptest::collection::vec(("[a-z_]{1,16}", global_value()), 0..8),
+        rider in proptest::option::of(rider_seat()),
     ) -> TransitionState {
         let mut table = GlobalStateTable::new();
         for (name, value) in globals {
@@ -174,6 +192,7 @@ prop_compose! {
                 .into_iter()
                 .map(|(targetname, snapshot)| MoverSnapshot { targetname, snapshot })
                 .collect(),
+            rider,
         }
     }
 }

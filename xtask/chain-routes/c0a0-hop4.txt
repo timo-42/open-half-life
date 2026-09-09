@@ -10,13 +10,18 @@
 # (1/60 s) of simulated time — not seconds.
 #
 # Route, in words only (no entity name, path or coordinate from any
-# payload): the player presses nothing at all. A per-tick probe (local,
-# uncommitted) of the arrival found the player already `on_ground` with
-# zero velocity and a constant position from the route's very first tick —
-# standing on world geometry, never in solid, never observed to fall.
-# Nothing further moves the player for the rest of the route; the level
-# change that ends it is fired by the map's own scripted ride reaching the
-# far end of this section, by name, not by anything this route presses.
+# payload): the player presses nothing at all, because there is nothing to
+# press — they arrive aboard the ride and stay aboard it. A per-tick probe
+# puts them on a `func_tracktrain` for 3260 of this route's 3261 ticks (the
+# missing one is the level-change tick itself); the ride carries them to
+# the end of this section and fires the next level change by name, which is
+# where `run_chained` ends the route.
+#
+# This route used to be a bystander's: the arrival placed the player beside
+# the ride, which drove off without them, and they stood on world geometry
+# for the whole 54 seconds. docs/MILESTONES.md M9.24 read that as an
+# arrival fault and M9.25 fixed it — a rider's seat now crosses relative to
+# the ride rather than as a raw landmark offset.
 #
 # The trailing wait is slack: `run_chained` (crates/ohl-app/src/game_run.rs)
 # ends a route at the level change it reaches, so any ticks left over here
