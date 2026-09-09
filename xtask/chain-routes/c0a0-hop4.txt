@@ -1,0 +1,26 @@
+# M9.22 chain-walk route 4: the map the *fourth* level change out of
+# ohl_campaign::STARTMAP ("c0a0") lands in, walked from its arrival point.
+#
+# Project-authored; no bytes here come from any game installation (see
+# docs/CLEAN_ROOM.md). Named by its position in the chain rather than by
+# the map it runs on, for the reason recorded in c0a0-hop1.txt and in
+# xtask/src/chain_walk.rs's module documentation.
+#
+# A line's leading number is a count of *ticks*, each one CAPTURE_STEP
+# (1/60 s) of simulated time — not seconds.
+#
+# Route, in words only (no entity name, path or coordinate from any
+# payload): the player presses nothing at all. A per-tick probe
+# (local, uncommitted) found the arrival short of the ride, which drives
+# off without them; they fall onto world geometry within a few seconds
+# and stand there — never in solid, never frozen — until the map's own
+# scripted ride reaches the far end of this section and fires the next
+# level change by name, which is where `run_chained` ends the route. The
+# same bystander shape ride-door-timing.md already recorded for the
+# boundary just before this one.
+#
+# The trailing wait is slack: `run_chained` (crates/ohl-app/src/game_run.rs)
+# ends a route at the level change it reaches, so any ticks left over here
+# are never run.
+
+9000 wait
