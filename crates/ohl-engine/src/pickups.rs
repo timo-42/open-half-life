@@ -7,7 +7,8 @@
 //! [`crate::components::Pickup`]/[`crate::components::Charger`] components
 //! on the matching registry entity — a lazy, one-time pass rather than a
 //! `Level`/`level.rs` change, so this package's touch list stays new files
-//! only (`.plan/m79-design.md` §8, P1).
+//! only (§8, P1 of the M7.9 design plan, recorded in local design notes
+//! and not part of the repository).
 //!
 //! This module never calls `ohl_combat::try_pickup`: that function owns a
 //! target's health and armour by `&mut Health`/`&mut Armor`, but this

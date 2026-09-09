@@ -42,7 +42,8 @@
 //! save written before M7.9 P4b (tags 23-27), M7.13 (tag 28), M9.5 (tag 29),
 //! M9.6 (tag 30), M9.8 (tag 31), M9.10 (tag 33), the teleport/master
 //! package (tag 34), M9.25 (tag 35) or M9.26 (tag 36) still loads
-//! (`.plan/m79-design.md` §6); a
+//! (§6 of the M7.9 design plan, recorded in local design notes and not
+//! part of the repository); a
 //! section that is present but fails to decode fails the whole read closed
 //! ([`crate::EngineError::SaveUnreadable`]), same as every other section.
 //!
@@ -631,7 +632,8 @@ fn section<T: serde::de::DeserializeOwned>(
 /// M7.13): `Ok(None)` when the tag is simply absent (a save written before
 /// this package existed), [`crate::EngineError::SaveUnreadable`] when it is
 /// present but fails to decode. This is the one place this module
-/// distinguishes "missing" from "corrupt" — `.plan/m79-design.md` §8 P4b's
+/// distinguishes "missing" from "corrupt" — the M7.9 design plan's §8
+/// P4b rule (recorded in local design notes, not part of the repository)
 /// rule (extended unchanged to tag 28) that a missing section loads as a
 /// default while a present-but-broken one fails closed.
 fn optional_section<T: serde::de::DeserializeOwned>(

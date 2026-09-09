@@ -73,7 +73,8 @@ impl LightmapExtents {
 ///
 /// ## `overbright`'s default (fidelity round 4, finding E5)
 ///
-/// A black-box fidelity review (`.plan/fidelity-round-4.md`, "E5") measured
+/// A black-box fidelity review (finding "E5", recorded in local
+/// investigation notes and not part of the repository) measured
 /// this project's mean scene luma at roughly 1.7x below public reference
 /// screenshots across six clean viewpoints and no code path in this ramp
 /// changed between rounds, so the review asked whether the wider deficit

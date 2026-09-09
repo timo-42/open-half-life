@@ -1,5 +1,6 @@
 //! `--viewpoint-at-nearest-monster` must not be a silent no-op under
-//! `--script` (J4, `.plan/fidelity-round-8.md`).
+//! `--script` (fidelity finding J4, recorded in local investigation
+//! notes and not part of the repository).
 //!
 //! Before this fix, `place_viewpoint_near_nearest_monster` was called only
 //! from the frame-count `capture()` path; `run_scripted()` never called it

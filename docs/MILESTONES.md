@@ -89,9 +89,10 @@ milestone's surface:
   catalog, handshake, process/result sessions) and payload path/layout/
   selection/staging
 
-See `.plan/rust-architecture-r1.md` section 5, packages R4.1-R4.7, for the
-package plan those crates were built against; this note does not re-audit
-each crate's exact completeness against that plan.
+The package plan those crates were built against (recorded in local
+design notes, not part of the repository) covered packages R4.1-R4.7;
+this note does not re-audit each crate's exact completeness against that
+plan.
 
 Historical C++ status (pre-removal): in progress; packages 2–4 establish the
 capability, cache, planning/staging, VFS, and application-composition feature
@@ -707,7 +708,8 @@ Status: accepted. Superseded by M0/M1 above: R2 added the Rust workspace
 beside the C++ tree; R3 (packages R3.1-R3.5) then brought Rust to M1 parity
 and removed the C++ tree in PR #<n>.
 
-Adds the Rust migration workspace (`.plan/rust-architecture-r1.md`) beside the
+Adds the Rust migration workspace (per the migration plan, recorded in
+local design notes and not part of the repository) beside the
 still-authoritative C++ tree, without touching or removing any C++ code:
 
 - root virtual Cargo workspace (`resolver = "3"`, `edition = "2024"`,
@@ -749,8 +751,9 @@ still-authoritative C++ tree, without touching or removing any C++ code:
 At the time this package landed, the C++ tree, its CMake/Ninja build, and
 `cmake/CheckRepository.cmake` were unchanged and remained the accepted,
 authoritative M0/M1 implementation; this package added a parallel,
-not-yet-feature-complete Rust workspace per the two-step transition plan in
-`.plan/rust-architecture-r1.md` section 4. That C++ tree, and
+not-yet-feature-complete Rust workspace per the two-step transition plan
+(section 4 of the migration plan, recorded in local design notes and not
+part of the repository). That C++ tree, and
 `cmake/CheckRepository.cmake` itself, were removed once R3 reached the same
 milestone (`cargo xtask policy` reimplements its rules).
 
@@ -1213,7 +1216,8 @@ any model source other than a path on disk.
 
 Status: in progress. Package M7.1 adds `ohl-combat`, the combat skeleton the
 remaining M7 packages (weapons, projectiles, pickups, monsters, player
-systems) build on. See `.plan/m7-design.md` for the package breakdown and
+systems) build on. The package breakdown follows the M7 design plan
+(recorded in local design notes, not part of the repository); see
 `docs/FORMAT_SOURCES.md`, "Combat and damage", for the sources.
 
 - `damage`: `DamageType`, a bitmask over Half-Life's published damage-type
@@ -1530,8 +1534,9 @@ player systems" below for the part that is done.
 
 ## M7.8 (Rust): player systems
 
-Status: in progress. Package 7.8a of the M7 plan (`.plan/m7-design.md`
-section 3): everything about the player that is not motion, plus the
+Status: in progress. Package 7.8a of the M7 plan (section 3, recorded in
+local design notes and not part of the repository): everything about the
+player that is not motion, plus the
 movement modes M4 left out.
 
 `ohl-physics` (additive):
@@ -2220,7 +2225,8 @@ top of the CI smoke; no panics were found in the code under test.
 ## M9.3 (Rust): release packaging polish
 
 Status: done. Closes the packaging-mechanics gaps a release-readiness dry
-run of M9 flagged (`.plan/release-readiness.md`), short of anything that
+run of M9 flagged (recorded in local investigation notes, not part of
+the repository), short of anything that
 actually requires cutting a tag.
 
 - `cargo xtask dist` is now a proper `clap`-derived subcommand, matching
@@ -2522,8 +2528,8 @@ Open follow-ups, in no particular priority order:
   integration test); a real-payload Hazard Course transition (`t0a0` →
   `t0a0a`) was attempted but not reached within a bounded
   scripted-navigation budget, and stayed undone rather than added as a
-  flaky smoke scenario (see `.plan/fidelity-round-7.md`, which is
-  git-ignored and local-only, for what blocked it).
+  flaky smoke scenario (what blocked it is recorded in local
+  investigation notes, not part of the repository).
 ## Status as of 2026-09-07
 
 This section is a snapshot, not a replacement for the package-by-package
@@ -2963,9 +2969,10 @@ payload.
   now measured from that `origin` keyvalue, so the sum every caller
   already forms (`origin` + offset, in both the renderer and
   `Level::sync_brush_collision`) cancels to the absolute path position
-  exactly once — which keeps `.plan/fidelity-round-2.md` finding E1
-  (returning the raw polyline coordinate, which the caller then
-  double-applies the keyvalue to) fixed. This follows the public
+  exactly once — which keeps fidelity finding E1 (returning the raw
+  polyline coordinate, which the caller then double-applies the keyvalue
+  to; recorded in local investigation notes, not part of the repository)
+  fixed. This follows the public
   documentation's description of a train riding its path on its origin
   brush: `height` is "the height above the path_track that the train will
   ride, based on the location of the train's origin brush"
@@ -3260,8 +3267,9 @@ documented before this package updated it to assert the fix instead.
   actual tag push will be `publish-release`'s (PR #83) first real exercise
   and the first entry in this project's GitHub Releases.
 - **Headless capture: spawn offsets ride with the player; dev viewpoint
-  works with scripts.** Fidelity round 8 (`.plan/fidelity-round-8.md`, J1)
-  found `--spawn-offset` broken by the tram fix above: it was applied once
+  works with scripts.** Fidelity round 8 (finding J1, recorded in local
+  investigation notes and not part of the repository) found
+  `--spawn-offset` broken by the tram fix above: it was applied once
   via `Game::set_viewpoint` (noclip) right after the map loaded and never
   touched again, so on a mover map the player kept riding away while the
   frozen camera stayed behind, ending the capture embedded in geometry the
@@ -3611,7 +3619,8 @@ documented before this package updated it to assert the fix instead.
   round; this is left as a follow-up, and the reachability probe used to
   clear "c1a0" is the obvious next tool to point at it.
 - **`--reachability-report` now models one-way falls and jumps.**
-  `.plan/progress-probe-3.md`'s own follow-up investigation found the
+  A follow-up investigation (recorded in local notes, not part of the
+  repository) found the
   walk's original 72-unit drop bound (not any real geometry) was the
   reason two maps read as sealed. The walk's plain step now accepts a
   one-way fall of any height (a landing deeper than the old 72-unit bound
@@ -3644,8 +3653,8 @@ documented before this package updated it to assert the fix instead.
 
 Status: accepted (Rust); evidence: PR #<n> ("Add a reachability/route-
 triage dev tool"). Promotes a technique two throwaway, uncommitted
-investigations (`.plan/progress-probe-1.md`,
-`.plan/c1a0-progress-investigation.md`) each rebuilt from scratch — a
+investigations (recorded in local notes, not part of the repository)
+each rebuilt from scratch — a
 breadth-first walk over the live collision model to find what blocks the
 player from reaching a map's `trigger_changelevel` — into a reusable,
 tested engine module and a `dev-tools`-only CLI flag.
@@ -3696,8 +3705,8 @@ tested engine module and a `dev-tools`-only CLI flag.
   and `c1a0` reports a `func_door` neither investigation could get `use`'s
   proximity search to reach on its own frontier after the first door
   opens — the same "if a second door blocks the spot, `use`'s proximity
-  search is not finding it" finding
-  `.plan/c1a0-progress-investigation.md` recorded manually.
+  search is not finding it" finding a local investigation note (not
+  part of the repository) recorded manually.
 
 - **Five more spawn-to-exit progression scenarios, from a second
   reachability triage pass.** With the `--reachability-report` dev tool in
@@ -3730,7 +3739,8 @@ tested engine module and a `dev-tools`-only CLI flag.
   added for it.
 
 - **Two more spawn-to-exit progression scenarios, from a third
-  reachability triage pass.** `.plan/progress-probe-3.md` pointed PR
+  reachability triage pass.** A follow-up investigation (recorded in
+  local notes, not part of the repository) pointed PR
   #121's `--reachability-report` dev tool at the six campaign maps
   following `c2a3` in `ohl_campaign::CHAPTERS`'s own cited table and found
   two more reachable at round 0: `progress_c2a5_reach_changelevel.txt`
@@ -3767,7 +3777,7 @@ tested engine module and a `dev-tools`-only CLI flag.
   defect or a reachability finding in question. No scenario was added for
   any of these four maps.
 - **Follow-up (one-way drops and jumps).** The original 72-unit drop bound
-  was later found to be the reason two of `.plan/progress-probe-3.md`'s six
+  was later found to be the reason two of that investigation's six
   probed maps read as sealed; the walk now also tries a one-way fall of any
   height and a jump edge. **Known limitation, not addressed by that
   follow-up:** although `ohl_game::registry::Breakable` now exists (M9.10,
@@ -3898,7 +3908,8 @@ in item 30 rather than guessed at.
   reserved for `ohl-player`), with a discriminating round-trip test, a
   pre-tag-33 compatibility regression, and a new golden-bytes test that
   touches no existing golden.
-- **What this unblocks, and what it does not.** `.plan/progress-probe-2.md`
+- **What this unblocks, and what it does not.** A follow-up
+  investigation (recorded in local notes, not part of the repository)
   found Office Complex ("c1a2", `ohl_campaign::CHAPTERS`'s own cited table)
   unreachable with a frontier made of `func_pushable`/`func_breakable`/
   `func_wall`/`func_button`/`func_pendulum` brushes; two of those five
@@ -3923,8 +3934,9 @@ in item 30 rather than guessed at.
 ## M9.11 (Rust): `func_monsterclip` is no longer solid to the player
 
 Status: accepted (Rust); evidence: PR #129 ("Fix `func_monsterclip`
-blocking the player"). `.plan/progress-probe-4.md`'s `c4a2` finding
-(`docs/FORMAT_SOURCES.md` item 33): `func_monsterclip` was spawned with no
+blocking the player"). A follow-up investigation's `c4a2` finding
+(recorded in local notes, not part of the repository; see
+`docs/FORMAT_SOURCES.md` item 33): `func_monsterclip` was spawned with no
 special handling at all, falling through to `ohl_game::brush`'s
 "everything not documented otherwise is solid" default and blocking the
 player exactly like a `func_wall` — the dominant blocker (~62% of blocked
@@ -3964,8 +3976,9 @@ frontier attempts) on `c4a2` (Gonarch's Lair).
   one. `xtask/src/combat_smoke.rs`'s `LEVEL_CHANGE_PRESENT_MONSTER_
   ENCOUNTER`/`_ABSENT` (this scenario's original present/absent sets) are
   unchanged; the file's *steps* are new, authored fresh against the
-  corrected engine with `.plan/progress-probe-2.md`'s own two-`Game`
-  planner/autopilot technique, verified end to end against the real
+  corrected engine with the two-`Game` planner/autopilot technique from
+  an earlier investigation (recorded in local notes, not part of the
+  repository), verified end to end against the real
   binary in 2 iterations (well within that technique's 10-iteration
   budget) — see the scenario file's own header and
   `docs/FORMAT_SOURCES.md` item 33 for the full account.
@@ -3994,7 +4007,7 @@ frontier attempts) on `c4a2` (Gonarch's Lair).
 - **Evidence against a locally imported retail payload** (identified only
   by its sanitized digest; no path or map name left the local boundary,
   per `docs/CLEAN_ROOM.md`): `--reachability-report` on `c4a2` before this
-  fix reproduces `.plan/progress-probe-4.md`'s own numbers exactly (round
+  fix reproduces that earlier investigation's own numbers exactly (round
   0: 12,678 cells reachable; frontier `func_breakable` x3,
   `func_monsterclip` x13, `func_wall` x1); after it, on the same map, cells
   reachable nearly double (23,520) and `func_monsterclip` is gone from the
@@ -4018,7 +4031,8 @@ frontier attempts) on `c4a2` (Gonarch's Lair).
 
 Status: in progress (Rust); evidence: this PR.
 
-- **Motivation.** `.plan/progress-probe-5.md` re-ran `--reachability-report`
+- **Motivation.** A follow-up investigation (recorded in local notes,
+  not part of the repository) re-ran `--reachability-report`
   on "c1a2" (Office Complex) and "c3a2" (Lambda Core) after M9.10 landed
   `func_breakable`/`func_pushable` gameplay, and found two gaps neither
   earlier probe had isolated: the walk itself still never modeled breaking
@@ -4082,7 +4096,8 @@ Status: in progress (Rust); evidence: this PR.
   binary build is unaffected.
 - **`--reachability-assume-longjump`** (`crates/ohl-app/src/main.rs`,
   `dev-tools` only, `requires = "reachability_report"`), added mid-package
-  once `.plan/progress-probe-6.md` (a follow-up read-only investigation)
+  once a follow-up read-only investigation (recorded in local notes,
+  not part of the repository)
   found "c4a1" (Xen) and "c4a3" (Nihilanth) closing their entire reachable
   area under the walk's existing single running-jump model without ever
   reaching their own `trigger_changelevel`, with no entity of any kind
@@ -4122,7 +4137,9 @@ Status: in progress (Rust); evidence: this PR.
   "detach the brush" treatment a door already gets — not a simulation of
   the real push distance/direction or the real damage-vs-health math. No
   `combat-smoke` scenario was changed to use `--start-inventory`: closing
-  the "route-authoring" gap `.plan/progress-probe-5.md`'s ranked list left
+  the "route-authoring" gap the ranked list from this package's
+  motivating investigation (recorded in local notes, not part of the
+  repository) left
   open (item 1) is this package's job; using it to actually author a
   working "c1a2"/"c3a2" route stays a follow-up, per that same list.
 
@@ -4266,8 +4283,8 @@ Every scenario `cargo xtask combat-smoke` runs starts at its own map's
 that: the player arrives through a `trigger_changelevel`, is placed at the
 same offset from the destination map's `info_landmark` they had from the
 source map's, and carries health, armor, weapons, ammo and the suit with
-them. Per-map routes therefore do not compose, and
-`.plan/progress-probe-5.md`/`.plan/progress-probe-7.md` classified several
+them. Per-map routes therefore do not compose, and earlier investigations
+(recorded in local notes, not part of the repository) classified several
 maps "blocked" partly for that reason: a cold `--map <name>` load has no
 campaign state at all, so on those maps the only weapon sits thousands of
 units past the frontier that needs it. This milestone adds the missing
@@ -5769,7 +5786,8 @@ pass with it.
 `cargo xtask chain-walk` initially regressed from distinct depth 7 back to
 6, re-entering the same "chain walk stopped" state M9.27 had already left
 behind. A local, uncommitted probe (reverted, same pattern this section's
-own tests and earlier `.plan/` reports used) traced it to
+own tests and earlier local investigation notes, not part of the
+repository, used) traced it to
 `crate::ai::AiState::action_seconds`: with no `StudioAnim`, it always fell
 back to `SCRIPT_FALLBACK_ACTION_SECONDS`, a project-authored 1-second
 guess. With one, it now resolves the map's own named action sequence
@@ -5791,11 +5809,11 @@ what made the *timing* fix possible to even measure.
 
 `--reachability-report` has answered "can the player get there" since M9.9.
 It has never answered "how", and every chain-walk route so far was
-hand-authored against that aggregate. `.plan/chain-hop6.md` records where
-that ends: two hand-written navigation probes, a greedy heading walk and a
-coarse waypoint chase, both failing to walk a route the report says exists
-— the first grinding along the first wall its straight line meets, the
-second stalling short of the trigger.
+hand-authored against that aggregate. Local investigation notes, not part
+of the repository, record where that ends: two hand-written navigation
+probes, a greedy heading walk and a coarse waypoint chase, both failing to
+walk a route the report says exists — the first grinding along the first
+wall its straight line meets, the second stalling short of the trigger.
 
 This milestone makes the engine answer the second question too.
 `ohl_engine::route_plan` runs the same bounded, deterministic walk over the

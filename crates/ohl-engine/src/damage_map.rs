@@ -6,7 +6,8 @@
 //!
 //! Neither `ohl-player` nor `ohl-combat` is edited to add this: the mapping
 //! lives entirely here, in the one crate that already depends on both, so
-//! no new crate edge is introduced. See `.plan/m79-design.md` §3 for the
+//! no new crate edge is introduced. See §3 of the M7.9 design plan
+//! (recorded in local design notes, not part of the repository) for the
 //! recommendation this module implements.
 //!
 //! `TODO(black-box)`: whether retail treats nerve gas and poison damage as

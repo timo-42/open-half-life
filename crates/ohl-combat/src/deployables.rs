@@ -205,7 +205,8 @@ impl DeployableSet {
     }
 
     /// This set's own next-handle counter, for a save file. Additive, for
-    /// `.plan/m79-design.md` §6/§8 P4b's `SECTION_PROJECTILES`; paired with
+    /// §6/§8 P4b of the M7.9 design plan (recorded in local design
+    /// notes, not part of the repository) for `SECTION_PROJECTILES`; paired with
     /// [`Self::restore_from_parts`].
     #[must_use]
     pub fn next_id(&self) -> u32 {

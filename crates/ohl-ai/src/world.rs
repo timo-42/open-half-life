@@ -382,7 +382,8 @@ impl AiWorld {
     }
 
     /// This world's own random stream's raw state, for save files. Additive,
-    /// for `.plan/m79-design.md` §6/§8 P4b: a caller that owns the seed
+    /// for §6/§8 P4b of the M7.9 design plan (recorded in local design
+    /// notes, not part of the repository): a caller that owns the seed
     /// this world was constructed with (`Systems::rng`, in `ohl-engine`)
     /// still needs this to continue the *same* stream across a save/load,
     /// since [`Self::new`] always reseeds from its constructor argument

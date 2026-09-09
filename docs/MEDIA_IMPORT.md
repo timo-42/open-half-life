@@ -195,8 +195,9 @@ worker process before allowing it to feed production import.
 > C++ tree's identifiers. The OWP/1 wire protocol itself is already
 > reimplemented, unchanged, in the Rust `ohl-parser-protocol` crate; the
 > session/handshake/broker/bridge/staging components those names describe are
-> still ahead as the Rust `ohl-import` crate (`.plan/rust-architecture-r1.md`
-> package R4.5). See `docs/MILESTONES.md` for current status.
+> still ahead as the Rust `ohl-import` crate (package R4.5 of the Rust
+> migration plan, recorded in local design notes and not part of the
+> repository). See `docs/MILESTONES.md` for current status.
 
 The current `parser` library is accepted as bounded protocol infrastructure
 only. It provides canonical OWP/1 framing, generic bounded primitive payload

@@ -711,7 +711,8 @@ pub struct TransitionVolume;
 /// research pass could not retrieve a public page describing the exact
 /// on-disk/save encoding of `env_global` state, so this enum models the
 /// documented *behaviour* (a named variable that is off, on, or dead) and
-/// not any specific byte layout; see `.plan/m8-research.md` open item 2.
+/// not any specific byte layout; open item 2 of the M8 research pass
+/// (recorded in local research notes, not part of the repository).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum GlobalStateValue {

@@ -429,7 +429,8 @@ mod tests {
     }
 
     /// Every published damage and clip/reserve number from the design
-    /// table (`.plan/m7-design.md` §1), checked against the table's actual
+    /// table (§1 of the M7 design plan, recorded in local design notes
+    /// and not part of the repository), checked against the table's actual
     /// entries so a typo cannot silently drift from the source.
     #[test]
     fn published_numbers_match_the_design_table() {

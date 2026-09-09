@@ -524,8 +524,9 @@ number greater than 0 and no more than 8.0."
     /// gap"), not a claim that the corridor is actually open — see
     /// `ohl_engine::reachability::ReachabilityConfig::assume_pendulum_wait`.
     /// Without this flag a `func_pendulum` stays on the frontier forever,
-    /// this project's own long-standing default (`.plan/progress-probe-7.md`'s
-    /// `c1a2` finding).
+    /// this project's own long-standing default (a follow-up
+    /// investigation's `c1a2` finding, recorded in local notes and not
+    /// part of the repository).
     #[cfg(feature = "dev-tools")]
     #[arg(long, requires = "reachability_report")]
     reachability_assume_pendulum_wait: bool,
@@ -536,7 +537,7 @@ number greater than 0 and no more than 8.0."
     /// whose own reachable area is larger than the default hits that cap
     /// before a single round-advance edge (door/breakable/pushable/
     /// pendulum) runs at all, hiding whatever those edges would otherwise
-    /// reveal (`.plan/progress-probe-7.md`'s `c4a2` finding, the gap this
+    /// reveal (that same investigation's `c4a2` finding, the gap this
     /// flag closes). Bounded by
     /// `ohl_engine::reachability::MAX_CELL_CAP` — a hard sanity maximum,
     /// not a per-map tuned value — so even the most permissive override

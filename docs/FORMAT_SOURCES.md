@@ -565,7 +565,8 @@ render modes, light styles, and sprite billboarding/timing.
   brightness multiplier rather than an intensity one.
 
 - `LightRamp::overbright`'s default (fidelity round 4, finding E5,
-  `.plan/fidelity-round-4.md`): a black-box brightness review measured this
+  recorded in local investigation notes and not part of the repository):
+  a black-box brightness review measured this
   project's rendering at roughly 1.7x below public reference screenshots
   across six clean viewpoints and asked whether GoldSrc documents a
   lightmap "overbright" scale that would explain a deficit of that
@@ -618,8 +619,9 @@ render modes, light styles, and sprite billboarding/timing.
   `overbright_two_matches_the_documented_full_bright_convention_at_code_128`
   test pins the documented "code 128 is the overbright reference point,
   doubling it saturates to white" behaviour for a caller who does opt in.
-  A follow-up fidelity investigation (round 5,
-  `.plan/fidelity-round-5.md`) measured `--overbright 1.7` bringing this
+  A follow-up fidelity investigation (round 5, recorded in local
+  investigation notes and not part of the repository) measured
+  `--overbright 1.7` bringing this
   project's captures to roughly 1.01x the public-reference mean luma with
   no added clipping, against roughly 1.72x under at the engine's raw
   `1.0`, so `ohl-app` now defaults its own `--overbright` flag to `1.7` as
@@ -1600,16 +1602,18 @@ fixtures built by `ohl_formats::test_support`.
   application of that same "the more specific, actually-set value wins"
   principle to the `angle`/`angles` pair, chosen because a `"0 0 0"`
   `angles` alongside a real `angle` is the failure mode this project's
-  fidelity review actually observed (see `.plan/fidelity-round-1.md`,
-  finding D3), not a rule copied from any single source.
+  fidelity review actually observed (finding D3, recorded in local
+  investigation notes and not part of the repository), not a rule copied
+  from any single source.
 - [Valve Developer Community: Entity keyvalues (angles)](https://developer.valvesoftware.com/wiki/Angles)
   (public GoldSrc/Source mapping documentation; consulted via search-engine
   result summaries, same access caveat as above): documents that a scalar
   `angle`/pitch keyvalue of `-1` means "straight up" and `-2` means
   "straight down", overriding the ordinary yaw-in-degrees reading of that
   field entirely — this is the source for `find_player_start`'s
-  `pitch_yaw_from_scalar_angle` sentinel handling (`.plan/fidelity-round-2.md`
-  finding E4). No public source found documents a defined yaw for either
+  `pitch_yaw_from_scalar_angle` sentinel handling (finding E4, recorded
+  in local investigation notes and not part of the repository). No
+  public source found documents a defined yaw for either
   sentinel, so this project records `0` for both, a documented choice
   rather than a confirmed engine constant.
 - [TWHL wiki: info_player_start](https://twhl.info/wiki/page/info_player_start)
@@ -1625,7 +1629,8 @@ fixtures built by `ohl_formats::test_support`.
 - [TWHL wiki: info_player_deathmatch](https://twhl.info/wiki/page/info_player_deathmatch)
   and [TWHL wiki: VERC: Half-Life Teamplay](https://twhl.info/wiki/page/VERC:_Half-Life_Teamplay)
   (consulted via search-engine result summaries, same access caveat as
-  above; fidelity finding F2, `.plan/fidelity-round-3.md`): a second search
+  above; fidelity finding F2, recorded in local investigation notes and
+  not part of the repository): a second search
   pass (2026-09-06), specifically looking for a documented tie-break among
   multiple `info_player_start` entities as a candidate root cause for a
   training-map spawn facing the wrong way, found only that GoldSrc's *one*
@@ -2076,8 +2081,9 @@ installation are used or committed.
 
 ## Game text formats
 
-Sources reused from `.plan/m8-research.md` sections 2 and 5 (M8.1 research
-pass) for the plain-text, line-oriented files GoldSrc/Half-Life loads
+Sources reused from the M8.1 research pass (sections 2 and 5, recorded
+in local research notes and not part of the repository) for the
+plain-text, line-oriented files GoldSrc/Half-Life loads
 alongside its binary assets. Every parser below is implemented in
 `crates/ohl-formats` as a bounded, never-panicking decoder over caller-owned
 bytes; see each module's own doc comment for its bounded grammar summary.
@@ -2123,7 +2129,8 @@ a matching `cargo fuzz` target under `crates/ohl-formats/fuzz/`
 The Half-Life single-player chapter titles and their internal `.bsp` map
 names, encoded as data in `crates/ohl-campaign/src/chapters.rs`, are
 publicly documented facts (see `docs/CLEAN_ROOM.md` rule 7) reused from
-`.plan/m8-research.md` section 1. Per-row citations live in that module's
+section 1 of the M8 research pass (recorded in local research notes and
+not part of the repository). Per-row citations live in that module's
 doc comment; the source list (all fetched during the M8 research pass) is:
 
 - [VDC `Liblist.gam/Half-Life`](https://developer.valvesoftware.com/wiki/Liblist.gam/Half-Life)
@@ -2162,8 +2169,8 @@ Level transitions, cross-level state and the on-load presentation
 `globalname`/`env_global`/`env_message`/`trigger_transition` components in
 `crates/ohl-game/src/registry.rs`) were implemented from these public
 mapping/documentation pages only; no SDK source or decompiled logic was
-consulted, and the M8 research pass that collected them is recorded in
-`.plan/m8-research.md` section 3.
+consulted, and the M8 research pass that collected them (section 3) is
+recorded in local research notes, not part of the repository.
 
 - [TWHL "VERC: In Depth: Level Transitions"](https://twhl.info/wiki/page/VERC:_In_Depth:_Level_Transitions)
   and [TWHL "Tutorial: Changing Levels"](https://twhl.info/wiki/page/Tutorial:_Changing_Levels):
@@ -2380,8 +2387,9 @@ documented as such in the code:
 - `DEFAULT_HOLD_SECONDS` (4 s): the hold time used when a `titles.txt` entry
   sets no `$holdtime` and the entity overrides none.
 
-Still flagged **to verify** (unchanged from `.plan/m8-research.md`'s open
-items; the three are also restated in `crates/ohl-campaign/src/lib.rs`):
+Still flagged **to verify** (unchanged from the M8 research pass's open
+items, recorded in local research notes and not part of the repository;
+the three are also restated in `crates/ohl-campaign/src/lib.rs`):
 
 1. **Interloper's starting map prefix** — sources disagreed (`c4a1a` vs
    `c4a2b`); `ohl_campaign::CHAPTERS` still carries an empty map list there.
@@ -2658,8 +2666,9 @@ comparing the event sequences.
 crate, were implemented from the public documentation below. Reviewed
 2026-09-05, largely through search-engine result summaries: TWHL and Combine
 OverWiki both front automated requests with a JS proof-of-work/challenge
-page, the same access limitation already recorded above and in
-`.plan/m7-design.md` §0.
+page, the same access limitation already recorded above and in the M7
+design plan's own notes (§0, recorded locally and not part of the
+repository).
 
 **Vocabulary and structure (classnames):**
 
@@ -2708,7 +2717,8 @@ five simulated seconds). `inventory::hud_slot`'s slot/position layout is
 likewise this project's own, undocumented, in a module doc comment rather
 than a `BlackBox` (it is a UI layout choice, not a gameplay number).
 Multiplayer respawn flags are out of scope: single-player pickups are
-simply consumed, matching `.plan/m7-design.md`'s single-player focus.
+simply consumed, matching the M7 design plan's single-player focus
+(recorded in local design notes, not part of the repository).
 
 **`ohl-gameplay`** introduces no new numeric fact: it maps `ohl-combat`
 output to `ohl_ui::HudState` fields, `SoundCue`s and `ViewModelAction`s.
@@ -3844,7 +3854,8 @@ marked `TODO(black-box)` in the code rather than guessed:
     condition now gives up instead of waiting forever.** Item 6 above
     already recorded that no page says what a script does when its monster
     cannot reach the mark, and that this project previously chose to keep
-    waiting. `.plan/smoke-round-3.md`'s "Scripted-sequence probe" found
+    waiting. A follow-up investigation's "Scripted-sequence probe" (recorded
+    in local notes, not part of the repository) found
     that choice observable: it drove an idle-input CLI probe against the
     campaign start map for up to five minutes of simulated time without
     `active_script_count` ever returning to zero. Instrumented aggregate
@@ -4678,8 +4689,8 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
     budget. See `docs/MILESTONES.md`'s M9.7 entry.
 
     **Correction (M9.9, appended, not a retraction of the citations
-    above):** a fidelity-review pass (`.plan/fidelity-round-10.md`, item
-    L1) found that `Simulation::advance_pendulums`'s own `omega`
+    above):** a fidelity-review pass (item L1, recorded in local
+    investigation notes and not part of the repository) found that `Simulation::advance_pendulums`'s own `omega`
     computation — `omega = pendulum.speed.to_radians() /
     pendulum.distance.max(1.0)` — converted only `speed` to radians while
     leaving `distance` unconverted, so the two operands no longer shared a
@@ -5526,8 +5537,9 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
     used by mappers "to control the paths monsters take" without affecting
     where the player can walk or what the player can see, "based off
     `func_wall`" (so it does not itself toggle on/off through a
-    `targetname`). A `.plan/progress-probe-4.md` read-only investigation
-    (the fourth in a series of throwaway `--reachability-report` probes,
+    `targetname`). A read-only investigation (the fourth in a series of
+    throwaway `--reachability-report` probes, recorded in local notes and
+    not part of the repository,
     never committed) found `func_monsterclip` on `c4a2`'s (Gonarch's Lair,
     `ohl_campaign::CHAPTERS`) reachability frontier, ~62% of that map's
     blocked walk attempts, and a full-workspace source search that found
@@ -5679,7 +5691,8 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
     Run against a locally imported retail payload (identified only by its
     sanitized digest, per `docs/CLEAN_ROOM.md`; no path or map name left
     the local boundary), `--reachability-report` on `c4a2` before this fix
-    reproduces `.plan/progress-probe-4.md`'s own recorded numbers exactly
+    reproduces that same fourth investigation's own recorded numbers
+    exactly
     (round 0: 12,678 cells reachable; frontier `func_breakable` x3,
     `func_monsterclip` x13, `func_wall` x1; `trigger_changelevel` not
     reached, ~1,640 units from spawn) and after it, on the same map, the
@@ -5723,8 +5736,9 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
     (`LEVEL_CHANGE_PRESENT_MONSTER_ENCOUNTER`/`_ABSENT`,
     `xtask/src/combat_smoke.rs`) are unchanged from before this milestone;
     the file's *steps* are new, authored fresh against the corrected
-    engine using `.plan/progress-probe-2.md`'s own two-`Game`
-    planner/autopilot technique (a breadth-first walk with parent pointers
+    engine using the two-`Game` planner/autopilot technique from an
+    earlier investigation (recorded in local notes, not part of the
+    repository; a breadth-first walk with parent pointers
     over a "planning" `Game`'s live collision model, reimplementing that
     module's private `walk`, to a `trigger_changelevel` — no door needed,
     since `--reachability-report` already found it reachable at round 0,
@@ -5737,8 +5751,9 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
     a merge-and-rescale pass over its raw per-tick turns (collapsing
     identical-degree runs into blocks, purely a line-count cosmetic) was
     tried and silently changed the outcome — the exact sub-degree rounding
-    risk `.plan/progress-probe-2.md` itself already flags for a merge that
-    only combines bit-for-bit identical per-tick turns — so it was
+    risk that same earlier investigation itself already flags for a
+    merge that only combines bit-for-bit identical per-tick turns — so it
+    was
     discarded and the unmerged, verified-working route was kept instead.
     See the scenario file's own header for the full account.
 

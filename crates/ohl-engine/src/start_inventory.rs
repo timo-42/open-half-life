@@ -3,7 +3,8 @@
 //! inventory a real campaign run would have carried across a `changelevel`
 //! without walking the whole campaign chain first.
 //!
-//! [`.plan/progress-probe-5.md`] found that a cold, single-map load always
+//! A follow-up investigation (recorded in local notes, not part of the
+//! repository) found that a cold, single-map load always
 //! starts with [`ohl_combat::Inventory::new`]'s empty inventory — no
 //! weapon, not even the crowbar — and that at least two mid-campaign maps
 //! (`c1a2`, `c3a2`) place their only weapon pickup far past a

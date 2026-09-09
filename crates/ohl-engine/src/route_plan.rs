@@ -9,9 +9,9 @@
 //! aggregate "reachable at round 2" left every chain-walk route
 //! (`xtask/chain-routes/`) to be hand-authored, and hand-authored greedy
 //! walks repeatedly failed to walk a route that report says exists
-//! (`.plan/chain-hop6.md`: a greedy heading walk grinds along the first
-//! wall the straight line meets; a coarse waypoint chase stalls short of
-//! the trigger).
+//! (local investigation notes, not part of the repository: a greedy
+//! heading walk grinds along the first wall the straight line meets; a
+//! coarse waypoint chase stalls short of the trigger).
 //!
 //! This module records what that walk already knows and throws away. It
 //! runs the same edge model — [`crate::reachability::CELL_SIZE`] grid,
@@ -387,9 +387,10 @@ struct ParentLink {
 /// A doorway the player fits through by a hand's width is not a doorway
 /// the [`CELL_SIZE`] grid fits through: whether a grid-aligned step
 /// threads it is a matter of where the walk's own cells happen to have
-/// landed. A published map is full of such frames (`.plan/chain-hop6.md`
-/// reports a live probe stalling at exactly one), and a player simply
-/// steps aside a little. So does this walk: when the plain step in a
+/// landed. A published map is full of such frames (local investigation
+/// notes, not part of the repository, report a live probe stalling at
+/// exactly one), and a player simply steps aside a little. So does this
+/// walk: when the plain step in a
 /// direction is blocked, it is retried from half a cell to either side,
 /// and the point it stepped aside to is kept on the path.
 ///

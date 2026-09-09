@@ -2,7 +2,8 @@
 //! now-removed C++ build, ported here with identical rules.
 //!
 //! Rules (kept identical to the CMake script so both checkers agree during
-//! the R2 transition period, see `.plan/rust-architecture-r1.md` section 4):
+//! the R2 transition period, section 4 of the migration plan recorded in
+//! local design notes and not part of the repository):
 //!
 //! - no tracked file under `assets/`, `cache/`, or `imported/`, except the
 //!   exact file `assets/README.md`;
@@ -10,7 +11,12 @@
 //!   extension;
 //! - no tracked file over 50 MiB;
 //! - no tracked file whose first bytes match the `MZ`/`MSCF`/`IWAD`/`PWAD`/
-//!   `PACK` magic signatures.
+//!   `PACK` magic signatures;
+//! - no tracked file under `docs/`, `crates/`, or `xtask/`, and not the
+//!   top-level `README.md`, may cite a machine-local, gitignored notes
+//!   directory: every such citation is a dangling reference for anyone who
+//!   does not have that directory, so the sentence around it must stand on
+//!   its own instead.
 
 use std::fmt;
 use std::io::Read as _;
@@ -34,6 +40,18 @@ pub const PROHIBITED_EXTENSIONS: &[&str] = &[
 /// The tracked-file size ceiling in bytes (50 MiB).
 pub const MAX_TRACKED_FILE_BYTES: u64 = 50 * 1024 * 1024;
 
+/// Path prefixes (lowercase, trailing slash) scanned for a dangling
+/// citation into the machine-local, gitignored notes directory.
+pub const PLAN_CITATION_SCANNED_PREFIXES: &[&str] = &["docs/", "crates/", "xtask/"];
+
+/// The sole non-prefix path also scanned for a dangling citation.
+pub const PLAN_CITATION_SCANNED_FILE: &str = "readme.md";
+
+/// The forbidden citation substring, split across two string literals so
+/// this check's own source never spells the literal it forbids — a plain
+/// text search for the joined string must not flag this file.
+pub const FORBIDDEN_PLAN_CITATION: &str = concat!(".pla", "n/");
+
 /// Lowercase hex-encoded magic signature prefixes that may never appear at
 /// the start of a tracked file: `MZ`, `MSCF`, `IWAD`, `PWAD`, `PACK`.
 pub const PROHIBITED_MAGIC_HEX_PREFIXES: &[&str] =
@@ -52,6 +70,9 @@ pub enum Violation {
     ProhibitedMagic(String),
     /// The tracked file could not be read to check its size or contents.
     Unreadable(String, String),
+    /// The tracked file cites the machine-local, gitignored notes
+    /// directory, a dangling reference for anyone without that directory.
+    PlanCitation(String),
 }
 
 impl fmt::Display for Violation {
@@ -74,6 +95,12 @@ impl fmt::Display for Violation {
             }
             Self::Unreadable(path, reason) => {
                 write!(f, "tracked file could not be inspected: {path} ({reason})")
+            }
+            Self::PlanCitation(path) => {
+                write!(
+                    f,
+                    "tracked file cites the machine-local notes directory: {path}"
+                )
             }
         }
     }
@@ -135,6 +162,21 @@ pub fn check_tracked_file(repository_root: &Path, relative_path: &str) -> Result
         .any(|prefix| signature.starts_with(prefix))
     {
         return Err(Violation::ProhibitedMagic(relative_path.to_string()));
+    }
+
+    let is_plan_citation_scanned = PLAN_CITATION_SCANNED_PREFIXES
+        .iter()
+        .any(|prefix| lower_path.starts_with(prefix))
+        || lower_path == PLAN_CITATION_SCANNED_FILE;
+    if is_plan_citation_scanned {
+        // Non-UTF-8 tracked files under these prefixes are not documentation
+        // or source text, so they cannot contain the citation; skip them
+        // rather than treating them as unreadable.
+        if let Ok(contents) = std::fs::read_to_string(&full_path)
+            && contents.contains(FORBIDDEN_PLAN_CITATION)
+        {
+            return Err(Violation::PlanCitation(relative_path.to_string()));
+        }
     }
 
     Ok(())
@@ -317,5 +359,67 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let violations = run(dir.path()).expect("skip is not an error");
         assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn rejects_a_dangling_local_notes_citation_in_docs_crates_xtask_or_readme() {
+        let repo = init_repo();
+        // Built from a split literal so this test file's own source never
+        // spells the forbidden substring either.
+        let citation = concat!(".pla", "n/some-note.md");
+        for path in [
+            "docs/ARCHITECTURE.md",
+            "crates/ohl-core/src/lib.rs",
+            "xtask/src/main.rs",
+            "README.md",
+        ] {
+            write_and_add(
+                repo.path(),
+                path,
+                format!("see `{citation}` for details\n").as_bytes(),
+            );
+            assert_eq!(
+                check_tracked_file(repo.path(), path),
+                Err(Violation::PlanCitation(path.to_string())),
+                "expected {path} citing the local notes directory to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_docs_crates_xtask_and_readme_without_the_citation() {
+        let repo = init_repo();
+        for path in [
+            "docs/ARCHITECTURE.md",
+            "crates/ohl-core/src/lib.rs",
+            "xtask/src/main.rs",
+            "README.md",
+        ] {
+            write_and_add(repo.path(), path, b"nothing to see here\n");
+            assert!(check_tracked_file(repo.path(), path).is_ok());
+        }
+    }
+
+    #[test]
+    fn ignores_the_citation_outside_the_scanned_prefixes() {
+        let repo = init_repo();
+        let citation = concat!(".pla", "n/some-note.md");
+        write_and_add(
+            repo.path(),
+            "fuzz/notes.txt",
+            format!("see `{citation}`\n").as_bytes(),
+        );
+        assert!(check_tracked_file(repo.path(), "fuzz/notes.txt").is_ok());
+    }
+
+    #[test]
+    fn this_policy_module_does_not_trip_its_own_check() {
+        let repository_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask is one level below root");
+        assert!(
+            check_tracked_file(repository_root, "xtask/src/policy.rs").is_ok(),
+            "policy.rs must not contain the literal citation substring it forbids"
+        );
     }
 }

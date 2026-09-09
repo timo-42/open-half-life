@@ -30,8 +30,9 @@
 # collision model that incorrectly treated `func_monsterclip` as solid to
 # the player too) no longer reaches its `trigger_changelevel` under the
 # corrected engine. This file's steps are a *new* route, authored fresh
-# against the corrected engine using `.plan/progress-probe-2.md`'s own
-# two-`Game` technique: a "planning" `Game` runs a breadth-first walk with
+# against the corrected engine using an earlier investigation's own
+# two-`Game` technique (recorded in local notes, not part of the
+# repository): a "planning" `Game` runs a breadth-first walk with
 # parent pointers over its live collision model (mirroring
 # `ohl_engine::reachability`'s own step-up/across/drop shape, `CELL_SIZE`/
 # `STEP_UP`/`DROP` constants and all — that module's own `walk` is
@@ -40,7 +41,7 @@
 # a waypoint path (no door needed: `--reachability-report` already found
 # the trigger reachable at round 0, ~930 units from spawn, unchanged from
 # before the fix). A **second, freshly reloaded** `Game` then flies an
-# autopilot along that path exactly as `.plan/progress-probe-2.md`
+# autopilot along that path exactly as that same earlier investigation
 # describes: turning by the difference between the current eye yaw (read
 # from the real camera at the start, not assumed) and the bearing to the
 # next waypoint, walking forward once roughly facing it. The raw per-tick
@@ -48,7 +49,7 @@
 # a merge-and-rescale pass was tried and tested end to end through the
 # real binary, and it silently changed the outcome (the merged script no
 # longer reached the level change) — the same sub-degree rounding risk
-# `.plan/progress-probe-2.md` itself already flagged for a merge that
+# that same earlier investigation itself already flagged for a merge that
 # only combines *bit-for-bit identical* per-tick turns; this route's own
 # turns are almost never identical tick to tick (the autopilot re-aims
 # every tick), so merging would only ever reintroduce that risk for a

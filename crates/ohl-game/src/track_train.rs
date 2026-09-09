@@ -90,8 +90,8 @@ pub const DEFAULT_YAW_BLEND_DISTANCE: f32 = 256.0;
 /// data rather than from any public page (none states which way a track
 /// train's geometry is compiled — `docs/FORMAT_SOURCES.md`, "Track trains
 /// and paths", records the gap). Three independent measurements, each
-/// taken from placed poses and keyvalues only, agree on the half turn (see
-/// `.plan/terminus-heading.md`):
+/// taken from placed poses and keyvalues only, agree on the half turn
+/// (recorded in local investigation notes, not part of the repository):
 ///
 /// 1. The map that parks the ride at its destination declares a sliding
 ///    door leaf as a separate brush entity, placed by its own path nodes.

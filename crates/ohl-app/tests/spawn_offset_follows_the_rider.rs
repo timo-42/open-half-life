@@ -1,5 +1,6 @@
 //! `--spawn-offset` must ride along with the player, not freeze in world
-//! space (J1, `.plan/fidelity-round-8.md`).
+//! space (fidelity finding J1, recorded in local investigation notes
+//! and not part of the repository).
 //!
 //! Before this fix, `--spawn-offset` was applied once via
 //! `Game::set_viewpoint` (which enables noclip) right after the map
