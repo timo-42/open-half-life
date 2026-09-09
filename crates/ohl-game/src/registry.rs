@@ -319,8 +319,9 @@ pub struct Platform {
 /// Sourced from the Sven Co-op wiki's `func_platrot` page, fetched
 /// directly (`docs/FORMAT_SOURCES.md`, "Entity keyvalues and map logic"),
 /// per keyvalue: `height` "Travel altitude" / "How many units func_plat
-/// travels up to the top"; `rotation` "Spin amount" / "Total amount of
-/// degrees this entity spins from it's starting to ending position";
+/// travels up to the top. It CAN'T be negative, the FGD lies!"; `rotation`
+/// "Spin amount" / "Total amount of degrees this entity spins from it's
+/// starting to ending position";
 /// `speed` "Movement-speed in units per second"; and spawnflags `1`
 /// Toggle, `64` X Axis, `128` Y Axis ([`SPAWNFLAG_PLATROT_TOGGLE`] and
 /// friends).
@@ -353,8 +354,11 @@ pub struct PlatRot {
     /// `func_plat` page describes the lift auto-returning from the top.
     pub wait: f32,
     /// Unit vector the platform travels along: `+Z` for a positive
-    /// `height` ("Travel altitude (can be negative)"), `-Z` for a negative
-    /// one.
+    /// `height` ("How many units func_plat travels up to the top"), `-Z`
+    /// for a negative one — which the cited page says cannot happen and
+    /// published maps declare anyway. See `docs/FORMAT_SOURCES.md`,
+    /// `func_platrot` item 2, for the conflict and the measurement that
+    /// settled which way this project reads it.
     pub movedir: Vec3,
     /// The distance travelled, from `height` when present, else the
     /// bounding-box-derived distance minus `lip` — the same fallback
@@ -2133,12 +2137,19 @@ impl Registry {
                         .get("lip")
                         .and_then(|v| v.trim().parse::<f32>().ok())
                         .unwrap_or(0.0);
-                    // "Travel altitude (can be negative)": the sign is the
-                    // direction, so the platform travels straight up for a
-                    // positive `height` and straight down for a negative
-                    // one. A `func_platrot` with no `height` at all falls
-                    // back to the same bounding-box-derived distance a
-                    // `func_plat` does, along `+Z`.
+                    // `height` is "How many units func_plat travels up to
+                    // the top", so a positive one travels up. A *negative*
+                    // one is a documented impossibility — the same page
+                    // says "It CAN'T be negative, the FGD lies!" — and yet
+                    // published maps declare them. This project reads the
+                    // sign as the direction, so a negative `height`
+                    // travels straight down by its magnitude: see
+                    // `docs/FORMAT_SOURCES.md`, `func_platrot` item 2,
+                    // which records the conflict, the bounded measurement
+                    // that decided it, and the alternative readings this
+                    // one was chosen over. A `func_platrot` with no
+                    // `height` at all falls back to the same
+                    // bounding-box-derived distance a `func_plat` does.
                     let height = def
                         .keyvalues
                         .get("height")

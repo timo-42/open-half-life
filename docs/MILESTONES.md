@@ -6099,19 +6099,32 @@ travel and the spin, so they cannot come apart, and both are reported
 through the one place this project answers "where is this brush right now"
 — which means the renderer, the collision hull, the `use`-proximity point
 and a rider's carry all agree by construction rather than by four copies of
-the same arithmetic. A rider is carried by the translation and by the same
-rigid rotational step a track train through a bend already used; the
-physics needed no change at all, because it was already written for a brush
-that does both.
+the same arithmetic. A rider is carried by the translation and the rotation
+together, through the same two mechanisms a track train through a bend
+already used; the physics needed no change at all, because it was already
+written for a brush that does both. (Which of those two mechanisms
+delivers a `func_platrot`'s turn is not worth asserting: at any speed a map
+declares it turns a fraction of a degree per tick, and they agree to well
+under a unit over a whole quarter turn. The test measures where the rider
+ends up, not which path put them there.)
 
 Activation follows the documentation that was found for it: stepping onto
 one starts it, unless the "Toggle" spawnflag is set, in which case every
 trip in either direction is one activation and it never comes back on its
-own. Eight further places where the public pages are silent are recorded in
-`docs/FORMAT_SOURCES.md` as this project's own choices — including one
-claim, found only in a search-engine summary, deliberately **not** adopted.
-Its state travels through a new optional save tag and across a level change
-beside the frozen snapshot rather than inside it.
+own. Nine further places where the public pages are silent — or contradict
+each other — are recorded in `docs/FORMAT_SOURCES.md` as this project's own
+choices. One of them is worth naming here: the page that was fetched
+directly says a platform's `height` "CAN'T be negative, the FGD lies!",
+and published maps declare negative ones anyway. Three readings were
+implemented in turn and measured against the same map: reading the sign as
+a direction roughly doubles what a bounded walk reaches, while ignoring the
+sign, or treating a negative height as no travel at all, leaves the walk
+with *exactly* the cell count it had before this entity existed — the
+platform clears nothing. So the sign is the direction, and the wiki's
+denial, the measurement that overrode it and the alternative it was chosen
+over are all on the record. Its state travels through a new optional save
+tag and across a level change beside the frozen snapshot rather than inside
+it.
 
 **Two ways a route can use one.** The ride edge from the last milestone
 picks it up like any other lift and plans from the *rotated* landing: where
@@ -6126,12 +6139,14 @@ through — and it is now planned as one.
 implemented, the reached region of the stalled map roughly **doubles**
 (about 2,200 grid cells to about 4,470): the switch really is what those
 buttons fire, and the space behind the column really does open. The map's
-platform is not a lift the walk can board — it is a Toggle column beside
-the walked floor, travelling downward and turning a quarter circle — so the
-ride edge finds no candidate there, exactly as the last milestone found for
-`func_plat`. What the enlarged region still does not contain is the level
-change: the search plateaus about 1,250 units short of it, with no door
-left to open, no platform left to switch and nothing left to ride. So there
+platform is not a lift the walk can board — it is a Toggle column standing
+beside the walked floor rather than under it, so no reached cell is on its
+top surface at all and the ride edge finds no candidate there, exactly as
+the last milestone found for `func_plat`. (Which way it travels is not what
+excludes it: nothing stands on it either way.) What the enlarged region
+still does not contain is the level change: the search plateaus about
+1,250 units short of it, with no door left to open, no platform left to
+switch and nothing left to ride. So there
 is still **no `c0a0-hop9.txt`** — the planner never writes an unvalidated
 route — and `cargo xtask chain-walk` still reports **distinct depth 10**.
 

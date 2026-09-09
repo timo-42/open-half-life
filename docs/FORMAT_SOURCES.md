@@ -5954,9 +5954,13 @@ above.
 **Per-literal keyvalues**, each quoted from the directly-fetched Sven
 Co-op `func_platrot` page's own keyvalue table:
 
-- `height` — "Travel altitude", "How many units func_plat travels up to the
-  top". The TWHL search summary adds "(can be negative)", with a default of
-  `0`.
+- `height` — "Travel altitude", and, in full and unabridged: "How many
+  units func_plat travels up to the top. **It CAN'T be negative, the FGD
+  lies!**" (the emphasis is the page's own). A TWHL search summary
+  contradicts that, giving the key as "Travel altitude (can be negative)"
+  with a default of `0`. See project-behaviour item 2 below: the direct
+  fetch and the summary disagree, published maps side with the summary,
+  and this project does not pretend the sentence ends at the full stop.
 - `rotation` — "Spin amount", "Total amount of degrees this entity spins
   from it's starting to ending position". TWHL search summary: default `0`.
 - `speed` — labelled "Speed of rotation" and described "Movement-speed in
@@ -5992,13 +5996,16 @@ tag 37 (`ohl_engine::save::SECTION_PLATROT_STATE`) and the level-change
 carry `ohl_engine::transition::CarriedEntity::platrot`. Both halves of its
 pose are derived from one progress fraction, so the renderer, the collision
 hull, the `use`-proximity point and a rider's carry all read one answer
-(`ohl_game::pose`'s single-answer rule); the rider is carried by the
-translation and by the rigid rotational step already used for a
-`func_tracktrain` through a bend (`ohl_engine::level::Level::
-rotational_carry`, "Riding movers" above).
+(`ohl_game::pose`'s single-answer rule); a rider is carried by the
+translation and by the rotation together, through the two mechanisms
+"Riding movers" above already records — the tangential ride velocity
+(`Level::brush_ride_velocity`) and the rigid whole-angle step
+(`Level::rotational_carry`), which agree with each other for a platform
+turning a fraction of a degree per tick and are not distinguished by the
+tests here.
 
-**Project behaviour, where the cited pages are silent** — recorded here
-rather than stated as documented fact:
+**Project behaviour, where the cited pages are silent — or disagree with
+each other** — recorded here rather than stated as documented fact:
 
 1. **`speed` is the translation's units per second**, and the rotation is
    spread over the same trip so both arrive together. The page's own
@@ -6007,38 +6014,111 @@ rather than stated as documented fact:
    because a degrees-per-second `speed` cannot be reconciled with the
    entity being documented as a `func_plat` that "will also rotate as it
    moves". The conflict is recorded, not resolved by this project.
-2. **A positive `rotation` turns anticlockwise about the selected axis**
+2. **A negative `height` travels straight down by its magnitude** — a
+   reading the directly-fetched page explicitly denies is possible, and
+   which is adopted anyway, on measurement rather than on the summary that
+   suggested it.
+
+   *The conflict.* The Sven Co-op page says "It CAN'T be negative, the FGD
+   lies!". A TWHL search summary says "(can be negative)". Nothing in
+   either states what an engine *does* with a negative one, and the two
+   cannot both be describing the same thing: an FGD that "lies" is an FGD
+   offering mappers a value the entity does not honour.
+
+   *What the maps do.* Bounded aggregate over the locally imported payload,
+   through `ohl_assets::AssetFs` with PAK archives included (no map name,
+   path or per-map figure leaves this measurement — see
+   `docs/CLEAN_ROOM.md` rule 5): across the 93 cited campaign and
+   hazard-course map names there are **4** `func_platrot` declarations, of
+   which **3** carry a positive `height` and **1** a negative one; across
+   the wider 102-name list, **5** declarations, **3** positive and **2**
+   negative. Every one of them sets the "Toggle" spawnflag. So negative
+   heights are not a hypothetical the FGD invented — the shipped maps
+   declare them.
+
+   *The measurement that decided it.* Three readings were implemented in
+   turn and a bounded route search run against the same map and the same
+   arrival point under each, comparing only how many grid cells the walk
+   reached:
+
+   | reading of a negative `height` | cells reached |
+   | --- | --- |
+   | the sign is the direction (travel down by `\|height\|`) | ~4,470 |
+   | the sign is ignored (travel up by `\|height\|`) | ~2,210 |
+   | a negative `height` means no travel at all | ~2,210 |
+
+   The latter two are *exactly* the count from before this entity existed
+   at all: under either, the platform clears nothing and the walk is no
+   better off than it was when the brush never moved. Under the first,
+   roughly twice as much of the map becomes reachable. A published map that
+   declares a negative `height` is therefore relying on downward travel,
+   whatever the wiki says a mapper should not do — which is evidence about
+   the engine, not about the FGD.
+
+   *The reading taken*, then: the sign is the direction. A positive
+   `height` travels up, which is what the page's own "travels up to the
+   top" says; a negative one travels down by its magnitude.
+
+   *The alternative, and what would decide it.* If the page is right that
+   the engine refuses a negative `height`, then those maps' platforms do
+   something else entirely — most likely they are authored at the *top* of
+   their travel and appear at the bottom in play (which the ds-servers page
+   describes for this entity, translated from the Russian original: "The
+   platform should be positioned at its upper destination point and will
+   appear at the bottom during gameplay"), so a negative `height` in the
+   FGD is a mapper's way of
+   saying "downward" that the compiler bakes into the placement instead.
+   This project does not model that spawn displacement — see item 8. What
+   would settle it is observing where such a platform is drawn on the first
+   frame of a real run, before anything triggers it: at its compiled pose,
+   or `height` units below it. Until then the reading above is project
+   behaviour, chosen on the measurement above and recorded as such.
+
+3. **A positive `rotation` turns anticlockwise about the selected axis**
    (`+Z` by default). No cited page states a sign convention, and this
    entity has no documented "Reverse direction" spawnflag.
-3. **`wait`** is read exactly as `func_plat`'s is (default `3`). No cited
+4. **`wait`** is read exactly as `func_plat`'s is (default `3`). No cited
    page lists a `wait` keyvalue for `func_platrot`; the non-Toggle
    platform is documented as auto-returning from the top, and this is how
    long it takes to do it.
-4. **A `func_platrot` responds to a `use` press.** Its documented
+5. **A `func_platrot` responds to a `use` press.** Its documented
    activations are stepping onto it and (with Toggle) being triggered.
    `ohl_engine::route_plan`'s ride edge offers a press on the mover itself
    as one of the three ways it plans a ride, so the engine accepts one
    (`ohl_game::logic::find_usable_within`) rather than planning a route it
    cannot then carry out. A plain `func_plat` is deliberately *not*
    changed to match.
-5. **Touch uses `DOOR_TOUCH_MARGIN`**: a player standing on a platform is
+6. **Touch uses `DOOR_TOUCH_MARGIN`**: a player standing on a platform is
    held `ohl_physics::hull::DIST_EPSILON` clear of its top face, so the
    overlap test is inflated by the same already-recorded margin
    `Simulation::touch_doors` uses, or the one contact this entity responds
    to would never register.
-6. **A platform already travelling ignores an activation** rather than
+7. **A platform already travelling ignores an activation** rather than
    reversing mid-trip — the same rule already recorded for
    `func_trackchange` (`Simulation::start_track_change`).
-7. **Not adopted**: a TWHL search summary states that with Toggle set "the
-   entity starts on its open position with rotation already applied". The
-   two directly-fetched pages describe Toggle only as removing the
-   step-on start and the automatic return, and say nothing about the
-   spawn pose; a platform that spawns *displaced* from its compiled
-   geometry is a large claim to take on a summary alone, so this project
-   spawns a Toggle platform at rest and lets each activation send it to
-   the other end. `TODO(black-box)` if a directly-fetchable source for the
-   summary's wording is ever found.
-8. **`dmg` is not modelled**, exactly as it is not for `func_plat` today.
+8. **A platform spawns at its compiled pose, not displaced from it.** Two
+   sources suggest otherwise, from different directions: a TWHL search
+   summary says that with Toggle set "the entity starts on its open
+   position with rotation already applied", and the directly-fetched
+   ds-servers page says of `func_platrot`, translated from the Russian
+   original, that "The platform should be positioned at its upper
+   destination point and will appear at the bottom during gameplay". The
+   Sven Co-op pages — the two directly-fetched
+   sources this section is otherwise built on — describe Toggle only as
+   removing the step-on start and the automatic return, and say nothing at
+   all about where the platform spawns.
+
+   Spawning a brush *displaced* from its own compiled geometry is a large
+   change to take on that evidence: it would put a platform's live hull
+   somewhere its `BrushBounds` (compiled bounds plus `origin`) says it is
+   not, which every consumer of a resting volume in this engine would then
+   disagree with. So the platform spawns where it was compiled and each
+   activation sends it to the other end. This is the *mirror image* of the
+   displaced reading rather than a different set of poses: the two resting
+   positions are the same pair either way, and only which one is occupied
+   at map load differs. `TODO(black-box)`: the first frame of a real run
+   would settle both this and item 2's alternative at once.
+9. **`dmg` is not modelled**, exactly as it is not for `func_plat` today.
 
 **Aggregate** (`docs/CLEAN_ROOM.md` rule 5: a bounded count, no map names
 and no per-map figures), measured through `ohl_assets::AssetFs` over the
@@ -6065,11 +6145,28 @@ is: one `use` press at the switch, one wait of the platform's own
 `distance / speed`, then walk through where it stood.
 
 No public page is being interpreted here beyond the keyvalues cited above;
-this is planner behaviour, and it is stated as project behaviour. Two rules
-it follows, both recorded rather than derived: a platform the walk is
-*standing on* is never switched (that is a ride, and moving it takes the
-ground out from under the route), and a mover is switched at most once per
-search.
+this is planner behaviour, and it is stated as project behaviour. Three
+rules it follows, all recorded rather than derived:
+
+- **Only a Toggle platform is switched.** Without that spawnflag the
+  platform returns after its own `wait`, so the gap it opens is temporary
+  and a route planned through it can arrive to find the way shut again;
+  this advance has no way to say "and be quick about it". Every
+  `func_platrot` in the cited maps sets the flag (see the aggregate below),
+  so nothing real is given up.
+- **A platform the walk is *standing on* is never switched.** That one is a
+  ride: moving it takes the ground out from under the route.
+- **A mover is switched at most once per search**, sharing the ride edge's
+  own set — a platform is either something to board or something to get out
+  of the way, never both.
+
+Unlike a ride there is no landing to validate, because nothing stands on a
+switched platform. The re-pose is checked for having taken effect at all
+and restored if it did not (`ohl_physics::CollisionModel::set_brush_pose`
+refuses a non-finite pose by leaving the brush where it was, and a press
+recorded for a platform that never moved is a route into a solid column);
+past that, the walk itself is the test — a platform that clears nothing
+adds no cells — with the replay gate below as the backstop.
 
 A route is also only accepted once its replay reaches a level change into a
 map the caller has **not** already been in

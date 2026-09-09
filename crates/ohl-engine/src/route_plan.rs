@@ -1455,9 +1455,9 @@ struct SwitchedMover {
     door: OpenedDoor,
 }
 
-/// Every `func_platrot` on this round's frontier that some reached cell can
-/// switch out of the way, in the shape [`attribute_doors`] presses a door
-/// with.
+/// Every Toggle `func_platrot` on this round's frontier that some reached
+/// cell can switch out of the way, in the shape [`attribute_doors`] presses
+/// a door with.
 ///
 /// A platform the walk is *standing on* is excluded for the same reason a
 /// door it is standing on is: moving it takes the ground out from under
@@ -1475,13 +1475,23 @@ fn switched_movers(game: &Game, trace: &Trace, taken: &HashSet<u32>) -> Vec<Swit
         if taken.contains(&entity.id()) {
             continue;
         }
+        // Only a platform with the documented "Toggle" spawnflag, which is
+        // what makes the space it clears *stay* clear: one activation sends
+        // it to its other resting pose and it never comes back on its own
+        // (`ohl_game::logic::Simulation::advance_platrots`). A plain
+        // `func_platrot` returns after its own `wait`, so a route planned
+        // through the gap it opens can arrive to find it shut again, and
+        // this advance has no way to say "and be quick about it". Every
+        // `func_platrot` in the cited campaign maps sets the flag
+        // (`docs/FORMAT_SOURCES.md`, the aggregate under `func_platrot`),
+        // so nothing real is given up by refusing the rest.
         let Some(platrot) = game
             .registry()
             .world
             .get::<&PlatRot>(entity)
             .ok()
             .map(|platrot| *platrot)
-            .filter(|platrot| platrot.state == MoverState::Closed)
+            .filter(|platrot| platrot.toggle && platrot.state == MoverState::Closed)
         else {
             continue;
         };
@@ -2363,6 +2373,14 @@ fn take_ride(game: &mut Game, walk: &mut Walk, ridden: &mut HashSet<u32>, cap: u
 /// search, sharing the `taken` set with [`take_ride`]: a platform is
 /// either something to ride or something to get out of the way, never both.
 ///
+/// Unlike [`take_ride`] there is no landing to validate — nothing stands on
+/// a switched platform, so there is no seat that has to end up somewhere a
+/// body fits. What *is* validated is that the re-pose took effect at all
+/// (see below), and beyond that the walk itself is the test: a platform
+/// that clears nothing useful simply adds no cells, and a route through a
+/// gap that is not really there is caught by the replay gate before
+/// anything is written.
+///
 /// # Errors
 /// [`PlanError::NoCollision`], the same failure every other round advance
 /// reports when the collision model has gone.
@@ -2381,11 +2399,28 @@ fn take_switch(
     let Some(collision) = game.collision_mut() else {
         return Err(PlanRejection::new(PlanError::NoCollision, cells, rounds));
     };
-    for mover in &switched {
-        let origin = collision.brush_origin(mover.brush) + mover.offset;
-        collision.set_brush_pose(mover.brush, origin, Vec3::ZERO, mover.axis, mover.degrees);
-    }
+    let mut moved = Vec::with_capacity(switched.len());
     for mover in switched {
+        let before = collision.brush_origin(mover.brush);
+        let origin = before + mover.offset;
+        collision.set_brush_pose(mover.brush, origin, Vec3::ZERO, mover.axis, mover.degrees);
+        // `set_brush_pose` refuses a non-finite pose outright rather than
+        // poisoning every later trace, and says so by leaving the brush
+        // where it was. A press recorded for a platform that did not
+        // actually move is a route that walks into a solid column, so put
+        // the pose back exactly as it was and let this mover be — the same
+        // restore-on-failure shape [`take_ride`] uses for a landing that
+        // turns out not to be standable.
+        if collision.brush_origin(mover.brush) == origin {
+            moved.push(mover);
+        } else {
+            collision.set_brush_pose(mover.brush, before, Vec3::ZERO, mover.axis, 0.0);
+        }
+    }
+    if moved.is_empty() {
+        return Ok(false);
+    }
+    for mover in moved {
         taken.insert(mover.entity.id());
         doors.push(mover.door);
     }
@@ -2592,9 +2627,10 @@ mod tests {
         PLAN_LADDER_MAP, PLAN_LIFT_MAP, PLAN_LIFT_TRAVEL, PLAN_PLATROT_GATE_MAP,
         PLAN_PLATROT_GATE_NAME, PLAN_PLATROT_GATE_SPEED, PLAN_PLATROT_GATE_TRAVEL,
         PLAN_PLATROT_MAP, PLAN_PLATROT_ROTATION, PLAN_PLATROT_SPEED, PLAN_PLATROT_TRAVEL,
-        PLAN_STOOD_ON_MAP, PLAN_STOOD_ON_NAME, PLAN_TURN_MAP, REACH_GAP_EDGE_X, REACH_GAP_MAP,
-        plan_cost_bsp, plan_ladder_bsp, plan_lift_bsp, plan_platrot_bsp, plan_platrot_gate_bsp,
-        plan_stood_on_lift_bsp, plan_turn_bsp, reachability_gap_bsp, reachability_gap_entities,
+        PLAN_STOOD_ON_MAP, PLAN_STOOD_ON_NAME, PLAN_STOOD_ON_PILLAR_NAME, PLAN_TURN_MAP,
+        REACH_GAP_EDGE_X, REACH_GAP_MAP, plan_cost_bsp, plan_ladder_bsp, plan_lift_bsp,
+        plan_platrot_bsp, plan_platrot_gate_bsp, plan_stood_on_lift_bsp, plan_turn_bsp,
+        reachability_gap_bsp, reachability_gap_entities,
     };
     use crate::{AssetSource, MemoryAssets};
 
@@ -2860,20 +2896,25 @@ mod tests {
             walk_stands_on(collision, &walk.trace, brush, &bounds),
             "the walk really is standing on the lift"
         );
-        // The same bounds, attributed to some other brush id: the
-        // geometric test still passes and the trace decides against it.
-        let other = walk
-            .trace
-            .frontier
-            .iter()
-            .copied()
-            .find(|other| *other != brush);
-        if let Some(other) = other {
-            assert!(
-                !walk_stands_on(collision, &walk.trace, other, &bounds),
-                "a brush that is not what holds the walk up is not stood on"
-            );
-        }
+        // The lift's own bounds, attributed to the fixture's *other*
+        // attached brush — a `func_wall` pillar standing on the far side
+        // of the floor. The geometric half of the question still says yes
+        // (the same landings are on the same top plane, inside the same
+        // footprint) and only the trace can say no. Reverting this rule to
+        // the geometry-only test it replaced makes this assertion fail,
+        // which is the whole point of writing it.
+        let pillar = *game
+            .registry()
+            .find(PLAN_STOOD_ON_PILLAR_NAME)
+            .first()
+            .expect("the fixture declares a second brush entity");
+        let other = brush_for_entity(&game, pillar)
+            .expect("that second brush entity is attached to collision");
+        assert_ne!(other, brush, "and it is not the lift");
+        assert!(
+            !walk_stands_on(collision, &walk.trace, other, &bounds),
+            "a brush that is not what holds the walk up is not stood on"
+        );
     }
 
     /// A mover this search has ridden is never afterwards opened as a
@@ -2920,7 +2961,7 @@ mod tests {
             let mut assets = MemoryAssets::new();
             assets.insert(
                 &format!("maps/{PLAN_PLATROT_GATE_MAP}.bsp"),
-                plan_platrot_gate_bsp("ohlplannext"),
+                plan_platrot_gate_bsp("ohlplannext", true),
             );
             Game::load(&assets as &dyn AssetSource, PLAN_PLATROT_GATE_MAP)
                 .expect("the fixture loads")
@@ -2974,6 +3015,49 @@ mod tests {
         assert!(
             ride_of(&plan).is_none(),
             "a column nobody stands on is not a ride"
+        );
+    }
+
+    /// A `func_platrot` **without** the documented "Toggle" spawnflag is
+    /// never switched, however reachable its button is: such a platform
+    /// returns after its own `wait`, so the gap it opens is temporary and a
+    /// route planned through it can arrive to find the corridor shut again.
+    /// The same fixture with the flag set *is* planned (above), so this is
+    /// the flag deciding it and nothing else.
+    #[test]
+    fn a_func_platrot_without_the_toggle_spawnflag_is_not_switched() {
+        let game = {
+            let mut assets = MemoryAssets::new();
+            assets.insert(
+                &format!("maps/{PLAN_PLATROT_GATE_MAP}.bsp"),
+                plan_platrot_gate_bsp("ohlplannext", false),
+            );
+            Game::load(&assets as &dyn AssetSource, PLAN_PLATROT_GATE_MAP)
+                .expect("the fixture loads")
+        };
+        let column = *game
+            .registry()
+            .find(PLAN_PLATROT_GATE_NAME)
+            .first()
+            .expect("the fixture declares one named func_platrot");
+        assert!(
+            !game
+                .registry()
+                .world
+                .get::<&PlatRot>(column)
+                .expect("it is a func_platrot")
+                .toggle,
+            "this build of the fixture clears the flag"
+        );
+        let walk = walk_of(&game);
+        assert!(
+            brush_for_entity(&game, column)
+                .is_some_and(|brush| walk.trace.frontier.contains(&brush)),
+            "the column is still what stops the walk"
+        );
+        assert!(
+            switched_movers(&game, &walk.trace, &HashSet::new()).is_empty(),
+            "a platform that comes back on its own is not switched"
         );
     }
 
