@@ -3566,10 +3566,9 @@ const PLAN_PLATROT_GATE_COLUMN_MAX: [f32; 3] = [48.0, 48.0, 128.0];
 
 /// The `func_button` wired to the column: a panel set into the south wall,
 /// at exactly the eye height of a player walking the corridor and well
-/// back from the column, so the route presses it on its way past rather
-/// than having to detour to it — which is how a route that crosses a
-/// switched brush without ever standing in reach of its switch gets
-/// truncated instead ([`crate::route_plan`]'s own door attribution).
+/// back from the column, so the route presses it on its way past without
+/// leaving the line it was already walking. [`plan_platrot_alcove_bsp`]
+/// is the same corridor with this panel moved out of reach of that line.
 const PLAN_PLATROT_GATE_BUTTON_MIN: [f32; 3] = [-176.0, -56.0, 48.0];
 /// See [`PLAN_PLATROT_GATE_BUTTON_MIN`].
 const PLAN_PLATROT_GATE_BUTTON_MAX: [f32; 3] = [-144.0, -48.0, 80.0];
@@ -3599,6 +3598,114 @@ const PLAN_PLATROT_GATE_GOAL_MAX: [f32; 3] = [512.0, 48.0, 128.0];
 /// `docs/CLEAN_ROOM.md`.
 #[must_use]
 pub fn plan_platrot_gate_bsp(next_map: &str) -> Vec<u8> {
+    gate_bsp(next_map, GateButton::OnTheWay)
+}
+
+/// The map name [`plan_platrot_alcove_bsp`] is registered under.
+pub const PLAN_PLATROT_ALCOVE_MAP: &str = "ohlplanalcovesynth";
+
+/// Where a [`gate_bsp`] fixture puts the `func_button` wired to its
+/// column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateButton {
+    /// Set into the corridor's own south wall, at the eye height of a
+    /// player walking past: the route presses it without leaving the line
+    /// it was already walking.
+    OnTheWay,
+    /// Set into the back wall of an alcove opening off that corridor,
+    /// further from every point of the corridor than [`crate::USE_RADIUS`]
+    /// — so the cheapest path to the goal walks straight past it and the
+    /// route has to step aside to press it.
+    InAnAlcove,
+}
+
+/// The same corridor as [`plan_platrot_gate_bsp`], with the column's
+/// button moved into an alcove off it.
+///
+/// The alcove is the shape a published map routinely builds and the shape
+/// this planner used to be defeated by: every cell in it is reached by the
+/// walk, so the column *is* switched and the space behind it *is* opened,
+/// but no point of the straight corridor path to the goal ever stands
+/// within [`crate::USE_RADIUS`] of the button. Without
+/// `crate::route_plan`'s step aside the route is truncated at the column
+/// and the caller is told the map is blocked at a switch it can in fact
+/// already reach.
+///
+/// No bytes here come from any game installation; see
+/// `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn plan_platrot_alcove_bsp(next_map: &str) -> Vec<u8> {
+    gate_bsp(next_map, GateButton::InAnAlcove)
+}
+
+/// The alcove's mouth in `x`: wide enough for a standing hull to walk into
+/// and back out of.
+const PLAN_PLATROT_ALCOVE_X: (f32, f32) = (-208.0, -112.0);
+/// How far south the alcove runs, and where its own back wall stands.
+const PLAN_PLATROT_ALCOVE_Y: (f32, f32) = (-192.0, -160.0);
+/// The button panel set into that back wall, at a walking player's eye
+/// height.
+const PLAN_PLATROT_ALCOVE_BUTTON_MIN: [f32; 3] = [-176.0, -168.0, 48.0];
+/// See [`PLAN_PLATROT_ALCOVE_BUTTON_MIN`].
+const PLAN_PLATROT_ALCOVE_BUTTON_MAX: [f32; 3] = [-144.0, -160.0, 80.0];
+
+/// The gate corridor's south wall: one slab, or — when the button is in an
+/// alcove — the two slabs the alcove's mouth leaves plus its own back
+/// wall, all running from `south` to the corridor's edge.
+fn gate_south_wall(alcove: bool, south: f32) -> Vec<CollisionBrush> {
+    let (top, inner) = (
+        PLAN_PLATROT_GATE_WALL_SOUTH_MAX[2],
+        PLAN_PLATROT_GATE_WALL_SOUTH_MAX[1],
+    );
+    let floor = PLAN_PLATROT_GATE_WALL_SOUTH_MIN[2];
+    if !alcove {
+        return vec![CollisionBrush::box_brush(
+            PLAN_PLATROT_GATE_WALL_SOUTH_MIN,
+            PLAN_PLATROT_GATE_WALL_SOUTH_MAX,
+        )];
+    }
+    vec![
+        CollisionBrush::box_brush(
+            [PLAN_PLATROT_GATE_WALL_SOUTH_MIN[0], south, floor],
+            [PLAN_PLATROT_ALCOVE_X.0, inner, top],
+        ),
+        CollisionBrush::box_brush(
+            [PLAN_PLATROT_ALCOVE_X.1, south, floor],
+            [PLAN_PLATROT_GATE_WALL_SOUTH_MAX[0], inner, top],
+        ),
+        CollisionBrush::box_brush(
+            [PLAN_PLATROT_ALCOVE_X.0, south, floor],
+            [PLAN_PLATROT_ALCOVE_X.1, PLAN_PLATROT_ALCOVE_Y.1, top],
+        ),
+    ]
+}
+
+/// Builds either [`plan_platrot_gate_bsp`] or
+/// [`plan_platrot_alcove_bsp`]: one corridor, one `func_platrot` column
+/// filling it, one `func_button` wired to that column, and one
+/// `trigger_changelevel` beyond it. Only where the button sits differs.
+fn gate_bsp(next_map: &str, button: GateButton) -> Vec<u8> {
+    let alcove = button == GateButton::InAnAlcove;
+    let (button_min, button_max) = if alcove {
+        (
+            PLAN_PLATROT_ALCOVE_BUTTON_MIN,
+            PLAN_PLATROT_ALCOVE_BUTTON_MAX,
+        )
+    } else {
+        (PLAN_PLATROT_GATE_BUTTON_MIN, PLAN_PLATROT_GATE_BUTTON_MAX)
+    };
+    let south = if alcove {
+        PLAN_PLATROT_ALCOVE_Y.0
+    } else {
+        PLAN_PLATROT_GATE_MIN[1]
+    };
+    let map_min = [PLAN_PLATROT_GATE_MIN[0], south, PLAN_PLATROT_GATE_MIN[2]];
+    let floor_min = [
+        PLAN_PLATROT_GATE_FLOOR_MIN[0],
+        south,
+        PLAN_PLATROT_GATE_FLOOR_MIN[2],
+    ];
+    let mut walls = gate_south_wall(alcove, south);
     let entities = format!(
         "{{\n\"classname\" \"worldspawn\"\n}}\n\
          {{\n\"classname\" \"info_player_start\"\n\"origin\" \"-256 0 40\"\n\
@@ -3617,36 +3724,30 @@ pub fn plan_platrot_gate_bsp(next_map: &str) -> Vec<u8> {
     let mut b = Bsp30Builder::new();
     b.set_entities_text(&entities);
 
-    let solid = [
+    let mut solid = vec![
         CollisionBrush::half_space([0.0, 0.0, 1.0], PLAN_PLATROT_GATE_MIN[2]),
         CollisionBrush::half_space([0.0, 0.0, -1.0], -PLAN_PLATROT_GATE_MAX[2]),
         CollisionBrush::half_space([1.0, 0.0, 0.0], PLAN_PLATROT_GATE_MIN[0]),
         CollisionBrush::half_space([-1.0, 0.0, 0.0], -PLAN_PLATROT_GATE_MAX[0]),
-        CollisionBrush::half_space([0.0, 1.0, 0.0], PLAN_PLATROT_GATE_MIN[1]),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], map_min[1]),
         CollisionBrush::half_space([0.0, -1.0, 0.0], -PLAN_PLATROT_GATE_MAX[1]),
-        CollisionBrush::box_brush(PLAN_PLATROT_GATE_FLOOR_MIN, PLAN_PLATROT_GATE_FLOOR_MAX),
-        CollisionBrush::box_brush(
-            PLAN_PLATROT_GATE_WALL_SOUTH_MIN,
-            PLAN_PLATROT_GATE_WALL_SOUTH_MAX,
-        ),
+        CollisionBrush::box_brush(floor_min, PLAN_PLATROT_GATE_FLOOR_MAX),
         CollisionBrush::box_brush(
             PLAN_PLATROT_GATE_WALL_NORTH_MIN,
             PLAN_PLATROT_GATE_WALL_NORTH_MAX,
         ),
     ];
+    solid.append(&mut walls);
     let world_heads = b.push_collision_hulls(&solid);
     let column_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(
         PLAN_PLATROT_GATE_COLUMN_MIN,
         PLAN_PLATROT_GATE_COLUMN_MAX,
     )]);
     let goal_heads = b.push_collision_hulls(&[]);
-    let button_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(
-        PLAN_PLATROT_GATE_BUTTON_MIN,
-        PLAN_PLATROT_GATE_BUTTON_MAX,
-    )]);
+    let button_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(button_min, button_max)]);
 
     b.push_model(
-        PLAN_PLATROT_GATE_MIN,
+        map_min,
         PLAN_PLATROT_GATE_MAX,
         [0.0; 3],
         world_heads,
@@ -3672,15 +3773,7 @@ pub fn plan_platrot_gate_bsp(next_map: &str) -> Vec<u8> {
         0,
         0,
     );
-    b.push_model(
-        PLAN_PLATROT_GATE_BUTTON_MIN,
-        PLAN_PLATROT_GATE_BUTTON_MAX,
-        [0.0; 3],
-        button_heads,
-        2,
-        0,
-        0,
-    );
+    b.push_model(button_min, button_max, [0.0; 3], button_heads, 2, 0, 0);
 
     b.build()
 }
