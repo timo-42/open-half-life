@@ -41,7 +41,7 @@ pub use hull::{
 pub use movement::{
     LiquidKind, MoveConfig, MoveEvents, MoveInput, PlayerState, WaterLevel, categorize_liquid,
     in_ladder_volume, ladder_normal, player_move, player_move_events, push_from_mover,
-    rotational_ride_step, rotational_ride_velocity, settle_at_spawn,
+    rotational_ride_step, rotational_ride_velocity, settle_at_spawn, settle_if_embedded,
 };
 
 /// Re-exported so callers can use this crate's vector type without also

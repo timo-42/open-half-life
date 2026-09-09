@@ -1245,6 +1245,55 @@ pub(crate) fn restore_breakables(level: &mut Level, snapshots: &[Option<Breakabl
     }
 }
 
+// --- `SECTION_TRAIN_HANDOVER_YAW` (35) -------------------------------------
+
+/// The most entities one `SECTION_TRAIN_HANDOVER_YAW` section records,
+/// matching [`MAX_SNAPSHOT_ENTITIES`] — the same per-registry-slot cap
+/// every other index-keyed section already uses.
+pub const MAX_SNAPSHOT_TRAIN_HANDOVER_YAW: usize = MAX_SNAPSHOT_ENTITIES;
+
+/// `SECTION_TRAIN_HANDOVER_YAW` (35)'s whole payload: one optional heading,
+/// in degrees, per `Registry::entities` slot, in spawn order. `None` for an
+/// entity that is not a train, and for a train that was not handed a
+/// heading across a level change — which is every train whose own chain
+/// defines one, i.e. all but a car parked on a single-node chain. See
+/// `crate::save::SECTION_TRAIN_HANDOVER_YAW` for why this is not a field on
+/// [`TrackTrainSnapshot`] (tag 28 is frozen).
+#[must_use]
+pub(crate) fn snapshot_train_handover_yaw(level: &Level) -> Vec<Option<f32>> {
+    level
+        .registry
+        .entities
+        .iter()
+        .take(MAX_SNAPSHOT_TRAIN_HANDOVER_YAW)
+        .map(|entity| {
+            level
+                .registry
+                .world
+                .get::<&TrackTrainState>(*entity)
+                .ok()
+                .and_then(|state| state.handover_yaw())
+        })
+        .collect()
+}
+
+/// Restores [`snapshot_train_handover_yaw`], zipped against
+/// `level.registry.entities` in spawn order.
+///
+/// Applied to every train the snapshot covers, `None` included, so a train
+/// that had *no* carried heading when the save was taken does not keep one
+/// a fresh `Level` could never have given it — the same
+/// "the snapshot is authoritative" rule every other spawn-order-zipped
+/// section follows.
+pub(crate) fn restore_train_handover_yaw(level: &mut Level, snapshots: &[Option<f32>]) {
+    let entities = level.registry.entities.clone();
+    for (entity, snapshot) in entities.iter().zip(snapshots) {
+        if let Ok(mut state) = level.registry.world.get::<&mut TrackTrainState>(*entity) {
+            state.set_handover_yaw(*snapshot);
+        }
+    }
+}
+
 // --- `SECTION_MAKER_CHILDREN` (29) ----------------------------------------
 
 /// The most maker children one `SECTION_MAKER_CHILDREN` section records,

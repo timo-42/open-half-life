@@ -18,6 +18,11 @@ const LANDMARK: &str = "ohl_lm";
 /// The named entity that travels between them.
 const CARRIED: &str = "ohl_lamp";
 
+/// The top of the step the shared room fixture puts across `x = 64..192`
+/// (`ohl_formats::test_support::collision_room_brushes`). The two maps'
+/// landmarks are 84 units apart on X, so the arriving player lands on it.
+const STEP_TOP_Z: f32 = 18.0;
+
 /// Map A: a player start, the landmark at `16 0 0`, a named light at
 /// `48 0 16` (inside the default carry radius), and a `trigger_changelevel`
 /// to map B.
@@ -114,10 +119,15 @@ fn a_transition_places_the_player_and_a_carried_entity_relative_to_the_landmarks
         .expect("map B loads");
 
     assert_eq!(game.map(), "ohl_b");
-    // Both landmarks are on the X axis, 84 units apart.
+    // Both landmarks are on the X axis, 84 units apart. The 84-unit
+    // translation lands the arriving hull on the shared room fixture's own
+    // 18-unit step (`ohl_formats::test_support::collision_room_brushes`
+    // puts one across `x = 64..192`), i.e. embedded in solid — so
+    // `ohl_physics::settle_if_embedded` puts them on top of it rather than
+    // leaving them frozen inside it. See `STEP_TOP_Z`.
     assert_close(
         game.eye_position(),
-        [before[0] + 84.0, before[1], before[2]],
+        [before[0] + 84.0, before[1], before[2] + STEP_TOP_Z],
     );
     // The light stood 32 units in front of map A's landmark; it arrives 32
     // units in front of map B's.
@@ -157,10 +167,11 @@ fn a_newunit_destination_drops_the_carried_state() {
         carried_origin(&game).is_none(),
         "newunit discards carried entities"
     );
-    // The player still arrives relative to the landmark.
+    // The player still arrives relative to the landmark (and still lands
+    // on the fixture room's 18-unit step; see the sibling test above).
     assert_close(
         game.eye_position(),
-        [before[0] + 84.0, before[1], before[2]],
+        [before[0] + 84.0, before[1], before[2] + STEP_TOP_Z],
     );
 }
 

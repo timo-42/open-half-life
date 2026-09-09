@@ -684,6 +684,44 @@ pub fn settle_at_spawn(model: &CollisionModel, state: &mut PlayerState, config: 
     categorize_position(model, state, config);
 }
 
+/// Settles a player who has just been *placed at a landmark-relative
+/// arrival* and came back embedded in solid, and reports whether it did
+/// anything.
+///
+/// A level change places the arriving player at the offset from the
+/// destination's `info_landmark` they had from the source map's own
+/// (`docs/FORMAT_SOURCES.md`, "Campaign flow"), and that offset must stay a
+/// pure offset: a boundary whose two maps line up is a no-op for the
+/// physics state, and nudging it would stop being one. So this runs
+/// *only* when the arrival origin fails [`origin_is_stuck`] — the same test
+/// [`settle_at_spawn`] already gates its own nudge on — and leaves every
+/// arrival that is not embedded exactly where the offset put it, down to
+/// the bit.
+///
+/// An embedded arrival is not a placement the offset rule can be preserved
+/// for anyway: [`categorize_position`] reports no ground brush while
+/// `start_solid` holds, no traced move out of solid succeeds, and the
+/// player is frozen where they landed rather than standing at an offset
+/// from anything. Recovering them with the same bounded upward nudge
+/// [`settle_at_spawn`] uses is strictly closer to the documented intent
+/// than leaving them stuck, and the bound ([`UNSTICK_MAX_NUDGE`]) means an
+/// arrival that is solid all the way through is still left alone.
+///
+/// Project-owned and `TODO(black-box)`, like the nudge and the spawn-time
+/// settle it reuses. Recorded in `docs/FORMAT_SOURCES.md` under "Riding
+/// movers".
+pub fn settle_if_embedded(
+    model: &CollisionModel,
+    state: &mut PlayerState,
+    config: &MoveConfig,
+) -> bool {
+    if !origin_is_stuck(model, state.origin, state, config) {
+        return false;
+    }
+    settle_at_spawn(model, state, config);
+    true
+}
+
 /// How deep the player is in a liquid and which liquid it is, sampled from
 /// the BSP leaf contents at the feet, the origin and the eye, exactly the
 /// three heights the documented `waterlevel` 0..3 scale distinguishes.

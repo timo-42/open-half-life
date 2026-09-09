@@ -2751,3 +2751,257 @@ pub fn track_change_bsp() -> Vec<u8> {
     b.push_model(lift_mins, lift_maxs, [0.0, 0.0, 0.0], lift_heads, 2, 0, 0);
     b.build()
 }
+
+// ---------------------------------------------------------------------
+// A level boundary the player crosses *aboard* a `func_tracktrain`
+// ---------------------------------------------------------------------
+
+/// The map name the rider-boundary fixture's *source* map is published
+/// under.
+pub const RIDER_SOURCE_MAP: &str = "ohlridersynth";
+/// The map name the rider-boundary fixture's *destination* map is
+/// published under.
+pub const RIDER_DESTINATION_MAP: &str = "ohlridersynth2";
+/// A destination map whose arrival point is inside a parked brush entity's
+/// own solid, for the embedded-arrival settle.
+pub const RIDER_EMBEDDED_MAP: &str = "ohlridersynth3";
+/// A destination map that *ends* the ride: its copy of the car sits on a
+/// one-node chain, so the chain defines no heading anywhere.
+pub const RIDER_TERMINUS_MAP: &str = "ohlridersynth4";
+/// A destination map declaring the same named `func_wall` as
+/// [`RiderMap::SourceOnBlock`], somewhere else entirely.
+pub const RIDER_BLOCK_MAP: &str = "ohlridersynth5";
+
+/// The `globalname` every copy of the fixture's car shares — the documented
+/// cross-level correlation key.
+pub const RIDER_CAR_GLOBAL: &str = "ohl_global_rider_car";
+
+/// The car's compiled half-extents about its own origin brush.
+pub const RIDER_CAR_HALF_LENGTH: f32 = 96.0;
+/// See [`RIDER_CAR_HALF_LENGTH`].
+pub const RIDER_CAR_HALF_WIDTH: f32 = 40.0;
+/// The car floor's top, in the compiled frame.
+pub const RIDER_CAR_TOP_Z: f32 = 8.0;
+/// The car floor's bottom, in the compiled frame.
+pub const RIDER_CAR_BOTTOM_Z: f32 = -8.0;
+
+/// The car's `speed`/`startspeed`, units per second.
+pub const RIDER_CAR_SPEED: f32 = 100.0;
+
+/// Where the source map's chain starts, and where its car's origin brush
+/// is. The world floor's top is `0`, so the car rides clear above it.
+pub const RIDER_SOURCE_CHAIN_HEAD: [f32; 3] = [0.0, 0.0, 64.0];
+/// Where the source map's chain ends: a straight run along `+X`, so the
+/// source car's heading is zero degrees.
+pub const RIDER_SOURCE_CHAIN_TAIL: [f32; 3] = [1600.0, 0.0, 64.0];
+
+/// Where the *destination* map's copy of the same chain starts. Deliberately
+/// nowhere near the source's, because that is the whole point: two maps
+/// that share a ride place their own copy of it by their own `path_track`
+/// chain, not by the landmark.
+pub const RIDER_DESTINATION_CHAIN_HEAD: [f32; 3] = [200.0, 300.0, 64.0];
+/// Where the destination map's chain ends: a straight run along `+Y`, so
+/// the destination car's heading is ninety degrees from the source's.
+pub const RIDER_DESTINATION_CHAIN_TAIL: [f32; 3] = [200.0, 1900.0, 64.0];
+
+/// How far along the car, from its origin brush, the source map's
+/// `info_player_start` sits: well off centre, so a seat that is *not*
+/// carried relative to the car is visibly in the wrong place.
+pub const RIDER_SEAT_OFFSET_X: f32 = 64.0;
+
+/// Where the fixture's `info_landmark` sits — identical in every map, so a
+/// landmark-relative arrival is the *identity* placement and any difference
+/// in the player's arrival origin is the rider rule and nothing else.
+pub const RIDER_LANDMARK_ORIGIN: [f32; 3] = [0.0, 0.0, 0.0];
+
+/// Where a chain running along `+Y` from [`RIDER_SOURCE_CHAIN_HEAD`] ends,
+/// so the car it carries is posed ninety degrees from the `+X` one.
+pub const RIDER_TURNED_CHAIN_TAIL: [f32; 3] = [0.0, 1600.0, 64.0];
+
+/// Where a *non-riding* player stands in the source map: on the world
+/// floor, clear of the car, so their arrival is placed by the landmark
+/// offset rather than by any seat.
+pub const RIDER_FOOT_SPAWN: [f32; 3] = [0.0, -400.0, 36.0];
+
+/// How far along `+X` [`RiderMap::BlockElsewhere`] moves its copy of the
+/// named block: far enough that a placement measured against the block
+/// instead of the landmark could not be mistaken for rounding.
+pub const RIDER_BLOCK_DISPLACEMENT_X: f32 = 600.0;
+
+/// The parked block the embedded-arrival map puts at [`RIDER_FOOT_SPAWN`]:
+/// its top is high enough that the arriving standing hull overlaps it, and
+/// low enough that the bounded nudge can free it.
+pub const RIDER_BLOCK_TOP_Z: f32 = 24.0;
+
+/// Which of the fixture's maps to build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RiderMap {
+    /// The source map: a world floor, a car on a chain running along `+X`,
+    /// and an `info_player_start` standing on the car's floor.
+    Source,
+    /// The source map with the player start on the *world floor* instead,
+    /// clear of the car.
+    SourceOnFoot,
+    /// The destination map: the same car, on the same-named chain, placed
+    /// somewhere else and pointing somewhere else.
+    Destination,
+    /// A destination whose arrival point is inside a parked brush entity.
+    Embedded,
+    /// The source map with its chain running along `+Y` instead, so the
+    /// car it carries a passenger out of is posed at ninety degrees.
+    SourceTurned,
+    /// A destination that *ends* the ride: its copy of the car sits on a
+    /// chain of exactly **one** `path_track`, so the chain defines no
+    /// heading anywhere and the car has none of its own.
+    Terminus,
+    /// The source map with the player standing on top of a named, parked
+    /// `func_wall` — a brush entity that is *not* a ride.
+    SourceOnBlock,
+    /// A destination that declares the same named `func_wall` somewhere
+    /// else entirely, so a placement measured against it would be visibly
+    /// different from the landmark offset.
+    BlockElsewhere,
+}
+
+/// Two (or three) maps of one synthetic campaign, sharing a
+/// `func_tracktrain` by `globalname` and a `path_track` chain by node name,
+/// but placing that chain differently — the shape a real shared ride takes,
+/// where each map's copy of the track is authored in its own coordinates.
+///
+/// Nothing here comes from any game installation; every keyvalue and
+/// coordinate is authored for this project (`docs/CLEAN_ROOM.md`).
+#[must_use]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one fixture builder for a five-map synthetic campaign; splitting \
+              it would scatter coordinates that only make sense together"
+)]
+pub fn rider_boundary_bsp(map: RiderMap) -> Vec<u8> {
+    let (head, tail) = match map {
+        RiderMap::Destination => (RIDER_DESTINATION_CHAIN_HEAD, RIDER_DESTINATION_CHAIN_TAIL),
+        RiderMap::SourceTurned => (RIDER_SOURCE_CHAIN_HEAD, RIDER_TURNED_CHAIN_TAIL),
+        _ => (RIDER_SOURCE_CHAIN_HEAD, RIDER_SOURCE_CHAIN_TAIL),
+    };
+    let [hx, hy, hz] = head;
+    let [tx, ty, tz] = tail;
+    let [lx, ly, lz] = RIDER_LANDMARK_ORIGIN;
+    let [fx, fy, fz] = RIDER_FOOT_SPAWN;
+    let seat = match map {
+        // The car is posed along `+Y` here, so the seat offset is too:
+        // this is the same place *in the car*, not in the world.
+        RiderMap::SourceTurned => [
+            hx,
+            hy + RIDER_SEAT_OFFSET_X,
+            hz + RIDER_CAR_TOP_Z + PLAYER_STANDING_HALF_HEIGHT,
+        ],
+        // Standing on the block's top rather than on the world floor.
+        RiderMap::SourceOnBlock => [fx, fy, RIDER_BLOCK_TOP_Z + PLAYER_STANDING_HALF_HEIGHT],
+        RiderMap::Source => [
+            hx + RIDER_SEAT_OFFSET_X,
+            hy,
+            hz + RIDER_CAR_TOP_Z + PLAYER_STANDING_HALF_HEIGHT,
+        ],
+        _ => RIDER_FOOT_SPAWN,
+    };
+    let speed = RIDER_CAR_SPEED;
+    // The embedded map's parked block: the same submodel the car uses,
+    // placed so its top is `RIDER_BLOCK_TOP_Z` and the arriving standing
+    // hull overlaps it from below.
+    let block = match map {
+        // The same block in three places: under the arrival point (so the
+        // arriving hull is embedded in it), under the source map's player
+        // start (so they are standing on a named brush that is not a ride),
+        // and moved far along `+X` in the destination (so a placement
+        // measured against it would be nowhere near the landmark offset).
+        RiderMap::Embedded | RiderMap::SourceOnBlock | RiderMap::BlockElsewhere => {
+            let bz = RIDER_BLOCK_TOP_Z - RIDER_BLOCK_HALF_HEIGHT;
+            let bx = if map == RiderMap::BlockElsewhere {
+                fx + RIDER_BLOCK_DISPLACEMENT_X
+            } else {
+                fx
+            };
+            format!(
+                "{{\n\"classname\" \"func_wall\"\n\"model\" \"*2\"\n\
+                 \"targetname\" \"ohl_rider_block\"\n\"origin\" \"{bx} {fy} {bz}\"\n}}\n"
+            )
+        }
+        _ => String::new(),
+    };
+    // A terminus map parks its copy of the car on a chain of exactly one
+    // node: the ride ends there, so there is no segment anywhere in the
+    // chain and the car has no heading of its own.
+    let chain = if map == RiderMap::Terminus {
+        format!(
+            "{{\n\"classname\" \"path_track\"\n\"targetname\" \"ohl_rider1\"\n\
+             \"origin\" \"{hx} {hy} {hz}\"\n}}\n"
+        )
+    } else {
+        format!(
+            "{{\n\"classname\" \"path_track\"\n\"targetname\" \"ohl_rider1\"\n\
+             \"target\" \"ohl_rider2\"\n\"origin\" \"{hx} {hy} {hz}\"\n}}\n\
+             {{\n\"classname\" \"path_track\"\n\"targetname\" \"ohl_rider2\"\n\
+             \"origin\" \"{tx} {ty} {tz}\"\n}}\n"
+        )
+    };
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(&format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\
+         \"origin\" \"{} {} {}\"\n\"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"info_landmark\"\n\"targetname\" \"{LANDMARK}\"\n\
+         \"origin\" \"{lx} {ly} {lz}\"\n}}\n\
+         {{\n\"classname\" \"func_tracktrain\"\n\"model\" \"*1\"\n\
+         \"targetname\" \"ohl_rider_car\"\n\"globalname\" \"{RIDER_CAR_GLOBAL}\"\n\
+         \"target\" \"ohl_rider1\"\n\"speed\" \"{speed}\"\n\
+         \"startspeed\" \"{speed}\"\n\"height\" \"0\"\n\
+         \"origin\" \"{hx} {hy} {hz}\"\n}}\n\
+         {chain}{block}",
+        seat[0], seat[1], seat[2],
+    ));
+    let _ = fz;
+
+    // Submodel 0: a floor slab the whole fixture stands on, so a player
+    // who is *not* riding has ordinary world geometry under them.
+    let floor_mins = [-2048.0, -2048.0, -64.0];
+    let floor_maxs = [2048.0, 2048.0, 0.0];
+    let world_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(floor_mins, floor_maxs)]);
+    b.push_model(
+        floor_mins,
+        floor_maxs,
+        [0.0, 0.0, 0.0],
+        world_heads,
+        2,
+        0,
+        0,
+    );
+    // Submodel 1: the car, compiled relative to its origin brush.
+    let car_mins = [
+        -RIDER_CAR_HALF_LENGTH,
+        -RIDER_CAR_HALF_WIDTH,
+        RIDER_CAR_BOTTOM_Z,
+    ];
+    let car_maxs = [RIDER_CAR_HALF_LENGTH, RIDER_CAR_HALF_WIDTH, RIDER_CAR_TOP_Z];
+    let car_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(car_mins, car_maxs)]);
+    b.push_model(car_mins, car_maxs, [0.0, 0.0, 0.0], car_heads, 2, 0, 0);
+    // Submodel 2: the parked block, compiled about its own origin brush.
+    let block_mins = [-64.0, -64.0, -RIDER_BLOCK_HALF_HEIGHT];
+    let block_maxs = [64.0, 64.0, RIDER_BLOCK_HALF_HEIGHT];
+    let block_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(block_mins, block_maxs)]);
+    b.push_model(
+        block_mins,
+        block_maxs,
+        [0.0, 0.0, 0.0],
+        block_heads,
+        2,
+        0,
+        0,
+    );
+    b.build()
+}
+
+/// Half the standing hull's height, i.e. how far a standing player's origin
+/// sits above the surface they are resting on.
+const PLAYER_STANDING_HALF_HEIGHT: f32 = 36.0;
+
+/// Half the parked block's compiled height.
+const RIDER_BLOCK_HALF_HEIGHT: f32 = 62.0;

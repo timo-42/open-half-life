@@ -15,20 +15,14 @@
 # by firing a level change by name — the same shape c0a0-hop2.txt ends on,
 # and where `run_chained` ends the route.
 #
-# READ THIS BEFORE TRUSTING THE ROUTE: unlike the three routes before it,
-# **the player is not on the ride during this one.** A per-tick probe of
-# `PlayerState::ground_brush` puts them on a `func_tracktrain` for 100% of
-# hop2 and for 0% of this route: they arrive just past the back of the
-# destination map's car, fall for about nine tenths of a second, and stand
-# on world geometry until the ride they are no longer on reaches its level
-# change. The route is honest — nothing is pressed, nothing is teleported,
-# and the level change is one the map itself fires — but it is a bystander's
-# route, not a passenger's, and the depth it earns should be read that way.
-# docs/MILESTONES.md M9.20 records the measurement and the mechanism (the
-# passenger rides too far back in the car to survive the heading and
-# position mismatch at this boundary), and names the two upstream fixes it
-# needs: world-baked spawn placement, and the documented `wheels`
-# heading-lag keyvalue this port records but does not apply.
+# The player is a passenger for the whole of this route. A per-tick probe
+# of `PlayerState::ground_brush` puts them on a `func_tracktrain` for
+# 4015 of its 4016 ticks (the missing one is the level-change tick
+# itself). It was 0% when this file was written, 91.5% after M9.23 settled
+# the spawn aboard the opening ride, and 100% since M9.25 started carrying
+# a rider's seat relative to the ride rather than as a raw landmark
+# offset — see docs/MILESTONES.md M9.25 and docs/FORMAT_SOURCES.md,
+# "Riding movers".
 #
 # M9.19 could not get here at all. Two separate faults sealed the arrival
 # point at a single reachable cell with no frontier entity of any kind, and

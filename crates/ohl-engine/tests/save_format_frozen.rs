@@ -197,6 +197,22 @@ const GOLDEN_TAG_34: &[u8] = &[
     0x02, 0xd3, 0x2c, 0x01, 0xa1, 0x1f, 0x00, 0x02, 0xd3, 0x2c, 0x03, 0xa1, 0x1f, 0x81, 0x02,
 ];
 
+/// `SECTION_TRAIN_HANDOVER_YAW` (35) at the shape this build writes: the
+/// exact bytes [`frozen_train_handover_yaw`]'s value encodes to. **New
+/// golden, not a revision of any tag above**: tag 35 did not exist before
+/// M9.25, the same "a future package adding a tag would pin its own golden
+/// from scratch" case [`GOLDEN_TAG_31`]'s own comment anticipated.
+const GOLDEN_TAG_35: &[u8] = &[
+    0x03, 0x01, 0x00, 0x00, 0xb4, 0xc2, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3f,
+];
+
+/// The value [`GOLDEN_TAG_35`] holds: a negative heading (the sign a real
+/// boundary hands over), an entity with none, and a fractional one, so both
+/// arms of the `Option` and a non-integral `f32` are on the wire.
+fn frozen_train_handover_yaw() -> Vec<Option<f32>> {
+    vec![Some(-90.0), None, Some(0.5)]
+}
+
 /// The value [`GOLDEN_TAG_34`] holds: both halves non-empty, and both
 /// arms of the touch-edge `bool` on the wire, plus a fire count past the
 /// single-byte varint boundary.
@@ -538,6 +554,17 @@ fn tag_34_teleport_state_keeps_its_frozen_wire_shape() {
 
     let decoded: TeleportStateSnapshot =
         postcard::from_bytes(GOLDEN_TAG_34).expect("section 34 decodes");
+    assert_eq!(decoded, value);
+}
+
+#[test]
+fn tag_35_train_handover_yaw_keeps_its_frozen_wire_shape() {
+    let value = frozen_train_handover_yaw();
+    let encoded = postcard::to_allocvec(&value).expect("the section encodes");
+    assert_golden(&encoded, GOLDEN_TAG_35, 35);
+
+    let decoded: Vec<Option<f32>> =
+        postcard::from_bytes(GOLDEN_TAG_35).expect("section 35 decodes");
     assert_eq!(decoded, value);
 }
 

@@ -99,6 +99,14 @@ impl PlayerController {
         crate::settle_at_spawn(model, &mut self.state, &self.config);
     }
 
+    /// Recovers an arrival that landed inside solid geometry, and reports
+    /// whether it had to. Called by the host for a *landmark-relative*
+    /// level-change arrival, which otherwise gets no settle at all; see
+    /// [`crate::settle_if_embedded`].
+    pub fn settle_if_embedded(&mut self, model: &CollisionModel) -> bool {
+        crate::settle_if_embedded(model, &mut self.state, &self.config)
+    }
+
     /// The camera position for the current stance: the eye height above the
     /// entity origin (28 units standing, 12 ducked).
     #[must_use]

@@ -35,11 +35,12 @@
 //! | 32 | *(reserved, `ohl-player`)* | `PlayerSnapshot`, written through `Player::snapshot()` when a later package wires it |
 //! | 33 | [`SECTION_BREAKABLE_STATE`] | `Vec<Option<`[`BreakableSnapshot`]`>>`, one per registry entity, in spawn order: `func_breakable`/`func_pushable` remaining hit points, broken flag and push offset (M9.10) |
 //! | 34 | [`SECTION_TELEPORT_STATE`] | [`TeleportStateSnapshot`]: the `trigger_teleport` touch-edge bookkeeping and the `multisource` master fire counts (M9) |
+//! | 35 | [`SECTION_TRAIN_HANDOVER_YAW`] | `Vec<Option<f32>>`, one per registry entity, in spawn order: the heading a `func_tracktrain` was handed across a level change with, for a chain that defines none of its own (M9.25) |
 //!
-//! Tags 23-31, 33 and 34 are read as `None`/a default when absent, so a
+//! Tags 23-31 and 33-35 are read as `None`/a default when absent, so a
 //! save written before M7.9 P4b (tags 23-27), M7.13 (tag 28), M9.5 (tag 29),
-//! M9.6 (tag 30), M9.8 (tag 31), M9.10 (tag 33) or the teleport/master
-//! package (tag 34) still loads (`.plan/m79-design.md` §6); a
+//! M9.6 (tag 30), M9.8 (tag 31), M9.10 (tag 33), the teleport/master
+//! package (tag 34) or M9.25 (tag 35) still loads (`.plan/m79-design.md` §6); a
 //! section that is present but fails to decode fails the whole read closed
 //! ([`crate::EngineError::SaveUnreadable`]), same as every other section.
 //!
@@ -227,6 +228,29 @@ pub const SECTION_BREAKABLE_STATE: u32 = 33;
 /// staying out of tags 18/19/28.
 pub const SECTION_TELEPORT_STATE: u32 = 34;
 
+/// The heading a `func_tracktrain` was handed across a level change with,
+/// one optional entry per registry entity in spawn order (M9.25,
+/// `docs/FORMAT_SOURCES.md`, "Riding movers").
+///
+/// `ohl_game::track_train::TrackTrainState::yaw_degrees` normally derives a
+/// train's heading from the segment it is on, so nothing about it is state
+/// worth saving. A map that *ends* a shared ride parks its own copy of the
+/// car on a chain of exactly one `path_track`, though, and such a chain has
+/// no segment anywhere in it: the heading carried across the boundary is
+/// then the only heading that car has, and it is load-bearing **player**
+/// placement — a passenger stands on the car's floor, and a car posed
+/// unrotated puts its floor somewhere else entirely.
+///
+/// A new tag rather than a field on [`SECTION_MOVER_STATE`] (28), which is
+/// where the rest of a train's runtime state lives: that section is shipped
+/// and frozen at its own wire shape (see this module's "Frozen section
+/// shapes"), so widening
+/// `crate::save_state::TrackTrainSnapshot` would invalidate every save
+/// already written — the same reasoning tags 30, 31, 33 and 34 each
+/// recorded for staying out of tags 18/19/28. Tag 35 is the next free
+/// number: 32 is reserved for `ohl-player`'s own snapshot.
+pub const SECTION_TRAIN_HANDOVER_YAW: u32 = 35;
+
 /// [`SECTION_TELEPORT_STATE`] (34)'s whole payload.
 ///
 /// Both halves are keyed by `hecs` bit pattern rather than by spawn order,
@@ -385,6 +409,13 @@ pub struct GameSave {
     pub breakables: Option<Vec<Option<BreakableSnapshot>>>,
     /// The teleport touch edges and master fire counts, when present.
     pub teleport_state: Option<TeleportStateSnapshot>,
+    /// The heading a `func_tracktrain` was handed across a level change
+    /// with, one optional entry per registry entity, in spawn order
+    /// (M9.25). `None` for a save missing tag 35 — an older save simply has
+    /// every train back on whatever heading its own chain defines, which is
+    /// every train except one parked on a single-node chain. See
+    /// [`SECTION_TRAIN_HANDOVER_YAW`].
+    pub train_handover_yaw: Option<Vec<Option<f32>>>,
 }
 
 impl GameSave {
@@ -460,6 +491,9 @@ impl GameSave {
             if let Some(teleport_state) = &self.teleport_state {
                 writer.add_section_serde(SECTION_TELEPORT_STATE, teleport_state)?;
             }
+            if let Some(train_handover_yaw) = &self.train_handover_yaw {
+                writer.add_section_serde(SECTION_TRAIN_HANDOVER_YAW, train_handover_yaw)?;
+            }
             Ok(())
         };
         write(&mut writer).map_err(|_| crate::EngineError::SaveUnwritable)?;
@@ -513,6 +547,11 @@ impl GameSave {
                 crate::save_state::MAX_SNAPSHOT_BREAKABLES,
             )?,
             teleport_state: optional_section(&reader, SECTION_TELEPORT_STATE)?,
+            train_handover_yaw: optional_bounded_vec_section(
+                &reader,
+                SECTION_TRAIN_HANDOVER_YAW,
+                crate::save_state::MAX_SNAPSHOT_TRAIN_HANDOVER_YAW,
+            )?,
         })
     }
 }
