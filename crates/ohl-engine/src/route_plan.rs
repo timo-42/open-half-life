@@ -2458,9 +2458,13 @@ struct PressDetour {
 /// So the detour is chosen the way a player would take it: the shortest
 /// out-and-back, from some point of the path *before* the crossing to
 /// some reached cell in press range, whose straight line is walkable in
-/// both directions ([`straight_line_is_walkable`]) and does not run into
-/// the very leaf that is still shut. `None` when no such pair exists,
-/// which truncates the route exactly as before.
+/// both directions ([`straight_line_is_walkable`]). The cell it steps
+/// aside to must also be outside the leaf's own closed volume — an
+/// endpoint test on that volume's recorded bounds, and only that: the
+/// walk runs against a collision model the round advance has already
+/// detached the leaf from, so no trace along the way could see a shut
+/// door even if one stood in it. `None` when no such pair exists, which
+/// truncates the route exactly as before.
 fn press_detour(
     collision: &CollisionModel,
     trace: &Trace,
@@ -2471,14 +2475,17 @@ fn press_detour(
 ) -> Option<PressDetour> {
     // Sorted rather than taken in the `HashMap`'s own iteration order, so
     // two runs over the same map choose the same detour.
-    let mut cells: Vec<Cell> = trace
+    // Kept as `(cell, landing)` pairs rather than cells alone: the
+    // landing is what the detour stands at, and looking it up again from
+    // the same map it was just read out of cannot fail.
+    let mut cells: Vec<(Cell, Vec3)> = trace
         .landing
         .iter()
         .filter(|(_, position)| (**position + eye).distance(door.center) <= USE_RADIUS)
         .filter(|(_, position)| !bounds_contains_with_margin(&door.bounds, **position))
-        .map(|(cell, _)| *cell)
+        .map(|(cell, position)| (*cell, *position))
         .collect();
-    cells.sort_unstable();
+    cells.sort_unstable_by_key(|(cell, _)| *cell);
     let mut best: Option<(f32, PressDetour)> = None;
     for (at, point) in path[..crossing].iter().enumerate() {
         if !point.kind.is_ground_movement() && at > 0 {
@@ -2487,10 +2494,8 @@ fn press_detour(
             // committed motion whose take-off cannot be re-entered.
             continue;
         }
-        for cell in &cells {
-            let Some(stand) = trace.landing.get(cell).copied() else {
-                continue;
-            };
+        for (_, stand) in &cells {
+            let stand = *stand;
             let aside = point.position.distance(stand);
             if best
                 .as_ref()
