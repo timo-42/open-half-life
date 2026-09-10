@@ -1,0 +1,94 @@
+# A machine-planned chain-walk route (--plan-route / cargo xtask
+# plan-chain-hop), not a hand-authored one.
+#
+# A bounded, cost-ordered walk over this map's live collision model
+# (ohl_engine::route_plan, the same edge model --reachability-report
+# triages with) found a path from the arrival point this route starts at
+# to the map's own level-change trigger, straightened it into runs,
+# converted the runs into the lines below, and replayed them in-process
+# until the level change actually fired. The route below is the one that
+# fired; nothing else was written.
+#
+# Commands only: no name, path or coordinate from any payload appears
+# here, and none was ever printed (docs/CLEAN_ROOM.md). The planner's own
+# search coordinates never left the process that produced this file.
+#
+# A line's leading number is a count of ticks, each one CAPTURE_STEP
+# (1/60 s) of simulated time -- not seconds.
+
+6 look 0 78.46
+45 forward
+6 look 0 -78.46
+3 forward
+6 look 0 16.84
+1 use
+51 wait
+6 look 0 3.02
+9 forward
+30 wait
+6 look 0 -109.86
+2 forward
+6 look 0 90.00
+7 forward
+6 look 0 45.00
+5 forward
+30 wait
+6 look 0 25.65
+25 forward
+6 look 0 -22.85
+1 use
+51 wait
+6 look 0 42.20
+120 forward
+6 look 0 -60.04
+1 use
+228 wait
+6 look 0 -29.96
+3 forward
+30 wait
+6 look 0 86.12
+115 forward
+6 look 0 58.24
+1 use
+228 wait
+6 look 0 35.64
+5 forward
+6 look 0 -90.00
+52 forward jump
+30 wait
+6 look 0 45.00
+52 forward jump
+6 look 0 180.00
+3 forward
+27 wait
+6 look 0 27.65
+27 forward
+4410 guard
+30 wait
+6 look 0 -9.22
+3 forward
+6 look 0 57.00
+1 use
+228 wait
+6 look 0 -30.43
+3 forward
+6 look 0 90.00
+52 forward jump
+30 wait
+6 look 0 90.00
+3 forward
+6 look 0 -67.50
+9 forward
+6 look 0 22.50
+52 forward jump
+27 wait
+30 wait
+52 forward jump
+29 wait
+6 look 0 135.00
+3 forward
+27 wait
+6 look 0 75.96
+26 forward
+4410 guard
+30 wait

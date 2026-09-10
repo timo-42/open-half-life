@@ -465,7 +465,10 @@ pub fn first_segments(actions: &[PlanAction], segments: usize) -> &[PlanAction] 
                 // the volume that run ended in — so it is committed with
                 // it rather than left for the next attempt to re-plan.
                 let mut end = index;
-                while matches!(actions.get(end + 1), Some(PlanAction::Wait { .. })) {
+                while matches!(
+                    actions.get(end + 1),
+                    Some(PlanAction::Wait { .. } | PlanAction::Guard { .. })
+                ) {
                     end += 1;
                 }
                 return &actions[..=end];
@@ -566,6 +569,20 @@ pub fn script_text(start_yaw: f32, actions: &[PlanAction], config: &MoveConfig) 
                     .saturating_add(RIDE_PADDING_TICKS)
                     .min(MAX_SEGMENT_TICKS);
                 let _ = writeln!(lines, "{wait} wait");
+            }
+            PlanAction::Guard { seconds } => {
+                // The `guard` line is the same shape as the `wait` line
+                // and covers the same span of time; what it holds is
+                // decided tick by tick while the script runs, by
+                // `ohl_engine::guard_input` (see `crate::script`).
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a planned wait, clamped just below"
+                )]
+                let ticks = (seconds.max(0.0) / CAPTURE_STEP).ceil() as u32;
+                let ticks = ticks.clamp(1, MAX_SEGMENT_TICKS);
+                let _ = writeln!(lines, "{ticks} guard");
             }
             PlanAction::Wait { seconds } => {
                 // Nothing is held: the route has arrived somewhere a
@@ -711,9 +728,15 @@ fn run_ticks(game: &mut Game, script: &Script, avoid: &[String]) -> bool {
 /// to see it is [`run_ticks`]'s question, kept separate so each can be
 /// tested for on its own.
 fn drive_to_level_change(game: &mut Game, script: &Script, avoid: &[String]) -> Option<bool> {
-    for input in script.inputs() {
+    for step in script.steps() {
+        // See `run_script_ticks`: a `guard` step is expanded here, against
+        // the live game, exactly as the app's own replay expands it.
+        let input = match step {
+            crate::script::ScriptStep::Fixed(input) => *input,
+            crate::script::ScriptStep::Guard => ohl_engine::guard_input(game),
+        };
         let mut reached = None;
-        for event in game.tick(CAPTURE_STEP, input) {
+        for event in game.tick(CAPTURE_STEP, &input) {
             if matches!(event, GameEvent::LevelChange { .. }) {
                 reached = Some(reaches_new_map(&event, avoid));
             }
@@ -995,8 +1018,9 @@ mod tests {
     use ohl_engine::MemoryAssets;
     use ohl_engine::test_support::{
         LiftFixture, PLAN_LADDER_MAP, PLAN_LIFT_MAP, PLAN_SCRIPTED_LETHAL_WAIT_DELAY,
-        PLAN_SCRIPTED_MAP, PLAN_TURN_MAP, ScriptedStart, plan_ladder_bsp, plan_lift_bsp,
-        plan_pit_bsp, plan_scripted_goal_bsp, plan_turn_bsp,
+        PLAN_SCRIPTED_MAP, PLAN_SCRIPTED_MONSTER_MODEL, PLAN_TURN_MAP, ScriptedStart,
+        plan_ladder_bsp, plan_lift_bsp, plan_pit_bsp, plan_scripted_goal_bsp,
+        plan_scripted_monster_model_bytes, plan_turn_bsp,
     };
 
     fn fixture() -> (MemoryAssets, Game) {
@@ -1129,10 +1153,55 @@ mod tests {
         )
         .expect("the scripted fixture's route plans, replays and validates");
         assert!(
-            route.text.contains(" wait\n"),
-            "the script waits the chain out"
+            route.text.contains(" guard\n"),
+            "the script holds the spot while the chain runs"
         );
         Script::parse(route.text.as_bytes()).expect("the written script parses");
+    }
+
+    /// The whole point of the guard action, end to end in this crate: on
+    /// a map with a monster hostile to the player, the planned route ends
+    /// with a `guard` line, the replay of it reaches the level change
+    /// alive — and the same route with that one line turned back into a
+    /// plain `wait` does not.
+    #[test]
+    fn a_guarded_route_survives_a_wait_a_plain_wait_would_not() {
+        let mut assets = MemoryAssets::new();
+        assets.insert(
+            &format!("maps/{PLAN_SCRIPTED_MAP}.bsp"),
+            plan_scripted_goal_bsp("ohlplannext", ScriptedStart::ByHostileMonster),
+        );
+        assets.insert(
+            PLAN_SCRIPTED_MONSTER_MODEL,
+            plan_scripted_monster_model_bytes(),
+        );
+        let loadout =
+            ohl_engine::parse_start_inventory("weapon_9mmAR").expect("a documented loadout");
+        let mut game =
+            Game::load(&assets as &dyn AssetSource, PLAN_SCRIPTED_MAP).expect("the fixture loads");
+        game.give_start_inventory(&loadout);
+        let route = plan(
+            &mut game,
+            &assets as &dyn AssetSource,
+            &PlanOptions::default(),
+        )
+        .expect("a guarded route plans, replays and validates");
+        assert!(
+            route.text.contains(" guard\n"),
+            "the route holds the spot with a weapon out"
+        );
+
+        let mutated = route.text.replace(" guard\n", " wait\n");
+        assert_ne!(mutated, route.text, "the mutation has to change something");
+        let waited = Script::parse(mutated.as_bytes()).expect("the mutated script parses");
+        let mut fresh =
+            Game::load(&assets as &dyn AssetSource, PLAN_SCRIPTED_MAP).expect("the fixture loads");
+        fresh.give_start_inventory(&loadout);
+        assert!(
+            !run_ticks(&mut fresh, &waited, &[]),
+            "standing still through the same wait gets the player killed"
+        );
+        assert!(fresh.player_health() <= 0.0);
     }
 
     #[test]
@@ -1358,6 +1427,36 @@ mod tests {
             3,
             "the wait after the last committed run comes too"
         );
+        // A guard is a wait that shoots back, and is committed the same
+        // way for the same reason.
+        let guard = PlanAction::Guard { seconds: 12.0 };
+        let guarded = [step, step, guard, step];
+        assert_eq!(
+            first_segments(&guarded, 2).len(),
+            3,
+            "the guard after the last committed run comes too"
+        );
+    }
+
+    /// A planned guard is a `guard` line covering the same span of time a
+    /// `wait` line would have: what it holds is decided while it runs.
+    #[test]
+    fn a_planned_guard_is_written_as_a_guard_line() {
+        let config = MoveConfig::default();
+        let text = script_text(0.0, &[PlanAction::Guard { seconds: 12.0 }], &config);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "the guard, then the trailing settle");
+        let ticks: u32 = lines[0]
+            .strip_suffix(" guard")
+            .expect("a guard line")
+            .parse()
+            .expect("a tick count");
+        assert!(
+            (f64::from(ticks) * f64::from(CAPTURE_STEP)) >= 12.0,
+            "the line guards at least as long as the plan asked for"
+        );
+        // And the file it produces is one this crate's own parser takes.
+        Script::parse(text.as_bytes()).expect("a guarded route parses");
     }
 
     /// A planned wait is a `wait` line and nothing else: the player holds
