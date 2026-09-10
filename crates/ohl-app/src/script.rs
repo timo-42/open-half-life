@@ -33,6 +33,17 @@
 //!   path scales by, inverted the same way
 //!   [`ohl_render::FreeFlyCamera::apply_mouse_delta`] applies it.
 //! - `wait` — no-op; holds nothing for the line's ticks.
+//! - `guard` — hold this spot and defend it for the line's ticks. Unlike
+//!   every other token this one carries no fixed input at all: each of the
+//!   line's ticks is expanded, *while the script is running*, by
+//!   [`ohl_engine::guard_input`] from the game state at that tick — select
+//!   the best carried weapon with ammo, turn toward the nearest hostile
+//!   monster in line of sight, fire when aligned, reload when empty, and
+//!   otherwise stand still. It must therefore be the only token on its
+//!   line ([`ScriptError::GuardNotAlone`]), and a script carrying it is a
+//!   closed loop around the simulation rather than a fixed recording. The
+//!   loop draws on no randomness of its own, so a guarded script is as
+//!   reproducible as any other.
 //!
 //! Limits (§7): at most 4,096 non-comment lines, at most 100,000 ticks in
 //! total, at most 8 tokens on one line. Anything outside the grammar is a
@@ -76,6 +87,10 @@ pub enum ScriptError {
     InvalidArguments,
     /// The script contained no scripted ticks at all.
     Empty,
+    /// A line combined `guard` with another token. `guard` decides every
+    /// button of its own ticks, so there is nothing for another token on
+    /// the same line to mean.
+    GuardNotAlone,
 }
 
 impl std::fmt::Display for ScriptError {
@@ -90,32 +105,45 @@ impl std::fmt::Display for ScriptError {
             Self::UnknownToken => "a script line uses a token outside the documented set",
             Self::InvalidArguments => "a script token's arguments are missing or invalid",
             Self::Empty => "the script contains no scripted ticks",
+            Self::GuardNotAlone => "a script line combines the guard token with another token",
         })
     }
 }
 
 impl std::error::Error for ScriptError {}
 
-/// A parsed scripted-input file: one [`Input`] per simulation tick, in
-/// order.
+/// One scheduled tick: either a fixed [`Input`] the file spelled out, or a
+/// tick of the guard loop, whose input only exists once the game state it
+/// is computed from does.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ScriptStep {
+    /// Hand this exact input to one [`ohl_engine::Game::tick`] call.
+    Fixed(Input),
+    /// Ask [`ohl_engine::guard_input`] what to press, from the game as it
+    /// is at this tick, and hand *that* to [`ohl_engine::Game::tick`].
+    Guard,
+}
+
+/// A parsed scripted-input file: one [`ScriptStep`] per simulation tick,
+/// in order.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Script {
-    inputs: Vec<Input>,
+    steps: Vec<ScriptStep>,
 }
 
 impl Script {
-    /// The parsed ticks, in order; one [`Input`] is handed to one
+    /// The parsed ticks, in order; one step drives one
     /// [`ohl_engine::Game::tick`] call.
     #[must_use]
-    pub fn inputs(&self) -> &[Input] {
-        &self.inputs
+    pub fn steps(&self) -> &[ScriptStep] {
+        &self.steps
     }
 
     /// How many ticks this script schedules.
     #[allow(dead_code)]
     #[must_use]
     pub fn len(&self) -> usize {
-        self.inputs.len()
+        self.steps.len()
     }
 
     /// Whether this script schedules no ticks. Never true for a value
@@ -123,7 +151,7 @@ impl Script {
     #[allow(dead_code)]
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.inputs.is_empty()
+        self.steps.is_empty()
     }
 
     /// Parses `bytes` per this module's grammar.
@@ -133,7 +161,7 @@ impl Script {
     /// fixed [`ScriptError`] instead.
     pub fn parse(bytes: &[u8]) -> Result<Self, ScriptError> {
         let text = String::from_utf8_lossy(bytes);
-        let mut inputs = Vec::new();
+        let mut steps = Vec::new();
         let mut total_ticks: u64 = 0;
         let mut line_count: usize = 0;
 
@@ -146,13 +174,13 @@ impl Script {
             if line_count > MAX_LINES {
                 return Err(ScriptError::TooManyLines);
             }
-            parse_line(line, &mut inputs, &mut total_ticks)?;
+            parse_line(line, &mut steps, &mut total_ticks)?;
         }
 
-        if inputs.is_empty() {
+        if steps.is_empty() {
             return Err(ScriptError::Empty);
         }
-        Ok(Self { inputs })
+        Ok(Self { steps })
     }
 }
 
@@ -164,11 +192,13 @@ struct LineState {
     base: Input,
     first_tick_only: Input,
     look_total: Option<(f32, f32)>,
+    /// Set by the `guard` token, which owns its whole line.
+    guard: bool,
 }
 
 fn parse_line(
     line: &str,
-    inputs: &mut Vec<Input>,
+    steps: &mut Vec<ScriptStep>,
     total_ticks: &mut u64,
 ) -> Result<(), ScriptError> {
     let mut words = line.split_ascii_whitespace();
@@ -191,6 +221,16 @@ fn parse_line(
     *total_ticks = total_ticks.saturating_add(u64::from(ticks));
     if *total_ticks > MAX_TOTAL_TICKS {
         return Err(ScriptError::TooManyTicks);
+    }
+
+    if state.guard {
+        if token_count > 1 {
+            return Err(ScriptError::GuardNotAlone);
+        }
+        for _ in 0..ticks {
+            steps.push(ScriptStep::Guard);
+        }
+        return Ok(());
     }
 
     let per_tick_mouse_delta = state.look_total.map(|(dpitch, dyaw)| {
@@ -217,7 +257,7 @@ fn parse_line(
         if let Some(delta) = per_tick_mouse_delta {
             input.mouse_delta = delta;
         }
-        inputs.push(input);
+        steps.push(ScriptStep::Fixed(input));
     }
     Ok(())
 }
@@ -242,6 +282,7 @@ fn apply_token(
         "reload" => state.first_tick_only.reload = true,
         "flashlight" => state.first_tick_only.flashlight_pressed = true,
         "wait" => {}
+        "guard" => state.guard = true,
         "slot" => {
             let raw = words.next().ok_or(ScriptError::InvalidArguments)?;
             let slot: u8 = raw.parse().map_err(|_| ScriptError::InvalidArguments)?;
@@ -276,6 +317,54 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    /// The fixed input at `index`, for a test that expects one there.
+    fn fixed(script: &Script, index: usize) -> Input {
+        match script.steps()[index] {
+            ScriptStep::Fixed(input) => input,
+            ScriptStep::Guard => panic!("a fixed input was expected at {index}"),
+        }
+    }
+
+    #[test]
+    fn a_guard_line_parses_into_one_guard_step_per_tick() {
+        let script = Script::parse(b"2 forward\n3 guard\n").expect("parses");
+        assert_eq!(
+            script.steps(),
+            &[
+                ScriptStep::Fixed(Input {
+                    forward: 1,
+                    ..Input::default()
+                }),
+                ScriptStep::Fixed(Input {
+                    forward: 1,
+                    ..Input::default()
+                }),
+                ScriptStep::Guard,
+                ScriptStep::Guard,
+                ScriptStep::Guard,
+            ]
+        );
+    }
+
+    #[test]
+    fn guard_may_not_share_its_line_with_another_token() {
+        let error = Script::parse(b"5 guard forward").unwrap_err();
+        assert_eq!(error, ScriptError::GuardNotAlone);
+        assert_eq!(
+            error.to_string(),
+            "a script line combines the guard token with another token"
+        );
+        assert_eq!(
+            Script::parse(b"5 duck guard").unwrap_err(),
+            ScriptError::GuardNotAlone
+        );
+    }
+
+    #[test]
+    fn a_zero_tick_guard_line_schedules_nothing() {
+        assert_eq!(Script::parse(b"0 guard\n"), Err(ScriptError::Empty));
+    }
+
     #[test]
     fn parses_the_documented_grammar() {
         let script =
@@ -283,9 +372,9 @@ mod tests {
                 .expect("the documented example parses");
         assert_eq!(script.len(), 10 + 2 + 1 + 40 + 1);
         assert!(!script.is_empty());
-        assert_eq!(script.inputs()[0].forward, 1);
-        assert!(script.inputs()[12].attack);
-        assert!(script.inputs()[10 + 2 + 1 + 40].use_pressed);
+        assert_eq!(fixed(&script, 0).forward, 1);
+        assert!(fixed(&script, 12).attack);
+        assert!(fixed(&script, 10 + 2 + 1 + 40).use_pressed);
     }
 
     #[test]
@@ -373,10 +462,11 @@ mod tests {
     fn look_spreads_the_turn_evenly_across_the_lines_ticks() {
         let script = Script::parse(b"4 look 0 -40\n").expect("parses");
         assert_eq!(script.len(), 4);
-        let first = script.inputs()[0].mouse_delta;
-        for input in script.inputs() {
+        let first = fixed(&script, 0).mouse_delta;
+        for index in 0..script.len() {
             assert_eq!(
-                input.mouse_delta, first,
+                fixed(&script, index).mouse_delta,
+                first,
                 "an even turn is the same every tick"
             );
         }

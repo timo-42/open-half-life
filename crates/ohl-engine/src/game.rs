@@ -593,6 +593,61 @@ impl Game {
             .nearest_monster_position(&self.level, from)
     }
 
+    /// Every living monster on this level that regards the player as an
+    /// enemy, as (entity, eye position) in ascending entity id.
+    ///
+    /// Additive and data-only, like [`Self::nearest_monster_position`]:
+    /// [`crate::guard`] aims at what this returns, and neither this method
+    /// nor that one ever logs a classname, entity id or coordinate. See
+    /// [`crate::ai::AiState::hostile_monster_eyes`] for what "hostile"
+    /// reads off.
+    #[must_use]
+    pub fn hostile_monster_eyes(&self) -> Vec<(ohl_game::hecs::Entity, Vec3)> {
+        self.systems.ai().hostile_monster_eyes(&self.level)
+    }
+
+    /// Which entity, if any, a hitscan shot fired from the player's eye
+    /// straight at `target` would actually reach.
+    ///
+    /// The same trace the player's own weapons resolve against
+    /// (`ohl_combat::trace_attack_filtered` over this step's hitbox index,
+    /// ignoring the player), so "would this shot land" is answered by the
+    /// code that decides whether it lands, not by a second rule. `None`
+    /// when the shot stops on world geometry, or when there is nothing
+    /// with a hitbox where the caller is aiming — which is the interesting
+    /// case for [`crate::guard`]: a monster whose model this map never
+    /// loaded has no hitbox at all, and shooting at it can only waste a
+    /// clip.
+    ///
+    /// Additive and data-only: it returns an entity for a caller to act
+    /// on and logs nothing.
+    #[must_use]
+    pub fn shot_would_reach(&self, target: Vec3) -> Option<ohl_game::hecs::Entity> {
+        let collision = self.level.collision.as_ref()?;
+        let eye = self.controller.eye_position();
+        let direction = (target - eye).normalize_or_zero();
+        if direction == Vec3::ZERO {
+            return None;
+        }
+        let end = eye + direction * crate::combat::HITSCAN_RANGE;
+        let filter = ohl_combat::TraceFilter::ignoring(
+            ohl_combat::TraceMask::SHOT,
+            crate::ids::entity_id(self.level.player),
+        );
+        let trace =
+            ohl_combat::trace_attack_filtered(collision, self.systems.hitboxes(), eye, end, filter);
+        trace.entity.and_then(crate::ids::entity_of)
+    }
+
+    /// The player's view angles, `(yaw, pitch)` in degrees, as the
+    /// physics controller holds them — the angles a shot is traced along
+    /// (`ohl_physics::PlayerController::view_direction`), not the render
+    /// camera's copy of them.
+    #[must_use]
+    pub fn player_view_angles(&self) -> (f32, f32) {
+        (self.controller.yaw, self.controller.pitch)
+    }
+
     /// A digest of the whole AI simulation — every actor's pose, health and
     /// faction, every monster's state, schedule and route, the sound list
     /// and the random stream.

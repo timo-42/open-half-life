@@ -694,8 +694,17 @@ fn run_script_ticks(
         followed_level_change: false,
         ticks: 0,
     };
-    for input in script.inputs() {
-        for event in game.tick(CAPTURE_STEP, input) {
+    for step in script.steps() {
+        // A `guard` step has no input of its own: what a defending player
+        // presses depends on where the monsters are *this* tick, so it is
+        // computed here, against the live game, rather than parsed out of
+        // the file (see `crate::script`'s `guard` token and
+        // `ohl_engine::guard_input`).
+        let input = match step {
+            crate::script::ScriptStep::Fixed(input) => *input,
+            crate::script::ScriptStep::Guard => ohl_engine::guard_input(game),
+        };
+        for event in game.tick(CAPTURE_STEP, &input) {
             match event {
                 GameEvent::LevelChange { map, landmark } => {
                     let followed = handle_level_change(
