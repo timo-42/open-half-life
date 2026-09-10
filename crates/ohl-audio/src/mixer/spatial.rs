@@ -32,6 +32,44 @@ fn length(v: Vec3) -> f32 {
 /// source.
 pub const MAX_AUDIBLE_DISTANCE: f32 = 1000.0;
 
+/// The published `ATTN_NONE`: a sound that never attenuates, audible
+/// everywhere in the level whatever the distance.
+///
+/// This and the three constants below are the GoldSrc `ATTN_*` values as
+/// published in the [AMX Mod X scripting API
+/// reference](https://www.amxmodx.org/api/amxconst) (`amxconst`, the
+/// `emit_sound` attenuation constants), recorded in
+/// `docs/FORMAT_SOURCES.md` under "Sound playback". They are a public
+/// modding-API reference, not engine source.
+pub const ATTN_NONE: f32 = 0.00;
+
+/// The published `ATTN_NORM`, the ordinary falloff most sounds use. With
+/// [`MAX_AUDIBLE_DISTANCE`] this reaches silence at 1,250 units, which is
+/// also the "max audible distance" default the published `ambient_generic`
+/// definition carries; see [`ATTN_NONE`].
+pub const ATTN_NORM: f32 = 0.80;
+
+/// The published `ATTN_IDLE`: the fastest documented falloff, so the
+/// smallest audible radius. See [`ATTN_NONE`].
+pub const ATTN_IDLE: f32 = 2.00;
+
+/// The published `ATTN_STATIC`, between [`ATTN_NORM`] and [`ATTN_IDLE`].
+/// See [`ATTN_NONE`].
+pub const ATTN_STATIC: f32 = 1.25;
+
+/// The distance at which `attenuation` reaches full silence, or `None` for
+/// [`ATTN_NONE`] (and any other non-positive value), which never does.
+///
+/// The inverse of [`distance_attenuation`]'s own linear ramp, published so
+/// a caller can cull or describe a sound without reproducing the formula.
+#[must_use]
+pub fn audible_radius(attenuation: f32) -> Option<f32> {
+    if attenuation <= 0.0 || !attenuation.is_finite() {
+        return None;
+    }
+    Some(MAX_AUDIBLE_DISTANCE / attenuation)
+}
+
 /// The listener's position and stereo axis (`right`, unit length) in world
 /// space. Only the horizontal pan axis is modeled; there is no elevation or
 /// front/back distinction.
@@ -128,7 +166,25 @@ pub fn spatial_gain(listener: &Listener, spatial: SoundSpatial, volume: f32) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{Listener, SoundSpatial, distance_attenuation, equal_power_pan, spatial_gain};
+    use super::{
+        ATTN_IDLE, ATTN_NONE, ATTN_NORM, ATTN_STATIC, Listener, SoundSpatial, audible_radius,
+        distance_attenuation, equal_power_pan, spatial_gain,
+    };
+
+    #[test]
+    fn published_attenuation_constants_order_by_radius() {
+        // `ATTN_NONE` is audible everywhere; of the rest, a larger
+        // constant is a smaller radius. This is the ordering the
+        // `ambient_generic` radius spawnflags are read through.
+        assert_eq!(audible_radius(ATTN_NONE), None);
+        let norm = audible_radius(ATTN_NORM).expect("a finite radius");
+        let static_ = audible_radius(ATTN_STATIC).expect("a finite radius");
+        let idle = audible_radius(ATTN_IDLE).expect("a finite radius");
+        assert!(norm > static_, "{norm} > {static_}");
+        assert!(static_ > idle, "{static_} > {idle}");
+        // The published "max audible distance" default of `ambient_generic`.
+        assert!((norm - 1250.0).abs() < 1e-3, "{norm}");
+    }
 
     #[test]
     fn attenuation_is_full_at_zero_distance() {

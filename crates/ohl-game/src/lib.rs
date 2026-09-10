@@ -38,6 +38,7 @@ pub use logic::{
     TriggerSnapshot, find_momentary_rot_button_within, find_usable_within,
 };
 pub use registry::{
-    Ladder, Liquid, Registry, TRIGGER_HURT_INTERVAL_SECONDS, TriggerCamera, TriggerHurt, Water,
+    AmbientGeneric, AmbientRadius, AmbientState, Ladder, Liquid, Registry,
+    TRIGGER_HURT_INTERVAL_SECONDS, TriggerCamera, TriggerHurt, Water,
 };
 pub use track_train::{PathChain, PathNode, TrackTrain, TrackTrainState, TrainRide};

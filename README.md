@@ -796,6 +796,23 @@ it interactively on a real screen.
   `func_train`/`func_tracktrain` position, a running `trigger_camera`
   sequence, a running scripted sequence's phase, a `monstermaker`'s spawn
   counters, and a `trigger_auto`'s one-shot fired flag.
+- **Audio**: the composition root opens an output device, owns a mixer and
+  plays the sounds a level asks for — `ambient_generic` (its published
+  `message`, `health` volume, `pitch`, radius spawnflags, "start silent"
+  and "is not looped" behaviour, started and stopped through the same
+  `use`/`target` chain a door rides), and `scripted_sentence` speech,
+  resolved through the payload's own `sentences.txt` and played as one
+  concatenated line on the speaker's voice channel. Sounds are attenuated
+  and panned by distance from the player's eye using the published
+  `ATTN_*` constants, decoded through a bounded, never-panicking WAV
+  decoder, and held in a size-capped LRU cache. Every headless run path
+  (`--screenshot`, `--script`, `--chain-script`, and every test) drives a
+  null sink and is silent on every platform by construction.
+  **Weapon fire, impacts, pain, footsteps, pickups and the chargers are
+  still silent**: those cues are produced, but their asset paths are
+  built-in engine knowledge rather than something a map names, and no
+  source this project may use publishes them (see `docs/CLEAN_ROOM.md`
+  rule 7 and `crates/ohl-gameplay/src/sounds.rs`).
 - **Scripted-input smokes**: a project-owned deterministic script format
   drives headless runs for both the campaign and combat scenarios above,
   with fixed milestone log lines asserted in CI.
@@ -814,7 +831,12 @@ it interactively on a real screen.
   project's "no FFI" rule forbids as written, so there is no real Linux
   audio output today (macOS and Windows are unaffected). See "Platform
   notes" above and `docs/MILESTONES.md`'s "Linux audio backend decision"
-  follow-up.
+  follow-up. Everything above the device — cue production, asset
+  resolution, decoding, spatialisation and mixing — runs and is tested on
+  Linux; only the last step, handing frames to hardware, does not.
+- Nobody has listened to the audio on a real device. The mixer's output is
+  asserted numerically (per-ear gains, channel starts and stops, buffers
+  running out) but never played back and heard by a person.
 - No real-display input test: keyboard/mouse input, the window loop, and
   rendering have been exercised offscreen (headless screenshots, scripted
   input) but not against a real display server and real hardware input.

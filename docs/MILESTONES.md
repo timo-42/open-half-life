@@ -6935,3 +6935,179 @@ at **distinct depth 12, Pass** both with `--start-inventory ""` (arrivals
 2 to 12 at `0 weapon(s), 0 round(s)`) and with `--start-inventory
 weapon_357,ammo_357,ammo_357` (arrivals 2 to 12 at one weapon and
 twenty-four rounds).
+
+## M9.NEXT — The game learns to make a noise, and to say which noises it may not make
+
+For nine months this engine has been mute. Not for want of a mixer:
+`ohl-audio` has had a WAV decoder, a resampling software mixer with loop
+points and distance attenuation, a channel-class voice-pool model and an
+output-device selector for a long time, all of it tested. It simply had no
+caller. `ohl-audio` was not a dependency of `ohl-app` or `ohl-engine` at
+all, and all three of the composition root's run paths ended their event
+match with `GameEvent::Sound(_) => {}`. The engine produced cues; nothing
+was on the other end of the wire.
+
+**The wire is connected.** `crates/ohl-app/src/audio.rs` is the audio
+composition root: it opens the platform's default output device, owns one
+`ohl_audio::Mixer` behind an `Arc<Mutex<_>>`, holds a bounded cache of
+decoded sound assets, and turns each frame's `GameEvent::Sound` into a
+`PlayRequest`. Assets are resolved through the same `ohl_engine::AssetSource`
+the renderer already resolves models and sprites through, so a sound comes
+out of the payload's loose files or its PAK archives by exactly the route a
+texture does. The listener is set from the player's eye and the camera's
+own right vector each frame, so what the player hears is panned and
+attenuated from where they are standing.
+
+**What is actually audible, and what is not.** This is the part that took
+the longest to get right, and it is not a code question.
+
+A sound path is either something the *map or a payload data file* names at
+run time, or something the *engine* has to know. The first kind is
+ordinary data flow: an `ambient_generic`'s published `message` keyvalue, a
+`sentences.txt` word list. Nothing about playing those puts a literal in
+this repository, and they are now played. The second kind — which WAV a
+9mm handgun fires with, which one a medkit is picked up with, which one a
+suit charger hums — is exactly what `docs/CLEAN_ROOM.md` rule 7 forbids
+until a clean-room provenance review admits it, and no source this project
+may use publishes Half-Life's sound file layout as reusable data. So
+`ohl_gameplay::sounds`'s three lookup functions still return `None`, each
+still carrying its `TODO(black-box)`, and weapon fire, impacts, pain,
+death, footsteps, jumping, landing, pickups and the chargers all still
+make no sound. Their cues are produced and travel the whole path; they
+carry `SoundAsset::Unresolved` and the mixer never sees them. The
+temptation to fill that table by listing a payload directory is precisely
+the thing rule 7 exists to stop, and it was not done.
+
+What that leaves is more than it sounds like. A GoldSrc level's standing
+ambience — machinery, alarms, dripping water, the hum of a room — is
+almost all `ambient_generic`, and NPC speech is almost all sentences. Both
+now play.
+
+**`ambient_generic`.** A new registry arm in `ohl-game` compiles the
+published keyvalues (`message`, `health` as a volume from 0 to 10, `pitch`
+as a percentage) and the published spawnflags (1/2/4/8 radius, 16 "start
+silent", 32 "is NOT looped") into an `AmbientGeneric` component plus an
+`AmbientState` flag. The flag is flipped by `Simulation::activate_with` —
+the same shared `use`/`target` path that opens a door, gated by the same
+`multisource` master — and never by a second, parallel mechanism. "Start
+silent" decides whether the entity spawns sounding; "is NOT looped" decides
+whether a second activation restarts it or switches it off, per TWHL's
+wording that the flag makes the entity "interpret each call as 'turn on'
+instead of 'toggle state'". Whether the sound then loops is not a flag at
+all: the same page says looping "depends purely on cue points defined in
+the .wav file", which is already exactly what
+`ohl_audio::wav::DecodedWav::effective_loop` reads.
+
+The radius spawnflags become an attenuation, and this is a reading rather
+than a citation, recorded as such. "Play everywhere" is `ATTN_NONE` by its
+own published wording. For the other three, no page states the mapping —
+but the ordering is forced (a larger radius is a slower falloff) and there
+are exactly three remaining published `ATTN_*` values, so they line up in
+exactly one way. `ohl_game` keeps the choice symbolic as an
+`AmbientRadius`, because that crate has no business depending on the mixer;
+`ohl-engine`'s presentation phase applies the numbers.
+
+**Nothing new is saved, deliberately.** `SECTION_SIMULATION` is postcard-
+encoded and not self-describing (M7.12's note), so a new field would
+invalidate every existing save. `AmbientState` is therefore not persisted
+at all: a loaded game rebuilds its registry from the map's entity defaults
+and restarts the level's ambience from its spawn state. An alarm the
+player had switched on is silent again after a load. That is a
+presentation difference, not a simulation one, and it is written down in
+`docs/FORMAT_SOURCES.md` rather than left to be discovered.
+
+**Sentences.** `scripted_sentence` already resolved its speaker and emitted
+a cue; the cue carried `path: None` and the speaker's position was thrown
+away. Both are fixed. The group named by `sentence` is expanded through the
+existing `ohl_engine::SentenceLookup` into one `sound/<word>.wav` per word,
+and the composition root decodes each and joins them into a single buffer
+(`SoundBuffer::concatenate`, which resamples words recorded at different
+rates) played on one `CHAN_VOICE` channel — TWHL describes the point of a
+sentence as stringing files "together back to back", not as playing them
+at once. The cue is spatialised at the speaker, not at the
+`scripted_sentence` entity: the script is a director, and what the player
+hears is the monster it directed. An `ambient_generic` whose `message`
+begins with `!` resolves through the same table, which is the published way
+a mapper plays a VOX line from a point entity.
+
+**The cue itself grew up.** `ohl_gameplay::SoundCue` was three fields — an
+entity, a channel class, and an `Option<&'static str>` that was always
+`None`. A `&'static str` cannot hold a path read out of a map, so it now
+carries a `SoundAsset` (`Unresolved`, one `File`, or a `Sentence`'s word
+list), plus an optional world origin, a volume, a pitch multiplier, an
+attenuation, and a `stop` flag for turning an ambient back off. A cue with
+no origin is played at the listener, which is the right answer for a
+first-person weapon and a pickup the player just walked over.
+
+**Staying silent where silence is the point.** Every headless run path —
+`--screenshot`, `--script`, `--chain-script`, and every test — builds an
+`AudioRuntime::silent()`, which drives a `NullSink` on *every* platform
+rather than relying on Linux happening to have no backend. The mixer still
+runs and every cue still travels the full resolve-and-decode path, so a
+smoke exercises the same code a windowed run does; the frames are simply
+rendered into a buffer that is dropped. Only the windowed loop calls
+`AudioRuntime::open()`. The Linux no-FFI decision is untouched: `cpal` is
+still not a dependency there, and `open_default_device` still returns a
+`NullSink`. `OutputDevice` gained a `pump` method with a no-op default so
+the headless sink can be advanced by the host's own frame time and a
+non-looping sound still ends in a run nobody can hear.
+
+**Bounds.** The asset cache is a least-recently-used map capped at both a
+byte budget (32 MiB of decoded PCM) and an entry count (512), and it
+remembers misses as well as hits, so a sound a map names but an
+installation does not carry is read once rather than every frame. An asset
+larger than the whole cache is played but not held. Sentence concatenation
+is capped at ten minutes of audio. The presentation phase tracks at most
+256 `ambient_generic` entities per map. `NullSink`'s pump clamps its own
+render length, and the runtime clamps the frame time it is handed, so a
+stalled host frame cannot ask for an unbounded buffer.
+
+**Coverage.** Mixer-level tests for the new stop/`is_playing` pair,
+concatenation (including resampling a word recorded at another rate) and
+`SoundBuffer::from_decoded`; `ohl-game` activation tests for the four
+published `ambient_generic` behaviours (spawn state, toggle, unlooped
+restart, and being held back by a `multisource` master); six `ohl-engine`
+integration tests over a synthetic room covering the cue stream a map
+produces, including the volume/pitch keyvalues, the radius-to-attenuation
+reading and a `message` that resolves to nothing; eleven `ohl-app` tests
+covering the cache's bounds and eviction, missing and malformed assets,
+listener orientation, per-ear gain, and a full synthetic-room event stream
+driven through the same calls `game_run` makes. The existing `ohl-audio`
+proptest now carries every arbitrary and mutated WAV all the way through
+`SoundBuffer::from_decoded`, `concatenate`, a spatialised play and a
+render — malformed bytes must not panic anywhere on that path, not only in
+the decoder.
+
+**Explicitly not done.**
+
+- **Every built-in sound path.** Weapons, impacts, pain, death, footsteps,
+  jump/land, pickups and the chargers stay silent, as above. Player pain,
+  death, footstep and jump/land cues are not even *produced* yet — there is
+  no `ohl-player` cue emitter — which was left alone deliberately: adding
+  producers that can only emit `Unresolved` is churn without a sound.
+- **HEV suit speech.** `GameEvent::Suit` still does nothing. Mapping a
+  `SuitOccasion` to a sentence group needs a group-name literal, which is
+  the same rule-7 problem.
+- **Other sound-naming entities.** `speaker`, `env_sound` (room
+  reverb/DSP), `target_cdaudio`, and the `movesnd`/`stopsnd`/`sounds`
+  index keyvalues on doors, buttons, platforms and trains are untouched.
+  `func_rotating`'s and `func_train`'s own sound-path keyvalues *are* map
+  data and could be played by the same route `ambient_generic` now takes;
+  the registry arms for them belong to another worker.
+- **`ambient_generic`'s dynamic presets.** `preset`, `volstart`, `fadein`,
+  `fadeout`, `spinup`, `spindown`, the LFO keys and `cspinup` are parsed by
+  nobody: a sound starts at its authored volume and pitch and stays there.
+  The newer `radius` keyvalue ("max audible distance") is likewise not
+  read; the spawnflags decide.
+- **Sentence modifiers and group tokens.** `SentenceLookup::words` still
+  returns group/wildcard tokens unexpanded, so a `V_DISTS`-style entry
+  resolves to nothing; per-word pitch, splicing and inter-word timing are
+  not modelled.
+- **A real listen.** Nobody has heard any of this. The output is asserted
+  numerically and never played to a person, and on Linux it cannot be.
+
+**Gates**: fmt, clippy (workspace and `--all-features`), `cargo test
+--workspace`, graph (36 crates: `ohl-app -> ohl-audio` needs no table
+change, since the composition root may depend on any workspace crate, and
+the already-allowed `ohl-engine -> ohl-audio` edge is still unused),
+policy, campaign-smoke 93/93 and combat-smoke 37/37, both silent.

@@ -2264,6 +2264,7 @@ dependencies = [
  "hadris-iso",
  "image",
  "ohl-assets",
+ "ohl-audio",
  "ohl-campaign",
  "ohl-core",
  "ohl-engine",

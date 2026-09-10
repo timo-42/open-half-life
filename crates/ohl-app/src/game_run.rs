@@ -31,6 +31,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
+use crate::audio::AudioRuntime;
 use crate::frame_profile::{FrameProfile, FrameSample, LiveFrameProfile};
 
 /// The offscreen capture size, in pixels.
@@ -719,6 +720,11 @@ fn run_script_ticks(
         followed_level_change: false,
         ticks: 0,
     };
+    // Silent on every platform, not merely on the ones with no device: a
+    // scripted run is a reproducible measurement, and it must not make a
+    // noise on the machine it runs on. The mixer still runs, so a cue that
+    // cannot be resolved is still a cue that cannot be resolved here.
+    let mut audio = AudioRuntime::silent();
     for step in script.steps() {
         // A `guard` step has no input of its own: what a defending player
         // presses depends on where the monsters are *this* tick, so it is
@@ -729,8 +735,10 @@ fn run_script_ticks(
             crate::script::ScriptStep::Fixed(input) => *input,
             crate::script::ScriptStep::Guard => ohl_engine::guard_input(game),
         };
+        audio.set_listener(game.eye_position(), game.camera().yaw);
         for event in game.tick(CAPTURE_STEP, &input) {
             match event {
+                GameEvent::Sound(cue) => audio.play(source, &cue),
                 GameEvent::LevelChange { map, landmark } => {
                     let followed = handle_level_change(
                         game,
@@ -740,6 +748,11 @@ fn run_script_ticks(
                         options.follow_level_change,
                         options.script_log,
                     );
+                    if followed {
+                        // The map being left stops humming; the arriving
+                        // one announces its own soundscape from scratch.
+                        audio.stop_all();
+                    }
                     outcome.followed_level_change |= followed;
                 }
                 // The same fixed line the interactive window logs
@@ -752,11 +765,11 @@ fn run_script_ticks(
                 }
                 GameEvent::ChapterTitle(_)
                 | GameEvent::Message { .. }
-                | GameEvent::Sound(_)
                 | GameEvent::Suit(_)
                 | GameEvent::ViewModel(_) => {}
             }
         }
+        audio.frame(CAPTURE_STEP);
         outcome.ticks += 1;
         if options.script_log {
             log.observe(game, CAPTURE_STEP);
@@ -1387,29 +1400,38 @@ fn capture(
         tracing::warn!("Capture viewpoint starts inside solid geometry.");
     }
 
+    // A capture writes a picture, never a sound: silent on every platform
+    // (see `run_script_ticks`'s own note). The mixer still runs so a
+    // capture exercises exactly the same cue-resolution path a windowed
+    // run does.
+    let mut audio = AudioRuntime::silent();
+
     for _ in 0..args.frames.max(1) {
         // The capture stands still (aside from a rider pose following the
         // player): only the world's own animation (doors, light styles,
         // liquid turbulence, model sequences) advances.
+        audio.set_listener(game.eye_position(), game.camera().yaw);
         let events = game.tick(CAPTURE_STEP, &Input::default());
         for event in events {
             match event {
+                GameEvent::Sound(cue) => audio.play(source, &cue),
                 GameEvent::LevelChange { map, landmark } => {
-                    handle_level_change(
+                    if handle_level_change(
                         game,
                         source,
                         &map,
                         &landmark,
                         args.follow_level_change,
                         args.script_log,
-                    );
+                    ) {
+                        audio.stop_all();
+                    }
                 }
                 // Map-authored text, presentation events with nothing to
                 // act on during a still capture (M7.9 P1): none of these
                 // are logged.
                 GameEvent::ChapterTitle(_)
                 | GameEvent::Message { .. }
-                | GameEvent::Sound(_)
                 | GameEvent::Suit(_)
                 | GameEvent::ViewModel(_) => {}
                 GameEvent::PlayerDied => {
@@ -1417,6 +1439,7 @@ fn capture(
                 }
             }
         }
+        audio.frame(CAPTURE_STEP);
         render_capture(
             game,
             &context,
@@ -1470,6 +1493,12 @@ fn windowed(game: Game, source: &AssetFsSource, args: &GameArgs<'_>) -> Result<(
         game,
         source,
         saves: save_slot_dir(),
+        // The one run path that actually wants to be heard. On Linux this
+        // is still a `NullSink` (the recorded no-FFI decision); on
+        // macOS/Windows it reaches CoreAudio/WASAPI, and on a machine with
+        // no output device at all it falls back to silence rather than
+        // failing the run.
+        audio: AudioRuntime::open(),
         input: Input::default(),
         key_use_down: false,
         console: Console::new(),
@@ -1518,6 +1547,8 @@ struct App<'a> {
     /// The save directory quicksave/quickload and the level-change autosave
     /// use, when the platform publishes one.
     saves: Option<ohl_save::SaveSlot>,
+    /// The output device, mixer and sound-asset cache. See `crate::audio`.
+    audio: AudioRuntime,
     input: Input,
     /// Whether "use" was already down as of the last keyboard event, so the
     /// one-frame press edge is not re-latched by key repeat.
@@ -1704,12 +1735,18 @@ impl App<'_> {
         let frame_input = self.input;
         self.input.mouse_delta = (0.0, 0.0);
         self.input.use_pressed = false;
+        // Where the player's ears are for the cues this frame produces.
+        self.audio
+            .set_listener(self.game.eye_position(), self.game.camera().yaw);
         for event in self.game.tick(delta_seconds, &frame_input) {
             match event {
                 GameEvent::LevelChange { map, landmark } => {
                     // Neither string is logged: both are map-derived.
                     if self.game.change_level(self.source, &map, &landmark).is_ok() {
                         tracing::info!("Level changed.");
+                        // The map being left stops sounding; the arriving
+                        // one re-announces its own ambience.
+                        self.audio.stop_all();
                         self.autosave();
                     } else {
                         tracing::warn!("The destination map is not published; staying here.");
@@ -1724,17 +1761,22 @@ impl App<'_> {
                     let seconds = block.total_seconds();
                     self.hud.show_message(block.text, seconds);
                 }
-                // M7.9 P1 presentation events. `ohl_gameplay::SoundCue::path`
-                // is always `None` until a clean-room provenance review
-                // admits a sound asset path, and viewmodel/suit-voice
-                // rendering are later work, so there is nothing to act on
-                // here yet beyond the fixed line below.
-                GameEvent::Sound(_) | GameEvent::Suit(_) | GameEvent::ViewModel(_) => {}
+                // The map's own soundscape and the payload's own speech
+                // are played here; a cue whose asset this project has no
+                // reviewed path for is dropped inside `AudioRuntime::play`
+                // (see `crate::audio` and `ohl_gameplay::sounds`).
+                GameEvent::Sound(cue) => {
+                    let source: &dyn ohl_engine::AssetSource = self.source;
+                    self.audio.play(source, &cue);
+                }
+                // Viewmodel and suit-voice rendering are later work.
+                GameEvent::Suit(_) | GameEvent::ViewModel(_) => {}
                 GameEvent::PlayerDied => {
                     tracing::info!("The player died.");
                 }
             }
         }
+        self.audio.frame(delta_seconds);
         // Health, armor, ammo and the damage flash are `Game::hud()`'s own
         // state (M7.9 P1), written every step from the player's inventory
         // and combat events; the title/message fields above are this

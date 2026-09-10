@@ -43,6 +43,12 @@ clap = { workspace = true, features = ["derive"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 ohl-render = { path = "../ohl-render", version = "=0.1.0" }
+# The mixer, WAV decoder and output-device selection behind `src/audio.rs`.
+# The composition root is the only crate allowed to own an output device;
+# `ohl-engine` produces sound *cues* and never touches a sound file. On
+# Linux this resolves to a `NullSink` with no C library linked at all (see
+# `docs/RENDER_DEPENDENCIES.md`, "Audio backend").
+ohl-audio = { path = "../ohl-audio", version = "=0.1.0" }
 ohl-world = { path = "../ohl-world", version = "=0.1.0" }
 ohl-formats = { path = "../ohl-formats", version = "=0.1.0", features = [
     "std",

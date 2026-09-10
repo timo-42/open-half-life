@@ -6297,3 +6297,141 @@ today (`spec_for(&kind)?` returns `None` for an undefined kind) and so
 never become a hostile `Actor` in the first place — they are out of scope
 for this fix, which only covers a monster the engine already treats as
 alive and attackable.
+
+## Sound playback
+
+The mixer, the WAV decoder and the output-device selection are documented
+under "Audio backend" in `docs/RENDER_DEPENDENCIES.md`; this section records
+the *game* behaviours the audio composition root (`crates/ohl-app/src/audio.rs`)
+and the cue producers implement.
+
+### The published sound constants
+
+- [AMX Mod X scripting API reference, `amxconst`](https://www.amxmodx.org/api/amxconst)
+  (reviewed 2026-09-10). A public scripting-API reference for the GoldSrc
+  engine, not engine source. It publishes the attenuation constants
+  `emit_sound` takes — `ATTN_NONE 0.00`, `ATTN_NORM 0.80`, `ATTN_IDLE 2.00`,
+  `ATTN_STATIC 1.25` — the channel constants `CHAN_AUTO 0`, `CHAN_WEAPON 1`,
+  `CHAN_VOICE 2`, `CHAN_ITEM 3`, `CHAN_BODY 4`, `CHAN_STREAM 5`,
+  `CHAN_STATIC 6`, and `PITCH_NORM 100` / `VOL_NORM 1.0`.
+
+  `ohl_audio::mixer::spatial` carries the four `ATTN_*` values and
+  `ohl_audio::mixer::channel` the two gain constants;
+  `ohl_audio::ChannelClass` was already the seven-class model those channel
+  constants name (see that module's own docs). Only the *names and values*
+  are taken from this page: the falloff curve itself is this project's own
+  linear ramp against `MAX_AUDIBLE_DISTANCE` (1,000 units), which nothing
+  public pins for GoldSrc. That combination does line up with one published
+  number, which is worth recording as corroboration rather than as a
+  citation: `ATTN_NORM` reaches silence at 1,000 / 0.8 = 1,250 units, and
+  1,250 is the "max audible distance" default the published
+  `ambient_generic` definition carries.
+
+  **`TODO(black-box)`**: no public page states GoldSrc's own attenuation
+  curve, its panning law, or how a channel class's voice pool is actually
+  sized. All three remain this project's own model.
+
+### `ambient_generic`
+
+Keyvalues and spawnflags, from the
+[Sven Co-op wiki `ambient_generic`](https://wiki.svencoop.com/Ambient_generic)
+page (fetched directly, reviewed 2026-09-10; a fork's page, so only the
+values shared with the base game's published definition are used) and
+[TWHL's `ambient_generic`](https://twhl.info/wiki/page/ambient_generic)
+and [TWHL's `Tutorial: ambient_generic`](https://twhl.info/wiki/page/Tutorial:_ambient_generic)
+(consulted via search-engine result summaries of the pages, the same 403
+caveat this document already records for TWHL elsewhere):
+
+- `message` — the sound to play. TWHL: it takes "an input in the form
+  path/filename.wav starting from the 'sound' folder", and "to play any
+  sentence from sentences.txt, replace the path/filename.wav with `!`
+  followed by the sentence name". `ohl_game::registry::AmbientGeneric`
+  stores the keyvalue verbatim and `ohl_engine::presentation`'s
+  `resolve_ambient_asset` applies both readings: a plain value becomes
+  `sound/<value>`, and a `!NAME` value is resolved through the same
+  `ohl_engine::SentenceLookup` a `scripted_sentence` speaks from.
+- `health` — the volume. Sven Co-op: "Set how loud the sound shall be in a
+  range from 0 (not audible) to 10 (normal)". Read as `health / 10`.
+- `pitch` — Sven Co-op: "Sound playback speed, in per-cent"; read as
+  `pitch / PITCH_NORM`, which is the multiplier the mixer resamples by.
+  The `0.05..=4.0` clamp on that multiplier is project-owned
+  (**`TODO(black-box)`**: no public page gives the engine's own bounds, and
+  a `pitch` of `0` would otherwise mean a channel that never advances).
+- Spawnflags `1` "Play everywhere", `2` "Small radius", `4` "Medium
+  radius", `8` "Large radius", `16` "Start silent", `32` "Is NOT looped"
+  (Sven Co-op's page words that last bit as "Unlooped/Cyclic — the sound
+  will play once when triggered"; older definitions word it "Not Toggled").
+  The bit values agree across both pages.
+- "Start silent": TWHL — "Checking this means the entity must be triggered
+  to work. If you do not click this flag, the sound will play as soon as
+  the map has loaded." `AmbientState::spawned` is exactly that.
+- "Is NOT looped": TWHL — the flag makes the entity "interpret each call as
+  'turn on' instead of 'toggle state'", it "must be left unchecked for
+  looping sound files", and whether a sound actually loops "depends purely
+  on cue points defined in the .wav file". `AmbientState::activate`
+  implements the first half; the second half is already how
+  `ohl_audio::wav::DecodedWav::effective_loop` works (a `smpl`/`cue ` chunk
+  is the only thing that makes the mixer loop a buffer), so no separate
+  "looping" flag is carried on a cue at all.
+
+**Radius to attenuation.** No public page states which `ATTN_*` value each
+radius spawnflag maps to, and this project does not invent one: "Play
+everywhere" is `ATTN_NONE` by its own published wording, and the ordering of
+the other three is forced — a larger radius must be the slower falloff — so
+the three remaining published constants line up in exactly one way (Large =
+`ATTN_NORM`, Medium = `ATTN_STATIC`, Small = `ATTN_IDLE`). Medium is also
+the default: it is the box the published definition ticks for a fresh
+entity, and an entity carrying no radius flag at all is read the same way.
+`ohl_game::registry::AmbientRadius` keeps the choice symbolic (that crate
+has no `ohl-audio` dependency) and `ohl_engine::presentation`'s
+`attenuation_of` applies the mapping. **`TODO(black-box)`**: the mapping
+itself, and the `radius` keyvalue newer definitions carry ("max audible
+distance"), which is not read.
+
+**Nothing new is saved.** `AmbientState` is deliberately not part of any
+save section. `SECTION_SIMULATION` is postcard-encoded and not
+self-describing (M7.12 in `docs/MILESTONES.md`), so a new field in it would
+invalidate every existing save. A loaded game rebuilds its registry from the
+map's own entity defaults, which restarts the level's ambience from its
+spawn state — a start-silent alarm the player had switched on is silent
+again after a load. That is a presentation difference, not a simulation one.
+
+### `scripted_sentence` and sentences
+
+The entity's own keyvalues are recorded under "`scripted_sentence`" above.
+What is new here is that its cue now carries something to play: the group
+named by `sentence` is resolved through `ohl_engine::SentenceLookup`
+(`sentences.txt`, already cited above under "Plain-text game data files"),
+whose `words` method expands each word token to one `sound/<token>.wav`
+asset. TWHL's `ambient_generic` tutorial describes the point of a sentence
+as "the ability to string together multiple sound files back to back (like
+the VOX announcement system)", so the composition root decodes each word and
+joins them into one buffer (`ohl_audio::SoundBuffer::concatenate`) played on
+one `CHAN_VOICE` channel, rather than starting one channel per word. The cue
+is spatialised at the *speaker's* position, not the `scripted_sentence`'s:
+the script entity is a director, and what the player hears is the monster it
+directed.
+
+**`TODO(black-box)`**: group/wildcard tokens (the documented `V_DISTS`-style
+expansions) are still returned unexpanded by `SentenceLookup::words` and so
+resolve to no asset; sentence modifiers (splicing, per-word pitch shifts,
+timing) are not implemented; and nothing models the per-word delay a real
+VOX announcement has, since the words are simply butted together.
+
+### What is still silent, and why
+
+Weapon fire, impacts, player pain and death, footsteps, jumping and landing,
+pickups and the item chargers all reach the host as cues already — the
+producers exist (`ohl_gameplay::GameplayBridge::on_weapon_action` and
+`on_pickup`) — but every one of them carries `SoundAsset::Unresolved`,
+because the asset path is a *built-in* one the engine would have to know
+rather than one the map or a payload data file names.
+`crates/ohl-gameplay/src/sounds.rs` keeps the three lookup functions
+(`weapon_sound_path`, `pickup_sound_path`, `charger_sound_path`) returning
+`None` with a `TODO(black-box)` each: `docs/CLEAN_ROOM.md` rule 7 requires a
+clean-room provenance review before any name or path literal derived from
+user media enters source, and no source this project may use publishes
+Half-Life's sound file layout as reusable data. The whole path from those
+three functions to a rendered channel is now built and tested; the day a
+reviewed table exists, those three functions are the only thing that has to
+change.

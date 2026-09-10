@@ -1161,6 +1161,172 @@ impl Liquid {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Water(pub Liquid);
 
+/// `ambient_generic`'s published "Play everywhere" spawnflag (bit `1`):
+/// the sound is audible anywhere in the level.
+///
+/// This and the five bits below are the published spawnflag values of
+/// `ambient_generic` (Sven Co-op's `ambient_generic` page and TWHL's; see
+/// `docs/FORMAT_SOURCES.md`, "`ambient_generic`").
+pub const SPAWNFLAG_AMBIENT_PLAY_EVERYWHERE: u32 = 1;
+
+/// `ambient_generic`'s published "Small radius" spawnflag (bit `2`).
+pub const SPAWNFLAG_AMBIENT_SMALL_RADIUS: u32 = 2;
+
+/// `ambient_generic`'s published "Medium radius" spawnflag (bit `4`).
+pub const SPAWNFLAG_AMBIENT_MEDIUM_RADIUS: u32 = 4;
+
+/// `ambient_generic`'s published "Large radius" spawnflag (bit `8`).
+pub const SPAWNFLAG_AMBIENT_LARGE_RADIUS: u32 = 8;
+
+/// `ambient_generic`'s published "Start silent" spawnflag (bit `16`):
+/// "Checking this means the entity must be triggered to work. If you do not
+/// click this flag, the sound will play as soon as the map has loaded"
+/// (TWHL).
+pub const SPAWNFLAG_AMBIENT_START_SILENT: u32 = 16;
+
+/// `ambient_generic`'s published "Is NOT looped" spawnflag (bit `32`):
+/// with it set the entity "interpret[s] each call as 'turn on' instead of
+/// 'toggle state'" (TWHL); Sven Co-op's page words the same bit as "the
+/// sound will play once when triggered".
+pub const SPAWNFLAG_AMBIENT_NOT_LOOPED: u32 = 32;
+
+/// The published maximum of `ambient_generic`'s `health` keyvalue, which is
+/// its volume: "a range from 0 (not audible) to 10 (normal)" (Sven Co-op's
+/// `ambient_generic` page). A cue's volume is `health / 10`.
+pub const AMBIENT_MAX_VOLUME: f32 = 10.0;
+
+/// The published unmodified value of `ambient_generic`'s `pitch` keyvalue,
+/// which is "sound playback speed, in per-cent" (Sven Co-op's page), i.e.
+/// the same `PITCH_NORM` the published sound API constants carry.
+pub const AMBIENT_PITCH_NORM: f32 = 100.0;
+
+/// The slowest playback rate an `ambient_generic`'s `pitch` is read as.
+/// Project-owned clamp: a `pitch` of `0` would otherwise mean a channel
+/// that never advances, and no published page gives the engine's own
+/// bounds. **`TODO(black-box)`**.
+pub const MIN_AMBIENT_PITCH: f32 = 0.05;
+
+/// The fastest playback rate an `ambient_generic`'s `pitch` is read as.
+/// See [`MIN_AMBIENT_PITCH`]. **`TODO(black-box)`**.
+pub const MAX_AMBIENT_PITCH: f32 = 4.0;
+
+/// Which of the published radius spawnflags an `ambient_generic` carries.
+///
+/// The host maps this to a falloff constant; this crate deliberately keeps
+/// it symbolic rather than naming a number, since the published `ATTN_*`
+/// values live with the mixer (`ohl_audio`) and this crate has no
+/// dependency on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AmbientRadius {
+    /// "Play everywhere": no distance falloff at all.
+    Everywhere,
+    /// "Large radius": the slowest falloff of the three radii.
+    Large,
+    /// "Medium radius", the published default. Also what an entity with no
+    /// radius flag at all is read as.
+    #[default]
+    Medium,
+    /// "Small radius": the fastest falloff, so the smallest audible range.
+    Small,
+}
+
+impl AmbientRadius {
+    /// Reads the published radius spawnflags. "Play everywhere" wins over
+    /// any radius flag, and a larger radius wins over a smaller one, so an
+    /// entity with more than one flag ticked is read as the widest it
+    /// asked for rather than being rejected.
+    #[must_use]
+    pub const fn from_spawnflags(spawnflags: u32) -> Self {
+        if spawnflags & SPAWNFLAG_AMBIENT_PLAY_EVERYWHERE != 0 {
+            Self::Everywhere
+        } else if spawnflags & SPAWNFLAG_AMBIENT_LARGE_RADIUS != 0 {
+            Self::Large
+        } else if spawnflags & SPAWNFLAG_AMBIENT_MEDIUM_RADIUS != 0 {
+            Self::Medium
+        } else if spawnflags & SPAWNFLAG_AMBIENT_SMALL_RADIUS != 0 {
+            Self::Small
+        } else {
+            Self::Medium
+        }
+    }
+}
+
+/// `ambient_generic`: a point entity that plays one sound file, or one
+/// `sentences.txt` sentence, at its own position.
+///
+/// The published keyvalues (see `docs/FORMAT_SOURCES.md`,
+/// "`ambient_generic`"): `message` names the sound — "in the form
+/// path/filename.wav starting from the 'sound' folder", or `!NAME` for a
+/// `sentences.txt` sentence — `health` is the volume from 0 to
+/// [`AMBIENT_MAX_VOLUME`], and `pitch` is "sound playback speed, in
+/// per-cent" (100 is unmodified).
+///
+/// This component is compiled keyvalues only: everything mutable lives in
+/// [`AmbientState`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct AmbientGeneric {
+    /// The `message` keyvalue verbatim, still `sound/`-relative and still
+    /// carrying a leading `!` for a sentence. Resolving it to an asset
+    /// path (or to a sentence's word samples) is the engine's job, since
+    /// only it holds the `sentences.txt` lookup.
+    pub message: String,
+    /// `health / AMBIENT_MAX_VOLUME`, clamped to `0.0..=1.0`.
+    pub volume: f32,
+    /// `pitch / AMBIENT_PITCH_NORM`, the playback-rate multiplier, clamped
+    /// to [`MIN_AMBIENT_PITCH`]..=[`MAX_AMBIENT_PITCH`].
+    pub pitch: f32,
+    /// Which published radius spawnflag this entity carries.
+    pub radius: AmbientRadius,
+    /// The published "Is NOT looped" spawnflag: an activation is read as
+    /// "turn on" rather than "toggle".
+    pub not_looped: bool,
+}
+
+/// Whether an [`AmbientGeneric`] is currently sounding, plus a counter that
+/// changes every time it is (re)started.
+///
+/// Deliberately *not* part of any save section: `SECTION_SIMULATION` is
+/// postcard-encoded and not self-describing (see M7.12 in
+/// `docs/MILESTONES.md`), so adding a field to it would break every
+/// existing save. A loaded game rebuilds its registry from the map's own
+/// entity defaults instead, which restarts the level's ambient loops from
+/// their spawn state — audible ambience is presentation, and restarting it
+/// is not a simulation difference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct AmbientState {
+    /// Whether the sound should be playing right now.
+    pub playing: bool,
+    /// Bumped on every start, so a re-activation of an already-playing
+    /// unlooped sound restarts it rather than being read as "no change".
+    pub generation: u32,
+}
+
+impl AmbientState {
+    /// The state an `ambient_generic` spawns in: silent when the published
+    /// "Start silent" spawnflag is set, sounding otherwise.
+    #[must_use]
+    pub const fn spawned(start_silent: bool) -> Self {
+        Self {
+            playing: !start_silent,
+            generation: 0,
+        }
+    }
+
+    /// One activation through the shared `use`/`target` path.
+    ///
+    /// With the published "Is NOT looped" spawnflag the entity "interpret[s]
+    /// each call as 'turn on' instead of 'toggle state'", so every
+    /// activation (re)starts it; without it, an activation toggles.
+    pub const fn activate(&mut self, not_looped: bool) {
+        if not_looped || !self.playing {
+            self.playing = true;
+            self.generation = self.generation.wrapping_add(1);
+        } else {
+            self.playing = false;
+        }
+    }
+}
+
 /// The published `Remove On fire` spawnflag bit of `trigger_auto`.
 pub const SPAWNFLAG_TRIGGER_AUTO_REMOVE_ON_FIRE: u32 = 1;
 
@@ -2388,6 +2554,29 @@ impl Registry {
                                     != 0,
                             },
                         )
+                        .ok();
+                }
+                "ambient_generic" => {
+                    let message = text_field(def, "message");
+                    // The published radius spawnflags, read as the
+                    // published `ATTN_*` falloffs: "play everywhere" is
+                    // `ATTN_NONE`, and of the three radii the largest is
+                    // the slowest falloff. See `docs/FORMAT_SOURCES.md`,
+                    // "`ambient_generic`", for why that ordering is forced
+                    // rather than chosen.
+                    let ambient = AmbientGeneric {
+                        message,
+                        volume: (numeric(def, "health", AMBIENT_MAX_VOLUME) / AMBIENT_MAX_VOLUME)
+                            .clamp(0.0, 1.0),
+                        pitch: (numeric(def, "pitch", AMBIENT_PITCH_NORM) / AMBIENT_PITCH_NORM)
+                            .clamp(MIN_AMBIENT_PITCH, MAX_AMBIENT_PITCH),
+                        radius: AmbientRadius::from_spawnflags(def.spawnflags),
+                        not_looped: def.spawnflags & SPAWNFLAG_AMBIENT_NOT_LOOPED != 0,
+                    };
+                    let start_silent = def.spawnflags & SPAWNFLAG_AMBIENT_START_SILENT != 0;
+                    world.insert_one(entity, ambient).ok();
+                    world
+                        .insert_one(entity, AmbientState::spawned(start_silent))
                         .ok();
                 }
                 "func_ladder" => {

@@ -29,6 +29,18 @@ pub trait OutputDevice {
 
     /// Stops delivering audio. Idempotent.
     fn stop(&mut self);
+
+    /// Renders and discards `frame_count` stereo frames, for a backend
+    /// that has no callback of its own to pull them.
+    ///
+    /// A real device ignores this — its own callback is already pulling —
+    /// so the default is a no-op. [`NullSink`] overrides it, which is what
+    /// lets a headless host keep the mixer's clock running (channels reach
+    /// the end of their buffers and are removed) without ever opening an
+    /// output device.
+    fn pump(&self, frame_count: usize) {
+        let _ = frame_count;
+    }
 }
 
 /// A headless output backend that never touches real hardware: used in
@@ -49,14 +61,19 @@ impl NullSink {
         }
     }
 
+    /// The most frames one [`NullSink::pump`] renders, so a host that
+    /// hands it an implausible time step cannot allocate without bound.
+    /// Roughly a second of 48 kHz audio.
+    pub const MAX_PUMP_FRAMES: usize = 48_000;
+
     /// Pulls and discards `frame_count` stereo frames from the attached
     /// mixer, exercising the same render path a real device's callback
     /// would use. A no-op (not an error) when no mixer is attached yet.
-    pub fn pump(&self, frame_count: usize) {
+    pub fn pump_frames(&self, frame_count: usize) {
         let Some(mixer) = &self.mixer else {
             return;
         };
-        let mut buffer = vec![0.0f32; frame_count * 2];
+        let mut buffer = vec![0.0f32; frame_count.min(Self::MAX_PUMP_FRAMES) * 2];
         if let Ok(mut mixer) = mixer.lock() {
             mixer.render(&mut buffer);
         }
@@ -75,6 +92,10 @@ impl OutputDevice for NullSink {
 
     fn stop(&mut self) {
         self.mixer = None;
+    }
+
+    fn pump(&self, frame_count: usize) {
+        self.pump_frames(frame_count);
     }
 }
 

@@ -90,6 +90,13 @@ pub use guard::{GuardDecision, guard_input, guard_step};
 pub use ids::{entity_id, entity_of};
 pub use input::Input;
 pub use level::{PLAYER_MAX_ARMOR, PLAYER_MAX_HEALTH, SpritePlacement};
+/// The sound-cue vocabulary `GameEvent::Sound` carries, re-exported so a
+/// host can act on one without taking its own `ohl-gameplay` dependency
+/// (the same courtesy `ohl-gameplay` already does for `ohl-audio`).
+pub use ohl_gameplay::{
+    ATTN_IDLE, ATTN_NONE, ATTN_NORM, ATTN_STATIC, ChannelClass, PITCH_NORM, SoundAsset, SoundCue,
+    VOL_NORM,
+};
 pub use reachability::{
     ChangeLevelStatus, FrontierClass, ReachabilityConfig, ReachabilityReport, RoundReport,
     compute_reachability_report,

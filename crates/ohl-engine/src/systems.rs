@@ -821,6 +821,10 @@ impl Systems {
         skill: &ohl_campaign::SkillTable,
     ) {
         self.damage_queue.clear();
+        // A new map has a new soundscape: whatever `ambient_generic`
+        // entities the previous one had are gone, and the arriving map's
+        // own must be announced from scratch.
+        self.presentation.forget_ambients();
         self.ai.attach_level(level, difficulty, skill);
         // Auto-wires a model-backed projectile/deployable kind to whichever
         // of this map's own loaded studio models matches its conventional
@@ -1420,6 +1424,10 @@ impl Systems {
             events,
             &mut self.view_model,
         );
+        // 13b — the level's own `ambient_generic` soundscape, compared
+        // against what was last reported. Read-only over the registry the
+        // shared `use`/`target` path has already updated this step.
+        self.presentation.ambient(level, self.ai.sentence_lookup());
         self.transient_sprites.tick(dt);
         self.view_model.tick(dt);
     }

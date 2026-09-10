@@ -282,11 +282,13 @@ fn a_pre_disaster_scientist_never_joins_the_player() {
     assert!(game.followers().is_empty());
 }
 
-/// A `scripted_sentence` resolves its speaker and emits one cue whose path
-/// is `None`, matching this project's sound-path policy, and fires its
-/// `target` afterwards.
+/// A `scripted_sentence` resolves its speaker and emits one voice cue,
+/// spatialised where that speaker stands, then fires its `target`. This
+/// fixture publishes no `sentences.txt`, so the sentence group resolves to
+/// no word samples and the cue names nothing playable — exactly what the
+/// composition root drops silently.
 #[test]
-fn a_scripted_sentence_speaks_through_a_cue_without_an_asset_path() {
+fn a_scripted_sentence_speaks_through_a_cue_on_the_speakers_voice_channel() {
     let entities = script_room_entities(
         [-192.0, -192.0, 36.0],
         &format!(
@@ -321,7 +323,15 @@ fn a_scripted_sentence_speaks_through_a_cue_without_an_asset_path() {
         for event in game.tick(TICK_SECONDS, &input) {
             match event {
                 GameEvent::Sound(cue) => {
-                    assert_eq!(cue.path, None, "no sound asset path is ever shipped");
+                    assert_eq!(cue.class, ohl_engine::ChannelClass::Voice);
+                    assert!(
+                        cue.origin.is_some(),
+                        "a spoken line is heard where the speaker stands"
+                    );
+                    assert!(
+                        cue.asset.is_unresolved(),
+                        "this fixture publishes no sentences.txt to resolve against"
+                    );
                     cues += 1;
                 }
                 GameEvent::LevelChange { .. } => level_changes += 1,
