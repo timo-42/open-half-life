@@ -693,6 +693,24 @@ fn idle(game: &mut Game, ticks: u32) -> bool {
 /// success only for one into a map `avoid` does not name
 /// ([`reaches_new_map`]).
 fn run_ticks(game: &mut Game, script: &Script, avoid: &[String]) -> bool {
+    // A level change a corpse crossed is not a route. A map may fire its
+    // own level change by name (see `ohl_engine::route_plan`'s scripted
+    // goals), which happens whether or not the player who started that
+    // chain is still alive — so "the change fired" and "the player got
+    // there" are two different questions, and only the second one is
+    // worth writing a route file for.
+    drive_to_level_change(game, script, avoid) == Some(true) && game.player_health() > 0.0
+}
+
+/// Drives `script` until the first level change fires and reports whether
+/// it went somewhere new (`Some(true)`), somewhere already visited
+/// (`Some(false)`), or nowhere at all because the script ran out of ticks
+/// first (`None`).
+///
+/// Deliberately says nothing about the player's state: whether they lived
+/// to see it is [`run_ticks`]'s question, kept separate so each can be
+/// tested for on its own.
+fn drive_to_level_change(game: &mut Game, script: &Script, avoid: &[String]) -> Option<bool> {
     for input in script.inputs() {
         let mut reached = None;
         for event in game.tick(CAPTURE_STEP, input) {
@@ -700,18 +718,11 @@ fn run_ticks(game: &mut Game, script: &Script, avoid: &[String]) -> bool {
                 reached = Some(reaches_new_map(&event, avoid));
             }
         }
-        if let Some(reached) = reached {
-            // A level change a corpse crossed is not a route. A map may
-            // fire its own level change by name (see
-            // `ohl_engine::route_plan`'s scripted goals), which happens
-            // whether or not the player who started that chain is still
-            // alive — so "the change fired" and "the player got there"
-            // are two different questions, and only the second one is
-            // worth writing a route file for.
-            return reached && game.player_health() > 0.0;
+        if reached.is_some() {
+            return reached;
         }
     }
-    false
+    None
 }
 
 /// Restores a fresh game from the planner's own snapshot.
@@ -983,9 +994,9 @@ mod tests {
     use super::*;
     use ohl_engine::MemoryAssets;
     use ohl_engine::test_support::{
-        LiftFixture, PLAN_LADDER_MAP, PLAN_LIFT_MAP, PLAN_SCRIPTED_MAP, PLAN_TURN_MAP,
-        ScriptedStart, plan_ladder_bsp, plan_lift_bsp, plan_pit_bsp, plan_scripted_goal_bsp,
-        plan_turn_bsp,
+        LiftFixture, PLAN_LADDER_MAP, PLAN_LIFT_MAP, PLAN_SCRIPTED_LETHAL_WAIT_DELAY,
+        PLAN_SCRIPTED_MAP, PLAN_TURN_MAP, ScriptedStart, plan_ladder_bsp, plan_lift_bsp,
+        plan_pit_bsp, plan_scripted_goal_bsp, plan_turn_bsp,
     };
 
     fn fixture() -> (MemoryAssets, Game) {
@@ -1002,6 +1013,78 @@ mod tests {
     /// door, the planner writes a script that *actually walks it* — the
     /// replay reaches the level change, which is the only reason a route
     /// is ever written.
+    /// The gate itself, with nothing else in the way of it: one script,
+    /// run twice against the same map built two ways.
+    ///
+    /// The script walks into the volume that starts the chain and then
+    /// stands still. In the lethal build a `trigger_hurt` on that volume
+    /// kills whoever stands there in about two and a half seconds, and the
+    /// chain fires the level change at six — so the change *is* reached,
+    /// over a corpse. In the plain build the same script reaches the same
+    /// change alive.
+    ///
+    /// [`run_ticks`] must answer `false` to the first and `true` to the
+    /// second. Both halves matter: without the second, dropping the
+    /// liveness check from `run_ticks` would still leave this test green
+    /// for the wrong reason (a script that never reached anything).
+    #[test]
+    fn run_ticks_refuses_a_level_change_reached_dead_and_accepts_one_reached_alive() {
+        let walk = ticks_for_distance(240.0, &MoveConfig::default());
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a fixture's own wait, well inside the grammar's bounds"
+        )]
+        let stand = ((PLAN_SCRIPTED_LETHAL_WAIT_DELAY + 4.0) / CAPTURE_STEP).ceil() as u32;
+        let text = format!("{walk} forward\n{stand} wait\n");
+        let script = Script::parse(text.as_bytes()).expect("the hand-written script parses");
+
+        let outcome = |start: ScriptedStart| {
+            let mut assets = MemoryAssets::new();
+            assets.insert(
+                &format!("maps/{PLAN_SCRIPTED_MAP}.bsp"),
+                plan_scripted_goal_bsp("ohlplannext", start),
+            );
+            let load = || {
+                Game::load(&assets as &dyn AssetSource, PLAN_SCRIPTED_MAP)
+                    .expect("the fixture loads")
+            };
+            // The two questions, asked of two identical runs: did the
+            // change fire at all, and does the replay accept it.
+            let fired = drive_to_level_change(&mut load(), &script, &[]);
+            let mut game = load();
+            let accepted = run_ticks(&mut game, &script, &[]);
+            (fired, accepted, game.player_health())
+        };
+
+        let (alive_fired, alive_accepted, alive_health) = outcome(ScriptedStart::ByTrigger);
+        assert_eq!(
+            alive_fired,
+            Some(true),
+            "the script has to reach the level change at all"
+        );
+        assert!(alive_health > 0.0, "the plain build must not kill anybody");
+        assert!(
+            alive_accepted,
+            "a level change reached alive is exactly what a route is"
+        );
+
+        let (dead_fired, dead_accepted, dead_health) = outcome(ScriptedStart::ByLethalWait);
+        assert_eq!(
+            dead_fired,
+            Some(true),
+            "the chain fires the level change over the corpse too, so the change *was* reached"
+        );
+        assert!(
+            dead_health <= 0.0,
+            "the lethal build has to kill the player during the wait, not before it"
+        );
+        assert!(
+            !dead_accepted,
+            "a level change reached dead is not a route this replay may accept"
+        );
+    }
+
     /// A level change a corpse crossed is not a route. The fixture's
     /// chain fires the change by name after its own delay, and the whole
     /// corridor is lethal, so the player who set it going is dead by the

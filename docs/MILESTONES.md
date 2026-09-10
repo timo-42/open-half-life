@@ -6357,6 +6357,16 @@ more path point: the path is straightened before it becomes actions, and a
 straightened out-and-back is a route that never touches the volume it went
 there to set off.
 
+**What the wait could be instead.** A wait is the simplest thing a route
+can do while a script runs, and on this map it is also the worst: standing
+still in front of two hostile monsters is how the player arrives dead. The
+same slot could hold something a body would actually do — a patrol between
+two reached cells, or a retreat away from whatever is hurting — which
+costs the planner nothing it does not already have (it knows which cells
+the walk reached, and which of them are safe to stand in). Worth trying
+before concluding this hop needs anything larger; a `Wait` that can also
+fight is being built separately.
+
 **Chain depth stays 11.** No eleventh route ships. Every attempt the
 planner made reached the volume that starts the map's chain, and every one
 of them ended with the player dead before the level change fired; with the
