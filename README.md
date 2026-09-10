@@ -173,7 +173,14 @@ skipping it; see
 [docs/RENDER_DEPENDENCIES.md](docs/RENDER_DEPENDENCIES.md).
 
 **Scripted input**, for deterministic automated runs (see `crate::script`'s
-grammar in `crates/ohl-app/src/script.rs`):
+grammar in `crates/ohl-app/src/script.rs`). One line of that grammar is not
+a recording at all: `<ticks> guard` hands each of its ticks to the engine's
+own guard loop (`ohl_engine::guard_input`), which decides what to press
+from the game state at that tick — select the best carried weapon that can
+fire, turn toward the nearest hostile monster a shot would actually reach,
+fire once aimed, reload a spent clip, back away when nothing carried can
+answer, and otherwise stand still. It draws on no randomness of its own, so
+a script holding it replays identically:
 
 ```sh
 cargo run --release -p ohl-app -- \
@@ -421,6 +428,19 @@ ever adds floor, but riding a mover *moves* the floor the ride departs
 from, and a walk that began again from the map's entrance could no longer
 reach it.
 
+Standing still is itself a planned action — it is how a route reaches a
+level change no player can walk into, by stepping into the volume that
+starts the map's own `multi_manager`/`multisource` chain and letting the
+chain fire the change by name. But a minute of standing still on a map
+with monsters on it is a minute of being shot at, so the planner emits a
+**guard** rather than a wait whenever the wait runs longer than a few
+seconds or the map has anything hostile on it: the same span of time, with
+the player defending the spot through it (the `guard` line above).
+Choosing to fight back rather than stand there is this project's own
+tactic, not a published behaviour; what it fights *with* is whatever the
+player is carrying, since the chain carries the inventory across maps like
+any other transition.
+
 A run that ends by stepping off a ledge is not over when its ticks are:
 the plan measures that fall, and the script waits it out (`sqrt(2h/g)`
 under the map's own gravity, plus a margin) so the next chunk replays
@@ -519,7 +539,7 @@ fixed terminal line ended it. It exits non-zero when the chain reaches
 fewer distinct maps than `--min-depth` (default 2), or when it re-entered
 a map it had already visited at any depth, or when it followed a level
 change with the player already dead ("The chain walk arrived dead."). The
-shipped chain reaches eleven distinct maps and ends on "The chain walk has
+shipped chain reaches twelve distinct maps and ends on "The chain walk has
 no further route." — it
 runs out of authored routes, not out of map. `--start NAME` walks a different
 chain, and must name a map from `ohl-campaign`'s own cited table.
@@ -533,6 +553,17 @@ planned script replayed to the level change, in which case nothing is
 written at all — a route only ships once the binary has actually walked
 it. `--attempts`, `--goal`, `--cell-cap` and `--round-cap` pass the
 planner's own bounds through.
+
+Both commands take `--start-inventory LIST` and default it to the same
+short list, which every summary they print names on its own row. It is a
+**harness aid and not a claim about the campaign**: the chain's routes are
+planned to walk from one level change to the next and never detour to a
+weapon pickup, so a chain run arrives in the later maps carrying nothing,
+while a player who had walked those same maps would be carrying what the
+maps handed them. The twelfth map is reached by a route that has to hold
+its ground while a scripted chain runs, which empty hands cannot do — so
+the harness supplies the one thing the routes never stop for, and says so
+in the report. Pass `--start-inventory ""` to walk with nothing.
 
 Route files are named by their position in the chain rather than by the
 map they run on, past the first: which map a level change lands in is a
