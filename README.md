@@ -565,6 +565,14 @@ its ground while a scripted chain runs, which empty hands cannot do — so
 the harness supplies the one thing the routes never stop for, and says so
 in the report. Pass `--start-inventory ""` to walk with nothing.
 
+It is meant to be **temporary**: the real answer is a planner that takes a
+bounded detour to a pickup lying near the path it was going to walk
+anyway, so the inventory a chain carries is one its own walk earned. Both
+commands build the app binary themselves with the same feature set
+(`dev-tools`, which is where this flag and `--plan-route` live), and a
+binary passed with `--bin` that does not accept the flag is reported as
+such rather than run.
+
 Route files are named by their position in the chain rather than by the
 map they run on, past the first: which map a level change lands in is a
 fact about the user's own payload, and only lawfully public name literals

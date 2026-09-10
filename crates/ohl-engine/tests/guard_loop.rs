@@ -154,9 +154,16 @@ fn an_empty_loadout_backs_away_from_the_threat() {
         assert!(!game.eye_is_in_solid(), "a retreat never walks into solid");
     }
     let end_distance = monster.distance(glam::Vec3::from_array(game.player_origin()));
+    // A real threshold, not just "further away than it started": a
+    // monster's own melee knockback shoves a player who does nothing at
+    // all about a third of a unit, so `end > start` passes for a guard
+    // loop that was never run at all. Half of one probe is two orders of
+    // magnitude past that and can only have been covered by walking (the
+    // loop as written covers about forty-seven units here).
     assert!(
-        end_distance > start_distance,
-        "an unarmed guard retreats ({start_distance} -> {end_distance})"
+        end_distance - start_distance > ohl_engine::guard::GUARD_RETREAT_PROBE / 2.0,
+        "an unarmed guard retreats half a probe's worth of ground at the very \
+         least ({start_distance} -> {end_distance})"
     );
 }
 
