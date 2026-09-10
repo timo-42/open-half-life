@@ -6181,3 +6181,57 @@ aim at a boundary leading back into a visited map, but a partial plan
 walking as close to the goal as a map allows can cross one on the way, and
 accepting that as "the goal was reached" writes a route whose only effect
 is to send the chain walk back where it came from.
+
+## Monster-hitbox coverage: a fallback box when a model contributes none (M9 follow-up)
+
+A PR #167 guard-loop measurement found a hostile monster roughly 800 units
+away that took 95 rounds for one hit — "no hitbox in the index the
+engine's own attack trace resolves against", not an aim problem.
+`ohl_combat::HitboxIndex::push` rejects any entity whose posed hitbox list
+came out empty (`entity.boxes.is_empty()`), which
+`ohl_engine::combat::rebuild_hitbox_index` had no answer for: a
+model-backed entity contributes zero boxes whenever
+`EntityHitboxes::push_studio_hitboxes` finds nothing to add, and that
+function's own documented behaviour makes that possible for three
+independent, unremarkable reasons — a model published with no hitbox lump
+at all (`StudioModel::hitboxes` empty, `num_hitboxes: 0` in the header),
+a hitbox whose bone the current pose does not carry
+(`StudioPose::hitbox_bounds` returns `None`), and a hitbox whose posed
+extent collapsed to zero or went non-finite in an unusual pose (that
+function's own documented skip). None of these is a reason a monster
+should be permanently unhittable.
+
+`ohl_engine::combat::push_fallback_hitbox` is the fix: when
+`push_studio_hitboxes` adds zero boxes, the entity gets one
+`HitGroup::Generic` box instead, taken from the model's own
+model-space bounding box (`StudioModel::bounds_min`/`bounds_max` — the
+header's `bbmin`/`bbmax`, the same GoldSrc MDL v10 fields cited above under
+"GoldSrc MDL v10 and SPR"; read back from the model's own bytes at load
+time, never a hard-coded per-species size, per `docs/CLEAN_ROOM.md`'s
+runtime-hitbox-source rule). When even that box is degenerate (non-finite,
+or zero or negative on any axis — an empty placeholder model, in practice)
+a fixed, explicitly project-chosen half-extent
+(`ohl_engine::combat::FALLBACK_HITBOX_HALF_EXTENT`, 24 units, roughly a
+crouching human's bounding radius) is used instead, labelled as
+project-chosen rather than model- or engine-sourced.
+
+An audit of the sixteen `MonsterKind`s this project defines (plus the
+published `monster_bullchicken` alias), each loaded from a real,
+already-imported retail payload via `ohl_assets::AssetFs` (PAK-aware) and
+posed at its own bind pose, found every one of those seventeen classnames'
+real studio models already publish a non-empty hitbox lump — the fallback
+never fires for them against real assets today. It is exercised, and
+regression-tested, by a *synthetic* zero-hitbox model
+(`ohl_formats::test_support::build_minimal_mdl10`) instead
+(`ohl_engine::combat::hitbox_fallback_tests`), covering the documented
+cause every published monster model could still hit in an unusual pose (a
+hitbox whose extent collapses, or whose bone is absent from the sampled
+pose) even though none of them lacks a lump outright. The same audit found
+several `monster_*` classnames this project's `MonsterKind` table does not
+define at all (for example `monster_barnacle`, `monster_bigmomma`,
+`monster_alien_controller`, the various `_dead` display classnames): those
+get no `MonsterSpawn` from `ohl_engine::ai::EngineSpawnRules::spawn_for`
+today (`spec_for(&kind)?` returns `None` for an undefined kind) and so
+never become a hostile `Actor` in the first place — they are out of scope
+for this fix, which only covers a monster the engine already treats as
+alive and attackable.
