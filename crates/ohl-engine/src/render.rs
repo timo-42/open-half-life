@@ -441,29 +441,7 @@ impl Renderers {
             let Some(model) = level.submodels.get(&instance.model_index) else {
                 continue;
             };
-            let (rotation_axis, rotation_degrees, rotation_pivot) =
-                brush_pose_rotation(&level.registry, instance.entity);
-            // The same three inputs `Level::sync_brush_collision` poses the
-            // collision hull from, read from the same one helper: a brush
-            // entity is drawn exactly where it collides, including a
-            // `func_tracktrain` turning through a bend.
-            let origin = instance.origin + brush_offset(&level.registry, instance.entity);
-            let transform = if rotation_axis == Vec3::ZERO {
-                placement(origin.to_array(), instance.angles.y)
-            } else {
-                // A rotating mover's compiled geometry is stored relative
-                // to its own origin keyvalue (see `rotated_placement`'s
-                // doc comment) and never also carries a translating
-                // `brush_offset` (`Door::movedir` is left `Vec3::ZERO` for
-                // a `func_door_rotating`, and `func_rotating` has no
-                // offset source at all — see `mover_rotation`'s doc
-                // comment), so adding `brush_offset` above is a no-op for
-                // one. The entity's own authored `angles` yaw is not
-                // reapplied here either: only the live simulation-driven
-                // rotation state matters, which for a `func_tracktrain` is
-                // the yaw it faces its segment at.
-                rotated_placement(origin, rotation_pivot, rotation_axis, rotation_degrees)
-            };
+            let transform = brush_placement(&level.registry, instance.entity, instance.origin);
             if !brush_in_frustum(&model.bounds, &transform, &frustum) {
                 continue;
             }
@@ -483,6 +461,50 @@ impl Renderers {
             target.width.max(1),
             target.height.max(1),
         );
+    }
+}
+
+/// The world placement matrix a brush entity's compiled submodel is drawn
+/// with: `instance_origin` (its `origin` keyvalue) plus however far its own
+/// state machine has moved it, and, for a rotating mover or a turning
+/// `func_tracktrain`, the live rotation `brush_pose_rotation` reports.
+///
+/// The same inputs `Level::sync_brush_collision` poses the collision hull
+/// from, read from the same helpers, so a brush entity is drawn exactly
+/// where it collides.
+///
+/// A translating brush entity is placed by *translation only*. Its authored
+/// `angles`/`angle` keyvalue is deliberately not applied as a rotation: for
+/// `func_door`, `func_button` and `func_plat` that keyvalue names the
+/// direction the entity moves in (the `-1`/`-2` sentinels mean up/down; see
+/// `ohl_game::registry::movedir_from_angles`), and a brush entity without an
+/// origin brush has its geometry compiled in absolute world space, so any
+/// yaw would swing it about the *map* origin. The previous
+/// `placement(origin, angles.y)` did exactly that: a door authored `angle
+/// -1` drew rotated one degree about `(0, 0, 0)`, a purely horizontal shift
+/// of roughly 1.7% of its distance from the map origin — a few pixels
+/// sideways from its own frame — while its collision hull sat in the right
+/// place.
+pub(crate) fn brush_placement(
+    registry: &ohl_game::registry::Registry,
+    entity: Entity,
+    instance_origin: Vec3,
+) -> math::Mat4 {
+    let (rotation_axis, rotation_degrees, rotation_pivot) = brush_pose_rotation(registry, entity);
+    let origin = instance_origin + brush_offset(registry, entity);
+    if rotation_axis == Vec3::ZERO {
+        placement(origin.to_array(), 0.0)
+    } else {
+        // A rotating mover's compiled geometry is stored relative to its
+        // own origin keyvalue (see `rotated_placement`'s doc comment) and
+        // never also carries a translating `brush_offset` (`Door::movedir`
+        // is left `Vec3::ZERO` for a `func_door_rotating`, and
+        // `func_rotating` has no offset source at all — see
+        // `mover_rotation`'s doc comment), so adding `brush_offset` above
+        // is a no-op for one. Only the live simulation-driven rotation
+        // state matters, which for a `func_tracktrain` is the yaw it faces
+        // its segment at.
+        rotated_placement(origin, rotation_pivot, rotation_axis, rotation_degrees)
     }
 }
 
@@ -609,10 +631,84 @@ fn render_props(props: ohl_game::keyvalues::RenderProps) -> RenderProps {
 // `save_sections.rs`'s own precedent for exact-comparison tests.
 #[allow(clippy::float_cmp)]
 mod tests {
-    use super::{brush_in_frustum, rotated_placement};
+    use std::collections::BTreeMap;
+
+    use super::{brush_in_frustum, brush_placement, rotated_placement};
     use glam::{Mat4, Vec3};
+    use ohl_formats::bsp30::Entity as RawEntity;
+    use ohl_game::keyvalues::{Limits, parse_entities};
+    use ohl_game::registry::Registry;
     use ohl_render::FreeFlyCamera;
     use ohl_world::{Aabb, Frustum};
+
+    /// A registry holding one brush entity (`*1`, targetname `mover`) with
+    /// the given keyvalues. This project's own synthetic fixture; no bytes
+    /// here come from any game installation (see `docs/CLEAN_ROOM.md`).
+    fn registry_with_brush(keys: &[(&str, &str)]) -> Registry {
+        let mut pairs = vec![("targetname", "mover"), ("model", "*1")];
+        pairs.extend_from_slice(keys);
+        let raw: RawEntity = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        let defs = parse_entities(&[raw], &Limits::default());
+        let mut bounds = BTreeMap::new();
+        bounds.insert(1u32, ([600.0, -300.0, 0.0], [664.0, -292.0, 96.0]));
+        Registry::build(&defs, &bounds, &Limits::default())
+    }
+
+    /// A translating brush entity's authored `angles`/`angle` is a move
+    /// direction, not a rotation, so at rest it must be placed by the
+    /// identity: its geometry is compiled in world space and any yaw would
+    /// swing it about the map origin. The regression this pins: a
+    /// `func_door` with `angle -1` ("up") drew rotated one degree about
+    /// `(0, 0, 0)`, a horizontal shift of several units, while a `func_door`
+    /// with a sideways yaw would have drawn a quarter turn away from its
+    /// frame.
+    #[test]
+    fn translating_brush_entities_ignore_their_authored_yaw() {
+        for (classname, angle_key, angle) in [
+            ("func_door", "angle", "-1"),
+            ("func_door", "angle", "-2"),
+            ("func_door", "angles", "0 90 0"),
+            ("func_button", "angle", "180"),
+            ("func_plat", "angles", "0 45 0"),
+            ("func_wall", "angles", "0 30 0"),
+        ] {
+            let registry = registry_with_brush(&[("classname", classname), (angle_key, angle)]);
+            let entity = registry.find("mover")[0];
+            let matrix = brush_placement(&registry, entity, Vec3::ZERO);
+            assert_eq!(
+                matrix,
+                Mat4::IDENTITY.to_cols_array(),
+                "{classname} {angle_key} {angle} must be placed by the identity at rest"
+            );
+        }
+    }
+
+    /// The live travel offset still applies on top: a door caught mid-slide
+    /// is translated by that offset and nothing else.
+    #[test]
+    fn translating_brush_placement_is_the_live_offset_alone() {
+        let registry = registry_with_brush(&[
+            ("classname", "func_door"),
+            ("angle", "-1"),
+            ("speed", "100"),
+            ("lip", "0"),
+        ]);
+        let entity = registry.find("mover")[0];
+        {
+            let mut door = registry
+                .world
+                .get::<&mut ohl_game::registry::Door>(entity)
+                .expect("the fixture entity is a door");
+            door.state = ohl_game::registry::MoverState::Open;
+        }
+        let expected = ohl_game::pose::brush_offset(&registry, entity);
+        assert!(expected.z > 0.0, "an open up-door has travelled upward");
+        let matrix = brush_placement(&registry, entity, Vec3::ZERO);
+        assert_eq!(matrix, Mat4::from_translation(expected).to_cols_array());
+    }
 
     #[test]
     fn brush_culling_uses_live_translation_and_camera_direction() {

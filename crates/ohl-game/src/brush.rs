@@ -26,8 +26,6 @@ pub struct ModelInstance {
     /// door mid-slide); the brush geometry itself is already baked in
     /// world space.
     pub origin: Vec3,
-    /// `pitch yaw roll`, in degrees.
-    pub angles: Vec3,
     /// `rendermode`/`renderamt`/`rendercolor`.
     pub render: RenderProps,
 }
@@ -172,7 +170,6 @@ fn collect_solid_model_instances(
             entity,
             model_index: model.0,
             origin: transform.origin,
-            angles: transform.angles,
             render: *render,
         });
     }
@@ -225,7 +222,6 @@ pub fn contents_model_instances(registry: &Registry) -> Vec<(ModelInstance, Cont
                 entity,
                 model_index: model.0,
                 origin: transform.origin,
-                angles: transform.angles,
                 render: *render,
             },
             kind,
@@ -253,7 +249,6 @@ pub fn model_instances(registry: &Registry) -> Vec<ModelInstance> {
             entity,
             model_index: model.0,
             origin: transform.origin,
-            angles: transform.angles,
             render: *render,
         });
     }
