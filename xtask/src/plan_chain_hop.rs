@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 
-use crate::chain_walk::{APP_BIN_NAME, assemble_chain, build_release_binary, capture_stderr};
+use crate::chain_walk::{assemble_chain, build_chain_binary, capture_stderr};
 
 /// `cargo xtask plan-chain-hop` command line.
 #[derive(Debug, Parser)]
@@ -197,32 +197,6 @@ pub fn write_summary(
     out
 }
 
-/// Builds the release `open-half-life` binary with `dev-tools`, which is
-/// where `--plan-route` lives.
-fn build_dev_tools_binary(root: &Path) -> Result<PathBuf, &'static str> {
-    let status = Command::new("cargo")
-        .args([
-            "build",
-            "-p",
-            "ohl-app",
-            "--release",
-            "--features",
-            "dev-tools",
-        ])
-        .current_dir(root)
-        .status()
-        .map_err(|_| "cargo build -p ohl-app --release --features dev-tools failed")?;
-    if !status.success() {
-        return Err("cargo build -p ohl-app --release --features dev-tools failed");
-    }
-    let name = if cfg!(windows) {
-        format!("{APP_BIN_NAME}.exe")
-    } else {
-        APP_BIN_NAME.to_string()
-    };
-    Ok(root.join("target").join("release").join(name))
-}
-
 /// Entry point for `cargo xtask plan-chain-hop`.
 pub fn run(root: &Path, raw_args: &[String]) -> ExitCode {
     let args = match Args::try_parse_from(
@@ -256,7 +230,7 @@ pub fn run(root: &Path, raw_args: &[String]) -> ExitCode {
 
     let bin = match args.bin.clone() {
         Some(bin) => bin,
-        None => match build_dev_tools_binary(root).or_else(|_| build_release_binary(root)) {
+        None => match build_chain_binary(root) {
             Ok(bin) => bin,
             Err(error) => {
                 eprintln!("error: {error}");

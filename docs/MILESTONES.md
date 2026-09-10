@@ -6432,6 +6432,20 @@ Three of its rules earned their place by being measured on the map:
   engine's own trace (`Game::shot_would_reach`) which entity a shot from
   the eye would hit is the only honest way to tell an unhittable target
   from a real one. With the filter in: 22 shots, 22 hits, three kills.
+  Removing only this check turns the chain back into depth 11, "arrived
+  dead", so it is load-bearing rather than defensive.
+
+  Reviewing this milestone found *why* that monster had no hitbox, and it
+  is an engine gap rather than anything about the guard: it was spawned at
+  runtime by a `monstermaker`, and the spawn path gives a child a
+  classname, a transform, an actor, a brain and health but never a
+  `StudioAnim` — which is the only thing the hitbox index is ever built
+  from. Every maker-spawned monster is therefore unhittable by any
+  hitscan or projectile attack, and never drawn: it can hurt the player
+  and cannot be hurt back. That is being fixed on its own branch (the
+  same second attach pass a carried entity already gets on a level change
+  or a save restore). The filter stays either way — it is what tells the
+  guard that *this* target is not worth a clip, whatever the reason.
 - **An aim tolerance that narrows with range.** A fixed few degrees is a
   hit at arm's length and several feet wide across a room. The tolerance
   is now the angle a small radius subtends at the target's own distance,
@@ -6471,6 +6485,18 @@ harness aid in place has to say so. It is a harness aid, not a claim about
 the campaign. `--start-inventory ""` walks with nothing, and reaches the
 eleventh map alive and the twelfth dead.
 
+It is also **explicitly temporary**, and the reason is in the measurement
+that made it necessary: the chain reaches the eleventh map with an empty
+inventory after ten maps, which means its routes pick up *nothing* — no
+weapon, no ammo, no health, no suit — because the planner has never had a
+reason to walk anywhere except toward the next level change. The honest
+answer is a planner that takes a bounded detour to a reachable
+`weapon_*`/`ammo_*`/`item_*` pickup lying near the path it was going to
+walk anyway, so the inventory a chain carries is one its own walk earned;
+that would also widen this hop's one-hit margin without the harness
+putting a thumb on the scale. Tracked as the next milestone; until it
+lands, a depth reported with a loadout says so on its own row.
+
 **Fixtures.** The synthetic corridor M9.36 built for scripted goals grew a
 variant with a monster hostile to the player at the far end and a chain
 long enough that standing through it is fatal. Making that fixture bite
@@ -6481,8 +6507,21 @@ player and guarding kills the monster; the app's own end-to-end test plans
 a guarded route, replays it, and then turns that one line back into a
 plain `wait` and watches the same route die.
 
+**One binary, one feature set.** Review caught the chain harness building
+its own app binary *without* `dev-tools` while passing a `dev-tools`-only
+flag to it: on a clean tree the walk died with "unexpected argument"
+before it loaded a map and reported depth 0, and only passed when a
+`plan-chain-hop` build happened to have left a `dev-tools` binary at the
+path the walk's own build then overwrote. Both subcommands now build
+through one shared helper with one argument list (asserted by a test),
+the flag is omitted entirely for an empty list, and a binary handed in
+with `--bin` is asked — through its own `--help` — whether it takes the
+flag at all, so a mismatch is reported as a mismatch instead of as a walk
+that went nowhere.
+
 **Gates**: fmt, clippy (workspace, `--features dev-tools`, and
 `--all-features`), `cargo test --workspace`, policy, graph, combat-smoke
 37/37 with 0 unexpected lines, campaign-smoke 93/93,
 `--reachability-report` unchanged against a build of the base, and
-`cargo xtask chain-walk` at **distinct depth 12**, Pass.
+`cargo xtask chain-walk` — with no `--bin`, from a tree with no binary
+built at all — at **distinct depth 12**, Pass.
