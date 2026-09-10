@@ -55,7 +55,7 @@ use ohl_combat::{
 use ohl_game::hecs::Entity;
 use ohl_game::registry::{Breakable, BrushBounds, Button, RotButton, Transform};
 use ohl_physics::{CollisionModel, PlayerController};
-use ohl_world::StudioPose;
+use ohl_world::{StudioModel, StudioPose};
 
 use crate::components::StudioAnim;
 use crate::damage_map;
@@ -656,10 +656,60 @@ pub(crate) fn rebuild_hitbox_index(hitboxes: &mut HitboxIndex, level: &Level) {
         let pose = StudioPose::sample(model, anim.sequence, anim.cycle)
             .unwrap_or_else(|_| StudioPose::bind(model));
         let mut entry = EntityHitboxes::from_transform(entity_id(entity), transform);
-        entry.push_studio_hitboxes(&pose, &model.hitboxes);
+        let added = entry.push_studio_hitboxes(&pose, &model.hitboxes);
+        if added == 0 {
+            push_fallback_hitbox(&mut entry, model);
+        }
         hitboxes.push(entry);
     }
     push_damageable_brush_hitboxes(hitboxes, level);
+}
+
+/// The project-chosen fallback half-extent, in world units, used only when
+/// [`push_fallback_hitbox`] cannot find any usable size in the model's own
+/// data either (see that function's doc comment for when that happens).
+/// Roughly a crouching human's bounding radius; not derived from any
+/// engine source, published spec or measurement of proprietary content —
+/// picked so a fallback box is closer to "wrong size, still shootable"
+/// than to "point-sized and nearly impossible to land a shot on."
+const FALLBACK_HITBOX_HALF_EXTENT: f32 = 24.0;
+
+/// Gives `entry` one [`HitGroup::Generic`] hitbox from `model`'s own
+/// model-space bounding box (`StudioModel::bounds_min`/`bounds_max`, the
+/// header `bbmin`/`bbmax` GoldSrc's own clipping code reads) when it has
+/// none of its own to contribute.
+///
+/// [`rebuild_hitbox_index`] calls this exactly when
+/// [`EntityHitboxes::push_studio_hitboxes`] added zero boxes for a
+/// model-backed entity — which [`HitboxIndex::push`] would otherwise
+/// reject outright (`entity.boxes.is_empty()`), dropping the entity from
+/// the index and making it unhittable by any attack trace no matter how
+/// carefully aimed. Three independent causes all end up here: a model
+/// published with no hitbox lump at all (`StudioModel::hitboxes` empty), a
+/// hitbox whose bone the current pose does not carry
+/// (`StudioPose::hitbox_bounds` returns `None`), and a hitbox whose posed
+/// extent collapsed to zero or went non-finite in an unusual pose (that
+/// function's own documented skip). None of these is a reason a monster
+/// should be unhittable — see `docs/CLEAN_ROOM.md`'s runtime-hitbox-source
+/// rule and the M9 monster-hitbox-coverage audit this fallback belongs to.
+///
+/// The box is a fallback, not a citation: `bounds_min`/`bounds_max` is
+/// read back from the model's own bytes at runtime (never a hard-coded
+/// per-species size), and when even that is degenerate (non-finite, or
+/// zero or negative on any axis — an empty placeholder model, in
+/// practice) this project's own [`FALLBACK_HITBOX_HALF_EXTENT`] is used
+/// instead, clearly labelled as project-chosen rather than model- or
+/// engine-sourced.
+fn push_fallback_hitbox(entry: &mut EntityHitboxes, model: &StudioModel) {
+    let min = glam::Vec3::from_array(model.bounds_min);
+    let max = glam::Vec3::from_array(model.bounds_max);
+    let (min, max) = if min.is_finite() && max.is_finite() && (max - min).min_element() > 0.0 {
+        (min, max)
+    } else {
+        let half = glam::Vec3::splat(FALLBACK_HITBOX_HALF_EXTENT);
+        (-half, half)
+    };
+    entry.push_box(0, min, max, HitGroup::Generic);
 }
 
 /// Adds one whole-brush hitbox for every brush entity a shot is allowed to
@@ -1085,5 +1135,94 @@ mod weapon_wiring_tests {
             damage_queue[0].target, target,
             "the player must never be the hit entity"
         );
+    }
+}
+
+/// M9 monster-hitbox-coverage regression: every `MonsterKind` this project
+/// defines must produce a hittable body, even when its studio model
+/// publishes no hitbox lump at all (`push_fallback_hitbox`'s documented
+/// first cause). PR #167's own finding — 95 shots at a hostile monster
+/// ~800 units away for one hit, because that monster "has no hitbox in the
+/// index the engine's own attack trace resolves against" — is exactly what
+/// [`HitboxIndex::push`] rejecting an entity with zero boxes causes; this
+/// module's fallback is the fix, and this is its regression coverage.
+#[cfg(test)]
+mod hitbox_fallback_tests {
+    use super::rebuild_hitbox_index;
+    use crate::assets::MemoryAssets;
+    use crate::level::Level;
+    use crate::test_support::{NEXT_MAP, synthetic_map_bsp_with_extra_entity};
+    use glam::Vec3;
+    use ohl_combat::{HitboxIndex, HitboxLimits, TraceFilter, TraceMask, trace_attack_filtered};
+
+    /// A level with the synthetic room fixture plus one `classname` monster
+    /// at `48 0 32` (well inside the closed room; see
+    /// `crate::test_support::synthetic_map_bsp_with_entities`'s doc
+    /// comment for its `±192` extents), whose default model is a minimal,
+    /// valid, synthetic MDL10 with **no hitbox lump**
+    /// (`ohl_formats::test_support::build_minimal_mdl10`, `num_hitboxes:
+    /// 0`) — the same shape a real published studio model with no hitbox
+    /// data, or one whose posed hitboxes all collapsed, would leave
+    /// [`super::push_fallback_hitbox`] to cover.
+    fn level_with_hitboxless_monster(classname: &str, model_path: &str) -> Level {
+        let bsp = synthetic_map_bsp_with_extra_entity(
+            NEXT_MAP,
+            &format!("{{\n\"classname\" \"{classname}\"\n\"origin\" \"48 0 32\"\n}}\n"),
+        );
+        let mut assets = MemoryAssets::new();
+        assets.insert("maps/ohlsynth.bsp", bsp.clone());
+        let (mdl_bytes, _layout) = ohl_formats::test_support::build_minimal_mdl10();
+        assets.insert(model_path, mdl_bytes);
+        Level::from_bytes(&assets, "ohlsynth", &bsp).expect("the fixture level loads")
+    }
+
+    /// Fires a `TraceMask::SHOT` shot from well outside the monster's own
+    /// position, straight at it, through the level's own world collision
+    /// (so a hit here also proves the closed room's walls do not swallow
+    /// the shot first) and reports whether an entity — not the world —
+    /// stopped it.
+    fn shot_hits_the_monster(level: &Level) -> bool {
+        let mut hitboxes = HitboxIndex::new(HitboxLimits::default());
+        rebuild_hitbox_index(&mut hitboxes, level);
+        assert!(
+            !hitboxes.is_empty(),
+            "the monster's entity must still be in the index even with no hitbox lump"
+        );
+        let world = level
+            .collision
+            .as_ref()
+            .expect("the synthetic room builds world collision");
+        let start = Vec3::new(-100.0, 0.0, 32.0);
+        let end = Vec3::new(48.0, 0.0, 32.0);
+        let filter = TraceFilter::new(TraceMask::SHOT);
+        trace_attack_filtered(world, &hitboxes, start, end, filter).hit_entity()
+    }
+
+    #[test]
+    fn every_defined_monster_kind_is_hit_by_a_straight_shot_with_no_hitbox_lump() {
+        for kind in ohl_ai::MonsterKind::defined() {
+            let model_path = kind
+                .default_model_path()
+                .expect("every defined MonsterKind publishes a default model path");
+            let level = level_with_hitboxless_monster(kind.classname(), model_path);
+            assert!(
+                shot_hits_the_monster(&level),
+                "{}: a straight shot missed a monster whose model has no hitbox lump; \
+                 the fallback bounding box did not make it hittable",
+                kind.classname()
+            );
+        }
+    }
+
+    /// `monster_bullchicken` is `MonsterKind::Bullsquid`'s published alias
+    /// (see `MonsterKind::from_classname`'s doc comment); this is not a
+    /// distinct kind but the same fix must cover it when a map spawns it
+    /// under that spelling.
+    #[test]
+    fn the_bullsquid_alias_classname_is_hit_too() {
+        let kind = ohl_ai::MonsterKind::from_classname("monster_bullchicken");
+        let model_path = kind.default_model_path().expect("bullsquid has a model");
+        let level = level_with_hitboxless_monster("monster_bullchicken", model_path);
+        assert!(shot_hits_the_monster(&level));
     }
 }
