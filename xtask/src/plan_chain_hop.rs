@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 
-use crate::chain_walk::{APP_BIN_NAME, assemble_chain, build_release_binary, capture_stderr};
+use crate::chain_walk::{assemble_chain, build_chain_binary, capture_stderr};
 
 /// `cargo xtask plan-chain-hop` command line.
 #[derive(Debug, Parser)]
@@ -84,6 +84,16 @@ struct Args {
     /// Timeout for the whole run, in seconds.
     #[arg(long, default_value_t = 3_600)]
     timeout: u64,
+
+    /// A `--start-inventory` list handed to the app at the *start* map's
+    /// load, carried onward by the chain exactly as a picked-up weapon
+    /// would be. Defaults to
+    /// [`crate::chain_walk::CHAIN_START_INVENTORY`], which is what
+    /// `cargo xtask chain-walk` will walk the planned route with; see
+    /// there for what it is and is not a claim about. Pass an empty string
+    /// for none.
+    #[arg(long, value_name = "LIST", default_value = crate::chain_walk::CHAIN_START_INVENTORY)]
+    start_inventory: String,
 }
 
 /// The fixed line the app logs once a planned route has been written.
@@ -152,7 +162,13 @@ pub fn parse_report(stderr: &str) -> PlanReport {
 /// contents, a payload path, or any map name beyond the caller's own
 /// `ohl_campaign`-table start name.
 #[must_use]
-pub fn write_summary(start: &str, routes: usize, report: &PlanReport, elapsed: Duration) -> String {
+pub fn write_summary(
+    start: &str,
+    routes: usize,
+    report: &PlanReport,
+    start_inventory: Option<&str>,
+    elapsed: Duration,
+) -> String {
     use std::fmt::Write as _;
 
     let mut out = String::new();
@@ -161,6 +177,9 @@ pub fn write_summary(start: &str, routes: usize, report: &PlanReport, elapsed: D
     let _ = writeln!(out, "Wall-clock elapsed: {:.1}s\n", elapsed.as_secs_f64());
     out.push_str("| Measure | Value |\n|---|---|\n");
     let _ = writeln!(out, "| Routes already in the chain | {routes} |");
+    if let Some(list) = start_inventory {
+        let _ = writeln!(out, "| Start inventory (harness aid) | {list} |");
+    }
     for (label, value) in &report.values {
         let _ = writeln!(out, "| {label} | {value} |");
     }
@@ -176,32 +195,6 @@ pub fn write_summary(start: &str, routes: usize, report: &PlanReport, elapsed: D
         }
     );
     out
-}
-
-/// Builds the release `open-half-life` binary with `dev-tools`, which is
-/// where `--plan-route` lives.
-fn build_dev_tools_binary(root: &Path) -> Result<PathBuf, &'static str> {
-    let status = Command::new("cargo")
-        .args([
-            "build",
-            "-p",
-            "ohl-app",
-            "--release",
-            "--features",
-            "dev-tools",
-        ])
-        .current_dir(root)
-        .status()
-        .map_err(|_| "cargo build -p ohl-app --release --features dev-tools failed")?;
-    if !status.success() {
-        return Err("cargo build -p ohl-app --release --features dev-tools failed");
-    }
-    let name = if cfg!(windows) {
-        format!("{APP_BIN_NAME}.exe")
-    } else {
-        APP_BIN_NAME.to_string()
-    };
-    Ok(root.join("target").join("release").join(name))
 }
 
 /// Entry point for `cargo xtask plan-chain-hop`.
@@ -237,7 +230,7 @@ pub fn run(root: &Path, raw_args: &[String]) -> ExitCode {
 
     let bin = match args.bin.clone() {
         Some(bin) => bin,
-        None => match build_dev_tools_binary(root).or_else(|_| build_release_binary(root)) {
+        None => match build_chain_binary(root) {
             Ok(bin) => bin,
             Err(error) => {
                 eprintln!("error: {error}");
@@ -258,6 +251,9 @@ pub fn run(root: &Path, raw_args: &[String]) -> ExitCode {
         .arg(&start);
     for route in &routes {
         command.arg("--chain-script").arg(route);
+    }
+    if !args.start_inventory.is_empty() {
+        command.arg("--start-inventory").arg(&args.start_inventory);
     }
     command
         .arg("--plan-route")
@@ -280,7 +276,16 @@ pub fn run(root: &Path, raw_args: &[String]) -> ExitCode {
     let stderr = capture_stderr(command, Duration::from_secs(args.timeout));
     let elapsed = started.elapsed();
     let report = parse_report(&stderr);
-    print!("{}", write_summary(&start, routes.len(), &report, elapsed));
+    print!(
+        "{}",
+        write_summary(
+            &start,
+            routes.len(),
+            &report,
+            Some(args.start_inventory.as_str()).filter(|list| !list.is_empty()),
+            elapsed
+        )
+    );
 
     if report.written {
         ExitCode::SUCCESS
@@ -322,7 +327,7 @@ mod tests {
         assert!(!report.written);
         assert!(!report.chain_incomplete);
         assert!(report.values.is_empty());
-        let summary = write_summary("c0a0", 5, &report, Duration::from_secs(3));
+        let summary = write_summary("c0a0", 5, &report, None, Duration::from_secs(3));
         assert!(summary.contains("Fail (no route replayed to the goal"));
         assert!(summary.contains("| Routes already in the chain | 5 |"));
     }
@@ -343,7 +348,7 @@ mod tests {
             "the fixed refusal line was recognised"
         );
         assert!(report.values.is_empty());
-        let summary = write_summary("c0a0", 5, &report, Duration::from_secs(3));
+        let summary = write_summary("c0a0", 5, &report, None, Duration::from_secs(3));
         assert!(
             summary.contains("Fail (the chain did not arrive cleanly; nothing was planned)"),
             "the refusal reads as distinct from an ordinary planning failure"

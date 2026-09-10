@@ -45,6 +45,7 @@
 //! the same rule the `xtask/smoke-scenarios/` files already do: script
 //! commands, table names and route words only.
 
+use std::ffi::OsString;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -81,7 +82,31 @@ struct Args {
     /// Timeout for the whole chain run, in seconds.
     #[arg(long, default_value_t = 600)]
     timeout: u64,
+
+    /// A `--start-inventory` list handed to the app at the *start* map's
+    /// load, carried onward by `ohl_engine::transition` exactly as a
+    /// picked-up weapon would be. Defaults to
+    /// [`CHAIN_START_INVENTORY`]; pass an empty string for none.
+    #[arg(long, value_name = "LIST", default_value = CHAIN_START_INVENTORY)]
+    start_inventory: String,
 }
+
+/// The loadout `cargo xtask chain-walk` gives the player at the start map
+/// unless told otherwise, and which every summary it prints names.
+///
+/// **Honest about what it is: a harness aid, not a claim about the
+/// campaign.** The chain's routes are planned to walk from one level
+/// change to the next; they do not detour to weapon pickups, so a chain
+/// run arrives in the later maps carrying nothing, while a player who had
+/// walked those same maps would be carrying what the maps handed them. A
+/// hop whose route has to hold a spot on a populated map
+/// (`ohl_engine::PlanAction::Guard`) cannot be walked at all with empty
+/// hands, and a depth counted from a walk that could not have happened is
+/// worth nothing — so the harness supplies the one thing the routes never
+/// stop for, and the summary always prints it. The list itself is two
+/// `ohl_combat::classify_classname` classnames, no more than one weapon's
+/// worth of what the campaign hands out long before this depth.
+pub const CHAIN_START_INVENTORY: &str = "weapon_357,ammo_357,ammo_357";
 
 /// The most routes one chain may hold, so a stray file cannot make the
 /// walk unbounded.
@@ -241,6 +266,7 @@ pub fn write_summary(
     routes: usize,
     report: &ChainReport,
     min_depth: usize,
+    start_inventory: Option<&str>,
     elapsed: Duration,
 ) -> String {
     use std::fmt::Write as _;
@@ -264,6 +290,9 @@ pub fn write_summary(
         report.stopped_at.unwrap_or("(no terminal line was logged)")
     );
     let _ = writeln!(out, "| Required depth | {min_depth} |");
+    if let Some(list) = start_inventory {
+        let _ = writeln!(out, "| Start inventory (harness aid) | {list} |");
+    }
     let _ = writeln!(
         out,
         "| Result | {} |",
@@ -286,15 +315,41 @@ pub fn passed(report: &ChainReport, min_depth: usize) -> bool {
 
 pub const APP_BIN_NAME: &str = "open-half-life";
 
-/// Builds the release `open-half-life` binary and returns its path.
-pub fn build_release_binary(root: &Path) -> Result<PathBuf, &'static str> {
+/// The `cargo` arguments both chain subcommands build their binary with.
+///
+/// `--features dev-tools` is not optional here, and both subcommands must
+/// pass exactly this list. The flags these commands drive the app with —
+/// `--plan-route` for `plan-chain-hop`, `--start-inventory` for a chain
+/// walk that has to arrive somewhere with something in hand — exist only
+/// in a `dev-tools` build, and both write their result to the *same*
+/// `target/release/open-half-life`. Two subcommands building that path
+/// with different feature sets means whichever ran last decides whether
+/// the other one's flags exist at all, which is exactly how a chain walk
+/// came to report depth 0 on a clean tree ("unexpected argument
+/// `--start-inventory`") while passing whenever a `plan-chain-hop` build
+/// happened to have gone first.
+pub const CHAIN_BINARY_BUILD_ARGS: [&str; 6] = [
+    "build",
+    "-p",
+    "ohl-app",
+    "--release",
+    "--features",
+    "dev-tools",
+];
+
+/// The fixed error both subcommands report when that build fails.
+const BUILD_FAILED: &str = "cargo build -p ohl-app --release --features dev-tools failed";
+
+/// Builds the release `open-half-life` binary both chain subcommands
+/// drive, with [`CHAIN_BINARY_BUILD_ARGS`], and returns its path.
+pub fn build_chain_binary(root: &Path) -> Result<PathBuf, &'static str> {
     let status = Command::new("cargo")
-        .args(["build", "-p", "ohl-app", "--release"])
+        .args(CHAIN_BINARY_BUILD_ARGS)
         .current_dir(root)
         .status()
-        .map_err(|_| "cargo build -p ohl-app --release failed")?;
+        .map_err(|_| BUILD_FAILED)?;
     if !status.success() {
-        return Err("cargo build -p ohl-app --release failed");
+        return Err(BUILD_FAILED);
     }
     let name = if cfg!(windows) {
         format!("{APP_BIN_NAME}.exe")
@@ -304,25 +359,84 @@ pub fn build_release_binary(root: &Path) -> Result<PathBuf, &'static str> {
     Ok(root.join("target").join("release").join(name))
 }
 
+/// The fixed error reported when the binary about to be driven does not
+/// accept `--start-inventory` — a build without `dev-tools`, handed in
+/// with `--bin`.
+///
+/// Reported instead of running, because running anyway is what produced a
+/// "depth 0, Fail" table that looks like a walk that went nowhere rather
+/// than like a binary that never started.
+pub const NO_START_INVENTORY_SUPPORT: &str = "the binary does not accept --start-inventory (it needs a dev-tools build); pass an empty list to walk with none";
+
+/// Whether `bin` accepts `--start-inventory`, asked of the binary itself
+/// rather than assumed from how it was built (it may have arrived through
+/// `--bin`).
+///
+/// A `--help` that cannot be run or read at all is treated as "yes": the
+/// run that follows will fail with the app's own message, which is a
+/// better report than one invented here.
+fn supports_start_inventory(bin: &Path) -> bool {
+    let Ok(output) = Command::new(bin).arg("--help").output() else {
+        return true;
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let error = String::from_utf8_lossy(&output.stderr);
+    if text.is_empty() && error.is_empty() {
+        return true;
+    }
+    help_lists_start_inventory(&text) || help_lists_start_inventory(&error)
+}
+
+/// Whether one `--help` text names the flag. Split out so it can be
+/// tested without a binary to run.
+fn help_lists_start_inventory(help: &str) -> bool {
+    help.contains("--start-inventory")
+}
+
 /// Runs the chain once, with a deadline, and returns the run's stderr.
 fn run_chain(
     bin: &Path,
     payload_root: &Path,
     start: &str,
     routes: &[PathBuf],
+    start_inventory: Option<&str>,
     timeout: Duration,
 ) -> String {
     let mut command = Command::new(bin);
-    command
-        .arg("--payload-root")
-        .arg(payload_root)
-        .arg("--map")
-        .arg(start);
-    for route in routes {
-        command.arg("--chain-script").arg(route);
-    }
-    command.arg("--script-log");
+    command.args(chain_app_args(payload_root, start, routes, start_inventory));
     capture_stderr(command, timeout)
+}
+
+/// The exact argument list [`run_chain`] drives the app with.
+///
+/// A pure function so a test can read it: whether `--start-inventory` is
+/// passed at all is the difference between a walk and an "unexpected
+/// argument" on a binary that does not have it, so it is worth asserting
+/// rather than assuming.
+fn chain_app_args(
+    payload_root: &Path,
+    start: &str,
+    routes: &[PathBuf],
+    start_inventory: Option<&str>,
+) -> Vec<OsString> {
+    let mut args: Vec<OsString> = vec![
+        OsString::from("--payload-root"),
+        payload_root.as_os_str().to_owned(),
+        OsString::from("--map"),
+        OsString::from(start),
+    ];
+    for route in routes {
+        args.push(OsString::from("--chain-script"));
+        args.push(route.as_os_str().to_owned());
+    }
+    // Omitted entirely for an empty list, so a walk that wants nothing in
+    // hand never depends on the flag existing.
+    if let Some(list) = start_inventory {
+        args.push(OsString::from("--start-inventory"));
+        args.push(OsString::from(list));
+    }
+    args.push(OsString::from("--script-log"));
+    args
 }
 
 /// Runs `command` with a deadline and returns whatever it wrote to
@@ -391,7 +505,7 @@ pub fn run(root: &Path, raw_args: &[String]) -> ExitCode {
 
     let bin = match args.bin.clone() {
         Some(bin) => bin,
-        None => match build_release_binary(root) {
+        None => match build_chain_binary(root) {
             Ok(bin) => bin,
             Err(error) => {
                 eprintln!("error: {error}");
@@ -399,6 +513,12 @@ pub fn run(root: &Path, raw_args: &[String]) -> ExitCode {
             }
         },
     };
+
+    let start_inventory = Some(args.start_inventory.as_str()).filter(|list| !list.is_empty());
+    if start_inventory.is_some() && !supports_start_inventory(&bin) {
+        eprintln!("error: {NO_START_INVENTORY_SUPPORT}");
+        return ExitCode::FAILURE;
+    }
 
     println!(
         "Walking a chain of {} route(s) from the campaign start map...",
@@ -410,13 +530,21 @@ pub fn run(root: &Path, raw_args: &[String]) -> ExitCode {
         &args.payload_root,
         &start,
         &routes,
+        start_inventory,
         Duration::from_secs(args.timeout),
     );
     let elapsed = started.elapsed();
     let report = parse_report(&stderr);
     print!(
         "{}",
-        write_summary(&start, routes.len(), &report, args.min_depth, elapsed)
+        write_summary(
+            &start,
+            routes.len(),
+            &report,
+            args.min_depth,
+            start_inventory,
+            elapsed
+        )
     );
 
     if passed(&report, args.min_depth) {
@@ -429,6 +557,64 @@ pub fn run(root: &Path, raw_args: &[String]) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The build both chain subcommands run must ask for `dev-tools`.
+    ///
+    /// Without it the app has no `--start-inventory` (nor `--plan-route`),
+    /// and a chain walk on a clean tree dies with "unexpected argument"
+    /// before it loads a map — reporting depth 0 as though the walk had
+    /// gone nowhere.
+    #[test]
+    fn the_chain_binary_is_built_with_dev_tools() {
+        assert!(
+            CHAIN_BINARY_BUILD_ARGS
+                .windows(2)
+                .any(|pair| pair == ["--features", "dev-tools"]),
+            "both chain subcommands build the app with dev-tools"
+        );
+        assert!(CHAIN_BINARY_BUILD_ARGS.contains(&"--release"));
+    }
+
+    #[test]
+    fn an_empty_loadout_never_passes_the_start_inventory_flag() {
+        let routes = [PathBuf::from("c0a0.txt")];
+        let args = chain_app_args(Path::new("/payload"), "c0a0", &routes, None);
+        assert!(
+            !args.iter().any(|arg| arg == "--start-inventory"),
+            "a walk with nothing in hand must not need the flag to exist"
+        );
+        assert!(args.iter().any(|arg| arg == "--chain-script"));
+        assert!(args.iter().any(|arg| arg == "--script-log"));
+    }
+
+    #[test]
+    fn a_loadout_is_passed_through_verbatim() {
+        let routes = [PathBuf::from("c0a0.txt")];
+        let args = chain_app_args(
+            Path::new("/payload"),
+            "c0a0",
+            &routes,
+            Some(CHAIN_START_INVENTORY),
+        );
+        let index = args
+            .iter()
+            .position(|arg| arg == "--start-inventory")
+            .expect("the flag is passed");
+        assert_eq!(args[index + 1], OsString::from(CHAIN_START_INVENTORY));
+    }
+
+    /// The preflight reads the binary's own `--help`, so a `--bin` built
+    /// without `dev-tools` is reported as such instead of running and
+    /// printing a table that looks like a walk which went nowhere.
+    #[test]
+    fn a_help_text_without_the_flag_is_recognised() {
+        assert!(help_lists_start_inventory(
+            "Options:\n  --start-inventory <LIST>\n  --script-log\n"
+        ));
+        assert!(!help_lists_start_inventory(
+            "Options:\n  --chain-script <PATH>\n  --script-log\n"
+        ));
+    }
 
     fn touch(directory: &Path, name: &str) {
         std::fs::write(directory.join(name), "1 wait\n").expect("write a route file");
@@ -538,7 +724,7 @@ mod tests {
             !passed(&report, 2),
             "a dead arrival is a failure at any depth"
         );
-        let summary = write_summary("c0a0", 11, &report, 2, Duration::from_secs(9));
+        let summary = write_summary("c0a0", 11, &report, 2, None, Duration::from_secs(9));
         assert!(summary.contains("| Result | Fail |"));
         assert!(summary.contains("| Stopped at | The chain walk arrived dead. |"));
     }
@@ -561,7 +747,7 @@ mod tests {
             arrived_dead: false,
             hops: 1,
         };
-        let summary = write_summary("c0a0", 2, &report, 2, Duration::from_secs(9));
+        let summary = write_summary("c0a0", 2, &report, 2, None, Duration::from_secs(9));
         assert!(summary.contains("| Distinct maps reached (chain depth) | 2 |"));
         assert!(summary.contains("| Elapsed game seconds | 61.5 |"));
         assert!(summary.contains("| Stopped at | The chain walk stopped. |"));
@@ -582,7 +768,7 @@ mod tests {
             arrived_dead: false,
             hops: 0,
         };
-        let summary = write_summary("c0a0", 2, &report, 2, Duration::from_secs(1));
+        let summary = write_summary("c0a0", 2, &report, 2, None, Duration::from_secs(1));
         assert!(summary.contains("| Result | Fail |"));
     }
 
@@ -600,7 +786,7 @@ mod tests {
             hops: 2,
         };
         assert!(!passed(&report, 2));
-        let summary = write_summary("c0a0", 2, &report, 2, Duration::from_secs(3));
+        let summary = write_summary("c0a0", 2, &report, 2, None, Duration::from_secs(3));
         assert!(summary.contains("| Result | Fail |"));
         assert!(summary.contains(RE_ENTERED_LINE));
     }

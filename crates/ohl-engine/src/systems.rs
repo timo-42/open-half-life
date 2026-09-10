@@ -1081,6 +1081,14 @@ impl Systems {
         }
     }
 
+    /// The hitbox index this step's phase 5 last rebuilt: what an attack
+    /// trace resolves against. Read-only, for an in-crate caller that
+    /// needs to ask whether a shot would reach something (see
+    /// `crate::guard`).
+    pub(crate) fn hitboxes(&self) -> &ohl_combat::HitboxIndex {
+        &self.hitboxes
+    }
+
     /// Phase 5 — hitbox index: rebuilt each step from every entity carrying
     /// a pose and an actor, so a trace hits where the model is drawn.
     /// Model-backed projectiles and deployables (a flying rocket, a placed

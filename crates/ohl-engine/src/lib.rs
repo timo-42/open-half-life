@@ -54,6 +54,7 @@ pub mod nav;
 // `GameEvent` variants cover the rest).
 mod combat;
 pub mod damage_map;
+pub mod guard;
 mod pickups;
 mod presentation;
 pub mod pushables;
@@ -85,6 +86,7 @@ pub use assets::{AssetFsSource, AssetSource, MemoryAssets};
 pub use components::{Charger, Corpse, MonsterMaker, Owner, Pickup, PlayerTag, StudioAnim};
 pub use error::{EngineError, Result};
 pub use game::{Game, GameConfig, GameEvent};
+pub use guard::{GuardDecision, guard_input, guard_step};
 pub use ids::{entity_id, entity_of};
 pub use input::Input;
 pub use level::{PLAYER_MAX_ARMOR, PLAYER_MAX_HEALTH, SpritePlacement};

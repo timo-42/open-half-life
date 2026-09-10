@@ -6390,3 +6390,138 @@ what gates the exit either.
 37/37, campaign-smoke 93/93, `--reachability-report` unchanged against a
 build of the base, and `cargo xtask chain-walk` at **distinct depth 11**,
 Pass.
+
+## M9.37 — A wait that fights back: the guard action, and the eleventh hop
+
+M9.36 got the eleventh map's level change to *fire* — a route that walks
+into the volume starting the map's own `multi_manager`/`multisource`
+chain, then stands still for the minute the chain takes — and then refused
+to ship the route, because the player who set the chain going was dead
+before it fired. The chain's own teleport tour puts the player next to
+hostile monsters, and a script that holds nothing at all for a minute has
+no answer to that. The two gates M9.36 added made the failure visible;
+this milestone is the answer to it.
+
+**`PlanAction::Guard`, expanded at replay time.** The planner emits a
+guard instead of a wait whenever the wait runs longer than a few seconds
+or the map has anything hostile on it — the same span of time, spent
+defending the spot. What makes it work is *where it is decided*: the route
+file holds one `guard <ticks>` line, and the runner expands each of those
+ticks against the live game, not into a fixed sequence of buttons. A
+recording cannot work here; what a defending player should press depends
+on where the monsters are that tick, and the monsters move.
+
+The loop itself (`ohl_engine::guard`) is a **project-authored tactic** —
+no published behaviour is reproduced by deciding to fight back — and every
+engine number it leans on is read back from where that number already
+lives rather than restated: the weapons' clips and ammo types, the melee
+reach, the hitscan reach, the relationship table a monster's own enemy
+acquisition reads. Each tick it selects the best carried weapon that can
+fire, turns toward the nearest hostile monster, fires once aimed, reloads
+a spent clip in a quiet moment, and stands still when there is nothing to
+do. It draws on no randomness of its own, so a guarded route replays
+identically; the replay gate stays the only arbiter of whether one ships.
+
+Three of its rules earned their place by being measured on the map:
+
+- **Fire only at what a shot would actually reach.** Aiming by line of
+  sight alone emptied a clip into a monster 800 units away for 0 hits.
+  That monster has no hitbox — nothing in the hitbox index the engine's
+  own attack trace resolves against — so no amount of aim could have hurt
+  it, and the reload that followed was what killed the player. Asking the
+  engine's own trace (`Game::shot_would_reach`) which entity a shot from
+  the eye would hit is the only honest way to tell an unhittable target
+  from a real one. With the filter in: 22 shots, 22 hits, three kills.
+  Removing only this check turns the chain back into depth 11, "arrived
+  dead", so it is load-bearing rather than defensive.
+
+  Reviewing this milestone found *why* that monster had no hitbox, and it
+  is an engine gap rather than anything about the guard: it was spawned at
+  runtime by a `monstermaker`, and the spawn path gives a child a
+  classname, a transform, an actor, a brain and health but never a
+  `StudioAnim` — which is the only thing the hitbox index is ever built
+  from. Every maker-spawned monster is therefore unhittable by any
+  hitscan or projectile attack, and never drawn: it can hurt the player
+  and cannot be hurt back. That is being fixed on its own branch (the
+  same second attach pass a carried entity already gets on a level change
+  or a save restore). The filter stays either way — it is what tells the
+  guard that *this* target is not worth a clip, whatever the reason.
+- **An aim tolerance that narrows with range.** A fixed few degrees is a
+  hit at arm's length and several feet wide across a room. The tolerance
+  is now the angle a small radius subtends at the target's own distance,
+  capped at the old value.
+- **Back away when nothing carried can answer.** Empty hands, a crowbar
+  against something across the room, or the seconds a reload takes are all
+  the same situation, and standing through it is how the player dies. The
+  loop probes a fixed list of headings away from the threat with the
+  player's own standing hull, takes the first that is clear and has floor
+  under it, and walks. This is the cheaper "patrol/retreat instead of
+  standing still" idea, kept as the unarmed half of the same policy rather
+  than as a separate mode. Measured on the map on its own, it is not
+  enough: retreating unarmed still ends at 0, because the tour teleports
+  the player away from wherever they retreated to.
+
+**The eleventh hop ships.** Re-planned with the guard in place, hop 10
+validates on the eighth plan/replay attempt (24 walk-forward segments,
+five door presses, 180.1 s of route), and two planning runs write
+byte-identical files. `cargo xtask chain-walk` now reports **distinct
+depth 12, Pass**, 660.8 simulated seconds, with the player **alive at the
+level change**. A per-tick health probe of the last hop (local,
+uncommitted): 99.1 for the whole walk and the first minutes of the guard,
+then 89.1, 39.1, 9.1 as the tour's monsters land their hits, and **9.1 at
+the level change** — where the same route without the guard reaches it at
+0. The margin is one hit wide, and it is a real margin, not a rounded one.
+
+**The loadout, and what it is not.** The chain arrives in that map
+carrying *nothing*: its routes are planned to walk from one level change
+to the next and never detour to a weapon pickup, while a player who had
+walked those maps would be carrying what the maps handed them. Empty
+hands cannot hold that spot. So `cargo xtask chain-walk` and
+`cargo xtask plan-chain-hop` now take `--start-inventory` and default it
+to one weapon's worth of pickup classnames, applied at the *start* map and
+carried onward by the ordinary transition machinery — and every summary
+they print names it on its own row, because a depth reported with a
+harness aid in place has to say so. It is a harness aid, not a claim about
+the campaign. `--start-inventory ""` walks with nothing, and reaches the
+eleventh map alive and the twelfth dead.
+
+It is also **explicitly temporary**, and the reason is in the measurement
+that made it necessary: the chain reaches the eleventh map with an empty
+inventory after ten maps, which means its routes pick up *nothing* — no
+weapon, no ammo, no health, no suit — because the planner has never had a
+reason to walk anywhere except toward the next level change. The honest
+answer is a planner that takes a bounded detour to a reachable
+`weapon_*`/`ammo_*`/`item_*` pickup lying near the path it was going to
+walk anyway, so the inventory a chain carries is one its own walk earned;
+that would also widen this hop's one-hit margin without the harness
+putting a thumb on the scale. Tracked as the next milestone; until it
+lands, a depth reported with a loadout says so on its own row.
+
+**Fixtures.** The synthetic corridor M9.36 built for scripted goals grew a
+variant with a monster hostile to the player at the far end and a chain
+long enough that standing through it is fatal. Making that fixture bite
+needed one thing the project's synthetic models never had: a hitbox. A
+monster with no studio hitbox cannot be shot at all, so the minimal
+synthetic MDL builder can now emit one. On that fixture, waiting kills the
+player and guarding kills the monster; the app's own end-to-end test plans
+a guarded route, replays it, and then turns that one line back into a
+plain `wait` and watches the same route die.
+
+**One binary, one feature set.** Review caught the chain harness building
+its own app binary *without* `dev-tools` while passing a `dev-tools`-only
+flag to it: on a clean tree the walk died with "unexpected argument"
+before it loaded a map and reported depth 0, and only passed when a
+`plan-chain-hop` build happened to have left a `dev-tools` binary at the
+path the walk's own build then overwrote. Both subcommands now build
+through one shared helper with one argument list (asserted by a test),
+the flag is omitted entirely for an empty list, and a binary handed in
+with `--bin` is asked — through its own `--help` — whether it takes the
+flag at all, so a mismatch is reported as a mismatch instead of as a walk
+that went nowhere.
+
+**Gates**: fmt, clippy (workspace, `--features dev-tools`, and
+`--all-features`), `cargo test --workspace`, policy, graph, combat-smoke
+37/37 with 0 unexpected lines, campaign-smoke 93/93,
+`--reachability-report` unchanged against a build of the base, and
+`cargo xtask chain-walk` — with no `--bin`, from a tree with no binary
+built at all — at **distinct depth 12**, Pass.
