@@ -508,6 +508,7 @@ pub struct MinimalMdl10Layout {
     pub norm_bones_offset: usize,
     pub tricommands_offset: usize,
     pub anim_data_offset: usize,
+    pub hitboxes_offset: usize,
     pub total_len: usize,
 }
 
@@ -540,8 +541,35 @@ pub fn build_minimal_mdl10() -> (Vec<u8>, MinimalMdl10Layout) {
 /// Every byte here is authored by this project for testing only; see
 /// `docs/CLEAN_ROOM.md`.
 #[must_use]
-#[allow(clippy::too_many_lines)]
 pub fn build_minimal_mdl10_with_sequences(names: &[&str]) -> (Vec<u8>, MinimalMdl10Layout) {
+    build_minimal_mdl10_parts(names, None)
+}
+
+/// [`build_minimal_mdl10`] with exactly one hitbox on the root bone,
+/// spanning `min`..`max` in bone-local space.
+///
+/// The default builder declares none, which is all a *format* test needs;
+/// a test that wants something a traced shot can actually hit needs an
+/// entry in the model's hitbox table, because that table is the only thing
+/// `ohl_combat::HitboxIndex` is ever built from.
+///
+/// Every byte here is authored by this project for testing only; see
+/// `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn build_minimal_mdl10_with_hitbox(
+    min: [f32; 3],
+    max: [f32; 3],
+) -> (Vec<u8>, MinimalMdl10Layout) {
+    build_minimal_mdl10_parts(&["idle"], Some((min, max)))
+}
+
+/// The builder both of the above are thin wrappers over.
+#[must_use]
+#[allow(clippy::too_many_lines)]
+fn build_minimal_mdl10_parts(
+    names: &[&str],
+    hitbox: Option<([f32; 3], [f32; 3])>,
+) -> (Vec<u8>, MinimalMdl10Layout) {
     const HEADER_SIZE: usize = 244;
     const BONE_SIZE: usize = 112;
     const TEXTURE_SIZE: usize = 80;
@@ -551,6 +579,7 @@ pub fn build_minimal_mdl10_with_sequences(names: &[&str]) -> (Vec<u8>, MinimalMd
     const MESH_SIZE: usize = 20;
     const VEC3_SIZE: usize = 12;
     const TRIVERT_SIZE: usize = 8;
+    const HITBOX_SIZE: usize = 32;
 
     assert!(!names.is_empty(), "at least one sequence is required");
 
@@ -587,7 +616,11 @@ pub fn build_minimal_mdl10_with_sequences(names: &[&str]) -> (Vec<u8>, MinimalMd
     // 2 bones * 12-byte offset records, then one 6-byte compressed run
     // (2-byte valid/total header + 2 `i16` values) for bone 0's slot 0.
     let anim_data_size = 12 * 2 + 6;
-    let total_len = anim_data_offset + anim_data_size;
+    // One optional 32-byte hitbox record, appended past everything else so
+    // the offsets above are the same with it and without it.
+    let hitboxes_offset = anim_data_offset + anim_data_size;
+    let hitbox_count = usize::from(hitbox.is_some());
+    let total_len = hitboxes_offset + HITBOX_SIZE * hitbox_count;
 
     let mut out = Vec::with_capacity(total_len);
 
@@ -607,8 +640,8 @@ pub fn build_minimal_mdl10_with_sequences(names: &[&str]) -> (Vec<u8>, MinimalMd
     push_u32(&mut out, u32::try_from(bones_offset).unwrap());
     push_u32(&mut out, 0); // num_bone_controllers
     push_u32(&mut out, u32::try_from(textures_offset).unwrap()); // bone_controller_index (count 0, any in-bounds value)
-    push_u32(&mut out, 0); // num_hitboxes
-    push_u32(&mut out, u32::try_from(textures_offset).unwrap()); // hitbox_index
+    push_u32(&mut out, u32::try_from(hitbox_count).unwrap()); // num_hitboxes
+    push_u32(&mut out, u32::try_from(hitboxes_offset).unwrap()); // hitbox_index
     push_u32(&mut out, u32::try_from(names.len()).unwrap()); // num_seq
     push_u32(&mut out, u32::try_from(sequences_offset).unwrap());
     push_u32(&mut out, 0); // num_seq_groups
@@ -798,6 +831,19 @@ pub fn build_minimal_mdl10_with_sequences(names: &[&str]) -> (Vec<u8>, MinimalMd
     out.push(2); // total
     push_i16(&mut out, 10);
     push_i16(&mut out, 20);
+    assert_eq!(out.len(), hitboxes_offset);
+
+    // --- Hitbox (optional): bone 0, hit group 0. ---
+    if let Some((min, max)) = hitbox {
+        push_i32(&mut out, 0); // bone
+        push_i32(&mut out, 0); // group
+        for axis in min {
+            push_f32(&mut out, axis);
+        }
+        for axis in max {
+            push_f32(&mut out, axis);
+        }
+    }
     assert_eq!(out.len(), total_len);
 
     let layout = MinimalMdl10Layout {
@@ -818,6 +864,7 @@ pub fn build_minimal_mdl10_with_sequences(names: &[&str]) -> (Vec<u8>, MinimalMd
         norm_bones_offset,
         tricommands_offset,
         anim_data_offset,
+        hitboxes_offset,
         total_len,
     };
     (out, layout)

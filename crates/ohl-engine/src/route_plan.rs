@@ -284,6 +284,25 @@ pub enum PlanAction {
         /// How long to stand still, in seconds.
         seconds: f32,
     },
+    /// Stand still for `seconds` *defending the spot*: every tick of it,
+    /// select the best carried weapon, turn toward the nearest hostile
+    /// monster in line of sight, fire when aligned and reload when empty
+    /// (see [`crate::guard`]).
+    ///
+    /// Emitted instead of [`Self::Wait`] whenever standing still is long
+    /// enough, or the map populated enough, that doing nothing is a real
+    /// risk — see [`GUARD_INSTEAD_OF_WAIT_SECONDS`]. **Project-authored
+    /// tactic**: no published behaviour is reproduced by choosing to fight
+    /// back rather than stand there, and in the published game a player
+    /// waiting out a set piece has their carried weapons to hand.
+    ///
+    /// The caller expands this at *replay* time, not into a fixed script:
+    /// what the player should press depends on where the monsters are that
+    /// tick, which nothing can know in advance.
+    Guard {
+        /// How long to hold the spot, in seconds.
+        seconds: f32,
+    },
     /// Ride the brush mover the player is standing on to its other
     /// resting position: set it going (a `use` press facing `yaw`, or
     /// nothing at all when standing on it already fired the touch volume
@@ -1289,6 +1308,35 @@ pub const SCRIPTED_GOAL_MAX_WAIT: f32 = 180.0;
 /// that arrives a moment late still outlasts the chain. This project's
 /// own margin.
 pub const SCRIPTED_GOAL_WAIT_MARGIN: f32 = 10.0;
+
+/// How long a planned wait may be, in seconds, before the route spends it
+/// guarding ([`PlanAction::Guard`]) rather than standing still
+/// ([`PlanAction::Wait`]).
+///
+/// **Project-authored.** A wait of a second or two is a settle; a wait of
+/// a minute is a stretch of time in which anything on the map can reach
+/// the player, and a script holding nothing at all for it is a script that
+/// gets them killed. A map with a hostile monster on it is guarded
+/// whatever the wait's length.
+pub const GUARD_INSTEAD_OF_WAIT_SECONDS: f32 = 3.0;
+
+/// How a route holds its ground for `seconds` at the end: guarding
+/// ([`PlanAction::Guard`]) when the wait is long enough to be dangerous
+/// or the map has something hostile on it, and standing still
+/// ([`PlanAction::Wait`]) otherwise.
+///
+/// **Project-authored tactic**, and deliberately a decision made here
+/// rather than at replay time: a route file is a record of what the
+/// planner decided, so which of the two a route holds has to be visible in
+/// it.
+#[must_use]
+fn hold_action(seconds: f32, hostiles_present: bool) -> PlanAction {
+    if hostiles_present || seconds >= GUARD_INSTEAD_OF_WAIT_SECONDS {
+        PlanAction::Guard { seconds }
+    } else {
+        PlanAction::Wait { seconds }
+    }
+}
 
 /// Whether `source` fires `name` directly, and how many seconds later.
 ///
@@ -3282,7 +3330,10 @@ fn build_plan(
                 fall: 0.0,
             });
         }
-        actions.push(PlanAction::Wait { seconds });
+        actions.push(hold_action(
+            seconds,
+            !game.hostile_monster_eyes().is_empty(),
+        ));
     }
     Ok(RoutePlan {
         actions,
@@ -3994,8 +4045,8 @@ mod tests {
             plan.reaches_goal,
             "starting the script that fires the level change is reaching the goal"
         );
-        let Some(PlanAction::Wait { seconds }) = plan.actions.last() else {
-            panic!("the route ends by standing still while the script runs");
+        let Some(PlanAction::Guard { seconds }) = plan.actions.last() else {
+            panic!("the route ends by holding the spot while the script runs");
         };
         assert!(
             (*seconds - (PLAN_SCRIPTED_DELAY + SCRIPTED_GOAL_WAIT_MARGIN)).abs() < 0.01,
@@ -4010,11 +4061,49 @@ mod tests {
         assert_eq!(
             plan.actions
                 .iter()
-                .filter(|action| matches!(action, PlanAction::Wait { .. }))
+                .filter(|action| matches!(
+                    action,
+                    PlanAction::Wait { .. } | PlanAction::Guard { .. }
+                ))
                 .count(),
             1,
             "one wait, on the end"
         );
+        assert!(
+            *seconds >= GUARD_INSTEAD_OF_WAIT_SECONDS,
+            "and it is long enough to be worth guarding"
+        );
+    }
+
+    /// The two arms of the guard/wait choice, both ways round: nothing to
+    /// fight and a settle-length wait stands still; either a long wait or
+    /// a monster on the map holds the spot with a weapon out.
+    #[test]
+    fn a_long_wait_or_a_populated_map_is_guarded_rather_than_waited_out() {
+        let short = GUARD_INSTEAD_OF_WAIT_SECONDS / 2.0;
+        assert!(matches!(hold_action(short, false), PlanAction::Wait { .. }));
+        assert!(matches!(hold_action(short, true), PlanAction::Guard { .. }));
+        assert!(matches!(
+            hold_action(GUARD_INSTEAD_OF_WAIT_SECONDS, false),
+            PlanAction::Guard { .. }
+        ));
+    }
+
+    /// A map with a monster hostile to the player on it is guarded end to
+    /// end: the route the planner writes for it holds its ground with a
+    /// weapon rather than standing still.
+    #[test]
+    fn a_route_on_a_map_with_a_hostile_monster_ends_by_guarding() {
+        let plan = plan_route(
+            &mut scripted_game(ScriptedStart::ByHostileMonster),
+            &PlanConfig::default(),
+        )
+        .expect("a route is found");
+        assert!(plan.reaches_goal);
+        assert!(matches!(
+            plan.actions.last(),
+            Some(PlanAction::Guard { .. })
+        ));
     }
 
     /// The starting volume itself can be a place that hurts. The route may
@@ -4038,7 +4127,10 @@ mod tests {
         }
         let plan = plan_route(&mut game, &PlanConfig::default()).expect("a route is found");
         assert!(plan.reaches_goal);
-        assert!(matches!(plan.actions.last(), Some(PlanAction::Wait { .. })));
+        assert!(matches!(
+            plan.actions.last(),
+            Some(PlanAction::Guard { .. })
+        ));
         let safe = plan_route(
             &mut scripted_game(ScriptedStart::ByTrigger),
             &PlanConfig::default(),
@@ -4077,7 +4169,7 @@ mod tests {
             !plan
                 .actions
                 .iter()
-                .any(|action| matches!(action, PlanAction::Wait { .. })),
+                .any(|action| matches!(action, PlanAction::Wait { .. } | PlanAction::Guard { .. })),
             "a route that reaches nothing has nothing to wait for"
         );
     }

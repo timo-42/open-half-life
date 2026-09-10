@@ -678,6 +678,39 @@ impl AiState {
             .map(|(_, position)| position)
     }
 
+    /// Every living monster this level holds that regards the player as an
+    /// enemy, as (entity, eye position), in ascending [`hecs::Entity::id`]
+    /// order.
+    ///
+    /// "Hostile" is read off the same data a monster's own enemy
+    /// acquisition reads: [`ohl_ai::RelationshipTable::get`] from the
+    /// monster's classification to [`Classification::Player`], hostile per
+    /// [`ohl_ai::Relationship::is_hostile`]. Nothing here is a second
+    /// hostility rule.
+    ///
+    /// Additive and data-only, like [`Self::nearest_monster_position`]: a
+    /// caller may aim at what this returns, and this method never logs a
+    /// classname, entity id or coordinate.
+    #[must_use]
+    pub fn hostile_monster_eyes(&self, level: &Level) -> Vec<(Entity, Vec3)> {
+        let relationships = self.world.relationships();
+        let mut hostile: Vec<(Entity, Vec3)> = level
+            .registry
+            .world
+            .query::<(Entity, &Actor, &MonsterAi)>()
+            .iter()
+            .filter(|(_, actor, _)| actor.alive)
+            .filter(|(_, actor, _)| {
+                relationships
+                    .get(actor.classification, Classification::Player)
+                    .is_hostile()
+            })
+            .map(|(entity, actor, _)| (entity, actor.eye()))
+            .collect();
+        hostile.sort_by_key(|(entity, _)| entity.id());
+        hostile
+    }
+
     /// A digest of the whole AI simulation, for determinism tests.
     #[must_use]
     pub fn state_hash(&self, level: &Level) -> [u8; 32] {
