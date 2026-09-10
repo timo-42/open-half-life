@@ -879,6 +879,7 @@ fn run_chained(
             break;
         }
         visited.push(arrived);
+        log_arrival_inventory(game, visited.len());
     }
 
     if args.script_log {
@@ -910,6 +911,25 @@ fn run_chained(
     // did not, rather than plan from an interrupted route's stall point
     // (see `PLAN_REFUSED_INCOMPLETE_CHAIN`).
     Ok((visited, !stopped && !re_entered && !arrived_dead))
+}
+
+/// The fixed prefix a chain walk's per-arrival inventory line carries.
+/// `xtask/src/chain_walk.rs` parses these into one summary row per
+/// arrival.
+const CHAIN_ARRIVAL_PREFIX: &str = "Chain walk arrival ";
+
+/// Logs what the player is carrying on arriving in the `index`-th map of
+/// a chain walk, as two counts and nothing else: how many weapons are
+/// owned and how many rounds of every kind are held together.
+///
+/// This is the measurement the chain's own routes are judged by — a walk
+/// that never stops for anything arrives everywhere empty-handed — and it
+/// is an aggregate over project-authored routes, not a media-derived
+/// name, path or content figure. No weapon or ammo *name* is logged: a
+/// count cannot say which map handed out what.
+fn log_arrival_inventory(game: &Game, index: usize) {
+    let (weapons, ammo) = game.inventory_totals();
+    tracing::info!("{CHAIN_ARRIVAL_PREFIX}{index}: weapons {weapons}, ammo {ammo}.");
 }
 
 /// Renders exactly one frame and writes it as a PNG. Shared by
@@ -993,6 +1013,13 @@ fn run_route_planner(
             // The default: never plan a fall the player does not walk
             // away from unhurt (`ohl_engine::route_plan::safe_drop_height`).
             max_drop: None,
+            // The defaults: a route steps aside for a handful of the
+            // pickups the map left beside it, so the chain arrives in the
+            // next map carrying what this one offered rather than
+            // whatever the harness was told to hand out
+            // (`ohl_engine::route_plan`'s pickup detours).
+            max_pickup_detours: ohl_engine::route_plan::DEFAULT_MAX_PICKUP_DETOURS,
+            pickup_detour_budget: ohl_engine::route_plan::DEFAULT_PICKUP_DETOUR_BUDGET,
         },
     };
 
@@ -1009,6 +1036,7 @@ fn run_route_planner(
     tracing::info!("Route plan cells: {}.", route.cells);
     tracing::info!("Route plan segments: {}.", route.segments);
     tracing::info!("Route plan ladder climbs: {}.", route.climbs);
+    tracing::info!("Route plan pickup detours: {}.", route.pickups);
     tracing::info!("Route plan door presses: {}.", route.doors);
     tracing::info!("Route plan replay attempts: {}.", route.attempts);
     tracing::info!("Route plan simulated seconds: {:.1}.", route.seconds());

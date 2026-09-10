@@ -84,27 +84,31 @@ struct Args {
 
     /// A `--start-inventory` list handed to the app at the *start* map's
     /// load, carried onward by `ohl_engine::transition` exactly as a
-    /// picked-up weapon would be. Defaults to
-    /// [`CHAIN_START_INVENTORY`]; pass an empty string for none.
-    #[arg(long, value_name = "LIST", default_value = CHAIN_START_INVENTORY)]
+    /// picked-up weapon would be. **Empty by default**: the campaign hands
+    /// the player nothing at the start map, and the chain's own routes now
+    /// detour to what the maps offer (`ohl_engine::route_plan`'s pickup
+    /// detours), so a walk that needs a handout is a walk whose routes are
+    /// not doing their job. [`CHAIN_START_INVENTORY`] is the harness aid
+    /// this used to default to, kept for an explicit opt-in.
+    #[arg(long, value_name = "LIST", default_value = "")]
     start_inventory: String,
 }
 
-/// The loadout `cargo xtask chain-walk` gives the player at the start map
-/// unless told otherwise, and which every summary it prints names.
+/// A loadout `cargo xtask chain-walk` can be *asked* to start with, and
+/// which the summary then prints on its own row.
 ///
-/// **Honest about what it is: a harness aid, not a claim about the
-/// campaign.** The chain's routes are planned to walk from one level
-/// change to the next; they do not detour to weapon pickups, so a chain
-/// run arrives in the later maps carrying nothing, while a player who had
-/// walked those same maps would be carrying what the maps handed them. A
-/// hop whose route has to hold a spot on a populated map
-/// (`ohl_engine::PlanAction::Guard`) cannot be walked at all with empty
-/// hands, and a depth counted from a walk that could not have happened is
-/// worth nothing — so the harness supplies the one thing the routes never
-/// stop for, and the summary always prints it. The list itself is two
-/// `ohl_combat::classify_classname` classnames, no more than one weapon's
-/// worth of what the campaign hands out long before this depth.
+/// **Not a default, and not a claim about the campaign: a harness aid.**
+/// It exists because the chain's routes once walked from one level change
+/// to the next without ever stopping for anything, so a run arrived in
+/// the later maps carrying nothing while a player who had walked those
+/// same maps would be carrying what the maps handed them. The planner now
+/// takes pickup detours of its own (`ohl_engine::route_plan`), so the
+/// default is an empty loadout again and what the chain carries is what
+/// its routes actually collected — reported per arrival by
+/// [`ChainReport::arrivals`]. Passing this list is an explicit opt-in, for
+/// telling "the routes cannot reach a weapon" apart from "a weapon would
+/// not have been enough". The list itself is two
+/// `ohl_combat::classify_classname` classnames.
 pub const CHAIN_START_INVENTORY: &str = "weapon_357,ammo_357,ammo_357";
 
 /// The most routes one chain may hold, so a stray file cannot make the
@@ -201,6 +205,10 @@ const TERMINAL_LINES: [&str; 4] = [
 const DEPTH_PREFIX: &str = "Chain walk depth: ";
 const SECONDS_PREFIX: &str = "Chain walk simulated seconds: ";
 
+/// The fixed prefix `run_chained` gives its per-arrival inventory line,
+/// one per map the chain enters after the start map.
+const ARRIVAL_PREFIX: &str = "Chain walk arrival ";
+
 /// What one chain run reported, parsed from the app's own fixed lines.
 #[derive(Debug, PartialEq)]
 pub struct ChainReport {
@@ -221,6 +229,28 @@ pub struct ChainReport {
     /// How many "A level change was followed." lines the run logged: one
     /// per hop, a cross-check on `depth`.
     pub hops: usize,
+    /// What the player carried into each map the chain entered, in
+    /// arrival order: the arrival's own index, how many weapons were
+    /// owned and how many rounds of every kind were held together.
+    ///
+    /// This is what says whether the chain's routes are picking anything
+    /// up. Counts only — the app logs no weapon or ammo name, and neither
+    /// does the summary built from them.
+    pub arrivals: Vec<(usize, usize, u32)>,
+}
+
+/// Parses one `Chain walk arrival N: weapons W, ammo A.` line's three
+/// counts, or `None` when the line is not one.
+fn parse_arrival(line: &str) -> Option<(usize, usize, u32)> {
+    let index = line.find(ARRIVAL_PREFIX)? + ARRIVAL_PREFIX.len();
+    let rest = line[index..].trim_end().trim_end_matches('.');
+    let (arrival, counts) = rest.split_once(": weapons ")?;
+    let (weapons, ammo) = counts.split_once(", ammo ")?;
+    Some((
+        arrival.trim().parse().ok()?,
+        weapons.trim().parse().ok()?,
+        ammo.trim().parse().ok()?,
+    ))
 }
 
 /// Parses a finished chain run's stderr into a [`ChainReport`], reading
@@ -253,6 +283,7 @@ pub fn parse_report(stderr: &str) -> ChainReport {
             .lines()
             .filter(|line| line.contains("A level change was followed."))
             .count(),
+        arrivals: stderr.lines().filter_map(parse_arrival).collect(),
     }
 }
 
@@ -290,7 +321,26 @@ pub fn write_summary(
     );
     let _ = writeln!(out, "| Required depth | {min_depth} |");
     if let Some(list) = start_inventory {
-        let _ = writeln!(out, "| Start inventory (harness aid) | {list} |");
+        // Which loadout this is matters to whoever reads the row: the
+        // documented harness aid ([`CHAIN_START_INVENTORY`]) says "this
+        // run was told to carry something", anything else says "and it
+        // was not even the usual something".
+        let label = if list == CHAIN_START_INVENTORY {
+            "Start inventory (harness aid)"
+        } else {
+            "Start inventory (caller-supplied)"
+        };
+        let _ = writeln!(out, "| {label} | {list} |");
+    } else {
+        out.push_str("| Start inventory | (none) |\n");
+    }
+    // One row per arrival: what the routes had actually collected by the
+    // time they walked into that map. Counts only, never a name.
+    for (arrival, weapons, ammo) in &report.arrivals {
+        let _ = writeln!(
+            out,
+            "| Inventory on arrival {arrival} | {weapons} weapon(s), {ammo} round(s) |"
+        );
     }
     let _ = writeln!(
         out,
@@ -583,6 +633,77 @@ mod tests {
         assert!(summary.contains("| Stopped at | The chain walk arrived dead. |"));
     }
 
+    /// The harness aid is still a documented, parseable loadout — it is
+    /// no longer a *default*, which is the whole point of this row of the
+    /// summary: a walk that carries something says where it came from.
+    #[test]
+    fn the_harness_loadout_is_an_opt_in_not_a_default() {
+        let args = Args::try_parse_from(["chain-walk", "--payload-root", "."])
+            .expect("the command line parses");
+        assert!(
+            args.start_inventory.is_empty(),
+            "the chain walks with what its routes collect"
+        );
+        let opted_in = Args::try_parse_from([
+            "chain-walk",
+            "--payload-root",
+            ".",
+            "--start-inventory",
+            CHAIN_START_INVENTORY,
+        ])
+        .expect("the command line parses");
+        assert_eq!(opted_in.start_inventory, CHAIN_START_INVENTORY);
+        let summary = write_summary(
+            "c0a0",
+            2,
+            &parse_report(""),
+            2,
+            Some(CHAIN_START_INVENTORY),
+            Duration::from_secs(1),
+        );
+        assert!(summary.contains("| Start inventory (harness aid) |"));
+    }
+
+    /// The measurement this command exists to make honest: what the
+    /// chain's own routes had collected by the time they walked into each
+    /// map. Counts only — the app logs no weapon or ammo name.
+    #[test]
+    fn the_per_arrival_inventory_is_parsed_and_reported() {
+        let stderr = "[info] A level change was followed.\n\
+             [info] Chain walk arrival 2: weapons 1, ammo 34.\n\
+             [info] A level change was followed.\n\
+             [info] Chain walk arrival 3: weapons 2, ammo 52.\n\
+             [info] The chain walk has no further route.\n\
+             [info] Chain walk depth: 3.\n\
+             [info] Chain walk simulated seconds: 120.0.\n";
+        let report = parse_report(stderr);
+        assert_eq!(report.arrivals, vec![(2, 1, 34), (3, 2, 52)]);
+        let summary = write_summary("c0a0", 3, &report, 2, None, Duration::from_secs(9));
+        assert!(summary.contains("| Inventory on arrival 2 | 1 weapon(s), 34 round(s) |"));
+        assert!(summary.contains("| Inventory on arrival 3 | 2 weapon(s), 52 round(s) |"));
+        // No start inventory was passed, and the summary says so rather
+        // than quietly implying one.
+        assert!(summary.contains("| Start inventory | (none) |"));
+    }
+
+    /// A walk whose routes collected nothing is reported as exactly that,
+    /// rather than as a walk with no inventory line at all.
+    #[test]
+    fn an_empty_handed_arrival_is_reported_as_zeroes() {
+        let report = parse_report("[info] Chain walk arrival 2: weapons 0, ammo 0.\n");
+        assert_eq!(report.arrivals, vec![(2, 0, 0)]);
+        let summary = write_summary("c0a0", 2, &report, 2, None, Duration::from_secs(1));
+        assert!(summary.contains("| Inventory on arrival 2 | 0 weapon(s), 0 round(s) |"));
+    }
+
+    /// A line that is not an arrival line contributes nothing.
+    #[test]
+    fn an_unrelated_line_is_not_read_as_an_arrival() {
+        assert!(parse_arrival("[info] The chain walk stopped.").is_none());
+        assert!(parse_arrival("[info] Chain walk depth: 3.").is_none());
+        assert!(parse_arrival("[info] Chain walk arrival 2: weapons one, ammo 3.").is_none());
+    }
+
     #[test]
     fn a_run_that_logged_nothing_parses_as_depth_zero() {
         let report = parse_report("");
@@ -600,6 +721,7 @@ mod tests {
             re_entered: false,
             arrived_dead: false,
             hops: 1,
+            arrivals: vec![(2, 1, 34)],
         };
         let summary = write_summary("c0a0", 2, &report, 2, None, Duration::from_secs(9));
         assert!(summary.contains("| Distinct maps reached (chain depth) | 2 |"));
@@ -621,6 +743,7 @@ mod tests {
             re_entered: false,
             arrived_dead: false,
             hops: 0,
+            arrivals: Vec::new(),
         };
         let summary = write_summary("c0a0", 2, &report, 2, None, Duration::from_secs(1));
         assert!(summary.contains("| Result | Fail |"));
@@ -638,6 +761,7 @@ mod tests {
             re_entered: true,
             arrived_dead: false,
             hops: 2,
+            arrivals: vec![(2, 0, 0)],
         };
         assert!(!passed(&report, 2));
         let summary = write_summary("c0a0", 2, &report, 2, None, Duration::from_secs(3));

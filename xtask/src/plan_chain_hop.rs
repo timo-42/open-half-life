@@ -87,12 +87,14 @@ struct Args {
 
     /// A `--start-inventory` list handed to the app at the *start* map's
     /// load, carried onward by the chain exactly as a picked-up weapon
-    /// would be. Defaults to
-    /// [`crate::chain_walk::CHAIN_START_INVENTORY`], which is what
-    /// `cargo xtask chain-walk` will walk the planned route with; see
-    /// there for what it is and is not a claim about. Pass an empty string
-    /// for none.
-    #[arg(long, value_name = "LIST", default_value = crate::chain_walk::CHAIN_START_INVENTORY)]
+    /// would be. **Empty by default**, matching what `cargo xtask
+    /// chain-walk` will walk the planned route with: the routes collect
+    /// what the maps offer for themselves
+    /// (`ohl_engine::route_plan`'s pickup detours), and planning a hop
+    /// against a loadout the walk will not have is planning against the
+    /// wrong state. [`crate::chain_walk::CHAIN_START_INVENTORY`] is the
+    /// harness aid this used to default to; see there.
+    #[arg(long, value_name = "LIST", default_value = "")]
     start_inventory: String,
 }
 
@@ -109,10 +111,11 @@ pub const CHAIN_INCOMPLETE_LINE: &str =
     "Route plan refused: the chain did not arrive cleanly, so nothing was planned.";
 
 /// The fixed prefixes the app's own planner report lines carry.
-const REPORT_PREFIXES: [(&str, &str); 6] = [
+const REPORT_PREFIXES: [(&str, &str); 7] = [
     ("Route plan cells: ", "Cells the search reached"),
     ("Route plan segments: ", "Walk-forward segments"),
     ("Route plan ladder climbs: ", "Ladder climbs"),
+    ("Route plan pickup detours: ", "Pickup detours"),
     ("Route plan door presses: ", "Door presses"),
     ("Route plan replay attempts: ", "Plan/replay attempts"),
     (

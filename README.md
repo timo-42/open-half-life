@@ -441,6 +441,32 @@ tactic, not a published behaviour; what it fights *with* is whatever the
 player is carrying, since the chain carries the inventory across maps like
 any other transition.
 
+What the player is carrying is, in turn, what the route stopped for. The
+cheapest path from one level change to the next passes nothing on
+purpose, so a route planned only to *arrive* arrives empty-handed however
+much the map laid out along the way. The planner therefore takes **pickup
+detours**: for every weapon, ammo box or item whose classname the pickup
+vocabulary recognises, still uncollected, and standing close enough to the
+route that a step aside reaches the spot its own touch test fires from,
+the route walks over to it and carries on — the same out-and-back shape
+the planner already uses to press a switch that sits off the path.
+Nothing is held and nothing is pressed: a touch pickup is collected by
+standing where it rests. What is worth a detour is decided against the
+inventory the route will have by then, in a player's own order — the suit
+first, then a weapon not carried, then ammo for one that is (including a
+weapon this same route picked up two detours earlier), then a weapon
+already owned whose ammo is short, and last a health kit or a battery,
+and those only while there is room for what they restore. A battery is
+never detoured to without the suit, since it grants nothing without one;
+a charger is not a touch pickup at all (it is used and held, so walking
+over it collects nothing) and the long-jump item unlocks an edge the
+planner refuses to plan, so neither is ever worth a step aside. Both the
+number of detours per route and their total length are capped, because a
+route is a script somebody has to walk: a few steps aside for what the
+map left beside the way is a player's own behaviour, and stopping at
+every last box on the level is a shopping trip whose every extra metre is
+more open-loop distance for the replay to drift along.
+
 A run that ends by stepping off a ledge is not over when its ticks are:
 the plan measures that fall, and the script waits it out (`sqrt(2h/g)`
 under the map's own gravity, plus a margin) so the next chunk replays
@@ -482,8 +508,8 @@ through the boundary it just came through, which `cargo xtask chain-walk`
 counts as a failure rather than progress.
 
 Like the report, the planner prints aggregates only — cells reached,
-rounds, segments, ladder climbs, door presses, replay attempts, route
-length in simulated seconds — never a map name, coordinate or targetname, and the file it
+rounds, segments, ladder climbs, door presses, pickup detours, replay
+attempts, route length in simulated seconds — never a map name, coordinate or targetname, and the file it
 writes holds script commands and project-authored comment words only
 (`docs/CLEAN_ROOM.md`).
 
@@ -539,10 +565,13 @@ fixed terminal line ended it. It exits non-zero when the chain reaches
 fewer distinct maps than `--min-depth` (default 2), or when it re-entered
 a map it had already visited at any depth, or when it followed a level
 change with the player already dead ("The chain walk arrived dead."). The
-shipped chain reaches twelve distinct maps and ends on "The chain walk has
-no further route." — it
-runs out of authored routes, not out of map. `--start NAME` walks a different
-chain, and must name a map from `ohl-campaign`'s own cited table.
+shipped chain walks eleven routes: with the harness loadout below it
+reaches twelve distinct maps and ends on "The chain walk has no further
+route." — it runs out of authored routes, not out of map — and with
+nothing (the default) it reaches eleven and dies on the last hop, where a
+route has to hold its ground through a scripted chain with empty hands.
+`--start NAME` walks a different chain, and must name a map from
+`ohl-campaign`'s own cited table.
 
 `cargo xtask plan-chain-hop` assembles that same chain, runs it in one
 process, and hands the arrival point it ends at to `--plan-route`: it
@@ -554,16 +583,30 @@ written at all — a route only ships once the binary has actually walked
 it. `--attempts`, `--goal`, `--cell-cap` and `--round-cap` pass the
 planner's own bounds through.
 
-Both commands take `--start-inventory LIST` and default it to the same
-short list, which every summary they print names on its own row. It is a
-**harness aid and not a claim about the campaign**: the chain's routes are
-planned to walk from one level change to the next and never detour to a
-weapon pickup, so a chain run arrives in the later maps carrying nothing,
-while a player who had walked those same maps would be carrying what the
-maps handed them. The twelfth map is reached by a route that has to hold
-its ground while a scripted chain runs, which empty hands cannot do — so
-the harness supplies the one thing the routes never stop for, and says so
-in the report. Pass `--start-inventory ""` to walk with nothing.
+What the routes themselves collect on the way is, on this chain, nothing —
+and the per-arrival rows below are what say so. Measured over the eleven
+maps it walks: four touch-pickup or charger entities in total, no weapon
+and no ammo among them, and the two maps that have any keep them a few
+hundred units from the nearest cell the route's own walk reached. The
+detours are there and they fire on a map that offers something; these maps
+do not, which is a fact about how far the chain has got rather than about
+the planner.
+
+`chain-walk` also prints **what the chain was carrying on each arrival**
+— one row per map entered, as two counts: how many weapons were owned and
+how many rounds of every kind were held together. That row is the honest
+measure of the pickup detours above: the routes are supposed to arrive
+carrying what the maps offered, and a row of zeroes says they did not.
+Counts only, never a weapon or ammo name.
+
+Both commands take `--start-inventory LIST` and **default it to nothing**,
+which is what the campaign hands the player at the start map. The chain
+walks with what its own routes collect. The short list the two commands
+once defaulted to is kept as an explicit opt-in (and named on its own
+summary row when passed) — a **harness aid, not a claim about the
+campaign** — for telling "the routes could not reach a weapon" apart from
+"a weapon would not have been enough" on a hop whose route has to hold its
+ground while a scripted chain runs.
 
 Route files are named by their position in the chain rather than by the
 map they run on, past the first: which map a level change lands in is a

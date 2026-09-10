@@ -459,6 +459,25 @@ impl Systems {
         self.player.state.armor
     }
 
+    /// The player's own health ceiling (`ohl_player::PlayerConfig`).
+    #[must_use]
+    pub(crate) fn player_max_health(&self) -> f32 {
+        self.player.config.max_health
+    }
+
+    /// The player's own armour ceiling (`ohl_player::PlayerConfig`).
+    #[must_use]
+    pub(crate) fn player_max_armor(&self) -> f32 {
+        self.player.config.max_armor
+    }
+
+    /// Whether the HEV suit is equipped, which is what decides whether a
+    /// battery pickup does anything at all (`crate::pickups`).
+    #[must_use]
+    pub(crate) fn player_suit_equipped(&self) -> bool {
+        self.player.state.suit_equipped
+    }
+
     /// This step's player health/armor/weapons/ammo/suit/long-jump, as a
     /// [`crate::transition::PlayerCarryState`] for a level change or a save.
     /// See `crate::combat::CombatState::capture_carry`'s doc comment for

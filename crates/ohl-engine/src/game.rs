@@ -509,6 +509,26 @@ impl Game {
         self.systems.inventory()
     }
 
+    /// What the player is carrying, as the two counts a caller may
+    /// report: how many weapons are owned, and how many rounds of every
+    /// kind are held together.
+    ///
+    /// Two aggregates rather than the inventory itself, because this is
+    /// what gets *printed* — a chain walk logs one of these per arrival to
+    /// say whether its routes are picking anything up. A count cannot name
+    /// a weapon, an ammo type or the map that handed either out
+    /// (`docs/CLEAN_ROOM.md`).
+    #[must_use]
+    pub fn inventory_totals(&self) -> (usize, u32) {
+        let inventory = self.inventory();
+        let weapons = inventory.owned_weapons().count();
+        let ammo = ohl_combat::AmmoType::ALL
+            .into_iter()
+            .map(|kind| inventory.ammo(kind).current())
+            .sum();
+        (weapons, ammo)
+    }
+
     /// Applies a `--start-inventory` list (dev-tools only; see
     /// `crate::start_inventory`), meant to be called exactly once, right
     /// after [`Self::load`]/[`Self::load_with`], so a single-map probe or
@@ -557,6 +577,28 @@ impl Game {
     #[must_use]
     pub fn player_armor(&self) -> f32 {
         self.systems.player_armor()
+    }
+
+    /// The player's own health ceiling — what a health item can restore
+    /// them *to*, and so whether detouring to one buys anything
+    /// (`crate::route_plan`'s pickup detours).
+    #[must_use]
+    pub fn player_max_health(&self) -> f32 {
+        self.systems.player_max_health()
+    }
+
+    /// The player's own armour ceiling; see [`Self::player_max_health`].
+    #[must_use]
+    pub fn player_max_armor(&self) -> f32 {
+        self.systems.player_max_armor()
+    }
+
+    /// Whether the HEV suit is equipped. A battery grants nothing without
+    /// it (`crate::pickups`), so a route never detours to one until the
+    /// suit is carried.
+    #[must_use]
+    pub fn player_suit_equipped(&self) -> bool {
+        self.systems.player_suit_equipped()
     }
 
     /// The single client entity, carrying [`crate::components::PlayerTag`].

@@ -4962,3 +4962,143 @@ pub fn plan_scripted_goal_bsp(next_map: &str, start: ScriptedStart) -> Vec<u8> {
 
     b.build()
 }
+
+// ---------------------------------------------------------------------
+// A straight corridor with pickups standing beside it: the route
+// planner's own pickup-detour fixture (`crate::route_plan`)
+// ---------------------------------------------------------------------
+
+/// The map name the route planner's pickup fixture is published under.
+pub const PLAN_PICKUP_MAP: &str = "ohlplanpickupsynth";
+
+/// The fixture's bounding box: one straight, wide corridor. The walk from
+/// the player start to the level change at the far end runs along the
+/// middle of it and passes nothing; whatever this fixture stands beside
+/// that line is reached only by stepping aside for it.
+const PLAN_PICKUP_MIN: [f32; 3] = [-96.0, -192.0, 0.0];
+/// See [`PLAN_PICKUP_MIN`].
+const PLAN_PICKUP_MAX: [f32; 3] = [896.0, 192.0, 256.0];
+
+/// The `trigger_changelevel` volume at the far end of the corridor.
+const PLAN_PICKUP_TRIGGER_MIN: [f32; 3] = [768.0, -192.0, 0.0];
+/// See [`PLAN_PICKUP_TRIGGER_MIN`].
+const PLAN_PICKUP_TRIGGER_MAX: [f32; 3] = [896.0, 192.0, 192.0];
+
+/// How far off the corridor's middle line this fixture's pickups stand,
+/// in world units: far enough that no straight run to the level change
+/// passes within the touch radius, close enough to be a step aside rather
+/// than a second route.
+pub const PLAN_PICKUP_ASIDE: f32 = 128.0;
+
+/// How high above the floor this fixture's pickups rest, in world units.
+/// A standing player's own origin is higher than this (the standing hull
+/// is 72 units tall), so the touch test's radius has to cover the
+/// difference — which is exactly the geometry a real placed item has.
+pub const PLAN_PICKUP_Z: f32 = 24.0;
+
+/// Which pickups [`plan_pickup_bsp`] stands beside its corridor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickupFixture {
+    /// One weapon, beside the middle of the corridor.
+    OneWeapon,
+    /// Five distinct weapons, spread along the corridor: more than any
+    /// bounded route may detour to.
+    ManyWeapons,
+    /// One `item_battery`, with no `item_suit` anywhere: a battery grants
+    /// nothing to a player with no suit (`crate::pickups`).
+    BatteryOnly,
+    /// One `item_healthkit`, for a player who starts at full health.
+    HealthKitOnly,
+    /// Nothing at all: the same corridor with an empty inventory to be
+    /// had from it.
+    Nothing,
+}
+
+impl PickupFixture {
+    /// The entity block this fixture adds to the corridor. Every
+    /// classname here is one `ohl_combat::classify_classname` already
+    /// recognises from its own published citations
+    /// (`docs/FORMAT_SOURCES.md`, "Pickups and chargers").
+    fn entities(self) -> String {
+        let at = |classname: &str, x: f32, y: f32| {
+            format!(
+                "{{\n\"classname\" \"{classname}\"\n\
+                 \"origin\" \"{x} {y} {PLAN_PICKUP_Z}\"\n}}\n"
+            )
+        };
+        match self {
+            Self::Nothing => String::new(),
+            Self::OneWeapon => at("weapon_crowbar", 320.0, PLAN_PICKUP_ASIDE),
+            Self::ManyWeapons => [
+                at("weapon_crowbar", 160.0, PLAN_PICKUP_ASIDE),
+                at("weapon_9mmhandgun", 288.0, -PLAN_PICKUP_ASIDE),
+                at("weapon_357", 416.0, PLAN_PICKUP_ASIDE),
+                at("weapon_shotgun", 544.0, -PLAN_PICKUP_ASIDE),
+                at("weapon_crossbow", 672.0, PLAN_PICKUP_ASIDE),
+            ]
+            .concat(),
+            Self::BatteryOnly => at("item_battery", 320.0, PLAN_PICKUP_ASIDE),
+            Self::HealthKitOnly => at("item_healthkit", 320.0, PLAN_PICKUP_ASIDE),
+        }
+    }
+}
+
+/// A straight corridor with a `trigger_changelevel` at the far end and
+/// `fixture`'s pickups standing [`PLAN_PICKUP_ASIDE`] units off the line
+/// between the two: the shape `crate::route_plan`'s pickup-detour tests
+/// plan a route through.
+///
+/// The corridor itself is empty — no door, no lift, no monster — so the
+/// only thing that can make one plan differ from another here is whether
+/// the route steps aside for what the map left beside it.
+///
+/// No bytes here come from any game installation; see
+/// `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn plan_pickup_bsp(next_map: &str, fixture: PickupFixture) -> Vec<u8> {
+    let pickups = fixture.entities();
+    let entities = format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"0 0 40\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {pickups}\
+         {{\n\"classname\" \"trigger_changelevel\"\n\"model\" \"*1\"\n\
+         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n"
+    );
+
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(&entities);
+
+    let world_heads = b.push_collision_hulls(&[
+        CollisionBrush::half_space([0.0, 0.0, 1.0], PLAN_PICKUP_MIN[2]),
+        CollisionBrush::half_space([0.0, 0.0, -1.0], -PLAN_PICKUP_MAX[2]),
+        CollisionBrush::half_space([1.0, 0.0, 0.0], PLAN_PICKUP_MIN[0]),
+        CollisionBrush::half_space([-1.0, 0.0, 0.0], -PLAN_PICKUP_MAX[0]),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], PLAN_PICKUP_MIN[1]),
+        CollisionBrush::half_space([0.0, -1.0, 0.0], -PLAN_PICKUP_MAX[1]),
+    ]);
+    // A volume, not an obstacle: a bare hull head, like every other
+    // trigger volume in this module.
+    let trigger_heads = b.push_collision_hulls(&[]);
+
+    b.push_model(
+        PLAN_PICKUP_MIN,
+        PLAN_PICKUP_MAX,
+        [0.0; 3],
+        world_heads,
+        2,
+        0,
+        0,
+    );
+    b.push_model(
+        PLAN_PICKUP_TRIGGER_MIN,
+        PLAN_PICKUP_TRIGGER_MAX,
+        [0.0; 3],
+        trigger_heads,
+        2,
+        0,
+        0,
+    );
+
+    b.build()
+}
