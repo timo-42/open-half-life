@@ -4735,6 +4735,14 @@ pub enum ScriptedStart {
     /// volume that starts the chain is a place that damages whoever
     /// stands in it, so a route may touch it but must not wait there.
     ByHazardousTrigger,
+    /// The same `trigger_once` with a `trigger_hurt` on it that kills
+    /// slowly: the player walks in alive, sets the chain going, and dies
+    /// standing there before the chain's own (deliberately longer) delay
+    /// fires the level change. Everywhere the player starts from is out
+    /// of that volume's reach, so a run only ever dies *during* the wait —
+    /// the one shape that tells a replay which accepts a level change
+    /// reached by a corpse from one that does not.
+    ByLethalWait,
     /// The same `trigger_once` with the *whole corridor* lethal: there is
     /// nowhere safe to step out to, so whoever starts the chain dies
     /// before it ends. The level change still fires — a chain fires by
@@ -4750,6 +4758,17 @@ pub const PLAN_SCRIPTED_HURT_DAMAGE: f32 = 20.0;
 /// Where that `trigger_hurt` sits: the middle of the starting volume, so
 /// the engine's own proximity test catches a player standing in it.
 pub const PLAN_SCRIPTED_HURT_ORIGIN: [f32; 3] = [32.0, 0.0, 40.0];
+
+/// The `dmg` [`ScriptedStart::ByLethalWait`]'s single volume carries: at
+/// the documented half-second cadence (half of `dmg` per hit) this empties
+/// a full-health player in about two and a half seconds, comfortably
+/// inside [`PLAN_SCRIPTED_LETHAL_WAIT_DELAY`].
+pub const PLAN_SCRIPTED_LETHAL_WAIT_DAMAGE: f32 = 40.0;
+
+/// How long [`ScriptedStart::ByLethalWait`]'s chain takes to fire the
+/// level change, in seconds: longer than the volume above needs to kill,
+/// so the change really does fire over a corpse.
+pub const PLAN_SCRIPTED_LETHAL_WAIT_DELAY: f32 = 6.0;
 
 /// The `dmg` each of [`ScriptedStart::ByLethalTrigger`]'s volumes carries:
 /// enough that a player who cannot step out of the damage is dead well
@@ -4779,6 +4798,15 @@ pub fn plan_scripted_goal_bsp(next_map: &str, start: ScriptedStart) -> Vec<u8> {
     let script = match start {
         ScriptedStart::ByTrigger => trigger,
         ScriptedStart::Unstartable => String::new(),
+        ScriptedStart::ByLethalWait => format!(
+            "{trigger}\
+             {{\n\"classname\" \"trigger_hurt\"\n\
+             \"dmg\" \"{PLAN_SCRIPTED_LETHAL_WAIT_DAMAGE}\"\n\
+             \"origin\" \"{hx} {hy} {hz}\"\n}}\n",
+            hx = PLAN_SCRIPTED_HURT_ORIGIN[0],
+            hy = PLAN_SCRIPTED_HURT_ORIGIN[1],
+            hz = PLAN_SCRIPTED_HURT_ORIGIN[2],
+        ),
         ScriptedStart::ByLethalTrigger => {
             use std::fmt::Write as _;
             let mut text = trigger.clone();
@@ -4802,6 +4830,11 @@ pub fn plan_scripted_goal_bsp(next_map: &str, start: ScriptedStart) -> Vec<u8> {
             hz = PLAN_SCRIPTED_HURT_ORIGIN[2],
         ),
     };
+    let delay = if start == ScriptedStart::ByLethalWait {
+        PLAN_SCRIPTED_LETHAL_WAIT_DELAY
+    } else {
+        PLAN_SCRIPTED_DELAY
+    };
     let entities = format!(
         "{{\n\"classname\" \"worldspawn\"\n}}\n\
          {{\n\"classname\" \"info_player_start\"\n\"origin\" \"-200 0 40\"\n\
@@ -4809,7 +4842,7 @@ pub fn plan_scripted_goal_bsp(next_map: &str, start: ScriptedStart) -> Vec<u8> {
          {script}\
          {{\n\"classname\" \"multi_manager\"\n\
          \"targetname\" \"{PLAN_SCRIPTED_RELAY_NAME}\"\n\
-         \"{PLAN_SCRIPTED_MASTER_NAME}\" \"{PLAN_SCRIPTED_DELAY}\"\n\
+         \"{PLAN_SCRIPTED_MASTER_NAME}\" \"{delay}\"\n\
          \"origin\" \"0 0 64\"\n}}\n\
          {{\n\"classname\" \"multisource\"\n\
          \"targetname\" \"{PLAN_SCRIPTED_MASTER_NAME}\"\n\
