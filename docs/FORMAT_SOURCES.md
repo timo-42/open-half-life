@@ -2851,11 +2851,27 @@ logic" and "Monster AI behaviour" above).
   | `Leech` | 2 (flat) | bite 2 (flat) | — | — |
   | `Gargantua` | 800/800/1000 | melee 10/30/30 | flame 3/5/5 | ground-stomp 50/100/100 (`GARG_STOMP_DAMAGE`); published immune to all but energy/crush/mortar/blast damage — not modeled, since `ohl-ai`'s minimal `DamageEvent` carries no damage-type bitflags yet (see `crate::damage`'s unification note) |
   | `Tentacle` | 75 (flat; retreats rather than dying) | touch 20, second touch level 25 (`TENTACLE_TOUCH2_DAMAGE`), reach ~336 | — | beak strike 200 flat (`TENTACLE_BEAK_DAMAGE`); beak heights +0/+256/+448/+640 (`TENTACLE_BEAK_HEIGHTS`), not yet wired into height-based hit detection |
+  | `Monster_barnacle` (Wave 1 batch A) | 25 (flat); "killed with a single hit from the crowbar" | tongue: bite damage **not published** (`TODO(black-box)`, flat 40 placeholder inside the cited "killed in 1 to 3 bites" bound for a player); reach published as "its real range goes 2048 units below his origin position" (`BARNACLE_TONGUE_LENGTH`) | — | "It takes 10 seconds for a barnacle to kill its prey" (`BARNACLE_KILL_SECONDS`; `brains::BARNACLE_BITE_INTERVAL` spreads it over three bites, the project's own reading); "they ignore other monsters"; tongue width `TODO(black-box)` (`BARNACLE_TONGUE_RADIUS`) |
+  | `Monster_alien_controller` (Wave 1 batch A) | 60/60/100 | — | hand-launched energy-ball volley ("zap") 3/4/5 | head-launched homing ball 15/25/35 at 650/800/1000 units/s (`CONTROLLER_HEAD_BALL_DAMAGE`/`_SPEED`, not yet wired); "launch volleys of small energy balls from their hands, or, at closer range, larger homing balls from their heads"; "constant evasive maneuvering and tendency to stay at a distance"; "Can't move unless an `info_node_air` is nearby" (flies: `MonsterFlags::FLIES`, point hull) |
+  | `Monster_human_assassin` (Wave 1 batch A) | 30/50/50 | — | silenced pistol 5/5/8 | grenade 100 flat (`ASSASSIN_GRENADE_DAMAGE`, not yet wired); "extremely agile", "will run and jump in order to avoid the players fire and will try to attack from multiple directions", "operate in small teams", "hide-and-seek behavior" (`brains::ASSASSIN_HIT_AND_RUN`/`ASSASSIN_RETREAT`; run speed `TODO(black-box)`, `brains::ASSASSIN_SPEEDS`) |
+  | `Monster_babycrab` (Wave 1 batch A) | 2.5/2.5/5 — "only 25% as much health as a normal headcrab" (`BABYCRAB_HEALTH_FRACTION`) | bite 1.5/3/3 — "only 30% as much damage" (`BABYCRAB_DAMAGE_FRACTION`) | — | runs the headcrab's brain; a `sk_headcrab_health<N>` override scales it (`MonsterSpec::resolve_health`) |
+  | `Monster_generic` (Wave 1 batch A) | 8 — "Spawns with only 8 HP." (`GENERIC_HEALTH`) | — | — | "Classified as a player ally"; "Used to spawn models for use with scripted sequences"; model from the map's own `model` keyvalue; `Not solid (4)` spawnflag ("impervious to any damage") not yet modeled |
+  | `Monster_furniture` (Wave 1 batch A) | **not published** (`TODO(black-box)`: mirrors `monster_generic`'s 8) | — | — | "a furniture model used in scripted sequences"; "still bleeds like a cycler when hit with explosion damage"; "doesn't turn to face forward"; model from the map's `model` keyvalue; classification not published (`Classification::None`, `TODO(black-box)`) |
+  | `Monster_rat` (Wave 1 batch A) | **not published** (`TODO(black-box)`: 1, dies to any hit) | — | — | "it doesn't do much"; follows `path_corner`s erratically (patrol paths not modeled; it wanders instead); classification not published (`Classification::None`, `TODO(black-box)`) |
+  | `Monster_cockroach` (Wave 1 batch A) | **not published** — "Stepping on them will kill them" (`TODO(black-box)`: 1, dies to any hit; the step-on kill itself is not modeled) | — | — | "scurry around in the dark ... They are easily scared" (`brains::CRITTER_WANDER`/`CRITTER_SCATTER`); classified `insect` here, which the page does not say outright (`TODO(black-box)`); patrol paths "Not used by cockroaches" |
 
   The `sk_<subject>_<property><1|2|3>` cvar-naming *convention* (subject
   stems `headcrab`, `zombie`, `houndeye`, `bullsquid`, `islave`, `agrunt`,
   `hgrunt`, `barney`, `scientist`, `turret`, `miniturret`, `sentry`,
-  `ichthyosaur`, `leech`, `garg`, `tentacle`) is separately public and
+  `ichthyosaur`, `leech`, `garg`, `tentacle`; the Wave 1 batch A stems
+  `barnacle`, `controller`, `hassassin` follow the convention but are this
+  project's own choice, since no vanilla `skill.cfg` was reachable to
+  confirm them — the two public pages found for the convention itself,
+  TWHL "VERC: Adding New skill.cfg Entries" and TWHL "Vlatitude: Editing
+  skill.cfg", name only `sk_headcrab_health1..3`/`sk_headcrab_dmg_bite1..3`
+  and a fictional example; the babycrab reuses `headcrab`, and the four
+  kinds with no skill entries use their classname as a stem nothing will
+  match) is separately public and
   already implemented by `ohl_formats::skill_cfg` and
   `ohl_campaign::SkillTable`; `table::SkillLookup` uses that same convention
   so a caller's own parsed `skill.cfg` can override any value above per map,
@@ -2911,6 +2927,20 @@ logic" and "Monster AI behaviour" above).
   | `Leech` | `monster_leech` | `leech.mdl` |
   | `Gargantua` | `monster_gargantua` | `garg.mdl` |
   | `Tentacle` | `monster_tentacle` | `tentacle2.mdl` |
+  | `Barnacle` (Wave 1 batch A) | `monster_barnacle` | `barnacle.mdl` |
+  | `AlienController` (Wave 1 batch A) | `monster_alien_controller` | `controller.mdl` |
+  | `HumanAssassin` (Wave 1 batch A) | `monster_human_assassin` | `hassassin.mdl` |
+  | `Babycrab` (Wave 1 batch A) | `monster_babycrab` | `baby_headcrab.mdl` |
+  | `Generic` (Wave 1 batch A) | `monster_generic` | *"specified by mapper"* — none; `MonsterKind::model_from_map` |
+  | `Furniture` (Wave 1 batch A) | `monster_furniture` | *"specified by mapper"* — none; `MonsterKind::model_from_map` |
+  | `Rat` (Wave 1 batch A) | `monster_rat` | `bigrat.mdl` |
+  | `Cockroach` (Wave 1 batch A) | `monster_cockroach` | `roach.mdl` |
+
+  The eight Wave 1 batch A rows were read from the same page through the
+  same text-extraction proxy, in the same session that read the eight
+  `TWHL:Monster_<entity>` pages cited in the stat table above; none of
+  these names were taken from, or checked against, any imported payload or
+  file listing derived from game data.
 - Blood color per monster family (red for humans/allies, yellow for
   headcrab/zombie, green for most other aliens, none for machines) is widely
   documented modding/mapping convention (the `BloodColor` FGD field on
@@ -2963,7 +2993,9 @@ Everything else under `crates/ohl-ai/src/monsters` — `MonsterBrain`'s
 schedule selection per kind, the new schedules themselves (houndeye pack
 blast, bullsquid spit, alien slave zap, grunt suppress/flank/grenade,
 barney/scientist follow, scientist heal, turret deploy/retract/track,
-tentacle sound-driven strikes, gargantua flame/stomp), the gib-overkill
+tentacle sound-driven strikes, gargantua flame/stomp, and Wave 1 batch A's
+barnacle lurk/feed, controller volley, assassin hit-and-run/retreat,
+passive stand and critter wander/scatter), the gib-overkill
 multiplier, and the `Spawner` bookkeeping shape — is this project's own
 design, written only from the monster-level behavioural descriptions cited
 above and in "Monster AI behaviour"; no SDK schedule, AI routine or damage
@@ -3068,6 +3100,62 @@ counterpart in `ohl-ai`'s sound classification and is recorded as
   re-creates a carried monster from its classname, names and placement
   alone, with no spawnflags, so a carried prisoner from such a save
   arrives an ordinary monster.
+
+### Wave 1 batch A: eight more `monster_*` kinds (M9.NEXT)
+
+The eight rows marked "Wave 1 batch A" in the two tables above
+(`monster_barnacle`, `monster_alien_controller`, `monster_human_assassin`,
+`monster_babycrab`, `monster_generic`, `monster_furniture`, `monster_rat`,
+`monster_cockroach`) were each read from that monster's own TWHL page,
+`https://twhl.info/wiki/page/<classname>`, through the same text-extraction
+proxy the model table already records (`twhl.info` still returns HTTP 403
+to direct automated fetches from this environment). Where a page publishes
+no number — the furniture's, rat's and cockroach's health, the barnacle's
+bite, every speed — the table says so and the code carries a
+`TODO(black-box)` placeholder rather than a guess dressed as a citation.
+
+Behavioural facts cited from those pages and how they are modeled
+(`crates/ohl-ai/src/monsters/{table,brains}.rs`, `crates/ohl-ai/src/
+{schedule,movement,spawn,world}.rs`):
+
+- **Barnacle**: the tongue reaches 2048 units straight down and prey is
+  killed in ten seconds. `MonsterBrain::melee_in_reach` (a new, defaulted
+  `Brain` method) turns the reach into a vertical test — within
+  `BARNACLE_TONGUE_RADIUS` of the line below the origin, no further down
+  than the length — instead of the spherical `melee_range` every other
+  kind uses; its senses are omnidirectional over the tongue length; it is
+  `ROOTED` (no schedule it selects moves it) and its eye sits *below* its
+  origin (`MonsterKind::view_offset`), since a ceiling-hung origin with the
+  default eye above it would start every sight trace inside the ceiling.
+  Not modeled: physically lifting the victim; the victim is bitten where it
+  stands and let go when it steps off the line.
+- **Alien controller**: flies, volleys, keeps its distance. Flight is the
+  hull seam the ichthyosaur's swim already relied on in `ohl-nav` (the
+  point hull steers in three dimensions there); this pass makes
+  `crate::movement::move_toward` and the no-collision fallback honour the
+  same hull (`movement::flies`), adds `MonsterFlags::FLIES` as the table's
+  statement of it, and — the actual gap — carries a species' hull (and eye
+  offset) from `MonsterSpec` onto the spawned `Actor` through
+  `MonsterSpawn::with_hull`/`with_view_ofs`, which `attach_monsters` never
+  did (every map-placed monster spawned with the standing hull; only
+  `monstermaker` children got their species' hull). The volley-then-back-
+  off schedule is the project's reading of "evasive" and "at a distance".
+- **Human assassin**: a two-shot burst then a relocation, a retreat on
+  heavy damage, a squad flag, faster placeholder speeds. Not modeled: the
+  jump, the cloak-when-still (a render effect), the grenade.
+- **Babycrab**: the headcrab's brain and hull with the cited fractions.
+- **Generic / furniture**: a passive brain (`PASSIVE_STAND`; the generic
+  additionally turns to look, `ALERT_STAND`) that never fights, flees or
+  takes cover, a spec so both get an `Actor` and a `MonsterAi` — which is
+  what lets a `scripted_sequence`'s `m_iszEntity` find and possess them
+  (`ohl-engine`'s `find_script_actor` requires an `Actor`) — and no
+  default model, since the cited model page lists both as "specified by
+  mapper" (`MonsterKind::model_from_map`). Not modeled: `Not solid (4)`.
+- **Rat / cockroach**: a wander (`Task::Wander`, a new task whose
+  direction is drawn from a generator seeded by the tick counter and the
+  entity id, so it consumes nothing from the world's shared stream and
+  replays exactly) and a scatter on any noise, hit or sighting; health 1.
+  Not modeled: being killed by being stepped on; `path_corner` patrols.
 
 ## Track trains and paths
 

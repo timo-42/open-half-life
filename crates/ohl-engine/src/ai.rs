@@ -69,7 +69,7 @@ use ohl_game::keyvalues::EntityDef;
 use ohl_game::registry::{ClassName, MakerActivation, Transform};
 use ohl_game::scripts::{ScriptActivation, ScriptDef, SentenceDef};
 
-use crate::components::{Corpse, MonsterMaker, Owner, StudioAnim};
+use crate::components::{Corpse, MonsterMaker, NotSolid, Owner, StudioAnim};
 use crate::ids::entity_id;
 use crate::level::Level;
 use crate::nav;
@@ -103,6 +103,13 @@ pub const MAX_MAKER_CHILDREN_PER_LEVEL: u32 = 256;
 /// The `monstermaker` classname, whose keyvalues become an
 /// [`ohl_ai::Spawner`].
 pub const MONSTERMAKER_CLASSNAME: &str = "monstermaker";
+
+/// The published `monster_generic` `Not solid` spawnflag bit: the prop
+/// is "impervious to any damage" (`docs/FORMAT_SOURCES.md`, "Monster
+/// definitions"; see [`NotSolid`] for what is and is not modeled). Read only for
+/// `monster_generic`, the one classname the cited page documents it on;
+/// on every other monster bit 4 is the unrelated `MonsterClip` flag.
+pub const SPAWNFLAG_GENERIC_NOT_SOLID: u32 = 4;
 
 /// The published `monster_generic` keyvalue naming the condition that fires
 /// [`TRIGGER_TARGET_KEY`].
@@ -236,7 +243,16 @@ impl MonsterSpawnRules for EngineSpawnRules<'_> {
         // it and never thinks, which is the documented inert state.
         let spec = spec_for(&kind)?;
         let brain = self.brains.get(&def.classname).copied()?;
-        Some(MonsterSpawn::new(spec.classification, brain).with_health(self.health_of(&kind, spec)))
+        // The species' own hull and eye offset: the hull is what decides
+        // whether it walks or flies (`ohl_ai::movement::flies`), and the
+        // eye is where its sight and attack traces start (a barnacle's
+        // points down, since its origin is at the ceiling).
+        Some(
+            MonsterSpawn::new(spec.classification, brain)
+                .with_health(self.health_of(&kind, spec))
+                .with_hull(spec.hull)
+                .with_view_ofs(kind.view_offset()),
+        )
     }
 }
 
@@ -485,6 +501,7 @@ impl AiState {
         }
 
         self.collect_triggers(level, &spawned);
+        Self::mark_not_solid(level, &spawned);
         self.attach_scripts(level);
         Self::attach_followers(level, &spawned);
         Self::attach_makers(level);
@@ -559,6 +576,24 @@ impl AiState {
                 entity,
                 trigger: MonsterTrigger::new(condition, target),
             });
+        }
+    }
+
+    /// Marks every `monster_generic` spawned with its `Not solid`
+    /// spawnflag ([`SPAWNFLAG_GENERIC_NOT_SOLID`]) with [`NotSolid`], so
+    /// the damage drain drops hits at it.
+    fn mark_not_solid(level: &mut Level, spawned: &[Entity]) {
+        for (index, def) in level.defs.iter().enumerate() {
+            let Some(entity) = level.registry.entities.get(index).copied() else {
+                break;
+            };
+            if !spawned.contains(&entity)
+                || MonsterKind::from_classname(&def.classname) != MonsterKind::Generic
+                || def.spawnflags & SPAWNFLAG_GENERIC_NOT_SOLID == 0
+            {
+                continue;
+            }
+            level.registry.world.insert_one(entity, NotSolid).ok();
         }
     }
 
@@ -1158,6 +1193,10 @@ impl AiState {
         }
         let pending = std::mem::take(damage);
         for queued in pending {
+            if level.registry.world.get::<&NotSolid>(queued.target).is_ok() {
+                // A `Not solid` prop is "impervious to any damage".
+                continue;
+            }
             if level
                 .registry
                 .world
@@ -1384,6 +1423,7 @@ impl AiState {
         let mut actor = Actor::new(spec.classification, origin).with_health(health);
         actor.yaw = yaw;
         actor.hull = spec.hull;
+        actor.view_ofs = kind.view_offset();
         let entity = level.registry.world.spawn((
             ClassName(classname.to_string()),
             Transform {

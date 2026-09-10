@@ -300,6 +300,96 @@ fn a_node_lattice_attaches_a_navigator_without_changing_the_contract() {
     );
 }
 
+/// Wave 1 batch A: an alien controller keeps its distance in the air.
+/// Hung high in the room with the player on the floor and well inside its
+/// reach, it fires and backs off rather than closing, and stays airborne
+/// throughout — nothing settles it to the floor. Its actor carries the
+/// point hull its species table asks for, the seam that makes both
+/// `ohl_ai::movement::move_toward` and `ohl-nav`'s steering treat it as a
+/// flier (the three-dimensional descent itself is covered by `ohl-ai`'s
+/// own `move_toward` tests, since here nothing gives it a reason to
+/// descend).
+#[test]
+fn an_alien_controller_keeps_its_distance_and_stays_airborne() {
+    let block = entities(&monster(
+        "monster_alien_controller",
+        [200.0, 0.0, 200.0],
+        180.0,
+        "",
+    ));
+    let mut game = game_from(&block, false);
+    let controller = monster_entities(&game)[0];
+    let start = *game
+        .registry()
+        .world
+        .get::<&ohl_ai::Actor>(controller)
+        .expect("the controller has an actor");
+    assert_eq!(start.hull, ohl_physics::Hull::Point);
+
+    tick(&mut game, 400);
+
+    let now = *game
+        .registry()
+        .world
+        .get::<&ohl_ai::Actor>(controller)
+        .expect("the controller still has an actor");
+    assert!(
+        now.origin.x > start.origin.x + 16.0,
+        "in range already, it backed away rather than closing"
+    );
+    assert!(
+        (now.origin.z - start.origin.z).abs() < 1.0,
+        "it stayed at its height: nothing settles a flier to the floor"
+    );
+    assert!(
+        game.player_health() < 100.0,
+        "and its volley reached the player"
+    );
+}
+
+/// Wave 1 batch A: a `monster_generic` is a player ally with eight health,
+/// so a soldier that sees one shoots it dead; the same prop spawned with
+/// its published `Not solid` spawnflag (bit 4) is "impervious to any
+/// damage" and survives the same soldier indefinitely. The wall keeps the
+/// player out of it: only the prop is in the soldier's sight.
+#[test]
+fn a_not_solid_generic_monster_is_impervious_and_a_solid_one_is_not() {
+    let room = |flags: &str| {
+        entities(&format!(
+            "{}{}",
+            monster("monster_human_grunt", [64.0, 0.0, 36.0], 0.0, ""),
+            monster(
+                "monster_generic",
+                [200.0, 0.0, 36.0],
+                180.0,
+                &format!("\"spawnflags\" \"{flags}\"\n"),
+            ),
+        ))
+    };
+    let mut solid = game_from(&room("0"), true);
+    let mut not_solid = game_from(&room("4"), true);
+    assert_eq!(solid.monster_count(), 2);
+    assert_eq!(not_solid.monster_count(), 2);
+
+    tick(&mut solid, 1_500);
+    tick(&mut not_solid, 1_500);
+
+    assert_eq!(
+        solid.monster_death_count(),
+        1,
+        "the soldier shot the solid prop dead"
+    );
+    assert_eq!(
+        not_solid.monster_death_count(),
+        0,
+        "a Not solid prop is impervious to the same soldier"
+    );
+    assert!(
+        not_solid.monster_damage_event_count() == 0,
+        "no hit at a Not solid prop is ever applied"
+    );
+}
+
 /// A `monster_*` classname this project has no table row for spawns nothing
 /// that thinks, and does not upset the step list.
 #[test]

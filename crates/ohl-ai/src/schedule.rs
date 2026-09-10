@@ -162,6 +162,13 @@ pub enum Task {
     Die,
     /// Fail immediately; useful as the body of a "cannot do this" schedule.
     Fail,
+    /// Build a route to a point `distance` units away in a direction drawn
+    /// for this monster and this tick (see
+    /// `crate::world`'s executor), for critters that wander with no goal.
+    Wander {
+        /// How far to go, in world units.
+        distance: f32,
+    },
 }
 
 impl Task {
@@ -203,6 +210,7 @@ impl Task {
             Self::ClearEnemy => 24,
             Self::Die => 25,
             Self::Fail => 26,
+            Self::Wander { .. } => 27,
         }
     }
 }
@@ -544,6 +552,20 @@ pub trait Brain: Send + Sync {
         true
     }
 
+    /// Whether the primary melee attack reaches a seen enemy: `origin` is
+    /// the monster's own origin, `enemy_origin` the enemy's, and
+    /// `distance` the eye-to-eye distance sight measured.
+    ///
+    /// The default is the sphere [`Self::melee_range`] describes. A
+    /// monster whose reach is not a sphere — a barnacle's tongue hangs
+    /// straight down — overrides this instead of `melee_range`, so the
+    /// range a caller reads for display or for an attack trace is left
+    /// alone.
+    fn melee_in_reach(&self, origin: glam::Vec3, enemy_origin: glam::Vec3, distance: f32) -> bool {
+        let _ = (origin, enemy_origin);
+        distance <= self.melee_range()
+    }
+
     /// Whether this monster has a ranged attack at all.
     ///
     /// Senses only raise [`Conditions::CAN_RANGE_ATTACK1`] when it does.
@@ -833,6 +855,7 @@ mod tests {
             Task::ClearEnemy,
             Task::Die,
             Task::Fail,
+            Task::Wander { distance: 1.0 },
         ];
         let mut tags: Vec<u8> = tasks.iter().map(|task| task.tag()).collect();
         let count = tags.len();

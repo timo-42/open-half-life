@@ -103,6 +103,59 @@ pub const TENTACLE_BEAK_DAMAGE: f32 = 200.0;
 /// height-based hit detection.
 pub const TENTACLE_BEAK_HEIGHTS: [f32; 4] = [0.0, 256.0, 448.0, 640.0];
 
+// Wave 1 batch A: barnacle, alien controller, human assassin, babycrab,
+// generic, furniture, rat, cockroach.
+
+/// `TWHL:Monster_barnacle`'s published tongue reach: "its real range goes
+/// 2048 units below his origin position", in world units. This is the
+/// length of the vertical tongue trace [`crate::monsters::MonsterBrain`]
+/// uses as the barnacle's melee reach (`brains::MonsterBrain::
+/// melee_in_reach`), and the barnacle's look distance.
+pub const BARNACLE_TONGUE_LENGTH: f32 = 2_048.0;
+
+/// How far off the vertical line below a barnacle a victim may stand and
+/// still be counted as touching the tongue, in world units.
+/// **`TODO(black-box)`**: the tongue's width is not published; this is a
+/// project placeholder, roughly one humanoid hull width.
+pub const BARNACLE_TONGUE_RADIUS: f32 = 32.0;
+
+/// `TWHL:Monster_barnacle`'s published feeding time: "It takes 10 seconds
+/// for a barnacle to kill its prey." Recorded as a fact; the bite cadence
+/// `brains::BARNACLE_BITE_INTERVAL` derives from it is this project's own
+/// reading of that sentence.
+pub const BARNACLE_KILL_SECONDS: f32 = 10.0;
+
+/// `TWHL:Monster_alien_controller`'s published head-launched homing ball
+/// damage, `[easy, medium, hard]`. Not yet wired: `MonsterSpec` carries one
+/// ranged attack, and the hand-launched energy-ball volley (the row's
+/// `ranged`) is the one a controller uses at range.
+pub const CONTROLLER_HEAD_BALL_DAMAGE: [f32; 3] = [15.0, 25.0, 35.0];
+
+/// `TWHL:Monster_alien_controller`'s published homing ball speed,
+/// `[easy, medium, hard]`, in units per second. Not yet wired (see
+/// [`CONTROLLER_HEAD_BALL_DAMAGE`]).
+pub const CONTROLLER_HEAD_BALL_SPEED: [f32; 3] = [650.0, 800.0, 1_000.0];
+
+/// `TWHL:Monster_human_assassin`'s thrown grenade; one published value, not
+/// skill-scaled. Not yet wired, for the same reason as
+/// [`HGRUNT_GRENADE_DAMAGE`].
+pub const ASSASSIN_GRENADE_DAMAGE: f32 = 100.0;
+
+/// `TWHL:Monster_babycrab`'s published health as a fraction of a
+/// headcrab's: "only 25% as much health as a normal headcrab".
+/// [`MonsterSpec::resolve_health`] applies it to the headcrab row so a
+/// `skill.cfg` override of `sk_headcrab_health<N>` scales the babycrab
+/// too, rather than the babycrab needing a cvar of its own that no
+/// published convention names.
+pub const BABYCRAB_HEALTH_FRACTION: f32 = 0.25;
+
+/// `TWHL:Monster_babycrab`'s published bite as a fraction of a
+/// headcrab's: "only 30% as much damage".
+pub const BABYCRAB_DAMAGE_FRACTION: f32 = 0.3;
+
+/// `TWHL:Monster_generic`'s published health: "Spawns with only 8 HP."
+pub const GENERIC_HEALTH: f32 = 8.0;
+
 /// A difficulty level, matching the `1`/`2`/`3` = easy/medium/hard
 /// `sk_<subject>_<property><N>` convention documented in
 /// `docs/FORMAT_SOURCES.md` ("Game text formats", `skill.cfg`) and already
@@ -202,6 +255,17 @@ impl MonsterFlags {
     pub const SQUAD_MONSTER: Self = Self(1 << 2);
     /// Never flees regardless of `SEE_FEAR`/low health (turrets, gargantua).
     pub const NEVER_FLEES: Self = Self(1 << 3);
+    // Wave 1 batch A.
+    /// Moves through the air rather than along the floor (the alien
+    /// controller): its route follows the full three-dimensional
+    /// direction to each waypoint and never steps up or settles down. The
+    /// hull that goes with it is [`Hull::Point`], which is also what
+    /// `ohl-nav`'s steering reads as "a flier" (`ohl_nav::steer`), so the
+    /// two seams agree; see `crate::movement::move_toward`.
+    pub const FLIES: Self = Self(1 << 4);
+    /// Never moves at all (the barnacle): no schedule its brain selects
+    /// carries a movement task, and it takes no cover.
+    pub const ROOTED: Self = Self(1 << 5);
 
     /// The union of two flag sets.
     #[must_use]
@@ -298,6 +362,23 @@ pub enum MonsterKind {
     Gargantua,
     /// `monster_tentacle`.
     Tentacle,
+    // Wave 1 batch A.
+    /// `monster_barnacle`.
+    Barnacle,
+    /// `monster_alien_controller`.
+    AlienController,
+    /// `monster_human_assassin`.
+    HumanAssassin,
+    /// `monster_babycrab`.
+    Babycrab,
+    /// `monster_generic`.
+    Generic,
+    /// `monster_furniture`.
+    Furniture,
+    /// `monster_rat`.
+    Rat,
+    /// `monster_cockroach`.
+    Cockroach,
     /// Any classname this table does not (yet) know, carried verbatim so it
     /// can still be logged, spawned as an inert actor, or rejected.
     Unknown(String),
@@ -325,12 +406,21 @@ impl MonsterKind {
             Self::Leech => "monster_leech",
             Self::Gargantua => "monster_gargantua",
             Self::Tentacle => "monster_tentacle",
+            // Wave 1 batch A.
+            Self::Barnacle => "monster_barnacle",
+            Self::AlienController => "monster_alien_controller",
+            Self::HumanAssassin => "monster_human_assassin",
+            Self::Babycrab => "monster_babycrab",
+            Self::Generic => "monster_generic",
+            Self::Furniture => "monster_furniture",
+            Self::Rat => "monster_rat",
+            Self::Cockroach => "monster_cockroach",
             Self::Unknown(classname) => classname,
         }
     }
 
     /// The kind for a map entity's `classname`, or [`Self::Unknown`] when it
-    /// is not one of the sixteen this table defines.
+    /// is not one of the kinds this table defines.
     ///
     /// `monster_bullchicken` is accepted as an alias for [`Self::Bullsquid`]:
     /// TWHL's "Reference: Entities and their models"
@@ -359,6 +449,15 @@ impl MonsterKind {
             "monster_leech" => Self::Leech,
             "monster_gargantua" => Self::Gargantua,
             "monster_tentacle" => Self::Tentacle,
+            // Wave 1 batch A.
+            "monster_barnacle" => Self::Barnacle,
+            "monster_alien_controller" => Self::AlienController,
+            "monster_human_assassin" => Self::HumanAssassin,
+            "monster_babycrab" => Self::Babycrab,
+            "monster_generic" => Self::Generic,
+            "monster_furniture" => Self::Furniture,
+            "monster_rat" => Self::Rat,
+            "monster_cockroach" => Self::Cockroach,
             other => Self::Unknown(other.to_string()),
         }
     }
@@ -368,10 +467,30 @@ impl MonsterKind {
     /// unverifiable *values* discussed in the module doc comment — the
     /// naming convention itself is corroborated by multiple sources and by
     /// this project's own `ohl_formats::skill_cfg` reader).
+    ///
+    /// The Wave 1 batch A stems (`barnacle`, `controller`, `hassassin`)
+    /// follow the same `sk_<subject>` convention but were **not** verified
+    /// against a vanilla `skill.cfg` (none is reachable from this
+    /// environment; see the module doc comment): they are this project's
+    /// own choice of stem, so a caller's override lookup that happens to
+    /// use another spelling simply falls back to the table. The babycrab
+    /// deliberately reuses the headcrab's stem, since its published numbers
+    /// are fractions of the headcrab's ([`BABYCRAB_HEALTH_FRACTION`]);
+    /// `monster_generic`, `monster_furniture`, `monster_rat` and
+    /// `monster_cockroach` have no skill entries at all, so their stems
+    /// are the classnames themselves, which no `skill.cfg` will match.
     #[must_use]
     pub fn skill_subject(&self) -> &str {
         match self {
-            Self::Headcrab => "headcrab",
+            // Wave 1 batch A.
+            Self::Barnacle => "barnacle",
+            Self::AlienController => "controller",
+            Self::HumanAssassin => "hassassin",
+            Self::Generic => "monster_generic",
+            Self::Furniture => "monster_furniture",
+            Self::Rat => "monster_rat",
+            Self::Cockroach => "monster_cockroach",
+            Self::Headcrab | Self::Babycrab => "headcrab",
             Self::Zombie => "zombie",
             Self::Houndeye => "houndeye",
             Self::Bullsquid => "bullsquid",
@@ -396,10 +515,11 @@ impl MonsterKind {
     ///
     /// Unlike every other keyvalue this project loads, a `monster_*`
     /// entity's model is **not** authored in the map's entity lump for the
-    /// fifteen defined kinds below (`monster_generic`/`monster_furniture`
-    /// are the documented exception, and already carry an explicit `model`
-    /// keyvalue the caller reads directly — see
-    /// `ohl_engine::level::wants_studio_model`'s doc comment). The
+    /// defined kinds below (`monster_generic`/`monster_furniture`
+    /// are the documented exception: the cited page lists their model as
+    /// "specified by mapper", they carry an explicit `model` keyvalue the
+    /// caller reads directly — see `ohl_engine::level::wants_studio_model`'s
+    /// doc comment — and so they return `None` here like `Unknown`). The
     /// monster's own `Spawn`/`Precache` code picks the model instead, so a
     /// clean-room engine that only reads the map's `model` keyvalue never
     /// finds one for these classnames and never draws them, even though
@@ -433,14 +553,48 @@ impl MonsterKind {
             // `skill_subject`'s stem for this kind is `"tentacle"`, which
             // does not double as this filename; see the cited table.
             Self::Tentacle => "models/tentacle2.mdl",
-            Self::Unknown(_) => return None,
+            // Wave 1 batch A. `skill_subject`'s stems for the controller
+            // and the assassin do not double as these filenames; see the
+            // cited table.
+            Self::Barnacle => "models/barnacle.mdl",
+            Self::AlienController => "models/controller.mdl",
+            Self::HumanAssassin => "models/hassassin.mdl",
+            Self::Babycrab => "models/baby_headcrab.mdl",
+            Self::Rat => "models/bigrat.mdl",
+            Self::Cockroach => "models/roach.mdl",
+            Self::Generic | Self::Furniture | Self::Unknown(_) => return None,
         })
+    }
+
+    /// Whether this kind's model is authored by the map (its `model`
+    /// keyvalue) rather than hardcoded per species: `true` exactly for the
+    /// two kinds the cited model table lists as "specified by mapper",
+    /// which is why [`Self::default_model_path`] has nothing for them.
+    #[must_use]
+    pub fn model_from_map(&self) -> bool {
+        matches!(self, Self::Generic | Self::Furniture)
+    }
+
+    /// The eye offset above the origin a monster of this kind spawns with.
+    ///
+    /// Every kind uses [`crate::Actor::new`]'s default except the barnacle,
+    /// whose origin sits at the ceiling it hangs from: an eye *above* it
+    /// would be inside the ceiling, so its tongue trace starts below the
+    /// origin instead. **`TODO(black-box)`**: the barnacle's mouth height
+    /// is not published; the offset is a project placeholder.
+    #[must_use]
+    pub fn view_offset(&self) -> glam::Vec3 {
+        match self {
+            // Wave 1 batch A.
+            Self::Barnacle => glam::Vec3::new(0.0, 0.0, -16.0),
+            _ => glam::Vec3::new(0.0, 0.0, 28.0),
+        }
     }
 
     /// Every defined kind (not [`Self::Unknown`]), in table order.
     #[must_use]
     pub fn defined() -> &'static [MonsterKind] {
-        const KINDS: [MonsterKind; 16] = [
+        const KINDS: [MonsterKind; 24] = [
             MonsterKind::Headcrab,
             MonsterKind::Zombie,
             MonsterKind::Houndeye,
@@ -457,6 +611,15 @@ impl MonsterKind {
             MonsterKind::Leech,
             MonsterKind::Gargantua,
             MonsterKind::Tentacle,
+            // Wave 1 batch A.
+            MonsterKind::Barnacle,
+            MonsterKind::AlienController,
+            MonsterKind::HumanAssassin,
+            MonsterKind::Babycrab,
+            MonsterKind::Generic,
+            MonsterKind::Furniture,
+            MonsterKind::Rat,
+            MonsterKind::Cockroach,
         ];
         &KINDS
     }
@@ -490,6 +653,12 @@ pub struct MonsterSpec {
 impl MonsterSpec {
     /// The health at `difficulty`, with a `skill`-table override applied
     /// first (looked up as `sk_<subject>_health<N>`).
+    ///
+    /// The babycrab is published as a fraction of the headcrab
+    /// ([`BABYCRAB_HEALTH_FRACTION`]), so its override is the *headcrab's*
+    /// `sk_headcrab_health<N>` scaled by that fraction: an override of the
+    /// parent scales the child, and the babycrab's own table row is only
+    /// ever what that product already equals.
     #[must_use]
     pub fn resolve_health(
         &self,
@@ -502,6 +671,12 @@ impl MonsterSpec {
             kind.skill_subject(),
             difficulty.skill_suffix()
         );
+        if matches!(kind, MonsterKind::Babycrab)
+            && let Some(headcrab) = spec_for(&MonsterKind::Headcrab)
+        {
+            return resolve_stat(headcrab.health, difficulty, &cvar, skill)
+                * BABYCRAB_HEALTH_FRACTION;
+        }
         resolve_stat(self.health, difficulty, &cvar, skill)
     }
 }
@@ -786,6 +961,159 @@ pub fn spec_for(kind: &MonsterKind) -> Option<&'static MonsterSpec> {
         flags: MonsterFlags::NEVER_FLEES,
     };
 
+    // --- Wave 1 batch A ---------------------------------------------------
+
+    // `TWHL:Monster_barnacle` — health 25 (one published value, not
+    // skill-scaled); "Barnacles can be killed with a single hit from the
+    // crowbar". Its "attack" is the tongue: published as reaching 2048
+    // units straight down (`BARNACLE_TONGUE_LENGTH`, the melee reach here;
+    // `brains::MonsterBrain::melee_in_reach` turns that into a vertical
+    // test rather than a sphere), and as killing its prey in 10 seconds
+    // (`BARNACLE_KILL_SECONDS`), with a player "killed in 1 to 3 bites
+    // depending on how much armor they have". Bite damage per hit is
+    // `TODO(black-box)`: the flat 40 below is a placeholder chosen to sit
+    // inside that published one-to-three-bites bound for a 100-health
+    // player, not a cited number. Published to "ignore other monsters":
+    // the relationship table's barnacle row only hates the player's side.
+    static BARNACLE: MonsterSpec = MonsterSpec {
+        classification: C::Barnacle,
+        health: [25.0, 25.0, 25.0],
+        melee: atk([40.0, 40.0, 40.0], BARNACLE_TONGUE_LENGTH),
+        ranged: None,
+        hull: Hull::Standing,
+        blood: BloodKind::Green,
+        size: SizeClass::Medium,
+        can_open_doors: false,
+        flags: MonsterFlags::NEVER_FLEES.union(MonsterFlags::ROOTED),
+    };
+    // `TWHL:Monster_alien_controller` — health 60/60/100; hand-launched
+    // energy-ball volley ("zap") 3/4/5 (the head-launched homing ball at
+    // 15/25/35 and its 650/800/1000 speed are `CONTROLLER_HEAD_BALL_DAMAGE`
+    // /`_SPEED` above, not yet wired). Published as flying ("Can't move
+    // unless an `info_node_air` is nearby"), evasive and keeping its
+    // distance; `MonsterFlags::FLIES` with the point hull is the flight
+    // seam, `brains::CONTROLLER_VOLLEY` the fire-then-reposition. No melee
+    // attack is published. Range: not published, `TODO(black-box)`.
+    static ALIEN_CONTROLLER: MonsterSpec = MonsterSpec {
+        classification: C::AlienMilitary,
+        health: [60.0, 60.0, 100.0],
+        melee: None,
+        ranged: atk([3.0, 4.0, 5.0], 1_024.0),
+        hull: Hull::Point,
+        blood: BloodKind::Green,
+        size: SizeClass::Medium,
+        can_open_doors: false,
+        flags: MonsterFlags::FLIES,
+    };
+    // `TWHL:Monster_human_assassin` — health 30/50/50; silenced pistol
+    // 5/5/8 (grenade 100 flat is `ASSASSIN_GRENADE_DAMAGE` above, not yet
+    // wired). Published as fast and agile, running and jumping to avoid
+    // fire and attacking from multiple directions, in small teams
+    // (`SQUAD_MONSTER`); `brains::ASSASSIN_HIT_AND_RUN` is the fire-then-
+    // relocate reading of that, and `brains::ASSASSIN_RUN_SPEED` the "fast".
+    // No melee attack is published. Range: not published, `TODO(black-box)`.
+    static HUMAN_ASSASSIN: MonsterSpec = MonsterSpec {
+        classification: C::HumanMilitary,
+        health: [30.0, 50.0, 50.0],
+        melee: None,
+        ranged: atk([5.0, 5.0, 8.0], 1_024.0),
+        hull: Hull::Standing,
+        blood: BloodKind::Red,
+        size: SizeClass::Medium,
+        can_open_doors: true,
+        flags: MonsterFlags::SQUAD_MONSTER
+            .union(MonsterFlags::OPENS_DOORS)
+            .union(MonsterFlags::FADES_CORPSE),
+    };
+    // `TWHL:Monster_babycrab` — health 2.5/2.5/5 and bite 1.5/3/3, both
+    // published as fractions of the headcrab's ("only 25% as much health",
+    // "only 30% as much damage": `BABYCRAB_HEALTH_FRACTION`/
+    // `BABYCRAB_DAMAGE_FRACTION`), which is exactly what these rows are.
+    // Everything else — hull, blood, brain — is the headcrab's. Melee
+    // reach: not published, `TODO(black-box)` (the headcrab's placeholder).
+    static BABYCRAB: MonsterSpec = MonsterSpec {
+        classification: C::AlienPrey,
+        health: [2.5, 2.5, 5.0],
+        melee: atk([1.5, 3.0, 3.0], 48.0),
+        ranged: None,
+        hull: Hull::Crouched,
+        blood: BloodKind::Yellow,
+        size: SizeClass::Small,
+        can_open_doors: false,
+        flags: MonsterFlags::FADES_CORPSE,
+    };
+    // `TWHL:Monster_generic` — "Spawns with only 8 HP" (`GENERIC_HEALTH`);
+    // "Classified as a player ally"; "Used to spawn models for use with
+    // scripted sequences", its model coming from the map's own `model`
+    // keyvalue (`MonsterKind::model_from_map`). No attack of its own is
+    // modeled (the page's "will try to attack ... if any animation with the
+    // appropriate ACTs exists" depends on the mapper's model, which this
+    // table cannot know). `NEVER_FLEES`: a prop for a script stands where
+    // it was put.
+    static GENERIC: MonsterSpec = MonsterSpec {
+        classification: C::PlayerAlly,
+        health: [GENERIC_HEALTH, GENERIC_HEALTH, GENERIC_HEALTH],
+        melee: None,
+        ranged: None,
+        hull: Hull::Standing,
+        blood: BloodKind::Red,
+        size: SizeClass::Medium,
+        can_open_doors: false,
+        flags: MonsterFlags::NEVER_FLEES,
+    };
+    // `TWHL:Monster_furniture` — "a furniture model used in scripted
+    // sequences", model from the map's `model` keyvalue; "still bleeds
+    // like a cycler when hit with explosion damage", so it is damageable,
+    // but no health value is published: the 8 below mirrors
+    // `monster_generic`'s and is `TODO(black-box)`. No classification is
+    // published either; `Classification::None` (takes part in no
+    // relationship) is the conservative reading of a piece of furniture.
+    // Published as not turning to face its path, hence `ROOTED` (its brain
+    // never turns or walks it; a script driving it is unaffected).
+    static FURNITURE: MonsterSpec = MonsterSpec {
+        classification: C::None,
+        health: [GENERIC_HEALTH, GENERIC_HEALTH, GENERIC_HEALTH],
+        melee: None,
+        ranged: None,
+        hull: Hull::Standing,
+        blood: BloodKind::None,
+        size: SizeClass::Medium,
+        can_open_doors: false,
+        flags: MonsterFlags::NEVER_FLEES.union(MonsterFlags::ROOTED),
+    };
+    // `TWHL:Monster_rat` — "it doesn't do much"; can wander erratically
+    // along a patrol path. No health, damage or classification is
+    // published: health 1 (dies to any hit) and `Classification::None` are
+    // `TODO(black-box)` placeholders. Harmless: no attack.
+    static RAT: MonsterSpec = MonsterSpec {
+        classification: C::None,
+        health: [1.0, 1.0, 1.0],
+        melee: None,
+        ranged: None,
+        hull: Hull::Crouched,
+        blood: BloodKind::Red,
+        size: SizeClass::Small,
+        can_open_doors: false,
+        flags: MonsterFlags::FADES_CORPSE,
+    };
+    // `TWHL:Monster_cockroach` — "scurry around in the dark ... They are
+    // easily scared"; "Stepping on them will kill them". The published
+    // classification vocabulary has an `insect` class, used here
+    // (`TODO(black-box)`: the page does not say so outright). Health 1 is
+    // the "any hit kills" reading of the stepping sentence, not a cited
+    // number. Harmless: no attack.
+    static COCKROACH: MonsterSpec = MonsterSpec {
+        classification: C::Insect,
+        health: [1.0, 1.0, 1.0],
+        melee: None,
+        ranged: None,
+        hull: Hull::Crouched,
+        blood: BloodKind::None,
+        size: SizeClass::Small,
+        can_open_doors: false,
+        flags: MonsterFlags::FADES_CORPSE,
+    };
+
     match kind {
         MonsterKind::Headcrab => Some(&HEADCRAB),
         MonsterKind::Zombie => Some(&ZOMBIE),
@@ -803,6 +1131,15 @@ pub fn spec_for(kind: &MonsterKind) -> Option<&'static MonsterSpec> {
         MonsterKind::Leech => Some(&LEECH),
         MonsterKind::Gargantua => Some(&GARGANTUA),
         MonsterKind::Tentacle => Some(&TENTACLE),
+        // Wave 1 batch A.
+        MonsterKind::Barnacle => Some(&BARNACLE),
+        MonsterKind::AlienController => Some(&ALIEN_CONTROLLER),
+        MonsterKind::HumanAssassin => Some(&HUMAN_ASSASSIN),
+        MonsterKind::Babycrab => Some(&BABYCRAB),
+        MonsterKind::Generic => Some(&GENERIC),
+        MonsterKind::Furniture => Some(&FURNITURE),
+        MonsterKind::Rat => Some(&RAT),
+        MonsterKind::Cockroach => Some(&COCKROACH),
         MonsterKind::Unknown(_) => None,
     }
 }
@@ -836,6 +1173,15 @@ mod tests {
             (MonsterKind::Leech, [2.0, 2.0, 2.0]),
             (MonsterKind::Gargantua, [800.0, 800.0, 1_000.0]),
             (MonsterKind::Tentacle, [75.0, 75.0, 75.0]),
+            // Wave 1 batch A.
+            (MonsterKind::Barnacle, [25.0, 25.0, 25.0]),
+            (MonsterKind::AlienController, [60.0, 60.0, 100.0]),
+            (MonsterKind::HumanAssassin, [30.0, 50.0, 50.0]),
+            (MonsterKind::Babycrab, [2.5, 2.5, 5.0]),
+            (MonsterKind::Generic, [8.0, 8.0, 8.0]),
+            (MonsterKind::Furniture, [8.0, 8.0, 8.0]),
+            (MonsterKind::Rat, [1.0, 1.0, 1.0]),
+            (MonsterKind::Cockroach, [1.0, 1.0, 1.0]),
         ];
         assert_eq!(expected.len(), MonsterKind::defined().len());
         for (kind, health) in expected {
@@ -853,10 +1199,16 @@ mod tests {
     /// Every defined kind must publish a `models/*.mdl` default path so a
     /// map's own `monster_*` entity (which usually carries no `model`
     /// keyvalue at all) can still be drawn; [`MonsterKind::Unknown`] must
-    /// not, since this project has no table row to guess a path from.
+    /// not, since this project has no table row to guess a path from, and
+    /// neither must the two kinds whose model the map itself authors
+    /// ([`MonsterKind::model_from_map`]).
     #[test]
     fn every_defined_kind_has_a_default_model_and_unknown_does_not() {
         for kind in MonsterKind::defined() {
+            if kind.model_from_map() {
+                assert_eq!(kind.default_model_path(), None, "{kind:?}");
+                continue;
+            }
             let path = kind
                 .default_model_path()
                 .unwrap_or_else(|| panic!("{kind:?} has a default model path"));
@@ -888,6 +1240,9 @@ mod tests {
             (MonsterKind::Leech, [2.0, 2.0, 2.0]),
             (MonsterKind::Gargantua, [10.0, 30.0, 30.0]),
             (MonsterKind::Tentacle, [20.0, 20.0, 20.0]),
+            // Wave 1 batch A (the barnacle's bite is a placeholder, not a
+            // cited number; see its row).
+            (MonsterKind::Babycrab, [1.5, 3.0, 3.0]),
         ];
         for (kind, damage) in melee_expected {
             let spec = spec_for(kind).unwrap_or_else(|| panic!("{kind:?} is defined"));
@@ -915,6 +1270,9 @@ mod tests {
             (MonsterKind::MiniTurret, [5.0, 5.0, 8.0]),
             (MonsterKind::Sentry, [3.0, 4.0, 5.0]),
             (MonsterKind::Gargantua, [3.0, 5.0, 5.0]),
+            // Wave 1 batch A.
+            (MonsterKind::AlienController, [3.0, 4.0, 5.0]),
+            (MonsterKind::HumanAssassin, [5.0, 5.0, 8.0]),
         ];
         for (kind, damage) in ranged_expected {
             let spec = spec_for(kind).unwrap_or_else(|| panic!("{kind:?} is defined"));
@@ -969,6 +1327,118 @@ mod tests {
             MonsterKind::from_classname("monster_bullsquid"),
             MonsterKind::Bullsquid
         );
+    }
+
+    /// Wave 1 batch A: none of the eight classnames added is
+    /// [`MonsterKind::Unknown`] any more, each has a spec, and each is in
+    /// [`MonsterKind::defined`].
+    #[test]
+    fn wave_1_batch_a_classnames_are_no_longer_unknown() {
+        let classnames = [
+            "monster_barnacle",
+            "monster_alien_controller",
+            "monster_human_assassin",
+            "monster_babycrab",
+            "monster_generic",
+            "monster_furniture",
+            "monster_rat",
+            "monster_cockroach",
+        ];
+        for classname in classnames {
+            let kind = MonsterKind::from_classname(classname);
+            assert!(
+                !matches!(kind, MonsterKind::Unknown(_)),
+                "{classname} is still Unknown"
+            );
+            assert_eq!(kind.classname(), classname);
+            assert!(spec_for(&kind).is_some(), "{classname} has no spec");
+            assert!(MonsterKind::defined().contains(&kind));
+        }
+    }
+
+    /// The babycrab's published numbers are fractions of the headcrab's:
+    /// its table row equals the headcrab's scaled by the cited fractions,
+    /// and an override of the *headcrab's* health cvar scales it too.
+    #[test]
+    fn the_babycrab_is_a_scaled_headcrab() {
+        use super::{BABYCRAB_DAMAGE_FRACTION, BABYCRAB_HEALTH_FRACTION};
+        let headcrab = spec_for(&MonsterKind::Headcrab).expect("defined");
+        let babycrab = spec_for(&MonsterKind::Babycrab).expect("defined");
+        for difficulty in Difficulty::ALL {
+            let index = difficulty.index();
+            assert!(
+                (babycrab.health[index] - headcrab.health[index] * BABYCRAB_HEALTH_FRACTION).abs()
+                    < 1e-6
+            );
+            let (Some(parent), Some(child)) = (headcrab.melee, babycrab.melee) else {
+                panic!("both crabs bite");
+            };
+            assert!(
+                (child.damage[index] - parent.damage[index] * BABYCRAB_DAMAGE_FRACTION).abs()
+                    < 1e-6
+            );
+        }
+        let lookup: &dyn Fn(&str) -> Option<f32> =
+            &|cvar: &str| (cvar == "sk_headcrab_health2").then_some(40.0);
+        let resolved =
+            babycrab.resolve_health(&MonsterKind::Babycrab, Difficulty::Medium, Some(lookup));
+        assert!((resolved - 40.0 * BABYCRAB_HEALTH_FRACTION).abs() < 1e-6);
+        assert!(
+            (babycrab.resolve_health(&MonsterKind::Babycrab, Difficulty::Hard, Some(lookup)) - 5.0)
+                .abs()
+                < 1e-6
+        );
+    }
+
+    /// The two locomotion flags agree with the hull that carries them:
+    /// a flier uses the point hull (the hull `ohl-nav` steers in three
+    /// dimensions), and a rooted kind is also one that never flees.
+    #[test]
+    fn locomotion_flags_agree_with_hulls() {
+        use super::MonsterFlags;
+        use ohl_physics::Hull;
+        for kind in MonsterKind::defined() {
+            let spec = spec_for(kind).expect("defined");
+            if spec.flags.contains(MonsterFlags::FLIES) {
+                assert_eq!(
+                    spec.hull,
+                    Hull::Point,
+                    "{kind:?} flies without the point hull"
+                );
+            }
+            if spec.flags.contains(MonsterFlags::ROOTED) {
+                assert!(
+                    spec.flags.contains(MonsterFlags::NEVER_FLEES),
+                    "{kind:?} is rooted but may flee"
+                );
+            }
+        }
+        assert!(
+            spec_for(&MonsterKind::AlienController)
+                .expect("defined")
+                .flags
+                .contains(MonsterFlags::FLIES)
+        );
+        assert!(
+            spec_for(&MonsterKind::Barnacle)
+                .expect("defined")
+                .flags
+                .contains(MonsterFlags::ROOTED)
+        );
+    }
+
+    /// The barnacle hangs from a ceiling, so its eye is below its origin;
+    /// every other kind keeps the default eye height above it.
+    #[test]
+    fn only_the_barnacle_looks_down_from_its_origin() {
+        for kind in MonsterKind::defined() {
+            let offset = kind.view_offset();
+            if *kind == MonsterKind::Barnacle {
+                assert!(offset.z < 0.0);
+            } else {
+                assert!(offset.z > 0.0, "{kind:?}");
+            }
+        }
     }
 
     #[test]

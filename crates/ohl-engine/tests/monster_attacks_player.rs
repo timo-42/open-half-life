@@ -56,3 +56,45 @@ fn a_monster_attack_reduces_player_health() {
          be silently dropped by phase 10's monster-only drain"
     );
 }
+
+/// A room with a barnacle hung just under the ceiling and the player
+/// starting at `x`: straight under the tongue at `0`, or beside it.
+fn barnacle_game(player_x: f32) -> Game {
+    let entities = format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"{player_x} 0 36\"\n\"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"monster_barnacle\"\n\"origin\" \"0 0 250\"\n\"angle\" \"0\"\n}}\n"
+    );
+    let bytes = ai_room_bsp(&entities, false);
+    let mut assets = MemoryAssets::new();
+    assets.insert(&format!("maps/{AI_MAP}.bsp"), bytes.clone());
+    Game::from_map_bytes(&assets, AI_MAP, &bytes).expect("the AI room loads")
+}
+
+/// Wave 1 batch A: a barnacle's tongue is a vertical line below it. A
+/// player standing on that line is bitten; one standing beside it, well
+/// inside the barnacle's straight-line reach, is not — and the barnacle
+/// never leaves the ceiling either way.
+#[test]
+fn a_barnacle_bites_what_stands_under_it_and_nothing_else() {
+    let mut under = barnacle_game(0.0);
+    assert_eq!(under.monster_count(), 1, "the barnacle thinks");
+    let barnacle = ohl_engine::test_support::monster_entities(&under)[0];
+    let hung_at = ohl_engine::test_support::actor_origin(&under, barnacle);
+    tick(&mut under, 1_000);
+    assert!(
+        under.player_health() < 100.0,
+        "a player under the tongue is bitten"
+    );
+    assert!(
+        (ohl_engine::test_support::actor_origin(&under, barnacle) - hung_at).length() < 1.0,
+        "the barnacle never moved"
+    );
+
+    let mut beside = barnacle_game(128.0);
+    tick(&mut beside, 1_000);
+    assert!(
+        (beside.player_health() - 100.0).abs() < f32::EPSILON,
+        "a player beside the tongue is left alone"
+    );
+}

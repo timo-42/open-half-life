@@ -42,11 +42,16 @@ pub struct MonsterSpawn {
     pub health: f32,
     /// Its eye offset above the origin.
     pub view_ofs: Vec3,
+    /// The collision hull it moves with. The standing hull by default; a
+    /// species table (`crate::monsters::MonsterSpec::hull`) supplies the
+    /// real one, which is also what decides whether it walks, swims or
+    /// flies (`crate::movement::flies`).
+    pub hull: ohl_physics::Hull,
 }
 
 impl MonsterSpawn {
-    /// A monster of the given faction and brain, with 100 health and the
-    /// default eye height.
+    /// A monster of the given faction and brain, with 100 health, the
+    /// default eye height and the standing hull.
     #[must_use]
     pub fn new(classification: Classification, brain: BrainId) -> Self {
         Self {
@@ -54,6 +59,7 @@ impl MonsterSpawn {
             brain,
             health: 100.0,
             view_ofs: Vec3::new(0.0, 0.0, 28.0),
+            hull: ohl_physics::Hull::Standing,
         }
     }
 
@@ -61,6 +67,20 @@ impl MonsterSpawn {
     #[must_use]
     pub fn with_health(mut self, health: f32) -> Self {
         self.health = health;
+        self
+    }
+
+    /// The same spawn with a different collision hull.
+    #[must_use]
+    pub fn with_hull(mut self, hull: ohl_physics::Hull) -> Self {
+        self.hull = hull;
+        self
+    }
+
+    /// The same spawn with a different eye offset.
+    #[must_use]
+    pub fn with_view_ofs(mut self, view_ofs: Vec3) -> Self {
+        self.view_ofs = view_ofs;
         self
     }
 }
@@ -108,7 +128,7 @@ pub fn attach_monsters(
             health: spawn.health,
             alive: spawn.health > 0.0,
             is_client: false,
-            hull: ohl_physics::Hull::Standing,
+            hull: spawn.hull,
         };
         if registry
             .world
@@ -247,6 +267,29 @@ mod tests {
         assert!(registry.world.get::<&Prisoner>(spawned[1]).is_ok());
         assert!(!super::is_prisoner(&defs[1]));
         assert!(super::is_prisoner(&defs[2]));
+    }
+
+    /// The hull and eye offset a spawn asks for reach the actor, so a
+    /// species table's hull (the flier's point hull, the barnacle's
+    /// downward eye) is what the monster actually moves and looks with.
+    #[test]
+    fn a_spawn_carries_its_hull_and_eye_offset_onto_the_actor() {
+        let defs = defs();
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let spawned = attach_monsters(&mut registry, &defs, &|def: &EntityDef| {
+            (def.classname == "monster_human_grunt").then(|| {
+                MonsterSpawn::new(Classification::HumanMilitary, BrainId(0))
+                    .with_hull(ohl_physics::Hull::Point)
+                    .with_view_ofs(glam::Vec3::new(0.0, 0.0, -16.0))
+            })
+        });
+        let actor = *registry.world.get::<&Actor>(spawned[0]).expect("component");
+        assert_eq!(actor.hull, ohl_physics::Hull::Point);
+        assert!((actor.view_ofs.z + 16.0).abs() < 1e-4);
+        // The default is still the standing hull at the default eye height.
+        let default = MonsterSpawn::new(Classification::HumanMilitary, BrainId(0));
+        assert_eq!(default.hull, ohl_physics::Hull::Standing);
+        assert!(default.view_ofs.z > 0.0);
     }
 
     #[test]

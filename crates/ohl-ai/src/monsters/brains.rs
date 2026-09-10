@@ -1,7 +1,7 @@
 //! Per-monster [`Brain`] implementations.
 //!
 //! One [`MonsterBrain`] type, parameterized by [`MonsterKind`] and
-//! [`MonsterSpec`], covers all sixteen defined monsters: the *data* (health,
+//! [`MonsterSpec`], covers every defined monster: the *data* (health,
 //! attack reach, senses) comes from [`crate::monsters::table`], and the
 //! *behaviour* — which schedule each kind runs in combat, and the handful of
 //! schedules no monster in package 7.5's default set needed — is switched on
@@ -16,7 +16,10 @@
 //! alien slave's zap, a grunt squad's suppress/flank/grenade behaviour, a
 //! barney/scientist following the player, a scientist healing a hurt ally, a
 //! sentry turret deploying/retracting/tracking, a tentacle striking toward a
-//! sound, and a gargantua's flame/stomp attacks — see
+//! sound, a gargantua's flame/stomp attacks, a barnacle waiting under a
+//! ceiling for something to touch its tongue, an alien controller firing
+//! and repositioning in the air, an assassin firing and relocating, a
+//! scripted prop standing where it was put, and a critter wandering — see
 //! `docs/FORMAT_SOURCES.md`, "Monster definitions". The houndeye
 //! squad-blast-bonus formula's *existence* is published (squads bonus a
 //! blast, capped, halved without line of sight) and its numbers are cited
@@ -238,6 +241,158 @@ pub static GARG_STOMP: Schedule = Schedule::new(
     Conditions::GENERAL_INTERRUPTS,
 );
 
+// --- Wave 1 batch A --------------------------------------------------------
+
+/// A barnacle waiting, mouth down, for something to touch its tongue: the
+/// only thing that ends the wait is a sighting (the tongue test is
+/// [`MonsterBrain::melee_in_reach`]) or being hit.
+pub static BARNACLE_LURK: Schedule = Schedule::new(
+    "ohl/monsters/barnacle_lurk",
+    &[
+        Task::SetActivity(Activity::Idle),
+        Task::StopMoving,
+        Task::Wait(0.5),
+    ],
+    Conditions::ALL_SIGHT.union(Conditions::ALL_DAMAGE),
+);
+
+/// A barnacle feeding on whatever its tongue caught: one bite, then the
+/// published cadence's pause. Re-selected for as long as the victim stays
+/// on the tongue, so a victim that steps off the line below the barnacle
+/// (`CAN_MELEE_ATTACK1` clears) is let go rather than chased.
+pub static BARNACLE_FEED: Schedule = Schedule::new(
+    "ohl/monsters/barnacle_feed",
+    &[
+        Task::StopMoving,
+        Task::SetActivity(Activity::Melee),
+        Task::MeleeAttack1,
+        Task::Wait(BARNACLE_BITE_INTERVAL),
+    ],
+    Conditions::ENEMY_DEAD
+        .union(Conditions::ENEMY_OCCLUDED)
+        .union(Conditions::GENERAL_INTERRUPTS),
+);
+
+/// An alien controller's hand-launched volley, then a reposition: the
+/// published "volleys of small energy balls" plus "constant evasive
+/// maneuvering and tendency to stay at a distance", read as fire-then-move.
+/// The move reuses the cover tasks, which back away from the enemy, so a
+/// controller that fires drifts out of reach and its chase brings it back:
+/// the hover-at-a-distance this crate can express without a dedicated
+/// strafe. Flight itself is the hull (`crate::movement::flies`).
+pub static CONTROLLER_VOLLEY: Schedule = Schedule::new(
+    "ohl/monsters/controller_volley",
+    &[
+        Task::StopMoving,
+        Task::FaceEnemy,
+        Task::SetActivity(Activity::Range),
+        Task::RangeAttack1,
+        Task::Wait(CONTROLLER_VOLLEY_INTERVAL),
+        Task::RangeAttack1,
+        Task::Wait(CONTROLLER_VOLLEY_INTERVAL),
+        Task::RangeAttack1,
+        Task::SetActivity(Activity::Run),
+        Task::FindCover,
+        Task::TakeCover,
+        Task::RunPath,
+        Task::WaitForMovement,
+    ],
+    Conditions::ENEMY_DEAD
+        .union(Conditions::ENEMY_OCCLUDED)
+        .union(Conditions::GENERAL_INTERRUPTS),
+);
+
+/// An assassin's hit-and-run: a two-shot burst, then a run to somewhere
+/// else before the next — the published "run and jump in order to avoid
+/// the players fire and ... attack from multiple directions". The jump is
+/// not modeled (see the milestone entry).
+pub static ASSASSIN_HIT_AND_RUN: Schedule = Schedule::new(
+    "ohl/monsters/assassin_hit_and_run",
+    &[
+        Task::StopMoving,
+        Task::FaceEnemy,
+        Task::SetActivity(Activity::Range),
+        Task::RangeAttack1,
+        Task::Wait(0.15),
+        Task::RangeAttack1,
+        Task::SetActivity(Activity::Run),
+        Task::FindCover,
+        Task::TakeCover,
+        Task::RunPath,
+        Task::WaitForMovement,
+        Task::FaceEnemy,
+    ],
+    Conditions::ENEMY_DEAD
+        .union(Conditions::NO_AMMO_LOADED)
+        .union(Conditions::HEAVY_DAMAGE)
+        .union(Conditions::GENERAL_INTERRUPTS),
+);
+
+/// An assassin breaking off after a hard hit: out of sight, then back to
+/// facing where the enemy was — the published "hide-and-seek".
+pub static ASSASSIN_RETREAT: Schedule = Schedule::new(
+    "ohl/monsters/assassin_retreat",
+    &[
+        Task::SetActivity(Activity::Run),
+        Task::FindCover,
+        Task::TakeCover,
+        Task::RunPath,
+        Task::WaitForMovement,
+        Task::FaceLastKnownPosition,
+        Task::Wait(0.5),
+    ],
+    Conditions::GENERAL_INTERRUPTS,
+);
+
+/// A scripted prop (`monster_generic`, `monster_furniture`) standing where
+/// it was put. Nothing interrupts it: a prop that is looked at, shot or
+/// shouted at stays a prop, and re-selection at the end of each spell is
+/// how it notices a state change at all.
+pub static PASSIVE_STAND: Schedule = Schedule::new(
+    "ohl/monsters/passive_stand",
+    &[
+        Task::SetActivity(Activity::Idle),
+        Task::StopMoving,
+        Task::WaitRandom { min: 1.0, max: 4.0 },
+    ],
+    Conditions::EMPTY,
+);
+
+/// A critter (rat, cockroach) ambling somewhere nearby and pausing.
+pub static CRITTER_WANDER: Schedule = Schedule::new(
+    "ohl/monsters/critter_wander",
+    &[
+        Task::SetActivity(Activity::Walk),
+        Task::Wander {
+            distance: CRITTER_WANDER_DISTANCE,
+        },
+        Task::WalkPath,
+        Task::WaitForMovement,
+        Task::SetActivity(Activity::Idle),
+        Task::WaitRandom { min: 0.5, max: 3.0 },
+    ],
+    Conditions::ALL_SOUND
+        .union(Conditions::ALL_DAMAGE)
+        .union(Conditions::GENERAL_INTERRUPTS),
+);
+
+/// A critter scurrying off after a noise — the cockroach's published
+/// "easily scared" — at running speed, further than a wander.
+pub static CRITTER_SCATTER: Schedule = Schedule::new(
+    "ohl/monsters/critter_scatter",
+    &[
+        Task::SetActivity(Activity::Run),
+        Task::Wander {
+            distance: CRITTER_SCATTER_DISTANCE,
+        },
+        Task::RunPath,
+        Task::WaitForMovement,
+        Task::SetActivity(Activity::Idle),
+        Task::Wait(0.5),
+    ],
+    Conditions::ALL_DAMAGE.union(Conditions::GENERAL_INTERRUPTS),
+);
+
 /// Every schedule this module adds, for lookup by name (joins
 /// `crate::brain::ALL` at the `schedule_by_name` call site).
 pub static ALL: &[&Schedule] = &[
@@ -256,6 +411,15 @@ pub static ALL: &[&Schedule] = &[
     &ROOTED_LISTEN,
     &GARG_FLAME,
     &GARG_STOMP,
+    // Wave 1 batch A.
+    &BARNACLE_LURK,
+    &BARNACLE_FEED,
+    &CONTROLLER_VOLLEY,
+    &ASSASSIN_HIT_AND_RUN,
+    &ASSASSIN_RETREAT,
+    &PASSIVE_STAND,
+    &CRITTER_WANDER,
+    &CRITTER_SCATTER,
 ];
 
 /// Looks a schedule up by name across both this module's set and
@@ -295,6 +459,48 @@ pub const SCIENTIST_HEAL_AMOUNT: f32 = 25.0;
 
 /// `TWHL:Scientist`'s published heal cooldown, in seconds.
 pub const SCIENTIST_HEAL_COOLDOWN: f32 = 60.0;
+
+// Wave 1 batch A.
+
+/// How many bites a barnacle's feed is read as taking to kill its prey:
+/// `TWHL:Monster_barnacle` publishes "killed in 1 to 3 bites" for a
+/// player; three, the slow end, paces the cadence below. **`TODO(black-
+/// box)`**: the bite count for a given prey is not published beyond that
+/// range.
+pub const BARNACLE_BITES_TO_KILL: f32 = 3.0;
+
+/// The pause between a barnacle's bites, in seconds: the published ten
+/// seconds to kill its prey (`table::BARNACLE_KILL_SECONDS`) spread over
+/// [`BARNACLE_BITES_TO_KILL`] bites. The spreading is this project's
+/// reading; only the ten seconds is cited.
+pub const BARNACLE_BITE_INTERVAL: f32 =
+    super::table::BARNACLE_KILL_SECONDS / BARNACLE_BITES_TO_KILL;
+
+/// The pause between the shots of an alien controller's volley, in
+/// seconds. **`TODO(black-box)`**: a volley is published, its rate is not.
+pub const CONTROLLER_VOLLEY_INTERVAL: f32 = 0.2;
+
+/// An alien controller's flight speeds, walking and running, in units per
+/// second. **`TODO(black-box)`**: published only as "evasive"; these are
+/// placeholders faster than a walker's defaults.
+pub const CONTROLLER_SPEEDS: (f32, f32) = (120.0, 240.0);
+
+/// A human assassin's speeds, walking and running, in units per second.
+/// **`TODO(black-box)`**: published only as "fast" and "extremely agile";
+/// the run is a placeholder well above a grunt's.
+pub const ASSASSIN_SPEEDS: (f32, f32) = (80.0, 320.0);
+
+/// A critter's speeds, walking and running, in units per second.
+/// **`TODO(black-box)`**: not published; placeholders for something small.
+pub const CRITTER_SPEEDS: (f32, f32) = (40.0, 120.0);
+
+/// How far a critter wanders in one spell, in world units.
+/// **`TODO(black-box)`**: not published.
+pub const CRITTER_WANDER_DISTANCE: f32 = 96.0;
+
+/// How far a startled critter scatters, in world units.
+/// **`TODO(black-box)`**: not published.
+pub const CRITTER_SCATTER_DISTANCE: f32 = 256.0;
 
 /// The blast damage a houndeye (or its pack) actually deals, given the base
 /// per-hit damage from [`MonsterSpec::ranged`], the number of *other*
@@ -368,6 +574,20 @@ impl MonsterBrain {
 
     fn never_flees(&self) -> bool {
         self.spec.flags.contains(MonsterFlags::NEVER_FLEES)
+    }
+
+    fn rooted(&self) -> bool {
+        self.spec.flags.contains(MonsterFlags::ROOTED)
+    }
+
+    /// The two scripted-prop kinds, which never fight or investigate.
+    fn is_passive_prop(&self) -> bool {
+        matches!(self.kind, MonsterKind::Generic | MonsterKind::Furniture)
+    }
+
+    /// The two harmless critters, which wander instead of standing.
+    fn is_critter(&self) -> bool {
+        matches!(self.kind, MonsterKind::Rat | MonsterKind::Cockroach)
     }
 
     #[allow(
@@ -462,7 +682,36 @@ impl MonsterBrain {
                     &ROOTED_LISTEN
                 }
             }
-            K::Ichthyosaur | K::Leech | K::Zombie | K::Headcrab | K::Unknown(_) => {
+            // Wave 1 batch A.
+            K::Barnacle => {
+                if conditions.contains(Conditions::CAN_MELEE_ATTACK1) {
+                    &BARNACLE_FEED
+                } else {
+                    &BARNACLE_LURK
+                }
+            }
+            K::AlienController => {
+                if conditions.contains(Conditions::CAN_RANGE_ATTACK1) {
+                    &CONTROLLER_VOLLEY
+                } else {
+                    &crate::brain::CHASE_ENEMY
+                }
+            }
+            K::HumanAssassin => {
+                if conditions.contains(Conditions::HEAVY_DAMAGE) {
+                    &ASSASSIN_RETREAT
+                } else if conditions.contains(Conditions::NO_AMMO_LOADED) {
+                    &crate::brain::RELOAD
+                } else if conditions.contains(Conditions::CAN_RANGE_ATTACK1) {
+                    &ASSASSIN_HIT_AND_RUN
+                } else {
+                    &crate::brain::CHASE_ENEMY
+                }
+            }
+            K::Generic => &crate::brain::ALERT_STAND,
+            K::Furniture => &PASSIVE_STAND,
+            K::Rat | K::Cockroach => &CRITTER_SCATTER,
+            K::Ichthyosaur | K::Leech | K::Zombie | K::Headcrab | K::Babycrab | K::Unknown(_) => {
                 if conditions.contains(Conditions::CAN_MELEE_ATTACK1) {
                     &crate::brain::MELEE_ATTACK
                 } else {
@@ -488,7 +737,36 @@ impl Brain for MonsterBrain {
                 hearing_sensitivity: TENTACLE_HEARING_SENSITIVITY,
                 ..Senses::default()
             },
+            // A barnacle has no eyes to point: whatever comes within the
+            // tongue's published length, in any direction, is a sighting,
+            // and `melee_in_reach` is what narrows that to "on the tongue".
+            K::Barnacle => Senses::omnidirectional(super::table::BARNACLE_TONGUE_LENGTH),
             _ => Senses::default(),
+        }
+    }
+
+    /// The barnacle's tongue is a vertical line, not a sphere: a victim
+    /// is on it when it stands within [`super::table::BARNACLE_TONGUE_
+    /// RADIUS`] of the line straight below the barnacle's origin and no
+    /// further below than the tongue's published length. Everything else
+    /// keeps the spherical default.
+    fn melee_in_reach(&self, origin: glam::Vec3, enemy_origin: glam::Vec3, distance: f32) -> bool {
+        if self.kind != MonsterKind::Barnacle {
+            return distance <= self.melee_range();
+        }
+        let horizontal = glam::Vec2::new(enemy_origin.x - origin.x, enemy_origin.y - origin.y);
+        let drop = origin.z - enemy_origin.z;
+        horizontal.length() <= super::table::BARNACLE_TONGUE_RADIUS
+            && (0.0..=super::table::BARNACLE_TONGUE_LENGTH).contains(&drop)
+    }
+
+    fn speeds(&self) -> (f32, f32) {
+        match self.kind {
+            // Wave 1 batch A.
+            MonsterKind::AlienController => CONTROLLER_SPEEDS,
+            MonsterKind::HumanAssassin => ASSASSIN_SPEEDS,
+            MonsterKind::Rat | MonsterKind::Cockroach => CRITTER_SPEEDS,
+            _ => (40.0, 160.0),
         }
     }
 
@@ -509,6 +787,15 @@ impl Brain for MonsterBrain {
     }
 
     fn select_schedule(&self, state: MonsterState, conditions: Conditions) -> &'static Schedule {
+        if self.rooted() {
+            return self.rooted_schedule(state, conditions);
+        }
+        if self.is_passive_prop() {
+            return self.prop_schedule(state, conditions);
+        }
+        if self.is_critter() {
+            return Self::critter_schedule(state, conditions);
+        }
         if conditions.contains(Conditions::HEAR_DANGER) && !self.never_flees() {
             return &crate::brain::TAKE_COVER_FROM_DANGER;
         }
@@ -562,6 +849,65 @@ impl Brain for MonsterBrain {
     }
 }
 
+impl MonsterBrain {
+    /// Schedules for a [`MonsterFlags::ROOTED`] kind: nothing here ever
+    /// carries a movement task. The barnacle lurks and feeds; furniture
+    /// only ever stands (it is passive too, and passivity wins).
+    fn rooted_schedule(&self, state: MonsterState, conditions: Conditions) -> &'static Schedule {
+        match state {
+            MonsterState::Dead
+            | MonsterState::Prone
+            | MonsterState::PlayDead
+            | MonsterState::Script => &crate::brain::INERT,
+            MonsterState::Combat if self.kind == MonsterKind::Barnacle => {
+                self.combat_schedule(conditions)
+            }
+            _ if self.kind == MonsterKind::Barnacle => &BARNACLE_LURK,
+            _ => &PASSIVE_STAND,
+        }
+    }
+
+    /// Schedules for a scripted prop: it stands, and — for the generic
+    /// monster, which is published as a player ally with a working set of
+    /// senses — turns to look at what it noticed. It never fights, flees,
+    /// investigates or takes cover, since a prop that walks off is a
+    /// broken set piece, and a `scripted_sequence` drives it from outside
+    /// the schedule system anyway (`crate::scripts`).
+    fn prop_schedule(&self, state: MonsterState, conditions: Conditions) -> &'static Schedule {
+        match state {
+            MonsterState::Dead
+            | MonsterState::Prone
+            | MonsterState::PlayDead
+            | MonsterState::Script => &crate::brain::INERT,
+            MonsterState::Combat | MonsterState::Hunt | MonsterState::Alert
+                if self.kind == MonsterKind::Generic =>
+            {
+                if conditions.contains(Conditions::TASK_FAILED) {
+                    &crate::brain::FAIL
+                } else {
+                    &crate::brain::ALERT_STAND
+                }
+            }
+            _ if self.kind == MonsterKind::Generic => &crate::brain::IDLE_STAND,
+            _ => &PASSIVE_STAND,
+        }
+    }
+
+    /// Schedules for a harmless critter: wander while nothing is going on,
+    /// scatter when something is (a noise, a hit, a sighting), never fight.
+    fn critter_schedule(state: MonsterState, conditions: Conditions) -> &'static Schedule {
+        match state {
+            MonsterState::Dead
+            | MonsterState::Prone
+            | MonsterState::PlayDead
+            | MonsterState::Script => &crate::brain::INERT,
+            _ if conditions.contains(Conditions::TASK_FAILED) => &crate::brain::FAIL,
+            MonsterState::Combat | MonsterState::Hunt | MonsterState::Alert => &CRITTER_SCATTER,
+            MonsterState::None | MonsterState::Idle => &CRITTER_WANDER,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -570,7 +916,7 @@ mod tests {
     };
     use crate::monsters::table::MonsterKind;
     use crate::schedule::Brain;
-    use crate::state::{Conditions, MonsterState};
+    use crate::state::{Classification, Conditions, MonsterState};
 
     #[test]
     fn every_defined_kind_builds_a_brain_and_covers_every_state() {
@@ -739,5 +1085,325 @@ mod tests {
         }
         // The default set is still reachable through this module's lookup.
         assert!(super::schedule_by_name("ohl/idle_stand").is_some());
+    }
+
+    // --- Wave 1 batch A ---------------------------------------------------
+
+    fn moves(schedule: &crate::schedule::Schedule) -> bool {
+        schedule.tasks.iter().any(|task| {
+            matches!(
+                task,
+                crate::schedule::Task::RunPath
+                    | crate::schedule::Task::WalkPath
+                    | crate::schedule::Task::TakeCover
+                    | crate::schedule::Task::Wander { .. }
+                    | crate::schedule::Task::MoveToEnemy { .. }
+                    | crate::schedule::Task::MoveToTarget { .. }
+                    | crate::schedule::Task::MoveToLastKnownPosition
+            )
+        })
+    }
+
+    /// The barnacle's tongue is a vertical line: a victim straight below
+    /// it, up to the published length, is on it; one beside it, or above
+    /// it, or too far below, is not — whatever the straight-line distance
+    /// says.
+    #[test]
+    fn a_barnacles_tongue_reaches_straight_down_and_nowhere_else() {
+        use crate::monsters::table::{BARNACLE_TONGUE_LENGTH, BARNACLE_TONGUE_RADIUS};
+        use glam::Vec3;
+        let brain = MonsterBrain::for_kind(MonsterKind::Barnacle).expect("defined");
+        let ceiling = Vec3::new(0.0, 0.0, 256.0);
+        let below = Vec3::new(8.0, -8.0, 0.0);
+        assert!(brain.melee_in_reach(ceiling, below, ceiling.distance(below)));
+        let far_below = Vec3::new(0.0, 0.0, 256.0 - BARNACLE_TONGUE_LENGTH + 1.0);
+        assert!(brain.melee_in_reach(ceiling, far_below, ceiling.distance(far_below)));
+        let too_far_below = Vec3::new(0.0, 0.0, 256.0 - BARNACLE_TONGUE_LENGTH - 1.0);
+        assert!(!brain.melee_in_reach(ceiling, too_far_below, ceiling.distance(too_far_below)));
+        let beside = Vec3::new(BARNACLE_TONGUE_RADIUS + 1.0, 0.0, 200.0);
+        assert!(!brain.melee_in_reach(ceiling, beside, ceiling.distance(beside)));
+        let above = Vec3::new(0.0, 0.0, 300.0);
+        assert!(!brain.melee_in_reach(ceiling, above, ceiling.distance(above)));
+        // Its senses reach the whole tongue length in every direction, so
+        // the reach test above is what decides, not the view cone.
+        let senses = brain.senses();
+        assert!((senses.look_distance - BARNACLE_TONGUE_LENGTH).abs() < 1e-6);
+        assert!(senses.fov_cos <= -1.0);
+        // Every other kind keeps the spherical default.
+        let zombie = MonsterBrain::for_kind(MonsterKind::Zombie).expect("defined");
+        assert!(zombie.melee_in_reach(Vec3::ZERO, Vec3::X * 10.0, zombie.melee_range()));
+        assert!(!zombie.melee_in_reach(Vec3::ZERO, Vec3::X * 10.0, zombie.melee_range() + 1.0));
+    }
+
+    /// A barnacle never selects a schedule that moves it, feeds only while
+    /// something is on its tongue, and lets go when it is not.
+    #[test]
+    fn a_barnacle_lurks_feeds_and_never_moves() {
+        let brain = MonsterBrain::for_kind(MonsterKind::Barnacle).expect("defined");
+        for state in MonsterState::ALL {
+            for conditions in [
+                Conditions::EMPTY,
+                Conditions::HEAR_DANGER,
+                Conditions::SEE_FEAR,
+                Conditions::SEE_ENEMY,
+                Conditions::SEE_ENEMY | Conditions::CAN_MELEE_ATTACK1,
+                Conditions::TASK_FAILED,
+            ] {
+                let schedule = brain.select_schedule(state, conditions);
+                assert!(!moves(schedule), "{} moves a barnacle", schedule.name);
+            }
+        }
+        let feeding = brain.select_schedule(
+            MonsterState::Combat,
+            Conditions::SEE_ENEMY | Conditions::CAN_MELEE_ATTACK1,
+        );
+        assert_eq!(feeding.name, super::BARNACLE_FEED.name);
+        let released = brain.select_schedule(MonsterState::Combat, Conditions::SEE_ENEMY);
+        assert_eq!(released.name, super::BARNACLE_LURK.name);
+        assert_eq!(
+            brain
+                .select_schedule(MonsterState::Idle, Conditions::EMPTY)
+                .name,
+            super::BARNACLE_LURK.name
+        );
+        // The published ten seconds spread over the slow end of "1 to 3
+        // bites".
+        assert!(
+            (super::BARNACLE_BITE_INTERVAL * super::BARNACLE_BITES_TO_KILL - 10.0).abs() < 1e-5
+        );
+    }
+
+    /// An alien controller fires a volley when it can and otherwise closes;
+    /// it flies (point hull, `FLIES`) at its own speeds.
+    #[test]
+    fn a_controller_volleys_in_range_and_flies() {
+        let brain = MonsterBrain::for_kind(MonsterKind::AlienController).expect("defined");
+        assert!(brain.has_range_attack());
+        assert!(!brain.has_melee_attack());
+        let volley = brain.select_schedule(
+            MonsterState::Combat,
+            Conditions::SEE_ENEMY | Conditions::CAN_RANGE_ATTACK1,
+        );
+        assert_eq!(volley.name, super::CONTROLLER_VOLLEY.name);
+        assert!(moves(volley), "a volley ends by repositioning");
+        let closing = brain.select_schedule(MonsterState::Combat, Conditions::SEE_ENEMY);
+        assert_eq!(closing.name, crate::brain::CHASE_ENEMY.name);
+        assert_eq!(brain.speeds(), super::CONTROLLER_SPEEDS);
+        assert!(crate::movement::flies(brain.spec.hull));
+        assert!(
+            brain
+                .spec
+                .flags
+                .contains(crate::monsters::MonsterFlags::FLIES)
+        );
+    }
+
+    /// An assassin fires and relocates, retreats when hit hard, and runs
+    /// faster than a grunt.
+    #[test]
+    fn an_assassin_hits_and_runs_and_retreats_when_hurt() {
+        let brain = MonsterBrain::for_kind(MonsterKind::HumanAssassin).expect("defined");
+        let burst = brain.select_schedule(
+            MonsterState::Combat,
+            Conditions::SEE_ENEMY | Conditions::CAN_RANGE_ATTACK1,
+        );
+        assert_eq!(burst.name, super::ASSASSIN_HIT_AND_RUN.name);
+        assert!(moves(burst), "a burst ends by relocating");
+        let retreat = brain.select_schedule(
+            MonsterState::Combat,
+            Conditions::SEE_ENEMY | Conditions::CAN_RANGE_ATTACK1 | Conditions::HEAVY_DAMAGE,
+        );
+        assert_eq!(retreat.name, super::ASSASSIN_RETREAT.name);
+        assert!(moves(retreat));
+        let grunt = MonsterBrain::for_kind(MonsterKind::HumanGrunt).expect("defined");
+        assert!(brain.speeds().1 > grunt.speeds().1);
+        assert!(
+            brain
+                .spec
+                .flags
+                .contains(crate::monsters::MonsterFlags::SQUAD_MONSTER)
+        );
+    }
+
+    /// A babycrab runs the headcrab's brain: the same schedule for the
+    /// same state and conditions, every time.
+    #[test]
+    fn a_babycrab_runs_the_headcrab_brain() {
+        let baby = MonsterBrain::for_kind(MonsterKind::Babycrab).expect("defined");
+        let adult = MonsterBrain::for_kind(MonsterKind::Headcrab).expect("defined");
+        for state in MonsterState::ALL {
+            for conditions in [
+                Conditions::EMPTY,
+                Conditions::HEAR_SOUND,
+                Conditions::SEE_ENEMY,
+                Conditions::SEE_ENEMY | Conditions::CAN_MELEE_ATTACK1,
+                Conditions::SEE_FEAR,
+                Conditions::HEAR_DANGER,
+                Conditions::TASK_FAILED,
+            ] {
+                assert_eq!(
+                    baby.select_schedule(state, conditions).name,
+                    adult.select_schedule(state, conditions).name,
+                    "{state:?} {conditions:?}"
+                );
+            }
+        }
+        assert_eq!(baby.classification(), adult.classification());
+        assert!((baby.melee_range() - adult.melee_range()).abs() < 1e-6);
+    }
+
+    /// A scripted prop never fights, flees, investigates or takes cover:
+    /// furniture only ever stands, and a generic monster at most turns to
+    /// look. Neither ever selects a schedule with an attack in it.
+    #[test]
+    fn scripted_props_stand_and_never_fight_or_walk_off() {
+        use crate::schedule::Task;
+        for kind in [MonsterKind::Generic, MonsterKind::Furniture] {
+            let brain = MonsterBrain::for_kind(kind.clone()).expect("defined");
+            assert!(!brain.has_melee_attack());
+            assert!(!brain.has_range_attack());
+            for state in MonsterState::ALL {
+                for conditions in [
+                    Conditions::EMPTY,
+                    Conditions::HEAR_DANGER,
+                    Conditions::SEE_FEAR,
+                    Conditions::SEE_ENEMY,
+                    Conditions::SEE_ENEMY | Conditions::CAN_MELEE_ATTACK1,
+                    Conditions::HEAR_SOUND,
+                    Conditions::HEAVY_DAMAGE,
+                ] {
+                    let schedule = brain.select_schedule(state, conditions);
+                    assert!(!moves(schedule), "{} walks a {kind:?} off", schedule.name);
+                    assert!(
+                        !schedule.tasks.iter().any(|task| matches!(
+                            task,
+                            Task::MeleeAttack1
+                                | Task::MeleeAttack2
+                                | Task::RangeAttack1
+                                | Task::RangeAttack2
+                        )),
+                        "{} makes a {kind:?} attack",
+                        schedule.name
+                    );
+                }
+            }
+        }
+        let furniture = MonsterBrain::for_kind(MonsterKind::Furniture).expect("defined");
+        for state in [
+            MonsterState::Idle,
+            MonsterState::Alert,
+            MonsterState::Combat,
+        ] {
+            assert_eq!(
+                furniture.select_schedule(state, Conditions::SEE_ENEMY).name,
+                super::PASSIVE_STAND.name
+            );
+        }
+        let generic = MonsterBrain::for_kind(MonsterKind::Generic).expect("defined");
+        assert_eq!(
+            generic
+                .select_schedule(MonsterState::Alert, Conditions::HEAR_SOUND)
+                .name,
+            crate::brain::ALERT_STAND.name
+        );
+        assert_eq!(
+            generic
+                .select_schedule(MonsterState::Idle, Conditions::EMPTY)
+                .name,
+            crate::brain::IDLE_STAND.name
+        );
+        assert_eq!(generic.classification(), Classification::PlayerAlly);
+    }
+
+    /// A critter wanders when nothing is going on, scatters when something
+    /// is, and never attacks.
+    #[test]
+    fn critters_wander_scatter_and_never_attack() {
+        use crate::schedule::Task;
+        for kind in [MonsterKind::Rat, MonsterKind::Cockroach] {
+            let brain = MonsterBrain::for_kind(kind.clone()).expect("defined");
+            assert!(!brain.has_melee_attack());
+            assert!(!brain.has_range_attack());
+            assert_eq!(
+                brain
+                    .select_schedule(MonsterState::Idle, Conditions::EMPTY)
+                    .name,
+                super::CRITTER_WANDER.name
+            );
+            assert_eq!(
+                brain
+                    .select_schedule(MonsterState::Alert, Conditions::HEAR_SOUND)
+                    .name,
+                super::CRITTER_SCATTER.name
+            );
+            assert_eq!(
+                brain
+                    .select_schedule(MonsterState::Idle, Conditions::TASK_FAILED)
+                    .name,
+                crate::brain::FAIL.name
+            );
+            for state in MonsterState::ALL {
+                let schedule = brain.select_schedule(state, Conditions::SEE_ENEMY);
+                assert!(
+                    !schedule.tasks.iter().any(|task| matches!(
+                        task,
+                        Task::MeleeAttack1
+                            | Task::MeleeAttack2
+                            | Task::RangeAttack1
+                            | Task::RangeAttack2
+                    )),
+                    "{} makes a {kind:?} attack",
+                    schedule.name
+                );
+            }
+            assert_eq!(brain.speeds(), super::CRITTER_SPEEDS);
+        }
+        let scatter = super::CRITTER_SCATTER
+            .tasks
+            .iter()
+            .find_map(|task| match task {
+                crate::schedule::Task::Wander { distance } => Some(*distance),
+                _ => None,
+            })
+            .expect("a scatter wanders");
+        let wander = super::CRITTER_WANDER
+            .tasks
+            .iter()
+            .find_map(|task| match task {
+                crate::schedule::Task::Wander { distance } => Some(*distance),
+                _ => None,
+            })
+            .expect("a wander wanders");
+        assert!(scatter > wander, "a scatter goes further than a wander");
+    }
+
+    /// A ticked critter actually goes somewhere: its wander draws a
+    /// direction without touching the world's shared stream, so a run with
+    /// a critter in it replays exactly and the critter moves.
+    #[test]
+    fn a_wandering_critter_moves_deterministically() {
+        use crate::senses::SightContext;
+        use crate::world::{Actor, AiWorld, spawn_monster};
+        use glam::Vec3;
+        let run = || {
+            let mut ai = AiWorld::new(7);
+            let brain = ai.register_brain(Box::new(
+                MonsterBrain::for_kind(MonsterKind::Rat).expect("defined"),
+            ));
+            let mut world = hecs::World::new();
+            let rat = spawn_monster(
+                &mut world,
+                Actor::new(Classification::None, Vec3::ZERO),
+                brain,
+            );
+            for _ in 0..200 {
+                ai.tick(&mut world, &SightContext::empty(), 0.05);
+            }
+            let origin = world.get::<&Actor>(rat).expect("actor").origin;
+            (origin, ai.state_hash(&world))
+        };
+        let (origin, hash) = run();
+        assert!(origin.length() > 1.0, "the rat never moved: {origin:?}");
+        assert_eq!(hash, run().1);
     }
 }

@@ -4,7 +4,7 @@
 //!   black-box health/attack table, plus the `sk_<subject>_<property><N>`
 //!   skill-table override hook.
 //! - [`brains`]: one data-driven [`crate::Brain`] ([`brains::MonsterBrain`])
-//!   covering all sixteen defined kinds, plus the new schedules and
+//!   covering every defined kind, plus the new schedules and
 //!   invented (black-box) tuning math (squad blast bonus, heal
 //!   cooldown/threshold) no monster in the 7.5 default set needed.
 //! - [`lifecycle`]: health intake from [`crate::DamageQueue`], the

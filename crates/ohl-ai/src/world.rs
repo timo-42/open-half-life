@@ -642,7 +642,9 @@ impl AiWorld {
             if seen.facing_viewer {
                 conditions |= Conditions::ENEMY_FACING_ME;
             }
-            if brain.has_melee_attack() && seen.distance <= brain.melee_range() {
+            if brain.has_melee_attack()
+                && brain.melee_in_reach(actor.origin, seen.origin, seen.distance)
+            {
                 conditions |= Conditions::CAN_MELEE_ATTACK1;
             }
             if brain.has_range_attack() && seen.distance <= brain.range_attack_range() {
@@ -806,6 +808,7 @@ impl AiWorld {
                 sounds: &mut self.sounds,
                 events,
                 dt,
+                tick_count: self.tick_count,
             };
             runner.tick(dt, conditions, &mut self.rng, &mut executor)
         };
@@ -1032,7 +1035,13 @@ fn advance_route(
             (result.position, result.distance)
         }
         (_, None) => {
-            let result = straight_step(actor.origin, waypoint, ai.move_speed, dt);
+            let result = straight_step(
+                actor.origin,
+                waypoint,
+                ai.move_speed,
+                dt,
+                movement::flies(actor.hull),
+            );
             (result.position, result.distance)
         }
     };
@@ -1048,9 +1057,15 @@ fn advance_route(
     distance
 }
 
-/// The no-collision-data fallback: move straight toward the waypoint.
-fn straight_step(from: Vec3, to: Vec3, speed: f32, dt: f32) -> MoveResult {
-    let delta = Vec3::new(to.x - from.x, to.y - from.y, 0.0);
+/// The no-collision-data fallback: move straight toward the waypoint,
+/// horizontally for a walker and along the full direction for a flier
+/// (`crate::movement::flies`).
+fn straight_step(from: Vec3, to: Vec3, speed: f32, dt: f32, flies: bool) -> MoveResult {
+    let delta = if flies {
+        to - from
+    } else {
+        Vec3::new(to.x - from.x, to.y - from.y, 0.0)
+    };
     let length = delta.length();
     let step = speed * dt;
     if length <= f32::EPSILON || step <= 0.0 {
@@ -1083,6 +1098,9 @@ struct MonsterExecutor<'a> {
     sounds: &'a mut SoundList,
     events: &'a mut Vec<AiEvent>,
     dt: f32,
+    /// The world's tick counter, which seeds a [`Task::Wander`] direction
+    /// (see [`MonsterExecutor::wander`]).
+    tick_count: u64,
 }
 
 impl MonsterExecutor<'_> {
@@ -1167,6 +1185,25 @@ impl MonsterExecutor<'_> {
         });
         self.ai.cover = Some(reachable);
         TaskStatus::Complete
+    }
+
+    /// Builds a route `distance` units away in a direction drawn from a
+    /// generator seeded by this tick and this entity.
+    ///
+    /// Deterministic and replayable — the same tick and entity always
+    /// wander the same way — without drawing from the world's shared
+    /// stream, whose per-tick consumption every other monster's
+    /// [`Task::WaitRandom`] outcome depends on: a critter that wanders
+    /// must not reshuffle the waits of everything ticked after it.
+    fn wander(&mut self, distance: f32) -> TaskStatus {
+        if !distance.is_finite() || distance <= 0.0 {
+            return TaskStatus::Failed;
+        }
+        let mut draw = Pcg32::with_stream(self.tick_count, u64::from(self.entity.id()));
+        let yaw = draw.range_f32(-180.0, 180.0);
+        let goal = self.actor.origin + movement::forward_from_yaw(yaw) * distance;
+        self.ai.move_target = Some(goal);
+        self.start_route(Some(goal), 0.0)
     }
 
     fn set_path_speed(&mut self, running: bool) -> TaskStatus {
@@ -1283,6 +1320,7 @@ impl TaskExecutor for MonsterExecutor<'_> {
                 TaskStatus::Complete
             }
             Task::Fail => TaskStatus::Failed,
+            Task::Wander { distance } => self.wander(distance),
         }
     }
 
