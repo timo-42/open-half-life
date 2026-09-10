@@ -1700,6 +1700,14 @@ impl AiState {
         self.sentence_lookup = lookup;
     }
 
+    /// The installed `sentences.txt` lookup, so the presentation phase can
+    /// resolve an `ambient_generic`'s published `!SENTENCENAME` `message`
+    /// against the same table a `scripted_sentence` speaks from.
+    #[must_use]
+    pub fn sentence_lookup(&self) -> &SentenceLookup {
+        &self.sentence_lookup
+    }
+
     /// How many scripted sequences currently possess a monster.
     #[must_use]
     pub fn active_script_count(&self) -> usize {
@@ -2249,12 +2257,27 @@ impl AiState {
             }
             let words = self.sentence_lookup.words(&sentence.def.sentence);
             self.sentence_words += words.len() as u64;
+            // The speaker's own position, not the `scripted_sentence`'s:
+            // the entity is a director, and what the player hears is the
+            // monster it directed. Falls back to the script entity's
+            // origin when the speaker has no `Actor` (an inert prop).
+            let speaker_origin = level
+                .registry
+                .world
+                .get::<&ohl_ai::Actor>(speaker)
+                .map_or(origin, |actor| actor.origin);
             #[allow(clippy::cast_possible_truncation)]
-            self.sound_cues.push(ohl_gameplay::SoundCue {
-                entity: entity_id(speaker).0 as u32,
-                class: ohl_gameplay::ChannelClass::Voice,
-                path: None,
-            });
+            self.sound_cues.push(
+                ohl_gameplay::SoundCue::new(
+                    entity_id(speaker).0 as u32,
+                    ohl_gameplay::ChannelClass::Voice,
+                    // Resolved through the payload's own `sentences.txt`,
+                    // so no asset path literal is involved; an unknown
+                    // group simply yields no words and nothing to play.
+                    ohl_gameplay::SoundAsset::sentence(words.into_iter().map(|word| word.0)),
+                )
+                .at(speaker_origin.to_array(), ohl_gameplay::ATTN_NORM),
+            );
             sentence.cooldown = sentence.def.duration;
             sentence.spent = sentence.def.fire_once();
             if !sentence.def.target.is_empty() {

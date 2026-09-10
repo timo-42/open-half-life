@@ -4,12 +4,17 @@
 //! `ohl-formats` (`tests/proptest_never_panics.rs`) and
 //! `ohl-cabinet-format` (`tests/never_panics.rs`).
 
+use ohl_audio::mixer::{ChannelClass, Mixer, PlayRequest, SoundBuffer};
 use ohl_audio::wav::decode;
 use proptest::prelude::*;
 use std::io::Cursor;
+use std::sync::Arc;
 
-/// Runs the decoder and touches every accessor on a successful result;
-/// malformed input is expected and ignored, only a panic is a failure.
+/// Runs the decoder and touches every accessor on a successful result,
+/// then walks the whole composition-root path a sound-asset cache takes:
+/// wrap the decode as a [`SoundBuffer`], join two of them as a sentence
+/// would, play both through a mixer and render a block. Malformed input is
+/// expected and ignored; only a panic is a failure.
 fn exercise(bytes: &[u8]) {
     let Ok(wav) = decode(bytes) else {
         return;
@@ -23,6 +28,33 @@ fn exercise(bytes: &[u8]) {
     for sample_loop in &wav.sample_loops {
         let _ = (sample_loop.start_frame, sample_loop.end_frame);
     }
+
+    let buffer = Arc::new(SoundBuffer::from_decoded(&wav));
+    let _ = buffer.byte_len();
+    let joined = SoundBuffer::concatenate(&[Arc::clone(&buffer), Arc::clone(&buffer)]);
+
+    let mut mixer = Mixer::new(44_100);
+    let mut play = |buffer: Arc<SoundBuffer>, class| {
+        mixer.play(PlayRequest {
+            entity: 1,
+            class,
+            buffer,
+            volume: 1.0,
+            pitch: 1.0,
+            spatial: Some(ohl_audio::SoundSpatial {
+                position: [64.0, -32.0, 0.0],
+                attenuation: ohl_audio::ATTN_NORM,
+            }),
+        });
+    };
+    play(buffer, ChannelClass::Static);
+    if let Some(joined) = joined {
+        play(Arc::new(joined), ChannelClass::Voice);
+    }
+    let mut out = vec![0.0f32; 128];
+    mixer.render(&mut out);
+    assert!(out.iter().all(|sample| sample.is_finite()));
+    mixer.stop(1, ChannelClass::Static);
 }
 
 /// Builds a valid, decodable mono 16-bit WAV, then appends a `cue ` and a

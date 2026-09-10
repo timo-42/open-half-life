@@ -121,6 +121,17 @@ directly and exclusively on Linux) when no such device is available — so a
 headless CI runner on any of the three platforms builds, lints, and runs the
 full test suite without an audio device.
 
+The composition root (`crates/ohl-app/src/audio.rs`) is the only crate that
+owns a device. It calls `open_default_device` from the windowed loop only;
+every non-interactive run path (`--screenshot`, `--script`,
+`--chain-script`) and every test constructs a `NullSink` directly, on every
+platform, so a smoke or a capture is silent by construction rather than by
+happening to run on Linux. The mixer, the WAV decoder and the sound-asset
+cache all run either way, which is what keeps those runs a real test of the
+audio path rather than a test of skipping it. `OutputDevice::pump` exists
+for that: a no-op on a real device, whose own callback is already pulling,
+and the only thing that advances a `NullSink`'s mixer.
+
 ## P4 renderer dependency facade (C++/CMake, removed)
 
 The historical C++/CMake "P4 renderer dependency facade"

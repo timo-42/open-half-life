@@ -21,7 +21,7 @@ use ohl_combat::{
 use ohl_ui::hud::HudState;
 
 use crate::queue::BoundedQueue;
-use crate::sounds::{SoundCue, pickup_sound_path, weapon_sound_path};
+use crate::sounds::{SoundAsset, SoundCue, pickup_sound_path, weapon_sound_path};
 use crate::viewmodel::{ViewModelAction, from_weapon_action};
 
 /// Default bounded capacity for both output queues: generous for a busy
@@ -133,11 +133,14 @@ impl GameplayBridge {
             self.viewmodel.push(view_model_action);
         }
         if let Some(cue) = cue {
-            self.sounds.push(SoundCue {
-                entity: player_entity,
-                class: ChannelClass::Weapon,
-                path: weapon_sound_path(weapon, cue),
-            });
+            // The player's own weapon is heard in the first person: no
+            // origin, so the composition root plays it at the listener
+            // rather than attenuating it by a distance of zero.
+            self.sounds.push(SoundCue::new(
+                player_entity,
+                ChannelClass::Weapon,
+                SoundAsset::from_static(weapon_sound_path(weapon, cue)),
+            ));
         }
     }
 
@@ -182,11 +185,11 @@ impl GameplayBridge {
             return;
         }
         hud.show_message(pickup_label(kind), PICKUP_MESSAGE_SECONDS);
-        self.sounds.push(SoundCue {
-            entity: player_entity,
-            class: ChannelClass::Item,
-            path: pickup_sound_path(kind),
-        });
+        self.sounds.push(SoundCue::new(
+            player_entity,
+            ChannelClass::Item,
+            SoundAsset::from_static(pickup_sound_path(kind)),
+        ));
     }
 }
 

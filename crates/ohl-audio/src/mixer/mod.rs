@@ -50,6 +50,13 @@ impl Mixer {
         self.listener = listener;
     }
 
+    /// Where the listener currently is and which way its stereo axis
+    /// points.
+    #[must_use]
+    pub fn listener(&self) -> Listener {
+        self.listener
+    }
+
     /// The number of channels currently playing.
     #[must_use]
     pub fn active_channel_count(&self) -> usize {
@@ -75,6 +82,22 @@ impl Mixer {
     /// Stops every channel of `class`.
     pub fn stop_class(&mut self, class: ChannelClass) {
         self.channels.retain(|channel| channel.class != class);
+    }
+
+    /// Stops the channel `(entity, class)` names — the same key
+    /// [`Mixer::play`] replaces on. This is what turning an
+    /// `ambient_generic` back off does.
+    pub fn stop(&mut self, entity: u32, class: ChannelClass) {
+        self.channels
+            .retain(|channel| channel.entity != entity || channel.class != class);
+    }
+
+    /// Whether `(entity, class)` currently has a channel playing.
+    #[must_use]
+    pub fn is_playing(&self, entity: u32, class: ChannelClass) -> bool {
+        self.channels
+            .iter()
+            .any(|channel| channel.entity == entity && channel.class == class)
     }
 
     /// Renders `out.len() / 2` stereo frames (any trailing odd sample is
@@ -308,6 +331,37 @@ mod tests {
             ..play_request(buffer_b)
         });
         assert_eq!(mixer.active_channel_count(), 1);
+    }
+
+    #[test]
+    fn a_looping_static_channel_is_stopped_by_its_entity_and_class() {
+        // The `ambient_generic` shape: a looping sound on `Static`, turned
+        // off again by the same `(entity, class)` key it was started under,
+        // while another entity's loop keeps playing.
+        let mut mixer = Mixer::new(8_000);
+        for entity in [7, 9] {
+            mixer.play(PlayRequest {
+                entity,
+                class: ChannelClass::Static,
+                ..play_request(mono_buffer(&[0.5; 4], 8_000, Some((0, 4))))
+            });
+        }
+        assert!(mixer.is_playing(7, ChannelClass::Static));
+        mixer.stop(7, ChannelClass::Static);
+        assert!(!mixer.is_playing(7, ChannelClass::Static));
+        assert!(mixer.is_playing(9, ChannelClass::Static));
+        // A loop outlives a render long enough to still be there after it.
+        let mut out = [0.0f32; 64];
+        mixer.render(&mut out);
+        assert_eq!(mixer.active_channel_count(), 1);
+    }
+
+    #[test]
+    fn stopping_a_channel_that_is_not_playing_does_nothing() {
+        let mut mixer = Mixer::new(8_000);
+        mixer.stop(1, ChannelClass::Voice);
+        assert_eq!(mixer.active_channel_count(), 0);
+        assert!(!mixer.is_playing(1, ChannelClass::Voice));
     }
 
     #[test]

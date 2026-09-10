@@ -29,6 +29,7 @@ use ohl_payload::SelectionRecipe;
 use ohl_platform::MediaSource;
 use ohl_vfs::{DirectoryLimits, MediaSourceBlockReader, Mount};
 
+mod audio;
 #[cfg(feature = "dev-tools")]
 mod dev_bsp;
 #[cfg(feature = "dev-tools")]

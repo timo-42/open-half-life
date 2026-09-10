@@ -25,5 +25,7 @@ pub mod mixer;
 pub mod wav;
 
 pub use error::{AudioError, Result};
+pub use mixer::channel::{PITCH_NORM, VOL_NORM};
+pub use mixer::spatial::{ATTN_IDLE, ATTN_NONE, ATTN_NORM, ATTN_STATIC, audible_radius};
 pub use mixer::{ChannelClass, Listener, Mixer, PlayRequest, SoundBuffer, SoundSpatial};
 pub use wav::{CuePoint, DecodedWav, SampleLoop, WavFormat};

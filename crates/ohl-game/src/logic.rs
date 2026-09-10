@@ -12,11 +12,11 @@ use glam::Vec3;
 use hecs::Entity;
 
 use crate::registry::{
-    AutoTrigger, Breakable, BrushBounds, Button, ChangeLevel, Door, DoorPassable, DoorUseOnly,
-    Master, Message, MomentaryDoor, MomentaryRotButton, MoverState, MultiManager, MultiSource,
-    Pendulum, PlatRot, Platform, Registry, RotButton, RotatingDoorSwing, Rotator, Target,
-    TargetName, TeleportTrigger, TrackChange, TrackChangeLinks, Transform, Trigger, TriggerHurt,
-    TriggerUse, TriggerUseType,
+    AmbientGeneric, AmbientState, AutoTrigger, Breakable, BrushBounds, Button, ChangeLevel, Door,
+    DoorPassable, DoorUseOnly, Master, Message, MomentaryDoor, MomentaryRotButton, MoverState,
+    MultiManager, MultiSource, Pendulum, PlatRot, Platform, Registry, RotButton, RotatingDoorSwing,
+    Rotator, Target, TargetName, TeleportTrigger, TrackChange, TrackChangeLinks, Transform,
+    Trigger, TriggerHurt, TriggerUse, TriggerUseType,
 };
 use crate::track_train::{PathChain, TrackTrainState};
 
@@ -1059,6 +1059,20 @@ impl Simulation {
             .map(|message| Message::clone(&message))
         {
             events.push(Event::Message(message));
+            return;
+        }
+        // An `ambient_generic` rides the same activation path a door does:
+        // "Start silent" makes the map's own `use`/`target` chain the only
+        // thing that starts it, and "Is NOT looped" decides whether a
+        // second activation restarts it or switches it back off (see
+        // [`AmbientState::activate`]). Nothing here plays anything: the
+        // engine's presentation phase reads the flag this flips and emits
+        // the cue.
+        if let Ok((ambient, state)) = registry
+            .world
+            .query_one_mut::<(&AmbientGeneric, &mut AmbientState)>(entity)
+        {
+            state.activate(ambient.not_looped);
             return;
         }
         if let Ok(activation) = registry
@@ -2510,6 +2524,123 @@ mod tests {
             sim.tick(registry, step);
             elapsed += step;
         }
+    }
+
+    /// Builds a registry from `entities` and returns it with a fresh
+    /// simulation, the shape most of the small activation tests want.
+    fn built(entities: &[RawEntity]) -> (Registry, Simulation) {
+        let defs = parse_entities(entities, &Limits::default());
+        (
+            Registry::build(&defs, &BTreeMap::new(), &Limits::default()),
+            Simulation::new(),
+        )
+    }
+
+    fn ambient_state(registry: &Registry, entity: Entity) -> AmbientState {
+        *registry
+            .world
+            .get::<&AmbientState>(entity)
+            .expect("the fixture's ambient_generic exists")
+    }
+
+    /// The published "Start silent" spawnflag: without it "the sound will
+    /// play as soon as the map has loaded", with it the entity "must be
+    /// triggered to work".
+    #[test]
+    fn an_ambient_generic_starts_sounding_unless_it_is_flagged_start_silent() {
+        // Both `message` values are project-authored synthetic paths.
+        let (registry, _) = built(&[
+            raw(&[
+                ("classname", "ambient_generic"),
+                ("targetname", "loud"),
+                ("message", "ohl/synthetic.wav"),
+            ]),
+            raw(&[
+                ("classname", "ambient_generic"),
+                ("targetname", "quiet"),
+                ("message", "ohl/synthetic.wav"),
+                ("spawnflags", "16"),
+            ]),
+        ]);
+        assert!(ambient_state(&registry, registry.find("loud")[0]).playing);
+        assert!(!ambient_state(&registry, registry.find("quiet")[0]).playing);
+    }
+
+    /// A looped `ambient_generic` toggles: the same `use`/`target` path
+    /// that opens a door switches it on, then off again.
+    #[test]
+    fn a_looped_ambient_generic_toggles_on_the_shared_activation_path() {
+        let (mut registry, mut sim) = built(&[raw(&[
+            ("classname", "ambient_generic"),
+            ("targetname", "hum"),
+            ("message", "ohl/synthetic.wav"),
+            ("spawnflags", "16"),
+        ])]);
+        let hum = registry.find("hum")[0];
+        let mut events = Vec::new();
+
+        sim.activate(&mut registry, hum, None, &mut events);
+        let started = ambient_state(&registry, hum);
+        assert!(started.playing);
+        assert_eq!(started.generation, 1);
+
+        sim.activate(&mut registry, hum, None, &mut events);
+        assert!(!ambient_state(&registry, hum).playing);
+        assert!(events.is_empty(), "an ambient emits no simulation event");
+    }
+
+    /// The published "Is NOT looped" spawnflag makes the entity "interpret
+    /// each call as 'turn on' instead of 'toggle state'": a second
+    /// activation restarts the sound rather than silencing it, which the
+    /// generation counter is what records.
+    #[test]
+    fn an_unlooped_ambient_generic_restarts_instead_of_toggling_off() {
+        let (mut registry, mut sim) = built(&[raw(&[
+            ("classname", "ambient_generic"),
+            ("targetname", "beep"),
+            ("message", "ohl/synthetic.wav"),
+            ("spawnflags", "48"),
+        ])]);
+        let beep = registry.find("beep")[0];
+        let mut events = Vec::new();
+
+        sim.activate(&mut registry, beep, None, &mut events);
+        sim.activate(&mut registry, beep, None, &mut events);
+        let state = ambient_state(&registry, beep);
+        assert!(state.playing, "an unlooped ambient never toggles off");
+        assert_eq!(state.generation, 2, "each call restarts it");
+    }
+
+    /// A `multi_manager`/`trigger_relay` chain reaches an `ambient_generic`
+    /// by name like anything else, and the published `master` gate holds it
+    /// back like anything else.
+    #[test]
+    fn an_ambient_generic_is_started_by_name_and_gated_by_a_master() {
+        let (mut registry, mut sim) = built(&[
+            raw(&[
+                ("classname", "trigger_relay"),
+                ("targetname", "switch"),
+                ("target", "alarm"),
+            ]),
+            raw(&[
+                ("classname", "ambient_generic"),
+                ("targetname", "alarm"),
+                ("message", "ohl/synthetic.wav"),
+                ("spawnflags", "16"),
+                ("master", "gate"),
+            ]),
+            raw(&[("classname", "multisource"), ("targetname", "gate")]),
+        ]);
+        let alarm = registry.find("alarm")[0];
+        let switch = registry.find("switch")[0];
+        let mut events = Vec::new();
+
+        sim.activate(&mut registry, switch, None, &mut events);
+        tick_for(&mut sim, &mut registry, 0.5, 0.05);
+        assert!(
+            !ambient_state(&registry, alarm).playing,
+            "an unsatisfied master holds the ambient back like any other entity"
+        );
     }
 
     /// The other half of the published `multisource` sentence: a satisfied
