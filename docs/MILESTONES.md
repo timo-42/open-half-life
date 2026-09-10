@@ -6525,3 +6525,63 @@ that went nowhere.
 `--reachability-report` unchanged against a build of the base, and
 `cargo xtask chain-walk` — with no `--bin`, from a tree with no binary
 built at all — at **distinct depth 12**, Pass.
+
+## M9.38 — A monster with a model always has a hittable body
+
+M9.37's guard-loop measurement found a hostile monster roughly 800 units
+away that took 95 rounds for one hit — not an aim problem: "no hitbox in
+the index the engine's own attack trace resolves against." `ohl_combat::HitboxIndex::push` rejects
+outright any entity whose posed hitbox list came out empty, and
+`ohl_engine::combat::rebuild_hitbox_index` had no fallback for that —
+`EntityHitboxes::push_studio_hitboxes` can legitimately add zero boxes for
+a model-backed entity for three independent, unremarkable reasons: no
+hitbox lump published at all, a hitbox whose bone the current pose does
+not carry, or a hitbox whose posed extent collapsed to zero (or went
+non-finite) in an unusual pose. Any of the three previously made a monster
+permanently unhittable for the rest of that tick's trace.
+
+An audit loaded every one of the sixteen `MonsterKind`s this project
+defines, plus the published `monster_bullchicken` alias, from a real,
+already-imported retail payload via `ohl_assets::AssetFs` (PAK-aware; the
+loose-file listing under a payload root's `files/` directory is
+incomplete — the single-player campaign's monster models and the training
+maps all live inside `valve/pak0.pak`) and posed each at its own bind pose. All seventeen
+classnames' real studio models already publish a non-empty hitbox lump —
+against real assets shipped today, the fallback below never fires for any
+of them. The same audit also enumerated every distinct `monster_*`
+classname declared across the 93 cited campaign/hazard-course maps: the
+classnames this project's `MonsterKind` table does not define at all (for
+example `monster_barnacle`, `monster_bigmomma`, `monster_alien_controller`,
+several `_dead` display classnames) get no `MonsterSpawn` from
+`ohl_engine::ai::EngineSpawnRules::spawn_for` today and so never become a
+hostile `Actor` in the first place — out of scope for a hitbox fix, since
+the engine does not yet treat them as attackable monsters at all.
+
+The fix, `ohl_engine::combat::push_fallback_hitbox`: when
+`push_studio_hitboxes` adds zero boxes, the entity gets one
+`HitGroup::Generic` box built from the model's own model-space bounding
+box (`StudioModel::bounds_min`/`bounds_max`, the MDL v10 header's
+`bbmin`/`bbmax` — read back from the model's own bytes at load time, never
+a hard-coded per-species size). When even that box is degenerate (an empty
+placeholder model, in practice) a fixed, explicitly project-chosen
+half-extent is used instead and labelled as such in its own doc comment,
+per `docs/CLEAN_ROOM.md`'s runtime-hitbox-source rule. Regression-tested
+against a synthetic zero-hitbox-lump model
+(`ohl_engine::combat::hitbox_fallback_tests`, mutation-checked: reverting
+the fallback call fails both new tests), parametrised over every defined
+`MonsterKind` plus the bullsquid alias.
+
+Because no currently-shipped monster model actually lacks a hitbox lump,
+this fix changes no combat-smoke or campaign-smoke outcome: none of the 37
+combat scenarios' "A monster took damage."/"A monster died." lines depend
+on a monster that was previously unhittable, and no chain-walk hop is
+affected. Nor does it resolve M9.37's eleventh-map finding: the
+unhittable target there is a `monstermaker` child, which is spawned
+without a `StudioAnim` at all, so `rebuild_hitbox_index` never reaches it
+and no fallback can fire for it. That is a separate gap; M9.37's
+attack-trace filter stays load-bearing until it is closed.
+
+**Gates**: fmt, clippy (workspace, `--features dev-tools`, and
+`--all-features`), `cargo test --workspace`, policy, graph, combat-smoke
+37/37, campaign-smoke 93/93, chain-walk unchanged at **distinct depth
+11**, Pass.
