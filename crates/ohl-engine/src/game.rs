@@ -509,6 +509,26 @@ impl Game {
         self.systems.inventory()
     }
 
+    /// What the player is carrying, as the two counts a caller may
+    /// report: how many weapons are owned, and how many rounds of every
+    /// kind are held together.
+    ///
+    /// Two aggregates rather than the inventory itself, because this is
+    /// what gets *printed* — a chain walk logs one of these per arrival to
+    /// say whether its routes are picking anything up. A count cannot name
+    /// a weapon, an ammo type or the map that handed either out
+    /// (`docs/CLEAN_ROOM.md`).
+    #[must_use]
+    pub fn inventory_totals(&self) -> (usize, u32) {
+        let inventory = self.inventory();
+        let weapons = inventory.owned_weapons().count();
+        let ammo = ohl_combat::AmmoType::ALL
+            .into_iter()
+            .map(|kind| inventory.ammo(kind).current())
+            .sum();
+        (weapons, ammo)
+    }
+
     /// Applies a `--start-inventory` list (dev-tools only; see
     /// `crate::start_inventory`), meant to be called exactly once, right
     /// after [`Self::load`]/[`Self::load_with`], so a single-map probe or
@@ -559,6 +579,28 @@ impl Game {
         self.systems.player_armor()
     }
 
+    /// The player's own health ceiling — what a health item can restore
+    /// them *to*, and so whether detouring to one buys anything
+    /// (`crate::route_plan`'s pickup detours).
+    #[must_use]
+    pub fn player_max_health(&self) -> f32 {
+        self.systems.player_max_health()
+    }
+
+    /// The player's own armour ceiling; see [`Self::player_max_health`].
+    #[must_use]
+    pub fn player_max_armor(&self) -> f32 {
+        self.systems.player_max_armor()
+    }
+
+    /// Whether the HEV suit is equipped. A battery grants nothing without
+    /// it (`crate::pickups`), so a route never detours to one until the
+    /// suit is carried.
+    #[must_use]
+    pub fn player_suit_equipped(&self) -> bool {
+        self.systems.player_suit_equipped()
+    }
+
     /// The single client entity, carrying [`crate::components::PlayerTag`].
     ///
     /// It is a real entity in the same world every other entity lives in,
@@ -591,6 +633,61 @@ impl Game {
         self.systems
             .ai()
             .nearest_monster_position(&self.level, from)
+    }
+
+    /// Every living monster on this level that regards the player as an
+    /// enemy, as (entity, eye position) in ascending entity id.
+    ///
+    /// Additive and data-only, like [`Self::nearest_monster_position`]:
+    /// [`crate::guard`] aims at what this returns, and neither this method
+    /// nor that one ever logs a classname, entity id or coordinate. See
+    /// [`crate::ai::AiState::hostile_monster_eyes`] for what "hostile"
+    /// reads off.
+    #[must_use]
+    pub fn hostile_monster_eyes(&self) -> Vec<(ohl_game::hecs::Entity, Vec3)> {
+        self.systems.ai().hostile_monster_eyes(&self.level)
+    }
+
+    /// Which entity, if any, a hitscan shot fired from the player's eye
+    /// straight at `target` would actually reach.
+    ///
+    /// The same trace the player's own weapons resolve against
+    /// (`ohl_combat::trace_attack_filtered` over this step's hitbox index,
+    /// ignoring the player), so "would this shot land" is answered by the
+    /// code that decides whether it lands, not by a second rule. `None`
+    /// when the shot stops on world geometry, or when there is nothing
+    /// with a hitbox where the caller is aiming — which is the interesting
+    /// case for [`crate::guard`]: a monster whose model this map never
+    /// loaded has no hitbox at all, and shooting at it can only waste a
+    /// clip.
+    ///
+    /// Additive and data-only: it returns an entity for a caller to act
+    /// on and logs nothing.
+    #[must_use]
+    pub fn shot_would_reach(&self, target: Vec3) -> Option<ohl_game::hecs::Entity> {
+        let collision = self.level.collision.as_ref()?;
+        let eye = self.controller.eye_position();
+        let direction = (target - eye).normalize_or_zero();
+        if direction == Vec3::ZERO {
+            return None;
+        }
+        let end = eye + direction * crate::combat::HITSCAN_RANGE;
+        let filter = ohl_combat::TraceFilter::ignoring(
+            ohl_combat::TraceMask::SHOT,
+            crate::ids::entity_id(self.level.player),
+        );
+        let trace =
+            ohl_combat::trace_attack_filtered(collision, self.systems.hitboxes(), eye, end, filter);
+        trace.entity.and_then(crate::ids::entity_of)
+    }
+
+    /// The player's view angles, `(yaw, pitch)` in degrees, as the
+    /// physics controller holds them — the angles a shot is traced along
+    /// (`ohl_physics::PlayerController::view_direction`), not the render
+    /// camera's copy of them.
+    #[must_use]
+    pub fn player_view_angles(&self) -> (f32, f32) {
+        (self.controller.yaw, self.controller.pitch)
     }
 
     /// A digest of the whole AI simulation — every actor's pose, health and

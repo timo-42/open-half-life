@@ -6390,3 +6390,184 @@ what gates the exit either.
 37/37, campaign-smoke 93/93, `--reachability-report` unchanged against a
 build of the base, and `cargo xtask chain-walk` at **distinct depth 11**,
 Pass.
+
+## M9.37 — A wait that fights back: the guard action, and the eleventh hop
+
+M9.36 got the eleventh map's level change to *fire* — a route that walks
+into the volume starting the map's own `multi_manager`/`multisource`
+chain, then stands still for the minute the chain takes — and then refused
+to ship the route, because the player who set the chain going was dead
+before it fired. The chain's own teleport tour puts the player next to
+hostile monsters, and a script that holds nothing at all for a minute has
+no answer to that. The two gates M9.36 added made the failure visible;
+this milestone is the answer to it.
+
+**`PlanAction::Guard`, expanded at replay time.** The planner emits a
+guard instead of a wait whenever the wait runs longer than a few seconds
+or the map has anything hostile on it — the same span of time, spent
+defending the spot. What makes it work is *where it is decided*: the route
+file holds one `guard <ticks>` line, and the runner expands each of those
+ticks against the live game, not into a fixed sequence of buttons. A
+recording cannot work here; what a defending player should press depends
+on where the monsters are that tick, and the monsters move.
+
+The loop itself (`ohl_engine::guard`) is a **project-authored tactic** —
+no published behaviour is reproduced by deciding to fight back — and every
+engine number it leans on is read back from where that number already
+lives rather than restated: the weapons' clips and ammo types, the melee
+reach, the hitscan reach, the relationship table a monster's own enemy
+acquisition reads. Each tick it selects the best carried weapon that can
+fire, turns toward the nearest hostile monster, fires once aimed, reloads
+a spent clip in a quiet moment, and stands still when there is nothing to
+do. It draws on no randomness of its own, so a guarded route replays
+identically; the replay gate stays the only arbiter of whether one ships.
+
+Three of its rules earned their place by being measured on the map:
+
+- **Fire only at what a shot would actually reach.** Aiming by line of
+  sight alone emptied a clip into a monster 800 units away for 0 hits.
+  That monster has no hitbox — nothing in the hitbox index the engine's
+  own attack trace resolves against — so no amount of aim could have hurt
+  it, and the reload that followed was what killed the player. Asking the
+  engine's own trace (`Game::shot_would_reach`) which entity a shot from
+  the eye would hit is the only honest way to tell an unhittable target
+  from a real one. With the filter in: 22 shots, 22 hits, three kills.
+- **An aim tolerance that narrows with range.** A fixed few degrees is a
+  hit at arm's length and several feet wide across a room. The tolerance
+  is now the angle a small radius subtends at the target's own distance,
+  capped at the old value.
+- **Back away when nothing carried can answer.** Empty hands, a crowbar
+  against something across the room, or the seconds a reload takes are all
+  the same situation, and standing through it is how the player dies. The
+  loop probes a fixed list of headings away from the threat with the
+  player's own standing hull, takes the first that is clear and has floor
+  under it, and walks. This is the cheaper "patrol/retreat instead of
+  standing still" idea, kept as the unarmed half of the same policy rather
+  than as a separate mode. Measured on the map on its own, it is not
+  enough: retreating unarmed still ends at 0, because the tour teleports
+  the player away from wherever they retreated to.
+
+**The eleventh hop ships.** Re-planned with the guard in place, hop 10
+validates on the eighth plan/replay attempt (24 walk-forward segments,
+five door presses, 180.1 s of route), and two planning runs write
+byte-identical files. `cargo xtask chain-walk` now reports **distinct
+depth 12, Pass**, 660.8 simulated seconds, with the player **alive at the
+level change**. A per-tick health probe of the last hop (local,
+uncommitted): 99.1 for the whole walk and the first minutes of the guard,
+then 89.1, 39.1, 9.1 as the tour's monsters land their hits, and **9.1 at
+the level change** — where the same route without the guard reaches it at
+0. The margin is one hit wide, and it is a real margin, not a rounded one.
+
+**The loadout, and what it is not.** The chain arrives in that map
+carrying *nothing*: its routes are planned to walk from one level change
+to the next and never detour to a weapon pickup, while a player who had
+walked those maps would be carrying what the maps handed them. Empty
+hands cannot hold that spot. So `cargo xtask chain-walk` and
+`cargo xtask plan-chain-hop` now take `--start-inventory` and default it
+to one weapon's worth of pickup classnames, applied at the *start* map and
+carried onward by the ordinary transition machinery — and every summary
+they print names it on its own row, because a depth reported with a
+harness aid in place has to say so. It is a harness aid, not a claim about
+the campaign. `--start-inventory ""` walks with nothing, and reaches the
+eleventh map alive and the twelfth dead.
+
+**Fixtures.** The synthetic corridor M9.36 built for scripted goals grew a
+variant with a monster hostile to the player at the far end and a chain
+long enough that standing through it is fatal. Making that fixture bite
+needed one thing the project's synthetic models never had: a hitbox. A
+monster with no studio hitbox cannot be shot at all, so the minimal
+synthetic MDL builder can now emit one. On that fixture, waiting kills the
+player and guarding kills the monster; the app's own end-to-end test plans
+a guarded route, replays it, and then turns that one line back into a
+plain `wait` and watches the same route die.
+
+**Gates**: fmt, clippy (workspace, `--features dev-tools`, and
+`--all-features`), `cargo test --workspace`, policy, graph, combat-smoke
+37/37 with 0 unexpected lines, campaign-smoke 93/93,
+`--reachability-report` unchanged against a build of the base, and
+`cargo xtask chain-walk` at **distinct depth 12**, Pass.
+
+## M9.38 — The route that stops for something: pickup detours, and what the chain actually carries
+
+M9.37 reported the chain arriving at the eleventh map carrying *nothing*
+and worked around it with a harness loadout, which it labelled a harness
+aid rather than a claim about the campaign. This is the other half of that
+sentence: the planner now stops for what a map leaves beside the way, and
+the walk now *reports* what it collected instead of leaving it to be
+assumed.
+
+**The edge.** `PlanAction::Pickup` is an out-and-back detour, built on the
+same shape the press detour already had: from a point of the path to a
+reached cell the item's own touch test would fire from, straight-line
+walkable both ways, and back to carry on. The reach test is the touch test
+itself — the pickups phase's own radius around the entity's placed origin,
+measured from the player's origin — so a detour that is planned is a
+detour that collects; there is no second, approximate notion of "close
+enough" to drift out of step with the first. Nothing is held and nothing
+is pressed: a touch pickup is collected by standing where it rests.
+
+**What is worth a step aside** is decided against a running inventory:
+what the player is carrying now, plus what the detours already chosen
+would have collected by then — so ammo for a weapon this same route picks
+up two detours earlier counts as wanted, exactly as it would for the
+player walking it. The order is a player's own: the suit first, then a
+weapon not carried, then ammo for one that is, then a weapon already owned
+whose ammo is short, and last a health kit or a battery, and those only
+while there is room for what they restore. A battery is never detoured to
+without the suit, because it grants nothing without one. A charger is not
+a touch pickup at all — it is used and held, and walking over it collects
+nothing — and the long-jump item unlocks the one edge the planner refuses
+to plan, so neither is ever worth a step aside. Both the number of detours
+per route and their total length are capped: a few steps aside is a
+player's own behaviour, and every extra metre is more open-loop distance
+for the replay to drift along.
+
+**The harness tells the truth again.** `--start-inventory` defaults to
+nothing on both `cargo xtask chain-walk` and `cargo xtask plan-chain-hop`,
+which is what the campaign hands the player at the start map; M9.37's
+short list is kept as an explicit opt-in and still named on its own
+summary row when passed. Every arrival now logs two counts — weapons owned
+and rounds carried, no names — and the summary prints one row per map
+entered. That row is the measurement the routes are judged by, and it is
+now impossible to report a depth without reporting what was carried to it.
+
+**What the maps offered, honestly.** Re-planned with the edge in place,
+not one of the chain's routes changes: across the eleven maps it walks
+there are four touch-pickup-or-charger entities in total, **no weapon and
+no ammo among them**, and the two maps that have any keep them a few
+hundred units from the nearest cell the route's own walk ever reached. So
+the chain still arrives everywhere with `0 weapon(s), 0 round(s)` — but
+that is now a *measured* fact about how far the chain has got, printed on
+eleven rows, rather than a gap papered over by a default. The eleventh
+hop's guard still cannot be held with empty hands: the default walk
+reaches distinct depth 11 and ends on "The chain walk arrived dead.", and
+the same chain with the opt-in loadout reaches **distinct depth 12, Pass**,
+carrying one weapon and twenty-four rounds to the last hop and spending
+twelve of them holding the spot. Both numbers are in the report; neither
+is the other's excuse.
+
+**Where the routes could not reach what there was.** The two maps with
+anything at all keep it roughly two hundred and roughly four hundred
+units from the walk's own reached cells — further than any bounded step aside, and in space the route's
+search never entered rather than beside the line it took. Closing that is
+not a wider detour cap; it is the search reaching more of those maps in
+the first place.
+
+**Tests.** A synthetic corridor fixture with pickups standing off the line
+between the player start and the level change: the weapon beside it is
+detoured to and the same map with the edge off is not, the detour leaves
+the line and comes back, the detour cap and the length budget each bite,
+a battery with no suit and a health kit at full health are both walked
+past, chargers and the long-jump item are never wanted, ammo is wanted
+only for a weapon that is carried (including one this route picked up),
+and two plans of the same map are identical. End to end in the app: a
+planned route on that fixture *replays with the weapon owned*, and the
+same route planned with detours off arrives empty-handed.
+
+**Gates**: fmt, clippy (workspace, `--features dev-tools`, and
+`--all-features`), `cargo test --workspace` 218 suites 0 failures, policy,
+graph, combat-smoke 37/37 with 0 unexpected lines, campaign-smoke 93/93,
+`--reachability-report --reachability-assume-armed` byte-identical to a
+build of the base over 20 campaign and training maps, and
+`cargo xtask chain-walk` at distinct depth 11 by default and **distinct
+depth 12, Pass** with the opt-in loadout.
