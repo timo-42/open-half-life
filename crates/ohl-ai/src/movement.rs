@@ -127,12 +127,27 @@ pub struct MoveResult {
     pub stepped_up: bool,
 }
 
+/// Whether a mover with `hull` flies: follows the full three-dimensional
+/// direction to its target with no step-up and no settle-down.
+///
+/// The point hull is the flier's hull in `ohl-nav`'s steering too
+/// (`ohl_nav::steer` keeps its full 3D direction for the point hull and
+/// flattens every box hull), so the two movement paths agree on who flies;
+/// `crate::monsters::MonsterFlags::FLIES` is the table-side statement of
+/// the same thing.
+#[must_use]
+pub const fn flies(hull: Hull) -> bool {
+    matches!(hull, Hull::Point)
+}
+
 /// Moves `from` toward `target` by at most `speed * dt`, using clip-hull
 /// traces, with a step up over obstructions no taller than [`STEP_HEIGHT`].
 ///
-/// Only the horizontal component of the direction is used, so a monster
-/// never flies at a target above it; the vertical part is the step-up and
-/// the settle-down trace. With no usable input the mover simply stays put.
+/// For a walking hull only the horizontal component of the direction is
+/// used, so a monster never walks at a target above it; the vertical part
+/// is the step-up and the settle-down trace. A flier ([`flies`]) moves
+/// along the full direction instead, with a single trace and no step-up.
+/// With no usable input the mover simply stays put.
 #[must_use]
 pub fn move_toward(
     collision: &CollisionModel,
@@ -154,6 +169,27 @@ pub fn move_toward(
     let step = speed * dt;
     if step <= 0.0 {
         return still;
+    }
+
+    if flies(hull) {
+        let delta = target - from;
+        let length = delta.length();
+        if length <= f32::EPSILON {
+            return still;
+        }
+        let goal = from + delta / length * step.min(length);
+        let flight = collision.trace(hull, from, goal);
+        let position = if flight.start_solid {
+            from
+        } else {
+            flight.end_pos
+        };
+        return MoveResult {
+            position,
+            distance: (position - from).length(),
+            blocked: flight.blocked(),
+            stepped_up: false,
+        };
     }
 
     let horizontal = Vec3::new(target.x - from.x, target.y - from.y, 0.0);

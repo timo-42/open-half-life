@@ -352,4 +352,49 @@ mod tests {
         assert_eq!(bridge.node_count(), 0);
         assert_eq!(bridge.link_count(), 0);
     }
+
+    /// Wave 1 batch A: the flight seam. Against a real collision model, a
+    /// point-hull mover follows the full three-dimensional line to a
+    /// target above it (an alien controller climbing), a box-hull mover
+    /// only ever the horizontal part (a walker never walks at something
+    /// above it), and a flier flying into the ceiling is stopped by it
+    /// rather than passing through — the same trace a walker is stopped
+    /// by, just not flattened first.
+    #[test]
+    fn a_point_hull_mover_flies_and_a_box_hull_mover_walks() {
+        use crate::movement::{flies, move_toward};
+        use glam::Vec3;
+        use ohl_physics::Hull;
+        let collision = open_room();
+        let from = Vec3::new(0.0, 0.0, 64.0);
+        let above = Vec3::new(100.0, 0.0, 200.0);
+
+        assert!(flies(Hull::Point));
+        assert!(!flies(Hull::Standing));
+
+        let flown = move_toward(&collision, Hull::Point, from, above, 100.0, 1.0);
+        assert!(
+            flown.position.z > from.z + 10.0,
+            "a flier climbs: {flown:?}"
+        );
+        assert!(flown.position.x > from.x, "and closes: {flown:?}");
+        assert!(!flown.blocked);
+
+        let walked = move_toward(&collision, Hull::Standing, from, above, 100.0, 1.0);
+        assert!(
+            (walked.position.z - from.z).abs() < 1.0,
+            "a walker keeps its height: {walked:?}"
+        );
+        assert!(walked.position.x > from.x, "but still closes: {walked:?}");
+
+        // Straight up into the ceiling at 256: stopped short, and blocked.
+        let ceiling = Vec3::new(0.0, 0.0, 512.0);
+        let bumped = move_toward(&collision, Hull::Point, from, ceiling, 1_000.0, 1.0);
+        assert!(bumped.blocked, "the ceiling stops a flier: {bumped:?}");
+        assert!(bumped.position.z <= 256.0 + f32::EPSILON, "{bumped:?}");
+        assert!(
+            bumped.position.z > from.z,
+            "it still flew up to it: {bumped:?}"
+        );
+    }
 }

@@ -781,7 +781,16 @@ it interactively on a real screen.
   `monstermaker`s (including toggling one by name via `use`/`trigger`),
   and level transitions by touch (`trigger_changelevel`) or by `use`.
 - **Combat and AI**: weapons, pickups, damage, monster AI, and navigation
-  are implemented and exercised by a scripted combat scenario that picks up
+  are implemented. Twenty-four `monster_*` classnames have a brain and a
+  stat row of their own — the sixteen original kinds plus, as of M9.NEXT,
+  the barnacle (a ceiling-hung tongue that bites what stands below it),
+  the alien controller (the first flier: a point-hull route that climbs
+  and descends), the human assassin (fire, relocate, retreat), the
+  babycrab, the two scripted-prop kinds `monster_generic` and
+  `monster_furniture` (which a `scripted_sequence` can now possess) and
+  the rat and cockroach (harmless wanderers). A monster the table does not
+  know still spawns as an inert, drawn-if-the-map-names-a-model actor.
+  Everything is exercised by a scripted combat scenario that picks up
   and fires a weapon (`cargo xtask combat-smoke`), which also runs a
   moving-player walk scenario through each of the 18 story chapters plus
   the Hazard Course, plus a ladder-climb scenario, as its own regression

@@ -148,3 +148,15 @@ pub struct Corpse {
 /// the child entity the spawner asks for.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MonsterMaker(pub ohl_ai::Spawner);
+
+/// A `monster_generic` spawned with its published `Not solid` spawnflag
+/// (bit 4): drawn, scriptable and perceivable like any other, but
+/// "impervious to any damage" (`docs/FORMAT_SOURCES.md`, "Monster
+/// definitions"): damage queued at it is dropped in
+/// [`crate::ai::AiState::lifecycle`]'s drain. Only the cited immunity is
+/// modeled: the prop keeps its hitbox, so a shot still stops at it and
+/// reports a hit — whether a trace should pass through such a prop is not
+/// something the cited page states, and is recorded as a gap in
+/// `docs/MILESTONES.md` rather than guessed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NotSolid;

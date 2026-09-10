@@ -306,12 +306,13 @@ proptest! {
     /// return non-finite values).
     #[test]
     fn monster_table_lookups_never_panic(
-        kind_index in 0usize..16,
+        kind_index in any::<usize>(),
         difficulty_index in 0usize..3,
         override_value in coordinate(),
         has_override in any::<bool>(),
     ) {
-        let kind = MonsterKind::defined()[kind_index].clone();
+        let kinds = MonsterKind::defined();
+        let kind = kinds[kind_index % kinds.len()].clone();
         let difficulty = Difficulty::ALL[difficulty_index];
         let spec = spec_for(&kind).expect("every defined kind has a spec");
         let lookup: &dyn Fn(&str) -> Option<f32> =
@@ -360,10 +361,11 @@ proptest! {
     /// same `state_hash` digest.
     #[test]
     fn monster_brain_ticking_stays_deterministic(
-        kind_index in 0usize..16,
+        kind_index in any::<usize>(),
         seed in any::<u64>(),
     ) {
-        let kind = MonsterKind::defined()[kind_index].clone();
+        let kinds = MonsterKind::defined();
+        let kind = kinds[kind_index % kinds.len()].clone();
         let run = || {
             let mut ai = AiWorld::new(seed);
             let brain = ai.register_brain(Box::new(

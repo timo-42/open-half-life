@@ -1066,3 +1066,78 @@ fn a_dormant_scripts_idle_animation_plays_while_its_monster_is_idle_and_yields_o
         "released back to its own brain, the guard settles back on its own idle"
     );
 }
+
+/// Wave 1 batch A: the two scripted-prop kinds (`monster_generic`,
+/// `monster_furniture`) are monsters a script can possess, so a
+/// `scripted_sequence` naming one walks it to the mark and fires its
+/// `target` exactly like a guard — where before this pass neither had an
+/// `Actor` for the script to find and the sequence never started.
+#[test]
+fn a_script_possesses_a_generic_monster_and_a_piece_of_furniture() {
+    for classname in ["monster_generic", "monster_furniture"] {
+        let entities = script_room_entities(
+            [-192.0, -192.0, 36.0],
+            &format!(
+                "{}{}{}",
+                entity_block(
+                    classname,
+                    [0.0, 0.0, 36.0],
+                    0.0,
+                    &[("targetname", "ohl_prop")]
+                ),
+                entity_block(
+                    "scripted_sequence",
+                    [160.0, 0.0, 36.0],
+                    90.0,
+                    &[
+                        ("targetname", "ohl_script"),
+                        ("m_iszEntity", "ohl_prop"),
+                        ("m_iszPlay", "ohl_action"),
+                        ("m_fMoveTo", "1"),
+                        ("target", "ohl_after"),
+                    ],
+                ),
+                trigger_auto("ohl_script") + &exit_trigger("ohl_after"),
+            ),
+        );
+        let mut game = script_game(&entities);
+        let prop = entity_of_classname(&game, classname).expect("the prop spawned");
+        let spawn = actor_origin(&game, prop);
+        assert!(
+            game.registry()
+                .world
+                .get::<&ohl_ai::MonsterAi>(prop)
+                .is_ok(),
+            "{classname} thinks (has a MonsterAi) rather than being an inert actor"
+        );
+
+        tick(&mut game, 5);
+        assert_eq!(
+            game.active_script_count(),
+            1,
+            "{classname}: the script possesses the prop"
+        );
+        assert_eq!(game.script_start_count(), 1);
+
+        let fired = tick_counting_level_changes(&mut game, 1_200);
+        let arrived = actor_origin(&game, prop);
+        assert!(
+            arrived.x > spawn.x + 64.0,
+            "{classname}: the prop walked toward the mark"
+        );
+        assert_eq!(
+            fired, 1,
+            "{classname}: the script's target fired exactly once"
+        );
+        assert_eq!(game.script_completion_count(), 1);
+        assert_eq!(game.active_script_count(), 0);
+
+        // Released, a prop's own brain never walks it anywhere.
+        let released = actor_origin(&game, prop);
+        tick(&mut game, 600);
+        assert!(
+            (actor_origin(&game, prop) - released).length() < 1.0,
+            "{classname}: a released prop stays put"
+        );
+    }
+}

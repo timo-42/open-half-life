@@ -7272,3 +7272,96 @@ volume, tag 38 written and restored, the large/medium check order,
 "Is NOT looped" at load, loop re-admission, both `stop_all`s, a cue's
 volume and pitch, the oversize miss, the volume ramp, the sentence cap,
 the benchmark loop, the listener in three run paths, and the stop cue.
+
+## M9.NEXT — Eight more monsters, and the hull that never reached the actor
+
+Eight `monster_*` classnames that a map can name — `monster_barnacle`,
+`monster_alien_controller`, `monster_human_assassin`, `monster_babycrab`,
+`monster_generic`, `monster_furniture`, `monster_rat`, `monster_cockroach`
+— resolved to `MonsterKind::Unknown`, which is the documented inert state:
+no spec, no brain, no default model, an entity that neither thinks nor
+draws unless the map itself named a model for it. This entry gives each a
+table row cited to its own TWHL page, a brain, and whatever engine wiring it needed to spawn
+from the entity lump. The enum additions are grouped under a `// Wave 1
+batch A` comment throughout, since another entry is adding the bosses and
+aircraft beside them.
+
+**What each one is now.** The barnacle is rooted under its ceiling with an
+eye that points *down* (`MonsterKind::view_offset`; the default eye above
+a ceiling-hung origin starts every sight trace inside the ceiling) and
+senses that reach the published 2048 units in every direction; its "melee"
+is the tongue, and a new defaulted `Brain::melee_in_reach` turns the reach
+into a vertical test — within a tongue's width of the line below it, no
+further down than the length — rather than the sphere every other kind
+uses. It feeds on what stands on that line at a cadence read off the
+published "ten seconds to kill its prey", and lets go of what steps off it.
+The alien controller is the first flier: `MonsterFlags::FLIES` with the
+point hull, a hand-launched volley of three shots followed by a
+reposition, which is the closest this crate's tasks come to "constant
+evasive maneuvering and tendency to stay at a distance". The assassin
+fires a two-shot burst and relocates, retreats when hit hard, and runs at
+a placeholder speed well above a grunt's. The babycrab is the headcrab's
+brain and hull at the published quarter health and thirty-percent bite,
+and an override of `sk_headcrab_health<N>` scales it too. `monster_generic`
+and `monster_furniture` get a passive brain that stands where it was put
+(the generic also turns to look), no default model — the cited model page
+lists both as "specified by mapper" — and, being monsters now, an `Actor`
+a `scripted_sequence` can find: an engine test walks each to a mark and
+fires the script's `target` once, exactly like a guard. The rat and the
+cockroach wander and scatter on a new `Task::Wander`, whose direction is
+drawn from a generator seeded by the tick counter and the entity id so it
+consumes nothing from the world's shared stream: a critter in the room
+reshuffles nobody else's random waits, and the run still replays exactly.
+
+**The hull that never arrived.** "Check how the ichthyosaur swims and reuse
+that seam" turned up the seam and the fact that it was unplugged.
+`ohl-nav`'s steering already reads the point hull as a flier and keeps its
+full three-dimensional direction; `MonsterSpec::hull` already says which
+hull each species uses. But `attach_monsters` gave every map-placed
+monster the standing hull regardless — only a `monstermaker`'s children
+got their species' hull — so no ichthyosaur has ever swum with the large
+hull and no flier could have flown. `MonsterSpawn` now carries the hull
+(and the eye offset) and the engine's spawn rules fill both from the
+species table; `crate::movement::move_toward` and the no-collision
+fallback honour the same hull (`movement::flies`), flying the full line
+with one trace and no step-up, and the walker path is untouched. A test
+against a real collision model shows a point-hull mover climbing toward a
+target above it, a box-hull mover keeping its height toward the same
+target, and a flier stopped by the ceiling rather than passing through it.
+This is a behaviour change for every existing kind whose hull is not the
+standing one — headcrab and leech crouched, bullsquid, alien grunt,
+ichthyosaur, gargantua and tentacle large, turrets point — and is what the
+smokes below were run against.
+
+**The prop that ate the smoke.** The first combat-smoke run failed one
+scenario: a swing the harness expects to hit an entity and nothing more
+now also reported a monster hurt and killed, once `monster_generic` had
+become an eight-health monster. That led to the cited page's `Not solid`
+spawnflag (bit 4), modeled to the extent the page describes it:
+"impervious to any damage", as a `NotSolid` marker the lifecycle drain
+honours, verified by a soldier that kills a solid prop and cannot scratch
+a not-solid one. The prop keeps its hitbox, since whether a trace passes
+through such a prop is not something the page states; that is listed
+below rather than quietly decided.
+
+**Explicitly not done.** The barnacle does not lift its victim: the catch
+is a reach test, the lift a wait, the kill a series of bites where the
+victim stands; it also follows the cited "ignore other monsters" rather
+than the assignment's "player/monster", since the relationship table's
+barnacle row only hates the player's side. The controller's head-launched
+homing ball and the assassin's grenade are recorded as constants but not
+fired (`CAN_RANGE_ATTACK2` is still set by nobody, the same gap the
+grunt's grenade has). The assassin does not jump and does not cloak when
+still — the latter is a render effect. The critters are not killed by
+being stepped on and do not follow `path_corner` patrols. The three stems
+`sk_barnacle`, `sk_controller` and `sk_hassassin` are this project's own
+choice of spelling, unverified against any vanilla `skill.cfg`. A
+`Not solid` prop still stops a shot. `monster_furniture`'s health and the
+rat's and cockroach's are placeholders the pages do not give. The six new
+kinds with a hardcoded model draw through the same default-model table the
+renderer already read, placed at their map origin exactly as before; no
+rendering code changed, so a barnacle's ceiling attachment and a
+controller's hover are whatever its model and that placement already give.
+
+**Gates**: fmt, clippy (workspace, `--all-features`), `cargo test
+--workspace`, graph, policy, combat-smoke 37/37, campaign-smoke 93/93.
