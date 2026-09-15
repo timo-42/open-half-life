@@ -18,7 +18,13 @@ use std::time::{Duration, Instant};
 use glam::Vec3;
 use ohl_engine::{AssetFsSource, Game, GameConfig, GameEvent, Input, RenderTarget};
 use ohl_render::{GpuContext, OFFSCREEN_FORMAT, OffscreenTarget, WindowSurface, wgpu};
-use ohl_ui::{UiLayer, console::Console, debug::GraphicsDebugInfo, hud::HudState};
+use ohl_ui::{
+    UiLayer,
+    console::Console,
+    debug::GraphicsDebugInfo,
+    hud::HudState,
+    menu::{Difficulty as MenuDifficulty, MenuAction, MenuPane, MenuState, Mission, Screen},
+};
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -207,6 +213,8 @@ pub struct GameArgs<'a> {
     /// (`--follow-level-change`) instead of logging that it was not
     /// followed and staying on the original map.
     pub follow_level_change: bool,
+    /// Opens the player-facing main menu before simulation begins.
+    pub start_in_menu: bool,
     /// Places the capture viewpoint this many units from the nearest
     /// spawned monster instead of at the map's player start or a caller
     /// chosen viewpoint (`--viewpoint-at-nearest-monster`, `dev-tools`
@@ -442,7 +450,7 @@ recognise (expected a comma-separated list of weapon_*/ammo_* classnames)"
 
     match args.screenshot {
         Some(path) => capture(&mut game, &source, args, path),
-        None => windowed(game, &source, args.profile_frames),
+        None => windowed(game, &source, args),
     }
 }
 
@@ -1381,9 +1389,23 @@ fn capture(
     Ok(())
 }
 
-/// Opens a window and runs the loop until it closes or Escape is pressed.
+/// Opens a window and runs the menu/game loop until the player quits.
+fn menu_missions() -> Vec<Mission> {
+    std::iter::once(Mission {
+        title: "Hazard Course",
+        map: ohl_campaign::TRAINMAP,
+    })
+    .chain(ohl_campaign::CHAPTERS.iter().filter_map(|chapter| {
+        chapter.maps.first().map(|map| Mission {
+            title: chapter.title,
+            map,
+        })
+    }))
+    .collect()
+}
+
 #[allow(clippy::needless_pass_by_value)]
-fn windowed(game: Game, source: &AssetFsSource, profile_frames: bool) -> Result<(), &'static str> {
+fn windowed(game: Game, source: &AssetFsSource, args: &GameArgs<'_>) -> Result<(), &'static str> {
     let event_loop = EventLoop::new().map_err(|_| "no window system is available")?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App {
@@ -1393,6 +1415,18 @@ fn windowed(game: Game, source: &AssetFsSource, profile_frames: bool) -> Result<
         input: Input::default(),
         key_use_down: false,
         console: Console::new(),
+        screen: if args.start_in_menu {
+            Screen::MainMenu
+        } else {
+            Screen::InGame
+        },
+        menu: MenuState::new(),
+        missions: menu_missions(),
+        config: GameConfig {
+            difficulty: args.difficulty,
+            overbright: args.overbright,
+        },
+        quit_requested: false,
         debug_open: false,
         live_profile: LiveFrameProfile::default(),
         hud: HudState::default(),
@@ -1400,7 +1434,7 @@ fn windowed(game: Game, source: &AssetFsSource, profile_frames: bool) -> Result<
         last_frame: Instant::now(),
         fps_window_start: Instant::now(),
         frames: 0,
-        profile: profile_frames.then(FrameProfile::default),
+        profile: args.profile_frames.then(FrameProfile::default),
         failure: None,
     };
     event_loop
@@ -1431,6 +1465,11 @@ struct App<'a> {
     /// one-frame press edge is not re-latched by key repeat.
     key_use_down: bool,
     console: Console,
+    screen: Screen,
+    menu: MenuState,
+    missions: Vec<Mission>,
+    config: GameConfig,
+    quit_requested: bool,
     /// Toggled with `P`; this overlay never captures gameplay input.
     debug_open: bool,
     live_profile: LiveFrameProfile,
@@ -1478,6 +1517,55 @@ impl App<'_> {
     fn fail(&mut self, event_loop: &ActiveEventLoop, message: &'static str) {
         self.failure = Some(message);
         event_loop.exit();
+    }
+
+    fn set_screen(&mut self, screen: Screen) {
+        self.screen = screen;
+        self.release_movement();
+        let Some(active) = self.state.as_ref() else {
+            return;
+        };
+        let capture = screen.input_capture();
+        if capture.release_cursor {
+            let _ = active.window.set_cursor_grab(CursorGrabMode::None);
+        } else if active
+            .window
+            .set_cursor_grab(CursorGrabMode::Locked)
+            .is_err()
+        {
+            let _ = active.window.set_cursor_grab(CursorGrabMode::Confined);
+        }
+        active.window.set_cursor_visible(capture.release_cursor);
+    }
+
+    fn handle_menu_actions(&mut self, actions: Vec<MenuAction>) {
+        for action in actions {
+            match action {
+                MenuAction::StartSinglePlayer { map, difficulty } => {
+                    self.config.difficulty = match difficulty {
+                        MenuDifficulty::Easy => ohl_campaign::Difficulty::Easy,
+                        MenuDifficulty::Medium => ohl_campaign::Difficulty::Medium,
+                        MenuDifficulty::Hard => ohl_campaign::Difficulty::Hard,
+                    };
+                    if let Ok(game) = Game::load_with(self.source, map, &self.config) {
+                        self.game = game;
+                        self.hud = HudState::default();
+                        self.menu.pane = MenuPane::Root;
+                        self.set_screen(Screen::InGame);
+                        tracing::info!("Single-player mission started.");
+                    } else {
+                        tracing::warn!("The selected mission could not be loaded.");
+                    }
+                }
+                MenuAction::Resume => self.set_screen(Screen::InGame),
+                MenuAction::Quit => self.quit_requested = true,
+                MenuAction::SaveGame => self.quicksave(),
+                MenuAction::LoadGame => self.quickload(),
+                MenuAction::SetSensitivity(_)
+                | MenuAction::SetVolume(_)
+                | MenuAction::SetFov(_) => {}
+            }
+        }
     }
 
     fn set_axis(&mut self, key: KeyCode, pressed: bool) {
@@ -1611,7 +1699,9 @@ impl App<'_> {
         let delta = now.saturating_duration_since(self.last_frame);
         self.last_frame = now;
 
-        self.tick_game(delta.as_secs_f32());
+        if self.screen == Screen::InGame && !self.console.is_open() {
+            self.tick_game(delta.as_secs_f32());
+        }
         let simulation = now.elapsed();
 
         let Some(active) = self.state.as_mut() else {
@@ -1653,6 +1743,17 @@ impl App<'_> {
             let mut root = ohl_ui::root_ui(active.ui.context());
             let _ = ohl_ui::console::draw_console(&mut root, &mut self.console);
         }
+        let menu_actions = if matches!(self.screen, Screen::MainMenu | Screen::Pause) {
+            let mut root = ohl_ui::root_ui(active.ui.context());
+            ohl_ui::menu::draw(
+                &mut root,
+                &mut self.menu,
+                self.screen == Screen::Pause,
+                &self.missions,
+            )
+        } else {
+            Vec::new()
+        };
         let mut encoder =
             active
                 .context
@@ -1700,6 +1801,7 @@ impl App<'_> {
             self.fps_window_start = now;
         }
         active.window.request_redraw();
+        self.handle_menu_actions(menu_actions);
     }
 }
 
@@ -1720,7 +1822,7 @@ impl ApplicationHandler for App<'_> {
             return;
         };
         let window = Arc::new(window);
-        if self.profile.is_none() {
+        if self.profile.is_none() && self.screen == Screen::InGame {
             if window.set_cursor_grab(CursorGrabMode::Locked).is_err() {
                 let _ = window.set_cursor_grab(CursorGrabMode::Confined);
             }
@@ -1762,11 +1864,15 @@ impl ApplicationHandler for App<'_> {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
-        if let Some(active) = self.state.as_mut()
-            && active.ui.handle_window_event(&event)
-            && self.console.is_open()
-        {
-            return;
+        if let Some(active) = self.state.as_mut() {
+            let consumed = active.ui.handle_window_event(&event);
+            if consumed
+                && (self.console.is_open()
+                    || matches!(self.screen, Screen::MainMenu | Screen::Pause))
+                && !matches!(event, WindowEvent::KeyboardInput { .. })
+            {
+                return;
+            }
         }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
@@ -1794,10 +1900,18 @@ impl ApplicationHandler for App<'_> {
                         self.console.set_open(false);
                         return;
                     }
-                    event_loop.exit();
+                    match self.screen {
+                        Screen::InGame => self.set_screen(Screen::Pause),
+                        Screen::Pause | Screen::Console => self.set_screen(Screen::InGame),
+                        Screen::MainMenu if self.menu.pane != MenuPane::Root => {
+                            self.menu.pane = MenuPane::Root;
+                        }
+                        Screen::MainMenu => event_loop.exit(),
+                    }
                     return;
                 }
-                if self.console.is_open() {
+                if self.console.is_open() || matches!(self.screen, Screen::MainMenu | Screen::Pause)
+                {
                     return;
                 }
                 if code == KeyCode::KeyP {
@@ -1839,7 +1953,7 @@ impl ApplicationHandler for App<'_> {
         _device_id: DeviceId,
         event: DeviceEvent,
     ) {
-        if self.console.is_open() || self.profile.is_some() {
+        if self.console.is_open() || self.screen != Screen::InGame || self.profile.is_some() {
             return;
         }
         if let DeviceEvent::MouseMotion { delta } = event {
@@ -1850,7 +1964,11 @@ impl ApplicationHandler for App<'_> {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.quit_requested {
+            event_loop.exit();
+            return;
+        }
         if let Some(active) = self.state.as_ref() {
             active.window.request_redraw();
         }

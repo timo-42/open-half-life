@@ -932,7 +932,14 @@ fn run(cli: Cli) -> ExitCode {
         || reachability_report
         || plan_route
     {
-        return run_game_flow(&cli);
+        return run_game_flow(&cli, false);
+    }
+
+    // Passing installation media is the normal player-facing launch path:
+    // import/reuse its payload, then enter the game menu. The explicit
+    // gameplay/headless flags above continue to bypass the menu.
+    if cli.iso.is_some() || cli.path.is_some() {
+        return run_game_flow(&cli, true);
     }
 
     run_media_flow(cli)
@@ -944,14 +951,19 @@ fn run(cli: Cli) -> ExitCode {
 /// Neither is logged: the payload root is a user-supplied path and the map
 /// name, though it comes from `ohl-campaign`'s own sourced table, names
 /// game content.
-fn run_game_flow(cli: &Cli) -> ExitCode {
+fn run_game_flow(cli: &Cli, start_in_menu: bool) -> ExitCode {
     let Ok(root) = payload_root(cli.payload_root.clone()) else {
         tracing::error!("Payload location failed: no per-user data directory is available");
         return ExitCode::from(EXIT_FAILURE);
     };
 
     let files = match locate_payload_files(cli, &root) {
-        Ok(files) => files,
+        Ok(Some(files)) => files,
+        Ok(None) if start_in_menu => return ExitCode::SUCCESS,
+        Ok(None) => {
+            tracing::error!("No payload is published for this medium.");
+            return ExitCode::from(EXIT_FAILURE);
+        }
         Err(code) => return code,
     };
 
@@ -979,6 +991,7 @@ fn run_game_flow(cli: &Cli) -> ExitCode {
         script_log: cli.script_log,
         overbright: cli.overbright,
         follow_level_change: cli.follow_level_change,
+        start_in_menu,
         #[cfg(feature = "dev-tools")]
         viewpoint_at_nearest_monster: cli.viewpoint_at_nearest_monster,
         #[cfg(feature = "dev-tools")]
@@ -1016,14 +1029,14 @@ fn run_game_flow(cli: &Cli) -> ExitCode {
 /// own provenance entry when an ISO was given (importing first if it has
 /// not been imported yet), and otherwise by resolving the single published
 /// tree under the payload root.
-fn locate_payload_files(cli: &Cli, root: &Path) -> Result<PathBuf, ExitCode> {
+fn locate_payload_files(cli: &Cli, root: &Path) -> Result<Option<PathBuf>, ExitCode> {
     if let Some(iso_path) = cli.iso.clone().or_else(|| cli.path.clone()) {
         let Some((validated, mount)) = preflight(iso_path) else {
             return Err(ExitCode::from(EXIT_FAILURE));
         };
         let layout = cache_layout(cli.cache.clone())?;
         if let Some(tree) = ohl_import::find_published_payload(&layout, &validated, root) {
-            return Ok(tree.files_directory().to_path_buf());
+            return Ok(Some(tree.files_directory().to_path_buf()));
         }
         match ohl_media::prepare_import_cache(&validated, &layout) {
             Ok(report) => report.log(),
@@ -1042,16 +1055,14 @@ fn locate_payload_files(cli: &Cli, root: &Path) -> Result<PathBuf, ExitCode> {
         if code != ExitCode::SUCCESS {
             return Err(code);
         }
-        return ohl_import::find_published_payload(&layout, &validated, root)
-            .map(|tree| tree.files_directory().to_path_buf())
-            .ok_or_else(|| {
-                tracing::error!("No payload is published for this medium.");
-                ExitCode::from(EXIT_FAILURE)
-            });
+        return Ok(
+            ohl_import::find_published_payload(&layout, &validated, root)
+                .map(|tree| tree.files_directory().to_path_buf()),
+        );
     }
 
     if let Some(files) = sole_published_tree(root) {
-        return Ok(files);
+        return Ok(Some(files));
     }
     tracing::error!("No imported payload was found. Import one first by passing --iso PATH.");
     Err(ExitCode::from(EXIT_FAILURE))
