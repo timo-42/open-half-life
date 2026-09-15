@@ -1036,6 +1036,7 @@ fn locate_payload_files(cli: &Cli, root: &Path) -> Result<Option<PathBuf>, ExitC
         };
         let layout = cache_layout(cli.cache.clone())?;
         if let Some(tree) = ohl_import::find_published_payload(&layout, &validated, root) {
+            tracing::info!("Payload already imported.");
             return Ok(Some(tree.files_directory().to_path_buf()));
         }
         match ohl_media::prepare_import_cache(&validated, &layout) {
