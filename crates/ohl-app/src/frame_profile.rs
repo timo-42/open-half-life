@@ -1,6 +1,10 @@
 //! Host timing statistics, independent of renderer internals and game assets.
 
-use std::time::Duration;
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
+
+const FPS_SAMPLE_WINDOW: Duration = Duration::from_secs(1);
+const LOW_SAMPLE_WINDOW: Duration = Duration::from_secs(60);
 
 /// Durations for one frame; GPU wait is populated only by the offscreen
 /// benchmark, where every frame waits for completion.
@@ -30,6 +34,87 @@ pub(crate) struct FrameSummary {
     pub render_ms: f64,
     pub ui_present_ms: f64,
     pub gpu_wait_ms: f64,
+}
+
+/// Live frame statistics used by the in-game graphics overlay.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct LiveFrameSummary {
+    pub fps: f64,
+    pub one_percent_low_fps: f64,
+    pub frame_ms: f64,
+    pub simulation_ms: f64,
+    pub acquire_ms: f64,
+    pub render_ms: f64,
+    pub ui_present_ms: f64,
+}
+
+/// Completed frame times retained for no longer than one minute.
+#[derive(Default)]
+pub(crate) struct LiveFrameProfile {
+    frames: VecDeque<(Instant, FrameSample)>,
+}
+
+impl LiveFrameProfile {
+    pub(crate) fn record(&mut self, now: Instant, sample: FrameSample) {
+        self.frames.push_back((now, sample));
+        while self
+            .frames
+            .front()
+            .is_some_and(|(at, _)| now.saturating_duration_since(*at) > LOW_SAMPLE_WINDOW)
+        {
+            self.frames.pop_front();
+        }
+    }
+
+    pub(crate) fn summary(&self, now: Instant) -> LiveFrameSummary {
+        let recent = self
+            .frames
+            .iter()
+            .rev()
+            .take_while(|(at, _)| now.saturating_duration_since(*at) <= FPS_SAMPLE_WINDOW)
+            .filter_map(|(_, sample)| (!sample.frame.is_zero()).then_some(sample.frame));
+        let (recent_frames, recent_time) = recent
+            .fold((0_usize, Duration::ZERO), |(count, total), frame| {
+                (count + 1, total + frame)
+            });
+        #[allow(clippy::cast_precision_loss)]
+        let fps = if recent_time.is_zero() {
+            0.0
+        } else {
+            recent_frames as f64 / recent_time.as_secs_f64()
+        };
+
+        let mut slowest: Vec<Duration> = self
+            .frames
+            .iter()
+            .map(|(_, sample)| sample.frame)
+            .filter(|frame| !frame.is_zero())
+            .collect();
+        let low_count = slowest.len().div_ceil(100);
+        if low_count < slowest.len() {
+            slowest.select_nth_unstable_by(low_count - 1, |left, right| right.cmp(left));
+        }
+        let low_time: Duration = slowest.iter().take(low_count).copied().sum();
+        #[allow(clippy::cast_precision_loss)]
+        let one_percent_low_fps = if low_time.is_zero() {
+            0.0
+        } else {
+            low_count as f64 / low_time.as_secs_f64()
+        };
+
+        let Some((_, latest)) = self.frames.back() else {
+            return LiveFrameSummary::default();
+        };
+        LiveFrameSummary {
+            fps,
+            one_percent_low_fps,
+            frame_ms: latest.frame.as_secs_f64() * 1000.0,
+            simulation_ms: latest.simulation.as_secs_f64() * 1000.0,
+            acquire_ms: latest.acquire.as_secs_f64() * 1000.0,
+            render_ms: latest.render.as_secs_f64() * 1000.0,
+            ui_present_ms: latest.ui_present.as_secs_f64() * 1000.0,
+        }
+    }
 }
 
 impl FrameProfile {
@@ -90,8 +175,8 @@ impl FrameSummary {
 
 #[cfg(test)]
 mod tests {
-    use super::{FrameProfile, FrameSample};
-    use std::time::Duration;
+    use super::{FrameProfile, FrameSample, LiveFrameProfile};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn summary_uses_elapsed_time_and_nearest_rank_percentiles_and_resets() {
@@ -130,5 +215,48 @@ mod tests {
         assert_eq!(summary.frames, 1);
         assert!((summary.median_ms - 7.0).abs() < 1e-9);
         assert!((summary.p95_ms - 7.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn live_summary_uses_slowest_one_percent_from_the_last_minute() {
+        let start = Instant::now();
+        let mut profile = LiveFrameProfile::default();
+        for index in 0..100 {
+            profile.record(
+                start + Duration::from_millis(index),
+                FrameSample {
+                    frame: if index == 99 {
+                        Duration::from_millis(100)
+                    } else {
+                        Duration::from_millis(10)
+                    },
+                    ..FrameSample::default()
+                },
+            );
+        }
+        let summary = profile.summary(start + Duration::from_millis(100));
+        assert!((summary.one_percent_low_fps - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn live_summary_discards_samples_older_than_one_minute() {
+        let start = Instant::now();
+        let mut profile = LiveFrameProfile::default();
+        profile.record(
+            start,
+            FrameSample {
+                frame: Duration::from_secs(1),
+                ..FrameSample::default()
+            },
+        );
+        profile.record(
+            start + Duration::from_secs(61),
+            FrameSample {
+                frame: Duration::from_millis(10),
+                ..FrameSample::default()
+            },
+        );
+        let summary = profile.summary(start + Duration::from_secs(61));
+        assert!((summary.one_percent_low_fps - 100.0).abs() < 1e-9);
     }
 }

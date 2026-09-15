@@ -14,6 +14,7 @@ mod layer;
 mod root_ui;
 
 pub mod console;
+pub mod debug;
 pub mod hud;
 pub mod menu;
 
