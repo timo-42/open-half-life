@@ -322,6 +322,34 @@ fn now_unix_secs() -> u64 {
 ///
 /// Returns a fixed, sanitized message on failure; the caller prints it as
 /// is.
+fn load_initial_game(
+    source: &AssetFsSource,
+    args: &GameArgs<'_>,
+    config: GameConfig,
+) -> Result<Option<Game>, &'static str> {
+    if let Some(name) = args.load_slot {
+        let slot = save_slot_dir().ok_or("no per-user save directory is available")?;
+        // Neither the slot name nor the saved map name is logged: one is
+        // user-supplied, the other media-derived.
+        return Game::load_slot_with(source, &slot, name, &config)
+            .map(Some)
+            .map_err(|_| "the save slot could not be loaded");
+    }
+
+    match Game::load_with(source, args.map, &config) {
+        Ok(game) => Ok(Some(game)),
+        // ISO-only launch doubles as the import command. A valid medium can
+        // publish a payload that is not a playable Half-Life installation
+        // (the installed-worker integration fixture is one such payload).
+        // Preserve the successful import result in that case; only a payload
+        // with a loadable campaign start proceeds to the player-facing menu.
+        Err(_) if args.start_in_menu => Ok(None),
+        // The map name is media-derived, so the reason names the step, not
+        // the asset.
+        Err(_) => Err("the start map could not be loaded from the payload"),
+    }
+}
+
 pub fn run(args: &GameArgs<'_>) -> Result<(), &'static str> {
     let root = game_root(args.payload_files);
     let asset_fs = ohl_assets::AssetFs::mount_default(&root)
@@ -331,19 +359,8 @@ pub fn run(args: &GameArgs<'_>) -> Result<(), &'static str> {
         difficulty: args.difficulty,
         overbright: args.overbright,
     };
-    let mut game = match args.load_slot {
-        Some(name) => {
-            let slot = save_slot_dir().ok_or("no per-user save directory is available")?;
-            // Neither the slot name nor the saved map name is logged: one is
-            // user-supplied, the other media-derived.
-            Game::load_slot_with(&source, &slot, name, &config)
-                .map_err(|_| "the save slot could not be loaded")?
-        }
-        None => Game::load_with(&source, args.map, &config).map_err(|_| {
-            // The map name is media-derived, so the reason names the step,
-            // not the asset.
-            "the start map could not be loaded from the payload"
-        })?,
+    let Some(mut game) = load_initial_game(&source, args, config)? else {
+        return Ok(());
     };
     tracing::info!("Map loaded.");
     // A map reached only through a `trigger_changelevel`/`info_landmark`
