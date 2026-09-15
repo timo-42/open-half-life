@@ -18,14 +18,14 @@ use std::time::{Duration, Instant};
 use glam::Vec3;
 use ohl_engine::{AssetFsSource, Game, GameConfig, GameEvent, Input, RenderTarget};
 use ohl_render::{GpuContext, OFFSCREEN_FORMAT, OffscreenTarget, WindowSurface, wgpu};
-use ohl_ui::{UiLayer, console::Console, hud::HudState};
+use ohl_ui::{UiLayer, console::Console, debug::GraphicsDebugInfo, hud::HudState};
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
-use crate::frame_profile::{FrameProfile, FrameSample};
+use crate::frame_profile::{FrameProfile, FrameSample, LiveFrameProfile};
 
 /// The offscreen capture size, in pixels.
 const CAPTURE_SIZE: (u32, u32) = (1280, 720);
@@ -1393,6 +1393,8 @@ fn windowed(game: Game, source: &AssetFsSource, profile_frames: bool) -> Result<
         input: Input::default(),
         key_use_down: false,
         console: Console::new(),
+        debug_open: false,
+        live_profile: LiveFrameProfile::default(),
         hud: HudState::default(),
         state: None,
         last_frame: Instant::now(),
@@ -1414,6 +1416,8 @@ struct Active {
     context: GpuContext,
     surface: WindowSurface<'static>,
     ui: UiLayer,
+    adapter_name: String,
+    backend_name: String,
 }
 
 struct App<'a> {
@@ -1427,6 +1431,9 @@ struct App<'a> {
     /// one-frame press edge is not re-latched by key repeat.
     key_use_down: bool,
     console: Console,
+    /// Toggled with `P`; this overlay never captures gameplay input.
+    debug_open: bool,
+    live_profile: LiveFrameProfile,
     hud: HudState,
     state: Option<Active>,
     last_frame: Instant,
@@ -1434,6 +1441,37 @@ struct App<'a> {
     frames: u32,
     profile: Option<FrameProfile>,
     failure: Option<&'static str>,
+}
+
+fn draw_graphics_debug(
+    active: &Active,
+    profile: &LiveFrameProfile,
+    now: Instant,
+    game: &Game,
+    width: u32,
+    height: u32,
+) {
+    let timing = profile.summary(now);
+    let resources = game.render_resource_stats();
+    ohl_ui::debug::draw(
+        active.ui.context(),
+        &GraphicsDebugInfo {
+            fps: timing.fps,
+            one_percent_low_fps: timing.one_percent_low_fps,
+            frame_ms: timing.frame_ms,
+            simulation_ms: timing.simulation_ms,
+            acquire_ms: timing.acquire_ms,
+            render_ms: timing.render_ms,
+            ui_present_ms: timing.ui_present_ms,
+            width,
+            height,
+            adapter: &active.adapter_name,
+            backend: &active.backend_name,
+            static_upload_bytes: resources.submodels.static_upload_bytes,
+            texture_uploads: resources.submodels.texture_uploads,
+            lightmap_uploads: resources.lightmap_uploads,
+        },
+    );
 }
 
 impl App<'_> {
@@ -1608,6 +1646,9 @@ impl App<'_> {
         let ui_start = Instant::now();
         active.ui.begin_frame();
         ohl_ui::hud::draw(active.ui.context(), &self.hud);
+        if self.debug_open {
+            draw_graphics_debug(active, &self.live_profile, now, &self.game, width, height);
+        }
         if self.console.is_open() {
             let mut root = ohl_ui::root_ui(active.ui.context());
             let _ = ohl_ui::console::draw_console(&mut root, &mut self.console);
@@ -1629,15 +1670,17 @@ impl App<'_> {
         active.context.queue.submit([encoder.finish()]);
         active.context.queue.present(frame);
 
+        let sample = FrameSample {
+            frame: delta,
+            simulation,
+            acquire,
+            render,
+            ui_present: ui_start.elapsed(),
+            ..FrameSample::default()
+        };
+        self.live_profile.record(now, sample);
         if let Some(profile) = self.profile.as_mut() {
-            profile.record(FrameSample {
-                frame: delta,
-                simulation,
-                acquire,
-                render,
-                ui_present: ui_start.elapsed(),
-                ..FrameSample::default()
-            });
+            profile.record(sample);
         }
 
         self.frames += 1;
@@ -1698,6 +1741,7 @@ impl ApplicationHandler for App<'_> {
             return;
         };
         let ui = UiLayer::new_windowed(&context.device, Arc::clone(&window), surface.format());
+        let adapter_info = context.adapter.get_info();
 
         self.last_frame = Instant::now();
         self.fps_window_start = self.last_frame;
@@ -1707,6 +1751,8 @@ impl ApplicationHandler for App<'_> {
             context,
             surface,
             ui,
+            adapter_name: adapter_info.name,
+            backend_name: format!("{:?}", adapter_info.backend),
         });
     }
 
@@ -1752,6 +1798,12 @@ impl ApplicationHandler for App<'_> {
                     return;
                 }
                 if self.console.is_open() {
+                    return;
+                }
+                if code == KeyCode::KeyP {
+                    if pressed && !event.repeat {
+                        self.debug_open = !self.debug_open;
+                    }
                     return;
                 }
                 if code == KeyCode::F6 {
