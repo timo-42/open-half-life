@@ -1,8 +1,7 @@
-//! Menu skeleton (main menu, pause, bindings placeholder) and the
-//! `Screen` state machine that governs input capture between gameplay, the
-//! console and the menus.
+//! Player-facing main and pause menus and the `Screen` state machine that
+//! governs input capture between gameplay, the console and the menus.
 
-use egui::{Slider, Vec2};
+use egui::{Color32, RichText, Slider, Stroke, Vec2};
 
 /// Which top-level UI screen currently owns the frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -57,8 +56,13 @@ impl Screen {
 /// [`crate::console::ConsoleEvent`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum MenuAction {
-    /// Start a new game.
-    NewGame,
+    /// Start a single-player mission at the selected difficulty.
+    StartSinglePlayer {
+        /// The mission's starting map.
+        map: &'static str,
+        /// The selected gameplay difficulty.
+        difficulty: Difficulty,
+    },
     /// Open the load-game screen (not itself implemented here).
     LoadGame,
     /// Open the save-game screen (not itself implemented here).
@@ -73,6 +77,26 @@ pub enum MenuAction {
     SetVolume(f32),
     /// Field of view changed, in degrees.
     SetFov(f32),
+}
+
+/// A difficulty exposed by the new-game menu. The application maps this
+/// presentation-level value onto its campaign configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Difficulty {
+    Easy,
+    #[default]
+    Medium,
+    Hard,
+}
+
+/// One selectable single-player mission. Mission data is supplied by the
+/// host so this UI crate does not own campaign ordering or map names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mission {
+    /// Player-facing mission title.
+    pub title: &'static str,
+    /// Starting map passed back to the host when this mission is chosen.
+    pub map: &'static str,
 }
 
 /// Bounded options state backing the options screen's sliders.
@@ -109,6 +133,8 @@ pub const FOV_RANGE: std::ops::RangeInclusive<f32> = 60.0..=120.0;
 pub enum MenuPane {
     #[default]
     Root,
+    SinglePlayer,
+    Multiplayer,
     Options,
     Bindings,
 }
@@ -123,6 +149,10 @@ pub struct MenuState {
     pub pane: MenuPane,
     /// The options screen's editable values.
     pub options: OptionsState,
+    /// Index into the host-provided mission list.
+    pub selected_mission: usize,
+    /// Difficulty selected for a new single-player game.
+    pub difficulty: Difficulty,
 }
 
 impl MenuState {
@@ -133,32 +163,121 @@ impl MenuState {
     }
 }
 
+fn menu_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add_sized(
+        [260.0, 34.0],
+        egui::Button::new(RichText::new(label).size(18.0)),
+    )
+}
+
 fn draw_root(ui: &mut egui::Ui, in_game: bool, actions: &mut Vec<MenuAction>, pane: &mut MenuPane) {
     ui.vertical_centered(|ui| {
         ui.add_space(24.0);
-        ui.heading("Open Half-Life");
-        ui.add_space(16.0);
+        ui.label(
+            RichText::new("λ")
+                .size(72.0)
+                .color(Color32::from_rgb(246, 154, 38)),
+        );
+        ui.label(
+            RichText::new("OPEN HALF-LIFE")
+                .size(25.0)
+                .strong()
+                .color(Color32::from_rgb(235, 225, 195)),
+        );
+        ui.add_space(22.0);
         if in_game {
-            if ui.button("Resume").clicked() {
+            if menu_button(ui, "RESUME GAME").clicked() {
                 actions.push(MenuAction::Resume);
             }
-        } else if ui.button("New game").clicked() {
-            actions.push(MenuAction::NewGame);
+        } else {
+            if menu_button(ui, "SINGLE PLAYER").clicked() {
+                *pane = MenuPane::SinglePlayer;
+            }
+            if menu_button(ui, "MULTIPLAYER").clicked() {
+                *pane = MenuPane::Multiplayer;
+            }
         }
-        if ui.button("Load game").clicked() {
+        if menu_button(ui, "LOAD GAME").clicked() {
             actions.push(MenuAction::LoadGame);
         }
-        if in_game && ui.button("Save game").clicked() {
+        if in_game && menu_button(ui, "SAVE GAME").clicked() {
             actions.push(MenuAction::SaveGame);
         }
-        if ui.button("Options").clicked() {
+        if menu_button(ui, "OPTIONS").clicked() {
             *pane = MenuPane::Options;
         }
-        if ui.button("Bindings").clicked() {
+        if menu_button(ui, "KEYBOARD").clicked() {
             *pane = MenuPane::Bindings;
         }
-        if ui.button("Quit").clicked() {
+        if menu_button(ui, "QUIT").clicked() {
             actions.push(MenuAction::Quit);
+        }
+    });
+}
+
+fn draw_single_player(
+    ui: &mut egui::Ui,
+    state: &mut MenuState,
+    missions: &[Mission],
+    actions: &mut Vec<MenuAction>,
+) {
+    ui.vertical_centered(|ui| {
+        ui.heading("Single Player");
+        ui.label("Choose a mission and difficulty");
+        ui.add_space(18.0);
+
+        if missions.is_empty() {
+            ui.label("No playable missions are available.");
+        } else {
+            state.selected_mission = state.selected_mission.min(missions.len() - 1);
+            egui::ComboBox::from_label("Mission")
+                .selected_text(missions[state.selected_mission].title)
+                .width(260.0)
+                .show_ui(ui, |ui| {
+                    for (index, mission) in missions.iter().enumerate() {
+                        ui.selectable_value(&mut state.selected_mission, index, mission.title);
+                    }
+                });
+            ui.add_space(16.0);
+            ui.label("Difficulty");
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut state.difficulty, Difficulty::Easy, "Easy");
+                ui.selectable_value(&mut state.difficulty, Difficulty::Medium, "Medium");
+                ui.selectable_value(&mut state.difficulty, Difficulty::Hard, "Hard");
+            });
+            ui.add_space(24.0);
+            if menu_button(ui, "BEGIN MISSION").clicked() {
+                actions.push(MenuAction::StartSinglePlayer {
+                    map: missions[state.selected_mission].map,
+                    difficulty: state.difficulty,
+                });
+            }
+        }
+        if menu_button(ui, "BACK").clicked() {
+            state.pane = MenuPane::Root;
+        }
+    });
+}
+
+fn draw_multiplayer(ui: &mut egui::Ui, pane: &mut MenuPane) {
+    ui.vertical_centered(|ui| {
+        ui.heading("Multiplayer");
+        ui.add_space(16.0);
+        ui.group(|ui| {
+            ui.set_min_width(300.0);
+            ui.label(RichText::new("SERVER BROWSER").strong());
+            ui.separator();
+            ui.label("No servers found");
+            ui.label("Multiplayer is a preview and is not connected yet.");
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.add_enabled(false, egui::Button::new("Create game"));
+                ui.add_enabled(false, egui::Button::new("Join game"));
+            });
+        });
+        ui.add_space(18.0);
+        if menu_button(ui, "BACK").clicked() {
+            *pane = MenuPane::Root;
         }
     });
 }
@@ -217,19 +336,39 @@ fn draw_bindings(ui: &mut egui::Ui, pane: &mut MenuPane) {
 /// Draws the menu (main or pause, depending on `in_game`) and returns the
 /// actions the player triggered this frame. `ui` is the frame's root `Ui`;
 /// see [`crate::root_ui`].
-pub fn draw(ui: &mut egui::Ui, state: &mut MenuState, in_game: bool) -> Vec<MenuAction> {
+pub fn draw(
+    ui: &mut egui::Ui,
+    state: &mut MenuState,
+    in_game: bool,
+    missions: &[Mission],
+) -> Vec<MenuAction> {
     let mut actions = Vec::new();
-    egui::CentralPanel::default().show(ui, |ui| {
-        ui.centered_and_justified(|ui| {
-            ui.allocate_ui(Vec2::new(320.0, 420.0), |ui| match state.pane {
-                MenuPane::Root => draw_root(ui, in_game, &mut actions, &mut state.pane),
-                MenuPane::Options => {
-                    draw_options(ui, &mut state.options, &mut actions, &mut state.pane);
-                }
-                MenuPane::Bindings => draw_bindings(ui, &mut state.pane),
+    let mut visuals = ui.style().visuals.clone();
+    visuals.override_text_color = Some(Color32::from_rgb(222, 217, 188));
+    visuals.selection.bg_fill = Color32::from_rgb(181, 91, 20);
+    visuals.widgets.inactive.bg_fill = Color32::from_rgb(35, 42, 35);
+    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(104, 111, 82));
+    visuals.widgets.hovered.bg_fill = Color32::from_rgb(124, 68, 22);
+    visuals.widgets.active.bg_fill = Color32::from_rgb(181, 91, 20);
+    ui.ctx().set_visuals(visuals);
+
+    egui::CentralPanel::default()
+        .frame(egui::Frame::new().fill(Color32::from_rgb(12, 18, 14)))
+        .show(ui, |ui| {
+            ui.centered_and_justified(|ui| {
+                ui.allocate_ui(Vec2::new(380.0, 560.0), |ui| match state.pane {
+                    MenuPane::Root => draw_root(ui, in_game, &mut actions, &mut state.pane),
+                    MenuPane::SinglePlayer => {
+                        draw_single_player(ui, state, missions, &mut actions);
+                    }
+                    MenuPane::Multiplayer => draw_multiplayer(ui, &mut state.pane),
+                    MenuPane::Options => {
+                        draw_options(ui, &mut state.options, &mut actions, &mut state.pane);
+                    }
+                    MenuPane::Bindings => draw_bindings(ui, &mut state.pane),
+                });
             });
         });
-    });
     actions
 }
 
@@ -266,6 +405,8 @@ mod tests {
     fn menu_state_starts_at_the_root_pane() {
         let state = MenuState::new();
         assert_eq!(state.pane, MenuPane::Root);
+        assert_eq!(state.difficulty, super::Difficulty::Medium);
+        assert_eq!(state.selected_mission, 0);
     }
 
     #[test]
