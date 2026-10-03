@@ -755,7 +755,9 @@ impl Game {
     }
 
     /// How many monster damage events have been applied since this level
-    /// was loaded. Counts events, not monsters. Data, never a log line.
+    /// was loaded: hits that cost their target something, not one its
+    /// species shrugs off or its shield takes. Counts events, not
+    /// monsters. Data, never a log line.
     #[must_use]
     pub fn monster_damage_event_count(&self) -> u64 {
         self.systems.ai().damage_event_count()

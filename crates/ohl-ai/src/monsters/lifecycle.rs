@@ -79,9 +79,25 @@ pub fn apply_damage_with_corpses(
     queue: &DamageQueue,
     gib_overkill_multiplier: f32,
 ) -> (Vec<AiEvent>, Vec<(Entity, CorpseDecision)>) {
-    apply_damage_effective(world, queue, gib_overkill_multiplier, &|_| {
+    let outcome = apply_damage_effective(world, queue, gib_overkill_multiplier, &|_| {
         DamageResponse::ORDINARY
-    })
+    });
+    (outcome.events, outcome.corpses)
+}
+
+/// What one [`apply_damage_effective`] call did.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DamageOutcome {
+    /// One [`AiEventKind::Died`] per monster this call killed.
+    pub events: Vec<AiEvent>,
+    /// The corpse decision for each of those, in the same order.
+    pub corpses: Vec<(Entity, CorpseDecision)>,
+    /// Every target the queue actually cost something, in queue order:
+    /// health lost, or (for a Gonarch) a node's health spent. A target
+    /// that shrugged every hit off — its species ignores the types, its
+    /// shield or reserve took them, or it is [`Impervious`] — is not here,
+    /// though it noticed them.
+    pub hurt: Vec<Entity>,
 }
 
 /// [`apply_damage_with_corpses`] with a per-target [`DamageResponse`]:
@@ -107,10 +123,11 @@ pub fn apply_damage_effective(
     queue: &DamageQueue,
     gib_overkill_multiplier: f32,
     response: &dyn Fn(Entity) -> DamageResponse,
-) -> (Vec<AiEvent>, Vec<(Entity, CorpseDecision)>) {
+) -> DamageOutcome {
     let mut corpses = Vec::new();
     let mut seen: Vec<Entity> = Vec::new();
     let mut events = Vec::new();
+    let mut hurt = Vec::new();
     for event in queue.events() {
         if seen.contains(&event.target) {
             continue;
@@ -133,8 +150,13 @@ pub fn apply_damage_effective(
             continue;
         }
         let previous_health = actor.health;
-        if !boss_intake(world, event.target, &mut actor, total) {
-            continue;
+        match boss_intake(world, event.target, &mut actor, total) {
+            Intake::Applied => hurt.push(event.target),
+            Intake::Spent => {
+                hurt.push(event.target);
+                continue;
+            }
+            Intake::Blocked => continue,
         }
         let new_health = previous_health - total;
         actor.health = new_health;
@@ -153,31 +175,45 @@ pub fn apply_damage_effective(
             corpses.push((event.target, decision));
         }
     }
-    (events, corpses)
+    DamageOutcome {
+        events,
+        corpses,
+        hurt,
+    }
+}
+
+/// What [`boss_intake`] decided about one target's hits.
+enum Intake {
+    /// They go on to cost health.
+    Applied,
+    /// They spent a Gonarch's node health, which sends it on rather than
+    /// costing it anything further.
+    Spent,
+    /// A shield or a reserve took them.
+    Blocked,
 }
 
 /// Runs a hit of `total` past `target`'s boss components, if it has any.
-/// Returns whether the hit goes on to cost health. A Gonarch whose node
-/// health this hit depletes has its health restored to its spawn value
-/// here and leaves for the next node instead.
-fn boss_intake(world: &World, target: Entity, actor: &mut Actor, total: f32) -> bool {
+/// A Gonarch whose node health this hit depletes has its health restored
+/// to its spawn value here and leaves for the next node instead.
+fn boss_intake(world: &World, target: Entity, actor: &mut Actor, total: f32) -> Intake {
     if let Ok(mut shield) = world.get::<&mut NihilanthShield>(target) {
         match shield.absorb(total) {
             ShieldVerdict::Applied => {}
-            ShieldVerdict::Absorbed | ShieldVerdict::Blocked => return false,
+            ShieldVerdict::Absorbed | ShieldVerdict::Blocked => return Intake::Blocked,
         }
     }
     if let Ok(mut trail) = world.get::<&mut GonarchTrail>(target) {
         match trail.absorb_damage(actor.health, total) {
             DamageVerdict::Applied => {}
-            DamageVerdict::Shielded => return false,
+            DamageVerdict::Shielded => return Intake::Blocked,
             DamageVerdict::Depleted { .. } => {
                 actor.health = trail.base_health();
-                return false;
+                return Intake::Spent;
             }
         }
     }
-    true
+    Intake::Applied
 }
 
 /// Whether `spec`'s corpse should fade rather than persist, per its
@@ -383,13 +419,14 @@ mod tests {
             DamageEvent::new(garg, attacker, 300.0, Vec3::ZERO).with_kinds(DamageKinds::SLASH),
         );
         small_arms.push_damage(DamageEvent::new(garg, attacker, 300.0, Vec3::ZERO));
-        let (events, _) = apply_damage_effective(
+        let outcome = apply_damage_effective(
             &mut world,
             &small_arms,
             DEFAULT_GIB_OVERKILL_MULTIPLIER,
             &vulnerability,
         );
-        assert!(events.is_empty());
+        assert!(outcome.events.is_empty());
+        assert!(outcome.hurt.is_empty(), "shrugged off, so not hurt");
         let actor = *world.get::<&Actor>(garg).expect("actor");
         assert!((actor.health - 800.0).abs() < 1e-4, "nothing got through");
         assert!(actor.alive);
@@ -401,13 +438,14 @@ mod tests {
         explosives.push_damage(
             DamageEvent::new(garg, attacker, 100.0, Vec3::ZERO).with_kinds(DamageKinds::BULLET),
         );
-        let (events, _) = apply_damage_effective(
+        let outcome = apply_damage_effective(
             &mut world,
             &explosives,
             DEFAULT_GIB_OVERKILL_MULTIPLIER,
             &vulnerability,
         );
-        assert!(events.is_empty());
+        assert!(outcome.events.is_empty());
+        assert_eq!(outcome.hurt, vec![garg]);
         let actor = *world.get::<&Actor>(garg).expect("actor");
         assert!(
             (actor.health - 700.0).abs() < 1e-4,
@@ -418,15 +456,16 @@ mod tests {
         beam.push_damage(
             DamageEvent::new(garg, attacker, 700.0, Vec3::ZERO).with_kinds(DamageKinds::ENERGYBEAM),
         );
-        let (events, corpses) = apply_damage_effective(
+        let outcome = apply_damage_effective(
             &mut world,
             &beam,
             DEFAULT_GIB_OVERKILL_MULTIPLIER,
             &vulnerability,
         );
-        assert_eq!(events.len(), 1);
-        assert!(matches!(events[0].kind, AiEventKind::Died));
-        assert_eq!(corpses.len(), 1);
+        assert_eq!(outcome.events.len(), 1);
+        assert!(matches!(outcome.events[0].kind, AiEventKind::Died));
+        assert_eq!(outcome.corpses.len(), 1);
+        assert_eq!(outcome.hurt, vec![garg]);
         assert!(!world.get::<&Actor>(garg).expect("actor").alive);
     }
 
@@ -487,6 +526,50 @@ mod tests {
         let actor = *world.get::<&Actor>(prop).expect("actor");
         assert!(actor.alive);
         assert!((actor.health - 8.0).abs() < 1e-6);
+    }
+
+    /// `hurt` lists exactly the targets the queue cost something: not an
+    /// `Impervious` prop, not a Nihilanth whose reserve took the hit, not a
+    /// Gonarch shielded on its trail; but a Gonarch whose node health a hit
+    /// spent, and an ordinary monster.
+    #[test]
+    fn hurt_lists_only_the_targets_the_queue_cost_something() {
+        let mut world = World::new();
+        let attacker = world.spawn((0u8,));
+        let at =
+            |health: f32| Actor::new(Classification::AlienMonster, Vec3::ZERO).with_health(health);
+        let prop = world.spawn((at(8.0), Impervious));
+        let mut shield = NihilanthShield::for_health(800.0, 20, 0);
+        shield.activate();
+        let boss = world.spawn((at(800.0), shield));
+        let node = |name: &str, next: Option<&str>| TrailNode {
+            name: name.to_string(),
+            position: Vec3::ZERO,
+            next: next.map(str::to_string),
+            health: Some(10.0),
+            wait: 0.0,
+            fire_on_reach: None,
+            kill_on_reach: None,
+            sequence_on_reach: None,
+            run: false,
+            wait_indefinitely: false,
+        };
+        let trail = Trail::new(vec![node("a", Some("b")), node("b", None)]);
+        let shielded = world.spawn((at(150.0), GonarchTrail::new(trail.clone(), 1.0, 150.0)));
+        let mut fighting_trail = GonarchTrail::new(trail, 1.0, 150.0);
+        let _ = fighting_trail.arrive();
+        let fighting = world.spawn((at(10.0), fighting_trail));
+        let ordinary = world.spawn((at(50.0),));
+        let mut queue = DamageQueue::new();
+        for target in [prop, boss, shielded, fighting, ordinary] {
+            queue.push_damage(DamageEvent::new(target, attacker, 20.0, Vec3::ZERO));
+        }
+        let outcome =
+            apply_damage_effective(&mut world, &queue, DEFAULT_GIB_OVERKILL_MULTIPLIER, &|_| {
+                DamageResponse::ORDINARY
+            });
+        assert_eq!(outcome.hurt, vec![fighting, ordinary]);
+        assert!(outcome.events.is_empty(), "nobody died");
     }
 
     /// The default entry point stays fully vulnerable, so every existing

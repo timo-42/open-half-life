@@ -11,10 +11,20 @@
 //!   which targets other `path_corners` forming a cyclic route"; of its
 //!   spawnflags only `Start Inactive (64)` works, which "Requires the Osprey
 //!   to be triggered to start".
+//! - `TWHL:Path_corner`: "Fire On Pass (`message`): Trigger this event when
+//!   this `path_corner` is passed by the locus entity"; "Wait here
+//!   (`wait`)"; Apaches and Ospreys are among the entities that use
+//!   `path_corner`s, and "all the logic of following the path, waiting,
+//!   firing the targets, etc., are handled by entities making use of
+//!   `path_corner`s".
 //!
 //! ## This project's reading
 //!
-//! A [`FlightPlan`] is the route's node positions and waits. It does not
+//! A [`FlightPlan`] is the route's node positions, waits and fire-on-pass
+//! names. It follows each node's `target`: a closed loop goes round, and a
+//! route that leads into a cycle part-way along (`p1 -> p2 -> p3 -> p2`)
+//! flies its lead-in once and then the cycle, never back to the head
+//! ([`FlightPlan::loop_to`]). It does not
 //! move the aircraft itself: every tick [`crate::monsters::bosses`] asks it
 //! for a [`FlightOrder`] and turns that into the same route and move speed
 //! a path task would set, so the aircraft is moved by the AI's ordinary
@@ -26,13 +36,19 @@
 //! subgraph; otherwise the bridge's traced fallback flies the straight
 //! line.
 //!
+//! Reaching a node fires its `message` by name (through
+//! `crate::monsters::bosses`, as an `AiEventKind::FireTarget`). The
+//! `path_corner` page leaves which of its keyvalues a follower honours to
+//! the follower; firing the pass name is this project's reading for the
+//! two aircraft, `TODO(black-box)`.
+//!
 //! `TODO(black-box)`: no page gives a flight speed ([`FLIGHT_SPEED`]) or
 //! says how close counts as reaching a node ([`FLIGHT_ARRIVAL_RADIUS`]).
-//! The published "angles of the `path_corner`s are used to orient the
-//! Apache" is not modelled: `ohl_game::PathChain` does not carry node
-//! angles, so the airframe faces its direction of travel. Whether a second
-//! `use` stops an aircraft again is not published; a `use` here only ever
-//! starts one ([`FlightPlan::activate`]).
+//! Not modelled: the published "angles of the `path_corner`s are used to
+//! orient the Apache" (`ohl_game::PathChain` does not carry node angles, so
+//! the airframe faces its direction of travel), and a node's "New train
+//! speed". Whether a second `use` stops an aircraft is not published; a
+//! `use` here only ever starts one ([`FlightPlan::activate`]).
 
 use glam::Vec3;
 use ohl_game::PathChain;
@@ -88,7 +104,10 @@ pub struct FlightProgress {
 pub struct FlightPlan {
     waypoints: Vec<Vec3>,
     waits: Vec<f32>,
-    looped: bool,
+    messages: Vec<Option<String>>,
+    /// The node a pass of the last node continues at, when the route does
+    /// not dead-end there.
+    loop_to: Option<usize>,
     current: usize,
     speed: f32,
     active: bool,
@@ -97,17 +116,19 @@ pub struct FlightPlan {
 
 impl FlightPlan {
     /// A started plan through `waypoints` (truncated to
-    /// [`MAX_FLIGHT_NODES`]) with no waits, looping back to the first when
-    /// `looped`, at `speed`.
+    /// [`MAX_FLIGHT_NODES`]) with no waits or pass names, looping back to
+    /// the first when `looped`, at `speed`.
     #[must_use]
     pub fn new(waypoints: Vec<Vec3>, looped: bool, speed: f32) -> Self {
         let mut waypoints = waypoints;
         waypoints.truncate(MAX_FLIGHT_NODES);
         let waits = vec![0.0; waypoints.len()];
+        let messages = vec![None; waypoints.len()];
         Self {
             waypoints,
             waits,
-            looped,
+            messages,
+            loop_to: looped.then_some(0),
             current: 0,
             speed: if speed.is_finite() && speed > 0.0 {
                 speed
@@ -120,14 +141,29 @@ impl FlightPlan {
     }
 
     /// A plan over a resolved `path_corner` chain: its node positions,
-    /// each node's `wait`, and whether it closes into a loop.
+    /// each node's `wait` and fire-on-pass `message`, and `reentry`, the
+    /// node its last node leads back to (`ohl_game::PathChain::
+    /// build_with_reentry`; `None` for a route that dead-ends).
     #[must_use]
-    pub fn from_chain(chain: &PathChain, speed: f32) -> Self {
+    pub fn from_chain(chain: &PathChain, reentry: Option<usize>, speed: f32) -> Self {
         let mut plan = Self::new(
             chain.nodes.iter().map(|node| node.position).collect(),
-            chain.looped,
+            false,
             speed,
         );
+        plan.loop_to = reentry.filter(|index| *index < plan.waypoints.len());
+        plan.messages = chain
+            .nodes
+            .iter()
+            .take(plan.waypoints.len())
+            .map(|node| {
+                node.message
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_string)
+            })
+            .collect();
         plan.waits = chain
             .nodes
             .iter()
@@ -180,10 +216,24 @@ impl FlightPlan {
         &self.waits
     }
 
-    /// Whether the route closes into a loop.
+    /// Whether the route goes round rather than dead-ending.
     #[must_use]
     pub fn is_looped(&self) -> bool {
-        self.looped
+        self.loop_to.is_some()
+    }
+
+    /// The node a pass of the last node continues at: `Some(0)` for a
+    /// closed loop, `Some(k)` for a route whose last node leads back into
+    /// node `k`, `None` for one that dead-ends.
+    #[must_use]
+    pub fn loop_to(&self) -> Option<usize> {
+        self.loop_to
+    }
+
+    /// The fire-on-pass name of route node `index`, if it has one.
+    #[must_use]
+    pub fn message(&self, index: usize) -> Option<&str> {
+        self.messages.get(index).and_then(Option::as_deref)
     }
 
     /// The node being flown to, or `None` when the route is empty or a
@@ -193,10 +243,10 @@ impl FlightPlan {
         self.waypoints.get(self.current).copied()
     }
 
-    /// Whether a non-looped route has been flown to its end.
+    /// Whether a route that dead-ends has been flown to its end.
     #[must_use]
     pub fn is_finished(&self) -> bool {
-        !self.looped && self.current >= self.waypoints.len()
+        self.loop_to.is_none() && self.current >= self.waypoints.len()
     }
 
     /// Decides this tick's flight from `origin`: hover out the wait at the
@@ -232,10 +282,8 @@ impl FlightPlan {
         self.wait_left = self.waits.get(reached).copied().unwrap_or(0.0);
         self.current = if self.current + 1 < self.waypoints.len() {
             self.current + 1
-        } else if self.looped {
-            0
         } else {
-            self.waypoints.len()
+            self.loop_to.unwrap_or(self.waypoints.len())
         };
         let order = match self.destination() {
             Some(next) if self.wait_left <= 0.0 => FlightOrder::FlyTo(next),
@@ -318,6 +366,20 @@ mod tests {
         assert!(!plan.is_finished());
         // It climbed to the higher nodes rather than staying at z = 0.
         assert!(origin.z > 400.0);
+    }
+
+    /// A route that leads into a cycle part-way along flies its lead-in
+    /// once and then goes round the cycle, never back to the head.
+    #[test]
+    fn a_lead_in_route_flies_into_its_cycle_and_stays_there() {
+        let mut plan = FlightPlan::new(square(), false, 500.0);
+        plan.loop_to = Some(1);
+        assert!(plan.is_looped());
+        let (_, arrivals) = fly(&mut plan, Vec3::new(-2_000.0, 0.0, 0.0), 4_000, 0.01);
+        assert!(arrivals.len() >= 7, "{arrivals:?}");
+        assert_eq!(&arrivals[..7], &[0, 1, 2, 3, 1, 2, 3]);
+        assert!(!arrivals[1..].contains(&0), "never back to the head");
+        assert!(!plan.is_finished());
     }
 
     #[test]
@@ -459,17 +521,28 @@ mod tests {
             model: None,
             render: ohl_game::keyvalues::RenderProps::default(),
         };
-        let defs = vec![
+        let mut defs = vec![
             corner("p1", [0.0, 0.0, 256.0], "p2", "0"),
             corner("p2", [512.0, 0.0, 256.0], "p3", "1.5"),
-            corner("p3", [512.0, 512.0, 256.0], "p1", "0"),
+            corner("p3", [512.0, 512.0, 256.0], "p2", "0"),
         ];
+        defs[2]
+            .keyvalues
+            .insert("message".to_string(), "ohl_pass".to_string());
         let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
-        let chain = ohl_game::PathChain::build(&registry, "p1", 0.0).expect("chain");
-        let plan = FlightPlan::from_chain(&chain, FLIGHT_SPEED);
+        let (chain, reentry) =
+            ohl_game::PathChain::build_with_reentry(&registry, "p1", 0.0).expect("chain");
+        let plan = FlightPlan::from_chain(&chain, reentry, FLIGHT_SPEED);
         assert_eq!(plan.waypoints().len(), 3);
-        assert!(plan.is_looped());
+        assert_eq!(plan.loop_to(), Some(1), "p3 leads back into p2");
         assert!((plan.waits()[1] - 1.5).abs() < 1e-6);
         assert_eq!(plan.waypoints()[2], Vec3::new(512.0, 512.0, 256.0));
+        assert_eq!(plan.message(2), Some("ohl_pass"));
+        assert_eq!(plan.message(0), None);
+        assert_eq!(
+            FlightPlan::from_chain(&chain, Some(99), FLIGHT_SPEED).loop_to(),
+            None,
+            "a re-entry past the route is dropped"
+        );
     }
 }

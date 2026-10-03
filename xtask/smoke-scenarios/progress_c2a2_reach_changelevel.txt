@@ -10,9 +10,11 @@
 # Route, in words only (no entity name, path or coordinate from any
 # payload): from the player's spawn point, advance forward through a long
 # sequence of turns, opening a rotating door along the way with a `use`
-# press once it is within reach, and passing near a monster along the way
-# (a source of damage to it, not a route failure), until a level change
-# fires; then wait out the transition.
+# press once it is within reach, and passing near a monster along the way,
+# until a level change fires; then wait out the transition. Until M9.NEXT
+# this walk also asserted "A monster took damage." present; every hit it
+# sees lands on a species whose published damage rules ignore that hit's
+# type, and such a hit no longer counts as damage.
 #
 # Technique: an autopilot was flown over this map's own collision hulls,
 # pressing `use` whenever a usable brush entity came within
@@ -31,7 +33,6 @@
 #   present: "Scripted input loaded.", "Scripted input finished.",
 #            "The player moved from the spawn point.",
 #            "The player opened a door.",
-#            "A monster took damage.",
 #            "A level change was followed."
 #   absent:  every other fixed line, including "The player is inside
 #            solid geometry." (this scenario's own regression guard for
