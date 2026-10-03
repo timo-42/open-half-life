@@ -7456,3 +7456,23 @@ nothing was added for it; the assignment that produced this section
 listed it as open on the strength of item 24's paragraph alone. The
 `dmg`/blocking half of the same paragraph, and item 26's and item 27's
 repetition of it, is what this section closes.
+
+### Project behaviour — brush collision after player death
+
+`ohl_engine::Systems::step` runs world brush collision as phase 2a,
+before phase 2b's player movement and phase 8's monster traces. This
+project-authored ordering copies the preceding step's mover poses into
+both collision models exactly once per fixed step, even after player
+death has stopped the player's own movement. It also refreshes brush
+velocities, holds newly enabled walls clear of their occupants and resets
+the per-step player blocker list. Rider carry and player push remain in
+the living-player movement phase; monster push, blocked resolution, door
+touches and map-logic advancement retain their existing phase 12 order.
+The timing choice is not a claim about the original runtime.
+
+`crates/ohl-engine/tests/brush_collision_after_death.rs` guards this with
+a synthetic delayed sliding door: a lethal hurt volume kills the player
+while the door remains closed, then map logic moves the door. Point traces
+in both collision models must clear its old trailing edge and hit its new
+leading edge while the corpse remains fixed and death fires only once.
+No new external behaviour source or proprietary fixture is used.

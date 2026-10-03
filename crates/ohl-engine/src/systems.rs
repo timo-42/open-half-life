@@ -938,6 +938,7 @@ impl Systems {
         } else {
             input
         };
+        Self::brush_collision(level, controller, dt); // 2a
         // A dead player stops moving: no more gravity, no more responding
         // to input. `player_systems` (phase 3, below) is what first learns
         // the player just died this same step (from this step's own
@@ -946,7 +947,7 @@ impl Systems {
         // that already killed the player still gets to finish its own
         // move and land normally.
         if !self.player.state.dead {
-            Self::player_move(level, camera, controller, input, dt); // 2
+            Self::player_move(level, camera, controller, input, dt); // 2b
         }
         self.physics_output = ohl_player::PhysicsOutput::from_move(
             &controller.state,
@@ -986,16 +987,13 @@ impl Systems {
         LatchedInput::with_edges(&self.frame_input, std::mem::take(&mut self.pending_edges))
     }
 
-    /// Phase 2 — player move. The walking path runs the collision
-    /// controller; a map with no usable hulls falls back to the free-fly
-    /// camera, which is what makes an unbuildable map still inspectable.
-    fn player_move(
-        level: &mut Level,
-        camera: &mut FreeFlyCamera,
-        controller: &mut PlayerController,
-        input: LatchedInput,
-        dt: f32,
-    ) {
+    /// Phase 2a — world brush collision, independent of player life state.
+    ///
+    /// Project-authored ordering: apply last step's map-logic poses once,
+    /// before either player movement or monster traces. Keeping this out of
+    /// the alive guard also refreshes mover velocities and wall occupancy
+    /// after death; player rider carry/push still runs only in phase 2b.
+    fn brush_collision(level: &mut Level, controller: &PlayerController, dt: f32) {
         // Doors, platforms and trains moved by last step's map logic must
         // collide where they now are, not where they were compiled.
         level.sync_brush_collision(dt);
@@ -1008,6 +1006,18 @@ impl Systems {
                 .then(|| (controller.state.hull(), controller.state.origin)),
         );
         level.movers_blocked.clear();
+    }
+
+    /// Phase 2b — living player move. The walking path runs the collision
+    /// controller; a map with no usable hulls falls back to the free-fly
+    /// camera, which is what makes an unbuildable map still inspectable.
+    fn player_move(
+        level: &mut Level,
+        camera: &mut FreeFlyCamera,
+        controller: &mut PlayerController,
+        input: LatchedInput,
+        dt: f32,
+    ) {
         if let Some(collision) = level.collision.as_ref() {
             // A brush the player was standing on that *turned* this step
             // carries them round with it as one rigid motion, before
