@@ -6666,7 +6666,9 @@ that frees a player from a closing mover only acts on a brush that moves,
 so a wall appearing around someone would embed them for good. Each step
 the wall stays non-solid, in both collision models, while anyone's hull is
 embedded in it alone, and it turns solid the first step nobody is
-(`Level::hold_toggled_walls_for_occupants`). Its map-logic state is on
+(`Level::hold_toggled_walls_for_occupants`); a `monster_generic` spawned
+"Not solid" (M9.42) is not solid to be embedded, and holds nothing up. Its
+map-logic state is on
 throughout, and it is drawn. No reviewed source says what the original
 does here; refusing to turn solid cannot strand anyone. The switched state
 is saved (save tag 39), so a load keeps a wall a spent trigger switched;

@@ -520,6 +520,26 @@ fn a_wall_switched_on_around_a_monster_waits_for_it() {
     assert!(!monster_model_is_solid_at(&game, BLOCK_PROBE));
 }
 
+/// A `monster_generic` spawned with its published "Not solid" flag is not
+/// solid to be embedded, so it does not hold the wall up; the same prop
+/// spawned solid does.
+#[test]
+fn a_not_solid_prop_inside_does_not_hold_the_wall_up() {
+    let held = |flags: &str| {
+        let prop = format!(
+            "{{\n\"classname\" \"monster_generic\"\n\"origin\" \"0 0 37\"\n\
+             \"spawnflags\" \"{flags}\"\n}}\n"
+        );
+        let mut game = block_game("ohlblockpropsynth", [-160.0, 0.0, 37.0], &prop);
+        assert_eq!(game.monster_count(), 1, "the prop spawned");
+        tick_n(&mut game, 60, &Input::default());
+        assert!(block_is_on(&game));
+        !game.position_is_in_solid(BLOCK_PROBE)
+    };
+    assert!(held("0"), "a solid prop inside holds the wall up");
+    assert!(!held("4"), "a Not solid prop does not");
+}
+
 /// The control for both: switched on with nobody inside, the block is
 /// solid on the next step.
 #[test]
