@@ -181,6 +181,24 @@ impl Actor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Prisoner;
 
+/// Marks an actor no damage can hurt: in this project, a `monster_generic`
+/// spawned with its published `Not solid` spawnflag, which the cited page
+/// calls "impervious to any damage" (`docs/FORMAT_SOURCES.md`, "Monster
+/// definitions"; the engine drops every hit queued at it).
+///
+/// Sight still sees it, and it still sees, hears and is scripted like any
+/// other monster; but no looker ever reads it as an enemy
+/// ([`crate::senses::look`] reads it through the same one hostility
+/// rule a prisoner goes through, [`crate::senses::sighting_relationship`]). An enemy that
+/// cannot be hurt is one a monster would fire at forever: a soldier that
+/// saw such a prop nearer than the player — both hated alike — chose the
+/// prop and ignored the player for as long as the prop stood there.
+///
+/// Derived from the entity definition's own spawnflags at spawn and never
+/// changed afterwards, so it needs no save-file field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Impervious;
+
 /// The `netname` squad membership of a monster.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SquadTag {
@@ -1001,9 +1019,9 @@ fn ai_bytes(ai: &MonsterAi) -> Vec<u8> {
 
 fn snapshot_candidates(world: &World) -> Vec<Candidate> {
     let mut candidates: Vec<(u32, Candidate)> = world
-        .query::<(Entity, &Actor, Option<&Prisoner>)>()
+        .query::<(Entity, &Actor, Option<&Prisoner>, Option<&Impervious>)>()
         .iter()
-        .map(|(entity, actor, prisoner)| {
+        .map(|(entity, actor, prisoner, impervious)| {
             (
                 entity.id(),
                 Candidate {
@@ -1015,6 +1033,7 @@ fn snapshot_candidates(world: &World) -> Vec<Candidate> {
                     alive: actor.alive,
                     is_client: actor.is_client,
                     prisoner: prisoner.is_some(),
+                    impervious: impervious.is_some(),
                 },
             )
         })

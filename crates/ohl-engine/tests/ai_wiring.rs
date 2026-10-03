@@ -347,47 +347,59 @@ fn an_alien_controller_keeps_its_distance_and_stays_airborne() {
     );
 }
 
-/// Wave 1 batch A: a `monster_generic` is a player ally with eight health,
-/// so a soldier that sees one shoots it dead; the same prop spawned with
-/// its published `Not solid` spawnflag (bit 4) is "impervious to any
-/// damage" and survives the same soldier indefinitely. The wall keeps the
-/// player out of it: only the prop is in the soldier's sight.
+/// Wave 1 batch A: a `monster_generic` has eight health, so a hit that
+/// lands on the engine's damage queue — where a weapon's or a monster's
+/// resolved hit goes — kills it; the same prop spawned with its published
+/// `Not solid` spawnflag (bit 4) is "impervious to any damage" and the
+/// same hit is dropped. Any other bit (8 here) is not `Not solid`.
 #[test]
 fn a_not_solid_generic_monster_is_impervious_and_a_solid_one_is_not() {
-    let room = |flags: &str| {
-        entities(&format!(
-            "{}{}",
-            monster("monster_human_grunt", [64.0, 0.0, 36.0], 0.0, ""),
-            monster(
-                "monster_generic",
-                [200.0, 0.0, 36.0],
-                180.0,
-                &format!("\"spawnflags\" \"{flags}\"\n"),
-            ),
-        ))
+    let outcome = |flags: &str| {
+        let block = entities(&monster(
+            "monster_generic",
+            [200.0, 0.0, 36.0],
+            180.0,
+            &format!("\"spawnflags\" \"{flags}\"\n"),
+        ));
+        let mut game = game_from(&block, false);
+        assert_eq!(game.monster_count(), 1);
+        let prop = monster_entities(&game)[0];
+        ohl_engine::test_support::queue_engine_damage(&mut game, prop, 50.0);
+        tick(&mut game, 50);
+        (
+            game.monster_death_count(),
+            game.monster_damage_event_count(),
+        )
     };
-    let mut solid = game_from(&room("0"), true);
-    let mut not_solid = game_from(&room("4"), true);
-    assert_eq!(solid.monster_count(), 2);
-    assert_eq!(not_solid.monster_count(), 2);
+    assert_eq!(outcome("0").0, 1, "the hit kills a solid prop");
+    assert_eq!(outcome("8").0, 1, "bit 8 is not Not solid");
+    assert_eq!(outcome("4"), (0, 0), "a Not solid prop takes no hit at all");
+}
 
-    tick(&mut solid, 1_500);
-    tick(&mut not_solid, 1_500);
-
-    assert_eq!(
-        solid.monster_death_count(),
-        1,
-        "the soldier shot the solid prop dead"
-    );
-    assert_eq!(
-        not_solid.monster_death_count(),
-        0,
-        "a Not solid prop is impervious to the same soldier"
-    );
+/// Wave 1 batch A review: a `Not solid` prop is never anybody's enemy. A
+/// soldier that sees one nearer than the player — player and player ally
+/// are hated alike, and sight prefers the nearer — would otherwise fire
+/// at a target it can never kill for as long as the prop stood there and
+/// ignore the player. It takes the player instead and hurts them.
+#[test]
+fn a_soldier_targets_the_player_past_a_not_solid_prop() {
+    let block = entities(&format!(
+        "{}{}",
+        monster("monster_human_grunt", [64.0, 0.0, 36.0], 180.0, ""),
+        monster(
+            "monster_generic",
+            [16.0, 48.0, 36.0],
+            0.0,
+            "\"spawnflags\" \"4\"\n"
+        ),
+    ));
+    let mut game = game_from(&block, false);
+    tick(&mut game, 300);
     assert!(
-        not_solid.monster_damage_event_count() == 0,
-        "no hit at a Not solid prop is ever applied"
+        monster_sees_player(&game),
+        "the soldier's enemy is the player, not the nearer prop"
     );
+    assert!(game.player_health() < 100.0, "and it hurt the player");
 }
 
 /// Wave 1 batch A: bit 4 means `Not solid` only on `monster_generic`, the
@@ -417,7 +429,7 @@ fn bit_four_is_not_solid_only_on_a_generic_monster() {
             .unwrap_or_else(|| panic!("{classname} spawned"));
         game.registry()
             .world
-            .get::<&ohl_engine::NotSolid>(entity)
+            .get::<&ohl_ai::Impervious>(entity)
             .is_ok()
     };
     assert!(

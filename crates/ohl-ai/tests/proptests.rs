@@ -125,6 +125,7 @@ proptest! {
                 alive: true,
                 is_client: false,
                 prisoner: false,
+                impervious: false,
             })
             .collect();
 

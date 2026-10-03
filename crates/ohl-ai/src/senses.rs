@@ -275,6 +275,10 @@ impl Viewer {
 
 /// One entity that might be seen.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "four independent facts about the seen entity, each read on its own"
+)]
 pub struct Candidate {
     /// The entity.
     pub entity: Entity,
@@ -293,6 +297,9 @@ pub struct Candidate {
     /// Whether it carries [`crate::world::Prisoner`]: something no looker
     /// ever reads as an enemy.
     pub prisoner: bool,
+    /// Whether it carries [`crate::world::Impervious`]: something no damage
+    /// can hurt, which no looker reads as an enemy.
+    pub impervious: bool,
 }
 
 impl Candidate {
@@ -455,11 +462,15 @@ pub fn look(
             continue;
         }
 
+        // Something no damage can hurt (`crate::world::Impervious`) is
+        // seen like anything else, but is never anybody's enemy: a monster
+        // that chose it would fight it forever. It goes through the same
+        // one hostility rule a prisoner does.
         let relationship = sighting_relationship(
             relationships,
             viewer.classification,
             candidate.classification,
-            viewer.prisoner || candidate.prisoner,
+            viewer.prisoner || candidate.prisoner || candidate.impervious,
         );
         let facing_viewer = facing(candidate.forward, eye - target);
         result.conditions |= relationship.sighting_condition();
@@ -500,6 +511,10 @@ pub fn look(
 /// [`Relationship::Fear`] and [`Relationship::Ally`] are not attacks and
 /// pass through unchanged, so a scientist still runs from an armed
 /// prisoner, and a prisoner scientist still runs from a real hostile.
+///
+/// [`look`] also passes `true` for a candidate carrying
+/// [`crate::world::Impervious`], since something no damage can hurt is no
+/// more an enemy than a prisoner is.
 ///
 /// This is the one hostility rule. [`look`] reads every sighting through
 /// it, and a caller outside this crate asking "does this monster regard
@@ -702,6 +717,7 @@ mod tests {
             alive: true,
             is_client: true,
             prisoner: false,
+            impervious: false,
         }
     }
 
@@ -1029,5 +1045,34 @@ mod tests {
         refreshed.refresh(&sighting);
         assert!(!refreshed.occluded);
         assert!(refreshed.time_since_seen.abs() < f32::EPSILON);
+    }
+
+    /// Wave 1 batch A review: something no damage can hurt
+    /// ([`crate::world::Impervious`]) is still seen — it still counts for
+    /// `SEE_CLIENT` and the sighting list — but never as an enemy, so a
+    /// hostile looker with it nearer than the player takes the player.
+    #[test]
+    fn an_impervious_candidate_is_seen_but_never_chosen() {
+        let mut world = World::new();
+        let (me, prop, player) = (world.spawn(()), world.spawn(()), world.spawn(()));
+        let impervious_ally = Candidate {
+            classification: Classification::PlayerAlly,
+            is_client: false,
+            impervious: true,
+            ..candidate(prop, Vec3::new(64.0, 0.0, 0.0))
+        };
+        let result = look(
+            &viewer(me),
+            &Senses::default(),
+            &[
+                impervious_ally,
+                candidate(player, Vec3::new(256.0, 0.0, 0.0)),
+            ],
+            &RelationshipTable::provisional(),
+            &super::SightContext::empty(),
+        );
+        assert_eq!(result.visible.len(), 2, "both are seen");
+        assert_eq!(result.enemy.map(|seen| seen.entity), Some(player));
+        assert_eq!(result.visible[0].relationship, Relationship::NoRelationship);
     }
 }
