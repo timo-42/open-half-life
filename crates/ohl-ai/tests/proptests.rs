@@ -124,6 +124,7 @@ proptest! {
                 forward: ohl_ai::Vec3::X,
                 alive: true,
                 is_client: false,
+                prisoner: false,
             })
             .collect();
 
@@ -133,6 +134,7 @@ proptest! {
             view_ofs,
             forward,
             classification: Classification::HumanMilitary,
+            prisoner: false,
         };
         let senses = Senses {
             look_distance,

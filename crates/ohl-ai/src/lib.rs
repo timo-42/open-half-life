@@ -95,7 +95,7 @@ pub use schedule::{
 pub use scripts::{ScriptAction, ScriptHold, ScriptPhase, ScriptRunner, ScriptSense, ScriptStep};
 pub use senses::{
     Candidate, EnemyMemory, ListenResult, LookResult, Senses, SightContext, Sighting, SoundEvent,
-    SoundKind, SoundList, Viewer, listen, look,
+    SoundKind, SoundList, Viewer, listen, look, sighting_relationship,
 };
 pub use spawn::{MonsterSpawn, MonsterSpawnRules, attach_monsters};
 pub use spawner::Spawner;
@@ -104,8 +104,8 @@ pub use state::{
     CLASSIFICATION_COUNT, Classification, Conditions, MonsterState, Relationship, RelationshipTable,
 };
 pub use world::{
-    Actor, AiEvent, AiEventKind, AiWorld, AttackKind, BrainId, MonsterAi, SquadTag, spawn_actor,
-    spawn_monster, spawn_squad_monster,
+    Actor, AiEvent, AiEventKind, AiWorld, AttackKind, BrainId, MonsterAi, Prisoner, SquadTag,
+    spawn_actor, spawn_monster, spawn_squad_monster,
 };
 
 /// Re-exported so callers can use this crate's vector type without pinning

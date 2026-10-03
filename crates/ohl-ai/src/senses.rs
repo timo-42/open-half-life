@@ -260,6 +260,9 @@ pub struct Viewer {
     pub forward: Vec3,
     /// Its faction.
     pub classification: Classification,
+    /// Whether it carries [`crate::world::Prisoner`]: a looker that never
+    /// reads anything it sees as an enemy.
+    pub prisoner: bool,
 }
 
 impl Viewer {
@@ -287,6 +290,9 @@ pub struct Candidate {
     pub alive: bool,
     /// Whether it is the player.
     pub is_client: bool,
+    /// Whether it carries [`crate::world::Prisoner`]: something no looker
+    /// ever reads as an enemy.
+    pub prisoner: bool,
 }
 
 impl Candidate {
@@ -408,6 +414,13 @@ pub struct LookResult {
 /// prefers the worse relationship and, among equals, the nearer candidate;
 /// ties beyond that are broken by entity id so the result never depends on
 /// candidate ordering noise.
+///
+/// Each sighting's relationship is [`sighting_relationship`]'s, so one
+/// that involves a prisoner on either end — a [`Viewer::prisoner`]
+/// looking, or a [`Candidate::prisoner`] being looked at — is never
+/// hostile. It is still *seen*, so [`Conditions::SEE_CLIENT`] and the
+/// sighting list are unaffected; only the hostility, and with it the enemy
+/// choice, is.
 #[must_use]
 pub fn look(
     viewer: &Viewer,
@@ -442,7 +455,12 @@ pub fn look(
             continue;
         }
 
-        let relationship = relationships.get(viewer.classification, candidate.classification);
+        let relationship = sighting_relationship(
+            relationships,
+            viewer.classification,
+            candidate.classification,
+            viewer.prisoner || candidate.prisoner,
+        );
         let facing_viewer = facing(candidate.forward, eye - target);
         result.conditions |= relationship.sighting_condition();
         if candidate.is_client {
@@ -465,6 +483,35 @@ pub fn look(
         result.conditions |= Conditions::SEE_ENEMY;
     }
     result
+}
+
+/// How something of class `viewer` reads something of class `seen` it is
+/// looking at: `relationships`' own entry, unless `prisoner_involved` —
+/// either of the two carries [`crate::world::Prisoner`] — in which case
+/// [`Relationship::NoRelationship`], whatever the table says.
+///
+/// The published `Prisoner` spawnflag's monster "won't attack, or be
+/// attacked by, other monsters", and with it "normal AI is disabled, so
+/// the monster won't attack the player" (see [`crate::world::Prisoner`]):
+/// a sighting with a prisoner on either end is never hostile, so neither
+/// side ever chooses the other as an enemy.
+///
+/// This is the one hostility rule. [`look`] reads every sighting through
+/// it, and a caller outside this crate asking "does this monster regard
+/// that one as an enemy?" (the engine's list of monsters hostile to the
+/// player, say) asks it here rather than reading the table directly.
+#[must_use]
+pub fn sighting_relationship(
+    relationships: &RelationshipTable,
+    viewer: Classification,
+    seen: Classification,
+    prisoner_involved: bool,
+) -> Relationship {
+    if prisoner_involved {
+        Relationship::NoRelationship
+    } else {
+        relationships.get(viewer, seen)
+    }
 }
 
 /// The best enemy among `visible`: worst relationship first, then nearest,
@@ -635,6 +682,7 @@ mod tests {
             view_ofs: Vec3::new(0.0, 0.0, 28.0),
             forward: Vec3::X,
             classification: Classification::HumanMilitary,
+            prisoner: false,
         }
     }
 
@@ -647,6 +695,7 @@ mod tests {
             forward: -Vec3::X,
             alive: true,
             is_client: true,
+            prisoner: false,
         }
     }
 
@@ -667,6 +716,59 @@ mod tests {
         assert_eq!(enemy.entity, them);
         assert_eq!(enemy.relationship, Relationship::Hate);
         assert!(enemy.facing_viewer);
+    }
+
+    /// The published `Prisoner` spawnflag, looking outward: "the monster
+    /// won't attack the player". The same hostile sighting as above, seen
+    /// by a prisoner, is still a sighting — the player is seen — but never
+    /// an enemy.
+    #[test]
+    fn a_prisoner_sees_a_hostile_without_reading_it_as_an_enemy() {
+        let (me, them) = two_entities();
+        let looker = Viewer {
+            prisoner: true,
+            ..viewer(me)
+        };
+        let result = look(
+            &looker,
+            &Senses::default(),
+            &[candidate(them, Vec3::new(256.0, 0.0, 0.0))],
+            &RelationshipTable::provisional(),
+            &super::SightContext::empty(),
+        );
+        assert!(
+            result.conditions.contains(Conditions::SEE_CLIENT),
+            "still seen"
+        );
+        assert!(!result.conditions.contains(Conditions::SEE_ENEMY));
+        assert!(!result.conditions.contains(Conditions::SEE_HATE));
+        assert!(result.enemy.is_none(), "a prisoner has no enemy to attack");
+        assert_eq!(result.visible.len(), 1);
+        assert_eq!(result.visible[0].relationship, Relationship::NoRelationship);
+    }
+
+    /// The same flag, looked at: "won't ... be attacked by, other
+    /// monsters". A hostile looker sees a prisoner and does not choose it.
+    #[test]
+    fn a_prisoner_is_seen_by_a_hostile_without_becoming_its_enemy() {
+        let (me, them) = two_entities();
+        let seen = Candidate {
+            prisoner: true,
+            ..candidate(them, Vec3::new(256.0, 0.0, 0.0))
+        };
+        let result = look(
+            &viewer(me),
+            &Senses::default(),
+            &[seen],
+            &RelationshipTable::provisional(),
+            &super::SightContext::empty(),
+        );
+        assert!(
+            result.conditions.contains(Conditions::SEE_CLIENT),
+            "still seen"
+        );
+        assert!(!result.conditions.contains(Conditions::SEE_ENEMY));
+        assert!(result.enemy.is_none(), "a prisoner is never chosen");
     }
 
     #[test]

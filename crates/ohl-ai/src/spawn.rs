@@ -8,17 +8,22 @@
 //!
 //! The keyvalues read here are the published ones recorded in
 //! `docs/FORMAT_SOURCES.md`: `origin`, `angles`/`angle`, `netname` (the
-//! squad name) and the `SquadLeader` spawnflag, bit 32. Which classname is
-//! which [`Classification`], and which brain each gets, is package 7.7's
-//! job — hence the caller-supplied [`MonsterSpawnRules`] rather than a table
-//! here.
+//! squad name), the `SquadLeader` spawnflag, bit 32, and the `Prisoner`
+//! spawnflag, bit 16. Which classname is which [`Classification`], and
+//! which brain each gets, is package 7.7's job — hence the caller-supplied
+//! [`MonsterSpawnRules`] rather than a table here.
 
 use glam::Vec3;
 use hecs::Entity;
 use ohl_game::{EntityDef, Registry};
 
 use crate::state::Classification;
-use crate::world::{Actor, BrainId, MonsterAi, SquadTag};
+use crate::world::{Actor, BrainId, MonsterAi, Prisoner, SquadTag};
+
+/// The published `Prisoner` spawnflag bit, shared by every `monster_*`
+/// entity page (`docs/FORMAT_SOURCES.md`, "Monster definitions"). See
+/// [`Prisoner`] for what it does.
+pub const SPAWNFLAG_PRISONER: u32 = 16;
 
 /// The published `SquadLeader` spawnflag bit.
 pub const SPAWNFLAG_SQUAD_LEADER: u32 = 32;
@@ -117,9 +122,19 @@ pub fn attach_monsters(
         {
             continue;
         }
+        if is_prisoner(def) && registry.world.insert_one(entity, Prisoner).is_err() {
+            continue;
+        }
         spawned.push(entity);
     }
     spawned
+}
+
+/// Whether `def` carries the published `Prisoner` spawnflag
+/// ([`SPAWNFLAG_PRISONER`]).
+#[must_use]
+pub fn is_prisoner(def: &EntityDef) -> bool {
+    def.spawnflags & SPAWNFLAG_PRISONER != 0
 }
 
 /// The squad membership `def` declares, if any.
@@ -139,7 +154,7 @@ pub fn squad_tag(def: &EntityDef) -> Option<SquadTag> {
 mod tests {
     use super::{MonsterSpawn, attach_monsters, squad_tag};
     use crate::state::Classification;
-    use crate::world::{Actor, BrainId, MonsterAi, SquadTag};
+    use crate::world::{Actor, BrainId, MonsterAi, Prisoner, SquadTag};
     use ohl_game::keyvalues::{Limits, RenderProps};
     use ohl_game::{EntityDef, Registry};
     use std::collections::BTreeMap;
@@ -214,6 +229,24 @@ mod tests {
         // The worldspawn and the player start are untouched.
         assert!(registry.world.get::<&Actor>(registry.entities[0]).is_err());
         assert!(registry.world.get::<&Actor>(registry.entities[3]).is_err());
+    }
+
+    /// The published `Prisoner` bit becomes the [`Prisoner`] marker, and
+    /// only on the entity that carries it.
+    #[test]
+    fn the_prisoner_spawnflag_marks_the_monster() {
+        let mut defs = defs();
+        defs[2].spawnflags |= super::SPAWNFLAG_PRISONER;
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let spawned = attach_monsters(&mut registry, &defs, &|def: &EntityDef| {
+            (def.classname == "monster_human_grunt")
+                .then(|| MonsterSpawn::new(Classification::HumanMilitary, BrainId(0)))
+        });
+        assert_eq!(spawned.len(), 2);
+        assert!(registry.world.get::<&Prisoner>(spawned[0]).is_err());
+        assert!(registry.world.get::<&Prisoner>(spawned[1]).is_ok());
+        assert!(!super::is_prisoner(&defs[1]));
+        assert!(super::is_prisoner(&defs[2]));
     }
 
     #[test]
