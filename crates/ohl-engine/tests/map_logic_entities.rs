@@ -179,6 +179,45 @@ fn a_no_push_conveyor_is_a_floor_and_nothing_more() {
     );
 }
 
+/// A conveyor carries what stands *on* it; it is not a mover closing on a
+/// player caught *inside* it. The player-move phase pushes an embedded
+/// player clear at the velocity of the brush that moved into them, and a
+/// conveyor's brush never moves: a player spawned inside the belt is
+/// neither shoved along it nor reported as blocking it, which is what the
+/// push records when a mover that *is* moving cannot push someone clear.
+#[test]
+fn a_conveyor_does_not_shove_a_player_caught_inside_it() {
+    let entities = format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"0 0 {}\"\n}}\n\
+         {{\n\"classname\" \"func_conveyor\"\n\"model\" \"*1\"\n\
+         \"speed\" \"{CONVEYOR_SPEED}\"\n\"angle\" \"90\"\n}}\n",
+        BRUSH_FLOOR_TOP_Z - 8.0
+    );
+    let mut game = game_from(
+        "ohlconveyorembeddedsynth",
+        killable_brush_floor_bsp(&entities),
+    );
+    assert!(
+        game.position_is_in_solid(game.player_origin()),
+        "the fixture embeds the player in the belt"
+    );
+    let start = game.player_origin();
+    for _ in 0..60 {
+        game.tick(STEP, &Input::default());
+        assert!(
+            game.movers_blocked().is_empty(),
+            "a conveyor is not a mover closing on the player"
+        );
+    }
+    let end = game.player_origin();
+    assert!(
+        (end[1] - start[1]).abs() < CONVEYOR_SPEED * 0.25,
+        "an embedded player was carried along the belt: moved {}",
+        end[1] - start[1]
+    );
+}
+
 // ---------------------------------------------------------------------
 // `func_wall_toggle`
 // ---------------------------------------------------------------------

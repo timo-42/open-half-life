@@ -998,8 +998,10 @@ impl Systems {
                 // exactly like a translating one closing on them: the
                 // velocity of the brush *at the player's own position* is
                 // what has to push them clear, which for a rotation grows
-                // with their distance from its axis.
-                let velocity = level.brush_ride_velocity(brush, controller.state.origin);
+                // with their distance from its axis. The brush's own
+                // motion only: a conveyor's belt is not closing on anyone,
+                // and must not shove a player caught inside its hull.
+                let velocity = level.brush_mover_velocity(brush, controller.state.origin);
                 if velocity != Vec3::ZERO
                     && !ohl_physics::push_from_mover(
                         collision,
