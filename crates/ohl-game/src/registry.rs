@@ -1147,7 +1147,7 @@ pub struct WallToggle {
     pub visible: bool,
 }
 
-/// The published `func_wall_toggle` "Starts Invisible" spawnflag (see
+/// The published `func_wall_toggle` "Starts invisible" spawnflag (see
 /// [`WallToggle`]).
 pub const SPAWNFLAG_WALL_TOGGLE_STARTS_INVISIBLE: u32 = 1;
 
@@ -1161,8 +1161,10 @@ pub const SPAWNFLAG_WALL_TOGGLE_STARTS_INVISIBLE: u32 = 1;
 /// spawnflag — which is exactly this component's shape: no touch volume, no
 /// keyvalue of its own, only a marker the activation path recognises. VDC's
 /// GoldSrc page (search-engine result summary) adds that "any other items,
-/// primarily the player's HEV Suit, will not be removed", and that the ammo
-/// pool is set to zero along with the weapons.
+/// primarily the player's HEV Suit, will not be removed"; its note on a known
+/// HUD bug of the original says the strip leaves the magazine count on screen
+/// while "changing the ammo pool to 0". This project reads the pool going to
+/// zero as the behaviour and does not reproduce the HUD half of the bug.
 ///
 /// Carrying out the strip belongs to the host: this crate does not own the
 /// player's inventory, so [`crate::logic::Simulation::activate`] raises a
@@ -2787,7 +2789,17 @@ impl Registry {
                     // The dedicated component is what makes a touch (or a
                     // fire by name) end the section rather than only fire
                     // a `target`.
-                    if def.spawnflags & SPAWNFLAG_ENDSECTION_USE_ONLY == 0 {
+                    //
+                    // With no `section` the entity "does not work" at all
+                    // (the published "must have a value for the entity to
+                    // work"), so it is given no touch volume either: a
+                    // touch would otherwise still run the ordinary trigger
+                    // bookkeeping and fire a `target`, where a fire by name
+                    // already does nothing.
+                    let end = EndSection {
+                        section: text_field(def, "section"),
+                    };
+                    if def.spawnflags & SPAWNFLAG_ENDSECTION_USE_ONLY == 0 && end.ends_section() {
                         world
                             .insert_one(
                                 entity,
@@ -2799,14 +2811,7 @@ impl Registry {
                             )
                             .ok();
                     }
-                    world
-                        .insert_one(
-                            entity,
-                            EndSection {
-                                section: text_field(def, "section"),
-                            },
-                        )
-                        .ok();
+                    world.insert_one(entity, end).ok();
                 }
                 "func_water" => {
                     world

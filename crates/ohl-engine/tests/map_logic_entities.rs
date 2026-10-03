@@ -153,9 +153,8 @@ fn triggering_a_conveyor_reverses_the_direction_it_carries_the_player() {
     );
 }
 
-/// A `func_conveyor` with the published "No push (1)" spawnflag is
-/// "essentially cosmetic": it is still a solid floor, and it carries
-/// nobody.
+/// A `func_conveyor` with the published "No push (1)" spawnflag has its push
+/// disabled: it is still a solid floor, and it carries nobody.
 #[test]
 fn a_no_push_conveyor_is_a_floor_and_nothing_more() {
     let entities = floor_entities(
@@ -192,10 +191,11 @@ fn inside_the_slab() -> [f32; 3] {
     [0.0, 0.0, BRUSH_FLOOR_TOP_Z - 8.0]
 }
 
-/// Switched off, a `func_wall_toggle` "will not block players or bullets";
-/// switched on again it is an ordinary wall. Both halves, on one fixture,
-/// read straight off the collision model rather than off the player's
-/// position — the switch is what is under test, not the fall.
+/// Switched off, a `func_wall_toggle` is "non-solid" (VDC GoldSrc, through a
+/// search-engine result summary); switched on again it is an ordinary wall,
+/// in the player's collision model and the monsters'. Both halves, on one
+/// fixture, read straight off the collision models rather than off the
+/// player's position — the switch is what is under test, not the fall.
 #[test]
 fn a_func_wall_toggle_stops_and_starts_being_solid_as_it_is_switched() {
     let entities = format!(
@@ -210,7 +210,7 @@ fn a_func_wall_toggle_stops_and_starts_being_solid_as_it_is_switched() {
     tick_n(&mut game, 6, &Input::default());
     assert!(
         game.position_is_in_solid(probe),
-        "the wall starts solid without the Starts Invisible flag"
+        "the wall starts solid without the Starts invisible flag"
     );
     assert!(monster_model_is_solid_at(&game, probe));
 
@@ -247,7 +247,7 @@ fn monster_model_is_solid_at(game: &Game, point: [f32; 3]) -> bool {
     ))
 }
 
-/// The published "Starts Invisible" flag: the wall is off from the first
+/// The published "Starts invisible" flag: the wall is off from the first
 /// tick, so the player — standing on nothing — falls straight through the
 /// only floor the map has.
 #[test]

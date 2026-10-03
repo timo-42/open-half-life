@@ -939,8 +939,9 @@ impl CollisionModel {
     ///
     /// This is [`Self::detach_brush`]'s reversible sibling, and exists for the
     /// one documented brush entity whose solidity is a *state* rather than a
-    /// lifetime: a `func_wall_toggle`, which VDC's page for it describes as
-    /// "non-solid and invisible" while off and back to an ordinary wall when
+    /// lifetime: a `func_wall_toggle`, which VDC's GoldSrc page for it
+    /// (through a search-engine result summary) describes as "non-solid and
+    /// invisible" while off and back to an ordinary wall when
     /// switched on again (`docs/FORMAT_SOURCES.md`, "Map entities the registry
     /// used to drop"). Detaching such a wall would be a one-way trip — an
     /// attach needs the `Bsp` the brush was built from, which the running level
