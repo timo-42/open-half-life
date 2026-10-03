@@ -2217,12 +2217,20 @@ impl AiState {
 
     /// Advances every `scripted_sentence`. Part of phase 10.
     ///
-    /// The resolved word list names sound assets; per `docs/CLEAN_ROOM.md`
-    /// rule 7 no such path may enter this project's source, a cue or a
-    /// diagnostic, so only its *length* is kept and the cue's path is
-    /// always `None` — the same policy `ohl_gameplay::sounds` already
-    /// applies to every other sound this engine asks for. An empty group
-    /// and a resolved one therefore produce the same cue.
+    /// A sentence that fires emits one voice cue carrying the words the
+    /// payload's own `sentences.txt` names for its group, in speaking order
+    /// (`ohl_gameplay::SoundAsset::Sentence`). Those words are asset paths
+    /// read from the user's installation at run time: they travel in
+    /// memory to the host, which decodes and plays them, and they never
+    /// enter this project's source, a log line or any other diagnostic
+    /// (`docs/CLEAN_ROOM.md` rule 7). A group the payload does not define
+    /// yields no words, and the cue then names nothing playable. Only the
+    /// word *count* is kept here, as a bounded aggregate.
+    ///
+    /// The cue is placed where the speaker stands when the line starts,
+    /// and stays there: a speaker that walks while talking is still heard
+    /// from where it began. That is a known limit (see
+    /// `docs/FORMAT_SOURCES.md`, "`scripted_sentence` and sentences").
     fn speak(&mut self, level: &mut Level, dt: f32) {
         let mut sentences = std::mem::take(&mut self.sentences);
         for sentence in &mut sentences {
@@ -2245,7 +2253,10 @@ impl AiState {
                 .world
                 .get::<&Transform>(sentence.entity)
                 .map_or(Vec3::ZERO, |transform| transform.origin);
-            let Some(speaker) = find_speaker(level, &sentence.def, origin) else {
+            // A speaker is a live actor. A dead one says nothing, and the
+            // sentence waits `refire` and looks again, exactly as when no
+            // speaker is found at all.
+            let Some((speaker, speaker_origin)) = find_speaker(level, &sentence.def, origin) else {
                 // Published: `refire` is the delay before trying to find
                 // the speaker again.
                 sentence.cooldown = sentence.def.refire;
@@ -2257,15 +2268,12 @@ impl AiState {
             }
             let words = self.sentence_lookup.words(&sentence.def.sentence);
             self.sentence_words += words.len() as u64;
-            // The speaker's own position, not the `scripted_sentence`'s:
-            // the entity is a director, and what the player hears is the
-            // monster it directed. Falls back to the script entity's
-            // origin when the speaker has no `Actor` (an inert prop).
-            let speaker_origin = level
-                .registry
-                .world
-                .get::<&ohl_ai::Actor>(speaker)
-                .map_or(origin, |actor| actor.origin);
+            // Heard at the speaker's own position, not the
+            // `scripted_sentence`'s: the entity is a director, and what the
+            // player hears is the monster it directed. At the published
+            // `volume` (`SentenceDef::gain`) and "Sound Radius"
+            // (`SentenceDef::radius`, read through the same `ATTN_*`
+            // mapping as an `ambient_generic`'s radius spawnflags).
             #[allow(clippy::cast_possible_truncation)]
             self.sound_cues.push(
                 ohl_gameplay::SoundCue::new(
@@ -2276,7 +2284,11 @@ impl AiState {
                     // group simply yields no words and nothing to play.
                     ohl_gameplay::SoundAsset::sentence(words.into_iter().map(|word| word.0)),
                 )
-                .at(speaker_origin.to_array(), ohl_gameplay::ATTN_NORM),
+                .at(
+                    speaker_origin.to_array(),
+                    crate::presentation::attenuation_of(sentence.def.radius()),
+                )
+                .with_gain(sentence.def.gain(), 1.0),
             );
             sentence.cooldown = sentence.def.duration;
             sentence.spent = sentence.def.fire_once();
@@ -2375,24 +2387,32 @@ fn closest(candidates: &mut [(f32, u32, Entity)]) -> Option<Entity> {
     candidates.first().map(|(_, _, entity)| *entity)
 }
 
-/// The entity a `scripted_sentence`'s `entity` keyvalue names.
+/// The live actor a `scripted_sentence`'s `entity` keyvalue names, and
+/// where it stands.
 ///
 /// Published: a `targetname` matches at any distance, a classname only
-/// inside `radius`, measured from the `scripted_sentence` itself.
-fn find_speaker(level: &Level, def: &SentenceDef, origin: Vec3) -> Option<Entity> {
+/// inside `radius`, measured from the `scripted_sentence` itself. Either
+/// way the speaker must be alive: a corpse keeps its `Actor` (a death only
+/// retires its brain), and a corpse does not talk.
+fn find_speaker(level: &Level, def: &SentenceDef, origin: Vec3) -> Option<(Entity, Vec3)> {
     if def.speaker.is_empty() {
         return None;
     }
-    if let Some(named) = level
+    let speaker = level
         .registry
         .find(&def.speaker)
         .iter()
         .copied()
-        .find(|entity| level.registry.world.get::<&Actor>(*entity).is_ok())
-    {
-        return Some(named);
-    }
-    nearest_by_classname(level, &def.speaker, origin, def.radius)
+        .find(|entity| {
+            level
+                .registry
+                .world
+                .get::<&Actor>(*entity)
+                .is_ok_and(|actor| actor.alive)
+        })
+        .or_else(|| nearest_by_classname(level, &def.speaker, origin, def.radius))?;
+    let at = level.registry.world.get::<&Actor>(speaker).ok()?.origin;
+    Some((speaker, at))
 }
 
 /// The nearest talk monster to `position` that is close enough to `use`.

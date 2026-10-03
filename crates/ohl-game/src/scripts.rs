@@ -280,6 +280,17 @@ impl ScriptDef {
     }
 }
 
+/// The `volume` a `scripted_sentence` that does not set the key is read as:
+/// `10`, the top of the published `0`–`10` range.
+///
+/// **`TODO(black-box)`**: neither the TWHL nor the VDC page publishes a
+/// default for `volume`. An absent key read as `0` would make every such
+/// sentence inaudible, which no mapper writing a line for a monster to say
+/// could have meant, so this reads it as full volume — the same reading
+/// `ambient_generic`'s `health` gets (`crate::registry::AMBIENT_MAX_VOLUME`).
+/// A key that *is* present is taken at its word, `0` included.
+pub const SENTENCE_DEFAULT_VOLUME: f32 = 10.0;
+
 /// One `scripted_sentence`'s published keyvalues.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SentenceDef {
@@ -297,10 +308,11 @@ pub struct SentenceDef {
     pub refire: f32,
     /// `delay`, "Delay before trigger", in seconds.
     pub delay: f32,
-    /// `volume`, published range `0`–`10`.
+    /// `volume`, published range `0`–`10`. [`SENTENCE_DEFAULT_VOLUME`] when
+    /// the map does not set it.
     pub volume: f32,
     /// `attenuation`, "Sound Radius": `0` small, `1` medium, `2` large,
-    /// `3` play everywhere.
+    /// `3` play everywhere. See [`SentenceDef::radius`].
     pub attenuation: u8,
     /// `target`: fired after the sentence starts, `delay` seconds later.
     pub target: String,
@@ -324,11 +336,34 @@ impl SentenceDef {
             duration: number(def, "duration", 0.0).max(0.0),
             refire: number(def, "refire", 0.0).max(0.0),
             delay: number(def, "delay", 0.0).max(0.0),
-            volume: number(def, "volume", 0.0).clamp(0.0, 10.0),
+            volume: number(def, "volume", SENTENCE_DEFAULT_VOLUME).clamp(0.0, 10.0),
             attenuation: attenuation(def),
             target: def.target.clone().unwrap_or_default(),
             spawnflags: def.spawnflags,
         })
+    }
+
+    /// The published `volume` as a gain, `0.0..=1.0`: `volume / 10`, the
+    /// top of the published `0`–`10` range being full volume.
+    #[must_use]
+    pub fn gain(&self) -> f32 {
+        (self.volume / SENTENCE_DEFAULT_VOLUME).clamp(0.0, 1.0)
+    }
+
+    /// The published "Sound Radius" choice as one of the four radii an
+    /// `ambient_generic`'s spawnflags also name. The two entities publish the
+    /// same four words ("Small/Medium/Large Radius", "Play Everywhere"), so
+    /// they are read through the same `ATTN_*` mapping (see
+    /// `docs/FORMAT_SOURCES.md`, "`ambient_generic`", for why that mapping is
+    /// forced rather than chosen).
+    #[must_use]
+    pub const fn radius(&self) -> crate::registry::AmbientRadius {
+        match self.attenuation {
+            0 => crate::registry::AmbientRadius::Small,
+            1 => crate::registry::AmbientRadius::Medium,
+            2 => crate::registry::AmbientRadius::Large,
+            _ => crate::registry::AmbientRadius::Everywhere,
+        }
     }
 
     /// The published `Fire Once` flag.
@@ -492,6 +527,47 @@ mod tests {
         );
         assert_eq!(sentence.attenuation, 2);
         assert!(sentence.fire_once());
+    }
+
+    #[test]
+    fn a_sentence_with_no_volume_key_is_heard_at_full_volume() {
+        let sentence = SentenceDef::from_def(&def(&[
+            ("classname", "scripted_sentence"),
+            ("sentence", "OHL_GROUP"),
+        ]))
+        .expect("a scripted_sentence parses");
+        assert!((sentence.gain() - 1.0).abs() < f32::EPSILON);
+
+        // A volume the map *did* set is taken at its word.
+        let quiet =
+            SentenceDef::from_def(&def(&[("classname", "scripted_sentence"), ("volume", "5")]))
+                .expect("a scripted_sentence parses");
+        assert!((quiet.gain() - 0.5).abs() < f32::EPSILON);
+        let silent =
+            SentenceDef::from_def(&def(&[("classname", "scripted_sentence"), ("volume", "0")]))
+                .expect("a scripted_sentence parses");
+        assert!(silent.gain().abs() < f32::EPSILON);
+    }
+
+    /// The published "Sound Radius" values, `0`–`3`, and an absent key,
+    /// which reads as `0` ("Small Radius").
+    #[test]
+    fn a_sentences_sound_radius_reads_as_the_four_published_radii() {
+        use crate::registry::AmbientRadius;
+        for (value, expected) in [
+            (None, AmbientRadius::Small),
+            (Some("0"), AmbientRadius::Small),
+            (Some("1"), AmbientRadius::Medium),
+            (Some("2"), AmbientRadius::Large),
+            (Some("3"), AmbientRadius::Everywhere),
+        ] {
+            let mut keys = vec![("classname", "scripted_sentence")];
+            if let Some(value) = value {
+                keys.push(("attenuation", value));
+            }
+            let sentence = SentenceDef::from_def(&def(&keys)).expect("a scripted_sentence parses");
+            assert_eq!(sentence.radius(), expected, "attenuation {value:?}");
+        }
     }
 
     #[test]
