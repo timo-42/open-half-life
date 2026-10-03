@@ -27,9 +27,9 @@ const CAMERA_UNIFORM_BYTES: wgpu::BufferAddress = 64 + 16;
 /// match `world_submodel.wgsl`'s `Camera`.
 const SUBMODEL_UNIFORM_BYTES: wgpu::BufferAddress = 64 + 16 + 16;
 
-/// `mat4x4<f32>` plus four `vec4<f32>`s (origin, right, up, params); must
+/// `mat4x4<f32>` plus five `vec4<f32>`s (origin, right, up, params, tint); must
 /// match `world_sprite.wgsl`'s `Instance`.
-const SPRITE_INSTANCE_UNIFORM_BYTES: wgpu::BufferAddress = 64 + 16 + 16 + 16 + 16;
+const SPRITE_INSTANCE_UNIFORM_BYTES: wgpu::BufferAddress = 64 + 16 + 16 + 16 + 16 + 16;
 
 /// Bytes per sprite quad vertex: a `vec2<f32>` corner plus a `vec2<f32>` uv.
 const SPRITE_VERTEX_STRIDE: wgpu::BufferAddress = 16;
@@ -770,7 +770,7 @@ impl WorldRenderer {
             "ohl sprite additive pipeline",
             Some(wgpu::BlendState {
                 color: wgpu::BlendComponent {
-                    src_factor: wgpu::BlendFactor::One,
+                    src_factor: wgpu::BlendFactor::SrcAlpha,
                     dst_factor: wgpu::BlendFactor::One,
                     operation: wgpu::BlendOperation::Add,
                 },
@@ -1549,6 +1549,11 @@ impl WorldRenderer {
                 image,
                 alpha: instance.render_props.alpha(),
                 blend: instance.render_props.blend_kind(),
+                tint: instance
+                    .render_props
+                    .color
+                    .map(|channel| f32::from(channel) / 255.0),
+                color_only: instance.render_props.uses_render_color(),
                 view_depth,
             });
         }
@@ -1617,7 +1622,7 @@ impl WorldRenderer {
                     continue;
                 };
                 let mut uniform = Vec::with_capacity(
-                    usize::try_from(SPRITE_INSTANCE_UNIFORM_BYTES).unwrap_or(112),
+                    usize::try_from(SPRITE_INSTANCE_UNIFORM_BYTES).unwrap_or(144),
                 );
                 for value in view_projection {
                     uniform.extend_from_slice(&value.to_le_bytes());
@@ -1632,6 +1637,14 @@ impl WorldRenderer {
                     uniform.extend_from_slice(&value.to_le_bytes());
                 }
                 for value in [item.half_width, item.half_height, item.alpha, srgb] {
+                    uniform.extend_from_slice(&value.to_le_bytes());
+                }
+                for value in [
+                    item.tint[0],
+                    item.tint[1],
+                    item.tint[2],
+                    if item.color_only { 1.0 } else { 0.0 },
+                ] {
                     uniform.extend_from_slice(&value.to_le_bytes());
                 }
                 context.queue.write_buffer(uniform_buffer, 0, &uniform);
@@ -1688,6 +1701,8 @@ struct SpriteDrawItem<'a> {
     image: &'a TextureImage,
     alpha: f32,
     blend: BlendKind,
+    tint: [f32; 3],
+    color_only: bool,
     /// Signed distance along the camera's forward axis; larger is farther,
     /// so sorting descending by this draws back-to-front.
     view_depth: f32,

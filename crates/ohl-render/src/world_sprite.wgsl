@@ -17,6 +17,8 @@ struct Instance {
     // z: this instance's alpha (`RenderProps::alpha`). w: 1.0 when sRGB
     // output.
     params: vec4<f32>,
+    // rgb: sprite rendercolor tint; w: replace texture RGB for Color mode.
+    tint: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> instance: Instance;
@@ -49,7 +51,10 @@ fn vertex_main(input: VertexInput) -> VertexOutput {
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     var sample = textureSample(sprite_texture, sprite_sampler, input.uv);
-    var color = sample.rgb;
+    var color = sample.rgb * instance.tint.rgb;
+    if (instance.tint.w > 0.5) {
+        color = instance.tint.rgb;
+    }
     if (instance.params.w > 0.5) {
         color = pow(color, vec3<f32>(2.2));
     }

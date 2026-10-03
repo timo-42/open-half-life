@@ -24,6 +24,9 @@ use crate::level::{Level, PropPlacement};
 use crate::sprites::TransientSprite;
 use crate::viewmodel::{self, ViewModelFrame};
 
+#[path = "visual_effects.rs"]
+mod visual_effects;
+
 /// The colour target one [`crate::Game::render`] call draws into.
 #[derive(Clone, Copy)]
 pub struct RenderTarget<'a> {
@@ -101,6 +104,8 @@ impl RenderStageTimings {
 /// The GPU-side resources for one loaded level.
 pub(crate) struct Renderers {
     world: WorldRenderer,
+    effects: ohl_render::EffectRenderer,
+    map_effects: visual_effects::MapEffects,
     submodels: BTreeMap<u32, ohl_render::PreparedSubmodel>,
     lightmap_uploads: u64,
     stage_timings: Option<RenderStageTimings>,
@@ -153,6 +158,8 @@ impl Renderers {
         }
         Ok(Self {
             world,
+            effects: ohl_render::EffectRenderer::new(context, format),
+            map_effects: visual_effects::MapEffects::new(level),
             submodels,
             lightmap_uploads: 0,
             stage_timings: (std::env::var_os("OHL_PROFILE_RENDER_STAGES").as_deref()
@@ -218,6 +225,18 @@ impl Renderers {
         self.record_stage(RenderStage::Liquid, &mut checkpoint);
 
         self.draw_sprites(context, level, camera, elapsed, target, transient_sprites);
+        self.map_effects.sample(level, elapsed);
+        if let Some(depth) = depth.as_ref() {
+            self.effects.draw(
+                context,
+                &self.map_effects.instances,
+                camera,
+                target.view,
+                depth,
+                width,
+                height,
+            );
+        }
         self.record_stage(RenderStage::Sprite, &mut checkpoint);
 
         // M7.9 P3: the view model, drawn last, after everything else. Its
@@ -305,13 +324,18 @@ impl Renderers {
             .sprites
             .iter()
             .filter_map(|sprite| {
+                if !sprite.initially_visible {
+                    return None;
+                }
+                let entity = *level.registry.entities.get(sprite.entity_index)?;
+                let transform = level.registry.world.get::<&Transform>(entity).ok()?;
                 let asset = level.sprite_assets.get(sprite.sprite)?;
                 Some(SpriteInstance {
                     asset,
-                    origin: sprite.origin,
+                    origin: transform.origin.to_array(),
                     scale: sprite.scale,
                     render_props: render_props(sprite.render),
-                    frame_time: elapsed,
+                    frame_time: elapsed * sprite.framerate / ohl_world::MAX_SPRITE_FRAMERATE,
                 })
             })
             .collect();

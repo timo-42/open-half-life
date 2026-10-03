@@ -7608,3 +7608,52 @@ the clean release rebuild. No death or player-damage expectation was loosened.
 These observations validate the wired path, not retail timing: six-second
 readiness, throw arcs, radius/falloff and self-splash remain project-authored
 `TODO(black-box)` policies documented above.
+
+## Wave 2 P6b: visual effect primitives and map bridge
+
+The renderer and `ohl-engine/src/visual_effects.rs` were authored from the
+published mapping pages below, not an SDK, engine source, or a game payload.
+
+- [Sven Co-op wiki: env_beam](https://wiki.svencoop.com/Env_beam):
+  `LightningStart`/`LightningEnd` identify endpoints; `rendercolor` and
+  `renderamt` set additive color/brightness; `life` is a visible duration
+  with zero meaning indefinite; `StrikeTime` is a gap; Start On begins the
+  effect. The straight named-endpoint subset is supported. This mod's width
+  description differs from its published FGD, so direct world-unit widths
+  are a project placeholder, TODO(black-box).
+- [Sven Co-op wiki: env_laser](https://wiki.svencoop.com/Env_laser): the
+  emitter is the start and `LaserTarget` is the end. Start/End Sparks and
+  Decal End describe endpoint visuals. The bridge point-traces lasers
+  against existing collision and draws a procedural contact mark while the
+  laser is present. `width` is accepted along with the page's `BoltWidth`;
+  the published [FGD](https://wiki.svencoop.com/Mapping/Sven_Co-op_FGD)
+  uses `width` for lasers. No source linked by these pages was opened.
+- [Sven Co-op wiki: env_spark](https://wiki.svencoop.com/Env_spark): Toggle
+  makes repeated emissions, Start On enables that mode initially, and
+  `MaxDelay` bounds the spacing. The bridge supports that initial mode.
+- [Sven Co-op wiki: env_sprite](https://wiki.svencoop.com/Env_sprite):
+  `framerate` is frames per second and named sprites can start visible
+  through Start On. The bridge forwards the rate through the existing
+  10 Hz-capped SPR sampler. Existing env_glow provenance is listed under
+  sprite-only entities above; its draw now remains on frame zero.
+
+Project-authored choices: untextured ribbons, square particles, round plane
+marks for bullet holes/blood, and shaded cuboids for gibs; white when a
+sprite has no explicit tint; deterministic first-definition selection for
+duplicate endpoint names; direct beam widths; deterministic finite-life
+strike cycles; eight analytic spark rays with fixed gravity, speed, fade,
+size and lifetime; fixed MaxDelay spacing clamped to 0.35–60 seconds; a
+0.05-unit decal offset and two-unit laser contact radius. These choices
+are TODO(black-box), not compatibility claims. Effect instances are bounded
+at 4096 per draw and cached map declarations at 512.
+
+Deferred: random/ring/noisy/textured beams, scrolling, beam shading and
+end sprites, beam damage, use/toggle handling, sprite play-once/removal and
+angle overrides, depth-independent glow attenuation, randomized spark intervals
+and spark audio, decal clipping
+and persistence/attachment to moving surfaces, automatic combat bullet/blood
+marks and death gibs, env_beam Decal End, retail gib models, gib
+lifetime/motion/collision.
+Renderer primitives are public for a future gameplay event seam; the engine
+bridge is private to `render.rs`, with no registry/systems/AI/combat edits and
+no new save section. All fixtures and optional PPM captures are synthetic.
