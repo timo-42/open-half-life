@@ -237,12 +237,33 @@ impl PathChain {
     /// by then simply stops there.
     #[must_use]
     pub fn build(registry: &Registry, first_name: &str, height: f32) -> Option<Self> {
+        Self::build_with_reentry(registry, first_name, height).map(|(chain, _)| chain)
+    }
+
+    /// [`Self::build`], also reporting where the walk ran back into
+    /// itself: the index of the node the chain's last node leads back to.
+    /// `Some(0)` for a closed loop (exactly when [`Self::looped`] is set),
+    /// `Some(k)` for `k` lead-in nodes ending in a cycle (`p1 -> p2 -> p3
+    /// -> p2` is `Some(1)`), `None` for a dead end or a walk cut off at
+    /// [`MAX_PATH_NODES`].
+    ///
+    /// A train still wraps only on [`Self::looped`]; this exists for a
+    /// follower that simply keeps following `target`s, which on a lead-in
+    /// route goes round the cycle and never back to the head (M9.NEXT's
+    /// aircraft).
+    #[must_use]
+    pub fn build_with_reentry(
+        registry: &Registry,
+        first_name: &str,
+        height: f32,
+    ) -> Option<(Self, Option<usize>)> {
         let mut nodes: Vec<PathNode> = Vec::new();
-        let looped = Self::walk_from(registry, first_name, height, &mut nodes) == Some(0);
+        let reentry = Self::walk_from(registry, first_name, height, &mut nodes);
         if nodes.is_empty() {
             None
         } else {
-            Some(Self { nodes, looped })
+            let looped = reentry == Some(0);
+            Some((Self { nodes, looped }, reentry))
         }
     }
 
@@ -1843,6 +1864,55 @@ mod tests {
         }
         assert_close(state.position(), Vec3::ZERO);
         assert!(!state.moving);
+    }
+
+    /// Where a chain walk runs back into itself: a closed loop re-enters at
+    /// its head (and is the only shape `looped` marks), a lead-in route
+    /// re-enters part-way (and stays unlooped, so a train on it keeps the
+    /// dead end it always had), and a dead end re-enters nowhere.
+    #[test]
+    fn a_chain_reports_where_its_walk_re_enters_itself() {
+        // Project-authored synthetic names and positions.
+        let corner = |name: &str, target: Option<&str>, x: &str| {
+            let origin = format!("{x} 0 0");
+            let mut pairs = vec![
+                ("classname".to_string(), "path_corner".to_string()),
+                ("targetname".to_string(), name.to_string()),
+                ("origin".to_string(), origin),
+            ];
+            if let Some(target) = target {
+                pairs.push(("target".to_string(), target.to_string()));
+            }
+            pairs.into_iter().collect::<RawEntity>()
+        };
+        let chain = |entities: Vec<RawEntity>| {
+            let registry = build_registry(&entities);
+            PathChain::build_with_reentry(&registry, "p1", 0.0).expect("the head resolves")
+        };
+
+        let (closed, reentry) = chain(vec![
+            corner("p1", Some("p2"), "0"),
+            corner("p2", Some("p3"), "100"),
+            corner("p3", Some("p1"), "200"),
+        ]);
+        assert_eq!(reentry, Some(0));
+        assert!(closed.looped);
+
+        let (lead_in, reentry) = chain(vec![
+            corner("p1", Some("p2"), "0"),
+            corner("p2", Some("p3"), "100"),
+            corner("p3", Some("p2"), "200"),
+        ]);
+        assert_eq!(reentry, Some(1));
+        assert!(!lead_in.looped, "a train still reads only a closed loop");
+        assert_eq!(lead_in.nodes.len(), 3);
+
+        let (dead_end, reentry) = chain(vec![
+            corner("p1", Some("p2"), "0"),
+            corner("p2", None, "100"),
+        ]);
+        assert_eq!(reentry, None);
+        assert!(!dead_end.looped);
     }
 
     #[test]

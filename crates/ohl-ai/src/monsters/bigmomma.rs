@@ -42,6 +42,18 @@
 //!   would leave a map's Gonarch shielded for good. `TODO(black-box)`.
 //! - How close counts as "reaching" a node ([`TRAIL_ARRIVAL_RADIUS`]) is a
 //!   placeholder.
+//! - A leg that stalls counts as arriving: when the Gonarch has gained no
+//!   ground on the node it is travelling to (at least
+//!   [`TRAIL_PROGRESS_STEP`] units nearer than its best so far) for
+//!   [`TRAIL_STALL_SECONDS`], [`GonarchTrail::note_progress`] says so and
+//!   the driver treats it as reaching the node: the node's effects fire and
+//!   its health is set where the Gonarch stands. Project-authored, not a
+//!   published rule: nothing published says what a Gonarch does when it
+//!   cannot reach its next node, but one that waited for it forever would
+//!   stay shielded, and so unkillable, for good. Arriving rather than
+//!   skipping the node keeps the node's `reachtarget` firing, which a map
+//!   may need to go on. The stall clock is not saved: a load starts it
+//!   again from zero.
 //!
 //! The trail is built once from the map's entity definitions
 //! ([`Trail::from_defs`]), bounded by [`MAX_TRAIL_NODES`] and loop-safe.
@@ -73,6 +85,14 @@ pub const MAX_TRAIL_NODES: usize = 64;
 /// How close (horizontally, in world units) the Gonarch must get to a node
 /// to count as having reached it. **`TODO(black-box)`**: project placeholder.
 pub const TRAIL_ARRIVAL_RADIUS: f32 = 48.0;
+
+/// How long, in seconds, a travel leg may go without progress before it
+/// counts as arriving (see the module doc comment). Project-authored.
+pub const TRAIL_STALL_SECONDS: f32 = 5.0;
+
+/// How much nearer (horizontally, in world units) than its best so far the
+/// Gonarch must get to count as progress on a leg. Project-authored.
+pub const TRAIL_PROGRESS_STEP: f32 = 16.0;
 
 /// One `info_bigmomma` node, read from its keyvalues.
 #[derive(Debug, Clone, PartialEq)]
@@ -275,6 +295,9 @@ pub enum DamageVerdict {
 pub struct GonarchTrail {
     trail: Trail,
     phase: TrailPhase,
+    /// The leg the stall clock is measuring, its nearest approach so far,
+    /// and the seconds since that last improved.
+    stall: Option<(usize, f32, f32)>,
     /// The published per-difficulty factor a node's `health` is scaled by.
     health_factor: f32,
     /// The health the monster spawned with, restored on depletion.
@@ -295,6 +318,7 @@ impl GonarchTrail {
         Self {
             trail,
             phase,
+            stall: None,
             health_factor: if health_factor.is_finite() && health_factor > 0.0 {
                 health_factor
             } else {
@@ -369,12 +393,46 @@ impl GonarchTrail {
         })
     }
 
+    /// Measures progress on the leg being travelled, `dt` seconds after the
+    /// last call, with the Gonarch at `position`. Returns `true` once the
+    /// leg has gone [`TRAIL_STALL_SECONDS`] without getting
+    /// [`TRAIL_PROGRESS_STEP`] nearer to its node than its best so far:
+    /// the leg has stalled, and the caller should treat it as arriving.
+    /// Always `false` while not travelling; a new leg starts the clock
+    /// again.
+    pub fn note_progress(&mut self, position: Vec3, dt: f32) -> bool {
+        let dt = if dt.is_finite() && dt > 0.0 { dt } else { 0.0 };
+        let (TrailPhase::Traveling { to }, Some(destination)) = (self.phase, self.destination())
+        else {
+            self.stall = None;
+            return false;
+        };
+        let distance =
+            Vec3::new(destination.x - position.x, destination.y - position.y, 0.0).length();
+        if !distance.is_finite() {
+            return false;
+        }
+        let (best, stalled) = match self.stall {
+            Some((leg, best, stalled)) if leg == to => {
+                if distance <= best - TRAIL_PROGRESS_STEP {
+                    (distance, 0.0)
+                } else {
+                    (best, stalled + dt)
+                }
+            }
+            _ => (distance, 0.0),
+        };
+        self.stall = Some((to, best, stalled));
+        stalled >= TRAIL_STALL_SECONDS
+    }
+
     /// Records arrival at the node being travelled to and returns what the
     /// host should do about it. `None` when not travelling.
     pub fn arrive(&mut self) -> Option<ArrivalEffects> {
         let TrailPhase::Traveling { to } = self.phase else {
             return None;
         };
+        self.stall = None;
         let node = self.node(to)?;
         let effects = ArrivalEffects {
             set_health: node.health.map(|health| health * self.health_factor),
@@ -773,6 +831,50 @@ mod tests {
             loaded.restore(out_of_range);
             assert_eq!(loaded.phase(), TrailPhase::Free, "{out_of_range:?}");
         }
+    }
+
+    /// The stall clock: progress keeps resetting it, standing still (or
+    /// creeping by less than the step) runs it out, a new leg starts it
+    /// again, and it never runs when the Gonarch is not travelling.
+    #[test]
+    fn a_leg_with_no_progress_stalls_and_a_new_leg_starts_the_clock_again() {
+        use super::{TRAIL_PROGRESS_STEP, TRAIL_STALL_SECONDS};
+        let mut gonarch = GonarchTrail::new(trail(), 1.0, 150.0);
+        // Node 0 is at the origin; start 1000 units away.
+        let mut position = Vec3::new(1_000.0, 0.0, 0.0);
+        // Walking steadily toward it never stalls, however long.
+        for _ in 0..1_000 {
+            position.x -= 0.5;
+            assert!(!gonarch.note_progress(position, 0.01));
+        }
+        // Creeping by less than the step does not count as progress.
+        let mut elapsed = 0.0;
+        loop {
+            position.x -= TRAIL_PROGRESS_STEP * 0.001;
+            elapsed += 0.1;
+            if gonarch.note_progress(position, 0.1) {
+                break;
+            }
+            assert!(elapsed < TRAIL_STALL_SECONDS + 1.0, "never stalled");
+        }
+        assert!(
+            elapsed >= TRAIL_STALL_SECONDS * 0.9,
+            "stalled early: {elapsed}"
+        );
+        // A new leg starts the clock again.
+        let _ = gonarch.arrive();
+        let _ = gonarch.tick(10.0);
+        assert_eq!(gonarch.phase(), TrailPhase::Traveling { to: 1 });
+        assert!(
+            !gonarch.note_progress(position, TRAIL_STALL_SECONDS * 10.0),
+            "a leg's first sample only starts its clock"
+        );
+        assert!(!gonarch.note_progress(position, TRAIL_STALL_SECONDS * 0.5));
+        assert!(gonarch.note_progress(position, TRAIL_STALL_SECONDS * 0.6));
+        // Not travelling: never stalled.
+        let _ = gonarch.arrive();
+        assert_eq!(gonarch.phase(), TrailPhase::Holding { at: 1 });
+        assert!(!gonarch.note_progress(position, TRAIL_STALL_SECONDS * 10.0));
     }
 
     #[test]

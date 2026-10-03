@@ -517,6 +517,72 @@ fn a_gonarch_walks_its_trail_through_the_tick_and_fights_only_on_arrival() {
     assert!(!state.conditions.contains(Conditions::SPECIAL1));
 }
 
+/// A Gonarch whose next node is on the far side of the room's dividing
+/// wall cannot reach it: it walks into the wall and stays there. The
+/// project-authored stall fallback (`GonarchTrail::note_progress`) counts
+/// that leg as arriving after `TRAIL_STALL_SECONDS`, so the node's health
+/// is set and the Gonarch, at the last node, is killable rather than
+/// shielded for good.
+#[test]
+fn a_gonarch_that_cannot_reach_its_node_arrives_once_its_leg_stalls() {
+    use ohl_ai::MonsterKind;
+    use ohl_ai::monsters::bigmomma::{TRAIL_STALL_SECONDS, TrailNode, TrailPhase};
+    use ohl_ai::{GonarchTrail, MonsterBrain};
+
+    let collision = divided_room();
+    let mut ai = AiWorld::new(13);
+    let brain = ai.register_brain(Box::new(
+        MonsterBrain::for_kind(MonsterKind::BigMomma).expect("defined"),
+    ));
+    let mut world = hecs::World::new();
+    let trail = ohl_ai::monsters::Trail::new(vec![TrailNode {
+        name: "beyond".to_string(),
+        position: Vec3::new(300.0, 0.0, 36.0),
+        next: None,
+        health: Some(100.0),
+        wait: 0.0,
+        fire_on_reach: None,
+        kill_on_reach: None,
+        sequence_on_reach: None,
+        run: true,
+        wait_indefinitely: false,
+    }]);
+    let mut actor =
+        Actor::new(Classification::AlienMonster, Vec3::new(-300.0, 0.0, 36.0)).with_health(150.0);
+    actor.hull = ohl_physics::Hull::Large;
+    let gonarch = world.spawn((
+        actor,
+        MonsterAi::new(brain),
+        GonarchTrail::new(trail, 1.0, 150.0),
+    ));
+
+    let context = SightContext::tracing(&collision);
+    let phase = |world: &hecs::World| world.get::<&GonarchTrail>(gonarch).expect("trail").phase();
+    // Well short of the stall delay: still travelling, still shielded,
+    // and stopped at the wall rather than through it.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let short = (TRAIL_STALL_SECONDS * 0.5 / DT) as usize;
+    for _ in 0..short {
+        ai.tick(&mut world, &context, DT);
+    }
+    assert_eq!(phase(&world), TrailPhase::Traveling { to: 0 });
+    let origin = world.get::<&Actor>(gonarch).expect("actor").origin;
+    assert!(origin.x < -16.0, "{origin:?}");
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let rest = (TRAIL_STALL_SECONDS * 1.5 / DT) as usize;
+    for _ in 0..rest {
+        ai.tick(&mut world, &context, DT);
+    }
+    assert_eq!(phase(&world), TrailPhase::Holding { at: 0 });
+    let actor = *world.get::<&Actor>(gonarch).expect("actor");
+    assert!(
+        (actor.health - 100.0).abs() < 1e-3,
+        "the node's health was set"
+    );
+    assert!(actor.origin.x < -16.0, "it never crossed the wall");
+}
+
 /// An aircraft, through the whole tick against a real collision model: on
 /// its point hull the ordinary movement step flies it along its plan in
 /// three dimensions (climbing to a higher node), and stops it at a wall

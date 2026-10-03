@@ -7,12 +7,16 @@
 //! `ohl_*` name, and no bytes come from any game installation. See
 //! `docs/CLEAN_ROOM.md`.
 
+use ohl_ai::MonsterKind;
 use ohl_ai::monsters::bigmomma::TrailPhase;
 use ohl_ai::monsters::nihilanth::HEAD_OPEN_SECONDS;
 use ohl_ai::monsters::table::BIGMOMMA_HEALTH_FACTOR;
 use ohl_ai::{DamageKinds, FlightPlan, GonarchTrail, NihilanthShield};
+use ohl_combat::{AmmoType, WeaponId};
+use ohl_engine::StartInventoryItem;
 use ohl_engine::test_support::{
-    AI_MAP, ai_room_bsp, monster_entities, queue_monster_damage, queue_typed_monster_damage,
+    AI_MAP, ai_room_bsp, monster_entities, plan_scripted_monster_model_bytes, queue_monster_damage,
+    queue_typed_monster_damage,
 };
 use ohl_engine::{Game, GameEvent, Input, MemoryAssets, TICK_SECONDS};
 use ohl_game::hecs::Entity;
@@ -122,9 +126,12 @@ fn origin_of(game: &Game, entity: Entity) -> ohl_ai::Vec3 {
 
 // --- Damage types -----------------------------------------------------------
 
-/// The gargantua's published immunity, end to end through the engine's
-/// damage queue. A hit typed as a bullet (or left untyped, as an unknown
-/// source's hit is) costs no health; a blast does; enough blast kills, once.
+/// The gargantua's published immunity through the engine's own monster
+/// damage intake. A hit typed as a bullet (or left untyped, as an unknown
+/// source's hit is) costs no health and counts as no damage applied; a
+/// blast does both; enough blast kills, once. (The hits are queued past
+/// the engine's weapon-to-monster drain; the two real-input tests below
+/// cover that drain.)
 #[test]
 fn a_gargantua_shrugs_off_bullets_and_dies_to_blast() {
     let mut game = game_from(&entities(&block(
@@ -144,18 +151,129 @@ fn a_gargantua_shrugs_off_bullets_and_dies_to_blast() {
         "bullets and untyped hits cost nothing"
     );
     assert_eq!(game.monster_death_count(), 0);
+    assert_eq!(game.monster_damage_event_count(), 0, "no damage applied");
 
+    // A blast and a bullet in the same step: the blast costs health and
+    // counts as damage applied; the bullet beside it does neither.
     queue_typed_monster_damage(&mut game, garg, None, 100.0, DamageKinds::BLAST);
+    queue_typed_monster_damage(&mut game, garg, None, 100.0, DamageKinds::BULLET);
     tick(&mut game, 1);
     assert!(
         (health_of(&game, garg) - (full - 100.0)).abs() < 1e-3,
         "a blast costs health"
     );
+    assert_eq!(game.monster_damage_event_count(), 1, "one hit applied");
 
     queue_typed_monster_damage(&mut game, garg, None, 5_000.0, DamageKinds::BLAST);
     tick(&mut game, 1);
     assert_eq!(game.monster_death_count(), 1, "enough blast kills, once");
     assert_eq!(game.monster_count(), 0);
+}
+
+/// A gargantua in front of the player, held `Prisoner` (published bit 16)
+/// so it never fights back, its species' model replaced by a synthetic one
+/// with a hitbox a shot can land on, and `loadout` in the player's hands.
+fn gargantua_range(loadout: &[StartInventoryItem]) -> (Game, Entity) {
+    let entities = entities(&block(
+        "monster_gargantua",
+        [96.0, 0.0, 36.0],
+        &[("angle", "180"), ("spawnflags", "16")],
+    ));
+    let bytes = ai_room_bsp(&entities, false);
+    let mut assets = MemoryAssets::new();
+    assets.insert(&format!("maps/{AI_MAP}.bsp"), bytes.clone());
+    // Under the species' own default path, so the engine loads it as the
+    // gargantua's model; the bytes are this project's synthetic fixture.
+    assets.insert(
+        MonsterKind::Gargantua
+            .default_model_path()
+            .expect("the gargantua has a default model"),
+        plan_scripted_monster_model_bytes(),
+    );
+    let mut game = Game::from_map_bytes(&assets, AI_MAP, &bytes).expect("the AI room loads");
+    game.give_start_inventory(loadout);
+    let garg = the_monster(&game);
+    (game, garg)
+}
+
+/// Draws the weapon in HUD `slot` and, when it has a clip, loads it.
+fn draw(game: &mut Game, slot: u8, reload: bool) {
+    game.tick(
+        TICK_SECONDS,
+        &Input {
+            select_slot: Some(slot),
+            ..Input::default()
+        },
+    );
+    if reload {
+        game.tick(
+            TICK_SECONDS,
+            &Input {
+                reload: true,
+                ..Input::default()
+            },
+        );
+    }
+    tick(game, 300);
+}
+
+fn fire_for(game: &mut Game, ticks: usize) {
+    let input = Input {
+        attack: true,
+        ..Input::default()
+    };
+    for _ in 0..ticks {
+        game.tick(TICK_SECONDS, &input);
+    }
+}
+
+/// The player's own egon, fired with real input: its beam is `ENERGYBEAM`,
+/// one of the three types the gargantua is published as vulnerable to,
+/// and the engine carries each hit's type from the weapon through its own
+/// damage queue to the monster. Ten seconds of beam kill it.
+#[test]
+fn the_players_egon_kills_a_gargantua() {
+    let (mut game, garg) = gargantua_range(&[
+        StartInventoryItem::Weapon(WeaponId::Egon),
+        StartInventoryItem::Ammo(AmmoType::Uranium),
+        StartInventoryItem::Ammo(AmmoType::Uranium),
+        StartInventoryItem::Ammo(AmmoType::Uranium),
+        StartInventoryItem::Ammo(AmmoType::Uranium),
+    ]);
+    let full = health_of(&game, garg);
+    draw(&mut game, 4, false);
+    let mut fired = 0;
+    while game.shot_hit_count() == 0 && fired < 100 {
+        fire_for(&mut game, 1);
+        fired += 1;
+    }
+    assert!(game.shot_hit_count() > 0, "the beam reached the gargantua");
+    tick(&mut game, 1);
+    assert!(health_of(&game, garg) < full, "and cost it health");
+    assert!(game.monster_damage_event_count() > 0);
+    fire_for(&mut game, 1_000);
+    assert_eq!(game.monster_death_count(), 1, "the gargantua died");
+}
+
+/// The same gargantua under the player's .357, fired with real input: its
+/// rounds are bullets, which the gargantua's published immunity ignores.
+/// They land, cost nothing, and count as no damage applied.
+#[test]
+fn the_players_magnum_lands_on_a_gargantua_and_costs_it_nothing() {
+    let (mut game, garg) = gargantua_range(&[
+        StartInventoryItem::Weapon(WeaponId::Python),
+        StartInventoryItem::Ammo(AmmoType::ThreeFiveSeven),
+    ]);
+    let full = health_of(&game, garg);
+    draw(&mut game, 2, true);
+    fire_for(&mut game, 600);
+    assert!(game.shot_hit_count() >= 3, "the rounds landed");
+    assert!(
+        (health_of(&game, garg) - full).abs() < 1e-3,
+        "and cost nothing"
+    );
+    assert_eq!(game.monster_damage_event_count(), 0, "no damage applied");
+    assert_eq!(game.monster_death_count(), 0);
 }
 
 /// The Apache's published "blast damage doubles damage": a blast costs

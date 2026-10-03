@@ -398,7 +398,9 @@ impl AiState {
     }
 
     /// How many monster damage events have been applied since this level
-    /// was attached. Media-derived: data, never a log line.
+    /// was attached: hits that cost their target something, not one its
+    /// species shrugs off or its shield takes. Media-derived: data, never a
+    /// log line.
     #[must_use]
     pub fn damage_event_count(&self) -> u64 {
         self.damage_events
@@ -1207,24 +1209,40 @@ impl AiState {
                 (target, response)
             })
             .collect();
-        let (events, corpses) = ohl_ai::monsters::lifecycle::apply_damage_effective(
+        let response_of = |target: Entity| {
+            responses
+                .get(&target)
+                .copied()
+                .unwrap_or(DamageResponse::ORDINARY)
+        };
+        let outcome = ohl_ai::monsters::lifecycle::apply_damage_effective(
             &mut level.registry.world,
             &self.damage,
             ohl_ai::monsters::lifecycle::DEFAULT_GIB_OVERKILL_MULTIPLIER,
-            &|target| {
-                responses
-                    .get(&target)
-                    .copied()
-                    .unwrap_or(DamageResponse::ORDINARY)
-            },
+            &response_of,
         );
+        let (events, corpses) = (outcome.events, outcome.corpses);
+        // Every monster a hit reached, for its `TriggerCondition`'s "took
+        // damage": unchanged by M9.NEXT's damage types, so a species that
+        // shrugs a hit off still counts as hit there. Which hits cost it
+        // anything is `outcome.hurt`.
         let hurt: Vec<Entity> = self
             .damage
             .events()
             .iter()
             .map(|event| event.target)
             .collect();
-        self.damage_events += hurt.len() as u64;
+        // Only the hits that cost their target something count as damage
+        // applied: one its species ignores, or that its shield or reserve
+        // took, does not (M9.NEXT).
+        self.damage_events += self
+            .damage
+            .events()
+            .iter()
+            .filter(|event| {
+                outcome.hurt.contains(&event.target) && response_of(event.target).scale(event) > 0.0
+            })
+            .count() as u64;
         self.damage.clear();
 
         self.deaths += events

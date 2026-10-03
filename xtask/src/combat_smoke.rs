@@ -278,35 +278,6 @@ const TELEPORTED_ABSENT: [&str; 10] = [
     "A level change was followed.",
 ];
 
-/// [`WALK_PRESENT`] plus the line this scenario's own walk (in "Power Up")
-/// happens to reach: a monster within it is hit. Until M9.NEXT the hits
-/// also killed it; they are of a damage type its species' published
-/// damage rules ignore (`ohl_ai::monsters::table::damage_response_for`),
-/// so it is still hit but no longer dies, and "A monster died." is back in
-/// the absent set. See `xtask/smoke-scenarios/walk_power_up.txt`'s own
-/// header.
-const WALK_PRESENT_MONSTER_ENCOUNTER: [&str; 4] = [
-    "Scripted input loaded.",
-    "Scripted input finished.",
-    "The player moved from the spawn point.",
-    "A monster took damage.",
-];
-
-/// [`BASE_ABSENT`] minus the one line [`WALK_PRESENT_MONSTER_ENCOUNTER`]
-/// moves to its own present set.
-const WALK_ABSENT_MONSTER_ENCOUNTER: [&str; 10] = [
-    "The player fired a weapon.",
-    "A shot hit an entity.",
-    "A monster died.",
-    "A pickup was collected.",
-    "The player took damage.",
-    "The player is inside solid geometry.",
-    "The player is riding a mover.",
-    "The player opened a door.",
-    "A level change was followed.",
-    "The player was teleported.",
-];
-
 /// [`WALK_PRESENT`] plus the line this scenario's own walk (in
 /// "Questionable Ethics") happens to reach: a source of player damage.
 /// See `xtask/smoke-scenarios/walk_questionable_ethics.txt`'s own header
@@ -486,77 +457,6 @@ const DOOR_AND_LEVEL_CHANGE_ABSENT: [&str; 9] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
     "A monster took damage.",
-    "A monster died.",
-    "A pickup was collected.",
-    "The player took damage.",
-    "The player is inside solid geometry.",
-    "The player is riding a mover.",
-    "The player was teleported.",
-];
-
-/// [`LEVEL_CHANGE_PRESENT`] plus "A monster took damage.": the scenario
-/// that walks a chapter's first map from its player start to its own
-/// `trigger_changelevel` and passes near a monster along the way. See
-/// `xtask/smoke-scenarios/progress_c2a1_reach_changelevel.txt`'s own
-/// header for the route.
-///
-/// Re-authored for M9.11 (`docs/FORMAT_SOURCES.md` item 33,
-/// `func_monsterclip` no longer solid to the player): this map carries 29
-/// `func_monsterclip` entities, and the route this scenario originally
-/// replayed was flown against the pre-M9.11 collision model, which
-/// (incorrectly) also treated `func_monsterclip` as solid to the player,
-/// so it stopped reaching its `trigger_changelevel` once that was fixed.
-/// Rather than weaken this scenario's own assertions, the route itself was
-/// re-authored fresh against the corrected engine
-/// (an earlier investigation's two-`Game` planner/autopilot technique,
-/// recorded in local notes and not part of the repository; see the
-/// scenario file's own header for the full account) — this
-/// constant, and the present/absent split below it, are therefore
-/// unchanged from before that milestone.
-const LEVEL_CHANGE_PRESENT_MONSTER_ENCOUNTER: [&str; 5] = [
-    "Scripted input loaded.",
-    "Scripted input finished.",
-    "The player moved from the spawn point.",
-    "A monster took damage.",
-    "A level change was followed.",
-];
-
-/// [`BASE_ABSENT`] minus the two lines
-/// [`LEVEL_CHANGE_PRESENT_MONSTER_ENCOUNTER`] moves to its own present
-/// set.
-const LEVEL_CHANGE_ABSENT_MONSTER_ENCOUNTER: [&str; 9] = [
-    "The player fired a weapon.",
-    "A shot hit an entity.",
-    "A monster died.",
-    "A pickup was collected.",
-    "The player took damage.",
-    "The player is inside solid geometry.",
-    "The player is riding a mover.",
-    "The player opened a door.",
-    "The player was teleported.",
-];
-
-/// [`DOOR_AND_LEVEL_CHANGE_PRESENT`] plus "A monster took damage.": the
-/// scenario that walks a chapter's first map from its player start,
-/// through a door it opens with a `use` press, past a monster along the
-/// way, to that map's own `trigger_changelevel`. See
-/// `xtask/smoke-scenarios/progress_c2a2_reach_changelevel.txt`'s own
-/// header for the route.
-const DOOR_AND_LEVEL_CHANGE_PRESENT_MONSTER_ENCOUNTER: [&str; 6] = [
-    "Scripted input loaded.",
-    "Scripted input finished.",
-    "The player moved from the spawn point.",
-    "The player opened a door.",
-    "A monster took damage.",
-    "A level change was followed.",
-];
-
-/// [`BASE_ABSENT`] minus the three lines
-/// [`DOOR_AND_LEVEL_CHANGE_PRESENT_MONSTER_ENCOUNTER`] moves to its own
-/// present set.
-const DOOR_AND_LEVEL_CHANGE_ABSENT_MONSTER_ENCOUNTER: [&str; 8] = [
-    "The player fired a weapon.",
-    "A shot hit an entity.",
     "A monster died.",
     "A pickup was collected.",
     "The player took damage.",
@@ -882,8 +782,14 @@ fn scenarios() -> [Scenario; 37] {
             name: "walk from spawn in Power Up",
             file: "walk_power_up.txt",
             map: "c2a1",
-            present: &WALK_PRESENT_MONSTER_ENCOUNTER,
-            absent: &WALK_ABSENT_MONSTER_ENCOUNTER,
+            // Until M9.NEXT this walk asserted "A monster took damage." and
+            // "A monster died." present. Every hit it sees lands on a
+            // species whose published damage rules ignore that hit's type,
+            // and a hit that costs nothing no longer counts as damage
+            // (`ohl_engine::Game::monster_damage_event_count`), so it is a
+            // plain walk now. See the scenario file's own header.
+            present: &WALK_PRESENT,
+            absent: &BASE_ABSENT,
             follow_level_change: false,
             start_inventory: &[],
         },
@@ -1044,8 +950,21 @@ fn scenarios() -> [Scenario; 37] {
             name: "walk from spawn to a followed level change in Power Up",
             file: "progress_c2a1_reach_changelevel.txt",
             map: "c2a1",
-            present: &LEVEL_CHANGE_PRESENT_MONSTER_ENCOUNTER,
-            absent: &LEVEL_CHANGE_ABSENT_MONSTER_ENCOUNTER,
+            // Re-authored for M9.11 (`docs/FORMAT_SOURCES.md` item 33,
+            // `func_monsterclip` no longer solid to the player): the route
+            // this scenario first replayed was flown against a collision
+            // model that also treated `func_monsterclip` as solid to the
+            // player, so it stopped reaching its `trigger_changelevel` once
+            // that was fixed; the route was re-authored fresh against the
+            // corrected engine (see the scenario file's own header).
+            //
+            // Until M9.NEXT it also asserted "A monster took damage."
+            // present. Every hit its route sees lands on a species whose
+            // published damage rules ignore that hit's type, and a hit that
+            // costs nothing no longer counts as damage
+            // (`ohl_engine::Game::monster_damage_event_count`).
+            present: &LEVEL_CHANGE_PRESENT,
+            absent: &LEVEL_CHANGE_ABSENT,
             follow_level_change: true,
             start_inventory: &[],
         },
@@ -1053,8 +972,11 @@ fn scenarios() -> [Scenario; 37] {
             name: "walk from spawn to a followed level change in On A Rail",
             file: "progress_c2a2_reach_changelevel.txt",
             map: "c2a2",
-            present: &DOOR_AND_LEVEL_CHANGE_PRESENT_MONSTER_ENCOUNTER,
-            absent: &DOOR_AND_LEVEL_CHANGE_ABSENT_MONSTER_ENCOUNTER,
+            // Until M9.NEXT this also asserted "A monster took damage."
+            // present; as for the Power Up progression above, every hit its
+            // route sees lands on a species that ignores that hit's type.
+            present: &DOOR_AND_LEVEL_CHANGE_PRESENT,
+            absent: &DOOR_AND_LEVEL_CHANGE_ABSENT,
             follow_level_change: true,
             start_inventory: &[],
         },

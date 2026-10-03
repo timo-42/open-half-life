@@ -105,10 +105,10 @@ pub fn attach(
                 .as_deref()
                 .map(str::trim)
                 .filter(|target| !target.is_empty())
-                .and_then(|target| PathChain::build(registry, target, 0.0))
+                .and_then(|target| PathChain::build_with_reentry(registry, target, 0.0))
                 .map_or_else(
                     || FlightPlan::new(Vec::new(), false, FLIGHT_SPEED),
-                    |chain| FlightPlan::from_chain(&chain, FLIGHT_SPEED),
+                    |(chain, reentry)| FlightPlan::from_chain(&chain, reentry, FLIGHT_SPEED),
                 );
             let plan = if def.spawnflags & SPAWNFLAG_AIRCRAFT_START_INACTIVE != 0 {
                 plan.starting_inactive()
@@ -163,7 +163,7 @@ pub fn pre_think(
     let scripted = world.get::<&ScriptHold>(entity).is_ok();
     drive_trail(world, entity, dt, speeds, scripted, events);
     drive_shield(world, entity, dt);
-    drive_flight(world, entity, dt, scripted);
+    drive_flight(world, entity, dt, scripted, events);
 }
 
 /// What a `use` of the monster's own name does: activates a Nihilanth,
@@ -206,7 +206,11 @@ fn drive_trail(
         // route is the script's until it lets go.
         return;
     }
-    if trail.has_reached_destination(actor.origin)
+    // Reaching the node, or a leg that has stalled (`GonarchTrail::
+    // note_progress`, a project-authored fallback so a node the Gonarch
+    // cannot reach never leaves it shielded for good).
+    let stalled = trail.note_progress(actor.origin, dt);
+    if (trail.has_reached_destination(actor.origin) || stalled)
         && let Some(effects) = trail.arrive()
     {
         if let Some(health) = effects.set_health {
@@ -264,7 +268,13 @@ fn drive_shield(world: &mut World, entity: Entity, dt: f32) {
     }
 }
 
-fn drive_flight(world: &mut World, entity: Entity, dt: f32, scripted: bool) {
+fn drive_flight(
+    world: &mut World,
+    entity: Entity,
+    dt: f32,
+    scripted: bool,
+    events: &mut Vec<AiEvent>,
+) {
     let Ok(mut plan) = world.get::<&mut FlightPlan>(entity) else {
         return;
     };
@@ -283,7 +293,13 @@ fn drive_flight(world: &mut World, entity: Entity, dt: f32, scripted: bool) {
         ai.move_speed = 0.0;
         return;
     }
-    match plan.steer(actor.origin, dt).order {
+    let step = plan.steer(actor.origin, dt);
+    // `TWHL:Path_corner`'s "Fire On Pass": the node just reached fires its
+    // `message` by name.
+    if let Some(name) = step.arrived_at.and_then(|index| plan.message(index)) {
+        push(events, entity, AiEventKind::FireTarget(name.to_string()));
+    }
+    match step.order {
         FlightOrder::Hold => {
             ai.route = Route::new();
             ai.move_speed = 0.0;
@@ -634,7 +650,7 @@ mod tests {
                 "path_corner",
                 Some("p1"),
                 [500.0, 0.0, 256.0],
-                &[("target", "p2")],
+                &[("target", "p2"), ("message", "ohl_pass")],
                 0,
             ),
             def(
@@ -698,8 +714,9 @@ mod tests {
         assert!(events.is_empty());
     }
 
-    /// Reaching a node moves the order on to the next one, and a dead
-    /// aircraft is given no route at all.
+    /// Reaching a node moves the order on to the next one and fires the
+    /// node's fire-on-pass `message`, and a dead aircraft is given no
+    /// route at all.
     #[test]
     fn an_apache_moves_on_at_each_node_and_stops_when_dead() {
         let (mut registry, flying, _) = two_apaches();
@@ -715,11 +732,55 @@ mod tests {
                 .waypoint(),
             Some(Vec3::new(500.0, 500.0, 300.0))
         );
+        let fired: Vec<&AiEventKind> = events.iter().map(|event| &event.kind).collect();
+        assert_eq!(
+            fired,
+            [&AiEventKind::FireTarget("ohl_pass".to_string())],
+            "passing p1 fires its message"
+        );
         world.get::<&mut Actor>(flying).expect("actor").alive = false;
         pre_think(world, flying, 0.01, (0.0, 0.0), &mut events);
         let ai = world.get::<&MonsterAi>(flying).expect("ai");
         assert!(ai.route.is_finished());
         assert!(ai.move_speed.abs() < 1e-6);
+    }
+
+    /// An aircraft whose route leads into a cycle part-way along is given
+    /// a plan that goes round that cycle rather than dead-ending.
+    #[test]
+    fn an_aircraft_on_a_lead_in_route_is_planned_round_its_cycle() {
+        let defs = vec![
+            def("worldspawn", None, [0.0; 3], &[], 0),
+            def("monster_osprey", None, [0.0; 3], &[("target", "p1")], 0),
+            def(
+                "path_corner",
+                Some("p1"),
+                [100.0, 0.0, 0.0],
+                &[("target", "p2")],
+                0,
+            ),
+            def(
+                "path_corner",
+                Some("p2"),
+                [200.0, 0.0, 0.0],
+                &[("target", "p3")],
+                0,
+            ),
+            def(
+                "path_corner",
+                Some("p3"),
+                [300.0, 0.0, 0.0],
+                &[("target", "p2")],
+                0,
+            ),
+        ];
+        let mut registry = registry_with(&defs);
+        give_ai(&mut registry, 1, Classification::Machine, 400.0);
+        let osprey = registry.entities[1];
+        attach(&mut registry, osprey, &defs[1], &defs, Difficulty::Easy);
+        let plan = registry.world.get::<&FlightPlan>(osprey).expect("attached");
+        assert_eq!(plan.waypoints().len(), 3);
+        assert_eq!(plan.loop_to(), Some(1));
     }
 
     #[test]

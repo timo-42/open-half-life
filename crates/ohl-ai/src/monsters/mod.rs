@@ -47,7 +47,7 @@ pub use bigmomma::{GonarchTrail, Trail, TrailNode, TrailPhase};
 pub use brains::MonsterBrain;
 pub use integration::{Navigator, NoOpRangedAttackSink, RangedAttackSink, StraightLineNavigator};
 pub use lifecycle::{
-    CorpseDecision, MonsterTrigger, TriggerCondition, TriggerContext, apply_damage,
+    CorpseDecision, DamageOutcome, MonsterTrigger, TriggerCondition, TriggerContext, apply_damage,
     apply_damage_effective, apply_damage_with_corpses, should_fade_corpse,
 };
 pub use nav_bridge::{Fallback, NavBridge, NavBridgeLimits, node_seeds_from_defs};
