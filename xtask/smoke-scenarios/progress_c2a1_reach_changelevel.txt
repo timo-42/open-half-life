@@ -27,7 +27,7 @@
 #            (no door is opened on this route)
 # Re-authored for M9.11 (docs/FORMAT_SOURCES.md item 33,
 # docs/MILESTONES.md M9.11): `func_monsterclip` is no longer solid to the
-# player, and this map carries 29 `func_monsterclip` entities, so the
+# player, and this map places `func_monsterclip` brushes, so the
 # route this file previously replayed (flown before that fix, against a
 # collision model that incorrectly treated `func_monsterclip` as solid to
 # the player too) no longer reaches its `trigger_changelevel` under the
