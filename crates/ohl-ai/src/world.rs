@@ -48,6 +48,12 @@ pub const COVER_DISTANCE: f32 = 320.0;
 /// How close counts as having faced a target, in degrees.
 pub const FACING_TOLERANCE: f32 = 5.0;
 
+/// The shortest [`Task::Wander`] leg worth walking once its goal has been
+/// clamped to what is reachable, in world units: two arrival tolerances
+/// ([`movement::WAYPOINT_TOLERANCE`]), so a leg that would count as
+/// "arrived" almost where it started is skipped instead. A project choice.
+pub const MIN_WANDER_LEG: f32 = 2.0 * movement::WAYPOINT_TOLERANCE;
+
 /// The largest number of events one tick reports.
 pub const MAX_EVENTS_PER_TICK: usize = 4_096;
 
@@ -1195,13 +1201,30 @@ impl MonsterExecutor<'_> {
     /// stream, whose per-tick consumption every other monster's
     /// [`Task::WaitRandom`] outcome depends on: a critter that wanders
     /// must not reshuffle the waits of everything ticked after it.
+    ///
+    /// With a collision model the drawn point is clamped to where the
+    /// monster can actually walk to ([`movement::walkable_reach`]: never
+    /// into or past a wall, never out over a drop), the same way
+    /// [`Self::find_cover`] clamps its cover point. A goal it cannot reach
+    /// would otherwise fail every straight-line check and every graph
+    /// search a [`NavBridge`] makes for it, every tick, and leave it to a
+    /// fallback mover. A leg shorter than [`MIN_WANDER_LEG`] after clamping
+    /// is not worth walking: the task fails and the critter picks another
+    /// direction next spell.
     fn wander(&mut self, distance: f32) -> TaskStatus {
         if !distance.is_finite() || distance <= 0.0 {
             return TaskStatus::Failed;
         }
         let mut draw = Pcg32::with_stream(self.tick_count, u64::from(self.entity.id()));
         let yaw = draw.range_f32(-180.0, 180.0);
-        let goal = self.actor.origin + movement::forward_from_yaw(yaw) * distance;
+        let origin = self.actor.origin;
+        let drawn = origin + movement::forward_from_yaw(yaw) * distance;
+        let goal = self.collision.map_or(drawn, |model| {
+            movement::walkable_reach(model, self.actor.hull, origin, drawn)
+        });
+        if Vec3::new(goal.x - origin.x, goal.y - origin.y, 0.0).length() < MIN_WANDER_LEG {
+            return TaskStatus::Failed;
+        }
         self.ai.move_target = Some(goal);
         self.start_route(Some(goal), 0.0)
     }
@@ -1930,5 +1953,142 @@ mod tests {
             AiWorld::new(SEED).rng_snapshot(),
             "a wander drew from the world's shared stream"
         );
+    }
+
+    /// A closed collision model from `brushes`, bounded by `mins..maxs`.
+    fn collision_from(
+        brushes: &[ohl_formats::test_support::CollisionBrush],
+        mins: [f32; 3],
+        maxs: [f32; 3],
+    ) -> ohl_physics::CollisionModel {
+        use ohl_formats::bsp30::{Bsp, Limits};
+        let mut builder = ohl_formats::test_support::Bsp30Builder::new();
+        builder.set_entities_text("{\n\"classname\" \"worldspawn\"\n}\n");
+        let heads = builder.push_collision_hulls(brushes);
+        builder.push_model(mins, maxs, [0.0, 0.0, 0.0], heads, 2, 0, 0);
+        let bytes = builder.build();
+        let limits = Limits::default();
+        let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+        ohl_physics::CollisionModel::from_bsp(&bsp, &limits).expect("fixture has collision hulls")
+    }
+
+    /// A rat on the crouched hull at `origin`, ticked at the engine's own
+    /// rate against `collision` for `ticks` ticks. Returns every wander
+    /// goal it set, every origin it stood at, and how many
+    /// `critter_wander` spells ended `Done`.
+    fn wander_in(
+        collision: &ohl_physics::CollisionModel,
+        origin: Vec3,
+        navigator: bool,
+        ticks: usize,
+    ) -> (Vec<Vec3>, Vec<Vec3>, usize) {
+        let mut ai = AiWorld::new(0x5EED);
+        let brain = ai.register_brain(Box::new(
+            crate::monsters::MonsterBrain::for_kind(crate::monsters::MonsterKind::Rat)
+                .expect("defined"),
+        ));
+        if navigator {
+            ai.attach_navigator(crate::monsters::NavBridge::build(
+                &[],
+                collision,
+                &ohl_nav::BuildLimits::default(),
+                crate::monsters::NavBridgeLimits::default(),
+            ));
+        }
+        let mut world = World::new();
+        let mut actor = Actor::new(Classification::None, origin);
+        actor.hull = ohl_physics::Hull::Crouched;
+        let rat = spawn_monster(&mut world, actor, brain);
+        let context = SightContext::tracing(collision);
+        let (mut goals, mut origins, mut finished) = (Vec::new(), Vec::new(), 0);
+        for _ in 0..ticks {
+            for event in ai.tick(&mut world, &context, ohl_physics::controller::TICK_SECONDS) {
+                if let AiEventKind::ScheduleEnded { name, outcome } = event.kind
+                    && name == crate::monsters::brains::CRITTER_WANDER.name
+                    && outcome == crate::schedule::RunOutcome::Done
+                {
+                    finished += 1;
+                }
+            }
+            let state = world.get::<&MonsterAi>(rat).expect("ai");
+            if let Some(goal) = state.move_target {
+                goals.push(goal);
+            }
+            origins.push(world.get::<&Actor>(rat).expect("actor").origin);
+        }
+        (goals, origins, finished)
+    }
+
+    /// Wave 1 batch A review: a wander goal is clamped to what the critter
+    /// can reach. In a closed room narrower than a wander leg, with a
+    /// `NavBridge` attached (whose fallback, for a goal no straight line
+    /// or graph route reaches, is what once carried a monster through a
+    /// wall), every goal the rat sets and every spot it stands on stays
+    /// inside the walls, and it still finishes legs.
+    #[test]
+    fn a_wander_goal_is_clamped_inside_the_walls() {
+        use ohl_formats::test_support::CollisionBrush;
+        const HALF: f32 = 96.0;
+        let room = collision_from(
+            &[
+                CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+                CollisionBrush::half_space([0.0, 0.0, -1.0], -128.0),
+                CollisionBrush::half_space([-1.0, 0.0, 0.0], -HALF),
+                CollisionBrush::half_space([1.0, 0.0, 0.0], -HALF),
+                CollisionBrush::half_space([0.0, -1.0, 0.0], -HALF),
+                CollisionBrush::half_space([0.0, 1.0, 0.0], -HALF),
+            ],
+            [-HALF, -HALF, 0.0],
+            [HALF, HALF, 128.0],
+        );
+        let (goals, origins, finished) = wander_in(&room, Vec3::new(0.0, 0.0, 19.0), true, 3_000);
+        // The crouched hull is 32 wide: its origin can get no closer to a
+        // wall than 16.
+        let inside = |point: &Vec3| point.x.abs() <= HALF - 15.0 && point.y.abs() <= HALF - 15.0;
+        assert!(!goals.is_empty(), "the rat wandered at all");
+        for goal in &goals {
+            assert!(inside(goal), "a wander goal beyond the walls: {goal:?}");
+        }
+        for origin in &origins {
+            assert!(inside(origin), "the rat left the room: {origin:?}");
+        }
+        assert!(finished >= 2, "it still finishes legs: {finished}");
+    }
+
+    /// Wave 1 batch A review: monsters have no gravity, so a leg aimed off
+    /// a ledge would float the critter out over the drop. On a platform
+    /// smaller than one wander leg, the floor probe ends every leg at the
+    /// edge: the rat never stands anywhere its hull has no platform under
+    /// it.
+    #[test]
+    fn a_wander_never_walks_off_a_ledge() {
+        use ohl_formats::test_support::CollisionBrush;
+        const PLATFORM: f32 = 48.0;
+        const TOP: f32 = 64.0;
+        let room = collision_from(
+            &[
+                CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+                CollisionBrush::half_space([0.0, 0.0, -1.0], -256.0),
+                CollisionBrush::half_space([-1.0, 0.0, 0.0], -512.0),
+                CollisionBrush::half_space([1.0, 0.0, 0.0], -512.0),
+                CollisionBrush::half_space([0.0, -1.0, 0.0], -512.0),
+                CollisionBrush::half_space([0.0, 1.0, 0.0], -512.0),
+                CollisionBrush::box_brush([-PLATFORM, -PLATFORM, 0.0], [PLATFORM, PLATFORM, TOP]),
+            ],
+            [-512.0, -512.0, 0.0],
+            [512.0, 512.0, 256.0],
+        );
+        let (_, origins, finished) =
+            wander_in(&room, Vec3::new(0.0, 0.0, TOP + 19.0), false, 3_000);
+        // Half the crouched hull's width past the edge is the farthest the
+        // hull can stand with some of the platform still under it.
+        for origin in &origins {
+            assert!(
+                origin.x.abs() <= PLATFORM + 16.0 && origin.y.abs() <= PLATFORM + 16.0,
+                "the rat walked off the platform: {origin:?}"
+            );
+            assert!(origin.z > TOP, "and stays on top of it: {origin:?}");
+        }
+        assert!(finished >= 2, "it still finishes legs: {finished}");
     }
 }
