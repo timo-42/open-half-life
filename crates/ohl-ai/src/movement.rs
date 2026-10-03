@@ -236,6 +236,95 @@ pub fn move_toward(
     }
 }
 
+/// How far apart [`walkable_reach`] probes for floor along a walker's leg,
+/// in world units.
+///
+/// A project choice: half a humanoid hull's width, so no gap a crouched
+/// hull could drop into lies between two probes unseen.
+pub const FLOOR_PROBE_SPACING: f32 = 16.0;
+
+/// How much clear space a [`walkable_reach`] leg keeps beyond its end, in
+/// world units: the leg is traced this much further than it is walked.
+///
+/// A project choice, sized against `ohl-nav`'s default steering: its
+/// look-ahead probe reaches 48 units and it counts a goal within 24 as
+/// arrived, so a goal with less than 24 units of open space past it — a
+/// goal by a wall, whether or not that wall cut the leg short — leaves the
+/// last stretch to a probe that keeps hitting the wall, and the mover
+/// slides and side-steps instead of arriving. 32, one humanoid hull width,
+/// clears that.
+pub const WALL_MARGIN: f32 = 32.0;
+
+/// The farthest point toward `goal` a mover with `hull` can actually get
+/// to from `from` in one straight leg, for a caller that picks a goal it
+/// has no reason to believe is reachable (a critter's wander).
+///
+/// Two things clamp it. First the same hull trace, step-up included, that
+/// [`move_toward`] makes, carried [`WALL_MARGIN`] past the goal, so the
+/// point is never inside, beyond or hard against a wall: a leg the trace
+/// cut short ends that margin before where the hull touched. Then, for a
+/// walker, a floor probe every [`FLOOR_PROBE_SPACING`] along the
+/// way: a hull trace from [`STEP_HEIGHT`] above the line down to
+/// [`STEP_HEIGHT`] below it must land on something, and the leg ends at the
+/// last probe that did. Monsters have no gravity — a walker that crosses a
+/// drop keeps its height and floats — so without the probe a leg aimed off
+/// a ledge would carry the mover out over the void. A flier
+/// ([`flies`]) needs no floor and gets the trace alone.
+///
+/// Returns `from` itself when nothing at all is reachable.
+#[must_use]
+pub fn walkable_reach(collision: &CollisionModel, hull: Hull, from: Vec3, goal: Vec3) -> Vec3 {
+    let length = (goal - from).length();
+    if !from.is_finite() || !length.is_finite() || length <= f32::EPSILON {
+        return from;
+    }
+    let direction = (goal - from) / length;
+    let moved = move_toward(
+        collision,
+        hull,
+        from,
+        goal + direction * WALL_MARGIN,
+        length + WALL_MARGIN,
+        1.0,
+    );
+    let end = if moved.blocked {
+        let travelled = moved.position - from;
+        let reach = travelled.length();
+        if reach > WALL_MARGIN {
+            from + travelled / reach * (reach - WALL_MARGIN).min(length)
+        } else {
+            from
+        }
+    } else {
+        goal
+    };
+    if flies(hull) {
+        return end;
+    }
+    let horizontal = Vec3::new(end.x - from.x, end.y - from.y, 0.0);
+    let span = horizontal.length();
+    if span <= f32::EPSILON {
+        return from;
+    }
+    let direction = horizontal / span;
+    let mut reached = from;
+    let mut travelled = 0.0;
+    while travelled < span {
+        travelled = (travelled + FLOOR_PROBE_SPACING).min(span);
+        let sample = from + direction * travelled;
+        let probe = collision.trace(
+            hull,
+            sample + Vec3::Z * STEP_HEIGHT,
+            sample - Vec3::Z * (STEP_HEIGHT + 1.0),
+        );
+        if probe.start_solid || probe.all_solid || probe.fraction >= 1.0 {
+            break;
+        }
+        reached = probe.end_pos;
+    }
+    reached
+}
+
 /// Counts consecutive ticks in which a mover made no meaningful progress.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StuckDetector {
