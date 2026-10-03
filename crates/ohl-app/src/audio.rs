@@ -15,8 +15,9 @@
 //! [`AudioRuntime::silent`] never opens a device on any platform: it drives
 //! an `ohl_audio::device::NullSink`, which renders only when this module
 //! pumps it and writes the result nowhere. Every non-interactive run path
-//! (`--screenshot`, `--script`, `--chain-script`, and every test) uses it,
-//! so a smoke run is silent by construction rather than by luck.
+//! (`--screenshot`, `--script`, `--chain-script`, `--benchmark`, and every
+//! test) uses it, so a smoke run is silent by construction rather than by
+//! luck.
 //! [`AudioRuntime::open`] — the windowed loop's — asks
 //! `ohl_audio::device::open_default_device` for a real backend, which on
 //! Linux is *also* a `NullSink` by the recorded no-FFI decision (see
@@ -326,6 +327,16 @@ impl AudioRuntime {
         }
     }
 
+    /// Sets the output volume, `0.0..=1.0`: the options menu's slider. It
+    /// scales every channel, sounds already playing included; see
+    /// `ohl_audio::Mixer::set_master_volume` for how a bad value is
+    /// bounded.
+    pub(crate) fn set_volume(&self, volume: f32) {
+        if let Ok(mut mixer) = self.mixer.lock() {
+            mixer.set_master_volume(volume);
+        }
+    }
+
     /// Acts on one `GameEvent::Sound`: starts the cue's asset on its
     /// `(entity, class)` channel, or stops that channel when the cue is a
     /// stop. A cue naming nothing playable is dropped silently, which is
@@ -404,16 +415,13 @@ fn sane(value: f32, fallback: f32) -> f32 {
     if value.is_finite() { value } else { fallback }
 }
 
+/// Project-authored sound fixtures shared by this module's tests and
+/// `crate::game_run`'s.
 #[cfg(test)]
-mod tests {
-    use super::{AudioRuntime, SoundCache};
-    use ohl_audio::mixer::ChannelClass;
-    use ohl_engine::{MemoryAssets, SoundAsset, SoundCue};
-    use std::sync::Arc;
-
+pub(crate) mod fixtures {
     /// A valid mono 16-bit PCM WAV of `frames` frames, written by hand so
     /// this test needs no encoder dependency. Project-authored bytes.
-    fn synthetic_wav(frames: usize) -> Vec<u8> {
+    pub(crate) fn synthetic_wav(frames: usize) -> Vec<u8> {
         let data_bytes = frames * 2;
         let mut wav = Vec::new();
         wav.extend_from_slice(b"RIFF");
@@ -442,6 +450,15 @@ mod tests {
         }
         wav
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixtures::synthetic_wav;
+    use super::{AudioRuntime, SoundCache};
+    use ohl_audio::mixer::ChannelClass;
+    use ohl_engine::{MemoryAssets, SoundAsset, SoundCue};
+    use std::sync::Arc;
 
     fn assets() -> MemoryAssets {
         let mut assets = MemoryAssets::new();

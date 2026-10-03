@@ -44,9 +44,11 @@ pub enum GameEvent {
         /// The resolved text and its fade/hold timings.
         block: MessageBlock,
     },
-    /// A cue the host should play. `ohl_gameplay::SoundCue::path` is always
-    /// `None` until a clean-room provenance review admits a sound asset
-    /// path; see `crate::presentation`'s module docs.
+    /// A cue the host should play, or stop. Its asset is one the map or a
+    /// payload data file named (an `ambient_generic`'s `message`, a
+    /// `sentences.txt` sentence's words), or `SoundAsset::Unresolved` for
+    /// every built-in sound until a clean-room provenance review admits
+    /// its path; see `crate::presentation`'s module docs.
     Sound(ohl_gameplay::SoundCue),
     /// An HEV suit voice occasion, which the host maps to a voice line.
     Suit(ohl_player::SuitEvent),

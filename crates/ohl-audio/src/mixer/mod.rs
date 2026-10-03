@@ -26,6 +26,9 @@ pub struct Mixer {
     listener: Listener,
     channels: Vec<ActiveChannel>,
     next_order: u64,
+    /// The player's own output-volume setting, applied on top of every
+    /// channel's own gain. See [`Mixer::set_master_volume`].
+    master_volume: f32,
 }
 
 impl Mixer {
@@ -38,6 +41,7 @@ impl Mixer {
             listener: Listener::default(),
             channels: Vec::new(),
             next_order: 0,
+            master_volume: 1.0,
         }
     }
 
@@ -55,6 +59,28 @@ impl Mixer {
     #[must_use]
     pub fn listener(&self) -> Listener {
         self.listener
+    }
+
+    /// Sets the output volume every channel is scaled by, `0.0..=1.0`:
+    /// the options menu's own slider, not a property of any one sound. A
+    /// value outside that range is clamped into it, and a non-finite one
+    /// is ignored, so a bad setting can neither amplify past full scale
+    /// nor poison the mix.
+    ///
+    /// It takes effect on the next [`Mixer::render`], for sounds already
+    /// playing as well as for new ones: a looping ambience gets quieter
+    /// while the slider moves, not only after it restarts.
+    pub fn set_master_volume(&mut self, volume: f32) {
+        if volume.is_finite() {
+            self.master_volume = volume.clamp(0.0, 1.0);
+        }
+    }
+
+    /// The output volume set by [`Mixer::set_master_volume`]; `1.0` until
+    /// anything sets it.
+    #[must_use]
+    pub fn master_volume(&self) -> f32 {
+        self.master_volume
     }
 
     /// The number of channels currently playing.
@@ -113,6 +139,7 @@ impl Mixer {
 
         let device_rate = f64::from(self.device_sample_rate);
         let listener = self.listener;
+        let master_volume = self.master_volume;
         let mut finished = Vec::new();
 
         for (channel_index, channel) in self.channels.iter_mut().enumerate() {
@@ -129,11 +156,12 @@ impl Mixer {
             let src_channels = usize::from(buffer.channels.max(1));
             let step =
                 (f64::from(buffer.sample_rate) / device_rate) * f64::from(channel.pitch.max(0.0));
+            let volume = channel.volume * master_volume;
             let gains = match channel.spatial {
-                Some(spatial) => spatial::spatial_gain(&listener, spatial, channel.volume),
+                Some(spatial) => spatial::spatial_gain(&listener, spatial, volume),
                 None => spatial::StereoGain {
-                    left: channel.volume,
-                    right: channel.volume,
+                    left: volume,
+                    right: volume,
                 },
             };
 
@@ -362,6 +390,45 @@ mod tests {
         mixer.stop(1, ChannelClass::Voice);
         assert_eq!(mixer.active_channel_count(), 0);
         assert!(!mixer.is_playing(1, ChannelClass::Voice));
+    }
+
+    #[test]
+    // A power-of-two volume over exactly representable samples: the scaled
+    // output is exact, so float equality is the point.
+    #[allow(clippy::float_cmp)]
+    fn the_master_volume_scales_every_channel_including_one_already_playing() {
+        let buffer = mono_buffer(&[0.5; 8], 8_000, None);
+        let mut mixer = Mixer::new(8_000);
+        assert_eq!(mixer.master_volume(), 1.0);
+        mixer.play(play_request(buffer));
+
+        let mut out = [0.0f32; 4];
+        mixer.render(&mut out);
+        assert_eq!(out, [0.5; 4]);
+
+        // Turned down mid-sound: the channel already playing is what
+        // gets quieter.
+        mixer.set_master_volume(0.5);
+        mixer.render(&mut out);
+        assert_eq!(out, [0.25; 4]);
+
+        mixer.set_master_volume(0.0);
+        mixer.render(&mut out);
+        assert_eq!(out, [0.0; 4]);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn a_master_volume_out_of_range_is_clamped_and_a_non_finite_one_ignored() {
+        let mut mixer = Mixer::new(8_000);
+        mixer.set_master_volume(4.0);
+        assert_eq!(mixer.master_volume(), 1.0);
+        mixer.set_master_volume(-1.0);
+        assert_eq!(mixer.master_volume(), 0.0);
+        mixer.set_master_volume(0.25);
+        mixer.set_master_volume(f32::NAN);
+        mixer.set_master_volume(f32::INFINITY);
+        assert_eq!(mixer.master_volume(), 0.25);
     }
 
     #[test]

@@ -7,8 +7,10 @@
 //! its own fixture. Every keyvalue and spawnflag used is a published one
 //! recorded in `docs/FORMAT_SOURCES.md`, "`ambient_generic`".
 
-use ohl_engine::test_support::{entity_block, script_game, script_room_entities};
-use ohl_engine::{ChannelClass, GameEvent, Input, SoundAsset, TICK_SECONDS};
+use ohl_engine::test_support::{
+    SCRIPT_MAP, entity_block, script_game, script_room_bsp, script_room_entities,
+};
+use ohl_engine::{ChannelClass, Game, GameEvent, Input, MemoryAssets, SoundAsset, TICK_SECONDS};
 
 /// The synthetic, project-authored sound name the fixtures name.
 const SYNTHETIC_WAV: &str = "ohl/synthetic.wav";
@@ -220,4 +222,95 @@ fn an_ambient_generic_with_no_resolvable_message_cues_nothing_playable() {
     let cues = sound_cues(&mut game, 30);
     assert_eq!(cues.len(), 2);
     assert!(cues.iter().all(|cue| cue.asset.is_unresolved()));
+}
+
+/// Every published radius spawnflag, alone and in combination, read as
+/// the published `ATTN_*` falloff it names (see
+/// `ohl_game::registry::AmbientRadius::from_spawnflags` for how a
+/// combination is read: "play everywhere" wins, then the widest radius;
+/// no radius flag at all is the published default, "medium").
+#[test]
+fn every_radius_spawnflag_chooses_its_published_falloff() {
+    let cases: [(&str, f32); 8] = [
+        ("0", ohl_engine::ATTN_STATIC),
+        ("1", ohl_engine::ATTN_NONE),
+        ("2", ohl_engine::ATTN_IDLE),
+        ("4", ohl_engine::ATTN_STATIC),
+        ("8", ohl_engine::ATTN_NORM),
+        ("9", ohl_engine::ATTN_NONE),
+        ("10", ohl_engine::ATTN_NORM),
+        ("6", ohl_engine::ATTN_STATIC),
+    ];
+    let mut blocks = String::new();
+    for (index, (spawnflags, _)) in cases.iter().enumerate() {
+        #[allow(clippy::cast_precision_loss, reason = "eight fixture slots")]
+        let x = -112.0 + 32.0 * index as f32;
+        blocks.push_str(&ambient(
+            &format!("ohl_radius_{index}"),
+            [x, 0.0, 36.0],
+            &[("spawnflags", spawnflags)],
+        ));
+    }
+    let mut game = script_game(&script_room_entities([-192.0, -192.0, 36.0], &blocks));
+
+    let cues = sound_cues(&mut game, 30);
+    assert_eq!(cues.len(), cases.len());
+    for (index, (spawnflags, expected)) in cases.iter().enumerate() {
+        #[allow(clippy::cast_precision_loss, reason = "eight fixture slots")]
+        let x = -112.0 + 32.0 * index as f32;
+        let cue = cues
+            .iter()
+            .find(|cue| {
+                cue.origin
+                    .is_some_and(|origin| (origin[0] - x).abs() < 1e-3)
+            })
+            .expect("every ambient announced itself");
+        assert!(
+            (cue.attenuation - expected).abs() < 1e-6,
+            "spawnflags {spawnflags}: {} != {expected}",
+            cue.attenuation
+        );
+    }
+}
+
+/// The published `message` form `!NAME` names a `sentences.txt` sentence
+/// rather than a file: the cue carries that sentence's words, resolved
+/// through the payload's own `sentences.txt` exactly as a
+/// `scripted_sentence`'s are. The sentence line and both words are
+/// project-authored.
+#[test]
+fn an_ambient_generic_naming_a_published_sentence_speaks_its_words() {
+    let entities = script_room_entities(
+        [-192.0, -192.0, 36.0],
+        &entity_block(
+            "ambient_generic",
+            [0.0, 0.0, 36.0],
+            0.0,
+            &[
+                ("targetname", "ohl_announcer"),
+                ("message", "!OHL_GREETING"),
+            ],
+        ),
+    );
+    let mut assets = MemoryAssets::new();
+    assets.insert(
+        &format!("maps/{SCRIPT_MAP}.bsp"),
+        script_room_bsp(&entities),
+    );
+    assets.insert(
+        "sound/sentences.txt",
+        b"OHL_GREETING ohl/hello ohl/there\n".to_vec(),
+    );
+    let mut game = Game::load(&assets, SCRIPT_MAP).expect("the script room loads");
+
+    let cues = sound_cues(&mut game, 30);
+    assert_eq!(cues.len(), 1);
+    assert_eq!(cues[0].class, ChannelClass::Static);
+    assert_eq!(
+        cues[0].asset,
+        SoundAsset::sentence(vec![
+            "sound/ohl/hello.wav".to_string(),
+            "sound/ohl/there.wav".to_string(),
+        ])
+    );
 }

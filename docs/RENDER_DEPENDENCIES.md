@@ -124,8 +124,8 @@ full test suite without an audio device.
 The composition root (`crates/ohl-app/src/audio.rs`) is the only crate that
 owns a device. It calls `open_default_device` from the windowed loop only;
 every non-interactive run path (`--screenshot`, `--script`,
-`--chain-script`) and every test constructs a `NullSink` directly, on every
-platform, so a smoke or a capture is silent by construction rather than by
+`--chain-script`, `--benchmark`) and every test constructs a `NullSink`
+directly, on every platform, so a smoke or a capture is silent by construction rather than by
 happening to run on Linux. The mixer, the WAV decoder and the sound-asset
 cache all run either way, which is what keeps those runs a real test of the
 audio path rather than a test of skipping it. `OutputDevice::pump` exists

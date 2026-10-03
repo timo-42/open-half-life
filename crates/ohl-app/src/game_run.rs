@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 #[cfg(feature = "dev-tools")]
 use glam::Vec3;
-use ohl_engine::{AssetFsSource, Game, GameConfig, GameEvent, Input, RenderTarget};
+use ohl_engine::{AssetFsSource, AssetSource, Game, GameConfig, GameEvent, Input, RenderTarget};
 use ohl_render::{GpuContext, OFFSCREEN_FORMAT, OffscreenTarget, WindowSurface, wgpu};
 use ohl_ui::{
     UiLayer,
@@ -463,7 +463,7 @@ recognise (expected a comma-separated list of weapon_*/ammo_* classnames)"
     }
 
     if let Some(seconds) = args.benchmark_seconds {
-        return benchmark(&mut game, seconds);
+        return benchmark(&mut game, &source, seconds);
     }
 
     match args.screenshot {
@@ -486,7 +486,12 @@ fn log_profile_device(context: &GpuContext, width: u32, height: u32) {
 /// Measures fully completed frames without presentation/vsync or readback.
 /// The ordinary simulation advances by one fixed tick per rendered frame;
 /// level changes and death end the run instead of changing its workload.
-fn benchmark(game: &mut Game, seconds: u32) -> Result<(), &'static str> {
+///
+/// Sound is part of that workload: every cue is resolved, decoded and
+/// mixed into a silent sink exactly as the windowed loop does it, and the
+/// time it takes is counted as simulation, which is where
+/// [`App::tick_game`] spends it too.
+fn benchmark(game: &mut Game, source: &dyn AssetSource, seconds: u32) -> Result<(), &'static str> {
     let context = GpuContext::headless().map_err(|_| "no usable graphics adapter is available")?;
     let (width, height) = CAPTURE_SIZE;
     let target = OffscreenTarget::new(&context, width, height)
@@ -497,16 +502,18 @@ fn benchmark(game: &mut Game, seconds: u32) -> Result<(), &'static str> {
     let mut measurement_start = None;
     let mut warmup_resources = ohl_engine::RenderResourceStats::default();
     let mut profile = FrameProfile::default();
+    // Silent on every platform: a benchmark is a measurement, like a
+    // scripted run (see `run_scripted`).
+    let mut audio = AudioRuntime::silent();
     loop {
         let frame_start = Instant::now();
+        audio.set_listener(game.eye_position(), game.camera().yaw);
         let events = game.tick(CAPTURE_STEP, &Input::default());
-        if events
-            .iter()
-            .any(|event| matches!(event, GameEvent::LevelChange { .. } | GameEvent::PlayerDied))
-        {
+        if route_benchmark_events(&mut audio, source, events) {
             tracing::warn!("Benchmark stopped because the level changed or the player died.");
             return Ok(());
         }
+        audio.frame(CAPTURE_STEP);
         let simulation = frame_start.elapsed();
         let render_start = Instant::now();
         render_capture(
@@ -548,6 +555,29 @@ fn benchmark(game: &mut Game, seconds: u32) -> Result<(), &'static str> {
     }
 }
 
+/// Plays every sound one benchmark tick produced, and reports whether the
+/// tick also ended the benchmark (a level change or the player's death:
+/// either would change the workload being measured, so neither is
+/// followed).
+fn route_benchmark_events(
+    audio: &mut AudioRuntime,
+    source: &dyn AssetSource,
+    events: Vec<GameEvent>,
+) -> bool {
+    let mut ends_the_run = false;
+    for event in events {
+        match event {
+            GameEvent::Sound(cue) => audio.play(source, &cue),
+            GameEvent::LevelChange { .. } | GameEvent::PlayerDied => ends_the_run = true,
+            GameEvent::ChapterTitle(_)
+            | GameEvent::Message { .. }
+            | GameEvent::Suit(_)
+            | GameEvent::ViewModel(_) => {}
+        }
+    }
+    ends_the_run
+}
+
 /// Resource work since the supplied checkpoint; only enabled by profiling.
 fn log_resource_uploads(game: &Game, previous: ohl_engine::RenderResourceStats) {
     let current = game.render_resource_stats();
@@ -581,7 +611,7 @@ fn log_resource_uploads(game: &Game, previous: ohl_engine::RenderResourceStats) 
 /// logged unconditionally, exactly as before this flag existed.
 fn handle_level_change(
     game: &mut Game,
-    source: &AssetFsSource,
+    source: &dyn AssetSource,
     map: &str,
     landmark: &str,
     follow: bool,
@@ -653,9 +683,15 @@ fn run_scripted(
     }
 
     let mut log = crate::script_log::ScriptLog::new(game);
+    // Silent on every platform, not merely on the ones with no device: a
+    // scripted run is a reproducible measurement, and it must not make a
+    // noise on the machine it runs on. The mixer still runs, so a cue that
+    // cannot be resolved is still a cue that cannot be resolved here.
+    let mut audio = AudioRuntime::silent();
     run_script_ticks(
         game,
         source,
+        &mut audio,
         &script,
         &mut log,
         &TickOptions {
@@ -706,12 +742,15 @@ struct TickOutcome {
 }
 
 /// Ticks one parsed script through [`Game::tick`] at [`CAPTURE_STEP`],
-/// handling the events it produces. Shared by [`run_scripted`] (one
-/// script, run to its end) and [`run_chained`] (one script per map, each
-/// ending at the level change that carries the player into the next one).
+/// handling the events it produces through [`route_headless_events`].
+/// Shared by [`run_scripted`] (one script, run to its end) and
+/// [`run_chained`] (one script per map, each ending at the level change
+/// that carries the player into the next one). `audio` is the caller's, so
+/// a chain walk's sounds outlive one route the way its game does.
 fn run_script_ticks(
     game: &mut Game,
-    source: &AssetFsSource,
+    source: &dyn AssetSource,
+    audio: &mut AudioRuntime,
     script: &crate::script::Script,
     log: &mut crate::script_log::ScriptLog,
     options: &TickOptions,
@@ -720,11 +759,6 @@ fn run_script_ticks(
         followed_level_change: false,
         ticks: 0,
     };
-    // Silent on every platform, not merely on the ones with no device: a
-    // scripted run is a reproducible measurement, and it must not make a
-    // noise on the machine it runs on. The mixer still runs, so a cue that
-    // cannot be resolved is still a cue that cannot be resolved here.
-    let mut audio = AudioRuntime::silent();
     for step in script.steps() {
         // A `guard` step has no input of its own: what a defending player
         // presses depends on where the monsters are *this* tick, so it is
@@ -736,39 +770,23 @@ fn run_script_ticks(
             crate::script::ScriptStep::Guard => ohl_engine::guard_input(game),
         };
         audio.set_listener(game.eye_position(), game.camera().yaw);
-        for event in game.tick(CAPTURE_STEP, &input) {
-            match event {
-                GameEvent::Sound(cue) => audio.play(source, &cue),
-                GameEvent::LevelChange { map, landmark } => {
-                    let followed = handle_level_change(
-                        game,
-                        source,
-                        &map,
-                        &landmark,
-                        options.follow_level_change,
-                        options.script_log,
-                    );
-                    if followed {
-                        // The map being left stops humming; the arriving
-                        // one announces its own soundscape from scratch.
-                        audio.stop_all();
-                    }
-                    outcome.followed_level_change |= followed;
-                }
+        let events = game.tick(CAPTURE_STEP, &input);
+        outcome.followed_level_change |= route_headless_events(
+            game,
+            source,
+            audio,
+            events,
+            &HeadlessEventOptions {
+                follow_level_change: options.follow_level_change,
+                script_log: options.script_log,
                 // The same fixed line the interactive window logs
-                // (`GameRun::draw`, below): a scripted/headless run is
-                // otherwise silent about the player's death, even though
-                // `ohl_engine::Systems::step` has already stopped
+                // (`App::handle_game_events`, below): a scripted/headless
+                // run is otherwise silent about the player's death, even
+                // though `ohl_engine::Systems::step` has already stopped
                 // simulating the player's movement from this point on.
-                GameEvent::PlayerDied => {
-                    tracing::info!("The player died.");
-                }
-                GameEvent::ChapterTitle(_)
-                | GameEvent::Message { .. }
-                | GameEvent::Suit(_)
-                | GameEvent::ViewModel(_) => {}
-            }
-        }
+                player_died_line: "The player died.",
+            },
+        );
         audio.frame(CAPTURE_STEP);
         outcome.ticks += 1;
         if options.script_log {
@@ -779,6 +797,76 @@ fn run_script_ticks(
         }
     }
     outcome
+}
+
+/// How [`route_headless_events`] treats the events it does not simply
+/// play.
+struct HeadlessEventOptions {
+    /// Passed straight to [`handle_level_change`].
+    follow_level_change: bool,
+    /// Passed straight to [`handle_level_change`].
+    script_log: bool,
+    /// The fixed line logged when the player dies. A capture and a
+    /// scripted run have always logged different ones, and the smokes
+    /// read them.
+    player_died_line: &'static str,
+}
+
+/// Handles one tick's events for a run nobody is listening to: a scripted
+/// run, one leg of a chain walk, or a still capture.
+///
+/// This is the one place those run paths turn a `GameEvent::Sound` into a
+/// play request; [`App::handle_game_events`] does the same for the window,
+/// and [`route_benchmark_events`] for a benchmark. A followed level change
+/// stops everything `audio` is playing, and drops the tick's remaining
+/// sounds, since the map being left must not keep humming under the one
+/// arriving, which announces its own soundscape from its first tick.
+/// Returns whether a level change was followed.
+fn route_headless_events(
+    game: &mut Game,
+    source: &dyn AssetSource,
+    audio: &mut AudioRuntime,
+    events: Vec<GameEvent>,
+    options: &HeadlessEventOptions,
+) -> bool {
+    let mut followed_level_change = false;
+    for event in events {
+        match event {
+            // Once a level change has been followed, the rest of this
+            // tick's sounds were produced on the map that was left (see
+            // `App::handle_game_events`) and are dropped with it.
+            GameEvent::Sound(cue) => {
+                if !followed_level_change {
+                    audio.play(source, &cue);
+                }
+            }
+            GameEvent::LevelChange { map, landmark } => {
+                let followed = handle_level_change(
+                    game,
+                    source,
+                    &map,
+                    &landmark,
+                    options.follow_level_change,
+                    options.script_log,
+                );
+                if followed {
+                    audio.stop_all();
+                }
+                followed_level_change |= followed;
+            }
+            GameEvent::PlayerDied => {
+                tracing::info!("{}", options.player_died_line);
+            }
+            // Map-authored text and presentation events with nothing to
+            // act on in a run nobody watches (M7.9 P1): none of these are
+            // logged.
+            GameEvent::ChapterTitle(_)
+            | GameEvent::Message { .. }
+            | GameEvent::Suit(_)
+            | GameEvent::ViewModel(_) => {}
+        }
+    }
+    followed_level_change
 }
 
 /// The fixed line a chain walk logs when one of its routes ran out of
@@ -887,6 +975,10 @@ fn run_chained(
     let mut stopped = false;
     let mut re_entered = false;
     let mut arrived_dead = false;
+    // One silent runtime for the whole walk, as `run_scripted` has one for
+    // its one route: the level change between two routes is what stops
+    // the sounds of the map being left, not the end of a route.
+    let mut audio = AudioRuntime::silent();
     for script in &scripts {
         // A fresh log per route, so every milestone line is observed from
         // this map's own arrival point rather than from the chain's start.
@@ -894,6 +986,7 @@ fn run_chained(
         let outcome = run_script_ticks(
             game,
             source,
+            &mut audio,
             script,
             &mut log,
             &TickOptions {
@@ -1401,7 +1494,7 @@ fn capture(
     }
 
     // A capture writes a picture, never a sound: silent on every platform
-    // (see `run_script_ticks`'s own note). The mixer still runs so a
+    // (see `run_scripted`'s own note). The mixer still runs so a
     // capture exercises exactly the same cue-resolution path a windowed
     // run does.
     let mut audio = AudioRuntime::silent();
@@ -1412,33 +1505,17 @@ fn capture(
         // liquid turbulence, model sequences) advances.
         audio.set_listener(game.eye_position(), game.camera().yaw);
         let events = game.tick(CAPTURE_STEP, &Input::default());
-        for event in events {
-            match event {
-                GameEvent::Sound(cue) => audio.play(source, &cue),
-                GameEvent::LevelChange { map, landmark } => {
-                    if handle_level_change(
-                        game,
-                        source,
-                        &map,
-                        &landmark,
-                        args.follow_level_change,
-                        args.script_log,
-                    ) {
-                        audio.stop_all();
-                    }
-                }
-                // Map-authored text, presentation events with nothing to
-                // act on during a still capture (M7.9 P1): none of these
-                // are logged.
-                GameEvent::ChapterTitle(_)
-                | GameEvent::Message { .. }
-                | GameEvent::Suit(_)
-                | GameEvent::ViewModel(_) => {}
-                GameEvent::PlayerDied => {
-                    tracing::info!("The player died during capture.");
-                }
-            }
-        }
+        route_headless_events(
+            game,
+            source,
+            &mut audio,
+            events,
+            &HeadlessEventOptions {
+                follow_level_change: args.follow_level_change,
+                script_log: args.script_log,
+                player_died_line: "The player died during capture.",
+            },
+        );
         audio.frame(CAPTURE_STEP);
         render_capture(
             game,
@@ -1490,39 +1567,27 @@ fn windowed(game: Game, source: &AssetFsSource, args: &GameArgs<'_>) -> Result<(
     let event_loop = EventLoop::new().map_err(|_| "no window system is available")?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App {
-        game,
-        source,
         saves: save_slot_dir(),
-        // The one run path that actually wants to be heard. On Linux this
-        // is still a `NullSink` (the recorded no-FFI decision); on
-        // macOS/Windows it reaches CoreAudio/WASAPI, and on a machine with
-        // no output device at all it falls back to silence rather than
-        // failing the run.
-        audio: AudioRuntime::open(),
-        input: Input::default(),
-        key_use_down: false,
-        console: Console::new(),
-        screen: if args.start_in_menu {
-            Screen::MainMenu
-        } else {
-            Screen::InGame
-        },
-        menu: MenuState::new(),
-        missions: menu_missions(),
-        config: GameConfig {
-            difficulty: args.difficulty,
-            overbright: args.overbright,
-        },
-        quit_requested: false,
-        debug_open: false,
-        live_profile: LiveFrameProfile::default(),
-        hud: HudState::default(),
-        state: None,
-        last_frame: Instant::now(),
-        fps_window_start: Instant::now(),
-        frames: 0,
         profile: args.profile_frames.then(FrameProfile::default),
-        failure: None,
+        ..App::new(
+            game,
+            source,
+            // The one run path that actually wants to be heard. On Linux
+            // this is still a `NullSink` (the recorded no-FFI decision); on
+            // macOS/Windows it reaches CoreAudio/WASAPI, and on a machine
+            // with no output device at all it falls back to silence rather
+            // than failing the run.
+            AudioRuntime::open(),
+            if args.start_in_menu {
+                Screen::MainMenu
+            } else {
+                Screen::InGame
+            },
+            GameConfig {
+                difficulty: args.difficulty,
+                overbright: args.overbright,
+            },
+        )
     };
     event_loop
         .run_app(&mut app)
@@ -1543,7 +1608,9 @@ struct Active {
 
 struct App<'a> {
     game: Game,
-    source: &'a AssetFsSource,
+    /// Where every map, save and sound this window loads is read from: the
+    /// payload's own files in a real run, an in-memory table in a test.
+    source: &'a dyn AssetSource,
     /// The save directory quicksave/quickload and the level-change autosave
     /// use, when the platform publishes one.
     saves: Option<ohl_save::SaveSlot>,
@@ -1602,7 +1669,42 @@ fn draw_graphics_debug(
     );
 }
 
-impl App<'_> {
+impl<'a> App<'a> {
+    /// A window-less app over `game`: no save directory, no frame
+    /// profile, and no window until winit hands it one. `audio` is the
+    /// caller's choice, so a test can drive the same loop silently.
+    fn new(
+        game: Game,
+        source: &'a dyn AssetSource,
+        audio: AudioRuntime,
+        screen: Screen,
+        config: GameConfig,
+    ) -> Self {
+        Self {
+            game,
+            source,
+            saves: None,
+            audio,
+            input: Input::default(),
+            key_use_down: false,
+            console: Console::new(),
+            screen,
+            menu: MenuState::new(),
+            missions: menu_missions(),
+            config,
+            quit_requested: false,
+            debug_open: false,
+            live_profile: LiveFrameProfile::default(),
+            hud: HudState::default(),
+            state: None,
+            last_frame: Instant::now(),
+            fps_window_start: Instant::now(),
+            frames: 0,
+            profile: None,
+            failure: None,
+        }
+    }
+
     fn fail(&mut self, event_loop: &ActiveEventLoop, message: &'static str) {
         self.failure = Some(message);
         event_loop.exit();
@@ -1638,6 +1740,11 @@ impl App<'_> {
                     };
                     if let Ok(game) = Game::load_with(self.source, map, &self.config) {
                         self.game = game;
+                        // The mission being left stops sounding, as at a
+                        // level change: the new game announces its own
+                        // ambience from its first tick, and nothing would
+                        // ever stop a loop the old one had started.
+                        self.audio.stop_all();
                         self.hud = HudState::default();
                         self.menu.pane = MenuPane::Root;
                         self.set_screen(Screen::InGame);
@@ -1650,9 +1757,10 @@ impl App<'_> {
                 MenuAction::Quit => self.quit_requested = true,
                 MenuAction::SaveGame => self.quicksave(),
                 MenuAction::LoadGame => self.quickload(),
-                MenuAction::SetSensitivity(_)
-                | MenuAction::SetVolume(_)
-                | MenuAction::SetFov(_) => {}
+                // The options screen's volume slider scales the whole mix,
+                // sounds already playing included.
+                MenuAction::SetVolume(volume) => self.audio.set_volume(volume),
+                MenuAction::SetSensitivity(_) | MenuAction::SetFov(_) => {}
             }
         }
     }
@@ -1722,23 +1830,28 @@ impl App<'_> {
         };
         if let Ok(game) = Game::load_slot(self.source, slot, ohl_save::QUICKSAVE_SLOT_NAME) {
             self.game = game;
+            // A loaded game restarts its ambience from the map's entity
+            // defaults (`ohl_game::AmbientState` is not saved), so a loop
+            // the abandoned game had switched on, and the load spawns
+            // silent, would otherwise hum on with no entity left to stop
+            // it.
+            self.audio.stop_all();
             tracing::info!("Quickload complete.");
         } else {
             tracing::warn!("The quicksave could not be loaded.");
         }
     }
 
-    /// Advances simulation and refreshes the HUD for one display frame.
-    fn tick_game(&mut self, delta_seconds: f32) {
-        // The held axes persist across frames; the two edge-triggered
-        // fields (mouse motion and the "use" press) are consumed here.
-        let frame_input = self.input;
-        self.input.mouse_delta = (0.0, 0.0);
-        self.input.use_pressed = false;
-        // Where the player's ears are for the cues this frame produces.
-        self.audio
-            .set_listener(self.game.eye_position(), self.game.camera().yaw);
-        for event in self.game.tick(delta_seconds, &frame_input) {
+    /// Acts on one frame's [`GameEvent`]s, in the order the game produced
+    /// them.
+    fn handle_game_events(&mut self, events: Vec<GameEvent>) {
+        // Every event in one frame's list was produced on the map the frame
+        // started on, and a level change is listed before the sounds of the
+        // same frame (`Game::tick`). Once the change has been followed,
+        // those sounds belong to a map that is gone: playing them would
+        // start a sound in the new one that nothing there will ever stop.
+        let mut left_the_map = false;
+        for event in events {
             match event {
                 GameEvent::LevelChange { map, landmark } => {
                     // Neither string is logged: both are map-derived.
@@ -1747,6 +1860,7 @@ impl App<'_> {
                         // The map being left stops sounding; the arriving
                         // one re-announces its own ambience.
                         self.audio.stop_all();
+                        left_the_map = true;
                         self.autosave();
                     } else {
                         tracing::warn!("The destination map is not published; staying here.");
@@ -1766,8 +1880,9 @@ impl App<'_> {
                 // reviewed path for is dropped inside `AudioRuntime::play`
                 // (see `crate::audio` and `ohl_gameplay::sounds`).
                 GameEvent::Sound(cue) => {
-                    let source: &dyn ohl_engine::AssetSource = self.source;
-                    self.audio.play(source, &cue);
+                    if !left_the_map {
+                        self.audio.play(self.source, &cue);
+                    }
                 }
                 // Viewmodel and suit-voice rendering are later work.
                 GameEvent::Suit(_) | GameEvent::ViewModel(_) => {}
@@ -1776,6 +1891,20 @@ impl App<'_> {
                 }
             }
         }
+    }
+
+    /// Advances simulation and refreshes the HUD for one display frame.
+    fn tick_game(&mut self, delta_seconds: f32) {
+        // The held axes persist across frames; the two edge-triggered
+        // fields (mouse motion and the "use" press) are consumed here.
+        let frame_input = self.input;
+        self.input.mouse_delta = (0.0, 0.0);
+        self.input.use_pressed = false;
+        // Where the player's ears are for the cues this frame produces.
+        self.audio
+            .set_listener(self.game.eye_position(), self.game.camera().yaw);
+        let events = self.game.tick(delta_seconds, &frame_input);
+        self.handle_game_events(events);
         self.audio.frame(delta_seconds);
         // Health, armor, ammo and the damage flash are `Game::hud()`'s own
         // state (M7.9 P1), written every step from the player's inventory
@@ -2213,5 +2342,418 @@ mod tests {
             pose_is_in_solid(&game, &CapturePose::Frozen),
             game.eye_is_in_solid()
         );
+    }
+}
+
+/// Every run path in this module hands its `GameEvent::Sound` cues to the
+/// audio runtime, and every way of leaving a game behind silences it.
+///
+/// Each test drives the run path's own code ([`run_script_ticks`] and
+/// [`route_headless_events`], [`route_benchmark_events`], and
+/// [`App::tick_game`]/[`App::handle_game_events`]/
+/// [`App::handle_menu_actions`]/[`App::quickload`])
+/// over a synthetic room and a silent runtime, so none of them opens an
+/// output device or needs a GPU. Every map, entity block, sound name,
+/// `sentences.txt` line and WAV here is project-authored; nothing comes
+/// from any game installation.
+#[cfg(test)]
+mod sound_routing_tests {
+    use super::*;
+    use crate::audio::fixtures::synthetic_wav;
+    use ohl_engine::test_support::{
+        LANDMARK, NEXT_MAP, SCRIPT_MAP, SYNTHETIC_MAP, entity_block, entity_of_classname,
+        script_room_bsp, script_room_entities, synthetic_map_bsp_named,
+        synthetic_map_bsp_with_extra_entity,
+    };
+    use ohl_engine::{ChannelClass, MemoryAssets, SoundAsset, SoundCue};
+
+    /// Two seconds of 22.05 kHz audio: longer than any test below pumps
+    /// the mixer for, so a channel that is gone was stopped, not run out.
+    const LONG_SOUND_FRAMES: usize = 44_100;
+
+    /// One `ambient_generic` that sounds from the map's first tick.
+    fn humming_ambient(origin: [f32; 3]) -> String {
+        entity_block(
+            "ambient_generic",
+            origin,
+            0.0,
+            &[("targetname", "ohl_hum"), ("message", "ohl/hum.wav")],
+        )
+    }
+
+    /// The payload side: the ambient's sound, a one-line `sentences.txt`
+    /// and the two word samples its one sentence names.
+    fn sound_assets() -> MemoryAssets {
+        let mut assets = MemoryAssets::new();
+        assets.insert("sound/ohl/hum.wav", synthetic_wav(LONG_SOUND_FRAMES));
+        assets.insert(
+            "sound/sentences.txt",
+            b"OHL_GREETING ohl/hello ohl/there\n".to_vec(),
+        );
+        assets.insert("sound/ohl/hello.wav", synthetic_wav(LONG_SOUND_FRAMES));
+        assets.insert("sound/ohl/there.wav", synthetic_wav(LONG_SOUND_FRAMES));
+        assets
+    }
+
+    /// The script room with the humming ambient, plus a scientist told by
+    /// a `scripted_sentence` to speak the one sentence `sound_assets`
+    /// publishes, as soon as the map loads.
+    fn speaking_room() -> String {
+        script_room_entities(
+            [-192.0, -192.0, 36.0],
+            &format!(
+                "{}{}{}{}",
+                humming_ambient([64.0, 0.0, 48.0]),
+                entity_block(
+                    "monster_scientist",
+                    [0.0, 96.0, 36.0],
+                    0.0,
+                    &[("targetname", "ohl_speaker")],
+                ),
+                entity_block(
+                    "scripted_sentence",
+                    [0.0, 0.0, 36.0],
+                    0.0,
+                    &[
+                        ("targetname", "ohl_line"),
+                        ("sentence", "OHL_GREETING"),
+                        ("entity", "ohl_speaker"),
+                        ("spawnflags", "1"),
+                    ],
+                ),
+                entity_block(
+                    "trigger_auto",
+                    [0.0, 0.0, 0.0],
+                    0.0,
+                    &[("target", "ohl_line")],
+                ),
+            ),
+        )
+    }
+
+    /// `assets` plus the script room built from `entities`, loaded.
+    fn script_room_game(assets: &mut MemoryAssets, entities: &str) -> Game {
+        assets.insert(&format!("maps/{SCRIPT_MAP}.bsp"), script_room_bsp(entities));
+        Game::load(&*assets, SCRIPT_MAP).expect("the synthetic room loads")
+    }
+
+    /// The low 32 bits of `classname`'s first entity: the key both an
+    /// ambient's and a sentence's cue name their channel by.
+    fn channel_key(game: &Game, classname: &str) -> u32 {
+        entity_of_classname(game, classname)
+            .expect("the fixture spawns it")
+            .id()
+    }
+
+    fn is_playing(audio: &AudioRuntime, entity: u32, class: ChannelClass) -> bool {
+        audio
+            .mixer()
+            .lock()
+            .expect("lock mixer")
+            .is_playing(entity, class)
+    }
+
+    fn channel_count(audio: &AudioRuntime) -> usize {
+        audio
+            .mixer()
+            .lock()
+            .expect("lock mixer")
+            .active_channel_count()
+    }
+
+    /// Runs `ticks` idle ticks of a scripted run over `game`.
+    fn run_idle(
+        game: &mut Game,
+        source: &dyn AssetSource,
+        audio: &mut AudioRuntime,
+        ticks: u32,
+        follow_level_change: bool,
+    ) -> TickOutcome {
+        let script = crate::script::Script::parse(format!("{ticks} wait\n").as_bytes())
+            .expect("a project-authored script parses");
+        let mut log = crate::script_log::ScriptLog::new(game);
+        run_script_ticks(
+            game,
+            source,
+            audio,
+            &script,
+            &mut log,
+            &TickOptions {
+                script_log: false,
+                follow_level_change,
+                stop_on_level_change: false,
+            },
+        )
+    }
+
+    /// What `--script` and `--chain-script` do with a map's ambience and a
+    /// monster's speech: both reach the mixer, the ambient on its own
+    /// static channel and the sentence on the speaker's voice channel.
+    #[test]
+    fn a_scripted_run_hands_the_maps_ambience_and_its_speech_to_the_mixer() {
+        let mut assets = sound_assets();
+        let mut game = script_room_game(&mut assets, &speaking_room());
+        let ambient = channel_key(&game, "ambient_generic");
+        let speaker = channel_key(&game, "monster_scientist");
+        let mut audio = AudioRuntime::silent();
+
+        run_idle(&mut game, &assets, &mut audio, 30, false);
+
+        assert!(
+            is_playing(&audio, ambient, ChannelClass::Static),
+            "the map's ambient_generic is sounding"
+        );
+        assert!(
+            is_playing(&audio, speaker, ChannelClass::Voice),
+            "the scientist is speaking its sentence"
+        );
+    }
+
+    /// A followed level change stops everything the map being left was
+    /// playing; the arriving map (which has no ambience of its own here)
+    /// leaves the mixer empty.
+    #[test]
+    fn a_followed_level_change_silences_the_map_being_left() {
+        let mut assets = sound_assets();
+        let leaving = synthetic_map_bsp_with_extra_entity(
+            NEXT_MAP,
+            &format!(
+                "{}{}",
+                humming_ambient([64.0, 0.0, 48.0]),
+                // Fires the fixture's own named `trigger_changelevel`
+                // half a second in.
+                entity_block(
+                    "trigger_auto",
+                    [0.0, 0.0, 0.0],
+                    0.0,
+                    &[("target", "ohl_exit"), ("delay", "0.5")],
+                ),
+            ),
+        );
+        assets.insert(&format!("maps/{SYNTHETIC_MAP}.bsp"), leaving);
+        assets.insert(
+            &format!("maps/{NEXT_MAP}.bsp"),
+            synthetic_map_bsp_named(SYNTHETIC_MAP),
+        );
+        let mut game = Game::load(&assets, SYNTHETIC_MAP).expect("the synthetic map loads");
+        let ambient = channel_key(&game, "ambient_generic");
+        let mut audio = AudioRuntime::silent();
+
+        let before = run_idle(&mut game, &assets, &mut audio, 10, true);
+        assert!(!before.followed_level_change);
+        assert!(is_playing(&audio, ambient, ChannelClass::Static));
+
+        let after = run_idle(&mut game, &assets, &mut audio, 60, true);
+        assert!(after.followed_level_change, "the named change fired");
+        assert_eq!(
+            channel_count(&audio),
+            0,
+            "nothing from the map that was left is still playing"
+        );
+    }
+
+    /// The two-map fixture: the synthetic room, whose named
+    /// `trigger_changelevel` leads to [`NEXT_MAP`], and that map, loaded
+    /// on the first.
+    fn two_map_game(assets: &mut MemoryAssets) -> Game {
+        assets.insert(
+            &format!("maps/{SYNTHETIC_MAP}.bsp"),
+            synthetic_map_bsp_named(NEXT_MAP),
+        );
+        assets.insert(
+            &format!("maps/{NEXT_MAP}.bsp"),
+            synthetic_map_bsp_named(SYNTHETIC_MAP),
+        );
+        Game::load(&*assets, SYNTHETIC_MAP).expect("the synthetic map loads")
+    }
+
+    /// One tick's events as `Game::tick` orders them: a level change, then
+    /// a sound produced on the map that tick started on.
+    fn change_then_sound() -> Vec<GameEvent> {
+        vec![
+            GameEvent::LevelChange {
+                map: String::from(NEXT_MAP),
+                landmark: String::from(LANDMARK),
+            },
+            GameEvent::Sound(SoundCue::new(
+                7,
+                ChannelClass::Static,
+                SoundAsset::file("sound/ohl/hum.wav"),
+            )),
+        ]
+    }
+
+    /// A sound listed after a followed level change in the same tick was
+    /// produced on the map that was left; a run nobody listens to drops
+    /// it rather than starting it in the new one.
+    #[test]
+    fn a_headless_run_drops_the_sounds_of_the_tick_that_left_the_map() {
+        let mut assets = sound_assets();
+        let mut game = two_map_game(&mut assets);
+        let mut audio = AudioRuntime::silent();
+
+        let followed = route_headless_events(
+            &mut game,
+            &assets,
+            &mut audio,
+            change_then_sound(),
+            &HeadlessEventOptions {
+                follow_level_change: true,
+                script_log: false,
+                player_died_line: "The player died.",
+            },
+        );
+        assert!(followed);
+        assert_eq!(game.map(), NEXT_MAP);
+        assert_eq!(channel_count(&audio), 0);
+
+        // Not followed, the same sound is the current map's own, and plays.
+        let mut game = two_map_game(&mut assets);
+        let followed = route_headless_events(
+            &mut game,
+            &assets,
+            &mut audio,
+            change_then_sound(),
+            &HeadlessEventOptions {
+                follow_level_change: false,
+                script_log: false,
+                player_died_line: "The player died.",
+            },
+        );
+        assert!(!followed);
+        assert_eq!(channel_count(&audio), 1);
+    }
+
+    /// The window's own level change silences the map being left, and
+    /// drops the sounds of the tick that left it.
+    #[test]
+    fn the_windows_level_change_silences_the_map_it_left() {
+        let mut assets = sound_assets();
+        let game = two_map_game(&mut assets);
+        let mut app = window(game, &assets);
+        // Something the map being left was already playing.
+        app.handle_game_events(vec![GameEvent::Sound(SoundCue::new(
+            9,
+            ChannelClass::Static,
+            SoundAsset::file("sound/ohl/hum.wav"),
+        ))]);
+        assert_eq!(channel_count(&app.audio), 1);
+
+        app.handle_game_events(change_then_sound());
+        assert_eq!(app.game.map(), NEXT_MAP, "the level change was followed");
+        assert_eq!(channel_count(&app.audio), 0);
+    }
+
+    /// `--benchmark` plays what it hears, and ends only on what would
+    /// change its workload.
+    #[test]
+    fn the_benchmark_plays_its_sounds_and_stops_on_a_level_change_or_a_death() {
+        let assets = sound_assets();
+        let mut audio = AudioRuntime::silent();
+        let hum = || {
+            GameEvent::Sound(SoundCue::new(
+                7,
+                ChannelClass::Static,
+                SoundAsset::file("sound/ohl/hum.wav"),
+            ))
+        };
+
+        assert!(!route_benchmark_events(&mut audio, &assets, vec![hum()]));
+        assert!(is_playing(&audio, 7, ChannelClass::Static));
+
+        assert!(route_benchmark_events(
+            &mut audio,
+            &assets,
+            vec![GameEvent::PlayerDied]
+        ));
+        assert!(route_benchmark_events(
+            &mut audio,
+            &assets,
+            vec![GameEvent::LevelChange {
+                map: String::from(NEXT_MAP),
+                landmark: String::from(LANDMARK),
+            }],
+        ));
+    }
+
+    /// A window over `game`, silent, with `assets` behind it.
+    fn window(game: Game, assets: &MemoryAssets) -> App<'_> {
+        App::new(
+            game,
+            assets,
+            AudioRuntime::silent(),
+            Screen::InGame,
+            GameConfig::default(),
+        )
+    }
+
+    /// The window's own loop plays the map's ambience, and the options
+    /// screen's volume slider reaches the mixer.
+    #[test]
+    fn the_window_plays_the_maps_sounds_and_the_menus_volume_reaches_the_mixer() {
+        let mut assets = sound_assets();
+        let game = script_room_game(&mut assets, &speaking_room());
+        let ambient = channel_key(&game, "ambient_generic");
+        let speaker = channel_key(&game, "monster_scientist");
+        let mut app = window(game, &assets);
+
+        for _ in 0..30 {
+            app.tick_game(CAPTURE_STEP);
+        }
+        assert!(is_playing(&app.audio, ambient, ChannelClass::Static));
+        assert!(is_playing(&app.audio, speaker, ChannelClass::Voice));
+
+        app.handle_menu_actions(vec![MenuAction::SetVolume(0.25)]);
+        let volume = app
+            .audio
+            .mixer()
+            .lock()
+            .expect("lock mixer")
+            .master_volume();
+        assert!((volume - 0.25).abs() < 1e-6, "{volume}");
+    }
+
+    /// Starting a mission from the menu replaces the game; whatever the
+    /// one being left was playing stops with it.
+    #[test]
+    fn starting_a_mission_from_the_menu_silences_the_game_being_left() {
+        let mut assets = sound_assets();
+        assets.insert(
+            &format!("maps/{SYNTHETIC_MAP}.bsp"),
+            synthetic_map_bsp_named(NEXT_MAP),
+        );
+        let game = script_room_game(
+            &mut assets,
+            &script_room_entities([-192.0, -192.0, 36.0], &humming_ambient([64.0, 0.0, 48.0])),
+        );
+        let mut app = window(game, &assets);
+        app.tick_game(CAPTURE_STEP);
+        assert_eq!(channel_count(&app.audio), 1);
+
+        app.handle_menu_actions(vec![MenuAction::StartSinglePlayer {
+            map: SYNTHETIC_MAP,
+            difficulty: MenuDifficulty::Medium,
+        }]);
+        assert_eq!(app.game.map(), SYNTHETIC_MAP, "the mission started");
+        assert_eq!(channel_count(&app.audio), 0);
+    }
+
+    /// A quickload replaces the game too, and must silence it the same way.
+    #[test]
+    fn a_quickload_silences_what_the_abandoned_game_was_playing() {
+        let saves = tempfile::tempdir().expect("a temporary save directory");
+        let mut assets = sound_assets();
+        let game = script_room_game(
+            &mut assets,
+            &script_room_entities([-192.0, -192.0, 36.0], &humming_ambient([64.0, 0.0, 48.0])),
+        );
+        let mut app = window(game, &assets);
+        app.saves = Some(ohl_save::SaveSlot::new(saves.path()));
+        app.quicksave();
+        app.tick_game(CAPTURE_STEP);
+        assert_eq!(channel_count(&app.audio), 1);
+
+        app.quickload();
+        assert_eq!(channel_count(&app.audio), 0);
     }
 }
