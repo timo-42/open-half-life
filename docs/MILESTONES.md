@@ -7465,7 +7465,7 @@ were also run with a local, uncommitted per-hop probe (player health and
 the engine's damage, death and hit counters) on this branch and on its
 base: the two read identically at every hop, with either loadout.
 
-## M9.NEXT — The entities that fell through: a belt, a wall that comes and goes, and a strip
+## M9.43 — The entities that fell through: a belt, a wall that comes and goes, and a strip
 
 `ohl_game::registry::Registry::build` has one arm per classname it knows
 and a fallthrough for the rest, and the fallthrough attaches a bare
@@ -7563,7 +7563,9 @@ master.
   from a closing mover only acts on a brush that moves, so a wall
   appearing around the player or a monster embedded them for good. It now
   waits, non-solid in both collision models, until nobody is inside — a
-  project-authored choice, since no source says what the original does.
+  project-authored choice, since no source says what the original does. A
+  `monster_generic` spawned "Not solid" (M9.42, merged meanwhile) holds
+  nothing up.
 - *The HUD after a strip* still showed the stripped gun's clip and reserve;
   they are cleared.
 - *A belt is not a piston.* The push-out read a velocity that now included
@@ -7597,9 +7599,9 @@ The one test the first run wrote for a plain `func_button` with `health` —
 a press path that already existed and had only ever been tested as a
 `func_rot_button` — is kept.
 
-**Gates**, measured after the review follow-ups and rebased onto M9.41:
+**Gates**, measured after the review follow-ups and rebased onto M9.42:
 fmt, clippy (workspace, `--features dev-tools`, and `--all-features`),
-`cargo test --workspace` (222 suites, 2,604 passed, 0 failed; the
+`cargo test --workspace` (222 suites, 2,642 passed, 0 failed; the
 end-section capture test also run with `OHL_RENDER_GPU_TEST=1`), policy,
 graph, combat-smoke 37/37 with 0 unexpected lines, campaign-smoke 93/93,
 and `cargo xtask chain-walk` at **distinct depth 12**, Pass, 660.8
