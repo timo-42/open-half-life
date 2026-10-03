@@ -563,7 +563,9 @@ fn benchmark_frames(
         audio.set_listener(game.eye_position(), game.camera().yaw);
         let events = game.tick(CAPTURE_STEP, &Input::default());
         if route_benchmark_events(audio, source, events) {
-            tracing::warn!("Benchmark stopped because the level changed or the player died.");
+            tracing::warn!(
+                "Benchmark stopped because the level changed, the player died or the section ended."
+            );
             return Ok(());
         }
         audio.frame(CAPTURE_STEP);
@@ -596,9 +598,10 @@ fn benchmark_frames(
 }
 
 /// Plays every sound one benchmark tick produced, and reports whether the
-/// tick also ended the benchmark (a level change or the player's death:
-/// either would change the workload being measured, so neither is
-/// followed).
+/// tick also ended the benchmark (a level change, the player's death, or a
+/// `trigger_endsection` ending the game: each would change the workload
+/// being measured, so none is followed). Sounds listed after the event
+/// that ended the run are dropped with it.
 fn route_benchmark_events(
     audio: &mut AudioRuntime,
     source: &dyn AssetSource,
@@ -607,8 +610,16 @@ fn route_benchmark_events(
     let mut ends_the_run = false;
     for event in events {
         match event {
-            GameEvent::Sound(cue) => audio.play(source, &cue),
+            GameEvent::Sound(cue) => {
+                if !ends_the_run {
+                    audio.play(source, &cue);
+                }
+            }
             GameEvent::LevelChange { .. } | GameEvent::PlayerDied => ends_the_run = true,
+            GameEvent::EndSection => {
+                tracing::info!("{SECTION_ENDED}");
+                ends_the_run = true;
+            }
             GameEvent::ChapterTitle(_)
             | GameEvent::Message { .. }
             | GameEvent::Suit(_)
@@ -775,6 +786,9 @@ struct TickOutcome {
     /// A `trigger_changelevel` fired and was followed onto its
     /// destination map.
     followed_level_change: bool,
+    /// A `trigger_endsection` fired, so the route stopped where it stood
+    /// rather than running its remaining ticks. See [`SECTION_ENDED`].
+    ended_section: bool,
     /// How many simulation ticks actually ran. Fewer than the script
     /// scheduled when [`TickOptions::stop_on_level_change`] cut the route
     /// short.
@@ -797,6 +811,7 @@ fn run_script_ticks(
 ) -> TickOutcome {
     let mut outcome = TickOutcome {
         followed_level_change: false,
+        ended_section: false,
         ticks: 0,
     };
     for step in script.steps() {
@@ -811,7 +826,7 @@ fn run_script_ticks(
         };
         audio.set_listener(game.eye_position(), game.camera().yaw);
         let events = game.tick(CAPTURE_STEP, &input);
-        outcome.followed_level_change |= route_headless_events(
+        let routed = route_headless_events(
             game,
             source,
             audio,
@@ -827,12 +842,19 @@ fn run_script_ticks(
                 player_died_line: "The player died.",
             },
         );
+        outcome.followed_level_change |= routed.followed_level_change;
+        outcome.ended_section |= routed.ended_section;
         audio.frame(CAPTURE_STEP);
         outcome.ticks += 1;
         if options.script_log {
             log.observe(game, CAPTURE_STEP);
         }
         if options.stop_on_level_change && outcome.followed_level_change {
+            break;
+        }
+        // A section that has ended is a run that is over: nothing after
+        // this tick belongs to it, whichever caller asked for the ticks.
+        if outcome.ended_section {
             break;
         }
     }
@@ -852,6 +874,15 @@ struct HeadlessEventOptions {
     player_died_line: &'static str,
 }
 
+/// What [`route_headless_events`] did with one tick's events.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct HeadlessOutcome {
+    /// A level change was followed onto its destination map.
+    followed_level_change: bool,
+    /// A `trigger_endsection` ended the run (see [`SECTION_ENDED`]).
+    ended_section: bool,
+}
+
 /// Handles one tick's events for a run nobody is listening to: a scripted
 /// run, one leg of a chain walk, or a still capture.
 ///
@@ -861,14 +892,18 @@ struct HeadlessEventOptions {
 /// stops everything `audio` is playing, and drops the tick's remaining
 /// sounds, since the map being left must not keep humming under the one
 /// arriving, which announces its own soundscape from its first tick.
-/// Returns whether a level change was followed.
+///
+/// A `trigger_endsection` ends the run: the fixed [`SECTION_ENDED`] line is
+/// logged, everything `audio` is playing stops, and the rest of the tick's
+/// events are dropped — a level change listed after it must not load a
+/// map behind a game that is over. The caller stops ticking.
 fn route_headless_events(
     game: &mut Game,
     source: &dyn AssetSource,
     audio: &mut AudioRuntime,
     events: Vec<GameEvent>,
     options: &HeadlessEventOptions,
-) -> bool {
+) -> HeadlessOutcome {
     let mut followed_level_change = false;
     for event in events {
         match event {
@@ -897,6 +932,14 @@ fn route_headless_events(
             GameEvent::PlayerDied => {
                 tracing::info!("{}", options.player_died_line);
             }
+            GameEvent::EndSection => {
+                tracing::info!("{SECTION_ENDED}");
+                audio.stop_all();
+                return HeadlessOutcome {
+                    followed_level_change,
+                    ended_section: true,
+                };
+            }
             // Map-authored text and presentation events with nothing to
             // act on in a run nobody watches (M7.9 P1): none of these are
             // logged.
@@ -906,8 +949,27 @@ fn route_headless_events(
             | GameEvent::ViewModel(_) => {}
         }
     }
-    followed_level_change
+    HeadlessOutcome {
+        followed_level_change,
+        ended_section: false,
+    }
 }
+
+/// The fixed line every run logs when a `trigger_endsection` fires.
+///
+/// TWHL's `trigger_endsection` page documents the entity as one that "ends the
+/// current game and returns the player to the game's main menu"
+/// (`docs/FORMAT_SOURCES.md`, "Map entities the registry used to drop"). The
+/// interactive window does exactly that: it stops ticking the game and shows
+/// [`Screen::MainMenu`]. A scripted or headless run has no menu to return to,
+/// so there the section ending means the run is over: it stops where it stands,
+/// and none of the script's remaining ticks run.
+///
+/// Name-free like every other line in this module: the entity's own
+/// `section` keyvalue never leaves `ohl-engine` (see
+/// `ohl_engine::GameEvent::EndSection`), so there is nothing map-derived
+/// to leak here.
+pub const SECTION_ENDED: &str = "The section ended.";
 
 /// The fixed line a chain walk logs when one of its routes ran out of
 /// scripted ticks without reaching a `trigger_changelevel`: the chain got
@@ -1929,6 +1991,17 @@ impl<'a> App<'a> {
                 GameEvent::PlayerDied => {
                     tracing::info!("The player died.");
                 }
+                GameEvent::EndSection => {
+                    // "Returns the player to the game's main menu": the
+                    // game stops ticking (`Self::draw` only ticks it
+                    // in-game) and its sounds stop, and starting a mission
+                    // from the menu loads a fresh one, exactly as from a
+                    // cold start.
+                    tracing::info!("{SECTION_ENDED}");
+                    self.audio.stop_all();
+                    self.menu.pane = MenuPane::Root;
+                    self.set_screen(Screen::MainMenu);
+                }
             }
         }
     }
@@ -2642,7 +2715,8 @@ mod sound_routing_tests {
                 script_log: false,
                 player_died_line: "The player died.",
             },
-        );
+        )
+        .followed_level_change;
         assert!(followed);
         assert_eq!(game.map(), NEXT_MAP);
         assert_eq!(channel_count(&audio), 0);
@@ -2659,7 +2733,8 @@ mod sound_routing_tests {
                 script_log: false,
                 player_died_line: "The player died.",
             },
-        );
+        )
+        .followed_level_change;
         assert!(!followed);
         assert_eq!(channel_count(&audio), 1);
     }

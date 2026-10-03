@@ -1061,6 +1061,155 @@ pub struct Trigger {
     pub delay: f32,
 }
 
+/// `func_conveyor`: a brush whose *surface* moves even though the brush
+/// itself never does.
+///
+/// TWHL's `func_conveyor` page (fetched 2026-10-03; `docs/FORMAT_SOURCES.md`,
+/// "Map entities the registry used to drop") documents a brush entity that
+/// "creates a moving conveyor belt that pushes things on top of it", with
+/// "Conveyor Speed (`speed`) — the speed of push, and the scroll speed of the
+/// `scroll*` textures. Defaults to 100 if 0 or not set", "Pitch Roll Yaw
+/// (`angles`) — set the direction of push here", a "No push (1)" spawnflag that
+/// disables the push, and a "Not solid (2)" spawnflag that makes the entity
+/// non-solid and disables the push too. The same page's triggering note —
+/// "triggering a `func_conveyor` will negate the speed thus pushing in the
+/// opposite direction" — is what [`crate::logic::Simulation::activate`]'s own
+/// arm does to [`Self::speed`]. The texture scroll is not implemented.
+///
+/// This crate only *records* the push; turning it into motion is the
+/// host's, since a conveyor carries whatever is standing on it and this
+/// crate owns no player. `ohl_engine::Level` reads
+/// [`Self::surface_velocity`] into the same rider-carry seam a moving
+/// `func_train` already goes through.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Conveyor {
+    /// `speed`, in units per second, signed: a documented activation flips
+    /// the sign rather than latching an on/off state.
+    pub speed: f32,
+    /// The push direction `angles`/`angle` selects, as a unit vector
+    /// (`movedir_from_angles`).
+    pub direction: Vec3,
+    /// The published "No push (1)" spawnflag: the entity is cosmetic and
+    /// pushes nothing, whatever its `speed` says.
+    pub no_push: bool,
+    /// The published "Not solid (2)" spawnflag: the brush blocks nothing
+    /// (`crate::brush::solid_model_instances` leaves it out) and, standing
+    /// on nothing, pushes nothing either.
+    pub not_solid: bool,
+}
+
+impl Conveyor {
+    /// The published default `speed` for a conveyor whose keyvalue is
+    /// absent or zero ("Defaults to 100 if 0 or not set").
+    pub const DEFAULT_SPEED: f32 = 100.0;
+
+    /// How fast, and in which direction, this conveyor's surface carries
+    /// whatever stands on it right now: `Vec3::ZERO` for a "No push" or a
+    /// "Not solid" conveyor and for a non-finite speed or direction.
+    #[must_use]
+    pub fn surface_velocity(&self) -> Vec3 {
+        if self.no_push || self.not_solid || !self.speed.is_finite() || !self.direction.is_finite()
+        {
+            return Vec3::ZERO;
+        }
+        self.direction * self.speed
+    }
+}
+
+/// The published `func_conveyor` "No push" spawnflag (see [`Conveyor`]).
+pub const SPAWNFLAG_CONVEYOR_NO_PUSH: u32 = 1;
+
+/// The published `func_conveyor` "Not solid" spawnflag (see [`Conveyor`]).
+pub const SPAWNFLAG_CONVEYOR_NOT_SOLID: u32 = 2;
+
+/// `func_wall_toggle`: a `func_wall` whose solidity *and* visibility switch
+/// together every time it is activated.
+///
+/// TWHL's `func_wall_toggle` page (fetched 2026-10-03;
+/// `docs/FORMAT_SOURCES.md`, "Map entities the registry used to drop")
+/// documents "a `func_wall` that is made invisible when triggered", which
+/// unlike a `func_illusionary` is "not there" once triggered, and a "Starts
+/// invisible (1)" spawnflag. VDC's GoldSrc page (reviewed through a
+/// search-engine result summary; it returns HTTP 403 to automated fetches)
+/// describes "a brush entity that can be toggled on/off. When off, the brush
+/// will be non-solid and invisible". Each activation flips it.
+///
+/// The two halves of "off" are honoured in the two places that own them:
+/// `crate::brush::model_instances` drops an invisible one from the drawn
+/// list, and `ohl_engine::Level::sync_brush_collision` suspends its
+/// attached collision brush. It stays *attached* either way — a wall that
+/// can come back has to have something to come back to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct WallToggle {
+    /// Whether the wall is currently drawn and solid.
+    pub visible: bool,
+}
+
+/// The published `func_wall_toggle` "Starts Invisible" spawnflag (see
+/// [`WallToggle`]).
+pub const SPAWNFLAG_WALL_TOGGLE_STARTS_INVISIBLE: u32 = 1;
+
+/// `player_weaponstrip`: a point entity that, when activated, takes every
+/// weapon (and its ammo) off the player.
+///
+/// TWHL's `player_weaponstrip` page (fetched 2026-10-03;
+/// `docs/FORMAT_SOURCES.md`, "Map entities the registry used to drop")
+/// documents an entity that "when activated ... removes all the weapons that
+/// the player is carrying", with a `targetname` and no other keyvalue or
+/// spawnflag — which is exactly this component's shape: no touch volume, no
+/// keyvalue of its own, only a marker the activation path recognises. VDC's
+/// GoldSrc page (search-engine result summary) adds that "any other items,
+/// primarily the player's HEV Suit, will not be removed", and that the ammo
+/// pool is set to zero along with the weapons.
+///
+/// Carrying out the strip belongs to the host: this crate does not own the
+/// player's inventory, so [`crate::logic::Simulation::activate`] raises a
+/// [`crate::logic::Event::WeaponStrip`] and `ohl_engine::Game` applies it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct WeaponStrip;
+
+/// `trigger_endsection`: a volume (or named entity) that ends the current
+/// game section.
+///
+/// TWHL's `trigger_endsection` page (fetched 2026-10-03;
+/// `docs/FORMAT_SOURCES.md`, "Map entities the registry used to drop")
+/// documents an entity that "ends the current game and returns the player to
+/// the game's main menu", a `section` keyvalue that "must have a value for the
+/// entity to work", and a "USE Only (1)" spawnflag: the entity "cannot be
+/// triggered by the player walking into it, but must be triggered by another
+/// entity".
+///
+/// [`Self::section`] is carried verbatim rather than interpreted: every
+/// published value takes the player back to the main menu (one also opens
+/// a web page, which this project will not do), so there is nothing for a
+/// match on it to decide beyond "is it set", and the string itself is map
+/// data — the host is expected to act on the *event*, never to print this
+/// field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct EndSection {
+    /// The `section` keyvalue, trimmed; `""` when the map does not set one,
+    /// in which case the entity does nothing at all.
+    pub section: String,
+}
+
+impl EndSection {
+    /// Whether firing this entity ends the section: only when its
+    /// `section` keyvalue is set, since the published entity "must have a
+    /// value for the entity to work".
+    #[must_use]
+    pub fn ends_section(&self) -> bool {
+        !self.section.is_empty()
+    }
+}
+
+/// The published `trigger_endsection` "USE Only" spawnflag (see
+/// [`EndSection`]).
+pub const SPAWNFLAG_ENDSECTION_USE_ONLY: u32 = 1;
+
 /// How many times the map logic has activated a `monstermaker` that has
 /// not been consumed yet.
 ///
@@ -2592,6 +2741,73 @@ impl Registry {
                 "func_ladder" => {
                     world.insert_one(entity, Ladder).ok();
                 }
+                "func_conveyor" => {
+                    // "Defaults to 100 if 0 or not set" — so an explicit
+                    // `0` is the default too, not a stopped conveyor.
+                    let speed = numeric(def, "speed", Conveyor::DEFAULT_SPEED);
+                    let speed = if speed == 0.0 {
+                        Conveyor::DEFAULT_SPEED
+                    } else {
+                        speed
+                    };
+                    world
+                        .insert_one(
+                            entity,
+                            Conveyor {
+                                speed,
+                                direction: movedir_from_angles(transform.angles),
+                                no_push: def.spawnflags & SPAWNFLAG_CONVEYOR_NO_PUSH != 0,
+                                not_solid: def.spawnflags & SPAWNFLAG_CONVEYOR_NOT_SOLID != 0,
+                            },
+                        )
+                        .ok();
+                }
+                "func_wall_toggle" => {
+                    world
+                        .insert_one(
+                            entity,
+                            WallToggle {
+                                visible: def.spawnflags & SPAWNFLAG_WALL_TOGGLE_STARTS_INVISIBLE
+                                    == 0,
+                            },
+                        )
+                        .ok();
+                }
+                "player_weaponstrip" => {
+                    world.insert_one(entity, WeaponStrip).ok();
+                }
+                "trigger_endsection" => {
+                    // A `trigger_endsection` is a brush volume like every
+                    // other `trigger_*`, so it keeps the ordinary
+                    // once/wait/delay bookkeeping the generic arm below
+                    // would have given it — unless "USE Only" is set, in
+                    // which case walking into it does nothing and only a
+                    // fire by name reaches it, exactly as
+                    // `trigger_changelevel`'s own flag is honoured above.
+                    // The dedicated component is what makes a touch (or a
+                    // fire by name) end the section rather than only fire
+                    // a `target`.
+                    if def.spawnflags & SPAWNFLAG_ENDSECTION_USE_ONLY == 0 {
+                        world
+                            .insert_one(
+                                entity,
+                                Trigger {
+                                    once: false,
+                                    wait: numeric(def, "wait", 0.2),
+                                    delay: numeric(def, "delay", 0.0),
+                                },
+                            )
+                            .ok();
+                    }
+                    world
+                        .insert_one(
+                            entity,
+                            EndSection {
+                                section: text_field(def, "section"),
+                            },
+                        )
+                        .ok();
+                }
                 "func_water" => {
                     world
                         .insert_one(entity, Water(Liquid::from_skin_keyvalue(def)))
@@ -3317,5 +3533,67 @@ mod tests {
         let defs = parse_entities(&entities, &Limits::default());
         let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
         assert_eq!(registry.find("many").len(), MAX_ENTITIES_PER_NAME);
+    }
+
+    /// The four new arms attach the components the map logic acts on, so a
+    /// gameplay entity that used to land in the `Unknown` bucket no longer
+    /// does.
+    #[test]
+    fn the_newly_handled_classnames_leave_the_unknown_bucket() {
+        let entities = vec![
+            raw(&[("classname", "func_conveyor"), ("model", "*1")]),
+            raw(&[("classname", "func_wall_toggle"), ("model", "*2")]),
+            raw(&[("classname", "player_weaponstrip")]),
+            raw(&[("classname", "trigger_endsection"), ("model", "*3")]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        assert_eq!(registry.world.query::<&Unknown>().iter().count(), 0);
+        assert_eq!(
+            registry.world.query::<&Conveyor>().iter().count()
+                + registry.world.query::<&WallToggle>().iter().count()
+                + registry.world.query::<&WeaponStrip>().iter().count()
+                + registry.world.query::<&EndSection>().iter().count(),
+            4
+        );
+    }
+
+    /// `trigger_endsection`'s published `section` keyvalue is carried
+    /// verbatim (and defaults to the empty string), so a host that wants
+    /// to tell the published section kinds apart can — while this project
+    /// itself never reads it.
+    #[test]
+    fn trigger_endsection_carries_its_section_keyvalue_verbatim() {
+        let entities = vec![
+            raw(&[
+                ("classname", "trigger_endsection"),
+                ("targetname", "end1"),
+                ("section", "ohl_test_section"),
+                ("model", "*1"),
+            ]),
+            raw(&[
+                ("classname", "trigger_endsection"),
+                ("targetname", "end2"),
+                ("model", "*2"),
+            ]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        assert_eq!(
+            registry
+                .world
+                .get::<&EndSection>(registry.find("end1")[0])
+                .unwrap()
+                .section,
+            "ohl_test_section"
+        );
+        assert!(
+            registry
+                .world
+                .get::<&EndSection>(registry.find("end2")[0])
+                .unwrap()
+                .section
+                .is_empty()
+        );
     }
 }

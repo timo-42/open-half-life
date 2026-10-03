@@ -384,6 +384,11 @@ struct BrushPart {
     /// actually solid, which is decided by walking the hull tree.
     mins: Vec3,
     maxs: Vec3,
+    /// The head links [`CollisionModel::set_brush_solid`] took away, kept
+    /// so the same brush can be made solid again. `None` whenever the
+    /// brush is solid, which is every brush's state until something
+    /// suspends it.
+    suspended: Option<[i32; 4]>,
 }
 
 impl BrushPart {
@@ -808,6 +813,7 @@ impl CollisionModel {
             kind,
             mins,
             maxs,
+            suspended: None,
         });
         Ok(BrushId(self.brushes.len() - 1))
     }
@@ -921,7 +927,56 @@ impl CollisionModel {
     pub fn detach_brush(&mut self, brush: BrushId) {
         if let Some(part) = self.brushes.get_mut(brush.0) {
             part.heads = [contents::EMPTY; 4];
+            // A detached brush is gone for good: dropping whatever
+            // [`Self::set_brush_solid`] had put aside keeps a later
+            // `set_brush_solid(_, true)` from resurrecting it.
+            part.suspended = None;
         }
+    }
+
+    /// Switches an attached brush entity's solidity off and on again,
+    /// without detaching it.
+    ///
+    /// This is [`Self::detach_brush`]'s reversible sibling, and exists for the
+    /// one documented brush entity whose solidity is a *state* rather than a
+    /// lifetime: a `func_wall_toggle`, which VDC's page for it describes as
+    /// "non-solid and invisible" while off and back to an ordinary wall when
+    /// switched on again (`docs/FORMAT_SOURCES.md`, "Map entities the registry
+    /// used to drop"). Detaching such a wall would be a one-way trip — an
+    /// attach needs the `Bsp` the brush was built from, which the running level
+    /// no longer holds — so the head links are set aside here and put back
+    /// verbatim instead.
+    ///
+    /// A suspended brush reads exactly like a detached one to
+    /// [`Self::trace`], [`Self::contents_at`] and [`Self::brush_count`]:
+    /// its four head links are the same bare-contents no-op state, so
+    /// nothing else in this module needs to know this method exists.
+    /// Suspending an already-suspended brush, restoring an already-solid
+    /// one, and naming a detached or out-of-range brush are all harmless
+    /// no-ops.
+    pub fn set_brush_solid(&mut self, brush: BrushId, solid: bool) {
+        let Some(part) = self.brushes.get_mut(brush.0) else {
+            return;
+        };
+        if solid {
+            if let Some(heads) = part.suspended.take() {
+                part.heads = heads;
+            }
+        } else if part.suspended.is_none() {
+            part.suspended = Some(part.heads);
+            part.heads = [contents::EMPTY; 4];
+        }
+    }
+
+    /// Whether `brush` is currently solid, i.e. has *not* been suspended by
+    /// [`Self::set_brush_solid`]. `true` for a brush that was never
+    /// suspended, including a detached one — this reports the switch's
+    /// position, not whether the brush has any geometry left.
+    #[must_use]
+    pub fn brush_is_solid(&self, brush: BrushId) -> bool {
+        self.brushes
+            .get(brush.0)
+            .is_none_or(|part| part.suspended.is_none())
     }
 
     /// Test-only: widens `brush`'s broad-phase bounds to cover the whole

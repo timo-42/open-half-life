@@ -154,6 +154,24 @@ fn load_sprites(
     (assets, placements, missing)
 }
 
+/// Suspends or restores `brush`'s solidity in `model` from `entity`'s
+/// `func_wall_toggle` flag, and does nothing for any other entity. Shared
+/// by the player's and the monster's collision sync, so the two models
+/// agree on whether a toggled wall is there.
+fn sync_wall_toggle(
+    registry: &Registry,
+    model: &mut CollisionModel,
+    entity: Entity,
+    brush: BrushId,
+) {
+    if let Ok(wall) = registry
+        .world
+        .get::<&ohl_game::registry::WallToggle>(entity)
+    {
+        model.set_brush_solid(brush, wall.visible);
+    }
+}
+
 /// The angular velocity (radians per second about the *signed* `axis`) a
 /// brush posed at `previous` degrees last step and `current` degrees this
 /// step is turning at.
@@ -263,6 +281,26 @@ pub struct Level {
     /// `ohl_physics::PlayerController::base_velocity` a translating mover
     /// already feeds. Missing an entry means that brush is not rotating.
     pub brush_rotation: BTreeMap<BrushId, BrushRotation>,
+    /// Each attached `func_conveyor`'s *surface* velocity as of the last
+    /// [`Self::sync_brush_collision`] call
+    /// (`ohl_game::registry::Conveyor::surface_velocity`).
+    ///
+    /// A conveyor is the one documented brush entity that carries a rider
+    /// without moving: its brush never leaves the spot it was compiled at,
+    /// so its [`Self::brush_velocity`] entry is (and stays) zero, and the
+    /// push has to come from somewhere else. [`Self::brush_ride_velocity`]
+    /// adds this on top of the translation and the rotation, so a
+    /// conveyor's ride reaches the player through exactly the same
+    /// `ohl_physics::PlayerController::base_velocity` seam a `func_train`'s
+    /// already does, with no second carry path to keep in step.
+    ///
+    /// Deliberately *not* folded into [`Self::brush_velocity`]: that map is
+    /// also what the player-move phase's "a mover is closing on the player"
+    /// push reads, and a conveyor is a floor, not a piston — a player
+    /// standing inside one's hull should not be shoved out of the map at
+    /// its belt speed. Missing an entry means that brush is not a conveyor,
+    /// or is one with the published "No push" flag.
+    pub brush_surface_velocity: BTreeMap<BrushId, Vec3>,
     /// Which attached brushes the player-move phase could not fully push
     /// the player clear of this step (a mover whose leading face is moving
     /// into the player faster than the bounded push trace can carry them
@@ -592,7 +630,9 @@ impl Level {
         // brush entity that should be on screen could vanish with no
         // diagnostic at all. Count them instead and publish the count.
         let mut unbuildable_submodels = 0usize;
-        for instance in ohl_game::brush::model_instances(&registry) {
+        // Including a `func_wall_toggle` that is switched off right now:
+        // it can be switched on later, and has to have geometry to draw.
+        for instance in ohl_game::brush::buildable_model_instances(&registry) {
             let index = instance.model_index;
             if index == 0 || submodels.contains_key(&index) {
                 continue;
@@ -659,7 +699,7 @@ impl Level {
                 .map(|model| model.dropped_faces)
                 .sum::<usize>();
 
-        Ok(Self {
+        let mut level = Self {
             name: map.to_string(),
             spawn: world.spawn,
             player_start_count: world.player_start_count,
@@ -674,6 +714,7 @@ impl Level {
             monster_brush_collision,
             brush_velocity: BTreeMap::new(),
             brush_rotation: BTreeMap::new(),
+            brush_surface_velocity: BTreeMap::new(),
             movers_blocked: Vec::new(),
             skybox,
             studio_models: studio.models,
@@ -688,7 +729,18 @@ impl Level {
             map_defs: defs.len(),
             defs,
             player,
-        })
+        };
+        // One zero-`dt` sync before the level is handed out, so anything a
+        // brush entity's *spawn state* says about its collision is already
+        // true on the first frame rather than only from the first
+        // simulation step: a `func_wall_toggle` with the published "Starts
+        // Invisible" flag is not solid, and a `func_conveyor` already knows
+        // which way its surface runs. A non-positive `dt` records zero
+        // velocity for every brush, which is exactly the seed a cold load
+        // is entitled to (see `Game::from_save`'s identical call, and its
+        // reasoning).
+        level.sync_brush_collision(0.0);
+        Ok(level)
     }
 
     /// Loads the studio models `self.defs[start..]` reference and attaches
@@ -798,6 +850,7 @@ impl Level {
             brush_collision,
             brush_velocity,
             brush_rotation,
+            brush_surface_velocity,
             ..
         } = self;
         let Some(model) = collision.as_mut() else {
@@ -821,8 +874,34 @@ impl Level {
                 model.detach_brush(*brush);
                 brush_velocity.remove(brush);
                 brush_rotation.remove(brush);
+                brush_surface_velocity.remove(brush);
                 return false;
             };
+            // A `func_wall_toggle` switched off is "non-solid and invisible"
+            // (`docs/FORMAT_SOURCES.md`, "Map entities the registry used to
+            // drop"); switched back on it is an ordinary wall again. Unlike the
+            // despawn above this is reversible, so the brush stays attached and
+            // only its solidity is suspended. Written every step from the
+            // entity's own flag rather than on the flip, so a save restore, a
+            // level change or anything else that puts the flag back also puts
+            // the wall back with it.
+            sync_wall_toggle(registry, model, *entity, *brush);
+            // A conveyor's surface velocity, refreshed here for the same
+            // reason: its sign is map logic the simulation can flip at any
+            // step (`ohl_game::registry::Conveyor`).
+            match registry.world.get::<&ohl_game::registry::Conveyor>(*entity) {
+                Ok(conveyor) => {
+                    let surface = conveyor.surface_velocity();
+                    if surface == Vec3::ZERO {
+                        brush_surface_velocity.remove(brush);
+                    } else {
+                        brush_surface_velocity.insert(*brush, surface);
+                    }
+                }
+                Err(_) => {
+                    brush_surface_velocity.remove(brush);
+                }
+            }
             let offset = crate::render::brush_offset(registry, *entity);
             let new_origin = transform.origin + offset;
             let displacement = new_origin - model.brush_origin(*brush);
@@ -913,6 +992,9 @@ impl Level {
                 model.detach_brush(*brush);
                 return false;
             };
+            // A switched-off `func_wall_toggle` is not there for a monster
+            // either: the same flag, the same suspension, in this model.
+            sync_wall_toggle(registry, model, *entity, *brush);
             let new_origin = transform.origin + crate::render::brush_offset(registry, *entity);
             let (axis, angle_degrees, pivot) =
                 crate::render::brush_pose_rotation(registry, *entity);
@@ -956,7 +1038,19 @@ impl Level {
                     point,
                 )
             });
-        translation + rotation
+        translation + rotation + self.conveyor_velocity(brush)
+    }
+
+    /// The surface velocity a `func_conveyor` gives whatever stands on it,
+    /// or `Vec3::ZERO` for any other brush; see the
+    /// [`Self::brush_surface_velocity`] field for why this is kept apart
+    /// from [`Self::brush_velocity`].
+    #[must_use]
+    pub fn conveyor_velocity(&self, brush: BrushId) -> Vec3 {
+        self.brush_surface_velocity
+            .get(&brush)
+            .copied()
+            .unwrap_or(Vec3::ZERO)
     }
 
     /// Where a rider standing at `point` on the attached brush `brush` is

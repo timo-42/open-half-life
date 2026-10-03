@@ -864,3 +864,57 @@ fn a_zero_angle_pose_traces_exactly_like_no_pose_at_all() {
     let after = model.trace(Hull::Point, start, end);
     assert_eq!(before, after);
 }
+
+/// `set_brush_solid` is `detach_brush`'s reversible sibling, for the
+/// `func_wall_toggle` whose solidity is a state rather than a lifetime:
+/// suspended, the brush blocks nothing; restored, the very same brush
+/// blocks again; and a brush detached while suspended stays gone however
+/// it is switched afterwards.
+#[test]
+fn suspending_a_brush_is_reversible_and_detaching_it_is_not() {
+    let bytes = build_brush_entity_floor_bsp("func_wall");
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+    let mut model = CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable hulls");
+    let brush = model
+        .attach_brush(&bsp, &limits, 1, Vec3::ZERO)
+        .expect("the fixture declares submodel 1");
+    let inside = Vec3::new(0.0, 0.0, -8.0);
+    let blocks_the_fall = |model: &CollisionModel| {
+        model
+            .trace(
+                Hull::Standing,
+                Vec3::new(0.0, 0.0, 100.0),
+                Vec3::new(0.0, 0.0, -100.0),
+            )
+            .fraction
+            < 1.0
+    };
+    assert!(blocks_the_fall(&model));
+    assert!(model.brush_is_solid(brush));
+
+    model.set_brush_solid(brush, false);
+    // Suspending twice must not overwrite the links put aside the first
+    // time with the bare ones the first suspension left behind.
+    model.set_brush_solid(brush, false);
+    assert!(!model.brush_is_solid(brush));
+    assert!(
+        !blocks_the_fall(&model),
+        "a suspended brush blocked the fall"
+    );
+    assert!(!contents::is_solid(point_contents(&model, inside)));
+
+    model.set_brush_solid(brush, true);
+    assert!(model.brush_is_solid(brush));
+    assert!(blocks_the_fall(&model), "a restored brush must block again");
+    assert!(contents::is_solid(point_contents(&model, inside)));
+
+    model.set_brush_solid(brush, false);
+    model.detach_brush(brush);
+    model.set_brush_solid(brush, true);
+    assert!(
+        !blocks_the_fall(&model),
+        "a detached brush must not come back"
+    );
+    assert_eq!(model.brush_count(), 0);
+}

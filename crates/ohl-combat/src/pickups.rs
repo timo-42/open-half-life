@@ -57,6 +57,23 @@ pub enum PickupKind {
     HealthCharger,
     /// `func_recharge`: a use-and-hold wall unit restoring HEV armour.
     SuitCharger,
+    /// `item_security`: the security card. TWHL's `item_security` page (fetched
+    /// 2026-10-03) documents an entity with no "game related behavior" besides
+    /// being stored in the player's inventory, whose "pickup ability is often
+    /// used as a way to unlock other kinds of entities (by targeting a
+    /// `multisource` which is the master of a door for example)", and which
+    /// "can be picked up without the suit". So this kind grants nothing and is
+    /// always taken; firing the entity's own `target` on that pickup is the
+    /// host's half, since this crate owns no map logic. See
+    /// `docs/FORMAT_SOURCES.md`, "Map entities the registry used to drop".
+    SecurityCard,
+    /// `weaponbox`: an ammo canister whose *contents* are its own per-ammo
+    /// keyvalues rather than a fixed grant, so unlike every other variant
+    /// this one carries no amount here — the caller reads the entity's
+    /// keyvalues through [`weaponbox_ammo_key`] and applies each pair
+    /// itself. [`try_pickup`] therefore leaves a `weaponbox` to its caller
+    /// and reports it untaken, exactly as it does the two chargers.
+    WeaponBox,
 }
 
 /// Classifies a BSP entity `classname` into a [`PickupKind`], or `None` when
@@ -66,7 +83,8 @@ pub enum PickupKind {
 #[must_use]
 pub fn classify_classname(classname: &str) -> Option<PickupKind> {
     use PickupKind::{
-        Ammo, Battery, HealthCharger, HealthKit, LongJump, Suit, SuitCharger, Weapon,
+        Ammo, Battery, HealthCharger, HealthKit, LongJump, SecurityCard, Suit, SuitCharger, Weapon,
+        WeaponBox,
     };
     Some(match classname {
         "weapon_crowbar" => Weapon(WeaponId::Crowbar),
@@ -99,8 +117,48 @@ pub fn classify_classname(classname: &str) -> Option<PickupKind> {
         "item_battery" => Battery,
         "item_suit" => Suit,
         "item_longjump" => LongJump,
+        "item_security" => SecurityCard,
+        "weaponbox" => WeaponBox,
         "func_healthcharger" => HealthCharger,
         "func_recharge" => SuitCharger,
+        _ => return None,
+    })
+}
+
+/// The [`AmmoType`] one `weaponbox` keyvalue *key* stocks, or `None` for a
+/// key that is not one of the published ammo names (`classname`, `origin`,
+/// `angles` and anything else a map editor writes alongside them).
+///
+/// TWHL's `weaponbox` page (fetched 2026-10-03) documents the entity as one
+/// that "creates a canister full of specific ammo and/or items", stocked by
+/// a keyvalue whose *key* is one of a fixed, **case-sensitive** list —
+/// for Half-Life itself "`357`", "`9mm`", "`ARgrenades`", "`bolts`",
+/// "`buckshot`", "`Hand Grenade`", "`Hornets`", "`rockets`",
+/// "`Satchel Charge`", "`Snarks`", "`Trip Mine`" and "`uranium`" — and
+/// whose *value* is the number of units. The same page notes that one
+/// "can't put in actual weapons ... only quantifiable entities are used,
+/// that is, only ammunition", so a `weaponbox` never unlocks a weapon here
+/// either. The expansion packs' own keys on that page are not Half-Life's
+/// and are not matched.
+///
+/// Case-sensitive by construction: the match below is exact, so a
+/// differently-cased key simply stocks nothing rather than being guessed
+/// at. See `docs/FORMAT_SOURCES.md`, "Map entities the registry used to drop".
+#[must_use]
+pub fn weaponbox_ammo_key(key: &str) -> Option<AmmoType> {
+    Some(match key {
+        "357" => AmmoType::ThreeFiveSeven,
+        "9mm" => AmmoType::NineMillimeter,
+        "ARgrenades" => AmmoType::Mp5Grenades,
+        "bolts" => AmmoType::Bolts,
+        "buckshot" => AmmoType::Buckshot,
+        "Hand Grenade" => AmmoType::HandGrenades,
+        "Hornets" => AmmoType::Hornets,
+        "rockets" => AmmoType::Rockets,
+        "Satchel Charge" => AmmoType::Satchels,
+        "Snarks" => AmmoType::Snarks,
+        "Trip Mine" => AmmoType::Tripmines,
+        "uranium" => AmmoType::Uranium,
         _ => return None,
     })
 }
@@ -236,10 +294,20 @@ pub fn try_pickup(
                 remaining: if taken { 0.0 } else { 1.0 },
             }
         }
-        PickupKind::HealthCharger | PickupKind::SuitCharger => PickupOutcome {
-            taken: false,
+        // No "game related behavior" besides being carried, and it "can be
+        // picked up without the suit": always taken, granting nothing.
+        PickupKind::SecurityCard => PickupOutcome {
+            taken: true,
             remaining: 0.0,
         },
+        // A `weaponbox`'s contents are its own keyvalues, which this
+        // function is not given; see [`PickupKind::WeaponBox`].
+        PickupKind::HealthCharger | PickupKind::SuitCharger | PickupKind::WeaponBox => {
+            PickupOutcome {
+                taken: false,
+                remaining: 0.0,
+            }
+        }
     }
 }
 
@@ -484,5 +552,92 @@ mod tests {
             charger.drain_health(&mut health, 1.0);
         }
         assert!(health.current <= 50.0);
+    }
+
+    /// `item_security` is taken and grants nothing: it has no published
+    /// "game related behavior" besides being carried, and the card's
+    /// meaning is left to the map's own wiring.
+    #[test]
+    fn the_security_card_is_taken_and_grants_nothing() {
+        assert_eq!(
+            classify_classname("item_security"),
+            Some(PickupKind::SecurityCard)
+        );
+        let mut inventory = Inventory::new();
+        let mut health = Health {
+            current: 50.0,
+            max: 100.0,
+        };
+        let mut armor = Armor {
+            current: 0.0,
+            max: 100.0,
+        };
+        let outcome = try_pickup(
+            &mut inventory,
+            &mut health,
+            &mut armor,
+            PickupKind::SecurityCard,
+            Difficulty::Medium,
+        );
+        assert!(outcome.taken);
+        assert!((health.current - 50.0).abs() < f32::EPSILON);
+        assert!((armor.current).abs() < f32::EPSILON);
+        assert_eq!(inventory.owned_weapons().count(), 0);
+    }
+
+    /// Every published `weaponbox` key maps to the ammo type it stocks,
+    /// the mapping is case-sensitive, and a key that is not one of them
+    /// stocks nothing.
+    #[test]
+    fn weaponbox_keys_are_the_published_case_sensitive_names() {
+        let published = [
+            ("357", AmmoType::ThreeFiveSeven),
+            ("9mm", AmmoType::NineMillimeter),
+            ("ARgrenades", AmmoType::Mp5Grenades),
+            ("bolts", AmmoType::Bolts),
+            ("buckshot", AmmoType::Buckshot),
+            ("Hand Grenade", AmmoType::HandGrenades),
+            ("Hornets", AmmoType::Hornets),
+            ("rockets", AmmoType::Rockets),
+            ("Satchel Charge", AmmoType::Satchels),
+            ("Snarks", AmmoType::Snarks),
+            ("Trip Mine", AmmoType::Tripmines),
+            ("uranium", AmmoType::Uranium),
+        ];
+        for (key, kind) in published {
+            assert_eq!(weaponbox_ammo_key(key), Some(kind), "key {key}");
+        }
+        // The published keys are case-sensitive and are not the `ammo_*`
+        // classnames: neither an `ammo_*` classname nor a differently cased
+        // spelling stocks anything.
+        assert_eq!(weaponbox_ammo_key("ammo_9mmclip"), None);
+        assert_eq!(weaponbox_ammo_key("argrenades"), None);
+        assert_eq!(weaponbox_ammo_key("classname"), None);
+        assert_eq!(weaponbox_ammo_key("origin"), None);
+    }
+
+    /// A `weaponbox` is classified, but never resolved by [`try_pickup`]:
+    /// its contents are its own keyvalues, which that function is not
+    /// given.
+    #[test]
+    fn a_weaponbox_is_classified_but_left_to_its_own_keyvalues() {
+        assert_eq!(classify_classname("weaponbox"), Some(PickupKind::WeaponBox));
+        let mut inventory = Inventory::new();
+        let mut health = Health {
+            current: 100.0,
+            max: 100.0,
+        };
+        let mut armor = Armor {
+            current: 0.0,
+            max: 100.0,
+        };
+        let outcome = try_pickup(
+            &mut inventory,
+            &mut health,
+            &mut armor,
+            PickupKind::WeaponBox,
+            Difficulty::Medium,
+        );
+        assert!(!outcome.taken);
     }
 }

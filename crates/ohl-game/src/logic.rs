@@ -12,11 +12,12 @@ use glam::Vec3;
 use hecs::Entity;
 
 use crate::registry::{
-    AmbientGeneric, AmbientState, AutoTrigger, Breakable, BrushBounds, Button, ChangeLevel, Door,
-    DoorPassable, DoorUseOnly, Master, Message, MomentaryDoor, MomentaryRotButton, MoverState,
-    MultiManager, MultiSource, Pendulum, PlatRot, Platform, Registry, RotButton, RotatingDoorSwing,
-    Rotator, Target, TargetName, TeleportTrigger, TrackChange, TrackChangeLinks, Transform,
-    Trigger, TriggerHurt, TriggerUse, TriggerUseType,
+    AmbientGeneric, AmbientState, AutoTrigger, Breakable, BrushBounds, Button, ChangeLevel,
+    Conveyor, Door, DoorPassable, DoorUseOnly, EndSection, Master, Message, MomentaryDoor,
+    MomentaryRotButton, MoverState, MultiManager, MultiSource, Pendulum, PlatRot, Platform,
+    Registry, RotButton, RotatingDoorSwing, Rotator, Target, TargetName, TeleportTrigger,
+    TrackChange, TrackChangeLinks, Transform, Trigger, TriggerHurt, TriggerUse, TriggerUseType,
+    WallToggle, WeaponStrip,
 };
 use crate::track_train::{PathChain, TrackTrainState};
 
@@ -207,6 +208,19 @@ pub enum Event {
     /// the player there (this crate does not own the player). See
     /// [`crate::registry::TeleportTrigger`].
     Teleport(Teleport),
+    /// A `player_weaponstrip` fired: the host must take every weapon and
+    /// all its ammo off the player (this crate does not own the
+    /// inventory). See [`crate::registry::WeaponStrip`].
+    WeaponStrip,
+    /// A `trigger_endsection` fired: the published behaviour is that the
+    /// current game section ends and the player is returned to the menu,
+    /// which is the host's call to make — this crate only reports it. See
+    /// [`crate::registry::EndSection`].
+    ///
+    /// Carries the entity's `section` keyvalue verbatim so a host that
+    /// wants to distinguish the published section kinds can; it is map
+    /// data and must never be logged.
+    EndSection(String),
 }
 
 /// Where a [`Event::Teleport`] puts the player: an
@@ -594,7 +608,10 @@ impl Simulation {
         touched.sort_unstable_by_key(|entity| entity.id());
         let mut fired = 0;
         for entity in touched {
-            fired += u32::from(self.activate_trigger(registry, entity, activator));
+            if self.activate_trigger(registry, entity, activator) {
+                fired += 1;
+                Self::touch_events(registry, entity, events);
+            }
         }
         self.touch_changelevel_triggers(registry, player_mins, player_maxs, events);
         self.touch_rot_buttons(registry, player_mins, player_maxs);
@@ -1096,8 +1113,65 @@ impl Simulation {
             activation.activate();
             return;
         }
+        // "Triggering a `func_conveyor` will negate the speed thus pushing in
+        // the opposite direction" (TWHL `func_conveyor`,
+        // `docs/FORMAT_SOURCES.md`, "Map entities the registry used to drop"):
+        // the published switch is a sign flip, not an on/off latch, so a
+        // conveyor switched twice runs the way it started. A "No push" conveyor
+        // flips too — the flag is about what its surface does to a rider, not
+        // about whether the entity answers its own switch.
+        if let Ok(conveyor) = registry.world.query_one_mut::<&mut Conveyor>(entity) {
+            conveyor.speed = -conveyor.speed;
+            return;
+        }
+        // "When triggered, `func_wall_toggle` will cause it to disappear if
+        // it is visible and appear if it is invisible" (VDC
+        // `func_wall_toggle`): one boolean, flipped. What "disappear" costs
+        // the wall — being drawn, and being solid — is applied by the two
+        // systems that own those, `crate::brush::model_instances` and
+        // `ohl_engine::Level::sync_brush_collision`.
+        if let Ok(wall) = registry.world.query_one_mut::<&mut WallToggle>(entity) {
+            wall.visible = !wall.visible;
+            return;
+        }
+        if registry.world.get::<&WeaponStrip>(entity).is_ok() {
+            events.push(Event::WeaponStrip);
+            return;
+        }
+        if let Some(end) = registry
+            .world
+            .get::<&EndSection>(entity)
+            .ok()
+            .map(|end| (*end).clone())
+        {
+            // "The `section` attribute must have a value for the entity to
+            // work" (TWHL `trigger_endsection`): an unset one does nothing,
+            // not even fire the ordinary trigger bookkeeping below.
+            if end.ends_section() {
+                events.push(Event::EndSection(end.section));
+            }
+            return;
+        }
         if registry.world.get::<&Trigger>(entity).is_ok() {
             self.activate_trigger(registry, entity, activator);
+        }
+    }
+
+    /// The events a `trigger_*` volume raises *by being touched*, over and
+    /// above the `target` fire [`Self::activate_trigger`] already does.
+    ///
+    /// [`Self::activate_trigger`] is the touch path's own entry point and
+    /// deliberately knows nothing but the shared once/`wait`/`delay`
+    /// bookkeeping and the `target` fire; a volume that also *is*
+    /// something — today, a `trigger_endsection` — reports that here, once
+    /// the trigger bookkeeping above has agreed the touch counts. Called
+    /// only for a touch that actually fired, so a volume on cooldown ends
+    /// nothing.
+    fn touch_events(registry: &Registry, entity: Entity, events: &mut Vec<Event>) {
+        if let Ok(end) = registry.world.get::<&EndSection>(entity)
+            && end.ends_section()
+        {
+            events.push(Event::EndSection(end.section.clone()));
         }
     }
 
@@ -5001,5 +5075,393 @@ mod tests {
             (Vec3::ZERO, 0.0)
         );
         assert_eq!(crate::pose::mover_rotation(&registry, entity).0, Vec3::ZERO);
+    }
+
+    // -----------------------------------------------------------------
+    // `func_conveyor`, `func_wall_toggle`, `player_weaponstrip` and
+    // `trigger_endsection`: four classnames the registry's fallthrough
+    // used to swallow into a bare `Unknown` marker.
+    // -----------------------------------------------------------------
+
+    /// The published keyvalues: `speed` is the push speed *and* defaults to
+    /// 100 when it is absent or zero, `angles`/`angle` is the push
+    /// direction, and the "No push" spawnflag makes the entity cosmetic.
+    #[test]
+    fn func_conveyor_reads_its_published_speed_direction_and_no_push_flag() {
+        let entities = vec![
+            raw(&[
+                ("classname", "func_conveyor"),
+                ("targetname", "belt1"),
+                ("speed", "150"),
+                ("angle", "90"),
+                ("model", "*1"),
+            ]),
+            raw(&[
+                ("classname", "func_conveyor"),
+                ("targetname", "belt2"),
+                ("speed", "0"),
+                ("model", "*2"),
+            ]),
+            raw(&[
+                ("classname", "func_conveyor"),
+                ("targetname", "belt3"),
+                ("speed", "150"),
+                (
+                    "spawnflags",
+                    &crate::registry::SPAWNFLAG_CONVEYOR_NO_PUSH.to_string(),
+                ),
+                ("model", "*3"),
+            ]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+
+        let belt = *registry
+            .world
+            .get::<&Conveyor>(registry.find("belt1")[0])
+            .unwrap();
+        assert!((belt.speed - 150.0).abs() < 1e-3);
+        assert!(!belt.no_push);
+        // `angle 90` is +Y, the same convention every other mover reads.
+        let velocity = belt.surface_velocity();
+        assert!(velocity.x.abs() < 1e-3, "a +Y belt must not push along X");
+        assert!((velocity.y - 150.0).abs() < 1e-2);
+
+        // "Defaults to 100 if 0 or not set": an explicit zero is the
+        // default too, not a stopped belt.
+        let zero = *registry
+            .world
+            .get::<&Conveyor>(registry.find("belt2")[0])
+            .unwrap();
+        assert!((zero.speed - Conveyor::DEFAULT_SPEED).abs() < 1e-3);
+
+        let cosmetic = *registry
+            .world
+            .get::<&Conveyor>(registry.find("belt3")[0])
+            .unwrap();
+        assert!(cosmetic.no_push);
+        assert_eq!(
+            cosmetic.surface_velocity(),
+            Vec3::ZERO,
+            "a No push conveyor pushes nothing whatever its speed says"
+        );
+    }
+
+    /// "Triggering a `func_conveyor` will negate the speed thus pushing in
+    /// the opposite direction" — and negating a negative makes it positive
+    /// again, so a belt switched twice runs the way it started.
+    #[test]
+    fn triggering_a_func_conveyor_negates_its_speed_and_triggering_again_restores_it() {
+        let entities = vec![raw(&[
+            ("classname", "func_conveyor"),
+            ("targetname", "belt1"),
+            ("speed", "150"),
+            ("angle", "90"),
+            ("model", "*1"),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let mut sim = Simulation::new();
+        let belt = registry.find("belt1")[0];
+        let mut events = Vec::new();
+
+        sim.use_entity(&mut registry, belt, None, &mut events);
+        let reversed = *registry.world.get::<&Conveyor>(belt).unwrap();
+        assert!((reversed.speed + 150.0).abs() < 1e-3);
+        assert!(reversed.surface_velocity().y < 0.0);
+
+        sim.use_entity(&mut registry, belt, None, &mut events);
+        let restored = *registry.world.get::<&Conveyor>(belt).unwrap();
+        assert!((restored.speed - 150.0).abs() < 1e-3);
+        assert!(restored.surface_velocity().y > 0.0);
+    }
+
+    /// The published "Starts Invisible" spawnflag, and the published
+    /// "disappear if it is visible and appear if it is invisible" switch.
+    #[test]
+    fn func_wall_toggle_starts_from_its_flag_and_flips_on_every_activation() {
+        let entities = vec![
+            raw(&[
+                ("classname", "func_wall_toggle"),
+                ("targetname", "wall1"),
+                ("model", "*1"),
+            ]),
+            raw(&[
+                ("classname", "func_wall_toggle"),
+                ("targetname", "wall2"),
+                ("model", "*2"),
+                (
+                    "spawnflags",
+                    &crate::registry::SPAWNFLAG_WALL_TOGGLE_STARTS_INVISIBLE.to_string(),
+                ),
+            ]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let mut sim = Simulation::new();
+        let plain = registry.find("wall1")[0];
+        let hidden = registry.find("wall2")[0];
+        assert!(registry.world.get::<&WallToggle>(plain).unwrap().visible);
+        assert!(!registry.world.get::<&WallToggle>(hidden).unwrap().visible);
+
+        let mut events = Vec::new();
+        sim.use_entity(&mut registry, plain, None, &mut events);
+        sim.use_entity(&mut registry, hidden, None, &mut events);
+        assert!(!registry.world.get::<&WallToggle>(plain).unwrap().visible);
+        assert!(registry.world.get::<&WallToggle>(hidden).unwrap().visible);
+
+        sim.use_entity(&mut registry, plain, None, &mut events);
+        assert!(registry.world.get::<&WallToggle>(plain).unwrap().visible);
+    }
+
+    /// A hidden `func_wall_toggle` is not drawn; a visible one is. The
+    /// *solid* list keeps offering both, since attachment happens once and
+    /// a wall that can come back needs a brush to come back as.
+    #[test]
+    fn a_hidden_func_wall_toggle_leaves_the_drawn_list_but_not_the_solid_one() {
+        let entities = vec![raw(&[
+            ("classname", "func_wall_toggle"),
+            ("targetname", "wall1"),
+            ("model", "*1"),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        assert_eq!(crate::brush::model_instances(&registry).len(), 1);
+        assert_eq!(crate::brush::solid_model_instances(&registry).len(), 1);
+
+        let mut sim = Simulation::new();
+        let wall = registry.find("wall1")[0];
+        sim.use_entity(&mut registry, wall, None, &mut Vec::new());
+        assert!(
+            crate::brush::model_instances(&registry).is_empty(),
+            "a switched-off wall_toggle is invisible"
+        );
+        assert_eq!(
+            crate::brush::solid_model_instances(&registry).len(),
+            1,
+            "it stays attachable, so switching it back on has something to restore"
+        );
+        assert_eq!(
+            crate::brush::buildable_model_instances(&registry).len(),
+            1,
+            "and buildable, so switching it back on has something to draw"
+        );
+    }
+
+    /// "The only way this entity works is if you trigger it": a
+    /// `player_weaponstrip` raises the event its host acts on, both when
+    /// fired directly and through an ordinary `target` chain.
+    #[test]
+    fn a_player_weaponstrip_raises_a_strip_event_when_it_is_fired() {
+        let entities = vec![
+            raw(&[
+                ("classname", "player_weaponstrip"),
+                ("targetname", "strip1"),
+            ]),
+            raw(&[
+                ("classname", "trigger_relay"),
+                ("targetname", "relay1"),
+                ("target", "strip1"),
+            ]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let mut sim = Simulation::new();
+        let strip = registry.find("strip1")[0];
+        let mut direct = Vec::new();
+        sim.use_entity(&mut registry, strip, None, &mut direct);
+        assert!(matches!(direct.as_slice(), [Event::WeaponStrip]));
+
+        // And through an ordinary relay's `target` chain, which is how a
+        // map actually reaches it: the fire is queued, so the event
+        // arrives from a later `tick` rather than at the call.
+        let relay = registry.find("relay1")[0];
+        sim.use_entity(&mut registry, relay, None, &mut Vec::new());
+        let mut chained = Vec::new();
+        for _ in 0..4 {
+            chained.extend(sim.tick(&mut registry, 0.05));
+        }
+        assert!(
+            chained
+                .iter()
+                .any(|event| matches!(event, Event::WeaponStrip)),
+            "a relay chain reaches the strip too"
+        );
+    }
+
+    /// A `trigger_endsection` ends the section when its volume is touched,
+    /// and when it is fired by name — both paths, since the touch path
+    /// never goes through `activate_with`.
+    #[test]
+    fn a_trigger_endsection_reports_the_section_ending_by_touch_and_by_name() {
+        let entities = vec![raw(&[
+            ("classname", "trigger_endsection"),
+            ("targetname", "end1"),
+            ("section", "ohl_test_section"),
+            ("model", "*1"),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut bounds = BTreeMap::new();
+        bounds.insert(1u32, ([-32.0, -32.0, -32.0], [32.0, 32.0, 32.0]));
+        let mut registry = Registry::build(&defs, &bounds, &Limits::default());
+        let mut sim = Simulation::new();
+
+        let mut events = Vec::new();
+        let fired = sim.touch_triggers(
+            &mut registry,
+            Vec3::new(-8.0, -8.0, -8.0),
+            Vec3::new(8.0, 8.0, 8.0),
+            None,
+            &mut events,
+        );
+        assert_eq!(fired, 1);
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, Event::EndSection(_))),
+            "walking into the volume ends the section"
+        );
+
+        let mut named = Vec::new();
+        let end = registry.find("end1")[0];
+        sim.use_entity(&mut registry, end, None, &mut named);
+        assert!(
+            named
+                .iter()
+                .any(|event| matches!(event, Event::EndSection(_))),
+            "a chain that fires it by name ends the section too"
+        );
+    }
+
+    /// The published "USE Only (1)" flag: walking into the volume does
+    /// nothing, and a fire by name still ends the section.
+    #[test]
+    fn a_use_only_trigger_endsection_ignores_a_touch_but_answers_its_name() {
+        let entities = vec![raw(&[
+            ("classname", "trigger_endsection"),
+            ("targetname", "end1"),
+            ("section", "ohl_test_section"),
+            (
+                "spawnflags",
+                &crate::registry::SPAWNFLAG_ENDSECTION_USE_ONLY.to_string(),
+            ),
+            ("model", "*1"),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut bounds = BTreeMap::new();
+        bounds.insert(1u32, ([-32.0, -32.0, -32.0], [32.0, 32.0, 32.0]));
+        let mut registry = Registry::build(&defs, &bounds, &Limits::default());
+        let mut sim = Simulation::new();
+
+        let mut events = Vec::new();
+        let fired = sim.touch_triggers(
+            &mut registry,
+            Vec3::new(-8.0, -8.0, -8.0),
+            Vec3::new(8.0, 8.0, 8.0),
+            None,
+            &mut events,
+        );
+        assert_eq!(fired, 0, "a USE Only volume is not walked into");
+        assert!(events.is_empty());
+
+        let end = registry.find("end1")[0];
+        sim.use_entity(&mut registry, end, None, &mut events);
+        assert!(matches!(events.as_slice(), [Event::EndSection(_)]));
+    }
+
+    /// "The `section` attribute must have a value for the entity to work":
+    /// with none set, neither a touch nor a fire by name ends anything.
+    #[test]
+    fn a_trigger_endsection_with_no_section_ends_nothing() {
+        let entities = vec![raw(&[
+            ("classname", "trigger_endsection"),
+            ("targetname", "end1"),
+            ("model", "*1"),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut bounds = BTreeMap::new();
+        bounds.insert(1u32, ([-32.0, -32.0, -32.0], [32.0, 32.0, 32.0]));
+        let mut registry = Registry::build(&defs, &bounds, &Limits::default());
+        let mut sim = Simulation::new();
+
+        let mut events = Vec::new();
+        sim.touch_triggers(
+            &mut registry,
+            Vec3::new(-8.0, -8.0, -8.0),
+            Vec3::new(8.0, 8.0, 8.0),
+            None,
+            &mut events,
+        );
+        let end = registry.find("end1")[0];
+        sim.use_entity(&mut registry, end, None, &mut events);
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, Event::EndSection(_))),
+            "an unset section ends nothing"
+        );
+    }
+
+    /// The published "Not solid (2)" flag: the conveyor is left out of both
+    /// solid lists, and pushes nothing, while still being drawn.
+    #[test]
+    fn a_not_solid_func_conveyor_blocks_nothing_and_pushes_nothing() {
+        let entities = vec![
+            raw(&[
+                ("classname", "func_conveyor"),
+                ("targetname", "belt1"),
+                ("speed", "150"),
+                ("model", "*1"),
+            ]),
+            raw(&[
+                ("classname", "func_conveyor"),
+                ("targetname", "belt2"),
+                ("speed", "150"),
+                (
+                    "spawnflags",
+                    &crate::registry::SPAWNFLAG_CONVEYOR_NOT_SOLID.to_string(),
+                ),
+                ("model", "*2"),
+            ]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let solid = registry.find("belt1")[0];
+        let ghost = registry.find("belt2")[0];
+
+        let listed = |list: Vec<crate::brush::ModelInstance>, entity: Entity| {
+            list.iter().any(|instance| instance.entity == entity)
+        };
+        assert!(listed(
+            crate::brush::solid_model_instances(&registry),
+            solid
+        ));
+        assert!(!listed(
+            crate::brush::solid_model_instances(&registry),
+            ghost
+        ));
+        assert!(!listed(
+            crate::brush::monster_solid_model_instances(&registry),
+            ghost
+        ));
+        assert!(listed(crate::brush::model_instances(&registry), ghost));
+
+        assert_ne!(
+            registry
+                .world
+                .get::<&Conveyor>(solid)
+                .unwrap()
+                .surface_velocity(),
+            Vec3::ZERO
+        );
+        assert_eq!(
+            registry
+                .world
+                .get::<&Conveyor>(ghost)
+                .unwrap()
+                .surface_velocity(),
+            Vec3::ZERO,
+            "a Not solid conveyor pushes nothing"
+        );
     }
 }

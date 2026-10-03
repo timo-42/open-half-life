@@ -99,7 +99,7 @@ pub use inventory::{HudSlot, Inventory, hud_slot};
 pub use pickups::{
     BATTERY_AMOUNT, CHARGER_DRAIN_RATE, ChargerState, HEALTH_CHARGER_TOTAL, HEALTHKIT_AMOUNT,
     PickupKind, PickupOutcome, SUIT_CHARGER_TOTAL_BY_DIFFICULTY, ammo_pickup_amount,
-    classify_classname, try_pickup, weapon_pickup_ammo,
+    classify_classname, try_pickup, weapon_pickup_ammo, weaponbox_ammo_key,
 };
 pub use projectile::{
     HAND_GRENADE_FUSE_SECONDS, Projectile, ProjectileEvent, ProjectileId, ProjectileKind,

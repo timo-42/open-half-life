@@ -126,6 +126,22 @@ impl Pickup {
     }
 }
 
+/// What one `weaponbox` entity is stocked with: a bounded, already-parsed
+/// list of (ammo type, units) pairs read off the entity's own keyvalues.
+///
+/// A `weaponbox` is the one pickup whose contents are per-entity map data
+/// rather than a fixed published grant, so [`Pickup`]'s `kind` alone
+/// ([`ohl_combat::PickupKind::WeaponBox`]) cannot say what taking it gives.
+/// The key names and their case sensitivity live with the rest of the
+/// pickup vocabulary in `ohl_combat::weaponbox_ammo_key`; this component
+/// only carries the result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WeaponBox {
+    /// Ammo type and how many units of it, at most one entry per published
+    /// key, in the keyvalue table's sorted key order.
+    pub contents: Vec<(ohl_combat::AmmoType, u32)>,
+}
+
 /// A `func_healthcharger` / `func_recharge` and its remaining charge.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Charger(pub ohl_combat::ChargerState);

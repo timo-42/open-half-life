@@ -119,6 +119,15 @@ impl AmmoBank {
     fn set(&mut self, kind: AmmoType, value: u32) {
         self.current[Self::slot(kind)] = value.min(kind.default_capacity());
     }
+
+    /// Empties every pool at once — the reserve half of a
+    /// `player_weaponstrip` (`ohl_game::registry::WeaponStrip`). The
+    /// inventory's own mirror of these numbers is cleared alongside, by
+    /// [`ohl_combat::Inventory::strip_weapons`]; see this module's docs for
+    /// why the two ledgers exist.
+    pub(crate) fn clear(&mut self) {
+        self.current = [0; AMMO_SLOTS];
+    }
 }
 
 /// Weapons, hit resolution and damage routing state, owned by
@@ -175,6 +184,27 @@ impl CombatState {
     /// borrows of `self`.
     pub(crate) fn inventory_and_ammo_mut(&mut self) -> (&mut Inventory, &mut AmmoBank) {
         (&mut self.inventory, &mut self.ammo)
+    }
+
+    /// Empties both ledgers — every owned weapon, every loaded clip and
+    /// every reserve pool — and cancels whatever the player was in the
+    /// middle of firing, which is the whole of a `player_weaponstrip`'s
+    /// published effect ("removes all the weapons that the player is
+    /// carrying"; `ohl_combat::Inventory::strip_weapons` carries the
+    /// citation). The HEV suit and the long jump module are left alone:
+    /// neither is a weapon.
+    ///
+    /// Resetting [`Self::firing_weapon`] matters as much as the inventory
+    /// does: the firing state machine keeps its own copy of the loaded
+    /// clip, and without the reset a gun given back after the strip comes
+    /// back with the rounds it held before it, and fires them. Emptying
+    /// each clip as well as the reserve is a project choice; see
+    /// `docs/FORMAT_SOURCES.md`, "Map entities the registry used to drop".
+    pub(crate) fn strip_weapons(&mut self) {
+        self.inventory.strip_weapons();
+        self.ammo.clear();
+        self.firing_weapon = None;
+        self.firing = FiringState::new(spec(WeaponId::Crowbar));
     }
 
     /// A short-lived [`Inventory`] with the same owned weapons, clips and

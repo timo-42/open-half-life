@@ -435,6 +435,13 @@ impl Systems {
         self.combat.display_inventory()
     }
 
+    /// Empties the player's weapons, clips and reserve ammo: the whole of
+    /// a `player_weaponstrip`'s published effect, forwarded from
+    /// [`CombatState::strip_weapons`].
+    pub(crate) fn strip_weapons(&mut self) {
+        self.combat.strip_weapons();
+    }
+
     /// Mutable access to the weapon inventory and the reserve-ammo ledger
     /// together, forwarded from [`CombatState::inventory_and_ammo_mut`]
     /// for `crate::start_inventory`'s `--start-inventory` seeding — the
