@@ -320,16 +320,16 @@ pub struct Level {
     /// not a conveyor, or is one whose push is off ("No push", "Not
     /// solid").
     pub brush_surface_velocity: BTreeMap<BrushId, Vec3>,
-    /// Which attached brushes the player-move phase could not fully push
-    /// the player clear of this step (a mover whose leading face is moving
-    /// into the player faster than the bounded push trace can carry them
-    /// out of its way). Refreshed every step; empty when nothing is
-    /// blocked. Published as a signal for a mover's own state machine to
-    /// react to; nothing yet consumes it to halt, reverse, or apply a
-    /// door's `dmg` keyvalue to the player — see the `TODO(black-box)` on
-    /// `ohl_physics::push_from_mover` — so today a blocked mover still
-    /// finishes its planned move on schedule, just with the player pushed
-    /// as far out of its way as the bounded trace allowed.
+    /// Which attached brushes the player-move phase could not push the
+    /// player clear of this step (a mover whose leading face moved into the
+    /// player, with nowhere for them to be pushed to — a wall behind them,
+    /// or another solid; see `ohl_physics::push_from_mover`). Refreshed
+    /// every step; empty when nothing is blocked. Consumed by phase 12
+    /// (`Systems::resolve_blocked_movers`): each entry's entity goes
+    /// through `ohl_game::logic::Simulation::block_mover`, which reverses a
+    /// door and returns whatever `dmg` the mover declares for the player
+    /// to take. The brush the player is standing on is never reported
+    /// here (a lift's own rider is carried, not blocked).
     pub movers_blocked: Vec<BrushId>,
     /// `func_wall_toggle` entities whose brush the last
     /// [`Self::sync_brush_collision`] turned solid again, waiting for
