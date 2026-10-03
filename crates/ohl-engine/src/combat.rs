@@ -1255,9 +1255,25 @@ mod hitbox_fallback_tests {
     #[test]
     fn every_defined_monster_kind_is_hit_by_a_straight_shot_with_no_hitbox_lump() {
         for kind in ohl_ai::MonsterKind::defined() {
+            // Skipped: `monster_generic` and `monster_furniture`, the two
+            // kinds whose model the cited model table lists as "specified
+            // by mapper" (`MonsterKind::model_from_map`). They publish no
+            // default path, since the map names the model in the entity's
+            // own `model` keyvalue, so there is no per-species path to put
+            // a hitbox-less fixture model at. Every other defined kind must
+            // still publish one, and is still swept.
+            if kind.model_from_map() {
+                assert_eq!(
+                    kind.default_model_path(),
+                    None,
+                    "{}: a map-authored model has no default path",
+                    kind.classname()
+                );
+                continue;
+            }
             let model_path = kind
                 .default_model_path()
-                .expect("every defined MonsterKind publishes a default model path");
+                .expect("every other defined MonsterKind publishes a default model path");
             let level = level_with_hitboxless_monster(kind.classname(), model_path);
             assert!(
                 shot_hits_the_monster(&level),
