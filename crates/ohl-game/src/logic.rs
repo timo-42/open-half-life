@@ -1124,11 +1124,13 @@ impl Simulation {
             conveyor.speed = -conveyor.speed;
             return;
         }
-        // "When triggered, `func_wall_toggle` will cause it to disappear if
-        // it is visible and appear if it is invisible" (VDC
-        // `func_wall_toggle`): one boolean, flipped. What "disappear" costs
-        // the wall — being drawn, and being solid — is applied by the two
-        // systems that own those, `crate::brush::model_instances` and
+        // TWHL's `func_wall_toggle` is "a `func_wall` that is made invisible
+        // when triggered", and its "Starts invisible" flag is how a map
+        // asks for the other starting state (`docs/FORMAT_SOURCES.md`,
+        // "Map entities the registry used to drop"): one boolean, flipped on every
+        // activation. What "off" costs the wall — being drawn, and being
+        // solid — is applied by the two systems that own those,
+        // `crate::brush::model_instances` and
         // `ohl_engine::Level::sync_brush_collision`.
         if let Ok(wall) = registry.world.query_one_mut::<&mut WallToggle>(entity) {
             wall.visible = !wall.visible;
@@ -5176,8 +5178,8 @@ mod tests {
         assert!(restored.surface_velocity().y > 0.0);
     }
 
-    /// The published "Starts Invisible" spawnflag, and the published
-    /// "disappear if it is visible and appear if it is invisible" switch.
+    /// The published "Starts invisible" spawnflag, and an activation that
+    /// flips the wall each time ("made invisible when triggered").
     #[test]
     fn func_wall_toggle_starts_from_its_flag_and_flips_on_every_activation() {
         let entities = vec![
@@ -5248,9 +5250,9 @@ mod tests {
         );
     }
 
-    /// "The only way this entity works is if you trigger it": a
-    /// `player_weaponstrip` raises the event its host acts on, both when
-    /// fired directly and through an ordinary `target` chain.
+    /// "When activated", a `player_weaponstrip` raises the event its host
+    /// acts on, both when fired directly and through an ordinary `target`
+    /// chain.
     #[test]
     fn a_player_weaponstrip_raises_a_strip_event_when_it_is_fired() {
         let entities = vec![
@@ -5370,14 +5372,25 @@ mod tests {
     }
 
     /// "The `section` attribute must have a value for the entity to work":
-    /// with none set, neither a touch nor a fire by name ends anything.
+    /// with none set, neither a touch nor a fire by name ends anything, and
+    /// a touch does not fire the entity's `target` either — the entity does
+    /// nothing at all, by either path.
     #[test]
     fn a_trigger_endsection_with_no_section_ends_nothing() {
-        let entities = vec![raw(&[
-            ("classname", "trigger_endsection"),
-            ("targetname", "end1"),
-            ("model", "*1"),
-        ])];
+        let entities = vec![
+            raw(&[
+                ("classname", "trigger_endsection"),
+                ("targetname", "end1"),
+                ("target", "door1"),
+                ("model", "*1"),
+            ]),
+            raw(&[
+                ("classname", "func_door"),
+                ("targetname", "door1"),
+                ("speed", "100"),
+                ("wait", "-1"),
+            ]),
+        ];
         let defs = parse_entities(&entities, &Limits::default());
         let mut bounds = BTreeMap::new();
         bounds.insert(1u32, ([-32.0, -32.0, -32.0], [32.0, 32.0, 32.0]));
@@ -5385,20 +5398,30 @@ mod tests {
         let mut sim = Simulation::new();
 
         let mut events = Vec::new();
-        sim.touch_triggers(
+        let fired = sim.touch_triggers(
             &mut registry,
             Vec3::new(-8.0, -8.0, -8.0),
             Vec3::new(8.0, 8.0, 8.0),
             None,
             &mut events,
         );
+        assert_eq!(fired, 0, "an unset section is not a touch volume");
         let end = registry.find("end1")[0];
         sim.use_entity(&mut registry, end, None, &mut events);
+        for _ in 0..10 {
+            events.extend(sim.tick(&mut registry, 0.1));
+        }
         assert!(
             !events
                 .iter()
                 .any(|event| matches!(event, Event::EndSection(_))),
             "an unset section ends nothing"
+        );
+        let door = registry.find("door1")[0];
+        assert_eq!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Closed,
+            "and fires nothing"
         );
     }
 

@@ -120,10 +120,11 @@ fn is_broken(registry: &Registry, entity: Entity) -> bool {
 }
 
 /// Whether this entity is a `func_wall_toggle` currently switched off, and so
-/// must be left out of the drawn list ([`model_instances`]): VDC's
-/// `func_wall_toggle` page documents an "off" wall as "non-solid and invisible"
-/// (`docs/FORMAT_SOURCES.md`, "Map entities the registry used to drop"). An
-/// entity with no [`WallToggle`] is never hidden.
+/// must be left out of the drawn list ([`model_instances`]): TWHL documents
+/// the entity as "made invisible when triggered", and VDC's GoldSrc page
+/// (through a search-engine result summary) an "off" wall as "non-solid and
+/// invisible" (`docs/FORMAT_SOURCES.md`, "Map entities the registry used to
+/// drop"). An entity with no [`WallToggle`] is never hidden.
 ///
 /// Only the *drawn* half is decided here. The solid half deliberately is
 /// not: [`solid_model_instances`] still offers a switched-off wall for
