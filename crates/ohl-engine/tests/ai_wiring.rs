@@ -390,6 +390,80 @@ fn a_not_solid_generic_monster_is_impervious_and_a_solid_one_is_not() {
     );
 }
 
+/// Wave 1 batch A: bit 4 means `Not solid` only on `monster_generic`, the
+/// one classname the cited page documents it on. On every other monster
+/// the same bit is the unrelated `MonsterClip` flag, so a soldier carrying
+/// it is not made impervious.
+#[test]
+fn bit_four_is_not_solid_only_on_a_generic_monster() {
+    let block = entities(&format!(
+        "{}{}",
+        monster(
+            "monster_human_grunt",
+            [64.0, 0.0, 36.0],
+            0.0,
+            "\"spawnflags\" \"4\"\n"
+        ),
+        monster(
+            "monster_generic",
+            [200.0, 0.0, 36.0],
+            180.0,
+            "\"spawnflags\" \"4\"\n"
+        ),
+    ));
+    let game = game_from(&block, true);
+    let marked = |classname: &str| {
+        let entity = ohl_engine::test_support::entity_of_classname(&game, classname)
+            .unwrap_or_else(|| panic!("{classname} spawned"));
+        game.registry()
+            .world
+            .get::<&ohl_engine::NotSolid>(entity)
+            .is_ok()
+    };
+    assert!(
+        marked("monster_generic"),
+        "the generic's bit 4 is Not solid"
+    );
+    assert!(
+        !marked("monster_human_grunt"),
+        "a soldier's bit 4 is MonsterClip, not Not solid"
+    );
+}
+
+/// Wave 1 batch A: a `monstermaker` child carries its species' hull and
+/// eye exactly like a map-placed monster of the same kind — the flier's
+/// point hull, and the barnacle's eye below its ceiling-hung origin.
+#[test]
+fn a_monstermaker_child_carries_its_species_hull_and_eye() {
+    for kind in [
+        ohl_ai::MonsterKind::Barnacle,
+        ohl_ai::MonsterKind::AlienController,
+    ] {
+        let block = entities(&format!(
+            "{{\n\"classname\" \"monstermaker\"\n\
+             \"origin\" \"0 96 36\"\n\"monstertype\" \"{}\"\n\
+             \"monstercount\" \"1\"\n\"delay\" \"0.1\"\n\
+             \"m_imaxlivechildren\" \"1\"\n\"spawnflags\" \"1\"\n}}\n",
+            kind.classname()
+        ));
+        let mut game = game_from(&block, false);
+        tick(&mut game, 40);
+        let children = monster_entities(&game);
+        assert_eq!(children.len(), 1, "{kind:?}: the maker made its child");
+        let actor = *game
+            .registry()
+            .world
+            .get::<&ohl_ai::Actor>(children[0])
+            .expect("the child has an actor");
+        let spec = ohl_ai::monsters::spec_for(&kind).expect("defined");
+        assert_eq!(actor.hull, spec.hull, "{kind:?}: the species' hull");
+        assert!(
+            (actor.view_ofs - kind.view_offset()).length() < 1e-4,
+            "{kind:?}: the species' eye, not the default"
+        );
+    }
+}
+
 /// A `monster_*` classname this project has no table row for spawns nothing
 /// that thinks, and does not upset the step list.
 #[test]

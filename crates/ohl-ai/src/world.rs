@@ -1799,4 +1799,136 @@ mod tests {
         };
         assert_ne!(run(1), run(2));
     }
+
+    /// Wave 1 batch A: the no-collision fallback (`straight_step`) honours
+    /// the hull the same way `crate::movement::move_toward` does. Chasing
+    /// an enemy above it with no collision model at all, a point-hull mover
+    /// climbs along the full line and a standing-hull mover closes at its
+    /// own height.
+    #[test]
+    fn the_no_collision_fallback_flies_a_point_hull_and_walks_a_box_hull() {
+        for (hull, flies) in [
+            (ohl_physics::Hull::Point, true),
+            (ohl_physics::Hull::Standing, false),
+        ] {
+            let mut ai = AiWorld::new(0x5EED);
+            let brain =
+                ai.register_brain(Box::new(DefaultBrain::melee(Classification::AlienMilitary)));
+            let mut world = World::new();
+            let mut actor = Actor::new(Classification::AlienMilitary, Vec3::ZERO);
+            actor.hull = hull;
+            let monster = spawn_monster(&mut world, actor, brain);
+            spawn_actor(
+                &mut world,
+                Actor::new(Classification::Player, Vec3::new(300.0, 0.0, 200.0)).as_client(),
+            );
+            for _ in 0..100 {
+                ai.tick(&mut world, &SightContext::empty(), DT);
+            }
+            let origin = world.get::<&Actor>(monster).expect("actor").origin;
+            assert!(origin.x > 16.0, "{hull:?} closed on its enemy: {origin:?}");
+            if flies {
+                assert!(origin.z > 16.0, "a flier climbs: {origin:?}");
+            } else {
+                assert!(
+                    origin.z.abs() < 1e-3,
+                    "a walker keeps its height: {origin:?}"
+                );
+            }
+        }
+    }
+
+    /// Only ever wanders: one leg, then a fixed (not random) pause.
+    static WANDER_ONLY: crate::schedule::Schedule = crate::schedule::Schedule::new(
+        "test/wander_only",
+        &[
+            crate::schedule::Task::Wander { distance: 64.0 },
+            crate::schedule::Task::WalkPath,
+            crate::schedule::Task::WaitForMovement,
+            crate::schedule::Task::Wait(0.1),
+        ],
+        Conditions::EMPTY,
+    );
+
+    struct Wanderer;
+
+    impl crate::schedule::Brain for Wanderer {
+        fn classification(&self) -> Classification {
+            Classification::None
+        }
+
+        fn select_schedule(
+            &self,
+            _state: MonsterState,
+            _conditions: Conditions,
+        ) -> &'static crate::schedule::Schedule {
+            &WANDER_ONLY
+        }
+
+        /// A walk fast enough at [`DT`] that the stuck check never gives a
+        /// leg up, so every spell reaches its closing wait.
+        fn speeds(&self) -> (f32, f32) {
+            (100.0, 200.0)
+        }
+    }
+
+    /// Wave 1 batch A: a [`crate::schedule::Task::Wander`] direction is
+    /// drawn from a generator seeded by the tick and the entity, never from
+    /// the world's shared stream. Two wanderers started on the same spot in
+    /// the same tick go different ways, each one turns between legs, and
+    /// after many complete legs the shared stream is exactly where a fresh
+    /// world's is — nothing (no wait here is random) has drawn from it.
+    #[test]
+    fn a_wander_is_drawn_per_tick_and_entity_and_leaves_the_shared_stream_alone() {
+        const SEED: u64 = 0x5EED;
+        let mut ai = AiWorld::new(SEED);
+        let brain = ai.register_brain(Box::new(Wanderer));
+        let mut world = World::new();
+        let wanderers = [
+            spawn_monster(
+                &mut world,
+                Actor::new(Classification::None, Vec3::ZERO),
+                brain,
+            ),
+            spawn_monster(
+                &mut world,
+                Actor::new(Classification::None, Vec3::ZERO),
+                brain,
+            ),
+        ];
+        let mut walked = [0.0_f32; 2];
+        let mut previous = [Vec3::ZERO; 2];
+        let mut spells = 0;
+        for _ in 0..1_000 {
+            for event in ai.tick(&mut world, &SightContext::empty(), DT) {
+                if let AiEventKind::ScheduleEnded { outcome, .. } = event.kind {
+                    assert_eq!(outcome, crate::schedule::RunOutcome::Done);
+                    spells += 1;
+                }
+            }
+            for (index, entity) in wanderers.iter().enumerate() {
+                let origin = world.get::<&Actor>(*entity).expect("actor").origin;
+                walked[index] += (origin - previous[index]).length();
+                previous[index] = origin;
+            }
+        }
+        assert!(
+            previous[0].distance(previous[1]) > 1.0,
+            "same spot, same tick, different entity: different ways {previous:?}"
+        );
+        assert!(spells >= 4, "every spell ran to its closing wait: {spells}");
+        for (index, end) in previous.iter().enumerate() {
+            assert!(walked[index] > 2.0 * 64.0, "it wandered more than one leg");
+            assert!(
+                end.length() + 1.0 < walked[index],
+                "its legs did not all point the same way: {end:?} after {}",
+                walked[index]
+            );
+        }
+        assert_eq!(
+            ai.rng_snapshot(),
+            AiWorld::new(SEED).rng_snapshot(),
+            "a wander drew from the world's shared stream"
+        );
+    }
 }
