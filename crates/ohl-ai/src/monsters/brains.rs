@@ -492,7 +492,15 @@ pub const ASSASSIN_SPEEDS: (f32, f32) = (80.0, 320.0);
 
 /// A critter's speeds, walking and running, in units per second.
 /// **`TODO(black-box)`**: not published; placeholders for something small.
-pub const CRITTER_SPEEDS: (f32, f32) = (40.0, 120.0);
+///
+/// The walk is kept above the floor the route-following stuck check
+/// imposes at the engine's 100 Hz tick: `crate::movement::StuckDetector`
+/// counts any tick that moves less than `movement::STUCK_EPSILON` (0.5
+/// units) as no progress, so anything slower than 50 units per second is
+/// "stuck" after a quarter of a second and gives every wander leg up a
+/// few units in. A critter is the one mover whose whole idle life is a
+/// walk, so its walk must clear that floor.
+pub const CRITTER_SPEEDS: (f32, f32) = (64.0, 120.0);
 
 /// How far a critter wanders in one spell, in world units.
 /// **`TODO(black-box)`**: not published.
@@ -1377,13 +1385,15 @@ mod tests {
         assert!(scatter > wander, "a scatter goes further than a wander");
     }
 
-    /// A ticked critter actually goes somewhere: its wander draws a
-    /// direction without touching the world's shared stream, so a run with
-    /// a critter in it replays exactly and the critter moves.
+    /// A ticked critter actually goes somewhere, at the engine's own tick
+    /// length: each wander leg is walked to its end and the pause after it
+    /// is reached (no `critter_wander` spell ends in failure), the rat
+    /// moves, and a run with a critter in it replays exactly.
     #[test]
-    fn a_wandering_critter_moves_deterministically() {
+    fn a_wandering_critter_finishes_its_legs_at_the_engine_tick() {
+        use crate::schedule::RunOutcome;
         use crate::senses::SightContext;
-        use crate::world::{Actor, AiWorld, spawn_monster};
+        use crate::world::{Actor, AiEventKind, AiWorld, spawn_monster};
         use glam::Vec3;
         let run = || {
             let mut ai = AiWorld::new(7);
@@ -1396,14 +1406,35 @@ mod tests {
                 Actor::new(Classification::None, Vec3::ZERO),
                 brain,
             );
-            for _ in 0..200 {
-                ai.tick(&mut world, &SightContext::empty(), 0.05);
+            let (mut finished, mut failed) = (0, 0);
+            for _ in 0..2_000 {
+                let events = ai.tick(
+                    &mut world,
+                    &SightContext::empty(),
+                    ohl_physics::controller::TICK_SECONDS,
+                );
+                for event in events {
+                    if let AiEventKind::ScheduleEnded { name, outcome } = event.kind
+                        && name == super::CRITTER_WANDER.name
+                    {
+                        match outcome {
+                            RunOutcome::Done => finished += 1,
+                            RunOutcome::Failed => failed += 1,
+                            _ => {}
+                        }
+                    }
+                }
             }
             let origin = world.get::<&Actor>(rat).expect("actor").origin;
-            (origin, ai.state_hash(&world))
+            (origin, finished, failed, ai.state_hash(&world))
         };
-        let (origin, hash) = run();
+        let (origin, finished, failed, hash) = run();
         assert!(origin.length() > 1.0, "the rat never moved: {origin:?}");
-        assert_eq!(hash, run().1);
+        assert!(
+            finished >= 2,
+            "a wander leg and its pause completed: {finished}"
+        );
+        assert_eq!(failed, 0, "a wander leg was given up as stuck");
+        assert_eq!(hash, run().3);
     }
 }
