@@ -424,6 +424,40 @@ fn a_player_weaponstrip_empties_the_players_weapons_and_ammo() {
     }
 }
 
+/// The HUD forgets the stripped gun as well: its clip and reserve numbers
+/// are only refreshed while a weapon is selected, so a strip that left them
+/// would keep the gun's last numbers on screen with nothing in hand.
+#[test]
+fn a_strip_clears_the_huds_ammo_numbers() {
+    let entities = format!(
+        "{}{}{}",
+        floor_entities("func_wall", ""),
+        "{\n\"classname\" \"weapon_357\"\n\"origin\" \"0 0 40\"\n}\n\
+         {\n\"classname\" \"player_weaponstrip\"\n\"targetname\" \"ohl_strip\"\n}\n",
+        auto_trigger("ohl_strip", 2.0),
+    );
+    let mut game = game_from("ohlstriphudsynth", killable_brush_floor_bsp(&entities));
+    tick_n(&mut game, 1, &Input::default());
+    tick_n(
+        &mut game,
+        1,
+        &Input {
+            select_slot: Some(2),
+            ..Input::default()
+        },
+    );
+    tick_n(&mut game, 30, &Input::default());
+    assert!(
+        game.hud().reserve_ammo.is_some(),
+        "the gun's numbers are on the HUD before the strip"
+    );
+
+    tick_n(&mut game, 120, &Input::default());
+    assert_eq!(game.weapon_strip_count(), 1);
+    assert_eq!(game.hud().clip_ammo, None);
+    assert_eq!(game.hud().reserve_ammo, None);
+}
+
 /// A strip also stops whatever the player was in the middle of firing. The
 /// firing state machine keeps its own copy of the loaded clip, so a strip
 /// that emptied only the inventory would hand the same gun back, given
