@@ -8231,8 +8231,9 @@ Every mutation was restored and the focused suites passed afterwards.
 
 **Gates:** fmt check passed; focused `ohl-combat` 116 passed and
 `bosses_and_aircraft` 14 passed; workspace clippy default, `--features dev-tools`
-and `--all-features`, `cargo test --workspace`, policy and graph pending;
-combat-smoke, campaign-smoke and chain-walk with both empty and
+and `--all-features` passed; `cargo test --workspace` 2780 passed, zero failed,
+31 ignored; policy and graph passed; combat-smoke, campaign-smoke and
+chain-walk with both empty and
 `weapon_357,ammo_357,ammo_357` inventories pending resource scheduling.
 Dependencies unchanged; cargo-deny not required. Final smoke acceptance remains
 37/37 with zero unexpected lines, campaign 93/93, and chain distinct depth 12,
