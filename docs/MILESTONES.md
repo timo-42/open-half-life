@@ -8186,7 +8186,7 @@ with `--start-inventory ""` and with
 and mutation/restoration probe also pass as described above. No
 probing output or imported assets are committed.
 
-## M9.NEXT — Continuous and charged weapon cadence
+## M9.47 — Continuous and charged weapon cadence
 
 The egon emitted 14 damage on every 0.01-second engine step while its cell
 counter advanced on the table's 0.1-second interval. Damage and ammo now
@@ -8232,12 +8232,17 @@ removing the remainder normalization. The last regression first reproduced
 an extra pulse after an exact 0.7-second step with zero additional elapsed time.
 Every mutation was restored and the focused suites passed afterwards.
 
-**Gates:** fmt check passed; focused `ohl-combat` 117 passed and
-`bosses_and_aircraft` 14 passed; workspace clippy default, `--features dev-tools`
-and `--all-features` passed; final `cargo test --workspace` 2781 passed, zero
-failed, 31 ignored; policy and graph passed. These changed-code gates ran on
-`dc1e69f`; combat-smoke, campaign-smoke and chain-walk with both empty and
-`weapon_357,ammo_357,ammo_357` inventories pending resource scheduling.
-Dependencies unchanged; cargo-deny not required. Final smoke acceptance remains
-37/37 with zero unexpected lines, campaign 93/93, and chain distinct depth 12,
-Pass, 660.8 simulated seconds for both inventories.
+**Gates:** on the combined M9.46 tree at `5bb699e`: fmt check; workspace
+clippy with all targets, default features, `--features dev-tools` and
+`--all-features`; `cargo test --workspace`, **2782 passed, zero failed,
+31 ignored**; policy; graph; dev-tools release build; combat-smoke **37/37
+with zero unexpected lines** and zero load errors, timeouts or crashes;
+campaign-smoke **93/93**; chain-walk at **distinct depth 12**, Pass,
+**660.8 simulated seconds**, both with `--start-inventory ""` and with
+`--start-inventory weapon_357,ammo_357,ammo_357`. Focused `ohl-combat` totals
+117 passed, and `bosses_and_aircraft` 14 passed; the original-loadout kill
+regression also passed separately. Every Cargo invocation used
+`CARGO_BUILD_JOBS=4 CARGO_PROFILE_DEV_DEBUG=line-tables-only`. Payload output
+was captured and sanitized in memory; temporary captures were removed and no
+raw payload report was persisted. Dependencies unchanged; cargo-deny not
+required. The final evidence commit changes only this paragraph.

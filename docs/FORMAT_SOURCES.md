@@ -7479,7 +7479,7 @@ in both collision models must clear its old trailing edge and hit its new
 leading edge while the corpse remains fixed and death fires only once.
 No new external behaviour source or proprietary fixture is used.
 
-### Continuous and charged weapon cadence audit (M9.NEXT)
+### Continuous and charged weapon cadence audit (M9.47)
 
 Published prose reviewed 2026-10-03, without inspecting retail engine/SDK source:
 
