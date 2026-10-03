@@ -8212,7 +8212,9 @@ first damage, cooldown across taps, float-boundary tolerance and at most one
 pulse per oversized call are project-authored policies, `TODO(black-box)`.
 Oversized calls discard missed whole intervals instead of bursting later;
 the engine's ordinary steps are smaller than the interval. The linear gauss
-curve and one-cell charge cost remain placeholders; charging drain, reflection,
+curve, ten-second limit counted from charge initiation and one-cell charge cost
+remain placeholders; the source describes ten seconds after full charge,
+without establishing its duration. Charging drain, reflection,
 beam splash, underwater restrictions and hornet regeneration remain unresolved.
 Beam sub-interval phase still resets on save restore; no save tags or encodings
 changed. The additional engine change is confined to gauss hitscan application.
