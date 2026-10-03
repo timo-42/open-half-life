@@ -6936,7 +6936,7 @@ at **distinct depth 12, Pass** both with `--start-inventory ""` (arrivals
 weapon_357,ammo_357,ammo_357` (arrivals 2 to 12 at one weapon and
 twenty-four rounds).
 
-## M9.NEXT — The game learns to make a noise, and to say which noises it may not make
+## M9.41 — The game learns to make a noise, and to say which noises it may not make
 
 For nine months this engine has been mute. Not for want of a mixer:
 `ohl-audio` has had a WAV decoder, a resampling software mixer with loop
@@ -7007,14 +7007,11 @@ exactly one way. `ohl_game` keeps the choice symbolic as an
 `AmbientRadius`, because that crate has no business depending on the mixer;
 `ohl-engine`'s presentation phase applies the numbers.
 
-**Nothing new is saved, deliberately.** `SECTION_SIMULATION` is postcard-
-encoded and not self-describing (M7.12's note), so a new field would
-invalidate every existing save. `AmbientState` is therefore not persisted
-at all: a loaded game rebuilds its registry from the map's entity defaults
-and restarts the level's ambience from its spawn state. An alarm the
-player had switched on is silent again after a load. That is a
-presentation difference, not a simulation one, and it is written down in
-`docs/FORMAT_SOURCES.md` rather than left to be discovered.
+**Saved in a section of its own.** `AmbientState` is saved in a new
+optional `SECTION_AMBIENT_STATE` (tag 38), the way tags 30, 31 and 33-37
+each added state without widening a frozen section. (The first draft of this
+entry argued the state need not be saved at all; review showed otherwise —
+see "Review follow-ups" below.)
 
 **Sentences.** `scripted_sentence` already resolved its speaker and emitted
 a cue; the cue carried `path: None` and the speaker's position was thrown
@@ -7057,9 +7054,11 @@ non-looping sound still ends in a run nobody can hear.
 byte budget (32 MiB of decoded PCM) and an entry count (512), and it
 remembers misses as well as hits, so a sound a map names but an
 installation does not carry is read once rather than every frame. An asset
-larger than the whole cache is played but not held. Sentence concatenation
-is capped at ten minutes of audio. The presentation phase tracks at most
-256 `ambient_generic` entities per map. `NullSink`'s pump clamps its own
+larger than the whole cache is remembered as a miss and not played.
+Sentence concatenation is capped at 32 MiB of stereo samples, about 95
+seconds. The presentation phase tracks at most 256 `ambient_generic`
+entities per map, and the host keeps the static pool's 64 voices for the
+loudest of the ones sounding (see "Review follow-ups"). `NullSink`'s pump clamps its own
 render length, and the runtime clamps the frame time it is handed, so a
 stalled host frame cannot ask for an unbounded buffer.
 
@@ -7169,6 +7168,8 @@ fail (see **Gates**).
 
 Also not done:
 
+- **A moving speaker.** A line is heard from where its speaker stood when
+  it started; nothing moves a playing channel.
 - **Pausing.** Opening the menu or the console stops the simulation but
   not a real device's own callback. On macOS and Windows a looping
   ambience therefore keeps playing behind the menu. On Linux the null sink
@@ -7189,9 +7190,71 @@ Also not done:
   default device on macOS and Windows CI. It is older than this work and
   was left alone. Every test added here uses `AudioRuntime::silent()`.
 
+**Review follow-ups (#175).** Every finding was checked against the code
+before it was fixed, and each fix has a test that fails when the fix is
+stubbed out.
+
+- **The sentence table emptied itself on every level change.** A level
+  change resets the engine's systems, and the reset built a fresh AI state
+  whose `sentences.txt` lookup was empty. The lookup was installed only
+  when the game was first loaded. After one `trigger_changelevel`, every
+  `scripted_sentence` and every `!NAME` ambient resolved to nothing. The
+  reset now keeps the table, since the table is the payload's and not the
+  level's. Tests speak a line after a level change and after a save is
+  loaded.
+- **Ambient state is saved (tag 38).** The first draft's reason for not
+  saving it was wrong. Tag 28 already saves that a `trigger_auto` has
+  fired, so an alarm a map switched on at its start stayed silent for the
+  rest of the map after a quickload, and a hum it had switched off came
+  back. The save format adds state through optional sections that an older
+  save simply lacks. Tag 38 is one such section, pinned by its own golden
+  bytes, with a round-trip test and a pre-tag-38 load test.
+- **A `scripted_sentence`'s own `volume` and `attenuation` are honoured.**
+  Both keys were parsed and then ignored for full volume and `ATTN_NORM`.
+  The volume is now `volume / 10`. An absent key is read as `10`, because
+  no source publishes a default and `0` would silence the line
+  (`TODO(black-box)`). The "Sound Radius" goes through the same `ATTN_*`
+  mapping as the ambient radius flags.
+- **The dead no longer speak.** A speaker named by `targetname` only had to
+  have an `Actor`, and a corpse keeps one. A dead speaker now says nothing,
+  and the sentence waits its `refire`. The unreachable fallback to the
+  script entity's own position is gone with it.
+- **Radius readings no source covers are marked.** Combining radius
+  spawnflags (widest wins) and "Is NOT looped" without "Start silent"
+  sounding at map load are both this project's own readings. They are
+  marked `TODO(black-box)` in code and in `docs/FORMAT_SOURCES.md`.
+  Tests pin `12` and `14`, which tell the large and medium checks apart,
+  and pin `32` alone.
+- **Ambients beyond the static pool come back.** The pool holds 64 voices
+  and the engine tracks up to 256 ambients, each announced once, so an
+  evicted loop stayed silent while the engine believed it played. The
+  host now remembers every looping static sound it started and has not
+  been told to stop. Each frame it gives the pool to the loudest of them
+  at the listener's position, using the mixer's own spatial gain, and
+  restarts any that were evicted.
+- **Memory.** `SoundBuffer::from_decoded` takes the decode by value, which
+  removes a full copy of the samples. A sound too large for the whole cache
+  is remembered as a miss instead of being decoded again on every play. A
+  joined sentence is capped at 32 MiB.
+- **Master volume is ramped** linearly across each render block instead of
+  stepping between blocks.
+- **`Mixer::stop_all`** clears every channel. `AudioRuntime::stop_all` no
+  longer lists classes by hand, so a class can no longer be missed.
+- **Docs:** the `speak` comment no longer claims cues carry no path. A line
+  being heard from where its speaker stood when it started is now recorded
+  as a known limit.
+
+Test gaps closed:
+- `benchmark()`'s frame loop is split from its GPU half (`benchmark_frames`),
+  so a test runs the real loop with a renderer that draws nothing.
+- Every run path's listener placement is tested.
+- A cue's volume and pitch are checked against what the mixer renders.
+
+Each item was mutation-probed (see **Gates**).
+
 **Gates** (on the rebased branch, follow-up included): fmt; clippy
 (workspace, `--features dev-tools`, and `--all-features`) with warnings
-denied; `cargo test --workspace` (2,494 passed, 0 failed, 31 ignored);
+denied; `cargo test --workspace` (2,528 passed, 0 failed, 31 ignored);
 policy; graph (36 crates: `ohl-app -> ohl-audio` needs no table change,
 since the composition root may depend on any workspace crate, and the
 already-allowed `ohl-engine -> ohl-audio` edge is still unused); `cargo deny
@@ -7203,4 +7266,9 @@ routing in every run path, the three ways a game is left behind, the
 volume slider, the master volume, sentence words and speaker position,
 `!SENTENCE`, the radius falloffs and their precedence, "start silent",
 "is NOT looped", the activation arm and the stop cue), each failing at
-least one test.
+least one test, and 24 more for the review follow-ups: the sentence table
+across a reset, a dead speaker, sentence volume, radius and default
+volume, tag 38 written and restored, the large/medium check order,
+"Is NOT looped" at load, loop re-admission, both `stop_all`s, a cue's
+volume and pitch, the oversize miss, the volume ramp, the sentence cap,
+the benchmark loop, the listener in three run paths, and the stop cue.
