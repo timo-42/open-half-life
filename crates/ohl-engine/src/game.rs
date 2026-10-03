@@ -1636,6 +1636,7 @@ impl Game {
             ambients: Some(crate::save_state::snapshot_ambients(&self.level)),
             switches: Some(crate::save_state::snapshot_switches(&self.level)),
             path_states: Some(crate::save_state::snapshot_path_states(&self.level)),
+            bosses: crate::save_state::snapshot_bosses(&self.level),
             // Written only when a level change actually materialised
             // something here, so a cold-loaded map's save carries no
             // section at all rather than an empty one.
@@ -1982,6 +1983,14 @@ impl Game {
         if let Some(switches) = &save.switches {
             self.systems.ensure_pickups_spawned(&mut self.level);
             crate::save_state::restore_switches(&mut self.level, switches);
+        }
+        // `SECTION_BOSS_STATE` (41): the same spawn-order-zipped overlay,
+        // onto the trail, shield and flight plan `attach_level` just built
+        // fresh from the map. A Gonarch resumes where it was on its trail,
+        // a Nihilanth keeps its activation and reserve, an aircraft its
+        // place on its route.
+        if let Some(bosses) = &save.bosses {
+            crate::save_state::restore_bosses(&mut self.level, bosses);
         }
         // A load is a map load: the chapter title is announced again.
         self.pending.clear();

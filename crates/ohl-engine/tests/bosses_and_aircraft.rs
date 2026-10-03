@@ -1,6 +1,6 @@
 //! Wave 1 batch B through the whole engine: the damage-type rules, the
-//! Gonarch's trail, the Nihilanth's activation and shield, and the
-//! aircraft's `Start Inactive` route.
+//! Gonarch's trail, the Nihilanth's activation and shield, the aircraft's
+//! `Start Inactive` route, and all of their state across a save.
 //!
 //! Every fixture here is project-authored (`ohl_engine::test_support`'s AI
 //! room, entity blocks written below); every `targetname` is a synthetic
@@ -10,12 +10,13 @@
 use ohl_ai::monsters::bigmomma::TrailPhase;
 use ohl_ai::monsters::nihilanth::HEAD_OPEN_SECONDS;
 use ohl_ai::monsters::table::BIGMOMMA_HEALTH_FACTOR;
-use ohl_ai::{DamageKinds, GonarchTrail};
+use ohl_ai::{DamageKinds, FlightPlan, GonarchTrail, NihilanthShield};
 use ohl_engine::test_support::{
     AI_MAP, ai_room_bsp, monster_entities, queue_monster_damage, queue_typed_monster_damage,
 };
 use ohl_engine::{Game, GameEvent, Input, MemoryAssets, TICK_SECONDS};
 use ohl_game::hecs::Entity;
+use ohl_game::registry::MonsterActivation;
 use std::fmt::Write as _;
 
 /// The room's entity block: a worldspawn, a player start facing `+X`, and
@@ -68,6 +69,12 @@ fn assets(entities: &str) -> MemoryAssets {
 fn game_from(entities: &str) -> Game {
     let bytes = ai_room_bsp(entities, false);
     Game::from_map_bytes(&assets(entities), AI_MAP, &bytes).expect("the AI room loads")
+}
+
+/// Saves `game` and loads it back over the same map.
+fn reload(game: &Game, entities: &str) -> Game {
+    let bytes = game.save_bytes(1_700_000_000).expect("the save is written");
+    Game::load_bytes(&assets(entities), &bytes).expect("the save loads")
 }
 
 /// Steps `game` and reports whether any step announced a level change.
@@ -271,6 +278,44 @@ fn a_gonarch_reaching_a_node_fires_removes_and_plays_what_the_node_names() {
     );
 }
 
+/// A Gonarch's place on its trail survives a save. Without tag 41 the load
+/// rebuilds the trail from the map and sets it walking from the first node
+/// again — which a save from before the tag existed still does.
+#[test]
+fn a_gonarchs_place_on_its_trail_round_trips_through_a_save() {
+    // The same room without the exit, so the arrival fires nothing.
+    let room = gonarch_room("").replace("\"targetname\" \"ohl_exit\"", "\"targetname\" \"ohl_x\"");
+    let mut game = game_from(&room);
+    let gonarch = the_monster(&game);
+    tick(&mut game, 300);
+    let phase = |game: &Game| {
+        game.registry()
+            .world
+            .get::<&GonarchTrail>(gonarch)
+            .expect("trail")
+            .phase()
+    };
+    assert_eq!(phase(&game), TrailPhase::Holding { at: 0 });
+    let health = health_of(&game, gonarch);
+
+    let loaded = reload(&game, &room);
+    assert_eq!(phase(&loaded), TrailPhase::Holding { at: 0 });
+    assert!((health_of(&loaded, gonarch) - health).abs() < 1e-3);
+
+    let mut save = game.to_save(1_700_000_000);
+    assert!(save.bosses.is_some(), "a level with a boss writes tag 41");
+    save.bosses = None;
+    let bytes = save
+        .to_bytes()
+        .expect("a save missing tag 41 still encodes");
+    let old = Game::load_bytes(&assets(&room), &bytes).expect("a pre-tag-41 save still loads");
+    assert_eq!(
+        phase(&old),
+        TrailPhase::Traveling { to: 0 },
+        "back at the trail's start"
+    );
+}
+
 // --- The Nihilanth ------------------------------------------------------------
 
 fn nihilanth_room(activated: bool, extra_keys: &[(&str, &str)]) -> String {
@@ -349,6 +394,73 @@ fn a_nihilanth_dies_once_its_head_opens_and_ignores_its_trigger_condition() {
     assert!(tick_until_level_change(&mut headcrab, 8));
 }
 
+/// Activation and a drained reserve survive a save. The `trigger_auto`
+/// that activated the boss is spent (tag 28), so a load that forgot the
+/// activation would leave it dormant for good.
+#[test]
+fn a_nihilanths_activation_and_reserve_round_trip_through_a_save() {
+    let room = nihilanth_room(true, &[]);
+    let mut game = game_from(&room);
+    let boss = the_monster(&game);
+    tick(&mut game, 5);
+    queue_monster_damage(&mut game, boss, None, 300.0);
+    tick(&mut game, 1);
+    let shield = |game: &Game| {
+        let shield = game
+            .registry()
+            .world
+            .get::<&NihilanthShield>(boss)
+            .expect("shield");
+        (shield.is_active(), shield.reserve())
+    };
+    let (active, reserve) = shield(&game);
+    assert!(active);
+    assert!(reserve < shield_capacity(&game, boss) - 1.0);
+
+    let loaded = reload(&game, &room);
+    assert_eq!(shield(&loaded), (active, reserve));
+}
+
+fn shield_capacity(game: &Game, boss: Entity) -> f32 {
+    game.registry()
+        .world
+        .get::<&NihilanthShield>(boss)
+        .expect("shield")
+        .reserve_capacity()
+}
+
+/// A save taken in the one tick between the map logic's `use` landing
+/// (the last phase of a tick) and the boss driver draining it (the next
+/// tick's AI phase) keeps the `use`: tag 41 carries the pending count.
+#[test]
+fn a_use_still_pending_at_a_save_survives_it() {
+    let room = nihilanth_room(true, &[]);
+    let mut game = game_from(&room);
+    let boss = the_monster(&game);
+    tick(&mut game, 1);
+    let pending = |game: &Game| {
+        game.registry()
+            .world
+            .get::<&MonsterActivation>(boss)
+            .expect("counter")
+            .pending
+    };
+    let active = |game: &Game| {
+        game.registry()
+            .world
+            .get::<&NihilanthShield>(boss)
+            .expect("shield")
+            .is_active()
+    };
+    assert_eq!(pending(&game), 1, "the trigger_auto's use, not yet drained");
+    assert!(!active(&game));
+
+    let mut loaded = reload(&game, &room);
+    assert_eq!(pending(&loaded), 1);
+    tick(&mut loaded, 1);
+    assert!(active(&loaded), "the carried use activated it");
+}
+
 // --- The aircraft -------------------------------------------------------------
 
 /// An Apache spawned `Start Inactive` on a two-corner loop, started by a
@@ -402,4 +514,26 @@ fn a_start_inactive_apache_waits_for_a_use_and_then_flies_its_route() {
     let moved = origin_of(&started, apache);
     assert!((moved - spawn).length() > 100.0, "{moved:?}");
     assert!(moved.z > spawn.z, "climbing toward the higher corner");
+}
+
+/// An aircraft's activation and place on its route survive a save.
+#[test]
+fn an_aircrafts_route_progress_round_trips_through_a_save() {
+    let room = apache_room(true);
+    let mut game = game_from(&room);
+    let apache = the_monster(&game);
+    tick(&mut game, 150);
+    let progress = |game: &Game| {
+        game.registry()
+            .world
+            .get::<&FlightPlan>(apache)
+            .expect("plan")
+            .progress()
+    };
+    let saved = progress(&game);
+    assert!(saved.active);
+    assert_eq!(saved.current, 1, "past the first corner");
+
+    let loaded = reload(&game, &room);
+    assert_eq!(progress(&loaded), saved);
 }

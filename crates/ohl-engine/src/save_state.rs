@@ -69,11 +69,15 @@
 //! own runtime configuration (`set_model_for`), not save data.
 
 use glam::Vec3;
+use ohl_ai::monsters::{
+    FlightPlan, FlightProgress, GonarchTrail, NihilanthShield, ShieldProgress, TrailPhase,
+};
 use ohl_combat::{EntityId as CombatEntityId, ProjectileKind};
 use ohl_game::hecs::Entity;
 use ohl_game::registry::{
     AmbientState, AutoTrigger, Breakable, ClassName, MakerActivation, MomentaryDoor,
-    MomentaryRotButton, MoverState, Pendulum, PlatRot, Pushable, RotButton, Rotator,
+    MomentaryRotButton, MonsterActivation, MoverState, Pendulum, PlatRot, Pushable, RotButton,
+    Rotator,
 };
 use ohl_game::{TrackTrainState, TriggerCameraState};
 use serde::{Deserialize, Serialize};
@@ -1672,6 +1676,228 @@ pub(crate) fn restore_path_states(level: &mut Level, snapshots: &[Option<PathSta
         };
         if let Ok(mut state) = level.registry.world.get::<&mut TrackTrainState>(*entity) {
             state.restore_chain(chain);
+        }
+    }
+}
+
+// --- `SECTION_BOSS_STATE` (41) --------------------------------------------
+
+/// A Gonarch's place on its `info_bigmomma` trail: `ohl_ai::monsters::
+/// TrailPhase`, with node indices as `u32`. Its own enum rather than
+/// `TrailPhase` itself, so the wire shape tag 41 freezes belongs to the
+/// save format and cannot move when the component does.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum TrailPhaseSnapshot {
+    /// `TrailPhase::Traveling`.
+    Traveling {
+        /// The node being moved to.
+        to: u32,
+    },
+    /// `TrailPhase::Arriving`.
+    Arriving {
+        /// The node reached.
+        at: u32,
+        /// Seconds of its `reachdelay` left.
+        wait_left: f32,
+    },
+    /// `TrailPhase::Holding`.
+    Holding {
+        /// The node held at.
+        at: u32,
+    },
+    /// `TrailPhase::Free`.
+    Free,
+}
+
+/// A Nihilanth's shield: `ohl_ai::monsters::ShieldProgress`. The reserve's
+/// size is rebuilt from the boss's health by every load, and the crystal
+/// count is re-read every tick, so neither is here.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ShieldSnapshot {
+    /// Whether the boss has been activated.
+    pub active: bool,
+    /// Points of reserve left.
+    pub reserve: f32,
+    /// Seconds until a standing crystal refills a low reserve.
+    pub recharge_left: f32,
+    /// Seconds until the head opens, while it is opening.
+    pub open_left: Option<f32>,
+    /// Whether the head is open.
+    pub exposed: bool,
+}
+
+/// An aircraft's place on its route: `ohl_ai::monsters::FlightProgress`.
+/// The route itself is rebuilt from the map's `path_corner`s by every
+/// load.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FlightSnapshot {
+    /// The index of the node being flown to.
+    pub current: u32,
+    /// Whether the plan has been started.
+    pub active: bool,
+    /// Seconds of the reached node's `wait` still to hover out.
+    pub wait_left: f32,
+}
+
+/// One boss or aircraft's runtime state (M9.NEXT): whichever of the three
+/// components it carries, plus its `ohl_game::registry::MonsterActivation`
+/// counter. Part of `SECTION_BOSS_STATE` (tag 41; see
+/// `crate::save::SECTION_BOSS_STATE`).
+///
+/// `pending_activation` closes the same one-tick window
+/// [`MonsterMakerSnapshot::pending_activation`] does: the map logic bumps
+/// the counter at the end of a tick and the AI drains it during the next,
+/// so a save taken between the two would otherwise lose the `use` that
+/// activates a Nihilanth or starts an aircraft.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct BossSnapshot {
+    /// A Gonarch's trail phase.
+    pub trail: Option<TrailPhaseSnapshot>,
+    /// A Nihilanth's shield.
+    pub shield: Option<ShieldSnapshot>,
+    /// An aircraft's flight progress.
+    pub flight: Option<FlightSnapshot>,
+    /// `ohl_game::registry::MonsterActivation::pending`.
+    pub pending_activation: u32,
+}
+
+/// The most entities one `SECTION_BOSS_STATE` section records, matching
+/// [`MAX_SNAPSHOT_ENTITIES`] like every other index-keyed section.
+pub const MAX_SNAPSHOT_BOSSES: usize = MAX_SNAPSHOT_ENTITIES;
+
+fn index_u32(index: usize) -> u32 {
+    u32::try_from(index).unwrap_or(u32::MAX)
+}
+
+fn index_usize(index: u32) -> usize {
+    usize::try_from(index).unwrap_or(usize::MAX)
+}
+
+impl From<TrailPhase> for TrailPhaseSnapshot {
+    fn from(phase: TrailPhase) -> Self {
+        match phase {
+            TrailPhase::Traveling { to } => Self::Traveling { to: index_u32(to) },
+            TrailPhase::Arriving { at, wait_left } => Self::Arriving {
+                at: index_u32(at),
+                wait_left,
+            },
+            TrailPhase::Holding { at } => Self::Holding { at: index_u32(at) },
+            TrailPhase::Free => Self::Free,
+        }
+    }
+}
+
+impl From<TrailPhaseSnapshot> for TrailPhase {
+    fn from(phase: TrailPhaseSnapshot) -> Self {
+        match phase {
+            TrailPhaseSnapshot::Traveling { to } => Self::Traveling {
+                to: index_usize(to),
+            },
+            TrailPhaseSnapshot::Arriving { at, wait_left } => Self::Arriving {
+                at: index_usize(at),
+                wait_left,
+            },
+            TrailPhaseSnapshot::Holding { at } => Self::Holding {
+                at: index_usize(at),
+            },
+            TrailPhaseSnapshot::Free => Self::Free,
+        }
+    }
+}
+
+/// `SECTION_BOSS_STATE` (41)'s whole payload: one optional
+/// [`BossSnapshot`] per `Registry::entities` slot, in spawn order. `None`
+/// for an entity that carries none of the three components; and the whole
+/// section is `None` (not written at all) for a level with no boss or
+/// aircraft, so every other map's save is exactly what it was before this
+/// tag existed.
+#[must_use]
+pub(crate) fn snapshot_bosses(level: &Level) -> Option<Vec<Option<BossSnapshot>>> {
+    let world = &level.registry.world;
+    let snapshots: Vec<Option<BossSnapshot>> = level
+        .registry
+        .entities
+        .iter()
+        .take(MAX_SNAPSHOT_BOSSES)
+        .map(|entity| {
+            let trail = world
+                .get::<&GonarchTrail>(*entity)
+                .ok()
+                .map(|trail| TrailPhaseSnapshot::from(trail.phase()));
+            let shield = world.get::<&NihilanthShield>(*entity).ok().map(|shield| {
+                let progress = shield.progress();
+                ShieldSnapshot {
+                    active: progress.active,
+                    reserve: progress.reserve,
+                    recharge_left: progress.recharge_left,
+                    open_left: progress.open_left,
+                    exposed: progress.exposed,
+                }
+            });
+            let flight = world.get::<&FlightPlan>(*entity).ok().map(|plan| {
+                let progress = plan.progress();
+                FlightSnapshot {
+                    current: index_u32(progress.current),
+                    active: progress.active,
+                    wait_left: progress.wait_left,
+                }
+            });
+            if trail.is_none() && shield.is_none() && flight.is_none() {
+                return None;
+            }
+            Some(BossSnapshot {
+                trail,
+                shield,
+                flight,
+                pending_activation: world
+                    .get::<&MonsterActivation>(*entity)
+                    .map_or(0, |activation| activation.pending),
+            })
+        })
+        .collect();
+    snapshots.iter().any(Option::is_some).then_some(snapshots)
+}
+
+/// Restores [`snapshot_bosses`], zipped against `level.registry.entities`
+/// in spawn order, onto the components this load's `attach_level` just
+/// rebuilt fresh from the map. Each component's own `restore` checks what
+/// it is handed against the route or trail the map actually has, so a
+/// save from a map whose trail or route has since changed cannot point one
+/// at a node that does not exist.
+pub(crate) fn restore_bosses(level: &mut Level, snapshots: &[Option<BossSnapshot>]) {
+    let entities = level.registry.entities.clone();
+    let world = &level.registry.world;
+    for (entity, snapshot) in entities.iter().zip(snapshots) {
+        let Some(snapshot) = snapshot else { continue };
+        if let (Some(phase), Ok(mut trail)) =
+            (snapshot.trail, world.get::<&mut GonarchTrail>(*entity))
+        {
+            trail.restore(phase.into());
+        }
+        if let (Some(saved), Ok(mut shield)) =
+            (snapshot.shield, world.get::<&mut NihilanthShield>(*entity))
+        {
+            shield.restore(ShieldProgress {
+                active: saved.active,
+                reserve: saved.reserve,
+                recharge_left: saved.recharge_left,
+                open_left: saved.open_left,
+                exposed: saved.exposed,
+            });
+        }
+        if let (Some(saved), Ok(mut plan)) =
+            (snapshot.flight, world.get::<&mut FlightPlan>(*entity))
+        {
+            plan.restore(FlightProgress {
+                current: index_usize(saved.current),
+                active: saved.active,
+                wait_left: saved.wait_left,
+            });
+        }
+        if let Ok(mut activation) = world.get::<&mut MonsterActivation>(*entity) {
+            activation.pending = snapshot
+                .pending_activation
+                .min(MonsterActivation::MAX_PENDING);
         }
     }
 }

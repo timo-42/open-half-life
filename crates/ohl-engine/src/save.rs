@@ -41,13 +41,14 @@
 //! | 38 | [`SECTION_AMBIENT_STATE`] | `Vec<Option<`[`AmbientSnapshot`]`>>`, one per registry entity, in spawn order: whether each `ambient_generic` is sounding (the audio package) |
 //! | 39 | [`SECTION_SWITCH_STATE`] | `Vec<Option<`[`SwitchSnapshot`]`>>`, one per registry entity, in spawn order: whether each `func_wall_toggle` is on, each `func_conveyor`'s signed speed, and whether each pickup has been taken (the entities package) |
 //! | 40 | [`SECTION_PATH_STATE`] | `Vec<Option<`[`PathStateSnapshot`](crate::save_state::PathStateSnapshot)`>>`, one per registry entity, in spawn order: a `path_track` switch's position and the chain each `func_train`/`func_tracktrain` holds |
+//! | 41 | [`SECTION_BOSS_STATE`] | `Vec<Option<`[`BossSnapshot`]`>>`, one per registry entity, in spawn order: a Gonarch's trail phase, a Nihilanth's shield, an aircraft's flight progress and their pending `use`s (M9.NEXT); written only for a level that has one |
 //!
-//! Tags 23-31 and 33-40 are read as `None`/a default when absent, so a
+//! Tags 23-31 and 33-41 are read as `None`/a default when absent, so a
 //! save written before M7.9 P4b (tags 23-27), M7.13 (tag 28), M9.5 (tag 29),
 //! M9.6 (tag 30), M9.8 (tag 31), M9.10 (tag 33), the teleport/master
 //! package (tag 34), M9.25 (tag 35), M9.26 (tag 36), M9.33 (tag 37), the
-//! audio package (tag 38), the entities package (tag 39) or the
-//! blocked-movers package (tag 40) still loads
+//! audio package (tag 38), the entities package (tag 39), the
+//! blocked-movers package (tag 40) or M9.NEXT (tag 41) still loads
 //! (§6 of the M7.9 design plan, recorded in local design notes and not
 //! part of the repository); a
 //! section that is present but fails to decode fails the whole read closed
@@ -129,9 +130,9 @@ use ohl_game::SimulationState;
 use serde::{Deserialize, Serialize};
 
 use crate::save_state::{
-    AiSnapshot, AmbientSnapshot, BreakableSnapshot, EntityCombatSnapshot, InventorySnapshot,
-    MomentaryDoorSnapshot, MonsterMakerChildSnapshot, MoverSnapshot, ProjectilesSnapshot,
-    RngSnapshot, RotatingMoverSnapshot,
+    AiSnapshot, AmbientSnapshot, BossSnapshot, BreakableSnapshot, EntityCombatSnapshot,
+    InventorySnapshot, MomentaryDoorSnapshot, MonsterMakerChildSnapshot, MoverSnapshot,
+    ProjectilesSnapshot, RngSnapshot, RotatingMoverSnapshot,
 };
 use crate::transition::{EntitySnapshot, GlobalStateTable, PlayerCarryState};
 
@@ -374,6 +375,29 @@ pub const SECTION_SWITCH_STATE: u32 = 39;
 /// claimed by the entities package's switch state, so this takes 40.
 pub const SECTION_PATH_STATE: u32 = 40;
 
+/// Tag 41: the runtime state of the boss and aircraft components, one
+/// optional entry per registry entity in spawn order (M9.NEXT,
+/// `docs/FORMAT_SOURCES.md`, "Wave 1 batch B").
+///
+/// A Gonarch's place on its `info_bigmomma` trail, a Nihilanth's shield
+/// and whether it has been activated, and an aircraft's place on its route
+/// and whether it has been started all live in components `attach_level`
+/// rebuilds fresh from the map on every load. Without this section a save
+/// taken mid-fight loads with the Gonarch back at the first node of its
+/// trail (shielded again, and set to walk a trail it has already
+/// finished), the Nihilanth dormant and its reserve full, and a `Start
+/// Inactive` aircraft parked again — with the `trigger_auto` that started
+/// it already spent (tag 28), so nothing would ever start it again.
+///
+/// A new tag rather than a field on [`SECTION_AI`] (25): that tag is
+/// shipped and frozen at its own wire shape (see this module's "Frozen
+/// section shapes"), the same reasoning tags 30, 31 and 33-40 each
+/// recorded. Unlike them it is written only when the level has at least
+/// one of these monsters, so every other map's save is byte-for-byte what
+/// it was before the tag existed. Tag 41 is the next free number: 39 is
+/// the entities package's, 40 the blocked-movers package's.
+pub const SECTION_BOSS_STATE: u32 = 41;
+
 /// One entity definition [`SECTION_CARRIED_ENTITIES`] (36) carries.
 ///
 /// The keyvalues only, as authored pairs: `crate::transition`'s
@@ -571,6 +595,13 @@ pub struct GameSave {
     /// every train back on the chain its `target` resolves to, which is
     /// what every build before this tag did.
     pub path_states: Option<Vec<Option<crate::save_state::PathStateSnapshot>>>,
+    /// The boss and aircraft components' runtime state, one optional entry
+    /// per registry entity in spawn order ([`SECTION_BOSS_STATE`], 41).
+    /// `None` both for a level with none of those monsters (the section is
+    /// not written) and for a save from before tag 41 existed, which loads
+    /// every boss and aircraft back at its spawn state — what every build
+    /// before it did.
+    pub bosses: Option<Vec<Option<BossSnapshot>>>,
     /// The entity definitions a level change materialised in this map, in
     /// the order they were appended (M9.26). `None` for a save missing tag
     /// 36 — an older save simply comes back with the map's own entities and
@@ -667,6 +698,9 @@ impl GameSave {
             if let Some(path_states) = &self.path_states {
                 writer.add_section_serde(SECTION_PATH_STATE, path_states)?;
             }
+            if let Some(bosses) = &self.bosses {
+                writer.add_section_serde(SECTION_BOSS_STATE, bosses)?;
+            }
             if let Some(carried_entities) = &self.carried_entities {
                 writer.add_section_serde(SECTION_CARRIED_ENTITIES, carried_entities)?;
             }
@@ -752,6 +786,11 @@ impl GameSave {
                 &reader,
                 SECTION_PATH_STATE,
                 crate::save_state::MAX_SNAPSHOT_PATH_STATES,
+            )?,
+            bosses: optional_bounded_vec_section(
+                &reader,
+                SECTION_BOSS_STATE,
+                crate::save_state::MAX_SNAPSHOT_BOSSES,
             )?,
         })
     }
