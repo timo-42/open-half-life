@@ -6797,14 +6797,18 @@ hundred units from the nearest cell the route's own walk ever reached. So
 the chain still arrives everywhere with `0 weapon(s), 0 round(s)` — but
 that is now a *measured* fact about how far the chain has got, printed on
 one row per arrival, rather than a gap papered over by a default. As
-measured when this milestone landed, the eleventh hop's guard could not be
-held with empty hands: the default walk reaches distinct depth 11 and ends
-on "The chain walk arrived dead." — ten arrival rows, since the walk dies
-entering the twelfth map and prints none for it — and the same chain with
-the opt-in loadout reaches **distinct depth 12, Pass**, carrying one weapon
+measured on this milestone's own base, before the Prisoner flag (M9.39)
+was merged ahead of it, the eleventh hop's guard could not be held with
+empty hands: the default walk reached distinct depth 11 and ended on "The
+chain walk arrived dead." — ten arrival rows, since the walk dies entering
+the twelfth map and prints none for it — and the same chain with the
+opt-in loadout reached **distinct depth 12, Pass**, carrying one weapon
 and twenty-four rounds to the last hop and arriving with eighteen: six
-fired holding the spot. Both numbers are in the report; neither is the
-other's excuse.
+fired holding the spot. Both numbers were in the report; neither was the
+other's excuse. Rebased onto M9.39 both walks reach **distinct depth 12,
+Pass**: the monsters that hop's chain puts in front of the player are held
+prisoner by the map, so nothing is fired — the empty walk arrives at all
+eleven maps with zeroes, the armed one with all twenty-four rounds.
 
 **Where the routes could not reach what there was.** The two maps with
 anything at all keep it roughly two hundred and roughly four hundred
@@ -6844,9 +6848,9 @@ fixture by fixture before anything was changed, found seven things:
   script has left of both caps; each `PlanAction::Pickup` carries its own
   out-and-back length for that.
 - *"Rounds carried" left out the clip*, so a reload read as rounds spent.
-  It now counts reserve and loaded rounds together; the opt-in run above
-  arrives at the last map with eighteen, not the twelve the reserve alone
-  showed.
+  It now counts reserve and loaded rounds together; on this milestone's
+  own base the opt-in run above arrived at the last map with eighteen,
+  not the twelve the reserve alone showed.
 - *The MP5's grenades were never wanted*: only a weapon's primary ammo was
   compared. Secondary fire counts now.
 - *The stand point sat on the rim of the touch radius*, the cell nearest
@@ -6868,6 +6872,13 @@ of it are tied together by a test that reads the app's own source; and the
 project-authored bounds and ranking are labelled as such. This entry's
 "printed on eleven rows" was wrong — a default walk that arrives dead
 prints ten — and is corrected above.
+
+**Rebased onto M9.39.** The Prisoner flag merged first, so this entry is
+M9.40, and the README's chain-walk paragraphs now describe the walk as it
+measures on top of it: the default, empty walk reaches distinct depth 12,
+Pass, the same as the armed one. The loadout is still an explicit opt-in
+and still named on its own row; on the shipped chain it changes nothing
+but the arrival rows.
 
 Nothing here changes a chain route: `chain-walk` replays the shipped route
 files, and every planner change is a no-op on a map where no wanted pickup
@@ -6916,4 +6927,11 @@ weapon_357,ammo_357,ammo_357` at **distinct depth 12, Pass** (arrivals 2
 to 11 at one weapon and twenty-four rounds, the twelfth at eighteen), the
 default walk at distinct depth 11, "The chain walk arrived dead." (ten
 rows, all zeroes), and a default `plan-chain-hop` refusing to plan
-because the chain did not arrive cleanly.
+because the chain did not arrive cleanly — all on this milestone's own
+base. Rebased onto M9.39: fmt, clippy (all three), `cargo test
+--workspace` 219 suites, 2,497 tests, 0 failures, policy, graph,
+combat-smoke 37/37 with 0 unexpected lines, and `cargo xtask chain-walk`
+at **distinct depth 12, Pass** both with `--start-inventory ""` (arrivals
+2 to 12 at `0 weapon(s), 0 round(s)`) and with `--start-inventory
+weapon_357,ammo_357,ammo_357` (arrivals 2 to 12 at one weapon and
+twenty-four rounds).

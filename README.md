@@ -582,13 +582,10 @@ no further route." it has run out of authored routes, not out of map.
 `--start NAME` walks a different chain, and must name a map from
 `ohl-campaign`'s own cited table.
 
-**As measured when pickup detours landed, the default `cargo xtask
-chain-walk` fails at distinct depth 11** ("The chain walk arrived dead.":
-the eleventh hop's route holds its ground through a scripted chain with
-nothing to fight with), `--start-inventory weapon_357,ammo_357,ammo_357`
-restores distinct depth 12, Pass, and a default `cargo xtask
-plan-chain-hop` refuses to plan for the same reason (the chain it runs
-first does not arrive cleanly).
+As last measured, the default `cargo xtask chain-walk` (empty inventory)
+reaches **distinct depth 12** and ends on "The chain walk has no further
+route.", Pass, and so does the same walk with `--start-inventory
+weapon_357,ammo_357,ammo_357`.
 
 `cargo xtask plan-chain-hop` assembles that same chain, runs it in one
 process, and hands the arrival point it ends at to `--plan-route`: it
@@ -627,12 +624,18 @@ commands once defaulted to (`weapon_357,ammo_357,ammo_357`, labelled
 **harness aid** — not a claim about the campaign), or any other list
 (labelled caller-supplied).
 
-That loadout used to stand in for something the planner lacked: a route
-that steps aside for what the map left beside it. The planner now does
-(pickup detours, above), so the list is no longer a stand-in for anything;
-it stays only as an explicit opt-in, for telling "the routes collected
-nothing to fight with" apart from "the hop fails even armed". Both
-commands build the app binary themselves with the same feature set
+That loadout was added for the twelfth map, which is reached by a route
+that holds its ground while a scripted chain runs, at a time when empty
+hands could not: the monsters that chain puts in front of the player
+carry the published `Prisoner` spawnflag, and until that flag was
+modelled they fought instead of waiting for the map's own script. With it
+modelled no shipped hop needs the loadout, and the routes now step aside
+for what a map leaves beside them (pickup detours, above) rather than
+lean on a handout. It stays only as an explicit opt-in — for a hop that
+turns out to need something to fight with before the routes have
+collected anything, and for telling "the routes collected nothing" apart
+from "the hop fails even armed" — and on the shipped chain it changes
+nothing but the arrival rows. Both commands build the app binary themselves with the same feature set
 (`dev-tools`, which is where this flag and `--plan-route` live), and a
 binary passed with `--bin` that does not accept the flag is reported as
 such rather than run.
