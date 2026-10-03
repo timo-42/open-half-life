@@ -225,13 +225,17 @@ fn an_ambient_generic_with_no_resolvable_message_cues_nothing_playable() {
 }
 
 /// Every published radius spawnflag, alone and in combination, read as
-/// the published `ATTN_*` falloff it names (see
-/// `ohl_game::registry::AmbientRadius::from_spawnflags` for how a
-/// combination is read: "play everywhere" wins, then the widest radius;
-/// no radius flag at all is the published default, "medium").
+/// the published `ATTN_*` falloff it names. No radius flag at all is the
+/// published default, "medium".
+///
+/// The combinations pin a reading no source publishes
+/// (**`TODO(black-box)`**, see
+/// `ohl_game::registry::AmbientRadius::from_spawnflags`): "play everywhere"
+/// wins, then the widest radius. `12` (medium and large) and `14` (all
+/// three radii) are what tell the large and medium checks apart.
 #[test]
 fn every_radius_spawnflag_chooses_its_published_falloff() {
-    let cases: [(&str, f32); 8] = [
+    let cases: [(&str, f32); 10] = [
         ("0", ohl_engine::ATTN_STATIC),
         ("1", ohl_engine::ATTN_NONE),
         ("2", ohl_engine::ATTN_IDLE),
@@ -240,11 +244,13 @@ fn every_radius_spawnflag_chooses_its_published_falloff() {
         ("9", ohl_engine::ATTN_NONE),
         ("10", ohl_engine::ATTN_NORM),
         ("6", ohl_engine::ATTN_STATIC),
+        ("12", ohl_engine::ATTN_NORM),
+        ("14", ohl_engine::ATTN_NORM),
     ];
     let mut blocks = String::new();
     for (index, (spawnflags, _)) in cases.iter().enumerate() {
-        #[allow(clippy::cast_precision_loss, reason = "eight fixture slots")]
-        let x = -112.0 + 32.0 * index as f32;
+        #[allow(clippy::cast_precision_loss, reason = "ten fixture slots")]
+        let x = -144.0 + 32.0 * index as f32;
         blocks.push_str(&ambient(
             &format!("ohl_radius_{index}"),
             [x, 0.0, 36.0],
@@ -256,8 +262,8 @@ fn every_radius_spawnflag_chooses_its_published_falloff() {
     let cues = sound_cues(&mut game, 30);
     assert_eq!(cues.len(), cases.len());
     for (index, (spawnflags, expected)) in cases.iter().enumerate() {
-        #[allow(clippy::cast_precision_loss, reason = "eight fixture slots")]
-        let x = -112.0 + 32.0 * index as f32;
+        #[allow(clippy::cast_precision_loss, reason = "ten fixture slots")]
+        let x = -144.0 + 32.0 * index as f32;
         let cue = cues
             .iter()
             .find(|cue| {
@@ -313,4 +319,24 @@ fn an_ambient_generic_naming_a_published_sentence_speaks_its_words() {
             "sound/ohl/there.wav".to_string(),
         ])
     );
+}
+
+/// "Is NOT looped" (32) without "Start silent" (16) sounds once as the map
+/// loads, like any other ambient that is not start-silent.
+///
+/// **`TODO(black-box)`**: no source says whether the engine makes an
+/// exception for an unlooped sound here. This pins the current reading —
+/// the published "Start silent" wording, applied without one — so a change
+/// to it is a deliberate one (see `ohl_game::registry::AmbientState::spawned`).
+#[test]
+fn an_unlooped_ambient_that_is_not_start_silent_sounds_when_the_map_loads() {
+    let entities = script_room_entities(
+        [-192.0, -192.0, 36.0],
+        &ambient("ohl_once", [0.0, 0.0, 36.0], &[("spawnflags", "32")]),
+    );
+    let mut game = script_game(&entities);
+
+    let cues = sound_cues(&mut game, 30);
+    assert_eq!(cues.len(), 1, "one start as the map loads: {cues:?}");
+    assert!(!cues[0].stop);
 }

@@ -1231,10 +1231,16 @@ pub enum AmbientRadius {
 }
 
 impl AmbientRadius {
-    /// Reads the published radius spawnflags. "Play everywhere" wins over
-    /// any radius flag, and a larger radius wins over a smaller one, so an
-    /// entity with more than one flag ticked is read as the widest it
-    /// asked for rather than being rejected.
+    /// Reads the published radius spawnflags.
+    ///
+    /// Each flag on its own is published. **`TODO(black-box)`**: what an
+    /// entity with *more than one* of them ticked does is not. This reads
+    /// "Play everywhere" as winning over any radius flag, and a larger
+    /// radius as winning over a smaller one, so such an entity is heard as
+    /// widely as it asked for rather than being rejected. That rule is this
+    /// project's own, recorded in `docs/FORMAT_SOURCES.md`,
+    /// "`ambient_generic`", and pinned by a test so a change to it is
+    /// deliberate.
     #[must_use]
     pub const fn from_spawnflags(spawnflags: u32) -> Self {
         if spawnflags & SPAWNFLAG_AMBIENT_PLAY_EVERYWHERE != 0 {
@@ -1301,6 +1307,13 @@ pub struct AmbientState {
 impl AmbientState {
     /// The state an `ambient_generic` spawns in: silent when the published
     /// "Start silent" spawnflag is set, sounding otherwise.
+    ///
+    /// **`TODO(black-box)`**: an entity with "Is NOT looped" (32) but not
+    /// "Start silent" (16) is read the same way as any other: it sounds
+    /// once when the map loads. The published wording of "Start silent"
+    /// ("If you do not click this flag, the sound will play as soon as the
+    /// map has loaded") does not make an exception for it, and no source
+    /// says whether the engine does; a test pins this reading.
     #[must_use]
     pub const fn spawned(start_silent: bool) -> Self {
         Self {
