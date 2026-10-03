@@ -5,7 +5,7 @@
 
 use hecs::Entity;
 use ohl_ai::monsters::nav_bridge::{NavBridge, NavBridgeLimits};
-use ohl_ai::{Navigator, StraightLineNavigator, Vec3};
+use ohl_ai::{Navigator, StraightLineNavigator, Vec3, move_toward};
 use ohl_formats::bsp30::{Bsp, Limits};
 use ohl_formats::test_support::{Bsp30Builder, CollisionBrush};
 use ohl_nav::{BuildLimits, NodeKind, NodeSeed};
@@ -127,7 +127,7 @@ fn a_monster_routes_around_a_wall_via_the_node_graph() {
 }
 
 #[test]
-fn with_no_nodes_and_a_blocked_line_the_bridge_falls_back_to_the_straight_line_mover() {
+fn with_no_nodes_and_a_blocked_line_the_bridge_falls_back_to_a_traced_step() {
     let collision = wall_room();
     let seeds: Vec<NodeSeed> = Vec::new();
     let mut bridge = NavBridge::build(
@@ -146,11 +146,53 @@ fn with_no_nodes_and_a_blocked_line_the_bridge_falls_back_to_the_straight_line_m
 
     bridge.begin_tick(&[actor]);
     let bridged = bridge.next_move(actor, origin, goal, hull, &collision, step);
-    let straight = StraightLineNavigator.next_move(origin, goal, step);
+    let traced = move_toward(&collision, hull, origin, goal, step, 1.0).position;
     assert_eq!(
-        bridged, straight,
-        "with no graph, the bridge is the straight-line mover"
+        bridged, traced,
+        "with no graph, the bridge is one traced step"
     );
+    // In the open, that step is the straight line.
+    assert_eq!(bridged, StraightLineNavigator.next_move(origin, goal, step));
+
+    // Driven on into the wall, it stops at it: the fallback never carries a
+    // monster through what its own hull trace says is solid.
+    let mut pos = origin;
+    for _ in 0..200 {
+        bridge.begin_tick(&[actor]);
+        pos = bridge.next_move(actor, pos, goal, hull, &collision, step);
+    }
+    assert!(
+        pos.x < -16.0 - 15.0,
+        "the fallback walked a monster through the wall: {pos:?}"
+    );
+}
+
+/// A flier is not routed through ground nodes. With only a ground lattice
+/// and the wall between it and its goal, a point-hull mover high in the
+/// room gets no graph route (every one would run through floor-level
+/// waypoints) and flies its traced fallback instead, at its own height,
+/// rather than diving to the floor to follow the walkers' graph.
+#[test]
+fn a_flier_is_not_routed_through_ground_nodes() {
+    let collision = wall_room();
+    let seeds = wall_room_lattice();
+    let mut bridge = NavBridge::build(
+        &seeds,
+        &collision,
+        &BuildLimits::default(),
+        NavBridgeLimits::default(),
+    );
+    let actor = dummy_actor();
+    let goal = Vec3::new(300.0, 0.0, 200.0);
+    let mut pos = Vec3::new(-300.0, 0.0, 200.0);
+    let mut lowest = pos.z;
+    for _ in 0..600 {
+        bridge.begin_tick(&[actor]);
+        pos = bridge.next_move(actor, pos, goal, Hull::Point, &collision, 4.0);
+        lowest = lowest.min(pos.z);
+    }
+    assert!(lowest > 150.0, "the flier dived toward the floor: {lowest}");
+    assert!(pos.x <= -16.0, "and did not pass through the wall: {pos:?}");
 }
 
 #[test]
@@ -183,10 +225,10 @@ fn the_per_tick_search_budget_is_respected() {
     // fallback this tick, even though it needs a route just as much.
     let origin = Vec3::new(-300.0, 0.0, 40.0);
     let second_move = bridge.next_move(second, origin, goal, hull, &collision, step);
-    let straight = StraightLineNavigator.next_move(origin, goal, step);
+    let traced = move_toward(&collision, hull, origin, goal, step, 1.0).position;
     assert_eq!(
-        second_move, straight,
-        "budget exhausted: straight-line fallback expected"
+        second_move, traced,
+        "budget exhausted: the traced fallback step expected"
     );
 
     // A fresh tick resets the budget. Run the second actor from scratch for

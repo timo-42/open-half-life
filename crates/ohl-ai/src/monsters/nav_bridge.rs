@@ -14,18 +14,28 @@
 //! [`NavBridge`] is a concrete type with its own richer `next_move`, and
 //! [`crate::world::AiWorld::attach_navigator`] takes it directly.
 //!
-//! Node kind (ground/air/water) is entirely `ohl-nav`'s concern: a graph
-//! built from [`ohl_nav::node_seeds_from_entities`]-style seeds already
-//! keeps ground links and air/water links in disjoint subgraphs (see
-//! `ohl_nav::graph`'s module doc), and both endpoint attachment and A* are
-//! validated per [`Hull`], not per node kind. A flying or swimming monster
-//! therefore only needs the right hull passed in — which it already has —
-//! for its moves to land on, and stay within, the air/water subgraph; this
-//! bridge does not need its own kind-aware attachment logic on top of that.
+//! Node kind (ground/air/water) is only partly `ohl-nav`'s concern. A graph
+//! built from [`ohl_nav::node_seeds_from_entities`]-style seeds keeps
+//! ground links and air/water links in disjoint subgraphs (see
+//! `ohl_nav::graph`'s module doc), but endpoint attachment and A* are
+//! validated per [`Hull`], not per node kind, and every ground link is
+//! also validated for the point hull. So the right hull alone does *not*
+//! keep a flier (the point hull, [`crate::movement::flies`]) off the
+//! ground subgraph: attached to its nearest node, which may be a ground
+//! node, it would be routed through floor-level waypoints (a ground node's
+//! waypoint is lifted by the hull's foot offset, which is zero for the
+//! point hull) and dive to them. This bridge therefore drops any route for
+//! a flier that passes through a grounded node and lets it fly the traced
+//! fallback below instead. **`TODO`**: attaching a flier only to air nodes
+//! in the first place needs a node-kind filter in `ohl_nav::find_path`;
+//! until then a flier whose nearest node is a ground node gets no graph
+//! route at all, even where an air route exists.
 //!
-//! Falls back to [`StraightLineNavigator`] whenever the graph has no nodes,
-//! no path can be found this tick, or this tick's bounded path-search budget
-//! is spent, so a monster is never left unable to move.
+//! Falls back to one traced step, [`crate::movement::move_toward`] —
+//! horizontal with a step-up for a walker, the full line for a flier —
+//! whenever the graph has no nodes, no path can be found this tick, or
+//! this tick's bounded path-search budget is spent, so a monster is never
+//! left unable to move and never moved through a wall to get there.
 
 use std::collections::HashMap;
 
@@ -37,7 +47,6 @@ use ohl_nav::{
 };
 use ohl_physics::{CollisionModel, Hull};
 
-use super::integration::{Navigator, StraightLineNavigator};
 use crate::movement::{ROUTE_REFRESH_DISTANCE, STUCK_PROGRESS_FRACTION};
 
 /// How far a cached path's goal may drift before it is rebuilt.
@@ -146,7 +155,8 @@ impl NavBridge {
     /// its goal has not drifted more than [`PATH_REFRESH_DISTANCE`];
     /// otherwise tries the direct line, then spends one of this tick's
     /// bounded `find_path` searches, and finally falls back to
-    /// [`StraightLineNavigator`] when neither finds a route.
+    /// one traced [`crate::movement::move_toward`] step when neither finds
+    /// a route.
     #[must_use]
     pub fn next_move(
         &mut self,
@@ -172,7 +182,8 @@ impl NavBridge {
         }
 
         let Some(cached) = self.cache.get_mut(&actor) else {
-            return StraightLineNavigator.next_move(origin, goal, max_step);
+            return crate::movement::move_toward(collision, hull, origin, goal, max_step, 1.0)
+                .position;
         };
 
         let steer_limits = own_pace_steer_limits(&self.limits.steer, max_step);
@@ -229,7 +240,9 @@ impl NavBridge {
                 goal,
                 hull,
                 &self.limits.path,
-            ) {
+            )
+            .filter(|path| !crate::movement::flies(hull) || !self.uses_ground_node(path))
+            {
                 self.cache.insert(
                     actor,
                     CachedRoute {
@@ -243,6 +256,17 @@ impl NavBridge {
             }
         }
         self.cache.remove(&actor);
+    }
+
+    /// Whether `path` passes through a grounded node: a route a flier must
+    /// not take, since a ground node's waypoint for the point hull is the
+    /// floor itself (see the module doc).
+    fn uses_ground_node(&self, path: &Path) -> bool {
+        path.nodes.iter().any(|index| {
+            self.graph
+                .node(*index)
+                .is_some_and(|node| node.kind.is_grounded())
+        })
     }
 }
 
