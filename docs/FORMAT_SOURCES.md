@@ -6582,7 +6582,7 @@ three functions to a rendered channel is now built and tested; the day a
 reviewed table exists, those three functions are the only thing that has to
 change.
 
-## Map entities the registry used to drop (M9.NEXT)
+## Map entities the registry used to drop (M9.43)
 
 Appended for the entities package. Nothing above this heading is revised.
 Before it, `ohl_game::registry::Registry::build` gave each classname below
