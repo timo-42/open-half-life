@@ -6569,7 +6569,10 @@ per `docs/CLEAN_ROOM.md`'s runtime-hitbox-source rule. Regression-tested
 against a synthetic zero-hitbox-lump model
 (`ohl_engine::combat::hitbox_fallback_tests`, mutation-checked: reverting
 the fallback call fails both new tests), parametrised over every defined
-`MonsterKind` plus the bullsquid alias.
+`MonsterKind` plus the bullsquid alias. Two more tests pin *which* box the
+fallback builds: a synthetic model with asymmetric, non-degenerate
+`bbmin`/`bbmax` must get exactly that box back (forcing the literal branch
+fails it), and one whose bounds are empty on an axis must get the literal.
 
 Because no currently-shipped monster model actually lacks a hitbox lump,
 this fix changes no combat-smoke or campaign-smoke outcome: none of the 37
@@ -6584,4 +6587,4 @@ attack-trace filter stays load-bearing until it is closed.
 **Gates**: fmt, clippy (workspace, `--features dev-tools`, and
 `--all-features`), `cargo test --workspace`, policy, graph, combat-smoke
 37/37, campaign-smoke 93/93, chain-walk unchanged at **distinct depth
-11**, Pass.
+11**, Pass (measured on the base before M9.37 landed).

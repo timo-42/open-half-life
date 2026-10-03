@@ -1148,12 +1148,15 @@ mod weapon_wiring_tests {
 /// module's fallback is the fix, and this is its regression coverage.
 #[cfg(test)]
 mod hitbox_fallback_tests {
-    use super::rebuild_hitbox_index;
+    use super::{FALLBACK_HITBOX_HALF_EXTENT, rebuild_hitbox_index};
     use crate::assets::MemoryAssets;
+    use crate::components::StudioAnim;
+    use crate::ids::entity_id;
     use crate::level::Level;
     use crate::test_support::{NEXT_MAP, synthetic_map_bsp_with_extra_entity};
     use glam::Vec3;
     use ohl_combat::{HitboxIndex, HitboxLimits, TraceFilter, TraceMask, trace_attack_filtered};
+    use ohl_game::hecs::Entity;
 
     /// A level with the synthetic room fixture plus one `classname` monster
     /// at `48 0 32` (well inside the closed room; see
@@ -1165,15 +1168,66 @@ mod hitbox_fallback_tests {
     /// data, or one whose posed hitboxes all collapsed, would leave
     /// [`super::push_fallback_hitbox`] to cover.
     fn level_with_hitboxless_monster(classname: &str, model_path: &str) -> Level {
+        let (mdl_bytes, _layout) = ohl_formats::test_support::build_minimal_mdl10();
+        level_with_monster_model(classname, model_path, mdl_bytes)
+    }
+
+    fn level_with_monster_model(classname: &str, model_path: &str, mdl_bytes: Vec<u8>) -> Level {
         let bsp = synthetic_map_bsp_with_extra_entity(
             NEXT_MAP,
             &format!("{{\n\"classname\" \"{classname}\"\n\"origin\" \"48 0 32\"\n}}\n"),
         );
         let mut assets = MemoryAssets::new();
         assets.insert("maps/ohlsynth.bsp", bsp.clone());
-        let (mdl_bytes, _layout) = ohl_formats::test_support::build_minimal_mdl10();
         assets.insert(model_path, mdl_bytes);
         Level::from_bytes(&assets, "ohlsynth", &bsp).expect("the fixture level loads")
+    }
+
+    /// Byte offset of `bbmin` in an MDL v10 header: the magic, the version,
+    /// the 64-byte name and the length, then `eyeposition`, `min` and `max`
+    /// (three `f32`s each). `bbmax` follows it directly.
+    const MDL10_BBMIN_OFFSET: usize = 4 + 4 + 64 + 4 + 3 * 12;
+
+    /// [`ohl_formats::test_support::build_minimal_mdl10`] (still no hitbox
+    /// lump) with its header `bbmin`/`bbmax` overwritten, so the fallback's
+    /// primary branch — the model's own bounds — is the one exercised.
+    fn hitboxless_mdl10_with_bounds(bbmin: [f32; 3], bbmax: [f32; 3]) -> Vec<u8> {
+        let (mut bytes, _layout) = ohl_formats::test_support::build_minimal_mdl10();
+        for (i, value) in bbmin.iter().chain(&bbmax).enumerate() {
+            let at = MDL10_BBMIN_OFFSET + 4 * i;
+            bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes
+    }
+
+    /// The single fallback box [`rebuild_hitbox_index`] gave the fixture's
+    /// one model-backed entity, after checking the loaded model reports
+    /// `expected_bounds` — so a wrong header offset in the fixture fails
+    /// here rather than quietly testing the degenerate branch instead.
+    fn fallback_box(level: &Level, expected_bounds: ([f32; 3], [f32; 3])) -> (Vec3, Vec3) {
+        let mut query = level.registry.world.query::<(Entity, &StudioAnim)>();
+        let (entity, anim) = query
+            .iter()
+            .next()
+            .expect("the fixture monster carries a studio model");
+        let model = level
+            .studio_models
+            .get(anim.model)
+            .expect("the fixture model loaded");
+        assert_eq!(
+            (model.bounds_min, model.bounds_max),
+            expected_bounds,
+            "the fixture's header bounds did not round-trip through the loader"
+        );
+        let mut hitboxes = HitboxIndex::new(HitboxLimits::default());
+        rebuild_hitbox_index(&mut hitboxes, level);
+        let entry = hitboxes
+            .entries()
+            .iter()
+            .find(|entry| entry.id == entity_id(entity))
+            .expect("the monster is in the index");
+        assert_eq!(entry.boxes.len(), 1, "exactly one fallback box");
+        (entry.boxes[0].min, entry.boxes[0].max)
     }
 
     /// Fires a `TraceMask::SHOT` shot from well outside the monster's own
@@ -1224,5 +1278,44 @@ mod hitbox_fallback_tests {
         let model_path = kind.default_model_path().expect("bullsquid has a model");
         let level = level_with_hitboxless_monster("monster_bullchicken", model_path);
         assert!(shot_hits_the_monster(&level));
+    }
+
+    /// The fallback box is the model's own `bbmin`/`bbmax`, not the
+    /// project's literal: the bounds are asymmetric on every axis and
+    /// smaller than the literal on two, so a fallback that ignored them,
+    /// swapped them or symmetrised them would not reproduce them.
+    #[test]
+    fn the_fallback_box_is_the_models_own_bounds() {
+        let bounds = ([-6.0, -10.0, 0.0], [5.0, 9.0, 36.0]);
+        let kind = ohl_ai::MonsterKind::defined()
+            .first()
+            .expect("at least one defined MonsterKind");
+        let model_path = kind.default_model_path().expect("it has a model");
+        let level = level_with_monster_model(
+            kind.classname(),
+            model_path,
+            hitboxless_mdl10_with_bounds(bounds.0, bounds.1),
+        );
+        let (min, max) = fallback_box(&level, bounds);
+        assert_eq!(min, Vec3::from_array(bounds.0));
+        assert_eq!(max, Vec3::from_array(bounds.1));
+    }
+
+    /// A model whose bounds are empty on an axis falls through to the
+    /// project-chosen literal, centred on the origin.
+    #[test]
+    fn degenerate_bounds_fall_back_to_the_project_literal() {
+        let bounds = ([-6.0, -10.0, 4.0], [5.0, 9.0, 4.0]);
+        let kind = ohl_ai::MonsterKind::defined()
+            .first()
+            .expect("at least one defined MonsterKind");
+        let model_path = kind.default_model_path().expect("it has a model");
+        let level = level_with_monster_model(
+            kind.classname(),
+            model_path,
+            hitboxless_mdl10_with_bounds(bounds.0, bounds.1),
+        );
+        let half = Vec3::splat(FALLBACK_HITBOX_HALF_EXTENT);
+        assert_eq!(fallback_box(&level, bounds), (-half, half));
     }
 }
