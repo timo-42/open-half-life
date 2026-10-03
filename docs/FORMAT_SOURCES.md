@@ -3687,13 +3687,14 @@ speaker is in the state of following the player"), `4` Interrupt Speech, `8`
 Concurrent.
 
 The sentence itself is resolved through the engine's existing
-`ohl_engine::SentenceLookup`. **The resolved words are asset paths**: per
-`docs/CLEAN_ROOM.md` rule 7 none of them enters this project's source, a
-`GameEvent`, or any diagnostic, so the emitted `ohl_gameplay::SoundCue`
-always carries `path: None` — the same policy `ohl_gameplay::sounds`
-already applies to every weapon, pickup and charger cue. An empty sentence
-group and a resolved one therefore produce the same cue. Only a word *count*
-crosses the boundary, as data (`Game`'s AI counters), never as a log line.
+`ohl_engine::SentenceLookup`. **The resolved words are asset paths** read
+from the user's own installation at run time. Under `docs/CLEAN_ROOM.md`
+rule 7 none of them may enter this project's source, tests, documentation
+or any diagnostic, and none does. Since the audio package they do travel in
+memory, inside the cue's `SoundAsset::Sentence`, to the host that decodes
+and plays them (see "`scripted_sentence` and sentences" under "Sound
+playback" below). Only a word *count* is kept as data (`Game`'s AI
+counters), never as a log line.
 
 ### Talk monsters
 
@@ -6365,6 +6366,11 @@ caveat this document already records for TWHL elsewhere):
 - "Start silent": TWHL — "Checking this means the entity must be triggered
   to work. If you do not click this flag, the sound will play as soon as
   the map has loaded." `AmbientState::spawned` is exactly that.
+  **`TODO(black-box)`**: an entity with "Is NOT looped" (32) and not "Start
+  silent" (16) is read by that wording with no exception, so it sounds once
+  as the map loads. No source says whether the engine makes an exception for
+  it. A test (`an_unlooped_ambient_that_is_not_start_silent_sounds_when_the_map_loads`)
+  pins the current reading.
 - "Is NOT looped": TWHL — the flag makes the entity "interpret each call as
   'turn on' instead of 'toggle state'", it "must be left unchecked for
   looping sound files", and whether a sound actually loops "depends purely
@@ -6388,13 +6394,24 @@ has no `ohl-audio` dependency) and `ohl_engine::presentation`'s
 itself, and the `radius` keyvalue newer definitions carry ("max audible
 distance"), which is not read.
 
-**Nothing new is saved.** `AmbientState` is deliberately not part of any
-save section. `SECTION_SIMULATION` is postcard-encoded and not
-self-describing (M7.12 in `docs/MILESTONES.md`), so a new field in it would
-invalidate every existing save. A loaded game rebuilds its registry from the
-map's own entity defaults, which restarts the level's ambience from its
-spawn state — a start-silent alarm the player had switched on is silent
-again after a load. That is a presentation difference, not a simulation one.
+**More than one radius flag.** Each flag on its own is published; what an
+entity with several of them ticked does is not. **`TODO(black-box)`**: this
+project's own rule is that "Play everywhere" wins over any radius flag, and
+otherwise the widest radius ticked wins (`AmbientRadius::from_spawnflags`),
+so such an entity is heard as widely as it asked for rather than being
+rejected. `every_radius_spawnflag_chooses_its_published_falloff` pins every
+flag alone and the combinations `9`, `10`, `6`, `12` and `14`, so changing
+the rule, or the order of its checks, is a deliberate act.
+
+**Saved in its own section.** Whether each ambient is sounding is saved in
+the optional `SECTION_AMBIENT_STATE` (tag 38, `crates/ohl-engine/src/save.rs`),
+one entry per registry entity in spawn order, like tags 30, 31 and 33-37. A
+map switches its own ambience with `trigger_auto`s and `multi_manager`s, and
+tag 28 already saves that such a trigger has fired, so restarting the
+ambience from its spawn state on a load would leave an alarm the map had
+switched on silent for the rest of the map, and bring back a hum it had
+switched off. A save written before tag 38 existed still loads, with every
+ambient at its spawn state.
 
 ### `scripted_sentence` and sentences
 
@@ -6412,11 +6429,36 @@ is spatialised at the *speaker's* position, not the `scripted_sentence`'s:
 the script entity is a director, and what the player hears is the monster it
 directed.
 
+The entity's own published `volume` ("Range: 0 - 10") and `attenuation`
+("Sound Radius": `0` Small, `1` Medium, `2` Large, `3` Play Everywhere,
+both recorded under "`scripted_sentence`" above) reach the cue: the volume
+as `volume / 10`, and the radius through the same `ATTN_*` mapping an
+`ambient_generic`'s radius spawnflags use, since the two entities publish the
+same four radii. **`TODO(black-box)`**: neither page publishes a default for
+`volume`. An absent key is read as `10`, full volume, not `0`, which would
+make every such line inaudible
+(`ohl_game::scripts::SENTENCE_DEFAULT_VOLUME`). An absent `attenuation`
+reads as `0`, "Small Radius", the first published value.
+
+The speaker must be alive. A dead monster keeps its actor (a death retires
+only its brain), and a sentence whose named speaker is dead says nothing
+and waits its `refire` delay, exactly as when no speaker is found at all.
+The classname search already skipped the dead.
+
+The sentence table is the payload's, not the level's: it is read once when
+the game loads and stays installed across every level change and every
+loaded save.
+
 **`TODO(black-box)`**: group/wildcard tokens (the documented `V_DISTS`-style
 expansions) are still returned unexpanded by `SentenceLookup::words` and so
 resolve to no asset; sentence modifiers (splicing, per-word pitch shifts,
 timing) are not implemented; and nothing models the per-word delay a real
 VOX announcement has, since the words are simply butted together.
+
+**Known limit**: a line is placed where its speaker stands when it starts,
+and stays there. A speaker that walks while talking is still heard from
+where it began; the cue carries one position, and nothing moves a playing
+channel.
 
 ### What is still silent, and why
 

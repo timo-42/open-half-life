@@ -795,14 +795,16 @@ it interactively on a real screen.
   projectiles/deployables, the RNG stream (M7.9 P4b), and — as of M7.13 —
   `func_train`/`func_tracktrain` position, a running `trigger_camera`
   sequence, a running scripted sequence's phase, a `monstermaker`'s spawn
-  counters, and a `trigger_auto`'s one-shot fired flag.
+  counters, and a `trigger_auto`'s one-shot fired flag, plus (in its own
+  optional section) which `ambient_generic`s are sounding.
 - **Audio**: the composition root opens an output device, owns a mixer and
   plays the sounds a level asks for — `ambient_generic` (its published
   `message`, `health` volume, `pitch`, radius spawnflags, "start silent"
   and "is not looped" behaviour, started and stopped through the same
-  `use`/`target` chain a door rides), and `scripted_sentence` speech,
-  resolved through the payload's own `sentences.txt` and played as one
-  concatenated line on the speaker's voice channel. Sounds are attenuated
+  `use`/`target` chain a door rides, and saved), and `scripted_sentence`
+  speech, resolved through the payload's own `sentences.txt` and played as
+  one concatenated line on a live speaker's voice channel at the entity's
+  own `volume` and "Sound Radius". Sounds are attenuated
   and panned by distance from the player's eye using the published
   `ATTN_*` constants, decoded through a bounded, never-panicking WAV
   decoder, and held in a size-capped LRU cache. The options menu's volume
