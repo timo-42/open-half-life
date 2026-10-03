@@ -16,17 +16,18 @@ use crate::damage::{DamageInfo, DamageType};
 use crate::trace::{AttackTrace, EntityId};
 use crate::weapons::{WeaponId, WeaponKind, WeaponSpec};
 
-/// How long the gauss gun's secondary charge may be held before it forces a
-/// release. Combine OverWiki, "Gauss Gun" (`docs/FORMAT_SOURCES.md`): "10
-/// seconds".
+/// Project-authored hold limit for a gauss secondary charge. Combine
+/// OverWiki, "Tau Cannon", describes a ten-second limit once fully charged;
+/// counting from charge initiation remains TODO(black-box).
 pub const GAUSS_OVERCHARGE_SECONDS: f32 = 10.0;
 
 /// The self-damage a forced gauss overcharge release deals instead of firing.
 /// Combine OverWiki, "Gauss Gun": "50 HP".
 pub const GAUSS_OVERCHARGE_SELF_DAMAGE: f32 = 50.0;
 
-/// The gauss gun's published charged-shot damage range (25 at no charge, 200
-/// at a full 10-second charge). Combine OverWiki, "Gauss Gun".
+/// The gauss gun's published charged-shot damage range (25..=200).
+/// Combine OverWiki, "Tau Cannon". The time to full charge is unpublished,
+/// TODO(black-box); the range itself does not imply a ten-second ramp.
 pub const GAUSS_CHARGE_DAMAGE_RANGE: (f32, f32) = (25.0, 200.0);
 
 /// One tick's worth of input for a weapon's [`FiringState`].
@@ -354,8 +355,9 @@ impl FiringState {
         if input.secondary {
             return WeaponAction::Empty;
         }
-        // Released before the overcharge: fire a shot scaled linearly across
-        // the published 25..=200 range by how long the charge was held.
+        // TODO(black-box): this linear ramp across the published damage
+        // range uses the project-authored total-hold limit as its duration;
+        // the source does not establish that curve or time to full charge.
         self.state = FireState::Idle;
         let fraction = (held / GAUSS_OVERCHARGE_SECONDS).clamp(0.0, 1.0);
         let (low, high) = GAUSS_CHARGE_DAMAGE_RANGE;

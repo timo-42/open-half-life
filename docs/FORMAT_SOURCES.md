@@ -7479,7 +7479,7 @@ No new external behaviour source or proprietary fixture is used.
 
 ### Continuous and charged weapon cadence audit (M9.NEXT)
 
-Published prose reviewed 2026-10-03, without inspecting engine/SDK source:
+Published prose reviewed 2026-10-03, without inspecting retail engine/SDK source:
 
 - [Combine OverWiki, Gluon Gun](https://combineoverwiki.net/wiki/Gluon_Gun)
   publishes a continuous beam, 14 single-player damage per cell and a
@@ -7487,9 +7487,11 @@ Published prose reviewed 2026-10-03, without inspecting engine/SDK source:
   `WeaponSpec` 0.1-second interval remains a **project-authored placeholder**,
   `TODO(black-box)`, rather than a verified retail cadence.
 - [Combine OverWiki, Tau Cannon](https://combineoverwiki.net/wiki/Tau_Cannon)
-  supplies the charge damage range and the ten-second overcharge threshold
-  already cited above. The linear charge curve and one-cell-on-release cost
-  remain project-authored placeholders, `TODO(black-box)`; a held charge is
+  supplies the charge damage range and describes a ten-second discharge
+  limit after full charge. It does not establish time to full charge. The
+  existing ten-second limit counted from charge initiation, linear charge
+  curve and one-cell-on-release cost remain project-authored placeholders,
+  `TODO(black-box)`; a held charge is
   timed by elapsed seconds, not by the number of simulation steps.
 - [Combine OverWiki, Hivehand](https://combineoverwiki.net/wiki/Hivehand)
   publishes eight ready hornets, their replacement after firing, and primary
