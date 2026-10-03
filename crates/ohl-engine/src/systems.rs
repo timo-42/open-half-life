@@ -438,8 +438,18 @@ impl Systems {
     /// Empties the player's weapons, clips and reserve ammo: the whole of
     /// a `player_weaponstrip`'s published effect, forwarded from
     /// [`CombatState::strip_weapons`].
+    ///
+    /// The HUD's clip and reserve numbers are cleared here too: they are
+    /// only ever refreshed by the weapons phase, which does nothing at all
+    /// with no weapon selected, so a strip that left them alone would keep
+    /// the stripped gun's numbers on screen until something else was
+    /// picked up. (The published original has exactly that bug, by the VDC
+    /// summary `docs/FORMAT_SOURCES.md` cites; this project does not
+    /// reproduce it.)
     pub(crate) fn strip_weapons(&mut self) {
         self.combat.strip_weapons();
+        self.hud.clip_ammo = None;
+        self.hud.reserve_ammo = None;
     }
 
     /// Mutable access to the weapon inventory and the reserve-ammo ledger
