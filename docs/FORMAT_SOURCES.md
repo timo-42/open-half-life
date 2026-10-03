@@ -3159,9 +3159,10 @@ Behavioural facts cited from those pages and how they are modeled
   entity id, so the direction consumes nothing from the world's shared
   stream and replays exactly; the pause after a leg is an ordinary random
   wait and draws from that stream like any other monster's) and a scatter
-  on any noise, hit or sighting; health 1. The walk speed is a placeholder
-  kept above the route stuck check's 50-units-per-second floor at the
-  engine's 100 Hz tick (`brains::CRITTER_SPEEDS`).
+  on any noise, hit or sighting; health 1. A leg is clamped to where the
+  critter can walk (`movement::walkable_reach`: never into or hard against
+  a wall, never out over a drop). The walk speed is a placeholder
+  (`brains::CRITTER_SPEEDS`).
   Not modeled: being killed by being stepped on; `path_corner` patrols.
 
 ## Track trains and paths

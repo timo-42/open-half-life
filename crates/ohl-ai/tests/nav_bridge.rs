@@ -269,3 +269,37 @@ fn an_unobstructed_goal_still_moves_with_no_nodes_at_all() {
     );
     assert!(next.y.abs() < 1e-3);
 }
+
+/// The steering's stuck window is measured against the mover's own pace:
+/// a walker at 32 units per second, at the project's 100 Hz tick, walks
+/// straight to a goal in an open room instead of being told it is stuck —
+/// its 20-tick window covers 6.4 units, short of the default 8 — and
+/// side-stepping off its line. (The default walk of 40 sits exactly on
+/// that line, where a rounding error decides it.)
+#[test]
+fn a_slow_walker_is_not_taken_for_stuck() {
+    let collision = open_room();
+    let mut bridge = NavBridge::build(
+        &[],
+        &collision,
+        &BuildLimits::default(),
+        NavBridgeLimits::default(),
+    );
+    let actor = dummy_actor();
+    let goal = Vec3::new(100.0, 0.0, 40.0);
+    let step = 32.0 * 0.01;
+    let mut pos = Vec3::new(-100.0, 0.0, 40.0);
+    let mut max_abs_y = 0.0f32;
+    let mut ticks = 0;
+    while (pos - goal).length() > 1.0 && ticks < 2_000 {
+        bridge.begin_tick(&[actor]);
+        pos = bridge.next_move(actor, pos, goal, Hull::Standing, &collision, step);
+        max_abs_y = max_abs_y.max(pos.y.abs());
+        ticks += 1;
+    }
+    assert!(
+        ticks <= 640,
+        "200 units at 0.32 a tick took {ticks} ticks, ending at {pos:?}"
+    );
+    assert!(max_abs_y < 1.0, "it side-stepped off its line: {max_abs_y}");
+}

@@ -28,8 +28,23 @@ pub const STEP_HEIGHT: f32 = 18.0;
 /// **Provisional**: a quarter of a second at the 100 Hz simulation tick.
 pub const STUCK_TICKS: u32 = 25;
 
-/// The distance a tick must cover to count as progress.
+/// The distance a tick must cover to count as progress, for a mover fast
+/// enough to cover it at all (see [`STUCK_PROGRESS_FRACTION`]).
 pub const STUCK_EPSILON: f32 = 0.5;
+
+/// The fraction of its own step a slow mover must cover in a tick to count
+/// as progress, for [`StuckDetector::record_step`].
+///
+/// A fixed [`STUCK_EPSILON`] is 50 units per second at the 100 Hz tick, so
+/// anything walking slower — the default walk of 40 among them — read as
+/// stuck after a quarter of a second of perfectly good walking, and every
+/// such leg was given up. Against its own step, a mover is making progress
+/// when it covers 40% of what its speed allows: `ohl-nav`'s steering slides
+/// along a wall at 0.7 of the step and side-steps at 0.5, which both count,
+/// and creeps toward its least obstructed probe at 0.25 when nothing is
+/// clear, which it marks blocked itself and which does not. A project
+/// choice, like the threshold it scales.
+pub const STUCK_PROGRESS_FRACTION: f32 = 0.4;
 
 /// How close counts as having arrived at a waypoint.
 pub const WAYPOINT_TOLERANCE: f32 = 8.0;
@@ -338,10 +353,29 @@ impl StuckDetector {
         Self::default()
     }
 
-    /// Records one tick's travelled distance and returns whether the mover
-    /// is now considered stuck.
+    /// Records one tick's travelled distance against the fixed
+    /// [`STUCK_EPSILON`] and returns whether the mover is now considered
+    /// stuck. [`Self::record_step`] is the same against the mover's own
+    /// step, which is what a route follower should use.
     pub fn record(&mut self, distance: f32) -> bool {
-        if distance.is_finite() && distance >= STUCK_EPSILON {
+        self.record_step(distance, f32::INFINITY)
+    }
+
+    /// Records one tick's travelled distance for a mover whose speed
+    /// allowed it `step` this tick, and returns whether it is now
+    /// considered stuck.
+    ///
+    /// Progress is [`STUCK_EPSILON`], or [`STUCK_PROGRESS_FRACTION`] of
+    /// `step` when that is less, so a slow walker covering its whole step
+    /// is not stuck merely for being slow. A non-finite or non-positive
+    /// `step` falls back to the fixed threshold.
+    pub fn record_step(&mut self, distance: f32, step: f32) -> bool {
+        let threshold = if step.is_finite() && step > 0.0 {
+            STUCK_EPSILON.min(STUCK_PROGRESS_FRACTION * step)
+        } else {
+            STUCK_EPSILON
+        };
+        if distance.is_finite() && distance >= threshold {
             self.ticks = 0;
         } else {
             self.ticks = self.ticks.saturating_add(1);
@@ -480,6 +514,44 @@ mod tests {
         detector.reset();
         assert_eq!(detector.ticks(), 0);
         assert!(!detector.record(f32::NAN) || detector.ticks() == 1);
+    }
+
+    /// A slow mover covering its whole step is never stuck, however far
+    /// below [`super::STUCK_EPSILON`] that step is; one covering a quarter
+    /// of it (the steering's creep) is, and a fast mover still has to
+    /// clear the fixed threshold.
+    #[test]
+    fn the_stuck_detector_measures_a_slow_mover_against_its_own_step() {
+        // 40 units per second at 100 Hz.
+        let step = 0.4;
+        let mut walking = StuckDetector::new();
+        for _ in 0..(4 * super::STUCK_TICKS) {
+            assert!(!walking.record_step(step, step));
+        }
+        // Sliding along a wall (0.7) and side-stepping (0.5) still count.
+        for scale in [0.7, 0.5] {
+            let mut sliding = StuckDetector::new();
+            for _ in 0..(4 * super::STUCK_TICKS) {
+                assert!(!sliding.record_step(step * scale, step), "{scale}");
+            }
+        }
+        let mut creeping = StuckDetector::new();
+        for _ in 0..super::STUCK_TICKS {
+            creeping.record_step(step * 0.25, step);
+        }
+        assert!(creeping.is_stuck());
+        // A fast mover's threshold is still the fixed one.
+        let mut fast = StuckDetector::new();
+        for _ in 0..super::STUCK_TICKS {
+            fast.record_step(super::STUCK_EPSILON * 0.9, 3.2);
+        }
+        assert!(fast.is_stuck());
+        // The fixed-threshold entry point is unchanged.
+        let mut fixed = StuckDetector::new();
+        for _ in 0..super::STUCK_TICKS {
+            fixed.record(step);
+        }
+        assert!(fixed.is_stuck());
     }
 
     #[test]

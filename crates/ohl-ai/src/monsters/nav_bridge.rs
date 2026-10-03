@@ -38,7 +38,7 @@ use ohl_nav::{
 use ohl_physics::{CollisionModel, Hull};
 
 use super::integration::{Navigator, StraightLineNavigator};
-use crate::movement::ROUTE_REFRESH_DISTANCE;
+use crate::movement::{ROUTE_REFRESH_DISTANCE, STUCK_PROGRESS_FRACTION};
 
 /// How far a cached path's goal may drift before it is rebuilt.
 ///
@@ -175,10 +175,10 @@ impl NavBridge {
             return StraightLineNavigator.next_move(origin, goal, max_step);
         };
 
-        let intent =
-            cached
-                .steer
-                .next_move(origin, &cached.path, hull, collision, &self.limits.steer);
+        let steer_limits = own_pace_steer_limits(&self.limits.steer, max_step);
+        let intent = cached
+            .steer
+            .next_move(origin, &cached.path, hull, collision, &steer_limits);
         if intent.reached {
             return goal;
         }
@@ -243,6 +243,31 @@ impl NavBridge {
             }
         }
         self.cache.remove(&actor);
+    }
+}
+
+/// `limits` with its stuck window measured against this mover's own pace.
+///
+/// `ohl-nav`'s steering calls a mover stuck when one window
+/// ([`SteerLimits::stuck_window_ticks`]) covers less than
+/// [`SteerLimits::min_window_progress`] — by default 8 units in 20 ticks,
+/// which is 40 units per second at the 100 Hz tick. A monster walking at
+/// the default walk of 40 sits exactly on that line and, a rounding error
+/// short of it, is told to side-step instead of walking on. The window is
+/// therefore never asked for more than [`STUCK_PROGRESS_FRACTION`] of what
+/// `max_step` a tick would cover over it, the same measure
+/// [`crate::movement::StuckDetector::record_step`] applies per tick; a fast
+/// mover's window is the configured one.
+fn own_pace_steer_limits(limits: &SteerLimits, max_step: f32) -> SteerLimits {
+    let window = u16::try_from(limits.stuck_window_ticks.max(1)).map_or(f32::MAX, f32::from);
+    let own = STUCK_PROGRESS_FRACTION * max_step * window;
+    if own.is_finite() && own > 0.0 && own < limits.min_window_progress {
+        SteerLimits {
+            min_window_progress: own,
+            ..*limits
+        }
+    } else {
+        *limits
     }
 }
 
