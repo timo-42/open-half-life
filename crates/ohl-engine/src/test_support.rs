@@ -670,6 +670,20 @@ pub fn queue_monster_damage(
     game.systems_mut().ai_mut().queue_damage(event);
 }
 
+/// Queues an `amount`-point bullet hit against `target` on the engine's own
+/// damage queue — where a weapon's or a monster's resolved hit lands —
+/// rather than straight into the AI the way [`queue_monster_damage`] does,
+/// so a test exercises everything the step's drain decides about a hit
+/// before the AI ever sees it (a `Not solid` prop's immunity among it).
+pub fn queue_engine_damage(game: &mut crate::Game, target: ohl_game::hecs::Entity, amount: f32) {
+    game.systems_mut()
+        .damage_queue
+        .push(crate::systems::QueuedDamage {
+            target,
+            info: ohl_combat::DamageInfo::new(amount, ohl_combat::DamageType::BULLET),
+        });
+}
+
 /// Runs `game` for `inputs.len()` ticks, one input per tick, at the fixed
 /// step (`crate::TICK_SECONDS`).
 ///

@@ -104,8 +104,8 @@ pub use state::{
     CLASSIFICATION_COUNT, Classification, Conditions, MonsterState, Relationship, RelationshipTable,
 };
 pub use world::{
-    Actor, AiEvent, AiEventKind, AiWorld, AttackKind, BrainId, MonsterAi, Prisoner, SquadTag,
-    spawn_actor, spawn_monster, spawn_squad_monster,
+    Actor, AiEvent, AiEventKind, AiWorld, AttackKind, BrainId, Impervious, MonsterAi, Prisoner,
+    SquadTag, spawn_actor, spawn_monster, spawn_squad_monster,
 };
 
 /// Re-exported so callers can use this crate's vector type without pinning

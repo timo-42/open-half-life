@@ -83,9 +83,7 @@ pub mod test_support;
 
 pub use ai::{AiState, AttackShape, NoProjectiles, ProjectileRequest, ProjectileSpawner};
 pub use assets::{AssetFsSource, AssetSource, MemoryAssets};
-pub use components::{
-    Charger, Corpse, MonsterMaker, NotSolid, Owner, Pickup, PlayerTag, StudioAnim,
-};
+pub use components::{Charger, Corpse, MonsterMaker, Owner, Pickup, PlayerTag, StudioAnim};
 pub use error::{EngineError, Result};
 pub use game::{Game, GameConfig, GameEvent};
 pub use guard::{GuardDecision, guard_input, guard_step};

@@ -69,7 +69,7 @@ use ohl_game::keyvalues::EntityDef;
 use ohl_game::registry::{ClassName, MakerActivation, Transform};
 use ohl_game::scripts::{ScriptActivation, ScriptDef, SentenceDef};
 
-use crate::components::{Corpse, MonsterMaker, NotSolid, Owner, StudioAnim};
+use crate::components::{Corpse, MonsterMaker, Owner, StudioAnim};
 use crate::ids::entity_id;
 use crate::level::Level;
 use crate::nav;
@@ -106,7 +106,11 @@ pub const MONSTERMAKER_CLASSNAME: &str = "monstermaker";
 
 /// The published `monster_generic` `Not solid` spawnflag bit: the prop
 /// is "impervious to any damage" (`docs/FORMAT_SOURCES.md`, "Monster
-/// definitions"; see [`NotSolid`] for what is and is not modeled). Read only for
+/// definitions"; see [`ohl_ai::Impervious`] for what that does to sight).
+/// Only the cited immunity is modeled: the prop keeps its hitbox, so a
+/// shot still stops at it and reports a hit — whether a trace should pass
+/// through such a prop is not something the cited page states, and is
+/// recorded as a gap in `docs/MILESTONES.md` rather than guessed. Read only for
 /// `monster_generic`, the one classname the cited page documents it on;
 /// on every other monster bit 4 is the unrelated `MonsterClip` flag.
 pub const SPAWNFLAG_GENERIC_NOT_SOLID: u32 = 4;
@@ -580,8 +584,9 @@ impl AiState {
     }
 
     /// Marks every `monster_generic` spawned with its `Not solid`
-    /// spawnflag ([`SPAWNFLAG_GENERIC_NOT_SOLID`]) with [`NotSolid`], so
-    /// the damage drain drops hits at it.
+    /// spawnflag ([`SPAWNFLAG_GENERIC_NOT_SOLID`]) with
+    /// [`ohl_ai::Impervious`], so the damage drain drops hits at it and no
+    /// monster's sight takes it for an enemy.
     fn mark_not_solid(level: &mut Level, spawned: &[Entity]) {
         for (index, def) in level.defs.iter().enumerate() {
             let Some(entity) = level.registry.entities.get(index).copied() else {
@@ -593,7 +598,11 @@ impl AiState {
             {
                 continue;
             }
-            level.registry.world.insert_one(entity, NotSolid).ok();
+            level
+                .registry
+                .world
+                .insert_one(entity, ohl_ai::Impervious)
+                .ok();
         }
     }
 
@@ -1193,7 +1202,12 @@ impl AiState {
         }
         let pending = std::mem::take(damage);
         for queued in pending {
-            if level.registry.world.get::<&NotSolid>(queued.target).is_ok() {
+            if level
+                .registry
+                .world
+                .get::<&ohl_ai::Impervious>(queued.target)
+                .is_ok()
+            {
                 // A `Not solid` prop is "impervious to any damage".
                 continue;
             }
