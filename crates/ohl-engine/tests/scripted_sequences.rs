@@ -404,6 +404,14 @@ fn a_scripted_sentence_names_its_words_and_is_heard_where_the_speaker_stands() {
     assert_eq!(spoken.len(), 1, "a Fire Once sentence speaks exactly once");
     let (cue, speaker_origin) = &spoken[0];
     assert_eq!(cue.class, ohl_engine::ChannelClass::Voice);
+    // No `volume` or `attenuation` key: full volume, and "Sound Radius" `0`
+    // ("Small Radius"), the fastest published falloff.
+    assert!((cue.volume - 1.0).abs() < 1e-6, "{}", cue.volume);
+    assert!(
+        (cue.attenuation - ohl_engine::ATTN_IDLE).abs() < 1e-6,
+        "{}",
+        cue.attenuation
+    );
     assert_eq!(
         cue.asset,
         ohl_engine::SoundAsset::sentence(vec![
@@ -429,6 +437,210 @@ fn a_scripted_sentence_names_its_words_and_is_heard_where_the_speaker_stands() {
         distance(director_at) > 100.0,
         "not at the scripted_sentence that directed it: {origin:?}"
     );
+}
+
+/// The `sentences.txt` line every test below speaks from. Project-authored.
+const GREETING_SENTENCES: &[u8] = b"OHL_GREETING ohl/hello ohl/there\n";
+
+/// A scientist named `ohl_speaker` at `speaker_at`, and a Fire Once
+/// `scripted_sentence` telling it to say `OHL_GREETING` with `keys` added,
+/// started by a `trigger_auto` `delay` seconds after the map loads.
+fn greeting_room(speaker_at: [f32; 3], delay: &str, keys: &[(&str, &str)]) -> String {
+    let mut sentence_keys = vec![
+        ("targetname", "ohl_line"),
+        ("sentence", "OHL_GREETING"),
+        ("entity", "ohl_speaker"),
+        ("spawnflags", "1"),
+    ];
+    sentence_keys.extend_from_slice(keys);
+    script_room_entities(
+        [-192.0, -192.0, 36.0],
+        &format!(
+            "{}{}{}",
+            entity_block(
+                "monster_scientist",
+                speaker_at,
+                0.0,
+                &[("targetname", "ohl_speaker")],
+            ),
+            entity_block("scripted_sentence", [0.0, 0.0, 36.0], 0.0, &sentence_keys),
+            entity_block(
+                "trigger_auto",
+                [0.0, 0.0, 0.0],
+                0.0,
+                &[("target", "ohl_line"), ("delay", delay)],
+            ),
+        ),
+    )
+}
+
+/// Every voice cue `ticks` steps of `game` produce.
+fn voice_cues(game: &mut Game, ticks: usize) -> Vec<ohl_engine::SoundCue> {
+    let input = Input::default();
+    let mut cues = Vec::new();
+    for _ in 0..ticks {
+        for event in game.tick(TICK_SECONDS, &input) {
+            if let GameEvent::Sound(cue) = event
+                && cue.class == ohl_engine::ChannelClass::Voice
+            {
+                cues.push(cue);
+            }
+        }
+    }
+    cues
+}
+
+/// The words `GREETING_SENTENCES` names, as the cue carries them.
+fn greeting_words() -> ohl_engine::SoundAsset {
+    ohl_engine::SoundAsset::sentence(vec![
+        "sound/ohl/hello.wav".to_string(),
+        "sound/ohl/there.wav".to_string(),
+    ])
+}
+
+/// The published `volume` ("Range: 0 - 10") and "Sound Radius"
+/// (`attenuation`: `3` is "Play Everywhere") reach the cue.
+#[test]
+fn a_scripted_sentence_speaks_at_its_published_volume_and_radius() {
+    let entities = greeting_room(
+        [0.0, 96.0, 36.0],
+        "0",
+        &[("volume", "5"), ("attenuation", "3")],
+    );
+    let mut assets = MemoryAssets::new();
+    assets.insert(
+        &format!("maps/{SCRIPT_MAP}.bsp"),
+        script_room_bsp(&entities),
+    );
+    assets.insert("sound/sentences.txt", GREETING_SENTENCES.to_vec());
+    let mut game = Game::load(&assets, SCRIPT_MAP).expect("the script room loads");
+
+    let cues = voice_cues(&mut game, 60);
+    assert_eq!(cues.len(), 1);
+    assert!((cues[0].volume - 0.5).abs() < 1e-6, "{}", cues[0].volume);
+    assert!(
+        (cues[0].attenuation - ohl_engine::ATTN_NONE).abs() < 1e-6,
+        "{}",
+        cues[0].attenuation
+    );
+}
+
+/// A speaker that has died says nothing: a corpse keeps its `Actor`, but
+/// not its voice. Killed before its line is due, the line never comes.
+#[test]
+fn a_dead_speaker_says_nothing() {
+    let entities = greeting_room([0.0, 96.0, 36.0], "1.0", &[]);
+    let mut assets = MemoryAssets::new();
+    assets.insert(
+        &format!("maps/{SCRIPT_MAP}.bsp"),
+        script_room_bsp(&entities),
+    );
+    assets.insert("sound/sentences.txt", GREETING_SENTENCES.to_vec());
+
+    // Alive, it speaks: the control for the case below.
+    let mut game = Game::load(&assets, SCRIPT_MAP).expect("the script room loads");
+    assert_eq!(voice_cues(&mut game, 120).len(), 1);
+
+    let mut game = Game::load(&assets, SCRIPT_MAP).expect("the script room loads");
+    let speaker = entity_of_classname(&game, "monster_scientist").expect("the speaker spawns");
+    // Enough to kill it, not enough to gib it: a corpse that is still there,
+    // still named, and still carrying its `Actor` is the case at issue.
+    queue_monster_damage(&mut game, speaker, None, 25.0);
+    tick(&mut game, 2);
+    let actor = game
+        .registry()
+        .world
+        .get::<&ohl_ai::Actor>(speaker)
+        .map(|actor| actor.alive);
+    assert_eq!(
+        actor,
+        Ok(false),
+        "the fixture's speaker is a corpse, not gone, before its line"
+    );
+    assert!(
+        voice_cues(&mut game, 120).is_empty(),
+        "a corpse does not speak"
+    );
+}
+
+/// The payload's `sentences.txt` is read once, when the game loads, and
+/// every map after a level change speaks from it. The first map here does
+/// nothing but leave; the second has the speaker.
+#[test]
+fn a_sentence_is_still_spoken_after_a_level_change() {
+    const SECOND_MAP: &str = "ohlscriptsynthb";
+    let leaving = script_room_entities(
+        [-192.0, -192.0, 36.0],
+        &format!(
+            "{}{}",
+            entity_block(
+                "trigger_changelevel",
+                [0.0, 0.0, 0.0],
+                0.0,
+                &[
+                    ("targetname", "ohl_leave"),
+                    ("map", SECOND_MAP),
+                    ("landmark", "ohl_landmark"),
+                ],
+            ),
+            trigger_auto("ohl_leave"),
+        ),
+    );
+    let mut assets = MemoryAssets::new();
+    assets.insert(&format!("maps/{SCRIPT_MAP}.bsp"), script_room_bsp(&leaving));
+    assets.insert(
+        &format!("maps/{SECOND_MAP}.bsp"),
+        script_room_bsp(&greeting_room([0.0, 96.0, 36.0], "0.5", &[])),
+    );
+    assets.insert("sound/sentences.txt", GREETING_SENTENCES.to_vec());
+    let mut game = Game::load(&assets, SCRIPT_MAP).expect("the first room loads");
+
+    let input = Input::default();
+    let mut changed = false;
+    for _ in 0..60 {
+        for event in game.tick(TICK_SECONDS, &input) {
+            if let GameEvent::LevelChange { map, landmark } = event {
+                game.change_level(&assets, &map, &landmark)
+                    .expect("the second room loads");
+                changed = true;
+            }
+        }
+        if changed {
+            break;
+        }
+    }
+    assert!(changed, "the first room's trigger_changelevel fired");
+    assert_eq!(game.map(), SECOND_MAP);
+
+    let cues = voice_cues(&mut game, 120);
+    assert_eq!(cues.len(), 1, "the second room's line is spoken");
+    assert_eq!(
+        cues[0].asset,
+        greeting_words(),
+        "spoken from the same sentences.txt the game loaded with"
+    );
+}
+
+/// The same after a save is loaded: the loaded game reads the table again.
+#[test]
+fn a_sentence_is_still_spoken_after_a_save_is_loaded() {
+    let entities = greeting_room([0.0, 96.0, 36.0], "1.0", &[]);
+    let mut assets = MemoryAssets::new();
+    assets.insert(
+        &format!("maps/{SCRIPT_MAP}.bsp"),
+        script_room_bsp(&entities),
+    );
+    assets.insert("sound/sentences.txt", GREETING_SENTENCES.to_vec());
+    let mut game = Game::load(&assets, SCRIPT_MAP).expect("the script room loads");
+    // Saved after the trigger_auto has scheduled the line and before it is
+    // due, so the line is spoken by the loaded game.
+    tick(&mut game, 10);
+    let bytes = game.save_bytes(1_700_000_000).expect("the save is written");
+
+    let mut loaded = Game::load_bytes(&assets, &bytes).expect("the save loads");
+    let cues = voice_cues(&mut loaded, 120);
+    assert_eq!(cues.len(), 1, "the loaded game speaks the line");
+    assert_eq!(cues[0].asset, greeting_words());
 }
 
 /// Loading the same fixture twice with the same inputs reproduces the same

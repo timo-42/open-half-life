@@ -804,11 +804,18 @@ impl Systems {
     }
 
     /// Clears everything a level change or a save load invalidates, keeping
-    /// the configuration. The caller re-attaches the new level with
-    /// [`Self::attach_level`].
+    /// the configuration and the payload's `sentences.txt` table. The caller
+    /// re-attaches the new level with [`Self::attach_level`].
     pub(crate) fn reset(&mut self) {
         let config = self.config;
+        // The payload's `sentences.txt` is not level state: it was read once
+        // when the game loaded, and every map after a level change speaks
+        // from the same table. Without this every `scripted_sentence` and
+        // every `!NAME` ambient fell silent after the first
+        // `trigger_changelevel`.
+        let sentences = self.ai.sentence_lookup().clone();
         *self = Self::new(config);
+        self.ai.set_sentence_lookup(sentences);
     }
 
     /// Builds the AI state for a freshly loaded level: its monsters,

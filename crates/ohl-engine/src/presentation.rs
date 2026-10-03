@@ -199,12 +199,13 @@ impl Presentation {
     }
 }
 
-/// The published `ATTN_*` falloff each published radius spawnflag is read
-/// as. "Play everywhere" is `ATTN_NONE` by its own wording; of the three
+/// The published `ATTN_*` falloff each published radius spawnflag (and each
+/// `scripted_sentence` "Sound Radius" choice, which publishes the same four
+/// radii) is read as. "Play everywhere" is `ATTN_NONE` by its own wording; of the three
 /// radii, the ordering is forced — a larger radius must be the slower
 /// falloff — so the three remaining published constants line up in exactly
 /// one way. See `docs/FORMAT_SOURCES.md`, "`ambient_generic`".
-fn attenuation_of(radius: AmbientRadius) -> f32 {
+pub(crate) fn attenuation_of(radius: AmbientRadius) -> f32 {
     match radius {
         AmbientRadius::Everywhere => ohl_gameplay::ATTN_NONE,
         AmbientRadius::Large => ohl_gameplay::ATTN_NORM,
