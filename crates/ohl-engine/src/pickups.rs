@@ -86,7 +86,7 @@ impl PickupsState {
 
     /// Attaches [`Pickup`]/[`Charger`] components to every entity
     /// `ohl_gameplay::classify_entity` recognises, once per level.
-    fn ensure_spawned(&mut self, level: &mut Level) {
+    pub(crate) fn ensure_spawned(&mut self, level: &mut Level) {
         if self.spawned {
             return;
         }

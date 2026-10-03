@@ -435,6 +435,13 @@ impl Systems {
         self.combat.display_inventory()
     }
 
+    /// Attaches this level's pickup and charger components now, rather than
+    /// on the first step, so a save restore has `taken` flags to restore
+    /// into (`crate::save_state::restore_switches`). A no-op once done.
+    pub(crate) fn ensure_pickups_spawned(&mut self, level: &mut Level) {
+        self.pickups.ensure_spawned(level);
+    }
+
     /// Empties the player's weapons, clips and reserve ammo: the whole of
     /// a `player_weaponstrip`'s published effect, forwarded from
     /// [`CombatState::strip_weapons`].

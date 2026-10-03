@@ -825,3 +825,122 @@ fn picking_up_a_security_card_fires_its_target() {
         "taking the card must fire the door it targets"
     );
 }
+
+// ---------------------------------------------------------------------
+// Saving what a map switched (save tag 39)
+// ---------------------------------------------------------------------
+
+/// The block fixture with its wall starting *on*, switched off half a
+/// second in, and a model-less `func_conveyor` reversed at the same time —
+/// both by `trigger_auto`s, which a save records as spent.
+fn switched_game(map: &str) -> (MemoryAssets, Game) {
+    let entities = format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"-160 0 37\"\n}}\n\
+         {{\n\"classname\" \"func_wall_toggle\"\n\"targetname\" \"ohl_block\"\n\
+         \"model\" \"*1\"\n}}\n\
+         {{\n\"classname\" \"func_conveyor\"\n\"targetname\" \"ohl_belt\"\n\
+         \"speed\" \"{CONVEYOR_SPEED}\"\n}}\n\
+         {}{}",
+        auto_trigger("ohl_block", 0.5),
+        auto_trigger("ohl_belt", 0.5),
+    );
+    let mut assets = MemoryAssets::new();
+    assets.insert(&format!("maps/{map}.bsp"), wall_toggle_block_bsp(&entities));
+    let game = Game::load(&assets as &dyn AssetSource, map).expect("the fixture loads");
+    (assets, game)
+}
+
+fn belt_speed(game: &Game) -> f32 {
+    let registry = game.registry();
+    let entity = *registry
+        .find("ohl_belt")
+        .first()
+        .expect("the fixture names its belt");
+    registry
+        .world
+        .get::<&ohl_game::registry::Conveyor>(entity)
+        .expect("the belt is a func_conveyor")
+        .speed
+}
+
+/// A wall a spent trigger switched off, and a belt it reversed, are still
+/// off and reversed after a save and a load: the trigger cannot switch
+/// them again, so a load that put them back would leave the barrier solid
+/// for good — or, here, solid around wherever the player had walked
+/// through it.
+#[test]
+fn a_switched_wall_and_a_reversed_belt_survive_a_save_and_load() {
+    let (assets, mut game) = switched_game("ohlswitchsavesynth");
+    tick_n(&mut game, 60, &Input::default());
+    assert!(!block_is_on(&game));
+    assert!(!game.position_is_in_solid(BLOCK_PROBE));
+    assert!(belt_speed(&game) < 0.0);
+
+    let bytes = game.save_bytes(1_700_000_000).expect("the save is written");
+    let mut reloaded = Game::load_bytes(&assets, &bytes).expect("the save loads");
+    assert!(!block_is_on(&reloaded), "the wall is still off");
+    assert!(
+        !reloaded.position_is_in_solid(BLOCK_PROBE),
+        "and still not solid"
+    );
+    assert!(belt_speed(&reloaded) < 0.0, "the belt still runs backwards");
+
+    tick_n(&mut reloaded, 60, &Input::default());
+    assert!(!block_is_on(&reloaded), "nothing switches it back");
+    assert!(!reloaded.position_is_in_solid(BLOCK_PROBE));
+}
+
+/// A save written before tag 39 existed still loads, with both entities
+/// back at their spawn state — exactly what every earlier build did.
+#[test]
+fn a_save_without_the_switch_section_still_loads() {
+    let (assets, mut game) = switched_game("ohlswitcholdsavesynth");
+    tick_n(&mut game, 60, &Input::default());
+    let mut save = game.to_save(1_700_000_000);
+    save.switches = None;
+    let bytes = save.to_bytes().expect("an old-shaped save still encodes");
+    let reloaded = Game::load_bytes(&assets, &bytes).expect("an old-shaped save still loads");
+    assert!(
+        block_is_on(&reloaded),
+        "no tag 39: the wall is back at spawn"
+    );
+    assert!(reloaded.position_is_in_solid(BLOCK_PROBE));
+    assert!((belt_speed(&reloaded) - CONVEYOR_SPEED).abs() < 1e-3);
+}
+
+/// A pickup taken before a save stays taken after it. For an
+/// `item_security` that matters beyond the item itself: taking it fires its
+/// `target`, and a card that came back to be taken again would fire it a
+/// second time.
+#[test]
+fn a_security_card_taken_before_a_save_is_not_taken_again_after_it() {
+    let entities = format!(
+        "{}{}",
+        floor_entities("func_wall", ""),
+        format_args!(
+            "{{\n\"classname\" \"item_security\"\n\"origin\" \"0 0 40\"\n\
+             \"target\" \"{CARD_DOOR_NAME}\"\n}}\n\
+             {{\n\"classname\" \"func_door\"\n\"targetname\" \"{CARD_DOOR_NAME}\"\n\
+             \"speed\" \"200\"\n\"wait\" \"-1\"\n}}\n"
+        ),
+    );
+    let mut assets = MemoryAssets::new();
+    assets.insert(
+        "maps/ohlcardsavesynth.bsp",
+        killable_brush_floor_bsp(&entities),
+    );
+    let mut game =
+        Game::load(&assets as &dyn AssetSource, "ohlcardsavesynth").expect("the fixture loads");
+    tick_n(&mut game, 30, &Input::default());
+    assert_eq!(game.pickup_count(), 1, "the card is taken before the save");
+
+    let bytes = game.save_bytes(1_700_000_000).expect("the save is written");
+    let mut reloaded = Game::load_bytes(&assets, &bytes).expect("the save loads");
+    tick_n(&mut reloaded, 30, &Input::default());
+    assert_eq!(
+        reloaded.pickup_count(),
+        0,
+        "the card stays taken, and its target is not fired again"
+    );
+}

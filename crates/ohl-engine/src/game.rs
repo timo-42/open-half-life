@@ -1626,6 +1626,7 @@ impl Game {
             train_handover_yaw: Some(crate::save_state::snapshot_train_handover_yaw(&self.level)),
             platrots: Some(crate::save_state::snapshot_platrots(&self.level)),
             ambients: Some(crate::save_state::snapshot_ambients(&self.level)),
+            switches: Some(crate::save_state::snapshot_switches(&self.level)),
             // Written only when a level change actually materialised
             // something here, so a cold-loaded map's save carries no
             // section at all rather than an empty one.
@@ -1957,6 +1958,15 @@ impl Game {
         // sounding after the load, and one it switched off stays off.
         if let Some(ambients) = &save.ambients {
             crate::save_state::restore_ambients(&mut self.level, ambients);
+        }
+        // `SECTION_SWITCH_STATE` (39): the same overlay for a
+        // `func_wall_toggle`, a `func_conveyor` and every pickup. Pickups
+        // are attached lazily, on the first step, so they are attached now
+        // to have a `taken` flag to restore into. The wall's solidity and
+        // the belt's direction follow from these on the `sync` below.
+        if let Some(switches) = &save.switches {
+            self.systems.ensure_pickups_spawned(&mut self.level);
+            crate::save_state::restore_switches(&mut self.level, switches);
         }
         // A load is a map load: the chapter title is announced again.
         self.pending.clear();
