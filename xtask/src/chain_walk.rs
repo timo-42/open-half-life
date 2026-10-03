@@ -288,6 +288,26 @@ pub fn parse_report(stderr: &str) -> ChainReport {
     }
 }
 
+/// The summary row naming the loadout a chain run was handed at the start
+/// map, shared with `cargo xtask plan-chain-hop` so both summaries label
+/// it the same way.
+///
+/// Which loadout it is matters to whoever reads the row: the documented
+/// harness aid ([`CHAIN_START_INVENTORY`]) says "this run was told to
+/// carry something", any other list says "and not even the usual
+/// something", and `(none)` says the run carried only what its own routes
+/// collected.
+#[must_use]
+pub fn start_inventory_row(start_inventory: Option<&str>) -> String {
+    match start_inventory {
+        Some(list) if list == CHAIN_START_INVENTORY => {
+            format!("| Start inventory (harness aid) | {list} |\n")
+        }
+        Some(list) => format!("| Start inventory (caller-supplied) | {list} |\n"),
+        None => "| Start inventory | (none) |\n".to_string(),
+    }
+}
+
 /// Renders the aggregate report. Never prints a route file's name or
 /// contents, a payload path, or any map name beyond the caller's own
 /// `ohl_campaign`-table start name.
@@ -321,20 +341,7 @@ pub fn write_summary(
         report.stopped_at.unwrap_or("(no terminal line was logged)")
     );
     let _ = writeln!(out, "| Required depth | {min_depth} |");
-    if let Some(list) = start_inventory {
-        // Which loadout this is matters to whoever reads the row: the
-        // documented harness aid ([`CHAIN_START_INVENTORY`]) says "this
-        // run was told to carry something", anything else says "and it
-        // was not even the usual something".
-        let label = if list == CHAIN_START_INVENTORY {
-            "Start inventory (harness aid)"
-        } else {
-            "Start inventory (caller-supplied)"
-        };
-        let _ = writeln!(out, "| {label} | {list} |");
-    } else {
-        out.push_str("| Start inventory | (none) |\n");
-    }
+    out.push_str(&start_inventory_row(start_inventory));
     // One row per arrival: what the routes had actually collected by the
     // time they walked into that map. Counts only, never a name.
     for (arrival, weapons, ammo) in &report.arrivals {
@@ -840,6 +847,52 @@ mod tests {
         assert_eq!(report.arrivals, vec![(2, 0, 0)]);
         let summary = write_summary("c0a0", 2, &report, 2, None, Duration::from_secs(1));
         assert!(summary.contains("| Inventory on arrival 2 | 0 weapon(s), 0 round(s) |"));
+    }
+
+    /// The arrival line is written by the app and read here, and the two
+    /// share no crate, so this ties them together through the app's own
+    /// source: the prefix it formats the line with must be
+    /// [`ARRIVAL_PREFIX`], and the line it formats must be the shape
+    /// [`parse_arrival`] reads.
+    #[test]
+    fn the_arrival_line_parsed_here_is_the_one_the_app_writes() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask lives one directory below the workspace root");
+        let source = std::fs::read_to_string(
+            root.join("crates")
+                .join("ohl-app")
+                .join("src")
+                .join("game_run.rs"),
+        )
+        .expect("the app's chain runner is readable");
+        assert!(
+            source.contains(&format!(
+                "const CHAIN_ARRIVAL_PREFIX: &str = {ARRIVAL_PREFIX:?};"
+            )),
+            "the app's arrival prefix is this parser's"
+        );
+        assert!(
+            source.contains("\"{CHAIN_ARRIVAL_PREFIX}{index}: weapons {weapons}, ammo {ammo}.\""),
+            "the app's arrival line has the shape this parser reads"
+        );
+        let line = format!("[info] {ARRIVAL_PREFIX}3: weapons 1, ammo 18.");
+        assert_eq!(parse_arrival(&line), Some((3, 1, 18)));
+    }
+
+    /// Every loadout is named on its own row, and labelled for what it
+    /// is: the harness aid, some other list, or nothing.
+    #[test]
+    fn the_start_inventory_row_says_which_loadout_it_was() {
+        assert_eq!(
+            start_inventory_row(Some(CHAIN_START_INVENTORY)),
+            format!("| Start inventory (harness aid) | {CHAIN_START_INVENTORY} |\n")
+        );
+        assert_eq!(
+            start_inventory_row(Some("weapon_shotgun")),
+            "| Start inventory (caller-supplied) | weapon_shotgun |\n"
+        );
+        assert_eq!(start_inventory_row(None), "| Start inventory | (none) |\n");
     }
 
     /// A line that is not an arrival line contributes nothing.

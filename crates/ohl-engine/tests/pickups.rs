@@ -5,9 +5,9 @@
 
 use std::fmt::Write as _;
 
-use ohl_combat::{AmmoType, WeaponId};
+use ohl_combat::{AmmoType, WeaponId, hud_slot};
 use ohl_engine::test_support::synthetic_map_bsp_with_extra_entity;
-use ohl_engine::{AssetSource, Game, Input, MemoryAssets, TICK_SECONDS};
+use ohl_engine::{AssetSource, Game, Input, MemoryAssets, StartInventoryItem, TICK_SECONDS};
 
 const NEXT_MAP: &str = "ohlsynth2";
 
@@ -52,6 +52,56 @@ fn walking_over_a_weapon_adds_it_once() {
         inventory.ammo(AmmoType::ThreeFiveSeven).current(),
         after_first,
         "a taken pickup does not grant its effect again"
+    );
+}
+
+/// Rounds loaded in a clip are rounds carried. A reload moves rounds out
+/// of the reserve and into the clip and fires none of them, so the total
+/// a chain walk reports on every arrival (`Game::inventory_totals`) must
+/// read the same on either side of one — while the reserve on its own
+/// drops, which is what keeps this test from passing on a count that
+/// left the clip out.
+#[test]
+fn a_reload_does_not_change_the_rounds_carried() {
+    let assets = assets_with_extra("");
+    let mut game = game(&assets);
+    game.give_start_inventory(&[
+        StartInventoryItem::Weapon(WeaponId::Python),
+        StartInventoryItem::Ammo(AmmoType::ThreeFiveSeven),
+    ]);
+    let (weapons, carried) = game.inventory_totals();
+    assert_eq!(weapons, 1);
+    assert!(carried > 0, "the loadout came with rounds");
+    let reserve = game.inventory().ammo(AmmoType::ThreeFiveSeven).current();
+
+    // Draw the weapon, let it come up, then reload it and let the reload
+    // finish.
+    let draw = Input {
+        select_slot: Some(hud_slot(WeaponId::Python).slot),
+        ..Input::default()
+    };
+    tick_n(&mut game, 1, &draw);
+    tick_n(&mut game, 60, &Input::default());
+    let reload = Input {
+        reload: true,
+        ..Input::default()
+    };
+    tick_n(&mut game, 1, &reload);
+    tick_n(&mut game, 300, &Input::default());
+
+    let inventory = game.inventory();
+    assert!(
+        inventory.clip(WeaponId::Python) > 0,
+        "the reload loaded the clip"
+    );
+    assert!(
+        inventory.ammo(AmmoType::ThreeFiveSeven).current() < reserve,
+        "out of the reserve"
+    );
+    assert_eq!(
+        game.inventory_totals(),
+        (1, carried),
+        "and not one round of what is carried went anywhere"
     );
 }
 

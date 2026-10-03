@@ -511,7 +511,13 @@ impl Game {
 
     /// What the player is carrying, as the two counts a caller may
     /// report: how many weapons are owned, and how many rounds of every
-    /// kind are held together.
+    /// kind are carried altogether — in reserve *and* loaded in every
+    /// owned weapon's clip.
+    ///
+    /// Both halves of the rounds count, because a reload moves rounds from
+    /// one to the other: a count of the reserve alone drops on a reload
+    /// that fired nothing, and reads as rounds spent. This one changes
+    /// only when rounds are picked up or fired.
     ///
     /// Two aggregates rather than the inventory itself, because this is
     /// what gets *printed* — a chain walk logs one of these per arrival to
@@ -522,11 +528,12 @@ impl Game {
     pub fn inventory_totals(&self) -> (usize, u32) {
         let inventory = self.inventory();
         let weapons = inventory.owned_weapons().count();
-        let ammo = ohl_combat::AmmoType::ALL
+        let reserve: u32 = ohl_combat::AmmoType::ALL
             .into_iter()
             .map(|kind| inventory.ammo(kind).current())
             .sum();
-        (weapons, ammo)
+        let loaded: u32 = inventory.owned_weapons().map(|id| inventory.clip(id)).sum();
+        (weapons, reserve + loaded)
     }
 
     /// Applies a `--start-inventory` list (dev-tools only; see

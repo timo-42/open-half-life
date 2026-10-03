@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 
-use crate::chain_walk::{assemble_chain, build_chain_binary, capture_stderr};
+use crate::chain_walk::{assemble_chain, build_chain_binary, capture_stderr, start_inventory_row};
 
 /// `cargo xtask plan-chain-hop` command line.
 #[derive(Debug, Parser)]
@@ -180,9 +180,8 @@ pub fn write_summary(
     let _ = writeln!(out, "Wall-clock elapsed: {:.1}s\n", elapsed.as_secs_f64());
     out.push_str("| Measure | Value |\n|---|---|\n");
     let _ = writeln!(out, "| Routes already in the chain | {routes} |");
-    if let Some(list) = start_inventory {
-        let _ = writeln!(out, "| Start inventory (harness aid) | {list} |");
-    }
+    // The same row, labelled the same way, as `cargo xtask chain-walk`'s.
+    out.push_str(&start_inventory_row(start_inventory));
     for (label, value) in &report.values {
         let _ = writeln!(out, "| {label} | {value} |");
     }
@@ -333,6 +332,25 @@ mod tests {
         let summary = write_summary("c0a0", 5, &report, None, Duration::from_secs(3));
         assert!(summary.contains("Fail (no route replayed to the goal"));
         assert!(summary.contains("| Routes already in the chain | 5 |"));
+    }
+
+    /// The loadout row reads exactly as `cargo xtask chain-walk`'s does:
+    /// the harness aid, a caller-supplied list, or `(none)` — never a
+    /// harness-aid label on a list that is not the harness aid, and never
+    /// a summary silent about what the chain carried.
+    #[test]
+    fn the_start_inventory_row_matches_the_chain_walks() {
+        let report = parse_report("");
+        let row =
+            |list: Option<&str>| write_summary("c0a0", 5, &report, list, Duration::from_secs(1));
+        assert!(
+            row(Some(crate::chain_walk::CHAIN_START_INVENTORY))
+                .contains("| Start inventory (harness aid) |")
+        );
+        let other = row(Some("weapon_shotgun"));
+        assert!(other.contains("| Start inventory (caller-supplied) | weapon_shotgun |"));
+        assert!(!other.contains("harness aid"));
+        assert!(row(None).contains("| Start inventory | (none) |"));
     }
 
     /// A chain that stopped short or re-entered a map leaves the planner

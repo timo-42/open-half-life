@@ -333,6 +333,12 @@ pub enum PlanAction {
     Pickup {
         /// How long to stand on the spot, in seconds.
         seconds: f32,
+        /// How far the step aside walks, out and back together, in world
+        /// units: what it spends of [`PlanConfig::pickup_detour_budget`].
+        /// A caller that plans a route one committed chunk at a time
+        /// carries this forward, so the budget bounds the whole route
+        /// rather than each chunk of it.
+        detour: f32,
     },
 }
 
@@ -352,6 +358,8 @@ pub struct RoutePlan {
     /// How many door presses the route needs.
     pub doors: usize,
     /// How many pickup detours the route takes ([`PlanAction::Pickup`]).
+    /// An item a point of the path already stands within reach of is
+    /// collected on the way and is not one.
     pub pickups: usize,
     /// Whether this route actually ends inside a goal volume.
     ///
@@ -442,10 +450,17 @@ pub struct PlanConfig {
     /// How many pickup detours ([`pickup_detour`]) one route may take;
     /// [`DEFAULT_MAX_PICKUP_DETOURS`] by default, and `0` to plan none at
     /// all (the behaviour before this edge existed).
+    ///
+    /// One call plans one route, so this caps one call. A caller that
+    /// commits a route a chunk at a time and plans again from where that
+    /// left the player owns the cap for the whole route, and passes each
+    /// search what is left of it (`ohl-app`'s closed loop does).
     pub max_pickup_detours: usize,
     /// How far, in world units, all of one route's pickup detours may add
     /// up to, counting both legs of each out-and-back;
-    /// [`DEFAULT_PICKUP_DETOUR_BUDGET`] by default.
+    /// [`DEFAULT_PICKUP_DETOUR_BUDGET`] by default. Bounds one call in the
+    /// same sense [`Self::max_pickup_detours`] does; what a committed
+    /// detour spent is [`PlanAction::Pickup`]'s own `detour`.
     pub pickup_detour_budget: f32,
 }
 
@@ -2608,6 +2623,7 @@ pub const DEFAULT_PICKUP_DETOUR_BUDGET: f32 = 1_536.0;
 /// A pickup "beside the path" is a step aside; something two rooms away
 /// is a different route, and planning it as a detour would hand the
 /// replay a long open-loop run with nothing on the end of it but an item.
+/// Project-authored bound, not a measured property of any map.
 pub const MAX_PICKUP_DETOUR_ASIDE: f32 = 320.0;
 
 /// How long a route stands on a pickup before walking back
@@ -2617,12 +2633,32 @@ pub const MAX_PICKUP_DETOUR_ASIDE: f32 = 320.0;
 /// [`crate::pickups::PICKUP_TOUCH_RADIUS`], so a run that merely passes
 /// through already collects; this is slack for the one case that does
 /// not, a run whose own coast stops it a moment short of where it was
-/// planned to.
+/// planned to. Project-authored slack, not a measured property of the
+/// replay.
 pub const PICKUP_PAUSE_SECONDS: f32 = 0.25;
+
+/// How far inside [`crate::pickups::PICKUP_TOUCH_RADIUS`] a route prefers
+/// to collect a pickup from, in world units.
+///
+/// The reached cell nearest the path is, by construction, the one furthest
+/// from the item — right on the rim of the touch radius — and a run
+/// replayed open-loop that stops a few units short of a rim cell collects
+/// nothing. So a pickup counts as passed on the way, and a detour picks
+/// its stand cell, at least this far inside the rim whenever a reached
+/// cell allows it, and falls back to the rim only when none does
+/// ([`pickup_reach`]). Half a grid cell: project-authored, not a measured
+/// property of the replay.
+pub const PICKUP_STAND_MARGIN: f32 = CELL_SIZE / 2.0;
 
 /// The most pickup entities one map is considered for detours, so a
 /// pathological map cannot make the selection below grow without bound.
 const MAX_PICKUP_CANDIDATES: usize = 256;
+
+/// How far a body may press against a shut leaf's face without counting
+/// as walking through it, in world units ([`DetourGuard`]): a run along a
+/// corridor that passes a closed door flush with the wall is not a run
+/// through that door.
+const LEAF_FLUSH_TOLERANCE: f32 = 0.5;
 
 /// One pickup entity the route may detour to: where it rests, and what
 /// taking it would give the player.
@@ -2650,9 +2686,41 @@ struct PickupDetour {
     aside: f32,
 }
 
+/// How a route collects one pickup.
+#[derive(Debug, Clone, Copy)]
+enum PickupReach {
+    /// A point of the route's own path, at this index, already stands
+    /// within reach: the item is collected on the way. That is not a
+    /// detour — it takes no detour slot, spends none of the length budget
+    /// and adds no pause — but the straightened route is pinned through
+    /// that point ([`Marks::pinned`]), so cutting the corner it lies on
+    /// cannot walk past the item after all.
+    OnTheWay(usize),
+    /// A step aside from the path.
+    Detour(PickupDetour),
+}
+
+impl PickupReach {
+    /// The path index the item is collected from.
+    fn at(self) -> usize {
+        match self {
+            Self::OnTheWay(at) => at,
+            Self::Detour(detour) => detour.at,
+        }
+    }
+
+    /// How far collecting it takes the route off its path, one way.
+    fn aside(self) -> f32 {
+        match self {
+            Self::OnTheWay(_) => 0.0,
+            Self::Detour(detour) => detour.aside,
+        }
+    }
+}
+
 /// What the player would be carrying while the route is walked, as far as
 /// the detour selection needs to know: the live inventory plus whatever
-/// the detours chosen so far would already have collected.
+/// the pickups chosen so far would already have collected.
 ///
 /// Kept as a copy rather than read from the game each time so that ammo
 /// for a weapon this very route picks up counts as wanted — a route that
@@ -2663,19 +2731,53 @@ struct CarriedSoFar {
     max_health: f32,
     armor: f32,
     max_armor: f32,
-    suit_equipped: bool,
+    /// The first path index from which the HEV suit is worn: `Some(0)` for
+    /// a player who is already wearing it, the index the route collects it
+    /// at for one who is not, `None` while the route never does.
+    ///
+    /// The one grant that depends on *when* a pickup is touched: a battery
+    /// touched before the suit is worn grants nothing (`crate::pickups`)
+    /// and stays where it is, whatever the route picks up after it.
+    suit_from: Option<usize>,
 }
 
 impl CarriedSoFar {
-    /// How much this route wants `kind`, smaller being wanted more, or
-    /// `None` when a detour for it would buy the player nothing.
+    /// What `game`'s player is carrying right now.
+    fn of(game: &Game) -> Self {
+        Self {
+            inventory: game.inventory(),
+            health: game.player_health(),
+            max_health: game.player_max_health(),
+            armor: game.player_armor(),
+            max_armor: game.player_max_armor(),
+            suit_from: game.player_suit_equipped().then_some(0),
+        }
+    }
+
+    /// Whether a pickup of `kind` could ever be worth collecting, whatever
+    /// the route carries by then. Only the kinds [`Self::wants`] can never
+    /// answer for — a charger, the long-jump item — are ruled out here;
+    /// everything else is decided against the running inventory, which is
+    /// what makes ammo for a weapon the route has not picked up *yet* a
+    /// candidate at all.
+    fn ever_wanted(kind: ohl_combat::PickupKind) -> bool {
+        use ohl_combat::PickupKind::{Ammo, Battery, HealthKit, Suit, Weapon};
+        matches!(kind, Suit | Weapon(_) | Ammo(_) | HealthKit | Battery)
+    }
+
+    /// How much this route wants `kind`, collected at path index `at`,
+    /// smaller being wanted more, or `None` when collecting it there would
+    /// buy the player nothing.
     ///
-    /// The order is a player's own: the suit first (nothing else in a
-    /// campaign works without it), then a weapon not carried, then ammo
-    /// for a weapon that is, then a weapon already owned whose ammo is
+    /// The ranking is this project's own (project-authored, not a
+    /// published behaviour), in the order a player would take things: the
+    /// suit first (nothing else in a campaign works without it), then a
+    /// weapon not carried, then ammo for a weapon that is (by its primary
+    /// or its secondary fire), then a weapon already owned whose ammo is
     /// short, and last the health and armour items, which are only worth
-    /// a detour when there is room for what they restore.
-    fn wants(&self, kind: ohl_combat::PickupKind) -> Option<u8> {
+    /// a detour when there is room for what they restore — and a battery
+    /// only from the point the suit is worn.
+    fn wants(&self, kind: ohl_combat::PickupKind, at: usize) -> Option<u8> {
         use ohl_combat::PickupKind::{
             Ammo, Battery, HealthCharger, HealthKit, LongJump, Suit, SuitCharger, Weapon,
         };
@@ -2694,11 +2796,11 @@ impl CarriedSoFar {
                 }
                 self.inventory
                     .owned_weapons()
-                    .any(|id| ohl_combat::spec(id).ammo == Some(ammo))
+                    .any(|id| Self::fires(id, ammo))
                     .then_some(2)
             }
             HealthKit => (self.health < self.max_health).then_some(4),
-            Battery => (self.suit_equipped && self.armor < self.max_armor).then_some(5),
+            Battery => (self.suit_worn_at(at) && self.armor < self.max_armor).then_some(5),
             // A charger is a use-and-hold brush entity, not a touch
             // pickup: walking onto it collects nothing
             // (`crate::pickups::PickupsState::drain_chargers`), so it is
@@ -2710,17 +2812,30 @@ impl CarriedSoFar {
         }
     }
 
+    /// Whether weapon `id` draws on `ammo`, by its primary fire or its
+    /// secondary: the MP5's grenades are its secondary fire's own ammo.
+    fn fires(id: ohl_combat::WeaponId, ammo: ohl_combat::AmmoType) -> bool {
+        let spec = ohl_combat::spec(id);
+        spec.ammo == Some(ammo) || spec.secondary.is_some_and(|fire| fire.ammo == Some(ammo))
+    }
+
+    /// Whether the suit is worn by path index `at`.
+    fn suit_worn_at(&self, at: usize) -> bool {
+        self.suit_from.is_some_and(|from| from <= at)
+    }
+
     /// Whether `ammo`'s pool has room for another box.
     fn has_room_for(&self, ammo: ohl_combat::AmmoType) -> bool {
         let pool = self.inventory.ammo(ammo);
         pool.current() < pool.capacity()
     }
 
-    /// Applies what taking `kind` would give, so the next choice is made
-    /// against the inventory the route would have by then. The grants are
-    /// the same ones `crate::pickups::apply_pickup` applies, read from
-    /// `ohl_combat`'s own published constants rather than restated.
-    fn take(&mut self, kind: ohl_combat::PickupKind) {
+    /// Applies what collecting `kind` at path index `at` would give, so
+    /// the next choice is made against the inventory the route would have
+    /// by then. The grants are the same ones `crate::pickups::apply_pickup`
+    /// applies, read from `ohl_combat`'s own published constants rather
+    /// than restated.
+    fn take(&mut self, kind: ohl_combat::PickupKind, at: usize) {
         use ohl_combat::PickupKind::{Ammo, Battery, HealthKit, Suit, Weapon};
         match kind {
             Weapon(id) => {
@@ -2739,11 +2854,14 @@ impl CarriedSoFar {
                     (self.health + ohl_combat::HEALTHKIT_AMOUNT.value).min(self.max_health);
             }
             Battery => {
-                self.armor = (self.armor + ohl_combat::BATTERY_AMOUNT.value).min(self.max_armor);
+                if self.suit_worn_at(at) {
+                    self.armor =
+                        (self.armor + ohl_combat::BATTERY_AMOUNT.value).min(self.max_armor);
+                }
             }
             Suit => {
                 self.inventory.give_suit();
-                self.suit_equipped = true;
+                self.suit_from = Some(self.suit_from.map_or(at, |from| from.min(at)));
             }
             _ => {}
         }
@@ -2796,10 +2914,140 @@ fn pickup_targets(game: &Game) -> Vec<PickupTarget> {
     targets
 }
 
+/// What the planning model shows open or empty that a replayed route
+/// would find shut or live: the closed volume of every door and switched
+/// mover this search opened, with the point of the route that presses it,
+/// and every level-change volume a touch fires.
+///
+/// The search detaches every door it can press ([`openable_doors`],
+/// [`take_switch`]) from the collision model it walks, whether or not the
+/// route it settles on ever presses it, and a level-change trigger is not
+/// solid at all; so [`straight_line_is_walkable`] can see neither. A
+/// pickup detour is checked against this instead — the protection
+/// [`press_detour`] gets from leaving only from before the leaf's crossing
+/// and refusing a stand cell inside the leaf's own volume.
+///
+/// A door is taken to stay open once pressed, which is what the rest of
+/// this planner assumes about the doors on the route's own path too.
+struct DetourGuard {
+    /// Each opened door's closed volume, and the earliest path index it is
+    /// pressed at — `usize::MAX` for one the route never presses, which is
+    /// shut for the whole of the replay.
+    doors: Vec<(BrushBounds, usize)>,
+    /// Every `trigger_changelevel` volume a touch fires (not a "USE Only"
+    /// one): standing in one, or walking through one, is a level change.
+    level_changes: Vec<BrushBounds>,
+}
+
+impl DetourGuard {
+    /// The guard for a route over `doors` pressed at `presses` (path index
+    /// to the doors pressed there).
+    fn new(game: &Game, doors: &[OpenedDoor], presses: &HashMap<usize, Vec<OpenedDoor>>) -> Self {
+        let doors = doors
+            .iter()
+            .map(|door| {
+                let first_press = presses
+                    .iter()
+                    .filter(|(_, at)| at.iter().any(|press| press.bounds == door.bounds))
+                    .map(|(index, _)| *index)
+                    .min()
+                    .unwrap_or(usize::MAX);
+                (door.bounds, first_press)
+            })
+            .collect();
+        let level_changes = game
+            .registry()
+            .world
+            .query::<(&Trigger, &ChangeLevel, &BrushBounds)>()
+            .iter()
+            .map(|(_, _, bounds)| *bounds)
+            .collect();
+        Self {
+            doors,
+            level_changes,
+        }
+    }
+
+    /// Whether a standing body walking straight from `from` to `to`, at a
+    /// point of the route where every door pressed at or before path index
+    /// `at` is open and every other one is still shut, would walk into a
+    /// shut leaf or touch a level change on the way — either end included.
+    fn blocks(&self, at: usize, from: Vec3, to: Vec3) -> bool {
+        self.doors.iter().any(|(bounds, pressed)| {
+            *pressed > at && sweep_overlaps(bounds, -LEAF_FLUSH_TOLERANCE, from, to)
+        }) || self
+            .level_changes
+            .iter()
+            .any(|bounds| sweep_overlaps(bounds, 0.0, from, to))
+    }
+}
+
+/// Whether a standing body ([`Hull::Standing`]) moved in a straight line
+/// from `from` to `to` overlaps `bounds`, grown by `slack` on every side
+/// (negative to shrink it), at any point along the way, endpoints
+/// included. The overlap is the engine's own: a touch volume fires when
+/// the player's box and the volume's box touch (`ohl_game::logic`'s
+/// trigger touch), and a solid leaf stops a body whose box would enter it.
+fn sweep_overlaps(bounds: &BrushBounds, slack: f32, from: Vec3, to: Vec3) -> bool {
+    let (hull_mins, hull_maxs) = Hull::Standing.bounds();
+    let mins = bounds.mins - hull_maxs - Vec3::splat(slack);
+    let maxs = bounds.maxs - hull_mins + Vec3::splat(slack);
+    let delta = to - from;
+    let (mut enter, mut exit) = (0.0_f32, 1.0_f32);
+    for axis in 0..3 {
+        let (start, step) = (from[axis], delta[axis]);
+        if step.abs() <= f32::EPSILON {
+            if start < mins[axis] || start > maxs[axis] {
+                return false;
+            }
+            continue;
+        }
+        let near = (mins[axis] - start) / step;
+        let far = (maxs[axis] - start) / step;
+        enter = enter.max(near.min(far));
+        exit = exit.min(near.max(far));
+        if enter > exit {
+            return false;
+        }
+    }
+    true
+}
+
+/// How a route should reach `target`: on the way, when a point of its own
+/// path already stands within reach, or by the shortest step aside
+/// ([`pickup_detour`]) otherwise.
+///
+/// Reach is asked twice, margin first ([`PICKUP_STAND_MARGIN`]): a path
+/// point or stand cell at least that far inside the touch radius is
+/// preferred over any on its rim, and the rim is used only when nothing
+/// inside it is reachable at all.
+fn pickup_reach(
+    collision: &CollisionModel,
+    trace: &Trace,
+    path: &[PathPoint],
+    target: &PickupTarget,
+    guard: &DetourGuard,
+) -> Option<PickupReach> {
+    let rim = crate::pickups::PICKUP_TOUCH_RADIUS;
+    for radius in [rim - PICKUP_STAND_MARGIN, rim] {
+        if let Some(at) = path
+            .iter()
+            .position(|point| point.position.distance(target.origin) <= radius)
+        {
+            return Some(PickupReach::OnTheWay(at));
+        }
+        if let Some(detour) = pickup_detour(collision, trace, path, target, radius, guard) {
+            return Some(PickupReach::Detour(detour));
+        }
+    }
+    None
+}
+
 /// Where a route should step aside to collect `target`: the shortest
-/// out-and-back, from a point of the path to a reached cell the pickup's
-/// own touch test would fire from, whose straight line is walkable in
-/// both directions.
+/// out-and-back, from a point of the path to a reached cell within
+/// `radius` of the item, whose straight line is walkable in both
+/// directions and walks through nothing the replay will find shut or live
+/// at that point of the route ([`DetourGuard`]).
 ///
 /// Deliberately the same shape as [`press_detour`], and for the same
 /// reason: nothing makes the cheapest path to a level change pass what
@@ -2809,20 +3057,20 @@ fn pickup_targets(game: &Game) -> Vec<PickupTarget> {
 /// The reach test is the touch test itself
 /// (`crate::pickups::PICKUP_TOUCH_RADIUS` around the item's own placed
 /// origin, measured from the player's origin), not an approximation of
-/// it: a detour that stood anywhere else would walk the player somewhere
-/// and collect nothing.
+/// it — `radius` is never larger: a detour that stood anywhere else would
+/// walk the player somewhere and collect nothing.
 fn pickup_detour(
     collision: &CollisionModel,
     trace: &Trace,
     path: &[PathPoint],
     target: &PickupTarget,
+    radius: f32,
+    guard: &DetourGuard,
 ) -> Option<PickupDetour> {
     let mut cells: Vec<(Cell, Vec3)> = trace
         .landing
         .iter()
-        .filter(|(_, position)| {
-            position.distance(target.origin) <= crate::pickups::PICKUP_TOUCH_RADIUS
-        })
+        .filter(|(_, position)| position.distance(target.origin) <= radius)
         .map(|(cell, position)| (*cell, *position))
         .collect();
     if cells.is_empty() {
@@ -2847,6 +3095,12 @@ fn pickup_detour(
             if best.is_some_and(|best| aside >= best.aside) {
                 continue;
             }
+            // The same line both ways, so one check covers both legs: a
+            // door shut at this point of the route, or a level change, on
+            // the way out is one on the way back too.
+            if guard.blocks(at, point.position, stand) {
+                continue;
+            }
             if !straight_line_is_walkable(collision, point.position, stand)
                 || !straight_line_is_walkable(collision, stand, point.position)
             {
@@ -2858,92 +3112,101 @@ fn pickup_detour(
     best
 }
 
-/// Chooses which pickups this route detours to, wanted-most first and
-/// shortest step aside first among equals, until the route has taken
-/// [`PlanConfig::max_pickup_detours`] of them or spent
-/// [`PlanConfig::pickup_detour_budget`] units on them.
+/// What a route collects on its way: the steps aside it takes, sorted by
+/// where they leave the path, and the path points it is pinned through
+/// for what lies within reach of the path already.
+#[derive(Debug, Default)]
+struct ChosenPickups {
+    /// The detours, sorted by [`PickupDetour::at`].
+    detours: Vec<PickupDetour>,
+    /// The path indices of every pickup collected on the way.
+    on_the_way: Vec<usize>,
+}
+
+/// Chooses what this route collects, wanted-most first and shortest step
+/// aside first among equals.
+///
+/// A pickup on the way costs nothing and is always taken while it is
+/// wanted. A detour costs one of [`PlanConfig::max_pickup_detours`] and
+/// both its legs out of [`PlanConfig::pickup_detour_budget`], and none is
+/// taken once either is spent.
 ///
 /// The choice is made against a running inventory ([`CarriedSoFar`]), so
 /// ammo for a weapon this same route picks up two detours earlier counts
 /// as wanted, exactly as it would for the player walking it.
-fn choose_pickup_detours(
+fn choose_pickups(
     game: &Game,
     collision: &CollisionModel,
     trace: &Trace,
     path: &[PathPoint],
+    guard: &DetourGuard,
     config: &PlanConfig,
-) -> Vec<PickupDetour> {
-    let mut carried = CarriedSoFar {
-        inventory: game.inventory(),
-        health: game.player_health(),
-        max_health: game.player_max_health(),
-        armor: game.player_armor(),
-        max_armor: game.player_max_armor(),
-        suit_equipped: game.player_suit_equipped(),
-    };
-    // Every candidate's own shortest step aside, computed once: it
-    // depends on the path and the map, never on what is carried.
-    let mut candidates: Vec<(PickupTarget, PickupDetour)> = pickup_targets(game)
+) -> ChosenPickups {
+    let mut carried = CarriedSoFar::of(game);
+    // Every candidate's own reach, computed once: it depends on the path
+    // and the map, never on what is carried. Whether it is *wanted* is
+    // decided in the loop below, against the inventory the route will
+    // have by then — not here, against the one it starts with.
+    let mut candidates: Vec<(PickupTarget, PickupReach)> = pickup_targets(game)
         .into_iter()
+        .filter(|target| CarriedSoFar::ever_wanted(target.kind))
         .filter_map(|target| {
-            carried.wants(target.kind)?;
-            let detour = pickup_detour(collision, trace, path, &target)?;
-            Some((target, detour))
+            let reach = pickup_reach(collision, trace, path, &target, guard)?;
+            Some((target, reach))
         })
         .collect();
 
-    let mut chosen: Vec<PickupDetour> = Vec::new();
+    let mut chosen = ChosenPickups::default();
     let mut budget = config.pickup_detour_budget;
-    while chosen.len() < config.max_pickup_detours {
-        let mut best: Option<(usize, u8)> = None;
-        for (index, (target, detour)) in candidates.iter().enumerate() {
-            let Some(want) = carried.wants(target.kind) else {
+    loop {
+        let detours_left = chosen.detours.len() < config.max_pickup_detours;
+        let mut best: Option<(usize, (u8, f32))> = None;
+        for (index, (target, reach)) in candidates.iter().enumerate() {
+            let Some(want) = carried.wants(target.kind, reach.at()) else {
                 continue;
             };
-            if detour.aside * 2.0 > budget {
+            if let PickupReach::Detour(detour) = reach
+                && (!detours_left || detour.aside * 2.0 > budget)
+            {
                 continue;
             }
-            let better = best.is_none_or(|(chosen_index, chosen_want)| {
-                (want, detour.aside) < (chosen_want, candidates[chosen_index].1.aside)
-            });
-            if better {
-                best = Some((index, want));
+            let rank = (want, reach.aside());
+            if best.is_none_or(|(_, best_rank)| rank < best_rank) {
+                best = Some((index, rank));
             }
         }
         let Some((index, _)) = best else {
             break;
         };
-        let (target, detour) = candidates.swap_remove(index);
-        carried.take(target.kind);
-        budget -= detour.aside * 2.0;
-        chosen.push(detour);
+        let (target, reach) = candidates.swap_remove(index);
+        carried.take(target.kind, reach.at());
+        match reach {
+            PickupReach::OnTheWay(at) => chosen.on_the_way.push(at),
+            PickupReach::Detour(detour) => {
+                budget -= detour.aside * 2.0;
+                chosen.detours.push(detour);
+            }
+        }
     }
-    chosen.sort_by_key(|detour| detour.at);
+    chosen.detours.sort_by_key(|detour| detour.at);
     chosen
 }
 
 /// Splices every chosen pickup detour into `path` as an out-and-back —
 /// the step aside, then the point it left from again — and remaps the
-/// door presses measured against the old path onto the new one.
+/// door presses and the pickups on the way measured against the old path
+/// onto the new one.
 ///
 /// Returns the walked path and the marks [`actions_for`] splits it at.
-fn splice_pickup_detours(
+fn splice_pickups(
     path: &[PathPoint],
-    detours: &[PickupDetour],
+    chosen: &ChosenPickups,
     presses: HashMap<usize, Vec<OpenedDoor>>,
 ) -> (Vec<PathPoint>, Marks) {
-    if detours.is_empty() {
-        return (
-            path.to_vec(),
-            Marks {
-                presses,
-                pickups: HashSet::new(),
-            },
-        );
-    }
+    let detours = &chosen.detours;
     let mut walked: Vec<PathPoint> = Vec::with_capacity(path.len() + detours.len() * 2);
     let mut remap: Vec<usize> = Vec::with_capacity(path.len());
-    let mut pickups: HashSet<usize> = HashSet::new();
+    let mut pickups: HashMap<usize, f32> = HashMap::new();
     let mut next = 0usize;
     for (index, point) in path.iter().enumerate() {
         remap.push(walked.len());
@@ -2953,7 +3216,7 @@ fn splice_pickup_detours(
                 position: detours[next].stand,
                 kind: EdgeKind::Walk,
             });
-            pickups.insert(walked.len() - 1);
+            pickups.insert(walked.len() - 1, detours[next].aside * 2.0);
             walked.push(PathPoint {
                 position: point.position,
                 kind: EdgeKind::Walk,
@@ -2965,16 +3228,34 @@ fn splice_pickup_detours(
         .into_iter()
         .filter_map(|(index, doors)| Some((*remap.get(index)?, doors)))
         .collect();
-    (walked, Marks { presses, pickups })
+    let pinned = chosen
+        .on_the_way
+        .iter()
+        .filter_map(|at| remap.get(*at).copied())
+        .collect();
+    (
+        walked,
+        Marks {
+            presses,
+            pickups,
+            pinned,
+        },
+    )
 }
 
-/// Where a route stops on its way: the doors it presses, and the pickups
-/// it stands on.
+/// Where a route stops on its way: the doors it presses, the pickups it
+/// steps aside to stand on, and the points it is pinned through for the
+/// pickups it collects on the way.
 struct Marks {
     /// The doors to press at each path index; see [`DoorMarks::presses`].
     presses: HashMap<usize, Vec<OpenedDoor>>,
-    /// The path indices that are a pickup detour's own stand point.
-    pickups: HashSet<usize>,
+    /// The path indices that are a pickup detour's own stand point, with
+    /// how far that detour walks out and back together.
+    pickups: HashMap<usize, f32>,
+    /// The path indices a pickup on the way lies within reach of: the
+    /// straightened route is never allowed to cut past one
+    /// ([`straighten`]).
+    pinned: HashSet<usize>,
 }
 
 /// Attributes every opened door to a press, stepping the route aside
@@ -3100,6 +3381,20 @@ fn straight_line_is_walkable(collision: &CollisionModel, from: Vec3, to: Vec3) -
 /// a long jump or a one-way fall are never absorbed (see
 /// [`EdgeKind::is_ground_movement`]).
 fn string_pull(collision: &CollisionModel, chunk: &[PathPoint]) -> Vec<PathPoint> {
+    string_pull_with(collision, chunk, |_, _| true)
+}
+
+/// [`string_pull`], with every shortcut from chunk index `from` to chunk
+/// index `to` also put to `allowed` first. Two consecutive points are
+/// always kept as they are, whatever `allowed` says: they are one of the
+/// walk's own edges (or a pickup detour's leg, already checked against
+/// the same guard), and the straightened route has to be able to fall
+/// back on them.
+fn string_pull_with(
+    collision: &CollisionModel,
+    chunk: &[PathPoint],
+    allowed: impl Fn(usize, usize) -> bool,
+) -> Vec<PathPoint> {
     let mut pulled = Vec::new();
     if chunk.is_empty() {
         return pulled;
@@ -3110,11 +3405,13 @@ fn string_pull(collision: &CollisionModel, chunk: &[PathPoint]) -> Vec<PathPoint
         let mut best = index + 1;
         let mut candidate = index + 1;
         while candidate < chunk.len() && chunk[candidate].kind.is_ground_movement() {
-            if straight_line_is_walkable(
-                collision,
-                chunk[index].position,
-                chunk[candidate].position,
-            ) {
+            if allowed(index, candidate)
+                && straight_line_is_walkable(
+                    collision,
+                    chunk[index].position,
+                    chunk[candidate].position,
+                )
+            {
                 best = candidate;
             }
             candidate += 1;
@@ -3225,25 +3522,29 @@ pub fn merge_collinear(path: &[PathPoint]) -> Vec<PlanAction> {
 }
 
 /// Splits `path` at its door presses and pickup stops, straightens each
-/// chunk, and emits the merged actions with a [`PlanAction::UseDoor`] or a
-/// [`PlanAction::Pickup`] between them.
+/// chunk ([`straighten`]), and emits the merged actions with a
+/// [`PlanAction::UseDoor`] or a [`PlanAction::Pickup`] between them.
 fn actions_for(
     collision: &CollisionModel,
     path: &[PathPoint],
     marks: &Marks,
+    guard: &DetourGuard,
     eye: Vec3,
 ) -> Vec<PlanAction> {
     let mut actions = Vec::new();
     let mut chunk_start = 0usize;
     for index in 0..path.len() {
         let doors = marks.presses.get(&index);
-        let collects = marks.pickups.contains(&index);
-        if doors.is_none() && !collects {
+        let detour = marks.pickups.get(&index).copied();
+        if doors.is_none() && detour.is_none() {
             continue;
         }
-        actions.extend(merge_collinear(&string_pull(
+        actions.extend(merge_collinear(&straighten(
             collision,
-            &path[chunk_start..=index],
+            path,
+            chunk_start..index + 1,
+            marks,
+            guard,
         )));
         for door in doors.into_iter().flatten() {
             let yaw = heading(path[index].position + eye, door.center).map_or(0.0, |(yaw, _)| yaw);
@@ -3252,21 +3553,59 @@ fn actions_for(
                 open_seconds: door.open_seconds,
             });
         }
-        if collects {
+        if let Some(detour) = detour {
             // Standing here *is* the collection: the touch test runs
             // against the player's own origin every tick
             // (`crate::pickups`), so there is nothing to press.
             actions.push(PlanAction::Pickup {
                 seconds: PICKUP_PAUSE_SECONDS,
+                detour,
             });
         }
         chunk_start = index;
     }
-    actions.extend(merge_collinear(&string_pull(
+    actions.extend(merge_collinear(&straighten(
         collision,
-        &path[chunk_start..],
+        path,
+        chunk_start..path.len(),
+        marks,
+        guard,
     )));
     actions
+}
+
+/// Straightens `path[chunk]` ([`string_pull`]) without undoing what the
+/// pickups planned: no shortcut cuts past a point a pickup on the way
+/// pinned the route through ([`Marks::pinned`]), and none into or out of a
+/// pickup detour's stand point walks through a door still shut at that
+/// point of the route, or into a level change ([`DetourGuard`]) — the
+/// detour's own legs were chosen against exactly that, and straightening
+/// them must not reintroduce what it refused.
+///
+/// A chunk with no pickup in it is straightened exactly as before this
+/// existed.
+fn straighten(
+    collision: &CollisionModel,
+    path: &[PathPoint],
+    chunk: std::ops::Range<usize>,
+    marks: &Marks,
+    guard: &DetourGuard,
+) -> Vec<PathPoint> {
+    let start = chunk.start;
+    let points = &path[chunk];
+    if marks.pinned.is_empty() && marks.pickups.is_empty() {
+        return string_pull(collision, points);
+    }
+    string_pull_with(collision, points, |from, to| {
+        let (from, to) = (start + from, start + to);
+        if (from + 1..to).any(|index| marks.pinned.contains(&index)) {
+            return false;
+        }
+        let leg = marks.pickups.contains_key(&from) || marks.pickups.contains_key(&to);
+        // Doors pressed at the chunk's own first point were pressed before
+        // the chunk is walked; any pressed later are still shut.
+        !(leg && guard.blocks(start, path[from].position, path[to].position))
+    })
 }
 
 /// Takes the cheapest ride [`ride_candidates`] offers, moving the mover's
@@ -3717,10 +4056,13 @@ fn build_plan(
     let path = &walked[..usable_len];
     // What the map left beside the way: the route steps aside for it the
     // same way it steps aside for a switch, and arrives at the next map
-    // carrying it (see [`choose_pickup_detours`]).
-    let detours = choose_pickup_detours(game, collision, trace, path, config);
-    let (with_pickups, marks) = splice_pickup_detours(path, &detours, presses);
+    // carrying it (see [`choose_pickups`]) — but never through a door it
+    // does not press, or into a level change ([`DetourGuard`]).
+    let guard = DetourGuard::new(game, doors, &presses);
+    let chosen = choose_pickups(game, collision, trace, path, &guard, config);
+    let (with_pickups, marks) = splice_pickups(path, &chosen, presses);
     let path = &with_pickups[..];
+    let guard = DetourGuard::new(game, doors, &marks.presses);
     let start_distance = goals
         .iter()
         .map(|goal| start.distance(goal.center))
@@ -3751,7 +4093,7 @@ fn build_plan(
     } else {
         None
     };
-    let mut actions = actions_for(collision, path, &marks, eye);
+    let mut actions = actions_for(collision, path, &marks, &guard, eye);
     if let Some(seconds) = wait_seconds {
         // The step out of a volume that hurts is appended as its own
         // action rather than as one more path point: the path is
@@ -3799,17 +4141,19 @@ fn shortest_turn_degrees(from: f32, to: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::test_support::{
-        LiftFixture, PLAN_COST_LEDGE_X, PLAN_COST_LEDGE_Z, PLAN_COST_MAP, PLAN_LADDER_DROP,
-        PLAN_LADDER_MAP, PLAN_LIFT_MAP, PLAN_LIFT_TRAVEL, PLAN_PICKUP_ASIDE, PLAN_PICKUP_MAP,
-        PLAN_PLATROT_ALCOVE_MAP, PLAN_PLATROT_GATE_MAP, PLAN_PLATROT_GATE_NAME,
+        ClosetDoor, LiftFixture, PLAN_CLOSET_MAP, PLAN_COST_LEDGE_X, PLAN_COST_LEDGE_Z,
+        PLAN_COST_MAP, PLAN_LADDER_DROP, PLAN_LADDER_MAP, PLAN_LIFT_MAP, PLAN_LIFT_TRAVEL,
+        PLAN_PICKUP_ASIDE, PLAN_PICKUP_FAR_ASIDE, PLAN_PICKUP_MAP, PLAN_PICKUP_PREVIOUS_MAP,
+        PLAN_PICKUP_Z, PLAN_PLATROT_ALCOVE_MAP, PLAN_PLATROT_GATE_MAP, PLAN_PLATROT_GATE_NAME,
         PLAN_PLATROT_GATE_SPEED, PLAN_PLATROT_GATE_TRAVEL, PLAN_PLATROT_MAP, PLAN_PLATROT_ROTATION,
         PLAN_PLATROT_SPEED, PLAN_PLATROT_TRAVEL, PLAN_SCRIPTED_DELAY, PLAN_SCRIPTED_HURT_ORIGIN,
         PLAN_SCRIPTED_MAP, PLAN_STOOD_ON_MAP, PLAN_STOOD_ON_NAME, PLAN_STOOD_ON_PILLAR_NAME,
         PLAN_TRAIN_RIDE_MAP, PLAN_TRAIN_RIDE_SPEED, PLAN_TRAIN_RIDE_TRAVEL, PLAN_TURN_MAP,
         PickupFixture, REACH_GAP_EDGE_X, REACH_GAP_MAP, ScriptedStart, TrainRideFixture,
-        plan_cost_bsp, plan_ladder_bsp, plan_lift_bsp, plan_pickup_bsp, plan_platrot_alcove_bsp,
-        plan_platrot_bsp, plan_platrot_gate_bsp, plan_scripted_goal_bsp, plan_stood_on_lift_bsp,
-        plan_train_ride_bsp, plan_turn_bsp, reachability_gap_bsp, reachability_gap_entities,
+        plan_cost_bsp, plan_ladder_bsp, plan_lift_bsp, plan_pickup_bsp, plan_pickup_closet_bsp,
+        plan_platrot_alcove_bsp, plan_platrot_bsp, plan_platrot_gate_bsp, plan_scripted_goal_bsp,
+        plan_stood_on_lift_bsp, plan_train_ride_bsp, plan_turn_bsp, reachability_gap_bsp,
+        reachability_gap_entities,
     };
     use crate::{AssetSource, MemoryAssets};
 
@@ -3986,15 +4330,6 @@ mod tests {
             },
         )
         .expect("the same fixture plans without the edge");
-        let travelled = |plan: &RoutePlan| -> f32 {
-            plan.actions
-                .iter()
-                .filter_map(|action| match action {
-                    PlanAction::Move { distance, .. } => Some(*distance),
-                    _ => None,
-                })
-                .sum()
-        };
         let extra = travelled(&plan) - travelled(&without);
         assert!(
             extra > 0.0 && extra < PLAN_PICKUP_ASIDE * 2.0,
@@ -4043,10 +4378,26 @@ mod tests {
         assert_eq!(pickups_of(&plan), 1, "the budget pays for one detour");
     }
 
+    /// Sets `game`'s player's health through the carry state a level
+    /// change restores (`crate::transition`), the one way this engine
+    /// hands a player over hurt: nothing here is a second way of setting
+    /// it.
+    fn hurt_to(game: &mut Game, health: f32) {
+        let systems = game.systems_mut();
+        let mut state = systems.capture_carry();
+        state.health = health;
+        systems.restore_carry(&state);
+    }
+
     /// What is *not* collected, and why. A battery grants nothing to a
     /// player with no suit and a healthkit nothing to one at full health
     /// (`crate::pickups::apply_pickup` reports both as untaken), so
     /// neither is worth a step aside.
+    ///
+    /// And the controls that keep this honest: the same battery for a
+    /// player already wearing the suit, and the same healthkit for a
+    /// player who is hurt, *are* detoured to — so this cannot pass merely
+    /// because no detour is ever planned.
     #[test]
     fn an_item_that_would_grant_nothing_is_not_detoured_to() {
         for fixture in [PickupFixture::BatteryOnly, PickupFixture::HealthKitOnly] {
@@ -4055,25 +4406,48 @@ mod tests {
             assert!(plan.reaches_goal);
             assert_eq!(pickups_of(&plan), 0, "{fixture:?} is walked past");
         }
+
+        // The suit lies where the player starts, so one tick puts it on;
+        // the battery stands exactly where `BatteryOnly`'s does.
+        let mut suited = pickup_game(PickupFixture::BatteryWithSuitAtStart);
+        suited.tick(crate::TICK_SECONDS, &crate::Input::default());
+        assert!(suited.player_suit_equipped(), "the suit is worn");
+        let plan = plan_route(&mut suited, &PlanConfig::default()).expect("the fixture plans");
+        assert_eq!(pickups_of(&plan), 1, "the battery restores armour now");
+
+        let mut hurt = pickup_game(PickupFixture::HealthKitOnly);
+        hurt_to(&mut hurt, 50.0);
+        assert!(hurt.player_health() < hurt.player_max_health());
+        let plan = plan_route(&mut hurt, &PlanConfig::default()).expect("the fixture plans");
+        assert_eq!(pickups_of(&plan), 1, "the healthkit restores health now");
     }
 
     /// An empty corridor plans exactly what it planned before the edge
-    /// existed: nothing to collect, nothing added.
+    /// existed: nothing to collect, nothing added. The control is the
+    /// same comparison on a corridor that *does* offer something, where
+    /// the two routes must differ — so this cannot pass merely because
+    /// the edge never does anything.
     #[test]
     fn a_map_with_nothing_to_collect_plans_the_same_route_either_way() {
+        let off = PlanConfig {
+            max_pickup_detours: 0,
+            ..PlanConfig::default()
+        };
         let mut with = pickup_game(PickupFixture::Nothing);
         let with = plan_route(&mut with, &PlanConfig::default()).expect("the fixture plans");
         let mut without = pickup_game(PickupFixture::Nothing);
-        let without = plan_route(
-            &mut without,
-            &PlanConfig {
-                max_pickup_detours: 0,
-                ..PlanConfig::default()
-            },
-        )
-        .expect("the fixture plans");
+        let without = plan_route(&mut without, &off).expect("the fixture plans");
         assert_eq!(with.actions, without.actions);
         assert_eq!(with.pickups, 0);
+
+        let mut with = pickup_game(PickupFixture::OneWeapon);
+        let with = plan_route(&mut with, &PlanConfig::default()).expect("the fixture plans");
+        let mut without = pickup_game(PickupFixture::OneWeapon);
+        let without = plan_route(&mut without, &off).expect("the fixture plans");
+        assert_ne!(
+            with.actions, without.actions,
+            "a corridor with a weapon beside it plans differently with the edge on"
+        );
     }
 
     /// What the wanting rule says about the kinds no fixture can stand in
@@ -4089,18 +4463,27 @@ mod tests {
             max_health: 100.0,
             armor: 0.0,
             max_armor: 100.0,
-            suit_equipped: true,
+            suit_from: Some(0),
         };
-        assert_eq!(carried.wants(PickupKind::HealthCharger), None);
-        assert_eq!(carried.wants(PickupKind::SuitCharger), None);
-        assert_eq!(carried.wants(PickupKind::LongJump), None);
+        for kind in [
+            PickupKind::HealthCharger,
+            PickupKind::SuitCharger,
+            PickupKind::LongJump,
+        ] {
+            assert_eq!(carried.wants(kind, 0), None);
+            assert!(
+                !CarriedSoFar::ever_wanted(kind),
+                "{kind:?} is not even a candidate"
+            );
+        }
         // And what *is* wanted, in the documented order.
-        assert_eq!(carried.wants(PickupKind::Suit), Some(0));
+        assert_eq!(carried.wants(PickupKind::Suit, 0), Some(0));
         assert_eq!(
-            carried.wants(PickupKind::Weapon(ohl_combat::WeaponId::Python)),
+            carried.wants(PickupKind::Weapon(ohl_combat::WeaponId::Python), 0),
             Some(1)
         );
-        assert_eq!(carried.wants(PickupKind::HealthKit), Some(4));
+        assert_eq!(carried.wants(PickupKind::HealthKit, 0), Some(4));
+        assert_eq!(carried.wants(PickupKind::Battery, 0), Some(5));
     }
 
     /// Ammo is wanted for a weapon that is carried, and not for one that
@@ -4115,19 +4498,85 @@ mod tests {
             max_health: 100.0,
             armor: 0.0,
             max_armor: 100.0,
-            suit_equipped: false,
+            suit_from: None,
         };
         assert_eq!(
-            carried.wants(PickupKind::Ammo(AmmoType::ThreeFiveSeven)),
+            carried.wants(PickupKind::Ammo(AmmoType::ThreeFiveSeven), 0),
             None
         );
-        carried.take(PickupKind::Weapon(WeaponId::Python));
+        carried.take(PickupKind::Weapon(WeaponId::Python), 0);
         assert_eq!(
-            carried.wants(PickupKind::Ammo(AmmoType::ThreeFiveSeven)),
+            carried.wants(PickupKind::Ammo(AmmoType::ThreeFiveSeven), 0),
             Some(2)
         );
         // The weapon itself is now only worth a detour for its ammo.
-        assert_eq!(carried.wants(PickupKind::Weapon(WeaponId::Python)), Some(3));
+        assert_eq!(
+            carried.wants(PickupKind::Weapon(WeaponId::Python), 0),
+            Some(3)
+        );
+    }
+
+    /// A weapon's secondary fire counts: the MP5's grenades are what its
+    /// secondary fire draws on, so a box of them is worth a step aside to
+    /// a player carrying one — and not to a player who is not.
+    #[test]
+    fn grenades_are_wanted_for_the_weapon_that_fires_them() {
+        use ohl_combat::{AmmoType, PickupKind, WeaponId};
+        let mut carried = CarriedSoFar {
+            inventory: ohl_combat::Inventory::new(),
+            health: 100.0,
+            max_health: 100.0,
+            armor: 0.0,
+            max_armor: 100.0,
+            suit_from: None,
+        };
+        assert_eq!(
+            carried.wants(PickupKind::Ammo(AmmoType::Mp5Grenades), 0),
+            None
+        );
+        carried.take(PickupKind::Weapon(WeaponId::Mp5), 0);
+        assert_eq!(
+            carried.wants(PickupKind::Ammo(AmmoType::Mp5Grenades), 0),
+            Some(2)
+        );
+    }
+
+    /// A battery is wanted while the suit is worn and the armour is short
+    /// — and only from the point the suit is worn: one collected before
+    /// the route reaches the suit grants nothing, so it is not wanted
+    /// there however soon the suit follows.
+    #[test]
+    fn a_battery_is_wanted_once_the_suit_is_on_and_armour_is_short() {
+        use ohl_combat::PickupKind;
+        let mut carried = CarriedSoFar {
+            inventory: ohl_combat::Inventory::new(),
+            health: 100.0,
+            max_health: 100.0,
+            armor: 0.0,
+            max_armor: 100.0,
+            suit_from: Some(0),
+        };
+        assert_eq!(carried.wants(PickupKind::Battery, 0), Some(5));
+        carried.armor = carried.max_armor;
+        assert_eq!(
+            carried.wants(PickupKind::Battery, 0),
+            None,
+            "full armour leaves no room"
+        );
+        carried.armor = 0.0;
+        carried.suit_from = None;
+        assert_eq!(carried.wants(PickupKind::Battery, 0), None, "no suit");
+        carried.take(PickupKind::Suit, 10);
+        assert_eq!(
+            carried.wants(PickupKind::Battery, 5),
+            None,
+            "before the suit"
+        );
+        assert_eq!(
+            carried.wants(PickupKind::Battery, 10),
+            Some(5),
+            "from the suit on"
+        );
     }
 
     /// Two searches over the same map choose the same detours: a route
@@ -4139,6 +4588,405 @@ mod tests {
         let mut again = pickup_game(PickupFixture::ManyWeapons);
         let again = plan_route(&mut again, &PlanConfig::default()).expect("the fixture plans");
         assert_eq!(first.actions, again.actions);
+    }
+
+    /// Loads the closet fixture with or without the closet's own door.
+    fn closet_game(closet: ClosetDoor) -> Game {
+        let mut assets = MemoryAssets::new();
+        assets.insert(
+            &format!("maps/{PLAN_CLOSET_MAP}.bsp"),
+            plan_pickup_closet_bsp("ohlplannext", closet),
+        );
+        Game::load(&assets as &dyn AssetSource, PLAN_CLOSET_MAP).expect("the fixture loads")
+    }
+
+    /// How far a plan walks, summed over its runs.
+    fn travelled(plan: &RoutePlan) -> f32 {
+        plan.actions
+            .iter()
+            .filter_map(|action| match action {
+                PlanAction::Move { distance, .. } => Some(*distance),
+                _ => None,
+            })
+            .sum()
+    }
+
+    /// The search opens every use-openable door in reach of what it has
+    /// walked — including a closet door nothing on the route ever presses
+    /// — and plans against a model with all of them gone. A step aside
+    /// into that closet would be planned straight through a door that is
+    /// shut when the route is replayed. So it is not planned at all; the
+    /// same closet with an open doorway is.
+    #[test]
+    fn a_detour_never_walks_through_a_door_the_route_does_not_press() {
+        let mut game = closet_game(ClosetDoor::Shut);
+        let plan = plan_route(&mut game, &PlanConfig::default()).expect("the fixture plans");
+        assert!(
+            plan.reaches_goal,
+            "the route still reaches the level change"
+        );
+        assert_eq!(
+            plan.doors, 1,
+            "it presses the door across the corridor, and only that"
+        );
+        assert_eq!(
+            plan.pickups, 0,
+            "the weapon behind the closet door is not stepped aside for"
+        );
+
+        let mut open = closet_game(ClosetDoor::Open);
+        let plan = plan_route(&mut open, &PlanConfig::default()).expect("the fixture plans");
+        assert!(plan.reaches_goal);
+        assert_eq!(
+            plan.pickups, 1,
+            "with no door in the doorway, the same weapon is a step aside"
+        );
+    }
+
+    /// The running inventory is the point: ammo for a weapon the route has
+    /// not picked up *yet* is worth a step aside once the route is going
+    /// to pick that weapon up. Walked with nothing, the corridor's weapon
+    /// and then its ammo are two detours, not one.
+    #[test]
+    fn a_weapon_and_then_its_ammo_are_both_detoured_to() {
+        let mut game = pickup_game(PickupFixture::WeaponThenAmmo);
+        assert_eq!(
+            game.inventory_totals(),
+            (0, 0),
+            "the walk starts empty-handed"
+        );
+        let plan = plan_route(&mut game, &PlanConfig::default()).expect("the fixture plans");
+        assert!(plan.reaches_goal);
+        assert_eq!(plan.pickups, 2, "the weapon, and then the ammo for it");
+    }
+
+    /// An item the route's own path already passes within reach of is
+    /// collected on the way: it is not a detour, takes no detour slot and
+    /// adds no pause. With one slot, that slot goes to the weapon that
+    /// does need a step aside.
+    #[test]
+    fn an_item_the_path_already_passes_is_not_a_detour() {
+        let config = PlanConfig {
+            max_pickup_detours: 1,
+            ..PlanConfig::default()
+        };
+        let mut game = pickup_game(PickupFixture::AtTheStartAndBeside);
+        let plan = plan_route(&mut game, &config).expect("the fixture plans");
+        assert!(plan.reaches_goal);
+        assert_eq!(plan.pickups, 1, "one step aside");
+        assert_eq!(pickups_of(&plan), 1, "and one pause, for it");
+
+        let mut control = pickup_game(PickupFixture::AtTheStartAndBeside);
+        let without = plan_route(
+            &mut control,
+            &PlanConfig {
+                max_pickup_detours: 0,
+                ..PlanConfig::default()
+            },
+        )
+        .expect("the fixture plans");
+        let at = plan
+            .actions
+            .iter()
+            .position(|action| matches!(action, PlanAction::Pickup { .. }))
+            .expect("the route stops for one pickup");
+        assert!(
+            matches!(
+                plan.actions.get(at.wrapping_sub(1)),
+                Some(PlanAction::Move { .. })
+            ),
+            "it walks somewhere to stop: the step aside, not a stop on the spot it started on"
+        );
+        // The step aside is straightened into a dogleg with the rest of the
+        // route ([`string_pull`]), so it costs a good deal less than its
+        // two legs — but it costs something, where a stop on the start
+        // point costs nothing at all.
+        assert!(
+            travelled(&plan) - travelled(&without) > CELL_SIZE,
+            "the one detour is the step aside to the second weapon"
+        );
+    }
+
+    /// A battery touched before the suit is worn grants nothing and stays
+    /// where it is, however soon the suit follows: walked battery-first,
+    /// only the suit is a step aside; walked suit-first, both are.
+    #[test]
+    fn a_battery_is_only_stepped_aside_for_after_the_suit() {
+        let mut game = pickup_game(PickupFixture::BatteryBeforeSuit);
+        let plan = plan_route(&mut game, &PlanConfig::default()).expect("the fixture plans");
+        assert_eq!(
+            plan.pickups, 1,
+            "the suit only: the battery comes first, and would grant nothing there"
+        );
+
+        let mut game = pickup_game(PickupFixture::SuitBeforeBattery);
+        let plan = plan_route(&mut game, &PlanConfig::default()).expect("the fixture plans");
+        assert_eq!(plan.pickups, 2, "the suit, and then a battery for it");
+    }
+
+    /// The walk and the path to the level change of a pickup fixture with
+    /// no door in it: what [`build_plan`] chooses pickups against.
+    fn pickup_search(game: &Game) -> (Walk, Vec<PathPoint>) {
+        let collision = game.collision().expect("the fixture has collision");
+        let walk = walk_of(game);
+        let start = plan_start(collision, Vec3::from_array(game.player_origin()));
+        let goals = goal_volumes(game, &PlanConfig::default());
+        let goal = pick_goal_cell(&walk.trace, &goals).expect("the corridor reaches its goal");
+        let path = path_to(&walk.trace, start, goal);
+        (walk, path)
+    }
+
+    /// A guard with nothing in it: no door opened, no level change.
+    fn open_guard() -> DetourGuard {
+        DetourGuard {
+            doors: Vec::new(),
+            level_changes: Vec::new(),
+        }
+    }
+
+    /// The ranking decides, not the distance: with one detour to spend,
+    /// the suit standing further off is taken over the weapon standing
+    /// nearer — which a "nearest first" choice would take instead.
+    #[test]
+    fn the_most_wanted_pickup_is_taken_first_not_the_nearest() {
+        use ohl_combat::{PickupKind, WeaponId};
+        let game = pickup_game(PickupFixture::SuitFarWeaponNear);
+        let collision = game.collision().expect("the fixture has collision");
+        let (walk, path) = pickup_search(&game);
+        let guard = open_guard();
+        let rim = crate::pickups::PICKUP_TOUCH_RADIUS;
+        let suit = PickupTarget {
+            origin: Vec3::new(480.0, -PLAN_PICKUP_FAR_ASIDE, PLAN_PICKUP_Z),
+            kind: PickupKind::Suit,
+        };
+        let weapon = PickupTarget {
+            origin: Vec3::new(320.0, PLAN_PICKUP_ASIDE, PLAN_PICKUP_Z),
+            kind: PickupKind::Weapon(WeaponId::Python),
+        };
+        let aside = |target: &PickupTarget| {
+            pickup_detour(collision, &walk.trace, &path, target, rim, &guard)
+                .expect("both are a step aside")
+                .aside
+        };
+        assert!(
+            aside(&weapon) < aside(&suit),
+            "the weapon is the nearer step aside, or this proves nothing"
+        );
+
+        let config = PlanConfig {
+            max_pickup_detours: 1,
+            ..PlanConfig::default()
+        };
+        let chosen = choose_pickups(&game, collision, &walk.trace, &path, &guard, &config);
+        assert_eq!(chosen.detours.len(), 1);
+        assert!(
+            chosen.detours[0].stand.distance(suit.origin) <= rim,
+            "the one detour goes to the suit"
+        );
+    }
+
+    /// The stand cell nearest the path is the one furthest from the item:
+    /// on the rim of the touch radius, where a replay that stops a few
+    /// units short collects nothing. A detour stands a margin inside the
+    /// rim instead whenever a reached cell allows it.
+    #[test]
+    fn a_detour_stands_inside_the_touch_radius_not_on_its_rim() {
+        let game = pickup_game(PickupFixture::Nothing);
+        let collision = game.collision().expect("the fixture has collision");
+        let (walk, path) = pickup_search(&game);
+        let guard = open_guard();
+        let rim = crate::pickups::PICKUP_TOUCH_RADIUS;
+        // Off the walk's own grid, so the reached cells nearest the path
+        // fall on the rim.
+        let target = PickupTarget {
+            origin: Vec3::new(320.0, PLAN_PICKUP_ASIDE + CELL_SIZE / 2.0, PLAN_PICKUP_Z),
+            kind: ohl_combat::PickupKind::Weapon(ohl_combat::WeaponId::Crowbar),
+        };
+        let nearest = pickup_detour(collision, &walk.trace, &path, &target, rim, &guard)
+            .expect("the item is a step aside");
+        assert!(
+            nearest.stand.distance(target.origin) > rim - PICKUP_STAND_MARGIN,
+            "the shortest step aside stands on the rim, or this proves nothing"
+        );
+
+        let Some(PickupReach::Detour(detour)) =
+            pickup_reach(collision, &walk.trace, &path, &target, &guard)
+        else {
+            panic!("the item is a step aside");
+        };
+        assert!(
+            detour.stand.distance(target.origin) <= rim - PICKUP_STAND_MARGIN,
+            "the detour stands with margin to spare"
+        );
+    }
+
+    /// How many runs `actions` holds.
+    fn moves_of(actions: &[PlanAction]) -> usize {
+        actions
+            .iter()
+            .filter(|action| matches!(action, PlanAction::Move { .. }))
+            .count()
+    }
+
+    /// A pickup on the way is collected by passing the path point that
+    /// stands in reach of it — so straightening the path must not cut the
+    /// corner that point lies on. Unpinned, the same three points become
+    /// one straight run that never goes near it.
+    #[test]
+    fn a_pickup_on_the_way_pins_the_straightened_route_through_it() {
+        let game = pickup_game(PickupFixture::Nothing);
+        let collision = game.collision().expect("the fixture has collision");
+        let z = plan_start(collision, Vec3::from_array(game.player_origin())).z;
+        let path = [
+            point_at(0.0, 0.0, z, EdgeKind::Walk),
+            point_at(160.0, 64.0, z, EdgeKind::Walk),
+            point_at(320.0, 0.0, z, EdgeKind::Walk),
+        ];
+        let free = Marks {
+            presses: HashMap::new(),
+            pickups: HashMap::new(),
+            pinned: HashSet::new(),
+        };
+        let actions = actions_for(collision, &path, &free, &open_guard(), Vec3::ZERO);
+        assert_eq!(moves_of(&actions), 1, "unpinned, the corner is cut");
+
+        let pinned = Marks {
+            pinned: HashSet::from([1]),
+            ..free
+        };
+        let actions = actions_for(collision, &path, &pinned, &open_guard(), Vec3::ZERO);
+        assert_eq!(
+            moves_of(&actions),
+            2,
+            "pinned, the route walks through the point"
+        );
+    }
+
+    /// Straightening the route must not undo what the detour's own legs
+    /// were chosen against: a shortcut from earlier on the path straight
+    /// to the stand point that would cut through a door still shut there
+    /// is refused, and the route walks the leg it was planned with. The
+    /// same door pressed before that point lets the shortcut through.
+    #[test]
+    fn a_straightened_detour_leg_never_cuts_through_a_shut_door() {
+        let game = pickup_game(PickupFixture::Nothing);
+        let collision = game.collision().expect("the fixture has collision");
+        let z = plan_start(collision, Vec3::from_array(game.player_origin())).z;
+        let path = [
+            point_at(0.0, 0.0, z, EdgeKind::Walk),
+            point_at(160.0, 0.0, z, EdgeKind::Walk),
+            point_at(160.0, PLAN_PICKUP_ASIDE, z, EdgeKind::Walk),
+            point_at(160.0, 0.0, z, EdgeKind::Walk),
+            point_at(320.0, 0.0, z, EdgeKind::Walk),
+        ];
+        let marks = Marks {
+            presses: HashMap::new(),
+            pickups: HashMap::from([(2, PLAN_PICKUP_ASIDE * 2.0)]),
+            pinned: HashSet::new(),
+        };
+        // A leaf across the diagonal from the first point to the stand
+        // point, clear of both of the detour's own legs. It is not in the
+        // collision model, which is the whole point: the search detached
+        // it.
+        let leaf = BrushBounds {
+            mins: Vec3::new(64.0, 48.0, 0.0),
+            maxs: Vec3::new(96.0, 80.0, 192.0),
+        };
+        let runs_out = |guard: &DetourGuard| {
+            let actions = actions_for(collision, &path, &marks, guard, Vec3::ZERO);
+            let at = actions
+                .iter()
+                .position(|action| matches!(action, PlanAction::Pickup { .. }))
+                .expect("the route stops for the pickup");
+            moves_of(&actions[..at])
+        };
+        let shut = DetourGuard {
+            doors: vec![(leaf, usize::MAX)],
+            level_changes: Vec::new(),
+        };
+        assert_eq!(
+            runs_out(&shut),
+            2,
+            "along the path, then out along the leg it was planned with"
+        );
+        let pressed = DetourGuard {
+            doors: vec![(leaf, 0)],
+            level_changes: Vec::new(),
+        };
+        assert_eq!(
+            runs_out(&pressed),
+            1,
+            "straight across, once the leaf is open"
+        );
+    }
+
+    /// What the guard calls shut: a door the route has not pressed yet by
+    /// that point of it, or never presses at all; never one flush beside
+    /// the line; and every level change, whatever has been pressed.
+    #[test]
+    fn a_door_is_shut_to_a_detour_until_the_route_presses_it() {
+        let leaf = BrushBounds {
+            mins: Vec3::new(96.0, -64.0, 0.0),
+            maxs: Vec3::new(112.0, 64.0, 192.0),
+        };
+        let door = OpenedDoor {
+            center: Vec3::new(104.0, 0.0, 96.0),
+            bounds: leaf,
+            open_seconds: 1.0,
+        };
+        let game = pickup_game(PickupFixture::Nothing);
+        let guard = DetourGuard::new(&game, &[door], &HashMap::from([(5, vec![door])]));
+        assert_eq!(guard.doors, vec![(leaf, 5)], "pressed at the fifth point");
+        let (from, to) = (Vec3::new(0.0, 0.0, 36.0), Vec3::new(200.0, 0.0, 36.0));
+        assert!(guard.blocks(4, from, to), "shut before the press");
+        assert!(!guard.blocks(5, from, to), "open from the press on");
+
+        let never = DetourGuard::new(&game, &[door], &HashMap::new());
+        assert!(
+            never.blocks(usize::MAX - 1, from, to),
+            "a door never pressed stays shut"
+        );
+        // A body whose side is flush with the leaf's face is beside it,
+        // not in it.
+        let (beside, past) = (Vec3::new(0.0, 80.0, 36.0), Vec3::new(200.0, 80.0, 36.0));
+        assert!(!never.blocks(0, beside, past));
+
+        assert_eq!(
+            guard.level_changes.len(),
+            1,
+            "the corridor's own level change is on the guard"
+        );
+        let goal = Vec3::new(832.0, 0.0, 36.0);
+        assert!(guard.blocks(usize::MAX - 1, Vec3::new(700.0, 0.0, 36.0), goal));
+    }
+
+    /// A step aside must not end in, or walk through, a level-change
+    /// volume: standing in the one that leads back where the chain came
+    /// from sends it there. The same weapon in the same place with no
+    /// volume around it is detoured to.
+    #[test]
+    fn a_detour_never_stands_in_a_level_change() {
+        let config = PlanConfig {
+            avoid_goal_maps: vec![PLAN_PICKUP_PREVIOUS_MAP.to_string()],
+            ..PlanConfig::default()
+        };
+        let mut game = pickup_game(PickupFixture::InALevelChange);
+        let plan = plan_route(&mut game, &config).expect("the fixture plans");
+        assert!(
+            plan.reaches_goal,
+            "the route still reaches its own level change"
+        );
+        assert_eq!(
+            plan.pickups, 0,
+            "the weapon inside the other one is left there"
+        );
+
+        let mut control = pickup_game(PickupFixture::OneWeapon);
+        let plan = plan_route(&mut control, &config).expect("the fixture plans");
+        assert_eq!(
+            plan.pickups, 1,
+            "outside any level change it is a step aside"
+        );
     }
 
     /// A shaft whose only way up is a `func_door` used as a lift, started

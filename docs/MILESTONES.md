@@ -6764,26 +6764,30 @@ is pressed: a touch pickup is collected by standing where it rests.
 what the player is carrying now, plus what the detours already chosen
 would have collected by then — so ammo for a weapon this same route picks
 up two detours earlier counts as wanted, exactly as it would for the
-player walking it. The order is a player's own: the suit first, then a
-weapon not carried, then ammo for one that is, then a weapon already owned
-whose ammo is short, and last a health kit or a battery, and those only
-while there is room for what they restore. A battery is never detoured to
-without the suit, because it grants nothing without one. A charger is not
-a touch pickup at all — it is used and held, and walking over it collects
-nothing — and the long-jump item unlocks the one edge the planner refuses
-to plan, so neither is ever worth a step aside. Both the number of detours
-per route and their total length are capped: a few steps aside is a
-player's own behaviour, and every extra metre is more open-loop distance
-for the replay to drift along.
+player walking it. The order is a player's own (this project's ranking,
+not a published behaviour): the suit first, then a weapon not carried,
+then ammo for one that is — by its primary or its secondary fire — then a
+weapon already owned whose ammo is short, and last a health kit or a
+battery, and those only while there is room for what they restore. A
+battery is never detoured to before the point of the route where the suit
+is worn, because it grants nothing without one. A charger is not a touch
+pickup at all — it is used and held, and walking over it collects nothing
+— and the long-jump item unlocks the one edge the planner refuses to plan,
+so neither is ever worth a step aside. Both the number of detours per
+route and their total length are capped, per route rather than per
+planning attempt: a few steps aside is a player's own behaviour, and every
+extra metre is more open-loop distance for the replay to drift along.
 
 **The harness tells the truth again.** `--start-inventory` defaults to
 nothing on both `cargo xtask chain-walk` and `cargo xtask plan-chain-hop`,
 which is what the campaign hands the player at the start map; M9.37's
 short list is kept as an explicit opt-in and still named on its own
 summary row when passed. Every arrival now logs two counts — weapons owned
-and rounds carried, no names — and the summary prints one row per map
-entered. That row is the measurement the routes are judged by, and it is
-now impossible to report a depth without reporting what was carried to it.
+and rounds carried, in reserve and loaded in a clip together, no names —
+and the summary prints one row per map entered after the start map (none
+for a map the walk arrived in dead). That row is the measurement the
+routes are judged by, and it is now impossible to report a depth without
+reporting what was carried to it.
 
 **What the maps offered, honestly.** Re-planned with the edge in place,
 not one of the chain's routes changes: across the eleven maps it walks
@@ -6792,13 +6796,15 @@ no ammo among them**, and the two maps that have any keep them a few
 hundred units from the nearest cell the route's own walk ever reached. So
 the chain still arrives everywhere with `0 weapon(s), 0 round(s)` — but
 that is now a *measured* fact about how far the chain has got, printed on
-eleven rows, rather than a gap papered over by a default. The eleventh
-hop's guard still cannot be held with empty hands: the default walk
-reaches distinct depth 11 and ends on "The chain walk arrived dead.", and
-the same chain with the opt-in loadout reaches **distinct depth 12, Pass**,
-carrying one weapon and twenty-four rounds to the last hop and spending
-twelve of them holding the spot. Both numbers are in the report; neither
-is the other's excuse.
+one row per arrival, rather than a gap papered over by a default. As
+measured when this milestone landed, the eleventh hop's guard could not be
+held with empty hands: the default walk reaches distinct depth 11 and ends
+on "The chain walk arrived dead." — ten arrival rows, since the walk dies
+entering the twelfth map and prints none for it — and the same chain with
+the opt-in loadout reaches **distinct depth 12, Pass**, carrying one weapon
+and twenty-four rounds to the last hop and arriving with eighteen: six
+fired holding the spot. Both numbers are in the report; neither is the
+other's excuse.
 
 **Where the routes could not reach what there was.** The two maps with
 anything at all keep it roughly two hundred and roughly four hundred
@@ -6807,16 +6813,94 @@ search never entered rather than beside the line it took. Closing that is
 not a wider detour cap; it is the search reaching more of those maps in
 the first place.
 
+**Review follow-ups (#170).** A review of the code, confirmed here
+fixture by fixture before anything was changed, found seven things:
+
+- *A detour could walk through a door the replay finds shut.* The search
+  opens every use-openable door within reach of what it walked, whether
+  or not the route it settles on ever crosses it, and the pickup detour
+  checked walkability against that model — so a weapon in a supply closet
+  behind a use-only door was planned as a step aside straight through the
+  door, and the closed loop, re-planning the same step aside every time
+  the replay walked into it, failed a route that had planned before.
+  Detours now carry the guard the press detour has: neither leg may enter,
+  and the stand point may not lie in, the closed volume of a door or
+  switched mover not pressed by that point of the route (pressed ones
+  count as open from their press on). Straightening the route afterwards
+  is held to the same guard for every line into or out of a stand point,
+  so a shortcut cannot reintroduce what the leg refused.
+- *Ammo for a weapon picked up earlier on the same route was never
+  wanted*: candidates were filtered against the *starting* inventory
+  before the running one was ever consulted, dropping that ammo (and a
+  battery before the suit). The filter now only rules out kinds that are
+  never wanted at all; the running inventory decides. That made one new
+  case reachable, so it is handled too: a battery touched before the suit
+  is worn grants nothing, so it is only wanted from the point of the
+  route the suit is collected at.
+- *The caps applied per planning call, not per route.* The closed loop
+  commits one segment and plans again, so every segment got a fresh
+  allowance — a route allowed two detours took all five weapons the
+  fixture offers. The loop now hands each search what the committed
+  script has left of both caps; each `PlanAction::Pickup` carries its own
+  out-and-back length for that.
+- *"Rounds carried" left out the clip*, so a reload read as rounds spent.
+  It now counts reserve and loaded rounds together; the opt-in run above
+  arrives at the last map with eighteen, not the twelve the reserve alone
+  showed.
+- *The MP5's grenades were never wanted*: only a weapon's primary ammo was
+  compared. Secondary fire counts now.
+- *The stand point sat on the rim of the touch radius*, the cell nearest
+  the path being the one furthest from the item, where a replay that
+  stops a little short collects nothing. A detour now stands at least half
+  a cell inside the rim whenever a reached cell allows it. And *an item
+  the path already passed within reach of became a zero-length detour*
+  that took a slot and a pause; it is now collected on the way, costs
+  neither, and pins the straightened route through the point that reaches
+  it.
+- *A stand point could sit in the level change back to the previous map.*
+  Neither leg may now touch a touch-fired level-change volume, measured
+  with the player's own box as the engine's touch test measures it.
+
+Also from the review: `plan-chain-hop` now labels its loadout row exactly
+as `chain-walk` does — harness aid, caller-supplied, or `(none)` — through
+one shared function; the app's arrival-line prefix and the parser's copy
+of it are tied together by a test that reads the app's own source; and the
+project-authored bounds and ranking are labelled as such. This entry's
+"printed on eleven rows" was wrong — a default walk that arrives dead
+prints ten — and is corrected above.
+
+Nothing here changes a chain route: `chain-walk` replays the shipped route
+files, and every planner change is a no-op on a map where no wanted pickup
+lies within a step aside of the walk — and on none of the chain's eleven
+maps does one.
+
 **Tests.** A synthetic corridor fixture with pickups standing off the line
 between the player start and the level change: the weapon beside it is
 detoured to and the same map with the edge off is not, the detour leaves
 the line and comes back, the detour cap and the length budget each bite,
 a battery with no suit and a health kit at full health are both walked
-past, chargers and the long-jump item are never wanted, ammo is wanted
-only for a weapon that is carried (including one this route picked up),
-and two plans of the same map are identical. End to end in the app: a
-planned route on that fixture *replays with the weapon owned*, and the
-same route planned with detours off arrives empty-handed.
+past — while the same battery with the suit worn and the same health kit
+for a hurt player are not, and a corridor with something to collect plans
+differently with the edge on, so neither test passes with detours removed
+outright — chargers and the long-jump item are never wanted, ammo is
+wanted only for a weapon that is carried (including one this route picked
+up), and two plans of the same map are identical. From the review: a
+closet fixture whose weapon is behind a door the route never presses is
+not stepped aside for (the same closet with an open doorway is); a weapon
+and then its ammo are two detours from an empty inventory; an item at the
+route's own start is collected on the way and leaves the one detour slot
+to the weapon beside the corridor; a weapon inside a second level change
+is left there; the battery is a step aside after the suit and not before
+it; with one slot the suit standing further off is chosen over the nearer
+weapon; the stand point keeps its margin; a pinned point is never cut past
+and a straightened leg never cuts through a shut leaf; the guard opens a
+door from its press on and not before; the MP5 wants its grenades; and a
+reload leaves the rounds carried unchanged. End to end in the app: a
+planned route on the corridor *replays with the weapon owned*, the same
+route planned with detours off arrives empty-handed, the caps hold across
+the loop's re-plans, and the closet fixture plans and replays. Every new
+or changed test was mutation-checked: stubbing the behaviour it covers
+fails it.
 
 **Gates**: fmt, clippy (workspace, `--features dev-tools`, and
 `--all-features`), `cargo test --workspace` 218 suites 0 failures, policy,
@@ -6824,4 +6908,12 @@ graph, combat-smoke 37/37 with 0 unexpected lines, campaign-smoke 93/93,
 `--reachability-report --reachability-assume-armed` byte-identical to a
 build of the base over 20 campaign and training maps, and
 `cargo xtask chain-walk` at distinct depth 11 by default and **distinct
-depth 12, Pass** with the opt-in loadout.
+depth 12, Pass** with the opt-in loadout. After the review follow-ups:
+fmt, clippy (all three), `cargo test --workspace` 218 suites, 2,481 tests,
+0 failures, policy, graph, combat-smoke 37/37 with 0 unexpected lines,
+campaign-smoke 93/93, `cargo xtask chain-walk --start-inventory
+weapon_357,ammo_357,ammo_357` at **distinct depth 12, Pass** (arrivals 2
+to 11 at one weapon and twenty-four rounds, the twelfth at eighteen), the
+default walk at distinct depth 11, "The chain walk arrived dead." (ten
+rows, all zeroes), and a default `plan-chain-hop` refusing to plan
+because the chain did not arrive cleanly.

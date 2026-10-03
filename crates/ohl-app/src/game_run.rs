@@ -940,12 +940,16 @@ fn run_chained(
 
 /// The fixed prefix a chain walk's per-arrival inventory line carries.
 /// `xtask/src/chain_walk.rs` parses these into one summary row per
-/// arrival.
+/// arrival, with its own copy of this prefix; a test there reads this
+/// definition and the line [`log_arrival_inventory`] formats, so the two
+/// cannot drift apart unnoticed.
 const CHAIN_ARRIVAL_PREFIX: &str = "Chain walk arrival ";
 
 /// Logs what the player is carrying on arriving in the `index`-th map of
 /// a chain walk, as two counts and nothing else: how many weapons are
-/// owned and how many rounds of every kind are held together.
+/// owned, and how many rounds of every kind are carried altogether, in
+/// reserve and loaded in a clip ([`Game::inventory_totals`]) — so a
+/// reload between two arrivals does not read as rounds spent.
 ///
 /// This is the measurement the chain's own routes are judged by — a walk
 /// that never stops for anything arrives everywhere empty-handed — and it
