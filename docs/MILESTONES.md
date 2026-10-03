@@ -6589,7 +6589,7 @@ attack-trace filter stays load-bearing until it is closed.
 37/37, campaign-smoke 93/93, chain-walk unchanged at **distinct depth
 11**, Pass (measured on the base before M9.37 landed).
 
-## M9.NEXT — Monsters a map holds prisoner: the `Prisoner` spawnflag, and the eleventh hop empty-handed
+## M9.39 — Monsters a map holds prisoner: the `Prisoner` spawnflag, and the eleventh hop empty-handed
 
 M9.37 read the eleventh map's danger as a fight. The map's own chain
 teleports the player through two stops and puts them in front of hostile
@@ -6624,23 +6624,45 @@ by, other monsters." The first source names this exact use.
 when the level's monsters are attached. A prisoner never acquires an
 enemy, by any of the three routes a monster has: sight, a squad mate's
 shared enemy, or being hurt. Every sighting with a prisoner on either end
-— a prisoner looking, or a prisoner being looked at — reads as "no
-relationship" whatever the class matrix says, so no monster ever chooses
-one as its enemy either. Having no enemy, a prisoner never reaches the
-combat state, and an ordinary script takes it over with the player
-standing in front of it. These readings are this project's, and recorded
-as such: "normal AI is disabled" is read as hostility disabled, not the
-monster switched off (it still idles, hears, and walks and plays a script,
-because the same sentence is about putting it in one); being hurt does
-not lift the flag, since neither source names an exception, and whether a
-retail prisoner shot by the player turns on them is `TODO(black-box)`; and
-a `monstermaker`'s children, built from its `monstertype` alone, are never
-prisoners. The marker is derived from the definition and never changes,
-so it needs no save field: a carried or restored monster is rebuilt from
-the same definition, spawnflags included.
+— a prisoner looking, or a prisoner being looked at — that the class
+matrix calls hostile reads as "no relationship" instead, so no monster
+ever chooses one as its enemy either. Having no enemy, a prisoner never
+reaches the combat state, and an ordinary script takes it over with the
+player standing in front of it. These readings are this project's, and
+recorded as such:
 
-**One hostility rule, not two.** The "no relationship" reading lives in
-one function, `ohl_ai::sighting_relationship`, which `look` reads every
+- Only attacking is suppressed. Fear and alliance are not attacks, so a
+  scientist still runs from an armed prisoner and a prisoner scientist
+  still runs from a real hostile. (Review caught the first version
+  turning *every* relationship into "no relationship", fear included.)
+- "Normal AI is disabled" is read as hostility disabled, not the monster
+  switched off: it still idles, hears, and walks and plays a script,
+  because the same sentence is about putting it in one.
+- Being hurt does not lift the flag, since neither source names an
+  exception; whether a retail prisoner shot by the player turns on them
+  is `TODO(black-box)`.
+- An enemy a prisoner already remembers is dropped on its next tick,
+  together with any attack schedule it is running. Nothing in this
+  milestone can give a prisoner an enemy, but a save made mid-fight
+  before it can: it restores the memory, which an unseen enemy within
+  range never expires from, and a schedule sitting on its attack task,
+  which fires straight ahead with no enemy at all.
+- A `monstermaker`'s children, built from its `monstertype` alone, are
+  never prisoners.
+
+The marker is derived from the definition and never changes, so it needs
+no save field: a carried or restored monster is rebuilt from the same
+definition, spawnflags included, and a save and load and a carrying level
+change are both tested to keep it. That design depends on the reading
+that the flag never lifts. If the black-box answer is that a hurt
+prisoner does turn, the flag becomes runtime state and needs a save field
+and a save-format version bump. One older save shape already loses it: a
+level change captured before carried entities' keyvalues travelled
+re-creates a carried prisoner without its spawnflags, as an ordinary
+monster.
+
+**One hostility rule, not two.** The "no relationship" reading of a
+hostile entry lives in one function, `ohl_ai::sighting_relationship`, which `look` reads every
 sighting through. The engine's list of monsters hostile to the player
 (`Game::hostile_monster_eyes`) already promised to be "not a second
 hostility rule", and with the flag modelled it would have become one: the
@@ -6679,28 +6701,38 @@ is nothing to defend against — and no route file changes here.
 added `--start-inventory` because empty hands could not hold the eleventh
 map, and called it temporary. That reason is gone. This milestone leaves
 the default where it is: the pickup-detour branch (#170, open as this is
-written) changes it to empty, and its README text — that a walk with
-nothing "dies on the last hop" — stops being true once this lands, so
-whichever of the two merges second has to reconcile that paragraph. Both
-walks above pass the flag explicitly so neither result depends on which
-default is in place.
+written, and landing after this) changes it to empty, and its README
+text — that a walk with nothing "dies on the last hop" — stops being
+true once this lands, so that paragraph is reconciled when #170 rebases
+onto this. Both walks above pass the flag explicitly so neither result
+depends on which default is in place.
 
 **Tests.** `ohl-ai` unit tests cover the spawnflag becoming the marker
 (only on the entity that carries it), a prisoner seeing a hostile without
 reading it as an enemy, a hostile seeing a prisoner without choosing it,
-no enemy from sight or damage across two hundred ticks and a heavy hit,
-and a prisoner squad member not taking its leader's enemy.
+the rule across the whole provisional class matrix (hostile entries
+suppressed, every other entry untouched), a scientist still fearing a
+prisoner grunt and a prisoner scientist still fearing a hostile, no enemy
+from sight or damage across two hundred ticks and a heavy hit, a prisoner
+squad member not taking its leader's enemy, and a prisoner restored
+mid-fight (remembered enemy, combat state, runner on its attack task)
+forgetting the enemy and never firing, where the same restored state on
+an unflagged monster shoots.
 `crates/ohl-engine/tests/prisoner_monsters.rs` runs the same room with
 and without the flag: the ordinary monster hurts the player and the
 prisoner never does; an ordinary script fired a second after the player
 appears possesses the prisoner and is refused by the ordinary monster
 (the eleventh hop's failure in miniature); the prisoner is not on the
-hostile list; and an empty-handed guard holds its ground in front of a
-prisoner where it backs away from the ordinary monster. Eight mutation
-probes — the sighting rule ignoring the flag, each half of it
-(looking/looked at) alone, the squad and damage filters, the spawnflag
-read, the marker insert, and the hostile-list filter — each fail at least
-one of these.
+hostile list; an empty-handed guard holds its ground in front of a
+prisoner where it backs away from the ordinary monster; and the marker
+survives a save and load, and a level change that carries the monster
+across followed by another save and load. Mutation probes each fail at
+least one of these: the sighting rule ignoring the flag, each half of it
+(looking/looked at) alone, the rule suppressing every relationship (the
+first version), the squad and damage filters, the spawnflag read, the
+marker insert, the hostile-list filter, each of the three restored-state
+fixes (memory, attack schedule, the reported loss), and a carried
+definition dropping its spawnflags.
 
 **Gates**: fmt, clippy (workspace, `--features dev-tools`, and
 `--all-features`), `cargo test --workspace`, policy, graph, combat-smoke
