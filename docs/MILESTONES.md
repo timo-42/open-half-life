@@ -8373,15 +8373,30 @@ primitive against a baseline, brightness, world/debris depth, and engine
 beam/laser/spark/sprite/glow frames. Optional `OHL_RENDER_CAPTURE_DIR` writes
 project-authored PPM captures only; `OHL_RENDER_GPU_TEST=1` gates GPU work.
 
+Review follow-ups use the established live brush pose for named endpoints,
+with a real train-state regression whose authored Transform remains unchanged.
+Placed/transient sprites and effects now interleave in depth order; actual
+GPU cases cover both near/far arrangements with full and partial sprite alpha.
+Laser Decal End contact marks are supported; only env_beam Decal End is cut.
+Global transparency remains limited: translucent brush/liquid/studio passes
+precede these visuals, and intersecting transparent primitives are sorted by
+one point. A synthetic foreground-brush/rear-beam diagnostic capture exposes
+that limit: center green remains 255 through a half-alpha brush, whereas the
+half-alpha sprite case correctly attenuates it to 127. Render properties/colors remain cached; P6a must connect later
+RenderPropsComponent changes through a read-side bridge update, alongside its
+activation/event seam, before claiming dynamic visual properties.
+
 **Gates.** fmt; scoped `cargo clippy -p ohl-render -p ohl-engine
 --all-targets -- -D warnings`; full `cargo test -p ohl-render` with
 `OHL_RENDER_GPU_TEST=1`, 50 passed (40 CPU, 10 GPU), 0 failed, 10 ignored;
-engine library plus visual-effects/offscreen/viewmodel GPU tests, 203 passed
-(199 CPU, 4 GPU), 0 failed, 4 ignored. Fourteen mutation probes were
+engine library plus visual-effects/offscreen/viewmodel GPU tests, 205 passed
+(200 CPU, 5 GPU), 0 failed, 5 ignored. Eighteen mutation probes were
 discriminated: removing beam/particle/decal/gib geometry, beam activation,
 laser clipping, spark expiry, the engine draw bridge, sprite Color mode,
 tint, framerate, static glow, initial visibility and additive brightness
-each failed its selected tests. Every mutated file was restored byte-for-byte
+each failed its selected tests. Review probes restoring authored endpoints,
+dropping brush displacement, grouping sprites before effects and reversing
+mixed depth order also failed their new mover/GPU regressions. Every mutated file was restored byte-for-byte
 before the final normal checks. Actual project-authored captures include
 the engine bridge, sprite/glow properties and combined renderer primitives.
 

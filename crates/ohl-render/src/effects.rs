@@ -54,12 +54,19 @@ enum Blend {
 }
 
 impl EffectInstance {
-    fn center(self) -> [f32; 3] {
+    /// World-space sorting point. A beam uses its midpoint; intersections
+    /// between transparent primitives still require a more general compositor.
+    pub fn center(self) -> [f32; 3] {
         match self {
             Self::Beam { start, end, .. } => std::array::from_fn(|i| start[i].midpoint(end[i])),
             Self::Particle { origin, .. } | Self::Decal { origin, .. } => origin,
             Self::Gib { transform, .. } => [transform[12], transform[13], transform[14]],
         }
+    }
+
+    /// Whether this primitive writes opaque depth before translucent draws.
+    pub fn writes_depth(self) -> bool {
+        self.blend() == Blend::Opaque
     }
 
     fn blend(self) -> Blend {

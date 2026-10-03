@@ -4,9 +4,8 @@
 //! These are not map-placed [`crate::level::SpritePlacement`]s; they are
 //! spawned by [`crate::projectiles`] from a [`ohl_combat::projectile::ProjectileEvent`]
 //! or a [`ohl_combat::deployables::DeployableEvent`] and aged out over a few
-//! seconds. [`Renderers::draw_sprites`](crate::render) appends them to the
-//! same [`ohl_render::SpriteInstance`] list the map's own sprite entities
-//! draw with, reusing the sprite asset the level already loaded rather than
+//! seconds. The render bridge interleaves them with map sprites and effect
+//! primitives in depth order, reusing the sprite asset the level already loaded rather than
 //! naming a new one (see the module doc on [`TransientSprite::asset`]).
 //!
 //! Bounded at [`MAX_TRANSIENT_SPRITES`]: a burst of impacts drops the

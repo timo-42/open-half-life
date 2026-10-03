@@ -34,6 +34,10 @@ fn game(extra: &str, seconds: f32) -> Game {
 
 fn pixels(context: &GpuContext, extra: &str, seconds: f32) -> Vec<u8> {
     let mut game = game(extra, seconds);
+    game_pixels(context, &mut game)
+}
+
+fn game_pixels(context: &GpuContext, game: &mut Game) -> Vec<u8> {
     let target = OffscreenTarget::new(context, WIDTH, HEIGHT).unwrap();
     game.render(
         context,
@@ -46,6 +50,11 @@ fn pixels(context: &GpuContext, extra: &str, seconds: f32) -> Vec<u8> {
     )
     .unwrap();
     target.read_rgba(context).unwrap()
+}
+
+fn center(pixels: &[u8]) -> &[u8] {
+    let offset = usize::try_from((HEIGHT / 2 * WIDTH + WIDTH / 2) * 4).unwrap();
+    &pixels[offset..offset + 4]
 }
 
 fn capture(label: &str, pixels: &[u8]) {
@@ -173,5 +182,95 @@ fn map_effects_and_sprite_properties_reach_the_frame() {
 fn map_effects_and_sprite_properties_reach_the_frame_when_opted_in() {
     if std::env::var_os("OHL_RENDER_GPU_TEST").is_some() {
         run();
+    }
+}
+
+fn mixed_transparency() {
+    let Ok(context) = GpuContext::headless() else {
+        eprintln!("mixed visual capture skipped: no adapter");
+        return;
+    };
+    let beam = "{\"classname\" \"info_target\" \"targetname\" \"ohl_a\" \"origin\" \"40 -10 40\"}\n{\"classname\" \"info_target\" \"targetname\" \"ohl_b\" \"origin\" \"40 10 40\"}\n{\"classname\" \"env_beam\" \"spawnflags\" \"1\" \"LightningStart\" \"ohl_a\" \"LightningEnd\" \"ohl_b\" \"BoltWidth\" \"3\" \"renderamt\" \"255\" \"rendercolor\" \"0 255 0\"}";
+    let sprite = |x, amount| {
+        format!(
+            "{{\"classname\" \"env_sprite\" \"model\" \"sprites/ohl_effect.spr\" \"origin\" \"{x} 0 40\" \"scale\" \"2\" \"rendermode\" \"2\" \"renderamt\" \"{amount}\" \"rendercolor\" \"255 0 0\"}}"
+        )
+    };
+    let beam_only = pixels(&context, beam, 0.0);
+    let mut composites = Vec::new();
+    for (label, x, amount) in [
+        ("engine-near-opaque-sprite-rear-beam", 20, 255),
+        ("engine-near-partial-sprite-rear-beam", 20, 128),
+        ("engine-far-opaque-sprite-front-beam", 60, 255),
+        ("engine-far-partial-sprite-front-beam", 60, 128),
+    ] {
+        let sprite = sprite(x, amount);
+        let sprite_only = pixels(&context, &sprite, 0.0);
+        let composite = pixels(&context, &format!("{sprite}\n{beam}"), 0.0);
+        let green = center(&composite)[1];
+        if x < 40 {
+            if amount == 255 {
+                assert_eq!(
+                    center(&composite),
+                    center(&sprite_only),
+                    "opaque foreground sprite must cover a rear beam"
+                );
+            } else {
+                assert!(
+                    (120..=135).contains(&green),
+                    "partial foreground sprite must attenuate rear green beam; green={green}"
+                );
+            }
+        } else {
+            assert_eq!(
+                green,
+                center(&beam_only)[1],
+                "front beam must remain bright over a rear sprite"
+            );
+            assert_eq!(
+                center(&composite)[0],
+                center(&sprite_only)[0],
+                "green beam must retain rear sprite red"
+            );
+        }
+        capture(label, &composite);
+        composites.push(composite);
+    }
+    assert!(center(&composites[1])[1] < center(&composites[3])[1]);
+    capture_global_transparency_limit(&context);
+}
+
+// Deliberate diagnostic, not a compatibility assertion: translucent brushes
+// still draw in their existing pass before this bounded sprite/effect sort.
+// Capture the rear beam unattenuated through a foreground half-alpha brush.
+fn capture_global_transparency_limit(context: &GpuContext) {
+    let beam = "{\"classname\" \"info_target\" \"targetname\" \"ohl_a\" \"origin\" \"-10 40 40\"}\n{\"classname\" \"info_target\" \"targetname\" \"ohl_b\" \"origin\" \"10 40 40\"}\n{\"classname\" \"env_beam\" \"spawnflags\" \"1\" \"LightningStart\" \"ohl_a\" \"LightningEnd\" \"ohl_b\" \"BoltWidth\" \"3\" \"renderamt\" \"255\" \"rendercolor\" \"0 255 0\"}";
+    let brush = "{\"classname\" \"func_wall\" \"model\" \"*1\" \"rendermode\" \"1\" \"renderamt\" \"128\" \"rendercolor\" \"255 0 0\"}";
+    for (label, extra) in [
+        ("engine-global-limit-brush", brush.to_owned()),
+        ("engine-global-limit-rear-beam", beam.to_owned()),
+        (
+            "engine-global-limit-brush-rear-beam",
+            format!("{brush}\n{beam}"),
+        ),
+    ] {
+        let mut game = game(&extra, 0.0);
+        game.set_viewpoint([0.0, -80.0, 40.0], 0.0, 90.0);
+        capture(label, &game_pixels(context, &mut game));
+    }
+}
+
+#[test]
+#[ignore = "requires an adapter; opt in with OHL_RENDER_GPU_TEST=1"]
+fn sprites_and_effects_composite_in_depth_order() {
+    if std::env::var_os("OHL_RENDER_GPU_TEST").is_none() {
+        mixed_transparency();
+    }
+}
+
+#[test]
+fn sprites_and_effects_composite_in_depth_order_when_opted_in() {
+    if std::env::var_os("OHL_RENDER_GPU_TEST").is_some() {
+        mixed_transparency();
     }
 }
