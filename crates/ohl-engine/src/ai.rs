@@ -1025,6 +1025,18 @@ impl AiState {
         for event in events {
             match &event.kind {
                 AiEventKind::ActivityChanged(activity) => {
+                    // The two prop kinds whose model the map names
+                    // (`MonsterKind::model_from_map`) keep the pose the map
+                    // gave them, its `sequence` keyvalue: their own brain's
+                    // stand-and-look activities are not a reason to drop a
+                    // set piece to sequence 0. A script still drives them
+                    // (`PlaySequence`, and the script runner's own calls).
+                    if self
+                        .spec_of(level, event.entity)
+                        .is_some_and(|(kind, _)| kind.model_from_map())
+                    {
+                        continue;
+                    }
                     select_sequence(level, event.entity, &activity_name(*activity));
                 }
                 AiEventKind::PlaySequence(name) => {

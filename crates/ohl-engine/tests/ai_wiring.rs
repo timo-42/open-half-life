@@ -402,6 +402,52 @@ fn a_soldier_targets_the_player_past_a_not_solid_prop() {
     assert!(game.player_health() < 100.0, "and it hurt the player");
 }
 
+/// Wave 1 batch A review: a posed `monster_generic` keeps the sequence its
+/// map gave it. Seeing a hostile soldier puts the prop's own brain into
+/// its stand-and-look schedule, an activity change; the prop's model has a
+/// sequence for that activity, and an ordinary monster would switch to
+/// it. The prop stays on its map-set `sequence` instead.
+#[test]
+fn a_posed_generic_monster_keeps_its_map_sequence() {
+    let block = entities(&format!(
+        "{}{}",
+        monster("monster_human_grunt", [64.0, 0.0, 36.0], 180.0, ""),
+        monster(
+            "monster_generic",
+            [16.0, 48.0, 36.0],
+            0.0,
+            "\"spawnflags\" \"4\"\n\"model\" \"models/ohl_prop.mdl\"\n\"sequence\" \"2\"\n"
+        ),
+    ));
+    let bytes = ai_room_bsp(&block, false);
+    let (mdl_bytes, _layout) = ohl_formats::test_support::build_minimal_mdl10_with_sequences(&[
+        "idle", "alert", "ohl_pose",
+    ]);
+    let mut assets = MemoryAssets::new();
+    assets.insert(&format!("maps/{AI_MAP}.bsp"), bytes.clone());
+    assets.insert("models/ohl_prop.mdl", mdl_bytes);
+    let mut game = Game::from_map_bytes(&assets, AI_MAP, &bytes).expect("the AI room loads");
+    let prop = ohl_engine::test_support::entity_of_classname(&game, "monster_generic")
+        .expect("the prop spawned");
+    let sequence = |game: &Game| {
+        game.registry()
+            .world
+            .get::<&ohl_engine::StudioAnim>(prop)
+            .expect("the prop draws its map-named model")
+            .sequence
+    };
+    assert_eq!(sequence(&game), 2, "it starts on its map-set pose");
+    tick(&mut game, 100);
+    let ai = game
+        .registry()
+        .world
+        .get::<&ohl_ai::MonsterAi>(prop)
+        .map(|ai| ai.activity)
+        .expect("the prop thinks");
+    assert_eq!(ai, ohl_ai::Activity::Alert, "it saw the soldier");
+    assert_eq!(sequence(&game), 2, "and kept its pose");
+}
+
 /// Wave 1 batch A: bit 4 means `Not solid` only on `monster_generic`, the
 /// one classname the cited page documents it on. On every other monster
 /// the same bit is the unrelated `MonsterClip` flag, so a soldier carrying

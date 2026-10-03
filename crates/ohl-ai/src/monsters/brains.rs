@@ -358,6 +358,27 @@ pub static PASSIVE_STAND: Schedule = Schedule::new(
     Conditions::EMPTY,
 );
 
+/// A `monster_generic` that has noticed something: alert, where it stands,
+/// facing the way its map put it. Like [`PASSIVE_STAND`] nothing
+/// interrupts it, and re-selection at the end of each spell is how it
+/// notices that whatever it saw has gone.
+///
+/// The ordinary stand-and-look (`crate::brain::ALERT_STAND`) will not do
+/// for a prop: it is interrupted by any sighting, which is right for a
+/// monster that will pick a fighting schedule next and wrong for one that
+/// never does — a prop in combat with an enemy in view re-selected it
+/// every tick, ran none of its tasks and never settled. It also turns to
+/// face the enemy, which a posed set piece should not.
+pub static PROP_ALERT: Schedule = Schedule::new(
+    "ohl/monsters/prop_alert",
+    &[
+        Task::SetActivity(Activity::Alert),
+        Task::StopMoving,
+        Task::WaitRandom { min: 1.0, max: 3.0 },
+    ],
+    Conditions::EMPTY,
+);
+
 /// A critter (rat, cockroach) ambling somewhere nearby and pausing.
 pub static CRITTER_WANDER: Schedule = Schedule::new(
     "ohl/monsters/critter_wander",
@@ -418,6 +439,7 @@ pub static ALL: &[&Schedule] = &[
     &ASSASSIN_HIT_AND_RUN,
     &ASSASSIN_RETREAT,
     &PASSIVE_STAND,
+    &PROP_ALERT,
     &CRITTER_WANDER,
     &CRITTER_SCATTER,
 ];
@@ -711,7 +733,7 @@ impl MonsterBrain {
                     &crate::brain::CHASE_ENEMY
                 }
             }
-            K::Generic => &crate::brain::ALERT_STAND,
+            K::Generic => &PROP_ALERT,
             K::Furniture => &PASSIVE_STAND,
             K::Rat | K::Cockroach => &CRITTER_SCATTER,
             K::Ichthyosaur | K::Leech | K::Zombie | K::Headcrab | K::Babycrab | K::Unknown(_) => {
@@ -878,7 +900,8 @@ impl MonsterBrain {
 
     /// Schedules for a scripted prop: it stands, and — for the generic
     /// monster, which is published as a player ally with a working set of
-    /// senses — turns to look at what it noticed. It never fights, flees,
+    /// senses — goes alert where it stands when it notices something
+    /// ([`PROP_ALERT`]), without turning. It never fights, flees,
     /// investigates or takes cover, since a prop that walks off is a
     /// broken set piece, and a `scripted_sequence` drives it from outside
     /// the schedule system anyway (`crate::scripts`).
@@ -894,7 +917,7 @@ impl MonsterBrain {
                 if conditions.contains(Conditions::TASK_FAILED) {
                     &crate::brain::FAIL
                 } else {
-                    &crate::brain::ALERT_STAND
+                    &PROP_ALERT
                 }
             }
             _ if self.kind == MonsterKind::Generic => &crate::brain::IDLE_STAND,
@@ -1313,7 +1336,7 @@ mod tests {
             generic
                 .select_schedule(MonsterState::Alert, Conditions::HEAR_SOUND)
                 .name,
-            crate::brain::ALERT_STAND.name
+            super::PROP_ALERT.name
         );
         assert_eq!(
             generic
@@ -1590,5 +1613,50 @@ mod tests {
         }
         assert_eq!(spells, 1, "the assassin finished a hit-and-run spell");
         assert_eq!(shots, 2, "its burst was {shots} shots");
+    }
+
+    /// Wave 1 batch A review: a `monster_generic` with an enemy in plain
+    /// view settles into one alert spell after another instead of
+    /// re-selecting a schedule every tick, and keeps the yaw it was given.
+    #[test]
+    fn a_generic_in_view_of_an_enemy_settles_and_does_not_turn() {
+        use crate::senses::SightContext;
+        use crate::world::{Actor, AiEventKind, AiWorld, spawn_actor, spawn_monster};
+        use glam::Vec3;
+        let mut ai = AiWorld::new(7);
+        let brain = ai.register_brain(Box::new(
+            MonsterBrain::for_kind(MonsterKind::Generic).expect("defined"),
+        ));
+        let mut world = hecs::World::new();
+        let prop = spawn_monster(
+            &mut world,
+            Actor::new(Classification::PlayerAlly, Vec3::ZERO).facing(0.0),
+            brain,
+        );
+        spawn_actor(
+            &mut world,
+            Actor::new(Classification::HumanMilitary, Vec3::new(100.0, 100.0, 0.0)),
+        );
+        let mut started = 0;
+        for _ in 0..200 {
+            for event in ai.tick(
+                &mut world,
+                &SightContext::empty(),
+                ohl_physics::controller::TICK_SECONDS,
+            ) {
+                if event.entity == prop && matches!(event.kind, AiEventKind::ScheduleStarted(_)) {
+                    started += 1;
+                }
+            }
+        }
+        let state = world.get::<&crate::world::MonsterAi>(prop).expect("ai");
+        assert_eq!(
+            state.activity,
+            crate::schedule::Activity::Alert,
+            "it noticed"
+        );
+        assert!(started <= 4, "{started} schedules in two seconds");
+        let yaw = world.get::<&Actor>(prop).expect("actor").yaw;
+        assert!(yaw.abs() < 1e-3, "it turned to {yaw}");
     }
 }
