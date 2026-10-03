@@ -3007,6 +3007,50 @@ counterpart in `ohl-ai`'s sound classification and is recorded as
   `monster_leech`, `monster_gargantua`, `monster_tentacle`) match the
   classnames `from_classname` already accepted, so no further alias was
   needed.
+- **The `Prisoner` spawnflag, bit `16`** (`ohl_ai::spawn::SPAWNFLAG_PRISONER`,
+  the `ohl_ai::Prisoner` marker, `ohl_ai::sighting_relationship`). Two TWHL
+  sources, both **fetched directly** (reviewed 2026-10-03; TWHL answered a
+  direct fetch this time, unlike the HTTP 403 recorded for the citations
+  above):
+  - ["VERC: Common Monster Properties"](https://twhl.info/wiki/page/VERC:_Common_Monster_Properties),
+    its "Prisoner (16)" entry: "When this is checked, normal AI is
+    disabled, so the monster won't attack the player. This can be useful
+    when you're using normally offensive monsters in a scripted_sequence."
+  - The flags list on each TWHL `monster_*` entity page — read on
+    [monster_human_grunt](https://twhl.info/wiki/page/monster_human_grunt)
+    and [monster_zombie](https://twhl.info/wiki/page/monster_zombie), whose
+    wording is identical: "Prisoner (16)" — "Won't attack, or be attacked
+    by, other monsters."
+
+  Modelled as the narrowest reading of the two that a map can rely on: a
+  prisoner never acquires an enemy, whether by sight, from a squad mate's
+  shared enemy, or from being hurt; and every sighting with a prisoner on
+  either end — a prisoner looking, or a prisoner looked at — reads as "no
+  relationship" whatever the class matrix says, so no monster ever chooses
+  one as its enemy either. Having no enemy, a prisoner never enters the
+  combat state, so a `scripted_sequence` without `Override AI` still takes
+  it over with the player in front of it — the use the first source names
+  (see "Scripted sequences and talk monsters" for the published
+  `Override AI` rule this depends on). These readings are this project's:
+  - "Normal AI is disabled" is read as *hostility* disabled, not the whole
+    monster switched off: it still idles, hears, and walks and plays a
+    script, because the same entry's next sentence is about putting it in
+    one.
+  - Being hurt does not lift the flag; neither source names an exception.
+    Whether a retail prisoner shot by the player turns on them is
+    `TODO(black-box)`.
+  - A `monstermaker`'s children are built from its `monstertype` alone and
+    carry no spawnflags of their own, so they are never prisoners.
+  - The engine's list of monsters hostile to the player
+    (`ohl_engine::Game::hostile_monster_eyes`, what `ohl_engine::guard`
+    aims at and backs away from, and what makes a planned wait a guard)
+    reads hostility through the same function, so it never lists a
+    prisoner. That is a consequence of having one hostility rule, not a
+    separate published fact.
+
+  The marker is derived from the entity definition's own spawnflags when
+  the level is built and never changes, so it needs no save field: a
+  carried or restored monster is rebuilt from the same definition.
 
 ## Track trains and paths
 
@@ -3643,8 +3687,9 @@ crosses the boundary, as data (`Game`'s AI counters), never as a log line.
   player if asked". Published spawnflags used here: `256` Pre-Disaster.
   (`1` Wait Till Seen, `2` Gag, `4` MonsterClip, `16` Prisoner, `128`
   WaitForScript — "Does nothing, not implemented" — and `512` Fade Corpse
-  are recorded but only `512` is already modelled, by
-  `ohl_ai::monsters::MonsterFlags::FADES_CORPSE`.)
+  are recorded; `512` is modelled by
+  `ohl_ai::monsters::MonsterFlags::FADES_CORPSE`, and `16` by
+  `ohl_ai::Prisoner` — see "Monster definitions".)
   `body` (`-1` Random, `0` Glasses, `1` Einstein, `2` Luther, `3` Slick;
   "Only difference is appearance") and `UseSentence`/`UnUseSentence` ("plays
   when the player brings the NPC into their group" / "removes the NPC from

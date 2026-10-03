@@ -130,6 +130,36 @@ impl Actor {
     }
 }
 
+/// Marks a monster spawned with the published `Prisoner` spawnflag
+/// (`crate::spawn::SPAWNFLAG_PRISONER`).
+///
+/// Published (see `docs/FORMAT_SOURCES.md`, "Monster definitions"): TWHL's
+/// "VERC: Common Monster Properties" — "When this is checked, normal AI is
+/// disabled, so the monster won't attack the player. This can be useful
+/// when you're using normally offensive monsters in a scripted_sequence."
+/// — and the line every TWHL `monster_*` entity page carries for the same
+/// bit: "Won't attack, or be attacked by, other monsters."
+///
+/// Modelled as the narrowest reading of both that a map can rely on: a
+/// prisoner never acquires an enemy — not by sight, not from a squad mate,
+/// not from being hurt — and no other monster's sight ever reads it as one
+/// ([`crate::senses::sighting_relationship`], the one hostility rule, reads
+/// every sighting with a prisoner on either end as
+/// [`crate::state::Relationship::NoRelationship`]). Never having an enemy,
+/// it never reaches [`crate::state::MonsterState::Combat`], which is what
+/// lets a `scripted_sequence` without `Override AI` take it over with the
+/// player standing in front of it — the use the first page names.
+/// Everything else about it is left alone: it still idles, hears, walks a
+/// scripted route and plays a script's animations.
+///
+/// Derived from the entity definition's own spawnflags at spawn
+/// ([`crate::spawn::attach_monsters`]) and never changed afterwards, so it
+/// needs no save-file field: a restored or carried monster is rebuilt from
+/// the same definition. A `monstermaker`'s children carry no definition of
+/// their own and are never prisoners; no page says otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Prisoner;
+
 /// The `netname` squad membership of a monster.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SquadTag {
@@ -544,12 +574,17 @@ impl AiWorld {
         }
 
         // --- Senses -------------------------------------------------------
+        // The published `Prisoner` spawnflag (see [`Prisoner`]): such a
+        // monster never acquires an enemy by any of the three routes below
+        // — sight, a squad mate's shared enemy, or being hurt.
+        let prisoner = world.get::<&Prisoner>(entity).is_ok();
         let viewer = Viewer {
             entity,
             origin: actor.origin,
             view_ofs: actor.view_ofs,
             forward: actor.forward(),
             classification: actor.classification,
+            prisoner,
         };
         let sight = look(&viewer, &senses, candidates, &self.relationships, context);
         conditions |= sight.conditions;
@@ -608,7 +643,9 @@ impl AiWorld {
                     });
                 }
             }
-        } else if let Some((shared, position)) = self.squads.shared_enemy(entity) {
+        } else if let Some((shared, position)) =
+            self.squads.shared_enemy(entity).filter(|_| !prisoner)
+        {
             // No enemy of our own: take the squad's, remembered but unseen.
             if shared != entity && by_entity.get(&shared).is_some_and(|c| c.alive) {
                 conditions |= Conditions::NEW_ENEMY | Conditions::ENEMY_OCCLUDED;
@@ -637,6 +674,7 @@ impl AiWorld {
                 conditions |= Conditions::PROVOKED;
             }
             if ai.memory.is_none()
+                && !prisoner
                 && let Some(attacker) = attacker
                 && attacker != entity
             {
@@ -905,9 +943,9 @@ fn ai_bytes(ai: &MonsterAi) -> Vec<u8> {
 
 fn snapshot_candidates(world: &World) -> Vec<Candidate> {
     let mut candidates: Vec<(u32, Candidate)> = world
-        .query::<(Entity, &Actor)>()
+        .query::<(Entity, &Actor, Option<&Prisoner>)>()
         .iter()
-        .map(|(entity, actor)| {
+        .map(|(entity, actor, prisoner)| {
             (
                 entity.id(),
                 Candidate {
@@ -918,6 +956,7 @@ fn snapshot_candidates(world: &World) -> Vec<Candidate> {
                     forward: actor.forward(),
                     alive: actor.alive,
                     is_client: actor.is_client,
+                    prisoner: prisoner.is_some(),
                 },
             )
         })
@@ -1270,7 +1309,7 @@ pub fn resolve_schedule(name: &str) -> Option<&'static Schedule> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Actor, AiEventKind, AiWorld, MonsterAi, SquadTag, spawn_actor, spawn_monster,
+        Actor, AiEventKind, AiWorld, MonsterAi, Prisoner, SquadTag, spawn_actor, spawn_monster,
         spawn_squad_monster,
     };
     use crate::brain::DefaultBrain;
@@ -1430,6 +1469,123 @@ mod tests {
             Some(player)
         );
         assert!(ai.squads().is_leader(leader));
+    }
+
+    /// The published `Prisoner` spawnflag, through the whole tick: the
+    /// exact scene `seeing_a_hostile_flips_to_combat_in_one_tick` builds,
+    /// with the monster marked a prisoner, sees the player and does
+    /// nothing about it — no enemy, no combat state, no attack — for as
+    /// long as the player stands there, and not even when hurt by them.
+    #[test]
+    fn a_prisoner_never_acquires_an_enemy_by_sight_or_damage() {
+        let (mut ai, mut world, brain) = setup();
+        let prisoner = world.spawn((
+            Actor::new(Classification::HumanMilitary, Vec3::ZERO),
+            MonsterAi::new(brain),
+            Prisoner,
+        ));
+        let player = spawn_actor(
+            &mut world,
+            Actor::new(Classification::Player, Vec3::new(200.0, 0.0, 0.0)).as_client(),
+        );
+
+        let mut events = Vec::new();
+        for _ in 0..200 {
+            events.extend(ai.tick(&mut world, &SightContext::empty(), DT));
+        }
+        {
+            let state = world.get::<&MonsterAi>(prisoner).expect("component");
+            assert!(state.conditions.contains(Conditions::SEE_CLIENT), "seen");
+            assert!(!state.conditions.contains(Conditions::SEE_ENEMY));
+            assert_ne!(state.state, MonsterState::Combat);
+            assert!(state.enemy().is_none());
+        }
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event.kind, AiEventKind::Attack { .. })),
+            "a prisoner never attacks"
+        );
+
+        // Being hurt is not an exception: neither published sentence names
+        // one, and "normal AI is disabled" is what a damage-provoked
+        // enemy would undo. The hurt still registers as a condition.
+        ai.apply_damage(DamageEvent::new(
+            prisoner,
+            player,
+            30.0,
+            Vec3::new(200.0, 0.0, 0.0),
+        ));
+        ai.tick(&mut world, &SightContext::empty(), DT);
+        let state = world.get::<&MonsterAi>(prisoner).expect("component");
+        assert!(state.conditions.contains(Conditions::HEAVY_DAMAGE));
+        assert!(state.enemy().is_none(), "hurt, and still no enemy");
+    }
+
+    /// The other half of the same sentence: a prisoner is not attacked
+    /// either. A hostile monster with a prisoner in plain view in front of
+    /// it — the one thing in the world it could fight — stays out of
+    /// combat.
+    #[test]
+    fn a_prisoner_is_not_chosen_as_an_enemy_by_a_hostile() {
+        let (mut ai, mut world, brain) = setup();
+        let hunter = spawn_monster(
+            &mut world,
+            Actor::new(Classification::HumanMilitary, Vec3::ZERO),
+            brain,
+        );
+        world.spawn((
+            Actor::new(Classification::AlienMilitary, Vec3::new(200.0, 0.0, 0.0)),
+            MonsterAi::new(brain),
+            Prisoner,
+        ));
+        let events = ai.tick(&mut world, &SightContext::empty(), DT);
+        let state = world.get::<&MonsterAi>(hunter).expect("component");
+        assert!(!state.conditions.contains(Conditions::SEE_ENEMY));
+        assert_ne!(state.state, MonsterState::Combat);
+        assert!(state.enemy().is_none());
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event.kind, AiEventKind::EnemyAcquired(_)))
+        );
+    }
+
+    /// A squad mate's shared enemy is the third way in, and it is shut
+    /// too: the leader fights, the prisoner member beside it does not.
+    #[test]
+    fn a_prisoner_squad_member_does_not_take_the_leaders_enemy() {
+        let (mut ai, mut world, brain) = setup();
+        let leader = spawn_squad_monster(
+            &mut world,
+            Actor::new(Classification::HumanMilitary, Vec3::ZERO),
+            brain,
+            SquadTag::leader("alpha"),
+        );
+        let captive = world.spawn((
+            Actor::new(Classification::HumanMilitary, Vec3::new(0.0, 48.0, 0.0)).facing(180.0),
+            MonsterAi::new(brain),
+            SquadTag::member("alpha"),
+            Prisoner,
+        ));
+        let player = spawn_actor(
+            &mut world,
+            Actor::new(Classification::Player, Vec3::new(180.0, 0.0, 0.0)).as_client(),
+        );
+        for _ in 0..3 {
+            ai.tick(&mut world, &SightContext::empty(), DT);
+        }
+        assert_eq!(
+            world.get::<&MonsterAi>(leader).expect("component").enemy(),
+            Some(player)
+        );
+        assert!(
+            world
+                .get::<&MonsterAi>(captive)
+                .expect("component")
+                .enemy()
+                .is_none()
+        );
     }
 
     #[test]

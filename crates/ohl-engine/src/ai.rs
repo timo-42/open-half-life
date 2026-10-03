@@ -60,8 +60,8 @@ use ohl_ai::{
     Activity, Actor, AiEvent, AiEventKind, AiWorld, AttackKind, BrainId, Classification,
     Conditions, CorpseDecision, DamageEvent, DamageQueue, DamageSink, EnemyMemory, MonsterAi,
     MonsterBrain, MonsterKind, MonsterSpawn, MonsterSpawnRules, MonsterSpec, MonsterState,
-    MonsterTrigger, Route, ScheduleRunner, SightContext, SquadTag, StuckDetector, TriggerCondition,
-    TriggerContext, attach_monsters,
+    MonsterTrigger, Prisoner, Route, ScheduleRunner, SightContext, SquadTag, StuckDetector,
+    TriggerCondition, TriggerContext, attach_monsters, sighting_relationship,
 };
 use ohl_combat::{DamageType, HitboxIndex, HitboxLimits, TraceFilter, TraceMask};
 use ohl_game::hecs::Entity;
@@ -682,11 +682,14 @@ impl AiState {
     /// enemy, as (entity, eye position), in ascending [`hecs::Entity::id`]
     /// order.
     ///
-    /// "Hostile" is read off the same data a monster's own enemy
-    /// acquisition reads: [`ohl_ai::RelationshipTable::get`] from the
+    /// "Hostile" is read through the same rule a monster's own enemy
+    /// acquisition reads: [`ohl_ai::sighting_relationship`] from the
     /// monster's classification to [`Classification::Player`], hostile per
     /// [`ohl_ai::Relationship::is_hostile`]. Nothing here is a second
-    /// hostility rule.
+    /// hostility rule, so a monster carrying the published `Prisoner`
+    /// spawnflag ([`ohl_ai::Prisoner`]) — one that never takes the player
+    /// as its enemy — is never listed, however its class regards the
+    /// player.
     ///
     /// Additive and data-only, like [`Self::nearest_monster_position`]: a
     /// caller may aim at what this returns, and this method never logs a
@@ -697,15 +700,19 @@ impl AiState {
         let mut hostile: Vec<(Entity, Vec3)> = level
             .registry
             .world
-            .query::<(Entity, &Actor, &MonsterAi)>()
+            .query::<(Entity, &Actor, &MonsterAi, Option<&Prisoner>)>()
             .iter()
-            .filter(|(_, actor, _)| actor.alive)
-            .filter(|(_, actor, _)| {
-                relationships
-                    .get(actor.classification, Classification::Player)
-                    .is_hostile()
+            .filter(|(_, actor, _, _)| actor.alive)
+            .filter(|(_, actor, _, prisoner)| {
+                sighting_relationship(
+                    relationships,
+                    actor.classification,
+                    Classification::Player,
+                    prisoner.is_some(),
+                )
+                .is_hostile()
             })
-            .map(|(entity, actor, _)| (entity, actor.eye()))
+            .map(|(entity, actor, _, _)| (entity, actor.eye()))
             .collect();
         hostile.sort_by_key(|(entity, _)| entity.id());
         hostile
