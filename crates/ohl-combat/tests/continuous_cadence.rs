@@ -118,16 +118,13 @@ fn egon_exact_multiple_and_changing_steps_leave_no_zero_time_backlog() {
             WeaponAction::Empty,
             "an exact {oversized}s multiple leaves no float-rounding backlog"
         );
-        for dt in [0.03, 0.07, 0.06, 0.04] {
-            let action = state.tick(dt, primary(), &mut pool);
-            assert_eq!(
-                action,
-                if dt == 0.07 || dt == 0.04 {
-                    WeaponAction::BeamTick
-                } else {
-                    WeaponAction::Empty
-                }
-            );
+        for (dt, expected) in [
+            (0.03, WeaponAction::Empty),
+            (0.07, WeaponAction::BeamTick),
+            (0.06, WeaponAction::Empty),
+            (0.04, WeaponAction::BeamTick),
+        ] {
+            assert_eq!(state.tick(dt, primary(), &mut pool), expected);
             assert_eq!(state.tick(0.0, primary(), &mut pool), WeaponAction::Empty);
         }
         assert_eq!(pool.current(), 96, "four pulses each buy one cell");
