@@ -21,7 +21,7 @@
 # from this file:
 #   present: "Scripted input loaded.", "Scripted input finished.",
 #            "The player moved from the spawn point.",
-#            "A level change was followed."
+#            "A level change was followed.", "A monster took damage."
 #   absent:  every other fixed line, including "The player is inside
 #            solid geometry." (this scenario's own regression guard for
 #            the PR #91 class of bug) and "The player opened a door."
