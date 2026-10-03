@@ -746,6 +746,7 @@ impl AiWorld {
         // navigator seam every other route uses.
         if world.get::<&crate::scripts::ScriptHold>(entity).is_ok() {
             ai.runner.clear();
+            let step = ai.move_speed * dt;
             let moved = advance_route(
                 entity,
                 &mut actor,
@@ -755,7 +756,7 @@ impl AiWorld {
                 dt,
             );
             if ai.move_speed > 0.0 {
-                if ai.stuck.record(moved) {
+                if ai.stuck.record_step(moved, step) {
                     ai.pending_conditions |= Conditions::BLOCKED;
                 }
             } else {
@@ -843,6 +844,7 @@ impl AiWorld {
         ai.runner = runner;
 
         // --- Movement -----------------------------------------------------
+        let step = ai.move_speed * dt;
         let moved = advance_route(
             entity,
             &mut actor,
@@ -852,7 +854,7 @@ impl AiWorld {
             dt,
         );
         if ai.move_speed > 0.0 {
-            if ai.stuck.record(moved) {
+            if ai.stuck.record_step(moved, step) {
                 ai.pending_conditions |= Conditions::BLOCKED;
             }
         } else {
@@ -1886,12 +1888,6 @@ mod tests {
             _conditions: Conditions,
         ) -> &'static crate::schedule::Schedule {
             &WANDER_ONLY
-        }
-
-        /// A walk fast enough at [`DT`] that the stuck check never gives a
-        /// leg up, so every spell reaches its closing wait.
-        fn speeds(&self) -> (f32, f32) {
-            (100.0, 200.0)
         }
     }
 
