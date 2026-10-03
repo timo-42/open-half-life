@@ -30,9 +30,11 @@ pub const PITCH_NORM: f32 = 100.0;
 
 /// The most frames [`SoundBuffer::concatenate`] will produce, so a
 /// pathological sentence (a `sentences.txt` entry naming hundreds of long
-/// words) cannot allocate without bound. Project-owned, sized at roughly
-/// ten minutes of 44.1 kHz audio.
-pub const MAX_CONCATENATED_FRAMES: u32 = 26_460_000;
+/// words) cannot allocate without bound. Project-owned: 32 MiB of stereo
+/// `f32` samples, about 95 seconds at 44.1 kHz, which is far longer than
+/// any spoken line and no larger than one entry a host's sound cache would
+/// hold.
+pub const MAX_CONCATENATED_FRAMES: u32 = 4_194_304;
 
 /// A decoded sound's PCM data, ready to be played back by the mixer.
 #[derive(Debug, Clone, PartialEq)]
@@ -66,13 +68,18 @@ impl SoundBuffer {
 
     /// Wraps one [`crate::wav::DecodedWav`] as a playable buffer, carrying
     /// its [`crate::wav::DecodedWav::effective_loop`] across.
+    ///
+    /// Takes the decode by value, so its samples are moved into the
+    /// buffer's shared allocation rather than cloned first: the peak is
+    /// the decoded samples plus that one copy, never a third.
     #[must_use]
-    pub fn from_decoded(decoded: &crate::wav::DecodedWav) -> Self {
+    pub fn from_decoded(decoded: crate::wav::DecodedWav) -> Self {
+        let loop_range = decoded.effective_loop();
         Self {
             channels: decoded.format.channels,
             sample_rate: decoded.format.sample_rate,
-            loop_range: decoded.effective_loop(),
-            samples: Arc::from(decoded.samples.clone()),
+            loop_range,
+            samples: Arc::from(decoded.samples),
         }
     }
 
@@ -352,6 +359,30 @@ mod tests {
         assert_eq!(joined.frame_count(), 12);
     }
 
+    /// The cap itself: a joined sentence holds at most 32 MiB of samples,
+    /// stereo included, so the longest one a sentence can produce is no
+    /// larger than one entry the host's sound cache will hold.
+    #[test]
+    fn a_joined_sentence_never_exceeds_32_mib_of_samples() {
+        let bytes = u64::from(MAX_CONCATENATED_FRAMES) * 2 * 4;
+        assert!(bytes <= 32 * 1024 * 1024, "{bytes}");
+    }
+
+    /// A sentence joined past [`MAX_CONCATENATED_FRAMES`] is refused rather
+    /// than allocated, whatever its parts.
+    #[test]
+    fn concatenating_past_the_frame_cap_yields_no_buffer() {
+        let half = usize::try_from(MAX_CONCATENATED_FRAMES / 2 + 1).expect("fits");
+        let word = Arc::new(SoundBuffer {
+            channels: 1,
+            sample_rate: 8_000,
+            samples: Arc::from(vec![0.0f32; half]),
+            loop_range: None,
+        });
+        assert!(SoundBuffer::concatenate(&[Arc::clone(&word)]).is_some());
+        assert!(SoundBuffer::concatenate(&[Arc::clone(&word), word]).is_none());
+    }
+
     #[test]
     fn concatenating_nothing_or_only_silence_yields_no_buffer() {
         assert!(SoundBuffer::concatenate(&[]).is_none());
@@ -379,7 +410,7 @@ mod tests {
             }],
             sample_loops: Vec::new(),
         };
-        let buffer = SoundBuffer::from_decoded(&decoded);
+        let buffer = SoundBuffer::from_decoded(decoded);
         assert_eq!(buffer.frame_count(), 4);
         assert_eq!(buffer.loop_range, Some((1, 4)));
         assert_eq!(buffer.byte_len(), 16);

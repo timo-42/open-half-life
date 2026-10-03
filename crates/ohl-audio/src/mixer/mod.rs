@@ -29,6 +29,10 @@ pub struct Mixer {
     /// The player's own output-volume setting, applied on top of every
     /// channel's own gain. See [`Mixer::set_master_volume`].
     master_volume: f32,
+    /// The master gain the last rendered block ended at. A change of
+    /// [`Self::master_volume`] is ramped from here across the next block,
+    /// not applied as a step.
+    applied_master_volume: f32,
 }
 
 impl Mixer {
@@ -42,6 +46,7 @@ impl Mixer {
             channels: Vec::new(),
             next_order: 0,
             master_volume: 1.0,
+            applied_master_volume: 1.0,
         }
     }
 
@@ -69,7 +74,9 @@ impl Mixer {
     ///
     /// It takes effect on the next [`Mixer::render`], for sounds already
     /// playing as well as for new ones: a looping ambience gets quieter
-    /// while the slider moves, not only after it restarts.
+    /// while the slider moves, not only after it restarts. The change is
+    /// ramped linearly across that render's block rather than applied as a
+    /// step, so a slider dragged across many blocks does not "zipper".
     pub fn set_master_volume(&mut self, volume: f32) {
         if volume.is_finite() {
             self.master_volume = volume.clamp(0.0, 1.0);
@@ -87,6 +94,15 @@ impl Mixer {
     #[must_use]
     pub fn active_channel_count(&self) -> usize {
         self.channels.len()
+    }
+
+    /// The number of channels of `class` currently playing.
+    #[must_use]
+    pub fn channel_count(&self, class: ChannelClass) -> usize {
+        self.channels
+            .iter()
+            .filter(|channel| channel.class == class)
+            .count()
     }
 
     /// Starts a new sound, applying the channel-class capacity and
@@ -108,6 +124,11 @@ impl Mixer {
     /// Stops every channel of `class`.
     pub fn stop_class(&mut self, class: ChannelClass) {
         self.channels.retain(|channel| channel.class != class);
+    }
+
+    /// Stops every channel, whatever its class: what leaving a map does.
+    pub fn stop_all(&mut self) {
+        self.channels.clear();
     }
 
     /// Stops the channel `(entity, class)` names — the same key
@@ -139,7 +160,6 @@ impl Mixer {
 
         let device_rate = f64::from(self.device_sample_rate);
         let listener = self.listener;
-        let master_volume = self.master_volume;
         let mut finished = Vec::new();
 
         for (channel_index, channel) in self.channels.iter_mut().enumerate() {
@@ -156,12 +176,11 @@ impl Mixer {
             let src_channels = usize::from(buffer.channels.max(1));
             let step =
                 (f64::from(buffer.sample_rate) / device_rate) * f64::from(channel.pitch.max(0.0));
-            let volume = channel.volume * master_volume;
             let gains = match channel.spatial {
-                Some(spatial) => spatial::spatial_gain(&listener, spatial, volume),
+                Some(spatial) => spatial::spatial_gain(&listener, spatial, channel.volume),
                 None => spatial::StereoGain {
-                    left: volume,
-                    right: volume,
+                    left: channel.volume,
+                    right: channel.volume,
                 },
             };
 
@@ -214,6 +233,24 @@ impl Mixer {
 
         for &index in finished.iter().rev() {
             self.channels.remove(index);
+        }
+
+        // The master volume, applied to the whole mix and ramped linearly
+        // from where the last block ended to the current setting, reaching
+        // it exactly on this block's last frame.
+        if frame_capacity > 0 {
+            let start = self.applied_master_volume;
+            let end = self.master_volume;
+            #[allow(clippy::cast_precision_loss, reason = "a frame index within one block")]
+            let frames = frame_capacity as f32;
+            let (pairs, _) = out.as_chunks_mut::<2>();
+            for (frame, pair) in pairs.iter_mut().take(frame_capacity).enumerate() {
+                #[allow(clippy::cast_precision_loss, reason = "a frame index within one block")]
+                let gain = start + (end - start) * ((frame + 1) as f32 / frames);
+                pair[0] *= gain;
+                pair[1] *= gain;
+            }
+            self.applied_master_volume = end;
         }
 
         for sample in out.iter_mut() {
@@ -393,11 +430,11 @@ mod tests {
     }
 
     #[test]
-    // A power-of-two volume over exactly representable samples: the scaled
+    // Power-of-two gains over exactly representable samples: the scaled
     // output is exact, so float equality is the point.
     #[allow(clippy::float_cmp)]
     fn the_master_volume_scales_every_channel_including_one_already_playing() {
-        let buffer = mono_buffer(&[0.5; 8], 8_000, None);
+        let buffer = mono_buffer(&[0.5; 16], 8_000, None);
         let mut mixer = Mixer::new(8_000);
         assert_eq!(mixer.master_volume(), 1.0);
         mixer.play(play_request(buffer));
@@ -406,15 +443,67 @@ mod tests {
         mixer.render(&mut out);
         assert_eq!(out, [0.5; 4]);
 
-        // Turned down mid-sound: the channel already playing is what
-        // gets quieter.
+        // Turned down mid-sound: the channel already playing is what gets
+        // quieter, ramped across the next block (1.0 -> 0.5 over two
+        // frames) and then held.
         mixer.set_master_volume(0.5);
+        mixer.render(&mut out);
+        assert_eq!(out, [0.375, 0.375, 0.25, 0.25]);
         mixer.render(&mut out);
         assert_eq!(out, [0.25; 4]);
 
         mixer.set_master_volume(0.0);
         mixer.render(&mut out);
+        assert_eq!(out, [0.125, 0.125, 0.0, 0.0]);
+        mixer.render(&mut out);
         assert_eq!(out, [0.0; 4]);
+    }
+
+    /// A step in the master volume never reaches the output as a step: over
+    /// a block of 64 frames, consecutive frames differ by at most one
+    /// sixty-fourth of the change.
+    #[test]
+    fn a_master_volume_change_is_ramped_across_the_block_not_stepped() {
+        let buffer = mono_buffer(&[1.0; 256], 8_000, None);
+        let mut mixer = Mixer::new(8_000);
+        mixer.play(play_request(buffer));
+        let mut out = [0.0f32; 128];
+        mixer.render(&mut out);
+
+        mixer.set_master_volume(0.0);
+        mixer.render(&mut out);
+        let left: Vec<f32> = out.iter().step_by(2).copied().collect();
+        assert!(left[0] > 0.9, "the ramp starts where the last block ended");
+        assert!(left[63].abs() < 1e-6, "and ends at the new setting");
+        for pair in left.windows(2) {
+            assert!(pair[0] - pair[1] <= 1.0 / 64.0 + 1e-6, "{pair:?}");
+        }
+    }
+
+    #[test]
+    fn stop_all_stops_every_class() {
+        let mut mixer = Mixer::new(8_000);
+        for (entity, class) in [
+            ChannelClass::Auto,
+            ChannelClass::Weapon,
+            ChannelClass::Voice,
+            ChannelClass::Item,
+            ChannelClass::Body,
+            ChannelClass::Stream,
+            ChannelClass::Static,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            mixer.play(PlayRequest {
+                entity: u32::try_from(entity).expect("seven classes"),
+                class,
+                ..play_request(mono_buffer(&[0.5; 4], 8_000, Some((0, 4))))
+            });
+            assert_eq!(mixer.channel_count(class), 1);
+        }
+        mixer.stop_all();
+        assert_eq!(mixer.active_channel_count(), 0);
     }
 
     #[test]
