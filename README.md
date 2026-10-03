@@ -560,10 +560,15 @@ short list, which every summary they print names on its own row. It is a
 planned to walk from one level change to the next and never detour to a
 weapon pickup, so a chain run arrives in the later maps carrying nothing,
 while a player who had walked those same maps would be carrying what the
-maps handed them. The twelfth map is reached by a route that has to hold
-its ground while a scripted chain runs, which empty hands cannot do — so
-the harness supplies the one thing the routes never stop for, and says so
-in the report. Pass `--start-inventory ""` to walk with nothing.
+maps handed them. It was added for the twelfth map, which is reached by a
+route that holds its ground while a scripted chain runs, at a time when
+empty hands could not: the monsters that chain puts in front of the
+player carry the published `Prisoner` spawnflag, and until that flag was
+modelled they fought instead of waiting for the map's own script. With it
+modelled the shipped chain reaches the same twelve distinct maps with
+nothing in hand, so no shipped hop needs the loadout any more; the option
+stays, and the report still names it when it is used. Pass
+`--start-inventory ""` to walk with nothing.
 
 It is meant to be **temporary**: the real answer is a planner that takes a
 bounded detour to a pickup lying near the path it was going to walk

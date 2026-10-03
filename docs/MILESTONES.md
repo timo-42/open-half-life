@@ -6588,3 +6588,123 @@ attack-trace filter stays load-bearing until it is closed.
 `--all-features`), `cargo test --workspace`, policy, graph, combat-smoke
 37/37, campaign-smoke 93/93, chain-walk unchanged at **distinct depth
 11**, Pass (measured on the base before M9.37 landed).
+
+## M9.NEXT — Monsters a map holds prisoner: the `Prisoner` spawnflag, and the eleventh hop empty-handed
+
+M9.37 read the eleventh map's danger as a fight. The map's own chain
+teleports the player through two stops and puts them in front of hostile
+monsters, so the route learned to guard its spot and the harness learned
+to hand the player a weapon: distinct depth 12, Pass, with **9.1 health**
+at the level change, one hit wide. Empty-handed, the same chain reached
+depth 11 and arrived dead. Neither answer asked why the monsters were
+fighting at all.
+
+**The monsters were never meant to fight.** The ones that did the damage
+carry the published `Prisoner` spawnflag, bit 16, and a moment after the
+teleport the map fires an ordinary `scripted_sequence` — no `Override AI`
+— at them: the player is brought there to *watch* something. This project
+did not model the flag. The monsters saw the player, went into combat,
+and the script arrived to find them already fighting; a script without
+`Override AI` leaves a monster in combat alone, as the published rule says
+it must (and as `ohl_engine::ai`'s script possession already does), so the
+monsters kept shooting a player who was only ever meant to look on. That
+reading comes from the interrupted run's local per-tick instrumentation
+(deleted, never committed); the measurements below confirm it without
+any.
+
+**What the flag is.** Two TWHL sources, both fetched directly and cited
+in `docs/FORMAT_SOURCES.md`, "Monster definitions": the "VERC: Common
+Monster Properties" entry — "When this is checked, normal AI is disabled,
+so the monster won't attack the player. This can be useful when you're
+using normally offensive monsters in a scripted_sequence." — and the line
+every `monster_*` page carries for the bit: "Won't attack, or be attacked
+by, other monsters." The first source names this exact use.
+
+**What is modelled.** The spawnflag becomes an `ohl_ai::Prisoner` marker
+when the level's monsters are attached. A prisoner never acquires an
+enemy, by any of the three routes a monster has: sight, a squad mate's
+shared enemy, or being hurt. Every sighting with a prisoner on either end
+— a prisoner looking, or a prisoner being looked at — reads as "no
+relationship" whatever the class matrix says, so no monster ever chooses
+one as its enemy either. Having no enemy, a prisoner never reaches the
+combat state, and an ordinary script takes it over with the player
+standing in front of it. These readings are this project's, and recorded
+as such: "normal AI is disabled" is read as hostility disabled, not the
+monster switched off (it still idles, hears, and walks and plays a script,
+because the same sentence is about putting it in one); being hurt does
+not lift the flag, since neither source names an exception, and whether a
+retail prisoner shot by the player turns on them is `TODO(black-box)`; and
+a `monstermaker`'s children, built from its `monstertype` alone, are never
+prisoners. The marker is derived from the definition and never changes,
+so it needs no save field: a carried or restored monster is rebuilt from
+the same definition, spawnflags included.
+
+**One hostility rule, not two.** The "no relationship" reading lives in
+one function, `ohl_ai::sighting_relationship`, which `look` reads every
+sighting through. The engine's list of monsters hostile to the player
+(`Game::hostile_monster_eyes`) already promised to be "not a second
+hostility rule", and with the flag modelled it would have become one: the
+guard would have aimed at, or backed away from, monsters that never fight,
+and a route waiting for a map to run its script on one would have walked
+off its spot to flee it. The list now goes through the same function and
+never holds a prisoner. Measured on the map, this half is not what saves
+the player (stubbing it alone still walks to depth 12, Pass); it is kept
+because the list must not disagree with the monsters it describes, and
+its own fixture tests pin it.
+
+**The eleventh hop, measured.** Every row is `cargo xtask chain-walk`
+against the same imported payload, from the same tree, with the
+eleventh hop's shipped `guard` route unchanged; "flag stubbed" is that
+tree with only the spawnflag read forced off.
+
+| build | `--start-inventory` | distinct depth | stopped at | result |
+| --- | --- | --- | --- | --- |
+| flag stubbed | `""` | 11 | arrived dead | Fail |
+| flag stubbed | `weapon_357,ammo_357,ammo_357` | 12 | no further route | Pass |
+| flag modelled | `""` | **12** | no further route | **Pass** |
+| flag modelled | `weapon_357,ammo_357,ammo_357` | 12 | no further route | Pass |
+
+**The eleventh hop now survives empty-handed.** A local, uncommitted
+health probe at each level change reads 99.1 at the eleventh — with an
+empty loadout and with the harness one alike — against M9.37's 9.1: the
+player takes no damage on that map at all, and the 0.9 missing is from
+earlier hops. With the flag modelled even a plain `wait` in place of the
+two `guard` lines reaches depth 12, Pass, with either loadout, where the
+same plain-wait route with the flag stubbed arrives dead at depth 11. The
+shipped route is left exactly as M9.37 planned it — `guard`, which the
+planner emits for any wait that long and which costs nothing when there
+is nothing to defend against — and no route file changes here.
+
+**The harness loadout is no longer needed by any shipped hop.** M9.37
+added `--start-inventory` because empty hands could not hold the eleventh
+map, and called it temporary. That reason is gone. This milestone leaves
+the default where it is: the pickup-detour branch (#170, open as this is
+written) changes it to empty, and its README text — that a walk with
+nothing "dies on the last hop" — stops being true once this lands, so
+whichever of the two merges second has to reconcile that paragraph. Both
+walks above pass the flag explicitly so neither result depends on which
+default is in place.
+
+**Tests.** `ohl-ai` unit tests cover the spawnflag becoming the marker
+(only on the entity that carries it), a prisoner seeing a hostile without
+reading it as an enemy, a hostile seeing a prisoner without choosing it,
+no enemy from sight or damage across two hundred ticks and a heavy hit,
+and a prisoner squad member not taking its leader's enemy.
+`crates/ohl-engine/tests/prisoner_monsters.rs` runs the same room with
+and without the flag: the ordinary monster hurts the player and the
+prisoner never does; an ordinary script fired a second after the player
+appears possesses the prisoner and is refused by the ordinary monster
+(the eleventh hop's failure in miniature); the prisoner is not on the
+hostile list; and an empty-handed guard holds its ground in front of a
+prisoner where it backs away from the ordinary monster. Eight mutation
+probes — the sighting rule ignoring the flag, each half of it
+(looking/looked at) alone, the squad and damage filters, the spawnflag
+read, the marker insert, and the hostile-list filter — each fail at least
+one of these.
+
+**Gates**: fmt, clippy (workspace, `--features dev-tools`, and
+`--all-features`), `cargo test --workspace`, policy, graph, combat-smoke
+37/37 with 0 unexpected lines, campaign-smoke 93/93, and
+`cargo xtask chain-walk` at **distinct depth 12**, Pass, both with
+`--start-inventory ""` and with `--start-inventory
+weapon_357,ammo_357,ammo_357`.
