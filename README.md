@@ -775,8 +775,12 @@ it interactively on a real screen.
   underneath), and a monster's position resumes correctly from a save
   rather than snapping back to its map spawn point on the next AI think.
 - **Interactive map logic**: touch triggers (fired by the player's own
-  movement, not only `use`, including `trigger_changelevel`), doors,
-  buttons, `func_train`/`func_tracktrain` track trains,
+  movement, not only `use`, including `trigger_changelevel`), doors
+  (opened by the player's or a monster's touch, and reversing — dealing
+  their `dmg` — when they close on someone), buttons,
+  `func_train`/`func_tracktrain` track trains (including a `path_track`
+  switch's `altpath` branch and a `func_trackchange` handing a train the
+  far end of a path),
   `trigger_camera` view sequences, scripted sequences/talk monsters,
   `monstermaker`s (including toggling one by name via `use`/`trigger`),
   and level transitions by touch (`trigger_changelevel`) or by `use`.
@@ -856,8 +860,9 @@ it interactively on a real screen.
   input) but not against a real display server and real hardware input.
 
 **Known gaps** (see `docs/MILESTONES.md`'s "Status as of" sections for the
-full list): `func_tracktrain` `altpath` branching is recorded but not
-applied; a brush entity's own `angles` keyvalue (a rotated door or
+full list): a thrown `path_track` switch (`altpath` branching is applied,
+but its position is not saved) reverts to its spawn state on load; a brush
+entity's own `angles` keyvalue (a rotated door or
 platform) is not yet applied to its collision shape; a `scripted_sequence`
 target's pre-trigger idle animation (`m_iszIdle`) is not yet modelled; a
 `monstermaker`'s already-spawned children are not themselves part of any

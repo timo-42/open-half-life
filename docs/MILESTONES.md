@@ -7610,3 +7610,147 @@ weapon_357,ammo_357,ammo_357` (arrivals 2 to 12 at one weapon and
 twenty-four rounds) and with `--start-inventory ""` (arrivals 2 to 12 at
 `0 weapon(s), 0 round(s)`) — the same depth, time and arrivals M9.40
 reports.
+
+## M9.NEXT — The door that gives way: blocked movers, a railway switch, a far end, and a monster's touch
+
+`docs/FORMAT_SOURCES.md` had five gaps standing against brush movers, each
+recorded in its own item and each pointing at the others. One of them
+turned out to be already closed. The other four are closed here, and the
+citations that were missing for them were found on pages that fetch
+directly — no search-summary caveat for any of it.
+
+**The one that was already done.** The assignment listed rotating movers
+as carrying no riders "because they never set `Level::brush_velocity`",
+which is what item 24 says. Item 26 — M9.6 — is the fix: a rotating brush
+records its pivot and angular velocity separately, and a rider is carried
+at the tangential speed of the point under their feet; M9.33 composed that
+with a `func_platrot`'s translation. The rider tests for a `func_rotating`
+disc, a `func_platrot` and its long ride all pass unchanged, and nothing
+was written for this. The stale paragraph now carries an appended
+correction pointing at the item that superseded it. Reading a document's
+gaps from the item that first recorded them, rather than from the last
+one that touched them, is how an assignment ends up asking for work that
+exists; worth saying so plainly rather than quietly re-describing the
+existing mechanism as new.
+
+**A push that pushes.** `Level::movers_blocked` had been published since
+the mover-riders package as a signal nobody consumed, and reading the
+push behind it closely showed why it never could have been: the push
+traced from the player's own origin, which is *inside* the mover's new
+solid by the time the push runs, so the trace started solid, travelled
+nowhere, and reported every embed — a door's leading face landing a
+hair's width into a player standing in the doorway — as a block. The push
+now tests the destination instead, the same way the lift ride already
+resolved a rising floor: the player is moved the mover's own distance
+when that is clear, and the mover is blocked when it is not. The brush
+the player is *standing on* is left to the ride blend, which owns it. A
+monster gets the same treatment from phase 12, against the monster-side
+collision model — the first time anything has moved a monster out of a
+door's way at all.
+
+**What a blocked mover does.** The Sven Co-op `func_door` page states it
+in one sentence: a blocked door applies its damage and moves back the way
+it came, and one blocked while closing on its own delay keeps trying.
+That is one rule in `Simulation::block_mover` — swap `Opening` for
+`Closing`, re-express the timer so the leaf does not jump — and both
+halves of the sentence fall out of the existing state machine: a door
+reopened this way reaches `Open` with its ordinary `wait` and tries again;
+one blocked while opening closes and idles. The other movers with a cited
+`dmg` (`func_rotating`, `func_plat`, `func_pendulum`, the two trains) deal
+it and carry on, since no page says they do anything else. Damage goes
+through the one queue every other hit uses, typed as a crush, and lands
+once per blocked attempt: the reversal takes the door off the blocker on
+the next step, so it cannot land twice. The engine test walks a sliding
+door open, parks the player in the doorway, and watches the closing leaf
+push them to the corridor wall, block, deal exactly its `dmg`, and back
+off — with the player never inside solid on any tick of it. A second
+engine test does the same to a monster: a `monster_barney` its
+`scripted_sequence` walked into the doorway is pushed forty units to the
+wall by the closing leaf, the door reverses, and the guard — not the
+player, who is nowhere near — loses the door's `dmg` once per attempt.
+
+**A railway switch.** `altpath` was parsed and never read. The published
+pages describe it as exactly a switch — "if path_track is triggered, it
+changes its next stop target to the name of Branch Path" — and the
+question was not what it does but when a train that already holds a
+resolved chain learns of it. The answer chosen: the moment a switch is
+thrown, every train re-splices its chain from the node it is at (or is
+committed to, mid-segment) forward, against the switches as they now
+stand. A train short of the switch is re-routed; one past it keeps its
+track; one mid-way to a node it was already sent to still arrives there.
+"Branch Reverse" starts a node with its branch selected, and the
+documented `triggerstate` of a relay selects a side outright. The
+engine test fires a relay at a fork on the first tick and reads which
+end the train arrives at, with the unthrown fork as the control.
+
+**A far end.** A `func_trackchange` was seating every train at node 0 of
+`PathChain::build(name)`, and for the name the pages document as the
+*last* node of its path — `toptrack` without "Start at Bottom",
+`bottomtrack` with it — that is a one-node chain and a dead end on
+arrival. The rule now: the far end is handed the whole chain leading up
+to it, walked backward through `target` links to the head, and the train
+is seated there travelling backward — the only direction that leaves the
+node along the path. Which way a train handed a far end travels is this
+project's reading and is marked as such.
+
+**A monster's touch.** `touch_doors` took the player's box and nothing
+else. It is now the `None` case of `touch_doors_by`, which phase 12 calls
+once per living monster with its own hull, edge-tracked per monster and
+door, and the cited "Monsters Can't" spawnflag (512, on both door
+classnames) is the one extra exclusion a monster gets. The first version
+skipped script-held monsters, on the reasoning that their transform sync
+does; the engine test found the guard walking its `scripted_sequence`
+route straight up to the closed leaf and standing there — the walk *is*
+the script's hold — and the exclusion was removed. A `monster_barney`
+now walks a route through a closed door, opens it, and reaches its mark;
+with the flag set it stands at the leaf. A corpse in the touch margin
+opens nothing, each toucher (the player and every monster) keeps its own
+edge on each door, and a `func_door_rotating` a monster opens swings away
+from the monster rather than from the player — each pinned by its own
+test.
+
+The page that cites "Monsters Can't" also says that without the flag a
+monster can move a door "even if it is a use-only- or
+trigger-only-door". That half is not done, on purpose, and is marked
+project-authored: this
+project's model of "a monster causes a door to move" is its hull touching
+the door, so letting monsters through the named and "Use Only"
+exclusions would open a trigger-only door for any monster idling against
+it, ahead of the trigger the map gates it on — a broader effect than the
+page describes, not the same one.
+
+**Not done**, recorded rather than approximated: a blocked
+`func_rotating`/`func_plat`/`func_tracktrain` does not halt or reverse
+(no page says it does, only that it damages); `func_rotating`'s "Fan
+pain", "Acc/Dcc" and "Not solid" spawnflags, now cited, are not
+implemented; triggering a branchless `path_track` does nothing here,
+since the cited "the train stops" needs a "Disabled" spawnflag this
+project reads as "Wait for retrigger"; only a train's forward direction is
+re-spliced; a thrown switch's position is not saved, and reverts to its
+spawn state on load; a rider on a lift that carries them into a ceiling
+is not crushed, because the brush under the player is deliberately never
+reported blocked; a monster does not open a use-only or trigger-only
+door, though the cited page says it can; and a rotating platform still
+carries a rider's position but not their facing, exactly as item 26
+already records.
+
+Every test above was checked against a stub of what it guards — 26
+probes: the destination push, the standing-brush exclusion (a
+`func_platrot` rider test is what catches that one), the reversal and its
+timer, each mover's `dmg` and the two spawn-time attachments, the monster
+push and the monster block, the monster touch and its script-held
+inclusion, "Monsters Can't", the corpse exclusion, the activator, the per-toucher edge, the switch arm and
+its use types, the re-splice and its commit point, "Branch Reverse", the
+branch walk, and the far end's seat, direction and walk back. Each one
+fails at least one test. A redundant `alive` filter on the monster list
+was removed when its probe passed: a corpse is already out of that list
+because phase 10 strips its `MonsterAi` the step it dies.
+
+**Gates**: fmt; clippy (workspace, `--all-targets`, also with
+`--features dev-tools` and with `--all-features`); `cargo test
+--workspace` (2471 passed, 0 failed, 31 ignored); policy; graph;
+combat-smoke 37/37 with 0 unexpected lines; campaign-smoke 93/93; and
+`cargo xtask chain-walk --start-inventory weapon_357,ammo_357,ammo_357`
+at **distinct depth 12**, Pass, the same depth as M9.37. The walk's lifts,
+trains and doors ride through the new push and block paths without
+changing where the chain gets to.
