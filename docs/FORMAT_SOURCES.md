@@ -6581,3 +6581,181 @@ Half-Life's sound file layout as reusable data. The whole path from those
 three functions to a rendered channel is now built and tested; the day a
 reviewed table exists, those three functions are the only thing that has to
 change.
+
+## Map entities the registry used to drop (M9.NEXT)
+
+Appended for the entities package. Nothing above this heading is revised.
+Before it, `ohl_game::registry::Registry::build` gave each classname below
+nothing but its bare `Unknown` marker (or, for `trigger_endsection`, only
+the generic `trigger_*` bookkeeping), so a map that depends on one loaded
+without complaint and played wrong.
+
+**Access.** Unlike the HTTP 403s recorded for TWHL throughout this file,
+every TWHL page below answered a **direct fetch** on 2026-10-03 and is
+quoted from that fetch. The Valve Developer Community's GoldSrc pages still
+returned HTTP 403 that day; where one is used it is labelled as a
+**search-engine result summary**, as earlier entries already do.
+
+### `func_conveyor`
+
+[TWHL wiki: func_conveyor](https://twhl.info/wiki/page/func_conveyor):
+the entity "creates a moving conveyor belt that pushes things on top of
+it". Per literal:
+
+- `speed` — "Conveyor Speed": "The speed of push, and the scroll speed of
+  the `scroll*` textures. Defaults to *100* if *0* or not set." An explicit
+  `0` is therefore the default too (`ohl_game::registry::Conveyor::DEFAULT_SPEED`).
+- `angles` — "Pitch Roll Yaw": "Set the direction of push here." Read
+  through the same `movedir_from_angles` convention every other mover's
+  `angles`/`angle` already goes through (see "Entity keyvalues and map
+  logic" above): the yaw, or the `-1`/`-2` up/down sentinels. Pitch and
+  roll are not read, as for every other mover.
+- Spawnflag `1` **No push** — disables the push
+  (`SPAWNFLAG_CONVEYOR_NO_PUSH`).
+- Spawnflag `2` **Not solid** — "makes the entity non-solid; disables push
+  effect" (`SPAWNFLAG_CONVEYOR_NOT_SOLID`). Such a conveyor is still drawn
+  but is attached to neither collision model.
+- Triggering: "Triggering a `func_conveyor` will negate the speed thus
+  pushing in the opposite direction", and "there is no way to disable the
+  push effect after spawn directly other than killing the entity". So an
+  activation flips the sign of `speed` and nothing else; twice restores it.
+
+**Project-authored** (none of this is stated by the page): the push
+reaches the player through `ohl_engine::Level::brush_ride_velocity`, the
+same `ohl_physics::PlayerController::base_velocity` seam a moving
+`func_train` already carries a rider through, and so only while the
+player's ground brush is the conveyor ("pushes things on top of it"). It is
+kept apart from the brush's own (zero) translation velocity, which is also
+what the "a mover is closing on the player" push-out reads: a conveyor is a
+floor, not a piston. Monsters, pushables and dropped items are not carried.
+The texture scroll is not implemented. `TODO(black-box)`: a reversed
+conveyor's sign is not part of the save format, and is not carried across
+a level change; a save restores its spawn direction.
+
+### `func_wall_toggle`
+
+[TWHL wiki: func_wall_toggle](https://twhl.info/wiki/page/func_wall_toggle):
+"a `func_wall` that is made invisible when triggered"; unlike a
+`func_illusionary` it becomes "not there" when triggered. Spawnflag `1`
+**Starts invisible** (`SPAWNFLAG_WALL_TOGGLE_STARTS_INVISIBLE`); spawnflag
+`2048` "Not in Deathmatch" is a multiplayer flag and is not read. The VDC
+GoldSrc page ([Func_wall_toggle (GoldSrc)](https://developer.valvesoftware.com/wiki/Func_wall_toggle_(GoldSrc)),
+search-engine result summary) states the same thing from the other side:
+"When off, the brush will be non-solid and invisible." Every activation
+flips it.
+
+**Project-authored:** "off" is applied in the two places that own it —
+`ohl_game::brush::model_instances` stops listing the wall, and
+`ohl_engine::Level::sync_brush_collision` suspends its brush in *both*
+collision models (the player's and the monsters') through
+`ohl_physics::CollisionModel::set_brush_solid`, a reversible sibling of
+`detach_brush` that sets the brush's head links aside rather than dropping
+them, since re-attaching needs the BSP the running level no longer holds.
+The flag is re-read every step, and once before the level is handed out,
+so a wall that starts invisible is not solid even for the spawn settle. Its
+submodel is built at load whether it starts visible or not
+(`ohl_game::brush::buildable_model_instances`), so switching it on has
+geometry to draw. `TODO(black-box)`: a user comment on the TWHL page says
+the entity "can be solid or non-solid for players, but is always solid to
+grenades/bullets"; this project follows the page's own description and
+VDC's "non-solid" instead, so hitscan traces and projectiles, which trace
+the player's collision model, pass through a wall that is off. Like the
+conveyor's sign, the switched state is not saved.
+
+### `player_weaponstrip`
+
+[TWHL wiki: player_weaponstrip](https://twhl.info/wiki/page/player_weaponstrip):
+"When activated, this entity removes all the weapons that the player is
+carrying." Its only keyvalue is `targetname`; no spawnflags. The VDC
+GoldSrc page ([Player weaponstrip (GoldSrc)](https://developer.valvesoftware.com/wiki/Player_weaponstrip_(GoldSrc)),
+search-engine result summary) adds that it "only strips the player's
+weapons; any other items, primarily the player's HEV Suit, will not be
+removed", and records as a known bug of the original that the HUD's ammo
+display is not cleared, "only changing the ammo pool to 0 and leaving you
+with the number of bullets that were in your magazine before the strip".
+
+Implemented as `ohl_game::logic::Event::WeaponStrip`, applied inside the
+fixed step by `ohl_engine::Game::apply_weapon_strips`: every weapon goes,
+and every reserve pool is set to zero (`ohl_combat::Inventory::strip_weapons`,
+the engine's `AmmoBank`). The suit and the long jump module stay ("any
+other items"). **Project-authored:** each weapon's loaded clip is emptied
+too, and the firing state machine is reset, so a gun given back later
+comes back unloaded; the HUD bug the summary describes is not reproduced.
+
+### `trigger_endsection`
+
+[TWHL wiki: trigger_endsection](https://twhl.info/wiki/page/trigger_endsection):
+"This entity ends the current game and returns the player to the game's
+main menu." The `section` keyvalue "must have a value for the entity to
+work"; its published values all return to the main menu, one also opening
+a web page. Spawnflag `1` **USE Only**: the entity "cannot be triggered by
+the player walking into it, but must be triggered by another entity"
+(`SPAWNFLAG_ENDSECTION_USE_ONLY`).
+
+Implemented as `ohl_game::logic::Event::EndSection`, raised by a touch of
+its volume (unless USE Only) or a fire by name, and only when `section` is
+set; `ohl_engine::GameEvent::EndSection` carries nothing map-derived, and
+the `section` string never leaves `ohl-engine`. The interactive window
+does what the page says — it stops ticking the game and shows the main
+menu. **Project-authored:** a scripted or headless run has no menu, so
+there the run simply ends where it stands, logging the fixed line "The
+section ended."; no web page is ever opened. `TODO(black-box)`: the same
+page says the entity "requires the player as its activator" and so cannot
+be fired through a `trigger_relay` or a `multisource`, "since those would
+make themselves the activator instead". This project's map logic does not
+track activators that way (the player is not a registry entity), so a
+relay or master that fires one here does end the section.
+
+`game_end` is not implemented, on the same site's word:
+[TWHL wiki: game_end](https://twhl.info/wiki/page/game_end) — "used to end
+a deathmatch map", with single-player endings left to `trigger_endsection`.
+
+### `weaponbox`
+
+[TWHL wiki: weaponbox](https://twhl.info/wiki/page/weaponbox) (already
+cited above for the `ammo_*` vocabulary): the entity "creates a canister
+full of specific ammo and/or items", stocked by keyvalues whose keys are
+case-sensitive ammunition names. Half-Life's are, verbatim: `357`, `9mm`,
+`ARgrenades`, `bolts`, `buckshot`, `Hand Grenade`, `Hornets`, `rockets`,
+`Satchel Charge`, `Snarks`, `Trip Mine`, `uranium`
+(`ohl_combat::weaponbox_ammo_key`); the page's expansion-pack keys are not
+matched. One "can't put in actual weapons ... only ammunition", so a
+`weaponbox` never unlocks a weapon. "Even if the ammunition load of a
+carried weapon is full, this entity will be picked up permanently": it is
+always taken, and whatever does not fit the carry cap is lost with it.
+"There is a limit of 32 ammo inputs" cannot be reached here: an entity's
+keyvalue table holds each key once, so at most twelve entries match.
+
+**Project-authored:** a value that is not a non-negative integer stocks
+nothing rather than being guessed at. `TODO(black-box)`: the page says the
+entity "is affected by gravity/physics"; here it stays where it was placed,
+touched by the same radius every other pickup uses.
+
+### `item_security`
+
+[TWHL wiki: item_security](https://twhl.info/wiki/page/item_security):
+"This entity has no 'game related behavior' besides storing in the
+player's inventory but its pickup ability is often used as a way to unlock
+other kinds of entities (by targeting a `multisource` which is the master
+of a door for example)." It "can be picked up without the suit", and
+"there is no 'limit' of how many security cards the player can carry".
+
+Implemented as `ohl_combat::PickupKind::SecurityCard`: always taken,
+granting nothing, and on pickup the entity's own `target` is fired
+(`ohl_engine::pickups`). **Project-authored:** only the card fires its
+target on pickup — no page reviewed here says the same of a weapon, ammo
+box or other item, and doing it for all of them would change every map's
+pickups at once. The carried count is not modelled: nothing reads it.
+
+### Not done
+
+- `ammo_egonclip` was attempted as an alias of `ammo_gaussclip` and
+  removed: no public source found on 2026-10-03 names it (a search returned
+  only `ammo_gaussclip` as the cell box), and a classname with no citation
+  may not enter source (`docs/CLEAN_ROOM.md` rule 7).
+- A count of "entities nothing in this build simulates" was attempted and
+  removed. `Unknown` marks every classname without an `ohl-game` arm,
+  which includes brush entities that are drawn and solid (`func_wall`),
+  nodes the navigation graph reads, and entities found only by name; a
+  count that called all of those ignored would be wrong more often than
+  right, and an honest one needs an audit of every consumer first.

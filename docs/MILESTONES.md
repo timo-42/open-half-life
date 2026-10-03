@@ -7464,3 +7464,110 @@ fallback and stuck-check changes move monsters differently, both chains
 were also run with a local, uncommitted per-hop probe (player health and
 the engine's damage, death and hit counters) on this branch and on its
 base: the two read identically at every hop, with either loadout.
+
+## M9.NEXT — The entities that fell through: a belt, a wall that comes and goes, and a strip
+
+`ohl_game::registry::Registry::build` has one arm per classname it knows
+and a fallthrough for the rest, and the fallthrough attaches a bare
+`Unknown` marker and says nothing. A map that leans on one of those
+entities loads cleanly and plays wrong: the conveyor that should carry the
+player is an ordinary floor, the wall a switch should open stays solid, the
+weapons a scene should take away stay in the player's hands. This
+milestone gives six of them an arm, each cited per keyvalue and spawnflag
+in `docs/FORMAT_SOURCES.md` ("Map entities the registry used to drop"),
+and every one of whose behaviours was checked by breaking it and watching a
+test fail.
+
+It is the remainder of an interrupted run. That run left about 1400 lines
+uncommitted and no milestone entry; what follows is what survived review of
+it, what was finished, and what was cut.
+
+**`func_conveyor`** carries what stands on it. Its brush never moves, so
+the push cannot come from the brush's own velocity; it is recorded as a
+separate *surface* velocity per attached brush and added to the ride
+velocity the player-move phase already reads for a `func_train`, so the
+belt reaches the player through the same seam and only while it is their
+ground. It is deliberately kept out of the velocity the "a mover is closing
+on the player" push-out reads: a conveyor is a floor, not a piston. Its
+published `speed` defaults to 100 when it is zero as well as when it is
+absent; triggering it negates the speed rather than switching it off; "No
+push" stops the push; and "Not solid" — missed by the first run — leaves
+the brush out of both collision models as well.
+
+**`func_wall_toggle`** stops being drawn and stops being solid when it is
+switched off, and both come back when it is switched on. The collision
+model could only ever *detach* a brush, and a detach is one-way: putting a
+brush back needs the BSP it was built from, which a running level no longer
+holds. `CollisionModel::set_brush_solid` sets the brush's links aside and
+restores them verbatim instead. Review found two gaps in the first run's
+version and both are closed: the monsters' collision model kept every
+switched-off wall solid, and a wall that *starts* invisible never had its
+geometry built at load — it would have become solid on being switched on,
+and stayed invisible. A level is now synced once before it is handed out,
+so a wall that starts off is not solid even for the spawn settle.
+
+**`player_weaponstrip`** empties the player's hands: every weapon, every
+reserve pool, and — a project choice — every loaded clip, with the firing
+state machine reset, so a gun handed back later does not still have the
+rounds it was holding chambered. That last one was measured, not assumed:
+without the reset, a strip followed by being given the same weapon again
+fires on the first trigger pull. The suit and the long jump module stay,
+as the published page says other items do.
+
+**`trigger_endsection`** ends the section. The menu that landed on main
+since the first run was written makes the published behaviour available
+directly: the window stops ticking the game and shows the main menu, which
+is what the page says the entity does. A scripted or headless run has no
+menu, so there it ends the run where it stands, logs "The section ended."
+once, and runs none of the script's remaining ticks. The first run had the
+window close instead, and had missed two published rules: an unset
+`section` makes the entity do nothing, and "USE Only" means walking into it
+does nothing either.
+
+**`weaponbox`** stocks the ammo its own case-sensitive keys name, never a
+weapon, and is "picked up permanently" even when nothing in it fits — the
+first run left a full one lying in the world, as an `ammo_*` box would be.
+**`item_security`** is picked up without the suit, grants nothing, and
+fires its `target`, which is how a map uses it to unlock a door through a
+master.
+
+**Cut, and why.**
+
+- `ammo_egonclip`, and a capital-letter spelling of it, as aliases of the
+  cell box. No public source found names either, so they may not be in
+  source at all.
+- A script-log count of "entities nothing in this build simulates". It was
+  built on the `Unknown` marker, and `Unknown` also marks every `func_wall`,
+  every navigation node and every entity that is only ever found by name —
+  things that are drawn, solid or read elsewhere. The count would have
+  called a map's own walls ignored. An honest one needs an audit of every
+  consumer of every classname first; until then the count is not shipped,
+  and the claims it needed in the AI and pickup spawn passes are gone with
+  it.
+- `game_end` is not implemented: its published purpose is to end a
+  deathmatch map, and single-player endings are `trigger_endsection`'s.
+
+**Not done.** A reversed conveyor and a switched wall are not saved (a save
+restores their spawn state) and are not carried across a level change; new
+persisted state needs its own save tag, and that is better added once,
+with the movers work also in flight. `trigger_endsection` is documented to
+work only with the player as its activator, so not through a relay or a
+master; this project's map logic does not track activators that way, so
+here a relay that fires one does end the section. A `weaponbox` does not
+fall under gravity. Bullets pass through a switched-off wall; a user
+comment on the TWHL page disagrees with the page itself on that, and it is
+recorded as a black-box question. The conveyor's texture scroll is not
+drawn.
+
+The one test the first run wrote for a plain `func_button` with `health` —
+a press path that already existed and had only ever been tested as a
+`func_rot_button` — is kept.
+
+**Gates**: fmt, clippy (workspace, `--features dev-tools`, and
+`--all-features`), `cargo test --workspace` (2496 passed, 0 failed),
+policy, graph, combat-smoke 37/37 with 0 unexpected lines, campaign-smoke
+93/93, and `cargo xtask chain-walk` at **distinct depth 12**, Pass,
+660.8 simulated seconds, both with `--start-inventory
+weapon_357,ammo_357,ammo_357` and with `--start-inventory ""`, measured
+after rebasing onto M9.39 — the depth M9.39 reports, and the simulated time
+M9.37 measured.
