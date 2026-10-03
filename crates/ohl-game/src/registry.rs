@@ -259,6 +259,39 @@ pub struct DoorUseOnly;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DoorPassable;
 
+/// Marks a `func_door`/`func_door_rotating` whose "Monsters Can't"
+/// spawnflag ([`SPAWNFLAG_DOOR_MONSTERS_CANT`]) is set: the Sven Co-op
+/// wiki's `Func_door` and `Func_door_rotating` pages (fetched directly;
+/// see `docs/FORMAT_SOURCES.md`, "Mover blocking, branching paths and
+/// monster-opened doors") document it as "If set, monsters cannot cause
+/// this door to move." Read by [`crate::logic::Simulation::touch_doors_by`]
+/// when the toucher is a monster rather than the player; a `use` press or
+/// another entity's fire chain is unaffected by it. Fixed at spawn from the
+/// map's own `spawnflags` keyvalue, a marker rather than a [`Door`] field
+/// for exactly the frozen-save-section reason [`DoorUseOnly`]'s own doc
+/// comment gives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct DoorMonstersCant;
+
+/// The documented `dmg` keyvalue of a brush mover that is *not* a
+/// [`Door`] — "the amount of damage to inflict on the object blocking the
+/// func_rotation's rotation" (`func_rotating`), "Damage inflicted when
+/// blocked" (`func_plat`), "When movement is blocked by the player, he
+/// will receive this amount of damage" (`func_pendulum`); see
+/// `docs/FORMAT_SOURCES.md`, "Mover blocking, branching paths and
+/// monster-opened doors", for each citation. A [`Door`] carries its own
+/// [`Door::dmg`] and a `func_train`/`func_tracktrain` its
+/// [`crate::track_train::TrackTrain::dmg`]; this component exists for the
+/// movers whose own component is reached by a frozen save section
+/// ([`Rotator`], [`Platform`], [`Pendulum`] — see [`DoorUseOnly`]'s doc
+/// comment for the rule), so the keyvalue can be carried without widening
+/// any of them. Attached only when the keyvalue parses to a positive value;
+/// read by [`crate::logic::Simulation::block_mover`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct BlockDamage(pub f32);
+
 /// `func_button`: `speed`, `wait`, `health`, `delay` and a `sounds` index.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -859,6 +892,21 @@ pub struct PathFireOnPass(pub String);
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PathFireOnDeadEnd(pub String);
 
+/// A `path_track`'s documented `altpath` ("Branch Path"): "The name of
+/// alternative path_track to go. If path_track is triggered, it's change
+/// it's next stop target to the name of 'Branch Path' path_track" (Sven
+/// Co-op Manor's `path_track` entry, fetched directly; see
+/// `docs/FORMAT_SOURCES.md`, "Mover blocking, branching paths and
+/// monster-opened doors"). Which of the two names a chain walk follows
+/// from this node is [`Path::branch_active`]; this component only carries
+/// the branch's name, and only for a node that declares one.
+///
+/// A separate component rather than a field on [`Path`] for the same
+/// reason [`PathFireOnPass`] is one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct PathBranch(pub String);
+
 /// `func_trackchange`/`func_trackautochange`: the moving piece of track
 /// that carries a `func_tracktrain` from one `path_track` chain to
 /// another, rotating and/or travelling between them.
@@ -1015,6 +1063,21 @@ pub struct Path {
     /// after `wait` seconds. See
     /// [`crate::track_train::path_stop_from_flags`].
     pub stop: bool,
+    /// Whether a chain walk leaving this node follows its [`PathBranch`]
+    /// (`altpath`) instead of its `target` — the railway switch the
+    /// documented "Branch Path" keyvalue describes. Flipped by triggering
+    /// the node (`crate::logic::Simulation::activate`'s `Path` arm); starts
+    /// `true` when the documented "Branch Reverse" spawnflag
+    /// ([`crate::track_train::path_branch_reversed_from_flags`], "Swap the
+    /// branch path and next target on start") is set. Meaningless for a
+    /// node with no [`PathBranch`], where it stays `false`.
+    ///
+    /// `Path` is reached by no save section (see `ohl_engine::save`'s
+    /// "Frozen section shapes"), so this field widens nothing that is
+    /// persisted; it is also *not itself persisted* — a documented gap
+    /// recorded in `docs/FORMAT_SOURCES.md` under "Mover blocking,
+    /// branching paths and monster-opened doors".
+    pub branch_active: bool,
 }
 
 /// `multi_manager`: every non-standard keyvalue is a `target -> delay`
@@ -1811,6 +1874,10 @@ pub const SPAWNFLAG_DOOR_USE_ONLY: u32 = 256;
 /// [`DoorPassable`]'s own doc comment for the cited wording. Carried on
 /// [`DoorPassable`].
 pub const SPAWNFLAG_DOOR_PASSABLE: u32 = 8;
+/// `func_door`/`func_door_rotating`'s "Monsters Can't" spawnflag: see
+/// [`DoorMonstersCant`]'s own doc comment for the cited wording. Carried
+/// on [`DoorMonstersCant`].
+pub const SPAWNFLAG_DOOR_MONSTERS_CANT: u32 = 512;
 
 /// `func_trackchange`/`func_trackautochange`'s "Auto Activate train"
 /// spawnflag. Sven Co-op Manor's `func_trackautochange` entry
@@ -2181,6 +2248,9 @@ impl Registry {
                     if def.spawnflags & SPAWNFLAG_DOOR_PASSABLE != 0 {
                         world.insert_one(entity, DoorPassable).ok();
                     }
+                    if def.spawnflags & SPAWNFLAG_DOOR_MONSTERS_CANT != 0 {
+                        world.insert_one(entity, DoorMonstersCant).ok();
+                    }
                 }
                 // `func_door_rotating`: TWHL wiki `func_door_rotating`
                 // (`docs/FORMAT_SOURCES.md`, "Entity keyvalues and map
@@ -2243,6 +2313,9 @@ impl Registry {
                     if flags & SPAWNFLAG_DOOR_PASSABLE != 0 {
                         world.insert_one(entity, DoorPassable).ok();
                     }
+                    if flags & SPAWNFLAG_DOOR_MONSTERS_CANT != 0 {
+                        world.insert_one(entity, DoorMonstersCant).ok();
+                    }
                     world
                         .insert_one(
                             entity,
@@ -2272,6 +2345,7 @@ impl Registry {
                         angle_deg: 0.0,
                     };
                     world.insert_one(entity, rotator).ok();
+                    attach_block_damage(&mut world, entity, def);
                 }
                 // `func_rot_button`: TWHL wiki `func_rot_button` (`docs/
                 // FORMAT_SOURCES.md`, "Entity keyvalues and map logic").
@@ -2420,6 +2494,7 @@ impl Registry {
                         angle_deg: 0.0,
                     };
                     world.insert_one(entity, pendulum).ok();
+                    attach_block_damage(&mut world, entity, def);
                 }
                 "func_button" => {
                     let button = Button {
@@ -2463,6 +2538,7 @@ impl Registry {
                         timer: 0.0,
                     };
                     world.insert_one(entity, platform).ok();
+                    attach_block_damage(&mut world, entity, def);
                 }
                 // `func_platrot`: Sven Co-op wiki `func_platrot` (`docs/
                 // FORMAT_SOURCES.md`, "Entity keyvalues and map logic").
@@ -2599,6 +2675,15 @@ impl Registry {
                     world.insert_one(entity, message).ok();
                 }
                 "path_corner" | "path_track" => {
+                    // `altpath` is a `path_track` keyvalue only; a
+                    // `path_corner` carrying one is read the same way, which
+                    // is harmless (no published `path_corner` declares one).
+                    let altpath = def
+                        .keyvalues
+                        .get("altpath")
+                        .map(|altpath| altpath.trim())
+                        .filter(|altpath| !altpath.is_empty())
+                        .map(str::to_string);
                     let path = Path {
                         wait: numeric(def, "wait", 0.0),
                         speed: def
@@ -2607,8 +2692,13 @@ impl Registry {
                             .and_then(|v| v.trim().parse::<f32>().ok())
                             .and_then(crate::track_train::path_speed_override),
                         stop: crate::track_train::path_stop_from_flags(def.spawnflags),
+                        branch_active: altpath.is_some()
+                            && crate::track_train::path_branch_reversed_from_flags(def.spawnflags),
                     };
                     world.insert_one(entity, path).ok();
+                    if let Some(altpath) = altpath {
+                        world.insert_one(entity, PathBranch(altpath)).ok();
+                    }
                     if let Some(message) = def
                         .keyvalues
                         .get("message")
@@ -2985,6 +3075,16 @@ fn numeric(def: &EntityDef, key: &str, default: f32) -> f32 {
         .and_then(|value| value.trim().parse::<f32>().ok())
         .filter(|value| value.is_finite())
         .unwrap_or(default)
+}
+
+/// Attaches a [`BlockDamage`] carrying `def`'s `dmg` keyvalue to `entity`
+/// when that keyvalue is a positive number; see [`BlockDamage`]'s own doc
+/// comment for which movers this is used for and why.
+fn attach_block_damage(world: &mut World, entity: Entity, def: &EntityDef) {
+    let dmg = numeric(def, "dmg", 0.0);
+    if dmg > 0.0 {
+        world.insert_one(entity, BlockDamage(dmg)).ok();
+    }
 }
 
 #[cfg(test)]

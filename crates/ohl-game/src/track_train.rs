@@ -52,6 +52,18 @@ const MAX_TRANSITIONS_PER_TICK: usize = 64;
 /// a defensible best-public-source value, not a confirmed engine constant.
 const PATH_TRACK_STOP_FLAG: u32 = 1;
 
+/// `path_track`'s documented "Branch Reverse" spawnflag: "Swap the branch
+/// path and next target on start" (Sven Co-op Manor's `path_track` entry
+/// and the Sven Co-op wiki's own `path_track` page, both fetched directly;
+/// see `docs/FORMAT_SOURCES.md`, "Mover blocking, branching paths and
+/// monster-opened doors"). Read as "the node starts with its branch
+/// active" — the same state one trigger would otherwise put it in — so the
+/// first trigger switches it back to `target`.
+///
+/// TODO(black-box): both pages document the same bit, but neither is a
+/// primary HL1 SDK source; treat it the way [`PATH_TRACK_STOP_FLAG`] is.
+const PATH_TRACK_BRANCH_REVERSE_FLAG: u32 = 4;
+
 /// `func_tracktrain`'s documented "No User Control" spawnflag: the train
 /// cannot be steered/accelerated by a player standing on it. This project
 /// implements no player-driven control at all (only triggered path
@@ -193,11 +205,18 @@ struct PassedNode {
 /// own `target` (the same generic [`Target`] component every entity with a
 /// `target` keyvalue carries).
 ///
-/// Branching (`path_track`'s documented `altpath`) is not implemented: this
-/// project only follows the single `target` chain a map's primary route
-/// describes. TODO(black-box): `altpath` branch selection semantics are not
-/// implemented; a map that relies on it will have its train follow the
-/// chain as if `altpath` did not exist.
+/// Branching — `path_track`'s documented `altpath` ("Branch Path") — is
+/// resolved *as the chain is walked*: a node whose [`Path::branch_active`]
+/// is set is followed through its [`crate::registry::PathBranch`] name
+/// instead of its `target`, so the chain a train holds is the route the
+/// map's switches currently select. Throwing a switch (triggering the
+/// `path_track`; `crate::logic::Simulation::activate`'s `Path` arm) changes
+/// what a walk from that node resolves to, and every train's chain is then
+/// re-spliced from its own current node by
+/// [`TrackTrainState::resplice_chain`], so a train already past the switch
+/// keeps the track it is on and one still approaching it takes the branch.
+/// See `docs/FORMAT_SOURCES.md`, "Mover blocking, branching paths and
+/// monster-opened doors".
 #[derive(Debug, Clone, PartialEq)]
 pub struct PathChain {
     /// The resolved nodes, in chain order starting from the train's first
@@ -219,6 +238,111 @@ impl PathChain {
     #[must_use]
     pub fn build(registry: &Registry, first_name: &str, height: f32) -> Option<Self> {
         let mut nodes: Vec<PathNode> = Vec::new();
+        let looped = Self::walk_from(registry, first_name, height, &mut nodes);
+        if nodes.is_empty() {
+            None
+        } else {
+            Some(Self { nodes, looped })
+        }
+    }
+
+    /// The chain that *ends* at `last_name`: the node named, preceded by
+    /// every node that leads into it, found by walking `target` links
+    /// backward from it to the chain's head and then forward again through
+    /// [`Self::build`]. This is the chain a `func_trackchange` hands a
+    /// train it delivers to the far end of a path — the documented "last
+    /// path_track of the top path"/"last path_track at the bottom path"
+    /// (see `docs/FORMAT_SOURCES.md`, "Track trains and paths") — so the
+    /// train can ride that path *backward* from its far end rather than
+    /// being seated on a one-node chain and dead-ending on arrival.
+    ///
+    /// Falls back to [`Self::build`]`(last_name)` — the one-node chain —
+    /// when nothing targets `last_name`, or when the forward walk from the
+    /// head found does not actually end there (a switch mid-way currently
+    /// selecting a different branch, or a loop). A node with more than one
+    /// predecessor takes the lowest-id one, so the choice is deterministic
+    /// for a registry rebuilt from the same map. Bounded by
+    /// [`MAX_PATH_NODES`] like every other chain walk here.
+    #[must_use]
+    pub fn build_ending_at(registry: &Registry, last_name: &str, height: f32) -> Option<Self> {
+        let &last = registry.find(last_name).first()?;
+        let mut visited: HashSet<Entity> = HashSet::from([last]);
+        let mut head_name = last_name.to_string();
+        let mut current = last;
+        while visited.len() < MAX_PATH_NODES {
+            let Some((entity, name)) = Self::predecessor_of(registry, current) else {
+                break;
+            };
+            if !visited.insert(entity) {
+                break;
+            }
+            head_name = name;
+            current = entity;
+        }
+        let from_head = Self::build(registry, &head_name, height)
+            .filter(|chain| chain.nodes.last().is_some_and(|node| node.entity == last));
+        from_head.or_else(|| {
+            // The named node alone: a train seated at the last node of
+            // this chain is seated exactly where it was delivered, which
+            // `build(last_name)` — the forward walk *from* it — would not
+            // guarantee.
+            let mut chain = Self::build(registry, last_name, height)?;
+            chain.nodes.truncate(1);
+            chain.looped = false;
+            Some(chain)
+        })
+    }
+
+    /// The lowest-id `path_corner`/`path_track` whose currently selected
+    /// next name (see [`Self::next_name_of`]) resolves to `node`, with its
+    /// own `targetname`. `None` when nothing leads into `node`, which is
+    /// what makes a chain head a head.
+    fn predecessor_of(registry: &Registry, node: Entity) -> Option<(Entity, String)> {
+        let mut best: Option<(Entity, String)> = None;
+        for (entity, path, name) in &mut registry
+            .world
+            .query::<(Entity, &Path, &crate::registry::TargetName)>()
+        {
+            let leads_here = Self::next_name_of(registry, entity, path)
+                .is_some_and(|next| registry.find(&next).first() == Some(&node));
+            if leads_here
+                && best
+                    .as_ref()
+                    .is_none_or(|(best, _)| entity.id() < best.id())
+            {
+                best = Some((entity, name.0.clone()));
+            }
+        }
+        best
+    }
+
+    /// The name of the node a walk leaves `entity` toward: its
+    /// [`crate::registry::PathBranch`] while [`Path::branch_active`] is set,
+    /// its `target` otherwise. `None` at a documented dead end.
+    fn next_name_of(registry: &Registry, entity: Entity, path: &Path) -> Option<String> {
+        if path.branch_active
+            && let Ok(branch) = registry.world.get::<&crate::registry::PathBranch>(entity)
+        {
+            return Some(branch.0.clone());
+        }
+        registry
+            .world
+            .get::<&Target>(entity)
+            .ok()
+            .map(|target| target.0.clone())
+    }
+
+    /// Appends the nodes reachable from `first_name` onto `nodes` — which
+    /// may already hold a prefix, see [`TrackTrainState::resplice_chain`] —
+    /// following each node's currently selected next name, until a dead
+    /// end, a node already present in `nodes`, or [`MAX_PATH_NODES`].
+    /// Returns whether the walk closed a loop back to `nodes[0]`.
+    fn walk_from(
+        registry: &Registry,
+        first_name: &str,
+        height: f32,
+        nodes: &mut Vec<PathNode>,
+    ) -> bool {
         let mut current_name = first_name.to_string();
         let mut looped = false;
 
@@ -239,11 +363,7 @@ impl PathChain {
                 .get::<&Transform>(entity)
                 .map_or(Vec3::ZERO, |transform| transform.origin)
                 + Vec3::Z * height;
-            let next = registry
-                .world
-                .get::<&Target>(entity)
-                .ok()
-                .map(|target| target.0.clone());
+            let next = Self::next_name_of(registry, entity, &path);
             let message = registry
                 .world
                 .get::<&PathFireOnPass>(entity)
@@ -268,12 +388,7 @@ impl PathChain {
                 None => break,
             }
         }
-
-        if nodes.is_empty() {
-            None
-        } else {
-            Some(Self { nodes, looped })
-        }
+        looped
     }
 
     /// The node index a train moving forward from `index` would reach next,
@@ -403,6 +518,13 @@ pub fn path_speed_override(raw: f32) -> Option<f32> {
 #[must_use]
 pub fn path_stop_from_flags(spawnflags: u32) -> bool {
     spawnflags & PATH_TRACK_STOP_FLAG != 0
+}
+
+/// Reads the documented `path_track` "Branch Reverse" spawnflag
+/// ([`PATH_TRACK_BRANCH_REVERSE_FLAG`]) out of a raw `spawnflags` bitmask.
+#[must_use]
+pub fn path_branch_reversed_from_flags(spawnflags: u32) -> bool {
+    spawnflags & PATH_TRACK_BRANCH_REVERSE_FLAG != 0
 }
 
 /// A train's runtime position along its [`PathChain`]: which segment it is
@@ -603,6 +725,81 @@ impl TrackTrainState {
         self.carry_offset = Vec3::ZERO;
         self.carry_yaw = 0.0;
         self.moving = moving;
+    }
+
+    /// [`Self::relink`]'s mirror for a train handed the *far end* of a
+    /// chain: seats it at `chain`'s last node, travelling backward toward
+    /// the chain's head. This is what a `func_trackchange` does with a
+    /// train it delivers to the `path_track` documented as the "last" of
+    /// its path (see [`PathChain::build_ending_at`]): the only direction
+    /// that leaves that node along the path is back along it, so the train
+    /// rides the path in reverse rather than dead-ending where it landed.
+    /// Project behaviour, recorded in `docs/FORMAT_SOURCES.md` ("Mover
+    /// blocking, branching paths and monster-opened doors"); no reviewed
+    /// page states which way such a train travels.
+    pub fn relink_at_end(&mut self, chain: PathChain, moving: bool) {
+        let last = chain.nodes.len().saturating_sub(1);
+        self.relink(chain, moving);
+        self.node_index = last;
+        self.direction = -1.0;
+    }
+
+    /// Re-resolves the part of this train's chain it has not yet committed
+    /// to, against the registry's *current* `path_track` switch positions
+    /// ([`crate::registry::Path::branch_active`]), keeping every node up to
+    /// the one the train is at — or, mid-segment and moving forward, the
+    /// one it is heading for — exactly as they were. The train's own
+    /// position, direction, speed and timers are untouched, since nothing
+    /// it has already passed is re-read: a switch thrown *behind* a train
+    /// changes nothing for it, one thrown ahead of it changes where the
+    /// chain goes from there. `height` is the train's own documented
+    /// `height` keyvalue, applied to every newly resolved node the way
+    /// [`PathChain::build`] applies it.
+    ///
+    /// Only the forward direction is re-resolved: a train travelling
+    /// *backward* keeps every node behind its current one (the ones it is
+    /// heading into) as they were, since a `path_track`'s documented
+    /// "Branch Path" is an alternative *next* target and no reviewed page
+    /// describes a switch's effect on a train approaching it from its far
+    /// side. TODO(black-box).
+    ///
+    /// Returns whether the chain actually changed. Called by
+    /// `crate::logic::Simulation` for every train whenever a switch is
+    /// thrown; cheap when nothing changed, and bounded by
+    /// [`MAX_PATH_NODES`] otherwise.
+    pub fn resplice_chain(&mut self, registry: &Registry, height: f32) -> bool {
+        let committed = if self.direction >= 0.0 && self.t > 0.0 {
+            match self.chain.next_index(self.node_index) {
+                Some(other) if other > self.node_index => other,
+                // Mid-way across a looped chain's wrap segment: the whole
+                // chain is the prefix, and there is nothing past it to
+                // re-resolve.
+                Some(_) => return false,
+                None => self.node_index,
+            }
+        } else {
+            self.node_index
+        };
+        let mut nodes: Vec<PathNode> = self.chain.nodes[..=committed].to_vec();
+        let last_entity = nodes[committed].entity;
+        let next_name = registry
+            .world
+            .get::<&Path>(last_entity)
+            .ok()
+            .and_then(|path| PathChain::next_name_of(registry, last_entity, &path));
+        let looped = match next_name {
+            Some(next_name) => PathChain::walk_from(registry, &next_name, height, &mut nodes),
+            None => false,
+        };
+        let chain = PathChain { nodes, looped };
+        if chain == self.chain {
+            return false;
+        }
+        // A train parked at what used to be a dead end has somewhere to go
+        // again once it is started; let that next dead end fire afresh.
+        self.dead_end_fired = false;
+        self.chain = chain;
+        true
     }
 
     /// The node currently ahead of the train in its direction of travel,
@@ -2008,6 +2205,102 @@ mod tests {
         assert!((direction - 1.0).abs() < f32::EPSILON);
         assert_eq!(speed.to_bits(), 0.0f32.to_bits());
         assert_eq!(wait_timer.to_bits(), 0.0f32.to_bits());
+    }
+
+    /// The chain that ends at a named node is the whole path leading into
+    /// it, and a train relinked at that end rides the path backward: from
+    /// `node3` of the bent track, back through `node2` to `node1`, facing
+    /// the segment it is on the whole way.
+    #[test]
+    fn a_chain_built_ending_at_a_node_is_ridden_backward_from_that_end() {
+        let entities = bent_track(&[("speed", "100")]);
+        let registry = build_registry(&entities);
+        let chain = PathChain::build_ending_at(&registry, "node3", 0.0).expect("chain");
+        let names: Vec<Entity> = chain.nodes.iter().map(|node| node.entity).collect();
+        assert_eq!(
+            names,
+            vec![
+                registry.find("node1")[0],
+                registry.find("node2")[0],
+                registry.find("node3")[0]
+            ]
+        );
+        assert!(!chain.looped);
+
+        let mut state = train_state(&registry);
+        let train = train_component(&registry);
+        state.relink_at_end(chain, true);
+        assert_close(state.position(), Vec3::new(100.0, 100.0, 0.0));
+        // Heading from node3 back to node2 is straight down `-Y`, posed
+        // with the compiled half turn.
+        assert_eq!(state.travel_heading_degrees(&train), Some(-90.0));
+        state.advance(0.5);
+        assert_close(state.position(), Vec3::new(100.0, 50.0, 0.0));
+        state.advance(1.0);
+        assert_close(state.position(), Vec3::new(50.0, 0.0, 0.0));
+        state.advance(1.0);
+        assert_close(state.position(), Vec3::ZERO);
+        assert!(!state.moving(), "node1 is the far end's own dead end");
+    }
+
+    /// A node nothing leads into is its own one-node chain, exactly as
+    /// `build` gives it: the fallback for a far end that has no path.
+    #[test]
+    fn a_chain_built_ending_at_a_head_is_the_one_node_chain() {
+        let entities = bent_track(&[]);
+        let registry = build_registry(&entities);
+        let chain = PathChain::build_ending_at(&registry, "node1", 0.0).expect("chain");
+        assert_eq!(chain.nodes.len(), 1);
+        assert!(PathChain::build_ending_at(&registry, "nowhere", 0.0).is_none());
+    }
+
+    /// Re-splicing keeps every node the train is committed to and only
+    /// re-resolves what lies ahead: with `node2`'s branch thrown toward a
+    /// fourth node, a train still short of `node2` is re-routed, and one
+    /// already past it is not.
+    #[test]
+    fn resplice_re_resolves_only_the_chain_ahead_of_the_train() {
+        let mut entities = bent_track(&[("speed", "100"), ("startspeed", "100")]);
+        entities[2] = raw(&[
+            ("classname", "path_track"),
+            ("targetname", "node2"),
+            ("target", "node3"),
+            ("altpath", "node4"),
+            ("origin", "100 0 0"),
+        ]);
+        entities.push(raw(&[
+            ("classname", "path_track"),
+            ("targetname", "node4"),
+            ("origin", "100 -100 0"),
+        ]));
+        let registry = build_registry(&entities);
+        let node2 = registry.find("node2")[0];
+        let node3 = registry.find("node3")[0];
+        let node4 = registry.find("node4")[0];
+
+        // Short of the switch.
+        let mut approaching = train_state(&registry);
+        approaching.advance(0.5);
+        // Past it, on the segment toward node3.
+        let mut past = train_state(&registry);
+        past.advance(1.5);
+
+        registry
+            .world
+            .get::<&mut Path>(node2)
+            .unwrap()
+            .branch_active = true;
+        assert!(approaching.resplice_chain(&registry, 0.0));
+        assert_eq!(approaching.chain.nodes.last().unwrap().entity, node4);
+        assert!(!past.resplice_chain(&registry, 0.0));
+        assert_eq!(past.chain.nodes.last().unwrap().entity, node3);
+        assert_close(past.position(), Vec3::new(100.0, 50.0, 0.0));
+
+        // The re-routed train's own position is untouched, and it now runs
+        // down the branch.
+        assert_close(approaching.position(), Vec3::new(50.0, 0.0, 0.0));
+        approaching.advance(1.0);
+        assert_close(approaching.position(), Vec3::new(100.0, -50.0, 0.0));
     }
 
     proptest! {

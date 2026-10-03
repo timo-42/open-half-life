@@ -217,3 +217,65 @@ fn a_shallow_embed_on_a_stationary_translating_brush_is_not_snapped_up() {
         );
     }
 }
+
+/// The slab's own half-extent in `x`/`y` (`ohl_formats::test_support::
+/// BRUSH_FLOOR_HALF_EXTENT`), which `build_platform_room` builds from.
+const SLAB_HALF_EXTENT: f32 = 128.0;
+
+/// A mover that slides its face into a player standing beside it pushes
+/// them along by its own move — `push_from_mover`'s destination test finds
+/// the pushed position clear and moves them there — and reports the push
+/// as not blocked.
+#[test]
+fn a_mover_sliding_into_the_player_pushes_them_its_own_distance() {
+    let (mut model, brush) = build_platform_room();
+    // Standing beside the slab's `+x` face: the 32-wide standing hull's
+    // `-x` side sits one unit off the face, the hull's `z` span (`-36..36`
+    // about the origin) straddling the slab's own (`-16..0`).
+    let origin = Vec3::new(SLAB_HALF_EXTENT + 16.0 + 1.0, 0.0, 0.0);
+    let mut state = PlayerState::at(origin);
+    assert!(
+        !model.trace(state.hull(), origin, origin).start_solid,
+        "the player starts clear of the slab"
+    );
+
+    // The slab moves 4 units into them this step.
+    let displacement = Vec3::new(4.0, 0.0, 0.0);
+    model.set_brush_origin(brush, displacement);
+    assert!(
+        model.trace(state.hull(), origin, origin).start_solid,
+        "the slab's move embeds the player"
+    );
+
+    assert!(
+        ohl_physics::push_from_mover(&model, &mut state, displacement),
+        "a push with a clear destination is not a block"
+    );
+    assert_eq!(state.origin, origin + displacement);
+    assert!(
+        !model
+            .trace(state.hull(), state.origin, state.origin)
+            .start_solid,
+        "the pushed player is clear of the slab again"
+    );
+}
+
+/// A push whose destination is still inside solid — here, a player
+/// embedded far deeper than one step's move can clear — moves nobody and
+/// reports the mover blocked, which is what a door reversal and its `dmg`
+/// hang off.
+#[test]
+fn a_push_that_cannot_clear_the_player_is_reported_blocked() {
+    let (mut model, brush) = build_platform_room();
+    let origin = Vec3::new(SLAB_HALF_EXTENT + 16.0 + 1.0, 0.0, 0.0);
+    let mut state = PlayerState::at(origin);
+    // The slab lands 40 units into them; the step's own move is only 4.
+    model.set_brush_origin(brush, Vec3::new(40.0, 0.0, 0.0));
+    assert!(model.trace(state.hull(), origin, origin).start_solid);
+
+    assert!(
+        !ohl_physics::push_from_mover(&model, &mut state, Vec3::new(4.0, 0.0, 0.0)),
+        "a push that leaves the player embedded is a block"
+    );
+    assert_eq!(state.origin, origin, "a blocked push moves nobody");
+}

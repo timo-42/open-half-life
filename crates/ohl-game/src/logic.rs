@@ -12,14 +12,14 @@ use glam::Vec3;
 use hecs::Entity;
 
 use crate::registry::{
-    AmbientGeneric, AmbientState, AutoTrigger, Breakable, BrushBounds, Button, ChangeLevel,
-    Conveyor, Door, DoorPassable, DoorUseOnly, EndSection, Master, Message, MomentaryDoor,
-    MomentaryRotButton, MoverState, MultiManager, MultiSource, Pendulum, PlatRot, Platform,
-    Registry, RotButton, RotatingDoorSwing, Rotator, Target, TargetName, TeleportTrigger,
-    TrackChange, TrackChangeLinks, Transform, Trigger, TriggerHurt, TriggerUse, TriggerUseType,
-    WallToggle, WeaponStrip,
+    AmbientGeneric, AmbientState, AutoTrigger, BlockDamage, Breakable, BrushBounds, Button,
+    ChangeLevel, Conveyor, Door, DoorMonstersCant, DoorPassable, DoorUseOnly, EndSection, Master,
+    Message, MomentaryDoor, MomentaryRotButton, MoverState, MultiManager, MultiSource, Path,
+    Pendulum, PlatRot, Platform, Registry, RotButton, RotatingDoorSwing, Rotator, Target,
+    TargetName, TeleportTrigger, TrackChange, TrackChangeLinks, Transform, Trigger, TriggerHurt,
+    TriggerUse, TriggerUseType, WallToggle, WeaponStrip,
 };
-use crate::track_train::{PathChain, TrackTrainState};
+use crate::track_train::{PathChain, TrackTrain, TrackTrainState};
 
 /// Finds the closest `func_door`, `func_button`, or `use`-activated
 /// `func_rot_button` within `radius` units of `position`, measured against
@@ -346,6 +346,12 @@ pub struct Simulation {
     /// standing in the same door's touch volume, never opens one that
     /// should stay shut.
     door_touch: std::collections::BTreeMap<Entity, bool>,
+    /// [`Self::door_touch`]'s per-*monster* counterpart, keyed by
+    /// `(monster, door)`, for [`Self::touch_doors_by`]: each monster gets
+    /// its own rising edge on each door. Pruned of despawned monsters by
+    /// [`Self::touch_doors`] once per tick. Not persisted, for exactly the
+    /// reason [`Self::door_touch`] is not.
+    monster_door_touch: std::collections::BTreeMap<(Entity, Entity), bool>,
     /// Per-`func_platrot` last-observed touch state, for
     /// [`Self::touch_platrots`]'s edge trigger — the same shape as
     /// [`Self::rot_button_touch`], and deliberately not part of the frozen
@@ -1005,6 +1011,30 @@ impl Simulation {
         }
         if registry.world.get::<&TrackChange>(entity).is_ok() {
             Self::start_track_change(registry, entity);
+            return;
+        }
+        // A `path_track` with a documented "Branch Path" is a railway
+        // switch: "If path_track is triggered, it's change it's next stop
+        // target to the name of 'Branch Path' path_track" (Sven Co-op
+        // Manor's `path_track` entry; `docs/FORMAT_SOURCES.md`, "Mover
+        // blocking, branching paths and monster-opened doors"). A plain
+        // toggle flips it; the documented `triggerstate` on/off of a
+        // `trigger_relay`/`trigger_auto` selects the branch/the `target`
+        // outright, the same reading the `TrackTrainState` arm above gives
+        // that use type. A `path_track` with no branch is left alone: the
+        // same page's "the train stops" reading of a branchless trigger
+        // needs the "Disabled" spawnflag this project does not implement
+        // (TODO(black-box), recorded in the same section).
+        if let Ok((path, _)) = registry
+            .world
+            .query_one_mut::<(&mut Path, &crate::registry::PathBranch)>(entity)
+        {
+            path.branch_active = match use_type {
+                TriggerUse::On => true,
+                TriggerUse::Off => false,
+                TriggerUse::Toggle => !path.branch_active,
+            };
+            Self::resplice_train_chains(registry);
             return;
         }
         if let Ok(rotator) = registry.world.query_one_mut::<&mut Rotator>(entity) {
@@ -1777,12 +1807,10 @@ impl Simulation {
     /// touch edge on a door that is already open, or one still animating,
     /// reaches [`Self::activate`] too but is a no-op there.
     ///
-    /// `TODO(black-box)`: whether a monster (as opposed to the player) can
-    /// open an eligible door by walking into it is not implemented — this
-    /// method is called only with the player's own hull box, the same
-    /// scope [`Self::touch_triggers`]/[`Self::touch_rot_buttons`] already
-    /// have. A door with a nonzero `wait` that auto-closes while the
-    /// player never leaves its touch volume also does not re-open: the
+    /// This is the *player's* touch; a monster's goes through
+    /// [`Self::touch_doors_by`], which this method is the `None`-toucher
+    /// case of. A door with a nonzero `wait` that auto-closes while the
+    /// player never leaves its touch volume does not re-open: the
     /// touch-edge state stays high across the whole
     /// `Opening -> Open -> Closing -> Closed` cycle, so the closed-to-open
     /// edge this method looks for never re-fires, and the player is left
@@ -1799,6 +1827,49 @@ impl Simulation {
         player_mins: Vec3,
         player_maxs: Vec3,
     ) -> usize {
+        // A monster that has since died or despawned leaves its edge
+        // entries behind; drop them here, once per tick, so the map stays
+        // bounded by the monsters and doors that currently exist.
+        self.monster_door_touch
+            .retain(|(toucher, _), _| registry.world.contains(*toucher));
+        self.touch_doors_by(registry, None, player_mins, player_maxs)
+    }
+
+    /// [`Self::touch_doors`] for an arbitrary toucher: the player when
+    /// `toucher` is `None`, else the monster entity whose hull box
+    /// `[mins, maxs]` is. The same eligibility rules and the same
+    /// rising-edge trigger apply, with the edge tracked *per toucher and
+    /// door* so two monsters walking into the same door each get their own
+    /// edge, and one of them leaving does not re-arm the other's.
+    ///
+    /// A monster additionally never opens a door with the "Monsters Can't"
+    /// spawnflag ([`DoorMonstersCant`]): the Sven Co-op wiki's `Func_door`/
+    /// `Func_door_rotating` pages document it as "If set, monsters cannot
+    /// cause this door to move" (`docs/FORMAT_SOURCES.md`, "Mover blocking,
+    /// branching paths and monster-opened doors"). The player's touch, a
+    /// `use` press and a fire chain are all unaffected by it — the cited
+    /// sentence is about monsters only.
+    ///
+    /// The same page goes on to say a monster *can* move a door without
+    /// that flag "even if it is a use-only- or trigger-only-door". That is
+    /// not implemented: a monster gets the player's own exclusions (a named
+    /// door, "Use Only", "Passable") as well. Project-authored and
+    /// `TODO(black-box)`: a touch is this project's only model of a monster
+    /// moving a door, and dropping those exclusions would open a
+    /// trigger-only door for any monster idling against it, ahead of the
+    /// trigger the map gates it on.
+    ///
+    /// A monster toucher is passed to [`Self::activate`] as the activator,
+    /// so a `func_door_rotating` it opens swings away from *it* (its own
+    /// [`Transform`] is what [`Self::rotating_door_open_axis`] reads),
+    /// rather than away from wherever the player happens to be standing.
+    pub fn touch_doors_by(
+        &mut self,
+        registry: &mut Registry,
+        toucher: Option<Entity>,
+        mins: Vec3,
+        maxs: Vec3,
+    ) -> usize {
         let mut candidates: Vec<(Entity, bool, bool)> = registry
             .world
             .query::<(Entity, &Door, &BrushBounds)>()
@@ -1806,12 +1877,15 @@ impl Simulation {
             .without::<&DoorPassable>()
             .without::<&TargetName>()
             .iter()
+            .filter(|(entity, _, _)| {
+                toucher.is_none() || registry.world.get::<&DoorMonstersCant>(*entity).is_err()
+            })
             .map(|(entity, door, bounds)| {
                 (
                     entity,
                     aabb_overlaps(
-                        player_mins,
-                        player_maxs,
+                        mins,
+                        maxs,
                         bounds.mins - Vec3::splat(DOOR_TOUCH_MARGIN),
                         bounds.maxs + Vec3::splat(DOOR_TOUCH_MARGIN),
                     ),
@@ -1822,11 +1896,17 @@ impl Simulation {
         candidates.sort_unstable_by_key(|(entity, _, _)| entity.id());
         let mut opened = 0;
         for (entity, overlapping, was_closed) in candidates {
-            let state = self.door_touch.entry(entity).or_default();
+            let state = match toucher {
+                None => self.door_touch.entry(entity).or_default(),
+                Some(monster) => self
+                    .monster_door_touch
+                    .entry((monster, entity))
+                    .or_default(),
+            };
             let rising_edge = overlapping && !*state;
             *state = overlapping;
             if rising_edge {
-                self.activate(registry, entity, None, &mut Vec::new());
+                self.activate(registry, entity, toucher, &mut Vec::new());
                 if was_closed {
                     opened += 1;
                 }
@@ -2311,6 +2391,96 @@ impl Simulation {
         }
     }
 
+    /// Re-splices every train's chain against the registry's current
+    /// `path_track` switch positions; see
+    /// [`TrackTrainState::resplice_chain`]. Called whenever a switch is
+    /// thrown, for every train: a chain is cheap to re-walk, and which
+    /// trains a given `path_track` lies ahead of is exactly what the
+    /// re-splice works out.
+    fn resplice_train_chains(registry: &mut Registry) {
+        let heights: Vec<(Entity, f32)> = registry
+            .world
+            .query::<(Entity, &TrackTrain)>()
+            .with::<&TrackTrainState>()
+            .iter()
+            .map(|(entity, train)| (entity, train.height))
+            .collect();
+        for (entity, height) in heights {
+            // The state is taken out and put back so the re-splice can read
+            // every other `Path`/`PathBranch`/`Target` in the registry
+            // while it runs.
+            let Ok(mut state) = registry.world.remove_one::<TrackTrainState>(entity) else {
+                continue;
+            };
+            state.resplice_chain(registry, height);
+            registry.world.insert_one(entity, state).ok();
+        }
+    }
+
+    /// What a mover does when something it moved into this step could not
+    /// be pushed clear of it — the documented "blocked" state a `dmg`
+    /// keyvalue is defined against. Returns the damage to deal to the
+    /// blocker, `None` when there is none to deal (a `dmg` of zero, or an
+    /// entity that is not a mover this project knows a blocking rule for).
+    ///
+    /// A `func_door`/`func_door_rotating` also *reverses*: the Sven Co-op
+    /// wiki's `Func_door` page (`docs/FORMAT_SOURCES.md`, "Mover blocking,
+    /// branching paths and monster-opened doors") states that a blocked
+    /// door "will apply its damage and, by default, move back into the
+    /// position it came from and idle without further action", except
+    /// that a door blocked while closing on its own `wait` delay "will
+    /// then attempt to close every time the delay runs out, till it closes
+    /// without getting blocked". Both fall out of one rule here: an
+    /// `Opening` door becomes `Closing` and a `Closing` one `Opening`, its
+    /// timer re-expressed so the leaf keeps the pose it was blocked at
+    /// ([`crate::pose::mover_fraction`] reads `1 - timer/T` opening and
+    /// `timer/T` closing, so the swap is `timer -> T - timer`). A door
+    /// reopened this way reaches `Open` with its ordinary `wait`, and so
+    /// tries to close again once that runs out — or stays open for a
+    /// `wait` of `-1`, which never closes on its own anyway. A door that
+    /// was blocked while opening closes and then idles at `Closed`, since
+    /// nothing re-triggers it. The reversal happens whether or not `dmg`
+    /// is set: the page describes damage and reversal as the same
+    /// response, and a door with no `dmg` still has to get out of the
+    /// player's way.
+    ///
+    /// Every other mover keeps moving and only deals its documented `dmg`
+    /// (`func_rotating`, `func_plat`, `func_pendulum` through
+    /// [`BlockDamage`]; `func_train`/`func_tracktrain` through
+    /// [`TrackTrain::dmg`]): no reviewed page describes any of them
+    /// reversing or halting when blocked, only the damage. TODO(black-box)
+    /// for whether the real engine halts a blocked train.
+    ///
+    /// The caller — `ohl-engine`'s phase 12, from `Level::movers_blocked`
+    /// — is what decides *who* was blocked and applies the damage
+    /// returned; this crate has no damage model of its own.
+    pub fn block_mover(registry: &mut Registry, entity: Entity) -> Option<f32> {
+        if let Ok(door) = registry.world.query_one_mut::<&mut Door>(entity) {
+            let travel = travel_time(door.travel_distance, door.speed);
+            match door.state {
+                MoverState::Opening => {
+                    door.state = MoverState::Closing;
+                    door.timer = (travel - door.timer.min(travel)).max(0.0);
+                }
+                MoverState::Closing => {
+                    door.state = MoverState::Opening;
+                    door.timer = (travel - door.timer.min(travel)).max(0.0);
+                }
+                MoverState::Closed | MoverState::Open => {}
+            }
+            return (door.dmg > 0.0).then_some(door.dmg);
+        }
+        if let Ok(train) = registry.world.get::<&TrackTrain>(entity) {
+            return (train.dmg > 0.0).then_some(train.dmg);
+        }
+        registry
+            .world
+            .get::<&BlockDamage>(entity)
+            .ok()
+            .map(|dmg| dmg.0)
+            .filter(|dmg| *dmg > 0.0)
+    }
+
     /// Starts a `func_trackchange`/`func_trackautochange` travelling to
     /// its other end, picking up the train it names if that train is
     /// resting on the `path_track` at the end it is setting off from.
@@ -2452,16 +2622,24 @@ impl Simulation {
     /// path_track of the bottom path" (Sven Co-op's and Sven Manor's
     /// `func_trackautochange` pages, see `docs/FORMAT_SOURCES.md`).
     ///
-    /// TODO(black-box): the train is seated at node `0` of the chain the
-    /// destination name resolves to. The same pages document that with
-    /// the "Start at Bottom" spawnflag set, `bottomtrack` names the
-    /// *last* `path_track` of the bottom path rather than the first (and
-    /// `toptrack` the first of the top path rather than the last), so
-    /// such a platform's downward destination is a chain's far end and
-    /// this seating would leave the train on a one-node chain, dead-ended
-    /// on arrival. No page reviewed states which way a train handed a
-    /// chain's far end is meant to travel, and no fixture here exercises
-    /// the flag; see `docs/FORMAT_SOURCES.md`, "Track trains and paths".
+    /// Which end of a path each documented name is decides how the train
+    /// is seated. The same pages give `toptrack` as the "name of last
+    /// path_track of the top path" and `bottomtrack` as the "name of first
+    /// path_track of the bottom track", and with the "Start at Bottom"
+    /// spawnflag the two swap ends: `toptrack` becomes "the first
+    /// path_track at the top path" and `bottomtrack` "the last path_track
+    /// at the bottom path". A train delivered to a path's *first* node is
+    /// seated there riding forward ([`TrackTrainState::relink`]); one
+    /// delivered to a path's *last* node is handed the chain leading up to
+    /// it ([`PathChain::build_ending_at`]) and seated at its far end
+    /// riding *backward* ([`TrackTrainState::relink_at_end`]), the only
+    /// direction that leaves that node along the path. Before this, both
+    /// ends were seated at node `0` of `PathChain::build(name)`, which for
+    /// a "last" node is a one-node chain: the train dead-ended on arrival.
+    /// Which way a train handed a chain's far end travels is not stated by
+    /// any page reviewed — project behaviour, `TODO(black-box)`, recorded
+    /// in `docs/FORMAT_SOURCES.md` ("Mover blocking, branching paths and
+    /// monster-opened doors").
     ///
     /// The relinked train rides on. That is this project's own black-box
     /// reading, not a quoted sentence: TWHL's `func_trackautochange` page
@@ -2495,19 +2673,28 @@ impl Simulation {
         if let Ok(mut change) = registry.world.get::<&mut TrackChange>(entity) {
             change.carrying = false;
         }
-        let to_name = if change.at_bottom() {
+        let arrived_at_bottom = change.at_bottom();
+        let to_name = if arrived_at_bottom {
             links.bottomtrack.as_str()
         } else {
             links.toptrack.as_str()
         };
+        // The documented name is the *last* node of its path for the top
+        // end without "Start at Bottom", and for the bottom end with it.
+        let far_end = arrived_at_bottom == change.start_at_bottom();
         let Some(train) = Self::named_train(registry, &links.train) else {
             return;
         };
         let height = registry
             .world
-            .get::<&crate::track_train::TrackTrain>(train)
+            .get::<&TrackTrain>(train)
             .map_or(0.0, |train| train.height);
-        let Some(chain) = PathChain::build(registry, to_name, height) else {
+        let chain = if far_end {
+            PathChain::build_ending_at(registry, to_name, height)
+        } else {
+            PathChain::build(registry, to_name, height)
+        };
+        let Some(chain) = chain else {
             // Nothing to hand the train over to: leave it exactly where
             // the platform put it rather than inventing a route.
             if let Ok(mut state) = registry.world.get::<&mut TrackTrainState>(train) {
@@ -2516,7 +2703,11 @@ impl Simulation {
             return;
         };
         if let Ok(mut state) = registry.world.get::<&mut TrackTrainState>(train) {
-            state.relink(chain, true);
+            if far_end {
+                state.relink_at_end(chain, true);
+            } else {
+                state.relink(chain, true);
+            }
         }
     }
 
@@ -5486,5 +5677,650 @@ mod tests {
             Vec3::ZERO,
             "a Not solid conveyor pushes nothing"
         );
+    }
+
+    // --- Blocked movers -------------------------------------------------
+
+    /// A door `dmg` keyvalue and a travel long enough to be blocked
+    /// part-way: 200 units at 100 units/second.
+    fn blocked_door_registry(dmg: &str) -> (Registry, Entity) {
+        let entities = vec![raw(&[
+            ("classname", "func_door"),
+            ("targetname", "blocked"),
+            ("model", "*1"),
+            ("angle", "90"),
+            ("speed", "100"),
+            ("wait", "1"),
+            ("lip", "0"),
+            ("dmg", dmg),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut bounds = BTreeMap::new();
+        bounds.insert(1u32, ([0.0, -100.0, 0.0], [16.0, 100.0, 72.0]));
+        let registry = Registry::build(&defs, &bounds, &Limits::default());
+        let door = registry.find("blocked")[0];
+        (registry, door)
+    }
+
+    fn door_fraction(registry: &Registry, door: Entity) -> f32 {
+        let door = registry.world.get::<&Door>(door).unwrap();
+        crate::pose::mover_fraction(door.speed, door.travel_distance, door.state, door.timer)
+    }
+
+    /// The cited rule for a blocked door: "apply its damage and, by
+    /// default, move back into the position it came from". Blocked while
+    /// opening, the door closes from exactly the pose it was blocked at
+    /// (no jump), reports its `dmg`, and idles closed; blocked while
+    /// closing on its own `wait`, it reopens and — the cited exception —
+    /// tries to close again once the delay runs out.
+    #[test]
+    fn a_blocked_door_reverses_from_the_pose_it_was_blocked_at_and_reports_its_dmg() {
+        let (mut registry, door) = blocked_door_registry("5");
+        let mut sim = Simulation::new();
+        let mut events = Vec::new();
+        sim.use_entity(&mut registry, door, None, &mut events);
+        // Half a second of a two-second opening travel.
+        tick_for(&mut sim, &mut registry, 0.5, 1.0 / 60.0);
+        let before = door_fraction(&registry, door);
+        assert!(before > 0.2 && before < 0.3, "part-way open: {before}");
+
+        assert_eq!(Simulation::block_mover(&mut registry, door), Some(5.0));
+        assert_eq!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Closing
+        );
+        let after = door_fraction(&registry, door);
+        assert!(
+            (after - before).abs() < 1e-3,
+            "the leaf must not jump on reversal: {before} -> {after}"
+        );
+
+        // It closes the rest of the way and idles there: nothing
+        // re-triggers a door blocked while opening.
+        tick_for(&mut sim, &mut registry, 1.0, 1.0 / 60.0);
+        assert_eq!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Closed
+        );
+
+        // Now the other way round: opened, waited out, part-way closed,
+        // blocked. It reopens, and after its `wait` tries to close again.
+        sim.use_entity(&mut registry, door, None, &mut events);
+        tick_for(&mut sim, &mut registry, 2.0 + 1.0 + 0.5, 1.0 / 60.0);
+        assert_eq!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Closing
+        );
+        let before = door_fraction(&registry, door);
+        assert_eq!(Simulation::block_mover(&mut registry, door), Some(5.0));
+        assert_eq!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Opening
+        );
+        let after = door_fraction(&registry, door);
+        assert!((after - before).abs() < 1e-3, "{before} -> {after}");
+        tick_for(&mut sim, &mut registry, 0.6, 1.0 / 60.0);
+        assert_eq!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Open
+        );
+        tick_for(&mut sim, &mut registry, 1.1, 1.0 / 60.0);
+        assert_eq!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Closing,
+            "a reopened door tries to close again once its wait runs out"
+        );
+    }
+
+    /// A door with no `dmg` still reverses — it has to get out of the
+    /// blocker's way — but reports nothing to deal; a resting door is
+    /// untouched by a block report.
+    #[test]
+    fn a_blocked_door_without_dmg_reverses_but_deals_nothing() {
+        let (mut registry, door) = blocked_door_registry("0");
+        let mut sim = Simulation::new();
+        assert_eq!(Simulation::block_mover(&mut registry, door), None);
+        assert_eq!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Closed,
+            "a closed door is not moving, so nothing blocks it"
+        );
+        let mut events = Vec::new();
+        sim.use_entity(&mut registry, door, None, &mut events);
+        tick_for(&mut sim, &mut registry, 0.5, 1.0 / 60.0);
+        assert_eq!(Simulation::block_mover(&mut registry, door), None);
+        assert_eq!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Closing
+        );
+    }
+
+    /// The movers whose only documented response to a block is damage:
+    /// a `func_rotating` reports its `dmg` and keeps spinning, a
+    /// `func_tracktrain` reports its own `dmg`, and a mover with no `dmg`
+    /// keyvalue at all reports nothing.
+    #[test]
+    fn non_door_movers_report_their_dmg_and_keep_moving_when_blocked() {
+        let entities = vec![
+            raw(&[
+                ("classname", "func_rotating"),
+                ("targetname", "fan"),
+                ("model", "*1"),
+                ("speed", "90"),
+                ("spawnflags", "1"),
+                ("dmg", "7"),
+            ]),
+            raw(&[
+                ("classname", "func_rotating"),
+                ("targetname", "harmless"),
+                ("model", "*2"),
+                ("speed", "90"),
+                ("spawnflags", "1"),
+            ]),
+            raw(&[
+                ("classname", "func_tracktrain"),
+                ("targetname", "tram"),
+                ("target", "n1"),
+                ("speed", "100"),
+                ("dmg", "3"),
+                ("origin", "0 0 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "n1"),
+                ("origin", "0 0 0"),
+            ]),
+            raw(&[
+                ("classname", "func_plat"),
+                ("targetname", "lift"),
+                ("model", "*3"),
+                ("dmg", "11"),
+            ]),
+            raw(&[
+                ("classname", "func_pendulum"),
+                ("targetname", "swing"),
+                ("model", "*4"),
+                ("speed", "90"),
+                ("distance", "45"),
+                ("dmg", "13"),
+            ]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let fan = registry.find("fan")[0];
+        let harmless = registry.find("harmless")[0];
+        let tram = registry.find("tram")[0];
+        let lift = registry.find("lift")[0];
+        let swing = registry.find("swing")[0];
+        assert!(registry.world.get::<&Platform>(lift).is_ok());
+        assert!(registry.world.get::<&Pendulum>(swing).is_ok());
+        assert_eq!(
+            registry
+                .world
+                .get::<&BlockDamage>(fan)
+                .map(|dmg| dmg.0)
+                .ok(),
+            Some(7.0)
+        );
+        assert!(registry.world.get::<&BlockDamage>(harmless).is_err());
+
+        assert_eq!(Simulation::block_mover(&mut registry, fan), Some(7.0));
+        assert!(
+            registry.world.get::<&Rotator>(fan).unwrap().spinning,
+            "a blocked func_rotating only deals damage; it does not stop"
+        );
+        assert_eq!(Simulation::block_mover(&mut registry, harmless), None);
+        assert_eq!(Simulation::block_mover(&mut registry, tram), Some(3.0));
+        // `func_plat`'s and `func_pendulum`'s cited `dmg` rides the same
+        // spawn-only component as `func_rotating`'s.
+        assert_eq!(Simulation::block_mover(&mut registry, lift), Some(11.0));
+        assert_eq!(Simulation::block_mover(&mut registry, swing), Some(13.0));
+    }
+
+    /// A monster's touch is passed to `activate` as the activator, so a
+    /// `func_door_rotating` it opens swings away from the *monster* — here
+    /// on the door's `-x` side — even with the player (the host-supplied
+    /// activator origin) standing on the other side.
+    #[test]
+    fn a_rotating_door_a_monster_touches_open_swings_away_from_the_monster() {
+        let entities = vec![
+            raw(&[
+                ("classname", "func_door_rotating"),
+                ("model", "*1"),
+                ("origin", "0 0 0"),
+                ("speed", "90"),
+                ("distance", "90"),
+                ("wait", "-1"),
+            ]),
+            raw(&[
+                ("classname", "monster_barney"),
+                ("targetname", "guard"),
+                ("origin", "-12 32 0"),
+            ]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        // The same `+y` leaf `rotating_door_registry` builds: a positive
+        // rotation sweeps it toward `-x`.
+        let mut bounds = BTreeMap::new();
+        bounds.insert(1u32, ([-4.0, 0.0, -32.0], [4.0, 64.0, 32.0]));
+        let mut registry = Registry::build(&defs, &bounds, &Limits::default());
+        let door = registry
+            .world
+            .query::<(Entity, &Door)>()
+            .iter()
+            .map(|(entity, _)| entity)
+            .next()
+            .expect("the door spawned");
+        let monster = registry.find("guard")[0];
+        let mut sim = Simulation::new();
+        sim.set_activator_origin(Some(Vec3::new(64.0, 32.0, 0.0)));
+
+        let opened = sim.touch_doors_by(
+            &mut registry,
+            Some(monster),
+            Vec3::new(-28.0, 16.0, -36.0),
+            Vec3::new(4.0, 48.0, 36.0),
+        );
+        assert_eq!(opened, 1);
+        let door = registry.world.get::<&Door>(door).unwrap();
+        assert_eq!(door.state, MoverState::Opening);
+        assert_eq!(
+            door.rotation_axis,
+            Some(-Vec3::Z),
+            "the leaf must not be swept into the monster that opened it"
+        );
+    }
+
+    // --- Branching paths --------------------------------------------------
+
+    /// A switch: `fork`'s `target` runs on to `main_end`, its `altpath` to
+    /// `branch_end`. The two ends are on opposite sides of the fork so a
+    /// position alone says which way the train went.
+    fn switch_entities(fork_keys: &[(&str, &str)]) -> Vec<RawEntity> {
+        let mut fork: Vec<(&str, &str)> = vec![
+            ("classname", "path_track"),
+            ("targetname", "fork"),
+            ("target", "main_end"),
+            ("altpath", "branch_end"),
+            ("origin", "100 0 0"),
+        ];
+        fork.extend_from_slice(fork_keys);
+        vec![
+            raw(&[
+                ("classname", "func_tracktrain"),
+                ("targetname", "tram"),
+                ("target", "start"),
+                ("speed", "100"),
+                ("startspeed", "100"),
+                ("height", "0"),
+                ("origin", "0 0 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "start"),
+                ("target", "fork"),
+                ("origin", "0 0 0"),
+            ]),
+            raw(&fork),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "main_end"),
+                ("origin", "100 300 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "branch_end"),
+                ("origin", "100 -300 0"),
+            ]),
+        ]
+    }
+
+    fn switch_registry(fork_keys: &[(&str, &str)]) -> Registry {
+        let entities = switch_entities(fork_keys);
+        let defs = parse_entities(&entities, &Limits::default());
+        Registry::build(&defs, &BTreeMap::new(), &Limits::default())
+    }
+
+    fn train_position(registry: &Registry, name: &str) -> Vec3 {
+        let train = registry.find(name)[0];
+        registry
+            .world
+            .get::<&TrackTrainState>(train)
+            .unwrap()
+            .position()
+    }
+
+    /// The cited railway switch: triggered before the train reaches it,
+    /// the `path_track` sends the train down its "Branch Path" instead of
+    /// its `target`; untriggered, the train follows `target`.
+    #[test]
+    fn a_triggered_path_track_sends_an_approaching_train_down_its_branch() {
+        let mut registry = switch_registry(&[]);
+        let mut sim = Simulation::new();
+        let fork = registry.find("fork")[0];
+        assert!(
+            registry
+                .world
+                .get::<&crate::registry::PathBranch>(fork)
+                .is_ok()
+        );
+
+        // Untriggered: the train runs 100 units to the fork and on toward
+        // `main_end` (+y).
+        tick_for(&mut sim, &mut registry, 2.0, 1.0 / 60.0);
+        let position = train_position(&registry, "tram");
+        assert!(
+            position.y > 50.0,
+            "the untriggered fork leads to main_end: {position:?}"
+        );
+
+        // Again from the top, with the switch thrown while the train is
+        // still short of it: it takes the branch (-y).
+        let mut registry = switch_registry(&[]);
+        let mut sim = Simulation::new();
+        let fork = registry.find("fork")[0];
+        tick_for(&mut sim, &mut registry, 0.5, 1.0 / 60.0);
+        let mut events = Vec::new();
+        sim.use_entity(&mut registry, fork, None, &mut events);
+        assert!(registry.world.get::<&Path>(fork).unwrap().branch_active);
+        tick_for(&mut sim, &mut registry, 1.5, 1.0 / 60.0);
+        let position = train_position(&registry, "tram");
+        assert!(
+            position.y < -50.0,
+            "the thrown switch leads to branch_end: {position:?}"
+        );
+    }
+
+    /// The documented `triggerstate` of a `trigger_relay`/`trigger_auto`
+    /// selects a side outright: "on" is the branch, "off" the `target`, and
+    /// the "Branch Reverse" spawnflag starts the node with its branch
+    /// selected.
+    #[test]
+    fn a_path_track_switch_honours_use_types_and_branch_reverse() {
+        let mut registry = switch_registry(&[("spawnflags", "4")]);
+        let fork = registry.find("fork")[0];
+        assert!(
+            registry.world.get::<&Path>(fork).unwrap().branch_active,
+            "Branch Reverse starts the switch on its branch"
+        );
+        let mut sim = Simulation::new();
+        let mut events = Vec::new();
+        sim.activate_with(&mut registry, fork, None, TriggerUse::Off, &mut events);
+        assert!(!registry.world.get::<&Path>(fork).unwrap().branch_active);
+        sim.activate_with(&mut registry, fork, None, TriggerUse::Off, &mut events);
+        assert!(!registry.world.get::<&Path>(fork).unwrap().branch_active);
+        sim.activate_with(&mut registry, fork, None, TriggerUse::On, &mut events);
+        assert!(registry.world.get::<&Path>(fork).unwrap().branch_active);
+        sim.activate_with(&mut registry, fork, None, TriggerUse::Toggle, &mut events);
+        assert!(!registry.world.get::<&Path>(fork).unwrap().branch_active);
+
+        // A train spawned against the reversed switch already holds the
+        // branch as its route.
+        let registry = switch_registry(&[("spawnflags", "4")]);
+        let tram = registry.find("tram")[0];
+        let branch_end = registry.find("branch_end")[0];
+        let state = registry.world.get::<&TrackTrainState>(tram).unwrap();
+        assert_eq!(state.chain().nodes.last().unwrap().entity, branch_end);
+    }
+
+    /// A switch thrown *behind* a train — one already out on the segment
+    /// past it — changes nothing for that train: it keeps the track it is
+    /// on. Only a train still approaching the switch is re-routed.
+    #[test]
+    fn a_switch_thrown_behind_a_train_leaves_its_track_alone() {
+        let mut registry = switch_registry(&[]);
+        let mut sim = Simulation::new();
+        let fork = registry.find("fork")[0];
+        // 1.5 seconds: 100 units to the fork, then 50 along the main line.
+        tick_for(&mut sim, &mut registry, 1.5, 1.0 / 60.0);
+        let before = train_position(&registry, "tram");
+        assert!(
+            before.y > 25.0,
+            "past the fork on the main line: {before:?}"
+        );
+        let mut events = Vec::new();
+        sim.use_entity(&mut registry, fork, None, &mut events);
+        tick_for(&mut sim, &mut registry, 1.0, 1.0 / 60.0);
+        let after = train_position(&registry, "tram");
+        assert!(
+            after.y > before.y + 50.0,
+            "the train carried on toward main_end: {before:?} -> {after:?}"
+        );
+    }
+
+    // --- func_trackchange, "Start at Bottom" ------------------------------
+
+    /// The documented "Start at Bottom" shape: the platform rests at the
+    /// bottom, `toptrack` names the *first* node of the top path and
+    /// `bottomtrack` the *last* node of the bottom path. The train waits
+    /// on `toptrack`; the platform goes up empty, then brings it down.
+    fn start_at_bottom_registry() -> Registry {
+        let entities = vec![
+            raw(&[
+                ("classname", "func_tracktrain"),
+                ("targetname", "tram"),
+                ("target", "top1"),
+                ("speed", "100"),
+                ("startspeed", "0"),
+                ("height", "0"),
+                ("origin", "100 0 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "top1"),
+                ("target", "top2"),
+                ("origin", "100 0 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "top2"),
+                ("origin", "300 0 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "bottom1"),
+                ("target", "bottom2"),
+                ("origin", "100 -200 -100"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "bottom2"),
+                ("origin", "100 0 -100"),
+            ]),
+            raw(&[
+                ("classname", "func_trackchange"),
+                ("model", "*2"),
+                ("targetname", "lift"),
+                ("train", "tram"),
+                ("toptrack", "top1"),
+                ("bottomtrack", "bottom2"),
+                ("height", "100"),
+                ("rotation", "0"),
+                ("speed", "100"),
+                (
+                    "spawnflags",
+                    &crate::registry::SPAWNFLAG_TRACK_CHANGE_START_AT_BOTTOM.to_string(),
+                ),
+                ("origin", "100 0 -100"),
+            ]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        Registry::build(&defs, &BTreeMap::new(), &Limits::default())
+    }
+
+    /// A train delivered to the *last* node of a path rides that path
+    /// backward from it, rather than being parked on a one-node chain.
+    #[test]
+    fn a_train_handed_a_paths_far_end_rides_it_backward() {
+        let mut registry = start_at_bottom_registry();
+        let mut sim = Simulation::new();
+        let lift = registry.find("lift")[0];
+        let tram = registry.find("tram")[0];
+        let mut events = Vec::new();
+
+        // Up, empty (one second at 100 units/second over 100 units).
+        sim.use_entity(&mut registry, lift, None, &mut events);
+        tick_for(&mut sim, &mut registry, 1.5, 1.0 / 60.0);
+        {
+            let change = registry.world.get::<&TrackChange>(lift).unwrap();
+            assert!(!change.moving && !change.at_bottom(), "up and resting");
+        }
+        // Down, with the train that has been waiting on `toptrack`.
+        sim.use_entity(&mut registry, lift, None, &mut events);
+        {
+            let change = registry.world.get::<&TrackChange>(lift).unwrap();
+            assert!(change.carrying, "the train resting on top1 rides down");
+        }
+        tick_for(&mut sim, &mut registry, 1.5, 1.0 / 60.0);
+        let state = registry.world.get::<&TrackTrainState>(tram).unwrap();
+        assert_eq!(
+            state.chain().nodes.len(),
+            2,
+            "the far end's whole path is handed over, not a one-node chain"
+        );
+        assert!(state.moving(), "the relinked train rides on");
+        let position = state.position();
+        assert!(
+            (position.z + 100.0).abs() < 1.0 && position.y < -20.0,
+            "riding the bottom path backward from bottom2 toward bottom1: {position:?}"
+        );
+    }
+
+    // --- Monsters opening doors ------------------------------------------
+
+    /// The player's touch and a monster's touch open the same eligible
+    /// door; only the documented "Monsters Can't" spawnflag tells them
+    /// apart, and it stops the monster alone.
+    #[test]
+    fn a_monster_touch_opens_an_eligible_door_unless_monsters_cant_is_set() {
+        let entities = vec![
+            raw(&[
+                ("classname", "func_door"),
+                ("model", "*1"),
+                ("speed", "100"),
+                ("wait", "-1"),
+            ]),
+            raw(&[
+                ("classname", "func_door"),
+                ("model", "*2"),
+                ("speed", "100"),
+                ("wait", "-1"),
+                (
+                    "spawnflags",
+                    &crate::registry::SPAWNFLAG_DOOR_MONSTERS_CANT.to_string(),
+                ),
+            ]),
+            raw(&[
+                ("classname", "monster_barney"),
+                ("targetname", "guard"),
+                ("origin", "100 0 36"),
+            ]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut bounds = BTreeMap::new();
+        bounds.insert(1u32, ([100.0, -32.0, 0.0], [116.0, 32.0, 72.0]));
+        bounds.insert(2u32, ([100.0, -32.0, 0.0], [116.0, 32.0, 72.0]));
+        let mut registry = Registry::build(&defs, &bounds, &Limits::default());
+        let mut sim = Simulation::new();
+        let mut doors: Vec<(Entity, bool)> = registry
+            .world
+            .query::<(Entity, &Door)>()
+            .iter()
+            .map(|(entity, _)| {
+                (
+                    entity,
+                    registry.world.get::<&DoorMonstersCant>(entity).is_ok(),
+                )
+            })
+            .collect();
+        doors.sort_unstable_by_key(|(entity, _)| entity.id());
+        assert_eq!(doors.len(), 2);
+        let plain = doors.iter().find(|(_, cant)| !cant).unwrap().0;
+        let monsters_cant = doors.iter().find(|(_, cant)| *cant).unwrap().0;
+        let monster = registry.find("guard")[0];
+
+        let mins = Vec3::new(84.0, -16.0, -36.0);
+        let maxs = Vec3::new(116.0, 16.0, 36.0);
+        let opened = sim.touch_doors_by(&mut registry, Some(monster), mins, maxs);
+        assert_eq!(opened, 1);
+        assert_eq!(
+            registry.world.get::<&Door>(plain).unwrap().state,
+            MoverState::Opening
+        );
+        assert_eq!(
+            registry.world.get::<&Door>(monsters_cant).unwrap().state,
+            MoverState::Closed,
+            "Monsters Can't keeps a monster's touch out"
+        );
+        // The same touch from the monster again is not a new edge.
+        assert_eq!(
+            sim.touch_doors_by(&mut registry, Some(monster), mins, maxs),
+            0
+        );
+        // The player's own touch opens the Monsters Can't door.
+        assert_eq!(sim.touch_doors(&mut registry, mins, maxs), 1);
+        assert_eq!(
+            registry.world.get::<&Door>(monsters_cant).unwrap().state,
+            MoverState::Opening
+        );
+    }
+
+    /// Each toucher has its own rising edge on each door. The player, then
+    /// one monster, then a second monster all stand in the same door's
+    /// touch volume and never leave it; the door has a short `wait`, so it
+    /// cycles shut under each of them in turn. A toucher that is already
+    /// overlapping never re-opens it (the documented edge rule), but each
+    /// *newcomer* does — which a single edge per door, shared between
+    /// touchers, would swallow.
+    #[test]
+    fn each_toucher_has_its_own_edge_on_a_door() {
+        let entities = vec![raw(&[
+            ("classname", "func_door"),
+            ("model", "*1"),
+            ("speed", "1000"),
+            ("wait", "0.1"),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut bounds = BTreeMap::new();
+        bounds.insert(1u32, ([100.0, -32.0, 0.0], [116.0, 32.0, 72.0]));
+        let mut registry = Registry::build(&defs, &bounds, &Limits::default());
+        let door = registry
+            .world
+            .query::<(Entity, &Door)>()
+            .iter()
+            .map(|(entity, _)| entity)
+            .next()
+            .expect("the door spawned");
+        let first = registry.world.spawn(());
+        let second = registry.world.spawn(());
+        let mut sim = Simulation::new();
+        let mins = Vec3::new(84.0, -16.0, -36.0);
+        let maxs = Vec3::new(116.0, 16.0, 36.0);
+        let state = |registry: &Registry| registry.world.get::<&Door>(door).unwrap().state;
+
+        // Everyone who has arrived so far touches the door every tick, in
+        // the engine's own order (the player, then each monster), until it
+        // has opened and shut again.
+        let mut present: Vec<Option<Entity>> = vec![None];
+        for newcomer in [None, Some(first), Some(second)] {
+            if newcomer.is_some() {
+                present.push(newcomer);
+            }
+            let mut opened = 0;
+            for _ in 0..60 {
+                for toucher in &present {
+                    opened += match toucher {
+                        None => sim.touch_doors(&mut registry, mins, maxs),
+                        Some(_) => sim.touch_doors_by(&mut registry, *toucher, mins, maxs),
+                    };
+                }
+                sim.tick(&mut registry, 0.05);
+            }
+            assert_eq!(
+                opened, 1,
+                "the newcomer {newcomer:?} opened the door once, and nobody already there re-opened it"
+            );
+            assert_eq!(state(&registry), MoverState::Closed);
+        }
     }
 }

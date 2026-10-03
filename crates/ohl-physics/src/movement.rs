@@ -1590,17 +1590,32 @@ pub fn trace_ground(model: &CollisionModel, state: &PlayerState, distance: f32) 
 
 /// Pushes `state` by `displacement` — an attached brush entity's own move
 /// this step (a `func_door` swinging shut, a `func_train` sliding past) —
-/// bounded by the same hull trace as any other player move, so a mover can
-/// never shove the player through a wall or another solid to make room for
-/// itself. Returns `false` when the player is still embedded in solid after
-/// the bounded push, which the caller reports back to the mover as
-/// "blocked": TWHL's `func_door`/`func_tracktrain` pages document a `dmg`
-/// keyvalue as damage dealt to whatever obstructs the mover's path (see
+/// checked against the whole collision model, so a mover can never shove
+/// the player through a wall or another solid to make room for itself.
+/// Returns `false` when the player is still embedded in solid after the
+/// push, which the caller reports back to the mover as "blocked": TWHL's
+/// `func_door`/`func_tracktrain` pages document a `dmg` keyvalue as damage
+/// dealt to whatever obstructs the mover's path (see
 /// `docs/FORMAT_SOURCES.md`, "Entity keyvalues and map logic" and "Track
 /// trains and paths"), which only makes sense if a blocked mover is itself
-/// a documented state; *how* a blocked mover reacts (halting, reversing,
-/// applying `dmg`) is `TODO(black-box)` and left to the caller, matching
-/// the same crush-detection gap already recorded for `TrackTrain::dmg`.
+/// a documented state. *How* a blocked mover reacts — a door reverses and
+/// deals its `dmg`, everything else deals its `dmg` and keeps going — is
+/// the caller's (`ohl_game::logic::Simulation::block_mover`'s) decision,
+/// from the citations recorded under "Mover blocking, branching paths and
+/// monster-opened doors" in the same document.
+///
+/// The player is already inside the mover's *new* solid when this is
+/// called (that is what made the caller call it), so a trace from their
+/// origin starts solid and can travel nowhere: the destination — the
+/// player's origin carried along by the mover's own move — is tested
+/// directly instead, exactly the way [`ride_vertical_mover`] resolves a
+/// rising lift's top face landing inside its rider. When that destination
+/// is clear the player is moved there, pushed the mover's own distance;
+/// when it is not (a wall behind them, or an embedding deeper than one
+/// step's move can clear) the player is left where they are and the mover
+/// is blocked. A bounded trace from the old origin is still run for a
+/// caller whose player is *not* embedded to begin with, where it can
+/// carry them part of the way.
 #[must_use]
 pub fn push_from_mover(
     model: &CollisionModel,
@@ -1610,8 +1625,13 @@ pub fn push_from_mover(
     if !displacement.is_finite() || displacement == Vec3::ZERO {
         return true;
     }
-    let end = state.origin + displacement;
-    let trace = model.trace(state.hull(), state.origin, end);
+    let candidate = state.origin + displacement;
+    let clear = model.trace(state.hull(), candidate, candidate);
+    if !clear.start_solid {
+        state.origin = candidate;
+        return true;
+    }
+    let trace = model.trace(state.hull(), state.origin, candidate);
     if !trace.start_solid {
         state.origin = trace.end_pos;
     }
