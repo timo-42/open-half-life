@@ -860,10 +860,9 @@ it interactively on a real screen.
   input) but not against a real display server and real hardware input.
 
 **Known gaps** (see `docs/MILESTONES.md`'s "Status as of" sections for the
-full list): a thrown `path_track` switch (`altpath` branching is applied,
-but its position is not saved) reverts to its spawn state on load; a brush
-entity's own `angles` keyvalue (a rotated door or
-platform) is not yet applied to its collision shape; a `scripted_sequence`
+full list): a brush entity's own `angles` keyvalue (a rotated door or
+platform) is not yet applied to its collision shape; a monster's map
+origin (at its feet) is read as the centre of its hull by every AI trace; a `scripted_sequence`
 target's pre-trigger idle animation (`m_iszIdle`) is not yet modelled; a
 `monstermaker`'s already-spawned children are not themselves part of any
 save section (only the maker's own spawn counters round-trip); and weapon
