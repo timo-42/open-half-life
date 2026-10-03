@@ -2852,7 +2852,7 @@ logic" and "Monster AI behaviour" above).
   | `Gargantua` | 800/800/1000 | melee 10/30/30 | flame 3/5/5 | ground-stomp 50/100/100 (`GARG_STOMP_DAMAGE`); published immune to all but energy/crush/mortar/blast damage — not modeled, since `ohl-ai`'s minimal `DamageEvent` carries no damage-type bitflags yet (see `crate::damage`'s unification note) |
   | `Tentacle` | 75 (flat; retreats rather than dying) | touch 20, second touch level 25 (`TENTACLE_TOUCH2_DAMAGE`), reach ~336 | — | beak strike 200 flat (`TENTACLE_BEAK_DAMAGE`); beak heights +0/+256/+448/+640 (`TENTACLE_BEAK_HEIGHTS`), not yet wired into height-based hit detection |
   | `Monster_barnacle` (Wave 1 batch A) | 25 (flat); "killed with a single hit from the crowbar" | tongue: bite damage **not published** (`TODO(black-box)`, flat 40 placeholder inside the cited "killed in 1 to 3 bites" bound for a player); reach published as "its real range goes 2048 units below his origin position" (`BARNACLE_TONGUE_LENGTH`) | — | "It takes 10 seconds for a barnacle to kill its prey" (`BARNACLE_KILL_SECONDS`; `brains::BARNACLE_BITE_INTERVAL` spreads it over three bites, the project's own reading); "they ignore other monsters"; tongue width `TODO(black-box)` (`BARNACLE_TONGUE_RADIUS`) |
-  | `Monster_alien_controller` (Wave 1 batch A) | 60/60/100 | — | hand-launched energy-ball volley ("zap") 3/4/5 | head-launched homing ball 15/25/35 at 650/800/1000 units/s (`CONTROLLER_HEAD_BALL_DAMAGE`/`_SPEED`, not yet wired); "launch volleys of small energy balls from their hands, or, at closer range, larger homing balls from their heads"; "constant evasive maneuvering and tendency to stay at a distance"; "Can't move unless an `info_node_air` is nearby" (flies: `MonsterFlags::FLIES`, point hull) |
+  | `Monster_alien_controller` (Wave 1 batch A) | 60/60/100 | — | hand-launched energy-ball volley ("zap") 3/4/5 | head-launched homing ball 15/25/35 at 650/800/1000 units/s (`CONTROLLER_HEAD_BALL_DAMAGE`/`_SPEED`, not yet wired); "launch volleys of small energy balls from their hands, or, at closer range, larger homing balls from their heads"; "constant evasive maneuvering and tendency to stay at a distance"; "Can't move unless an `info_node_air` is nearby" (flies: the point hull, `movement::flies`) |
   | `Monster_human_assassin` (Wave 1 batch A) | 30/50/50 | — | silenced pistol 5/5/8 | grenade 100 flat (`ASSASSIN_GRENADE_DAMAGE`, not yet wired); "extremely agile", "will run and jump in order to avoid the players fire and will try to attack from multiple directions", "operate in small teams", "hide-and-seek behavior" (`brains::ASSASSIN_HIT_AND_RUN`/`ASSASSIN_RETREAT`; run speed `TODO(black-box)`, `brains::ASSASSIN_SPEEDS`) |
   | `Monster_babycrab` (Wave 1 batch A) | 2.5/2.5/5 — "only 25% as much health as a normal headcrab" (`BABYCRAB_HEALTH_FRACTION`) | bite 1.5/3/3 — "only 30% as much damage" (`BABYCRAB_DAMAGE_FRACTION`) | — | runs the headcrab's brain; a `sk_headcrab_health<N>` override scales it (`MonsterSpec::resolve_health`) |
   | `Monster_generic` (Wave 1 batch A) | 8 — "Spawns with only 8 HP." (`GENERIC_HEALTH`) | — | — | "Classified as a player ally"; "Used to spawn models for use with scripted sequences"; model from the map's own `model` keyvalue; `Not solid (4)` spawnflag ("impervious to any damage") modeled as that damage immunity (`ohl_ai::Impervious`, read on `monster_generic` alone, where the page documents it), and, since an enemy that cannot be hurt would be fired at forever, as never being chosen as anybody's enemy; whether a shot passes through such a prop is not stated, so it keeps its hitbox |
@@ -3130,11 +3130,13 @@ Behavioural facts cited from those pages and how they are modeled
   Not modeled: physically lifting the victim; the victim is bitten where it
   stands and let go when it steps off the line.
 - **Alien controller**: flies, volleys, keeps its distance. Flight is the
-  hull seam the ichthyosaur's swim already relied on in `ohl-nav` (the
-  point hull steers in three dimensions there); this pass makes
-  `crate::movement::move_toward` and the no-collision fallback honour the
-  same hull (`movement::flies`), adds `MonsterFlags::FLIES` as the table's
-  statement of it, and — the actual gap — carries a species' hull (and eye
+  point hull, which `ohl-nav`'s steering already steered in three
+  dimensions though no defined kind that moves had used it (the
+  ichthyosaur is on the large hull; the turrets, also on the point hull,
+  never move); this pass makes `crate::movement::move_toward` and the
+  no-collision fallback honour the same hull (`movement::flies`), keeps
+  a flier's graph route off ground nodes, and — the actual gap — carries a
+  species' hull (and eye
   offset) from `MonsterSpec` onto the spawned `Actor` through
   `MonsterSpawn::with_hull`/`with_view_ofs`, which `attach_monsters` never
   did (every map-placed monster spawned with the standing hull; only

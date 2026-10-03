@@ -300,17 +300,14 @@ fn a_node_lattice_attaches_a_navigator_without_changing_the_contract() {
     );
 }
 
-/// Wave 1 batch A: an alien controller keeps its distance in the air.
-/// Hung high in the room with the player on the floor and well inside its
-/// reach, it fires and backs off rather than closing, and stays airborne
-/// throughout — nothing settles it to the floor. Its actor carries the
-/// point hull its species table asks for, the seam that makes both
-/// `ohl_ai::movement::move_toward` and `ohl-nav`'s steering treat it as a
-/// flier (the three-dimensional descent itself is covered by `ohl-ai`'s
-/// own `move_toward` tests, since here nothing gives it a reason to
-/// descend).
+/// Wave 1 batch A: a map-placed alien controller spawns on its species'
+/// point hull — the seam that makes `ohl_ai::movement::move_toward`,
+/// `ohl-nav`'s steering and the nav bridge treat it as a flier; the flight
+/// itself is `ohl-ai`'s to test (`a_controller_climbs_to_chase_an_enemy_
+/// above_it`). Hung high in the room with the player well inside its
+/// reach, it fires and backs off rather than closing.
 #[test]
-fn an_alien_controller_keeps_its_distance_and_stays_airborne() {
+fn an_alien_controller_spawns_on_the_point_hull_and_backs_off() {
     let block = entities(&monster(
         "monster_alien_controller",
         [200.0, 0.0, 200.0],
@@ -336,10 +333,6 @@ fn an_alien_controller_keeps_its_distance_and_stays_airborne() {
     assert!(
         now.origin.x > start.origin.x + 16.0,
         "in range already, it backed away rather than closing"
-    );
-    assert!(
-        (now.origin.z - start.origin.z).abs() < 1.0,
-        "it stayed at its height: nothing settles a flier to the floor"
     );
     assert!(
         game.player_health() < 100.0,

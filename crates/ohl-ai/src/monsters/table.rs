@@ -256,16 +256,11 @@ impl MonsterFlags {
     /// Never flees regardless of `SEE_FEAR`/low health (turrets, gargantua).
     pub const NEVER_FLEES: Self = Self(1 << 3);
     // Wave 1 batch A.
-    /// Moves through the air rather than along the floor (the alien
-    /// controller): its route follows the full three-dimensional
-    /// direction to each waypoint and never steps up or settles down. The
-    /// hull that goes with it is [`Hull::Point`], which is also what
-    /// `ohl-nav`'s steering reads as "a flier" (`ohl_nav::steer`), so the
-    /// two seams agree; see `crate::movement::move_toward`.
-    pub const FLIES: Self = Self(1 << 4);
     /// Never moves at all (the barnacle): no schedule its brain selects
-    /// carries a movement task, and it takes no cover.
-    pub const ROOTED: Self = Self(1 << 5);
+    /// carries a movement task, and it takes no cover. (There is no
+    /// matching "flies" flag: whether a monster flies is decided by its
+    /// hull alone, `crate::movement::flies`.)
+    pub const ROOTED: Self = Self(1 << 4);
 
     /// The union of two flag sets.
     #[must_use]
@@ -554,8 +549,11 @@ impl MonsterKind {
             // does not double as this filename; see the cited table.
             Self::Tentacle => "models/tentacle2.mdl",
             // Wave 1 batch A. `skill_subject`'s stems for the controller
-            // and the assassin do not double as these filenames; see the
-            // cited table.
+            // and the assassin (`controller`, `hassassin`) happen to equal
+            // these filenames' stems, but neither was derived from the
+            // other: the paths come from the cited model table, the cvar
+            // stems are this project's own unverified choice (see
+            // `skill_subject`).
             Self::Barnacle => "models/barnacle.mdl",
             Self::AlienController => "models/controller.mdl",
             Self::HumanAssassin => "models/hassassin.mdl",
@@ -991,8 +989,9 @@ pub fn spec_for(kind: &MonsterKind) -> Option<&'static MonsterSpec> {
     // 15/25/35 and its 650/800/1000 speed are `CONTROLLER_HEAD_BALL_DAMAGE`
     // /`_SPEED` above, not yet wired). Published as flying ("Can't move
     // unless an `info_node_air` is nearby"), evasive and keeping its
-    // distance; `MonsterFlags::FLIES` with the point hull is the flight
-    // seam, `brains::CONTROLLER_VOLLEY` the fire-then-reposition. No melee
+    // distance; the point hull is the flight seam (`crate::movement::flies`,
+    // and `ohl-nav`'s steering), `brains::CONTROLLER_VOLLEY` the
+    // fire-then-reposition. No melee
     // attack is published. Range: not published, `TODO(black-box)`.
     static ALIEN_CONTROLLER: MonsterSpec = MonsterSpec {
         classification: C::AlienMilitary,
@@ -1003,7 +1002,7 @@ pub fn spec_for(kind: &MonsterKind) -> Option<&'static MonsterSpec> {
         blood: BloodKind::Green,
         size: SizeClass::Medium,
         can_open_doors: false,
-        flags: MonsterFlags::FLIES,
+        flags: MonsterFlags::EMPTY,
     };
     // `TWHL:Monster_human_assassin` — health 30/50/50; silenced pistol
     // 5/5/8 (grenade 100 flat is `ASSASSIN_GRENADE_DAMAGE` above, not yet
@@ -1390,22 +1389,15 @@ mod tests {
         );
     }
 
-    /// The two locomotion flags agree with the hull that carries them:
-    /// a flier uses the point hull (the hull `ohl-nav` steers in three
-    /// dimensions), and a rooted kind is also one that never flees.
+    /// A rooted kind is also one that never flees, and the controller —
+    /// the one kind that is meant to fly — is on the point hull, the hull
+    /// every mover flies (`crate::movement::flies`; `brains`' own test
+    /// checks no other point-hull kind ever moves).
     #[test]
-    fn locomotion_flags_agree_with_hulls() {
+    fn rooted_kinds_never_flee_and_the_controller_is_on_the_point_hull() {
         use super::MonsterFlags;
-        use ohl_physics::Hull;
         for kind in MonsterKind::defined() {
             let spec = spec_for(kind).expect("defined");
-            if spec.flags.contains(MonsterFlags::FLIES) {
-                assert_eq!(
-                    spec.hull,
-                    Hull::Point,
-                    "{kind:?} flies without the point hull"
-                );
-            }
             if spec.flags.contains(MonsterFlags::ROOTED) {
                 assert!(
                     spec.flags.contains(MonsterFlags::NEVER_FLEES),
@@ -1413,12 +1405,11 @@ mod tests {
                 );
             }
         }
-        assert!(
+        assert!(crate::movement::flies(
             spec_for(&MonsterKind::AlienController)
                 .expect("defined")
-                .flags
-                .contains(MonsterFlags::FLIES)
-        );
+                .hull
+        ));
         assert!(
             spec_for(&MonsterKind::Barnacle)
                 .expect("defined")

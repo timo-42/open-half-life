@@ -1206,7 +1206,7 @@ mod tests {
     }
 
     /// An alien controller fires a volley when it can and otherwise closes;
-    /// it flies (point hull, `FLIES`) at its own speeds.
+    /// it flies (the point hull) at its own speeds.
     #[test]
     fn a_controller_volleys_in_range_and_flies() {
         let brain = MonsterBrain::for_kind(MonsterKind::AlienController).expect("defined");
@@ -1222,12 +1222,43 @@ mod tests {
         assert_eq!(closing.name, crate::brain::CHASE_ENEMY.name);
         assert_eq!(brain.speeds(), super::CONTROLLER_SPEEDS);
         assert!(crate::movement::flies(brain.spec.hull));
-        assert!(
-            brain
-                .spec
-                .flags
-                .contains(crate::monsters::MonsterFlags::FLIES)
-        );
+    }
+
+    /// Every mover flies a point hull (`crate::movement::flies`, and
+    /// `ohl-nav`'s steering), so a point-hull kind that ever walked would
+    /// fly. The alien controller is meant to; every other point-hull kind
+    /// (the turrets) must never select a schedule that moves it.
+    #[test]
+    fn only_the_controller_moves_on_the_point_hull() {
+        let mut point_hull_kinds = 0;
+        for kind in MonsterKind::defined() {
+            let brain = MonsterBrain::for_kind(kind.clone()).expect("defined");
+            if !crate::movement::flies(brain.spec.hull) || *kind == MonsterKind::AlienController {
+                continue;
+            }
+            point_hull_kinds += 1;
+            for state in MonsterState::ALL {
+                for conditions in [
+                    Conditions::EMPTY,
+                    Conditions::HEAR_SOUND,
+                    Conditions::HEAR_DANGER,
+                    Conditions::SEE_FEAR,
+                    Conditions::SEE_ENEMY,
+                    Conditions::SEE_ENEMY | Conditions::CAN_RANGE_ATTACK1,
+                    Conditions::SEE_ENEMY | Conditions::CAN_MELEE_ATTACK1,
+                    Conditions::HEAVY_DAMAGE,
+                    Conditions::TASK_FAILED,
+                ] {
+                    let schedule = brain.select_schedule(state, conditions);
+                    assert!(
+                        !moves(schedule),
+                        "{kind:?} on the point hull would fly {} ({state:?}, {conditions:?})",
+                        schedule.name
+                    );
+                }
+            }
+        }
+        assert!(point_hull_kinds > 0, "the turrets are on the point hull");
     }
 
     /// An assassin fires and relocates, retreats when hit hard, and runs
