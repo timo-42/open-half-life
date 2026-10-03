@@ -294,12 +294,15 @@ pub struct Level {
     /// `ohl_physics::PlayerController::base_velocity` seam a `func_train`'s
     /// already does, with no second carry path to keep in step.
     ///
-    /// Deliberately *not* folded into [`Self::brush_velocity`]: that map is
-    /// also what the player-move phase's "a mover is closing on the player"
-    /// push reads, and a conveyor is a floor, not a piston — a player
-    /// standing inside one's hull should not be shoved out of the map at
-    /// its belt speed. Missing an entry means that brush is not a conveyor,
-    /// or is one with the published "No push" flag.
+    /// Deliberately kept out of [`Self::brush_velocity`] *and* out of
+    /// [`Self::brush_mover_velocity`], which is what the player-move
+    /// phase's "a mover is closing on the player" push reads: a conveyor is
+    /// a floor, not a piston, and a player (or monster) caught inside one's
+    /// hull must not be shoved along at its belt speed. Only
+    /// [`Self::brush_ride_velocity`], the velocity of something standing
+    /// *on* the brush, includes it. Missing an entry means that brush is
+    /// not a conveyor, or is one whose push is off ("No push", "Not
+    /// solid").
     pub brush_surface_velocity: BTreeMap<BrushId, Vec3>,
     /// Which attached brushes the player-move phase could not fully push
     /// the player clear of this step (a mover whose leading face is moving
@@ -1019,10 +1022,26 @@ impl Level {
     /// velocity alone is the ride, but a `func_rotating` disc carries a
     /// player standing near its rim far faster than one standing on its
     /// axis, and a swinging `func_door_rotating` sweeps its outer edge
-    /// fastest of all. Zero for a brush this level has never synced, one
-    /// that is not moving, and one whose id has been detached.
+    /// fastest of all. A `func_conveyor` adds its surface velocity on top
+    /// ([`Self::brush_surface_velocity`]): its brush does not move, but
+    /// what stands on it is carried. Zero for a brush this level has never
+    /// synced, one that is not moving, and one whose id has been detached.
+    ///
+    /// For pushing something *out of* a brush that moved into it, use
+    /// [`Self::brush_mover_velocity`] instead, which leaves the conveyor's
+    /// surface out.
     #[must_use]
     pub fn brush_ride_velocity(&self, brush: BrushId, point: Vec3) -> Vec3 {
+        self.brush_mover_velocity(brush, point) + self.conveyor_velocity(brush)
+    }
+
+    /// How fast the brush *itself* is moving at `point`: its translation
+    /// and, for a rotating mover, its tangential velocity there — without
+    /// a conveyor's surface velocity. This is the velocity that can close
+    /// on something and has to push it clear; a conveyor's belt cannot,
+    /// since the brush under it never moves.
+    #[must_use]
+    pub fn brush_mover_velocity(&self, brush: BrushId, point: Vec3) -> Vec3 {
         let translation = self
             .brush_velocity
             .get(&brush)
@@ -1038,7 +1057,7 @@ impl Level {
                     point,
                 )
             });
-        translation + rotation + self.conveyor_velocity(brush)
+        translation + rotation
     }
 
     /// The surface velocity a `func_conveyor` gives whatever stands on it,

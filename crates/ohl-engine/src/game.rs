@@ -1031,6 +1031,15 @@ impl Game {
         &self.level.brush_collision
     }
 
+    /// The attached brushes the last step's player move found embedding the
+    /// player while moving into them, and could not push the player clear
+    /// of (`crate::level::Level::movers_blocked`). For tests and dev tools:
+    /// nothing in the simulation reacts to a blocked mover yet.
+    #[must_use]
+    pub fn movers_blocked(&self) -> &[ohl_physics::BrushId] {
+        &self.level.movers_blocked
+    }
+
     /// The live *monster-side* collision model (M9.11,
     /// `docs/FORMAT_SOURCES.md` item 33): identical to [`Self::collision`]
     /// except `func_monsterclip` is attached as solid, which
