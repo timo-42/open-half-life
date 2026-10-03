@@ -8246,3 +8246,36 @@ regression also passed separately. Every Cargo invocation used
 was captured and sanitized in memory; temporary captures were removed and no
 raw payload report was persisted. Dependencies unchanged; cargo-deny not
 required. The final evidence commit changes only this paragraph.
+## M9.NEXT — Live projectiles, deployable controls and additive continuation
+
+Player RPG, hand grenade, MP5 launcher, satchel and tripmine input now reaches
+the one Systems-owned projectile simulation. Monster grenade, spit, controller
+ball, Apache rocket and Gonarch mortar requests use the same simulation with
+launch-time damage profiles and terminal owner attribution. Secondary schedules
+have a live guarded readiness producer. The model-less player and deployable
+stand-ins participate in the shared hitbox index. Satchel radio is owner-filtered,
+works without carried ammo, and preserves held-input behavior through saves.
+Failed placement/capacity admission refunds the firing transaction.
+
+Optional tag 42 adds profiles, explicit player references, secondary cooldowns
+and the satchel input edge. Tag 26 keeps its existing layout; old kind values
+remain fixed, and new values 6..9 use the existing byte. Source provenance and
+all project-authored tuning/cuts are documented in FORMAT_SOURCES under this
+milestone: guidance toggle, hold-to-cook animation, moving-wall attachment, missing-asset visuals,
+nuanced owner grace periods and retail cadence/radius matching remain open.
+
+**Focused evidence:** 197 engine unit tests, 11 real-input projectile tests,
+6 additive runtime save tests, 22 frozen-format tests and 14 combat projectile
+tests pass. Sixteen temporary mutations each made its named regression fail:
+removed player spawn routing, RPG BLAST changed to BULLET, removed hand fuse,
+launcher changed to hand grenade, launcher spending primary ammo; satchel owner
+filter, primary edge and radio routing removed; tripmine player box and self
+filter removed; live Range2 producer, default queue and queue drain removed;
+terminal owner recovered after removal, saved Player reference dropped, and
+generic ranged damage substituted for the resolved species profile. All probes
+were restored before the passing baseline. The tests also cover capacity
+refunds, held/reload input combinations, post-restore owner attribution, guarded
+secondary readiness and stale tasks after shooter death. Duplicate physical ids
+are filtered and restored counters skip live ids.
+
+**Gates:** full contract gates pending on the final rebased tree.

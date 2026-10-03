@@ -694,6 +694,28 @@ impl Systems {
         self.projectiles.restore_snapshot(level, snapshot);
     }
 
+    pub(crate) fn snapshot_projectile_runtime(
+        &self,
+        level: &Level,
+    ) -> Option<crate::save_state::ProjectileRuntimeSnapshot> {
+        let mut snapshot = self.projectiles.snapshot_runtime(level);
+        snapshot.secondary_cooldowns = self.ai.snapshot_secondary_cooldowns(level);
+        snapshot.player_controls = self.combat.projectile_controls();
+        (snapshot != crate::save_state::ProjectileRuntimeSnapshot::default()).then_some(snapshot)
+    }
+
+    pub(crate) fn restore_projectile_runtime(
+        &mut self,
+        level: &mut Level,
+        snapshot: &crate::save_state::ProjectileRuntimeSnapshot,
+    ) {
+        self.projectiles.restore_runtime(level, snapshot);
+        self.ai
+            .restore_secondary_cooldowns(level, &snapshot.secondary_cooldowns);
+        self.combat
+            .restore_projectile_controls(snapshot.player_controls);
+    }
+
     /// `SECTION_RNG` (27): the shared random stream's state and the substep
     /// counter.
     #[must_use]
@@ -956,7 +978,7 @@ impl Systems {
         );
         self.player_systems(level, input, dt); // 3
         Self::actor_sync(level, camera, controller, dt); // 4
-        self.rebuild_hitbox_index(level); // 5
+        self.rebuild_hitbox_index(level, controller); // 5
         self.weapons(level, controller, dt, input); // 6
         self.projectiles(level, dt); // 7
         self.ai_think(level, dt); // 8
@@ -1230,20 +1252,24 @@ impl Systems {
     /// satchel must stay shootable — and instead ignored per trace by
     /// whichever trace must not hit itself (`crate::projectiles`' module
     /// doc; `ohl_combat::Projectile::self_id`/`owner`).
-    fn rebuild_hitbox_index(&mut self, level: &mut Level) {
+    fn rebuild_hitbox_index(&mut self, level: &mut Level, controller: &PlayerController) {
+        if let Ok(mut actor) = level.registry.world.get::<&mut ohl_ai::Actor>(level.player) {
+            actor.hull = controller.state.hull();
+        }
         crate::combat::rebuild_hitbox_index(&mut self.hitboxes, level);
+        self.projectiles.update_blast_bounds(&self.hitboxes);
     }
 
     /// Phase 6 — weapons: the firing state machine, its hitscan traces and
     /// the damage they queue.
     fn weapons(
         &mut self,
-        level: &Level,
+        level: &mut Level,
         controller: &PlayerController,
         dt: f32,
         input: LatchedInput,
     ) {
-        self.combat.weapons(
+        let command = self.combat.weapons(
             level,
             controller,
             dt,
@@ -1253,7 +1279,52 @@ impl Systems {
             &mut self.damage_queue,
             &mut self.hud,
             &mut self.presentation,
+            self.projectiles.owned_satchels(level.player),
         );
+        if let Some(command) = command {
+            use crate::combat::PlayerProjectileCommand as Command;
+            let success = match command {
+                Command::Spawn(request) => {
+                    self.projectiles.spawn_request(level, &request).is_some()
+                }
+                Command::PlaceSatchel { owner, position } => self
+                    .projectiles
+                    .place_satchel(level, Some(owner), position)
+                    .is_some(),
+                Command::PlaceTripmine {
+                    owner,
+                    origin,
+                    direction,
+                } => self
+                    .projectiles
+                    .place_tripmine(level, Some(owner), origin, direction)
+                    .is_some(),
+                Command::DetonateSatchels { owner } => {
+                    self.projectiles.detonate_satchels_for(
+                        level,
+                        owner,
+                        &mut self.damage_queue,
+                        &mut self.transient_sprites,
+                    ) > 0
+                }
+            };
+            self.combat.finish_projectile_command(success);
+        }
+        if let Some(collision) = level.collision.as_ref() {
+            let start = controller.eye_position();
+            let point = ohl_combat::trace_attack_filtered(
+                collision,
+                &self.hitboxes,
+                start,
+                start + controller.view_direction() * crate::combat::HITSCAN_RANGE,
+                ohl_combat::TraceFilter::ignoring(
+                    ohl_combat::TraceMask::SHOT,
+                    crate::ids::entity_id(level.player),
+                ),
+            )
+            .end;
+            self.projectiles.guide_player_rockets(level.player, point);
+        }
     }
 
     /// Phase 7 — projectiles and deployables, and the radius damage they
@@ -1274,6 +1345,9 @@ impl Systems {
     /// purpose: see the module note.
     fn ai_think(&mut self, level: &mut Level, dt: f32) {
         self.ai.think(level, dt, &mut self.damage_queue);
+        for request in self.ai.take_projectile_requests() {
+            self.projectiles.spawn_request(level, &request);
+        }
     }
 
     /// Phase 8b — monster transform sync: phase 8 just moved every

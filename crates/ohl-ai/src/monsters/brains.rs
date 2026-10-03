@@ -126,6 +126,42 @@ pub static GRUNT_GRENADE: Schedule = Schedule::new(
     Conditions::GENERAL_INTERRUPTS,
 );
 
+/// Project-authored secondary schedule; stable name is save-compatible.
+pub static ASSASSIN_GRENADE: Schedule = Schedule::new(
+    "ohl/monsters/assassin_grenade",
+    &[
+        Task::StopMoving,
+        Task::FaceEnemy,
+        Task::RangeAttack2,
+        Task::Wait(1.0),
+    ],
+    Conditions::GENERAL_INTERRUPTS.union(Conditions::ENEMY_OCCLUDED),
+);
+
+/// Project-authored secondary schedule; stable name is save-compatible.
+pub static CONTROLLER_HEAD_BALL: Schedule = Schedule::new(
+    "ohl/monsters/controller_head_ball",
+    &[
+        Task::StopMoving,
+        Task::FaceEnemy,
+        Task::RangeAttack2,
+        Task::Wait(1.0),
+    ],
+    Conditions::GENERAL_INTERRUPTS.union(Conditions::ENEMY_OCCLUDED),
+);
+
+/// Project-authored secondary schedule; stable name is save-compatible.
+pub static APACHE_ROCKET: Schedule = Schedule::new(
+    "ohl/monsters/apache_rocket",
+    &[
+        Task::StopMoving,
+        Task::FaceEnemy,
+        Task::RangeAttack2,
+        Task::Wait(1.0),
+    ],
+    Conditions::GENERAL_INTERRUPTS.union(Conditions::ENEMY_OCCLUDED),
+);
+
 /// Barney/scientist walking after the player they are following.
 pub static FOLLOW_PLAYER: Schedule = Schedule::new(
     "ohl/monsters/follow_player",
@@ -522,6 +558,9 @@ pub static ALL: &[&Schedule] = &[
     &GRUNT_SUPPRESS,
     &GRUNT_FLANK,
     &GRUNT_GRENADE,
+    &APACHE_ROCKET,
+    &CONTROLLER_HEAD_BALL,
+    &ASSASSIN_GRENADE,
     &FOLLOW_PLAYER,
     &SCIENTIST_HEAL,
     &TURRET_DEPLOY,
@@ -785,7 +824,8 @@ impl MonsterBrain {
                 }
             }
             K::AlienGrunt | K::HumanGrunt => {
-                if conditions.contains(Conditions::CAN_RANGE_ATTACK2) {
+                if self.kind == K::HumanGrunt && conditions.contains(Conditions::CAN_RANGE_ATTACK2)
+                {
                     &GRUNT_GRENADE
                 } else if conditions.contains(Conditions::SPECIAL2) {
                     &GRUNT_SUPPRESS
@@ -851,14 +891,18 @@ impl MonsterBrain {
                 }
             }
             K::AlienController => {
-                if conditions.contains(Conditions::CAN_RANGE_ATTACK1) {
+                if conditions.contains(Conditions::CAN_RANGE_ATTACK2) {
+                    &CONTROLLER_HEAD_BALL
+                } else if conditions.contains(Conditions::CAN_RANGE_ATTACK1) {
                     &CONTROLLER_VOLLEY
                 } else {
                     &crate::brain::CHASE_ENEMY
                 }
             }
             K::HumanAssassin => {
-                if conditions.contains(Conditions::HEAVY_DAMAGE) {
+                if conditions.contains(Conditions::CAN_RANGE_ATTACK2) {
+                    &ASSASSIN_GRENADE
+                } else if conditions.contains(Conditions::HEAVY_DAMAGE) {
                     &ASSASSIN_RETREAT
                 } else if conditions.contains(Conditions::NO_AMMO_LOADED) {
                     &crate::brain::RELOAD
@@ -886,7 +930,9 @@ impl MonsterBrain {
                 }
             }
             K::Apache => {
-                if conditions.contains(Conditions::CAN_RANGE_ATTACK1) {
+                if conditions.contains(Conditions::CAN_RANGE_ATTACK2) {
+                    &APACHE_ROCKET
+                } else if conditions.contains(Conditions::CAN_RANGE_ATTACK1) {
                     &APACHE_GUN
                 } else {
                     &HOVER_WATCH
