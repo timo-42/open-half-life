@@ -2545,9 +2545,11 @@ authoritative record, this section is a summary:
   the same per-pellet damage from the same clip.
 - Crossbow: 50 damage per bolt, 5-round clip, 50-bolt max reserve.
 - RPG: 100 damage (single-player value), laser-guided, 5-rocket max reserve.
-- Gauss Gun: uncharged primary 20 damage; secondary charges up to 10 seconds
-  and releases 25 up to 200 damage, reflecting off metal; holding the charge
-  past 10 seconds costs 50 health instead of firing. 100-cell max reserve.
+- Gauss Gun: uncharged primary 20 damage; secondary releases 25 up to 200
+  damage, reflecting off metal. Once fully charged, it must fire within ten
+  seconds to avoid a 50-health discharge. Time to full charge is unpublished;
+  the engine's ten-second limit from charge initiation and linear ramp are
+  project-authored placeholders, `TODO(black-box)`. 100-cell max reserve.
 - Egon: continuous beam, 14 damage per cell, 100-cell max reserve.
 - Hornetgun: 7 damage per hornet, primary fires at 240/minute (0.25 s cycle)
   and homes, secondary at 600/minute (0.1 s cycle) and does not; 8-hornet

@@ -102,6 +102,39 @@ fn egon_large_steps_do_not_queue_free_or_delayed_burst_damage() {
 }
 
 #[test]
+fn egon_exact_multiple_and_changing_steps_leave_no_zero_time_backlog() {
+    for oversized in [0.3, 0.5, 0.7, 1.0] {
+        let (mut state, mut pool) = drawn(WeaponId::Egon, AmmoType::Uranium, 100);
+        assert_eq!(
+            state.tick(0.01, primary(), &mut pool),
+            WeaponAction::BeamTick
+        );
+        assert_eq!(
+            state.tick(oversized, primary(), &mut pool),
+            WeaponAction::BeamTick
+        );
+        assert_eq!(
+            state.tick(0.0, primary(), &mut pool),
+            WeaponAction::Empty,
+            "an exact {oversized}s multiple leaves no float-rounding backlog"
+        );
+        for dt in [0.03, 0.07, 0.06, 0.04] {
+            let action = state.tick(dt, primary(), &mut pool);
+            assert_eq!(
+                action,
+                if dt == 0.07 || dt == 0.04 {
+                    WeaponAction::BeamTick
+                } else {
+                    WeaponAction::Empty
+                }
+            );
+            assert_eq!(state.tick(0.0, primary(), &mut pool), WeaponAction::Empty);
+        }
+        assert_eq!(pool.current(), 96, "four pulses each buy one cell");
+    }
+}
+
+#[test]
 fn gauss_charge_depends_on_elapsed_seconds_not_step_count() {
     for (dt, steps) in [(0.01, 500), (0.02, 250)] {
         let (mut state, mut pool) = drawn(WeaponId::Gauss, AmmoType::Uranium, 100);
