@@ -49,8 +49,9 @@
 use glam::Vec3;
 use ohl_engine::save::{CarriedEntityDef, EngineHeader, TeleportStateSnapshot, ViewState};
 use ohl_engine::save_state::{
-    AmbientSnapshot, BreakableSnapshot, MomentaryDoorSnapshot, MonsterMakerSnapshot, MoverSnapshot,
-    PathStateSnapshot, PlatRotSnapshot, RotatorSnapshot, ScriptRunnerSnapshot, TrackTrainSnapshot,
+    AmbientSnapshot, BossSnapshot, BreakableSnapshot, FlightSnapshot, MomentaryDoorSnapshot,
+    MonsterMakerSnapshot, MoverSnapshot, PathStateSnapshot, PlatRotSnapshot, RotatorSnapshot,
+    ScriptRunnerSnapshot, ShieldSnapshot, TrackTrainSnapshot, TrailPhaseSnapshot,
     TrainChainSnapshot, TriggerCameraSnapshot,
 };
 use ohl_engine::test_support::{
@@ -272,6 +273,76 @@ fn tag_38_ambient_state_keeps_its_frozen_wire_shape() {
 const GOLDEN_TAG_40: &[u8] = &[
     0x03, 0x00, 0x01, 0x01, 0x01, 0x00, 0x01, 0x00, 0x01, 0x03, 0x03, 0x04, 0x05, 0x01,
 ];
+
+/// `SECTION_BOSS_STATE` (41) at the shape this build writes: the exact
+/// bytes [`frozen_boss_state`]'s value encodes to. **New golden, not a
+/// revision of any tag above**: tag 41 did not exist before M9.NEXT, the
+/// same "a future package adding a tag would pin its own golden from
+/// scratch" case [`GOLDEN_TAG_31`]'s own comment anticipated.
+const GOLDEN_TAG_41: &[u8] = &[
+    0x04, 0x00, 0x01, 0x01, 0x01, 0x02, 0x00, 0x00, 0xc0, 0x3f, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01,
+    0x01, 0x00, 0x00, 0x96, 0x43, 0x00, 0x00, 0xc0, 0x40, 0x01, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00,
+    0x01, 0x01, 0x01, 0x02, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3f, 0x00,
+    0x01, 0x01, 0x03, 0x01, 0x00, 0x00, 0x80, 0x3e, 0x40,
+];
+
+/// The value [`GOLDEN_TAG_41`] holds: an entity with none of the
+/// components, a Gonarch, a Nihilanth and an aircraft — every arm of
+/// [`TrailPhaseSnapshot`] that carries data, both arms of the shield's
+/// opening timer, and the largest pending count a counter can hold.
+fn frozen_boss_state() -> Vec<Option<BossSnapshot>> {
+    vec![
+        None,
+        Some(BossSnapshot {
+            trail: Some(TrailPhaseSnapshot::Arriving {
+                at: 2,
+                wait_left: 1.5,
+            }),
+            shield: None,
+            flight: None,
+            pending_activation: 0,
+        }),
+        Some(BossSnapshot {
+            trail: None,
+            shield: Some(ShieldSnapshot {
+                active: true,
+                reserve: 300.0,
+                recharge_left: 6.0,
+                open_left: Some(2.0),
+                exposed: false,
+            }),
+            flight: None,
+            pending_activation: 1,
+        }),
+        Some(BossSnapshot {
+            trail: Some(TrailPhaseSnapshot::Holding { at: 1 }),
+            shield: Some(ShieldSnapshot {
+                active: false,
+                reserve: 0.0,
+                recharge_left: 0.5,
+                open_left: None,
+                exposed: true,
+            }),
+            flight: Some(FlightSnapshot {
+                current: 3,
+                active: true,
+                wait_left: 0.25,
+            }),
+            pending_activation: 64,
+        }),
+    ]
+}
+
+#[test]
+fn tag_41_boss_state_keeps_its_frozen_wire_shape() {
+    let value = frozen_boss_state();
+    let encoded = postcard::to_allocvec(&value).expect("the section encodes");
+    assert_golden(&encoded, GOLDEN_TAG_41, 41);
+
+    let decoded: Vec<Option<BossSnapshot>> =
+        postcard::from_bytes(GOLDEN_TAG_41).expect("section 41 decodes");
+    assert_eq!(decoded, value);
+}
 
 /// The value [`GOLDEN_TAG_36`] holds: one definition carrying the three
 /// keys every re-created entity has a placement and an identity from, and
