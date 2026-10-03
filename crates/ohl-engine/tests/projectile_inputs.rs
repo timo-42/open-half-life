@@ -445,8 +445,14 @@ fn live_grunt_schedule_queues_a_grenade_that_later_hurts_the_player() {
         }
     }
     assert!(thrown, "live senses and schedules must produce Range2");
-    // Stop further firearm attacks, leaving the already emitted grenade alive.
-    ohl_engine::test_support::strip_monster_ai(&mut game, grunt);
+    // Kill the shooter through normal damage/lifecycle; its emitted grenade remains live.
+    ohl_engine::test_support::queue_monster_damage(&mut game, grunt, None, 10_000.0);
+    tick(&mut game, 1, Input::default());
+    assert_eq!(
+        game.monster_death_count(),
+        1,
+        "the shooter is dead before detonation"
+    );
     let before = game.player_health();
     tick(&mut game, 530, Input::default());
     assert!(
@@ -600,4 +606,35 @@ fn projectile_capacity_rejection_refunds_the_real_player_shot() {
     assert_eq!(game.projectile_count(), 128);
     assert_eq!(game.inventory().clip(WeaponId::Rpg), 1);
     assert_eq!(game.weapon_fired_count(), fired);
+}
+
+#[test]
+fn mp5_reload_without_primary_reserves_does_not_suppress_a_valid_grenade() {
+    for clip in [0, 17] {
+        let (mut game, assets) = fixture("", true);
+        equip(
+            &mut game,
+            &assets,
+            WeaponId::Mp5,
+            clip,
+            &[(AmmoType::Mp5Grenades, 2)],
+        );
+        tick(
+            &mut game,
+            1,
+            Input {
+                reload: true,
+                attack2: true,
+                ..Input::default()
+            },
+        );
+        assert_eq!(
+            game.projectile_count(),
+            1,
+            "ineligible primary reload must not seize grenade reserves"
+        );
+        assert_eq!(game.inventory().clip(WeaponId::Mp5), clip);
+        assert_eq!(game.inventory().ammo(AmmoType::NineMillimeter).current(), 0);
+        assert_eq!(game.inventory().ammo(AmmoType::Mp5Grenades).current(), 1);
+    }
 }

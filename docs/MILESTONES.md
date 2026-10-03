@@ -8246,6 +8246,7 @@ regression also passed separately. Every Cargo invocation used
 was captured and sanitized in memory; temporary captures were removed and no
 raw payload report was persisted. Dependencies unchanged; cargo-deny not
 required. The final evidence commit changes only this paragraph.
+
 ## M9.NEXT — Live projectiles, deployable controls and additive continuation
 
 Player RPG, hand grenade, MP5 launcher, satchel and tripmine input now reaches
@@ -8264,7 +8265,7 @@ all project-authored tuning/cuts are documented in FORMAT_SOURCES under this
 milestone: guidance toggle, hold-to-cook animation, moving-wall attachment, missing-asset visuals,
 nuanced owner grace periods and retail cadence/radius matching remain open.
 
-**Focused evidence:** 197 engine unit tests, 11 real-input projectile tests,
+**Focused evidence:** 198 engine unit tests, 12 real-input projectile tests,
 6 additive runtime save tests, 22 frozen-format tests and 14 combat projectile
 tests pass. Sixteen temporary mutations each made its named regression fail:
 removed player spawn routing, RPG BLAST changed to BULLET, removed hand fuse,
@@ -8277,5 +8278,26 @@ were restored before the passing baseline. The tests also cover capacity
 refunds, held/reload input combinations, post-restore owner attribution, guarded
 secondary readiness and stale tasks after shooter death. Duplicate physical ids
 are filtered and restored counters skip live ids.
+
+Review follow-ups normalize reload eligibility against the MP5's primary reserve,
+keep Apache flight-plan movement through its rocket schedule, and compare a
+truly live pre-save control with the loaded branch after fuse, guidance, homing
+target and secondary cooldown state have advanced. The Apache condition invariant
+now includes Range2, and live flight is checked from schedule entry through launch.
+
+Two synthetic fixture corrections isolate their original contracts. The guarded
+route opts into an existing houndeye trace attacker; its original grunt fixture
+is unchanged, and the actual guard-to-wait script mutation still kills the
+player. A neutral synthetic Gonarch isolates node-assigned health from later
+mortar splash. Production owner splash remains covered directly, and the real
+AI grenade test kills the shooter normally before requiring later grenade damage.
+These are project-authored test choices, not smoke-expectation or gameplay changes.
+
+Nine additional review mutations were killed: reintroducing the ineligible MP5
+reload; stopping Apache movement (both the condition invariant and live flight);
+resetting restored secondary cooldown; losing the restored homing target;
+removing node-health assignment; excluding mortar owner splash; disabling the
+guard policy; and cancelling a grenade when its shooter dies. Every source
+mutation was restored before rerunning the focused baseline.
 
 **Gates:** full contract gates pending on the final rebased tree.

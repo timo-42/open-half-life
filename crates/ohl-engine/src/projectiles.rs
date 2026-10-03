@@ -172,8 +172,8 @@ struct BlastSpec {
 /// kind that never detonates (a bolt, a hornet, a snark's bite).
 const fn projectile_blast(kind: ProjectileKind) -> Option<BlastSpec> {
     match kind {
-        // Legacy 120 fallback retained for old saves; radius is TODO(black-box).
-        ProjectileKind::Rocket => Some(BlastSpec {
+        // Legacy rocket fallback; the medium Gonarch values happen to match.
+        ProjectileKind::Rocket | ProjectileKind::GonarchMortar => Some(BlastSpec {
             radius: 250.0,
             damage: 120.0,
         }),
@@ -181,10 +181,6 @@ const fn projectile_blast(kind: ProjectileKind) -> Option<BlastSpec> {
         ProjectileKind::HandGrenade | ProjectileKind::Mp5Grenade => Some(BlastSpec {
             radius: 200.0,
             damage: 100.0,
-        }),
-        ProjectileKind::GonarchMortar => Some(BlastSpec {
-            radius: 250.0,
-            damage: 120.0,
         }),
         ProjectileKind::CrossbowBolt
         | ProjectileKind::Hornet
@@ -1951,6 +1947,50 @@ mod resolved_profile_tests {
     use super::*;
     use crate::{MemoryAssets, test_support::synthetic_map_bsp};
     use ohl_combat::{EntityHitboxes, HitGroup, HitboxLimits};
+
+    #[test]
+    fn gonarch_mortar_keeps_the_neutral_owner_splash_policy() {
+        let mut level = Level::from_bytes(&MemoryAssets::new(), "ohlsynth", &synthetic_map_bsp())
+            .expect("fixture");
+        let owner = level.registry.world.spawn((
+            Transform {
+                origin: Vec3::new(0.0, 0.0, 36.0),
+                angles: Vec3::ZERO,
+            },
+            Health::new(200.0),
+        ));
+        let mut system = ProjectileSystem::new(0);
+        system
+            .spawn_request(
+                &mut level,
+                &crate::ai::ProjectileRequest {
+                    kind: ProjectileKind::GonarchMortar,
+                    owner,
+                    origin: Vec3::new(30.0, 0.0, 100.0),
+                    velocity: Vec3::new(0.0, 0.0, -500.0),
+                    damage: 120.0,
+                    damage_type: DamageType::BLAST | DamageType::ACID,
+                    blast_radius: Some(250.0),
+                    target: None,
+                },
+            )
+            .expect("mortar");
+        let mut damage = Vec::new();
+        system.tick(
+            &mut level,
+            &HitboxIndex::new(HitboxLimits::default()),
+            0.3,
+            &mut damage,
+            &mut TransientSprites::default(),
+        );
+        let hit = damage
+            .iter()
+            .find(|hit| hit.target == owner)
+            .expect("owner remains a splash target");
+        assert!(hit.info.amount > 0.0);
+        assert_eq!(hit.info.attacker, Some(entity_id(owner)));
+        assert_eq!(hit.info.kind, DamageType::BLAST | DamageType::ACID);
+    }
 
     #[test]
     fn terminal_damage_keeps_launch_profile_and_original_attacker_after_restore_and_despawn() {

@@ -1099,7 +1099,8 @@ mod tests {
         PLAN_PICKUP_ASIDE, PLAN_PICKUP_MAP, PLAN_SCRIPTED_LETHAL_WAIT_DELAY, PLAN_SCRIPTED_MAP,
         PLAN_SCRIPTED_MONSTER_MODEL, PLAN_TURN_MAP, PickupFixture, ScriptedStart, plan_ladder_bsp,
         plan_lift_bsp, plan_pickup_bsp, plan_pickup_closet_bsp, plan_pit_bsp,
-        plan_scripted_goal_bsp, plan_scripted_monster_model_bytes, plan_turn_bsp,
+        plan_scripted_goal_bsp, plan_scripted_hitscan_goal_bsp, plan_scripted_monster_model_bytes,
+        plan_turn_bsp,
     };
 
     fn fixture() -> (MemoryAssets, Game) {
@@ -1372,7 +1373,7 @@ mod tests {
         let mut assets = MemoryAssets::new();
         assets.insert(
             &format!("maps/{PLAN_SCRIPTED_MAP}.bsp"),
-            plan_scripted_goal_bsp("ohlplannext", ScriptedStart::ByHostileMonster),
+            plan_scripted_hitscan_goal_bsp("ohlplannext"),
         );
         assets.insert(
             PLAN_SCRIPTED_MONSTER_MODEL,
