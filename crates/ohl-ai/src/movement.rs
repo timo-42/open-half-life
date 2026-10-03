@@ -147,9 +147,9 @@ pub struct MoveResult {
 ///
 /// The point hull is the flier's hull in `ohl-nav`'s steering too
 /// (`ohl_nav::steer` keeps its full 3D direction for the point hull and
-/// flattens every box hull), so the two movement paths agree on who flies;
-/// `crate::monsters::MonsterFlags::FLIES` is the table-side statement of
-/// the same thing.
+/// flattens every box hull), so the two movement paths agree on who flies.
+/// The species table decides it by giving a kind the point hull: the alien
+/// controller, and the turrets, which never move.
 #[must_use]
 pub const fn flies(hull: Hull) -> bool {
     matches!(hull, Hull::Point)

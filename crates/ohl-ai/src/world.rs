@@ -2121,4 +2121,50 @@ mod tests {
         }
         assert!(finished >= 2, "it still finishes legs: {finished}");
     }
+
+    /// Wave 1 batch A review: a controller flies through the whole tick,
+    /// not just in `move_toward`'s own unit test. Against a real collision
+    /// model, with an enemy above it and beyond its volley's range, it
+    /// chases and climbs toward it; a walker on the same chase would keep
+    /// its height.
+    #[test]
+    fn a_controller_climbs_to_chase_an_enemy_above_it() {
+        use ohl_formats::test_support::CollisionBrush;
+        let room = collision_from(
+            &[
+                CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+                CollisionBrush::half_space([0.0, 0.0, -1.0], -1_024.0),
+                CollisionBrush::half_space([-1.0, 0.0, 0.0], -2_048.0),
+                CollisionBrush::half_space([1.0, 0.0, 0.0], -2_048.0),
+                CollisionBrush::half_space([0.0, -1.0, 0.0], -2_048.0),
+                CollisionBrush::half_space([0.0, 1.0, 0.0], -2_048.0),
+            ],
+            [-2_048.0, -2_048.0, 0.0],
+            [2_048.0, 2_048.0, 1_024.0],
+        );
+        let kind = crate::monsters::MonsterKind::AlienController;
+        let spec = crate::monsters::spec_for(&kind).expect("defined");
+        let mut ai = AiWorld::new(0x5EED);
+        let brain = ai.register_brain(Box::new(
+            crate::monsters::MonsterBrain::for_kind(kind).expect("defined"),
+        ));
+        let mut world = World::new();
+        let mut actor = Actor::new(spec.classification, Vec3::new(0.0, 0.0, 64.0));
+        actor.hull = spec.hull;
+        let controller = spawn_monster(&mut world, actor, brain);
+        spawn_actor(
+            &mut world,
+            Actor::new(Classification::Player, Vec3::new(1_500.0, 0.0, 600.0)).as_client(),
+        );
+        let context = SightContext::tracing(&room);
+        for _ in 0..200 {
+            ai.tick(&mut world, &context, ohl_physics::controller::TICK_SECONDS);
+        }
+        let origin = world.get::<&Actor>(controller).expect("actor").origin;
+        assert!(origin.x > 100.0, "it chased: {origin:?}");
+        assert!(
+            origin.z > 64.0 + 50.0,
+            "and climbed while it did: {origin:?}"
+        );
+    }
 }
