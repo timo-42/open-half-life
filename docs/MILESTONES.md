@@ -7273,7 +7273,7 @@ volume, tag 38 written and restored, the large/medium check order,
 volume and pitch, the oversize miss, the volume ramp, the sentence cap,
 the benchmark loop, the listener in three run paths, and the stop cue.
 
-## M9.NEXT — Eight more monsters, and the hull that never reached the actor
+## M9.42 — Eight more monsters, and the hull that never reached the actor
 
 Eight `monster_*` classnames that a map can name — `monster_barnacle`,
 `monster_alien_controller`, `monster_human_assassin`, `monster_babycrab`,
@@ -7293,10 +7293,11 @@ senses that reach the published 2048 units in every direction; its "melee"
 is the tongue, and a new defaulted `Brain::melee_in_reach` turns the reach
 into a vertical test — within a tongue's width of the line below it, no
 further down than the length — rather than the sphere every other kind
-uses. It feeds on what stands on that line at a cadence read off the
-published "ten seconds to kill its prey", and lets go of what steps off it.
-The alien controller is the first flier: `MonsterFlags::FLIES` with the
-point hull, a hand-launched volley of three shots followed by a
+uses. Whatever is on that line is its enemy ahead of whatever else it
+sees (`Brain::chooses_enemy_in_reach`). It feeds on it at a cadence read
+off the published "ten seconds to kill its prey", and lets go of what
+steps off it. The alien controller is the first flier: the point hull,
+a hand-launched volley of three shots followed by a
 reposition, which is the closest this crate's tasks come to "constant
 evasive maneuvering and tendency to stay at a distance". The assassin
 fires a two-shot burst and relocates, retreats when hit hard, and runs at
@@ -7304,12 +7305,16 @@ a placeholder speed well above a grunt's. The babycrab is the headcrab's
 brain and hull at the published quarter health and thirty-percent bite,
 and an override of `sk_headcrab_health<N>` scales it too. `monster_generic`
 and `monster_furniture` get a passive brain that stands where it was put
-(the generic also turns to look), no default model — the cited model page
+(the generic also goes alert where it stands, without turning) and keeps
+the pose its map's `sequence` keyvalue gave it unless a script plays
+another, no default model — the cited model page
 lists both as "specified by mapper" — and, being monsters now, an `Actor`
 a `scripted_sequence` can find: an engine test walks each to a mark and
 fires the script's `target` once, exactly like a guard. The rat and the
-cockroach wander and scatter on a new `Task::Wander`, whose direction is
-drawn from a generator seeded by the tick counter and the entity id so it
+cockroach wander and scatter on a new `Task::Wander`, each leg clamped to
+where the critter can actually walk (`movement::walkable_reach`: not into
+or hard against a wall, not out over a drop), whose direction is drawn
+from a generator seeded by the tick counter and the entity id so it
 consumes nothing from the world's shared stream: choosing where to go
 shifts nobody else's random waits (the pause after a leg is an ordinary
 random wait, and does draw from the stream, like every other monster's),
@@ -7340,9 +7345,9 @@ scenario: a swing the harness expects to hit an entity and nothing more
 now also reported a monster hurt and killed, once `monster_generic` had
 become an eight-health monster. That led to the cited page's `Not solid`
 spawnflag (bit 4), modeled to the extent the page describes it:
-"impervious to any damage", as a `NotSolid` marker the lifecycle drain
-honours, verified by a soldier that kills a solid prop and cannot scratch
-a not-solid one. The prop keeps its hitbox, since whether a trace passes
+"impervious to any damage", as an `ohl_ai::Impervious` marker the
+engine's damage drain honours and sight never takes for an enemy. The
+prop keeps its hitbox, since whether a trace passes
 through such a prop is not something the page states; that is listed
 below rather than quietly decided.
 
@@ -7364,6 +7369,13 @@ kinds with a hardcoded model draw through the same default-model table the
 renderer already read, placed at their map origin exactly as before; no
 rendering code changed, so a barnacle's ceiling attachment and a
 controller's hover are whatever its model and that placement already give.
+Two routing gaps are left as `TODO`s in `ohl-ai`'s nav bridge: a flier is
+kept off ground nodes by dropping any route that uses one, not by
+attaching it only to air nodes (that needs a node-kind filter in
+`ohl_nav::find_path`), so a flier whose nearest node is a ground node gets
+no graph route at all; and a monster a script is walking to its mark still
+falls back to the old wall-ignoring straight line when no route reaches
+the mark (`Fallback::StraightLine`, below).
 
 **Rebased and re-checked.** Moved onto M9.37 and M9.38, then every
 claim above was stubbed out once to see whether a test noticed.
@@ -7377,39 +7389,78 @@ claim above was stubbed out once to see whether a test noticed.
 - *Four claims nothing checked.* Removing the no-collision fallback's
   flight, the `monster_generic`-only reading of bit 4, the maker child's
   species eye, or the per-tick-and-entity seeding of a wander left every
-  test green. Each now has one that fails when it goes: a point-hull
-  chaser with no collision model climbs to an enemy above it while a
-  standing one keeps its height; a soldier carrying bit 4 is not
-  `NotSolid` while the generic beside it is; a `monstermaker`'s barnacle
-  and controller children carry their species' eye and hull; and two
-  wanderers started on one spot in one tick go different ways, each turns
-  between legs, and after many complete legs the shared stream is exactly
-  where a fresh world's is (a random pause swapped into that test's
-  schedule trips the last check, so it is not vacuous).
-- *A rat that never finished a leg.* The critter test ran at 20 Hz. At
-  the engine's 100 Hz tick the route's stuck check — a tick that moves
-  less than `STUCK_EPSILON`, half a unit, counts as no progress — makes
-  anything walking slower than 50 units per second "stuck" after a
-  quarter of a second, and the critters' placeholder walk was 40: every
-  wander leg was given up a few units in and the rat hopped rather than
-  wandered. The placeholder walk is now 64 and the test runs at the
-  engine's own tick, requiring each leg and its pause to complete. The
-  same floor applies to anything else that walks below 50 units per
-  second — on main, the default walk speed of 40 that `FOLLOW_PLAYER`
-  uses — and is left for its own change rather than retuned here.
+  test green. Each now has a test that fails when it goes.
 - *Two doc corrections.* `docs/FORMAT_SOURCES.md` still called `Not solid
-  (4)` "not yet modeled" in two places after the drain started honouring
-  it, and the paragraph above claimed a critter reshuffles nobody's
-  random waits, which its own random pause contradicts; both now say what
-  the code does.
+  (4)` "not yet modeled", and this entry claimed a critter reshuffles
+  nobody's random waits, which its own random pause contradicts.
+
+**Review round.** Then onto M9.39, and through a review of the whole
+entry. Each fix below has a test that was seen to fail without it.
+
+- *Wander legs into walls and off ledges.* A drawn wander goal was never
+  traced: one inside a wall failed every route the nav bridge tried, every
+  tick, and with no gravity a leg aimed off a ledge floated the critter
+  out over the drop. `movement::walkable_reach` clamps it — traced 32
+  units past its end (`WALL_MARGIN`, so the steering's 48-unit look-ahead
+  never runs into the wall that ended it) and probed for floor every 16.
+- *Slow walkers taken for stuck.* The route follower called any tick
+  under half a unit no progress, which at 100 Hz is 50 units a second, so
+  the default walk of 40 (`FOLLOW_PLAYER`'s, the critters') failed every
+  leg a quarter of a second in; `ohl-nav`'s steering window wants 40
+  units a second exactly and a rounding error decided it. Both now
+  measure a mover against its own step (`STUCK_PROGRESS_FRACTION`, 40%:
+  the steering's slide and side-step count, its creep does not), which
+  let the critters keep their placeholder 40 rather than the 64 the
+  previous round had raised it to. This changes how every walker below
+  125 units a second moves at the engine tick: they now walk continuously
+  instead of in quarter-second bursts.
+- *The nav bridge's fallback, and fliers on the ground graph.* With the
+  species' hull on every monster, a large hull fails routes a standing
+  one fit through and fell back to a straight line that ignores walls;
+  and the point hull could attach to ground nodes, whose waypoint for it
+  is the floor, so a controller dived to follow the walkers' graph. The
+  fallback is now a traced step, and a flier's route through any ground
+  node is dropped. Measured: the traced fallback alone dropped the chain
+  walk to depth 6 — the sixth map's door out is opened by a carried
+  guard's scripted walk to a mark our graph cannot route to, which had
+  only ever arrived through a wall. A scripted walk keeps the straight
+  line (`Fallback::StraightLine`, with its `TODO`); everything moving
+  under its own brain gets the traced step.
+- *The barnacle's tongue and the nearest hated thing.* Sight chose the
+  nearest of equally hated things, so an ally of the player nearer than a
+  player under the tongue was the enemy, failed the reach test, and the
+  player was never bitten. A barnacle now takes what is on its tongue
+  first. The bite cadence and the assassin's two-shot burst gained tests.
+- *A target that never dies.* A `Not solid` generic is a hated player
+  ally that takes no damage, so a soldier that saw one nearer than the
+  player fired at it forever. The marker moved into `ohl-ai` and goes
+  through M9.39's one hostility rule (`sighting_relationship`), so it is
+  never chosen as an enemy. Its immunity test now queues a hit on the
+  engine's own damage queue, and bit 8 is checked not to count.
+- *A posed generic.* Every activity change looked a sequence up by name
+  and fell back to sequence 0, so a prop dropped its map-set pose. The
+  two map-modelled prop kinds now keep theirs. The test for it found the
+  generic re-selecting the ordinary alert schedule every tick with an
+  enemy in view (any sighting interrupts it); it runs its own
+  uninterruptible `PROP_ALERT` instead.
+- *Smaller things.* The controller test's "stays airborne" proved nothing
+  (walkers do not fall either); flight is now tested through the whole
+  tick against a real collision model. `MonsterFlags::FLIES` was read
+  nowhere and is dropped — flight is the hull — with a test that no other
+  point-hull kind (the turrets) ever moves. A note crediting flight to
+  the ichthyosaur's seam (it is on the large hull) and one denying that
+  the controller's and assassin's skill stems match their model filenames
+  (they do) were corrected. And this entry and the first commit's message
+  had recorded counts and spawnflags read from retail map content; both
+  were reworded without them.
 
 **Gates**: fmt; clippy (workspace, `--features dev-tools`, and
-`--all-features`); `cargo test --workspace` (2471 passed, 0 failed, 31
+`--all-features`); `cargo test --workspace` (2597 passed, 0 failed, 31
 ignored); policy; graph; combat-smoke 37/37 with 0 unexpected lines;
-campaign-smoke 93/93; `cargo xtask chain-walk --start-inventory
-weapon_357,ammo_357,ammo_357` at **distinct depth 12**, Pass, 660.8
-simulated seconds. Because the hull change moves every non-standing kind
-differently, the chain was also run with a local, uncommitted per-hop
-health probe on this branch and on `origin/main`: both read 99.1 entering
-the last hop and 9.1 at its level change, so nothing the chain can see
-moved.
+campaign-smoke 93/93; and `cargo xtask chain-walk` at **distinct depth
+12**, Pass, 660.8 simulated seconds, both with `--start-inventory ""` and
+with `--start-inventory weapon_357,ammo_357,ammo_357`. Because the hull,
+fallback and stuck-check changes move monsters differently, both chains
+were also run with a local, uncommitted per-hop probe (player health and
+the engine's damage, death and hit counters) on this branch and on its
+base: the two read identically at every hop, with either loadout.
