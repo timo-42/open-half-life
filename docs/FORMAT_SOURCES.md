@@ -2473,7 +2473,7 @@ explicit values of their own instead of relying on those defaults.
   sprite of its own. `DamageType` names exactly this set; the *bit values*
   are this project's own dense assignment in the order the list is written,
   not a transcription of any engine header, and nothing in the crate depends
-  on a particular numeric value. `ohl_ai::DamageKinds` (M9.NEXT, "Wave 1
+  on a particular numeric value. `ohl_ai::DamageKinds` (M9.45, "Wave 1
   batch B" under "Monster definitions") declares the same set again for
   the AI crate, which has no edge to `ohl-combat`, on the same bits.
 - the303, ["GoldSrc MDL QC commands"](https://the303.org/tutorials/gold_qc.htm)
@@ -3188,7 +3188,7 @@ Behavioural facts cited from those pages and how they are modeled
   (`brains::CRITTER_SPEEDS`).
   Not modeled: being killed by being stepped on; `path_corner` patrols.
 
-### Wave 1 batch B — bosses and aircraft (M9.NEXT)
+### Wave 1 batch B — bosses and aircraft (M9.45)
 
 `monster_bigmomma`, `monster_nihilanth`, `monster_apache` and
 `monster_osprey` (`crates/ohl-ai/src/monsters/{bigmomma,nihilanth,aircraft,
@@ -3223,7 +3223,46 @@ consulted (`docs/CLEAN_ROOM.md`).
   the engine drops every hit at it before it is queued, and `ohl-ai`'s own
   intake (`lifecycle::apply_damage_effective`) answers it with
   `DamageResponse::IMPERVIOUS` whatever the species lookup says, so the
-  two never disagree.
+  two never disagree. Combine OverWiki,
+  [Gargantua](https://combineoverwiki.net/wiki/Gargantua), "Tactics":
+  "Explosives or explosive weapons such as the RPG and energy weapons such
+  as the Gluon Gun are effective against it", and the Tau Cannon "in
+  *Half-Life* deals "BULLET"-type damage with direct fire, to which the
+  Gargantua is immune".
+
+  **What hurts a gargantua in this engine today: the egon's beam
+  (`ENERGYBEAM`) and a blocked mover's `dmg` (`CRUSH`, M9.44's blocked
+  movers), nothing else.** `BLAST` comes only from a projectile or a
+  deployable detonating (`ohl_engine::projectiles`), and nothing reachable
+  creates one: a weapon's `WeaponAction::SpawnProjectile` only counts the
+  shot, a monster's projectile request goes to `ohl_engine::NoProjectiles`,
+  and no host calls `AiState::set_projectile_spawner`. `TODO`: the
+  projectile package; until it lands no rocket, grenade, satchel or
+  tripmine hurts a gargantua, though the cited sentence says blast does.
+  The gauss is `SHOCK` in this project's weapon table, a categorisation
+  "Combat and damage" above already records as this project's own and not
+  cited; it is outside the gargantua's set, which matches the OverWiki
+  sentence above for the original game, and no claim is made here beyond
+  that sentence. Every bullet weapon, the crowbar and every monster attack
+  (the engine types those as bullet or slash) cost a gargantua nothing.
+- **What counts as damage applied.** `ohl_engine::Game::
+  monster_damage_event_count`, which `--script-log`'s "A monster took
+  damage." reads, counts only hits that cost their target something
+  (`ohl_ai::monsters::DamageOutcome::hurt`: health lost, or a Gonarch's
+  node health spent). A hit a species ignores, that a shield or reserve
+  takes, or aimed at an `Impervious` prop is noticed and not counted. A
+  project decision, like the counter itself.
+- **`path_corner`, as the aircraft follow it** —
+  [TWHL: path_corner](https://twhl.info/wiki/page/path_corner): "Next stop
+  target (`target`): Name of the next `path_corner` in the path"; "Fire On
+  Pass (`message`): Trigger this event when this `path_corner` is passed by
+  the locus entity"; "Wait here (`wait`): Makes the locus entity wait for
+  this number of seconds before moving to next `path_corner`"; "Pitch Yaw
+  Roll (`angles`) ... Used to aim Apaches/Ospreys in flight"; "New train
+  speed (`speed`): Set new speed for the locus entity once it passes this
+  `path_corner`"; the entities that use `path_corner`s include "Apaches,
+  Ospreys", and "all the logic of following the path, waiting, firing the
+  targets, etc., are handled by entities making use of `path_corner`s".
 - **Classifications** —
   [TWHL: Reference: Monster classifications](https://twhl.info/wiki/page/Reference:_Monster_classifications):
   `monster_bigmomma` "Alien Monster", `monster_nihilanth` "Alien Military",
@@ -3326,7 +3365,14 @@ unless stated as a project decision):
   releases it, or, on a node with health, until that health is depleted
   (decision: the flag has no description, and a wait nothing could end
   would leave a map's Gonarch shielded for good). While a script holds it,
-  the trail neither steers it nor counts it as arriving. The arrival
+  the trail neither steers it nor counts it as arriving. A travel leg that
+  gains no ground on its node (`TRAIL_PROGRESS_STEP`, 16 units nearer than
+  its best) for `TRAIL_STALL_SECONDS` (5) counts as arriving there: the
+  node's effects fire and its health is set where the Gonarch stands
+  (project-authored: nothing published says what it does when it cannot
+  reach a node, and waiting forever would leave it shielded for good;
+  arriving rather than skipping keeps the node's `reachtarget` firing).
+  The stall clock is not saved; a load restarts it. The arrival
   radius, the claw reach, the mortar range and the attack pauses are
   placeholders; the mortar is resolved as a single hit, like every ranged
   attack the engine has no projectile for, and its blast radius is not
@@ -3351,8 +3397,16 @@ unless stated as a project decision):
   hull's trace says is solid (`crate::movement::flies`, the flight seam
   batch A's alien controller already uses); a `FlightPlan` built from the
   `path_corner` chain their `target` names (through the same
-  `ohl_game::PathChain` a train uses: node positions, per-node `wait`,
-  whether it closes) hands that step one node at a time as a route. The
+  `ohl_game::PathChain` a train uses: node positions, per-node `wait`, the
+  fire-on-pass `message`) hands that step one node at a time as a route.
+  It follows each node's `target`: a closed loop goes round, and a route
+  leading into a cycle part-way along goes round that cycle
+  (`PathChain::build_with_reentry`; a train still reads only
+  `PathChain::looped`, so a train's chain is unchanged). Reaching a node
+  fires its `message` by name — the `path_corner` page's "Fire On Pass",
+  read here as honoured by both aircraft, since that page leaves which of
+  its keyvalues a follower uses to the follower (`TODO(black-box)`); its
+  "New train speed" is not applied. The
   flight speed and arrival radius are placeholders; the airframe faces its
   direction of travel rather than the cited `path_corner` angles, which
   `PathChain` does not carry. `Start Inactive` parks the plan until a `use`
@@ -7217,7 +7271,7 @@ Guarded by:
   - `a_door_closing_on_a_turret_neither_shoves_it_nor_reverses`,
     `a_door_closing_on_rooted_furniture_neither_shoves_it_nor_reverses`
     and `a_door_closing_on_a_not_solid_prop_neither_shoves_it_nor_reverses`;
-    and, since M9.NEXT ("Wave 1 batch B"),
+    and, since M9.45 ("Wave 1 batch B"),
     `a_door_closing_on_the_nihilanth_neither_shoves_it_nor_reverses` and
     `a_door_closing_on_an_apache_neither_shoves_it_nor_reverses`.
   - `a_passable_door_is_walked_through_and_never_blocked`.

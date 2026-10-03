@@ -14,7 +14,7 @@
 # around first was tuned against this one map's own player-start-relative
 # geometry, never recorded here beyond this turn/walk technique.
 #
-# Until M9.NEXT this walk asserted "A monster took damage." and
+# Until M9.45 this walk asserted "A monster took damage." and
 # "A monster died." present. Every hit it sees lands on a species whose
 # published damage rules ignore that hit's type; such a hit no longer
 # kills, and no longer counts as damage, so the walk is a plain one now.

@@ -7849,7 +7849,7 @@ Two probes passed and changed what shipped:
 The chain gets as far as on main. Its lifts, trains and doors ride
 through the new push and block paths without changing where it ends.
 
-## M9.NEXT — A damage type the gargantua can ignore, and four monsters that fly or refuse to die
+## M9.45 — A damage type the gargantua can ignore, and four monsters that fly or refuse to die
 
 Four `monster_*` classnames — `monster_bigmomma` (the Gonarch),
 `monster_nihilanth`, `monster_apache` and `monster_osprey` — had no row in
@@ -7884,9 +7884,27 @@ with a pistol still turns and charges — which is a decision, not a
 citation. `Impervious` is the empty response: the engine already drops
 every hit at a `Not solid` prop before it is queued, and `ohl-ai`'s own
 intake now answers one with `DamageResponse::IMPERVIOUS` whatever the
-species lookup says, so the marker means the same in both crates. The
-player's explosives carry `BLAST` and the gauss `ENERGYBEAM`, so the
-gargantua stays killable with the weapons the page names.
+species lookup says, so the marker means the same in both crates.
+
+**What hurts a gargantua today: the egon and a crushing mover, nothing
+else.** The cited immunity is kept, and it narrows the shipped engine
+further than the page does, because two of the three types it lets
+through never reach a monster yet. `BLAST` comes only from a projectile
+or a deployable detonating, and nothing reachable creates one: a weapon's
+`WeaponAction::SpawnProjectile` only counts the shot, a monster's
+projectile request goes to `NoProjectiles`, and no host calls
+`set_projectile_spawner` — the pre-existing gap between M7.9's P1 and P3
+that `Game::debug_spawn_projectile`'s doc already records. So no rocket,
+grenade, satchel or tripmine hurts one, though the page says blast does
+(`TODO`: the projectile package). What does reach one is the egon's
+beam (`ENERGYBEAM`) and a blocked mover's `dmg` (`CRUSH`, since M9.44).
+The gauss is `SHOCK` in this project's own weapon table, a categorisation
+`docs/FORMAT_SOURCES.md` already records as uncited, and that is outside
+the set either way: Combine OverWiki's Gargantua page says the Tau Cannon
+"in *Half-Life* deals "BULLET"-type damage with direct fire, to which the
+Gargantua is immune". Every bullet weapon, every monster's attack (the
+engine types those as bullet or slash) and the crowbar cost a gargantua
+nothing.
 
 **The Gonarch walks a trail it cannot be killed on.** `monster_bigmomma`
 gets its cited 150 base health times the cited 1x/1.5x/2x, its slash and
@@ -7954,13 +7972,18 @@ species that flies — by its hull, so the two aircraft and M9.42's alien
 controller — keeps to its own course in the air rather than being
 carried off by a lift or shoved by a door. None of the four opens doors.
 
-**A smoke expectation that encoded the old rule.** combat-smoke's "walk
-from spawn in Power Up" asserted "A monster died." present. Its walk
-sees a monster hit by other monsters, and those hits used to add up to a
-kill; they are of a type that monster's species' published damage rules
-ignore, so it is still hit but no longer dies. The scenario now asserts
-"A monster took damage." present and "A monster died." absent; its file
-header says why without naming anything from the map.
+**Smoke expectations that encoded the old rule.** combat-smoke's "walk
+from spawn in Power Up" asserted "A monster took damage." and "A monster
+died." present, and "walk from spawn to a followed level change" in
+Power Up and in On A Rail asserted "A monster took damage.". A local,
+uncommitted debug build that printed every hit the engine forwards
+showed every hit in all three landing on a species whose published
+damage rules ignore that hit's type. Nothing dies any more, and nothing
+counts as damaged either: `Game::monster_damage_event_count`, which the
+smoke's "A monster took damage." reads, now counts only hits that cost
+their target something (below). The three scenarios no longer assert
+either line; their file headers say why without naming anything from
+the maps.
 
 **Saves.** All of this runtime state lives in components `attach_level`
 rebuilds fresh from the map, so it gets a section of its own:
@@ -7999,6 +8022,52 @@ does not.
 - *A dormant Nihilanth that took no damage at all*, which with nothing in
   the engine activating it made the boss unkillable in a real map.
 
+**Review round.** A review of the entry found five things; each fix has
+a test that was seen to fail without it.
+
+- *What kills a gargantua.* This entry first said the player's explosives
+  and the gauss would. Neither reaches one in this engine; the paragraph
+  above now says what does, and why.
+- *Nothing tested that the engine passes a hit's type through.* The
+  gargantua test queued its hits with a test hook that skips the engine's
+  own damage drain, so typing every engine hit `GENERIC` passed every
+  test. Two engine tests now fire the player's own weapons with real
+  input at a gargantua (held `Prisoner`, so it never fights back, and
+  given a synthetic model with a hitbox under its species' own default
+  path): the egon's beam kills it, and the .357's rounds land and cost it
+  nothing. With the drain typing everything `GENERIC`, the egon test
+  fails.
+- *"A monster took damage." counted hits that cost nothing.*
+  `lifecycle::apply_damage_effective` now reports which targets the
+  queue actually cost something (`DamageOutcome::hurt`: health lost, or
+  a Gonarch's node health spent; not a hit a species ignores, a shield
+  took, or an `Impervious` prop drew), and the engine counts only those
+  hits as damage applied. That took "A monster took damage." out of two
+  more combat-smoke scenarios (above). A monster's `TriggerCondition`
+  "took damage" still reads every hit that reached it, as it did before
+  this entry gave hits a type.
+- *A route that leads into its cycle.* `ohl_game::PathChain::build` marks
+  a route looped only when it returns to its first node, so an aircraft
+  on `p1 -> p2 -> p3 -> p2` flew it once and hovered at `p3` for good.
+  `PathChain::build_with_reentry` also reports where the walk re-entered
+  itself, and a flight plan goes round from there. Trains still read only
+  `looped`, so a train's chain is exactly what it was. Reaching a node
+  also fires its fire-on-pass `message` now: TWHL's `path_corner` page
+  documents it as fired "when this `path_corner` is passed by the locus
+  entity" and names Apaches and Ospreys among those entities.
+- *A Gonarch that cannot reach its next node.* It waited for it, shielded,
+  forever. A project-authored stall fallback now counts a travel leg that
+  has gained no ground for five seconds as arriving
+  (`GonarchTrail::note_progress`): the node's effects fire and its health
+  is set where the Gonarch stands, so a map's `reachtarget` still fires
+  and the fight goes on. An `ohl-ai` test puts the next node on the far
+  side of a wall.
+
+Testing the egon also showed that its beam deals its 14 damage every
+engine step (58 hits in 58 steps of 0.01 s), where the weapon table gives
+one cell per 0.1 s. That is the weapon system's, not this entry's, and
+is left for it.
+
 **Explicitly not done.** The Gonarch's babies (`monster_babycrab` has its
 row now, but nothing births one), its mortar's blast radius (the mortar is
 resolved as a single hit, like every ranged attack the engine has no
@@ -8009,13 +8078,19 @@ its damage sentence and the Osprey's per-hit-location rules. The Osprey's
 soldier drops and its removal from a level without a
 `monster_human_grunt`. `trigger_changetarget` redirection of an aircraft;
 the cited `path_corner` angles (the airframe faces its direction of
-travel). Whether a second `use` stops an aircraft (here it does not). A
+travel) and "New train speed". Whether a second `use` stops an aircraft
+(here it does not). A train on a route that leads into a cycle still
+dead-ends at the route's last node, as it did before this entry.
+Explosives against a gargantua, which wait on projectiles being spawned
+at all. Whether a retail aircraft honours a `path_corner`'s `message` is
+a reading of the `path_corner` page, `TODO(black-box)`. A
 `monstermaker` child of one of the four kinds gets no boss component (the
 maker's spawn path does not call `attach`). The `sk_bigmomma`/
 `_nihilanth`/`_apache`/`_osprey` cvar stems are the convention applied to
 the classname, not cited names. Every attack pause, the flight speed, the
 arrival radii, the recharge and head-opening delays and the low-reserve
-fraction are placeholders marked `TODO(black-box)`.
+fraction are placeholders marked `TODO(black-box)`; the Gonarch's stall
+delay and step are project-authored.
 
 **Coverage.** Unit tests per module: the damage-kinds bitset, the
 response rule and the doubled type; the table (the four classnames are
@@ -8052,17 +8127,27 @@ after its head opens, and fires nothing through a declared
 trail, the shield, the flight progress and a pending `use` across a save,
 with a pre-tag-41 save still loading. Two more door tests join M9.44's in
 `blocked_movers.rs`: a door closes through the Nihilanth and through an
-Apache without shoving either or reversing. Every behaviour above was
-stubbed out once and its tests were seen to fail.
+Apache without shoving either or reversing. The review round added the
+real-input egon and .357 tests at a gargantua, the `hurt` list across a
+shield, a reserve, an `Impervious` prop and a spent node, the stall clock
+(progress resets it, a new leg restarts it) and a Gonarch stalled at a
+wall through `AiWorld::tick`, a lead-in route flown into its cycle, a
+node's pass `message` fired, and `PathChain::build_with_reentry` on a
+closed loop, a lead-in and a dead end. Every behaviour above was stubbed
+out once and its tests were seen to fail.
 
-**Gates**, on the final tree, rebased on M9.44: fmt; clippy for the
+**Gates**, on the tree after the review round, rebased on M9.44: fmt; clippy for the
 workspace, `--features dev-tools` and `--all-features`; `cargo test
---workspace`, 2764 passed, 0 failed, 31 ignored; policy; graph;
-combat-smoke 37/37 with 0 unexpected lines; campaign-smoke 93/93; and
-`cargo xtask chain-walk` at **distinct depth 12**, Pass, 660.8 simulated
-seconds, both with `--start-inventory ""` and with `--start-inventory
-weapon_357,ammo_357,ammo_357` — the depth and time M9.42 records. The
-first combat-smoke run, before the Power Up expectation above was
-corrected, read 35/37: that scenario's unexpected line, and a timeout in
-"walk from spawn in Office Complex" taken under a machine load of about
-20, which a direct rerun (8.5 s) and the full rerun did not repeat.
+--workspace`, 2772 passed, 0 failed, 31 ignored; policy; graph;
+campaign-smoke 93/93; `cargo xtask chain-walk` at **distinct depth 12**,
+Pass, 660.8 simulated seconds, both with `--start-inventory ""` and with
+`--start-inventory weapon_357,ammo_357,ammo_357` — the depth and time
+M9.42 records; and combat-smoke 37/37 with 0 unexpected lines. That last
+is from a rerun. The full gate run read 36/37, with "walk from spawn in
+Office Complex" timing out while other processes held most of the
+machine (load about 15; the 37 scenarios took 441 s). Run alone three
+times it finishes its script in 8.8 to 9.1 s against the harness's 60 s,
+and the rerun at load about 6 took 49.8 s for all 37. The first
+combat-smoke run before the review read 35/37 the same way: Power Up's
+unexpected line, which the review round's scenario changes cover, and
+the same load-bound timeout.

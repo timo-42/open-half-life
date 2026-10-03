@@ -1223,7 +1223,7 @@ impl AiState {
         );
         let (events, corpses) = (outcome.events, outcome.corpses);
         // Every monster a hit reached, for its `TriggerCondition`'s "took
-        // damage": unchanged by M9.NEXT's damage types, so a species that
+        // damage": unchanged by M9.45's damage types, so a species that
         // shrugs a hit off still counts as hit there. Which hits cost it
         // anything is `outcome.hurt`.
         let hurt: Vec<Entity> = self
@@ -1234,7 +1234,7 @@ impl AiState {
             .collect();
         // Only the hits that cost their target something count as damage
         // applied: one its species ignores, or that its shield or reserve
-        // took, does not (M9.NEXT).
+        // took, does not (M9.45).
         self.damage_events += self
             .damage
             .events()

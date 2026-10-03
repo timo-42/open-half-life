@@ -1739,7 +1739,7 @@ pub struct FlightSnapshot {
     pub wait_left: f32,
 }
 
-/// One boss or aircraft's runtime state (M9.NEXT): whichever of the three
+/// One boss or aircraft's runtime state (M9.45): whichever of the three
 /// components it carries, plus its `ohl_game::registry::MonsterActivation`
 /// counter. Part of `SECTION_BOSS_STATE` (tag 41; see
 /// `crate::save::SECTION_BOSS_STATE`).

@@ -784,9 +784,11 @@ it interactively on a real screen.
   hull, a `Start Inactive` one once something uses it. Monster damage now
   carries its type, so the gargantua's published immunity to everything
   but blast, crush and energy-beam damage applies, and the Apache takes
-  double from a blast. Not yet: the Gonarch's babies, the Nihilanth's
-  teleport ball and summoning, the Apache's rockets, the Osprey's soldier
-  drops; see the milestone entry.
+  double from a blast. Since no rocket, grenade or other projectile is
+  spawned yet, today only the egon and a crushing mover hurt a
+  gargantua. Not yet: the Gonarch's babies, the Nihilanth's teleport ball
+  and summoning, the Apache's rockets, the Osprey's soldier drops; see
+  the milestone entry.
 - **Interactive map logic**: touch triggers (fired by the player's own
   movement, not only `use`, including `trigger_changelevel`), doors
   (opened by the player's or a monster's touch, and reversing — dealing
