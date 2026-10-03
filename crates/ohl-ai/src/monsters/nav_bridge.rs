@@ -35,7 +35,10 @@
 //! horizontal with a step-up for a walker, the full line for a flier —
 //! whenever the graph has no nodes, no path can be found this tick, or
 //! this tick's bounded path-search budget is spent, so a monster is never
-//! left unable to move and never moved through a wall to get there.
+//! left unable to move and never moved through a wall to get there. The
+//! one exception is a monster a script is walking to its mark, which keeps
+//! the old wall-ignoring straight line ([`Fallback::StraightLine`] says
+//! why, with its `TODO`).
 
 use std::collections::HashMap;
 
@@ -47,6 +50,7 @@ use ohl_nav::{
 };
 use ohl_physics::{CollisionModel, Hull};
 
+use super::integration::{Navigator, StraightLineNavigator};
 use crate::movement::{ROUTE_REFRESH_DISTANCE, STUCK_PROGRESS_FRACTION};
 
 /// How far a cached path's goal may drift before it is rebuilt.
@@ -77,6 +81,26 @@ impl Default for NavBridgeLimits {
             max_searches_per_tick: 8,
         }
     }
+}
+
+/// What [`NavBridge::next_move_with`] does when neither a straight line nor
+/// a graph route reaches the goal this tick (no nodes, no path, or the
+/// tick's search budget spent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fallback {
+    /// One traced [`crate::movement::move_toward`] step: whatever the
+    /// hull's own trace says is solid stops it. What every monster moving
+    /// under its own brain gets.
+    Traced,
+    /// The [`StraightLineNavigator`] step, which ignores collision. Kept
+    /// only for a monster a `scripted_sequence` is walking to its mark: a
+    /// mark this graph cannot route to is a gap in this project's routing,
+    /// not the map's intent, and a script whose monster never arrives
+    /// stalls whatever the map chained onto it (the measured case is a
+    /// carried guard whose scripted walk opens the only door out of a map:
+    /// with a traced fallback the chain walk stops there, at depth 6).
+    /// **`TODO`**: route such marks properly and retire this.
+    StraightLine,
 }
 
 /// One actor's cached route: the path it is following, the hull and goal it
@@ -156,7 +180,7 @@ impl NavBridge {
     /// otherwise tries the direct line, then spends one of this tick's
     /// bounded `find_path` searches, and finally falls back to
     /// one traced [`crate::movement::move_toward`] step when neither finds
-    /// a route.
+    /// a route ([`Fallback::Traced`]).
     #[must_use]
     pub fn next_move(
         &mut self,
@@ -166,6 +190,34 @@ impl NavBridge {
         hull: Hull,
         collision: &CollisionModel,
         max_step: f32,
+    ) -> Vec3 {
+        self.next_move_with(
+            actor,
+            origin,
+            goal,
+            hull,
+            collision,
+            max_step,
+            Fallback::Traced,
+        )
+    }
+
+    /// [`Self::next_move`], with the caller choosing what happens when no
+    /// straight line and no graph route reaches `goal` this tick.
+    #[must_use]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "next_move's six, plus the one choice this variant exists for"
+    )]
+    pub fn next_move_with(
+        &mut self,
+        actor: Entity,
+        origin: Vec3,
+        goal: Vec3,
+        hull: Hull,
+        collision: &CollisionModel,
+        max_step: f32,
+        fallback: Fallback,
     ) -> Vec3 {
         if !origin.is_finite() || !goal.is_finite() || !max_step.is_finite() {
             // `origin` itself may be the non-finite value, so it cannot be
@@ -182,8 +234,13 @@ impl NavBridge {
         }
 
         let Some(cached) = self.cache.get_mut(&actor) else {
-            return crate::movement::move_toward(collision, hull, origin, goal, max_step, 1.0)
-                .position;
+            return match fallback {
+                Fallback::Traced => {
+                    crate::movement::move_toward(collision, hull, origin, goal, max_step, 1.0)
+                        .position
+                }
+                Fallback::StraightLine => StraightLineNavigator.next_move(origin, goal, max_step),
+            };
         };
 
         let steer_limits = own_pace_steer_limits(&self.limits.steer, max_step);

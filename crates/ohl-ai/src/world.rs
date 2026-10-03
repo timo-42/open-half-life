@@ -20,7 +20,7 @@ use ohl_physics::{CollisionModel, Hull};
 use std::collections::BTreeMap;
 
 use crate::damage::{DamageEvent, DamageQueue, DamageSink, summarize};
-use crate::monsters::NavBridge;
+use crate::monsters::{Fallback, NavBridge};
 use crate::movement::{
     self, MoveResult, Route, StuckDetector, forward_from_yaw, move_toward, normalize_yaw,
     turn_toward, yaw_toward,
@@ -786,6 +786,7 @@ impl AiWorld {
                 &mut ai,
                 context.collision,
                 self.navigator.as_mut(),
+                Fallback::StraightLine,
                 dt,
             );
             if ai.move_speed > 0.0 {
@@ -884,6 +885,7 @@ impl AiWorld {
             &mut ai,
             context.collision,
             self.navigator.as_mut(),
+            Fallback::Traced,
             dt,
         );
         if ai.move_speed > 0.0 {
@@ -1058,6 +1060,7 @@ fn advance_route(
     ai: &mut MonsterAi,
     collision: Option<&CollisionModel>,
     navigator: Option<&mut NavBridge>,
+    fallback: Fallback,
     dt: f32,
 ) -> f32 {
     if ai.move_speed <= 0.0 || ai.route.is_finished() {
@@ -1069,7 +1072,15 @@ fn advance_route(
     let step = ai.move_speed * dt;
     let (position, distance) = match (navigator, collision) {
         (Some(navigator), Some(model)) => {
-            let next = navigator.next_move(entity, actor.origin, waypoint, actor.hull, model, step);
+            let next = navigator.next_move_with(
+                entity,
+                actor.origin,
+                waypoint,
+                actor.hull,
+                model,
+                step,
+                fallback,
+            );
             (next, (next - actor.origin).length())
         }
         (_, Some(model)) => {
@@ -2165,6 +2176,101 @@ mod tests {
         assert!(
             origin.z > 64.0 + 50.0,
             "and climbed while it did: {origin:?}"
+        );
+    }
+
+    /// Walks to the move target it was given, and nothing else.
+    static WALK_TO_TARGET: crate::schedule::Schedule = crate::schedule::Schedule::new(
+        "test/walk_to_target",
+        &[
+            crate::schedule::Task::MoveToTarget { within: 0.0 },
+            crate::schedule::Task::RunPath,
+            crate::schedule::Task::WaitForMovement,
+        ],
+        Conditions::EMPTY,
+    );
+
+    struct Walker;
+
+    impl crate::schedule::Brain for Walker {
+        fn classification(&self) -> Classification {
+            Classification::None
+        }
+
+        fn select_schedule(
+            &self,
+            _state: MonsterState,
+            _conditions: Conditions,
+        ) -> &'static crate::schedule::Schedule {
+            &WALK_TO_TARGET
+        }
+    }
+
+    /// Wave 1 batch A review: with a `NavBridge` attached and no route
+    /// around a wall, a monster on its own brain is stopped by the wall
+    /// (the bridge's traced fallback), while a monster a script is walking
+    /// to its mark still crosses it (`Fallback::StraightLine`, kept because
+    /// a scripted walk that never arrives stalls the map).
+    #[test]
+    fn only_a_scripted_walk_keeps_the_straight_line_fallback() {
+        use ohl_formats::test_support::CollisionBrush;
+        let room = collision_from(
+            &[
+                CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+                CollisionBrush::half_space([0.0, 0.0, -1.0], -256.0),
+                CollisionBrush::half_space([-1.0, 0.0, 0.0], -512.0),
+                CollisionBrush::half_space([1.0, 0.0, 0.0], -512.0),
+                CollisionBrush::half_space([0.0, -1.0, 0.0], -512.0),
+                CollisionBrush::half_space([0.0, 1.0, 0.0], -512.0),
+                CollisionBrush::box_brush([-16.0, -128.0, -16.0], [16.0, 128.0, 256.0]),
+            ],
+            [-512.0, -512.0, 0.0],
+            [512.0, 512.0, 256.0],
+        );
+        let goal = Vec3::new(100.0, 0.0, 37.0);
+        let run = |scripted: bool| {
+            let mut ai = AiWorld::new(1);
+            let brain = ai.register_brain(Box::new(Walker));
+            ai.attach_navigator(crate::monsters::NavBridge::build(
+                &[],
+                &room,
+                &ohl_nav::BuildLimits::default(),
+                crate::monsters::NavBridgeLimits::default(),
+            ));
+            let mut world = World::new();
+            let monster = spawn_monster(
+                &mut world,
+                Actor::new(Classification::None, Vec3::new(-100.0, 0.0, 37.0)),
+                brain,
+            );
+            {
+                let mut state = world.get::<&mut MonsterAi>(monster).expect("ai");
+                state.move_target = Some(goal);
+                if scripted {
+                    state.route = crate::movement::Route::straight_line(goal);
+                    state.move_speed = 160.0;
+                }
+            }
+            if scripted {
+                world
+                    .insert_one(monster, crate::scripts::ScriptHold)
+                    .expect("alive");
+            }
+            let context = SightContext::tracing(&room);
+            for _ in 0..300 {
+                ai.tick(&mut world, &context, ohl_physics::controller::TICK_SECONDS);
+            }
+            world.get::<&Actor>(monster).expect("actor").origin
+        };
+        let own = run(false);
+        assert!(
+            own.x < -16.0,
+            "a monster on its own brain crossed the wall: {own:?}"
+        );
+        let scripted = run(true);
+        assert!(
+            scripted.x > 16.0,
+            "a scripted walk was stopped short of its mark: {scripted:?}"
         );
     }
 }

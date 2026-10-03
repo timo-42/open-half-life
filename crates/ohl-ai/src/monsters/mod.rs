@@ -38,7 +38,7 @@ pub use lifecycle::{
     CorpseDecision, MonsterTrigger, TriggerCondition, TriggerContext, apply_damage,
     apply_damage_with_corpses, should_fade_corpse,
 };
-pub use nav_bridge::{NavBridge, NavBridgeLimits, node_seeds_from_defs};
+pub use nav_bridge::{Fallback, NavBridge, NavBridgeLimits, node_seeds_from_defs};
 pub use table::{
     AttackSpec, BloodKind, Difficulty, MonsterFlags, MonsterKind, MonsterSpec, spec_for,
 };
