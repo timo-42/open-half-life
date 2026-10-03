@@ -782,14 +782,29 @@ fn scenarios() -> [Scenario; 37] {
             name: "walk from spawn in Power Up",
             file: "walk_power_up.txt",
             map: "c2a1",
-            // Until M9.45 this walk asserted "A monster took damage." and
-            // "A monster died." present. Every hit it sees lands on a
-            // species whose published damage rules ignore that hit's type,
-            // and a hit that costs nothing no longer counts as damage
-            // (`ohl_engine::Game::monster_damage_event_count`), so it is a
-            // plain walk now. See the scenario file's own header.
-            present: &WALK_PRESENT,
-            absent: &BASE_ABSENT,
+            // M9.45 required damage absent while reachable attacks were
+            // immune. Grunt grenades now apply their published 100 BLAST
+            // to the blast-vulnerable Gargantua, so require damage again.
+            // Every other assertion, including no monster death, remains.
+            // See FORMAT_SOURCES, Live projectiles and deployables.
+            present: &[
+                "Scripted input loaded.",
+                "Scripted input finished.",
+                "The player moved from the spawn point.",
+                "A monster took damage.",
+            ],
+            absent: &[
+                "The player fired a weapon.",
+                "A shot hit an entity.",
+                "A monster died.",
+                "A pickup was collected.",
+                "The player took damage.",
+                "The player is inside solid geometry.",
+                "The player is riding a mover.",
+                "The player opened a door.",
+                "A level change was followed.",
+                "The player was teleported.",
+            ],
             follow_level_change: false,
             start_inventory: &[],
         },
@@ -958,13 +973,29 @@ fn scenarios() -> [Scenario; 37] {
             // that was fixed; the route was re-authored fresh against the
             // corrected engine (see the scenario file's own header).
             //
-            // Until M9.45 it also asserted "A monster took damage."
-            // present. Every hit its route sees lands on a species whose
-            // published damage rules ignore that hit's type, and a hit that
-            // costs nothing no longer counts as damage
-            // (`ohl_engine::Game::monster_damage_event_count`).
-            present: &LEVEL_CHANGE_PRESENT,
-            absent: &LEVEL_CHANGE_ABSENT,
+            // M9.45 required damage absent while reachable attacks were
+            // immune. Grunt grenades now apply their published 100 BLAST
+            // to the blast-vulnerable Gargantua, so require damage again.
+            // Every other assertion, including no monster death, remains.
+            // See FORMAT_SOURCES, Live projectiles and deployables.
+            present: &[
+                "Scripted input loaded.",
+                "Scripted input finished.",
+                "The player moved from the spawn point.",
+                "A level change was followed.",
+                "A monster took damage.",
+            ],
+            absent: &[
+                "The player fired a weapon.",
+                "A shot hit an entity.",
+                "A monster died.",
+                "A pickup was collected.",
+                "The player took damage.",
+                "The player is inside solid geometry.",
+                "The player is riding a mover.",
+                "The player opened a door.",
+                "The player was teleported.",
+            ],
             follow_level_change: true,
             start_inventory: &[],
         },

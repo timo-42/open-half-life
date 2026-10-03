@@ -14,10 +14,11 @@
 # around first was tuned against this one map's own player-start-relative
 # geometry, never recorded here beyond this turn/walk technique.
 #
-# Until M9.45 this walk asserted "A monster took damage." and
-# "A monster died." present. Every hit it sees lands on a species whose
-# published damage rules ignore that hit's type; such a hit no longer
-# kills, and no longer counts as damage, so the walk is a plain one now.
+# M9.45 removed damage/death expectations while all reachable attacks
+# were ignored by the target's published immunity. Projectile integration
+# now requires monster damage from grunt grenades: the published 100-point
+# blast hurts Gargantuas. Monster death remains forbidden. Commands below
+# are unchanged; see FORMAT_SOURCES, Live projectiles and deployables.
 #
 # Expected fixed log lines, asserted by the harness rather than parsed
 # from this file:

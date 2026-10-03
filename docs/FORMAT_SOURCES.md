@@ -3233,15 +3233,15 @@ consulted (`docs/CLEAN_ROOM.md`).
   *Half-Life* deals "BULLET"-type damage with direct fire, to which the
   Gargantua is immune".
 
-  **What hurts a gargantua in this engine today: the egon's beam
+  **At M9.45, before live projectile integration, what hurt a gargantua: the egon's beam
   (`ENERGYBEAM`) and a blocked mover's `dmg` (`CRUSH`, M9.44's blocked
   movers), nothing else.** `BLAST` comes only from a projectile or a
   deployable detonating (`ohl_engine::projectiles`), and nothing reachable
   creates one: a weapon's `WeaponAction::SpawnProjectile` only counts the
   shot, a monster's projectile request goes to `ohl_engine::NoProjectiles`,
-  and no host calls `AiState::set_projectile_spawner`. `TODO`: the
-  projectile package; until it lands no rocket, grenade, satchel or
-  tripmine hurts a gargantua, though the cited sentence says blast does.
+  and no host calls `AiState::set_projectile_spawner`. That was the pre-P1
+  limitation; the live projectile integration below now delivers BLAST
+  from rockets, grenades and deployables to the same vulnerability rule.
   The gauss is `SHOCK` in this project's weapon table, a categorisation
   "Combat and damage" above already records as this project's own and not
   cited; it is outside the gargantua's set, which matches the OverWiki
@@ -7593,3 +7593,18 @@ coverage now requires damage after the shooter dies. The Gonarch node/script
 fixture alone uses a neutral actor so node-assigned health is measured before any
 unrelated combat. Mortar owner splash remains enabled and independently tested.
 These choices are project-authored and change no payload smoke expectations.
+
+Two authored combat scenarios now require the fixed monster-damaged event,
+while preserving every other required/forbidden event and every script command.
+Their M9.45 expectations described the earlier reachable bullet/slash-only
+attacks. Live human-grunt grenades now carry the published 100 damage at all
+skills ([TWHL grunt table](https://twhl.info/wiki/page/monster_human_grunt));
+[TWHL Gargantua](https://twhl.info/wiki/page/monster_gargantua) permits blast
+damage, consistent with the explosive-weapon tactics on
+[Combine OverWiki](https://combineoverwiki.net/wiki/Gargantua). Bounded temporary
+observations confirmed the original grunt owner, HandGrenade profile and BLAST
+mask at positive effective damage; all diagnostic source was restored before
+the clean release rebuild. No death or player-damage expectation was loosened.
+These observations validate the wired path, not retail timing: six-second
+readiness, throw arcs, radius/falloff and self-splash remain project-authored
+`TODO(black-box)` policies documented above.
