@@ -15,6 +15,7 @@
 //! formats, media, or the on-disk layout of a map.
 
 mod camera;
+mod effects;
 mod error;
 mod gpu;
 mod light_styles;
@@ -28,6 +29,7 @@ mod surface;
 mod water;
 
 pub use camera::{FreeFlyCamera, MoveInput};
+pub use effects::{EffectInstance, EffectRenderer, MAX_EFFECT_INSTANCES};
 pub use error::{RenderError, Result};
 pub use gpu::{GpuContext, preferred_backends};
 pub use light_styles::{LightStyles, MAX_LIGHT_STYLES, STYLE_HZ};

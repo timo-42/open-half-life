@@ -8330,3 +8330,63 @@ paths pointed to `/dev/null`, and ephemeral captures were removed. Dependencies
 are unchanged, so cargo-deny is not required. The final evidence commit changes
 only documentation and script-header comments; fully tested production and
 harness code, and both parsed script command streams, are unchanged.
+
+## M9.NEXT — Wave 2 P6b renderer effects
+
+A new bounded asset-independent effect pass draws additive beam ribbons and
+billboard particles, alpha-blended round bullet/blood marks, and opaque
+shaded cuboid gib/debris placeholders. The pass reads world depth; opaque
+debris writes depth, translucent effects do not. Geometry, colors, dimensions
+and transforms are checked before upload and translucent effects sort by
+view depth. Shapes are project-authored, not retail art.
+
+The isolated engine render bridge caches initially active straight
+`env_beam`/`env_laser` declarations with named endpoints, samples live
+transforms/removal, point-traces lasers, and draws declared endpoint sparks
+for either class and contact marks for lasers. Initially active Toggle `env_spark` emits analytic,
+repeatable bursts from simulation elapsed time. Rendering consumes no
+gameplay RNG or mutation. Sprite rendercolor and additive renderamt now
+change pixels, declared framerate controls animation through the existing
+10 Hz cap, named sprites without Start On begin hidden, and `env_glow`
+remains on frame zero. Missing sprite tint defaults to white.
+
+**Limits and cuts.** No use/toggle wiring, beam damage, random/ring/noisy or
+textured/scrolled beams, endpoint sprites/shading, randomized spark spacing
+or spark sounds. No sprite play-once/removal, angle overrides or
+depth-independent glow attenuation; Glow uses the existing depth-tested
+additive pipeline. env_beam Decal End is deferred; only lasers draw contact
+marks. Marks are
+procedural and not clipped to face edges, persistent, or attached to moving
+surfaces. Bullet/blood marks and gibs have a renderer API but no automatic
+combat/death emission; cuboid gibs have no physics or retail models. No
+gameplay registry/systems/AI/combat changes or save section were added.
+Widths, duplicate-name selection, spark motion/timing and other visual
+constants are project choices, TODO(black-box); published mapping evidence
+and the exact cuts are in `docs/FORMAT_SOURCES.md`.
+
+**Coverage.** CPU tests discriminate beam endpoints/width, particle facing,
+decal normal/bias, debris transforms/depth family, ordering/bounds, live
+endpoint motion/removal, finite-life gaps, initial activation, spark
+motion/fade/expiry/repeatability, laser clipping/contact marks, and sprite
+rate/initial visibility. Opt-in actual GPU tests compare each renderer
+primitive against a baseline, brightness, world/debris depth, and engine
+beam/laser/spark/sprite/glow frames. Optional `OHL_RENDER_CAPTURE_DIR` writes
+project-authored PPM captures only; `OHL_RENDER_GPU_TEST=1` gates GPU work.
+
+**Gates.** fmt; scoped `cargo clippy -p ohl-render -p ohl-engine
+--all-targets -- -D warnings`; full `cargo test -p ohl-render` with
+`OHL_RENDER_GPU_TEST=1`, 50 passed (40 CPU, 10 GPU), 0 failed, 10 ignored;
+engine library plus visual-effects/offscreen/viewmodel GPU tests, 203 passed
+(199 CPU, 4 GPU), 0 failed, 4 ignored. Fourteen mutation probes were
+discriminated: removing beam/particle/decal/gib geometry, beam activation,
+laser clipping, spark expiry, the engine draw bridge, sprite Color mode,
+tint, framerate, static glow, initial visibility and additive brightness
+each failed its selected tests. Every mutated file was restored byte-for-byte
+before the final normal checks. Actual project-authored captures include
+the engine bridge, sprite/glow properties and combined renderer primitives.
+
+Full workspace clippy (default, dev-tools and all-features), workspace tests,
+policy, graph, combat-smoke 37/37, campaign-smoke 93/93, and both inventory
+chain walks at distinct depth 12 / Pass / 660.8 simulated seconds remain
+pending coordinator resource scheduling. No dependencies changed. This
+draft does not claim the full or payload gates have passed.

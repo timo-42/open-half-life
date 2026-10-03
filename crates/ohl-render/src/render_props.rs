@@ -50,7 +50,8 @@ pub struct RenderProps {
     /// The `renderamt` value (`0..=255`); read as alpha/blend strength by
     /// every mode except [`RenderMode::Normal`] and [`RenderMode::Solid`].
     pub amount: u8,
-    /// The `rendercolor` value, used only by [`RenderMode::Color`].
+    /// The `rendercolor` value. Brush/studio Color mode replaces texture
+    /// RGB with it; sprites multiply their palette RGB by it in other modes.
     pub color: [u8; 3],
     /// The `renderfx` value. Not yet interpreted by this renderer (no
     /// documented `renderfx` animation is implemented at this milestone);

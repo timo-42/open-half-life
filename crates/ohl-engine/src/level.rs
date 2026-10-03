@@ -77,6 +77,8 @@ const MAX_SPRITE_ASSETS: usize = 96;
 /// One `env_sprite` / `env_glow` / `cycler_sprite` entity's placement.
 #[derive(Debug, Clone, Copy)]
 pub struct SpritePlacement {
+    /// Index into the level's definitions/registry, for live placement and removal.
+    pub entity_index: usize,
     /// Index into [`Level::sprite_assets`].
     pub sprite: usize,
     /// World-space origin.
@@ -87,6 +89,12 @@ pub struct SpritePlacement {
     /// `rendermode`/`renderamt`/`rendercolor`, as GoldSrc's `env_sprite`
     /// resolves brightness and additive/glow blending from them.
     pub render: keyvalues::RenderProps,
+    /// Animation rate in frames per second, bounded by the existing SPR
+    /// sampler's 10 Hz cap. Zero keeps a glow/non-animated sprite on frame 0.
+    pub framerate: f32,
+    /// Initial visibility. Named env_sprite entities require Start On.
+    /// Runtime triggering remains TODO(black-box).
+    pub initially_visible: bool,
 }
 
 /// Loads the sprite assets this map's `env_sprite`/`env_glow`/
@@ -102,7 +110,7 @@ fn load_sprites(
     let mut placements = Vec::new();
     let mut missing = 0usize;
 
-    for def in defs {
+    for (entity_index, def) in defs.iter().enumerate() {
         if !SPRITE_ONLY_CLASSES.contains(&def.classname.as_str()) {
             continue;
         }
@@ -138,6 +146,7 @@ fn load_sprites(
         };
         if let Some(sprite) = slot {
             placements.push(SpritePlacement {
+                entity_index,
                 sprite,
                 origin: def.origin,
                 scale: def
@@ -146,7 +155,29 @@ fn load_sprites(
                     .and_then(|value| value.trim().parse::<f32>().ok())
                     .filter(|scale| scale.is_finite() && *scale > 0.0)
                     .unwrap_or(1.0),
-                render: def.render,
+                render: keyvalues::RenderProps {
+                    // A sprite without an explicit tint draws its own palette.
+                    // Project-authored default; explicit black stays black.
+                    color: if def.keyvalues.contains_key("rendercolor") {
+                        def.render.color
+                    } else {
+                        [255; 3]
+                    },
+                    ..def.render
+                },
+                framerate: if def.classname == "env_glow" {
+                    0.0
+                } else {
+                    def.keyvalues
+                        .get("framerate")
+                        .and_then(|value| value.trim().parse::<f32>().ok())
+                        .filter(|value| value.is_finite() && *value >= 0.0)
+                        .unwrap_or(ohl_world::MAX_SPRITE_FRAMERATE)
+                        .min(ohl_world::MAX_SPRITE_FRAMERATE)
+                },
+                initially_visible: def.classname != "env_sprite"
+                    || def.targetname.is_none()
+                    || def.spawnflags & 1 != 0,
             });
         }
     }
@@ -1838,6 +1869,7 @@ mod tests {
     /// their render props and an explicit `scale`, regardless of whether a
     /// studio prop is also present in the map.
     #[test]
+    #[allow(clippy::float_cmp)] // Parsed rates and frame-zero marker are exact constants.
     fn sprite_entities_collected_with_render_props_and_scale() {
         let map = synthetic_map_bsp_with_extra_entity(
             "next",
@@ -1866,12 +1898,34 @@ mod tests {
         assert_eq!(glow.render.mode, 5);
         assert_eq!(glow.render.amt, 200);
         assert_eq!(glow.render.color, [10, 20, 30]);
+        assert_eq!(glow.framerate, 0.0);
+        assert!(glow.initially_visible);
 
         let cycler = &level.sprites[1];
         assert!((cycler.origin[0] - 7.0).abs() < f32::EPSILON);
         assert!((cycler.origin[1] - 8.0).abs() < f32::EPSILON);
         assert!((cycler.origin[2] - 9.0).abs() < f32::EPSILON);
         assert!((cycler.scale - 1.0).abs() < f32::EPSILON);
+        assert_eq!(cycler.framerate, 10.0);
+        assert_eq!(cycler.render.color, [255; 3]);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)] // These are parsed or default rates without arithmetic.
+    fn sprite_rate_and_initial_visibility_follow_the_definition() {
+        let map = synthetic_map_bsp_with_extra_entity(
+            "next",
+            "{\"classname\" \"env_sprite\" \"targetname\" \"ohl_hidden\" \"model\" \"sprites/ohl_glow.spr\" \"framerate\" \"2\"}\n{\"classname\" \"env_sprite\" \"targetname\" \"ohl_visible\" \"spawnflags\" \"1\" \"model\" \"sprites/ohl_glow.spr\" \"framerate\" \"0\"}\n{\"classname\" \"env_sprite\" \"model\" \"sprites/ohl_glow.spr\" \"framerate\" \"NaN\"}",
+        );
+        let mut assets = MemoryAssets::new();
+        assets.insert("sprites/ohl_glow.spr", build_minimal_spr());
+        let level = Level::from_bytes(&assets, "ohlsynth", &map).unwrap();
+        assert_eq!(level.sprites[0].framerate, 2.0);
+        assert!(!level.sprites[0].initially_visible);
+        assert_eq!(level.sprites[1].framerate, 0.0);
+        assert!(level.sprites[1].initially_visible);
+        assert_eq!(level.sprites[2].framerate, 10.0);
+        assert!(level.sprites[2].initially_visible);
     }
 
     /// Applies a column-major [`crate::render`] placement matrix to a
