@@ -7040,7 +7040,8 @@ no origin is played at the listener, which is the right answer for a
 first-person weapon and a pickup the player just walked over.
 
 **Staying silent where silence is the point.** Every headless run path —
-`--screenshot`, `--script`, `--chain-script`, and every test — builds an
+`--screenshot`, `--script`, `--chain-script`, `--benchmark` (see below),
+and every test — builds an
 `AudioRuntime::silent()`, which drives a `NullSink` on *every* platform
 rather than relying on Linux happening to have no backend. The mixer still
 runs and every cue still travels the full resolve-and-decode path, so a
@@ -7106,8 +7107,100 @@ the decoder.
 - **A real listen.** Nobody has heard any of this. The output is asserted
   numerically and never played to a person, and on Linux it cannot be.
 
-**Gates**: fmt, clippy (workspace and `--all-features`), `cargo test
---workspace`, graph (36 crates: `ohl-app -> ohl-audio` needs no table
-change, since the composition root may depend on any workspace crate, and
-the already-allowed `ohl-engine -> ohl-audio` edge is still unused),
-policy, campaign-smoke 93/93 and combat-smoke 37/37, both silent.
+**Rebased onto the menu, and four ways to leave a game humming.** While
+this was in review, `main` gained a player-facing menu, a graphics debug
+overlay and M9.38's hitbox fallback, and the scripted loop in
+`game_run.rs` gained M9.37's `guard` step. The rebase kept both sides (the guard step's per-tick input,
+then this entry's listener and routing), and then four holes showed up
+that the menu either opened or made easy to fall into:
+
+- **A new mission and a quickload.** The menu can start a mission and load
+  the quicksave, and both replace the `Game` outright rather than going
+  through a level change, so neither stopped the mixer: a loop the
+  abandoned game had started would hum on under the new one with no
+  entity left to stop it. Both now call `AudioRuntime::stop_all`. The
+  quickload key, which is older than the menu, had the same hole.
+- **The volume slider.** The options screen emitted
+  `MenuAction::SetVolume` into an arm that ignored it. `ohl_audio::Mixer`
+  now has a master volume applied in `render`, so moving the slider changes
+  sounds already playing as well as new ones. It is clamped to 0–1, and a
+  non-finite value is ignored. The slider reaches it.
+- **`--benchmark`.** This entry's first draft never mentioned it. It
+  dropped every event except a level change or a death. It now sends its
+  cues to a silent runtime like every other headless path, and counts that
+  time as simulation, which is where the window spends it too.
+- **The tick that leaves a map.** `Game::tick` lists a level change before
+  that tick's sounds. A host that followed the change and then played the
+  rest of the list therefore started sounds from the map it had just left
+  in the new map, where nothing would ever stop them. Every path now drops
+  the rest of a tick's sounds once it has followed that tick's level
+  change.
+
+The scripted run, the chain walk (one runtime for the whole walk now,
+rather than one per route) and the capture share one
+`route_headless_events`. That leaves one place where a headless path turns
+a `GameEvent::Sound` into a play request. The window's own
+`App::handle_game_events` is the other. `App` takes any `AssetSource` and
+has a constructor that needs no window, so a test can drive it.
+
+Coverage for this part: eight `ohl-app` tests drive that run-path code
+itself over synthetic rooms, each with a silent runtime:
+
+- a scripted run sends the map's ambience and a monster's speech to the
+  mixer;
+- a followed level change, scripted and windowed, silences the map that was
+  left and drops that tick's sounds;
+- the benchmark routes cues and stops when it should;
+- the window plays the map's sounds, and its volume slider reaches the
+  mixer;
+- a new mission and a quickload each silence the game they replace.
+
+In `ohl-engine`:
+
+- a `scripted_sentence` checked against a synthetic `sentences.txt` carries
+  its words in order and is heard at the speaker, not at the director;
+- an `ambient_generic` naming `!SENTENCE` speaks that sentence's words;
+- every radius spawnflag, alone and in combination, gives its falloff.
+
+`ohl-audio` gained two master-volume tests. Every behaviour above, and
+the original commit's spawnflag, sentence and routing behaviour, was
+checked the way a reviewer would check it: stub the code, and see a test
+fail (see **Gates**).
+
+Also not done:
+
+- **Pausing.** Opening the menu or the console stops the simulation but
+  not a real device's own callback. On macOS and Windows a looping
+  ambience therefore keeps playing behind the menu. On Linux the null sink
+  is pumped only by the game loop, so it falls silent. The mixer has no
+  pause.
+- **Keeping settings.** The volume, like the menu's other options, starts
+  at full again on every launch. Sensitivity and FOV are still ignored.
+- **`--screenshot`'s own call site** has no test, because it needs a GPU.
+  It goes through the same `route_headless_events` as the scripted run,
+  which does have one.
+- **Planner replays.** The dev-tools route planner ticks the game to search
+  for routes and throws away the sounds it produces. Nobody hears those
+  runs.
+- **Sentence word directories.** `SentenceLookup` reads every word token
+  as `sound/<word>.wav` on its own. It does not model any link between one
+  word's directory and the next.
+- `ohl-audio`'s `open_default_device_never_panics` test opens the
+  default device on macOS and Windows CI. It is older than this work and
+  was left alone. Every test added here uses `AudioRuntime::silent()`.
+
+**Gates** (on the rebased branch, follow-up included): fmt; clippy
+(workspace, `--features dev-tools`, and `--all-features`) with warnings
+denied; `cargo test --workspace` (2,494 passed, 0 failed, 31 ignored);
+policy; graph (36 crates: `ohl-app -> ohl-audio` needs no table change,
+since the composition root may depend on any workspace crate, and the
+already-allowed `ohl-engine -> ohl-audio` edge is still unused); `cargo deny
+check` (advisories, bans, licenses and sources ok; no new third-party
+crate, since `ohl-audio` was already in the tree through `ohl-gameplay`);
+combat-smoke 37/37 with 0 unexpected lines; campaign-smoke 93/93; both
+silent. Mutation probes: 23 stubs of the code this entry adds (the cue
+routing in every run path, the three ways a game is left behind, the
+volume slider, the master volume, sentence words and speaker position,
+`!SENTENCE`, the radius falloffs and their precedence, "start silent",
+"is NOT looped", the activation arm and the stop cue), each failing at
+least one test.

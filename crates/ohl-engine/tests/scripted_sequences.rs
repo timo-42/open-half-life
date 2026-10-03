@@ -343,6 +343,94 @@ fn a_scripted_sentence_speaks_through_a_cue_on_the_speakers_voice_channel() {
     assert_eq!(level_changes, 1, "and fires its target");
 }
 
+/// With a `sentences.txt` to resolve against, the same cue carries the
+/// sentence's word samples, in speaking order, each a `sound/`-relative WAV
+/// — and it is heard where the *speaker* stands, not where the
+/// `scripted_sentence` that directed it was placed.
+///
+/// The `sentences.txt` line, the sentence name and both words are
+/// project-authored; the file's published shape (a name, then word tokens
+/// naming `sound/`-relative samples) is recorded in
+/// `docs/FORMAT_SOURCES.md`.
+#[test]
+fn a_scripted_sentence_names_its_words_and_is_heard_where_the_speaker_stands() {
+    let speaker_at = [96.0, 64.0, 36.0];
+    let director_at = [-96.0, -64.0, 36.0];
+    let entities = script_room_entities(
+        [-192.0, -192.0, 36.0],
+        &format!(
+            "{}{}{}",
+            entity_block(
+                "monster_scientist",
+                speaker_at,
+                0.0,
+                &[("targetname", "ohl_speaker")],
+            ),
+            entity_block(
+                "scripted_sentence",
+                director_at,
+                0.0,
+                &[
+                    ("targetname", "ohl_line"),
+                    ("sentence", "OHL_GREETING"),
+                    ("entity", "ohl_speaker"),
+                    ("spawnflags", "1"),
+                ],
+            ),
+            trigger_auto("ohl_line"),
+        ),
+    );
+    let mut assets = MemoryAssets::new();
+    assets.insert(
+        &format!("maps/{SCRIPT_MAP}.bsp"),
+        script_room_bsp(&entities),
+    );
+    assets.insert(
+        "sound/sentences.txt",
+        b"OHL_GREETING ohl/hello ohl/there\n".to_vec(),
+    );
+    let mut game = Game::load(&assets, SCRIPT_MAP).expect("the script room loads");
+    let speaker = entity_of_classname(&game, "monster_scientist").expect("the speaker spawns");
+
+    let input = Input::default();
+    let mut spoken = Vec::new();
+    for _ in 0..120 {
+        for event in game.tick(TICK_SECONDS, &input) {
+            if let GameEvent::Sound(cue) = event {
+                spoken.push((cue, actor_origin(&game, speaker)));
+            }
+        }
+    }
+    assert_eq!(spoken.len(), 1, "a Fire Once sentence speaks exactly once");
+    let (cue, speaker_origin) = &spoken[0];
+    assert_eq!(cue.class, ohl_engine::ChannelClass::Voice);
+    assert_eq!(
+        cue.asset,
+        ohl_engine::SoundAsset::sentence(vec![
+            "sound/ohl/hello.wav".to_string(),
+            "sound/ohl/there.wav".to_string(),
+        ]),
+        "the group's words, in order, as `sound/`-relative samples"
+    );
+    let origin = cue.origin.expect("a spoken line is spatialised");
+    let distance = |to: [f32; 3]| {
+        origin
+            .iter()
+            .zip(to)
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum::<f32>()
+            .sqrt()
+    };
+    assert!(
+        distance(speaker_origin.to_array()) < 1.0,
+        "heard at the speaker: {origin:?} vs {speaker_origin:?}"
+    );
+    assert!(
+        distance(director_at) > 100.0,
+        "not at the scripted_sentence that directed it: {origin:?}"
+    );
+}
+
 /// Loading the same fixture twice with the same inputs reproduces the same
 /// AI state hash, scripts and followers included.
 #[test]

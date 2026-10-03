@@ -805,9 +805,12 @@ it interactively on a real screen.
   concatenated line on the speaker's voice channel. Sounds are attenuated
   and panned by distance from the player's eye using the published
   `ATTN_*` constants, decoded through a bounded, never-panicking WAV
-  decoder, and held in a size-capped LRU cache. Every headless run path
-  (`--screenshot`, `--script`, `--chain-script`, and every test) drives a
-  null sink and is silent on every platform by construction.
+  decoder, and held in a size-capped LRU cache. The options menu's volume
+  slider scales the whole mix, sounds already playing included; a level
+  change, a new mission and a quickload each silence the game being left.
+  Every headless run path (`--screenshot`, `--script`, `--chain-script`,
+  `--benchmark`, and every test) drives a null sink and is silent on every
+  platform by construction.
   **Weapon fire, impacts, pain, footsteps, pickups and the chargers are
   still silent**: those cues are produced, but their asset paths are
   built-in engine knowledge rather than something a map names, and no
