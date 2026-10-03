@@ -8185,3 +8185,53 @@ with `--start-inventory ""` and with
 `--start-inventory weapon_357,ammo_357,ammo_357`. The focused regression
 and mutation/restoration probe also pass as described above. No
 probing output or imported assets are committed.
+
+## M9.NEXT — Continuous and charged weapon cadence
+
+The egon emitted 14 damage on every 0.01-second engine step while its cell
+counter advanced on the table's 0.1-second interval. Damage and ammo now
+advance together: one cell buys one pulse, including the starting pulse and
+last cell. The cooldown survives release/re-press. A held beam and alternating
+primary input both produce **10 hits, 140 damage and 10 cells spent in one
+second** through the engine's actual input, collision and monster intake.
+The existing real-input gargantua kill regression retains the species' health
+and supplies additional synthetic cell pickups to finish the fight.
+
+The charged-weapon audit also found that a gauss release applied a normal
+20-damage shot and then its charged amount as a second hit. The engine now
+resolves one shot using the charged amount. A synthetic scientist under real
+secondary input takes one 33.925-damage hit after 0.51 seconds of charge, with
+one cell spent. Charge duration already uses elapsed seconds: equal five-second
+holds at two step sizes produce the same linear-placeholder amount. The
+hornet gun has no regeneration path, so no per-step refill error was found.
+
+**Provenance and limits.** `docs/FORMAT_SOURCES.md` cites published OverWiki
+weapon prose. The egon's 14 damage per cell is published; its 0.1-second timing
+remains the table's project-authored `TODO(black-box)` placeholder. Immediate
+first damage, cooldown across taps, float-boundary tolerance and at most one
+pulse per oversized call are project-authored policies, `TODO(black-box)`.
+Oversized calls discard missed whole intervals instead of bursting later;
+the engine's ordinary steps are smaller than the interval. The linear gauss
+curve and one-cell charge cost remain placeholders; charging drain, reflection,
+beam splash, underwater restrictions and hornet regeneration remain unresolved.
+Beam sub-interval phase still resets on save restore; no save tags or encodings
+changed. The additional engine change is confined to gauss hitscan application.
+
+**Coverage and discrimination.** Six focused combat integration tests cover
+three egon step sizes, held/released/re-pressed input, zero elapsed time, the
+last cell, oversized/idle steps, equal-duration gauss holds, and the absence of
+hornet regeneration. Two engine regressions exercise real held/tapping egon
+input and charged gauss damage; the earlier gargantua kill regression remains.
+Six mutations were actually compiled and run, each failing its targeted test:
+per-step beam damage, free cells, resetting cooldown on taps, step-count gauss
+charge, per-step hornet awards, and duplicate base-plus-charged gauss hits.
+Every mutation was restored and the focused suites passed afterwards.
+
+**Gates:** fmt check passed; focused `ohl-combat` 116 passed and
+`bosses_and_aircraft` 14 passed; workspace clippy default, `--features dev-tools`
+and `--all-features`, `cargo test --workspace`, policy and graph pending;
+combat-smoke, campaign-smoke and chain-walk with both empty and
+`weapon_357,ammo_357,ammo_357` inventories pending resource scheduling.
+Dependencies unchanged; cargo-deny not required. Final smoke acceptance remains
+37/37 with zero unexpected lines, campaign 93/93, and chain distinct depth 12,
+Pass, 660.8 simulated seconds for both inventories.
