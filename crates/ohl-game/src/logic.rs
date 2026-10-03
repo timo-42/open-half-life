@@ -1203,6 +1203,16 @@ impl Simulation {
             }
             return;
         }
+        if let Ok(activation) = registry
+            .world
+            .query_one_mut::<&mut crate::registry::MonsterActivation>(entity)
+        {
+            // A monster that waits to be switched on (the final boss, an
+            // aircraft spawned `Start Inactive`) rides the same path; the
+            // AI's boss driver drains the counter.
+            activation.activate();
+            return;
+        }
         if registry.world.get::<&Trigger>(entity).is_ok() {
             self.activate_trigger(registry, entity, activator);
         }
@@ -2900,6 +2910,44 @@ mod tests {
             .world
             .get::<&AmbientState>(entity)
             .expect("the fixture's ambient_generic exists")
+    }
+
+    /// A monster the AI marked as waiting to be switched on
+    /// (`MonsterActivation`) counts every fire aimed at its name, whatever
+    /// the use type, and a monster without the marker is left alone.
+    #[test]
+    fn a_fire_at_a_monster_waiting_to_be_switched_on_is_counted() {
+        use crate::registry::MonsterActivation;
+        // Project-authored synthetic names.
+        let (mut registry, mut sim) = built(&[
+            raw(&[("classname", "monster_ohl_waiting"), ("targetname", "boss")]),
+            raw(&[("classname", "monster_ohl_plain"), ("targetname", "plain")]),
+        ]);
+        let boss = registry.find("boss")[0];
+        let plain = registry.find("plain")[0];
+        registry
+            .world
+            .insert_one(boss, MonsterActivation::default())
+            .expect("spawned");
+        let mut events = Vec::new();
+        sim.activate(&mut registry, boss, None, &mut events);
+        sim.activate_with(&mut registry, boss, None, TriggerUse::On, &mut events);
+        sim.activate(&mut registry, plain, None, &mut events);
+        assert!(events.is_empty());
+        let mut activation = *registry
+            .world
+            .get::<&MonsterActivation>(boss)
+            .expect("marker");
+        assert_eq!(activation.pending, 2);
+        assert_eq!(activation.take(), 2);
+        assert_eq!(activation.pending, 0);
+        assert!(registry.world.get::<&MonsterActivation>(plain).is_err());
+
+        let mut saturating = MonsterActivation::default();
+        for _ in 0..(MonsterActivation::MAX_PENDING + 5) {
+            saturating.activate();
+        }
+        assert_eq!(saturating.pending, MonsterActivation::MAX_PENDING);
     }
 
     /// The published "Start silent" spawnflag: without it "the sound will

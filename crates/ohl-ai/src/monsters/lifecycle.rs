@@ -28,10 +28,12 @@
 
 use hecs::{Entity, World};
 
-use crate::damage::DamageQueue;
+use crate::damage::{DamageQueue, DamageResponse};
 use crate::senses::SoundKind;
-use crate::world::{Actor, AiEvent, AiEventKind};
+use crate::world::{Actor, AiEvent, AiEventKind, Impervious};
 
+use super::bigmomma::{DamageVerdict, GonarchTrail};
+use super::nihilanth::{NihilanthShield, ShieldVerdict};
 use super::table::{MonsterFlags, MonsterSpec};
 
 /// How much total damage in the killing tick counts as an overkill that
@@ -67,11 +69,44 @@ pub fn apply_damage(
 
 /// [`apply_damage`], additionally reporting the corpse decision for every
 /// monster that died this call, in the same order as `queue`.
+///
+/// Every target answers every damage type at face value (save an
+/// [`Impervious`] one, which nothing hurts); see [`apply_damage_effective`]
+/// for the per-species form.
 #[must_use]
 pub fn apply_damage_with_corpses(
     world: &mut World,
     queue: &DamageQueue,
     gib_overkill_multiplier: f32,
+) -> (Vec<AiEvent>, Vec<(Entity, CorpseDecision)>) {
+    apply_damage_effective(world, queue, gib_overkill_multiplier, &|_| {
+        DamageResponse::ORDINARY
+    })
+}
+
+/// [`apply_damage_with_corpses`] with a per-target [`DamageResponse`]:
+/// `response(target)` says which damage types take health off that entity
+/// and which take double (`crate::monsters::table::damage_response_for`
+/// for its species). A queued hit it shrugs off costs nothing — though the
+/// monster still *notices* it, since `AiWorld::tick` reads the same queue
+/// at face value for its conditions. An [`Impervious`] target answers with
+/// [`DamageResponse::IMPERVIOUS`] whatever `response` says, so the marker
+/// means "no damage can hurt it" here exactly as it does to the engine,
+/// which drops every hit aimed at one before it is ever queued.
+///
+/// Two boss components are consulted here as well, because this is the
+/// one place health moves: a [`GonarchTrail`] shields the Gonarch on its
+/// trail and turns a depleting hit into a departure rather than a death,
+/// and a [`NihilanthShield`] drains its reserve before, and blocks health
+/// loss until, the boss is exposed. Neither can emit
+/// [`AiEventKind::Died`] except through the same crossing check every
+/// other monster uses.
+#[must_use]
+pub fn apply_damage_effective(
+    world: &mut World,
+    queue: &DamageQueue,
+    gib_overkill_multiplier: f32,
+    response: &dyn Fn(Entity) -> DamageResponse,
 ) -> (Vec<AiEvent>, Vec<(Entity, CorpseDecision)>) {
     let mut corpses = Vec::new();
     let mut seen: Vec<Entity> = Vec::new();
@@ -81,8 +116,13 @@ pub fn apply_damage_with_corpses(
             continue;
         }
         seen.push(event.target);
+        let answer = if world.get::<&Impervious>(event.target).is_ok() {
+            DamageResponse::IMPERVIOUS
+        } else {
+            response(event.target)
+        };
         let Some((total, _attacker, _position, _provoked)) =
-            crate::damage::summarize(queue, event.target)
+            crate::damage::summarize_effective(queue, event.target, answer)
         else {
             continue;
         };
@@ -93,6 +133,9 @@ pub fn apply_damage_with_corpses(
             continue;
         }
         let previous_health = actor.health;
+        if !boss_intake(world, event.target, &mut actor, total) {
+            continue;
+        }
         let new_health = previous_health - total;
         actor.health = new_health;
         if previous_health > 0.0 && new_health <= 0.0 {
@@ -111,6 +154,30 @@ pub fn apply_damage_with_corpses(
         }
     }
     (events, corpses)
+}
+
+/// Runs a hit of `total` past `target`'s boss components, if it has any.
+/// Returns whether the hit goes on to cost health. A Gonarch whose node
+/// health this hit depletes has its health restored to its spawn value
+/// here and leaves for the next node instead.
+fn boss_intake(world: &World, target: Entity, actor: &mut Actor, total: f32) -> bool {
+    if let Ok(mut shield) = world.get::<&mut NihilanthShield>(target) {
+        match shield.absorb(total) {
+            ShieldVerdict::Applied => {}
+            ShieldVerdict::Absorbed | ShieldVerdict::Blocked => return false,
+        }
+    }
+    if let Ok(mut trail) = world.get::<&mut GonarchTrail>(target) {
+        match trail.absorb_damage(actor.health, total) {
+            DamageVerdict::Applied => {}
+            DamageVerdict::Shielded => return false,
+            DamageVerdict::Depleted { .. } => {
+                actor.health = trail.base_health();
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// Whether `spec`'s corpse should fade rather than persist, per its
@@ -279,13 +346,307 @@ pub struct LifecycleSound {
 mod tests {
     use super::{
         CorpseDecision, DEFAULT_GIB_OVERKILL_MULTIPLIER, MonsterTrigger, TriggerCondition,
-        TriggerContext, apply_damage, apply_damage_with_corpses,
+        TriggerContext, apply_damage, apply_damage_effective, apply_damage_with_corpses,
     };
-    use crate::damage::{DamageEvent, DamageQueue, DamageSink};
+    use crate::damage::{DamageEvent, DamageKinds, DamageQueue, DamageResponse, DamageSink};
+    use crate::monsters::bigmomma::{GonarchTrail, Trail, TrailNode, TrailPhase};
+    use crate::monsters::nihilanth::{HEAD_OPEN_SECONDS, NihilanthShield};
+    use crate::monsters::table::{GARGANTUA_VULNERABILITY, MonsterKind, damage_response_for};
     use crate::state::Classification;
-    use crate::world::{Actor, AiEventKind};
+    use crate::world::{Actor, AiEventKind, Impervious};
     use glam::Vec3;
     use hecs::World;
+
+    /// The gargantua's published immunity, through the same intake every
+    /// other monster uses: bullets and untyped hits cost nothing, a blast
+    /// costs health, and a blast can kill.
+    #[test]
+    fn a_gargantua_loses_health_only_to_its_published_damage_types() {
+        let mut world = World::new();
+        let attacker = world.spawn((0u8,));
+        let garg =
+            world.spawn((Actor::new(Classification::AlienMonster, Vec3::ZERO).with_health(800.0),));
+        let vulnerability = |entity: hecs::Entity| {
+            if entity == garg {
+                damage_response_for(&MonsterKind::Gargantua)
+            } else {
+                DamageResponse::ORDINARY
+            }
+        };
+        assert_eq!(vulnerability(garg).vulnerable_to, GARGANTUA_VULNERABILITY);
+
+        let mut small_arms = DamageQueue::new();
+        small_arms.push_damage(
+            DamageEvent::new(garg, attacker, 300.0, Vec3::ZERO).with_kinds(DamageKinds::BULLET),
+        );
+        small_arms.push_damage(
+            DamageEvent::new(garg, attacker, 300.0, Vec3::ZERO).with_kinds(DamageKinds::SLASH),
+        );
+        small_arms.push_damage(DamageEvent::new(garg, attacker, 300.0, Vec3::ZERO));
+        let (events, _) = apply_damage_effective(
+            &mut world,
+            &small_arms,
+            DEFAULT_GIB_OVERKILL_MULTIPLIER,
+            &vulnerability,
+        );
+        assert!(events.is_empty());
+        let actor = *world.get::<&Actor>(garg).expect("actor");
+        assert!((actor.health - 800.0).abs() < 1e-4, "nothing got through");
+        assert!(actor.alive);
+
+        let mut explosives = DamageQueue::new();
+        explosives.push_damage(
+            DamageEvent::new(garg, attacker, 100.0, Vec3::ZERO).with_kinds(DamageKinds::BLAST),
+        );
+        explosives.push_damage(
+            DamageEvent::new(garg, attacker, 100.0, Vec3::ZERO).with_kinds(DamageKinds::BULLET),
+        );
+        let (events, _) = apply_damage_effective(
+            &mut world,
+            &explosives,
+            DEFAULT_GIB_OVERKILL_MULTIPLIER,
+            &vulnerability,
+        );
+        assert!(events.is_empty());
+        let actor = *world.get::<&Actor>(garg).expect("actor");
+        assert!(
+            (actor.health - 700.0).abs() < 1e-4,
+            "only the blast counted"
+        );
+
+        let mut beam = DamageQueue::new();
+        beam.push_damage(
+            DamageEvent::new(garg, attacker, 700.0, Vec3::ZERO).with_kinds(DamageKinds::ENERGYBEAM),
+        );
+        let (events, corpses) = apply_damage_effective(
+            &mut world,
+            &beam,
+            DEFAULT_GIB_OVERKILL_MULTIPLIER,
+            &vulnerability,
+        );
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0].kind, AiEventKind::Died));
+        assert_eq!(corpses.len(), 1);
+        assert!(!world.get::<&Actor>(garg).expect("actor").alive);
+    }
+
+    /// The Apache's published "blast damage doubles damage", through the
+    /// same intake: a blast costs twice its amount, a bullet its own.
+    #[test]
+    fn an_apache_takes_double_from_a_blast_and_face_value_from_a_bullet() {
+        let mut world = World::new();
+        let attacker = world.spawn((0u8,));
+        let apache = world
+            .spawn((Actor::new(Classification::HumanMilitary, Vec3::ZERO).with_health(250.0),));
+        let response = |_: hecs::Entity| damage_response_for(&MonsterKind::Apache);
+        let hit = |amount: f32, kinds: DamageKinds| {
+            let mut queue = DamageQueue::new();
+            queue.push_damage(
+                DamageEvent::new(apache, attacker, amount, Vec3::ZERO).with_kinds(kinds),
+            );
+            queue
+        };
+        let _ = apply_damage_effective(
+            &mut world,
+            &hit(10.0, DamageKinds::BULLET),
+            DEFAULT_GIB_OVERKILL_MULTIPLIER,
+            &response,
+        );
+        assert!((world.get::<&Actor>(apache).expect("actor").health - 240.0).abs() < 1e-4);
+        let _ = apply_damage_effective(
+            &mut world,
+            &hit(100.0, DamageKinds::BLAST),
+            DEFAULT_GIB_OVERKILL_MULTIPLIER,
+            &response,
+        );
+        assert!(
+            (world.get::<&Actor>(apache).expect("actor").health - 40.0).abs() < 1e-4,
+            "the blast counted twice"
+        );
+    }
+
+    /// `Impervious` is the empty response here too, whatever the caller's
+    /// own lookup says: no hit of any type costs such a target anything.
+    #[test]
+    fn an_impervious_target_loses_nothing_whatever_the_response_says() {
+        let mut world = World::new();
+        let attacker = world.spawn((0u8,));
+        let prop = world.spawn((
+            Actor::new(Classification::PlayerAlly, Vec3::ZERO).with_health(8.0),
+            Impervious,
+        ));
+        let mut queue = DamageQueue::new();
+        queue.push_damage(DamageEvent::new(prop, attacker, 500.0, Vec3::ZERO));
+        queue.push_damage(
+            DamageEvent::new(prop, attacker, 500.0, Vec3::ZERO).with_kinds(DamageKinds::BLAST),
+        );
+        let (events, corpses) =
+            apply_damage_with_corpses(&mut world, &queue, DEFAULT_GIB_OVERKILL_MULTIPLIER);
+        assert!(events.is_empty());
+        assert!(corpses.is_empty());
+        let actor = *world.get::<&Actor>(prop).expect("actor");
+        assert!(actor.alive);
+        assert!((actor.health - 8.0).abs() < 1e-6);
+    }
+
+    /// The default entry point stays fully vulnerable, so every existing
+    /// caller keeps its behaviour.
+    #[test]
+    fn the_untyped_entry_point_treats_every_target_as_fully_vulnerable() {
+        let mut world = World::new();
+        let attacker = world.spawn((0u8,));
+        let victim =
+            world.spawn((Actor::new(Classification::AlienMonster, Vec3::ZERO).with_health(10.0),));
+        let mut queue = DamageQueue::new();
+        queue.push_damage(
+            DamageEvent::new(victim, attacker, 10.0, Vec3::ZERO).with_kinds(DamageKinds::BULLET),
+        );
+        let events = apply_damage(&mut world, &queue, DEFAULT_GIB_OVERKILL_MULTIPLIER);
+        assert_eq!(events.len(), 1);
+    }
+
+    /// The Nihilanth's reserve and crystals gate its health: hits drain the
+    /// reserve, then are blocked while a crystal stands, and only an
+    /// exposed boss can die — and then exactly once.
+    #[test]
+    fn a_nihilanth_dies_only_once_its_reserve_is_gone_and_its_crystals_are_down() {
+        let mut world = World::new();
+        let attacker = world.spawn((0u8,));
+        let mut shield = NihilanthShield::for_health(800.0, 20, 1);
+        shield.activate();
+        let boss = world.spawn((
+            Actor::new(Classification::AlienMilitary, Vec3::ZERO).with_health(800.0),
+            shield,
+        ));
+        let hit = |amount: f32| {
+            let mut queue = DamageQueue::new();
+            queue.push_damage(DamageEvent::new(boss, attacker, amount, Vec3::ZERO));
+            queue
+        };
+
+        // Drains the reserve, health untouched.
+        let (events, _) =
+            apply_damage_with_corpses(&mut world, &hit(500.0), DEFAULT_GIB_OVERKILL_MULTIPLIER);
+        assert!(events.is_empty());
+        assert!((world.get::<&Actor>(boss).expect("actor").health - 800.0).abs() < 1e-4);
+        assert!(
+            (world
+                .get::<&NihilanthShield>(boss)
+                .expect("shield")
+                .reserve()
+                - 300.0)
+                .abs()
+                < 1e-4
+        );
+
+        // Reserve gone, a crystal standing: blocked.
+        let (events, _) =
+            apply_damage_with_corpses(&mut world, &hit(5_000.0), DEFAULT_GIB_OVERKILL_MULTIPLIER);
+        assert!(events.is_empty());
+        let (events, _) =
+            apply_damage_with_corpses(&mut world, &hit(5_000.0), DEFAULT_GIB_OVERKILL_MULTIPLIER);
+        assert!(events.is_empty());
+        assert!((world.get::<&Actor>(boss).expect("actor").health - 800.0).abs() < 1e-4);
+
+        // The crystal falls and the head opens: hits cost health, and the
+        // killing one reports exactly one death.
+        {
+            let mut shield = world.get::<&mut NihilanthShield>(boss).expect("shield");
+            shield.sync_crystals(0);
+            assert!(shield.tick(HEAD_OPEN_SECONDS + 1.0));
+        }
+        let (events, _) =
+            apply_damage_with_corpses(&mut world, &hit(300.0), DEFAULT_GIB_OVERKILL_MULTIPLIER);
+        assert!(events.is_empty());
+        assert!((world.get::<&Actor>(boss).expect("actor").health - 500.0).abs() < 1e-4);
+        let (events, corpses) =
+            apply_damage_with_corpses(&mut world, &hit(500.0), DEFAULT_GIB_OVERKILL_MULTIPLIER);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0].kind, AiEventKind::Died));
+        assert_eq!(corpses, vec![(boss, CorpseDecision::Corpse)]);
+        let (events, _) =
+            apply_damage_with_corpses(&mut world, &hit(500.0), DEFAULT_GIB_OVERKILL_MULTIPLIER);
+        assert!(events.is_empty(), "dead is dead");
+    }
+
+    /// The Gonarch's trail through the same intake: shielded on the way,
+    /// fought down at a node with health, sent on (not killed) by the hit
+    /// that depletes it, and killed only at the trail's end.
+    #[test]
+    fn a_gonarch_is_sent_on_by_a_depleting_hit_and_dies_only_at_the_end() {
+        let node = |name: &str, next: Option<&str>, health: Option<f32>| TrailNode {
+            name: name.to_string(),
+            position: Vec3::ZERO,
+            next: next.map(str::to_string),
+            health,
+            wait: 0.0,
+            fire_on_reach: None,
+            kill_on_reach: None,
+            sequence_on_reach: None,
+            run: false,
+            wait_indefinitely: false,
+        };
+        let trail = Trail::new(vec![
+            node("a", Some("b"), Some(100.0)),
+            node("b", None, Some(60.0)),
+        ]);
+        let mut world = World::new();
+        let attacker = world.spawn((0u8,));
+        let gonarch = world.spawn((
+            Actor::new(Classification::AlienMonster, Vec3::ZERO).with_health(225.0),
+            GonarchTrail::new(trail, 1.5, 225.0),
+        ));
+        let hit = |amount: f32| {
+            let mut queue = DamageQueue::new();
+            queue.push_damage(DamageEvent::new(gonarch, attacker, amount, Vec3::ZERO));
+            queue
+        };
+
+        // Travelling: shielded.
+        let (events, _) =
+            apply_damage_with_corpses(&mut world, &hit(10_000.0), DEFAULT_GIB_OVERKILL_MULTIPLIER);
+        assert!(events.is_empty());
+        assert!((world.get::<&Actor>(gonarch).expect("actor").health - 225.0).abs() < 1e-4);
+
+        // At node a with its (scaled) health: fought down, then sent on with
+        // its spawn health restored rather than killed.
+        {
+            let mut trail = world.get::<&mut GonarchTrail>(gonarch).expect("trail");
+            let effects = trail.arrive().expect("at a");
+            world.get::<&mut Actor>(gonarch).expect("actor").health =
+                effects.set_health.expect("health");
+        }
+        assert!((world.get::<&Actor>(gonarch).expect("actor").health - 150.0).abs() < 1e-4);
+        let (events, _) =
+            apply_damage_with_corpses(&mut world, &hit(100.0), DEFAULT_GIB_OVERKILL_MULTIPLIER);
+        assert!(events.is_empty());
+        assert!((world.get::<&Actor>(gonarch).expect("actor").health - 50.0).abs() < 1e-4);
+        let (events, corpses) =
+            apply_damage_with_corpses(&mut world, &hit(1_000.0), DEFAULT_GIB_OVERKILL_MULTIPLIER);
+        assert!(events.is_empty(), "depletion is a departure, not a death");
+        assert!(corpses.is_empty());
+        let actor = *world.get::<&Actor>(gonarch).expect("actor");
+        assert!(actor.alive);
+        assert!((actor.health - 225.0).abs() < 1e-4, "spawn health restored");
+        assert_eq!(
+            world.get::<&GonarchTrail>(gonarch).expect("trail").phase(),
+            TrailPhase::Traveling { to: 1 }
+        );
+
+        // At the last node: the depleting hit kills, exactly once.
+        {
+            let mut trail = world.get::<&mut GonarchTrail>(gonarch).expect("trail");
+            let effects = trail.arrive().expect("at b");
+            world.get::<&mut Actor>(gonarch).expect("actor").health =
+                effects.set_health.expect("health");
+        }
+        let (events, corpses) =
+            apply_damage_with_corpses(&mut world, &hit(90.0), DEFAULT_GIB_OVERKILL_MULTIPLIER);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0].kind, AiEventKind::Died));
+        assert_eq!(corpses.len(), 1);
+        assert!(!world.get::<&Actor>(gonarch).expect("actor").alive);
+    }
 
     #[test]
     fn a_killed_monster_emits_exactly_one_died_event() {

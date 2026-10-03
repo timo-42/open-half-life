@@ -1307,6 +1307,45 @@ impl MakerActivation {
     }
 }
 
+/// How many times the map logic has switched on a monster that waits to
+/// be switched on, not yet consumed.
+///
+/// The same shape as [`MakerActivation`], for the `monster_*` entities
+/// whose published behaviour starts with a `use`: `monster_nihilanth`
+/// ("does not attack immediately. You need to 'activate' it with
+/// `trigger_auto` ... or any other way") and `monster_apache`/
+/// `monster_osprey` spawned with `Start Inactive` ("Must be triggered to
+/// start"); see `docs/FORMAT_SOURCES.md`, "Wave 1 batch B". This crate
+/// never decides which monsters carry it: `ohl-ai`'s spawn-time boss
+/// attachment inserts it, [`crate::logic::Simulation::activate`] bumps it
+/// exactly like it opens a door, and `ohl-ai`'s per-tick boss driver
+/// drains it. No parallel trigger system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MonsterActivation {
+    /// Activations not yet consumed.
+    pub pending: u32,
+}
+
+impl MonsterActivation {
+    /// The most activations kept between two AI phases. Project-owned,
+    /// matching [`MakerActivation::MAX_PENDING`].
+    pub const MAX_PENDING: u32 = MakerActivation::MAX_PENDING;
+
+    /// Records one activation, saturating at [`Self::MAX_PENDING`].
+    pub const fn activate(&mut self) {
+        if self.pending < Self::MAX_PENDING {
+            self.pending += 1;
+        }
+    }
+
+    /// Takes every pending activation, leaving none.
+    pub const fn take(&mut self) -> u32 {
+        let pending = self.pending;
+        self.pending = 0;
+        pending
+    }
+}
+
 /// `trigger_hurt`: a volume that damages whatever is inside it.
 ///
 /// The published behaviour (TWHL's `trigger_hurt` page, see

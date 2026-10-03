@@ -27,6 +27,7 @@
 //! [`SkillLookup`] exists only so a caller's own parsed `skill.cfg` can
 //! override them per map.
 
+use crate::damage::{DamageKinds, DamageResponse};
 use crate::state::Classification;
 use ohl_physics::Hull;
 
@@ -155,6 +156,100 @@ pub const BABYCRAB_DAMAGE_FRACTION: f32 = 0.3;
 
 /// `TWHL:Monster_generic`'s published health: "Spawns with only 8 HP."
 pub const GENERIC_HEALTH: f32 = 8.0;
+
+/// `TWHL:Monster_gargantua`'s published vulnerability: "Gargantuas are only
+/// vulnerable to energy-beam, crush, mortar, and blast damage". A mortar
+/// strike is delivered as blast damage in this project's vocabulary
+/// (`docs/FORMAT_SOURCES.md`, "Combat and damage": mortar is not one of
+/// the published damage *types*), so the set is the remaining three.
+pub const GARGANTUA_VULNERABILITY: DamageKinds = DamageKinds::ENERGYBEAM
+    .union(DamageKinds::CRUSH)
+    .union(DamageKinds::BLAST);
+
+// Wave 1 batch B — bosses and aircraft. Every number below is cited to the
+// monster's own TWHL page (`TWHL:Monster_bigmomma`, `TWHL:Info_bigmomma`,
+// `TWHL:Monster_nihilanth`, `TWHL:Monster_apache`, `TWHL:Monster_osprey`)
+// or, where noted, to Combine OverWiki; see `docs/FORMAT_SOURCES.md`,
+// "Monster definitions", "Wave 1 batch B".
+
+/// `TWHL:Monster_bigmomma`: the Gonarch "has 150 health by default"; its
+/// per-difficulty health is that base times [`BIGMOMMA_HEALTH_FACTOR`].
+pub const BIGMOMMA_BASE_HEALTH: f32 = 150.0;
+
+/// `TWHL:Monster_bigmomma`'s published health multiplier per difficulty,
+/// `[easy, medium, hard]` = 1x / 1.5x / 2x. Also what an `info_bigmomma`
+/// node's own `health` keyvalue is scaled by on approach
+/// (`crate::monsters::bigmomma`).
+pub const BIGMOMMA_HEALTH_FACTOR: [f32; 3] = [1.0, 1.5, 2.0];
+
+/// `TWHL:Monster_bigmomma`'s acid-mortar blast radius, `[easy, medium,
+/// hard]`, in world units.
+pub const BIGMOMMA_BLAST_RADIUS: [f32; 3] = [250.0, 250.0, 275.0];
+
+/// `TWHL:Monster_bigmomma`: "At most 20 spawned baby headcrabs can be alive
+/// at any given time." Recorded, not applied: the Gonarch does not yet
+/// spawn the babies (`monster_babycrab` has a row of its own, but nothing
+/// here births one).
+pub const BIGMOMMA_MAX_LIVE_BABYCRABS: u32 = 20;
+
+/// `TWHL:Monster_nihilanth`: the number of health-reserve sprites floating
+/// about it, "each holding 1/20th of its health".
+pub const NIHILANTH_SPHERE_COUNT: u32 = 20;
+
+/// `TWHL:Monster_nihilanth`'s published "reserve per sprite", `[easy,
+/// medium, hard]` — exactly its health table divided by
+/// [`NIHILANTH_SPHERE_COUNT`].
+pub const NIHILANTH_SPHERE_RESERVE: [f32; 3] = [40.0, 40.0, 50.0];
+
+/// `TWHL:Monster_apache`'s rocket damage, published as a single 150 at
+/// every difficulty (the machine gun is the `ranged` row). Not yet wired:
+/// `MonsterSpec` carries one ranged attack, and the engine resolves a
+/// second one at the first one's damage, the same reason
+/// [`CONTROLLER_HEAD_BALL_DAMAGE`] and [`ASSASSIN_GRENADE_DAMAGE`] are not
+/// wired. The Apache fires its machine gun only.
+pub const APACHE_ROCKET_DAMAGE: f32 = 150.0;
+
+/// `TWHL:Monster_apache`: "will also start emitting smoke when its health
+/// falls below 100". Recorded, not applied (no smoke is drawn).
+pub const APACHE_SMOKE_HEALTH: f32 = 100.0;
+
+/// `TWHL:Monster_apache`: "Normally when killed, falls ... for 12 seconds
+/// or until hitting ground before disintegrating." Recorded, not applied:
+/// a dead aircraft stops where it died.
+pub const APACHE_WRECK_FALL_SECONDS: f32 = 12.0;
+
+/// `TWHL:Monster_apache`: "The NoWreckage flag reduces the time to 4
+/// seconds." Recorded, not applied (see [`APACHE_WRECK_FALL_SECONDS`]).
+pub const APACHE_NO_WRECKAGE_FALL_SECONDS: f32 = 4.0;
+
+/// `TWHL:Monster_apache`'s published `NoWreckage` spawnflag bit
+/// ("Explodes in mid-air"). Recorded, not read.
+pub const SPAWNFLAG_APACHE_NO_WRECKAGE: u32 = 8;
+
+/// The published `Start Inactive` spawnflag bit shared by `monster_apache`
+/// ("Must be triggered to start") and `monster_osprey` ("Requires the
+/// Osprey to be triggered to start"); read by
+/// `crate::monsters::bosses::attach`.
+pub const SPAWNFLAG_AIRCRAFT_START_INACTIVE: u32 = 64;
+
+/// `TWHL:Monster_apache`: "blast damage doubles damage". Applied through
+/// [`damage_response_for`]; the same sentence's "the cockpit and engines
+/// are more easily damaged" needs per-hitbox routing and is not.
+pub const APACHE_DOUBLED_BY: DamageKinds = DamageKinds::BLAST;
+
+/// `TWHL:Monster_osprey`: "An Osprey can track and replace up to 24
+/// soldiers (these soldiers will be replaced indefinitely)". Recorded, not
+/// applied: the Osprey's soldier drops are not modelled.
+pub const OSPREY_MAX_SOLDIERS: u32 = 24;
+
+/// `TWHL:Monster_osprey`: "Shots that deal less than 50 damage are only
+/// effective when they hit the cockpit or one of the engines". Recorded,
+/// not applied: per-hitbox routing is not modelled.
+pub const OSPREY_WEAK_HIT_THRESHOLD: f32 = 50.0;
+
+/// `TWHL:Monster_osprey`: "each engine only takes up to 200 damage before
+/// shots become ineffective". Recorded, not yet modelled (same seam).
+pub const OSPREY_ENGINE_DAMAGE_CAP: f32 = 200.0;
 
 /// A difficulty level, matching the `1`/`2`/`3` = easy/medium/hard
 /// `sk_<subject>_<property><N>` convention documented in
@@ -374,6 +469,15 @@ pub enum MonsterKind {
     Rat,
     /// `monster_cockroach`.
     Cockroach,
+    // Wave 1 batch B.
+    /// `monster_bigmomma` (the Gonarch).
+    BigMomma,
+    /// `monster_nihilanth` (the final boss).
+    Nihilanth,
+    /// `monster_apache` (attack helicopter).
+    Apache,
+    /// `monster_osprey` (troop transport).
+    Osprey,
     /// Any classname this table does not (yet) know, carried verbatim so it
     /// can still be logged, spawned as an inert actor, or rejected.
     Unknown(String),
@@ -410,6 +514,11 @@ impl MonsterKind {
             Self::Furniture => "monster_furniture",
             Self::Rat => "monster_rat",
             Self::Cockroach => "monster_cockroach",
+            // Wave 1 batch B.
+            Self::BigMomma => "monster_bigmomma",
+            Self::Nihilanth => "monster_nihilanth",
+            Self::Apache => "monster_apache",
+            Self::Osprey => "monster_osprey",
             Self::Unknown(classname) => classname,
         }
     }
@@ -453,6 +562,11 @@ impl MonsterKind {
             "monster_furniture" => Self::Furniture,
             "monster_rat" => Self::Rat,
             "monster_cockroach" => Self::Cockroach,
+            // Wave 1 batch B.
+            "monster_bigmomma" => Self::BigMomma,
+            "monster_nihilanth" => Self::Nihilanth,
+            "monster_apache" => Self::Apache,
+            "monster_osprey" => Self::Osprey,
             other => Self::Unknown(other.to_string()),
         }
     }
@@ -474,6 +588,11 @@ impl MonsterKind {
     /// `monster_generic`, `monster_furniture`, `monster_rat` and
     /// `monster_cockroach` have no skill entries at all, so their stems
     /// are the classnames themselves, which no `skill.cfg` will match.
+    /// The four batch-B stems (`bigmomma`, `nihilanth`, `apache`,
+    /// `osprey`) are this project's own application of that convention to
+    /// the classname stem, since none of the cited pages lists the cvars
+    /// themselves; a `skill.cfg` that spells them differently simply leaves
+    /// the table value in force. `TODO(black-box)`.
     #[must_use]
     pub fn skill_subject(&self) -> &str {
         match self {
@@ -501,6 +620,11 @@ impl MonsterKind {
             Self::Leech => "leech",
             Self::Gargantua => "garg",
             Self::Tentacle => "tentacle",
+            // Wave 1 batch B.
+            Self::BigMomma => "bigmomma",
+            Self::Nihilanth => "nihilanth",
+            Self::Apache => "apache",
+            Self::Osprey => "osprey",
             Self::Unknown(classname) => classname,
         }
     }
@@ -560,8 +684,25 @@ impl MonsterKind {
             Self::Babycrab => "models/baby_headcrab.mdl",
             Self::Rat => "models/bigrat.mdl",
             Self::Cockroach => "models/roach.mdl",
+            // Wave 1 batch B: the same cited page's rows.
+            Self::BigMomma => "models/big_mom.mdl",
+            Self::Nihilanth => "models/nihilanth.mdl",
+            Self::Apache => "models/apache.mdl",
+            Self::Osprey => "models/osprey.mdl",
             Self::Generic | Self::Furniture | Self::Unknown(_) => return None,
         })
+    }
+
+    /// Whether a map's `TriggerCondition`/`TriggerTarget` pair works on
+    /// this kind. Every TWHL `monster_*` page lists the pair, but three say
+    /// it does not work: `TWHL:Monster_nihilanth` ("TriggerCondition is not
+    /// working for this monster"), `TWHL:Monster_apache` and
+    /// `TWHL:Monster_osprey` ("trigger condition" and "trigger target" do
+    /// not function / "will not work"). `ohl-engine` collects no trigger
+    /// for those three.
+    #[must_use]
+    pub fn honours_trigger_condition(&self) -> bool {
+        !matches!(self, Self::Nihilanth | Self::Apache | Self::Osprey)
     }
 
     /// Whether this kind's model is authored by the map (its `model`
@@ -592,7 +733,7 @@ impl MonsterKind {
     /// Every defined kind (not [`Self::Unknown`]), in table order.
     #[must_use]
     pub fn defined() -> &'static [MonsterKind] {
-        const KINDS: [MonsterKind; 24] = [
+        const KINDS: [MonsterKind; 28] = [
             MonsterKind::Headcrab,
             MonsterKind::Zombie,
             MonsterKind::Houndeye,
@@ -618,8 +759,38 @@ impl MonsterKind {
             MonsterKind::Furniture,
             MonsterKind::Rat,
             MonsterKind::Cockroach,
+            // Wave 1 batch B.
+            MonsterKind::BigMomma,
+            MonsterKind::Nihilanth,
+            MonsterKind::Apache,
+            MonsterKind::Osprey,
         ];
         &KINDS
+    }
+}
+
+/// How `kind`'s health answers each damage type.
+///
+/// [`DamageResponse::ORDINARY`] for every monster without a published
+/// rule; the gargantua is hurt only by [`GARGANTUA_VULNERABILITY`], and the
+/// Apache takes double from [`APACHE_DOUBLED_BY`]. Kept as a function
+/// beside [`spec_for`] rather than a `MonsterSpec` field so each rule is an
+/// explicit, cited exception and every other row stays untouched. A hit a
+/// species shrugs off still *registers* — the monster turns toward and
+/// acquires its attacker — it just costs no health; see
+/// `crate::damage::summarize_effective` and `crate::monsters::lifecycle`.
+#[must_use]
+pub fn damage_response_for(kind: &MonsterKind) -> DamageResponse {
+    match kind {
+        MonsterKind::Gargantua => DamageResponse {
+            vulnerable_to: GARGANTUA_VULNERABILITY,
+            doubled_by: DamageKinds::NONE,
+        },
+        MonsterKind::Apache => DamageResponse {
+            vulnerable_to: DamageKinds::ALL,
+            doubled_by: APACHE_DOUBLED_BY,
+        },
+        _ => DamageResponse::ORDINARY,
     }
 }
 
@@ -923,12 +1094,11 @@ pub fn spec_for(kind: &MonsterKind) -> Option<&'static MonsterSpec> {
     };
     // `TWHL:Gargantua` — health 800/800/1000; melee 10/30/30; flame
     // 3/5/5 (the ground-stomp shockwave at 50/100/100 is
-    // `GARG_STOMP_DAMAGE` in `brains`). Published immune to everything
-    // except energy/crush/mortar/blast damage types — `ohl-ai`'s minimal
-    // `DamageEvent` carries no damage-type bitflags yet (see `crate::damage`
-    // module docs), so that immunity is not modeled here; it is
-    // `ohl-combat`'s `DamageInfo` unification's job. Reach/range: not
-    // published, `TODO(black-box)`.
+    // `GARG_STOMP_DAMAGE` in `brains`). Published "only vulnerable to
+    // energy-beam, crush, mortar, and blast damage": modelled by
+    // `damage_response_for` narrowing it to `GARGANTUA_VULNERABILITY`,
+    // matched against `DamageEvent::kinds`. Reach/range: not published,
+    // `TODO(black-box)`.
     static GARGANTUA: MonsterSpec = MonsterSpec {
         classification: C::AlienMonster,
         health: [800.0, 800.0, 1_000.0],
@@ -1112,6 +1282,82 @@ pub fn spec_for(kind: &MonsterKind) -> Option<&'static MonsterSpec> {
         can_open_doors: false,
         flags: MonsterFlags::FADES_CORPSE,
     };
+    // Wave 1 batch B — bosses and aircraft.
+    //
+    // `TWHL:Monster_bigmomma` (the Gonarch) — 150 base health times the
+    // published 1x/1.5x/2x per-difficulty factor (`BIGMOMMA_BASE_HEALTH`,
+    // `BIGMOMMA_HEALTH_FACTOR`), so 150/225/300; claw slash 50/60/70; acid
+    // mortar 100/120/160 in a 250/250/275 radius (`BIGMOMMA_BLAST_RADIUS`).
+    // Classified "Alien Monster" by `TWHL:Reference:_Monster_classifications`.
+    // Headcrab family, so yellow blood by the documented convention. Its
+    // `info_bigmomma` trail (invulnerable on the trail, killable only at
+    // its end) is `crate::monsters::bigmomma`. Reach/mortar range: not
+    // published, `TODO(black-box)`.
+    static BIGMOMMA: MonsterSpec = MonsterSpec {
+        classification: C::AlienMonster,
+        health: [150.0, 225.0, 300.0],
+        melee: atk([50.0, 60.0, 70.0], 128.0),
+        ranged: atk([100.0, 120.0, 160.0], 1_024.0),
+        hull: Hull::Large,
+        blood: BloodKind::Yellow,
+        size: SizeClass::Large,
+        can_open_doors: false,
+        flags: MonsterFlags::NEVER_FLEES,
+    };
+    // `TWHL:Monster_nihilanth` — health 800/800/1000; zap 30 (one
+    // published value, not skill-scaled); a reserve of 20 sprites each
+    // holding 1/20th of its health, 40/40/50 (`NIHILANTH_SPHERE_COUNT`,
+    // `NIHILANTH_SPHERE_RESERVE`), refilled from its chamber's recharger
+    // crystals — `crate::monsters::nihilanth`. Classified "Alien Military"
+    // by the same reference page. It never moves: no schedule its brain
+    // selects carries a movement task, so it hangs where the map put it,
+    // and its hull is never traced (the large hull is the nearest box to
+    // its size). No melee attack is published. Zap range: not published,
+    // `TODO(black-box)`.
+    static NIHILANTH: MonsterSpec = MonsterSpec {
+        classification: C::AlienMilitary,
+        health: [800.0, 800.0, 1_000.0],
+        melee: None,
+        ranged: atk([30.0, 30.0, 30.0], 2_048.0),
+        hull: Hull::Large,
+        blood: BloodKind::Green,
+        size: SizeClass::Large,
+        can_open_doors: false,
+        flags: MonsterFlags::NEVER_FLEES,
+    };
+    // `TWHL:Monster_apache` — health 150/250/400; machine gun 8/10/10
+    // (the rocket's 150 is `APACHE_ROCKET_DAMAGE`, not wired); blast
+    // damage doubled (`APACHE_DOUBLED_BY`). Classified "Human Military". A
+    // machine: no blood. Flies a cyclic `path_corner` route from its
+    // `target` (`crate::monsters::aircraft`) on the point hull, the flight
+    // seam (`crate::movement::flies`). Gun range: not published,
+    // `TODO(black-box)`.
+    static APACHE: MonsterSpec = MonsterSpec {
+        classification: C::HumanMilitary,
+        health: [150.0, 250.0, 400.0],
+        melee: None,
+        ranged: atk([8.0, 10.0, 10.0], 2_048.0),
+        hull: Hull::Point,
+        blood: BloodKind::None,
+        size: SizeClass::Large,
+        can_open_doors: false,
+        flags: MonsterFlags::NEVER_FLEES,
+    };
+    // `TWHL:Monster_osprey` — health 400 (one published value, not
+    // skill-scaled); no attack of its own. Classified "Machine". Flies a
+    // cyclic `path_corner` route on the point hull, like the Apache. Its
+    // soldier drops (`OSPREY_MAX_SOLDIERS`) are not modelled.
+    static OSPREY: MonsterSpec = MonsterSpec {
+        classification: C::Machine,
+        health: [400.0, 400.0, 400.0],
+        melee: None,
+        ranged: None,
+        hull: Hull::Point,
+        blood: BloodKind::None,
+        size: SizeClass::Large,
+        can_open_doors: false,
+        flags: MonsterFlags::NEVER_FLEES,
+    };
 
     match kind {
         MonsterKind::Headcrab => Some(&HEADCRAB),
@@ -1139,13 +1385,23 @@ pub fn spec_for(kind: &MonsterKind) -> Option<&'static MonsterSpec> {
         MonsterKind::Furniture => Some(&FURNITURE),
         MonsterKind::Rat => Some(&RAT),
         MonsterKind::Cockroach => Some(&COCKROACH),
+        // Wave 1 batch B.
+        MonsterKind::BigMomma => Some(&BIGMOMMA),
+        MonsterKind::Nihilanth => Some(&NIHILANTH),
+        MonsterKind::Apache => Some(&APACHE),
+        MonsterKind::Osprey => Some(&OSPREY),
         MonsterKind::Unknown(_) => None,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AttackSpec, Difficulty, MonsterKind, spec_for};
+    use super::{
+        AttackSpec, BIGMOMMA_BASE_HEALTH, BIGMOMMA_HEALTH_FACTOR, Difficulty,
+        GARGANTUA_VULNERABILITY, MonsterFlags, MonsterKind, NIHILANTH_SPHERE_COUNT,
+        NIHILANTH_SPHERE_RESERVE, damage_response_for, spec_for,
+    };
+    use crate::damage::{DamageKinds, DamageResponse};
 
     /// A checked-in expectation list, transcribed from the same TWHL pages
     /// cited per-row in [`spec_for`] (see the module doc comment and
@@ -1181,6 +1437,11 @@ mod tests {
             (MonsterKind::Furniture, [8.0, 8.0, 8.0]),
             (MonsterKind::Rat, [1.0, 1.0, 1.0]),
             (MonsterKind::Cockroach, [1.0, 1.0, 1.0]),
+            // Wave 1 batch B.
+            (MonsterKind::BigMomma, [150.0, 225.0, 300.0]),
+            (MonsterKind::Nihilanth, [800.0, 800.0, 1_000.0]),
+            (MonsterKind::Apache, [150.0, 250.0, 400.0]),
+            (MonsterKind::Osprey, [400.0, 400.0, 400.0]),
         ];
         assert_eq!(expected.len(), MonsterKind::defined().len());
         for (kind, health) in expected {
@@ -1242,6 +1503,8 @@ mod tests {
             // Wave 1 batch A (the barnacle's bite is a placeholder, not a
             // cited number; see its row).
             (MonsterKind::Babycrab, [1.5, 3.0, 3.0]),
+            // Wave 1 batch B.
+            (MonsterKind::BigMomma, [50.0, 60.0, 70.0]),
         ];
         for (kind, damage) in melee_expected {
             let spec = spec_for(kind).unwrap_or_else(|| panic!("{kind:?} is defined"));
@@ -1272,6 +1535,10 @@ mod tests {
             // Wave 1 batch A.
             (MonsterKind::AlienController, [3.0, 4.0, 5.0]),
             (MonsterKind::HumanAssassin, [5.0, 5.0, 8.0]),
+            // Wave 1 batch B.
+            (MonsterKind::BigMomma, [100.0, 120.0, 160.0]),
+            (MonsterKind::Nihilanth, [30.0, 30.0, 30.0]),
+            (MonsterKind::Apache, [8.0, 10.0, 10.0]),
         ];
         for (kind, damage) in ranged_expected {
             let spec = spec_for(kind).unwrap_or_else(|| panic!("{kind:?} is defined"));
@@ -1299,6 +1566,120 @@ mod tests {
                 .expect("published spit attack")
                 .range
                 .is_infinite()
+        );
+    }
+
+    // Wave 1 batch B.
+    /// The four boss/aircraft classnames all resolve to a defined kind
+    /// with a spec, a model and a brain row — none of them is `Unknown`.
+    #[test]
+    fn the_batch_b_classnames_are_defined_rather_than_unknown() {
+        for (classname, kind) in [
+            ("monster_bigmomma", MonsterKind::BigMomma),
+            ("monster_nihilanth", MonsterKind::Nihilanth),
+            ("monster_apache", MonsterKind::Apache),
+            ("monster_osprey", MonsterKind::Osprey),
+        ] {
+            let resolved = MonsterKind::from_classname(classname);
+            assert!(
+                !matches!(resolved, MonsterKind::Unknown(_)),
+                "{classname} must not be Unknown"
+            );
+            assert_eq!(resolved, kind);
+            assert_eq!(resolved.classname(), classname);
+            assert!(spec_for(&resolved).is_some());
+            assert!(resolved.default_model_path().is_some());
+            assert!(MonsterKind::defined().contains(&resolved));
+        }
+    }
+
+    /// The Gonarch's health row is exactly the published base times the
+    /// published per-difficulty factor.
+    #[test]
+    fn the_gonarchs_health_is_the_base_times_the_published_factor() {
+        let spec = spec_for(&MonsterKind::BigMomma).expect("defined");
+        for difficulty in Difficulty::ALL {
+            let expected = BIGMOMMA_BASE_HEALTH * BIGMOMMA_HEALTH_FACTOR[difficulty.index()];
+            assert!((spec.health[difficulty.index()] - expected).abs() < 1e-6);
+        }
+    }
+
+    /// The Nihilanth's published per-sprite reserve is its health over the
+    /// published sprite count, at every difficulty.
+    #[test]
+    fn the_nihilanths_sphere_reserve_is_a_twentieth_of_its_health() {
+        let spec = spec_for(&MonsterKind::Nihilanth).expect("defined");
+        #[allow(clippy::cast_precision_loss)]
+        let count = NIHILANTH_SPHERE_COUNT as f32;
+        for difficulty in Difficulty::ALL {
+            let reserve = spec.health[difficulty.index()] / count;
+            assert!((reserve - NIHILANTH_SPHERE_RESERVE[difficulty.index()]).abs() < 1e-6);
+        }
+    }
+
+    /// The two aircraft fly (the point hull, `crate::movement::flies`); the
+    /// two bosses do not. Whether a monster flies is its hull alone; there
+    /// is no flag for it.
+    #[test]
+    fn the_aircraft_are_on_the_point_hull_and_the_bosses_are_not() {
+        for kind in [MonsterKind::Apache, MonsterKind::Osprey] {
+            let spec = spec_for(&kind).expect("defined");
+            assert!(crate::movement::flies(spec.hull), "{kind:?}");
+        }
+        for kind in [MonsterKind::BigMomma, MonsterKind::Nihilanth] {
+            let spec = spec_for(&kind).expect("defined");
+            assert!(!crate::movement::flies(spec.hull), "{kind:?}");
+            assert!(!spec.flags.contains(MonsterFlags::ROOTED), "{kind:?}");
+        }
+    }
+
+    /// The cited pages say `TriggerCondition` does not work on the
+    /// Nihilanth, the Apache or the Osprey; it works on everything else.
+    #[test]
+    fn only_the_final_boss_and_the_aircraft_ignore_trigger_condition() {
+        for kind in MonsterKind::defined() {
+            assert_eq!(
+                kind.honours_trigger_condition(),
+                !matches!(
+                    kind,
+                    MonsterKind::Nihilanth | MonsterKind::Apache | MonsterKind::Osprey
+                ),
+                "{kind:?}"
+            );
+        }
+        assert!(MonsterKind::Unknown("monster_x".into()).honours_trigger_condition());
+    }
+
+    /// The gargantua's immunity and the Apache's doubled blast are the only
+    /// published damage rules in the table; every other kind answers every
+    /// type at face value.
+    #[test]
+    fn only_the_gargantua_and_the_apache_answer_damage_types_specially() {
+        for kind in MonsterKind::defined() {
+            let response = damage_response_for(kind);
+            match kind {
+                MonsterKind::Gargantua => {
+                    let vulnerable = response.vulnerable_to;
+                    assert_eq!(vulnerable, GARGANTUA_VULNERABILITY);
+                    assert!(vulnerable.contains(DamageKinds::BLAST));
+                    assert!(vulnerable.contains(DamageKinds::CRUSH));
+                    assert!(vulnerable.contains(DamageKinds::ENERGYBEAM));
+                    assert!(!vulnerable.intersects(DamageKinds::BULLET));
+                    assert!(!vulnerable.intersects(DamageKinds::SLASH));
+                    assert!(!vulnerable.intersects(DamageKinds::BURN));
+                    assert!(!vulnerable.intersects(DamageKinds::GENERIC));
+                    assert!(response.doubled_by.is_empty());
+                }
+                MonsterKind::Apache => {
+                    assert_eq!(response.vulnerable_to, DamageKinds::ALL);
+                    assert_eq!(response.doubled_by, DamageKinds::BLAST);
+                }
+                _ => assert_eq!(response, DamageResponse::ORDINARY, "{kind:?}"),
+            }
+        }
+        assert_eq!(
+            damage_response_for(&MonsterKind::Unknown("monster_x".into())),
+            DamageResponse::ORDINARY
         );
     }
 

@@ -662,11 +662,25 @@ pub fn queue_monster_damage(
     attacker: Option<ohl_game::hecs::Entity>,
     amount: f32,
 ) {
+    queue_typed_monster_damage(game, target, attacker, amount, ohl_ai::DamageKinds::GENERIC);
+}
+
+/// As [`queue_monster_damage`], typed as `kinds` (the published damage
+/// vocabulary, `ohl_ai::DamageKinds`), so a test can check a species'
+/// immunity against a specific kind of hit.
+pub fn queue_typed_monster_damage(
+    game: &mut crate::Game,
+    target: ohl_game::hecs::Entity,
+    attacker: Option<ohl_game::hecs::Entity>,
+    amount: f32,
+    kinds: ohl_ai::DamageKinds,
+) {
     let origin = ohl_ai::Vec3::ZERO;
     let event = match attacker {
         Some(attacker) => ohl_ai::DamageEvent::new(target, attacker, amount, origin),
         None => ohl_ai::DamageEvent::environmental(target, amount, origin),
-    };
+    }
+    .with_kinds(kinds);
     game.systems_mut().ai_mut().queue_damage(event);
 }
 

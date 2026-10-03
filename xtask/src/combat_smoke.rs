@@ -278,23 +278,26 @@ const TELEPORTED_ABSENT: [&str; 10] = [
     "A level change was followed.",
 ];
 
-/// [`WALK_PRESENT`] plus the two lines this scenario's own walk (in
-/// "Power Up") happens to reach: a monster in the crowbar's swing path
-/// took damage and died. See `xtask/smoke-scenarios/walk_power_up.txt`'s
-/// own header for why.
-const WALK_PRESENT_MONSTER_ENCOUNTER: [&str; 5] = [
+/// [`WALK_PRESENT`] plus the line this scenario's own walk (in "Power Up")
+/// happens to reach: a monster within it is hit. Until M9.NEXT the hits
+/// also killed it; they are of a damage type its species' published
+/// damage rules ignore (`ohl_ai::monsters::table::damage_response_for`),
+/// so it is still hit but no longer dies, and "A monster died." is back in
+/// the absent set. See `xtask/smoke-scenarios/walk_power_up.txt`'s own
+/// header.
+const WALK_PRESENT_MONSTER_ENCOUNTER: [&str; 4] = [
     "Scripted input loaded.",
     "Scripted input finished.",
     "The player moved from the spawn point.",
     "A monster took damage.",
-    "A monster died.",
 ];
 
-/// [`BASE_ABSENT`] minus the two lines [`WALK_PRESENT_MONSTER_ENCOUNTER`]
+/// [`BASE_ABSENT`] minus the one line [`WALK_PRESENT_MONSTER_ENCOUNTER`]
 /// moves to its own present set.
-const WALK_ABSENT_MONSTER_ENCOUNTER: [&str; 9] = [
+const WALK_ABSENT_MONSTER_ENCOUNTER: [&str; 10] = [
     "The player fired a weapon.",
     "A shot hit an entity.",
+    "A monster died.",
     "A pickup was collected.",
     "The player took damage.",
     "The player is inside solid geometry.",
