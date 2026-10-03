@@ -251,8 +251,91 @@ fn the_players_egon_kills_a_gargantua() {
     tick(&mut game, 1);
     assert!(health_of(&game, garg) < full, "and cost it health");
     assert!(game.monster_damage_event_count() > 0);
+    // The original four cell boxes cannot kill at 14 damage per cell.
+    // Replenish with synthetic start-inventory grants while retaining the
+    // species' published health and real weapon-to-monster damage path.
+    for _ in 0..4 {
+        game.give_start_inventory(&[StartInventoryItem::Ammo(AmmoType::Uranium)]);
+    }
     fire_for(&mut game, 1_000);
     assert_eq!(game.monster_death_count(), 1, "the gargantua died");
+}
+
+/// Real input reaches the monster ten times per second, spending ten
+/// cells for 140 damage, at the table's TODO(black-box) 0.1-second interval.
+#[test]
+fn the_players_egon_hits_ten_times_per_second_and_cannot_tap_faster() {
+    for tapping in [false, true] {
+        let (mut game, garg) = gargantua_range(&[
+            StartInventoryItem::Weapon(WeaponId::Egon),
+            StartInventoryItem::Ammo(AmmoType::Uranium),
+            StartInventoryItem::Ammo(AmmoType::Uranium),
+        ]);
+        draw(&mut game, 4, false);
+        let full = health_of(&game, garg);
+        let ammo = game.inventory_totals().1;
+        for step in 0..100 {
+            game.tick(
+                TICK_SECONDS,
+                &Input {
+                    attack: !tapping || step % 2 == 0,
+                    ..Input::default()
+                },
+            );
+        }
+        // Damage intake runs after the weapon phase on the following step.
+        tick(&mut game, 1);
+        assert_eq!(game.shot_hit_count(), 10, "one second, tapping={tapping}");
+        assert_eq!(game.monster_damage_event_count(), 10);
+        assert!((health_of(&game, garg) - (full - 140.0)).abs() < 1e-3);
+        assert_eq!(game.inventory_totals().1, ammo - 10);
+    }
+}
+
+/// A charged gauss release must resolve one scaled shot, not also a base
+/// shot. The target and model are synthetic; held input drives the engine.
+#[test]
+fn the_players_gauss_charge_releases_one_scaled_hit() {
+    let entities = entities(&block(
+        "monster_scientist",
+        [96.0, 0.0, 36.0],
+        &[("angle", "180"), ("spawnflags", "16")],
+    ));
+    let mut assets = assets(&entities);
+    assets.insert(
+        MonsterKind::Scientist.default_model_path().expect("model"),
+        plan_scripted_monster_model_bytes(),
+    );
+    let mut game =
+        Game::from_map_bytes(&assets, AI_MAP, &ai_room_bsp(&entities, false)).expect("room");
+    game.give_start_inventory(&[
+        StartInventoryItem::Weapon(WeaponId::Gauss),
+        StartInventoryItem::Ammo(AmmoType::Uranium),
+    ]);
+    let target = the_monster(&game);
+    draw(&mut game, 4, false);
+    let full = health_of(&game, target);
+    let ammo = game.inventory_totals().1;
+    let secondary = Input {
+        attack2: true,
+        ..Input::default()
+    };
+    game.tick(TICK_SECONDS, &secondary);
+    for _ in 0..50 {
+        game.tick(TICK_SECONDS, &secondary);
+    }
+    assert_eq!(
+        game.shot_hit_count(),
+        0,
+        "holding does not emit damage per step"
+    );
+    tick(&mut game, 2);
+    // Fifty held steps plus the release step: 0.51 seconds of charge.
+    let charged_damage = 25.0 + 0.51 / 10.0 * (200.0 - 25.0);
+    assert_eq!(game.shot_hit_count(), 1, "release resolves one hit");
+    assert_eq!(game.monster_damage_event_count(), 1);
+    assert!((health_of(&game, target) - (full - charged_damage)).abs() < 0.01);
+    assert_eq!(game.inventory_totals().1, ammo - 1);
 }
 
 /// The same gargantua under the player's .357, fired with real input: its

@@ -488,6 +488,7 @@ impl CombatState {
         }
         self.inventory.set_clip(selected, self.firing.clip());
 
+        let charge_damage = self.firing.take_charge_damage();
         if let Some(collision) = level.collision.as_ref() {
             match action {
                 // TODO(black-box): `spread` (the cone half-angle a real
@@ -500,16 +501,30 @@ impl CombatState {
                 // random source this package does not yet own.
                 WeaponAction::Hitscan { count, .. } => {
                     self.fired_count += 1;
-                    self.hit_count += Self::queue_ranged(
-                        hitboxes,
-                        collision,
-                        controller,
-                        player_combat_id,
-                        &current_spec,
-                        count,
-                        HITSCAN_RANGE,
-                        damage_queue,
-                    ) as u64;
+                    // A charged release replaces the base shot's amount;
+                    // it is one shot, not a base hit plus a second charge.
+                    self.hit_count += if let Some(amount) = charge_damage {
+                        Self::queue_amount(
+                            hitboxes,
+                            collision,
+                            controller,
+                            player_combat_id,
+                            amount,
+                            current_spec.damage_type,
+                            damage_queue,
+                        )
+                    } else {
+                        Self::queue_ranged(
+                            hitboxes,
+                            collision,
+                            controller,
+                            player_combat_id,
+                            &current_spec,
+                            count,
+                            HITSCAN_RANGE,
+                            damage_queue,
+                        )
+                    } as u64;
                 }
                 WeaponAction::Melee => {
                     self.fired_count += 1;
@@ -545,17 +560,6 @@ impl CombatState {
                     self.fired_count += 1;
                 }
                 WeaponAction::PlaySequence(_) | WeaponAction::Sound(_) | WeaponAction::Empty => {}
-            }
-            if let Some(damage) = self.firing.take_charge_damage() {
-                self.hit_count += Self::queue_amount(
-                    hitboxes,
-                    collision,
-                    controller,
-                    player_combat_id,
-                    damage,
-                    current_spec.damage_type,
-                    damage_queue,
-                ) as u64;
             }
         }
         if let Some(self_damage) = self.firing.take_self_damage() {

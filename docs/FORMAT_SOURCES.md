@@ -7476,3 +7476,44 @@ while the door remains closed, then map logic moves the door. Point traces
 in both collision models must clear its old trailing edge and hit its new
 leading edge while the corpse remains fixed and death fires only once.
 No new external behaviour source or proprietary fixture is used.
+
+### Continuous and charged weapon cadence audit (M9.NEXT)
+
+Published prose reviewed 2026-10-03, without inspecting engine/SDK source:
+
+- [Combine OverWiki, Gluon Gun](https://combineoverwiki.net/wiki/Gluon_Gun)
+  publishes a continuous beam, 14 single-player damage per cell and a
+  100-cell reserve. It supplies no damage/drain interval. The existing
+  `WeaponSpec` 0.1-second interval remains a **project-authored placeholder**,
+  `TODO(black-box)`, rather than a verified retail cadence.
+- [Combine OverWiki, Tau Cannon](https://combineoverwiki.net/wiki/Tau_Cannon)
+  supplies the charge damage range and the ten-second overcharge threshold
+  already cited above. The linear charge curve and one-cell-on-release cost
+  remain project-authored placeholders, `TODO(black-box)`; a held charge is
+  timed by elapsed seconds, not by the number of simulation steps.
+- [Combine OverWiki, Hivehand](https://combineoverwiki.net/wiki/Hivehand)
+  publishes eight ready hornets, their replacement after firing, and primary
+  and secondary rates of 240/minute and 600/minute. It does not publish a
+  numerical regeneration interval. Regeneration remains unimplemented,
+  `TODO(black-box)`; the audit found no per-step regeneration award.
+
+`FiringState` now emits a damaging egon pulse and consumes one cell together
+at the existing interval. The starting pulse spends a cell; no empty-pool
+pulse is emitted. Release/re-press preserves the elapsed cooldown. Immediate
+first damage, float-boundary tolerance, priming at most one pulse during idle,
+and dropping missed whole intervals when a caller supplies an oversized step
+are **project-authored policies**, `TODO(black-box)`. The fixed-step engine
+uses 0.01-second steps, below the placeholder interval. Synthetic held-input
+and alternating-input windows both reach ten hits, 140 damage and ten spent
+cells in one second; this verifies the implementation, not retail timing.
+The existing weapon summary still omits the sub-interval beam phase: restore
+primes one pulse as it did before, with exact phase persistence unresolved,
+`TODO(black-box)`. No save section or encoding changes.
+
+The audit also found the engine's charged-gauss release resolves its base
+hitscan and then separately queues the charged amount. Correcting that
+composition now substitutes the charged amount for the base shot and traces
+exactly once. A synthetic scientist under actual secondary-fire input loses
+only the scaled amount and counts one hit, rather than two. No reflection,
+underwater firing restrictions, beam splash, charge drain schedule, or hornet
+regeneration timing is asserted as newly implemented here.

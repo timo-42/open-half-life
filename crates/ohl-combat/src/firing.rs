@@ -109,8 +109,8 @@ pub enum WeaponAction {
         /// Muzzle speed, world units per second.
         speed: f32,
     },
-    /// One tick of a continuous beam; the caller re-traces every tick this
-    /// is produced.
+    /// One damaging pulse of a continuous beam; the caller re-traces only
+    /// when this action is produced, rather than once per simulation step.
     BeamTick,
     /// Play a view-model animation.
     PlaySequence(Sequence),
@@ -154,7 +154,7 @@ impl FiringState {
             state: FireState::Holstered,
             clip: 0,
             elapsed: 0.0,
-            beam_accum: 0.0,
+            beam_accum: spec.cycle_time.value,
             pending_charge_damage: None,
             pending_self_damage: None,
         }
@@ -225,11 +225,10 @@ impl FiringState {
     /// `Idle`. A non-finite timer restores `0.0` rather than propagating a
     /// corrupt float into a state machine that otherwise never sees one.
     /// `elapsed`, `beam_accum` and the one-shot pending-damage fields are
-    /// not part of this summary (they are transient per-tick outputs
-    /// already drained by the time a save is taken) and always restore to
-    /// their fresh defaults, so a weapon captured mid-cycle resumes at the
-    /// start of that cycle's remaining timer rather than its exact
-    /// sub-tick accumulator.
+    /// not part of this summary and restore to their fresh defaults. Beam
+    /// restore primes one pulse; exact sub-interval phase persistence is
+    /// TODO(black-box). Pending damage outputs have already been drained
+    /// by the time a save is taken.
     #[must_use]
     pub fn restore(spec: WeaponSpec, clip: u32, state_tag: u8, timer: f32) -> Self {
         let timer = if timer.is_finite() {
@@ -273,12 +272,19 @@ impl FiringState {
     pub fn tick(&mut self, dt: f32, input: WeaponInput, pool: &mut AmmoPool) -> WeaponAction {
         let dt = if dt.is_finite() && dt > 0.0 { dt } else { 0.0 };
         self.elapsed += dt;
+        // Beam damage and cell consumption share one elapsed-time cadence.
+        // Keep the cooldown across release/re-press; otherwise taps could
+        // bypass it. Idle time primes at most one pulse, never a backlog.
+        self.beam_accum += dt;
+        if !matches!(self.state, FireState::Beam) {
+            self.beam_accum = self.beam_accum.min(self.spec.cycle_time.value);
+        }
 
         match self.state {
             FireState::Holstered => self.tick_holstered(input),
             FireState::Firing { until } => self.tick_firing(until),
             FireState::Reloading { until } => self.tick_reloading(until, pool),
-            FireState::Beam => self.tick_beam(dt, input, pool),
+            FireState::Beam => self.tick_beam(input, pool),
             FireState::Charging { since } => self.tick_charging(since, input, pool),
             FireState::Idle => self.tick_idle(input, pool),
         }
@@ -313,22 +319,23 @@ impl FiringState {
         WeaponAction::PlaySequence(Sequence::Idle)
     }
 
-    fn tick_beam(&mut self, dt: f32, input: WeaponInput, pool: &mut AmmoPool) -> WeaponAction {
+    fn tick_beam(&mut self, input: WeaponInput, pool: &mut AmmoPool) -> WeaponAction {
         if !input.primary || pool.is_empty() {
             self.state = FireState::Idle;
             return WeaponAction::PlaySequence(Sequence::Idle);
         }
-        // The cell-drain interval is **BBO**; `spec.cycle_time` is this
-        // package's placeholder for it (see `weapons::spec`'s egon entry).
+        // TODO(black-box): the table's 0.1-second interval is a project
+        // placeholder; the published source gives damage per cell but no
+        // drain interval. Pair each damage pulse with exactly one cell.
         let interval = self.spec.cycle_time.value.max(f32::MIN_POSITIVE);
-        self.beam_accum += dt;
-        while self.beam_accum >= interval {
-            self.beam_accum -= interval;
-            if pool.take_up_to(1) == 0 {
-                self.state = FireState::Idle;
-                return WeaponAction::BeamTick;
-            }
+        // Absorb float rounding at interval boundaries, not a whole step.
+        if self.beam_accum + interval * 1e-5 < interval {
+            return WeaponAction::Empty;
         }
+        // Project-authored: one action per call, dropping missed whole
+        // intervals on oversized steps instead of queuing burst damage.
+        self.beam_accum = (self.beam_accum - interval).max(0.0) % interval;
+        pool.take_up_to(1);
         WeaponAction::BeamTick
     }
 
@@ -414,8 +421,13 @@ impl FiringState {
                     return WeaponAction::Sound(SoundKind::DryFire);
                 }
                 self.state = FireState::Beam;
-                self.beam_accum = 0.0;
-                WeaponAction::BeamTick
+                self.tick_beam(
+                    WeaponInput {
+                        primary: true,
+                        ..WeaponInput::default()
+                    },
+                    pool,
+                )
             }
             WeaponKind::Charge => {
                 // The gauss gun's primary is an instant, uncharged shot at
@@ -794,8 +806,9 @@ mod tests {
         let started = state.tick(0.001, primary(true), &mut pool);
         assert_eq!(started, WeaponAction::BeamTick);
 
+        assert_eq!(pool.current(), 9, "the starting pulse spends a cell too");
         state.tick(interval, primary(true), &mut pool);
-        assert_eq!(pool.current(), 9);
+        assert_eq!(pool.current(), 8);
 
         let released = state.tick(0.001, WeaponInput::default(), &mut pool);
         assert_eq!(released, WeaponAction::PlaySequence(Sequence::Idle));
