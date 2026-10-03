@@ -192,12 +192,18 @@ pub const RE_ENTERED_LINE: &str = "The chain walk re-entered a map it had alread
 /// nothing.
 pub const ARRIVED_DEAD_LINE: &str = "The chain walk arrived dead.";
 
-/// The four fixed terminal lines `crates/ohl-app/src/game_run.rs`'s
+/// The fixed line `run_chained` logs when a `trigger_endsection` ended the
+/// game partway through a route: told apart from a route that merely ran
+/// out of ticks, though neither is a failure by itself.
+pub const SECTION_ENDED_LINE: &str = "The chain walk ended its section.";
+
+/// The five fixed terminal lines `crates/ohl-app/src/game_run.rs`'s
 /// `run_chained` ends a chain walk with, in the order this module looks
 /// for them.
-const TERMINAL_LINES: [&str; 4] = [
+const TERMINAL_LINES: [&str; 5] = [
     ARRIVED_DEAD_LINE,
     RE_ENTERED_LINE,
+    SECTION_ENDED_LINE,
     "The chain walk stopped.",
     "The chain walk has no further route.",
 ];
@@ -878,6 +884,40 @@ mod tests {
         );
         let line = format!("[info] {ARRIVAL_PREFIX}3: weapons 1, ammo 18.");
         assert_eq!(parse_arrival(&line), Some((3, 1, 18)));
+    }
+
+    /// A walk a `trigger_endsection` ended says so on its own row, not as
+    /// a route that ran out of ticks — and the line it reads is the one
+    /// the app writes.
+    #[test]
+    fn a_section_that_ended_the_walk_is_its_own_stopping_reason() {
+        let stderr = "[info] A level change was followed.\n\
+             [info] The section ended.\n\
+             [info] The chain walk ended its section.\n\
+             [info] Chain walk depth: 2.\n\
+             [info] Chain walk simulated seconds: 30.0.\n";
+        let report = parse_report(stderr);
+        assert_eq!(report.stopped_at, Some(SECTION_ENDED_LINE));
+        let summary = write_summary("c0a0", 2, &report, 2, None, Duration::from_secs(1));
+        assert!(summary.contains("| Stopped at | The chain walk ended its section. |"));
+        assert!(summary.contains("| Result | Pass |"));
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask lives one directory below the workspace root");
+        let source = std::fs::read_to_string(
+            root.join("crates")
+                .join("ohl-app")
+                .join("src")
+                .join("game_run.rs"),
+        )
+        .expect("the app's chain runner is readable");
+        assert!(
+            source.contains(&format!(
+                "const CHAIN_SECTION_ENDED: &str = {SECTION_ENDED_LINE:?};"
+            )),
+            "the app's section-ended line is this parser's"
+        );
     }
 
     /// Every loadout is named on its own row, and labelled for what it
