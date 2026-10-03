@@ -39,12 +39,13 @@
 //! | 36 | [`SECTION_CARRIED_ENTITIES`] | `Vec<`[`CarriedEntityDef`]`>`: the entity definitions a level change materialised in this map, in the order they were appended, for entities the map itself never declared (M9.26) |
 //! | 37 | [`SECTION_PLATROT_STATE`] | `Vec<Option<`[`PlatRotSnapshot`]`>>`, one per registry entity, in spawn order: `func_platrot` runtime state (M9.33) |
 //! | 38 | [`SECTION_AMBIENT_STATE`] | `Vec<Option<`[`AmbientSnapshot`]`>>`, one per registry entity, in spawn order: whether each `ambient_generic` is sounding (the audio package) |
+//! | 39 | [`SECTION_SWITCH_STATE`] | `Vec<Option<`[`SwitchSnapshot`]`>>`, one per registry entity, in spawn order: whether each `func_wall_toggle` is on, each `func_conveyor`'s signed speed, and whether each pickup has been taken (the entities package) |
 //!
-//! Tags 23-31 and 33-38 are read as `None`/a default when absent, so a
+//! Tags 23-31 and 33-39 are read as `None`/a default when absent, so a
 //! save written before M7.9 P4b (tags 23-27), M7.13 (tag 28), M9.5 (tag 29),
 //! M9.6 (tag 30), M9.8 (tag 31), M9.10 (tag 33), the teleport/master
-//! package (tag 34), M9.25 (tag 35), M9.26 (tag 36), M9.33 (tag 37) or the
-//! audio package (tag 38) still loads
+//! package (tag 34), M9.25 (tag 35), M9.26 (tag 36), M9.33 (tag 37), the
+//! audio package (tag 38) or the entities package (tag 39) still loads
 //! (§6 of the M7.9 design plan, recorded in local design notes and not
 //! part of the repository); a
 //! section that is present but fails to decode fails the whole read closed
@@ -331,6 +332,26 @@ pub const SECTION_PLATROT_STATE: u32 = 37;
 /// number.
 pub const SECTION_AMBIENT_STATE: u32 = 38;
 
+/// Tag 39: the state a map's own logic switches on three kinds of entity,
+/// one optional entry per registry entity in spawn order
+/// (`docs/FORMAT_SOURCES.md`, "Map entities the registry used to drop"):
+/// whether each `func_wall_toggle` is on, each `func_conveyor`'s signed
+/// speed, and whether each pickup has been taken.
+///
+/// Every one of them is switched by something tags 18/19/28 already save
+/// as spent — a `trigger_once`, a `wait -1` button, a fired `trigger_auto`
+/// — so without this section a load put them back at their spawn state
+/// behind a switch that can never be pressed again: a barrier a one-shot
+/// trigger opened was solid for good, a wall the player stood where it had
+/// been switched off came back around them, a bridge switched on vanished
+/// under them, and a pickup came back to be taken (and an
+/// `item_security`'s `target` fired) a second time.
+///
+/// A new tag rather than a field on any shipped section, for the reason
+/// this module's "Frozen section shapes" gives. Tag 39 is the next free
+/// number: 38 is the audio package's.
+pub const SECTION_SWITCH_STATE: u32 = 39;
+
 /// One entity definition [`SECTION_CARRIED_ENTITIES`] (36) carries.
 ///
 /// The keyvalues only, as authored pairs: `crate::transition`'s
@@ -517,6 +538,11 @@ pub struct GameSave {
     /// `None` for a save missing tag 38: an older save brings every ambient
     /// back at its spawn state, which is what every build before it did.
     pub ambients: Option<Vec<Option<AmbientSnapshot>>>,
+    /// `func_wall_toggle`/`func_conveyor`/pickup state, one optional entry
+    /// per registry entity in spawn order ([`SECTION_SWITCH_STATE`], 39).
+    /// `None` for a save missing tag 39: an older save brings every one of
+    /// them back at its spawn state, as every build before it did.
+    pub switches: Option<Vec<Option<crate::save_state::SwitchSnapshot>>>,
     /// The entity definitions a level change materialised in this map, in
     /// the order they were appended (M9.26). `None` for a save missing tag
     /// 36 — an older save simply comes back with the map's own entities and
@@ -607,6 +633,9 @@ impl GameSave {
             if let Some(ambients) = &self.ambients {
                 writer.add_section_serde(SECTION_AMBIENT_STATE, ambients)?;
             }
+            if let Some(switches) = &self.switches {
+                writer.add_section_serde(SECTION_SWITCH_STATE, switches)?;
+            }
             if let Some(carried_entities) = &self.carried_entities {
                 writer.add_section_serde(SECTION_CARRIED_ENTITIES, carried_entities)?;
             }
@@ -682,6 +711,11 @@ impl GameSave {
                 &reader,
                 SECTION_AMBIENT_STATE,
                 crate::save_state::MAX_SNAPSHOT_AMBIENTS,
+            )?,
+            switches: optional_bounded_vec_section(
+                &reader,
+                SECTION_SWITCH_STATE,
+                crate::save_state::MAX_SNAPSHOT_SWITCHES,
             )?,
         })
     }

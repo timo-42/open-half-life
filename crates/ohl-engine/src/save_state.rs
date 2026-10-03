@@ -1429,6 +1429,101 @@ pub(crate) fn restore_ambients(level: &mut Level, snapshots: &[Option<AmbientSna
     }
 }
 
+// --- `SECTION_SWITCH_STATE` (39) ------------------------------------------
+
+/// The map-logic state of one `func_wall_toggle`, `func_conveyor` or
+/// pickup, as `SECTION_SWITCH_STATE` (tag 39; see
+/// `crate::save::SECTION_SWITCH_STATE`) carries it. Each field is `None`
+/// for an entity that is not that kind.
+///
+/// Its own struct rather than the components themselves, so the wire shape
+/// this tag freezes belongs to the save format and cannot move when a
+/// component does.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SwitchSnapshot {
+    /// `ohl_game::registry::WallToggle::visible`.
+    pub wall_visible: Option<bool>,
+    /// `ohl_game::registry::Conveyor::speed`, signed: a triggered conveyor
+    /// runs the other way.
+    pub conveyor_speed: Option<f32>,
+    /// `Some(true)` for a pickup that has been taken, `None` otherwise —
+    /// an untaken pickup is simply what a load already spawns, and leaving
+    /// it out keeps a save of a level whose pickups were never attached
+    /// (one saved before its first step) byte-identical across a load.
+    pub pickup_taken: Option<bool>,
+}
+
+/// The most entities one `SECTION_SWITCH_STATE` section records, matching
+/// [`MAX_SNAPSHOT_ENTITIES`] like every other index-keyed section.
+pub const MAX_SNAPSHOT_SWITCHES: usize = MAX_SNAPSHOT_ENTITIES;
+
+/// `SECTION_SWITCH_STATE` (39)'s whole payload: one optional
+/// [`SwitchSnapshot`] per `Registry::entities` slot, in spawn order. `None`
+/// for an entity that is none of the three kinds.
+#[must_use]
+pub(crate) fn snapshot_switches(level: &Level) -> Vec<Option<SwitchSnapshot>> {
+    let world = &level.registry.world;
+    level
+        .registry
+        .entities
+        .iter()
+        .take(MAX_SNAPSHOT_SWITCHES)
+        .map(|entity| {
+            let snapshot = SwitchSnapshot {
+                wall_visible: world
+                    .get::<&ohl_game::registry::WallToggle>(*entity)
+                    .ok()
+                    .map(|wall| wall.visible),
+                conveyor_speed: world
+                    .get::<&ohl_game::registry::Conveyor>(*entity)
+                    .ok()
+                    .map(|conveyor| conveyor.speed),
+                pickup_taken: world
+                    .get::<&crate::components::Pickup>(*entity)
+                    .is_ok_and(|pickup| pickup.taken)
+                    .then_some(true),
+            };
+            (snapshot.wall_visible.is_some()
+                || snapshot.conveyor_speed.is_some()
+                || snapshot.pickup_taken.is_some())
+            .then_some(snapshot)
+        })
+        .collect()
+}
+
+/// Restores [`snapshot_switches`], zipped against
+/// `level.registry.entities` in spawn order. The caller makes sure the
+/// pickups' own components exist first (they are attached lazily, on the
+/// first step a level runs); a wall's solidity and a conveyor's surface
+/// velocity follow from these flags on the next
+/// `Level::sync_brush_collision`. A conveyor speed that is not finite is
+/// ignored rather than restored.
+pub(crate) fn restore_switches(level: &mut Level, snapshots: &[Option<SwitchSnapshot>]) {
+    let entities = level.registry.entities.clone();
+    let world = &mut level.registry.world;
+    for (entity, snapshot) in entities.iter().zip(snapshots) {
+        let Some(snapshot) = snapshot else { continue };
+        if let (Some(visible), Ok(mut wall)) = (
+            snapshot.wall_visible,
+            world.get::<&mut ohl_game::registry::WallToggle>(*entity),
+        ) {
+            wall.visible = visible;
+        }
+        if let (Some(speed), Ok(mut conveyor)) = (
+            snapshot.conveyor_speed.filter(|speed| speed.is_finite()),
+            world.get::<&mut ohl_game::registry::Conveyor>(*entity),
+        ) {
+            conveyor.speed = speed;
+        }
+        if let (Some(taken), Ok(mut pickup)) = (
+            snapshot.pickup_taken,
+            world.get::<&mut crate::components::Pickup>(*entity),
+        ) {
+            pickup.taken = taken;
+        }
+    }
+}
+
 // --- `SECTION_CARRIED_ENTITIES` (36) --------------------------------------
 
 /// The most entity definitions one `SECTION_CARRIED_ENTITIES` section
