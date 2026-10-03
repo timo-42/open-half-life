@@ -7547,27 +7547,64 @@ master.
 - `game_end` is not implemented: its published purpose is to end a
   deathmatch map, and single-player endings are `trigger_endsection`'s.
 
-**Not done.** A reversed conveyor and a switched wall are not saved (a save
-restores their spawn state) and are not carried across a level change; new
-persisted state needs its own save tag, and that is better added once,
-with the movers work also in flight. `trigger_endsection` is documented to
-work only with the player as its activator, so not through a relay or a
-master; this project's map logic does not track activators that way, so
-here a relay that fires one does end the section. A `weaponbox` does not
-fall under gravity. Bullets pass through a switched-off wall; a user
-comment on the TWHL page disagrees with the page itself on that, and it is
-recorded as a black-box question. The conveyor's texture scroll is not
-drawn.
+**What review found.** Seven findings, all addressed as their own commits.
+
+- *A switch that outlives its wall.* The wall's state was not saved, while
+  the `trigger_once` or `wait -1` button that switched it is: a load put a
+  barrier a one-shot trigger had opened back up for good, put a wall back
+  around a player standing where it had been off, and took a bridge
+  switched on out from under them. Save tag 39 (`SECTION_SWITCH_STATE`)
+  now carries each wall's state and each conveyor's signed speed — and,
+  for the same price, whether each pickup has been taken, which no save
+  had ever recorded: every pickup came back after a load, and a security
+  card fired its `target` again. An older save without the tag loads with
+  all three at their spawn state.
+- *A wall switched on around someone.* The push-out that frees a player
+  from a closing mover only acts on a brush that moves, so a wall
+  appearing around the player or a monster embedded them for good. It now
+  waits, non-solid in both collision models, until nobody is inside — a
+  project-authored choice, since no source says what the original does.
+- *The HUD after a strip* still showed the stripped gun's clip and reserve;
+  they are cleared.
+- *A belt is not a piston.* The push-out read a velocity that now included
+  the conveyor's belt. Nobody was actually shoved (the push never moves a
+  player who starts in solid), but the belt was recorded as a blocked
+  mover every step; the push-out now reads the brush's own motion only.
+- *An end-section with no `section`* still fired its `target` when walked
+  into; it is now inert by both paths.
+- *Every run path ends.* The window now silences the game, clears its HUD
+  and drops the rest of the frame (a level change listed after the end
+  used to load, and autosave, a map behind the menu); a capture keeps the
+  frame it ended on; a benchmark stops; and a chain walk says "The chain
+  walk ended its section." on its own row. The audio package (M9.41),
+  which landed meanwhile, routes every headless event through one
+  function, which now reports the end too.
+- *Citations.* Every quotation is now in `docs/FORMAT_SOURCES.md`, and
+  every VDC one carries its search-summary label; two unsourced ones were
+  removed.
+
+**Not done.** A reversed conveyor and a switched wall are not carried
+across a level change. A charger's remaining reservoir is not saved.
+`trigger_endsection` is documented to work only with the player as its
+activator, so not through a relay or a master; this project's map logic
+does not track activators that way, so here a relay that fires one does
+end the section. A `weaponbox` does not fall under gravity. Bullets pass
+through a switched-off wall; a user comment on the TWHL page disagrees with
+the page itself on that, and it is recorded as a black-box question. The
+conveyor's texture scroll is not drawn.
 
 The one test the first run wrote for a plain `func_button` with `health` —
 a press path that already existed and had only ever been tested as a
 `func_rot_button` — is kept.
 
-**Gates**: fmt, clippy (workspace, `--features dev-tools`, and
-`--all-features`), `cargo test --workspace` (2496 passed, 0 failed),
-policy, graph, combat-smoke 37/37 with 0 unexpected lines, campaign-smoke
-93/93, and `cargo xtask chain-walk` at **distinct depth 12**, Pass,
-660.8 simulated seconds, both with `--start-inventory
-weapon_357,ammo_357,ammo_357` and with `--start-inventory ""`, measured
-after rebasing onto M9.39 — the depth M9.39 reports, and the simulated time
-M9.37 measured.
+**Gates**, measured after the review follow-ups and rebased onto M9.41:
+fmt, clippy (workspace, `--features dev-tools`, and `--all-features`),
+`cargo test --workspace` (222 suites, 2,604 passed, 0 failed; the
+end-section capture test also run with `OHL_RENDER_GPU_TEST=1`), policy,
+graph, combat-smoke 37/37 with 0 unexpected lines, campaign-smoke 93/93,
+and `cargo xtask chain-walk` at **distinct depth 12**, Pass, 660.8
+simulated seconds, both with `--start-inventory
+weapon_357,ammo_357,ammo_357` (arrivals 2 to 12 at one weapon and
+twenty-four rounds) and with `--start-inventory ""` (arrivals 2 to 12 at
+`0 weapon(s), 0 round(s)`) — the same depth, time and arrivals M9.40
+reports.
