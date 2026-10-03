@@ -7848,3 +7848,221 @@ Two probes passed and changed what shipped:
 
 The chain gets as far as on main. Its lifts, trains and doors ride
 through the new push and block paths without changing where it ends.
+
+## M9.NEXT — A damage type the gargantua can ignore, and four monsters that fly or refuse to die
+
+Four `monster_*` classnames — `monster_bigmomma` (the Gonarch),
+`monster_nihilanth`, `monster_apache` and `monster_osprey` — had no row in
+the AI's table, so a map placing one got the documented inert actor: no
+brain, no default model, nothing that thinks or draws. Behind them sat an older,
+documented gap: the gargantua's published immunity ("only vulnerable to
+energy-beam, crush, mortar, and blast damage") could not be modelled,
+because the one damage record `ohl-ai` accepts said *how much* and *from
+where*, never *what kind*. This entry closes that gap first and builds the
+four on top of it. Its additions sit under `// Wave 1 batch B` comments
+beside M9.42's batch A, and it was written against M9.42's design (and
+rebased over M9.43 and M9.44, which is why its save section is tag 41): flight
+is the point hull, a `Not solid` prop is `ohl_ai::Impervious`, and
+hostility goes through M9.39's `sighting_relationship` (none of the four
+adds a hostility rule of its own).
+
+**A hit now says what it was.** `ohl_ai::DamageEvent` carries a
+`DamageKinds` bitset: the same `trigger_hurt` vocabulary
+`ohl_combat::DamageType` already cites, declared again in the AI crate
+(which has no edge to `ohl-combat`) on the same bits, with an engine test
+holding the two `NAMED` tables to each other label for label. Every hit
+the engine forwards to a monster copies its `DamageInfo::kind` across. How
+a species' health answers each type is a `DamageResponse` — which types
+hurt it at all, which hurt it double — from `table::damage_response_for`:
+face value for every kind but two, the gargantua (hurt only by energy
+beam, crush and blast; a mortar arrives as blast) and the Apache, whose
+page says "blast damage doubles damage". `lifecycle::apply_damage_effective`,
+the one place a monster's health moves, weighs each queued hit by its
+target's response. A hit a species shrugs off is still *noticed* — the
+tick reads the queue at face value for its conditions, so a gargantua shot
+with a pistol still turns and charges — which is a decision, not a
+citation. `Impervious` is the empty response: the engine already drops
+every hit at a `Not solid` prop before it is queued, and `ohl-ai`'s own
+intake now answers one with `DamageResponse::IMPERVIOUS` whatever the
+species lookup says, so the marker means the same in both crates. The
+player's explosives carry `BLAST` and the gauss `ENERGYBEAM`, so the
+gargantua stays killable with the weapons the page names.
+
+**The Gonarch walks a trail it cannot be killed on.** `monster_bigmomma`
+gets its cited 150 base health times the cited 1x/1.5x/2x, its slash and
+acid-mortar numbers, and the `info_bigmomma` chain: the first node from
+its `netname` (which for this one kind is therefore *not* a squad name),
+each node's `target`, `health`, `reachdelay`, `reachtarget`,
+`reachsequence`, `killtarget`, `Run to Node` and `Wait Indefinitely`,
+walked once from the map's definitions, bounded and loop-safe. The
+progression follows the cited sentences where they exist — shielded on
+the way, a node's health set on arrival and fought down, the depleting hit
+sending it on rather than killing it, a pass-through node left after its
+delay, death possible only at the end — and reads the gaps in the open: a
+node's health takes the same difficulty factor as the base, a depleted
+Gonarch leaves with its spawn health restored, and `Wait Indefinitely`,
+which has no published description, holds it until a `use` of its own
+name. The trail is driven just before the ordinary think step through the
+handles a script already uses: it owns the route, so no sound or enemy can
+redirect a leg, and raises `SPECIAL1` so the brain runs a travel schedule
+over anything else it perceives; a script holding the Gonarch owns its
+route instead. Arrival effects are AI events the engine now consumes:
+`reachtarget` and `reachsequence` fire by name through the map logic (a
+`scripted_sequence` fired by name starts and binds its own monster) and
+`killtarget` removes what it names, exactly as a finished script's
+`target`/`killtarget` are.
+
+**The Nihilanth cannot be killed while its reserve holds.** Its cited
+800/800/1000 health, flat 30 zap and twenty sprites of a twentieth each
+become a `NihilanthShield`: every hit drains the reserve first; with the
+reserve empty and a crystal standing, hits are blocked and a crystal
+refills a reserve that has run low; with the reserve spent and no crystal
+left, the head opens after a delay and only then does a hit cost health.
+Which entities are the crystals is the host's to say (`NihilanthCrystal`),
+and no map data says, so a map's boss has no rechargers: once its reserve
+is spent, its head opens. "When spawned, the Nihilanth does not attack
+immediately. You need to 'activate' it with `trigger_auto` ... or any other
+way": a new `ohl_game::registry::MonsterActivation` counter, bumped by the
+map logic's ordinary activation path exactly as `MakerActivation` is and
+drained by the boss driver, activates it. Activation only lets it attack —
+the page says it does not attack, not that it cannot be hurt. Its page also
+says its `target` and `TriggerCondition` are not used, and the Apache's and
+Osprey's say trigger condition and target do not work: the engine collects
+no `TriggerCondition` for those three (`MonsterKind::
+honours_trigger_condition`).
+
+**The aircraft fly.** `monster_apache` and `monster_osprey` are on the
+point hull, so they fly through the same movement step and nav-bridge
+seam M9.42's controller does: in three dimensions, stopped by what the
+hull's own trace says is solid. A `FlightPlan` built from the
+`path_corner` chain their `target` names (through the same
+`ohl_game::PathChain` a train uses: node positions, per-node waits and
+whether it closes) hands that step one node at a time as a route and a
+speed; it never moves the aircraft itself. `Start Inactive` parks the plan
+until a `use` of the aircraft's name, through the same
+`MonsterActivation`. The Apache fires its machine gun in three-round
+bursts without turning the airframe (the gun "can rotate freely"); the
+Osprey attacks nothing. Neither the Nihilanth nor the aircraft ever
+selects a schedule that moves *or stops* it — `StopMoving` would wipe the
+route the plan hands over — and a test holds that over every state and a
+spread of conditions.
+
+**Doors and lifts.** M9.44's blocked movers push and are stopped by any
+monster that moves under its own power. The Nihilanth never moves, so it
+joins the turrets and the rooted kinds a mover leaves alone; and a
+species that flies — by its hull, so the two aircraft and M9.42's alien
+controller — keeps to its own course in the air rather than being
+carried off by a lift or shoved by a door. None of the four opens doors.
+
+**A smoke expectation that encoded the old rule.** combat-smoke's "walk
+from spawn in Power Up" asserted "A monster died." present. Its walk
+sees a monster hit by other monsters, and those hits used to add up to a
+kill; they are of a type that monster's species' published damage rules
+ignore, so it is still hit but no longer dies. The scenario now asserts
+"A monster took damage." present and "A monster died." absent; its file
+header says why without naming anything from the map.
+
+**Saves.** All of this runtime state lives in components `attach_level`
+rebuilds fresh from the map, so it gets a section of its own:
+`SECTION_BOSS_STATE`, tag 41 — the trail phase, the shield and its
+activation, the flight progress, and a `use` still pending in the one tick
+between the map logic bumping the counter and the driver draining it (the
+same window `MonsterMakerSnapshot::pending_activation` closes). It is
+optional and is written only for a level that has one of these monsters,
+so no existing tag's wire shape moves and every other map's save is
+byte-for-byte what it was; a save from before it loads with every boss
+and aircraft back at its spawn state. `save_format_frozen` pins its shape
+with a new golden. Each component's `restore` checks what it is handed
+against the trail or route the map actually has.
+
+**Cut from the first draft, and why.** This entry was interrupted once and
+finished on top of M9.42; the first draft did several things this one
+does not.
+
+- *A death that fired the Nihilanth's `target`*, as "the seam the campaign
+  ending hangs off". The cited page says that keyvalue is not used, so the
+  flag is gone; what starts the ending after its death is not modelled.
+- *A lifetime cap of 24 Osprey drops*, which misread "can track and
+  replace up to 24 soldiers (these soldiers will be replaced
+  indefinitely)"; and the drops themselves, which no engine code consumed
+  and which spawned the soldiers at the aircraft's own height. The
+  Osprey's soldier drops are not modelled.
+- *The Nihilanth's teleport ball and the Apache's rockets*, which the
+  engine resolves as a second hitscan at the *first* ranged attack's
+  damage: a 30-point zap instead of a teleport, a 10-point hit instead of
+  a 150-point rocket. They are recorded and not wired, for the reason
+  M9.42 gave the controller's head ball and the assassin's grenade.
+- *A `MonsterFlags::FLIES` flag and a flight that moved the aircraft's
+  origin with no collision*: M9.42 dropped the flag (flight is the hull),
+  and the point hull's movement step flies through the same seam with a
+  trace.
+- *A dormant Nihilanth that took no damage at all*, which with nothing in
+  the engine activating it made the boss unkillable in a real map.
+
+**Explicitly not done.** The Gonarch's babies (`monster_babycrab` has its
+row now, but nothing births one), its mortar's blast radius (the mortar is
+resolved as a single hit, like every ranged attack the engine has no
+projectile for). The Nihilanth's teleport ball, summoning, and anything
+after its death; which map entities are its crystals. The Apache's
+rockets, smoke, wreck fall and `NoWreckage`; the cockpit/engine half of
+its damage sentence and the Osprey's per-hit-location rules. The Osprey's
+soldier drops and its removal from a level without a
+`monster_human_grunt`. `trigger_changetarget` redirection of an aircraft;
+the cited `path_corner` angles (the airframe faces its direction of
+travel). Whether a second `use` stops an aircraft (here it does not). A
+`monstermaker` child of one of the four kinds gets no boss component (the
+maker's spawn path does not call `attach`). The `sk_bigmomma`/
+`_nihilanth`/`_apache`/`_osprey` cvar stems are the convention applied to
+the classname, not cited names. Every attack pause, the flight speed, the
+arrival radii, the recharge and head-opening delays and the low-reserve
+fraction are placeholders marked `TODO(black-box)`.
+
+**Coverage.** Unit tests per module: the damage-kinds bitset, the
+response rule and the doubled type; the table (the four classnames are
+defined, the Gonarch's health is base times factor, the Nihilanth's
+reserve is a twentieth, only the gargantua and the Apache answer types
+specially, only the aircraft are on the point hull, only the three named
+kinds ignore `TriggerCondition`); the trail (progression end to end, a
+pass-through last node, an indefinite wait, a bounded and loop-safe walk,
+a checked restore); the shield (drain, block, recharge, opening, exposure,
+activation changing nothing about it, a checked restore); the flight plan
+(a looped route wrapped in three dimensions, arrival at a node overhead
+only at its height, a non-looped end, `Start Inactive`, node waits, a
+plan over a real `PathChain`, a checked restore); the drivers (a Gonarch
+driven to a node with its three arrival effects reported, left to a
+script that holds it, released from an indefinite wait by a `use`; a
+dormant Nihilanth and its live crystal count; an Apache given its route,
+a parked one started by a `use`, a dead one given none); the brains (no
+hovering kind moves or stops itself, the Gonarch travels over combat, the
+Nihilanth attacks nothing until activated, the Apache bursts without
+turning, the Osprey never attacks); the lifecycle (a gargantua through
+the real intake, an Apache's doubled blast, an `Impervious` target, a
+Nihilanth that dies exactly once and only exposed, a Gonarch sent on by a
+depleting hit and killed only at the end); and `ohl-game`'s activation
+arm. `ohl-ai` integration tests run a Gonarch's trail through
+`AiWorld::tick`, and an Apache through it on its point hull against a
+real collision model: it climbs to a higher node, and a node beyond a
+wall stops it at the wall. A new `ohl-engine` test file,
+`bosses_and_aircraft.rs`, covers the same things through the whole
+engine: typed damage at a gargantua and an Apache; a Gonarch whose node
+fires a level change, removes an entity and starts a script; a Nihilanth
+that zaps the player only once a `trigger_auto` has used it, dies once
+after its head opens, and fires nothing through a declared
+`TriggerCondition`; a `Start Inactive` Apache parked until used; and the
+trail, the shield, the flight progress and a pending `use` across a save,
+with a pre-tag-41 save still loading. Two more door tests join M9.44's in
+`blocked_movers.rs`: a door closes through the Nihilanth and through an
+Apache without shoving either or reversing. Every behaviour above was
+stubbed out once and its tests were seen to fail.
+
+**Gates**, on the final tree, rebased on M9.44: fmt; clippy for the
+workspace, `--features dev-tools` and `--all-features`; `cargo test
+--workspace`, 2764 passed, 0 failed, 31 ignored; policy; graph;
+combat-smoke 37/37 with 0 unexpected lines; campaign-smoke 93/93; and
+`cargo xtask chain-walk` at **distinct depth 12**, Pass, 660.8 simulated
+seconds, both with `--start-inventory ""` and with `--start-inventory
+weapon_357,ammo_357,ammo_357` — the depth and time M9.42 records. The
+first combat-smoke run, before the Power Up expectation above was
+corrected, read 35/37: that scenario's unexpected line, and a timeout in
+"walk from spawn in Office Complex" taken under a machine load of about
+20, which a direct rerun (8.5 s) and the full rerun did not repeat.

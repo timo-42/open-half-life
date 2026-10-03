@@ -2473,7 +2473,9 @@ explicit values of their own instead of relying on those defaults.
   sprite of its own. `DamageType` names exactly this set; the *bit values*
   are this project's own dense assignment in the order the list is written,
   not a transcription of any engine header, and nothing in the crate depends
-  on a particular numeric value.
+  on a particular numeric value. `ohl_ai::DamageKinds` (M9.NEXT, "Wave 1
+  batch B" under "Monster definitions") declares the same set again for
+  the AI crate, which has no edge to `ohl-combat`, on the same bits.
 - the303, ["GoldSrc MDL QC commands"](https://the303.org/tutorials/gold_qc.htm)
   (public GoldSrc modelling reference, reviewed 2026-09-05): a studio model's
   `$hbox` hitboxes carry a damage group, numbered 0 generic, 1 head, 2 chest,
@@ -2852,7 +2854,7 @@ logic" and "Monster AI behaviour" above).
   | `Sentry` | 40/40/50 | — | 3/4/5 | — |
   | `Ichthyosaur` | 200/200/400 | bite 20/35/50 | — | — |
   | `Leech` | 2 (flat) | bite 2 (flat) | — | — |
-  | `Gargantua` | 800/800/1000 | melee 10/30/30 | flame 3/5/5 | ground-stomp 50/100/100 (`GARG_STOMP_DAMAGE`); published immune to all but energy/crush/mortar/blast damage — not modeled, since `ohl-ai`'s minimal `DamageEvent` carries no damage-type bitflags yet (see `crate::damage`'s unification note) |
+  | `Gargantua` | 800/800/1000 | melee 10/30/30 | flame 3/5/5 | ground-stomp 50/100/100 (`GARG_STOMP_DAMAGE`); "only vulnerable to energy-beam, crush, mortar, and blast damage" — modelled as `GARGANTUA_VULNERABILITY` (energy beam, crush, blast; a mortar strike arrives as blast) via `table::damage_response_for` and `DamageEvent::kinds`, see "Wave 1 batch B" below |
   | `Tentacle` | 75 (flat; retreats rather than dying) | touch 20, second touch level 25 (`TENTACLE_TOUCH2_DAMAGE`), reach ~336 | — | beak strike 200 flat (`TENTACLE_BEAK_DAMAGE`); beak heights +0/+256/+448/+640 (`TENTACLE_BEAK_HEIGHTS`), not yet wired into height-based hit detection |
   | `Monster_barnacle` (Wave 1 batch A) | 25 (flat); "killed with a single hit from the crowbar" | tongue: bite damage **not published** (`TODO(black-box)`, flat 40 placeholder inside the cited "killed in 1 to 3 bites" bound for a player); reach published as "its real range goes 2048 units below his origin position" (`BARNACLE_TONGUE_LENGTH`) | — | "It takes 10 seconds for a barnacle to kill its prey" (`BARNACLE_KILL_SECONDS`; `brains::BARNACLE_BITE_INTERVAL` spreads it over three bites, the project's own reading); "they ignore other monsters"; tongue width `TODO(black-box)` (`BARNACLE_TONGUE_RADIUS`) |
   | `Monster_alien_controller` (Wave 1 batch A) | 60/60/100 | — | hand-launched energy-ball volley ("zap") 3/4/5 | head-launched homing ball 15/25/35 at 650/800/1000 units/s (`CONTROLLER_HEAD_BALL_DAMAGE`/`_SPEED`, not yet wired); "launch volleys of small energy balls from their hands, or, at closer range, larger homing balls from their heads"; "constant evasive maneuvering and tendency to stay at a distance"; "Can't move unless an `info_node_air` is nearby" (flies: the point hull, `movement::flies`) |
@@ -2862,6 +2864,10 @@ logic" and "Monster AI behaviour" above).
   | `Monster_furniture` (Wave 1 batch A) | **not published** (`TODO(black-box)`: mirrors `monster_generic`'s 8) | — | — | "a furniture model used in scripted sequences"; "still bleeds like a cycler when hit with explosion damage"; "doesn't turn to face forward"; model from the map's `model` keyvalue; classification not published (`Classification::None`, `TODO(black-box)`) |
   | `Monster_rat` (Wave 1 batch A) | **not published** (`TODO(black-box)`: 1, dies to any hit) | — | — | "it doesn't do much"; follows `path_corner`s erratically (patrol paths not modeled; it wanders instead); classification not published (`Classification::None`, `TODO(black-box)`) |
   | `Monster_cockroach` (Wave 1 batch A) | **not published** — "Stepping on them will kill them" (`TODO(black-box)`: 1, dies to any hit; the step-on kill itself is not modeled) | — | — | "scurry around in the dark ... They are easily scared" (`brains::CRITTER_WANDER`/`CRITTER_SCATTER`); classified `insect` here, which the page does not say outright (`TODO(black-box)`); patrol paths "Not used by cockroaches" |
+  | `Monster_bigmomma` (Gonarch, Wave 1 batch B) | 150 base × 1x/1.5x/2x = 150/225/300 (`BIGMOMMA_BASE_HEALTH`, `BIGMOMMA_HEALTH_FACTOR`) | slash 50/60/70 | acid mortar 100/120/160 (blast radius 250/250/275, `BIGMOMMA_BLAST_RADIUS`, recorded, not applied: the engine resolves it as a single hit) | at most 20 live baby headcrabs (`BIGMOMMA_MAX_LIVE_BABYCRABS`, recorded; no babies are born); the `info_bigmomma` trail (`crate::monsters::bigmomma`), see "Wave 1 batch B" |
+  | `Monster_nihilanth` (Wave 1 batch B) | 800/800/1000 | — | zap 30 (flat) | 20 reserve sprites of 1/20th health each, 40/40/50 (`NIHILANTH_SPHERE_COUNT`, `NIHILANTH_SPHERE_RESERVE`); recharger crystals and activation (`crate::monsters::nihilanth`), see "Wave 1 batch B"; `TriggerCondition` "not working" |
+  | `Monster_apache` (Wave 1 batch B) | 150/250/400 | — | machine gun 8/10/10 | "blast damage doubles damage" (`APACHE_DOUBLED_BY`, applied); rocket 150 flat (`APACHE_ROCKET_DAMAGE`, not wired); smokes below 100 health (`APACHE_SMOKE_HEALTH`), falls 12 s / 4 s with `NoWreckage` (8) when killed (`APACHE_WRECK_FALL_SECONDS`/`APACHE_NO_WRECKAGE_FALL_SECONDS`, `SPAWNFLAG_APACHE_NO_WRECKAGE`) — recorded, not applied; `Start Inactive` (64), applied; trigger condition/target do not function |
+  | `Monster_osprey` (Wave 1 batch B) | 400 (flat) | — | — | "can track and replace up to 24 soldiers (these soldiers will be replaced indefinitely)" (`OSPREY_MAX_SOLDIERS`); hits under 50 count only on cockpit/engines, each engine takes at most 200 (`OSPREY_WEAK_HIT_THRESHOLD`/`OSPREY_ENGINE_DAMAGE_CAP`) — all recorded, not modelled; `Start Inactive` (64), applied; trigger condition/target "will not work" |
 
   The `sk_<subject>_<property><1|2|3>` cvar-naming *convention* (subject
   stems `headcrab`, `zombie`, `houndeye`, `bullsquid`, `islave`, `agrunt`,
@@ -2938,12 +2944,18 @@ logic" and "Monster AI behaviour" above).
   | `Furniture` (Wave 1 batch A) | `monster_furniture` | *"specified by mapper"* — none; `MonsterKind::model_from_map` |
   | `Rat` (Wave 1 batch A) | `monster_rat` | `bigrat.mdl` |
   | `Cockroach` (Wave 1 batch A) | `monster_cockroach` | `roach.mdl` |
+  | `BigMomma` (Wave 1 batch B) | `monster_bigmomma` | `big_mom.mdl` |
+  | `Nihilanth` (Wave 1 batch B) | `monster_nihilanth` | `nihilanth.mdl` |
+  | `Apache` (Wave 1 batch B) | `monster_apache` | `apache.mdl` |
+  | `Osprey` (Wave 1 batch B) | `monster_osprey` | `osprey.mdl` |
 
   The eight Wave 1 batch A rows were read from the same page through the
   same text-extraction proxy, in the same session that read the eight
   `TWHL:Monster_<entity>` pages cited in the stat table above; none of
   these names were taken from, or checked against, any imported payload or
-  file listing derived from game data.
+  file listing derived from game data. The four Wave 1 batch B rows were
+  read off the same page the same way, and re-read on 2026-10-03; likewise
+  never from, or checked against, any payload listing.
 - Blood color per monster family (red for humans/allies, yellow for
   headcrab/zombie, green for most other aliens, none for machines) is widely
   documented modding/mapping convention (the `BloodColor` FGD field on
@@ -3175,6 +3187,196 @@ Behavioural facts cited from those pages and how they are modeled
   a wall, never out over a drop). The walk speed is a placeholder
   (`brains::CRITTER_SPEEDS`).
   Not modeled: being killed by being stepped on; `path_corner` patrols.
+
+### Wave 1 batch B — bosses and aircraft (M9.NEXT)
+
+`monster_bigmomma`, `monster_nihilanth`, `monster_apache` and
+`monster_osprey` (`crates/ohl-ai/src/monsters/{bigmomma,nihilanth,aircraft,
+bosses}.rs` and their table rows above), plus the damage-type bitflag on
+`ohl_ai::DamageEvent` the gargantua's immunity needed. Each monster's own
+TWHL page, `https://twhl.info/wiki/page/<classname>`, and the pages named
+below were read through the same text-extraction proxy (`r.jina.ai`) the
+model table records, since `twhl.info` still answers direct automated
+fetches with HTTP 403; every sentence quoted here was re-read on
+2026-10-03. No SDK source, decompilation or other engine port was
+consulted (`docs/CLEAN_ROOM.md`).
+
+- **Damage types on the AI side** (`ohl_ai::damage::DamageKinds`): the same
+  `trigger_hurt` damage-type vocabulary already cited under "Combat and
+  damage" for `ohl_combat::DamageType`, declared again in `ohl-ai` (which
+  has no edge to `ohl-combat`) in the same order on the same project-chosen
+  dense bits; `ohl-engine` converts by bits (`ai::damage_kinds_of`) and
+  asserts the two `NAMED` tables agree label for label and bit for bit.
+  Every hit `ohl-engine` forwards to a monster carries its
+  `DamageInfo::kind`; a hit produced with no type is `generic`. How a
+  species' health answers each type is a `DamageResponse` (which types
+  hurt it at all, which hurt it double), `table::damage_response_for`.
+- **Gargantua immunity** —
+  [TWHL: monster_gargantua](https://twhl.info/wiki/page/monster_gargantua):
+  "Gargantuas are only vulnerable to energy-beam, crush, mortar, and blast
+  damage". Modelled as `GARGANTUA_VULNERABILITY` = energy beam + crush +
+  blast; a mortar strike is not a damage *type* in the cited vocabulary
+  and reaches the target as blast. The monster still notices a hit it
+  shrugs off (`AiWorld::tick` reads the queue at face value for its
+  conditions): a project decision, not a cited fact. A `monster_generic`
+  with `Not solid` (batch A's `ohl_ai::Impervious`) is the empty response:
+  the engine drops every hit at it before it is queued, and `ohl-ai`'s own
+  intake (`lifecycle::apply_damage_effective`) answers it with
+  `DamageResponse::IMPERVIOUS` whatever the species lookup says, so the
+  two never disagree.
+- **Classifications** —
+  [TWHL: Reference: Monster classifications](https://twhl.info/wiki/page/Reference:_Monster_classifications):
+  `monster_bigmomma` "Alien Monster", `monster_nihilanth` "Alien Military",
+  `monster_apache` "Human Military", `monster_osprey` "Machine".
+- **`monster_bigmomma`** —
+  [TWHL: monster_bigmomma](https://twhl.info/wiki/page/monster_bigmomma):
+  "The Gonarch has 150 health by default, but its actual health depends on
+  the use of `info_bigmomma` nodes"; the per-difficulty table gives health
+  1x/1.5x/2x, slash 50/60/70, mortar 100/120/160 and mortar blast radius
+  250/250/275; at a distance it "launches globs of acid" and it will
+  "attack with its claws"; "At most 20 spawned baby headcrabs can be alive
+  at any given time"; "First node (netname) - Name of the first
+  info_bigmomma for the Gonarch to follow"; "The Gonarch will be invincible
+  as long as it's still 'on the trail': applying enough damage will make it
+  move to the next node"; "When it reaches a node that specifies a health
+  value, the Gonarch's health will be set to that value and it will start
+  fighting the player again"; "It can only be killed at the end of the
+  trail, when there is no next node to move to."
+- **`info_bigmomma`** —
+  [TWHL: info_bigmomma](https://twhl.info/wiki/page/info_bigmomma):
+  `target` ("Next node in path. If this node specifies a health value, then
+  big momma will only continue to the next node after its health has been
+  depleted"), `reachdelay` (time spent at node), `reachtarget` ("Target to
+  activate on reaching the node"), `reachsequence` ("The name of a
+  scripted_sequence to use on approach"), `health` ("Sets big momma's
+  health to the specified value"), `killtarget` (undescribed); spawnflags
+  `Run to Node` (1, "Determines wether the monster runs to the node") and
+  `Wait Indefinitely` (2, undescribed); "Gonarch can only be killed at the
+  end of this trail."
+- **`monster_nihilanth`** —
+  [TWHL: monster_nihilanth](https://twhl.info/wiki/page/monster_nihilanth):
+  health 800/800/1000, "Reserve per sprite" 40/40/50, zap damage 30 at
+  every difficulty; "each holding 1/20th of its health, which it absorbs
+  when injured"; it can "replenish this reserve using recharger crystals on
+  the walls of its chamber, making it impossible to kill it without
+  destroying the rechargers first"; it can "teleport players to scripted
+  locations, summon controllers and Vortigaunt slaves into its chamber, and
+  also attack with electrical particles"; "When spawned, the Nihilanth does
+  not attack immediately. You need to 'activate' it with trigger_auto (with
+  its TargetState as ON) or any other way"; its `target` and
+  `TriggerCondition` are listed as not used ("TriggerCondition is not
+  working for this monster"); "When the Nihilanth dies, it spins around in
+  its tormented state indefinitely until it is turned OFF using a
+  trigger_relay". Combine OverWiki,
+  [Nihilanth](https://combineoverwiki.net/wiki/Nihilanth): "When this
+  energy runs low (after being attacked by the player), the Nihilanth
+  replenishes the spheres by absorbing energy from one of the crystals in
+  the chamber"; "When the crystals are destroyed, the Nihilanth becomes
+  vulnerable, and its head opens up like a flower after some time".
+- **`monster_apache`** —
+  [TWHL: monster_apache](https://twhl.info/wiki/page/monster_apache):
+  health 150/250/400, machine gun 8/10/10, rocket 150; `target` is "The
+  Apache's first `path_corner`", the corners forming "a cyclic route";
+  trigger condition and trigger target do not function on it; `Start
+  Inactive` (64) "Must be triggered to start"; `NoWreckage` (8) "Explodes
+  in mid-air"; "Damage is dependent on hitbox and type; the cockpit and
+  engines are more easily damaged, and blast damage doubles damage"; "The
+  Apache will also start emitting smoke when its health falls below 100";
+  "Normally when killed, falls ... for 12 seconds or until hitting ground
+  before disintegrating. The NoWreckage flag reduces the time to 4
+  seconds"; it "can be directed to go to the position of any entity ... at
+  any time by using `trigger_changetarget`".
+- **`monster_osprey`** —
+  [TWHL: monster_osprey](https://twhl.info/wiki/page/monster_osprey):
+  health 400 at every difficulty; "_target_ needs to point to a
+  `path_corner` which targets other `path_corners` forming a cyclic
+  route"; "An Osprey can track and replace up to 24 soldiers (these
+  soldiers will be replaced indefinitely)"; it "Needs at least one
+  `monster_human_grunt` in the level to resupply, otherwise, the Osprey
+  will be removed"; of its spawnflags only "Start Inactive (64)" works,
+  which "Requires the Osprey to be triggered to start"; "Trigger condition
+  & trigger target will not work"; "Shots that deal less than 50 damage are
+  only effective when they hit the cockpit or one of the engines, and each
+  engine only takes up to 200 damage before shots become ineffective".
+
+**What is modelled, and what is read into the gaps** (`TODO(black-box)`
+unless stated as a project decision):
+
+- **The Apache's doubled blast** is applied (`APACHE_DOUBLED_BY` in its
+  `DamageResponse`); the cockpit/engine half of the same sentence, the
+  Osprey's per-hit-location rules, the smoke, the wreck fall and
+  `NoWreckage` are recorded constants, not applied.
+- **`TriggerCondition`** is not collected for the Nihilanth, the Apache or
+  the Osprey (`MonsterKind::honours_trigger_condition`), as their pages
+  say.
+- **Skill-cvar stems** `bigmomma`, `nihilanth`, `apache`, `osprey` are this
+  project's application of the `sk_<subject>_<property><N>` convention to
+  the classname stem; none of the pages lists the cvars. A `skill.cfg`
+  spelling them otherwise leaves the table values in force.
+- **The Gonarch**: a node's `health` is scaled by the same 1x/1.5x/2x
+  factor as the base (decision); a depleting hit is absorbed, its health
+  restored to its spawn value and it leaves for the next node shielded
+  (decision: the page does not say what its health is between nodes); a
+  node with no health value that is not the last is passed through after
+  `reachdelay`, still shielded; `reachtarget` and `reachsequence` are fired
+  by name through the map logic (a `scripted_sequence` fired by name
+  starts and binds its own monster) and `killtarget` removes what it
+  names, exactly as a finished script's `target`/`killtarget` are;
+  `Wait Indefinitely` holds it on a node until a `use` of its own name
+  releases it, or, on a node with health, until that health is depleted
+  (decision: the flag has no description, and a wait nothing could end
+  would leave a map's Gonarch shielded for good). While a script holds it,
+  the trail neither steers it nor counts it as arriving. The arrival
+  radius, the claw reach, the mortar range and the attack pauses are
+  placeholders; the mortar is resolved as a single hit, like every ranged
+  attack the engine has no projectile for, and its blast radius is not
+  applied. Baby-headcrab births are not modelled.
+- **The Nihilanth**: the reserve is one pool of `20 × per-sprite` points
+  that every hit drains first, a hit overrunning it is spent rather than
+  carried into health (decision); with the pool empty and a crystal
+  standing hits are blocked, and a standing crystal refills a pool that
+  has fallen below `RECHARGE_BELOW_FRACTION` after `RECHARGE_SECONDS`; with
+  the pool empty and no crystal left the head opens after
+  `HEAD_OPEN_SECONDS`. Which map entities are the crystals is the host's
+  to tag (`NihilanthCrystal`); no map data says, so a map's boss has no
+  rechargers and its head opens once the reserve is spent. Activation is
+  a `use` of its name (`ohl_game::registry::MonsterActivation`, bumped by
+  the map logic's ordinary activation path) and only lets it attack: the
+  page says it "does not attack immediately", not that it cannot be hurt
+  (decision). The zap range and pause are placeholders. Not modelled: the
+  teleport ball (the engine would resolve a second ranged attack as a
+  second zap), the summoning, and anything after its death.
+- **The aircraft**: both are on the point hull, so the AI's ordinary
+  movement step flies them in three dimensions and stops them at what the
+  hull's trace says is solid (`crate::movement::flies`, the flight seam
+  batch A's alien controller already uses); a `FlightPlan` built from the
+  `path_corner` chain their `target` names (through the same
+  `ohl_game::PathChain` a train uses: node positions, per-node `wait`,
+  whether it closes) hands that step one node at a time as a route. The
+  flight speed and arrival radius are placeholders; the airframe faces its
+  direction of travel rather than the cited `path_corner` angles, which
+  `PathChain` does not carry. `Start Inactive` parks the plan until a `use`
+  of the aircraft's name; whether a second `use` stops it again is not
+  published, and here it does not. The Apache fires its machine gun in
+  three-round bursts without turning the airframe ("can rotate freely";
+  the burst cadence is a placeholder) and not its rockets, which
+  `MonsterSpec`'s single ranged attack cannot carry at their own damage
+  (the same reason batch A's controller head ball and assassin grenade are
+  not wired). The Osprey attacks nothing. Not modelled: the Osprey's
+  soldier drops and its removal from a level without a
+  `monster_human_grunt`, `trigger_changetarget` redirection, and the wreck.
+- **Movers**: the Nihilanth joins the kinds a mover neither pushes nor
+  is blocked by (`ohl_engine`'s `Systems::moved_by_movers`, M9.44), since
+  it never moves; and so does every species that flies (its hull,
+  `ohl_ai::movement::flies`: the two aircraft and M9.42's alien
+  controller), which keeps to its own course in the air rather than being
+  carried by a lift or shoved by a door. Project-authored, like the rule
+  it extends. None of the four opens doors (`can_open_doors` is false on
+  each row): no page says any of them does.
+- **Saves**: the trail phase, the shield and its activation, the flight
+  progress and a `use` still pending are `SECTION_BOSS_STATE` (tag 41), an
+  optional section written only for a level with one of these monsters;
+  see `ohl_engine::save`'s module doc.
 
 ## Track trains and paths
 
@@ -7014,7 +7216,10 @@ Guarded by:
     pacing.
   - `a_door_closing_on_a_turret_neither_shoves_it_nor_reverses`,
     `a_door_closing_on_rooted_furniture_neither_shoves_it_nor_reverses`
-    and `a_door_closing_on_a_not_solid_prop_neither_shoves_it_nor_reverses`.
+    and `a_door_closing_on_a_not_solid_prop_neither_shoves_it_nor_reverses`;
+    and, since M9.NEXT ("Wave 1 batch B"),
+    `a_door_closing_on_the_nihilanth_neither_shoves_it_nor_reverses` and
+    `a_door_closing_on_an_apache_neither_shoves_it_nor_reverses`.
   - `a_passable_door_is_walked_through_and_never_blocked`.
 
 ### Project behaviour — branching paths

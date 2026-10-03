@@ -774,6 +774,19 @@ it interactively on a real screen.
   model stayed pinned at its last position while the AI kept moving
   underneath), and a monster's position resumes correctly from a save
   rather than snapping back to its map spawn point on the next AI think.
+- **Bosses and aircraft**: `monster_bigmomma`, `monster_nihilanth`,
+  `monster_apache` and `monster_osprey` have table rows, brains and default
+  models. The Gonarch walks its `info_bigmomma` trail shielded, fires,
+  removes and plays what each node names, and can only be killed at the
+  trail's end; the Nihilanth attacks nothing until a `use` activates it,
+  and its health is untouchable until its reserve is spent and its head
+  has opened; the aircraft fly their `path_corner` routes on the point
+  hull, a `Start Inactive` one once something uses it. Monster damage now
+  carries its type, so the gargantua's published immunity to everything
+  but blast, crush and energy-beam damage applies, and the Apache takes
+  double from a blast. Not yet: the Gonarch's babies, the Nihilanth's
+  teleport ball and summoning, the Apache's rockets, the Osprey's soldier
+  drops; see the milestone entry.
 - **Interactive map logic**: touch triggers (fired by the player's own
   movement, not only `use`, including `trigger_changelevel`), doors
   (opened by the player's or a monster's touch, and reversing — dealing
@@ -785,8 +798,9 @@ it interactively on a real screen.
   `monstermaker`s (including toggling one by name via `use`/`trigger`),
   and level transitions by touch (`trigger_changelevel`) or by `use`.
 - **Combat and AI**: weapons, pickups, damage, monster AI, and navigation
-  are implemented. Twenty-four `monster_*` classnames have a brain and a
-  stat row of their own — the sixteen original kinds plus, as of M9.42,
+  are implemented. Twenty-eight `monster_*` classnames have a brain and a
+  stat row of their own — the sixteen original kinds, the four bosses and
+  aircraft above, plus, as of M9.42,
   the barnacle (a ceiling-hung tongue that bites what stands below it),
   the alien controller (the first flier: a point-hull route that climbs
   and descends), the human assassin (fire, relocate, retreat), the
@@ -808,8 +822,9 @@ it interactively on a real screen.
   projectiles/deployables, the RNG stream (M7.9 P4b), and — as of M7.13 —
   `func_train`/`func_tracktrain` position, a running `trigger_camera`
   sequence, a running scripted sequence's phase, a `monstermaker`'s spawn
-  counters, and a `trigger_auto`'s one-shot fired flag, plus (in its own
-  optional section) which `ambient_generic`s are sounding.
+  counters, and a `trigger_auto`'s one-shot fired flag, plus (in optional
+  sections of their own) which `ambient_generic`s are sounding and where a
+  boss or aircraft is in its fight or its route.
 - **Audio**: the composition root opens an output device, owns a mixer and
   plays the sounds a level asks for — `ambient_generic` (its published
   `message`, `health` volume, `pitch`, radius spawnflags, "start silent"
