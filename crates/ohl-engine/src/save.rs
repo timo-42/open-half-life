@@ -41,14 +41,14 @@
 //! | 38 | [`SECTION_AMBIENT_STATE`] | `Vec<Option<`[`AmbientSnapshot`]`>>`, one per registry entity, in spawn order: whether each `ambient_generic` is sounding (the audio package) |
 //! | 39 | [`SECTION_SWITCH_STATE`] | `Vec<Option<`[`SwitchSnapshot`]`>>`, one per registry entity, in spawn order: whether each `func_wall_toggle` is on, each `func_conveyor`'s signed speed, and whether each pickup has been taken (the entities package) |
 //! | 40 | [`SECTION_PATH_STATE`] | `Vec<Option<`[`PathStateSnapshot`](crate::save_state::PathStateSnapshot)`>>`, one per registry entity, in spawn order: a `path_track` switch's position and the chain each `func_train`/`func_tracktrain` holds |
-//! | 41 | [`SECTION_BOSS_STATE`] | `Vec<Option<`[`BossSnapshot`]`>>`, one per registry entity, in spawn order: a Gonarch's trail phase, a Nihilanth's shield, an aircraft's flight progress and their pending `use`s (M9.NEXT); written only for a level that has one |
+//! | 41 | [`SECTION_BOSS_STATE`] | `Vec<Option<`[`BossSnapshot`]`>>`, one per registry entity, in spawn order: a Gonarch's trail phase, a Nihilanth's shield, an aircraft's flight progress and their pending `use`s (M9.45); written only for a level that has one |
 //!
 //! Tags 23-31 and 33-41 are read as `None`/a default when absent, so a
 //! save written before M7.9 P4b (tags 23-27), M7.13 (tag 28), M9.5 (tag 29),
 //! M9.6 (tag 30), M9.8 (tag 31), M9.10 (tag 33), the teleport/master
 //! package (tag 34), M9.25 (tag 35), M9.26 (tag 36), M9.33 (tag 37), the
 //! audio package (tag 38), the entities package (tag 39), the
-//! blocked-movers package (tag 40) or M9.NEXT (tag 41) still loads
+//! blocked-movers package (tag 40) or M9.45 (tag 41) still loads
 //! (§6 of the M7.9 design plan, recorded in local design notes and not
 //! part of the repository); a
 //! section that is present but fails to decode fails the whole read closed
@@ -376,7 +376,7 @@ pub const SECTION_SWITCH_STATE: u32 = 39;
 pub const SECTION_PATH_STATE: u32 = 40;
 
 /// Tag 41: the runtime state of the boss and aircraft components, one
-/// optional entry per registry entity in spawn order (M9.NEXT,
+/// optional entry per registry entity in spawn order (M9.45,
 /// `docs/FORMAT_SOURCES.md`, "Wave 1 batch B").
 ///
 /// A Gonarch's place on its `info_bigmomma` trail, a Nihilanth's shield

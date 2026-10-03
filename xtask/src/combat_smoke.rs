@@ -782,7 +782,7 @@ fn scenarios() -> [Scenario; 37] {
             name: "walk from spawn in Power Up",
             file: "walk_power_up.txt",
             map: "c2a1",
-            // Until M9.NEXT this walk asserted "A monster took damage." and
+            // Until M9.45 this walk asserted "A monster took damage." and
             // "A monster died." present. Every hit it sees lands on a
             // species whose published damage rules ignore that hit's type,
             // and a hit that costs nothing no longer counts as damage
@@ -958,7 +958,7 @@ fn scenarios() -> [Scenario; 37] {
             // that was fixed; the route was re-authored fresh against the
             // corrected engine (see the scenario file's own header).
             //
-            // Until M9.NEXT it also asserted "A monster took damage."
+            // Until M9.45 it also asserted "A monster took damage."
             // present. Every hit its route sees lands on a species whose
             // published damage rules ignore that hit's type, and a hit that
             // costs nothing no longer counts as damage
@@ -972,7 +972,7 @@ fn scenarios() -> [Scenario; 37] {
             name: "walk from spawn to a followed level change in On A Rail",
             file: "progress_c2a2_reach_changelevel.txt",
             map: "c2a2",
-            // Until M9.NEXT this also asserted "A monster took damage."
+            // Until M9.45 this also asserted "A monster took damage."
             // present; as for the Power Up progression above, every hit its
             // route sees lands on a species that ignores that hit's type.
             present: &DOOR_AND_LEVEL_CHANGE_PRESENT,

@@ -276,7 +276,7 @@ const GOLDEN_TAG_40: &[u8] = &[
 
 /// `SECTION_BOSS_STATE` (41) at the shape this build writes: the exact
 /// bytes [`frozen_boss_state`]'s value encodes to. **New golden, not a
-/// revision of any tag above**: tag 41 did not exist before M9.NEXT, the
+/// revision of any tag above**: tag 41 did not exist before M9.45, the
 /// same "a future package adding a tag would pin its own golden from
 /// scratch" case [`GOLDEN_TAG_31`]'s own comment anticipated.
 const GOLDEN_TAG_41: &[u8] = &[

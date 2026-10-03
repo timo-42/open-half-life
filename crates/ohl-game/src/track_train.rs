@@ -249,7 +249,7 @@ impl PathChain {
     ///
     /// A train still wraps only on [`Self::looped`]; this exists for a
     /// follower that simply keeps following `target`s, which on a lead-in
-    /// route goes round the cycle and never back to the head (M9.NEXT's
+    /// route goes round the cycle and never back to the head (M9.45's
     /// aircraft).
     #[must_use]
     pub fn build_with_reentry(
