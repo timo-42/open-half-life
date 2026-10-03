@@ -38,12 +38,13 @@
 //! | 35 | [`SECTION_TRAIN_HANDOVER_YAW`] | `Vec<Option<f32>>`, one per registry entity, in spawn order: the heading a `func_tracktrain` was handed across a level change with, for a chain that defines none of its own (M9.25) |
 //! | 36 | [`SECTION_CARRIED_ENTITIES`] | `Vec<`[`CarriedEntityDef`]`>`: the entity definitions a level change materialised in this map, in the order they were appended, for entities the map itself never declared (M9.26) |
 //! | 37 | [`SECTION_PLATROT_STATE`] | `Vec<Option<`[`PlatRotSnapshot`]`>>`, one per registry entity, in spawn order: `func_platrot` runtime state (M9.33) |
+//! | 38 | [`SECTION_AMBIENT_STATE`] | `Vec<Option<`[`AmbientSnapshot`]`>>`, one per registry entity, in spawn order: whether each `ambient_generic` is sounding (the audio package) |
 //!
-//! Tags 23-31 and 33-37 are read as `None`/a default when absent, so a
+//! Tags 23-31 and 33-38 are read as `None`/a default when absent, so a
 //! save written before M7.9 P4b (tags 23-27), M7.13 (tag 28), M9.5 (tag 29),
 //! M9.6 (tag 30), M9.8 (tag 31), M9.10 (tag 33), the teleport/master
-//! package (tag 34), M9.25 (tag 35), M9.26 (tag 36) or M9.33 (tag 37)
-//! still loads
+//! package (tag 34), M9.25 (tag 35), M9.26 (tag 36), M9.33 (tag 37) or the
+//! audio package (tag 38) still loads
 //! (§6 of the M7.9 design plan, recorded in local design notes and not
 //! part of the repository); a
 //! section that is present but fails to decode fails the whole read closed
@@ -125,9 +126,9 @@ use ohl_game::SimulationState;
 use serde::{Deserialize, Serialize};
 
 use crate::save_state::{
-    AiSnapshot, BreakableSnapshot, EntityCombatSnapshot, InventorySnapshot, MomentaryDoorSnapshot,
-    MonsterMakerChildSnapshot, MoverSnapshot, ProjectilesSnapshot, RngSnapshot,
-    RotatingMoverSnapshot,
+    AiSnapshot, AmbientSnapshot, BreakableSnapshot, EntityCombatSnapshot, InventorySnapshot,
+    MomentaryDoorSnapshot, MonsterMakerChildSnapshot, MoverSnapshot, ProjectilesSnapshot,
+    RngSnapshot, RotatingMoverSnapshot,
 };
 use crate::transition::{EntitySnapshot, GlobalStateTable, PlayerCarryState};
 
@@ -311,6 +312,25 @@ pub const SECTION_CARRIED_ENTITIES: u32 = 36;
 /// is reserved for `ohl-player`'s own snapshot.
 pub const SECTION_PLATROT_STATE: u32 = 37;
 
+/// Tag 38: whether each `ambient_generic` is sounding, one optional entry
+/// per registry entity in spawn order (`docs/FORMAT_SOURCES.md`,
+/// "`ambient_generic`").
+///
+/// A map's own logic switches its ambience on and off: a `trigger_auto`
+/// or a `multi_manager` starts a "Start silent" alarm as the map begins, a
+/// button turns a machine's hum off. Tag 28 already saves that a
+/// `trigger_auto` has fired, so without this section a save taken after it
+/// loads with the trigger spent *and* the alarm back at its spawn state:
+/// silent for the rest of the map. A sound the map had switched off would
+/// come back on. Neither is a presentation detail a load may get wrong.
+///
+/// A new tag rather than a field on [`SECTION_ENTITY_REGISTRY`] (18) or
+/// [`SECTION_SIMULATION`] (19): both are shipped and frozen at their own
+/// wire shapes (see this module's "Frozen section shapes"), the same
+/// reasoning tags 30, 31 and 33-37 each recorded. Tag 38 is the next free
+/// number.
+pub const SECTION_AMBIENT_STATE: u32 = 38;
+
 /// One entity definition [`SECTION_CARRIED_ENTITIES`] (36) carries.
 ///
 /// The keyvalues only, as authored pairs: `crate::transition`'s
@@ -492,6 +512,11 @@ pub struct GameSave {
     /// `func_platrot` runtime state, one optional entry per registry
     /// entity in spawn order ([`SECTION_PLATROT_STATE`], 37).
     pub platrots: Option<Vec<Option<crate::save_state::PlatRotSnapshot>>>,
+    /// Whether each `ambient_generic` is sounding, one optional entry per
+    /// registry entity in spawn order ([`SECTION_AMBIENT_STATE`], 38).
+    /// `None` for a save missing tag 38: an older save brings every ambient
+    /// back at its spawn state, which is what every build before it did.
+    pub ambients: Option<Vec<Option<AmbientSnapshot>>>,
     /// The entity definitions a level change materialised in this map, in
     /// the order they were appended (M9.26). `None` for a save missing tag
     /// 36 — an older save simply comes back with the map's own entities and
@@ -579,6 +604,9 @@ impl GameSave {
             if let Some(platrots) = &self.platrots {
                 writer.add_section_serde(SECTION_PLATROT_STATE, platrots)?;
             }
+            if let Some(ambients) = &self.ambients {
+                writer.add_section_serde(SECTION_AMBIENT_STATE, ambients)?;
+            }
             if let Some(carried_entities) = &self.carried_entities {
                 writer.add_section_serde(SECTION_CARRIED_ENTITIES, carried_entities)?;
             }
@@ -649,6 +677,11 @@ impl GameSave {
                 &reader,
                 SECTION_PLATROT_STATE,
                 crate::save_state::MAX_SNAPSHOT_PLATROTS,
+            )?,
+            ambients: optional_bounded_vec_section(
+                &reader,
+                SECTION_AMBIENT_STATE,
+                crate::save_state::MAX_SNAPSHOT_AMBIENTS,
             )?,
         })
     }

@@ -1285,13 +1285,10 @@ pub struct AmbientGeneric {
 /// Whether an [`AmbientGeneric`] is currently sounding, plus a counter that
 /// changes every time it is (re)started.
 ///
-/// Deliberately *not* part of any save section: `SECTION_SIMULATION` is
-/// postcard-encoded and not self-describing (see M7.12 in
-/// `docs/MILESTONES.md`), so adding a field to it would break every
-/// existing save. A loaded game rebuilds its registry from the map's own
-/// entity defaults instead, which restarts the level's ambient loops from
-/// their spawn state — audible ambience is presentation, and restarting it
-/// is not a simulation difference.
+/// Saved in its own optional section (`ohl_engine`'s
+/// `SECTION_AMBIENT_STATE`, tag 38), so a loaded game hears what the saved
+/// one did. A save written before that section existed loads with every
+/// ambient back at its spawn state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct AmbientState {
     /// Whether the sound should be playing right now.

@@ -72,8 +72,8 @@ use glam::Vec3;
 use ohl_combat::{EntityId as CombatEntityId, ProjectileKind};
 use ohl_game::hecs::Entity;
 use ohl_game::registry::{
-    AutoTrigger, Breakable, ClassName, MakerActivation, MomentaryDoor, MomentaryRotButton,
-    MoverState, Pendulum, PlatRot, Pushable, RotButton, Rotator,
+    AmbientState, AutoTrigger, Breakable, ClassName, MakerActivation, MomentaryDoor,
+    MomentaryRotButton, MoverState, Pendulum, PlatRot, Pushable, RotButton, Rotator,
 };
 use ohl_game::{TrackTrainState, TriggerCameraState};
 use serde::{Deserialize, Serialize};
@@ -1360,6 +1360,71 @@ pub(crate) fn restore_platrots(level: &mut Level, snapshots: &[Option<PlatRotSna
         if let Ok(mut component) = level.registry.world.get::<&mut PlatRot>(*entity) {
             component.state = snapshot.state;
             component.timer = snapshot.timer;
+        }
+    }
+}
+
+// --- `SECTION_AMBIENT_STATE` (38) -----------------------------------------
+
+/// An `ambient_generic`'s runtime state: whether it is sounding, and how
+/// many times it has been (re)started. Its keyvalues (`message`, volume,
+/// pitch, the radius and loop spawnflags) are fixed at spawn and rebuilt
+/// identically by every load, so only `ohl_game::registry::AmbientState`
+/// needs to round-trip.
+///
+/// Its own struct rather than `AmbientState` itself, so the wire shape this
+/// tag freezes belongs to the save format and cannot move when the
+/// component does. Part of `SECTION_AMBIENT_STATE` (tag 38; see
+/// `crate::save::SECTION_AMBIENT_STATE`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AmbientSnapshot {
+    /// `ohl_game::registry::AmbientState::playing`.
+    pub playing: bool,
+    /// `ohl_game::registry::AmbientState::generation`.
+    pub generation: u32,
+}
+
+/// The most entities one `SECTION_AMBIENT_STATE` section records, matching
+/// [`MAX_SNAPSHOT_ENTITIES`] like every other index-keyed section.
+pub const MAX_SNAPSHOT_AMBIENTS: usize = MAX_SNAPSHOT_ENTITIES;
+
+/// `SECTION_AMBIENT_STATE` (38)'s whole payload: one optional
+/// [`AmbientSnapshot`] per `Registry::entities` slot, in spawn order.
+/// `None` for an entity that is not an `ambient_generic`.
+#[must_use]
+pub(crate) fn snapshot_ambients(level: &Level) -> Vec<Option<AmbientSnapshot>> {
+    level
+        .registry
+        .entities
+        .iter()
+        .take(MAX_SNAPSHOT_AMBIENTS)
+        .map(|entity| {
+            level
+                .registry
+                .world
+                .get::<&AmbientState>(*entity)
+                .ok()
+                .map(|state| AmbientSnapshot {
+                    playing: state.playing,
+                    generation: state.generation,
+                })
+        })
+        .collect()
+}
+
+/// Restores [`snapshot_ambients`], zipped against
+/// `level.registry.entities` in spawn order. Nothing is played here: the
+/// presentation phase compares this state against what it has announced,
+/// which after a load is nothing, so every ambient restored as sounding is
+/// announced on the loaded game's first step and every other one stays
+/// silent.
+pub(crate) fn restore_ambients(level: &mut Level, snapshots: &[Option<AmbientSnapshot>]) {
+    let entities = level.registry.entities.clone();
+    for (entity, snapshot) in entities.iter().zip(snapshots) {
+        let Some(snapshot) = snapshot else { continue };
+        if let Ok(mut state) = level.registry.world.get::<&mut AmbientState>(*entity) {
+            state.playing = snapshot.playing;
+            state.generation = snapshot.generation;
         }
     }
 }

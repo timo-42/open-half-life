@@ -1554,6 +1554,7 @@ impl Game {
             breakables: Some(crate::save_state::snapshot_breakables(&self.level)),
             train_handover_yaw: Some(crate::save_state::snapshot_train_handover_yaw(&self.level)),
             platrots: Some(crate::save_state::snapshot_platrots(&self.level)),
+            ambients: Some(crate::save_state::snapshot_ambients(&self.level)),
             // Written only when a level change actually materialised
             // something here, so a cold-loaded map's save carries no
             // section at all rather than an empty one.
@@ -1879,6 +1880,12 @@ impl Game {
         // the platform to be drawn, collided and ridden where it was.
         if let Some(platrots) = &save.platrots {
             crate::save_state::restore_platrots(&mut self.level, platrots);
+        }
+        // `SECTION_AMBIENT_STATE` (38): the same spawn-order-zipped overlay
+        // for an `ambient_generic`. An alarm the map switched on is still
+        // sounding after the load, and one it switched off stays off.
+        if let Some(ambients) = &save.ambients {
+            crate::save_state::restore_ambients(&mut self.level, ambients);
         }
         // A load is a map load: the chapter title is announced again.
         self.pending.clear();
