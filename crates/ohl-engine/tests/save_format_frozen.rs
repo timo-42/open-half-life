@@ -49,8 +49,9 @@
 use glam::Vec3;
 use ohl_engine::save::{CarriedEntityDef, EngineHeader, TeleportStateSnapshot, ViewState};
 use ohl_engine::save_state::{
-    BreakableSnapshot, MomentaryDoorSnapshot, MonsterMakerSnapshot, MoverSnapshot, PlatRotSnapshot,
-    RotatorSnapshot, ScriptRunnerSnapshot, TrackTrainSnapshot, TriggerCameraSnapshot,
+    AmbientSnapshot, BreakableSnapshot, MomentaryDoorSnapshot, MonsterMakerSnapshot, MoverSnapshot,
+    PlatRotSnapshot, RotatorSnapshot, ScriptRunnerSnapshot, TrackTrainSnapshot,
+    TriggerCameraSnapshot,
 };
 use ohl_engine::test_support::{
     ROTATING_DOOR_MAP, ROTATING_DOOR_NAME, rotating_door_bsp, rotating_door_entities,
@@ -227,6 +228,42 @@ const GOLDEN_TAG_36: &[u8] = &[
 const GOLDEN_TAG_37: &[u8] = &[
     0x03, 0x00, 0x01, 0x01, 0x00, 0x00, 0xa0, 0x3f, 0x01, 0x02, 0x00, 0x00, 0x00, 0x00,
 ];
+
+/// `SECTION_AMBIENT_STATE` (38) at the shape this build writes: the exact
+/// bytes [`frozen_ambient_state`]'s value encodes to. **New golden, not a
+/// revision of any tag above**: tag 38 did not exist before the audio
+/// package, the same "a future package adding a tag would pin its own
+/// golden from scratch" case [`GOLDEN_TAG_31`]'s own comment anticipated.
+const GOLDEN_TAG_38: &[u8] = &[0x03, 0x00, 0x01, 0x01, 0x01, 0x01, 0x00, 0xac, 0x02];
+
+/// The value [`GOLDEN_TAG_38`] holds: an entity that is not an ambient, one
+/// sounding, and one switched off after several starts — both arms of the
+/// `Option` and of `playing`, and a generation past the single-byte varint
+/// boundary.
+fn frozen_ambient_state() -> Vec<Option<AmbientSnapshot>> {
+    vec![
+        None,
+        Some(AmbientSnapshot {
+            playing: true,
+            generation: 1,
+        }),
+        Some(AmbientSnapshot {
+            playing: false,
+            generation: 300,
+        }),
+    ]
+}
+
+#[test]
+fn tag_38_ambient_state_keeps_its_frozen_wire_shape() {
+    let value = frozen_ambient_state();
+    let encoded = postcard::to_allocvec(&value).expect("the section encodes");
+    assert_golden(&encoded, GOLDEN_TAG_38, 38);
+
+    let decoded: Vec<Option<AmbientSnapshot>> =
+        postcard::from_bytes(GOLDEN_TAG_38).expect("section 38 decodes");
+    assert_eq!(decoded, value);
+}
 
 /// The value [`GOLDEN_TAG_36`] holds: one definition carrying the three
 /// keys every re-created entity has a placement and an identity from, and

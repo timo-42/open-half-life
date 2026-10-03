@@ -2066,3 +2066,116 @@ fn a_save_from_before_section_37_existed_still_loads() {
     );
     assert_eq!(platrot.timer, 0.0);
 }
+
+// --- `SECTION_AMBIENT_STATE` (38) -----------------------------------------
+
+/// A room whose own logic changes its ambience as it starts: a "Start
+/// silent" alarm a `trigger_auto` switches on, and a hum that sounds from
+/// spawn and a second `trigger_auto` switches off. Every name and `message`
+/// is project-authored.
+fn ambience_switched_by_the_map() -> String {
+    script_room_entities(
+        [-192.0, -192.0, 36.0],
+        &format!(
+            "{}{}{}{}",
+            entity_block(
+                "ambient_generic",
+                [64.0, 0.0, 36.0],
+                0.0,
+                &[
+                    ("targetname", "ohl_alarm"),
+                    ("message", "ohl/alarm.wav"),
+                    ("spawnflags", "16"),
+                ],
+            ),
+            entity_block(
+                "ambient_generic",
+                [-64.0, 0.0, 36.0],
+                0.0,
+                &[("targetname", "ohl_hum"), ("message", "ohl/hum.wav")],
+            ),
+            trigger_auto("ohl_alarm"),
+            trigger_auto("ohl_hum"),
+        ),
+    )
+}
+
+/// `(alarm, hum)`'s `AmbientState::playing`.
+fn ambience(game: &Game) -> (bool, bool) {
+    let playing = |name: &str| {
+        let entity = *game
+            .registry()
+            .find(name)
+            .first()
+            .expect("the fixture declares it");
+        game.registry()
+            .world
+            .get::<&ohl_game::registry::AmbientState>(entity)
+            .expect("an ambient_generic carries its state")
+            .playing
+    };
+    (playing("ohl_alarm"), playing("ohl_hum"))
+}
+
+/// The start cues `ticks` steps of `game` produce, by origin.
+fn ambient_starts(game: &mut Game, ticks: usize) -> Vec<[f32; 3]> {
+    let input = Input::default();
+    let mut starts = Vec::new();
+    for _ in 0..ticks {
+        for event in game.tick(TICK_SECONDS, &input) {
+            if let GameEvent::Sound(cue) = event
+                && !cue.stop
+                && let Some(origin) = cue.origin
+            {
+                starts.push(origin);
+            }
+        }
+    }
+    starts
+}
+
+/// What the map switched on stays on across a save and a load, and what it
+/// switched off stays off. The `trigger_auto`s that did it are spent (tag
+/// 28), so without tag 38 neither would ever change again.
+#[test]
+fn an_ambience_the_map_switched_round_trips_through_a_save() {
+    let entities = ambience_switched_by_the_map();
+    let mut game = script_game(&entities);
+    script_tick(&mut game, 30);
+    assert_eq!(ambience(&game), (true, false), "the map's own logic ran");
+
+    let bytes = game.save_bytes(1_700_000_000).expect("the save is written");
+    let assets = script_game_assets(&entities);
+    let mut loaded = Game::load_bytes(&assets, &bytes).expect("the save loads");
+    assert_eq!(ambience(&loaded), (true, false));
+
+    // And the loaded game is heard accordingly: the alarm announces itself
+    // again, once, and the hum does not.
+    assert_eq!(ambient_starts(&mut loaded, 30), vec![[64.0, 0.0, 36.0]]);
+}
+
+/// A save written before `SECTION_AMBIENT_STATE` (38) existed — the tag
+/// absent, reproduced by clearing `GameSave::ambients` before encoding, as
+/// the tests for tags 30, 31, 33 and 37 do — still loads, with every
+/// ambient back at its spawn state, which is what every build before tag
+/// 38 did.
+#[test]
+fn a_save_from_before_section_38_existed_still_loads() {
+    let entities = ambience_switched_by_the_map();
+    let mut game = script_game(&entities);
+    script_tick(&mut game, 30);
+
+    let mut save = game.to_save(1_700_000_000);
+    save.ambients = None;
+    let bytes = save
+        .to_bytes()
+        .expect("a save missing SECTION_AMBIENT_STATE still encodes");
+
+    let assets = script_game_assets(&entities);
+    let loaded = Game::load_bytes(&assets, &bytes).expect("a pre-tag-38 save still loads");
+    assert_eq!(
+        ambience(&loaded),
+        (false, true),
+        "every ambient is back at its spawn state"
+    );
+}
