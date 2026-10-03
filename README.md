@@ -460,12 +460,24 @@ and those only while there is room for what they restore. A battery is
 never detoured to without the suit, since it grants nothing without one;
 a charger is not a touch pickup at all (it is used and held, so walking
 over it collects nothing) and the long-jump item unlocks an edge the
-planner refuses to plan, so neither is ever worth a step aside. Both the
-number of detours per route and their total length are capped, because a
-route is a script somebody has to walk: a few steps aside for what the
-map left beside the way is a player's own behaviour, and stopping at
-every last box on the level is a shopping trip whose every extra metre is
-more open-loop distance for the replay to drift along.
+planner refuses to plan, so neither is ever worth a step aside. An item
+the path already passes within reach of is collected on the way and is
+not a detour at all; the straightened route is only pinned through the
+point that reaches it. A step aside stands a margin inside the touch
+radius whenever a reached cell allows it, rather than on its rim where a
+replay that stops a little short collects nothing, and it never walks
+through a door the route does not press by then (the search opens every
+door it can reach, so the model it plans on shows doors open that the
+replay finds shut) or into a level-change volume. Both the number of
+detours per route and their total length are capped — per route, not per
+planning attempt: the closed loop below plans a route one segment at a
+time, and hands each search only what the segments already committed
+have left of both caps. A route is a script somebody has to walk: a few
+steps aside for what the map left beside the way is a player's own
+behaviour, and stopping at every last box on the level is a shopping
+trip whose every extra metre is more open-loop distance for the replay
+to drift along. Which item comes first is this project's own ranking,
+not a published behaviour.
 
 A run that ends by stepping off a ledge is not over when its ticks are:
 the plan measures that fall, and the script waits it out (`sqrt(2h/g)`
@@ -565,13 +577,18 @@ fixed terminal line ended it. It exits non-zero when the chain reaches
 fewer distinct maps than `--min-depth` (default 2), or when it re-entered
 a map it had already visited at any depth, or when it followed a level
 change with the player already dead ("The chain walk arrived dead."). The
-shipped chain walks eleven routes: with the harness loadout below it
-reaches twelve distinct maps and ends on "The chain walk has no further
-route." — it runs out of authored routes, not out of map — and with
-nothing (the default) it reaches eleven and dies on the last hop, where a
-route has to hold its ground through a scripted chain with empty hands.
+shipped chain walks eleven routes, and when it ends on "The chain walk has
+no further route." it has run out of authored routes, not out of map.
 `--start NAME` walks a different chain, and must name a map from
 `ohl-campaign`'s own cited table.
+
+**As measured when pickup detours landed, the default `cargo xtask
+chain-walk` fails at distinct depth 11** ("The chain walk arrived dead.":
+the eleventh hop's route holds its ground through a scripted chain with
+nothing to fight with), `--start-inventory weapon_357,ammo_357,ammo_357`
+restores distinct depth 12, Pass, and a default `cargo xtask
+plan-chain-hop` refuses to plan for the same reason (the chain it runs
+first does not arrive cleanly).
 
 `cargo xtask plan-chain-hop` assembles that same chain, runs it in one
 process, and hands the arrival point it ends at to `--plan-route`: it
@@ -593,24 +610,28 @@ do not, which is a fact about how far the chain has got rather than about
 the planner.
 
 `chain-walk` also prints **what the chain was carrying on each arrival**
-— one row per map entered, as two counts: how many weapons were owned and
-how many rounds of every kind were held together. That row is the honest
-measure of the pickup detours above: the routes are supposed to arrive
-carrying what the maps offered, and a row of zeroes says they did not.
-Counts only, never a weapon or ammo name.
+— one row per map entered after the start map, as two counts: how many
+weapons were owned and how many rounds of every kind were carried, in
+reserve and loaded in a clip together (so a reload between two arrivals
+does not read as rounds spent). A walk that arrives dead prints no row for
+the map it died entering. That row is the honest measure of the pickup
+detours above: the routes are supposed to arrive carrying what the maps
+offered, and a row of zeroes says they did not. Counts only, never a
+weapon or ammo name.
 
 Both commands take `--start-inventory LIST` and **default it to nothing**,
 which is what the campaign hands the player at the start map. The chain
-walks with what its own routes collect. The short list the two commands
-once defaulted to is kept as an explicit opt-in (and named on its own
-summary row when passed) — a **harness aid, not a claim about the
-campaign** — for telling "the routes could not reach a weapon" apart from
-"a weapon would not have been enough" on a hop whose route has to hold its
-ground while a scripted chain runs.
+walks with what its own routes collect. The summary always says which
+loadout a run had, on its own row: `(none)`, the short list the two
+commands once defaulted to (`weapon_357,ammo_357,ammo_357`, labelled
+**harness aid** — not a claim about the campaign), or any other list
+(labelled caller-supplied).
 
-It is meant to be **temporary**: the real answer is a planner that takes a
-bounded detour to a pickup lying near the path it was going to walk
-anyway, so the inventory a chain carries is one its own walk earned. Both
+That loadout used to stand in for something the planner lacked: a route
+that steps aside for what the map left beside it. The planner now does
+(pickup detours, above), so the list is no longer a stand-in for anything;
+it stays only as an explicit opt-in, for telling "the routes collected
+nothing to fight with" apart from "the hop fails even armed". Both
 commands build the app binary themselves with the same feature set
 (`dev-tools`, which is where this flag and `--plan-route` live), and a
 binary passed with `--bin` that does not accept the flag is reported as

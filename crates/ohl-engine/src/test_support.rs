@@ -4996,6 +4996,24 @@ pub const PLAN_PICKUP_ASIDE: f32 = 128.0;
 /// difference — which is exactly the geometry a real placed item has.
 pub const PLAN_PICKUP_Z: f32 = 24.0;
 
+/// The destination map [`PickupFixture::InALevelChange`]'s second
+/// `trigger_changelevel` leads to: the map a chain would have *come from*,
+/// which a planned route is told to avoid
+/// (`crate::route_plan::PlanConfig::avoid_goal_maps`).
+pub const PLAN_PICKUP_PREVIOUS_MAP: &str = "ohlplanpickupprev";
+
+/// The second `trigger_changelevel` volume [`PickupFixture::InALevelChange`]
+/// stands its weapon inside: beside the corridor, well clear of the line
+/// the walk takes along its middle.
+const PLAN_PICKUP_BACK_TRIGGER_MIN: [f32; 3] = [256.0, 64.0, 0.0];
+/// See [`PLAN_PICKUP_BACK_TRIGGER_MIN`].
+const PLAN_PICKUP_BACK_TRIGGER_MAX: [f32; 3] = [384.0, 192.0, 192.0];
+
+/// Where along the corridor the suit of [`PickupFixture::SuitFarWeaponNear`]
+/// stands, and how far off the middle line: further aside than
+/// [`PLAN_PICKUP_ASIDE`], against the opposite wall.
+pub const PLAN_PICKUP_FAR_ASIDE: f32 = 168.0;
+
 /// Which pickups [`plan_pickup_bsp`] stands beside its corridor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickupFixture {
@@ -5012,6 +5030,33 @@ pub enum PickupFixture {
     /// Nothing at all: the same corridor with an empty inventory to be
     /// had from it.
     Nothing,
+    /// A `weapon_357` beside the corridor early on, and an `ammo_357`
+    /// beside it further along: ammo that is only worth a step aside once
+    /// the route has picked up the weapon that fires it.
+    WeaponThenAmmo,
+    /// A weapon lying where the player starts — inside the touch radius of
+    /// the route's own first point, so no step aside is needed for it — and
+    /// a second weapon beside the corridor.
+    AtTheStartAndBeside,
+    /// A `weapon_357` beside the corridor, and an `item_suit` further along
+    /// and further aside: the nearer item is the one a "nearest first"
+    /// choice takes, the suit the one a player takes first.
+    SuitFarWeaponNear,
+    /// An `item_suit` lying where the player starts, and an `item_battery`
+    /// beside the corridor: once the suit is worn, the battery restores
+    /// armour.
+    BatteryWithSuitAtStart,
+    /// An `item_battery` beside the corridor early on and an `item_suit`
+    /// beside it further along: walked in that order, the battery is
+    /// touched before the suit is worn and grants nothing.
+    BatteryBeforeSuit,
+    /// The same two items the other way round: the suit first, then a
+    /// battery for it.
+    SuitBeforeBattery,
+    /// One weapon beside the corridor exactly where [`Self::OneWeapon`]'s
+    /// stands, but inside a second `trigger_changelevel` volume — one
+    /// leading to [`PLAN_PICKUP_PREVIOUS_MAP`].
+    InALevelChange,
 }
 
 impl PickupFixture {
@@ -5028,7 +5073,9 @@ impl PickupFixture {
         };
         match self {
             Self::Nothing => String::new(),
-            Self::OneWeapon => at("weapon_crowbar", 320.0, PLAN_PICKUP_ASIDE),
+            Self::OneWeapon | Self::InALevelChange => {
+                at("weapon_crowbar", 320.0, PLAN_PICKUP_ASIDE)
+            }
             Self::ManyWeapons => [
                 at("weapon_crowbar", 160.0, PLAN_PICKUP_ASIDE),
                 at("weapon_9mmhandgun", 288.0, -PLAN_PICKUP_ASIDE),
@@ -5039,6 +5086,36 @@ impl PickupFixture {
             .concat(),
             Self::BatteryOnly => at("item_battery", 320.0, PLAN_PICKUP_ASIDE),
             Self::HealthKitOnly => at("item_healthkit", 320.0, PLAN_PICKUP_ASIDE),
+            Self::WeaponThenAmmo => [
+                at("weapon_357", 160.0, PLAN_PICKUP_ASIDE),
+                at("ammo_357", 416.0, PLAN_PICKUP_ASIDE),
+            ]
+            .concat(),
+            Self::AtTheStartAndBeside => [
+                at("weapon_crowbar", 0.0, 0.0),
+                at("weapon_9mmhandgun", 320.0, PLAN_PICKUP_ASIDE),
+            ]
+            .concat(),
+            Self::SuitFarWeaponNear => [
+                at("weapon_357", 320.0, PLAN_PICKUP_ASIDE),
+                at("item_suit", 480.0, -PLAN_PICKUP_FAR_ASIDE),
+            ]
+            .concat(),
+            Self::BatteryWithSuitAtStart => [
+                at("item_suit", 0.0, 0.0),
+                at("item_battery", 320.0, PLAN_PICKUP_ASIDE),
+            ]
+            .concat(),
+            Self::BatteryBeforeSuit => [
+                at("item_battery", 160.0, PLAN_PICKUP_ASIDE),
+                at("item_suit", 480.0, PLAN_PICKUP_ASIDE),
+            ]
+            .concat(),
+            Self::SuitBeforeBattery => [
+                at("item_suit", 160.0, PLAN_PICKUP_ASIDE),
+                at("item_battery", 480.0, PLAN_PICKUP_ASIDE),
+            ]
+            .concat(),
         }
     }
 }
@@ -5050,20 +5127,33 @@ impl PickupFixture {
 ///
 /// The corridor itself is empty — no door, no lift, no monster — so the
 /// only thing that can make one plan differ from another here is whether
-/// the route steps aside for what the map left beside it.
+/// the route steps aside for what the map left beside it. The one
+/// exception is [`PickupFixture::InALevelChange`], which adds a second
+/// `trigger_changelevel` volume beside the corridor.
 ///
 /// No bytes here come from any game installation; see
 /// `docs/CLEAN_ROOM.md`.
 #[must_use]
 pub fn plan_pickup_bsp(next_map: &str, fixture: PickupFixture) -> Vec<u8> {
     let pickups = fixture.entities();
+    let back_trigger = fixture == PickupFixture::InALevelChange;
+    let back = if back_trigger {
+        format!(
+            "{{\n\"classname\" \"trigger_changelevel\"\n\"model\" \"*2\"\n\
+             \"map\" \"{PLAN_PICKUP_PREVIOUS_MAP}\"\n\"landmark\" \"{LANDMARK}\"\n\
+             \"origin\" \"0 0 0\"\n}}\n"
+        )
+    } else {
+        String::new()
+    };
     let entities = format!(
         "{{\n\"classname\" \"worldspawn\"\n}}\n\
          {{\n\"classname\" \"info_player_start\"\n\"origin\" \"0 0 40\"\n\
          \"angle\" \"0\"\n}}\n\
          {pickups}\
          {{\n\"classname\" \"trigger_changelevel\"\n\"model\" \"*1\"\n\
-         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n"
+         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n\
+         {back}"
     );
 
     let mut b = Bsp30Builder::new();
@@ -5099,6 +5189,171 @@ pub fn plan_pickup_bsp(next_map: &str, fixture: PickupFixture) -> Vec<u8> {
         0,
         0,
     );
+    if back_trigger {
+        let back_heads = b.push_collision_hulls(&[]);
+        b.push_model(
+            PLAN_PICKUP_BACK_TRIGGER_MIN,
+            PLAN_PICKUP_BACK_TRIGGER_MAX,
+            [0.0; 3],
+            back_heads,
+            2,
+            0,
+            0,
+        );
+    }
+
+    b.build()
+}
+
+// ---------------------------------------------------------------------
+// A corridor with a supply closet off it and a door across it: the
+// pickup detour's own door fixture (`crate::route_plan`)
+// ---------------------------------------------------------------------
+
+/// The map name [`plan_pickup_closet_bsp`] is published under.
+pub const PLAN_CLOSET_MAP: &str = "ohlplanclosetsynth";
+
+/// The closet fixture's bounding box: a corridor along `x` (`y` up to
+/// 64) and, carved out of the rest by two filler blocks, a closet off its
+/// north wall.
+const PLAN_CLOSET_MIN: [f32; 3] = [-64.0, -64.0, 0.0];
+/// See [`PLAN_CLOSET_MIN`].
+const PLAN_CLOSET_MAX: [f32; 3] = [704.0, 256.0, 256.0];
+
+/// The solid block west of the closet.
+const PLAN_CLOSET_WEST_MIN: [f32; 3] = [-64.0, 64.0, 0.0];
+/// See [`PLAN_CLOSET_WEST_MIN`].
+const PLAN_CLOSET_WEST_MAX: [f32; 3] = [128.0, 256.0, 256.0];
+
+/// The solid block east of the closet.
+const PLAN_CLOSET_EAST_MIN: [f32; 3] = [256.0, 64.0, 0.0];
+/// See [`PLAN_CLOSET_EAST_MIN`].
+const PLAN_CLOSET_EAST_MAX: [f32; 3] = [704.0, 256.0, 256.0];
+
+/// The closet's own door, across its doorway with an eight-unit margin to
+/// each jamb (too narrow for a body), taller than any jump.
+const PLAN_CLOSET_DOOR_MIN: [f32; 3] = [136.0, 64.0, 0.0];
+/// See [`PLAN_CLOSET_DOOR_MIN`].
+const PLAN_CLOSET_DOOR_MAX: [f32; 3] = [248.0, 80.0, 192.0];
+
+/// The door across the corridor itself, between the closet and the level
+/// change: the one the route has to press to get anywhere.
+const PLAN_CLOSET_GATE_MIN: [f32; 3] = [400.0, -56.0, 0.0];
+/// See [`PLAN_CLOSET_GATE_MIN`].
+const PLAN_CLOSET_GATE_MAX: [f32; 3] = [416.0, 56.0, 192.0];
+
+/// The `trigger_changelevel` volume at the far end of the corridor.
+const PLAN_CLOSET_TRIGGER_MIN: [f32; 3] = [576.0, -64.0, 0.0];
+/// See [`PLAN_CLOSET_TRIGGER_MIN`].
+const PLAN_CLOSET_TRIGGER_MAX: [f32; 3] = [704.0, 64.0, 192.0];
+
+/// Whether [`plan_pickup_closet_bsp`]'s closet has a door at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClosetDoor {
+    /// A named `func_door` across the doorway: it opens when *used*, and
+    /// nothing on the way to the level change ever uses it.
+    Shut,
+    /// No door: an open doorway.
+    Open,
+}
+
+/// A corridor whose level change lies behind a door across it (so no
+/// route plans without opening one), with a closet off its north wall
+/// holding a `weapon_357`, and — for [`ClosetDoor::Shut`] — a second door
+/// across the closet's doorway.
+///
+/// Both doors stand within use range of the corridor, so the planner's
+/// search opens both in the same round
+/// (`crate::route_plan::openable_doors`); only the one across the corridor
+/// is ever on the route's own path. That is the shape a pickup detour has
+/// to refuse: a step aside through a door the route never presses walks
+/// into a shut door when it is replayed.
+///
+/// No bytes here come from any game installation; see
+/// `docs/CLEAN_ROOM.md`.
+#[must_use]
+pub fn plan_pickup_closet_bsp(next_map: &str, closet: ClosetDoor) -> Vec<u8> {
+    let closet_door = match closet {
+        ClosetDoor::Shut => "{\n\"classname\" \"func_door\"\n\"targetname\" \"ohl_plan_closet\"\n\
+             \"model\" \"*3\"\n\"speed\" \"100\"\n\"wait\" \"-1\"\n\"angle\" \"-1\"\n\
+             \"origin\" \"0 0 0\"\n}\n"
+            .to_string(),
+        ClosetDoor::Open => String::new(),
+    };
+    let entities = format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"0 0 40\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"weapon_357\"\n\"origin\" \"192 192 {PLAN_PICKUP_Z}\"\n}}\n\
+         {{\n\"classname\" \"func_door\"\n\"targetname\" \"ohl_plan_gate\"\n\
+         \"model\" \"*1\"\n\"speed\" \"100\"\n\"wait\" \"-1\"\n\"angle\" \"-1\"\n\
+         \"origin\" \"0 0 0\"\n}}\n\
+         {{\n\"classname\" \"trigger_changelevel\"\n\"model\" \"*2\"\n\
+         \"map\" \"{next_map}\"\n\"landmark\" \"{LANDMARK}\"\n\"origin\" \"0 0 0\"\n}}\n\
+         {closet_door}"
+    );
+
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(&entities);
+
+    let world_heads = b.push_collision_hulls(&[
+        CollisionBrush::half_space([0.0, 0.0, 1.0], PLAN_CLOSET_MIN[2]),
+        CollisionBrush::half_space([0.0, 0.0, -1.0], -PLAN_CLOSET_MAX[2]),
+        CollisionBrush::half_space([1.0, 0.0, 0.0], PLAN_CLOSET_MIN[0]),
+        CollisionBrush::half_space([-1.0, 0.0, 0.0], -PLAN_CLOSET_MAX[0]),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], PLAN_CLOSET_MIN[1]),
+        CollisionBrush::half_space([0.0, -1.0, 0.0], -PLAN_CLOSET_MAX[1]),
+        CollisionBrush::box_brush(PLAN_CLOSET_WEST_MIN, PLAN_CLOSET_WEST_MAX),
+        CollisionBrush::box_brush(PLAN_CLOSET_EAST_MIN, PLAN_CLOSET_EAST_MAX),
+    ]);
+    let gate_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(
+        PLAN_CLOSET_GATE_MIN,
+        PLAN_CLOSET_GATE_MAX,
+    )]);
+    let trigger_heads = b.push_collision_hulls(&[]);
+
+    b.push_model(
+        PLAN_CLOSET_MIN,
+        PLAN_CLOSET_MAX,
+        [0.0; 3],
+        world_heads,
+        2,
+        0,
+        0,
+    );
+    b.push_model(
+        PLAN_CLOSET_GATE_MIN,
+        PLAN_CLOSET_GATE_MAX,
+        [0.0; 3],
+        gate_heads,
+        2,
+        0,
+        0,
+    );
+    b.push_model(
+        PLAN_CLOSET_TRIGGER_MIN,
+        PLAN_CLOSET_TRIGGER_MAX,
+        [0.0; 3],
+        trigger_heads,
+        2,
+        0,
+        0,
+    );
+    if closet == ClosetDoor::Shut {
+        let door_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(
+            PLAN_CLOSET_DOOR_MIN,
+            PLAN_CLOSET_DOOR_MAX,
+        )]);
+        b.push_model(
+            PLAN_CLOSET_DOOR_MIN,
+            PLAN_CLOSET_DOOR_MAX,
+            [0.0; 3],
+            door_heads,
+            2,
+            0,
+            0,
+        );
+    }
 
     b.build()
 }

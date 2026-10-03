@@ -437,6 +437,20 @@ pub fn count_pickup_actions(actions: &[PlanAction]) -> usize {
         .count()
 }
 
+/// How far the pickup detours `actions` holds walk, out and back, in
+/// world units: what they spend of
+/// [`ohl_engine::PlanConfig::pickup_detour_budget`].
+#[must_use]
+pub fn pickup_detour_length(actions: &[PlanAction]) -> f32 {
+    actions
+        .iter()
+        .map(|action| match action {
+            PlanAction::Pickup { detour, .. } => *detour,
+            _ => 0.0,
+        })
+        .sum()
+}
+
 /// `actions` truncated after its first ladder climb or ride.
 ///
 /// A climb is one of the two actions whose commands mean something else
@@ -626,7 +640,7 @@ pub fn script_text(start_yaw: f32, actions: &[PlanAction], config: &MoveConfig) 
             // actions so a route's pickups can be counted
             // ([`count_pickup_actions`]) rather than hidden among its
             // waits.
-            PlanAction::Pickup { seconds } | PlanAction::Wait { seconds } => {
+            PlanAction::Pickup { seconds, .. } | PlanAction::Wait { seconds } => {
                 push_wait(&mut lines, seconds);
             }
             PlanAction::UseDoor { yaw, open_seconds } => {
@@ -831,6 +845,9 @@ struct Planner<'a> {
     /// How many pickup detours the committed script holds so far,
     /// counted from the actions themselves ([`count_pickup_actions`]).
     pickups: RefCell<usize>,
+    /// How far those detours walk, out and back, in world units
+    /// ([`pickup_detour_length`]).
+    pickup_length: RefCell<f32>,
     /// The last chunk of commands committed. A plan that produces the
     /// very same chunk again has stopped making progress — the player
     /// walked it and ended up somewhere it plans identically from — and
@@ -839,6 +856,26 @@ struct Planner<'a> {
 }
 
 impl Planner<'_> {
+    /// The search configuration for the next attempt: the caller's own,
+    /// with both pickup detour caps reduced by what the committed script
+    /// has already spent of them.
+    ///
+    /// The caps bound a *route*. This loop plans a route one committed
+    /// chunk at a time ([`PlanOptions::segments_per_attempt`]) and searches
+    /// afresh after each, and every search applies the caps it is given to
+    /// the route it plans from there — so handing each search the full
+    /// caps would let a route allowed two detours take one more after
+    /// every chunk.
+    fn plan_config(&self) -> PlanConfig {
+        let mut config = self.options.plan.clone();
+        config.max_pickup_detours = config
+            .max_pickup_detours
+            .saturating_sub(*self.pickups.borrow());
+        config.pickup_detour_budget =
+            (config.pickup_detour_budget - *self.pickup_length.borrow()).max(0.0);
+        config
+    }
+
     /// Reports one planning attempt: bounded aggregates only — how far
     /// the search got, how much of a route came out of it, and whether
     /// that route ends at the goal or only closer to it. No coordinate,
@@ -910,6 +947,7 @@ impl Planner<'_> {
     /// waiting and looking again as [`PlanOptions::settle_rounds`]
     /// allows.
     fn step(&self, prefix: &str) -> Result<String, PlanFailure> {
+        let config = self.plan_config();
         let mut waited = String::new();
         let mut last_rejection: Option<PlanRejection> = None;
         for round in 0..=self.options.settle_rounds.min(MAX_SETTLE_ROUNDS) {
@@ -919,7 +957,7 @@ impl Planner<'_> {
             };
             let facing = scratch.camera().yaw;
             let move_config = *scratch.move_config();
-            let plan = match ohl_engine::plan_route(&mut scratch, &self.options.plan) {
+            let plan = match ohl_engine::plan_route(&mut scratch, &config) {
                 Ok(plan) => plan,
                 Err(rejection) if rejection.error == PlanError::GoalUnreachable => {
                     last_rejection = Some(rejection);
@@ -965,6 +1003,7 @@ impl Planner<'_> {
             Self::report(&plan);
             *self.climbs.borrow_mut() += count_climb_actions(committed);
             *self.pickups.borrow_mut() += count_pickup_actions(committed);
+            *self.pickup_length.borrow_mut() += pickup_detour_length(committed);
             self.previous.borrow_mut().clone_from(&text);
             *self.last.borrow_mut() = Some(plan);
             waited.push_str(&text);
@@ -1013,6 +1052,7 @@ pub fn plan(
         previous: RefCell::new(String::new()),
         climbs: RefCell::new(0),
         pickups: RefCell::new(0),
+        pickup_length: RefCell::new(0.0),
     };
 
     let (text, attempts) = refine(
@@ -1055,11 +1095,11 @@ mod tests {
     use super::*;
     use ohl_engine::MemoryAssets;
     use ohl_engine::test_support::{
-        LiftFixture, PLAN_LADDER_MAP, PLAN_LIFT_MAP, PLAN_PICKUP_MAP,
-        PLAN_SCRIPTED_LETHAL_WAIT_DELAY, PLAN_SCRIPTED_MAP, PLAN_SCRIPTED_MONSTER_MODEL,
-        PLAN_TURN_MAP, PickupFixture, ScriptedStart, plan_ladder_bsp, plan_lift_bsp,
-        plan_pickup_bsp, plan_pit_bsp, plan_scripted_goal_bsp, plan_scripted_monster_model_bytes,
-        plan_turn_bsp,
+        ClosetDoor, LiftFixture, PLAN_CLOSET_MAP, PLAN_LADDER_MAP, PLAN_LIFT_MAP,
+        PLAN_PICKUP_ASIDE, PLAN_PICKUP_MAP, PLAN_SCRIPTED_LETHAL_WAIT_DELAY, PLAN_SCRIPTED_MAP,
+        PLAN_SCRIPTED_MONSTER_MODEL, PLAN_TURN_MAP, PickupFixture, ScriptedStart, plan_ladder_bsp,
+        plan_lift_bsp, plan_pickup_bsp, plan_pickup_closet_bsp, plan_pit_bsp,
+        plan_scripted_goal_bsp, plan_scripted_monster_model_bytes, plan_turn_bsp,
     };
 
     fn fixture() -> (MemoryAssets, Game) {
@@ -1114,6 +1154,86 @@ mod tests {
             0,
             "without the detour the walk arrives empty-handed"
         );
+    }
+
+    /// Loads the pickup corridor in one of its shapes, with its assets.
+    fn pickup_fixture(fixture: PickupFixture) -> (MemoryAssets, Game) {
+        let mut assets = MemoryAssets::new();
+        assets.insert(
+            &format!("maps/{PLAN_PICKUP_MAP}.bsp"),
+            plan_pickup_bsp("ohlplannext", fixture),
+        );
+        let game = Game::load(&assets as &dyn AssetSource, PLAN_PICKUP_MAP).expect("fixture loads");
+        (assets, game)
+    }
+
+    /// The detour caps bound a *route*, not one planning attempt. The
+    /// loop commits one segment per attempt and plans again from where
+    /// that left the player, so a cap applied afresh to every attempt
+    /// would let a route allowed two detours take all five weapons the
+    /// corridor offers, one fresh allowance at a time. Both caps are
+    /// carried across the attempts: two detours buy two weapons, and a
+    /// length budget that pays for one out-and-back buys one.
+    #[test]
+    fn the_detour_caps_hold_for_the_whole_route() {
+        let (assets, mut game) = pickup_fixture(PickupFixture::ManyWeapons);
+        let source = &assets as &dyn AssetSource;
+        let options = PlanOptions {
+            plan: PlanConfig {
+                max_pickup_detours: 2,
+                ..PlanConfig::default()
+            },
+            ..PlanOptions::default()
+        };
+        assert_eq!(
+            options.segments_per_attempt, 1,
+            "the default loop re-plans after every segment, which is what this test is about"
+        );
+        let route = plan(&mut game, source, &options).expect("the corridor plans");
+        assert_eq!(route.pickups, 2, "two detours over the whole route");
+        // A later run may pass within reach of another weapon on its way
+        // to the level change, which collects it without a detour; what
+        // the cap bounds is the steps aside.
+        assert!(
+            game.inventory_totals().0 >= 2,
+            "and both of the weapons it stepped aside for carried at the end of it"
+        );
+
+        let (_, mut game) = pickup_fixture(PickupFixture::ManyWeapons);
+        let options = PlanOptions {
+            plan: PlanConfig {
+                // Two legs of one step aside, and a little slack for where
+                // the walk's own grid puts the stand point.
+                pickup_detour_budget: PLAN_PICKUP_ASIDE * 2.0 + 64.0,
+                ..PlanConfig::default()
+            },
+            ..PlanOptions::default()
+        };
+        let route = plan(&mut game, source, &options).expect("the corridor plans");
+        assert_eq!(
+            route.pickups, 1,
+            "the budget pays for one detour over the whole route"
+        );
+        assert!(game.inventory_totals().0 >= 1);
+    }
+
+    /// The closet fixture end to end: a planned route never steps aside
+    /// through a door it does not press, so the route the loop replays is
+    /// the one it planned — it reaches the level change, and the weapon
+    /// behind the shut closet door stays where it is.
+    #[test]
+    fn a_route_past_a_shut_closet_plans_and_replays() {
+        let mut assets = MemoryAssets::new();
+        assets.insert(
+            &format!("maps/{PLAN_CLOSET_MAP}.bsp"),
+            plan_pickup_closet_bsp("ohlplannext", ClosetDoor::Shut),
+        );
+        let source = &assets as &dyn AssetSource;
+        let mut game = Game::load(source, PLAN_CLOSET_MAP).expect("the fixture loads");
+        let route = plan(&mut game, source, &PlanOptions::default())
+            .expect("the route past the closet plans, replays and validates");
+        assert_eq!(route.pickups, 0);
+        assert_eq!(game.inventory_totals().0, 0, "the closet stayed shut");
     }
 
     /// The end-to-end promise: on a corridor with a turn and a closed
@@ -1714,6 +1834,7 @@ mod tests {
             previous: RefCell::new(String::new()),
             climbs: RefCell::new(0),
             pickups: RefCell::new(0),
+            pickup_length: RefCell::new(0.0),
         }
     }
 
