@@ -11,10 +11,11 @@
 # payload): from the player's spawn point, advance forward through a long
 # sequence of turns, passing near a monster along the way, until a level
 # change fires; then wait out the transition. No door needs opening on
-# this route. Until M9.45 this walk also asserted "A monster took
-# damage." present; every hit it sees lands on a species whose published
-# damage rules ignore that hit's type, and such a hit no longer counts as
-# damage.
+# this route. M9.45 removed monster damage while all reachable attacks
+# were ignored by the target's published immunity. Projectile integration
+# now requires damage from grunt grenades: the published 100-point blast
+# hurts Gargantuas. All commands and other assertions remain unchanged;
+# see FORMAT_SOURCES, Live projectiles and deployables.
 #
 # Expected fixed log lines, asserted by the harness rather than parsed
 # from this file:

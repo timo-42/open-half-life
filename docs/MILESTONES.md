@@ -8042,8 +8042,9 @@ a test that was seen to fail without it.
   queue actually cost something (`DamageOutcome::hurt`: health lost, or
   a Gonarch's node health spent; not a hit a species ignores, a shield
   took, or an `Impervious` prop drew), and the engine counts only those
-  hits as damage applied. That took "A monster took damage." out of two
-  more combat-smoke scenarios (above). A monster's `TriggerCondition`
+  hits as damage applied. At this milestone that took "A monster took damage."
+  out of two more combat-smoke scenarios (above); live projectile integration
+  later requires it again when grunt blast damage becomes reachable. A monster's `TriggerCondition`
   "took damage" still reads every hit that reached it, as it did before
   this entry gave hits a type.
 - *A route that leads into its cycle.* `ohl_game::PathChain::build` marks
@@ -8081,8 +8082,8 @@ the cited `path_corner` angles (the airframe faces its direction of
 travel) and "New train speed". Whether a second `use` stops an aircraft
 (here it does not). A train on a route that leads into a cycle still
 dead-ends at the route's last node, as it did before this entry.
-Explosives against a gargantua, which wait on projectiles being spawned
-at all. Whether a retail aircraft honours a `path_corner`'s `message` is
+At M9.45, explosives against a gargantua waited on projectiles being spawned
+at all; the live projectile milestone below closes that wiring gap. Whether a retail aircraft honours a `path_corner`'s `message` is
 a reading of the `path_corner` page, `TODO(black-box)`. A
 `monstermaker` child of one of the four kinds gets no boss component (the
 maker's spawn path does not call `attach`). The `sk_bigmomma`/
@@ -8299,5 +8300,13 @@ resetting restored secondary cooldown; losing the restored homing target;
 removing node-health assignment; excluding mortar owner splash; disabling the
 guard policy; and cancelling a grenade when its shooter dies. Every source
 mutation was restored before rerunning the focused baseline.
+
+The two authored combat scenarios previously forbidding all monster damage now
+require it, with all other assertions and every parsed script command unchanged.
+The observed cause is the live grunt grenade's published 100 BLAST profile
+reaching a Gargantua's published blast vulnerability, retaining the original
+attacker. FORMAT_SOURCES records the citations and distinguishes the project's
+readiness, arcs, radius and self-splash choices. Temporary observations were
+removed byte-for-byte before the clean release rebuild.
 
 **Gates:** full contract gates pending on the final rebased tree.
