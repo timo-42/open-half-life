@@ -1016,11 +1016,14 @@ the real game before this project may claim movement parity.
   keyvalue as "damage dealt to anything blocking the door" / "the train's
   movement", which only makes sense if "blocked" is itself a documented
   mover state, so a push that cannot fully clear the player is reported to
-  `Level::movers_blocked`. **TODO(black-box)**: nothing yet consumes that
+  `Level::movers_blocked`. ~~**TODO(black-box)**: nothing yet consumes that
   signal to halt, reverse, or apply a blocking mover's `dmg` to the player —
   matching the crush-detection gap already recorded for `TrackTrain::dmg`
   under "Track trains and paths" below, this needs the same real-game
-  observation before a formula is guessed at. Finally,
+  observation before a formula is guessed at.~~ **Closed** — see "Mover
+  blocking, branching paths and monster-opened doors" at the end of this
+  document for the citations, the push that now actually pushes, and what
+  each mover does when blocked. Finally,
   `ohl-engine::render::platform_offset` was added alongside this package
   because `func_plat`/`func_platform` had a `Platform` component and its
   own advancing `MoverState`/timer (see "Entity keyvalues and map logic"
@@ -3322,10 +3325,12 @@ Behavioural facts cited from those pages and how they are modeled
     `ohl_game::track_train`'s `a_restarted_train_resumes_at_its_own_speed`
     and by `ohl_game::logic`'s
     `a_released_ride_reaches_the_door_group_before_its_wait_expires`.
-  - `path_track`'s documented `altpath` (branch path) keyvalue exists in
+  - ~~`path_track`'s documented `altpath` (branch path) keyvalue exists in
     the public documentation but is **not implemented**; see the
     `TODO(black-box)` on `ohl_game::track_train::PathChain` (branching) —
-    a train instead simply follows the single `target` chain.
+    a train instead simply follows the single `target` chain.~~
+    **Implemented**; see "Mover blocking, branching paths and
+    monster-opened doors" at the end of this document.
   - **`func_trackchange`/`func_trackautochange`**: the moving piece of
     track that carries a train from one chain to another. Sven Co-op's own
     wiki ([wiki.svencoop.com: func_trackautochange](https://wiki.svencoop.com/Func_trackautochange),
@@ -3398,7 +3403,10 @@ Behavioural facts cited from those pages and how they are modeled
       — rather than replaying the platform's own `height` on it — is what
       makes the arrival land exactly on the destination node the pages
       name, with no snap for a passenger to be scraped off by.
-    - **The "Start at Bottom" end-of-chain reversal is not implemented.**
+    - **The "Start at Bottom" end-of-chain reversal ~~is not implemented~~
+      is implemented** — see "Mover blocking, branching paths and
+      monster-opened doors" at the end of this document; the paragraph
+      below is kept as the record of the gap it closed.
       The parenthesised clauses quoted above say that with that flag set,
       the two names point at the *other* end of each chain: `toptrack`
       becomes the first node of the top path and `bottomtrack` the last
@@ -5406,11 +5414,13 @@ mouse look) while the active sequence's "Freeze Player" flag is set.
     and after this correction) since it only loads maps, never scripts
     player movement.
 
-    **`TODO(black-box)`**: whether a monster (as opposed to the player)
+    **`TODO(black-box)`**: ~~whether a monster (as opposed to the player)
     can open a touch-eligible door by walking into it is not implemented
     or tested by this package — `touch_doors` is called only with the
     player's own hull box, the same scope `touch_triggers`/
-    `touch_rot_buttons` already have; and whether the real engine's touch
+    `touch_rot_buttons` already have~~ (closed: `touch_doors_by`, see
+    "Mover blocking, branching paths and monster-opened doors" at the end
+    of this document); and whether the real engine's touch
     check re-triggers on every tick a mover keeps overlapping an
     already-open door (as opposed to only on the closed-to-open rising
     edge this project chose) is not stated by either cited source and is
@@ -6792,3 +6802,249 @@ be taken again, and a card's `target` fired a second time.
   nodes the navigation graph reads, and entities found only by name; a
   count that called all of those ignored would be wrong more often than
   right, and an honest one needs an audit of every consumer first.
+
+## Mover blocking, branching paths and monster-opened doors
+
+Five gaps this document had recorded against brush movers, closed together
+(`docs/MILESTONES.md`, the entry titled "The door that gives way"). Every
+citation here was fetched directly (no search-summary caveat applies)
+unless it says otherwise; reviewed 2026-09-10.
+
+### Sources
+
+- [Sven Co-op wiki: `Func_door`](https://wiki.svencoop.com/Func_door) —
+  the same page item 30 above already cites for the touch rule. Quoted
+  here: `dmg` "Damage to apply to whatever blocks the door"; the blocked
+  behaviour, "will apply its damage and, by default, move back into the
+  position it came from and idle without further action", with the one
+  exception "if the door has already been opened and its movement is a
+  result of automatic delayed closing; it will then attempt to close every
+  time the delay runs out, till it closes without getting blocked"; and the
+  spawnflag "512 : Monsters Can't" — "If set, monsters cannot cause this
+  door to move. They can, otherwise, even if it is a use-only- or
+  trigger-only-door, so don't forget to set this when you need it!"
+- [Sven Co-op wiki: `Func_door_rotating`](https://wiki.svencoop.com/Func_door_rotating):
+  `dmg` "Damage to apply to whatever blocks the door"; "512 : Monsters
+  Can't", with the same sentence as `Func_door` (re-fetched 2026-10-03;
+  the earlier shortened quote here was a paraphrase). The page does not
+  restate the blocked behaviour; both classnames share `Door`'s state
+  machine in this project (item 24), so `Func_door`'s sentence is applied
+  to both.
+- [Sven Co-op wiki: `Func_rotating`](https://wiki.svencoop.com/Func_rotating):
+  `dmg` "Set the amount of damage to inflict on the object blocking the
+  func_rotation's rotation"; and its spawnflags table, "1 Start on", "2
+  Reverse direction", "4 X-axis", "8 Y-axis", "16 Acc/Dcc", "32 Fan pain",
+  "64 Not solid", plus three sound-radius bits. **This resolves the caveat
+  items 24 and 26 carried**: `func_rotating`'s "Start On" bit value (`1`)
+  is now a fetched citation, not an FGD-convention reading. "Fan pain",
+  "Acc/Dcc" and "Not solid" remain unimplemented (see "Not done" in the
+  milestone entry).
+- [Sven Co-op wiki: `Func_plat`](https://wiki.svencoop.com/Func_plat):
+  `dmg`, labelled "Damage inflicted when blocked" — "Damage to deal when
+  entity is blocked".
+- [Sven Co-op wiki: `Func_tracktrain`](https://wiki.svencoop.com/Func_tracktrain):
+  `dmg` ("Damage on crush") "Damage to deal to entities that attempts to
+  block it". `func_train`'s own `dmg` keeps the TWHL citation already
+  recorded under "Mover riders" (item 9): the Sven page's `dmg` row
+  repeats its "Angular Velocity" text, a documentation error noted here
+  so nobody re-cites it. `func_pendulum`'s `dmg` keeps item 27's TWHL
+  citation ("When movement is blocked by the player, he will receive this
+  amount of damage").
+- [Sven Co-op Manor: `path_track`](https://www.svenmanor.com/entity-guide/path_track)
+  and [Sven Co-op wiki: `Path_track`](https://wiki.svencoop.com/Path_track):
+  "Branch Path" (`altpath`) — "The name of alternative path_track to go.
+  If path_track is triggered, it's change it's next stop target to the
+  name of 'Branch Path' path_track"; spawnflags "1 Disabled" ("Start
+  disabled. Trigger path to enable it"), "2 Fire once", "4 Branch Reverse"
+  ("Swap the branch path and next target on start"), "8 Disable train".
+  The wiki adds that with no branch defined, triggering the node makes
+  "the train ... stop at the last enabled path_track", and that a node
+  with only a branch and no `target` "treats it as a dead end until
+  triggered". A search-engine summary of the (403-to-automated-fetch)
+  [Valve Developer Community `path_track` (GoldSrc)](https://developer.valvesoftware.com/wiki/Path_track_(GoldSrc))
+  page, reviewed the same day, describes the same keyvalue and adds that
+  triggering "can make it behave either like a railway signal
+  (enabling/disabling passage) or a railway switch (goes one way or the
+  other), depending on whether a Branch path is specified".
+- `func_trackchange`'s "Start at Bottom" wording: the two pages already
+  quoted in full under "Track trains and paths" (`toptrack`/`bottomtrack`
+  and their parenthesised "Start at Bottom" clauses). No new source.
+
+### Project behaviour — blocked movers
+
+"Blocked" is decided where the push is: `ohl_physics::push_from_mover`
+(the "Mover riders" item above) no longer traces from the player's own
+origin — which, being already inside the mover's new solid, could travel
+nowhere and so reported every embed as a block — but tests the destination
+the mover's own move carries the player to, the way `ride_vertical_mover`
+already resolved a rising lift. A clear destination is a push (the player
+is moved the mover's own distance); a solid one — a wall behind them, or
+an embed deeper than one step's move — is a block. The brush the player is
+*standing on* is never pushed or reported: a lift's top face lands a hair
+inside its own rider every step and the ride blend owns that case.
+`ohl-engine`'s phase 12 (`Systems::resolve_blocked_movers`) drains
+`Level::movers_blocked` through the new `ohl_game::logic::Simulation::
+block_mover`, and runs the same destination test for every living
+monster against `Level::monster_collision` — pushing a monster whose
+destination is clear (nothing else ever moved a monster out of a door's
+way) and reporting one whose destination is not. Damage goes through the
+one damage queue every other hit uses, typed `DamageType::CRUSH`, with the
+mover as inflictor and no attacker. The crush type is project-authored:
+`func_tracktrain`'s "Damage on crush" label is the only cited page that
+names one, and the same type is used for every mover rather than leaving
+the others untyped.
+
+`block_mover` applies the cited sentence to a `Door`: an `Opening` door
+becomes `Closing` and a `Closing` one `Opening`, its timer re-expressed
+(`timer -> travel - timer`) so the leaf keeps the pose it was blocked at
+(`ohl_game::pose::mover_fraction` reads `1 - timer/T` opening and
+`timer/T` closing). A door reopened this way reaches `Open` with its
+ordinary `wait` and so tries to close again once it runs out — the cited
+exception — while one blocked while opening closes and idles at `Closed`,
+since nothing re-triggers it; `wait -1` stays open, as it would anyway.
+The reversal happens whether or not `dmg` is set: the cited sentence
+describes damage and reversal as one response, and a door with no `dmg`
+still has to get out of the way. `dmg` is dealt once per blocked
+*attempt*: the reversal moves the door off the blocker on the very next
+step, so the destination test stops reporting it. Every other mover keeps
+moving and deals only its `dmg`: `Rotator`, `Platform` and `Pendulum`
+through a new spawn-only `ohl_game::registry::BlockDamage` component (a
+`dmg` field on any of the three would widen a frozen save section — item
+28's rule), `func_train`/`func_tracktrain` through `TrackTrain::dmg`.
+**`TODO(black-box)`**: no reviewed page says whether a blocked
+`func_rotating`/`func_plat`/`func_tracktrain` halts or reverses; only the
+damage is implemented. `func_platrot`, `func_rot_button`,
+`momentary_rot_button`, `momentary_door`, `func_trackchange` and
+`func_pushable` declare no cited `dmg` and report nothing when blocked.
+
+Guarded by `ohl_physics`'s `tests/mover_riders.rs`
+(`a_mover_sliding_into_the_player_pushes_them_its_own_distance`,
+`a_push_that_cannot_clear_the_player_is_reported_blocked`),
+`ohl_game::logic`'s `a_blocked_door_reverses_from_the_pose_it_was_blocked_
+at_and_reports_its_dmg`, `a_blocked_door_without_dmg_reverses_but_deals_
+nothing` and `non_door_movers_report_their_dmg_and_keep_moving_when_
+blocked` (a `func_rotating`, `func_plat`, `func_pendulum` and
+`func_tracktrain` each reporting its own `dmg`), and end to end by
+`crates/ohl-engine/tests/blocked_movers.rs`'s
+`a_door_closing_on_the_player_pushes_them_then_reverses_and_deals_its_dmg`
+(a real `Game` loop: the player walks a sliding door open, is steered to a
+stop in the doorway, is pushed to the corridor wall by the closing leaf,
+and the door reverses and deals its `dmg` exactly once per attempt) and
+`a_door_closing_on_a_monster_pushes_it_then_reverses_and_deals_it_the_dmg`
+(the same with a `monster_barney` a `scripted_sequence` walked into the
+doorway: the leaf pushes it 40 units to the wall, reverses, and the guard,
+not the player, loses the door's `dmg` once per attempt).
+
+### Project behaviour — branching paths
+
+`ohl_game::registry::PathBranch` carries a `path_track`'s `altpath`;
+`Path::branch_active` is which of the two names a chain walk follows from
+that node, starting `true` under "Branch Reverse"
+(`ohl_game::track_train::path_branch_reversed_from_flags`). `Simulation::
+activate`'s new `Path` arm flips it on a toggle and sets it outright for
+the documented `triggerstate` on/off of a `trigger_relay`/`trigger_auto`
+("on" is the branch), then re-splices every train's chain
+(`TrackTrainState::resplice_chain`): the nodes up to the one the train is
+at — or, mid-segment and moving forward, the one it is heading for — are
+kept exactly as they were and the rest is re-resolved against the
+switches as they now stand. So a switch thrown ahead of a train re-routes
+it, one thrown behind it changes nothing for it, and a train mid-way to a
+node it was already sent to still arrives there. `PathChain::build` now
+resolves each node's next name the same way, so a train spawned against a
+reversed switch already holds the branch. Three bounded readings, all
+**`TODO(black-box)`**: (a) triggering a `path_track` with no branch does
+nothing here — the cited "the train stops" needs the "Disabled" spawnflag
+(bit 1), which this project reads as "Wait for retrigger" for `path_track`
+and `path_corner` alike (the `PATH_TRACK_STOP_FLAG` item above) and does
+not otherwise implement; (b) only the forward direction is re-resolved,
+since the cited keyvalue is an alternative *next* target and no page
+describes a switch's effect on a train approaching it backward; (c)
+`Path::branch_active` is not persisted — `Path` is reached by no save
+section, and no new tag was added for one bool — so a thrown switch
+reverts to its spawn state on load, the same shape of gap "Not saved"
+under "Track trains and paths" already records for a relinked train.
+
+Guarded by `ohl_game::track_train`'s `resplice_re_resolves_only_the_
+chain_ahead_of_the_train`, `ohl_game::logic`'s `a_triggered_path_track_
+sends_an_approaching_train_down_its_branch`, `a_path_track_switch_
+honours_use_types_and_branch_reverse` and `a_switch_thrown_behind_a_
+train_leaves_its_track_alone`, and `crates/ohl-engine/tests/
+path_track_branch.rs` (a `trigger_auto` firing a `trigger_relay` with
+`triggerstate` "1" at a fork, with the untriggered fork as the control).
+
+### Project behaviour — a train handed a path's far end
+
+The "Start at Bottom" reversal recorded as not implemented under
+"Track trains and paths" is implemented as one rule: the documented name
+that is the *last* node of its path — `toptrack` without the flag,
+`bottomtrack` with it — hands the train the whole chain leading up to it
+(`PathChain::build_ending_at`: `target` links walked backward to the
+head, bounded, lowest-id predecessor on a tie, falling back to the named
+node alone when the forward walk does not end there) and seats it at that
+far end travelling *backward* (`TrackTrainState::relink_at_end`), the only
+direction that leaves the node along the path. The name that is the
+*first* node of its path is seated forward exactly as before. Which way a
+train handed a chain's far end travels is this project's reading; no page
+reviewed states it. **`TODO(black-box)`**. Guarded by
+`ohl_game::track_train`'s `a_chain_built_ending_at_a_node_is_ridden_
+backward_from_that_end` and `ohl_game::logic`'s `a_train_handed_a_paths_
+far_end_rides_it_backward` (a "Start at Bottom" platform that goes up
+empty and brings a train down onto the bottom path's last node).
+
+### Project behaviour — monsters open doors
+
+`Simulation::touch_doors_by(registry, toucher, mins, maxs)` is the
+generalisation `touch_doors` (item 30) is now the `None`-toucher case of:
+`ohl-engine`'s phase 12 calls it once per living monster with that
+monster's own `Actor::hull` box at its `Actor::origin` (a script-held
+monster included — a `scripted_sequence` walking its monster to a mark is
+exactly the route through a door this exists for), with the edge tracked
+per `(monster, door)` and pruned of despawned monsters once per tick.
+The same three exclusions apply (a named door, "Use Only", "Passable"),
+plus the cited "Monsters Can't" spawnflag as a fourth, carried on the new
+spawn-only `DoorMonstersCant` marker and read only when the toucher is a
+monster: the player's touch, a `use` press and a fire chain are all
+unaffected, since the cited sentence is about monsters.
+
+Keeping the first two exclusions for a monster is **project-authored**,
+and narrower than the cited page, which says a monster *can* move a door
+without the flag "even if it is a use-only- or trigger-only-door". This
+project models "a monster causes a door to move" as the monster's hull
+touching it, nothing more: there is no notion here of a monster routing
+through a door and opening it because its path is blocked. Under that
+model, dropping the two exclusions would let any monster that idles or
+is shoved against a trigger-only door open it ahead of the trigger a map
+gates it on, which is a broader effect than the page describes rather
+than the same one. **`TODO(black-box)`**: monsters opening use-only and
+trigger-only doors is not implemented; a map that relies on it keeps such
+a door shut against its monsters. The monster is
+passed as the activator, so a `func_door_rotating` it opens swings away
+from *it* (item 26's rule reads the activator's own `Transform`). Guarded
+by `ohl_game::logic`'s `a_monster_touch_opens_an_eligible_door_unless_
+monsters_cant_is_set`, `each_toucher_has_its_own_edge_on_a_door` (the
+player and two monsters arriving at one door in turn, each newcomer
+opening it once) and `a_rotating_door_a_monster_touches_open_swings_away_
+from_the_monster`, and `crates/ohl-engine/tests/blocked_movers.rs`'s
+`a_monster_walking_a_route_through_a_door_opens_it` / `a_monsters_cant_
+door_stays_closed_against_a_monsters_route` (a `monster_barney` walked by
+a `scripted_sequence` through a closed sliding door, with the flag as the
+control) and `a_dead_monster_at_a_door_does_not_open_it` (a guard killed
+before the first tick, inside the door's touch margin, with a living one
+as the control).
+
+### Correction to items 24 and 26 (appended, nothing revised in place)
+
+Item 24's closing paragraph — "A rotating mover never sets
+`Level::brush_velocity` to anything but zero, so it cannot carry a
+standing rider" — describes the state before item 26 (M9.6) landed, and
+item 26 records the fix: `Level::brush_rotation` and
+`Level::brush_ride_velocity` carry a rider on a `func_rotating`/
+`func_door_rotating` at the tangential velocity of the point under their
+feet, and M9.33's `func_platrot` composes that with its translation. That
+was re-verified for this entry (`crates/ohl-engine/tests/rotating_riders.
+rs`, `platrot_rider.rs`, `platrot_rider_long_ride.rs`, and
+`ohl_physics`'s `tests/rotating_riders.rs` all pass unchanged) and
+nothing was added for it; the assignment that produced this section
+listed it as open on the strength of item 24's paragraph alone. The
+`dmg`/blocking half of the same paragraph, and item 26's and item 27's
+repetition of it, is what this section closes.
