@@ -2609,7 +2609,7 @@ constant carrying its citation:
   package does not restate it, it reads `weapons::spec`.
 
 **BBO, not shipped as a measured number in M7.3:** projectile speeds and blast
-radii used by that package (M9.NEXT later sources controller head-ball speed
+radii used by that package (M9.48 later sources controller head-ball speed
 and Gonarch mortar radius), the bounce
 restitution and surface drag, the resting-speed threshold, the RPG's and
 hornet's turn rates, the hornet's and crossbow bolt's lifetimes, the MP5
@@ -3377,7 +3377,7 @@ unless stated as a project decision):
   arriving rather than skipping keeps the node's `reachtarget` firing).
   The stall clock is not saved; a load restarts it. The arrival
   radius, the claw reach, the mortar range and the attack pauses are
-  placeholders. M9.NEXT replaces the mortar's earlier immediate single hit
+  placeholders. M9.48 replaces the mortar's earlier immediate single hit
   with a gravity-affected projectile using its published blast radius.
   Baby-headcrab births are not modelled.
 - **The Nihilanth**: the reserve is one pool of `20 × per-sprite` points
@@ -7523,7 +7523,7 @@ only the scaled amount and counts one hit, rather than two. No reflection,
 underwater firing restrictions, beam splash, charge drain schedule, or hornet
 regeneration timing is asserted as newly implemented here.
 
-## Live projectiles and deployables (M9.NEXT)
+## Live projectiles and deployables (M9.48)
 
 Published pages re-read 2026-10-04. TWHL pages other than Apache were read as
 page text via `https://r.jina.ai/https://twhl.info/wiki/page/<page>` after direct

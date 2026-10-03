@@ -7886,8 +7886,10 @@ every hit at a `Not solid` prop before it is queued, and `ohl-ai`'s own
 intake now answers one with `DamageResponse::IMPERVIOUS` whatever the
 species lookup says, so the marker means the same in both crates.
 
-**What hurts a gargantua today: the egon and a crushing mover, nothing
-else.** The cited immunity is kept, and it narrows the shipped engine
+**At M9.45, before live projectile integration, the egon and a crushing
+mover were the reachable ways to hurt a gargantua.** The following paragraph
+records that historical state; the live projectile milestone below closes
+the missing BLAST wiring. The cited immunity is kept, and it narrows the shipped engine
 further than the page does, because two of the three types it lets
 through never reach a monster yet. `BLAST` comes only from a projectile
 or a deployable detonating, and nothing reachable creates one: a weapon's
@@ -8248,7 +8250,7 @@ was captured and sanitized in memory; temporary captures were removed and no
 raw payload report was persisted. Dependencies unchanged; cargo-deny not
 required. The final evidence commit changes only this paragraph.
 
-## M9.NEXT — Live projectiles, deployable controls and additive continuation
+## M9.48 — Live projectiles, deployable controls and additive continuation
 
 Player RPG, hand grenade, MP5 launcher, satchel and tripmine input now reaches
 the one Systems-owned projectile simulation. Monster grenade, spit, controller
@@ -8309,4 +8311,22 @@ attacker. FORMAT_SOURCES records the citations and distinguishes the project's
 readiness, arcs, radius and self-splash choices. Temporary observations were
 removed byte-for-byte before the clean release rebuild.
 
-**Gates:** full contract gates pending on the final rebased tree.
+**Gates:** on combined M9.47 tree `8704561`: fmt check; workspace clippy
+with all targets in default, `dev-tools` and all-feature configurations,
+all with warnings denied; workspace tests **2810 passed, zero failed,
+31 ignored**; tracked-file policy; crate dependency graph; dev-tools release
+build. Combat-smoke is **37/37 with zero unexpected lines**, load errors,
+timeouts or crashes; campaign-smoke is **93/93**. Both chain inventories
+(`--start-inventory ""` and
+`--start-inventory weapon_357,ammo_357,ammo_357`) reach **distinct depth 12**,
+**Pass**, **660.8 simulated seconds**. All 25 actual mutation probes described
+above were restored before the passing focused baseline; the final combined
+workspace also passes. The scoped expectation follow-up preserves both parsed
+script command streams byte-for-byte and every unrelated assertion.
+Every Cargo invocation used `CARGO_BUILD_JOBS=4` and
+`CARGO_PROFILE_DEV_DEBUG=line-tables-only`. The release build used a 15 GiB
+free-space guard. Payload stdout/stderr remained in memory, temporary summary
+paths pointed to `/dev/null`, and ephemeral captures were removed. Dependencies
+are unchanged, so cargo-deny is not required. The final evidence commit changes
+only documentation and script-header comments; fully tested production and
+harness code, and both parsed script command streams, are unchanged.
