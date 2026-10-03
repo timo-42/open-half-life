@@ -24,10 +24,13 @@
 use std::fmt::Write as _;
 
 use ohl_combat::{AmmoType, WeaponId};
-use ohl_engine::test_support::{ROT_BUTTON_CENTER, killable_brush_floor_bsp, rot_button_bsp};
+use ohl_engine::test_support::{
+    ROT_BUTTON_CENTER, WALL_TOGGLE_BLOCK_MAX, killable_brush_floor_bsp, rot_button_bsp,
+    wall_toggle_block_bsp,
+};
 use ohl_engine::{AssetSource, Game, GameEvent, Input, MemoryAssets, StartInventoryItem};
 use ohl_formats::test_support::BRUSH_FLOOR_TOP_Z;
-use ohl_game::registry::{Door, MoverState};
+use ohl_game::registry::{Door, MoverState, WallToggle};
 
 const STEP: f32 = 1.0 / 60.0;
 
@@ -413,6 +416,119 @@ fn idling_next_to_a_health_gated_func_button_does_not_press_it() {
     );
     tick_n(&mut game, 120, &Input::default());
     assert_eq!(door_state(&game), MoverState::Closed);
+}
+
+/// A point well inside the toggle block, away from where the fixtures
+/// below stand anyone, so a point-contents probe reads the block itself.
+const BLOCK_PROBE: [f32; 3] = [24.0, 24.0, 90.0];
+
+/// A `func_wall_toggle` block that starts invisible, switched on by a
+/// `trigger_auto` half a second in, with the player standing at
+/// `player_start` and `extra` entities appended.
+fn block_game(map: &str, player_start: [f32; 3], extra: &str) -> Game {
+    let [x, y, z] = player_start;
+    let entities = format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"{x} {y} {z}\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"func_wall_toggle\"\n\"targetname\" \"ohl_block\"\n\
+         \"model\" \"*1\"\n\"spawnflags\" \"1\"\n}}\n\
+         {}{extra}",
+        auto_trigger("ohl_block", 0.5)
+    );
+    game_from(map, wall_toggle_block_bsp(&entities))
+}
+
+fn block_is_on(game: &Game) -> bool {
+    let registry = game.registry();
+    let entity = *registry
+        .find("ohl_block")
+        .first()
+        .expect("the fixture names its block");
+    registry
+        .world
+        .get::<&WallToggle>(entity)
+        .expect("the block is a func_wall_toggle")
+        .visible
+}
+
+/// Switched on around the player, a `func_wall_toggle` waits: it is on as
+/// far as the map is concerned, but not solid while the player stands in
+/// it, so they are not embedded for good. Once they have walked out, it is
+/// solid. (Project-authored; see `Level::hold_toggled_walls_for_occupants`.)
+#[test]
+fn a_wall_switched_on_around_the_player_waits_until_they_step_out() {
+    let mut game = block_game("ohlblockplayersynth", [0.0, 0.0, 37.0], "");
+    tick_n(&mut game, 60, &Input::default());
+    assert!(block_is_on(&game), "the trigger_auto switched the block on");
+    assert!(
+        !game.position_is_in_solid(BLOCK_PROBE),
+        "the block must not turn solid around the player"
+    );
+    assert!(!monster_model_is_solid_at(&game, BLOCK_PROBE));
+
+    let start = game.player_origin();
+    tick_n(
+        &mut game,
+        60,
+        &Input {
+            forward: 1,
+            ..Input::default()
+        },
+    );
+    let out = game.player_origin();
+    assert!(
+        out[0] > WALL_TOGGLE_BLOCK_MAX[0] + 16.0,
+        "the player walks out of the block: from {start:?} to {out:?}"
+    );
+    tick_n(&mut game, 2, &Input::default());
+    assert!(
+        game.position_is_in_solid(BLOCK_PROBE),
+        "with nobody inside, the block turns solid"
+    );
+    assert!(monster_model_is_solid_at(&game, BLOCK_PROBE));
+}
+
+/// The same block switched on around a monster waits too, in both
+/// collision models, while the player stands well clear of it.
+#[test]
+fn a_wall_switched_on_around_a_monster_waits_for_it() {
+    let monster = "{\n\"classname\" \"monster_scientist\"\n\"targetname\" \"ohl_inside\"\n\
+                   \"origin\" \"0 0 37\"\n\"angle\" \"0\"\n}\n";
+    let mut game = block_game("ohlblockmonstersynth", [-160.0, 0.0, 37.0], monster);
+    tick_n(&mut game, 60, &Input::default());
+    assert!(block_is_on(&game), "the trigger_auto switched the block on");
+    let inside = *game
+        .registry()
+        .find("ohl_inside")
+        .first()
+        .expect("the fixture names its monster");
+    let origin = game
+        .registry()
+        .world
+        .get::<&ohl_game::registry::Transform>(inside)
+        .expect("the monster has a transform")
+        .origin;
+    assert!(
+        origin.x.abs() < WALL_TOGGLE_BLOCK_MAX[0] && origin.y.abs() < WALL_TOGGLE_BLOCK_MAX[1],
+        "the monster is still standing inside the block: {origin:?}"
+    );
+    assert!(
+        !game.position_is_in_solid(BLOCK_PROBE),
+        "the block must not turn solid around a monster"
+    );
+    assert!(!monster_model_is_solid_at(&game, BLOCK_PROBE));
+}
+
+/// The control for both: switched on with nobody inside, the block is
+/// solid on the next step.
+#[test]
+fn a_wall_switched_on_with_nobody_inside_is_solid_at_once() {
+    let mut game = block_game("ohlblockemptysynth", [-160.0, 0.0, 37.0], "");
+    tick_n(&mut game, 60, &Input::default());
+    assert!(block_is_on(&game));
+    assert!(game.position_is_in_solid(BLOCK_PROBE));
+    assert!(monster_model_is_solid_at(&game, BLOCK_PROBE));
 }
 
 // ---------------------------------------------------------------------

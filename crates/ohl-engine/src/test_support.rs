@@ -5371,3 +5371,55 @@ pub fn plan_pickup_closet_bsp(next_map: &str, closet: ClosetDoor) -> Vec<u8> {
 
     b.build()
 }
+
+/// The lower corner of [`wall_toggle_block_bsp`]'s block (submodel 1).
+pub const WALL_TOGGLE_BLOCK_MIN: [f32; 3] = [-32.0, -32.0, 0.0];
+
+/// The upper corner of [`wall_toggle_block_bsp`]'s block (submodel 1).
+pub const WALL_TOGGLE_BLOCK_MAX: [f32; 3] = [32.0, 32.0, 96.0];
+
+/// A closed room with a floor at `z = 0` (collision only, the same room
+/// [`rot_button_bsp`] uses) and, on submodel 1, a solid block standing on
+/// that floor between [`WALL_TOGGLE_BLOCK_MIN`] and [`WALL_TOGGLE_BLOCK_MAX`]
+/// — tall and wide enough for a standing player or monster to be entirely
+/// inside it. Built for a `func_wall_toggle` switched on around someone
+/// standing in it. Every coordinate is project-authored.
+#[must_use]
+pub fn wall_toggle_block_bsp(entities: &str) -> Vec<u8> {
+    const HALF: f32 = 256.0;
+    const HEIGHT: f32 = 256.0;
+
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(entities);
+    let world_heads = b.push_collision_hulls(&[
+        CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+        CollisionBrush::half_space([0.0, 0.0, -1.0], -HEIGHT),
+        CollisionBrush::half_space([-1.0, 0.0, 0.0], -HALF),
+        CollisionBrush::half_space([1.0, 0.0, 0.0], -HALF),
+        CollisionBrush::half_space([0.0, -1.0, 0.0], -HALF),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], -HALF),
+    ]);
+    b.push_model(
+        [-HALF, -HALF, 0.0],
+        [HALF, HALF, HEIGHT],
+        [0.0; 3],
+        world_heads,
+        2,
+        0,
+        0,
+    );
+    let block_heads = b.push_collision_hulls(&[CollisionBrush::box_brush(
+        WALL_TOGGLE_BLOCK_MIN,
+        WALL_TOGGLE_BLOCK_MAX,
+    )]);
+    b.push_model(
+        WALL_TOGGLE_BLOCK_MIN,
+        WALL_TOGGLE_BLOCK_MAX,
+        [0.0; 3],
+        block_heads,
+        2,
+        0,
+        0,
+    );
+    b.build()
+}

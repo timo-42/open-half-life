@@ -8,7 +8,7 @@ use ohl_game::hecs::Entity;
 use ohl_game::keyvalues::{self, EntityDef, Limits as KeyvalueLimits, ModelRef};
 use ohl_game::registry::{ClassName, Landmark, TargetName, Transform};
 use ohl_game::{Registry, Simulation};
-use ohl_physics::{BrushId, CollisionModel, ContentsKind};
+use ohl_physics::{BrushId, CollisionModel, ContentsKind, Hull};
 use ohl_world::{
     LightRamp, PlayerSpawn, SKY_FACE_SUFFIXES, SkyboxAsset, StudioLimits, StudioModel,
     WorldBuildOptions, WorldModel,
@@ -158,18 +158,34 @@ fn load_sprites(
 /// `func_wall_toggle` flag, and does nothing for any other entity. Shared
 /// by the player's and the monster's collision sync, so the two models
 /// agree on whether a toggled wall is there.
+///
+/// Returns whether this call turned a suspended brush solid again — a wall
+/// being switched on — which is what [`Level::hold_toggled_walls_for_occupants`]
+/// then checks for anyone standing inside it.
 fn sync_wall_toggle(
     registry: &Registry,
     model: &mut CollisionModel,
     entity: Entity,
     brush: BrushId,
-) {
-    if let Ok(wall) = registry
+) -> bool {
+    let Ok(wall) = registry
         .world
         .get::<&ohl_game::registry::WallToggle>(entity)
-    {
-        model.set_brush_solid(brush, wall.visible);
-    }
+    else {
+        return false;
+    };
+    let was_solid = model.brush_is_solid(brush);
+    model.set_brush_solid(brush, wall.visible);
+    wall.visible && !was_solid
+}
+
+/// Whether `brush`, and nothing else, is what a `hull` at `origin` is
+/// embedded in: the actor is in solid with the brush and clear without it.
+fn brush_embeds(model: &CollisionModel, brush: BrushId, hull: Hull, origin: Vec3) -> bool {
+    model.trace(hull, origin, origin).start_solid
+        && !model
+            .trace_ignoring(hull, origin, origin, Some(brush))
+            .start_solid
 }
 
 /// The angular velocity (radians per second about the *signed* `axis`) a
@@ -315,6 +331,11 @@ pub struct Level {
     /// finishes its planned move on schedule, just with the player pushed
     /// as far out of its way as the bounded trace allowed.
     pub movers_blocked: Vec<BrushId>,
+    /// `func_wall_toggle` entities whose brush the last
+    /// [`Self::sync_brush_collision`] turned solid again, waiting for
+    /// [`Self::hold_toggled_walls_for_occupants`] to check nobody is
+    /// standing inside them. Bounded by how many walls a map declares.
+    walls_turning_on: Vec<Entity>,
     /// The `skyname` skybox, when the payload publishes its six faces.
     pub skybox: Option<SkyboxAsset>,
     /// Studio models referenced by this map's entities, in load order.
@@ -719,6 +740,7 @@ impl Level {
             brush_rotation: BTreeMap::new(),
             brush_surface_velocity: BTreeMap::new(),
             movers_blocked: Vec::new(),
+            walls_turning_on: Vec::new(),
             skybox,
             studio_models: studio.models,
             studio_model_paths: studio.paths,
@@ -854,6 +876,7 @@ impl Level {
             brush_velocity,
             brush_rotation,
             brush_surface_velocity,
+            walls_turning_on,
             ..
         } = self;
         let Some(model) = collision.as_mut() else {
@@ -888,7 +911,11 @@ impl Level {
             // entity's own flag rather than on the flip, so a save restore, a
             // level change or anything else that puts the flag back also puts
             // the wall back with it.
-            sync_wall_toggle(registry, model, *entity, *brush);
+            if sync_wall_toggle(registry, model, *entity, *brush)
+                && !walls_turning_on.contains(entity)
+            {
+                walls_turning_on.push(*entity);
+            }
             // A conveyor's surface velocity, refreshed here for the same
             // reason: its sign is map logic the simulation can flip at any
             // step (`ohl_game::registry::Conveyor`).
@@ -1008,6 +1035,69 @@ impl Level {
             }
             true
         });
+    }
+
+    /// Keeps a `func_wall_toggle` that was just switched on non-solid, in
+    /// both collision models, for as long as the player or a living monster
+    /// is standing inside it, and lets it turn solid the first step nobody
+    /// is.
+    ///
+    /// A wall switched on around someone would otherwise embed them for
+    /// good: the push-out that frees a player from a closing mover only
+    /// acts on a brush that is *moving*, and a toggled wall never moves.
+    /// Refusing to turn solid until it is clear is a **project-authored**
+    /// choice — no reviewed source says what the original does to an actor
+    /// a wall appears around. The wall is drawn meanwhile (its map-logic
+    /// state *is* on); only its solidity waits. `player` is the player's
+    /// own hull and origin, `None` when there is no player body to check.
+    ///
+    /// Called by the player-move phase right after
+    /// [`Self::sync_brush_collision`]; a wall still occupied is suspended
+    /// again here, so the next sync turns it on again and it is checked
+    /// again, every step until it is clear.
+    pub(crate) fn hold_toggled_walls_for_occupants(&mut self, player: Option<(Hull, Vec3)>) {
+        if self.walls_turning_on.is_empty() {
+            return;
+        }
+        let turning = std::mem::take(&mut self.walls_turning_on);
+        for entity in turning {
+            let player_brush = self
+                .brush_collision
+                .iter()
+                .find(|(attached, _)| *attached == entity)
+                .map(|(_, brush)| *brush);
+            let monster_brush = self
+                .monster_brush_collision
+                .iter()
+                .find(|(attached, _)| *attached == entity)
+                .map(|(_, brush)| *brush);
+            let player_inside = match (self.collision.as_ref(), player_brush, player) {
+                (Some(model), Some(brush), Some((hull, origin))) => {
+                    brush_embeds(model, brush, hull, origin)
+                }
+                _ => false,
+            };
+            let monster_inside = !player_inside
+                && match (self.monster_collision.as_ref(), monster_brush) {
+                    (Some(model), Some(brush)) => self
+                        .registry
+                        .world
+                        .query::<&ohl_ai::Actor>()
+                        .iter()
+                        .filter(|actor| actor.alive && !actor.is_client)
+                        .any(|actor| brush_embeds(model, brush, actor.hull, actor.origin)),
+                    _ => false,
+                };
+            if !(player_inside || monster_inside) {
+                continue;
+            }
+            if let (Some(model), Some(brush)) = (self.collision.as_mut(), player_brush) {
+                model.set_brush_solid(brush, false);
+            }
+            if let (Some(model), Some(brush)) = (self.monster_collision.as_mut(), monster_brush) {
+                model.set_brush_solid(brush, false);
+            }
+        }
     }
 
     /// How fast an attached brush entity is moving *at the world-space

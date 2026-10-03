@@ -949,6 +949,14 @@ impl Systems {
         // Doors, platforms and trains moved by last step's map logic must
         // collide where they now are, not where they were compiled.
         level.sync_brush_collision(dt);
+        // A `func_wall_toggle` switched on around the player or a monster
+        // waits, non-solid, until they have stepped out of it.
+        level.hold_toggled_walls_for_occupants(
+            level
+                .collision
+                .is_some()
+                .then(|| (controller.state.hull(), controller.state.origin)),
+        );
         level.movers_blocked.clear();
         if let Some(collision) = level.collision.as_ref() {
             // A brush the player was standing on that *turned* this step
