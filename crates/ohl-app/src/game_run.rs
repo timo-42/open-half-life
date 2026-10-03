@@ -498,56 +498,96 @@ fn benchmark(game: &mut Game, source: &dyn AssetSource, seconds: u32) -> Result<
         .map_err(|_| "no offscreen target could be created")?;
     log_profile_device(&context, width, height);
     tracing::info!("Benchmark warming up for five seconds.");
+    // Silent on every platform: a benchmark is a measurement, like a
+    // scripted run (see `run_scripted`).
+    let mut audio = AudioRuntime::silent();
+    benchmark_frames(
+        game,
+        source,
+        &mut audio,
+        &BenchmarkWindow {
+            warmup: Duration::from_secs(5),
+            seconds: u64::from(seconds),
+        },
+        |game| {
+            let render_start = Instant::now();
+            render_capture(
+                game,
+                &context,
+                RenderTarget {
+                    view: target.view(),
+                    width,
+                    height,
+                    format: OFFSCREEN_FORMAT,
+                },
+                &CapturePose::None,
+            )?;
+            let render = render_start.elapsed();
+            let wait_start = Instant::now();
+            context.wait();
+            Ok((render, wait_start.elapsed()))
+        },
+    )
+}
+
+/// How long [`benchmark_frames`] warms up for, and then measures.
+struct BenchmarkWindow {
+    /// Frames run, and not measured, before measurement starts.
+    warmup: Duration,
+    /// How many whole seconds are measured.
+    seconds: u64,
+}
+
+/// The benchmark's own frame loop: one simulation tick (sound included,
+/// through [`route_benchmark_events`]) and one call to `render` per frame,
+/// until `window` has been measured or a level change or a death ends the
+/// run.
+///
+/// `render` is the GPU half — draw one frame, wait for it — returning how
+/// long the drawing and the wait took. [`benchmark`] hands in the real
+/// one; a test hands in one that draws nothing, so the loop that routes
+/// every cue is exercised without a GPU.
+fn benchmark_frames(
+    game: &mut Game,
+    source: &dyn AssetSource,
+    audio: &mut AudioRuntime,
+    window: &BenchmarkWindow,
+    mut render: impl FnMut(&mut Game) -> Result<(Duration, Duration), &'static str>,
+) -> Result<(), &'static str> {
     let warmup_start = Instant::now();
     let mut measurement_start = None;
     let mut warmup_resources = ohl_engine::RenderResourceStats::default();
     let mut profile = FrameProfile::default();
-    // Silent on every platform: a benchmark is a measurement, like a
-    // scripted run (see `run_scripted`).
-    let mut audio = AudioRuntime::silent();
     loop {
         let frame_start = Instant::now();
         audio.set_listener(game.eye_position(), game.camera().yaw);
         let events = game.tick(CAPTURE_STEP, &Input::default());
-        if route_benchmark_events(&mut audio, source, events) {
+        if route_benchmark_events(audio, source, events) {
             tracing::warn!("Benchmark stopped because the level changed or the player died.");
             return Ok(());
         }
         audio.frame(CAPTURE_STEP);
         let simulation = frame_start.elapsed();
-        let render_start = Instant::now();
-        render_capture(
-            game,
-            &context,
-            RenderTarget {
-                view: target.view(),
-                width,
-                height,
-                format: OFFSCREEN_FORMAT,
-            },
-            &CapturePose::None,
-        )?;
-        let render = render_start.elapsed();
-        let wait_start = Instant::now();
-        context.wait();
+        let (render, gpu_wait) = render(game)?;
         let completed = Instant::now();
         if let Some(start) = measurement_start {
             profile.record(FrameSample {
                 frame: completed.duration_since(frame_start),
                 simulation,
                 render,
-                gpu_wait: completed.duration_since(wait_start),
+                gpu_wait,
                 ..FrameSample::default()
             });
             let elapsed = completed.duration_since(start);
-            if elapsed >= Duration::from_secs(u64::from(seconds)) {
+            if elapsed >= Duration::from_secs(window.seconds) {
                 if let Some(summary) = profile.finish(elapsed) {
                     summary.log("headless_completed");
                 }
                 log_resource_uploads(game, warmup_resources);
                 return Ok(());
             }
-        } else if completed.duration_since(warmup_start) >= Duration::from_secs(5) {
+        } else if completed.duration_since(warmup_start) >= window.warmup {
+            let seconds = window.seconds;
             tracing::info!(seconds, "Benchmark measurement started.");
             warmup_resources = game.render_resource_stats();
             measurement_start = Some(Instant::now());
@@ -2674,6 +2714,93 @@ mod sound_routing_tests {
                 landmark: String::from(LANDMARK),
             }],
         ));
+    }
+
+    /// The benchmark's own frame loop, with a renderer that draws nothing:
+    /// the map's ambience reaches the mixer through it, as it does in every
+    /// other run path.
+    #[test]
+    fn the_benchmarks_own_frame_loop_plays_the_maps_sounds() {
+        let mut assets = sound_assets();
+        let mut game = script_room_game(
+            &mut assets,
+            &script_room_entities([-192.0, -192.0, 36.0], &humming_ambient([64.0, 0.0, 48.0])),
+        );
+        let ambient = channel_key(&game, "ambient_generic");
+        let mut audio = AudioRuntime::silent();
+        let mut frames = 0;
+        benchmark_frames(
+            &mut game,
+            &assets,
+            &mut audio,
+            &BenchmarkWindow {
+                warmup: Duration::ZERO,
+                seconds: 0,
+            },
+            |_| {
+                frames += 1;
+                Ok((Duration::ZERO, Duration::ZERO))
+            },
+        )
+        .expect("a benchmark that draws nothing still runs");
+        assert_eq!(frames, 2, "one warm-up frame and one measured frame");
+        assert!(is_playing(&audio, ambient, ChannelClass::Static));
+    }
+
+    /// Whether the mixer's listener is at `eye`, facing along `yaw`'s right
+    /// vector (see `AudioRuntime::set_listener`). The position is a copy of
+    /// the eye, so exact equality is the point.
+    #[allow(clippy::float_cmp)]
+    fn listener_is_at(audio: &AudioRuntime, eye: [f32; 3], yaw: f32) -> bool {
+        let listener = audio.mixer().lock().expect("lock mixer").listener();
+        let (sin, cos) = yaw.to_radians().sin_cos();
+        listener.position == eye
+            && (listener.right[0] - sin).abs() < 1e-6
+            && (listener.right[1] + cos).abs() < 1e-6
+    }
+
+    /// Every run path puts the listener where the player's eye is before
+    /// the tick whose cues it then plays, so a sound is panned and
+    /// attenuated from where the player stands, not from the world origin.
+    #[test]
+    fn every_run_path_puts_the_listener_at_the_players_eye() {
+        let entities = script_room_entities([-192.0, -192.0, 36.0], "");
+        let mut assets = sound_assets();
+
+        // A scripted run.
+        let mut game = script_room_game(&mut assets, &entities);
+        let (eye, yaw) = (game.eye_position(), game.camera().yaw);
+        assert!(
+            eye.iter().any(|axis| axis.abs() > 1.0),
+            "the fixture's player is away from the origin"
+        );
+        let mut audio = AudioRuntime::silent();
+        run_idle(&mut game, &assets, &mut audio, 1, false);
+        assert!(listener_is_at(&audio, eye, yaw), "scripted run");
+
+        // The benchmark's loop.
+        let mut game = script_room_game(&mut assets, &entities);
+        let (eye, yaw) = (game.eye_position(), game.camera().yaw);
+        let mut audio = AudioRuntime::silent();
+        benchmark_frames(
+            &mut game,
+            &assets,
+            &mut audio,
+            &BenchmarkWindow {
+                warmup: Duration::from_secs(3600),
+                seconds: 0,
+            },
+            |_| Err("stop after one frame"),
+        )
+        .expect_err("the renderer ends the run");
+        assert!(listener_is_at(&audio, eye, yaw), "benchmark");
+
+        // The window.
+        let game = script_room_game(&mut assets, &entities);
+        let (eye, yaw) = (game.eye_position(), game.camera().yaw);
+        let mut app = window(game, &assets);
+        app.tick_game(CAPTURE_STEP);
+        assert!(listener_is_at(&app.audio, eye, yaw), "window");
     }
 
     /// A window over `game`, silent, with `assets` behind it.
