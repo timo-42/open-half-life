@@ -1049,7 +1049,9 @@ impl Level {
     /// choice — no reviewed source says what the original does to an actor
     /// a wall appears around. The wall is drawn meanwhile (its map-logic
     /// state *is* on); only its solidity waits. `player` is the player's
-    /// own hull and origin, `None` when there is no player body to check.
+    /// own hull and origin, `None` when there is no player body to check. A
+    /// `monster_generic` spawned "Not solid" (marked `ohl_ai::Impervious`)
+    /// holds nothing up: it is not solid to be embedded.
     ///
     /// Called by the player-move phase right after
     /// [`Self::sync_brush_collision`]; a wall still occupied is suspended
@@ -1083,6 +1085,7 @@ impl Level {
                         .registry
                         .world
                         .query::<&ohl_ai::Actor>()
+                        .without::<&ohl_ai::Impervious>()
                         .iter()
                         .filter(|actor| actor.alive && !actor.is_client)
                         .any(|actor| brush_embeds(model, brush, actor.hull, actor.origin)),
