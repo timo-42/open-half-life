@@ -297,11 +297,12 @@ pub const fn spec(id: WeaponId) -> WeaponSpec {
             secondary: None,
         },
         // Combine OverWiki, "Gauss Gun": primary fires an uncharged 20-damage
-        // shot; secondary charges for up to 10 seconds and releases a shot
-        // scaled from 25 up to 200 damage, reflecting off metal surfaces;
-        // holding the charge past 10 seconds costs the wielder 50 health
-        // instead of firing (see `crate::firing` for the charge/overcharge
-        // state machine). 100-cell max reserve, no separate clip.
+        // shot; secondary releases 25 up to 200 damage, reflecting off
+        // metal surfaces. After full charge, firing within ten seconds
+        // avoids a 50-health discharge. Time to full charge is unpublished;
+        // TODO(black-box): `crate::firing`'s linear ramp and ten-second
+        // timer from charge initiation are project-authored placeholders.
+        // 100-cell max reserve, no separate clip.
         WeaponId::Gauss => WeaponSpec {
             id,
             kind: WeaponKind::Charge,

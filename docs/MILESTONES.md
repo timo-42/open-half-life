@@ -8219,20 +8219,23 @@ beam splash, underwater restrictions and hornet regeneration remain unresolved.
 Beam sub-interval phase still resets on save restore; no save tags or encodings
 changed. The additional engine change is confined to gauss hitscan application.
 
-**Coverage and discrimination.** Six focused combat integration tests cover
+**Coverage and discrimination.** Seven focused combat integration tests cover
 three egon step sizes, held/released/re-pressed input, zero elapsed time, the
-last cell, oversized/idle steps, equal-duration gauss holds, and the absence of
+last cell, oversized/idle steps, exact-multiple and changing steps with no
+zero-time backlog, equal-duration gauss holds, and the absence of
 hornet regeneration. Two engine regressions exercise real held/tapping egon
 input and charged gauss damage; the earlier gargantua kill regression remains.
-Six mutations were actually compiled and run, each failing its targeted test:
+Seven mutations were actually compiled and run, each failing its targeted test:
 per-step beam damage, free cells, resetting cooldown on taps, step-count gauss
-charge, per-step hornet awards, and duplicate base-plus-charged gauss hits.
+charge, per-step hornet awards, duplicate base-plus-charged gauss hits, and
+removing the remainder normalization. The last regression first reproduced
+an extra pulse after an exact 0.7-second step with zero additional elapsed time.
 Every mutation was restored and the focused suites passed afterwards.
 
-**Gates:** fmt check passed; focused `ohl-combat` 116 passed and
+**Gates:** fmt check passed; focused `ohl-combat` 117 passed and
 `bosses_and_aircraft` 14 passed; workspace clippy default, `--features dev-tools`
 and `--all-features` passed; `cargo test --workspace` 2780 passed, zero failed,
-31 ignored; policy and graph passed; combat-smoke, campaign-smoke and
+31 ignored before the review fix; final changed-code gates pending; policy and graph passed; combat-smoke, campaign-smoke and
 chain-walk with both empty and
 `weapon_357,ammo_357,ammo_357` inventories pending resource scheduling.
 Dependencies unchanged; cargo-deny not required. Final smoke acceptance remains

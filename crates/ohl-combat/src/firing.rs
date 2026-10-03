@@ -330,12 +330,21 @@ impl FiringState {
         // drain interval. Pair each damage pulse with exactly one cell.
         let interval = self.spec.cycle_time.value.max(f32::MIN_POSITIVE);
         // Absorb float rounding at interval boundaries, not a whole step.
-        if self.beam_accum + interval * 1e-5 < interval {
+        let tolerance = interval * 1e-5;
+        if self.beam_accum + tolerance < interval {
             return WeaponAction::Empty;
         }
         // Project-authored: one action per call, dropping missed whole
         // intervals on oversized steps instead of queuing burst damage.
-        self.beam_accum = (self.beam_accum - interval).max(0.0) % interval;
+        let remainder = (self.beam_accum - interval).max(0.0) % interval;
+        // An exact multiple can round to just below `interval` after `%`.
+        // Treat it as zero using the same tolerance as the due check, so
+        // a zero-time call cannot turn discarded backlog into another hit.
+        self.beam_accum = if remainder + tolerance >= interval {
+            0.0
+        } else {
+            remainder
+        };
         pool.take_up_to(1);
         WeaponAction::BeamTick
     }
