@@ -976,6 +976,14 @@ pub const SECTION_ENDED: &str = "The section ended.";
 /// no further than the map that route ran on.
 const CHAIN_STOPPED: &str = "The chain walk stopped.";
 
+/// The fixed line a chain walk logs when a `trigger_endsection` ended the
+/// game partway through a route (see [`SECTION_ENDED`]): the walk stops
+/// there, and says so in its own words rather than as a route that merely
+/// ran out of ticks ([`CHAIN_STOPPED`]). Not a failure in itself — a game
+/// that ends where its section ends is the documented behaviour — but not
+/// a clean arrival either, so `--plan-route` refuses to plan from it.
+const CHAIN_SECTION_ENDED: &str = "The chain walk ended its section.";
+
 /// The fixed line a chain walk logs when every route it was given did
 /// reach a level change, so the walk ended only because no route was
 /// authored for the map it last arrived in. Not a failure.
@@ -1075,6 +1083,7 @@ fn run_chained(
     let mut visited: Vec<String> = vec![game.map().to_ascii_lowercase()];
     let mut ticks: u64 = 0;
     let mut stopped = false;
+    let mut section_ended = false;
     let mut re_entered = false;
     let mut arrived_dead = false;
     // One silent runtime for the whole walk, as `run_scripted` has one for
@@ -1098,6 +1107,10 @@ fn run_chained(
             },
         );
         ticks += outcome.ticks;
+        if outcome.ended_section {
+            section_ended = true;
+            break;
+        }
         if !outcome.followed_level_change {
             stopped = true;
             break;
@@ -1122,6 +1135,8 @@ fn run_chained(
         tracing::info!("{CHAIN_ARRIVED_DEAD}");
     } else if re_entered {
         tracing::info!("{CHAIN_RE_ENTERED}");
+    } else if section_ended {
+        tracing::info!("{CHAIN_SECTION_ENDED}");
     } else if stopped {
         tracing::info!("{CHAIN_STOPPED}");
     } else {
@@ -1143,7 +1158,10 @@ fn run_chained(
     // re-entered a map): `--plan-route` refuses to plan at all when it
     // did not, rather than plan from an interrupted route's stall point
     // (see `PLAN_REFUSED_INCOMPLETE_CHAIN`).
-    Ok((visited, !stopped && !re_entered && !arrived_dead))
+    Ok((
+        visited,
+        !stopped && !section_ended && !re_entered && !arrived_dead,
+    ))
 }
 
 /// The fixed prefix a chain walk's per-arrival inventory line carries.
@@ -1607,7 +1625,7 @@ fn capture(
         // liquid turbulence, model sequences) advances.
         audio.set_listener(game.eye_position(), game.camera().yaw);
         let events = game.tick(CAPTURE_STEP, &Input::default());
-        route_headless_events(
+        let routed = route_headless_events(
             game,
             source,
             &mut audio,
@@ -1630,6 +1648,12 @@ fn capture(
             },
             &pose,
         )?;
+        // The section ended this tick: this frame is the last one the run
+        // has, and the capture keeps it rather than ticking a game that is
+        // over (see [`SECTION_ENDED`]).
+        if routed.ended_section {
+            break;
+        }
     }
     context.wait();
 
@@ -1946,7 +1970,9 @@ impl<'a> App<'a> {
 
     /// Acts on one frame's [`GameEvent`]s, in the order the game produced
     /// them.
-    fn handle_game_events(&mut self, events: Vec<GameEvent>) {
+    /// Returns whether a `trigger_endsection` ended the game this frame,
+    /// in which case the window is already on the main menu.
+    fn handle_game_events(&mut self, events: Vec<GameEvent>) -> bool {
         // Every event in one frame's list was produced on the map the frame
         // started on, and a level change is listed before the sounds of the
         // same frame (`Game::tick`). Once the change has been followed,
@@ -1994,16 +2020,22 @@ impl<'a> App<'a> {
                 GameEvent::EndSection => {
                     // "Returns the player to the game's main menu": the
                     // game stops ticking (`Self::draw` only ticks it
-                    // in-game) and its sounds stop, and starting a mission
-                    // from the menu loads a fresh one, exactly as from a
-                    // cold start.
+                    // in-game), its sounds stop and its HUD is cleared, and
+                    // starting a mission from the menu loads a fresh one,
+                    // exactly as from a cold start. The rest of this
+                    // frame's events belong to a game that is over and are
+                    // dropped: a level change listed after this one must
+                    // not load (and autosave) a map behind the menu.
                     tracing::info!("{SECTION_ENDED}");
                     self.audio.stop_all();
+                    self.hud = HudState::default();
                     self.menu.pane = MenuPane::Root;
                     self.set_screen(Screen::MainMenu);
+                    return true;
                 }
             }
         }
+        false
     }
 
     /// Advances simulation and refreshes the HUD for one display frame.
@@ -2017,7 +2049,11 @@ impl<'a> App<'a> {
         self.audio
             .set_listener(self.game.eye_position(), self.game.camera().yaw);
         let events = self.game.tick(delta_seconds, &frame_input);
-        self.handle_game_events(events);
+        if self.handle_game_events(events) {
+            // The section ended: the menu is up and the HUD was cleared,
+            // so nothing from the game that just ended is copied back in.
+            return;
+        }
         self.audio.frame(delta_seconds);
         // Health, armor, ammo and the damage flash are `Game::hud()`'s own
         // state (M7.9 P1), written every step from the player's inventory
@@ -2789,6 +2825,121 @@ mod sound_routing_tests {
                 landmark: String::from(LANDMARK),
             }],
         ));
+        assert!(
+            route_benchmark_events(&mut audio, &assets, vec![GameEvent::EndSection]),
+            "a section that ended ends the benchmark too"
+        );
+    }
+
+    /// A section ending, then a level change and a sound in the same tick,
+    /// as one tick could list them: a run nobody watches stops on the
+    /// first, silences what was playing, and neither follows the change nor
+    /// starts the sound.
+    #[test]
+    fn a_headless_run_stops_at_the_section_end_and_drops_the_rest_of_the_tick() {
+        let mut assets = sound_assets();
+        let mut game = two_map_game(&mut assets);
+        let mut audio = AudioRuntime::silent();
+        audio.play(
+            &assets,
+            &SoundCue::new(
+                9,
+                ChannelClass::Static,
+                SoundAsset::file("sound/ohl/hum.wav"),
+            ),
+        );
+        assert_eq!(channel_count(&audio), 1);
+
+        let mut events = vec![GameEvent::EndSection];
+        events.extend(change_then_sound());
+        let outcome = route_headless_events(
+            &mut game,
+            &assets,
+            &mut audio,
+            events,
+            &HeadlessEventOptions {
+                follow_level_change: true,
+                script_log: false,
+                player_died_line: "The player died.",
+            },
+        );
+        assert!(outcome.ended_section);
+        assert!(!outcome.followed_level_change);
+        assert_eq!(
+            game.map(),
+            SYNTHETIC_MAP,
+            "no map loads behind an ended run"
+        );
+        assert_eq!(channel_count(&audio), 0, "and nothing keeps playing");
+    }
+
+    /// The window's own section end: back to the main menu with the game's
+    /// sounds stopped and its HUD cleared, and the same tick's later level
+    /// change never followed.
+    #[test]
+    fn the_windows_section_end_returns_to_a_silent_main_menu() {
+        let mut assets = sound_assets();
+        let game = two_map_game(&mut assets);
+        let mut app = window(game, &assets);
+        app.handle_game_events(vec![GameEvent::Sound(SoundCue::new(
+            9,
+            ChannelClass::Static,
+            SoundAsset::file("sound/ohl/hum.wav"),
+        ))]);
+        app.hud.clip_ammo = Some(6);
+        app.hud.reserve_ammo = Some(12);
+        assert_eq!(channel_count(&app.audio), 1);
+
+        let mut events = vec![GameEvent::EndSection];
+        events.extend(change_then_sound());
+        assert!(app.handle_game_events(events));
+        assert_eq!(app.screen, Screen::MainMenu);
+        assert_eq!(
+            app.game.map(),
+            SYNTHETIC_MAP,
+            "the later level change is dropped"
+        );
+        assert_eq!(channel_count(&app.audio), 0, "nothing plays over the menu");
+        assert_eq!(app.hud.clip_ammo, None);
+        assert_eq!(app.hud.reserve_ammo, None);
+    }
+
+    /// The window's own frame: once the section ends, the HUD is left
+    /// cleared rather than refilled from the game that just ended — the
+    /// gun the player was holding is not still on the menu's HUD.
+    #[test]
+    fn the_windows_frame_leaves_the_hud_cleared_once_the_section_ends() {
+        let mut assets = MemoryAssets::new();
+        assets.insert(
+            "maps/ohlendsectionwindowsynth.bsp",
+            ohl_engine::test_support::killable_brush_floor_bsp(
+                "{\n\"classname\" \"worldspawn\"\n}\n\
+                 {\n\"classname\" \"info_player_start\"\n\"origin\" \"0 0 40\"\n}\n\
+                 {\n\"classname\" \"func_wall\"\n\"model\" \"*1\"\n}\n\
+                 {\n\"classname\" \"trigger_endsection\"\n\"targetname\" \"ohl_end\"\n\
+                 \"section\" \"ohl_test_section\"\n\"spawnflags\" \"1\"\n}\n\
+                 {\n\"classname\" \"trigger_auto\"\n\"target\" \"ohl_end\"\n\"delay\" \"1\"\n}\n",
+            ),
+        );
+        let mut game = Game::load(&assets, "ohlendsectionwindowsynth").expect("the fixture loads");
+        game.give_start_inventory(
+            &ohl_engine::parse_start_inventory("weapon_357").expect("a cited classname"),
+        );
+        let mut app = window(game, &assets);
+        app.input.select_slot = Some(2);
+
+        let mut armed = false;
+        for _ in 0..240 {
+            app.tick_game(1.0 / 60.0);
+            armed |= app.hud.reserve_ammo.is_some();
+            if app.screen == Screen::MainMenu {
+                break;
+            }
+        }
+        assert!(armed, "the gun's reserve was on the HUD before the end");
+        assert_eq!(app.screen, Screen::MainMenu, "the section ended");
+        assert_eq!(app.hud.clip_ammo, None);
+        assert_eq!(app.hud.reserve_ammo, None);
     }
 
     /// The benchmark's own frame loop, with a renderer that draws nothing:

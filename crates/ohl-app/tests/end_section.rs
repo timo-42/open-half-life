@@ -15,7 +15,9 @@
 use std::path::Path;
 use std::process::Command;
 
-use ohl_engine::test_support::killable_brush_floor_bsp;
+use ohl_engine::test_support::{
+    SYNTHETIC_MAP, killable_brush_floor_bsp, synthetic_map_bsp_with_extra_entity,
+};
 
 const MAP: &str = "ohlendsectionrunsynth";
 
@@ -60,6 +62,9 @@ fn stage_payload(root: &Path, end_section: bool) {
     )
     .expect("stage the synthetic map");
 }
+
+/// The opt-in a GPU-backed capture test needs, as `playable_loop.rs` uses.
+const GPU_OPT_IN: &str = "OHL_RENDER_GPU_TEST";
 
 /// Runs a three-second `wait` script over the fixture and returns stderr.
 fn run(end_section: bool) -> String {
@@ -109,4 +114,59 @@ fn an_ended_section_ends_the_scripted_run_where_it_stands() {
         "ticks ran after the section ended: {stderr}"
     );
     assert!(stderr.contains("Scripted input finished."), "{stderr}");
+}
+
+/// A still capture stops at the section end too: it keeps the frame of the
+/// tick the section ended on, and never ticks on to the level change the
+/// fixture schedules after it. Rendering needs a graphics adapter, so this
+/// runs only when opted into, like `playable_loop.rs`'s capture test.
+#[test]
+fn a_capture_stops_at_the_section_end_when_opted_in() {
+    if std::env::var_os(GPU_OPT_IN).is_none() {
+        eprintln!("set {GPU_OPT_IN}=1 to run the end-section capture test");
+        return;
+    }
+    // The brush-floor fixture has nothing to draw, so the capture uses the
+    // lit synthetic room instead, whose own named `trigger_changelevel`
+    // the second `trigger_auto` fires.
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let root = directory.path().join("payload");
+    let maps = root
+        .join("ohl-synthetic")
+        .join("files")
+        .join("valve")
+        .join("maps");
+    std::fs::create_dir_all(&maps).expect("create the payload tree");
+    std::fs::write(
+        maps.join(format!("{SYNTHETIC_MAP}.bsp")),
+        synthetic_map_bsp_with_extra_entity(
+            "ohlnowheresynth",
+            "{\n\"classname\" \"trigger_endsection\"\n\"targetname\" \"ohl_end\"\n\
+             \"section\" \"ohl_test_section\"\n\"spawnflags\" \"1\"\n}\n\
+             {\n\"classname\" \"trigger_auto\"\n\"target\" \"ohl_end\"\n\"delay\" \"0.5\"\n}\n\
+             {\n\"classname\" \"trigger_auto\"\n\"target\" \"ohl_exit\"\n\"delay\" \"1\"\n}\n",
+        ),
+    )
+    .expect("stage the synthetic map");
+    let shot = directory.path().join("capture.png");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_open-half-life"))
+        .arg("--payload-root")
+        .arg(&root)
+        .arg("--map")
+        .arg(SYNTHETIC_MAP)
+        .arg("--headless-screenshot")
+        .arg(&shot)
+        .arg("--frames")
+        .arg("180")
+        .output()
+        .expect("spawn open-half-life");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "the capture failed: {stderr}");
+    assert!(shot.is_file(), "the last frame is still written: {stderr}");
+    assert_eq!(stderr.matches(SECTION_ENDED).count(), 1, "{stderr}");
+    assert!(
+        !stderr.contains(CHANGE_NOT_FOLLOWED),
+        "the capture ticked on after the section ended: {stderr}"
+    );
 }
