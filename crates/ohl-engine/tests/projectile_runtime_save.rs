@@ -163,32 +163,68 @@ fn tag_42_rejects_oversized_sequence_before_restoring() {
 
 #[test]
 fn fuse_guidance_and_secondary_cooldown_continuation_matches_across_save_load() {
-    let (mut game, assets) = fixture();
-    game.debug_spawn_projectile(
-        ProjectileKind::HandGrenade,
-        [0.0, 64.0, 100.0],
-        [50.0, 0.0, 100.0],
-    )
-    .expect("grenade");
-    game.debug_spawn_projectile(
-        ProjectileKind::Rocket,
-        [0.0, -64.0, 100.0],
-        [10.0, 0.0, 0.0],
-    )
-    .expect("rocket");
-    for _ in 0..125 {
-        game.tick(TICK_SECONDS, &Input::default());
+    let (mut setup, assets) = fixture();
+    for (kind, origin, velocity) in [
+        (
+            ProjectileKind::HandGrenade,
+            [0.0, 64.0, 100.0],
+            [50.0, 0.0, 100.0],
+        ),
+        (
+            ProjectileKind::Rocket,
+            [0.0, -64.0, 100.0],
+            [10.0, 0.0, 0.0],
+        ),
+        (
+            ProjectileKind::ControllerHomingBall,
+            [0.0, 0.0, 100.0],
+            [10.0, 0.0, 0.0],
+        ),
+    ] {
+        setup
+            .debug_spawn_projectile(kind, origin, velocity)
+            .expect("fixture projectile");
     }
-    let mut save = game.to_save(0);
-    save.projectiles.as_mut().expect("physics").projectiles[1].guide_point =
-        Some([100.0, 0.0, 180.0]);
-    save.projectile_runtime
-        .as_mut()
-        .expect("metadata")
-        .secondary_cooldowns = vec![(2, 4.0)];
-    let mut uninterrupted = Game::from_save(&assets, &save).expect("control branch");
-    let mut restored =
-        Game::load_bytes(&assets, &save.to_bytes().expect("save")).expect("restored branch");
+    // Inject initial synthetic control values, then let a live game age them before capture.
+    let mut initial = setup.to_save(0);
+    let runtime = initial.projectile_runtime.as_mut().expect("metadata");
+    runtime.attacks[1].owner = Some(ProjectileEntityRef::Player);
+    runtime.attacks[2].target = Some(ProjectileEntityRef::Player);
+    runtime.secondary_cooldowns = vec![(2, 4.0)];
+    let mut uninterrupted = Game::from_save(&assets, &initial).expect("initial fixture");
+    for _ in 0..125 {
+        uninterrupted.tick(TICK_SECONDS, &Input::default());
+    }
+    let checkpoint = uninterrupted.to_save(0);
+    let physics = checkpoint.projectiles.as_ref().expect("physics");
+    assert!(
+        physics.projectiles[0]
+            .fuse
+            .is_some_and(|fuse| fuse > 3.0 && fuse < 4.0)
+    );
+    assert!(
+        physics.projectiles[1].guide_point.is_some(),
+        "live aim drove rocket guidance"
+    );
+    let metadata = checkpoint.projectile_runtime.as_ref().expect("metadata");
+    assert_eq!(
+        metadata.attacks[2].target,
+        Some(ProjectileEntityRef::Player)
+    );
+    assert!(metadata.secondary_cooldowns[0].1 > 2.0 && metadata.secondary_cooldowns[0].1 < 3.0);
+    let mut restored = Game::load_bytes(
+        &assets,
+        &uninterrupted.save_bytes(0).expect("capture live game"),
+    )
+    .expect("restored branch");
+    assert_eq!(
+        uninterrupted.to_save(0).projectiles,
+        restored.to_save(0).projectiles
+    );
+    assert_eq!(
+        uninterrupted.to_save(0).projectile_runtime,
+        restored.to_save(0).projectile_runtime
+    );
     for _ in 0..420 {
         uninterrupted.tick(TICK_SECONDS, &Input::default());
         restored.tick(TICK_SECONDS, &Input::default());
@@ -215,8 +251,8 @@ fn duplicate_physical_ids_are_filtered_and_restored_counters_skip_live_handles()
         .expect("mine");
     let mut save = game.to_save(0);
     let physics = save.projectiles.as_mut().expect("physics");
-    physics.projectiles.push(physics.projectiles[0].clone());
-    physics.satchels.push(physics.satchels[0].clone());
+    physics.projectiles.push(physics.projectiles[0]);
+    physics.satchels.push(physics.satchels[0]);
     physics.tripmines[0].id = physics.satchels[0].id;
     physics.projectile_next_id = physics.projectiles[0].id;
     physics.deployable_next_id = physics.satchels[0].id;

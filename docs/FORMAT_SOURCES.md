@@ -7585,3 +7585,11 @@ position, fuse, age or RNG state. Bounded decode and first-entry-wins overlays
 ignore orphan metadata; invalid present profiles become harmless. Missing tag
 42 uses legacy kind defaults and never guesses that an owner-less projectile
 belongs to the player. Runtime stand-in handles are rebuilt and never saved.
+
+Synthetic integration isolation: the opt-in stationary-guard fixture uses the
+already cited houndeye and its existing trace-attack path. Its actual guard-to-wait
+mutation remains lethal. The original grunt fixture is unchanged; real grenade
+coverage now requires damage after the shooter dies. The Gonarch node/script
+fixture alone uses a neutral actor so node-assigned health is measured before any
+unrelated combat. Mortar owner splash remains enabled and independently tested.
+These choices are project-authored and change no payload smoke expectations.

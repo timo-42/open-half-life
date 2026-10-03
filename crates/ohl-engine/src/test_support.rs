@@ -4867,8 +4867,28 @@ pub fn plan_scripted_monster_model_bytes() -> Vec<u8> {
 /// No bytes here come from any game installation; see
 /// `docs/CLEAN_ROOM.md`.
 #[must_use]
-#[allow(clippy::too_many_lines, reason = "one fixture, five variants of it")]
 pub fn plan_scripted_goal_bsp(next_map: &str, start: ScriptedStart) -> Vec<u8> {
+    plan_scripted_goal_bsp_impl(next_map, start, PLAN_SCRIPTED_MONSTER_CLASSNAME)
+}
+
+/// Opt-in guard-route fixture with a hitscan-only hostile.
+///
+/// Project-authored isolation of standing-fire tactics: the original grunt fixture
+/// can now leave a live grenade after its shooter dies. The existing cited
+/// houndeye species (`FORMAT_SOURCES`, "Monster definitions") uses the existing
+/// trace attack path, keeping this route's
+/// guarded-pass/plain-wait-dies comparison about shooting back, not dodging explosives.
+#[must_use]
+pub fn plan_scripted_hitscan_goal_bsp(next_map: &str) -> Vec<u8> {
+    plan_scripted_goal_bsp_impl(
+        next_map,
+        ScriptedStart::ByHostileMonster,
+        ohl_ai::MonsterKind::Houndeye.classname(),
+    )
+}
+
+#[allow(clippy::too_many_lines, reason = "one fixture, five variants of it")]
+fn plan_scripted_goal_bsp_impl(next_map: &str, start: ScriptedStart, hostile: &str) -> Vec<u8> {
     let trigger = format!(
         "{{\n\"classname\" \"trigger_once\"\n\"model\" \"*1\"\n\
          \"target\" \"{PLAN_SCRIPTED_RELAY_NAME}\"\n\"origin\" \"0 0 0\"\n}}\n"
@@ -4877,7 +4897,7 @@ pub fn plan_scripted_goal_bsp(next_map: &str, start: ScriptedStart) -> Vec<u8> {
         ScriptedStart::ByTrigger => trigger,
         ScriptedStart::ByHostileMonster => format!(
             "{trigger}\
-             {{\n\"classname\" \"{PLAN_SCRIPTED_MONSTER_CLASSNAME}\"\n\
+             {{\n\"classname\" \"{hostile}\"\n\
              \"model\" \"{PLAN_SCRIPTED_MONSTER_MODEL}\"\n\
              \"origin\" \"{mx} {my} {mz}\"\n\"angle\" \"180\"\n}}\n",
             mx = PLAN_SCRIPTED_MONSTER_ORIGIN[0],

@@ -434,6 +434,13 @@ fn a_gonarch_reaching_a_node_fires_removes_and_plays_what_the_node_names() {
     );
     let mut game = game_from(&gonarch_room(&script));
     let gonarch = the_monster(&game);
+    // This synthetic node/script contract measures assigned health. A neutral
+    // actor still follows its trail, without a later mortar changing that health.
+    game.registry()
+        .world
+        .get::<&mut ohl_ai::Actor>(gonarch)
+        .expect("actor")
+        .classification = ohl_ai::Classification::None;
     assert_eq!(game.registry().find("ohl_crate").len(), 1);
     assert_eq!(game.script_start_count(), 0);
 
@@ -733,4 +740,67 @@ fn an_aircrafts_route_progress_round_trips_through_a_save() {
 
     let loaded = reload(&game, &room);
     assert_eq!(progress(&loaded), saved);
+}
+
+#[test]
+fn an_apache_advances_its_flight_route_while_firing_a_live_rocket() {
+    let room = entities(&format!(
+        "{}{}{}",
+        block(
+            "monster_apache",
+            [128.0, 0.0, 64.0],
+            &[("angle", "180"), ("target", "ohl_flight_a")]
+        ),
+        block(
+            "path_corner",
+            [128.0, 160.0, 64.0],
+            &[("targetname", "ohl_flight_a"), ("target", "ohl_flight_b")]
+        ),
+        block(
+            "path_corner",
+            [128.0, -160.0, 64.0],
+            &[("targetname", "ohl_flight_b"), ("target", "ohl_flight_a")]
+        ),
+    ));
+    let mut game = game_from(&room);
+    let apache = the_monster(&game);
+    for _ in 0..200 {
+        let before = origin_of(&game, apache);
+        tick(&mut game, 1);
+        let rocket_schedule = game
+            .registry()
+            .world
+            .get::<&ohl_ai::MonsterAi>(apache)
+            .expect("ai")
+            .schedule_name()
+            == "ohl/monsters/apache_rocket";
+        if rocket_schedule {
+            assert!(
+                (origin_of(&game, apache) - before).length() > 0.1,
+                "entering or running the rocket schedule must preserve flight movement"
+            );
+        }
+        let launched = game
+            .to_save(0)
+            .projectiles
+            .expect("physics")
+            .projectiles
+            .iter()
+            .any(|p| p.kind_tag == 1 && p.age.abs() < f32::EPSILON);
+        if launched {
+            assert!(
+                (origin_of(&game, apache) - before).length() > 0.1,
+                "rocket firing must preserve flight movement in that tick"
+            );
+            assert!(
+                game.registry()
+                    .world
+                    .get::<&FlightPlan>(apache)
+                    .expect("flight plan")
+                    .is_active()
+            );
+            return;
+        }
+    }
+    panic!("live perception and secondary schedule must launch a rocket during flight");
 }

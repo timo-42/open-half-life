@@ -1288,22 +1288,7 @@ impl AiState {
         if let AttackShape::Projectile(projectile) = shape {
             let (damage, damage_type, blast_radius) =
                 monster_projectile_profile(projectile, self.difficulty);
-            let speed = if projectile == ohl_combat::ProjectileKind::ControllerHomingBall {
-                [650.0, 800.0, 1000.0][self.difficulty.index()]
-            } else {
-                DEFAULT_PROJECTILE_SPEED
-            };
-            let velocity = if matches!(
-                projectile,
-                ohl_combat::ProjectileKind::HandGrenade | ohl_combat::ProjectileKind::GonarchMortar
-            ) {
-                // TODO(black-box): bounded ballistic aim and nominal throw speed are project choices.
-                let flight = (aim.distance(muzzle) / 400.0).clamp(0.35, 1.5);
-                (aim - muzzle) / flight
-                    + Vec3::Z * (ohl_physics::MoveConfig::default().gravity * flight * 0.5)
-            } else {
-                (aim - muzzle).normalize_or_zero() * speed
-            };
+            let velocity = monster_projectile_velocity(projectile, self.difficulty, muzzle, aim);
             self.projectiles.spawn_projectile(&ProjectileRequest {
                 kind: projectile,
                 owner: attacker,
@@ -2837,6 +2822,28 @@ mod tests {
         assert_eq!(trigger_condition_of(4), Some(TriggerCondition::Death));
         assert_eq!(trigger_condition_of(11), None);
         assert_eq!(trigger_condition_of(255), None);
+    }
+}
+
+/// Published head-ball speed; other speeds and bounded ballistic aim are TODO(black-box).
+fn monster_projectile_velocity(
+    kind: ohl_combat::ProjectileKind,
+    difficulty: AiDifficulty,
+    muzzle: Vec3,
+    aim: Vec3,
+) -> Vec3 {
+    use ohl_combat::ProjectileKind as P;
+    if matches!(kind, P::HandGrenade | P::GonarchMortar) {
+        let flight = (aim.distance(muzzle) / 400.0).clamp(0.35, 1.5);
+        (aim - muzzle) / flight
+            + Vec3::Z * (ohl_physics::MoveConfig::default().gravity * flight * 0.5)
+    } else {
+        let speed = if kind == P::ControllerHomingBall {
+            [650.0, 800.0, 1000.0][difficulty.index()]
+        } else {
+            DEFAULT_PROJECTILE_SPEED
+        };
+        (aim - muzzle).normalize_or_zero() * speed
     }
 }
 

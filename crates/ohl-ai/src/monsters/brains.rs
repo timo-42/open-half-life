@@ -153,12 +153,7 @@ pub static CONTROLLER_HEAD_BALL: Schedule = Schedule::new(
 /// Project-authored secondary schedule; stable name is save-compatible.
 pub static APACHE_ROCKET: Schedule = Schedule::new(
     "ohl/monsters/apache_rocket",
-    &[
-        Task::StopMoving,
-        Task::FaceEnemy,
-        Task::RangeAttack2,
-        Task::Wait(1.0),
-    ],
+    &[Task::FaceEnemy, Task::RangeAttack2, Task::Wait(1.0)],
     Conditions::GENERAL_INTERRUPTS.union(Conditions::ENEMY_OCCLUDED),
 );
 
@@ -1262,13 +1257,14 @@ mod tests {
     // Wave 1 batch B.
 
     /// A spread of conditions every state is tried against.
-    const SPREAD: [Conditions; 12] = [
+    const SPREAD: [Conditions; 13] = [
         Conditions::EMPTY,
         Conditions::HEAR_SOUND,
         Conditions::HEAR_DANGER,
         Conditions::SEE_FEAR,
         Conditions::SEE_ENEMY,
         Conditions::SEE_ENEMY.union(Conditions::CAN_RANGE_ATTACK1),
+        Conditions::SEE_ENEMY.union(Conditions::CAN_RANGE_ATTACK2),
         Conditions::SEE_ENEMY.union(Conditions::CAN_MELEE_ATTACK1),
         Conditions::ENEMY_OCCLUDED,
         Conditions::HEAVY_DAMAGE,

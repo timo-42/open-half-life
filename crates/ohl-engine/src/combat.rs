@@ -492,9 +492,7 @@ impl CombatState {
         if let Some(slot) = input.select_slot {
             self.select_slot(slot);
         }
-        let Some(selected) = self.inventory.selected() else {
-            return None;
-        };
+        let selected = self.inventory.selected()?;
         if self.firing_weapon != Some(selected) {
             self.switch_to(selected);
         }
@@ -546,7 +544,7 @@ impl CombatState {
                 input.attack
             },
             secondary: selected != WeaponId::Satchel && input.attack2,
-            reload: input.reload_pressed || auto_reload,
+            reload: reload_wanted || auto_reload,
             select: self.firing.is_holstered(),
         };
         let action = self.firing.tick(dt, weapon_input, &mut pool);
