@@ -7310,8 +7310,10 @@ a `scripted_sequence` can find: an engine test walks each to a mark and
 fires the script's `target` once, exactly like a guard. The rat and the
 cockroach wander and scatter on a new `Task::Wander`, whose direction is
 drawn from a generator seeded by the tick counter and the entity id so it
-consumes nothing from the world's shared stream: a critter in the room
-reshuffles nobody else's random waits, and the run still replays exactly.
+consumes nothing from the world's shared stream: choosing where to go
+shifts nobody else's random waits (the pause after a leg is an ordinary
+random wait, and does draw from the stream, like every other monster's),
+and the run still replays exactly.
 
 **The hull that never arrived.** "Check how the ichthyosaur swims and reuse
 that seam" turned up the seam and the fact that it was unplugged.
@@ -7363,5 +7365,51 @@ renderer already read, placed at their map origin exactly as before; no
 rendering code changed, so a barnacle's ceiling attachment and a
 controller's hover are whatever its model and that placement already give.
 
-**Gates**: fmt, clippy (workspace, `--all-features`), `cargo test
---workspace`, graph, policy, combat-smoke 37/37, campaign-smoke 93/93.
+**Rebased and re-checked.** Moved onto M9.37 and M9.38, then every
+claim above was stubbed out once to see whether a test noticed.
+
+- *M9.38's hitbox sweep.* `hitbox_fallback_tests` walks every defined
+  kind and expected each to publish a default model path; this entry's
+  two "specified by mapper" kinds have none by design, and the sweep
+  panicked on the first of them. It now skips exactly the kinds
+  `MonsterKind::model_from_map` names, asserting on the way past that
+  they really have no default path; every other kind is still shot at.
+- *Four claims nothing checked.* Removing the no-collision fallback's
+  flight, the `monster_generic`-only reading of bit 4, the maker child's
+  species eye, or the per-tick-and-entity seeding of a wander left every
+  test green. Each now has one that fails when it goes: a point-hull
+  chaser with no collision model climbs to an enemy above it while a
+  standing one keeps its height; a soldier carrying bit 4 is not
+  `NotSolid` while the generic beside it is; a `monstermaker`'s barnacle
+  and controller children carry their species' eye and hull; and two
+  wanderers started on one spot in one tick go different ways, each turns
+  between legs, and after many complete legs the shared stream is exactly
+  where a fresh world's is (a random pause swapped into that test's
+  schedule trips the last check, so it is not vacuous).
+- *A rat that never finished a leg.* The critter test ran at 20 Hz. At
+  the engine's 100 Hz tick the route's stuck check — a tick that moves
+  less than `STUCK_EPSILON`, half a unit, counts as no progress — makes
+  anything walking slower than 50 units per second "stuck" after a
+  quarter of a second, and the critters' placeholder walk was 40: every
+  wander leg was given up a few units in and the rat hopped rather than
+  wandered. The placeholder walk is now 64 and the test runs at the
+  engine's own tick, requiring each leg and its pause to complete. The
+  same floor applies to anything else that walks below 50 units per
+  second — on main, the default walk speed of 40 that `FOLLOW_PLAYER`
+  uses — and is left for its own change rather than retuned here.
+- *Two doc corrections.* `docs/FORMAT_SOURCES.md` still called `Not solid
+  (4)` "not yet modeled" in two places after the drain started honouring
+  it, and the paragraph above claimed a critter reshuffles nobody's
+  random waits, which its own random pause contradicts; both now say what
+  the code does.
+
+**Gates**: fmt; clippy (workspace, `--features dev-tools`, and
+`--all-features`); `cargo test --workspace` (2471 passed, 0 failed, 31
+ignored); policy; graph; combat-smoke 37/37 with 0 unexpected lines;
+campaign-smoke 93/93; `cargo xtask chain-walk --start-inventory
+weapon_357,ammo_357,ammo_357` at **distinct depth 12**, Pass, 660.8
+simulated seconds. Because the hull change moves every non-standing kind
+differently, the chain was also run with a local, uncommitted per-hop
+health probe on this branch and on `origin/main`: both read 99.1 entering
+the last hop and 9.1 at its level change, so nothing the chain can see
+moved.

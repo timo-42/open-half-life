@@ -2855,7 +2855,7 @@ logic" and "Monster AI behaviour" above).
   | `Monster_alien_controller` (Wave 1 batch A) | 60/60/100 | — | hand-launched energy-ball volley ("zap") 3/4/5 | head-launched homing ball 15/25/35 at 650/800/1000 units/s (`CONTROLLER_HEAD_BALL_DAMAGE`/`_SPEED`, not yet wired); "launch volleys of small energy balls from their hands, or, at closer range, larger homing balls from their heads"; "constant evasive maneuvering and tendency to stay at a distance"; "Can't move unless an `info_node_air` is nearby" (flies: `MonsterFlags::FLIES`, point hull) |
   | `Monster_human_assassin` (Wave 1 batch A) | 30/50/50 | — | silenced pistol 5/5/8 | grenade 100 flat (`ASSASSIN_GRENADE_DAMAGE`, not yet wired); "extremely agile", "will run and jump in order to avoid the players fire and will try to attack from multiple directions", "operate in small teams", "hide-and-seek behavior" (`brains::ASSASSIN_HIT_AND_RUN`/`ASSASSIN_RETREAT`; run speed `TODO(black-box)`, `brains::ASSASSIN_SPEEDS`) |
   | `Monster_babycrab` (Wave 1 batch A) | 2.5/2.5/5 — "only 25% as much health as a normal headcrab" (`BABYCRAB_HEALTH_FRACTION`) | bite 1.5/3/3 — "only 30% as much damage" (`BABYCRAB_DAMAGE_FRACTION`) | — | runs the headcrab's brain; a `sk_headcrab_health<N>` override scales it (`MonsterSpec::resolve_health`) |
-  | `Monster_generic` (Wave 1 batch A) | 8 — "Spawns with only 8 HP." (`GENERIC_HEALTH`) | — | — | "Classified as a player ally"; "Used to spawn models for use with scripted sequences"; model from the map's own `model` keyvalue; `Not solid (4)` spawnflag ("impervious to any damage") not yet modeled |
+  | `Monster_generic` (Wave 1 batch A) | 8 — "Spawns with only 8 HP." (`GENERIC_HEALTH`) | — | — | "Classified as a player ally"; "Used to spawn models for use with scripted sequences"; model from the map's own `model` keyvalue; `Not solid (4)` spawnflag ("impervious to any damage") modeled as that damage immunity only (`ohl_engine::NotSolid`, read on `monster_generic` alone, where the page documents it); whether a shot passes through such a prop is not stated, so it keeps its hitbox |
   | `Monster_furniture` (Wave 1 batch A) | **not published** (`TODO(black-box)`: mirrors `monster_generic`'s 8) | — | — | "a furniture model used in scripted sequences"; "still bleeds like a cycler when hit with explosion damage"; "doesn't turn to face forward"; model from the map's `model` keyvalue; classification not published (`Classification::None`, `TODO(black-box)`) |
   | `Monster_rat` (Wave 1 batch A) | **not published** (`TODO(black-box)`: 1, dies to any hit) | — | — | "it doesn't do much"; follows `path_corner`s erratically (patrol paths not modeled; it wanders instead); classification not published (`Classification::None`, `TODO(black-box)`) |
   | `Monster_cockroach` (Wave 1 batch A) | **not published** — "Stepping on them will kill them" (`TODO(black-box)`: 1, dies to any hit; the step-on kill itself is not modeled) | — | — | "scurry around in the dark ... They are easily scared" (`brains::CRITTER_WANDER`/`CRITTER_SCATTER`); classified `insect` here, which the page does not say outright (`TODO(black-box)`); patrol paths "Not used by cockroaches" |
@@ -3150,11 +3150,18 @@ Behavioural facts cited from those pages and how they are modeled
   what lets a `scripted_sequence`'s `m_iszEntity` find and possess them
   (`ohl-engine`'s `find_script_actor` requires an `Actor`) — and no
   default model, since the cited model page lists both as "specified by
-  mapper" (`MonsterKind::model_from_map`). Not modeled: `Not solid (4)`.
+  mapper" (`MonsterKind::model_from_map`). `Not solid (4)` on a
+  `monster_generic` is modeled as the cited damage immunity (an
+  `ohl_engine::NotSolid` marker the damage drain honours); not modeled:
+  letting a shot pass through such a prop, which the page does not state.
 - **Rat / cockroach**: a wander (`Task::Wander`, a new task whose
   direction is drawn from a generator seeded by the tick counter and the
-  entity id, so it consumes nothing from the world's shared stream and
-  replays exactly) and a scatter on any noise, hit or sighting; health 1.
+  entity id, so the direction consumes nothing from the world's shared
+  stream and replays exactly; the pause after a leg is an ordinary random
+  wait and draws from that stream like any other monster's) and a scatter
+  on any noise, hit or sighting; health 1. The walk speed is a placeholder
+  kept above the route stuck check's 50-units-per-second floor at the
+  engine's 100 Hz tick (`brains::CRITTER_SPEEDS`).
   Not modeled: being killed by being stepped on; `path_corner` patrols.
 
 ## Track trains and paths
