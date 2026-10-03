@@ -566,6 +566,22 @@ pub trait Brain: Send + Sync {
         distance <= self.melee_range()
     }
 
+    /// Whether this monster takes as its enemy whatever its melee attack
+    /// reaches ([`Self::melee_in_reach`]) ahead of whatever its sight
+    /// would otherwise choose.
+    ///
+    /// Sight picks the worst-regarded, then nearest, hostile thing seen.
+    /// That is the right enemy for a monster that can go after it, and the
+    /// wrong one for a monster that can only ever attack one place: a
+    /// barnacle hung over a player, with an ally of the player standing
+    /// nearer but off the tongue, would take the ally and never bite the
+    /// player. Such a monster overrides this to `true`; nothing that moves
+    /// should, since it would trade a target it can chase for one it
+    /// happens to be next to.
+    fn chooses_enemy_in_reach(&self) -> bool {
+        false
+    }
+
     /// Whether this monster has a ranged attack at all.
     ///
     /// Senses only raise [`Conditions::CAN_RANGE_ATTACK1`] when it does.

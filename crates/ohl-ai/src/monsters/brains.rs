@@ -763,6 +763,12 @@ impl Brain for MonsterBrain {
             && (0.0..=super::table::BARNACLE_TONGUE_LENGTH).contains(&drop)
     }
 
+    /// The barnacle can only ever bite what is on its tongue, so that is
+    /// its enemy whenever anything is.
+    fn chooses_enemy_in_reach(&self) -> bool {
+        self.kind == MonsterKind::Barnacle
+    }
+
     fn speeds(&self) -> (f32, f32) {
         match self.kind {
             // Wave 1 batch A.
@@ -1431,5 +1437,158 @@ mod tests {
         );
         assert_eq!(failed, 0, "a wander leg was given up as stuck");
         assert_eq!(hash, run().3);
+    }
+
+    /// Every attack `attacker` makes over `seconds` of ticks at the
+    /// engine's own rate, as (seconds since start, target).
+    fn attacks_by(
+        ai: &mut crate::world::AiWorld,
+        world: &mut hecs::World,
+        attacker: hecs::Entity,
+        seconds: f32,
+    ) -> Vec<(f32, Option<hecs::Entity>)> {
+        use crate::senses::SightContext;
+        use crate::world::AiEventKind;
+        let dt = ohl_physics::controller::TICK_SECONDS;
+        let mut attacks = Vec::new();
+        let mut elapsed = 0.0;
+        while elapsed < seconds {
+            for event in ai.tick(world, &SightContext::empty(), dt) {
+                if event.entity == attacker
+                    && let AiEventKind::Attack { target, .. } = event.kind
+                {
+                    attacks.push((elapsed, target));
+                }
+            }
+            elapsed += dt;
+        }
+        attacks
+    }
+
+    /// A barnacle hung at 256 with a player standing straight under its
+    /// tongue, and returns (world, barnacle, player).
+    fn barnacle_over_a_player() -> (
+        crate::world::AiWorld,
+        hecs::World,
+        hecs::Entity,
+        hecs::Entity,
+    ) {
+        use crate::world::{Actor, AiWorld, spawn_actor, spawn_monster};
+        use glam::Vec3;
+        let mut ai = AiWorld::new(7);
+        let brain = ai.register_brain(Box::new(
+            MonsterBrain::for_kind(MonsterKind::Barnacle).expect("defined"),
+        ));
+        let mut world = hecs::World::new();
+        let mut hung = Actor::new(Classification::Barnacle, Vec3::new(0.0, 0.0, 256.0));
+        hung.view_ofs = MonsterKind::Barnacle.view_offset();
+        let barnacle = spawn_monster(&mut world, hung, brain);
+        let player = spawn_actor(
+            &mut world,
+            Actor::new(Classification::Player, Vec3::ZERO).as_client(),
+        );
+        (ai, world, barnacle, player)
+    }
+
+    /// Wave 1 batch A review: the barnacle's enemy is what is on its
+    /// tongue. A player's ally standing nearer to it but off the tongue is
+    /// what sight alone would choose (equal hatred, nearer); the barnacle
+    /// bites the player under it instead, and never aims at the ally.
+    #[test]
+    fn a_barnacle_bites_what_is_on_its_tongue_past_a_nearer_hated_thing() {
+        use crate::world::{Actor, spawn_actor};
+        use glam::Vec3;
+        let (mut ai, mut world, barnacle, player) = barnacle_over_a_player();
+        let ally = spawn_actor(
+            &mut world,
+            Actor::new(Classification::PlayerAlly, Vec3::new(80.0, 0.0, 180.0)),
+        );
+        let attacks = attacks_by(&mut ai, &mut world, barnacle, 2.0);
+        assert!(
+            attacks.iter().any(|(_, target)| *target == Some(player)),
+            "the player on the tongue was never bitten: {attacks:?}"
+        );
+        assert!(
+            attacks.iter().all(|(_, target)| *target != Some(ally)),
+            "the barnacle aimed at something off its tongue"
+        );
+    }
+
+    /// Wave 1 batch A review: the bite cadence. Over ten seconds — the
+    /// published time to kill its prey — a barnacle with a player on its
+    /// tongue bites at `BARNACLE_BITE_INTERVAL`: once at once, then once
+    /// per interval, so three or four times, not once and not every tick.
+    #[test]
+    fn a_barnacle_bites_at_its_cadence() {
+        let (mut ai, mut world, barnacle, player) = barnacle_over_a_player();
+        let attacks = attacks_by(&mut ai, &mut world, barnacle, 10.0);
+        assert!(
+            (3..=4).contains(&attacks.len()),
+            "{} bites in ten seconds",
+            attacks.len()
+        );
+        assert!(attacks.iter().all(|(_, target)| *target == Some(player)));
+        for pair in attacks.windows(2) {
+            let gap = pair[1].0 - pair[0].0;
+            assert!(
+                gap >= super::BARNACLE_BITE_INTERVAL - 0.05,
+                "two bites {gap} s apart"
+            );
+        }
+    }
+
+    /// Wave 1 batch A review: the assassin's burst is two shots. An
+    /// assassin with the player in view runs one `assassin_hit_and_run`
+    /// spell — the burst, then the relocation — and fires exactly twice in
+    /// it.
+    #[test]
+    fn an_assassins_burst_is_two_shots() {
+        use crate::senses::SightContext;
+        use crate::world::{Actor, AiEventKind, AiWorld, spawn_actor, spawn_monster};
+        use glam::Vec3;
+        let mut ai = AiWorld::new(7);
+        let brain = ai.register_brain(Box::new(
+            MonsterBrain::for_kind(MonsterKind::HumanAssassin).expect("defined"),
+        ));
+        let mut world = hecs::World::new();
+        let assassin = spawn_monster(
+            &mut world,
+            Actor::new(Classification::HumanMilitary, Vec3::ZERO),
+            brain,
+        );
+        spawn_actor(
+            &mut world,
+            Actor::new(Classification::Player, Vec3::new(300.0, 0.0, 0.0)).as_client(),
+        );
+        let (mut in_spell, mut shots, mut spells) = (false, 0, 0);
+        for _ in 0..1_000 {
+            for event in ai.tick(
+                &mut world,
+                &SightContext::empty(),
+                ohl_physics::controller::TICK_SECONDS,
+            ) {
+                if event.entity != assassin {
+                    continue;
+                }
+                match event.kind {
+                    AiEventKind::ScheduleStarted(name) => {
+                        in_spell = name == super::ASSASSIN_HIT_AND_RUN.name;
+                    }
+                    AiEventKind::ScheduleEnded { name, .. }
+                        if in_spell && name == super::ASSASSIN_HIT_AND_RUN.name =>
+                    {
+                        in_spell = false;
+                        spells += 1;
+                    }
+                    AiEventKind::Attack { .. } if in_spell && spells == 0 => shots += 1,
+                    _ => {}
+                }
+            }
+            if spells > 0 {
+                break;
+            }
+        }
+        assert_eq!(spells, 1, "the assassin finished a hit-and-run spell");
+        assert_eq!(shots, 2, "its burst was {shots} shots");
     }
 }

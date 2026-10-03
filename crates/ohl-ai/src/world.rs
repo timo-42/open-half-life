@@ -30,7 +30,8 @@ use crate::schedule::{
     Activity, Brain, RunOutcome, Schedule, ScheduleRunner, Task, TaskExecutor, TaskStatus,
 };
 use crate::senses::{
-    Candidate, EnemyMemory, SightContext, SoundEvent, SoundKind, SoundList, Viewer, listen, look,
+    Candidate, EnemyMemory, SightContext, Sighting, SoundEvent, SoundKind, SoundList, Viewer,
+    listen, look, select_enemy,
 };
 use crate::squad::{SquadCandidate, SquadRoster};
 use crate::state::{Classification, Conditions, MonsterState, RelationshipTable};
@@ -633,7 +634,21 @@ impl AiWorld {
         }
 
         // --- Enemy acquisition and memory ---------------------------------
-        if let Some(seen) = sight.enemy {
+        // A monster that can only attack one place takes what is there as
+        // its enemy ahead of sight's own choice (`Brain::
+        // chooses_enemy_in_reach`).
+        let enemy = if brain.has_melee_attack() && brain.chooses_enemy_in_reach() {
+            let in_reach: Vec<Sighting> = sight
+                .visible
+                .iter()
+                .filter(|seen| brain.melee_in_reach(actor.origin, seen.origin, seen.distance))
+                .copied()
+                .collect();
+            select_enemy(&in_reach).or(sight.enemy)
+        } else {
+            sight.enemy
+        };
+        if let Some(seen) = enemy {
             let is_new = ai.memory.is_none_or(|memory| memory.entity != seen.entity);
             if is_new {
                 conditions |= Conditions::NEW_ENEMY;
