@@ -10,7 +10,9 @@ use glam::Vec3;
 use hecs::Entity;
 
 use crate::keyvalues::RenderProps;
-use crate::registry::{Breakable, BrushModel, ClassName, Liquid, Registry, Transform, Water};
+use crate::registry::{
+    Breakable, BrushModel, ClassName, Conveyor, Liquid, Registry, Transform, WallToggle, Water,
+};
 
 /// One brush-model entity's placement: which submodel to draw, and where.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -117,6 +119,38 @@ fn is_broken(registry: &Registry, entity: Entity) -> bool {
         .is_ok_and(|breakable| breakable.broken)
 }
 
+/// Whether this entity is a `func_wall_toggle` currently switched off, and so
+/// must be left out of the drawn list ([`model_instances`]): VDC's
+/// `func_wall_toggle` page documents an "off" wall as "non-solid and invisible"
+/// (`docs/FORMAT_SOURCES.md`, "Map entities the registry used to drop"). An
+/// entity with no [`WallToggle`] is never hidden.
+///
+/// Only the *drawn* half is decided here. The solid half deliberately is
+/// not: [`solid_model_instances`] still offers a switched-off wall for
+/// attachment, because attachment happens once, at level load, and a wall
+/// that can be switched back on has to keep the collision brush it will
+/// come back as. `ohl_engine::Level::sync_brush_collision` suspends and
+/// restores that brush's solidity every step from this same flag, which is
+/// the half of "non-solid" a running game can actually change.
+fn is_hidden_wall(registry: &Registry, entity: Entity) -> bool {
+    registry
+        .world
+        .get::<&WallToggle>(entity)
+        .is_ok_and(|wall| !wall.visible)
+}
+
+/// Whether this entity is a `func_conveyor` carrying the published "Not
+/// solid (2)" spawnflag (TWHL `func_conveyor`, `docs/FORMAT_SOURCES.md`,
+/// "Map entities the registry used to drop"), and so must never be attached to
+/// either collision model. Unlike [`is_hidden_wall`] this is decided once,
+/// at spawn: nothing published switches it later. It is still drawn.
+fn is_non_solid_conveyor(registry: &Registry, entity: Entity) -> bool {
+    registry
+        .world
+        .get::<&Conveyor>(entity)
+        .is_ok_and(|conveyor| conveyor.not_solid)
+}
+
 /// Collects one [`ModelInstance`] per brush entity that is solid to the
 /// player (see [`is_solid_brush`]), in registry spawn order.
 ///
@@ -163,7 +197,10 @@ fn collect_solid_model_instances(
             .world
             .query::<(Entity, &BrushModel, &Transform, &RenderProps, &ClassName)>()
     {
-        if !is_solid(&classname.0) || is_broken(registry, entity) {
+        if !is_solid(&classname.0)
+            || is_broken(registry, entity)
+            || is_non_solid_conveyor(registry, entity)
+        {
             continue;
         }
         out.push(ModelInstance {
@@ -236,13 +273,30 @@ pub fn contents_model_instances(registry: &Registry) -> Vec<(ModelInstance, Cont
 /// order.
 #[must_use]
 pub fn model_instances(registry: &Registry) -> Vec<ModelInstance> {
+    collect_model_instances(registry, true)
+}
+
+/// As [`model_instances`], but keeping a `func_wall_toggle` that is
+/// switched off right now: the list a host builds brush geometry from, once,
+/// at level load. A wall that starts invisible (or is off when a save is
+/// loaded) can be switched on later, and has to have been built by then;
+/// [`model_instances`] is what decides, frame by frame, whether it is drawn.
+#[must_use]
+pub fn buildable_model_instances(registry: &Registry) -> Vec<ModelInstance> {
+    collect_model_instances(registry, false)
+}
+
+fn collect_model_instances(registry: &Registry, skip_hidden_walls: bool) -> Vec<ModelInstance> {
     let mut out = Vec::new();
     for (entity, model, transform, render, classname) in
         &mut registry
             .world
             .query::<(Entity, &BrushModel, &Transform, &RenderProps, &ClassName)>()
     {
-        if is_never_rendered(&classname.0) || is_broken(registry, entity) {
+        if is_never_rendered(&classname.0)
+            || is_broken(registry, entity)
+            || (skip_hidden_walls && is_hidden_wall(registry, entity))
+        {
             continue;
         }
         out.push(ModelInstance {

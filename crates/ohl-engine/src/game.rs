@@ -56,6 +56,18 @@ pub enum GameEvent {
     ViewModel(ohl_gameplay::ViewModelAction),
     /// The player's health reached zero.
     PlayerDied,
+    /// A `trigger_endsection` fired: the published behaviour is that the
+    /// current game section ends and the player goes back to the menu (TWHL
+    /// `trigger_endsection`, `docs/FORMAT_SOURCES.md`, "Map entities the
+    /// registry used to drop"). The engine only reports it: `ohl-app`'s
+    /// window goes back to its main menu, and a scripted run ends.
+    ///
+    /// Carries no map data at all, deliberately: the entity's own
+    /// `section` keyvalue is read (`ohl_game::registry::EndSection`) but
+    /// stops at this boundary, since every published value ends the
+    /// section the same way here and a host that received the string could
+    /// print it.
+    EndSection,
 }
 
 /// How a [`Game`] is started: everything the host chooses rather than the
@@ -129,6 +141,9 @@ pub struct Game {
     /// How many times a `trigger_teleport` has moved the player on this
     /// level; see [`Self::teleport_count`].
     teleports: u64,
+    /// How many times a `player_weaponstrip` has emptied the player's
+    /// hands on this level; see [`Self::weapon_strip_count`].
+    weapon_strips: u64,
 }
 
 impl Game {
@@ -224,6 +239,7 @@ impl Game {
             clock: TickClock::new(),
             pending,
             teleports: 0,
+            weapon_strips: 0,
         }
     }
 
@@ -1108,7 +1124,12 @@ impl Game {
                 .level
                 .rotational_carry(brush, origin, TICK_SECONDS)
                 .map_or(Vec3::ZERO, |carried| (carried - origin) / TICK_SECONDS);
-            (translation + rotational).length()
+            // Plus whatever a `func_conveyor` under the player's feet is
+            // pushing them at: its brush never translates or turns, so
+            // neither term above sees it, but the player is being carried
+            // by it all the same (`Level::conveyor_velocity`).
+            let surface = self.level.conveyor_velocity(brush);
+            (translation + rotational + surface).length()
         })
     }
 
@@ -1183,10 +1204,13 @@ impl Game {
             Event::Message(message) => Some(GameEvent::Message {
                 block: self.titles.resolve(&message),
             }),
-            // Already applied to the player in `Self::apply_teleports`, and
-            // removed from the queue there; this arm only exists for a
-            // teleport queued outside a fixed step, which nothing does.
-            Event::Teleport(_) => None,
+            // Already applied to the player inside the fixed step — a
+            // teleport in `Self::apply_teleports`, a weapon strip in
+            // `Self::apply_weapon_strips` — and removed from the queue
+            // there; this arm only exists for one queued outside a fixed
+            // step, which nothing does.
+            Event::Teleport(_) | Event::WeaponStrip => None,
+            Event::EndSection(_) => Some(GameEvent::EndSection),
         }));
         out.extend(
             self.systems
@@ -1224,6 +1248,7 @@ impl Game {
             events,
         );
         self.apply_teleports(events, before);
+        self.apply_weapon_strips(events, before);
         self.elapsed += TICK_SECONDS;
     }
 
@@ -1276,6 +1301,42 @@ impl Game {
         self.camera.yaw = self.controller.yaw;
         self.camera.pitch = self.controller.pitch;
         self.teleports = self.teleports.saturating_add(1);
+    }
+
+    /// Applies (and removes) every [`Event::WeaponStrip`] this step
+    /// produced, the same way [`Self::apply_teleports`] applies a teleport:
+    /// the entity that fired is map logic `ohl-game` owns, the inventory it
+    /// empties is engine state only this type can reach, and a host should
+    /// never have to do the wiring between them.
+    ///
+    /// Idempotent by construction — a strip empties the inventory, so two
+    /// in one step is the same as one — but each one is still counted, so
+    /// [`Self::weapon_strip_count`] reports activations rather than
+    /// state changes.
+    fn apply_weapon_strips(&mut self, events: &mut Vec<Event>, from: usize) {
+        let mut stripped = 0u64;
+        let mut index = from;
+        while index < events.len() {
+            if matches!(events[index], Event::WeaponStrip) {
+                stripped += 1;
+                events.remove(index);
+            } else {
+                index += 1;
+            }
+        }
+        if stripped == 0 {
+            return;
+        }
+        self.systems.strip_weapons();
+        self.weapon_strips = self.weapon_strips.saturating_add(stripped);
+    }
+
+    /// How many times a `player_weaponstrip` has emptied the player's hands
+    /// since this level was loaded (see
+    /// [`ohl_game::registry::WeaponStrip`]). Data, never a log line.
+    #[must_use]
+    pub fn weapon_strip_count(&self) -> u64 {
+        self.weapon_strips
     }
 
     /// How many times a `trigger_teleport` volume has moved the player
@@ -1417,6 +1478,7 @@ impl Game {
         self.renderers = None;
         self.elapsed = 0.0;
         self.teleports = 0;
+        self.weapon_strips = 0;
         self.clock = TickClock::new();
         self.systems.reset();
         self.systems

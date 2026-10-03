@@ -234,6 +234,27 @@ impl Inventory {
         was_owned
     }
 
+    /// Removes every weapon, every loaded clip and every ammo pool at once,
+    /// leaving the player's hands empty — the published `player_weaponstrip`
+    /// effect ("when activated, removes all the weapons that the player is
+    /// carrying"; TWHL's `player_weaponstrip` page, see
+    /// `docs/FORMAT_SOURCES.md`, "Map entities the registry used to drop").
+    ///
+    /// The HEV suit and the long jump module survive: neither is a weapon,
+    /// and the VDC page cited there says "any other items" stay. Returns
+    /// whether anything was actually removed, so a caller can tell a strip
+    /// that did something from one aimed at an already-empty inventory.
+    pub fn strip_weapons(&mut self) -> bool {
+        let carried = self.owned != 0
+            || self.clips.iter().any(|clip| *clip > 0)
+            || self.ammo.iter().any(|pool| !pool.is_empty());
+        self.owned = 0;
+        self.clips = [0; WEAPON_COUNT];
+        self.ammo = AmmoType::ALL.map(AmmoPool::new);
+        self.selected = None;
+        carried
+    }
+
     /// Deselects the current weapon without dropping it, leaving the
     /// player's hands empty until [`select_slot`](Self::select_slot),
     /// [`select_next`](Self::select_next) or
@@ -495,5 +516,34 @@ mod tests {
         assert!(inventory.give_long_jump());
         assert!(!inventory.give_long_jump());
         assert!(inventory.has_long_jump());
+    }
+
+    /// A `player_weaponstrip` takes every weapon, every clip and every
+    /// ammo pool, and leaves the suit and the long jump module — neither
+    /// of which is a weapon.
+    #[test]
+    fn stripping_takes_every_weapon_and_all_ammo_but_not_the_suit() {
+        let mut inventory = Inventory::new();
+        inventory.give_weapon(WeaponId::Glock);
+        inventory.give_weapon(WeaponId::Shotgun);
+        inventory.set_clip(WeaponId::Glock, 5);
+        inventory.give_ammo(AmmoType::NineMillimeter, 100);
+        inventory.give_ammo(AmmoType::Buckshot, 20);
+        inventory.give_suit();
+        inventory.give_long_jump();
+        inventory.select_slot(1);
+
+        assert!(inventory.strip_weapons());
+        assert_eq!(inventory.owned_weapons().count(), 0);
+        assert_eq!(inventory.clip(WeaponId::Glock), 0);
+        assert!(inventory.selected().is_none());
+        for kind in AmmoType::ALL {
+            assert!(inventory.ammo(kind).is_empty(), "{kind:?} must be empty");
+        }
+        assert!(inventory.has_suit());
+        assert!(inventory.has_long_jump());
+
+        // A second strip finds nothing left to take, and says so.
+        assert!(!inventory.strip_weapons());
     }
 }
