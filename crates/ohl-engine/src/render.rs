@@ -13,8 +13,9 @@ use glam::{Mat4, Quat, Vec3};
 use ohl_game::hecs::Entity;
 use ohl_game::registry::Transform;
 use ohl_render::{
-    FreeFlyCamera, GpuContext, LightStyles, ModelInstance, RenderProps, SkyRenderer,
-    SpriteInstance, StudioRenderer, SubmodelInstance, WorldRenderer, math, placement, wgpu,
+    BlendKind, EffectInstance, FreeFlyCamera, GpuContext, LightStyles, ModelInstance, RenderProps,
+    SkyRenderer, SpriteInstance, StudioRenderer, SubmodelInstance, WorldRenderer, math, placement,
+    wgpu,
 };
 use ohl_world::{Aabb, Frustum, StudioPose};
 
@@ -26,6 +27,36 @@ use crate::viewmodel::{self, ViewModelFrame};
 
 #[path = "visual_effects.rs"]
 mod visual_effects;
+
+#[derive(Clone, Copy)]
+enum VisualDraw<'a> {
+    Sprite(SpriteInstance<'a>),
+    Effect(EffectInstance),
+}
+
+impl VisualDraw<'_> {
+    fn writes_depth(self) -> bool {
+        match self {
+            Self::Sprite(sprite) => sprite.render_props.blend_kind() == BlendKind::Opaque,
+            Self::Effect(effect) => effect.writes_depth(),
+        }
+    }
+
+    fn view_depth(self, camera: &FreeFlyCamera) -> f32 {
+        let origin = match self {
+            Self::Sprite(sprite) => sprite.origin,
+            Self::Effect(effect) => effect.center(),
+        };
+        math::dot(
+            std::array::from_fn(|axis| origin[axis] - camera.position[axis]),
+            camera.direction(),
+        )
+    }
+
+    fn is_sprite(self) -> bool {
+        matches!(self, Self::Sprite(_))
+    }
+}
 
 /// The colour target one [`crate::Game::render`] call draws into.
 #[derive(Clone, Copy)]
@@ -224,19 +255,7 @@ impl Renderers {
             .render_liquid(context, camera, target.view, width, height, elapsed, 1.0);
         self.record_stage(RenderStage::Liquid, &mut checkpoint);
 
-        self.draw_sprites(context, level, camera, elapsed, target, transient_sprites);
-        self.map_effects.sample(level, elapsed);
-        if let Some(depth) = depth.as_ref() {
-            self.effects.draw(
-                context,
-                &self.map_effects.instances,
-                camera,
-                target.view,
-                depth,
-                width,
-                height,
-            );
-        }
+        self.draw_visuals(context, level, camera, elapsed, target, transient_sprites);
         self.record_stage(RenderStage::Sprite, &mut checkpoint);
 
         // M7.9 P3: the view model, drawn last, after everything else. Its
@@ -308,10 +327,12 @@ impl Renderers {
         );
     }
 
-    /// Draws every placed `env_sprite`/`env_glow`/`cycler_sprite` entity,
-    /// plus this frame's transient sprites (muzzle flashes, impacts,
-    /// explosions — `crate::sprites`), appended to the same instance list.
-    fn draw_sprites(
+    /// Draws placed/transient sprites and effect primitives in one order.
+    /// Opaque geometry writes depth first; alpha/additive draws interleave
+    /// back-to-front. Consecutive items of one renderer share a submission.
+    /// Brush/liquid/studio transparency and intersecting primitives remain
+    /// outside this bounded compositor; see the milestone limits.
+    fn draw_visuals(
         &mut self,
         context: &GpuContext,
         level: &Level,
@@ -349,14 +370,81 @@ impl Renderers {
                 frame_time: sprite.age,
             })
         }));
-        self.world.draw_sprites(
-            context,
-            &instances,
-            camera,
-            target.view,
-            target.width.max(1),
-            target.height.max(1),
-        );
+        self.map_effects.sample(level, elapsed);
+        let Some(depth) = self.world.depth_view().cloned() else {
+            return;
+        };
+        let mut draws: Vec<_> = instances
+            .iter()
+            .copied()
+            .map(VisualDraw::Sprite)
+            .chain(
+                self.map_effects
+                    .instances
+                    .iter()
+                    .copied()
+                    .map(VisualDraw::Effect),
+            )
+            .collect();
+        draws.sort_by(|a, b| match (a.writes_depth(), b.writes_depth()) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => b.view_depth(camera).total_cmp(&a.view_depth(camera)),
+        });
+        let mut index = 0;
+        while index < draws.len() {
+            let is_sprite = draws[index].is_sprite();
+            let mut end = index + 1;
+            while end < draws.len() && draws[end].is_sprite() == is_sprite {
+                end += 1;
+            }
+            self.draw_visual_batch(context, &draws[index..end], camera, target, &depth);
+            index = end;
+        }
+    }
+
+    fn draw_visual_batch(
+        &mut self,
+        context: &GpuContext,
+        draws: &[VisualDraw<'_>],
+        camera: &FreeFlyCamera,
+        target: RenderTarget<'_>,
+        depth: &wgpu::TextureView,
+    ) {
+        if draws[0].is_sprite() {
+            let sprites: Vec<_> = draws
+                .iter()
+                .filter_map(|draw| match *draw {
+                    VisualDraw::Sprite(sprite) => Some(sprite),
+                    VisualDraw::Effect(_) => None,
+                })
+                .collect();
+            self.world.draw_sprites(
+                context,
+                &sprites,
+                camera,
+                target.view,
+                target.width.max(1),
+                target.height.max(1),
+            );
+        } else {
+            let effects: Vec<_> = draws
+                .iter()
+                .filter_map(|draw| match *draw {
+                    VisualDraw::Effect(effect) => Some(effect),
+                    VisualDraw::Sprite(_) => None,
+                })
+                .collect();
+            self.effects.draw(
+                context,
+                &effects,
+                camera,
+                target.view,
+                depth,
+                target.width.max(1),
+                target.height.max(1),
+            );
+        }
     }
 
     /// Rebuilds [`Self::props`], this frame's studio instance list, from the

@@ -8,7 +8,7 @@
 use glam::Vec3;
 use ohl_game::hecs::Entity;
 use ohl_game::keyvalues::EntityDef;
-use ohl_game::registry::Transform;
+use ohl_game::registry::{BrushModel, Transform};
 use ohl_physics::Hull;
 use ohl_render::{EffectInstance, MAX_EFFECT_INSTANCES};
 
@@ -62,13 +62,16 @@ fn named(level: &Level, def: &EntityDef, key: &str) -> Option<Entity> {
 }
 
 fn origin(level: &Level, entity: Entity) -> Option<Vec3> {
-    level
-        .registry
-        .world
-        .get::<&Transform>(entity)
-        .ok()
-        .map(|transform| transform.origin)
-        .filter(|origin| origin.is_finite())
+    let authored = level.registry.world.get::<&Transform>(entity).ok()?.origin;
+    // Brush transforms keep their authored origin while mover state carries
+    // displacement/rotation. Use the same posed center as rendering/collision.
+    let live = if level.registry.world.get::<&BrushModel>(entity).is_ok() {
+        ohl_game::pose::brush_center(&level.registry, entity)
+            .unwrap_or_else(|| authored + ohl_game::pose::brush_offset(&level.registry, entity))
+    } else {
+        authored
+    };
+    live.is_finite().then_some(live)
 }
 
 impl MapEffects {
@@ -297,6 +300,52 @@ mod tests {
         level.registry.world.despawn(emitter).unwrap();
         effects.sample(&level, 0.2);
         assert!(effects.instances.is_empty());
+    }
+
+    #[test]
+    fn beam_endpoint_follows_a_real_train_state_while_its_transform_stays_authored() {
+        let mut level = level(
+            "{\"classname\" \"func_train\" \"targetname\" \"ohl_train\" \"model\" \"*1\" \"target\" \"ohl_node1\" \"speed\" \"40\"}\n{\"classname\" \"path_corner\" \"targetname\" \"ohl_node1\" \"target\" \"ohl_node2\" \"origin\" \"100 0 0\"}\n{\"classname\" \"path_corner\" \"targetname\" \"ohl_node2\" \"origin\" \"200 0 0\"}\n{\"classname\" \"info_target\" \"targetname\" \"ohl_start\" \"origin\" \"-100 -8 48\"}\n{\"classname\" \"env_beam\" \"spawnflags\" \"1\" \"LightningStart\" \"ohl_start\" \"LightningEnd\" \"ohl_train\"}",
+        );
+        let train = level.registry.find("ohl_train")[0];
+        let authored = level
+            .registry
+            .world
+            .get::<&Transform>(train)
+            .unwrap()
+            .origin;
+        let mut effects = MapEffects::new(&level);
+        effects.sample(&level, 0.0);
+        let EffectInstance::Beam { end: initial, .. } = effects.instances[0] else {
+            panic!("beam expected")
+        };
+        assert_eq!(initial, [0.0, 24.0, 48.0]);
+        level
+            .simulation
+            .use_entity(&mut level.registry, train, None, &mut Vec::new());
+        for _ in 0..30 {
+            level.simulation.tick(&mut level.registry, 1.0 / 60.0);
+        }
+        effects.sample(&level, 0.5);
+        let EffectInstance::Beam { end, .. } = effects.instances[0] else {
+            panic!("beam expected")
+        };
+        assert!((end[0] - initial[0] - 20.0).abs() < 1e-3);
+        assert_eq!(end[1..], initial[1..]);
+        assert_eq!(
+            level
+                .registry
+                .world
+                .get::<&Transform>(train)
+                .unwrap()
+                .origin,
+            authored
+        );
+        assert!(
+            Vec3::from_array(end)
+                .distance(ohl_game::pose::brush_center(&level.registry, train).unwrap())
+                < 1e-3
+        );
     }
 
     #[test]

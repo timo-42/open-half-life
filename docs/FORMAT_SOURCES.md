@@ -7657,3 +7657,19 @@ lifetime/motion/collision.
 Renderer primitives are public for a future gameplay event seam; the engine
 bridge is private to `render.rs`, with no registry/systems/AI/combat edits and
 no new save section. All fixtures and optional PPM captures are synthetic.
+
+Named brush endpoints read the established live brush center/pose, including
+train displacement and door rotation, rather than their authored Transform.
+Placed/transient sprites and these effect primitives share an opaque-first,
+back-to-front order. Beam midpoints provide sorting keys; transparent
+intersections are unresolved. Studio transparency, translucent brushes and
+liquids still draw in their existing earlier passes, so a foreground
+translucent brush/liquid cannot correctly attenuate a rear effect. This is
+a bounded sprite/effect compositor, not a global transparency solution.
+The synthetic brush/beam diagnostic records this remaining limit.
+
+P6a handoff: placed sprite render properties and map beam/laser colors are
+cached from their declarations. Later RenderPropsComponent changes are not
+sampled by this bridge; gameplay render-property changes need a read-side
+bridge update as well as their gameplay producer. Initially inactive effects
+also need an activation event/state seam. No registry changes are inferred here.
