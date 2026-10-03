@@ -418,9 +418,9 @@ pub struct LookResult {
 /// Each sighting's relationship is [`sighting_relationship`]'s, so one
 /// that involves a prisoner on either end — a [`Viewer::prisoner`]
 /// looking, or a [`Candidate::prisoner`] being looked at — is never
-/// hostile. It is still *seen*, so [`Conditions::SEE_CLIENT`] and the
-/// sighting list are unaffected; only the hostility, and with it the enemy
-/// choice, is.
+/// hostile. It is still *seen*, so [`Conditions::SEE_CLIENT`], the
+/// sighting list, and a fear or ally sighting's own condition are
+/// unaffected; only the hostility, and with it the enemy choice, is.
 #[must_use]
 pub fn look(
     viewer: &Viewer,
@@ -486,15 +486,20 @@ pub fn look(
 }
 
 /// How something of class `viewer` reads something of class `seen` it is
-/// looking at: `relationships`' own entry, unless `prisoner_involved` —
-/// either of the two carries [`crate::world::Prisoner`] — in which case
-/// [`Relationship::NoRelationship`], whatever the table says.
+/// looking at: `relationships`' own entry, except that when
+/// `prisoner_involved` — either of the two carries
+/// [`crate::world::Prisoner`] — a *hostile* entry
+/// ([`Relationship::is_hostile`]) reads as
+/// [`Relationship::NoRelationship`].
 ///
 /// The published `Prisoner` spawnflag's monster "won't attack, or be
 /// attacked by, other monsters", and with it "normal AI is disabled, so
 /// the monster won't attack the player" (see [`crate::world::Prisoner`]):
 /// a sighting with a prisoner on either end is never hostile, so neither
-/// side ever chooses the other as an enemy.
+/// side ever chooses the other as an enemy. Only attacking is suppressed.
+/// [`Relationship::Fear`] and [`Relationship::Ally`] are not attacks and
+/// pass through unchanged, so a scientist still runs from an armed
+/// prisoner, and a prisoner scientist still runs from a real hostile.
 ///
 /// This is the one hostility rule. [`look`] reads every sighting through
 /// it, and a caller outside this crate asking "does this monster regard
@@ -507,10 +512,11 @@ pub fn sighting_relationship(
     seen: Classification,
     prisoner_involved: bool,
 ) -> Relationship {
-    if prisoner_involved {
+    let relationship = relationships.get(viewer, seen);
+    if prisoner_involved && relationship.is_hostile() {
         Relationship::NoRelationship
     } else {
-        relationships.get(viewer, seen)
+        relationship
     }
 }
 
@@ -769,6 +775,91 @@ mod tests {
         );
         assert!(!result.conditions.contains(Conditions::SEE_ENEMY));
         assert!(result.enemy.is_none(), "a prisoner is never chosen");
+    }
+
+    /// Only attacking is suppressed. Across the whole provisional matrix,
+    /// with a prisoner involved, a hostile entry reads as no relationship
+    /// and every other entry (fear, ally, no relationship) is untouched.
+    #[test]
+    fn a_prisoner_suppresses_only_hostile_relationships() {
+        let table = RelationshipTable::provisional();
+        let mut fear_or_ally_seen = false;
+        for viewer in Classification::ALL {
+            for seen in Classification::ALL {
+                let entry = table.get(viewer, seen);
+                let read = super::sighting_relationship(&table, viewer, seen, true);
+                if entry.is_hostile() {
+                    assert_eq!(read, Relationship::NoRelationship, "{viewer:?} -> {seen:?}");
+                } else {
+                    assert_eq!(read, entry, "{viewer:?} -> {seen:?}");
+                    fear_or_ally_seen |= matches!(entry, Relationship::Fear | Relationship::Ally);
+                }
+                assert_eq!(
+                    super::sighting_relationship(&table, viewer, seen, false),
+                    entry,
+                    "without a prisoner the table is read as is"
+                );
+            }
+        }
+        assert!(
+            fear_or_ally_seen,
+            "the matrix exercises fear or ally at all"
+        );
+    }
+
+    /// A scientist (passive human) still fears an armed monster that is
+    /// held prisoner: the prisoner will not attack, but nothing published
+    /// says the scientist knows that.
+    #[test]
+    fn a_passive_human_still_fears_a_prisoner_grunt() {
+        let (me, them) = two_entities();
+        let scientist = Viewer {
+            classification: Classification::HumanPassive,
+            ..viewer(me)
+        };
+        let grunt = Candidate {
+            classification: Classification::HumanMilitary,
+            is_client: false,
+            prisoner: true,
+            ..candidate(them, Vec3::new(256.0, 0.0, 0.0))
+        };
+        let result = look(
+            &scientist,
+            &Senses::default(),
+            &[grunt],
+            &RelationshipTable::provisional(),
+            &super::SightContext::empty(),
+        );
+        assert!(result.conditions.contains(Conditions::SEE_FEAR));
+        assert_eq!(result.visible[0].relationship, Relationship::Fear);
+        assert!(result.enemy.is_none(), "feared, never fought");
+    }
+
+    /// And the other way round: a prisoner scientist still fears a real
+    /// hostile. The flag stops a prisoner attacking; it does not stop it
+    /// running.
+    #[test]
+    fn a_prisoner_passive_human_still_fears_a_hostile() {
+        let (me, them) = two_entities();
+        let scientist = Viewer {
+            classification: Classification::HumanPassive,
+            prisoner: true,
+            ..viewer(me)
+        };
+        let grunt = Candidate {
+            classification: Classification::HumanMilitary,
+            is_client: false,
+            ..candidate(them, Vec3::new(256.0, 0.0, 0.0))
+        };
+        let result = look(
+            &scientist,
+            &Senses::default(),
+            &[grunt],
+            &RelationshipTable::provisional(),
+            &super::SightContext::empty(),
+        );
+        assert!(result.conditions.contains(Conditions::SEE_FEAR));
+        assert_eq!(result.visible[0].relationship, Relationship::Fear);
     }
 
     #[test]
