@@ -782,7 +782,7 @@ it interactively on a real screen.
   and level transitions by touch (`trigger_changelevel`) or by `use`.
 - **Combat and AI**: weapons, pickups, damage, monster AI, and navigation
   are implemented. Twenty-four `monster_*` classnames have a brain and a
-  stat row of their own — the sixteen original kinds plus, as of M9.NEXT,
+  stat row of their own — the sixteen original kinds plus, as of M9.42,
   the barnacle (a ceiling-hung tongue that bites what stands below it),
   the alien controller (the first flier: a point-hull route that climbs
   and descends), the human assassin (fire, relocate, retreat), the

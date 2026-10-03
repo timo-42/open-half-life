@@ -3101,7 +3101,7 @@ counterpart in `ohl-ai`'s sound classification and is recorded as
   alone, with no spawnflags, so a carried prisoner from such a save
   arrives an ordinary monster.
 
-### Wave 1 batch A: eight more `monster_*` kinds (M9.NEXT)
+### Wave 1 batch A: eight more `monster_*` kinds (M9.42)
 
 The eight rows marked "Wave 1 batch A" in the two tables above
 (`monster_barnacle`, `monster_alien_controller`, `monster_human_assassin`,
@@ -3123,7 +3123,9 @@ Behavioural facts cited from those pages and how they are modeled
   `Brain` method) turns the reach into a vertical test — within
   `BARNACLE_TONGUE_RADIUS` of the line below the origin, no further down
   than the length — instead of the spherical `melee_range` every other
-  kind uses; its senses are omnidirectional over the tongue length; it is
+  kind uses; its senses are omnidirectional over the tongue length, and
+  what is on the tongue is its enemy ahead of whatever else it sees
+  (`Brain::chooses_enemy_in_reach`); it is
   `ROOTED` (no schedule it selects moves it) and its eye sits *below* its
   origin (`MonsterKind::view_offset`), since a ceiling-hung origin with the
   default eye above it would start every sight trace inside the ceiling.
