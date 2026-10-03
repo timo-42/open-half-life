@@ -238,12 +238,37 @@ impl PathChain {
     #[must_use]
     pub fn build(registry: &Registry, first_name: &str, height: f32) -> Option<Self> {
         let mut nodes: Vec<PathNode> = Vec::new();
-        let looped = Self::walk_from(registry, first_name, height, &mut nodes);
+        let looped = Self::walk_from(registry, first_name, height, &mut nodes) == Some(0);
         if nodes.is_empty() {
             None
         } else {
             Some(Self { nodes, looped })
         }
+    }
+
+    /// The chain made of exactly `entities`, in that order, each resolved
+    /// by [`Self::node_of`] with `height` added — how a save restores the
+    /// chain a train actually held (`ohl-engine`'s `SECTION_PATH_STATE`),
+    /// which after a switch, a re-rooted loop or a `func_trackchange` is
+    /// not what [`Self::build`] from the train's own `target` gives.
+    /// `None` when `entities` is empty, longer than [`MAX_PATH_NODES`], or
+    /// names anything that is not a path node, so a save taken against a
+    /// different map falls back to the chain the train spawned with.
+    #[must_use]
+    pub fn from_entities(
+        registry: &Registry,
+        entities: &[Entity],
+        looped: bool,
+        height: f32,
+    ) -> Option<Self> {
+        if entities.is_empty() || entities.len() > MAX_PATH_NODES {
+            return None;
+        }
+        let nodes = entities
+            .iter()
+            .map(|&entity| Self::node_of(registry, entity, height))
+            .collect::<Option<Vec<PathNode>>>()?;
+        Some(Self { nodes, looped })
     }
 
     /// The chain that *ends* at `last_name`: the node named, preceded by
@@ -253,16 +278,18 @@ impl PathChain {
     /// train it delivers to the far end of a path — the documented "last
     /// path_track of the top path"/"last path_track at the bottom path"
     /// (see `docs/FORMAT_SOURCES.md`, "Track trains and paths") — so the
-    /// train can ride that path *backward* from its far end rather than
-    /// being seated on a one-node chain and dead-ending on arrival.
+    /// train is seated on that whole path, at its far end, rather than on
+    /// a one-node chain that can never be left.
     ///
-    /// Falls back to [`Self::build`]`(last_name)` — the one-node chain —
-    /// when nothing targets `last_name`, or when the forward walk from the
-    /// head found does not actually end there (a switch mid-way currently
-    /// selecting a different branch, or a loop). A node with more than one
-    /// predecessor takes the lowest-id one, so the choice is deterministic
-    /// for a registry rebuilt from the same map. Bounded by
-    /// [`MAX_PATH_NODES`] like every other chain walk here.
+    /// `None` whenever the named node is not actually where the forward
+    /// walk from that head ends: a "last" node that has an onward `target`
+    /// of its own, a switch upstream currently selecting the other branch,
+    /// or a loop. The caller then seats the train the way it always did, on
+    /// the forward walk *from* the named node, so a map whose "last" node
+    /// rides on keeps riding on. A node with more than one predecessor
+    /// takes the lowest-id one, so the choice is deterministic for a
+    /// registry rebuilt from the same map. Bounded by [`MAX_PATH_NODES`]
+    /// like every other chain walk here.
     #[must_use]
     pub fn build_ending_at(registry: &Registry, last_name: &str, height: f32) -> Option<Self> {
         let &last = registry.find(last_name).first()?;
@@ -279,17 +306,8 @@ impl PathChain {
             head_name = name;
             current = entity;
         }
-        let from_head = Self::build(registry, &head_name, height)
-            .filter(|chain| chain.nodes.last().is_some_and(|node| node.entity == last));
-        from_head.or_else(|| {
-            // The named node alone: a train seated at the last node of
-            // this chain is seated exactly where it was delivered, which
-            // `build(last_name)` — the forward walk *from* it — would not
-            // guarantee.
-            let mut chain = Self::build(registry, last_name, height)?;
-            chain.nodes.truncate(1);
-            chain.looped = false;
-            Some(chain)
+        Self::build(registry, &head_name, height).filter(|chain| {
+            !chain.looped && chain.nodes.last().is_some_and(|node| node.entity == last)
         })
     }
 
@@ -336,59 +354,67 @@ impl PathChain {
     /// may already hold a prefix, see [`TrackTrainState::resplice_chain`] —
     /// following each node's currently selected next name, until a dead
     /// end, a node already present in `nodes`, or [`MAX_PATH_NODES`].
-    /// Returns whether the walk closed a loop back to `nodes[0]`.
+    /// Returns the index in `nodes` of the node the walk ran back into,
+    /// when it closed onto one already present — `Some(0)` is an ordinary
+    /// loop back to the chain's first node — and `None` at a dead end, an
+    /// unresolved name, or the bound.
     fn walk_from(
         registry: &Registry,
         first_name: &str,
         height: f32,
         nodes: &mut Vec<PathNode>,
-    ) -> bool {
+    ) -> Option<usize> {
         let mut current_name = first_name.to_string();
-        let mut looped = false;
-
         while nodes.len() < MAX_PATH_NODES {
             let Some(&entity) = registry.find(&current_name).first() else {
                 break;
             };
-            if nodes.iter().any(|node| node.entity == entity) {
-                looped = nodes.first().is_some_and(|first| first.entity == entity);
-                break;
+            if let Some(index) = nodes.iter().position(|node| node.entity == entity) {
+                return Some(index);
             }
-            let Ok(path) = registry.world.get::<&Path>(entity) else {
+            let Some(node) = Self::node_of(registry, entity, height) else {
                 break;
             };
-            let path = *path;
-            let position = registry
-                .world
-                .get::<&Transform>(entity)
-                .map_or(Vec3::ZERO, |transform| transform.origin)
-                + Vec3::Z * height;
-            let next = Self::next_name_of(registry, entity, &path);
-            let message = registry
-                .world
-                .get::<&PathFireOnPass>(entity)
-                .ok()
-                .map(|fire| fire.0.clone());
-            let dead_end = registry
-                .world
-                .get::<&crate::registry::PathFireOnDeadEnd>(entity)
-                .ok()
-                .map(|fire| fire.0.clone());
-            nodes.push(PathNode {
-                entity,
-                position,
-                wait: path.wait,
-                speed: path.speed,
-                stop: path.stop,
-                message,
-                dead_end,
-            });
-            match next {
+            nodes.push(node);
+            let path = *registry.world.get::<&Path>(entity).ok()?;
+            match Self::next_name_of(registry, entity, &path) {
                 Some(next_name) => current_name = next_name,
                 None => break,
             }
         }
-        looped
+        None
+    }
+
+    /// One resolved node for the `path_corner`/`path_track` `entity`, with
+    /// `height` added to its position the way every chain walk adds it.
+    /// `None` when `entity` is not a path node.
+    #[must_use]
+    pub fn node_of(registry: &Registry, entity: Entity, height: f32) -> Option<PathNode> {
+        let path = *registry.world.get::<&Path>(entity).ok()?;
+        let position = registry
+            .world
+            .get::<&Transform>(entity)
+            .map_or(Vec3::ZERO, |transform| transform.origin)
+            + Vec3::Z * height;
+        let message = registry
+            .world
+            .get::<&PathFireOnPass>(entity)
+            .ok()
+            .map(|fire| fire.0.clone());
+        let dead_end = registry
+            .world
+            .get::<&crate::registry::PathFireOnDeadEnd>(entity)
+            .ok()
+            .map(|fire| fire.0.clone());
+        Some(PathNode {
+            entity,
+            position,
+            wait: path.wait,
+            speed: path.speed,
+            stop: path.stop,
+            message,
+            dead_end,
+        })
     }
 
     /// The node index a train moving forward from `index` would reach next,
@@ -728,15 +754,17 @@ impl TrackTrainState {
     }
 
     /// [`Self::relink`]'s mirror for a train handed the *far end* of a
-    /// chain: seats it at `chain`'s last node, travelling backward toward
-    /// the chain's head. This is what a `func_trackchange` does with a
-    /// train it delivers to the `path_track` documented as the "last" of
-    /// its path (see [`PathChain::build_ending_at`]): the only direction
-    /// that leaves that node along the path is back along it, so the train
-    /// rides the path in reverse rather than dead-ending where it landed.
-    /// Project behaviour, recorded in `docs/FORMAT_SOURCES.md` ("Mover
-    /// blocking, branching paths and monster-opened doors"); no reviewed
-    /// page states which way such a train travels.
+    /// chain: seats it at `chain`'s last node, facing back toward the
+    /// chain's head. This is what a `func_trackchange` does with a train it
+    /// delivers to the `path_track` documented as the "last" of its path
+    /// (see [`PathChain::build_ending_at`]). It is seated *parked*
+    /// (`moving` is `false` from that caller): no reviewed page says a
+    /// train delivered there rides anywhere, and the only way along the
+    /// path from that node is backward. Once something starts it, it rides
+    /// the path back toward its head instead of sitting on a one-node
+    /// chain that nothing could ever move it off. Project behaviour,
+    /// recorded in `docs/FORMAT_SOURCES.md` ("Mover blocking, branching
+    /// paths and monster-opened doors").
     pub fn relink_at_end(&mut self, chain: PathChain, moving: bool) {
         let last = chain.nodes.len().saturating_sub(1);
         self.relink(chain, moving);
@@ -751,10 +779,29 @@ impl TrackTrainState {
     /// one it is heading for — exactly as they were. The train's own
     /// position, direction, speed and timers are untouched, since nothing
     /// it has already passed is re-read: a switch thrown *behind* a train
-    /// changes nothing for it, one thrown ahead of it changes where the
-    /// chain goes from there. `height` is the train's own documented
-    /// `height` keyvalue, applied to every newly resolved node the way
-    /// [`PathChain::build`] applies it.
+    /// changes nothing for it until it comes round to that switch again,
+    /// one thrown ahead of it changes where the chain goes from there.
+    /// `height` is the train's own documented `height` keyvalue, applied to
+    /// every newly resolved node the way [`PathChain::build`] applies it.
+    ///
+    /// `crate::logic::Simulation` calls this for every train when a switch
+    /// is thrown, and for a train each time it arrives at a node. The
+    /// second call is what makes a switch decide the route when a train
+    /// *reaches* it, lap after lap: a looped train arriving back at its
+    /// chain's first node keeps only that node and re-walks the whole loop,
+    /// so a switch thrown behind it on the last lap is read on this one.
+    ///
+    /// A walk that runs back into a node other than the chain's first —
+    /// a branch rejoining the loop somewhere else, or a spur leading into
+    /// a loop — is a loop the chain's `looped` flag cannot express, since
+    /// that flag only wraps to node `0`. Once the train is at or past the
+    /// node the walk rejoined, the nodes before it are behind the train for
+    /// good, so the chain is re-rooted there: they are dropped, the rejoin
+    /// node becomes node `0`, and the chain is an ordinary loop. A train
+    /// still short of it keeps the open chain until it arrives there and
+    /// this runs again, and so does a train travelling backward, which
+    /// still needs the nodes behind it. Before this a train dead-ended at
+    /// the last node of such a path.
     ///
     /// Only the forward direction is re-resolved: a train travelling
     /// *backward* keeps every node behind its current one (the ones it is
@@ -763,17 +810,14 @@ impl TrackTrainState {
     /// describes a switch's effect on a train approaching it from its far
     /// side. TODO(black-box).
     ///
-    /// Returns whether the chain actually changed. Called by
-    /// `crate::logic::Simulation` for every train whenever a switch is
-    /// thrown; cheap when nothing changed, and bounded by
-    /// [`MAX_PATH_NODES`] otherwise.
+    /// Returns whether the chain actually changed. Cheap when nothing
+    /// changed, and bounded by [`MAX_PATH_NODES`] otherwise.
     pub fn resplice_chain(&mut self, registry: &Registry, height: f32) -> bool {
         let committed = if self.direction >= 0.0 && self.t > 0.0 {
             match self.chain.next_index(self.node_index) {
                 Some(other) if other > self.node_index => other,
                 // Mid-way across a looped chain's wrap segment: the whole
-                // chain is the prefix, and there is nothing past it to
-                // re-resolve.
+                // chain is the prefix. Its arrival at node `0` re-walks it.
                 Some(_) => return false,
                 None => self.node_index,
             }
@@ -787,19 +831,49 @@ impl TrackTrainState {
             .get::<&Path>(last_entity)
             .ok()
             .and_then(|path| PathChain::next_name_of(registry, last_entity, &path));
-        let looped = match next_name {
-            Some(next_name) => PathChain::walk_from(registry, &next_name, height, &mut nodes),
-            None => false,
+        let closed_onto = next_name
+            .and_then(|next_name| PathChain::walk_from(registry, &next_name, height, &mut nodes));
+        let mut node_index = self.node_index;
+        let looped = match closed_onto {
+            Some(0) => true,
+            Some(rejoin) if self.direction >= 0.0 && rejoin <= node_index => {
+                nodes.drain(..rejoin);
+                node_index -= rejoin;
+                true
+            }
+            _ => false,
         };
         let chain = PathChain { nodes, looped };
-        if chain == self.chain {
+        if chain == self.chain && node_index == self.node_index {
             return false;
         }
         // A train parked at what used to be a dead end has somewhere to go
         // again once it is started; let that next dead end fire afresh.
         self.dead_end_fired = false;
         self.chain = chain;
+        self.node_index = node_index;
         true
+    }
+
+    /// Replaces this train's chain with one a save recorded
+    /// ([`PathChain::from_entities`]), clamping its node index into the new
+    /// chain and leaving everything else as it was. `ohl-engine` applies it
+    /// before [`Self::restore_dynamic_state`], which then puts the train
+    /// back at the saved node and progress on the chain it was actually
+    /// riding.
+    pub fn restore_chain(&mut self, chain: PathChain) {
+        self.chain = chain;
+        self.node_index = self
+            .node_index
+            .min(self.chain.nodes.len().saturating_sub(1));
+    }
+
+    /// The node this train last departed from, or is at rest at — the
+    /// first field of [`Self::dynamic_state`] — so a caller can tell when
+    /// an [`Self::advance_firing`] call took it to another node.
+    #[must_use]
+    pub fn node_index(&self) -> usize {
+        self.node_index
     }
 
     /// The node currently ahead of the train in its direction of travel,
@@ -2243,14 +2317,16 @@ mod tests {
         assert!(!state.moving(), "node1 is the far end's own dead end");
     }
 
-    /// A node nothing leads into is its own one-node chain, exactly as
-    /// `build` gives it: the fallback for a far end that has no path.
+    /// A node that is not where its path ends — `node1` has `node2` and
+    /// `node3` after it — has no far-end chain, so the caller seats a train
+    /// forward from it as it always did; neither does a name that resolves
+    /// to nothing.
     #[test]
-    fn a_chain_built_ending_at_a_head_is_the_one_node_chain() {
+    fn a_node_with_an_onward_target_has_no_far_end_chain() {
         let entities = bent_track(&[]);
         let registry = build_registry(&entities);
-        let chain = PathChain::build_ending_at(&registry, "node1", 0.0).expect("chain");
-        assert_eq!(chain.nodes.len(), 1);
+        assert!(PathChain::build_ending_at(&registry, "node1", 0.0).is_none());
+        assert!(PathChain::build_ending_at(&registry, "node2", 0.0).is_none());
         assert!(PathChain::build_ending_at(&registry, "nowhere", 0.0).is_none());
     }
 

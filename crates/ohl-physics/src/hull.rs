@@ -1117,6 +1117,40 @@ impl CollisionModel {
         self.trace_ignoring(hull, start, end, None)
     }
 
+    /// As [`Self::trace`], but against the one attached brush `brush`
+    /// alone: no world tree, and no other brush. This answers "is this
+    /// hull inside *that* mover?" whatever else it may also be inside —
+    /// which [`Self::trace`] cannot, since it reports one combined result.
+    /// `ohl-engine` uses it to tell a mover that moved into a monster this
+    /// step from one the monster was already embedded in. An unknown or
+    /// detached `brush` is a miss; a non-finite segment is reported fully
+    /// blocked, as [`Self::trace_ignoring`] reports it.
+    #[must_use]
+    pub fn trace_brush(&self, hull: Hull, start: Vec3, end: Vec3, brush: BrushId) -> Trace {
+        if !start.is_finite() || !end.is_finite() {
+            return self.trace_ignoring(hull, start, end, None);
+        }
+        let mut trace = Trace::miss(end);
+        let Some(part) = self.brushes.get(brush.0) else {
+            return trace;
+        };
+        let head = part.heads[hull.index()];
+        if head < 0 {
+            return trace;
+        }
+        let (mins, maxs) = part.broad_bounds(hull);
+        if !boxes_overlap(start.min(end), start.max(end), mins, maxs) {
+            return trace;
+        }
+        let hit = self.trace_tree(hull, head, Some(part), start, end, part.kind);
+        combine(&mut trace, &hit, brush);
+        if trace.start_solid {
+            trace.fraction = 0.0;
+            trace.end_pos = start;
+        }
+        trace
+    }
+
     /// As [`Self::trace`], but skipping one attached brush entirely.
     ///
     /// This is what lets a brush entity be traced *as a mover*: a

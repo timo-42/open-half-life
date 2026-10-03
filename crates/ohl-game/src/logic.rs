@@ -325,6 +325,23 @@ pub struct SimulationState {
 /// "game_playerspawn") for the public source and its caveats.
 const GAME_PLAYER_SPAWN_TARGETNAME: &str = "game_playerspawn";
 
+/// One blocker's share of a blocked mover's response, from
+/// [`Simulation::block_movers`]: the damage `mover` deals `blocker`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BlockHit {
+    /// The mover that was blocked.
+    pub mover: Entity,
+    /// What blocked it: the player, or a monster.
+    pub blocker: Entity,
+    /// The mover's documented `dmg`, always positive.
+    pub dmg: f32,
+    /// `true` for a mover that does not reverse when blocked (everything
+    /// but a door), and so goes on reporting the same block every step it
+    /// stays in the blocker's way; `ohl-engine` paces that mover's damage
+    /// rather than dealing it every step.
+    pub keeps_moving: bool,
+}
+
 /// The map logic simulation: an event queue plus per-tick state-machine
 /// advancement.
 #[derive(Debug, Default)]
@@ -1021,7 +1038,9 @@ impl Simulation {
         // toggle flips it; the documented `triggerstate` on/off of a
         // `trigger_relay`/`trigger_auto` selects the branch/the `target`
         // outright, the same reading the `TrackTrainState` arm above gives
-        // that use type. A `path_track` with no branch is left alone: the
+        // that use type. Which side "on" selects is project-authored: no
+        // page says, and the branch is what the cited sentence says a
+        // trigger selects. A `path_track` with no branch is left alone: the
         // same page's "the train stops" reading of a branchless trigger
         // needs the "Disabled" spawnflag this project does not implement
         // (TODO(black-box), recorded in the same section).
@@ -2376,13 +2395,25 @@ impl Simulation {
     /// ("Track trains and paths") for the public source of the keyvalue.
     fn advance_trains(&mut self, registry: &mut Registry, dt: f32) {
         let mut fired: Vec<(Entity, Vec<String>)> = Vec::new();
+        let mut arrived: Vec<Entity> = Vec::new();
         for (entity, train) in registry.world.query_mut::<(Entity, &mut TrackTrainState)>() {
+            let departed_from = train.node_index();
             let mut messages = Vec::new();
             train.advance_firing(dt, &mut messages);
+            if train.node_index() != departed_from {
+                arrived.push(entity);
+            }
             if !messages.is_empty() {
                 fired.push((entity, messages));
             }
         }
+        // A train that reached a node reads the switches from there on as
+        // they stand now (`TrackTrainState::resplice_chain`): this is what
+        // makes a switch thrown behind a looped train take effect on its
+        // next lap, and what turns a branch rejoining a loop somewhere
+        // other than its first node into a loop the train keeps riding.
+        arrived.sort_unstable_by_key(|entity| entity.id());
+        Self::resplice_train_chains_of(registry, &arrived);
         fired.sort_unstable_by_key(|(entity, _)| entity.id());
         for (entity, messages) in fired {
             for message in messages {
@@ -2398,22 +2429,40 @@ impl Simulation {
     /// trains a given `path_track` lies ahead of is exactly what the
     /// re-splice works out.
     fn resplice_train_chains(registry: &mut Registry) {
-        let heights: Vec<(Entity, f32)> = registry
+        let mut trains: Vec<Entity> = registry
             .world
-            .query::<(Entity, &TrackTrain)>()
-            .with::<&TrackTrainState>()
+            .query::<(Entity, &TrackTrainState)>()
             .iter()
-            .map(|(entity, train)| (entity, train.height))
+            .map(|(entity, _)| entity)
             .collect();
-        for (entity, height) in heights {
-            // The state is taken out and put back so the re-splice can read
-            // every other `Path`/`PathBranch`/`Target` in the registry
-            // while it runs.
-            let Ok(mut state) = registry.world.remove_one::<TrackTrainState>(entity) else {
+        trains.sort_unstable_by_key(|entity| entity.id());
+        Self::resplice_train_chains_of(registry, &trains);
+    }
+
+    /// [`Self::resplice_train_chains`] for just `trains`, in the order
+    /// given.
+    fn resplice_train_chains_of(registry: &mut Registry, trains: &[Entity]) {
+        for &entity in trains {
+            let height = registry
+                .world
+                .get::<&TrackTrain>(entity)
+                .map_or(0.0, |train| train.height);
+            // Re-spliced on a copy, so the walk can read every other
+            // `Path`/`PathBranch`/`Target` in the registry while it runs,
+            // and written back only when something changed.
+            let Some(mut state) = registry
+                .world
+                .get::<&TrackTrainState>(entity)
+                .ok()
+                .map(|state| TrackTrainState::clone(&state))
+            else {
                 continue;
             };
-            state.resplice_chain(registry, height);
-            registry.world.insert_one(entity, state).ok();
+            if state.resplice_chain(registry, height)
+                && let Ok(mut live) = registry.world.get::<&mut TrackTrainState>(entity)
+            {
+                *live = state;
+            }
         }
     }
 
@@ -2451,9 +2500,11 @@ impl Simulation {
     /// reversing or halting when blocked, only the damage. TODO(black-box)
     /// for whether the real engine halts a blocked train.
     ///
-    /// The caller — `ohl-engine`'s phase 12, from `Level::movers_blocked`
-    /// — is what decides *who* was blocked and applies the damage
-    /// returned; this crate has no damage model of its own.
+    /// The caller — `ohl-engine`'s phase 12, through
+    /// [`Self::block_movers`], which calls this once per mover per step —
+    /// is what decides *who* was blocked, applies the damage returned, and
+    /// paces it for a mover that keeps moving; this crate has no damage
+    /// model of its own.
     pub fn block_mover(registry: &mut Registry, entity: Entity) -> Option<f32> {
         if let Ok(door) = registry.world.query_one_mut::<&mut Door>(entity) {
             let travel = travel_time(door.travel_distance, door.speed);
@@ -2479,6 +2530,46 @@ impl Simulation {
             .ok()
             .map(|dmg| dmg.0)
             .filter(|dmg| *dmg > 0.0)
+    }
+
+    /// [`Self::block_mover`] for one step's worth of `(mover, blocker)`
+    /// reports, which is how `ohl-engine`'s phase 12 calls it.
+    ///
+    /// Each mover responds to being blocked **once per step**, however many
+    /// things blocked it: a door with the player and a monster both in its
+    /// way reverses once, not once per blocker — two reversals in one step
+    /// would cancel out and leave it closing through both of them. The
+    /// mover's `dmg` is then dealt to *every* blocker, since each of them
+    /// is something the mover "blocks"/"attempts to block it" in the cited
+    /// wording. Movers are visited in entity order and each blocker once
+    /// per mover, so the result is deterministic and a duplicate report
+    /// deals nothing extra.
+    pub fn block_movers(registry: &mut Registry, blocked: &[(Entity, Entity)]) -> Vec<BlockHit> {
+        let mut by_mover: std::collections::BTreeMap<u32, (Entity, Vec<Entity>)> =
+            std::collections::BTreeMap::new();
+        for &(mover, blocker) in blocked {
+            let (_, blockers) = by_mover
+                .entry(mover.id())
+                .or_insert_with(|| (mover, Vec::new()));
+            if !blockers.contains(&blocker) {
+                blockers.push(blocker);
+            }
+        }
+        let mut hits = Vec::new();
+        for (mover, mut blockers) in by_mover.into_values() {
+            let keeps_moving = registry.world.get::<&Door>(mover).is_err();
+            let Some(dmg) = Self::block_mover(registry, mover) else {
+                continue;
+            };
+            blockers.sort_unstable_by_key(|blocker| blocker.id());
+            hits.extend(blockers.into_iter().map(|blocker| BlockHit {
+                mover,
+                blocker,
+                dmg,
+                keeps_moving,
+            }));
+        }
+        hits
     }
 
     /// Starts a `func_trackchange`/`func_trackautochange` travelling to
@@ -2629,19 +2720,23 @@ impl Simulation {
     /// spawnflag the two swap ends: `toptrack` becomes "the first
     /// path_track at the top path" and `bottomtrack` "the last path_track
     /// at the bottom path". A train delivered to a path's *first* node is
-    /// seated there riding forward ([`TrackTrainState::relink`]); one
-    /// delivered to a path's *last* node is handed the chain leading up to
-    /// it ([`PathChain::build_ending_at`]) and seated at its far end
-    /// riding *backward* ([`TrackTrainState::relink_at_end`]), the only
-    /// direction that leaves that node along the path. Before this, both
-    /// ends were seated at node `0` of `PathChain::build(name)`, which for
-    /// a "last" node is a one-node chain: the train dead-ended on arrival.
-    /// Which way a train handed a chain's far end travels is not stated by
-    /// any page reviewed — project behaviour, `TODO(black-box)`, recorded
-    /// in `docs/FORMAT_SOURCES.md` ("Mover blocking, branching paths and
-    /// monster-opened doors").
+    /// seated there riding forward ([`TrackTrainState::relink`]), as it
+    /// always was. One delivered to a path's *last* node is handed the
+    /// chain leading up to it ([`PathChain::build_ending_at`]) and seated
+    /// *parked* at its far end, facing back along it
+    /// ([`TrackTrainState::relink_at_end`]): before, it was seated on the
+    /// one-node chain `PathChain::build(name)` gives a last node and
+    /// dead-ended there, so it parked too, but on a chain nothing could
+    /// ever move it off. No page reviewed says a train delivered to a far
+    /// end rides anywhere, so it does not; started later, it rides the path
+    /// back. When the named node is not where its path ends after all (it
+    /// has an onward `target`, or a switch upstream points elsewhere),
+    /// `build_ending_at` declines and the train is seated forward from the
+    /// named node exactly as before. Project behaviour, `TODO(black-box)`,
+    /// recorded in `docs/FORMAT_SOURCES.md` ("Mover blocking, branching
+    /// paths and monster-opened doors").
     ///
-    /// The relinked train rides on. That is this project's own black-box
+    /// A train seated forward rides on. That is this project's own black-box
     /// reading, not a quoted sentence: TWHL's `func_trackautochange` page
     /// names an "Auto Activate train" flag but leaves its description
     /// blank, and the Sven Co-op mod's guide — a different engine —
@@ -2689,12 +2784,13 @@ impl Simulation {
             .world
             .get::<&TrackTrain>(train)
             .map_or(0.0, |train| train.height);
-        let chain = if far_end {
-            PathChain::build_ending_at(registry, to_name, height)
-        } else {
-            PathChain::build(registry, to_name, height)
-        };
-        let Some(chain) = chain else {
+        if far_end && let Some(chain) = PathChain::build_ending_at(registry, to_name, height) {
+            if let Ok(mut state) = registry.world.get::<&mut TrackTrainState>(train) {
+                state.relink_at_end(chain, false);
+            }
+            return;
+        }
+        let Some(chain) = PathChain::build(registry, to_name, height) else {
             // Nothing to hand the train over to: leave it exactly where
             // the platform put it rather than inventing a route.
             if let Ok(mut state) = registry.world.get::<&mut TrackTrainState>(train) {
@@ -2703,11 +2799,7 @@ impl Simulation {
             return;
         };
         if let Ok(mut state) = registry.world.get::<&mut TrackTrainState>(train) {
-            if far_end {
-                state.relink_at_end(chain, true);
-            } else {
-                state.relink(chain, true);
-            }
+            state.relink(chain, true);
         }
     }
 
@@ -5795,6 +5887,61 @@ mod tests {
         );
     }
 
+    /// The player and a monster both in a closing door's way in the same
+    /// step: the door reverses *once* — a second reversal would put it back
+    /// to closing, through both of them — and each blocker is dealt the
+    /// door's `dmg`, a duplicate report dealing nothing extra. A mover that
+    /// does not reverse is marked as one that keeps moving.
+    #[test]
+    fn a_door_blocked_by_two_at_once_reverses_once_and_damages_both() {
+        let (mut registry, door) = blocked_door_registry("5");
+        let mut sim = Simulation::new();
+        let mut events = Vec::new();
+        sim.use_entity(&mut registry, door, None, &mut events);
+        tick_for(&mut sim, &mut registry, 0.5, 1.0 / 60.0);
+        assert_eq!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Opening
+        );
+        let player = registry.world.spawn(());
+        let monster = registry.world.spawn(());
+
+        let hits = Simulation::block_movers(
+            &mut registry,
+            &[(door, monster), (door, player), (door, monster)],
+        );
+        assert_eq!(
+            registry.world.get::<&Door>(door).unwrap().state,
+            MoverState::Closing,
+            "two blockers reverse the door once, not twice"
+        );
+        let mut blockers: Vec<Entity> = hits.iter().map(|hit| hit.blocker).collect();
+        blockers.sort_unstable_by_key(|entity| entity.id());
+        let mut expected = vec![player, monster];
+        expected.sort_unstable_by_key(|entity| entity.id());
+        assert_eq!(blockers, expected, "each blocker is hit exactly once");
+        assert!(
+            hits.iter()
+                .all(|hit| hit.mover == door && (hit.dmg - 5.0).abs() < 1e-6 && !hit.keeps_moving)
+        );
+
+        let entities = vec![raw(&[
+            ("classname", "func_rotating"),
+            ("targetname", "fan"),
+            ("model", "*1"),
+            ("speed", "90"),
+            ("spawnflags", "1"),
+            ("dmg", "7"),
+        ])];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let fan = registry.find("fan")[0];
+        let player = registry.world.spawn(());
+        let hits = Simulation::block_movers(&mut registry, &[(fan, player)]);
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].keeps_moving, "a func_rotating does not reverse");
+    }
+
     /// The movers whose only documented response to a block is damage:
     /// a `func_rotating` reports its `dmg` and keeps spinning, a
     /// `func_tracktrain` reports its own `dmg`, and a mover with no `dmg`
@@ -6088,102 +6235,390 @@ mod tests {
         );
     }
 
-    // --- func_trackchange, "Start at Bottom" ------------------------------
+    /// A train that rode up to the switch and stopped on it (the fork's
+    /// "Wait for retrigger" flag), `t == 0` exactly at the node: a switch
+    /// thrown under it then decides which way it leaves once restarted.
+    #[test]
+    fn a_train_parked_on_the_switch_leaves_by_the_side_thrown_under_it() {
+        let mut registry = switch_registry(&[("spawnflags", "1")]);
+        let mut sim = Simulation::new();
+        tick_for(&mut sim, &mut registry, 2.0, 1.0 / 60.0);
+        let parked = train_position(&registry, "tram");
+        assert!(
+            parked.abs_diff_eq(Vec3::new(100.0, 0.0, 0.0), 1e-3),
+            "stopped on the fork: {parked:?}"
+        );
+        let fork = registry.find("fork")[0];
+        let tram = registry.find("tram")[0];
+        let mut events = Vec::new();
+        sim.use_entity(&mut registry, fork, None, &mut events);
+        sim.use_entity(&mut registry, tram, None, &mut events);
+        tick_for(&mut sim, &mut registry, 1.0, 1.0 / 60.0);
+        let position = train_position(&registry, "tram");
+        assert!(
+            position.y < -50.0,
+            "restarted, it takes the branch: {position:?}"
+        );
+    }
 
-    /// The documented "Start at Bottom" shape: the platform rests at the
-    /// bottom, `toptrack` names the *first* node of the top path and
-    /// `bottomtrack` the *last* node of the bottom path. The train waits
-    /// on `toptrack`; the platform goes up empty, then brings it down.
-    fn start_at_bottom_registry() -> Registry {
+    /// A looped square `a -> b -> c -> d -> a` whose `b` can switch to `x`
+    /// (out at `x = 200`), rejoining at `c`. `b_keys` adds keyvalues to `b`.
+    fn looped_switch_registry(b_keys: &[(&str, &str)]) -> Registry {
+        let mut b = vec![
+            ("classname", "path_track"),
+            ("targetname", "b"),
+            ("target", "c"),
+            ("altpath", "x"),
+            ("origin", "100 0 0"),
+        ];
+        b.extend_from_slice(b_keys);
         let entities = vec![
             raw(&[
                 ("classname", "func_tracktrain"),
                 ("targetname", "tram"),
-                ("target", "top1"),
+                ("target", "a"),
                 ("speed", "100"),
-                ("startspeed", "0"),
+                ("startspeed", "100"),
                 ("height", "0"),
-                ("origin", "100 0 0"),
+                ("origin", "0 0 0"),
             ]),
             raw(&[
                 ("classname", "path_track"),
-                ("targetname", "top1"),
-                ("target", "top2"),
-                ("origin", "100 0 0"),
+                ("targetname", "a"),
+                ("target", "b"),
+                ("origin", "0 0 0"),
+            ]),
+            raw(&b),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "c"),
+                ("target", "d"),
+                ("origin", "100 100 0"),
             ]),
             raw(&[
                 ("classname", "path_track"),
-                ("targetname", "top2"),
-                ("origin", "300 0 0"),
+                ("targetname", "d"),
+                ("target", "a"),
+                ("origin", "0 100 0"),
             ]),
             raw(&[
                 ("classname", "path_track"),
-                ("targetname", "bottom1"),
-                ("target", "bottom2"),
-                ("origin", "100 -200 -100"),
-            ]),
-            raw(&[
-                ("classname", "path_track"),
-                ("targetname", "bottom2"),
-                ("origin", "100 0 -100"),
-            ]),
-            raw(&[
-                ("classname", "func_trackchange"),
-                ("model", "*2"),
-                ("targetname", "lift"),
-                ("train", "tram"),
-                ("toptrack", "top1"),
-                ("bottomtrack", "bottom2"),
-                ("height", "100"),
-                ("rotation", "0"),
-                ("speed", "100"),
-                (
-                    "spawnflags",
-                    &crate::registry::SPAWNFLAG_TRACK_CHANGE_START_AT_BOTTOM.to_string(),
-                ),
-                ("origin", "100 0 -100"),
+                ("targetname", "x"),
+                ("target", "c"),
+                ("origin", "200 50 0"),
             ]),
         ];
         let defs = parse_entities(&entities, &Limits::default());
         Registry::build(&defs, &BTreeMap::new(), &Limits::default())
     }
 
-    /// A train delivered to the *last* node of a path rides that path
-    /// backward from it, rather than being parked on a one-node chain.
+    /// The furthest `+x` the train reaches over `seconds`.
+    fn furthest_x(sim: &mut Simulation, registry: &mut Registry, seconds: f32) -> f32 {
+        let mut furthest = f32::MIN;
+        let mut elapsed = 0.0;
+        while elapsed < seconds {
+            sim.tick(registry, 1.0 / 60.0);
+            elapsed += 1.0 / 60.0;
+            furthest = furthest.max(train_position(registry, "tram").x);
+        }
+        furthest
+    }
+
+    /// On a loop, a switch thrown *behind* the train is not lost: the
+    /// train keeps its track for the rest of this lap and takes the branch
+    /// the next time it comes round to the switch.
     #[test]
-    fn a_train_handed_a_paths_far_end_rides_it_backward() {
-        let mut registry = start_at_bottom_registry();
+    fn a_switch_thrown_behind_a_looped_train_is_taken_on_its_next_lap() {
+        let mut registry = looped_switch_registry(&[]);
         let mut sim = Simulation::new();
+        // 1.5 seconds: past `b`, half-way to `c`.
+        tick_for(&mut sim, &mut registry, 1.5, 1.0 / 60.0);
+        let b = registry.find("b")[0];
+        let mut events = Vec::new();
+        sim.use_entity(&mut registry, b, None, &mut events);
+        // The rest of this lap stays on the square ...
+        assert!(furthest_x(&mut sim, &mut registry, 2.0) < 100.5);
+        // ... and the next one goes out through `x`.
+        assert!(
+            furthest_x(&mut sim, &mut registry, 4.0) > 190.0,
+            "the next lap takes the thrown switch"
+        );
+    }
+
+    /// A branch that rejoins the loop at a node other than the chain's
+    /// first (`c -> y -> b`, thrown from the start by "Branch Reverse")
+    /// makes a loop through `b` that does not pass `a`: the train rides it
+    /// round and round instead of dead-ending at `y`.
+    #[test]
+    fn a_branch_rejoining_a_loop_elsewhere_is_ridden_as_a_loop() {
+        let entities = vec![
+            raw(&[
+                ("classname", "func_tracktrain"),
+                ("targetname", "tram"),
+                ("target", "a"),
+                ("speed", "100"),
+                ("startspeed", "100"),
+                ("height", "0"),
+                ("origin", "0 0 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "a"),
+                ("target", "b"),
+                ("origin", "0 0 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "b"),
+                ("target", "c"),
+                ("origin", "100 0 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "c"),
+                ("target", "d"),
+                ("altpath", "y"),
+                ("spawnflags", "4"),
+                ("origin", "100 100 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "d"),
+                ("target", "a"),
+                ("origin", "0 100 0"),
+            ]),
+            raw(&[
+                ("classname", "path_track"),
+                ("targetname", "y"),
+                ("target", "b"),
+                ("origin", "200 50 0"),
+            ]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let mut sim = Simulation::new();
+        // Three laps of b -> c -> y -> b (about 341 units each) after the
+        // first 100 units to `b`.
+        let mut nearest_a = f32::MAX;
+        let mut elapsed = 0.0;
+        while elapsed < 11.0 {
+            sim.tick(&mut registry, 1.0 / 60.0);
+            elapsed += 1.0 / 60.0;
+            if elapsed > 1.5 {
+                nearest_a = nearest_a.min(train_position(&registry, "tram").length());
+            }
+        }
+        let tram = registry.find("tram")[0];
+        assert!(
+            registry
+                .world
+                .get::<&TrackTrainState>(tram)
+                .unwrap()
+                .moving(),
+            "still riding the loop, not parked at a dead end"
+        );
+        assert!(
+            nearest_a > 50.0,
+            "the loop through b never leads back to a: {nearest_a}"
+        );
+    }
+
+    // --- func_trackchange: which end of a path a train is handed ---------
+
+    /// A `func_trackchange` between a top path (`topa` -> `topb`, at
+    /// `z = 0`) and a bottom path (`bota` -> `botb`, at `z = -100`), with
+    /// `toptrack`/`bottomtrack` naming the ends the published pages give
+    /// for `start_at_bottom`: without "Start at Bottom", `toptrack` is the
+    /// top path's *last* node and `bottomtrack` the bottom path's *first*;
+    /// with it, the other way round. `top_onward` gives `topb` an onward
+    /// `target` (`topc`), so it is not the end of its path after all. The
+    /// train `tram` starts parked on `train_at`.
+    fn path_ends_registry(start_at_bottom: bool, train_at: &str, top_onward: bool) -> Registry {
+        let node = |name: &str, origin: &str, target: Option<&str>| {
+            let mut pairs = vec![
+                ("classname", "path_track"),
+                ("targetname", name),
+                ("origin", origin),
+            ];
+            if let Some(target) = target {
+                pairs.push(("target", target));
+            }
+            raw(&pairs)
+        };
+        let origin_of = |name: &str| match name {
+            "topa" => "0 0 0",
+            "topb" => "100 0 0",
+            "topc" => "300 0 0",
+            "bota" => "100 0 -100",
+            _ => "100 -200 -100",
+        };
+        let (toptrack, bottomtrack) = if start_at_bottom {
+            ("topa", "botb")
+        } else {
+            ("topb", "bota")
+        };
+        let flags = if start_at_bottom {
+            crate::registry::SPAWNFLAG_TRACK_CHANGE_START_AT_BOTTOM.to_string()
+        } else {
+            "0".to_string()
+        };
+        let mut entities = vec![
+            raw(&[
+                ("classname", "func_tracktrain"),
+                ("targetname", "tram"),
+                ("target", train_at),
+                ("speed", "100"),
+                ("startspeed", "0"),
+                ("height", "0"),
+                ("origin", origin_of(train_at)),
+            ]),
+            node("topa", origin_of("topa"), Some("topb")),
+            node("topb", origin_of("topb"), top_onward.then_some("topc")),
+            node("bota", origin_of("bota"), Some("botb")),
+            node("botb", origin_of("botb"), None),
+            raw(&[
+                ("classname", "func_trackchange"),
+                ("model", "*2"),
+                ("targetname", "lift"),
+                ("train", "tram"),
+                ("toptrack", toptrack),
+                ("bottomtrack", bottomtrack),
+                ("height", "100"),
+                ("rotation", "0"),
+                ("speed", "100"),
+                ("spawnflags", &flags),
+                ("origin", "100 0 -100"),
+            ]),
+        ];
+        if top_onward {
+            entities.push(node("topc", origin_of("topc"), None));
+        }
+        let defs = parse_entities(&entities, &Limits::default());
+        Registry::build(&defs, &BTreeMap::new(), &Limits::default())
+    }
+
+    /// Sends the platform to its other end and lets it arrive (one second
+    /// of travel at 100 units/second over 100 units, with room to spare).
+    fn ride_the_platform(sim: &mut Simulation, registry: &mut Registry) {
         let lift = registry.find("lift")[0];
+        let mut events = Vec::new();
+        sim.use_entity(registry, lift, None, &mut events);
+        tick_for(sim, registry, 1.5, 1.0 / 60.0);
+        assert!(
+            !registry.world.get::<&TrackChange>(lift).unwrap().moving,
+            "the platform arrived"
+        );
+    }
+
+    fn tram_state(registry: &Registry) -> TrackTrainState {
+        let tram = registry.find("tram")[0];
+        registry
+            .world
+            .get::<&TrackTrainState>(tram)
+            .map(|state| TrackTrainState::clone(&state))
+            .unwrap()
+    }
+
+    fn chain_of(state: &TrackTrainState) -> Vec<Entity> {
+        state.chain().nodes.iter().map(|node| node.entity).collect()
+    }
+
+    fn names(registry: &Registry, names: &[&str]) -> Vec<Entity> {
+        names.iter().map(|name| registry.find(name)[0]).collect()
+    }
+
+    /// No "Start at Bottom", carried down: `bottomtrack` is the bottom
+    /// path's first node, so the train is seated there and rides on.
+    #[test]
+    fn a_train_carried_down_onto_a_paths_first_node_rides_on() {
+        let mut registry = path_ends_registry(false, "topb", false);
+        let mut sim = Simulation::new();
+        ride_the_platform(&mut sim, &mut registry);
+        let state = tram_state(&registry);
+        assert_eq!(chain_of(&state), names(&registry, &["bota", "botb"]));
+        assert!(state.moving(), "seated forward, it rides on");
+    }
+
+    /// No "Start at Bottom", carried up: `toptrack` is the top path's
+    /// *last* node. The train is seated there, on the whole top path,
+    /// facing back along it and parked: nothing says it rides anywhere,
+    /// and whoever is aboard is not carried off backward. Started later,
+    /// it rides the path back toward its head.
+    #[test]
+    fn a_train_carried_up_onto_a_paths_last_node_parks_there() {
+        let mut registry = path_ends_registry(false, "bota", false);
+        let mut sim = Simulation::new();
+        // Down empty (the train is on the bottom path, not on `toptrack`),
+        // then back up with it.
+        ride_the_platform(&mut sim, &mut registry);
+        assert!(!tram_state(&registry).moving());
+        ride_the_platform(&mut sim, &mut registry);
+        let state = tram_state(&registry);
+        assert_eq!(chain_of(&state), names(&registry, &["topa", "topb"]));
+        assert!(!state.moving(), "handed a far end, the train parks");
+        let parked = state.position();
+        assert!(
+            parked.abs_diff_eq(Vec3::new(100.0, 0.0, 0.0), 1e-3),
+            "seated on topb: {parked:?}"
+        );
+        tick_for(&mut sim, &mut registry, 0.5, 1.0 / 60.0);
+        assert!(tram_state(&registry).position().abs_diff_eq(parked, 1e-3));
+
         let tram = registry.find("tram")[0];
         let mut events = Vec::new();
-
-        // Up, empty (one second at 100 units/second over 100 units).
-        sim.use_entity(&mut registry, lift, None, &mut events);
-        tick_for(&mut sim, &mut registry, 1.5, 1.0 / 60.0);
-        {
-            let change = registry.world.get::<&TrackChange>(lift).unwrap();
-            assert!(!change.moving && !change.at_bottom(), "up and resting");
-        }
-        // Down, with the train that has been waiting on `toptrack`.
-        sim.use_entity(&mut registry, lift, None, &mut events);
-        {
-            let change = registry.world.get::<&TrackChange>(lift).unwrap();
-            assert!(change.carrying, "the train resting on top1 rides down");
-        }
-        tick_for(&mut sim, &mut registry, 1.5, 1.0 / 60.0);
-        let state = registry.world.get::<&TrackTrainState>(tram).unwrap();
-        assert_eq!(
-            state.chain().nodes.len(),
-            2,
-            "the far end's whole path is handed over, not a one-node chain"
-        );
-        assert!(state.moving(), "the relinked train rides on");
-        let position = state.position();
+        sim.use_entity(&mut registry, tram, None, &mut events);
+        tick_for(&mut sim, &mut registry, 0.5, 1.0 / 60.0);
+        let position = tram_state(&registry).position();
         assert!(
-            (position.z + 100.0).abs() < 1.0 && position.y < -20.0,
-            "riding the bottom path backward from bottom2 toward bottom1: {position:?}"
+            position.x < parked.x - 20.0,
+            "started, it rides back toward topa: {position:?}"
         );
+    }
+
+    /// "Start at Bottom", carried up: `toptrack` is now the top path's
+    /// first node, so the train rides on from it.
+    #[test]
+    fn a_start_at_bottom_train_carried_up_onto_a_paths_first_node_rides_on() {
+        let mut registry = path_ends_registry(true, "botb", false);
+        let mut sim = Simulation::new();
+        ride_the_platform(&mut sim, &mut registry);
+        let state = tram_state(&registry);
+        assert_eq!(chain_of(&state), names(&registry, &["topa", "topb"]));
+        assert!(state.moving());
+    }
+
+    /// "Start at Bottom", carried down: `bottomtrack` is now the bottom
+    /// path's *last* node, so the train is handed the whole bottom path and
+    /// parks at its far end.
+    #[test]
+    fn a_start_at_bottom_train_carried_down_onto_a_paths_last_node_parks_there() {
+        let mut registry = path_ends_registry(true, "topa", false);
+        let mut sim = Simulation::new();
+        // Up empty, then down with the train waiting on `toptrack`.
+        ride_the_platform(&mut sim, &mut registry);
+        ride_the_platform(&mut sim, &mut registry);
+        let state = tram_state(&registry);
+        assert_eq!(chain_of(&state), names(&registry, &["bota", "botb"]));
+        assert!(!state.moving());
+        assert!(
+            state
+                .position()
+                .abs_diff_eq(Vec3::new(100.0, -200.0, -100.0), 1e-3)
+        );
+    }
+
+    /// A `toptrack` documented as the "last" node but with an onward
+    /// `target` of its own is not where its path ends: the train is seated
+    /// forward from it and rides on, exactly as before far ends were read.
+    #[test]
+    fn a_far_end_that_rides_on_is_seated_forward_as_before() {
+        let mut registry = path_ends_registry(false, "bota", true);
+        let mut sim = Simulation::new();
+        ride_the_platform(&mut sim, &mut registry);
+        ride_the_platform(&mut sim, &mut registry);
+        let state = tram_state(&registry);
+        assert_eq!(chain_of(&state), names(&registry, &["topb", "topc"]));
+        assert!(state.moving(), "seated forward from topb, it rides on");
     }
 
     // --- Monsters opening doors ------------------------------------------
@@ -6205,10 +6640,8 @@ mod tests {
                 ("model", "*2"),
                 ("speed", "100"),
                 ("wait", "-1"),
-                (
-                    "spawnflags",
-                    &crate::registry::SPAWNFLAG_DOOR_MONSTERS_CANT.to_string(),
-                ),
+                // The cited "512 : Monsters Can't", as a map writes it.
+                ("spawnflags", "512"),
             ]),
             raw(&[
                 ("classname", "monster_barney"),

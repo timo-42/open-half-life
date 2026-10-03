@@ -23,7 +23,8 @@ use ohl_engine::test_support::{
     entity_block, entity_of_classname, queue_monster_damage, rotating_door_bsp,
 };
 use ohl_engine::{AssetSource, Game, Input, MemoryAssets, TICK_SECONDS};
-use ohl_game::registry::{Door, MoverState, SPAWNFLAG_DOOR_MONSTERS_CANT};
+use ohl_formats::test_support::{Bsp30Builder, CollisionBrush};
+use ohl_game::registry::{Door, MoverState};
 
 /// The door's `dmg` keyvalue: what one block costs the player.
 const DOOR_DMG: f32 = 5.0;
@@ -252,9 +253,14 @@ fn a_monster_walking_a_route_through_a_door_opens_it() {
         "the guard walked through the doorway to its mark: {arrived:?}"
     );
     assert_eq!(
-        game.doors_opened_count(),
+        game.monster_doors_opened_count(),
         1,
-        "the monster's open is counted like the player's"
+        "the monster's open is counted as a monster's"
+    );
+    assert_eq!(
+        game.doors_opened_count(),
+        0,
+        "and not as something the player did"
     );
     assert!(
         (game.player_health() - 100.0).abs() < f32::EPSILON,
@@ -264,7 +270,9 @@ fn a_monster_walking_a_route_through_a_door_opens_it() {
 
 #[test]
 fn a_monsters_cant_door_stays_closed_against_a_monsters_route() {
-    let mut game = game_with(&monster_route_entities(SPAWNFLAG_DOOR_MONSTERS_CANT));
+    // The cited bit value written as the map would write it, not through
+    // this project's own constant, so a wrong constant fails here.
+    let mut game = game_with(&monster_route_entities(512));
     let guard = entity_of_classname(&game, "monster_barney").expect("the guard spawned");
 
     stand(&mut game, ROUTE_TICKS);
@@ -279,7 +287,7 @@ fn a_monsters_cant_door_stays_closed_against_a_monsters_route() {
         stopped.x < ROTATING_DOOR_MINS[0],
         "the guard is held short of the closed leaf: {stopped:?}"
     );
-    assert_eq!(game.doors_opened_count(), 0);
+    assert_eq!(game.monster_doors_opened_count(), 0);
 }
 
 /// Where the guard of [`monster_in_doorway_entities`] is walked to. A
@@ -415,10 +423,15 @@ fn a_door_closing_on_a_monster_pushes_it_then_reverses_and_deals_it_the_dmg() {
 /// opens the door on the first tick it is alive for. The player is far
 /// behind it, so nothing else touches the door.
 fn monster_at_the_door_entities() -> String {
+    monster_of_kind_at_the_door_entities("monster_barney")
+}
+
+/// [`monster_at_the_door_entities`] with a monster of `classname` instead.
+fn monster_of_kind_at_the_door_entities(classname: &str) -> String {
     // The hull's `+x` face sits two units short of the leaf's near face,
     // inside `ohl_game::logic`'s four-unit door touch margin.
     let guard = entity_block(
-        "monster_barney",
+        classname,
         [ROTATING_DOOR_MINS[0] - 16.0 - 2.0, 0.0, 36.0],
         0.0,
         &[("targetname", "ohl_guard")],
@@ -466,4 +479,391 @@ fn a_dead_monster_at_a_door_does_not_open_it() {
         MoverState::Closed,
         "a dead guard's hull does not touch the door open"
     );
+}
+
+// --- Movers built for one test each ----------------------------------------
+//
+// Each of these is a small project-authored BSP: a world with at most a
+// floor and one wall, and one or two brush entities whose boxes are given
+// in their own local frame and placed by their `origin` keyvalue.
+
+/// The map name every hand-built fixture below is loaded under.
+const BUILT_MAP: &str = "ohlblockedmoversynth";
+
+/// One brush entity's submodel: its local box.
+struct Submodel {
+    mins: [f32; 3],
+    maxs: [f32; 3],
+}
+
+/// Builds a map from `entities` (the `worldspawn` included), a world made
+/// of `world` (half-spaces and boxes; empty for a void), and `submodels`
+/// as `*1`, `*2`, ... in order.
+fn built_map(entities: &str, world: &[CollisionBrush], submodels: &[Submodel]) -> Game {
+    let mut b = Bsp30Builder::new();
+    b.set_entities_text(entities);
+    let world_heads = b.push_collision_hulls(world);
+    b.push_model([-4096.0; 3], [4096.0; 3], [0.0; 3], world_heads, 2, 0, 0);
+    for submodel in submodels {
+        let heads =
+            b.push_collision_hulls(&[CollisionBrush::box_brush(submodel.mins, submodel.maxs)]);
+        b.push_model(submodel.mins, submodel.maxs, [0.0; 3], heads, 2, 0, 0);
+    }
+    let mut assets = MemoryAssets::new();
+    assets.insert(&format!("maps/{BUILT_MAP}.bsp"), b.build());
+    Game::load(&assets as &dyn AssetSource, BUILT_MAP).expect("the fixture loads")
+}
+
+fn named_door_state(game: &Game, name: &str) -> MoverState {
+    let entity = game.registry().find(name)[0];
+    game.registry()
+        .world
+        .get::<&Door>(entity)
+        .expect("a door")
+        .state
+}
+
+/// A lift: a `func_door` moving up (`angle` `-1`) whose 128-wide box has
+/// its top face at its origin, rising 32 units at 50 units/second when
+/// the `trigger_auto` fires it, with `dmg` [`DOOR_DMG`].
+const LIFT: Submodel = Submodel {
+    mins: [-64.0, -64.0, -64.0],
+    maxs: [64.0, 64.0, 0.0],
+};
+
+/// A `monster_barney` standing on [`LIFT`] at `guard_z` above its top
+/// face, in a void (the lift is the only solid), with the player far off
+/// in the void where nothing touches them.
+fn lift_rider_entities(guard_z: f32) -> String {
+    let guard = entity_block(
+        "monster_barney",
+        [0.0, 0.0, guard_z],
+        0.0,
+        &[("targetname", "ohl_guard")],
+    );
+    format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"2000 2000 2000\"\n}}\n\
+         {{\n\"classname\" \"func_door\"\n\"targetname\" \"ohl_lift\"\n\"model\" \"*1\"\n\
+         \"angle\" \"-1\"\n\"speed\" \"50\"\n\"wait\" \"-1\"\n\"lip\" \"32\"\n\
+         \"dmg\" \"{DOOR_DMG}\"\n\"origin\" \"0 0 0\"\n}}\n\
+         {{\n\"classname\" \"trigger_auto\"\n\"target\" \"ohl_lift\"\n}}\n{guard}"
+    )
+}
+
+/// A monster standing on a rising lift is carried up with it — pushed by
+/// the lift's top face each step — and the lift is never blocked by its
+/// own passenger: it rises the whole way and deals nothing. The guard is
+/// placed the way every synthetic fixture here places a monster, its
+/// origin at the centre of its hull, 36 units above the lift's top.
+#[test]
+fn a_monster_riding_a_lift_is_carried_up_and_never_blocks_it() {
+    let mut game = built_map(&lift_rider_entities(36.0), &[], &[LIFT]);
+    let guard = entity_of_classname(&game, "monster_barney").expect("the guard spawned");
+    let health = actor_health(&game, guard);
+    let mut saw_closing = false;
+    for _ in 0..150 {
+        stand(&mut game, 1);
+        saw_closing |= named_door_state(&game, "ohl_lift") == MoverState::Closing;
+    }
+    assert_eq!(named_door_state(&game, "ohl_lift"), MoverState::Open);
+    assert!(!saw_closing, "the lift never reversed on its own rider");
+    let z = actor_origin(&game, guard).z;
+    assert!(
+        (z - 68.0).abs() < 1.5,
+        "carried the lift's 32 units up: z {z}"
+    );
+    assert!((actor_health(&game, guard) - health).abs() < f32::EPSILON);
+}
+
+/// The same lift with the guard placed the way real maps place monsters:
+/// its origin at its feet, on the lift's top face. Every AI trace here
+/// reads an origin as the hull's centre, so that guard's hull is half
+/// inside the lift from the moment it spawns. That embed is not the
+/// lift's doing this step, so the lift neither shoves the guard nor counts
+/// as blocked by it: it rises the whole way, never reverses, and deals
+/// nothing — rather than reversing and hurting its passenger every step.
+#[test]
+fn a_monster_already_inside_a_lift_does_not_block_it() {
+    let mut game = built_map(&lift_rider_entities(0.0), &[], &[LIFT]);
+    let guard = entity_of_classname(&game, "monster_barney").expect("the guard spawned");
+    let health = actor_health(&game, guard);
+    let mut saw_closing = false;
+    for _ in 0..150 {
+        stand(&mut game, 1);
+        saw_closing |= named_door_state(&game, "ohl_lift") == MoverState::Closing;
+    }
+    assert_eq!(named_door_state(&game, "ohl_lift"), MoverState::Open);
+    assert!(!saw_closing, "the lift never reversed");
+    assert!((actor_health(&game, guard) - health).abs() < f32::EPSILON);
+}
+
+/// A slow lift with the player standing on it, and a second door that
+/// slides across the lift's top while it rises, pushing the player 48
+/// units sideways into open space. The rider is a hair inside the rising
+/// lift on every step, which must count for nothing: the pusher pushes
+/// them, is never blocked by them, and deals nothing. Built both ways
+/// round, since which of the two brushes gets the lower `BrushId` decides
+/// which one an all-brush probe would find first.
+fn rider_and_pusher(lift_first: bool) -> Game {
+    let lift = "{\n\"classname\" \"func_door\"\n\"targetname\" \"ohl_go\"\n\
+                \"model\" \"*LIFT\"\n\"angle\" \"-1\"\n\"speed\" \"10\"\n\"wait\" \"-1\"\n\
+                \"lip\" \"54\"\n\"origin\" \"0 0 0\"\n}\n";
+    let pusher = format!(
+        "{{\n\"classname\" \"func_door\"\n\"targetname\" \"ohl_go\"\n\
+         \"model\" \"*PUSHER\"\n\"angle\" \"180\"\n\"speed\" \"100\"\n\"wait\" \"-1\"\n\
+         \"lip\" \"-64\"\n\"dmg\" \"{DOOR_DMG}\"\n\"origin\" \"64 0 0\"\n}}\n"
+    );
+    let pusher_box = Submodel {
+        mins: [0.0, -64.0, 12.0],
+        maxs: [32.0, 64.0, 112.0],
+    };
+    let (first, second, submodels) = if lift_first {
+        (
+            lift.replace("*LIFT", "*1"),
+            pusher.replace("*PUSHER", "*2"),
+            [LIFT, pusher_box],
+        )
+    } else {
+        (
+            pusher.replace("*PUSHER", "*1"),
+            lift.replace("*LIFT", "*2"),
+            [pusher_box, LIFT],
+        )
+    };
+    let entities = format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"0 0 37\"\n\"angle\" \"0\"\n}}\n\
+         {first}{second}\
+         {{\n\"classname\" \"trigger_auto\"\n\"target\" \"ohl_go\"\n}}\n"
+    );
+    built_map(&entities, &[], &submodels)
+}
+
+#[test]
+fn a_rider_on_a_rising_lift_is_pushed_by_another_mover_not_blocked() {
+    for lift_first in [true, false] {
+        let mut game = rider_and_pusher(lift_first);
+        let pusher = game
+            .registry()
+            .find("ohl_go")
+            .iter()
+            .copied()
+            .find(|entity| {
+                game.registry()
+                    .world
+                    .get::<&Door>(*entity)
+                    .is_ok_and(|door| door.movedir.x < -0.5)
+            })
+            .expect("the pusher");
+        let mut saw_closing = false;
+        for _ in 0..200 {
+            stand(&mut game, 1);
+            saw_closing |=
+                game.registry().world.get::<&Door>(pusher).unwrap().state == MoverState::Closing;
+        }
+        let x = game.player_origin()[0];
+        assert!(
+            x < -30.0,
+            "the pusher shoved the rider across the lift (lift first: {lift_first}): x {x}"
+        );
+        assert!(
+            !saw_closing,
+            "the pusher was never blocked by the rider (lift first: {lift_first})"
+        );
+        assert_eq!(game.player_damage_event_count(), 0);
+        assert!(!game.eye_is_in_solid());
+    }
+}
+
+/// A `func_train` with `dmg` 3 pins the player against a wall and keeps
+/// going: it does not reverse, so it is blocked on every step until it
+/// reaches its last node. The brush the engine finds blocked has to be
+/// mapped back to the train entity for its `dmg` to land at all, and that
+/// `dmg` is dealt at the project's half-second pace for a mover that keeps
+/// moving, not on every one of the ~180 steps it spends pushing.
+#[test]
+fn a_train_pinning_the_player_deals_its_dmg_at_a_paced_rate() {
+    const TRAIN_DMG: f32 = 3.0;
+    let entities = format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"-84 0 37\"\n\"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"func_train\"\n\"model\" \"*1\"\n\"target\" \"ohl_n1\"\n\
+         \"speed\" \"10\"\n\"startspeed\" \"10\"\n\"dmg\" \"{TRAIN_DMG}\"\n\
+         \"origin\" \"0 0 0\"\n}}\n\
+         {{\n\"classname\" \"path_corner\"\n\"targetname\" \"ohl_n1\"\n\
+         \"target\" \"ohl_n2\"\n\"origin\" \"-50 0 0\"\n}}\n\
+         {{\n\"classname\" \"path_corner\"\n\"targetname\" \"ohl_n2\"\n\
+         \"origin\" \"-70 0 0\"\n}}\n"
+    );
+    // A floor at `z = 0` and a wall filling `x <= -100`; the train is a
+    // 32-wide block on the floor, compiled where it starts (a `func_train`
+    // with no origin brush is moved by how far it is from its first
+    // node), two units short of the player standing against the wall. It
+    // stops 18 units into them.
+    let world = [
+        CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+        CollisionBrush::half_space([1.0, 0.0, 0.0], -100.0),
+    ];
+    let train = Submodel {
+        mins: [-66.0, -64.0, 1.0],
+        maxs: [-34.0, 64.0, 96.0],
+    };
+    let mut game = built_map(&entities, &world, &[train]);
+    let health = game.player_health();
+    for _ in 0..300 {
+        stand(&mut game, 1);
+    }
+    let hits = game.player_damage_event_count();
+    // About 1.8 seconds of pushing at one hit per half second.
+    assert!(
+        (3..=5).contains(&hits),
+        "the train's dmg lands at a paced rate, not every step: {hits} hits"
+    );
+    #[allow(clippy::cast_precision_loss)]
+    let expected = hits as f32 * TRAIN_DMG;
+    assert!(
+        (health - game.player_health() - expected).abs() < 1e-3,
+        "each hit is the train's own dmg"
+    );
+}
+
+/// A door with the cited "Passable" spawnflag (8) is "entirely
+/// non-solid": the player walks straight through the closed leaf, and a
+/// door nothing can be inside of is never blocked — it stays shut (the
+/// flag also stops a touch opening it) and deals nothing.
+#[test]
+fn a_passable_door_is_walked_through_and_never_blocked() {
+    let entities = format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"150 0 40\"\n\
+         \"angle\" \"0\"\n}}\n\
+         {{\n\"classname\" \"func_door\"\n\"model\" \"*1\"\n\"angle\" \"90\"\n\
+         \"speed\" \"100\"\n\"wait\" \"1\"\n\"lip\" \"0\"\n\"dmg\" \"{DOOR_DMG}\"\n\
+         \"spawnflags\" \"8\"\n\"origin\" \"{} {} {}\"\n}}\n",
+        ROTATING_DOOR_PIVOT[0], ROTATING_DOOR_PIVOT[1], ROTATING_DOOR_PIVOT[2],
+    );
+    let mut game = game_with(&entities);
+    walk_forward(&mut game, 200);
+    assert!(
+        game.player_origin()[0] > ROTATING_DOOR_MAXS[0] + 16.0,
+        "the player walked through the passable leaf: {:?}",
+        game.player_origin()
+    );
+    assert_eq!(door_state(&game), MoverState::Closed);
+    assert_eq!(game.player_damage_event_count(), 0);
+}
+
+/// A monster its species table says does not open doors (`monster_headcrab`;
+/// `ohl_ai::monsters::MonsterSpec::can_open_doors`) touching the same
+/// door at the same spot leaves it shut, where the barney control above
+/// opens it.
+#[test]
+fn a_monster_that_does_not_open_doors_leaves_one_shut() {
+    let mut game = game_with(&monster_of_kind_at_the_door_entities("monster_headcrab"));
+    assert!(entity_of_classname(&game, "monster_headcrab").is_some());
+    stand(&mut game, 10);
+    assert_eq!(door_state(&game), MoverState::Closed);
+    assert_eq!(game.monster_doors_opened_count(), 0);
+}
+
+/// A monster of `classname` (with `spawnflags`) sitting in the doorway,
+/// inside the leaf's path, of a named door the `trigger_auto` opens and
+/// that closes again on its own one-second `wait`.
+///
+/// The corridor is [`rotating_door_bsp`]'s, rebuilt here with a wall
+/// across it between the monster and the player: a turret shoots on
+/// sight, and a dead player stops the step that moves brush collision at
+/// all, so the player has to be out of its line of fire for the door's
+/// leaf to be anywhere but where it was when they died.
+fn a_door_closing_on(classname: &str, spawnflags: u32) {
+    let monster = entity_block(
+        classname,
+        [192.0, -40.0, 36.0],
+        0.0,
+        &[
+            ("targetname", "ohl_fixture"),
+            ("spawnflags", &spawnflags.to_string()),
+        ],
+    );
+    let entities = format!(
+        "{{\n\"classname\" \"worldspawn\"\n}}\n\
+         {{\n\"classname\" \"info_player_start\"\n\"origin\" \"-300 0 40\"\n\
+         \"angle\" \"180\"\n}}\n\
+         {{\n\"classname\" \"func_door\"\n\"targetname\" \"ohl_door\"\n\"model\" \"*1\"\n\
+         \"angle\" \"90\"\n\"speed\" \"200\"\n\"wait\" \"1\"\n\"lip\" \"0\"\n\
+         \"dmg\" \"{DOOR_DMG}\"\n\"origin\" \"{} {} {}\"\n}}\n\
+         {{\n\"classname\" \"trigger_auto\"\n\"target\" \"ohl_door\"\n}}\n{monster}",
+        ROTATING_DOOR_PIVOT[0], ROTATING_DOOR_PIVOT[1], ROTATING_DOOR_PIVOT[2],
+    );
+    let world = [
+        CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+        CollisionBrush::half_space([0.0, -1.0, 0.0], -96.0),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], -96.0),
+        CollisionBrush::box_brush([-110.0, -96.0, 0.0], [-100.0, 96.0, 512.0]),
+    ];
+    let leaf = Submodel {
+        mins: [
+            ROTATING_DOOR_MINS[0] - ROTATING_DOOR_PIVOT[0],
+            ROTATING_DOOR_MINS[1] - ROTATING_DOOR_PIVOT[1],
+            ROTATING_DOOR_MINS[2] - ROTATING_DOOR_PIVOT[2],
+        ],
+        maxs: [
+            ROTATING_DOOR_MAXS[0] - ROTATING_DOOR_PIVOT[0],
+            ROTATING_DOOR_MAXS[1] - ROTATING_DOOR_PIVOT[1],
+            ROTATING_DOOR_MAXS[2] - ROTATING_DOOR_PIVOT[2],
+        ],
+    };
+    let mut game = built_map(&entities, &world, &[leaf]);
+    let fixture = entity_of_classname(&game, classname).expect("the monster spawned");
+    let health = actor_health(&game, fixture);
+    let start = actor_origin(&game, fixture);
+    let mut saw_closing = false;
+    let mut saw_reopen = false;
+    for _ in 0..400 {
+        stand(&mut game, 1);
+        match door_state(&game) {
+            MoverState::Closing => saw_closing = true,
+            MoverState::Opening | MoverState::Open if saw_closing => saw_reopen = true,
+            _ => {}
+        }
+    }
+    assert!(
+        game.player_health() > 0.0,
+        "the wall kept the player out of harm's way"
+    );
+    assert!(saw_closing, "the door's wait ran out and it closed");
+    assert!(
+        !saw_reopen,
+        "nothing it closed on reversed it ({classname} {spawnflags})"
+    );
+    assert_eq!(door_state(&game), MoverState::Closed);
+    assert!(
+        actor_origin(&game, fixture).abs_diff_eq(start, 1e-3),
+        "the {classname} was not shoved"
+    );
+    assert!((actor_health(&game, fixture) - health).abs() < f32::EPSILON);
+}
+
+/// A mover neither shoves a monster that stays where the map put it nor is
+/// blocked by one, so the door closes right through it, never reversing
+/// and dealing nothing — where a walking monster in the same spot is
+/// pushed to the wall and reverses the door (the barney test above). A
+/// `monster_turret` is one of the kinds named as fixed.
+#[test]
+fn a_door_closing_on_a_turret_neither_shoves_it_nor_reverses() {
+    a_door_closing_on("monster_turret", 0);
+}
+
+/// `monster_furniture` is a species the table marks `ROOTED`.
+#[test]
+fn a_door_closing_on_rooted_furniture_neither_shoves_it_nor_reverses() {
+    a_door_closing_on("monster_furniture", 0);
+}
+
+/// A `monster_generic` with its published "Not solid" spawnflag (bit 4)
+/// is nothing for a mover to push or be stopped by.
+#[test]
+fn a_door_closing_on_a_not_solid_prop_neither_shoves_it_nor_reverses() {
+    a_door_closing_on("monster_generic", 4);
 }

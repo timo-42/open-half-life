@@ -1622,19 +1622,39 @@ pub fn push_from_mover(
     state: &mut PlayerState,
     displacement: Vec3,
 ) -> bool {
+    push_from_mover_ignoring(model, state, displacement, None)
+}
+
+/// [`push_from_mover`], with every test leaving out the attached brush
+/// `ignore` — the one the player is standing on, in `ohl-engine`'s phase 2.
+///
+/// A rider on a rising lift is always a hair inside its top face when the
+/// push runs (the ride blend, [`ride_vertical_mover`], resolves that a step
+/// later), so a destination tested against the whole model would report a
+/// push from *another* mover — a door closing across the lift — as a block
+/// every time. With the lift left out, the push is judged on everything
+/// else, which is what it is pushing the rider into.
+#[must_use]
+pub fn push_from_mover_ignoring(
+    model: &CollisionModel,
+    state: &mut PlayerState,
+    displacement: Vec3,
+    ignore: Option<BrushId>,
+) -> bool {
     if !displacement.is_finite() || displacement == Vec3::ZERO {
         return true;
     }
+    let hull = state.hull();
     let candidate = state.origin + displacement;
-    let clear = model.trace(state.hull(), candidate, candidate);
+    let clear = model.trace_ignoring(hull, candidate, candidate, ignore);
     if !clear.start_solid {
         state.origin = candidate;
         return true;
     }
-    let trace = model.trace(state.hull(), state.origin, candidate);
+    let trace = model.trace_ignoring(hull, state.origin, candidate, ignore);
     if !trace.start_solid {
         state.origin = trace.end_pos;
     }
-    let clear = model.trace(state.hull(), state.origin, state.origin);
+    let clear = model.trace_ignoring(hull, state.origin, state.origin, ignore);
     !clear.start_solid
 }

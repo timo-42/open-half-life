@@ -50,8 +50,8 @@ use glam::Vec3;
 use ohl_engine::save::{CarriedEntityDef, EngineHeader, TeleportStateSnapshot, ViewState};
 use ohl_engine::save_state::{
     AmbientSnapshot, BreakableSnapshot, MomentaryDoorSnapshot, MonsterMakerSnapshot, MoverSnapshot,
-    PlatRotSnapshot, RotatorSnapshot, ScriptRunnerSnapshot, TrackTrainSnapshot,
-    TriggerCameraSnapshot,
+    PathStateSnapshot, PlatRotSnapshot, RotatorSnapshot, ScriptRunnerSnapshot, TrackTrainSnapshot,
+    TrainChainSnapshot, TriggerCameraSnapshot,
 };
 use ohl_engine::test_support::{
     ROTATING_DOOR_MAP, ROTATING_DOOR_NAME, rotating_door_bsp, rotating_door_entities,
@@ -264,6 +264,14 @@ fn tag_38_ambient_state_keeps_its_frozen_wire_shape() {
         postcard::from_bytes(GOLDEN_TAG_38).expect("section 38 decodes");
     assert_eq!(decoded, value);
 }
+
+/// `SECTION_PATH_STATE` (40) at the shape this build writes: the exact
+/// bytes [`frozen_path_state`]'s value encodes to. **New golden, not a
+/// revision of any tag above**: tag 40 did not exist before the
+/// blocked-movers package.
+const GOLDEN_TAG_40: &[u8] = &[
+    0x03, 0x00, 0x01, 0x01, 0x01, 0x00, 0x01, 0x00, 0x01, 0x03, 0x03, 0x04, 0x05, 0x01,
+];
 
 /// The value [`GOLDEN_TAG_36`] holds: one definition carrying the three
 /// keys every re-created entity has a placement and an identity from, and
@@ -684,6 +692,37 @@ fn tag_37_platrot_state_keeps_its_frozen_wire_shape() {
 
     let decoded: Vec<Option<PlatRotSnapshot>> =
         postcard::from_bytes(GOLDEN_TAG_37).expect("section 37 decodes");
+    assert_eq!(decoded, value);
+}
+
+/// The value [`GOLDEN_TAG_40`] holds: an empty slot, a thrown switch, and
+/// a train holding a three-node loop — both kinds of entry, and both arms
+/// of each `Option`, on the wire.
+fn frozen_path_state() -> Vec<Option<PathStateSnapshot>> {
+    vec![
+        None,
+        Some(PathStateSnapshot {
+            branch_active: Some(true),
+            train_chain: None,
+        }),
+        Some(PathStateSnapshot {
+            branch_active: None,
+            train_chain: Some(TrainChainSnapshot {
+                nodes: vec![3, 4, 5],
+                looped: true,
+            }),
+        }),
+    ]
+}
+
+#[test]
+fn tag_40_path_state_keeps_its_frozen_wire_shape() {
+    let value = frozen_path_state();
+    let encoded = postcard::to_allocvec(&value).expect("the section encodes");
+    assert_golden(&encoded, GOLDEN_TAG_40, 40);
+
+    let decoded: Vec<Option<PathStateSnapshot>> =
+        postcard::from_bytes(GOLDEN_TAG_40).expect("section 40 decodes");
     assert_eq!(decoded, value);
 }
 

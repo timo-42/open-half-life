@@ -287,7 +287,9 @@ pub struct DoorMonstersCant;
 /// ([`Rotator`], [`Platform`], [`Pendulum`] — see [`DoorUseOnly`]'s doc
 /// comment for the rule), so the keyvalue can be carried without widening
 /// any of them. Attached only when the keyvalue parses to a positive value;
-/// read by [`crate::logic::Simulation::block_mover`].
+/// read by [`crate::logic::Simulation::block_mover`]. The `func_pendulum`
+/// sentence names only the player; dealing the same `dmg` to a monster in
+/// its way is project-authored, as it is for every mover.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BlockDamage(pub f32);

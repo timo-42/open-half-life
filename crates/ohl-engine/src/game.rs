@@ -859,6 +859,14 @@ impl Game {
         self.systems.doors_opened_count()
     }
 
+    /// How many closed doors a monster's own touch has opened since this
+    /// level was loaded — counted apart from [`Self::doors_opened_count`],
+    /// which is the player's. Data, never a log line.
+    #[must_use]
+    pub fn monster_doors_opened_count(&self) -> u64 {
+        self.systems.monster_doors_opened_count()
+    }
+
     /// How many times damage aimed at the player has actually been applied
     /// since this level was loaded. Data, never a log line.
     #[must_use]
@@ -1627,6 +1635,7 @@ impl Game {
             platrots: Some(crate::save_state::snapshot_platrots(&self.level)),
             ambients: Some(crate::save_state::snapshot_ambients(&self.level)),
             switches: Some(crate::save_state::snapshot_switches(&self.level)),
+            path_states: Some(crate::save_state::snapshot_path_states(&self.level)),
             // Written only when a level change actually materialised
             // something here, so a cold-loaded map's save carries no
             // section at all rather than an empty one.
@@ -1901,6 +1910,12 @@ impl Game {
         // `attach_level` just spawned in the same deterministic spawn
         // order — the same pattern `SECTION_ENTITY_COMBAT`/`SECTION_AI`
         // already use above.
+        // `SECTION_PATH_STATE` (40): every switch's position and every
+        // train's chain, put back *before* tag 28 below, whose node index
+        // and progress are measured along the chain this restores.
+        if let Some(path_states) = &save.path_states {
+            crate::save_state::restore_path_states(&mut self.level, path_states);
+        }
         if let Some(mover_state) = &save.mover_state {
             self.systems
                 .restore_mover_state(&mut self.level, mover_state);

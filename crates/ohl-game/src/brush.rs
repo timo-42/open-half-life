@@ -11,7 +11,8 @@ use hecs::Entity;
 
 use crate::keyvalues::RenderProps;
 use crate::registry::{
-    Breakable, BrushModel, ClassName, Conveyor, Liquid, Registry, Transform, WallToggle, Water,
+    Breakable, BrushModel, ClassName, Conveyor, DoorPassable, Liquid, Registry, Transform,
+    WallToggle, Water,
 };
 
 /// One brush-model entity's placement: which submodel to draw, and where.
@@ -152,6 +153,15 @@ fn is_non_solid_conveyor(registry: &Registry, entity: Entity) -> bool {
         .is_ok_and(|conveyor| conveyor.not_solid)
 }
 
+/// Whether this entity is a `func_door`/`func_door_rotating` with the
+/// "Passable" spawnflag ([`DoorPassable`]), which the cited page describes
+/// as "entirely non-solid": left out of both solid lists, so neither the
+/// player nor a monster collides with it, and a door nothing can be inside
+/// of is never blocked by anything either. It is still drawn.
+fn is_passable(registry: &Registry, entity: Entity) -> bool {
+    registry.world.get::<&DoorPassable>(entity).is_ok()
+}
+
 /// Collects one [`ModelInstance`] per brush entity that is solid to the
 /// player (see [`is_solid_brush`]), in registry spawn order.
 ///
@@ -201,6 +211,7 @@ fn collect_solid_model_instances(
         if !is_solid(&classname.0)
             || is_broken(registry, entity)
             || is_non_solid_conveyor(registry, entity)
+            || is_passable(registry, entity)
         {
             continue;
         }
@@ -425,6 +436,36 @@ mod tests {
         );
         assert_eq!(instances[0].model_index, 7);
         assert_eq!(instances[1].model_index, 8);
+    }
+
+    /// A door with the cited "Passable" spawnflag (8, "entirely
+    /// non-solid") is in neither solid list — the player's or a monster's —
+    /// but is still drawn; the same door without the flag is solid to both.
+    #[test]
+    fn a_passable_door_is_drawn_but_solid_to_nobody() {
+        let entities = vec![
+            raw(&[
+                ("classname", "func_door"),
+                ("model", "*2"),
+                ("spawnflags", "8"),
+            ]),
+            raw(&[
+                ("classname", "func_door_rotating"),
+                ("model", "*3"),
+                ("spawnflags", "8"),
+            ]),
+            raw(&[("classname", "func_door"), ("model", "*4")]),
+        ];
+        let defs = parse_entities(&entities, &Limits::default());
+        let registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        for solid in [
+            super::solid_model_instances(&registry),
+            super::monster_solid_model_instances(&registry),
+        ] {
+            let models: Vec<u32> = solid.iter().map(|instance| instance.model_index).collect();
+            assert_eq!(models, vec![4], "only the ordinary door is solid");
+        }
+        assert_eq!(model_instances(&registry).len(), 3, "all three are drawn");
     }
 
     #[test]

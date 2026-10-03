@@ -548,3 +548,26 @@ pub fn build_platform_room() -> (CollisionModel, BrushId) {
         .expect("fixture's platform submodel attaches");
     (model, brush)
 }
+
+/// [`build_platform_room`] with the same slab submodel attached a second
+/// time, at `second_origin`: two independent movers, for a test that needs
+/// one of them under a rider and the other pushing them.
+///
+/// # Panics
+///
+/// As [`build_platform_room`].
+#[must_use]
+pub fn build_two_platform_room(second_origin: Vec3) -> (CollisionModel, BrushId, BrushId) {
+    let bytes = build_brush_entity_floor_bsp("func_plat");
+    let limits = Limits::default();
+    let bsp = Bsp::parse(&bytes, &limits).expect("fixture parses as BSP v30");
+    let mut model =
+        CollisionModel::from_bsp(&bsp, &limits).expect("fixture has usable world hulls");
+    let first = model
+        .attach_brush(&bsp, &limits, 1, Vec3::ZERO)
+        .expect("fixture's platform submodel attaches");
+    let second = model
+        .attach_brush(&bsp, &limits, 1, second_origin)
+        .expect("fixture's platform submodel attaches a second time");
+    (model, first, second)
+}

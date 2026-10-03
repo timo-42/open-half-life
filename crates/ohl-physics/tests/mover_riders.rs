@@ -17,7 +17,7 @@
 
 use ohl_physics::controller::TICK_SECONDS;
 use ohl_physics::movement::categorize_position;
-use ohl_physics::test_support::build_platform_room;
+use ohl_physics::test_support::{build_platform_room, build_two_platform_room};
 use ohl_physics::{CollisionModel, MoveConfig, MoveInput, PlayerState, Vec3};
 
 const TICK: f32 = TICK_SECONDS;
@@ -278,4 +278,66 @@ fn a_push_that_cannot_clear_the_player_is_reported_blocked() {
         "a push that leaves the player embedded is a block"
     );
     assert_eq!(state.origin, origin, "a blocked push moves nobody");
+}
+
+/// A rider a hair inside the slab under them (a rising lift's top face, a
+/// step before the ride blend catches them up), pushed sideways by a
+/// second slab sliding across at chest height. Judged against the whole
+/// model, the push's destination is still inside the lift and reads as a
+/// block; with the lift left out, it is clear, and the rider is pushed.
+#[test]
+fn a_push_ignoring_the_lift_underfoot_is_not_a_block() {
+    // The pusher: the same 256-wide slab, raised to `z` 4..20 and with its
+    // `-x` face starting just clear of the rider at `x = 20`.
+    let (mut model, lift, pusher) =
+        build_two_platform_room(Vec3::new(SLAB_HALF_EXTENT + 20.0, 0.0, 20.0));
+    // Half a unit inside the lift's top face.
+    let origin = Vec3::new(0.0, 0.0, RIDER_ORIGIN_Z - 0.5);
+    let state = PlayerState::at(origin);
+    assert!(model.trace(state.hull(), origin, origin).start_solid);
+    assert!(
+        !model
+            .trace_ignoring(state.hull(), origin, origin, Some(lift))
+            .start_solid
+    );
+    // The pusher slides 8 units toward `-x`, its face now 4 units into
+    // the rider.
+    let displacement = Vec3::new(-8.0, 0.0, 0.0);
+    model.set_brush_origin(pusher, Vec3::new(SLAB_HALF_EXTENT + 12.0, 0.0, 20.0));
+    assert!(
+        model
+            .trace_brush(state.hull(), origin, origin, pusher)
+            .start_solid
+    );
+
+    let mut judged_whole = state;
+    assert!(
+        !ohl_physics::push_from_mover(&model, &mut judged_whole, displacement),
+        "with the lift in the test, the push reads as a block"
+    );
+    let mut judged_without_lift = state;
+    assert!(
+        ohl_physics::push_from_mover_ignoring(
+            &model,
+            &mut judged_without_lift,
+            displacement,
+            Some(lift)
+        ),
+        "with the lift left out, the destination is clear"
+    );
+    assert_eq!(judged_without_lift.origin, origin + displacement);
+}
+
+/// `trace_brush` answers for the one brush it is asked about, whatever
+/// else the hull is also inside: a rider half a unit into the lift and
+/// nowhere near the second slab is inside the one and not the other.
+#[test]
+fn trace_brush_answers_for_one_brush_alone() {
+    let (model, lift, far) = build_two_platform_room(Vec3::new(1000.0, 0.0, 0.0));
+    let origin = Vec3::new(0.0, 0.0, RIDER_ORIGIN_Z - 0.5);
+    let hull = PlayerState::at(origin).hull();
+    assert!(model.trace_brush(hull, origin, origin, lift).start_solid);
+    assert!(!model.trace_brush(hull, origin, origin, far).start_solid);
+    let clear = Vec3::new(0.0, 0.0, RIDER_ORIGIN_Z + 1.0);
+    assert!(!model.trace_brush(hull, clear, clear, lift).start_solid);
 }

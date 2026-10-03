@@ -50,11 +50,19 @@ fn entities(throw_the_switch: bool) -> String {
     )
 }
 
-fn game(throw_the_switch: bool) -> Game {
+fn assets(throw_the_switch: bool) -> MemoryAssets {
     let bytes = rotating_door_bsp(&entities(throw_the_switch));
     let mut assets = MemoryAssets::new();
     assets.insert(&format!("maps/{ROTATING_DOOR_MAP}.bsp"), bytes);
-    Game::load(&assets as &dyn AssetSource, ROTATING_DOOR_MAP).expect("the fixture loads")
+    assets
+}
+
+fn game(throw_the_switch: bool) -> Game {
+    Game::load(
+        &assets(throw_the_switch) as &dyn AssetSource,
+        ROTATING_DOOR_MAP,
+    )
+    .expect("the fixture loads")
 }
 
 fn train_position(game: &Game) -> glam::Vec3 {
@@ -80,7 +88,11 @@ fn fork_is_thrown(game: &Game) -> bool {
 /// 100 units to the fork and 150 more past it, at 100 units/second: well
 /// clear of the fork on whichever side it sent the train.
 fn ride(game: &mut Game) {
-    for _ in 0..250 {
+    ride_for(game, 250);
+}
+
+fn ride_for(game: &mut Game, ticks: u32) {
+    for _ in 0..ticks {
         game.tick(TICK_SECONDS, &Input::default());
     }
 }
@@ -109,5 +121,91 @@ fn a_fork_triggered_on_sends_the_next_train_down_its_branch() {
     assert!(
         position.y < -100.0,
         "the train should be on the branch (-y): {position:?}"
+    );
+}
+
+// --- Saving a thrown switch and the chain a train holds (tag 40) ----------
+
+/// Saves `game` and loads the save back over the same map.
+fn save_and_load(game: &Game, assets: &MemoryAssets) -> Game {
+    let bytes = game.save_bytes(1_700_000_000).expect("the save is written");
+    Game::load_bytes(assets, &bytes).expect("the save loads")
+}
+
+/// A train saved out on the branch comes back out on the branch, at the
+/// same place, and carries on along it — not at the same node index and
+/// progress on the main line, which is where a chain rebuilt from its own
+/// `target` against an unthrown switch would put it.
+#[test]
+fn a_train_saved_on_the_branch_loads_on_the_branch() {
+    let assets = assets(true);
+    let mut game = Game::load(&assets as &dyn AssetSource, ROTATING_DOOR_MAP).expect("loads");
+    ride_for(&mut game, 200);
+    let before = train_position(&game);
+    assert!(before.y < -50.0, "out on the branch: {before:?}");
+
+    let mut reloaded = save_and_load(&game, &assets);
+    assert!(fork_is_thrown(&reloaded), "the switch is still thrown");
+    let after = train_position(&reloaded);
+    assert!(
+        after.abs_diff_eq(before, 1e-3),
+        "the train is where it was saved: {before:?} -> {after:?}"
+    );
+    ride_for(&mut game, 50);
+    ride_for(&mut reloaded, 50);
+    assert!(
+        train_position(&reloaded).abs_diff_eq(train_position(&game), 1e-3),
+        "and carries on exactly as the unsaved game does"
+    );
+}
+
+/// A train saved *approaching* a thrown switch takes the branch after the
+/// load, as it would have without one.
+#[test]
+fn a_train_saved_approaching_a_thrown_switch_takes_the_branch_after_load() {
+    let assets = assets(true);
+    let mut game = Game::load(&assets as &dyn AssetSource, ROTATING_DOOR_MAP).expect("loads");
+    ride_for(&mut game, 30);
+    assert!(fork_is_thrown(&game));
+    assert!(train_position(&game).x < 90.0, "still short of the fork");
+
+    let mut reloaded = save_and_load(&game, &assets);
+    ride(&mut reloaded);
+    let position = train_position(&reloaded);
+    assert!(
+        position.y < -100.0,
+        "the reloaded train takes the branch: {position:?}"
+    );
+}
+
+/// A save written before tag 40 existed — the section simply absent —
+/// still loads, with every switch back at its spawn position and the train
+/// on the chain its `target` resolves to.
+#[test]
+fn a_save_from_before_section_40_existed_still_loads() {
+    let assets = assets(true);
+    let mut game = Game::load(&assets as &dyn AssetSource, ROTATING_DOOR_MAP).expect("loads");
+    ride_for(&mut game, 30);
+    let mut save = game.to_save(1_700_000_000);
+    assert!(save.path_states.is_some(), "this build writes tag 40");
+    save.path_states = None;
+    let bytes = save
+        .to_bytes()
+        .expect("a save missing tag 40 still encodes");
+    let reloaded = Game::load_bytes(&assets, &bytes).expect("a pre-tag-40 save still loads");
+    assert!(
+        !fork_is_thrown(&reloaded),
+        "without tag 40 the switch is back at its spawn position"
+    );
+    let registry = reloaded.registry();
+    let tram = registry.find("ohl_tram")[0];
+    let main_end = registry.find("ohl_main_end")[0];
+    let state = registry
+        .world
+        .get::<&TrackTrainState>(tram)
+        .expect("the train has a chain");
+    assert_eq!(
+        state.chain().nodes.last().map(|node| node.entity),
+        Some(main_end)
     );
 }
