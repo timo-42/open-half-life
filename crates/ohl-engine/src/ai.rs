@@ -58,10 +58,11 @@ use ohl_ai::monsters::table::Difficulty as AiDifficulty;
 use ohl_ai::scripts::{ScriptAction, ScriptHold, ScriptRunner, ScriptSense};
 use ohl_ai::{
     Activity, Actor, AiEvent, AiEventKind, AiWorld, AttackKind, BrainId, Classification,
-    Conditions, CorpseDecision, DamageEvent, DamageQueue, DamageSink, EnemyMemory, MonsterAi,
-    MonsterBrain, MonsterKind, MonsterSpawn, MonsterSpawnRules, MonsterSpec, MonsterState,
-    MonsterTrigger, Prisoner, Route, ScheduleRunner, SightContext, SquadTag, StuckDetector,
-    TriggerCondition, TriggerContext, attach_monsters, sighting_relationship,
+    Conditions, CorpseDecision, DamageEvent, DamageKinds, DamageQueue, DamageResponse, DamageSink,
+    EnemyMemory, MonsterAi, MonsterBrain, MonsterKind, MonsterSpawn, MonsterSpawnRules,
+    MonsterSpec, MonsterState, MonsterTrigger, Prisoner, Route, ScheduleRunner, SightContext,
+    SquadTag, StuckDetector, TriggerCondition, TriggerContext, attach_monsters,
+    sighting_relationship,
 };
 use ohl_combat::{DamageType, HitboxIndex, HitboxLimits, TraceFilter, TraceMask};
 use ohl_game::hecs::Entity;
@@ -255,7 +256,8 @@ impl MonsterSpawnRules for EngineSpawnRules<'_> {
             MonsterSpawn::new(spec.classification, brain)
                 .with_health(self.health_of(&kind, spec))
                 .with_hull(spec.hull)
-                .with_view_ofs(kind.view_offset()),
+                .with_view_ofs(kind.view_offset())
+                .with_difficulty(self.difficulty),
         )
     }
 }
@@ -551,13 +553,17 @@ impl AiState {
     }
 
     /// Reads the `TriggerCondition`/`TriggerTarget` pair off every monster
-    /// that declares one, in spawn order.
+    /// that declares one, in spawn order — except the kinds whose own page
+    /// says the pair does not work on them (`ohl_ai::MonsterKind::
+    /// honours_trigger_condition`: the Nihilanth, the Apache, the Osprey).
     fn collect_triggers(&mut self, level: &Level, spawned: &[Entity]) {
         for (index, def) in level.defs.iter().enumerate() {
             let Some(entity) = level.registry.entities.get(index).copied() else {
                 break;
             };
-            if !spawned.contains(&entity) {
+            if !spawned.contains(&entity)
+                || !MonsterKind::from_classname(&def.classname).honours_trigger_condition()
+            {
                 continue;
             }
             let Some(condition) = def
@@ -1045,6 +1051,22 @@ impl AiState {
                 AiEventKind::Attack { kind, target } => {
                     self.resolve_attack(level, event.entity, *kind, *target, damage);
                 }
+                // A Gonarch reaching an `info_bigmomma` node: its
+                // `reachtarget` and `reachsequence` fire by name through
+                // the map logic, exactly as a finished script's `target`
+                // does (`finish_script_step`) — a `scripted_sequence`
+                // fired by name starts and binds its own monster — and its
+                // `killtarget` removes what it names the same way a
+                // script's does.
+                AiEventKind::FireTarget(name) | AiEventKind::ScriptRequested(name) => {
+                    level.simulation.fire(name.clone(), Some(event.entity), 0.0);
+                }
+                AiEventKind::KillTarget(name) => {
+                    let doomed: Vec<Entity> = level.registry.find(name).to_vec();
+                    for entity in doomed {
+                        level.registry.world.despawn(entity).ok();
+                    }
+                }
                 _ => {}
             }
         }
@@ -1164,10 +1186,37 @@ impl AiState {
     /// `monstermaker`s.
     pub fn lifecycle(&mut self, level: &mut Level, dt: f32, damage: &mut Vec<QueuedDamage>) {
         self.drain_engine_damage(level, damage);
-        let (events, corpses) = ohl_ai::monsters::lifecycle::apply_damage_with_corpses(
+        // How each hit target's species answers each damage type (the
+        // gargantua's published immunity, the Apache's doubled blast,
+        // face value for everything else), resolved here where the species
+        // table is reachable and handed to the one place a monster's
+        // health moves. Looked up per target once, not per event: the
+        // queue is small and bounded. (A `Not solid` prop never gets
+        // here: `drain_engine_damage` dropped every hit at it.)
+        let responses: BTreeMap<Entity, DamageResponse> = self
+            .damage
+            .events()
+            .iter()
+            .map(|event| event.target)
+            .map(|target| {
+                let response = self
+                    .spec_of(level, target)
+                    .map_or(DamageResponse::ORDINARY, |(kind, _)| {
+                        ohl_ai::damage_response_for(&kind)
+                    });
+                (target, response)
+            })
+            .collect();
+        let (events, corpses) = ohl_ai::monsters::lifecycle::apply_damage_effective(
             &mut level.registry.world,
             &self.damage,
             ohl_ai::monsters::lifecycle::DEFAULT_GIB_OVERKILL_MULTIPLIER,
+            &|target| {
+                responses
+                    .get(&target)
+                    .copied()
+                    .unwrap_or(DamageResponse::ORDINARY)
+            },
         );
         let hurt: Vec<Entity> = self
             .damage
@@ -1245,6 +1294,7 @@ impl AiState {
                 amount: queued.info.amount,
                 source_position: queued.info.origin,
                 provokes: attacker.is_some(),
+                kinds: damage_kinds_of(queued.info.kind),
             });
         }
     }
@@ -1625,6 +1675,17 @@ fn attack_damage_type(shape: AttackShape) -> DamageType {
         AttackShape::Melee => DamageType::SLASH,
         AttackShape::Hitscan | AttackShape::Projectile(_) => DamageType::BULLET,
     }
+}
+
+/// `ohl-combat`'s damage type as `ohl-ai`'s damage kinds.
+///
+/// The two are the same published vocabulary in the same declaration
+/// order with the same dense bit assignment (`ohl_ai::damage`'s module doc
+/// comment records that as a contract), so the conversion is by bits;
+/// `damage_kinds_match_combat_damage_types_bit_for_bit` below holds it.
+#[must_use]
+pub fn damage_kinds_of(kind: DamageType) -> DamageKinds {
+    DamageKinds::from_bits_truncate(kind.bits())
 }
 
 /// The `ohl-ai` difficulty matching the campaign's.
@@ -2499,8 +2560,31 @@ fn nearest_follower(level: &Level, position: Vec3) -> Option<Entity> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AttackShape, activity_name, attack_shape, trigger_condition_of};
-    use ohl_ai::{Activity, AttackKind, MonsterKind, TriggerCondition};
+    use super::{AttackShape, activity_name, attack_shape, damage_kinds_of, trigger_condition_of};
+    use ohl_ai::{Activity, AttackKind, DamageKinds, MonsterKind, TriggerCondition};
+    use ohl_combat::DamageType;
+
+    /// The contract `damage_kinds_of` converts by: `ohl-combat`'s damage
+    /// types and `ohl-ai`'s damage kinds are the same published names in
+    /// the same order on the same bits, so a hit typed in one crate means
+    /// the same thing in the other.
+    #[test]
+    fn damage_kinds_match_combat_damage_types_bit_for_bit() {
+        assert_eq!(DamageType::NAMED.len(), DamageKinds::NAMED.len());
+        for ((combat, combat_label), (ai, ai_label)) in
+            DamageType::NAMED.iter().zip(DamageKinds::NAMED.iter())
+        {
+            assert_eq!(combat_label, ai_label);
+            assert_eq!(combat.bits(), ai.bits(), "{combat_label}");
+            assert_eq!(damage_kinds_of(*combat), *ai);
+        }
+        assert_eq!(damage_kinds_of(DamageType::ALL), DamageKinds::ALL);
+        assert_eq!(damage_kinds_of(DamageType::NONE), DamageKinds::NONE);
+        assert_eq!(
+            damage_kinds_of(DamageType::BLAST | DamageType::BURN),
+            DamageKinds::BLAST | DamageKinds::BURN
+        );
+    }
 
     #[test]
     fn melee_attacks_are_always_traces() {

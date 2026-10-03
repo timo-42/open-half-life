@@ -14,19 +14,21 @@
 # around first was tuned against this one map's own player-start-relative
 # geometry, never recorded here beyond this turn/walk technique.
 #
-# This walk's own reach happens to put a monster in the crowbar's way,
-# so "A monster took damage."/"A monster died." move to this scenario's
-# own present set instead of its absent one.
+# A monster within this walk's reach is hit, so "A monster took damage."
+# moves to this scenario's own present set instead of its absent one.
+# Until M9.NEXT the hits also killed it; they are of a damage type its
+# species' published damage rules ignore, so it no longer dies and
+# "A monster died." stays absent.
 #
 # Expected fixed log lines, asserted by the harness rather than parsed
 # from this file:
 #   present: "Scripted input loaded.", "Scripted input finished.",
 #            "The player moved from the spawn point.",
-#            "A monster took damage.", "A monster died."
+#            "A monster took damage."
 #   absent:  "The player is inside solid geometry." (this scenario's own
 #            regression guard for the PR #91 class of bug)
 #            plus every other fixed line except:
-#            "A monster took damage.", "A monster died."
+#            "A monster took damage."
 20 look 0 180
 60 forward
 8 look 0 20

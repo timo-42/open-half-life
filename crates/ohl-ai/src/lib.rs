@@ -25,11 +25,14 @@
 //!   while a script owns it.
 //! - [`follow`]: the `monster_scientist`/`monster_barney` follow layer.
 //! - [`spawn`]: attaching AI components to `ohl-game`'s entity registry.
-//! - [`damage`]: the minimal damage input, to be replaced by `ohl-combat`'s
-//!   richer `DamageInfo` (see the module docs).
+//! - [`damage`]: the minimal damage input — who, how much, from where, and
+//!   which published damage types ([`DamageKinds`]) — the host fills from
+//!   `ohl-combat`'s richer `DamageInfo` (see the module docs).
 //! - [`monsters`]: package 7.7's per-monster `MonsterKind`/`MonsterSpec`
 //!   table, `MonsterBrain` and lifecycle (health intake, death, corpse/gib,
-//!   `TriggerCondition`).
+//!   `TriggerCondition`), plus the boss and aircraft components (the
+//!   Gonarch's trail, the Nihilanth's shield, the Apache/Osprey flight
+//!   plan) and the driver that runs them before each think step.
 //! - [`spawner`]: `Spawner`, the `monstermaker` spawn-count/delay/
 //!   live-children bookkeeping.
 //! - [`rng`]: a project-owned seeded [`Pcg32`].
@@ -80,12 +83,14 @@ pub mod state;
 pub mod world;
 
 pub use brain::{DefaultBrain, default_next_state, schedule_by_name};
-pub use damage::{DamageEvent, DamageQueue, DamageSink};
+pub use damage::{DamageEvent, DamageKinds, DamageQueue, DamageResponse, DamageSink};
 pub use follow::{FollowChange, FollowRoster, Follower};
 pub use monsters::{
-    CorpseDecision, MonsterBrain, MonsterKind, MonsterSpec, MonsterTrigger, NavBridge,
-    NavBridgeLimits, Navigator, NoOpRangedAttackSink, RangedAttackSink, StraightLineNavigator,
-    TriggerCondition, TriggerContext, apply_damage as apply_monster_damage, node_seeds_from_defs,
+    CorpseDecision, FlightPlan, GonarchTrail, MonsterBrain, MonsterKind, MonsterSpec,
+    MonsterTrigger, NavBridge, NavBridgeLimits, Navigator, NihilanthCrystal, NihilanthShield,
+    NoOpRangedAttackSink, RangedAttackSink, StraightLineNavigator, TriggerCondition,
+    TriggerContext, apply_damage as apply_monster_damage, damage_response_for,
+    node_seeds_from_defs,
 };
 pub use movement::{MoveResult, Route, StuckDetector, move_toward};
 pub use rng::Pcg32;

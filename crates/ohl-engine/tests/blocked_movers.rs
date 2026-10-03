@@ -861,6 +861,19 @@ fn a_door_closing_on_rooted_furniture_neither_shoves_it_nor_reverses() {
     a_door_closing_on("monster_furniture", 0);
 }
 
+/// The Nihilanth never moves (M9.NEXT): it hangs where the map put it.
+#[test]
+fn a_door_closing_on_the_nihilanth_neither_shoves_it_nor_reverses() {
+    a_door_closing_on("monster_nihilanth", 0);
+}
+
+/// An aircraft flies (the point hull, M9.NEXT): it keeps to its own course
+/// rather than being shoved by, or blocking, a door it is in the way of.
+#[test]
+fn a_door_closing_on_an_apache_neither_shoves_it_nor_reverses() {
+    a_door_closing_on("monster_apache", 0);
+}
+
 /// A `monster_generic` with its published "Not solid" spawnflag (bit 4)
 /// is nothing for a mover to push or be stopped by.
 #[test]

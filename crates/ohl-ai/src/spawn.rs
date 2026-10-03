@@ -8,8 +8,10 @@
 //!
 //! The keyvalues read here are the published ones recorded in
 //! `docs/FORMAT_SOURCES.md`: `origin`, `angles`/`angle`, `netname` (the
-//! squad name), the `SquadLeader` spawnflag, bit 32, and the `Prisoner`
-//! spawnflag, bit 16. Which classname is which [`Classification`], and
+//! squad name — except on a `monster_bigmomma`, whose `netname` names the
+//! first node of its trail), the `SquadLeader` spawnflag, bit 32, and the
+//! `Prisoner` spawnflag, bit 16. The boss and aircraft kinds read a few
+//! more of their own through `crate::monsters::bosses::attach`. Which classname is which [`Classification`], and
 //! which brain each gets, is package 7.7's job — hence the caller-supplied
 //! [`MonsterSpawnRules`] rather than a table here.
 
@@ -17,6 +19,8 @@ use glam::Vec3;
 use hecs::Entity;
 use ohl_game::{EntityDef, Registry};
 
+use crate::monsters::bosses;
+use crate::monsters::table::{Difficulty, MonsterKind};
 use crate::state::Classification;
 use crate::world::{Actor, BrainId, MonsterAi, Prisoner, SquadTag};
 
@@ -47,6 +51,11 @@ pub struct MonsterSpawn {
     /// real one, which is also what decides whether it walks, swims or
     /// flies (`crate::movement::flies`).
     pub hull: ohl_physics::Hull,
+    /// The difficulty the level runs at, for the per-kind components that
+    /// scale by it (the Gonarch's node health; see
+    /// `crate::monsters::bigmomma`). Defaults to [`Difficulty::Easy`], the
+    /// published 1x factor.
+    pub difficulty: Difficulty,
 }
 
 impl MonsterSpawn {
@@ -60,6 +69,7 @@ impl MonsterSpawn {
             health: 100.0,
             view_ofs: Vec3::new(0.0, 0.0, 28.0),
             hull: ohl_physics::Hull::Standing,
+            difficulty: Difficulty::Easy,
         }
     }
 
@@ -81,6 +91,13 @@ impl MonsterSpawn {
     #[must_use]
     pub fn with_view_ofs(mut self, view_ofs: Vec3) -> Self {
         self.view_ofs = view_ofs;
+        self
+    }
+
+    /// The same spawn at a different difficulty.
+    #[must_use]
+    pub fn with_difficulty(mut self, difficulty: Difficulty) -> Self {
+        self.difficulty = difficulty;
         self
     }
 }
@@ -105,6 +122,12 @@ impl<F: Fn(&EntityDef) -> Option<MonsterSpawn>> MonsterSpawnRules for F {
 /// [`Registry::build`] was given, because `ohl-game` records the spawn order
 /// in [`Registry::entities`]. Entities the registry did not spawn (a
 /// truncated `defs`, say) are skipped rather than panicking.
+///
+/// A kind with a boss or aircraft component of its own (see
+/// [`crate::monsters::bosses::attach`]) gets it here too, built from the
+/// same `defs` and `registry`; for the one kind whose `netname` names a
+/// trail node rather than a squad (`monster_bigmomma`), no [`SquadTag`] is
+/// attached.
 ///
 /// Returns the entities that gained AI components, in map order.
 pub fn attach_monsters(
@@ -137,7 +160,9 @@ pub fn attach_monsters(
         {
             continue;
         }
-        if let Some(tag) = squad_tag(def)
+        let kind = MonsterKind::from_classname(&def.classname);
+        if !bosses::netname_is_not_a_squad(&kind)
+            && let Some(tag) = squad_tag(def)
             && registry.world.insert_one(entity, tag).is_err()
         {
             continue;
@@ -145,6 +170,7 @@ pub fn attach_monsters(
         if is_prisoner(def) && registry.world.insert_one(entity, Prisoner).is_err() {
             continue;
         }
+        bosses::attach(registry, entity, def, defs, spawn.difficulty);
         spawned.push(entity);
     }
     spawned
@@ -298,6 +324,90 @@ mod tests {
         assert!(squad_tag(&defs[0]).is_none());
         assert!(squad_tag(&defs[3]).is_none());
         assert!(squad_tag(&defs[1]).is_some_and(|tag| tag.leader));
+    }
+
+    /// Wave 1 batch B: a Gonarch's `netname` is its trail's first node,
+    /// not a squad, and an aircraft's `target` is its flight route.
+    #[test]
+    fn boss_and_aircraft_kinds_get_their_components_at_spawn() {
+        use crate::monsters::bigmomma::TrailPhase;
+        use crate::monsters::table::Difficulty;
+        use crate::monsters::{FlightPlan, GonarchTrail, NihilanthShield};
+        use ohl_game::registry::MonsterActivation;
+
+        let defs = vec![
+            def("worldspawn", [0.0; 3], &[], 0),
+            def(
+                "monster_bigmomma",
+                [0.0, 0.0, 0.0],
+                &[("netname", "trail_1")],
+                0,
+            ),
+            {
+                let mut node = def("info_bigmomma", [256.0, 0.0, 0.0], &[("health", "100")], 0);
+                node.targetname = Some("trail_1".to_string());
+                node
+            },
+            {
+                let mut aircraft = def(
+                    "monster_osprey",
+                    [0.0, 0.0, 512.0],
+                    &[("target", "route_1")],
+                    0,
+                );
+                aircraft.target = Some("route_1".to_string());
+                aircraft
+            },
+            {
+                let mut corner = def(
+                    "path_corner",
+                    [512.0, 0.0, 512.0],
+                    &[("target", "route_1")],
+                    0,
+                );
+                corner.targetname = Some("route_1".to_string());
+                corner.target = Some("route_1".to_string());
+                corner
+            },
+            def("monster_nihilanth", [0.0, 0.0, 1_024.0], &[], 0),
+        ];
+        let mut registry = Registry::build(&defs, &BTreeMap::new(), &Limits::default());
+        let spawned = attach_monsters(&mut registry, &defs, &|def: &EntityDef| {
+            def.classname.starts_with("monster_").then(|| {
+                MonsterSpawn::new(Classification::AlienMonster, BrainId(0))
+                    .with_health(300.0)
+                    .with_difficulty(Difficulty::Hard)
+            })
+        });
+        assert_eq!(spawned.len(), 3);
+        let (gonarch, osprey, boss) = (spawned[0], spawned[1], spawned[2]);
+
+        assert!(
+            registry.world.get::<&SquadTag>(gonarch).is_err(),
+            "the Gonarch's netname is not a squad"
+        );
+        let trail = registry.world.get::<&GonarchTrail>(gonarch).expect("trail");
+        assert_eq!(trail.trail().len(), 1);
+        assert_eq!(trail.phase(), TrailPhase::Traveling { to: 0 });
+        drop(trail);
+
+        let plan = registry.world.get::<&FlightPlan>(osprey).expect("plan");
+        assert_eq!(plan.waypoints().len(), 1);
+        assert!(plan.is_looped());
+        drop(plan);
+        for waiting in [gonarch, osprey, boss] {
+            assert!(
+                registry.world.get::<&MonsterActivation>(waiting).is_ok(),
+                "a use can reach it"
+            );
+        }
+
+        let shield = registry
+            .world
+            .get::<&NihilanthShield>(boss)
+            .expect("shield");
+        assert!((shield.reserve_capacity() - 300.0).abs() < 1e-4);
+        assert!(!shield.is_active());
     }
 
     #[test]

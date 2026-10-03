@@ -342,6 +342,17 @@ pub enum AiEventKind {
     SoundEmitted(SoundKind),
     /// The monster died.
     Died,
+    /// The named map entity should be fired (a Gonarch trail node's
+    /// `reachtarget`; see `crate::monsters::bigmomma`). Dispatching a fire
+    /// by name into the map logic is the host's job, exactly as for
+    /// `crate::monsters::MonsterTrigger`.
+    FireTarget(String),
+    /// The named map entity should be removed (a trail node's
+    /// `killtarget`).
+    KillTarget(String),
+    /// The named `scripted_sequence` should run on this monster (a trail
+    /// node's `reachsequence`).
+    ScriptRequested(String),
 }
 
 /// One [`AiEventKind`] with the entity it happened to.
@@ -509,6 +520,17 @@ impl AiWorld {
         }
 
         for entity in order {
+            // A boss or aircraft component (a Gonarch's trail, a
+            // Nihilanth's shield, an aircraft's flight plan) is driven just
+            // before the ordinary step, through the same route/condition
+            // handles a script or a follower uses; a monster carrying none
+            // is untouched. See `crate::monsters::bosses`.
+            let speeds = world
+                .get::<&MonsterAi>(entity)
+                .ok()
+                .and_then(|ai| self.brains.get(ai.brain.0).map(|brain| brain.speeds()))
+                .unwrap_or((40.0, 160.0));
+            crate::monsters::bosses::pre_think(world, entity, dt, speeds, &mut events);
             self.tick_one(
                 world,
                 entity,

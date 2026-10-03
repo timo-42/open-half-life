@@ -1527,12 +1527,16 @@ impl Systems {
     }
 
     /// Whether a mover pushes, and is blocked by, a monster of this kind:
-    /// anything that moves under its own power. A species the table marks
+    /// anything that walks under its own power. A species the table marks
     /// [`ohl_ai::monsters::MonsterFlags::ROOTED`] (a barnacle hanging from
     /// its ceiling, a piece of `monster_furniture`), a turret, a
-    /// mini-turret, a sentry and a tentacle stay fixed where the map put
-    /// them. A door closing on one would otherwise be blocked by it on
-    /// every attempt, and would shove it aside like a walker. A
+    /// mini-turret, a sentry, a tentacle and the Nihilanth stay fixed where
+    /// the map put them. A door closing on one would otherwise be blocked
+    /// by it on every attempt, and would shove it aside like a walker. A
+    /// species that flies (its hull, `ohl_ai::movement::flies`: the alien
+    /// controller, the Apache, the Osprey) keeps to its own course in the
+    /// air, which a lift would otherwise carry it off and a door shove it
+    /// from. A
     /// `monster_generic` with its "Not solid" spawnflag
     /// (`ohl_ai::Impervious`, checked by the caller) is out too: a prop
     /// published as not solid is nothing for a mover to push or be stopped
@@ -1544,14 +1548,16 @@ impl Systems {
         spec: Option<&ohl_ai::monsters::MonsterSpec>,
     ) -> bool {
         use ohl_ai::monsters::{MonsterFlags, MonsterKind};
-        !spec.is_some_and(|spec| spec.flags.contains(MonsterFlags::ROOTED))
-            && !matches!(
-                kind,
-                MonsterKind::Turret
-                    | MonsterKind::MiniTurret
-                    | MonsterKind::Sentry
-                    | MonsterKind::Tentacle
-            )
+        !spec.is_some_and(|spec| {
+            spec.flags.contains(MonsterFlags::ROOTED) || ohl_ai::movement::flies(spec.hull)
+        }) && !matches!(
+            kind,
+            MonsterKind::Turret
+                | MonsterKind::MiniTurret
+                | MonsterKind::Sentry
+                | MonsterKind::Tentacle
+                | MonsterKind::Nihilanth
+        )
     }
 
     /// Phase 12's monster half of the door touch: calls

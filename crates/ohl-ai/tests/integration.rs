@@ -435,3 +435,146 @@ fn a_monster_walks_toward_its_enemy_without_leaving_the_room() {
     assert!(actor.origin.x < 512.0 && actor.origin.x > -512.0);
     assert!(actor.origin.is_finite());
 }
+
+/// Wave 1 batch B: a Gonarch with a trail walks its legs through the
+/// ordinary tick, ignoring the player it can see on the way, arrives at a
+/// node with health and only then turns to fight.
+#[test]
+fn a_gonarch_walks_its_trail_through_the_tick_and_fights_only_on_arrival() {
+    use ohl_ai::MonsterKind;
+    use ohl_ai::monsters::bigmomma::{TrailNode, TrailPhase};
+    use ohl_ai::{GonarchTrail, MonsterBrain};
+
+    let collision = divided_room();
+    let mut ai = AiWorld::new(11);
+    let gonarch_brain = ai.register_brain(Box::new(
+        MonsterBrain::for_kind(MonsterKind::BigMomma).expect("defined"),
+    ));
+    let mut world = hecs::World::new();
+
+    // The trail runs along the left half of the room, away from the wall.
+    let node = |name: &str, x: f32, next: Option<&str>, health: Option<f32>| TrailNode {
+        name: name.to_string(),
+        position: Vec3::new(x, 0.0, 36.0),
+        next: next.map(str::to_string),
+        health,
+        wait: 0.0,
+        fire_on_reach: None,
+        kill_on_reach: None,
+        sequence_on_reach: None,
+        run: true,
+        wait_indefinitely: false,
+    };
+    let trail = ohl_ai::monsters::Trail::new(vec![
+        node("a", -300.0, Some("b"), None),
+        node("b", -100.0, None, Some(100.0)),
+    ]);
+    let mut actor =
+        Actor::new(Classification::AlienMonster, Vec3::new(-450.0, 0.0, 36.0)).with_health(225.0);
+    actor.hull = ohl_physics::Hull::Large;
+    let gonarch = world.spawn((
+        actor,
+        MonsterAi::new(gonarch_brain),
+        GonarchTrail::new(trail, 1.5, 225.0),
+    ));
+    // The player stands right beside the trail's start, in plain sight.
+    spawn_actor(
+        &mut world,
+        Actor::new(Classification::Player, Vec3::new(-450.0, 200.0, 36.0)).as_client(),
+    );
+
+    let context = SightContext::tracing(&collision);
+    let mut saw_travel = false;
+    let mut arrived_tick = None;
+    for tick in 0..800 {
+        ai.tick(&mut world, &context, DT);
+        let state = world.get::<&MonsterAi>(gonarch).expect("component");
+        if state.schedule_name() == "ohl/monsters/gonarch_travel" {
+            saw_travel = true;
+        }
+        let phase = world.get::<&GonarchTrail>(gonarch).expect("trail").phase();
+        if arrived_tick.is_none() && phase == (TrailPhase::Holding { at: 1 }) {
+            arrived_tick = Some(tick);
+        }
+    }
+    assert!(
+        saw_travel,
+        "the trail leg ran through the brain's own schedule"
+    );
+    assert!(arrived_tick.is_some(), "the Gonarch reached the last node");
+    let actor = *world.get::<&Actor>(gonarch).expect("component");
+    assert!(
+        (actor.origin.x - (-100.0)).abs() < 64.0,
+        "{:?}",
+        actor.origin
+    );
+    assert!(actor.origin.is_finite());
+    // The last node's health, scaled by the medium factor, was set on
+    // arrival; and once there the brain is free to fight.
+    assert!((actor.health - 150.0).abs() < 1e-3);
+    let state = world.get::<&MonsterAi>(gonarch).expect("component");
+    assert_ne!(state.schedule_name(), "ohl/monsters/gonarch_travel");
+    assert!(!state.conditions.contains(Conditions::SPECIAL1));
+}
+
+/// An aircraft, through the whole tick against a real collision model: on
+/// its point hull the ordinary movement step flies it along its plan in
+/// three dimensions (climbing to a higher node), and stops it at a wall
+/// rather than carrying it through.
+fn fly_an_apache(nodes: Vec<Vec3>, from: Vec3, ticks: usize) -> (Vec3, f32) {
+    use ohl_ai::MonsterKind;
+    use ohl_ai::monsters::aircraft::FLIGHT_SPEED;
+    use ohl_ai::{FlightPlan, MonsterBrain};
+
+    let collision = divided_room();
+    let mut ai = AiWorld::new(12);
+    let brain = ai.register_brain(Box::new(
+        MonsterBrain::for_kind(MonsterKind::Apache).expect("defined"),
+    ));
+    let mut world = hecs::World::new();
+    let spec = ohl_ai::monsters::spec_for(&MonsterKind::Apache).expect("defined");
+    let mut actor = Actor::new(Classification::HumanMilitary, from).with_health(250.0);
+    actor.hull = spec.hull;
+    let apache = world.spawn((
+        actor,
+        MonsterAi::new(brain),
+        FlightPlan::new(nodes, true, FLIGHT_SPEED),
+    ));
+    let context = SightContext::tracing(&collision);
+    let mut highest = f32::NEG_INFINITY;
+    for _ in 0..ticks {
+        ai.tick(&mut world, &context, DT);
+        let origin = world.get::<&Actor>(apache).expect("component").origin;
+        assert!(origin.is_finite());
+        highest = highest.max(origin.z);
+    }
+    (
+        world.get::<&Actor>(apache).expect("component").origin,
+        highest,
+    )
+}
+
+#[test]
+fn an_apache_flies_its_route_in_three_dimensions_through_the_tick() {
+    let from = Vec3::new(-400.0, -400.0, 160.0);
+    let (origin, highest) = fly_an_apache(vec![Vec3::new(-400.0, 400.0, 240.0), from], from, 300);
+    assert!(
+        (origin - from).length() > 100.0,
+        "it left its spawn point: {origin:?}"
+    );
+    assert!(
+        highest > 230.0,
+        "it climbed toward the higher node: {highest}"
+    );
+    assert!(origin.x < -16.0 && origin.y.abs() <= 512.0);
+}
+
+#[test]
+fn an_apache_is_stopped_by_a_wall_its_route_runs_through() {
+    // The node is on the far side of the room's dividing wall (x in
+    // -16..16): the traced flight stops short of it.
+    let from = Vec3::new(-400.0, 0.0, 128.0);
+    let (origin, _) = fly_an_apache(vec![Vec3::new(400.0, 0.0, 128.0)], from, 400);
+    assert!(origin.x < -15.0, "carried through the wall: {origin:?}");
+    assert!(origin.x > -100.0, "it did fly to the wall: {origin:?}");
+}

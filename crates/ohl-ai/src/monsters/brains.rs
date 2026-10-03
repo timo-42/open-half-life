@@ -414,6 +414,105 @@ pub static CRITTER_SCATTER: Schedule = Schedule::new(
     Conditions::ALL_DAMAGE.union(Conditions::GENERAL_INTERRUPTS),
 );
 
+// --- Wave 1 batch B: bosses and aircraft ------------------------------------
+//
+// Project-authored, like everything above, from the published descriptions
+// cited in `docs/FORMAT_SOURCES.md` ("Monster definitions", "Wave 1 batch
+// B"): the Gonarch launches acid at a distance and charges to claw, and
+// walks a node trail it is invulnerable on; the Nihilanth attacks with
+// electrical particles, and not at all until it is activated; the Apache
+// circles its route firing its machine gun, which "can rotate freely"; the
+// Osprey only circles. The three that hover ([`MonsterBrain::hovers`])
+// never select a schedule that moves *or stops* them: an aircraft's
+// position is its flight plan's (`crate::monsters::aircraft`), handed to
+// the movement step by `crate::monsters::bosses` as a route, and
+// `Task::StopMoving` would wipe that route every time a schedule started.
+// The Gonarch's travel leg likewise only waits on a route the trail driver
+// already set.
+
+/// The Gonarch walking a trail leg (`SPECIAL1`, set by the trail driver
+/// while it has a destination). Nothing interrupts it: it is shielded on
+/// the way and fights only once it arrives.
+pub static GONARCH_TRAVEL: Schedule = Schedule::new(
+    "ohl/monsters/gonarch_travel",
+    &[
+        Task::SetActivity(Activity::Run),
+        Task::WaitForMovement,
+        Task::Wait(0.1),
+    ],
+    Conditions::EMPTY,
+);
+
+/// The Gonarch's acid mortar, resolved by the engine like every ranged
+/// attack it has no projectile for.
+pub static GONARCH_SPIT: Schedule = Schedule::new(
+    "ohl/monsters/gonarch_spit",
+    &[
+        Task::StopMoving,
+        Task::FaceEnemy,
+        Task::SetActivity(Activity::Range),
+        Task::RangeAttack1,
+        Task::Wait(GONARCH_SPIT_INTERVAL),
+    ],
+    Conditions::ENEMY_DEAD
+        .union(Conditions::ENEMY_OCCLUDED)
+        .union(Conditions::GENERAL_INTERRUPTS),
+);
+
+/// The Nihilanth before activation (`SPECIAL2`, set by the shield driver):
+/// hangs there and attacks nothing.
+pub static NIHILANTH_DORMANT: Schedule = Schedule::new(
+    "ohl/monsters/nihilanth_dormant",
+    &[Task::SetActivity(Activity::Idle), Task::Wait(0.5)],
+    Conditions::EMPTY,
+);
+
+/// The Nihilanth's electrical attack.
+pub static NIHILANTH_ZAP: Schedule = Schedule::new(
+    "ohl/monsters/nihilanth_zap",
+    &[
+        Task::FaceEnemy,
+        Task::SetActivity(Activity::Range),
+        Task::RangeAttack1,
+        Task::Wait(NIHILANTH_ZAP_INTERVAL),
+    ],
+    Conditions::ENEMY_DEAD
+        .union(Conditions::ENEMY_OCCLUDED)
+        .union(Conditions::GENERAL_INTERRUPTS),
+);
+
+/// A hovering kind with nothing to shoot at: keeps flying (or hanging
+/// there) and keeps watch. Neither moves nor stops it. Its interrupts are
+/// the things that change what it would *do* — an attack coming into
+/// reach, an enemy gained or lost — not every sighting, since in combat
+/// with an enemy out of reach a sighting is the steady state.
+pub static HOVER_WATCH: Schedule = Schedule::new(
+    "ohl/monsters/hover_watch",
+    &[Task::SetActivity(Activity::Alert), Task::Wait(0.5)],
+    Conditions::ALL_ATTACK
+        .union(Conditions::NEW_ENEMY)
+        .union(Conditions::ENEMY_DEAD)
+        .union(Conditions::GENERAL_INTERRUPTS),
+);
+
+/// The Apache's machine gun: a three-round burst without turning the
+/// airframe, since the gun is published as rotating freely.
+pub static APACHE_GUN: Schedule = Schedule::new(
+    "ohl/monsters/apache_gun",
+    &[
+        Task::SetActivity(Activity::Range),
+        Task::RangeAttack1,
+        Task::Wait(APACHE_GUN_INTERVAL),
+        Task::RangeAttack1,
+        Task::Wait(APACHE_GUN_INTERVAL),
+        Task::RangeAttack1,
+        Task::Wait(APACHE_BURST_PAUSE),
+    ],
+    Conditions::ENEMY_DEAD
+        .union(Conditions::ENEMY_OCCLUDED)
+        .union(Conditions::GENERAL_INTERRUPTS),
+);
+
 /// Every schedule this module adds, for lookup by name (joins
 /// `crate::brain::ALL` at the `schedule_by_name` call site).
 pub static ALL: &[&Schedule] = &[
@@ -442,6 +541,13 @@ pub static ALL: &[&Schedule] = &[
     &PROP_ALERT,
     &CRITTER_WANDER,
     &CRITTER_SCATTER,
+    // Wave 1 batch B.
+    &GONARCH_TRAVEL,
+    &GONARCH_SPIT,
+    &NIHILANTH_DORMANT,
+    &NIHILANTH_ZAP,
+    &HOVER_WATCH,
+    &APACHE_GUN,
 ];
 
 /// Looks a schedule up by name across both this module's set and
@@ -526,6 +632,24 @@ pub const CRITTER_WANDER_DISTANCE: f32 = 96.0;
 /// How far a startled critter scatters, in world units.
 /// **`TODO(black-box)`**: not published.
 pub const CRITTER_SCATTER_DISTANCE: f32 = 256.0;
+
+// Wave 1 batch B. None of the four pages publishes an attack rate.
+
+/// The pause after a Gonarch's acid launch, in seconds.
+/// **`TODO(black-box)`**: not published.
+pub const GONARCH_SPIT_INTERVAL: f32 = 1.5;
+
+/// The pause after a Nihilanth's zap, in seconds. **`TODO(black-box)`**:
+/// not published.
+pub const NIHILANTH_ZAP_INTERVAL: f32 = 1.0;
+
+/// The pause between the rounds of an Apache's machine-gun burst, in
+/// seconds. **`TODO(black-box)`**: not published.
+pub const APACHE_GUN_INTERVAL: f32 = 0.1;
+
+/// The pause after an Apache's burst, in seconds. **`TODO(black-box)`**:
+/// not published.
+pub const APACHE_BURST_PAUSE: f32 = 0.5;
 
 /// The blast damage a houndeye (or its pack) actually deals, given the base
 /// per-hit damage from [`MonsterSpec::ranged`], the number of *other*
@@ -613,6 +737,17 @@ impl MonsterBrain {
     /// The two harmless critters, which wander instead of standing.
     fn is_critter(&self) -> bool {
         matches!(self.kind, MonsterKind::Rat | MonsterKind::Cockroach)
+    }
+
+    /// The three kinds whose position is not their schedules' to change:
+    /// the two aircraft, which their flight plan moves, and the Nihilanth,
+    /// which never moves. None of them ever selects a schedule that moves
+    /// or stops it.
+    pub fn hovers(&self) -> bool {
+        matches!(
+            self.kind,
+            MonsterKind::Nihilanth | MonsterKind::Apache | MonsterKind::Osprey
+        )
     }
 
     #[allow(
@@ -733,6 +868,31 @@ impl MonsterBrain {
                     &crate::brain::CHASE_ENEMY
                 }
             }
+            // Wave 1 batch B.
+            K::BigMomma => {
+                if conditions.contains(Conditions::CAN_MELEE_ATTACK1) {
+                    &crate::brain::MELEE_ATTACK
+                } else if conditions.contains(Conditions::CAN_RANGE_ATTACK1) {
+                    &GONARCH_SPIT
+                } else {
+                    &crate::brain::CHASE_ENEMY
+                }
+            }
+            K::Nihilanth => {
+                if conditions.contains(Conditions::CAN_RANGE_ATTACK1) {
+                    &NIHILANTH_ZAP
+                } else {
+                    &HOVER_WATCH
+                }
+            }
+            K::Apache => {
+                if conditions.contains(Conditions::CAN_RANGE_ATTACK1) {
+                    &APACHE_GUN
+                } else {
+                    &HOVER_WATCH
+                }
+            }
+            K::Osprey => &HOVER_WATCH,
             K::Generic => &PROP_ALERT,
             K::Furniture => &PASSIVE_STAND,
             K::Rat | K::Cockroach => &CRITTER_SCATTER,
@@ -755,7 +915,13 @@ impl Brain for MonsterBrain {
     fn senses(&self) -> Senses {
         use MonsterKind as K;
         match self.kind {
-            K::Turret | K::MiniTurret | K::Sentry => {
+            // Turrets are published with 360-degree vision. Wave 1 batch B
+            // reads the same into the three that hover: an aircraft's gun
+            // "can rotate freely", and a boss hanging in its chamber is
+            // given no front to be crept up on. `TODO(black-box)`: no page
+            // says either outright, and the look distance is the table's
+            // own range placeholder.
+            K::Turret | K::MiniTurret | K::Sentry | K::Nihilanth | K::Apache | K::Osprey => {
                 Senses::omnidirectional(self.range_attack_range())
             }
             K::Tentacle => Senses {
@@ -839,6 +1005,24 @@ impl Brain for MonsterBrain {
         {
             return &FOLLOW_PLAYER;
         }
+        // Wave 1 batch B: a Gonarch with a trail leg to walk walks it
+        // whatever else it perceives (it is shielded on the way), and a
+        // Nihilanth nobody has activated yet does nothing at all.
+        if matches!(
+            state,
+            MonsterState::None
+                | MonsterState::Idle
+                | MonsterState::Alert
+                | MonsterState::Combat
+                | MonsterState::Hunt
+        ) {
+            if self.kind == MonsterKind::BigMomma && conditions.contains(Conditions::SPECIAL1) {
+                return &GONARCH_TRAVEL;
+            }
+            if self.kind == MonsterKind::Nihilanth && conditions.contains(Conditions::SPECIAL2) {
+                return &NIHILANTH_DORMANT;
+            }
+        }
 
         match state {
             MonsterState::Combat => self.combat_schedule(conditions),
@@ -847,6 +1031,7 @@ impl Brain for MonsterBrain {
                 | MonsterKind::Turret
                 | MonsterKind::MiniTurret
                 | MonsterKind::Sentry => &ROOTED_LISTEN,
+                _ if self.hovers() => &HOVER_WATCH,
                 _ => &crate::brain::HUNT_ENEMY,
             },
             MonsterState::Alert => match self.kind {
@@ -854,6 +1039,7 @@ impl Brain for MonsterBrain {
                 MonsterKind::Turret | MonsterKind::MiniTurret | MonsterKind::Sentry => {
                     &TURRET_DEPLOY
                 }
+                _ if self.hovers() => &HOVER_WATCH,
                 _ => {
                     if conditions.intersects(Conditions::ALL_SOUND) {
                         &crate::brain::INVESTIGATE_SOUND
@@ -869,6 +1055,7 @@ impl Brain for MonsterBrain {
                 MonsterKind::Turret | MonsterKind::MiniTurret | MonsterKind::Sentry => {
                     &TURRET_RETRACT
                 }
+                _ if self.hovers() => &HOVER_WATCH,
                 _ if conditions.contains(Conditions::TASK_FAILED) => &crate::brain::FAIL,
                 _ => &crate::brain::IDLE_STAND,
             },
@@ -1023,6 +1210,168 @@ mod tests {
                     schedule.name
                 );
             }
+        }
+    }
+
+    // Wave 1 batch B.
+
+    /// A spread of conditions every state is tried against.
+    const SPREAD: [Conditions; 12] = [
+        Conditions::EMPTY,
+        Conditions::HEAR_SOUND,
+        Conditions::HEAR_DANGER,
+        Conditions::SEE_FEAR,
+        Conditions::SEE_ENEMY,
+        Conditions::SEE_ENEMY.union(Conditions::CAN_RANGE_ATTACK1),
+        Conditions::SEE_ENEMY.union(Conditions::CAN_MELEE_ATTACK1),
+        Conditions::ENEMY_OCCLUDED,
+        Conditions::HEAVY_DAMAGE,
+        Conditions::TASK_FAILED,
+        Conditions::SPECIAL1,
+        Conditions::SPECIAL2,
+    ];
+
+    /// A hovering kind's position is not its schedules' to change: no
+    /// schedule it can ever select moves it, and none stops it either —
+    /// `StopMoving` would wipe the route an aircraft's flight plan hands
+    /// the movement step every tick.
+    #[test]
+    fn a_hovering_kind_never_selects_a_schedule_that_moves_or_stops_it() {
+        let mut hovering = 0;
+        for kind in MonsterKind::defined() {
+            let brain = MonsterBrain::for_kind(kind.clone()).expect("defined");
+            if !brain.hovers() {
+                continue;
+            }
+            hovering += 1;
+            for state in MonsterState::ALL {
+                for conditions in SPREAD {
+                    let schedule = brain.select_schedule(state, conditions);
+                    assert!(
+                        !moves(schedule)
+                            && !schedule.tasks.contains(&crate::schedule::Task::StopMoving),
+                        "{kind:?} in {state:?} with {conditions} runs {}",
+                        schedule.name
+                    );
+                }
+            }
+        }
+        assert_eq!(hovering, 3, "the Nihilanth and both aircraft");
+    }
+
+    /// The Gonarch walks its trail leg over everything else while the
+    /// trail driver marks one, and fights normally otherwise.
+    #[test]
+    fn a_gonarch_walks_its_trail_leg_over_combat_and_fights_otherwise() {
+        let brain = MonsterBrain::for_kind(MonsterKind::BigMomma).expect("defined");
+        assert!(!brain.hovers());
+        for state in [
+            MonsterState::Idle,
+            MonsterState::Alert,
+            MonsterState::Combat,
+            MonsterState::Hunt,
+        ] {
+            let travelling = brain.select_schedule(
+                state,
+                Conditions::SPECIAL1
+                    | Conditions::SEE_ENEMY
+                    | Conditions::CAN_MELEE_ATTACK1
+                    | Conditions::HEAVY_DAMAGE,
+            );
+            assert_eq!(travelling.name, super::GONARCH_TRAVEL.name, "{state:?}");
+            assert!(!moves(travelling), "the driver owns the route");
+        }
+        assert_eq!(
+            brain
+                .select_schedule(MonsterState::Dead, Conditions::SPECIAL1)
+                .name,
+            crate::brain::INERT.name
+        );
+        let claw = brain.select_schedule(
+            MonsterState::Combat,
+            Conditions::SEE_ENEMY | Conditions::CAN_MELEE_ATTACK1 | Conditions::CAN_RANGE_ATTACK1,
+        );
+        assert_eq!(claw.name, crate::brain::MELEE_ATTACK.name);
+        let spit = brain.select_schedule(
+            MonsterState::Combat,
+            Conditions::SEE_ENEMY | Conditions::CAN_RANGE_ATTACK1,
+        );
+        assert_eq!(spit.name, super::GONARCH_SPIT.name);
+        let chase = brain.select_schedule(MonsterState::Combat, Conditions::SEE_ENEMY);
+        assert_eq!(chase.name, crate::brain::CHASE_ENEMY.name);
+    }
+
+    /// The Nihilanth attacks nothing until activated, then zaps whatever it
+    /// can reach, from a chamber it watches all of.
+    #[test]
+    fn a_nihilanth_attacks_nothing_until_activated_and_then_zaps() {
+        let brain = MonsterBrain::for_kind(MonsterKind::Nihilanth).expect("defined");
+        for state in [
+            MonsterState::Idle,
+            MonsterState::Alert,
+            MonsterState::Combat,
+        ] {
+            let dormant = brain.select_schedule(
+                state,
+                Conditions::SPECIAL2 | Conditions::SEE_ENEMY | Conditions::CAN_RANGE_ATTACK1,
+            );
+            assert_eq!(dormant.name, super::NIHILANTH_DORMANT.name, "{state:?}");
+            assert!(!dormant.tasks.iter().any(|task| matches!(
+                task,
+                crate::schedule::Task::RangeAttack1 | crate::schedule::Task::RangeAttack2
+            )));
+        }
+        let zap = brain.select_schedule(
+            MonsterState::Combat,
+            Conditions::SEE_ENEMY | Conditions::CAN_RANGE_ATTACK1,
+        );
+        assert_eq!(zap.name, super::NIHILANTH_ZAP.name);
+        let out_of_reach = brain.select_schedule(MonsterState::Combat, Conditions::SEE_ENEMY);
+        assert_eq!(out_of_reach.name, super::HOVER_WATCH.name);
+        assert!(brain.senses().fov_cos <= -1.0, "watches its whole chamber");
+    }
+
+    /// The Apache fires its gun in bursts without turning; the Osprey never
+    /// attacks at all.
+    #[test]
+    fn an_apache_fires_bursts_without_turning_and_an_osprey_never_attacks() {
+        let apache = MonsterBrain::for_kind(MonsterKind::Apache).expect("defined");
+        let gun = apache.select_schedule(
+            MonsterState::Combat,
+            Conditions::SEE_ENEMY | Conditions::CAN_RANGE_ATTACK1,
+        );
+        assert_eq!(gun.name, super::APACHE_GUN.name);
+        assert!(!gun.tasks.contains(&crate::schedule::Task::FaceEnemy));
+        let rounds = gun
+            .tasks
+            .iter()
+            .filter(|task| **task == crate::schedule::Task::RangeAttack1)
+            .count();
+        assert_eq!(rounds, 3);
+        assert!(apache.has_range_attack());
+        assert!(!apache.has_melee_attack());
+
+        let osprey = MonsterBrain::for_kind(MonsterKind::Osprey).expect("defined");
+        assert!(!osprey.has_range_attack());
+        assert!(!osprey.has_melee_attack());
+        for state in MonsterState::ALL {
+            let schedule = osprey.select_schedule(
+                state,
+                Conditions::SEE_ENEMY
+                    | Conditions::CAN_RANGE_ATTACK1
+                    | Conditions::CAN_MELEE_ATTACK1,
+            );
+            assert!(
+                !schedule.tasks.iter().any(|task| matches!(
+                    task,
+                    crate::schedule::Task::RangeAttack1
+                        | crate::schedule::Task::RangeAttack2
+                        | crate::schedule::Task::MeleeAttack1
+                        | crate::schedule::Task::MeleeAttack2
+                )),
+                "{} attacks",
+                schedule.name
+            );
         }
     }
 
@@ -1227,7 +1576,8 @@ mod tests {
     /// Every mover flies a point hull (`crate::movement::flies`, and
     /// `ohl-nav`'s steering), so a point-hull kind that ever walked would
     /// fly. The alien controller is meant to; every other point-hull kind
-    /// (the turrets) must never select a schedule that moves it.
+    /// (the turrets, and the two aircraft, which only their flight plan
+    /// moves) must never select a schedule that moves it.
     #[test]
     fn only_the_controller_moves_on_the_point_hull() {
         let mut point_hull_kinds = 0;
