@@ -8151,3 +8151,31 @@ and the rerun at load about 6 took 49.8 s for all 37. The first
 combat-smoke run before the review read 35/37 the same way: Power Up's
 unexpected line, which the review round's scenario changes cover, and
 the same load-bound timeout.
+
+
+## M9.NEXT — brush collision remains live after player death
+
+World brush collision no longer depends on the player's movement running.
+Phase 2a of `Systems::step` synchronizes both collision models, refreshes
+mover velocities, checks wall occupancy and resets the per-step blocker
+list before the living-player guard in phase 2b. A door, lift or train
+therefore keeps its collision where map logic put it after player death.
+This ordering is project-authored; see `docs/FORMAT_SOURCES.md`,
+"Project behaviour — brush collision after player death".
+
+Rider carry and player push still run once in the living-player movement
+phase. Monster traces still follow the collision update; monster push,
+blocked resolution, door touches and map-logic advancement retain their
+existing phase 12 order. The player's own movement remains frozen after
+death. No AI movement, sight, combat, projectile or save format changes
+are part of this entry.
+
+**Coverage.** `brush_collision_after_death.rs` kills the player before a
+synthetic delayed sliding door starts moving, then checks both models'
+old and new door edges with point traces, frozen corpse position and a
+single death event. Moving phase 2a back under the alive guard fails the
+old-edge assertion (exit 101); restoring it passes.
+
+**Gates.** The focused regression and its mutation/restoration probe pass.
+Final workspace and smoke gates are pending on this draft; this entry
+will record their aggregate results before review acceptance.
