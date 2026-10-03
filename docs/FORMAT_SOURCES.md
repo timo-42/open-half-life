@@ -3145,8 +3145,9 @@ Behavioural facts cited from those pages and how they are modeled
   jump, the cloak-when-still (a render effect), the grenade.
 - **Babycrab**: the headcrab's brain and hull with the cited fractions.
 - **Generic / furniture**: a passive brain (`PASSIVE_STAND`; the generic
-  additionally turns to look, `ALERT_STAND`) that never fights, flees or
-  takes cover, a spec so both get an `Actor` and a `MonsterAi` — which is
+  additionally goes alert where it stands, `PROP_ALERT`, without turning)
+  that never fights, flees or takes cover, and keeps the pose its map's
+  `sequence` keyvalue gave it unless a script plays another, a spec so both get an `Actor` and a `MonsterAi` — which is
   what lets a `scripted_sequence`'s `m_iszEntity` find and possess them
   (`ohl-engine`'s `find_script_actor` requires an `Actor`) — and no
   default model, since the cited model page lists both as "specified by
