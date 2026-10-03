@@ -1065,3 +1065,92 @@ fn save_with_section(tag: u32, payload: &[u8]) -> Vec<u8> {
         .finish(&ohl_save::Limits::default())
         .expect("the rewritten container closes")
 }
+
+/// Tag 26's original layout is pinned before adding any tag 42 metadata.
+#[test]
+fn projectile_physics_tag_26_keeps_its_original_wire_shape() {
+    use ohl_engine::save_state::{
+        ProjectileSnapshot, ProjectilesSnapshot, SatchelSnapshot, TripmineSnapshot,
+    };
+    let fixture = ProjectilesSnapshot {
+        projectiles: vec![ProjectileSnapshot {
+            id: 1,
+            kind_tag: 1,
+            owner: Some(2),
+            position: [1.0, 2.0, 3.0],
+            velocity: [4.0, 5.0, 6.0],
+            age: 0.5,
+            fuse: Some(2.0),
+            guide_point: Some([7.0, 8.0, 9.0]),
+            target: Some(3),
+            attack_cooldown: 0.25,
+            hop_cooldown: 0.75,
+            resting: true,
+        }],
+        projectile_next_id: 4,
+        projectile_rng_state: 5,
+        satchels: vec![SatchelSnapshot {
+            id: 6,
+            owner: Some(7),
+            position: [1.0, 2.0, 3.0],
+            age: 0.5,
+        }],
+        tripmines: vec![TripmineSnapshot {
+            id: 8,
+            owner: None,
+            position: [4.0, 5.0, 6.0],
+            normal: [0.0, 0.0, 1.0],
+            age: 3.0,
+            armed: true,
+        }],
+        deployable_next_id: 9,
+    };
+    const GOLDEN: &[u8] = &[
+        0x01, 0x01, 0x01, 0x01, 0x02, 0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00,
+        0x40, 0x40, 0x00, 0x00, 0x80, 0x40, 0x00, 0x00, 0xa0, 0x40, 0x00, 0x00, 0xc0, 0x40, 0x00,
+        0x00, 0x00, 0x3f, 0x01, 0x00, 0x00, 0x00, 0x40, 0x01, 0x00, 0x00, 0xe0, 0x40, 0x00, 0x00,
+        0x00, 0x41, 0x00, 0x00, 0x10, 0x41, 0x01, 0x03, 0x00, 0x00, 0x80, 0x3e, 0x00, 0x00, 0x40,
+        0x3f, 0x01, 0x04, 0x05, 0x01, 0x06, 0x01, 0x07, 0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00,
+        0x40, 0x00, 0x00, 0x40, 0x40, 0x00, 0x00, 0x00, 0x3f, 0x01, 0x08, 0x00, 0x00, 0x00, 0x80,
+        0x40, 0x00, 0x00, 0xa0, 0x40, 0x00, 0x00, 0xc0, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x40, 0x40, 0x01, 0x09,
+    ];
+    assert_eq!(postcard::to_allocvec(&fixture).expect("encode"), GOLDEN);
+    assert_eq!(
+        postcard::from_bytes::<ProjectilesSnapshot>(GOLDEN).expect("decode"),
+        fixture
+    );
+}
+
+#[test]
+fn projectile_runtime_tag_42_has_a_fixed_additive_wire_shape() {
+    use ohl_engine::save_state::{
+        DeployableOwnerSnapshot, PlayerProjectileControlsSnapshot, ProjectileAttackSnapshot,
+        ProjectileEntityRef, ProjectileRuntimeSnapshot,
+    };
+    let fixture = ProjectileRuntimeSnapshot {
+        attacks: vec![ProjectileAttackSnapshot {
+            id: 1,
+            damage: 100.0,
+            damage_bits: 64,
+            blast_radius: Some(250.0),
+            owner: Some(ProjectileEntityRef::Player),
+            target: Some(ProjectileEntityRef::Registry(2)),
+        }],
+        deployable_owners: vec![DeployableOwnerSnapshot {
+            id: 3,
+            owner: Some(ProjectileEntityRef::Player),
+        }],
+        secondary_cooldowns: vec![(4, 2.0)],
+        player_controls: PlayerProjectileControlsSnapshot { primary_held: true },
+    };
+    const GOLDEN: &[u8] = &[
+        0x01, 0x01, 0x00, 0x00, 0xc8, 0x42, 0x40, 0x01, 0x00, 0x00, 0x7a, 0x43, 0x01, 0x00, 0x01,
+        0x01, 0x02, 0x01, 0x03, 0x01, 0x00, 0x01, 0x04, 0x00, 0x00, 0x00, 0x40, 0x01,
+    ];
+    assert_eq!(postcard::to_allocvec(&fixture).expect("encode"), GOLDEN);
+    assert_eq!(
+        postcard::from_bytes::<ProjectileRuntimeSnapshot>(GOLDEN).expect("decode"),
+        fixture
+    );
+}

@@ -42,13 +42,14 @@
 //! | 39 | [`SECTION_SWITCH_STATE`] | `Vec<Option<`[`SwitchSnapshot`]`>>`, one per registry entity, in spawn order: whether each `func_wall_toggle` is on, each `func_conveyor`'s signed speed, and whether each pickup has been taken (the entities package) |
 //! | 40 | [`SECTION_PATH_STATE`] | `Vec<Option<`[`PathStateSnapshot`](crate::save_state::PathStateSnapshot)`>>`, one per registry entity, in spawn order: a `path_track` switch's position and the chain each `func_train`/`func_tracktrain` holds |
 //! | 41 | [`SECTION_BOSS_STATE`] | `Vec<Option<`[`BossSnapshot`]`>>`, one per registry entity, in spawn order: a Gonarch's trail phase, a Nihilanth's shield, an aircraft's flight progress and their pending `use`s (M9.45); written only for a level that has one |
+//! | 42 | [`SECTION_PROJECTILE_RUNTIME`] | [`ProjectileRuntimeSnapshot`]: resolved profiles, explicit owners/targets and new control state |
 //!
-//! Tags 23-31 and 33-41 are read as `None`/a default when absent, so a
+//! Tags 23-31 and 33-42 are read as `None`/a default when absent, so a
 //! save written before M7.9 P4b (tags 23-27), M7.13 (tag 28), M9.5 (tag 29),
 //! M9.6 (tag 30), M9.8 (tag 31), M9.10 (tag 33), the teleport/master
 //! package (tag 34), M9.25 (tag 35), M9.26 (tag 36), M9.33 (tag 37), the
 //! audio package (tag 38), the entities package (tag 39), the
-//! blocked-movers package (tag 40) or M9.45 (tag 41) still loads
+//! blocked-movers package (tag 40), M9.45 (tag 41) or live projectiles (tag 42) still loads
 //! (§6 of the M7.9 design plan, recorded in local design notes and not
 //! part of the repository); a
 //! section that is present but fails to decode fails the whole read closed
@@ -132,7 +133,7 @@ use serde::{Deserialize, Serialize};
 use crate::save_state::{
     AiSnapshot, AmbientSnapshot, BossSnapshot, BreakableSnapshot, EntityCombatSnapshot,
     InventorySnapshot, MomentaryDoorSnapshot, MonsterMakerChildSnapshot, MoverSnapshot,
-    ProjectilesSnapshot, RngSnapshot, RotatingMoverSnapshot,
+    ProjectileRuntimeSnapshot, ProjectilesSnapshot, RngSnapshot, RotatingMoverSnapshot,
 };
 use crate::transition::{EntitySnapshot, GlobalStateTable, PlayerCarryState};
 
@@ -398,6 +399,9 @@ pub const SECTION_PATH_STATE: u32 = 40;
 /// the entities package's, 40 the blocked-movers package's.
 pub const SECTION_BOSS_STATE: u32 = 41;
 
+/// Optional attack profiles, explicit owners and projectile input state.
+pub const SECTION_PROJECTILE_RUNTIME: u32 = 42;
+
 /// One entity definition [`SECTION_CARRIED_ENTITIES`] (36) carries.
 ///
 /// The keyvalues only, as authored pairs: `crate::transition`'s
@@ -537,6 +541,8 @@ pub struct GameSave {
     /// Live projectiles and placed deployables (M7.9 P4b). `None` for a
     /// save missing tag 26.
     pub projectiles: Option<ProjectilesSnapshot>,
+    /// Optional tag 42 metadata over tag 26 physics.
+    pub projectile_runtime: Option<ProjectileRuntimeSnapshot>,
     /// The shared random stream and the substep counter (M7.9 P4b). `None`
     /// for a save missing tag 27.
     pub rng: Option<RngSnapshot>,
@@ -662,6 +668,16 @@ impl GameSave {
             if let Some(projectiles) = &self.projectiles {
                 writer.add_section_serde(SECTION_PROJECTILES, projectiles)?;
             }
+            if let Some(runtime) = &self.projectile_runtime {
+                if runtime.attacks.len() > crate::save_state::MAX_SNAPSHOT_PROJECTILES
+                    || runtime.deployable_owners.len()
+                        > crate::save_state::MAX_SNAPSHOT_DEPLOYABLES * 2
+                    || runtime.secondary_cooldowns.len() > crate::save_state::MAX_SNAPSHOT_ENTITIES
+                {
+                    return Err(ohl_save::SaveError::LimitExceeded);
+                }
+                writer.add_section_serde(SECTION_PROJECTILE_RUNTIME, runtime)?;
+            }
             if let Some(rng) = &self.rng {
                 writer.add_section_serde(SECTION_RNG, rng)?;
             }
@@ -734,6 +750,7 @@ impl GameSave {
             entity_combat: optional_section(&reader, SECTION_ENTITY_COMBAT)?,
             ai: optional_section(&reader, SECTION_AI)?,
             projectiles: optional_section(&reader, SECTION_PROJECTILES)?,
+            projectile_runtime: optional_section(&reader, SECTION_PROJECTILE_RUNTIME)?,
             rng: optional_section(&reader, SECTION_RNG)?,
             mover_state: optional_bounded_vec_section(
                 &reader,

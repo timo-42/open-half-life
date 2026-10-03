@@ -130,10 +130,38 @@ impl AmmoBank {
     }
 }
 
+/// Value commands applied by Systems after releasing the combat borrow.
+pub(crate) enum PlayerProjectileCommand {
+    Spawn(crate::ai::ProjectileRequest),
+    PlaceSatchel {
+        owner: Entity,
+        position: glam::Vec3,
+    },
+    PlaceTripmine {
+        owner: Entity,
+        origin: glam::Vec3,
+        direction: glam::Vec3,
+    },
+    DetonateSatchels {
+        owner: Entity,
+    },
+}
+
+#[derive(Clone, Copy)]
+struct ProjectileCheckpoint {
+    firing: FiringState,
+    ammo: AmmoBank,
+    weapon: WeaponId,
+    clip: u32,
+    fired_count: u64,
+}
+
 /// Weapons, hit resolution and damage routing state, owned by
 /// [`crate::systems::Systems`].
 pub(crate) struct CombatState {
     inventory: Inventory,
+    primary_held: bool,
+    projectile_checkpoint: Option<ProjectileCheckpoint>,
     ammo: AmmoBank,
     /// The weapon [`Self::firing`] currently belongs to; `None` until a
     /// weapon has ever been selected.
@@ -153,6 +181,8 @@ impl CombatState {
     pub(crate) fn new() -> Self {
         Self {
             inventory: Inventory::new(),
+            primary_held: false,
+            projectile_checkpoint: None,
             ammo: AmmoBank::new(),
             firing_weapon: None,
             firing: FiringState::new(spec(WeaponId::Crowbar)),
@@ -454,20 +484,48 @@ impl CombatState {
         damage_queue: &mut Vec<QueuedDamage>,
         hud: &mut ohl_ui::hud::HudState,
         presentation: &mut Presentation,
-    ) {
+        owned_satchels: usize,
+    ) -> Option<PlayerProjectileCommand> {
+        let primary_edge = input.attack && !self.primary_held;
+        self.primary_held = input.attack;
         let player_combat_id = entity_id(player_id);
         if let Some(slot) = input.select_slot {
             self.select_slot(slot);
         }
         let Some(selected) = self.inventory.selected() else {
-            return;
+            return None;
         };
         if self.firing_weapon != Some(selected) {
             self.switch_to(selected);
         }
 
         let current_spec = *self.firing.spec();
-        let mut pool = match current_spec.ammo {
+        if selected == WeaponId::Satchel && primary_edge && owned_satchels > 0 {
+            return Some(PlayerProjectileCommand::DetonateSatchels { owner: player_id });
+        }
+        let checkpoint = ProjectileCheckpoint {
+            firing: self.firing,
+            ammo: self.ammo,
+            weapon: selected,
+            clip: self.inventory.clip(selected),
+            fired_count: self.fired_count,
+        };
+        // Reload has precedence over a secondary attempt and must use primary reserves.
+        let reload_wanted = input.reload_pressed
+            && current_spec
+                .clip_size
+                .is_some_and(|max| self.firing.clip() < max)
+            && current_spec
+                .ammo
+                .is_some_and(|kind| self.ammo.current(kind) > 0);
+        let secondary =
+            input.attack2 && !input.attack && !self.firing.is_reloading() && !reload_wanted;
+        let ammo_kind = if selected == WeaponId::Mp5 && secondary {
+            Some(AmmoType::Mp5Grenades)
+        } else {
+            current_spec.ammo
+        };
+        let mut pool = match ammo_kind {
             Some(kind) => {
                 let mut pool = AmmoPool::new(kind);
                 pool.add(self.ammo.current(kind));
@@ -476,19 +534,52 @@ impl CombatState {
             None => AmmoPool::new(AmmoType::NineMillimeter),
         };
 
+        let single_clip = matches!(
+            selected,
+            WeaponId::HandGrenade | WeaponId::Satchel | WeaponId::Tripmine | WeaponId::Snark
+        );
+        let auto_reload = single_clip && self.firing.clip() == 0 && !pool.is_empty();
         let weapon_input = WeaponInput {
-            primary: input.attack,
-            secondary: input.attack2,
-            reload: input.reload_pressed,
+            primary: if selected == WeaponId::Satchel {
+                primary_edge || (!input.attack && input.attack2)
+            } else {
+                input.attack
+            },
+            secondary: selected != WeaponId::Satchel && input.attack2,
+            reload: input.reload_pressed || auto_reload,
             select: self.firing.is_holstered(),
         };
         let action = self.firing.tick(dt, weapon_input, &mut pool);
-        if let Some(kind) = current_spec.ammo {
+        if let Some(kind) = ammo_kind {
             self.ammo.set(kind, pool.current());
         }
         self.inventory.set_clip(selected, self.firing.clip());
 
         let charge_damage = self.firing.take_charge_damage();
+        let command = if let WeaponAction::SpawnProjectile { kind, speed } = action {
+            self.projectile_checkpoint = Some(checkpoint);
+            let mut command =
+                player_projectile_command(kind, speed, player_id, controller, &current_spec);
+            if kind == WeaponId::HornetGun
+                && !secondary
+                && let Some(collision) = level.collision.as_ref()
+                && let PlayerProjectileCommand::Spawn(request) = &mut command
+            {
+                let start = controller.eye_position();
+                request.target = trace_attack_filtered(
+                    collision,
+                    hitboxes,
+                    start,
+                    start + controller.view_direction() * HITSCAN_RANGE,
+                    TraceFilter::ignoring(TraceMask::SHOT, player_combat_id),
+                )
+                .entity
+                .and_then(entity_of);
+            }
+            Some(command)
+        } else {
+            None
+        };
         if let Some(collision) = level.collision.as_ref() {
             match action {
                 // TODO(black-box): `spread` (the cone half-angle a real
@@ -581,6 +672,33 @@ impl CombatState {
             action,
             &self.display_inventory(),
         );
+        command
+    }
+
+    /// Failed placement/capacity admission rolls back only this phase's ammunition transaction.
+    pub(crate) fn finish_projectile_command(&mut self, success: bool) {
+        if let Some(checkpoint) = self.projectile_checkpoint.take().filter(|_| !success) {
+            self.firing = checkpoint.firing;
+            self.ammo = checkpoint.ammo;
+            self.inventory.set_clip(checkpoint.weapon, checkpoint.clip);
+            self.fired_count = checkpoint.fired_count;
+        }
+    }
+
+    pub(crate) fn projectile_controls(
+        &self,
+    ) -> crate::save_state::PlayerProjectileControlsSnapshot {
+        crate::save_state::PlayerProjectileControlsSnapshot {
+            primary_held: self.primary_held,
+        }
+    }
+
+    pub(crate) fn restore_projectile_controls(
+        &mut self,
+        controls: crate::save_state::PlayerProjectileControlsSnapshot,
+    ) {
+        self.primary_held = controls.primary_held;
+        self.projectile_checkpoint = None;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -656,6 +774,74 @@ impl CombatState {
     }
 }
 
+/// Weapon actions retain their public shape; only the engine resolves physical kinds.
+fn player_projectile_command(
+    weapon: WeaponId,
+    speed: f32,
+    owner: Entity,
+    controller: &PlayerController,
+    weapon_spec: &WeaponSpec,
+) -> PlayerProjectileCommand {
+    use ohl_combat::ProjectileKind as P;
+    let origin = controller.eye_position();
+    let direction = controller.view_direction();
+    match weapon {
+        WeaponId::Satchel => {
+            return PlayerProjectileCommand::PlaceSatchel {
+                owner,
+                position: origin + direction * 16.0,
+            };
+        }
+        WeaponId::Tripmine => {
+            return PlayerProjectileCommand::PlaceTripmine {
+                owner,
+                origin,
+                direction,
+            };
+        }
+        _ => {}
+    }
+    let (kind, damage, damage_type, blast_radius) = match weapon {
+        WeaponId::Rpg => (
+            P::Rocket,
+            weapon_spec.damage,
+            DamageType::BLAST,
+            Some(250.0),
+        ),
+        WeaponId::HandGrenade => (
+            P::HandGrenade,
+            weapon_spec.damage,
+            DamageType::BLAST,
+            Some(200.0),
+        ),
+        WeaponId::Mp5 => (
+            P::Mp5Grenade,
+            weapon_spec.secondary.map_or(0.0, |mode| mode.damage),
+            DamageType::BLAST,
+            Some(200.0),
+        ),
+        WeaponId::Crossbow => (
+            P::CrossbowBolt,
+            weapon_spec.damage,
+            weapon_spec.damage_type,
+            None,
+        ),
+        WeaponId::HornetGun => (P::Hornet, weapon_spec.damage, weapon_spec.damage_type, None),
+        _ => (P::Snark, weapon_spec.damage, weapon_spec.damage_type, None),
+    };
+    // TODO(black-box): radii and the stationary satchel's short placement offset are project choices.
+    PlayerProjectileCommand::Spawn(crate::ai::ProjectileRequest {
+        kind,
+        owner,
+        origin,
+        velocity: direction * speed,
+        damage,
+        damage_type,
+        blast_radius,
+        target: None,
+    })
+}
+
 /// Phase 5 — rebuilds `hitboxes` from every entity carrying a
 /// [`StudioAnim`] (and so a pose to sample), cleared and refilled each
 /// step. A monster or prop whose `anim.model` names no loaded slot
@@ -694,6 +880,40 @@ pub(crate) fn rebuild_hitbox_index(hitboxes: &mut HitboxIndex, level: &Level) {
         if added == 0 {
             push_fallback_hitbox(&mut entry, model);
         }
+        hitboxes.push(entry);
+    }
+    if !hitboxes
+        .entries()
+        .iter()
+        .any(|entry| entry.id == entity_id(level.player))
+        && let Ok(actor) = level.registry.world.get::<&ohl_ai::Actor>(level.player)
+    {
+        let (min, max) = actor.hull.bounds();
+        let mut entry = EntityHitboxes::new(entity_id(level.player), actor.origin);
+        entry.push_box(0, min, max, HitGroup::Generic);
+        hitboxes.push(entry);
+    }
+    // Explicit small model-less deployable collision, independent of asset availability.
+    for (entity, transform, _) in
+        &mut level
+            .registry
+            .world
+            .query::<(Entity, &Transform, &crate::components::DeployableRef)>()
+    {
+        if hitboxes
+            .entries()
+            .iter()
+            .any(|entry| entry.id == entity_id(entity))
+        {
+            continue;
+        }
+        let mut entry = EntityHitboxes::new(entity_id(entity), transform.origin);
+        entry.push_box(
+            0,
+            glam::Vec3::splat(-4.0),
+            glam::Vec3::splat(4.0),
+            HitGroup::Generic,
+        );
         hitboxes.push(entry);
     }
     push_damageable_brush_hitboxes(hitboxes, level);
@@ -1099,6 +1319,7 @@ mod weapon_wiring_tests {
                 damage_queue,
                 hud,
                 presentation,
+                0,
             );
         }
     }

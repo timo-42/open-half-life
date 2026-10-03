@@ -602,3 +602,87 @@ fn a_projectile_still_hits_an_unrelated_entity_in_its_path() {
         "an unrelated entity in the flight path must still stop the rocket: {events:?}"
     );
 }
+
+#[test]
+fn terminal_events_keep_the_owner_after_the_physical_projectile_is_removed() {
+    for kind in [
+        ProjectileKind::Rocket,
+        ProjectileKind::BullsquidSpit,
+        ProjectileKind::ControllerBall,
+        ProjectileKind::ControllerHomingBall,
+        ProjectileKind::GonarchMortar,
+    ] {
+        let collision = room();
+        let entities = index_of(vec![cube_entity(2, Vec3::new(100.0, 0.0, 100.0))]);
+        let movement = MoveConfig::default();
+        let tuning = ProjectileTuning::default();
+        let world = ProjectileWorld {
+            collision: &collision,
+            entities: &entities,
+            movement: &movement,
+            tuning: &tuning,
+        };
+        let mut set = ProjectileSet::default();
+        let id = set
+            .spawn(
+                kind,
+                Some(EntityId(1)),
+                Vec3::new(0.0, 0.0, 100.0),
+                Vec3::new(1000.0, 0.0, 0.0),
+                &tuning,
+            )
+            .expect("spawn");
+        let events = run(&mut set, &world, 0.2);
+        assert!(set.get(id).is_none());
+        let impacts: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                ProjectileEvent::Impact { owner, entity, .. } => Some((*owner, *entity)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(impacts, [(Some(EntityId(1)), Some(EntityId(2)))]);
+        for event in events {
+            if let ProjectileEvent::Detonate { owner, .. } = event {
+                assert_eq!(owner, Some(EntityId(1)));
+            }
+        }
+    }
+}
+
+#[test]
+fn mp5_grenade_falls_and_detonates_on_first_contact_without_a_fuse() {
+    let collision = room();
+    let entities = empty_index();
+    let movement = MoveConfig::default();
+    let tuning = ProjectileTuning::default();
+    let world = ProjectileWorld {
+        collision: &collision,
+        entities: &entities,
+        movement: &movement,
+        tuning: &tuning,
+    };
+    let mut set = ProjectileSet::default();
+    let id = set
+        .spawn(
+            ProjectileKind::Mp5Grenade,
+            None,
+            Vec3::new(0.0, 0.0, 100.0),
+            Vec3::ZERO,
+            &tuning,
+        )
+        .expect("spawn");
+    assert_eq!(set.get(id).expect("grenade").fuse, None);
+    let early = run(&mut set, &world, 0.1);
+    assert!(early.is_empty());
+    assert!(set.get(id).expect("falling").position.z < 100.0);
+    let events = run(&mut set, &world, 0.7);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, ProjectileEvent::Detonate { .. }))
+            .count(),
+        1
+    );
+    assert!(set.is_empty());
+}

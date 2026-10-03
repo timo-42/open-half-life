@@ -30,14 +30,12 @@
 //! sweep (`ohl_combat` ticket #57's `TraceFilter::ignoring`), leaving the
 //! index itself untouched for everyone else's trace this same tick.
 //!
-//! # Numbers this module invents
+//! # Resolved attack profiles
 //!
-//! Nothing here is published: `ohl_combat::explosion` already documents
-//! that no Half-Life explosive's blast radius is public, and the same is
-//! true of a bolt or hornet's direct-hit damage outside a full weapon-spec
-//! table (`ohl_combat::weapons`, not yet wired to a projectile's *impact*
-//! rather than its *firing*). [`BlastSpec`] and [`ImpactDamage`] hold this
-//! module's own placeholder constants, each marked `// TODO(black-box)`.
+//! Normal firing captures published weapon/species damage at launch. Only
+//! old saves and the debug spawn helper use legacy per-kind damage defaults.
+//! Radii other than Gonarch's, attenuation, and damage classifications are
+//! project-authored; see `docs/FORMAT_SOURCES.md`.
 //! [`default_projectile_model_path`] and [`default_deployable_model_path`]
 //! name a kind's asset path only when this project found that exact
 //! literal published on a specific, linkable page (cited on the function
@@ -60,8 +58,8 @@
 //! `Systems::attach_level`, has always already called it once by the time
 //! restore runs) and re-spawns every stand-in from the just-restored
 //! `ProjectileSet`/`DeployableSet` itself: a placed satchel/tripmine gets
-//! a fresh [`StudioAnim`]+[`Health`]+[`DeployableRef`] entity so it draws
-//! and stays damageable again, and a model-backed in-flight projectile
+//! a fresh [`Health`]+[`DeployableRef`] entity, with [`StudioAnim`] when a
+//! model is available, so it stays damageable; a model-backed in-flight projectile
 //! gets a fresh stand-in of its own so [`ohl_combat::Projectile::self_id`]
 //! is set again — without either, a restored deployable would come back
 //! simulated but undrawn and undamageable, and a restored projectile could
@@ -89,7 +87,7 @@ use crate::systems::QueuedDamage;
 /// Which studio-model slot (into `Level::studio_models`) draws each
 /// projectile kind, when one has been configured. A flat, linearly-scanned
 /// list rather than a `HashMap`: it holds at most one entry per
-/// [`ProjectileKind`] variant (six, today), so a scan costs nothing and
+/// [`ProjectileKind`] variant, so a scan costs nothing and
 /// stays deterministic without needing `Hash`/`Ord` on the key.
 type ModelTable = Vec<(ProjectileKind, usize)>;
 
@@ -104,7 +102,7 @@ type DeployableModelTable = Vec<(DeployableKind, usize)>;
 /// default). Per `docs/CLEAN_ROOM.md`'s per-literal citation rule, no path
 /// is named here unless it is cited by URL in `docs/FORMAT_SOURCES.md`,
 /// "Deployable damageability and per-trace hitbox exclusion" — none of the
-/// six [`ProjectileKind`] variants has a model path this project found
+/// [`ProjectileKind`] variants has a model path this project found
 /// published on a page it could re-check by URL (the page this project
 /// already trusts for entity-to-model mappings, TWHL's "Reference: Entities
 /// and their models", has no row for any of them), so every variant is
@@ -136,7 +134,7 @@ const fn default_deployable_model_path(kind: DeployableKind) -> &'static str {
     }
 }
 
-/// The [`Health`] a model-backed deployable's stand-in entity spawns with.
+/// The [`Health`] every deployable's stand-in entity spawns with.
 ///
 /// Published for the tripmine: TWHL, "monster_tripmine"
 /// (<https://twhl.info/wiki/page/monster_tripmine>, reached via a
@@ -163,9 +161,7 @@ const DEPLOYABLE_BLAST_DAMAGE: f32 = 150.0;
 
 /// This module's own placeholder blast parameters, per detonating kind.
 ///
-/// TODO(black-box): no Half-Life explosive's blast radius or damage total
-/// is published (`ohl_combat::explosion`'s module doc); these are a
-/// project-chosen, explicitly unverified starting point.
+/// Legacy fallback values for saves without resolved attack metadata.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct BlastSpec {
     radius: f32,
@@ -176,31 +172,44 @@ struct BlastSpec {
 /// kind that never detonates (a bolt, a hornet, a snark's bite).
 const fn projectile_blast(kind: ProjectileKind) -> Option<BlastSpec> {
     match kind {
-        // TODO(black-box): placeholder radius/damage; see the module doc.
+        // Legacy 120 fallback retained for old saves; radius is TODO(black-box).
         ProjectileKind::Rocket => Some(BlastSpec {
             radius: 250.0,
             damage: 120.0,
         }),
-        // TODO(black-box): as above; the hand grenade's *fuse* (5 s) is
-        // published (`ohl_combat::projectile::HAND_GRENADE_FUSE_SECONDS`),
-        // its blast is not.
+        // Published damage, project-authored radius: TODO(black-box).
         ProjectileKind::HandGrenade | ProjectileKind::Mp5Grenade => Some(BlastSpec {
             radius: 200.0,
             damage: 100.0,
         }),
-        ProjectileKind::CrossbowBolt | ProjectileKind::Hornet | ProjectileKind::Snark => None,
+        ProjectileKind::GonarchMortar => Some(BlastSpec {
+            radius: 250.0,
+            damage: 120.0,
+        }),
+        ProjectileKind::CrossbowBolt
+        | ProjectileKind::Hornet
+        | ProjectileKind::Snark
+        | ProjectileKind::BullsquidSpit
+        | ProjectileKind::ControllerBall
+        | ProjectileKind::ControllerHomingBall => None,
     }
 }
 
 /// Direct-hit damage for a kind that stops on impact instead of exploding.
 ///
-/// TODO(black-box): unpublished; see the module doc.
+/// Legacy values are retained for old kinds; new kinds use their published medium values.
 const fn direct_impact_damage(kind: ProjectileKind) -> Option<(f32, DamageType)> {
     match kind {
         ProjectileKind::CrossbowBolt => Some((40.0, DamageType::BULLET)),
         ProjectileKind::Hornet => Some((15.0, DamageType::BULLET)),
         ProjectileKind::Snark => Some((5.0, DamageType::GENERIC)),
-        ProjectileKind::Rocket | ProjectileKind::HandGrenade | ProjectileKind::Mp5Grenade => None,
+        ProjectileKind::BullsquidSpit => Some((10.0, DamageType::ACID)),
+        ProjectileKind::ControllerBall => Some((4.0, DamageType::SHOCK)),
+        ProjectileKind::ControllerHomingBall => Some((25.0, DamageType::SHOCK)),
+        ProjectileKind::Rocket
+        | ProjectileKind::HandGrenade
+        | ProjectileKind::Mp5Grenade
+        | ProjectileKind::GonarchMortar => None,
     }
 }
 
@@ -211,9 +220,38 @@ const EXPLOSION_SPRITE_SECONDS: f32 = 0.5;
 const IMPACT_SPRITE_SCALE: f32 = 1.0;
 const EXPLOSION_SPRITE_SCALE: f32 = 4.0;
 
+/// Immutable damage chosen when a projectile is created, retained through its event batch.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct AttackPayload {
+    damage: f32,
+    kind: DamageType,
+    radius: Option<f32>,
+}
+
+impl AttackPayload {
+    fn legacy(kind: ProjectileKind) -> Self {
+        if let Some(blast) = projectile_blast(kind) {
+            Self {
+                damage: blast.damage,
+                kind: DamageType::BLAST,
+                radius: Some(blast.radius),
+            }
+        } else {
+            let (damage, kind) = direct_impact_damage(kind).unwrap_or((0.0, DamageType::GENERIC));
+            Self {
+                damage,
+                kind,
+                radius: None,
+            }
+        }
+    }
+}
+
 /// Owns the simulated projectiles and placed deployables for one level.
 pub(crate) struct ProjectileSystem {
     projectiles: ProjectileSet,
+    attacks: BTreeMap<ProjectileId, AttackPayload>,
+    blast_bounds: BTreeMap<CombatEntityId, (Vec3, Vec3)>,
     deployables: DeployableSet,
     tuning: ProjectileTuning,
     deployable_tuning: DeployableTuning,
@@ -231,6 +269,8 @@ impl ProjectileSystem {
     pub(crate) fn new(seed: u64) -> Self {
         Self {
             projectiles: ProjectileSet::new(ohl_combat::ProjectileLimits::default(), seed),
+            attacks: BTreeMap::new(),
+            blast_bounds: BTreeMap::new(),
             deployables: DeployableSet::new(),
             tuning: ProjectileTuning::default(),
             deployable_tuning: DeployableTuning::default(),
@@ -395,7 +435,107 @@ impl ProjectileSystem {
                 projectile.self_id = Some(entity_id(entity));
             }
         }
+        self.attacks.insert(id, AttackPayload::legacy(kind));
         Some(id)
+    }
+
+    /// Atomically creates physical state and its resolved attack profile.
+    pub(crate) fn spawn_request(
+        &mut self,
+        level: &mut Level,
+        request: &crate::ai::ProjectileRequest,
+    ) -> Option<ProjectileId> {
+        if !request.damage.is_finite()
+            || request.damage < 0.0
+            || request
+                .blast_radius
+                .is_some_and(|r| !r.is_finite() || r <= 0.0)
+        {
+            return None;
+        }
+        let id = self.spawn(
+            level,
+            request.kind,
+            Some(request.owner),
+            request.origin,
+            request.velocity,
+        )?;
+        self.projectiles.get_mut(id)?.target = request.target.map(entity_id);
+        self.attacks.insert(
+            id,
+            AttackPayload {
+                damage: request.damage,
+                kind: request.damage_type,
+                radius: request.blast_radius,
+            },
+        );
+        Some(id)
+    }
+
+    pub(crate) fn owned_satchels(&self, owner: Entity) -> usize {
+        self.deployables
+            .satchels()
+            .iter()
+            .filter(|charge| charge.owner == Some(entity_id(owner)))
+            .count()
+    }
+
+    pub(crate) fn detonate_satchels_for(
+        &mut self,
+        level: &mut Level,
+        owner: Entity,
+        damage: &mut Vec<QueuedDamage>,
+        sprites: &mut TransientSprites,
+    ) -> usize {
+        let mut events = Vec::new();
+        let count = self.deployables.detonate_satchels_for(
+            Some(entity_id(owner)),
+            &self.deployable_tuning,
+            &mut events,
+        );
+        for event in events {
+            self.apply_deployable_event(level, event, damage, sprites);
+        }
+        count
+    }
+
+    /// Copies world bounds from this tick's shared hitbox index, without removing shooters.
+    pub(crate) fn update_blast_bounds(&mut self, hitboxes: &HitboxIndex) {
+        self.blast_bounds.clear();
+        for entry in hitboxes.entries() {
+            let mut min = Vec3::splat(f32::INFINITY);
+            let mut max = Vec3::splat(f32::NEG_INFINITY);
+            for volume in &entry.boxes {
+                for x in [volume.min.x, volume.max.x] {
+                    for y in [volume.min.y, volume.max.y] {
+                        for z in [volume.min.z, volume.max.z] {
+                            let corner = entry.origin + entry.rotation * Vec3::new(x, y, z);
+                            min = min.min(corner);
+                            max = max.max(corner);
+                        }
+                    }
+                }
+            }
+            if min.is_finite() && max.is_finite() {
+                self.blast_bounds.insert(entry.id, (min, max));
+            }
+        }
+    }
+
+    /// Player rockets follow the current filtered eye trace; Apache rockets stay unguided.
+    pub(crate) fn guide_player_rockets(&mut self, owner: Entity, point: Vec3) {
+        let ids: Vec<_> = self
+            .projectiles
+            .projectiles()
+            .iter()
+            .filter(|p| p.kind == ProjectileKind::Rocket && p.owner == Some(entity_id(owner)))
+            .map(|p| p.id)
+            .collect();
+        for id in ids {
+            if let Some(p) = self.projectiles.get_mut(id) {
+                p.guide_point = Some(point);
+            }
+        }
     }
 
     /// Places a satchel charge; see [`ohl_combat::DeployableSet::place_satchel`].
@@ -475,10 +615,8 @@ impl ProjectileSystem {
         Some(id)
     }
 
-    /// Spawns the `hecs` entity standing in for one placed deployable's
-    /// model, when `kind` has a configured slot; a no-op otherwise (the
-    /// deployable stays simulated but undrawn and undamageable, as before
-    /// this module tracked a model for it at all).
+    /// Creates a damageable stand-in, adding a studio model when available.
+    /// The shared index supplies an explicit small box for model-less deployables.
     fn spawn_deployable_model(
         &mut self,
         level: &mut Level,
@@ -487,20 +625,25 @@ impl ProjectileSystem {
         position: Vec3,
         owner: Option<Entity>,
     ) {
-        let Some(model) = self.deployable_model_for(kind) else {
-            return;
-        };
         let entity = level.registry.world.spawn((
             Transform {
                 origin: position,
                 angles: Vec3::ZERO,
             },
-            StudioAnim::new(model, 0),
             Health::new(DEPLOYABLE_HEALTH),
             DeployableRef { id, kind },
         ));
         if let Some(owner) = owner {
             let _ = level.registry.world.insert_one(entity, Owner(owner));
+        }
+        if let Some(model) = self.deployable_model_for(kind) {
+            let _ = level
+                .registry
+                .world
+                .insert_one(entity, StudioAnim::new(model, 0));
+        }
+        if let Some(mine) = self.deployables.tripmine_mut(id) {
+            mine.self_id = Some(entity_id(entity));
         }
         self.deployable_models.insert(id, entity);
     }
@@ -543,6 +686,8 @@ impl ProjectileSystem {
         for event in events {
             self.apply_projectile_event(level, event, damage_queue, sprites);
         }
+        self.attacks
+            .retain(|id, _| self.projectiles.get(*id).is_some());
         self.sync_model_entities(level);
 
         let collision = level.collision.as_ref().expect("checked above");
@@ -575,6 +720,7 @@ impl ProjectileSystem {
                 kind,
                 position,
                 entity,
+                owner,
                 ..
             } => {
                 push_sprite(
@@ -584,24 +730,35 @@ impl ProjectileSystem {
                     IMPACT_SPRITE_SECONDS,
                     IMPACT_SPRITE_SCALE,
                 );
-                if let (Some(target), Some((amount, damage_kind))) =
-                    (entity.and_then(entity_of), direct_impact_damage(kind))
+                let payload = self
+                    .attacks
+                    .get(&id)
+                    .copied()
+                    .unwrap_or_else(|| AttackPayload::legacy(kind));
+                if let Some(target) = entity
+                    .and_then(entity_of)
+                    .filter(|_| payload.radius.is_none())
                 {
-                    let attacker = self.projectiles.get(id).and_then(|p| p.owner);
+                    let attacker = owner;
                     damage_queue.push(QueuedDamage {
                         target,
                         info: DamageInfo {
                             attacker,
                             inflictor: attacker,
-                            amount,
-                            kind: damage_kind,
+                            amount: payload.damage,
+                            kind: payload.kind,
                             origin: position,
                             direction: Vec3::ZERO,
                         },
                     });
                 }
             }
-            ProjectileEvent::Detonate { id, kind, position } => {
+            ProjectileEvent::Detonate {
+                id,
+                kind,
+                position,
+                owner,
+            } => {
                 push_sprite(
                     sprites,
                     level,
@@ -609,16 +766,22 @@ impl ProjectileSystem {
                     EXPLOSION_SPRITE_SECONDS,
                     EXPLOSION_SPRITE_SCALE,
                 );
-                if let Some(spec) = projectile_blast(kind) {
-                    let attacker = self.projectiles.get(id).and_then(|p| p.owner);
+                let payload = self
+                    .attacks
+                    .get(&id)
+                    .copied()
+                    .unwrap_or_else(|| AttackPayload::legacy(kind));
+                if let Some(radius) = payload.radius {
+                    let attacker = owner;
                     resolve_blast(
                         level,
                         position,
-                        spec.radius,
-                        spec.damage,
-                        DamageType::BLAST,
+                        radius,
+                        payload.damage,
+                        payload.kind,
                         attacker,
                         &self.explosion_rule,
+                        &self.blast_bounds,
                         damage_queue,
                     );
                 }
@@ -661,6 +824,7 @@ impl ProjectileSystem {
                 DamageType::BLAST,
                 owner,
                 &self.explosion_rule,
+                &self.blast_bounds,
                 damage_queue,
             );
             // The charge is gone: whatever model-backed stand-in it had
@@ -718,6 +882,120 @@ impl ProjectileSystem {
             }
         }
         detonated
+    }
+
+    pub(crate) fn snapshot_runtime(
+        &self,
+        level: &Level,
+    ) -> crate::save_state::ProjectileRuntimeSnapshot {
+        use crate::save_state::{
+            DeployableOwnerSnapshot, ProjectileAttackSnapshot, projectile_entity_ref,
+        };
+        let mut attacks: Vec<_> = self
+            .projectiles
+            .projectiles()
+            .iter()
+            .take(crate::save_state::MAX_SNAPSHOT_PROJECTILES)
+            .map(|p| {
+                let profile = self
+                    .attacks
+                    .get(&p.id)
+                    .copied()
+                    .unwrap_or_else(|| AttackPayload::legacy(p.kind));
+                ProjectileAttackSnapshot {
+                    id: p.id.0,
+                    damage: profile.damage,
+                    damage_bits: profile.kind.bits(),
+                    blast_radius: profile.radius,
+                    owner: p.owner.and_then(|id| projectile_entity_ref(level, id)),
+                    target: p.target.and_then(|id| projectile_entity_ref(level, id)),
+                }
+            })
+            .collect();
+        attacks.sort_by_key(|entry| entry.id);
+        let mut deployable_owners: Vec<_> = self
+            .deployables
+            .satchels()
+            .iter()
+            .map(|p| (p.id, p.owner))
+            .chain(self.deployables.tripmines().iter().map(|p| (p.id, p.owner)))
+            .take(crate::save_state::MAX_SNAPSHOT_DEPLOYABLES * 2)
+            .map(|(id, owner)| DeployableOwnerSnapshot {
+                id: id.0,
+                owner: owner.and_then(|id| projectile_entity_ref(level, id)),
+            })
+            .collect();
+        deployable_owners.sort_by_key(|entry| entry.id);
+        crate::save_state::ProjectileRuntimeSnapshot {
+            attacks,
+            deployable_owners,
+            ..Default::default()
+        }
+    }
+
+    pub(crate) fn restore_runtime(
+        &mut self,
+        level: &mut Level,
+        snapshot: &crate::save_state::ProjectileRuntimeSnapshot,
+    ) {
+        use crate::save_state::{
+            MAX_SNAPSHOT_DEPLOYABLES, MAX_SNAPSHOT_PROJECTILES, resolve_projectile_ref,
+        };
+        let mut seen = std::collections::BTreeSet::new();
+        for entry in snapshot.attacks.iter().take(MAX_SNAPSHOT_PROJECTILES) {
+            let id = ProjectileId(entry.id);
+            if !seen.insert(id) {
+                continue;
+            }
+            let Some(projectile) = self.projectiles.get_mut(id) else {
+                continue;
+            };
+            projectile.owner = entry
+                .owner
+                .and_then(|owner| resolve_projectile_ref(level, owner));
+            projectile.target = entry
+                .target
+                .and_then(|target| resolve_projectile_ref(level, target));
+            // Invalid present profiles become harmless, never a stronger legacy fallback.
+            let valid = entry.damage.is_finite()
+                && entry.damage >= 0.0
+                && entry.blast_radius.is_none_or(|r| r.is_finite() && r > 0.0);
+            self.attacks.insert(
+                id,
+                AttackPayload {
+                    damage: if valid { entry.damage } else { 0.0 },
+                    kind: DamageType::from_bits_truncate(entry.damage_bits),
+                    radius: entry.blast_radius.filter(|r| r.is_finite() && *r > 0.0),
+                },
+            );
+            if let Some(entity) = self.models.get(&id) {
+                sync_owner(level, *entity, projectile.owner);
+            }
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for entry in snapshot
+            .deployable_owners
+            .iter()
+            .take(MAX_SNAPSHOT_DEPLOYABLES * 2)
+        {
+            let id = DeployableId(entry.id);
+            if !seen.insert(id) {
+                continue;
+            }
+            let owner = entry
+                .owner
+                .and_then(|owner| resolve_projectile_ref(level, owner));
+            if let Some(charge) = self.deployables.satchel_mut(id) {
+                charge.owner = owner;
+            } else if let Some(mine) = self.deployables.tripmine_mut(id) {
+                mine.owner = owner;
+            } else {
+                continue;
+            }
+            if let Some(entity) = self.deployable_models.get(&id) {
+                sync_owner(level, *entity, owner);
+            }
+        }
     }
 
     /// Captures `SECTION_PROJECTILES` (26): every live projectile and
@@ -789,11 +1067,10 @@ impl ProjectileSystem {
     }
 
     /// Restores everything [`Self::snapshot`] captured, replacing whatever
-    /// this system currently holds, and then re-creates every model-backed
-    /// stand-in this module owns (see the module doc's former "Not yet
-    /// persisted" note): a restored satchel/tripmine gets a fresh stand-in
-    /// entity ([`StudioAnim`], [`Health`], [`DeployableRef`]) so it draws
-    /// and stays damageable, and a restored model-backed projectile gets a
+    /// this system currently holds, and then re-creates every stand-in this
+    /// module owns: a restored satchel/tripmine gets [`Health`] and
+    /// [`DeployableRef`], plus [`StudioAnim`] when a model is available,
+    /// so it stays damageable. A restored model-backed projectile gets a
     /// fresh stand-in entity of its own so [`ohl_combat::Projectile::self_id`]
     /// is set again (never the old `hecs::Entity` bits, which `hecs` gives
     /// no cross-process stability for — always a brand new entity spawned
@@ -824,11 +1101,15 @@ impl ProjectileSystem {
         // truncation afterward: a corrupt or adversarial save naming an
         // enormous section must not make this crate build an enormous
         // `Vec` just to throw most of it away.
+        let mut seen_projectiles = std::collections::BTreeSet::new();
         let projectiles = snapshot
             .projectiles
             .iter()
             .take(crate::save_state::MAX_SNAPSHOT_PROJECTILES)
             .filter_map(|entry| {
+                if !seen_projectiles.insert(entry.id) {
+                    return None;
+                }
                 let kind = crate::save_state::projectile_kind_from_tag(entry.kind_tag)?;
                 Some(ohl_combat::Projectile {
                     id: ProjectileId(entry.id),
@@ -866,10 +1147,12 @@ impl ProjectileSystem {
             snapshot.projectile_next_id,
             snapshot.projectile_rng_state,
         );
+        let mut seen_deployables = std::collections::BTreeSet::new();
         let satchels = snapshot
             .satchels
             .iter()
             .take(crate::save_state::MAX_SNAPSHOT_DEPLOYABLES)
+            .filter(|entry| seen_deployables.insert(entry.id))
             .map(|entry| ohl_combat::Satchel {
                 id: DeployableId(entry.id),
                 owner: entry
@@ -883,7 +1166,9 @@ impl ProjectileSystem {
             .tripmines
             .iter()
             .take(crate::save_state::MAX_SNAPSHOT_DEPLOYABLES)
+            .filter(|entry| seen_deployables.insert(entry.id))
             .map(|entry| ohl_combat::Tripmine {
+                self_id: None,
                 id: DeployableId(entry.id),
                 owner: entry
                     .owner
@@ -896,6 +1181,12 @@ impl ProjectileSystem {
             .collect();
         self.deployables =
             DeployableSet::restore_from_parts(satchels, tripmines, snapshot.deployable_next_id);
+        self.attacks = self
+            .projectiles
+            .projectiles()
+            .iter()
+            .map(|p| (p.id, AttackPayload::legacy(p.kind)))
+            .collect();
         self.respawn_deployable_stand_ins(level);
         self.respawn_projectile_models(level);
     }
@@ -1007,6 +1298,13 @@ impl ProjectileSystem {
     }
 }
 
+fn sync_owner(level: &mut Level, entity: Entity, owner: Option<CombatEntityId>) {
+    let _ = level.registry.world.remove_one::<Owner>(entity);
+    if let Some(owner) = owner.and_then(entity_of) {
+        let _ = level.registry.world.insert_one(entity, Owner(owner));
+    }
+}
+
 /// Applies `radius_damage` at `position` and queues every hit it reports.
 #[allow(clippy::too_many_arguments)]
 fn resolve_blast(
@@ -1017,12 +1315,13 @@ fn resolve_blast(
     kind: DamageType,
     attacker: Option<CombatEntityId>,
     rule: &ExplosionRule,
+    bounds: &BTreeMap<CombatEntityId, (Vec3, Vec3)>,
     damage_queue: &mut Vec<QueuedDamage>,
 ) {
     let Some(collision) = level.collision.as_ref() else {
         return;
     };
-    let targets = blast_targets(level);
+    let targets = blast_targets(level, bounds);
     let hits = radius_damage(
         position,
         radius,
@@ -1045,7 +1344,10 @@ fn resolve_blast(
 /// by its `Transform`. `ohl-ai`'s `Actor`-carrying monsters are not a
 /// dependency of this package yet (see `crate::components`'s note); the
 /// player, spawned in `crate::level`, already qualifies.
-fn blast_targets(level: &Level) -> Vec<BlastTarget> {
+fn blast_targets(
+    level: &Level,
+    bounds: &BTreeMap<CombatEntityId, (Vec3, Vec3)>,
+) -> Vec<BlastTarget> {
     let mut targets = Vec::new();
     for (entity, transform, _health) in
         &mut level
@@ -1055,6 +1357,26 @@ fn blast_targets(level: &Level) -> Vec<BlastTarget> {
     {
         targets.push(BlastTarget::new(entity_id(entity), transform.origin));
     }
+    for (id, &(min, max)) in bounds {
+        if let Some(target) = targets.iter_mut().find(|target| target.id == *id) {
+            target.hitbox = Some((min, max));
+        } else if let Some(entity) = entity_of(*id) {
+            let world = &level.registry.world;
+            let damageable = world
+                .get::<&ohl_game::registry::Breakable>(entity)
+                .is_ok_and(|b| !b.broken && b.health > 0.0)
+                || world
+                    .get::<&ohl_game::registry::Button>(entity)
+                    .is_ok_and(|b| b.health > 0.0)
+                || world
+                    .get::<&ohl_game::registry::RotButton>(entity)
+                    .is_ok_and(|b| b.health > 0.0);
+            if damageable {
+                targets.push(BlastTarget::new(*id, (min + max) * 0.5).with_hitbox(min, max));
+            }
+        }
+    }
+    targets.sort_by_key(|target| target.id);
     targets
 }
 
@@ -1621,5 +1943,93 @@ mod tests {
         // A guard against accidentally shadowing the published constant
         // with a local placeholder of the same name.
         assert!((HAND_GRENADE_FUSE_SECONDS - 5.0).abs() < f32::EPSILON);
+    }
+}
+
+#[cfg(test)]
+mod resolved_profile_tests {
+    use super::*;
+    use crate::{MemoryAssets, test_support::synthetic_map_bsp};
+    use ohl_combat::{EntityHitboxes, HitGroup, HitboxLimits};
+
+    #[test]
+    fn terminal_damage_keeps_launch_profile_and_original_attacker_after_restore_and_despawn() {
+        for kind in [ProjectileKind::ControllerBall, ProjectileKind::Rocket] {
+            let mut level =
+                Level::from_bytes(&MemoryAssets::new(), "ohlsynth", &synthetic_map_bsp())
+                    .expect("fixture");
+            let owner = level.registry.world.spawn((Transform {
+                origin: Vec3::new(-80.0, 0.0, 100.0),
+                angles: Vec3::ZERO,
+            },));
+            level.registry.entities.push(owner);
+            let victim = level.registry.world.spawn((
+                Transform {
+                    origin: Vec3::new(60.0, 0.0, 100.0),
+                    angles: Vec3::ZERO,
+                },
+                Health::new(200.0),
+            ));
+            let mut index = HitboxIndex::new(HitboxLimits::default());
+            let mut entry = EntityHitboxes::new(entity_id(victim), Vec3::new(60.0, 0.0, 100.0));
+            entry.push_box(0, Vec3::splat(-8.0), Vec3::splat(8.0), HitGroup::Generic);
+            index.push(entry);
+            let explosive = kind == ProjectileKind::Rocket;
+            let request = crate::ai::ProjectileRequest {
+                kind,
+                owner,
+                origin: Vec3::new(0.0, 0.0, 100.0),
+                velocity: Vec3::X * 1000.0,
+                damage: if explosive { 150.0 } else { 4.0 },
+                damage_type: if explosive {
+                    DamageType::BLAST
+                } else {
+                    DamageType::SHOCK
+                },
+                blast_radius: explosive.then_some(250.0),
+                target: None,
+            };
+            let mut system = ProjectileSystem::new(0);
+            system.spawn_request(&mut level, &request).expect("launch");
+            let physics = system.snapshot(&level);
+            let runtime = system.snapshot_runtime(&level);
+            system.restore_snapshot(&mut level, &physics);
+            system.restore_runtime(&mut level, &runtime);
+            level
+                .registry
+                .world
+                .despawn(owner)
+                .expect("remove shooter after restore");
+            system.update_blast_bounds(&index);
+            let mut damage = Vec::new();
+            system.tick(
+                &mut level,
+                &index,
+                0.1,
+                &mut damage,
+                &mut TransientSprites::default(),
+            );
+            assert_eq!(system.count(), 0);
+            let hits: Vec<_> = damage.iter().filter(|hit| hit.target == victim).collect();
+            assert_eq!(
+                hits.len(),
+                1,
+                "impact plus terminal event must not double hit"
+            );
+            assert_eq!(
+                hits[0].info.attacker,
+                Some(entity_id(owner)),
+                "terminal owner survives physical removal"
+            );
+            assert_eq!(hits[0].info.kind, request.damage_type);
+            if explosive {
+                assert!(
+                    hits[0].info.amount > 140.0,
+                    "Apache profile must not become player's/legacy rocket damage"
+                );
+            } else {
+                assert!((hits[0].info.amount - 4.0).abs() < f32::EPSILON);
+            }
+        }
     }
 }

@@ -2608,8 +2608,9 @@ constant carrying its citation:
   150 damage is the value already cited in the M7.2 weapon table; this
   package does not restate it, it reads `weapons::spec`.
 
-**BBO, not shipped as a number:** every projectile speed, every blast radius
-(no usable source publishes one for *any* Half-Life explosive), the bounce
+**BBO, not shipped as a measured number in M7.3:** projectile speeds and blast
+radii used by that package (M9.NEXT later sources controller head-ball speed
+and Gonarch mortar radius), the bounce
 restitution and surface drag, the resting-speed threshold, the RPG's and
 hornet's turn rates, the hornet's and crossbow bolt's lifetimes, the MP5
 grenade's fuse, the snark's hop cadence, hop speed and bite interval, the
@@ -3376,9 +3377,9 @@ unless stated as a project decision):
   arriving rather than skipping keeps the node's `reachtarget` firing).
   The stall clock is not saved; a load restarts it. The arrival
   radius, the claw reach, the mortar range and the attack pauses are
-  placeholders; the mortar is resolved as a single hit, like every ranged
-  attack the engine has no projectile for, and its blast radius is not
-  applied. Baby-headcrab births are not modelled.
+  placeholders. M9.NEXT replaces the mortar's earlier immediate single hit
+  with a gravity-affected projectile using its published blast radius.
+  Baby-headcrab births are not modelled.
 - **The Nihilanth**: the reserve is one pool of `20 × per-sprite` points
   that every hit drains first, a hit overrunning it is spent rather than
   carried into health (decision); with the pool empty and a crystal
@@ -7521,3 +7522,66 @@ exactly once. A synthetic scientist under actual secondary-fire input loses
 only the scaled amount and counts one hit, rather than two. No reflection,
 underwater firing restrictions, beam splash, charge drain schedule, or hornet
 regeneration timing is asserted as newly implemented here.
+
+## Live projectiles and deployables (M9.NEXT)
+
+Published pages re-read 2026-10-04. TWHL pages other than Apache were read as
+page text via `https://r.jina.ai/https://twhl.info/wiki/page/<page>` after direct
+requests failed. These are page-table observations, not search-summary quotes;
+no SDK or engine source was consulted. Damage triples are easy/medium/hard.
+
+| Attack | Damage | Published source |
+| --- | --- | --- |
+| Human grunt grenade | 100 / 100 / 100 | [TWHL monster_human_grunt](https://twhl.info/wiki/page/monster_human_grunt) |
+| Assassin grenade | 100 / 100 / 100 | [TWHL monster_human_assassin](https://twhl.info/wiki/page/monster_human_assassin) |
+| Bullsquid spit | 10 / 10 / 15 | [TWHL monster_bullchicken](https://twhl.info/wiki/page/monster_bullchicken) |
+| Controller hand ball | 3 / 4 / 5 | [TWHL monster_alien_controller](https://twhl.info/wiki/page/monster_alien_controller) |
+| Controller head ball | 15 / 25 / 35 | [TWHL monster_alien_controller](https://twhl.info/wiki/page/monster_alien_controller), speed 650 / 800 / 1000 |
+| Apache rocket | 150 / 150 / 150 | [TWHL monster_apache](https://twhl.info/wiki/page/monster_apache) |
+| Gonarch mortar | 100 / 120 / 160 | [TWHL monster_bigmomma](https://twhl.info/wiki/page/monster_bigmomma), radius 250 / 250 / 275 |
+| Alien-grunt hornet | 4 / 5 / 8 | [TWHL monster_alien_grunt](https://twhl.info/wiki/page/monster_alien_grunt) |
+
+The [RPG page](https://combineoverwiki.net/wiki/Rocket-Propelled_Grenade_Launcher_(Half-Life))
+distinguishes 100 single-player damage from 120 multiplayer damage. New player
+rockets capture the weapon table's 100, while old saves without tag 42 retain
+the documented legacy 120 fallback. The
+[SMG page](https://combineoverwiki.net/wiki/Submachine_Gun_(Half-Life)) gives
+100 grenade damage and describes impact detonation. New launcher grenades
+therefore arc and detonate on contact; the old bouncing timed-fuse behavior
+was a placeholder. MP5 secondary draws its separate grenade reserve; reload
+still draws the primary reserve. The
+[Satchel Charge page](https://combineoverwiki.net/wiki/Satchel_Charge) gives
+150 damage and the primary place/detonate, secondary add-charge input sequence.
+Hand-grenade damage/five-second fuse and tripmine damage/three-second arming
+retain the earlier M7.2/M7.3 provenance above.
+
+Project-authored implementation choices, all **TODO(black-box)**: most muzzle
+speeds, six-second monster secondary cooldown, secondary distance bounds,
+ballistic throw time and gravity, muzzle/placement offsets, impact blast
+clearance, radii except Gonarch's, blast falloff/occlusion/self-damage, homing
+turn rates and lifetime bounds. Grenades/RPG/deployables use BLAST, spit ACID,
+controller balls SHOCK, and mortar BLAST|ACID as project classifications.
+Player projectiles advance once in their spawn tick; AI projectiles are
+spawned after phase 8 and first advance on the following tick. Terminal events
+carry their original owner, and resolved damage remains until the event batch
+is consumed. Damage is queued through the existing player/entity and monster
+lifecycle; explosive impacts do not also add a direct hit.
+
+A projectile ignores its own stand-in and owner only during its own sweep;
+owner splash remains enabled. An armed tripmine ignores only its own stand-in,
+so its owner can trigger it. The shared index includes the current player hull
+and explicit four-unit half-extent model-less deployable boxes. Those fallback
+boxes, stationary satchel placement and world-only tripmine mounting are project
+choices. Player rockets follow the current aim point; the guidance toggle is
+a fidelity cut. Hold-to-cook/release animations, moving-wall attachment, per-species
+visuals without available assets, nuanced owner collision grace periods and
+retail matching of every secondary cadence remain cuts, not parity claims.
+
+Tag 26's old wire layout and numeric kinds 0..5 remain fixed. New physical kind
+values 6..9 extend its existing `u8` without widening the struct. Optional tag
+42 contains only resolved profiles, Player/Registry owner/target references,
+secondary cooldowns and the primary held edge. It never repeats physical
+position, fuse, age or RNG state. Bounded decode and first-entry-wins overlays
+ignore orphan metadata; invalid present profiles become harmless. Missing tag
+42 uses legacy kind defaults and never guesses that an owner-less projectile
+belongs to the player. Runtime stand-in handles are rebuilt and never saved.

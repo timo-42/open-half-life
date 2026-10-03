@@ -152,26 +152,26 @@ pub enum AttackShape {
     Projectile(ohl_combat::ProjectileKind),
 }
 
-/// How `kind`'s `attack` resolves.
-///
-/// Melee attacks are melee; ranged attacks are hitscan except for the two
-/// kinds whose ranged attack is a visible flying object in the published
-/// game (the alien grunt's hornet and the human grunt's thrown grenade).
-/// Anything this project has no `ohl-combat` projectile for stays hitscan,
-/// which is the conservative choice: it resolves through a trace that
-/// already exists rather than silently doing nothing.
+/// Physical attack classification, independent of its resolved damage profile.
 #[must_use]
 pub fn attack_shape(kind: &MonsterKind, attack: AttackKind) -> AttackShape {
-    match attack {
-        AttackKind::Melee1 | AttackKind::Melee2 => AttackShape::Melee,
-        AttackKind::Range1 | AttackKind::Range2 => match kind {
-            MonsterKind::AlienGrunt => AttackShape::Projectile(ohl_combat::ProjectileKind::Hornet),
-            MonsterKind::HumanGrunt if attack == AttackKind::Range2 => {
-                AttackShape::Projectile(ohl_combat::ProjectileKind::HandGrenade)
-            }
-            _ => AttackShape::Hitscan,
-        },
+    use ohl_combat::ProjectileKind as P;
+    if matches!(attack, AttackKind::Melee1 | AttackKind::Melee2) {
+        return AttackShape::Melee;
     }
+    let projectile = match kind {
+        MonsterKind::AlienGrunt => P::Hornet,
+        MonsterKind::HumanGrunt | MonsterKind::HumanAssassin if attack == AttackKind::Range2 => {
+            P::HandGrenade
+        }
+        MonsterKind::Bullsquid => P::BullsquidSpit,
+        MonsterKind::AlienController if attack == AttackKind::Range2 => P::ControllerHomingBall,
+        MonsterKind::AlienController => P::ControllerBall,
+        MonsterKind::Apache if attack == AttackKind::Range2 => P::Rocket,
+        MonsterKind::BigMomma => P::GonarchMortar,
+        _ => return AttackShape::Hitscan,
+    };
+    AttackShape::Projectile(projectile)
 }
 
 /// One projectile a monster attack asks for.
@@ -185,26 +185,62 @@ pub struct ProjectileRequest {
     pub origin: Vec3,
     /// Its initial velocity, in units per second.
     pub velocity: Vec3,
+    /// Damage resolved at launch, independent of subsequent shooter changes.
+    pub damage: f32,
+    /// Project-authored damage classification.
+    pub damage_type: DamageType,
+    /// Radius for explosive attacks; `None` means a direct impact.
+    pub blast_radius: Option<f32>,
+    /// Homing target, if the physical kind supports one.
+    pub target: Option<Entity>,
 }
 
 /// Creates the projectiles monster attacks ask for.
 ///
-/// The seam M7.9 P3 fills: it owns the `ohl_combat::ProjectileSet` and the
-/// tuning every kind needs, neither of which this package has. The default
-/// [`NoProjectiles`] drops every request, so a ranged monster whose attack
-/// is a projectile is harmless rather than broken.
+/// The normal engine sink queues bounded value requests for Systems to drain
+/// after phase 8. Custom sinks can implement their own delivery; the explicit
+/// [`NoProjectiles`] sink discards requests.
 pub trait ProjectileSpawner {
     /// Creates one projectile. Returning is the whole contract: a spawner
     /// that cannot honour a request drops it.
     fn spawn_projectile(&mut self, request: &ProjectileRequest);
+    /// Drains value requests for the engine-owned simulation. Custom sinks may retain delivery.
+    fn take_requests(&mut self) -> Vec<ProjectileRequest> {
+        Vec::new()
+    }
 }
 
-/// The default [`ProjectileSpawner`]: drops every request.
+/// An explicit [`ProjectileSpawner`] that drops every request.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoProjectiles;
 
 impl ProjectileSpawner for NoProjectiles {
     fn spawn_projectile(&mut self, _request: &ProjectileRequest) {}
+}
+
+/// A bounded value queue; never owns another projectile simulation.
+#[derive(Default)]
+struct QueuedProjectiles {
+    requests: Vec<ProjectileRequest>,
+}
+
+impl ProjectileSpawner for QueuedProjectiles {
+    fn spawn_projectile(&mut self, request: &ProjectileRequest) {
+        if self.requests.len() < ohl_combat::ProjectileLimits::default().max_projectiles
+            && request.origin.is_finite()
+            && request.velocity.is_finite()
+            && request.damage.is_finite()
+            && request.damage >= 0.0
+            && request
+                .blast_radius
+                .is_none_or(|radius| radius.is_finite() && radius > 0.0)
+        {
+            self.requests.push(*request);
+        }
+    }
+    fn take_requests(&mut self) -> Vec<ProjectileRequest> {
+        std::mem::take(&mut self.requests)
+    }
 }
 
 /// Turns one map entity definition into a monster, using the brains
@@ -302,6 +338,7 @@ pub struct AiState {
     /// world-occlusion trace. M7.9 P1 owns the populated index.
     hitboxes: HitboxIndex,
     projectiles: Box<dyn ProjectileSpawner>,
+    secondary_cooldowns: BTreeMap<Entity, f32>,
     /// This level's `scripted_sequence`/`aiscripted_sequence` entities, in
     /// spawn order.
     scripts: Vec<ActiveScript>,
@@ -352,6 +389,44 @@ impl core::fmt::Debug for AiState {
 }
 
 impl AiState {
+    pub(crate) fn snapshot_secondary_cooldowns(&self, level: &Level) -> Vec<(u32, f32)> {
+        let mut entries: Vec<_> = self
+            .secondary_cooldowns
+            .iter()
+            .filter(|(_, left)| **left > 0.0 && left.is_finite())
+            .filter_map(|(entity, left)| {
+                crate::save_state::spawn_index_of(level, *entity).map(|index| (index, *left))
+            })
+            .take(crate::save_state::MAX_SNAPSHOT_ENTITIES)
+            .collect();
+        entries.sort_by_key(|entry| entry.0);
+        entries
+    }
+
+    pub(crate) fn restore_secondary_cooldowns(&mut self, level: &Level, entries: &[(u32, f32)]) {
+        self.secondary_cooldowns.clear();
+        for &(index, left) in entries
+            .iter()
+            .take(crate::save_state::MAX_SNAPSHOT_ENTITIES)
+        {
+            if let Some(entity) = crate::save_state::entity_at_spawn_index(level, index)
+                && self.spec_of(level, entity).is_some()
+            {
+                // Invalid entries suppress immediate attack until the normal project cooldown passes.
+                let left = if left.is_finite() {
+                    left.clamp(0.0, 6.0)
+                } else {
+                    6.0
+                };
+                self.secondary_cooldowns.entry(entity).or_insert(left);
+            }
+        }
+    }
+
+    pub(crate) fn take_projectile_requests(&mut self) -> Vec<ProjectileRequest> {
+        self.projectiles.take_requests()
+    }
+
     /// An AI world seeded with `seed` and no brains registered yet.
     #[must_use]
     pub fn new(seed: u64) -> Self {
@@ -366,7 +441,8 @@ impl AiState {
             maker_children: 0,
             difficulty: AiDifficulty::default(),
             hitboxes: HitboxIndex::new(HitboxLimits::default()),
-            projectiles: Box::new(NoProjectiles),
+            projectiles: Box::<QueuedProjectiles>::default(),
+            secondary_cooldowns: BTreeMap::new(),
             scripts: Vec::new(),
             sentences: Vec::new(),
             followers: FollowRoster::new(),
@@ -381,8 +457,8 @@ impl AiState {
         }
     }
 
-    /// Installs the spawner monster projectile attacks go through,
-    /// replacing [`NoProjectiles`].
+    /// Installs the sole sink monster projectile attacks go through,
+    /// replacing the engine's bounded value queue.
     pub fn set_projectile_spawner(&mut self, spawner: Box<dyn ProjectileSpawner>) {
         self.projectiles = spawner;
     }
@@ -458,6 +534,8 @@ impl AiState {
         difficulty: ohl_campaign::Difficulty,
         skill: &ohl_campaign::SkillTable,
     ) {
+        self.secondary_cooldowns.clear();
+        self.projectiles.take_requests();
         self.brains.clear();
         self.brain_kinds.clear();
         self.triggers.clear();
@@ -1004,6 +1082,7 @@ impl AiState {
         // than beside it.
         self.update_scripts(level, dt);
         self.update_followers(level);
+        self.update_secondary_opportunities(level, dt);
         let events = {
             let context = SightContext {
                 collision: level.monster_collision.as_ref(),
@@ -1020,6 +1099,72 @@ impl AiState {
         // dormant script whose monster is idle now overwrites that specific
         // case — and only that case; see `apply_pretrigger_idles`.
         self.apply_pretrigger_idles(level);
+    }
+
+    /// Project-authored readiness persists until a secondary request actually emits.
+    fn update_secondary_opportunities(&mut self, level: &mut Level, dt: f32) {
+        self.secondary_cooldowns.retain(|entity, remaining| {
+            *remaining = (*remaining - dt.max(0.0)).max(0.0);
+            level.registry.world.contains(*entity)
+        });
+        for (entity, actor, ai) in &mut level
+            .registry
+            .world
+            .query::<(Entity, &Actor, &mut MonsterAi)>()
+        {
+            let Some(kind) = self.brain_kinds.get(ai.brain.0) else {
+                continue;
+            };
+            if !matches!(
+                kind,
+                MonsterKind::HumanGrunt
+                    | MonsterKind::HumanAssassin
+                    | MonsterKind::AlienController
+                    | MonsterKind::Apache
+            ) {
+                continue;
+            }
+            // A previously ready opportunity must not survive a new script/prisoner/death guard.
+            ai.pending_conditions.remove(Conditions::CAN_RANGE_ATTACK2);
+            if !actor.alive
+                || actor.health <= 0.0
+                || level.registry.world.get::<&Prisoner>(entity).is_ok()
+                || level.registry.world.get::<&ScriptHold>(entity).is_ok()
+                || self
+                    .secondary_cooldowns
+                    .get(&entity)
+                    .is_some_and(|left| *left > 0.0)
+                || level
+                    .registry
+                    .world
+                    .get::<&ohl_ai::monsters::FlightPlan>(entity)
+                    .is_ok_and(|plan| !plan.is_active())
+            {
+                continue;
+            }
+            let Some(memory) = ai.memory.filter(|memory| !memory.occluded) else {
+                continue;
+            };
+            let Ok(enemy) = level.registry.world.get::<&Actor>(memory.entity) else {
+                continue;
+            };
+            // TODO(black-box): secondary engagement bounds, in world units.
+            if !enemy.alive
+                || enemy.health <= 0.0
+                || !(96.0..=1024.0).contains(&actor.eye().distance(enemy.eye()))
+            {
+                continue;
+            }
+            if level.monster_collision.as_ref().is_some_and(|collision| {
+                collision
+                    .trace(ohl_physics::Hull::Point, actor.eye(), enemy.eye())
+                    .fraction
+                    < 1.0
+            }) {
+                continue;
+            }
+            ai.pending_conditions |= Conditions::CAN_RANGE_ATTACK2;
+        }
     }
 
     /// Turns this step's [`AiEvent`]s into animation, damage and projectile
@@ -1106,6 +1251,9 @@ impl AiState {
         let Ok(actor) = level.registry.world.get::<&Actor>(attacker).map(|a| *a) else {
             return;
         };
+        if !actor.alive || actor.health <= 0.0 {
+            return;
+        }
         let shape = attack_shape(&kind, attack);
         let (amount, range) = match shape {
             AttackShape::Melee => match spec.melee {
@@ -1115,7 +1263,7 @@ impl AiState {
             AttackShape::Hitscan | AttackShape::Projectile(_) => match spec.ranged {
                 Some(ranged) => (
                     ranged.damage[self.difficulty.index()],
-                    if ranged.range > 0.0 {
+                    if ranged.range.is_finite() && ranged.range > 0.0 {
                         ranged.range
                     } else {
                         DEFAULT_ATTACK_RANGE
@@ -1138,13 +1286,38 @@ impl AiState {
             .unwrap_or_else(|| muzzle + actor.forward() * range);
 
         if let AttackShape::Projectile(projectile) = shape {
-            let direction = (aim - muzzle).normalize_or_zero();
+            let (damage, damage_type, blast_radius) =
+                monster_projectile_profile(projectile, self.difficulty);
+            let speed = if projectile == ohl_combat::ProjectileKind::ControllerHomingBall {
+                [650.0, 800.0, 1000.0][self.difficulty.index()]
+            } else {
+                DEFAULT_PROJECTILE_SPEED
+            };
+            let velocity = if matches!(
+                projectile,
+                ohl_combat::ProjectileKind::HandGrenade | ohl_combat::ProjectileKind::GonarchMortar
+            ) {
+                // TODO(black-box): bounded ballistic aim and nominal throw speed are project choices.
+                let flight = (aim.distance(muzzle) / 400.0).clamp(0.35, 1.5);
+                (aim - muzzle) / flight
+                    + Vec3::Z * (ohl_physics::MoveConfig::default().gravity * flight * 0.5)
+            } else {
+                (aim - muzzle).normalize_or_zero() * speed
+            };
             self.projectiles.spawn_projectile(&ProjectileRequest {
                 kind: projectile,
                 owner: attacker,
                 origin: muzzle,
-                velocity: direction * DEFAULT_PROJECTILE_SPEED,
+                velocity,
+                damage,
+                damage_type,
+                blast_radius,
+                target,
             });
+            if attack == AttackKind::Range2 {
+                // TODO(black-box): project-authored six-second opportunity cadence.
+                self.secondary_cooldowns.insert(attacker, 6.0);
+            }
             return;
         }
 
@@ -2616,7 +2789,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_two_project_chosen_kinds_fire_projectiles() {
+    fn published_projectile_attacks_map_to_physical_kinds() {
         let projectiles = MonsterKind::defined()
             .iter()
             .filter(|kind| {
@@ -2626,7 +2799,10 @@ mod tests {
                 )
             })
             .count();
-        assert_eq!(projectiles, 1, "only the alien grunt's primary is a hornet");
+        assert_eq!(
+            projectiles, 4,
+            "hornet, spit, hand ball and mortar primaries"
+        );
         assert!(matches!(
             attack_shape(&MonsterKind::HumanGrunt, AttackKind::Range2),
             AttackShape::Projectile(_)
@@ -2661,5 +2837,174 @@ mod tests {
         assert_eq!(trigger_condition_of(4), Some(TriggerCondition::Death));
         assert_eq!(trigger_condition_of(11), None);
         assert_eq!(trigger_condition_of(255), None);
+    }
+}
+
+/// Published attack tables: TWHL pages for each named monster, cited in FORMAT_SOURCES.
+/// Radii other than Gonarch's and damage classifications are project-authored.
+fn monster_projectile_profile(
+    kind: ohl_combat::ProjectileKind,
+    difficulty: AiDifficulty,
+) -> (f32, DamageType, Option<f32>) {
+    use ohl_combat::ProjectileKind as P;
+    let skill = difficulty.index();
+    match kind {
+        P::HandGrenade => (100.0, DamageType::BLAST, Some(200.0)),
+        P::Rocket => (150.0, DamageType::BLAST, Some(250.0)),
+        P::Hornet => ([4.0, 5.0, 8.0][skill], DamageType::BULLET, None),
+        P::BullsquidSpit => ([10.0, 10.0, 15.0][skill], DamageType::ACID, None),
+        P::ControllerBall => ([3.0, 4.0, 5.0][skill], DamageType::SHOCK, None),
+        P::ControllerHomingBall => ([15.0, 25.0, 35.0][skill], DamageType::SHOCK, None),
+        P::GonarchMortar => (
+            [100.0, 120.0, 160.0][skill],
+            DamageType::BLAST | DamageType::ACID,
+            Some([250.0, 250.0, 275.0][skill]),
+        ),
+        _ => (0.0, DamageType::GENERIC, None),
+    }
+}
+
+#[cfg(test)]
+mod projectile_queue_tests {
+    use super::*;
+
+    #[test]
+    fn normal_sink_is_bounded_rejects_non_finite_requests_and_drains_once() {
+        let mut world = ohl_game::hecs::World::new();
+        let owner = world.spawn(());
+        let request = ProjectileRequest {
+            kind: ohl_combat::ProjectileKind::Rocket,
+            owner,
+            origin: Vec3::ZERO,
+            velocity: Vec3::X,
+            damage: 100.0,
+            damage_type: DamageType::BLAST,
+            blast_radius: Some(200.0),
+            target: None,
+        };
+        let mut ai = AiState::new(0);
+        ai.projectiles.spawn_projectile(&ProjectileRequest {
+            damage: f32::NAN,
+            ..request
+        });
+        assert!(ai.take_projectile_requests().is_empty());
+        for _ in 0..150 {
+            ai.projectiles.spawn_projectile(&request);
+        }
+        assert_eq!(ai.take_projectile_requests().len(), 128);
+        assert!(ai.take_projectile_requests().is_empty());
+        ai.set_projectile_spawner(Box::new(NoProjectiles));
+        ai.projectiles.spawn_projectile(&request);
+        assert!(
+            ai.take_projectile_requests().is_empty(),
+            "custom sink is the only route"
+        );
+    }
+
+    fn live_fixture(classname: &str) -> (crate::Game, Entity) {
+        let text = format!(
+            "{{\"classname\" \"worldspawn\"}}\n{{\"classname\" \"info_player_start\" \"origin\" \"0 0 36\"}}\n{{\"classname\" \"{classname}\" \"origin\" \"128 0 36\" \"angle\" \"180\"}}\n"
+        );
+        let bytes = crate::test_support::ai_room_bsp(&text, false);
+        let mut game =
+            crate::Game::from_map_bytes(&crate::MemoryAssets::new(), "ohlaisynth", &bytes)
+                .expect("fixture");
+        let actor = crate::test_support::monster_entities(&game)[0];
+        game.tick(crate::TICK_SECONDS, &crate::Input::default());
+        (game, actor)
+    }
+
+    #[test]
+    fn live_secondary_readiness_excludes_prisoners_scripts_dormant_aircraft_and_dead_actors() {
+        for guard in 0..4 {
+            let (mut game, actor) = live_fixture(if guard == 2 {
+                "monster_apache"
+            } else {
+                "monster_human_grunt"
+            });
+            let (level, systems) = game.level_and_systems_mut();
+            let ai = systems.ai_mut();
+            ai.update_secondary_opportunities(level, crate::TICK_SECONDS);
+            assert!(
+                level
+                    .registry
+                    .world
+                    .get::<&MonsterAi>(actor)
+                    .expect("ai")
+                    .pending_conditions
+                    .contains(Conditions::CAN_RANGE_ATTACK2),
+                "live opportunity stays ready"
+            );
+            match guard {
+                0 => {
+                    level
+                        .registry
+                        .world
+                        .insert_one(actor, Prisoner)
+                        .expect("prisoner");
+                }
+                1 => {
+                    level
+                        .registry
+                        .world
+                        .insert_one(actor, ScriptHold)
+                        .expect("script hold");
+                }
+                2 => {
+                    level
+                        .registry
+                        .world
+                        .insert_one(
+                            actor,
+                            ohl_ai::monsters::FlightPlan::new(Vec::new(), true, 100.0)
+                                .starting_inactive(),
+                        )
+                        .expect("dormant flight");
+                }
+                _ => {
+                    level
+                        .registry
+                        .world
+                        .get::<&mut Actor>(actor)
+                        .expect("actor")
+                        .alive = false;
+                }
+            }
+            ai.update_secondary_opportunities(level, crate::TICK_SECONDS);
+            assert!(
+                !level
+                    .registry
+                    .world
+                    .get::<&MonsterAi>(actor)
+                    .expect("ai")
+                    .pending_conditions
+                    .contains(Conditions::CAN_RANGE_ATTACK2)
+            );
+        }
+    }
+
+    #[test]
+    fn stale_attack_tasks_cannot_launch_from_a_dead_actor() {
+        let (mut game, actor) = live_fixture("monster_human_grunt");
+        let (level, systems) = game.level_and_systems_mut();
+        let ai = systems.ai_mut();
+        assert!(
+            ai.take_projectile_requests().is_empty(),
+            "public tick drained all requests"
+        );
+        level
+            .registry
+            .world
+            .get::<&mut Actor>(actor)
+            .expect("actor")
+            .alive = false;
+        ai.resolve_attack(
+            level,
+            actor,
+            AttackKind::Range2,
+            Some(level.player),
+            &mut Vec::new(),
+        );
+        assert!(ai.take_projectile_requests().is_empty());
     }
 }

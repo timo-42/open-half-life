@@ -60,8 +60,7 @@ pub enum ProjectileKind {
     /// An RPG rocket: unaffected by gravity, optionally steered toward a
     /// laser-designated point, detonates on the first impact.
     Rocket,
-    /// The MP5's underslung 40mm grenade: an arcing, bouncing grenade with a
-    /// fuse.
+    /// The MP5's underslung 40mm grenade: arcs and detonates on contact.
     Mp5Grenade,
     /// A thrown hand grenade: arcs, bounces and detonates after
     /// [`HAND_GRENADE_FUSE_SECONDS`].
@@ -74,6 +73,14 @@ pub enum ProjectileKind {
     /// hitbox index, bites what it lands on, and detonates after
     /// [`SNARK_LIFETIME_SECONDS`] without a bite.
     Snark,
+    /// A gravity-free acid spit, stopping on contact.
+    BullsquidSpit,
+    /// A straight controller energy ball, stopping on contact.
+    ControllerBall,
+    /// A controller head ball that homes on its target.
+    ControllerHomingBall,
+    /// Gonarch's arcing acid mortar, detonating on contact.
+    GonarchMortar,
 }
 
 impl ProjectileKind {
@@ -85,26 +92,36 @@ impl ProjectileKind {
     /// much of it each projectile feels is [`ProjectileTuning::gravity_scale`].
     #[must_use]
     pub const fn falls(self) -> bool {
-        matches!(self, Self::Mp5Grenade | Self::HandGrenade | Self::Snark)
+        matches!(
+            self,
+            Self::Mp5Grenade | Self::HandGrenade | Self::Snark | Self::GonarchMortar
+        )
     }
 
     /// Whether an impact detonates the projectile instead of bouncing it.
     #[must_use]
     pub const fn detonates_on_impact(self) -> bool {
-        matches!(self, Self::Rocket)
+        matches!(self, Self::Rocket | Self::Mp5Grenade | Self::GonarchMortar)
     }
 
     /// Whether an impact simply stops the projectile (a bolt embedding in a
     /// wall, a hornet striking a target).
     #[must_use]
     pub const fn stops_on_impact(self) -> bool {
-        matches!(self, Self::CrossbowBolt | Self::Hornet)
+        matches!(
+            self,
+            Self::CrossbowBolt
+                | Self::Hornet
+                | Self::BullsquidSpit
+                | Self::ControllerBall
+                | Self::ControllerHomingBall
+        )
     }
 
     /// Whether the projectile bounces off what it hits.
     #[must_use]
     pub const fn bounces(self) -> bool {
-        matches!(self, Self::Mp5Grenade | Self::HandGrenade | Self::Snark)
+        matches!(self, Self::HandGrenade | Self::Snark)
     }
 }
 
@@ -132,8 +149,8 @@ pub struct ProjectileTuning {
     pub hornet_lifetime: BlackBox<f32>,
     /// How long a crossbow bolt lives before expiring, in seconds.
     pub bolt_lifetime: BlackBox<f32>,
-    /// The MP5 grenade's fuse, in seconds. Unlike the hand grenade's, no
-    /// usable source publishes it.
+    /// Legacy tuning slot retained for API compatibility. Newly launched MP5
+    /// grenades detonate on contact and do not use a timed fuse.
     pub mp5_grenade_fuse: BlackBox<f32>,
     /// Seconds between a resting snark's hops.
     pub snark_hop_interval: BlackBox<f32>,
@@ -203,6 +220,8 @@ pub enum ProjectileEvent {
     Impact {
         /// Which projectile.
         id: ProjectileId,
+        /// Original owner, retained even after terminal removal.
+        owner: Option<EntityId>,
         /// What kind it is.
         kind: ProjectileKind,
         /// Where the impact happened, in world units.
@@ -217,6 +236,8 @@ pub enum ProjectileEvent {
     Detonate {
         /// Which projectile.
         id: ProjectileId,
+        /// Original owner, retained even after terminal removal.
+        owner: Option<EntityId>,
         /// What kind it was.
         kind: ProjectileKind,
         /// Where it exploded, in world units.
@@ -463,15 +484,14 @@ impl ProjectileSet {
     /// Returns `None` when the set is full or either vector is not finite,
     /// so a flood of spawns degrades instead of growing without limit. The
     /// initial fuse comes from the kind: [`HAND_GRENADE_FUSE_SECONDS`] and
-    /// [`SNARK_LIFETIME_SECONDS`] are published, the MP5 grenade's is a
-    /// [`ProjectileTuning`] placeholder, and the remaining kinds have none.
+    /// [`SNARK_LIFETIME_SECONDS`] are published; the remaining kinds have none.
     pub fn spawn(
         &mut self,
         kind: ProjectileKind,
         owner: Option<EntityId>,
         position: Vec3,
         velocity: Vec3,
-        tuning: &ProjectileTuning,
+        _tuning: &ProjectileTuning,
     ) -> Option<ProjectileId> {
         if self.projectiles.len() >= self.limits.max_projectiles
             || !position.is_finite()
@@ -479,12 +499,15 @@ impl ProjectileSet {
         {
             return None;
         }
+        // A restored counter may name an existing id; skip occupied handles.
+        while self.get(ProjectileId(self.next_id)).is_some() {
+            self.next_id = self.next_id.wrapping_add(1);
+        }
         let id = ProjectileId(self.next_id);
         self.next_id = self.next_id.wrapping_add(1);
         let fuse = match kind {
             ProjectileKind::HandGrenade => Some(HAND_GRENADE_FUSE_SECONDS),
             ProjectileKind::Snark => Some(SNARK_LIFETIME_SECONDS),
-            ProjectileKind::Mp5Grenade => Some(tuning.mp5_grenade_fuse.value),
             _ => None,
         };
         self.projectiles.push(Projectile {
@@ -579,6 +602,7 @@ impl ProjectileSet {
             if *fuse <= 0.0 {
                 events.push(ProjectileEvent::Detonate {
                     id: projectile.id,
+                    owner: projectile.owner,
                     kind: projectile.kind,
                     position: projectile.position,
                 });
@@ -664,6 +688,7 @@ impl ProjectileSet {
             if report {
                 events.push(ProjectileEvent::Impact {
                     id: projectile.id,
+                    owner: projectile.owner,
                     kind: projectile.kind,
                     position: trace.end,
                     normal,
@@ -680,8 +705,10 @@ impl ProjectileSet {
             if projectile.kind.detonates_on_impact() {
                 events.push(ProjectileEvent::Detonate {
                     id: projectile.id,
+                    owner: projectile.owner,
                     kind: projectile.kind,
-                    position: trace.end,
+                    // Project-authored clearance keeps the blast outside solid.
+                    position: trace.end + normal * 1.0,
                 });
                 return true;
             }
@@ -763,7 +790,10 @@ fn substep_count(dt: f32) -> u32 {
 /// The lifetime after which a projectile of this kind expires, if any.
 fn lifetime_of(kind: ProjectileKind, tuning: &ProjectileTuning) -> Option<f32> {
     match kind {
-        ProjectileKind::Hornet => Some(tuning.hornet_lifetime.value),
+        ProjectileKind::Hornet
+        | ProjectileKind::BullsquidSpit
+        | ProjectileKind::ControllerBall
+        | ProjectileKind::ControllerHomingBall => Some(tuning.hornet_lifetime.value),
         ProjectileKind::CrossbowBolt => Some(tuning.bolt_lifetime.value),
         _ => None,
     }
@@ -773,7 +803,7 @@ fn lifetime_of(kind: ProjectileKind, tuning: &ProjectileTuning) -> Option<f32> {
 fn steer(projectile: &mut Projectile, step: f32, world: &ProjectileWorld<'_>) {
     let (goal, turn_rate) = match projectile.kind {
         ProjectileKind::Rocket => (projectile.guide_point, world.tuning.rocket_turn_rate.value),
-        ProjectileKind::Hornet => (
+        ProjectileKind::Hornet | ProjectileKind::ControllerHomingBall => (
             projectile
                 .target
                 .and_then(|id| entity_origin(world.entities, id)),

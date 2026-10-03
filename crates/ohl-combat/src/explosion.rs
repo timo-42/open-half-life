@@ -31,8 +31,8 @@
 //!   cannot hurt its owner, `1.0` for one that hurts it in full); the value
 //!   Half-Life uses per weapon and per skill level is **BBO**.
 //!
-//! No blast radius is published for any Half-Life explosive, so this module
-//! never supplies one: the radius is a parameter, and the placeholders the
+//! Gonarch's mortar radius is published by TWHL (monster_bigmomma); this module
+//! takes each radius as a parameter. Unverified radii used by the
 //! rest of the crate passes live in [`crate::projectile::ProjectileTuning`]
 //! and [`crate::deployables::DeployableTuning`], marked `// TODO(black-box)`.
 

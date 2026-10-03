@@ -1624,6 +1624,7 @@ impl Game {
             entity_combat: Some(Systems::snapshot_entity_combat(&self.level)),
             ai: Some(Systems::snapshot_ai(&self.level)),
             projectiles: Some(self.systems.snapshot_projectiles(&self.level)),
+            projectile_runtime: self.systems.snapshot_projectile_runtime(&self.level),
             rng: Some(self.systems.snapshot_rng()),
             mover_state: Some(self.systems.snapshot_mover_state(&self.level)),
             maker_children: Some(crate::save_state::snapshot_maker_children(&self.level)),
@@ -1899,6 +1900,10 @@ impl Game {
         if let Some(projectiles) = &save.projectiles {
             self.systems
                 .restore_projectiles(&mut self.level, projectiles);
+        }
+        if let Some(runtime) = &save.projectile_runtime {
+            self.systems
+                .restore_projectile_runtime(&mut self.level, runtime);
         }
         // `SECTION_RNG` (27, M7.9 P4b).
         if let Some(rng) = &save.rng {

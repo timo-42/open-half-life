@@ -355,6 +355,145 @@ pub struct ProjectilesSnapshot {
     pub deployable_next_id: u32,
 }
 
+/// Cross-section entity reference that distinguishes the player from registry entries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProjectileEntityRef {
+    /// The separately spawned player entity.
+    Player,
+    /// A validated registry spawn index.
+    Registry(u32),
+}
+
+/// Resolved attack metadata; physics remains solely in tag 26.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ProjectileAttackSnapshot {
+    /// Existing physical projectile id.
+    pub id: u32,
+    /// Resolved launch damage.
+    pub damage: f32,
+    /// Damage classification bits.
+    pub damage_bits: u32,
+    /// Optional blast radius.
+    pub blast_radius: Option<f32>,
+    /// Explicit shooter reference, including the player.
+    pub owner: Option<ProjectileEntityRef>,
+    /// Explicit homing reference, including the player.
+    pub target: Option<ProjectileEntityRef>,
+}
+
+/// Owner overlay for one existing placed explosive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeployableOwnerSnapshot {
+    /// Existing deployable id.
+    pub id: u32,
+    /// Explicit owner; absence never implies the player.
+    pub owner: Option<ProjectileEntityRef>,
+}
+
+/// New input state only; inventory and firing timers stay in tag 23.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PlayerProjectileControlsSnapshot {
+    /// The preceding fixed tick's primary input, for satchel radio edges.
+    pub primary_held: bool,
+}
+
+/// Optional tag 42. Never duplicates tag 26's position, velocity, fuse or ids/RNG state.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ProjectileRuntimeSnapshot {
+    /// Profiles ordered by physical projectile id.
+    #[serde(deserialize_with = "bounded_projectile_attacks")]
+    pub attacks: Vec<ProjectileAttackSnapshot>,
+    /// Owners ordered by deployable id.
+    #[serde(deserialize_with = "bounded_deployable_owners")]
+    pub deployable_owners: Vec<DeployableOwnerSnapshot>,
+    /// Registry index and seconds until another secondary opportunity.
+    #[serde(deserialize_with = "bounded_secondary_cooldowns")]
+    pub secondary_cooldowns: Vec<(u32, f32)>,
+    /// Player input edge state.
+    pub player_controls: PlayerProjectileControlsSnapshot,
+}
+
+fn bounded_projectile_attacks<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<ProjectileAttackSnapshot>, D::Error> {
+    bounded_runtime_vec(d, MAX_SNAPSHOT_PROJECTILES)
+}
+fn bounded_deployable_owners<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<DeployableOwnerSnapshot>, D::Error> {
+    bounded_runtime_vec(d, MAX_SNAPSHOT_DEPLOYABLES * 2)
+}
+fn bounded_secondary_cooldowns<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<(u32, f32)>, D::Error> {
+    bounded_runtime_vec(d, MAX_SNAPSHOT_ENTITIES)
+}
+fn bounded_runtime_vec<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    d: D,
+    max: usize,
+) -> Result<Vec<T>, D::Error> {
+    struct Bounded<T>(usize, std::marker::PhantomData<T>);
+    impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for Bounded<T> {
+        type Value = Vec<T>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("bounded projectile runtime sequence")
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> Result<Self::Value, A::Error> {
+            if seq.size_hint().is_some_and(|n| n > self.0) {
+                return Err(serde::de::Error::custom(
+                    "projectile runtime capacity exceeded",
+                ));
+            }
+            let mut values = Vec::new();
+            while let Some(value) = seq.next_element()? {
+                if values.len() == self.0 {
+                    return Err(serde::de::Error::custom(
+                        "projectile runtime capacity exceeded",
+                    ));
+                }
+                values.push(value);
+            }
+            Ok(values)
+        }
+    }
+    d.deserialize_seq(Bounded(max, std::marker::PhantomData))
+}
+
+pub(crate) fn projectile_entity_ref(
+    level: &Level,
+    entity: ohl_combat::EntityId,
+) -> Option<ProjectileEntityRef> {
+    let entity = crate::ids::entity_of(entity)?;
+    if entity == level.player {
+        Some(ProjectileEntityRef::Player)
+    } else {
+        spawn_index_of(level, entity).map(ProjectileEntityRef::Registry)
+    }
+}
+
+pub(crate) fn resolve_projectile_ref(
+    level: &Level,
+    reference: ProjectileEntityRef,
+) -> Option<ohl_combat::EntityId> {
+    let entity = match reference {
+        ProjectileEntityRef::Player => level.player,
+        ProjectileEntityRef::Registry(index) => entity_at_spawn_index(level, index)?,
+    };
+    if !level.registry.world.contains(entity)
+        || level
+            .registry
+            .world
+            .get::<&ohl_ai::Actor>(entity)
+            .is_ok_and(|actor| !actor.alive || actor.health <= 0.0)
+    {
+        return None;
+    }
+    Some(crate::ids::entity_id(entity))
+}
+
 /// `SECTION_RNG` (27): `Systems::rng`'s own PCG state and the substep
 /// counter, so a fixed-seed scripted run continued after a load produces
 /// the same `ai_state_hash` as the uninterrupted run.
@@ -394,6 +533,10 @@ pub(crate) const fn projectile_kind_tag(kind: ProjectileKind) -> u8 {
         ProjectileKind::HandGrenade => 3,
         ProjectileKind::Hornet => 4,
         ProjectileKind::Snark => 5,
+        ProjectileKind::GonarchMortar => 9,
+        ProjectileKind::ControllerHomingBall => 8,
+        ProjectileKind::ControllerBall => 7,
+        ProjectileKind::BullsquidSpit => 6,
     }
 }
 
@@ -408,6 +551,10 @@ pub(crate) const fn projectile_kind_from_tag(tag: u8) -> Option<ProjectileKind> 
         3 => ProjectileKind::HandGrenade,
         4 => ProjectileKind::Hornet,
         5 => ProjectileKind::Snark,
+        9 => ProjectileKind::GonarchMortar,
+        8 => ProjectileKind::ControllerHomingBall,
+        7 => ProjectileKind::ControllerBall,
+        6 => ProjectileKind::BullsquidSpit,
         _ => return None,
     })
 }

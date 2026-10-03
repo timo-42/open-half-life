@@ -23,7 +23,7 @@
 use glam::Vec3;
 use ohl_physics::{CollisionModel, Hull};
 
-use crate::trace::{EntityId, HitboxIndex, TraceMask, trace_attack};
+use crate::trace::{EntityId, HitboxIndex, TraceFilter, TraceMask, trace_attack_filtered};
 use crate::weapons::BlackBox;
 
 /// How long a tripmine takes to arm, in seconds.
@@ -82,8 +82,7 @@ impl Default for DeployableTuning {
             beam_length: BlackBox::new(512.0),
             // TODO(black-box): unpublished; one unit clears the surface.
             beam_offset: BlackBox::new(1.0),
-            // TODO(black-box): no blast radius is published for any
-            // Half-Life explosive.
+            // TODO(black-box): the satchel radius is not published.
             satchel_radius: BlackBox::new(200.0),
             // TODO(black-box): as above.
             tripmine_radius: BlackBox::new(200.0),
@@ -109,6 +108,8 @@ pub struct Satchel {
 /// One placed tripmine.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Tripmine {
+    /// Runtime stand-in excluded only from this mine's own beam. Never persisted.
+    pub self_id: Option<EntityId>,
     /// This mine's handle.
     pub id: DeployableId,
     /// Who placed it.
@@ -239,6 +240,14 @@ impl DeployableSet {
 
     /// The next handle.
     fn allocate(&mut self) -> DeployableId {
+        while self.satchels.iter().any(|entry| entry.id.0 == self.next_id)
+            || self
+                .tripmines
+                .iter()
+                .any(|entry| entry.id.0 == self.next_id)
+        {
+            self.next_id = self.next_id.wrapping_add(1);
+        }
         let id = DeployableId(self.next_id);
         self.next_id = self.next_id.wrapping_add(1);
         id
@@ -295,6 +304,35 @@ impl DeployableSet {
         count
     }
 
+    /// Mutable placement metadata for restore and runtime self-exclusion.
+    pub fn tripmine_mut(&mut self, id: DeployableId) -> Option<&mut Tripmine> {
+        self.tripmines.iter_mut().find(|entry| entry.id == id)
+    }
+
+    /// Mutable placement ownership for additive save restoration.
+    pub fn satchel_mut(&mut self, id: DeployableId) -> Option<&mut Satchel> {
+        self.satchels.iter_mut().find(|entry| entry.id == id)
+    }
+
+    /// Detonates this exact owner's charges; `None` selects owner-less charges.
+    pub fn detonate_satchels_for(
+        &mut self,
+        owner: Option<EntityId>,
+        tuning: &DeployableTuning,
+        events: &mut Vec<DeployableEvent>,
+    ) -> usize {
+        let ids: Vec<_> = self
+            .satchels
+            .iter()
+            .filter(|entry| entry.owner == owner)
+            .map(|entry| entry.id)
+            .collect();
+        for id in &ids {
+            self.detonate(*id, tuning, events);
+        }
+        ids.len()
+    }
+
     /// Places a tripmine on whatever a trace from `from` toward `direction`
     /// runs into.
     ///
@@ -331,6 +369,7 @@ impl DeployableSet {
         }
         let id = self.allocate();
         self.tripmines.push(Tripmine {
+            self_id: None,
             id,
             owner,
             position: trace.end_pos,
@@ -371,7 +410,7 @@ impl DeployableSet {
             events.push(DeployableEvent::Detonated {
                 id,
                 kind: DeployableKind::Tripmine,
-                position: mine.position,
+                position: mine.beam_start(tuning),
                 owner: mine.owner,
                 radius: tuning.tripmine_radius.value.max(0.0),
             });
@@ -424,7 +463,7 @@ impl DeployableSet {
                 events.push(DeployableEvent::Detonated {
                     id: mine.id,
                     kind: DeployableKind::Tripmine,
-                    position: mine.position,
+                    position: mine.beam_start(tuning),
                     owner: mine.owner,
                     radius: tuning.tripmine_radius.value.max(0.0),
                 });
@@ -463,7 +502,16 @@ fn beam_trace(
 ) -> (Option<EntityId>, Vec3) {
     let start = mine.beam_start(tuning);
     let end = start + mine.normal * tuning.beam_length.value.max(0.0);
-    let trace = trace_attack(world, entities, start, end, TraceMask::SHOT);
+    let trace = trace_attack_filtered(
+        world,
+        entities,
+        start,
+        end,
+        TraceFilter {
+            ignore: [mine.self_id, None],
+            mask: TraceMask::SHOT,
+        },
+    );
     (trace.entity, trace.end)
 }
 
@@ -491,6 +539,7 @@ mod restore_tests {
             age: 0.5,
         }];
         let tripmines = vec![Tripmine {
+            self_id: None,
             id: DeployableId(4),
             owner: None,
             position: Vec3::new(4.0, 5.0, 6.0),
