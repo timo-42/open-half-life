@@ -40,12 +40,14 @@
 //! | 37 | [`SECTION_PLATROT_STATE`] | `Vec<Option<`[`PlatRotSnapshot`]`>>`, one per registry entity, in spawn order: `func_platrot` runtime state (M9.33) |
 //! | 38 | [`SECTION_AMBIENT_STATE`] | `Vec<Option<`[`AmbientSnapshot`]`>>`, one per registry entity, in spawn order: whether each `ambient_generic` is sounding (the audio package) |
 //! | 39 | [`SECTION_SWITCH_STATE`] | `Vec<Option<`[`SwitchSnapshot`]`>>`, one per registry entity, in spawn order: whether each `func_wall_toggle` is on, each `func_conveyor`'s signed speed, and whether each pickup has been taken (the entities package) |
+//! | 40 | [`SECTION_PATH_STATE`] | `Vec<Option<`[`PathStateSnapshot`](crate::save_state::PathStateSnapshot)`>>`, one per registry entity, in spawn order: a `path_track` switch's position and the chain each `func_train`/`func_tracktrain` holds |
 //!
-//! Tags 23-31 and 33-39 are read as `None`/a default when absent, so a
+//! Tags 23-31 and 33-40 are read as `None`/a default when absent, so a
 //! save written before M7.9 P4b (tags 23-27), M7.13 (tag 28), M9.5 (tag 29),
 //! M9.6 (tag 30), M9.8 (tag 31), M9.10 (tag 33), the teleport/master
 //! package (tag 34), M9.25 (tag 35), M9.26 (tag 36), M9.33 (tag 37), the
-//! audio package (tag 38) or the entities package (tag 39) still loads
+//! audio package (tag 38), the entities package (tag 39) or the
+//! blocked-movers package (tag 40) still loads
 //! (§6 of the M7.9 design plan, recorded in local design notes and not
 //! part of the repository); a
 //! section that is present but fails to decode fails the whole read closed
@@ -352,6 +354,26 @@ pub const SECTION_AMBIENT_STATE: u32 = 38;
 /// number: 38 is the audio package's.
 pub const SECTION_SWITCH_STATE: u32 = 39;
 
+/// Tag 40: every `path_track` switch's position and the chain every
+/// `func_train`/`func_tracktrain` holds, one optional entry per registry
+/// entity in spawn order (`docs/FORMAT_SOURCES.md`, "Mover blocking,
+/// branching paths and monster-opened doors").
+///
+/// Without it a thrown switch comes back at its spawn position, and a
+/// train's chain is rebuilt from its own `target` — so a train saved out on
+/// a branch reappears at the same node index and progress on the *main*
+/// line (a teleport that leaves a saved rider behind), and one saved
+/// approaching a thrown switch takes the main line after the load. A
+/// train re-rooted onto a loop, or handed over by a `func_trackchange`, has
+/// the same problem. Applied before tag 28, whose node index and progress
+/// are measured along the chain this restores.
+///
+/// A new tag rather than a field on [`SECTION_MOVER_STATE`] (28) or
+/// [`SECTION_ENTITY_REGISTRY`] (18): both are shipped and frozen at their
+/// own wire shapes (see this module's "Frozen section shapes"). Tag 39 is
+/// claimed by the entities package's switch state, so this takes 40.
+pub const SECTION_PATH_STATE: u32 = 40;
+
 /// One entity definition [`SECTION_CARRIED_ENTITIES`] (36) carries.
 ///
 /// The keyvalues only, as authored pairs: `crate::transition`'s
@@ -543,6 +565,12 @@ pub struct GameSave {
     /// `None` for a save missing tag 39: an older save brings every one of
     /// them back at its spawn state, as every build before it did.
     pub switches: Option<Vec<Option<crate::save_state::SwitchSnapshot>>>,
+    /// Switch positions and train chains, one optional entry per registry
+    /// entity in spawn order ([`SECTION_PATH_STATE`], 40). `None` for a
+    /// save missing tag 40: every switch back at its spawn position and
+    /// every train back on the chain its `target` resolves to, which is
+    /// what every build before this tag did.
+    pub path_states: Option<Vec<Option<crate::save_state::PathStateSnapshot>>>,
     /// The entity definitions a level change materialised in this map, in
     /// the order they were appended (M9.26). `None` for a save missing tag
     /// 36 — an older save simply comes back with the map's own entities and
@@ -636,6 +664,9 @@ impl GameSave {
             if let Some(switches) = &self.switches {
                 writer.add_section_serde(SECTION_SWITCH_STATE, switches)?;
             }
+            if let Some(path_states) = &self.path_states {
+                writer.add_section_serde(SECTION_PATH_STATE, path_states)?;
+            }
             if let Some(carried_entities) = &self.carried_entities {
                 writer.add_section_serde(SECTION_CARRIED_ENTITIES, carried_entities)?;
             }
@@ -716,6 +747,11 @@ impl GameSave {
                 &reader,
                 SECTION_SWITCH_STATE,
                 crate::save_state::MAX_SNAPSHOT_SWITCHES,
+            )?,
+            path_states: optional_bounded_vec_section(
+                &reader,
+                SECTION_PATH_STATE,
+                crate::save_state::MAX_SNAPSHOT_PATH_STATES,
             )?,
         })
     }

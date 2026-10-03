@@ -87,6 +87,30 @@ pub struct QueuedDamage {
 // TODO(black-box): replace with a real volume-overlap test.
 pub(crate) const TRIGGER_HURT_RADIUS: f32 = 128.0;
 
+/// How often a blocked mover that does not reverse — a `func_train`/
+/// `func_tracktrain`, `func_rotating`, `func_plat` or `func_pendulum`
+/// still pushing into its blocker — deals its `dmg` to that blocker, in
+/// seconds. Project-authored: no page reviewed gives a rate for a mover's
+/// `dmg` (each only says it is dealt to whatever blocks it), and dealing it
+/// on every simulation step would be a hundred hits a second. Half a second
+/// is the cadence the cited `trigger_hurt` page gives for its own repeated
+/// hits ([`ohl_game::TRIGGER_HURT_INTERVAL_SECONDS`]), borrowed so the two
+/// kinds of standing hazard hurt at the same pace. A door reverses off its
+/// blocker and so deals its `dmg` once per blocked attempt, unpaced.
+pub(crate) const MOVER_DAMAGE_INTERVAL_SECONDS: f32 = ohl_game::TRIGGER_HURT_INTERVAL_SECONDS;
+
+/// One thinking monster as phase 12's mover code sees it; see
+/// `Systems::thinking_monsters`.
+struct MoverMonster {
+    entity: Entity,
+    origin: Vec3,
+    hull: Hull,
+    /// Its species table says it opens doors.
+    opens_doors: bool,
+    /// A mover pushes it, and is blocked by it (`Systems::moved_by_movers`).
+    moved_by_movers: bool,
+}
+
 /// Everything about the step list a host chooses rather than the map.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SystemsConfig {
@@ -322,7 +346,17 @@ pub struct Systems {
     /// acting on it, worked end to end) or by the player's own hull
     /// touching it (`Simulation::touch_doors`, `docs/FORMAT_SOURCES.md`
     /// item 30). Media-derived: data, never a log line from this crate.
+    /// Only the player's opens: a monster's are [`Self::monster_doors_opened`].
     doors_opened: u64,
+    /// How many closed doors a monster's own touch has opened since this
+    /// level was attached (`Simulation::touch_doors_by`); kept apart from
+    /// [`Self::doors_opened`], which counts the player's actions.
+    monster_doors_opened: u64,
+    /// How long until each `(mover, blocker)` pair that does not reverse
+    /// (a train, a `func_rotating`, a plat, a pendulum) may deal its `dmg`
+    /// again; see [`Self::resolve_blocked_movers`]. Not saved: a load
+    /// mid-crush deals the next hit up to one interval early.
+    mover_damage_cooldown: std::collections::BTreeMap<(Entity, Entity), f32>,
     /// How many `trigger_*` volumes have fired from the player's own hull
     /// touching them since this level was loaded; see
     /// [`crate::Game::touch_trigger_count`].
@@ -358,6 +392,8 @@ impl Systems {
             hitboxes: HitboxIndex::new(ohl_combat::HitboxLimits::default()),
             player_damage_events: 0,
             doors_opened: 0,
+            monster_doors_opened: 0,
+            mover_damage_cooldown: std::collections::BTreeMap::new(),
             touch_triggers_fired: 0,
         }
     }
@@ -390,6 +426,13 @@ impl Systems {
     #[must_use]
     pub fn doors_opened_count(&self) -> u64 {
         self.doors_opened
+    }
+
+    /// How many closed doors a monster's own touch has opened since this
+    /// level was attached. Data, never a log line.
+    #[must_use]
+    pub fn monster_doors_opened_count(&self) -> u64 {
+        self.monster_doors_opened
     }
 
     /// How many `trigger_*` volumes have fired from the player's own hull
@@ -1009,14 +1052,21 @@ impl Systems {
             // resolves that, by design), and treating that as a push —
             // let alone a block — would either double the lift's carry or
             // deal its `dmg` to its own passenger every tick.
-            let probe = collision.trace(
+            //
+            // So the brush underfoot is left out of both the embed probe and
+            // the push's own destination test: probing with it in would let
+            // it hide another mover's embed behind its own lower `BrushId`,
+            // and testing the destination with it in would report every
+            // push of a rider on a rising lift as a block.
+            let ground = controller.state.ground_brush;
+            let probe = collision.trace_ignoring(
                 controller.state.hull(),
                 controller.state.origin,
                 controller.state.origin,
+                ground,
             );
             if probe.start_solid
                 && let Some(brush) = probe.brush_index
-                && controller.state.ground_brush != Some(brush)
             {
                 // A rotating brush sweeping into the player counts here
                 // exactly like a translating one closing on them: the
@@ -1027,10 +1077,11 @@ impl Systems {
                 // and must not shove a player caught inside its hull.
                 let velocity = level.brush_mover_velocity(brush, controller.state.origin);
                 if velocity != Vec3::ZERO
-                    && !ohl_physics::push_from_mover(
+                    && !ohl_physics::push_from_mover_ignoring(
                         collision,
                         &mut controller.state,
                         velocity * dt,
+                        ground,
                     )
                 {
                     level.movers_blocked.push(brush);
@@ -1417,7 +1468,7 @@ impl Systems {
         // spawnflag says otherwise (`ohl_game::logic::Simulation::
         // touch_doors_by`, `docs/FORMAT_SOURCES.md`, "Mover blocking,
         // branching paths and monster-opened doors").
-        self.doors_opened += Self::monster_door_touches(level) as u64;
+        self.monster_doors_opened += Self::monster_door_touches(level) as u64;
         // A mover that could not push the player clear this step
         // (`Level::movers_blocked`, phase 2), or that a monster's hull is
         // embedded in with nowhere to be pushed to, is *blocked*: a door
@@ -1436,32 +1487,80 @@ impl Systems {
     }
 
     /// Every monster still thinking this step — anything with an
-    /// `ohl_ai::MonsterAi` — with its origin and hull, in entity order.
+    /// `ohl_ai::MonsterAi` — as phase 12's mover code sees it, in entity
+    /// order.
     ///
     /// That component is what keeps a corpse out: phase 10 retires a
     /// monster the step it dies (`crate::ai`'s `retire` strips its
     /// `MonsterAi` and leaves the `Actor` behind as the corpse), so by
     /// phase 12 nothing dead is in this list. It also keeps out the
     /// player's own client `Actor`, which never carries one.
-    fn thinking_monsters(level: &Level) -> Vec<(Entity, Vec3, Hull)> {
-        let mut monsters: Vec<(Entity, Vec3, Hull)> = level
+    fn thinking_monsters(level: &Level) -> Vec<MoverMonster> {
+        let mut monsters: Vec<MoverMonster> = level
             .registry
             .world
-            .query::<(Entity, &ohl_ai::Actor)>()
+            .query::<(
+                Entity,
+                &ohl_ai::Actor,
+                Option<&ohl_game::registry::ClassName>,
+                Option<&ohl_ai::Impervious>,
+            )>()
             .with::<&ohl_ai::MonsterAi>()
             .iter()
-            .map(|(entity, actor)| (entity, actor.origin, actor.hull))
+            .map(|(entity, actor, classname, impervious)| {
+                let kind = ohl_ai::monsters::MonsterKind::from_classname(
+                    classname.map_or("", |classname| classname.0.as_str()),
+                );
+                let spec = ohl_ai::monsters::spec_for(&kind);
+                let not_solid = impervious.is_some();
+                MoverMonster {
+                    entity,
+                    origin: actor.origin,
+                    hull: actor.hull,
+                    opens_doors: spec.is_some_and(|spec| spec.can_open_doors),
+                    moved_by_movers: !not_solid && Self::moved_by_movers(&kind, spec),
+                }
+            })
             .collect();
-        monsters.sort_unstable_by_key(|(entity, _, _)| entity.id());
+        monsters.sort_unstable_by_key(|monster| monster.entity.id());
         monsters
     }
 
+    /// Whether a mover pushes, and is blocked by, a monster of this kind:
+    /// anything that moves under its own power. A species the table marks
+    /// [`ohl_ai::monsters::MonsterFlags::ROOTED`] (a barnacle hanging from
+    /// its ceiling, a piece of `monster_furniture`), a turret, a
+    /// mini-turret, a sentry and a tentacle stay fixed where the map put
+    /// them. A door closing on one would otherwise be blocked by it on
+    /// every attempt, and would shove it aside like a walker. A
+    /// `monster_generic` with its "Not solid" spawnflag
+    /// (`ohl_ai::Impervious`, checked by the caller) is out too: a prop
+    /// published as not solid is nothing for a mover to push or be stopped
+    /// by. Project-authored: no page describes a mover meeting a mounted
+    /// monster. See `docs/FORMAT_SOURCES.md`, "Mover blocking, branching
+    /// paths and monster-opened doors".
+    fn moved_by_movers(
+        kind: &ohl_ai::monsters::MonsterKind,
+        spec: Option<&ohl_ai::monsters::MonsterSpec>,
+    ) -> bool {
+        use ohl_ai::monsters::{MonsterFlags, MonsterKind};
+        !spec.is_some_and(|spec| spec.flags.contains(MonsterFlags::ROOTED))
+            && !matches!(
+                kind,
+                MonsterKind::Turret
+                    | MonsterKind::MiniTurret
+                    | MonsterKind::Sentry
+                    | MonsterKind::Tentacle
+            )
+    }
+
     /// Phase 12's monster half of the door touch: calls
-    /// `Simulation::touch_doors_by` once per thinking monster
-    /// ([`Self::thinking_monsters`], so never a corpse) with that monster's
-    /// own hull box, at the position its AI put it this step. Returns how
-    /// many doors were actually started opening, for the same
-    /// `doors_opened` count the player's touch feeds.
+    /// `Simulation::touch_doors_by` once per thinking monster that its
+    /// species table says opens doors (`ohl_ai::monsters::MonsterSpec::
+    /// can_open_doors`; a headcrab, a turret or a leech never does), with
+    /// that monster's own hull box at the position its AI put it this step.
+    /// Returns how many doors were actually started opening, for
+    /// [`Self::monster_doors_opened`].
     ///
     /// A monster held by a script (`ohl_ai::ScriptHold`) is *not* skipped:
     /// a `scripted_sequence` walking its monster to a mark is exactly the
@@ -1469,13 +1568,16 @@ impl Systems {
     /// walk through the same `Actor` origin.
     fn monster_door_touches(level: &mut Level) -> usize {
         let mut opened = 0;
-        for (monster, origin, hull) in Self::thinking_monsters(level) {
-            let (mins, maxs) = HULL_SIZES[hull.index()];
+        for monster in Self::thinking_monsters(level) {
+            if !monster.opens_doors {
+                continue;
+            }
+            let (mins, maxs) = HULL_SIZES[monster.hull.index()];
             opened += level.simulation.touch_doors_by(
                 &mut level.registry,
-                Some(monster),
-                origin + Vec3::from_array(mins),
-                origin + Vec3::from_array(maxs),
+                Some(monster.entity),
+                monster.origin + Vec3::from_array(mins),
+                monster.origin + Vec3::from_array(maxs),
             );
         }
         opened
@@ -1485,23 +1587,38 @@ impl Systems {
     ///
     /// Two sources of "blocked": the attached brushes phase 2 could not
     /// push the *player* clear of (`Level::movers_blocked`), and any
-    /// thinking monster ([`Self::thinking_monsters`]) whose hull the
-    /// monster-side collision model finds embedded in a moving attached
-    /// brush that cannot push it clear either — the same destination test
-    /// `ohl_physics::push_from_mover` applies to the player, run here
-    /// against `Level::monster_collision` because no other phase moves a
-    /// monster out of a mover's way (AI movement does not ride or dodge
-    /// movers; see `Level::sync_monster_brush_collision`).
-    /// A monster whose destination *is* clear is pushed there, exactly as
-    /// the player is, so a closing door shoves a monster aside before it
-    /// ever counts as blocked by it.
+    /// thinking monster a mover moves ([`Self::moved_by_movers`]) whose
+    /// hull a mover moved into this step with nowhere to push it to — the
+    /// same destination test `ohl_physics::push_from_mover` applies to the
+    /// player, run here against `Level::monster_collision` because no other
+    /// phase moves a monster out of a mover's way (AI movement does not
+    /// ride or dodge movers; see `Level::sync_monster_brush_collision`). A
+    /// monster whose destination *is* clear is pushed there, as the player
+    /// is, so a closing door shoves a monster aside before it ever counts
+    /// as blocked by it, and a lift carries a monster standing on it.
+    /// Pushing monsters at all is project-authored: the cited pages say
+    /// what a blocked mover does, not that a mover shoves a monster.
     ///
-    /// Each blocked mover then goes through `Simulation::block_mover` once
-    /// per blocker: a door reverses and deals its `dmg`, everything else
-    /// deals its `dmg` and carries on (see that method for the citations).
-    /// Damage is queued with `DamageType::CRUSH`, the type
-    /// `crate::damage_map` maps to the player's own `Crush` kind, and with
-    /// no attacker: nobody is credited with a door.
+    /// "Moved into it this step" is checked against that one mover alone
+    /// (`ohl_physics::CollisionModel::trace_brush`): a monster that is
+    /// still inside the mover at the place the mover's own move would have
+    /// carried it to was inside it *before* the move too, so the embed is
+    /// not this step's doing and the monster is left alone. That is what
+    /// keeps a monster whose map origin sits at its feet — most of them,
+    /// in real maps, while every AI trace here reads the origin as the
+    /// hull's centre — from being "blocked" by the floor of every lift it
+    /// stands on, on every step.
+    ///
+    /// Every blocked mover then goes through `Simulation::block_movers`
+    /// once per step, however many things blocked it: a door reverses and
+    /// deals its `dmg`, everything else deals its `dmg` and carries on
+    /// (see that method for the citations). A mover that carries on stays
+    /// in its blocker's way and is reported again every step, so its `dmg`
+    /// is dealt at most once per [`MOVER_DAMAGE_INTERVAL_SECONDS`] per
+    /// blocker, not 100 times a second. Damage is queued with
+    /// `DamageType::CRUSH`, the type `crate::damage_map` maps to the
+    /// player's own `Crush` kind, and with no attacker: nobody is credited
+    /// with a door.
     fn resolve_blocked_movers(&mut self, level: &mut Level, dt: f32) {
         let mut blocked: Vec<(Entity, Entity)> = Vec::new();
         for brush in std::mem::take(&mut level.movers_blocked) {
@@ -1514,7 +1631,8 @@ impl Systems {
         // that entity's player-side attachment.
         let monsters = Self::thinking_monsters(level);
         if let Some(collision) = level.monster_collision.as_ref() {
-            for (monster, origin, hull) in monsters {
+            for monster in monsters.iter().filter(|monster| monster.moved_by_movers) {
+                let (origin, hull) = (monster.origin, monster.hull);
                 let probe = collision.trace(hull, origin, origin);
                 let (true, Some(brush)) = (probe.start_solid, probe.brush_index) else {
                     continue;
@@ -1523,45 +1641,69 @@ impl Systems {
                 else {
                     continue;
                 };
+                // The brush's own motion only (`Level::brush_mover_velocity`),
+                // as the player's push reads it: a conveyor's belt is a
+                // floor, not a piston, so it neither shoves a monster
+                // caught in its hull nor counts as blocked by one.
                 let velocity = level
                     .brush_collision
                     .iter()
                     .find(|(entity, _)| *entity == mover)
                     .map_or(Vec3::ZERO, |(_, brush)| {
-                        level.brush_ride_velocity(*brush, origin)
+                        level.brush_mover_velocity(*brush, origin)
                     });
                 if velocity == Vec3::ZERO {
                     continue;
                 }
                 let candidate = origin + velocity * dt;
-                if collision.trace(hull, candidate, candidate).start_solid {
-                    blocked.push((mover, monster));
+                if collision
+                    .trace_brush(hull, candidate, candidate, brush)
+                    .start_solid
+                {
                     continue;
                 }
-                if let Ok(mut actor) = level.registry.world.get::<&mut ohl_ai::Actor>(monster) {
+                if collision.trace(hull, candidate, candidate).start_solid {
+                    blocked.push((mover, monster.entity));
+                    continue;
+                }
+                if let Ok(mut actor) = level
+                    .registry
+                    .world
+                    .get::<&mut ohl_ai::Actor>(monster.entity)
+                {
                     actor.origin = candidate;
                 }
-                if let Ok(mut transform) = level.registry.world.get::<&mut Transform>(monster) {
+                if let Ok(mut transform) =
+                    level.registry.world.get::<&mut Transform>(monster.entity)
+                {
                     transform.origin = candidate;
                 }
             }
         }
-        blocked.sort_unstable_by_key(|(mover, blocker)| (mover.id(), blocker.id()));
-        for (mover, blocker) in blocked {
-            let Some(dmg) = Simulation::block_mover(&mut level.registry, mover) else {
-                continue;
-            };
+        self.mover_damage_cooldown.retain(|_, left| {
+            *left -= dt;
+            *left > 0.0
+        });
+        for hit in Simulation::block_movers(&mut level.registry, &blocked) {
+            if hit.keeps_moving {
+                let key = (hit.mover, hit.blocker);
+                if self.mover_damage_cooldown.contains_key(&key) {
+                    continue;
+                }
+                self.mover_damage_cooldown
+                    .insert(key, MOVER_DAMAGE_INTERVAL_SECONDS);
+            }
             let origin = level
                 .registry
                 .world
-                .get::<&Transform>(blocker)
+                .get::<&Transform>(hit.blocker)
                 .map_or(Vec3::ZERO, |transform| transform.origin);
             self.damage_queue.push(QueuedDamage {
-                target: blocker,
+                target: hit.blocker,
                 info: ohl_combat::DamageInfo {
                     attacker: None,
-                    inflictor: Some(crate::ids::entity_id(mover)),
-                    amount: dmg,
+                    inflictor: Some(crate::ids::entity_id(hit.mover)),
+                    amount: hit.dmg,
                     kind: ohl_combat::DamageType::CRUSH,
                     origin,
                     direction: Vec3::ZERO,

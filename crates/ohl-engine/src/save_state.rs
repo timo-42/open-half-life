@@ -1524,6 +1524,158 @@ pub(crate) fn restore_switches(level: &mut Level, snapshots: &[Option<SwitchSnap
     }
 }
 
+// --- `SECTION_PATH_STATE` (40) ---------------------------------------------
+
+/// One registry entity's share of `SECTION_PATH_STATE` (tag 40): a
+/// `path_track` switch's position, a train's route, or (never both) neither.
+///
+/// Part of a **new** tag rather than a field on tag 28's
+/// [`TrackTrainSnapshot`] or tag 18's entity snapshot, both frozen at their
+/// own wire shapes (see `crate::save`'s "Frozen section shapes").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PathStateSnapshot {
+    /// A `path_track` with a documented "Branch Path": whether a walk
+    /// leaving it follows the branch (`ohl_game::registry::Path::
+    /// branch_active`). `None` for every other entity.
+    pub branch_active: Option<bool>,
+    /// A `func_train`/`func_tracktrain`: the chain it holds. `None` for
+    /// every other entity.
+    pub train_chain: Option<TrainChainSnapshot>,
+}
+
+/// The chain a train holds, as its nodes' `Registry::entities` indices in
+/// chain order, and whether the last node wraps to the first.
+///
+/// Saved as it is rather than rebuilt from the train's `target` on load,
+/// because after a thrown switch, a loop re-rooted at the node a branch
+/// rejoined, or a `func_trackchange` handover, the two differ — and tag
+/// 28's node index and progress only mean anything on the chain they were
+/// measured along.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrainChainSnapshot {
+    /// Each node's index into `Registry::entities`, in chain order.
+    pub nodes: Vec<u32>,
+    /// `ohl_game::PathChain::looped`.
+    pub looped: bool,
+}
+
+/// The most entities one `SECTION_PATH_STATE` section records, matching
+/// [`MAX_SNAPSHOT_ENTITIES`] — the same per-registry-slot cap every other
+/// index-keyed section already uses.
+pub const MAX_SNAPSHOT_PATH_STATES: usize = MAX_SNAPSHOT_ENTITIES;
+
+/// `SECTION_PATH_STATE` (40)'s whole payload: one optional
+/// [`PathStateSnapshot`] per `Registry::entities` slot, in spawn order.
+#[must_use]
+pub(crate) fn snapshot_path_states(level: &Level) -> Vec<Option<PathStateSnapshot>> {
+    let registry = &level.registry;
+    let index_of: std::collections::HashMap<Entity, u32> = registry
+        .entities
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entity)| Some((*entity, u32::try_from(index).ok()?)))
+        .collect();
+    registry
+        .entities
+        .iter()
+        .take(MAX_SNAPSHOT_PATH_STATES)
+        .map(|entity| {
+            let branch_active = registry
+                .world
+                .get::<&ohl_game::registry::PathBranch>(*entity)
+                .ok()
+                .and_then(|_| {
+                    registry
+                        .world
+                        .get::<&ohl_game::registry::Path>(*entity)
+                        .ok()
+                })
+                .map(|path| path.branch_active);
+            let train_chain = registry
+                .world
+                .get::<&TrackTrainState>(*entity)
+                .ok()
+                .and_then(|state| {
+                    let nodes = state
+                        .chain()
+                        .nodes
+                        .iter()
+                        .map(|node| index_of.get(&node.entity).copied())
+                        .collect::<Option<Vec<u32>>>()?;
+                    Some(TrainChainSnapshot {
+                        nodes,
+                        looped: state.chain().looped,
+                    })
+                });
+            (branch_active.is_some() || train_chain.is_some()).then_some(PathStateSnapshot {
+                branch_active,
+                train_chain,
+            })
+        })
+        .collect()
+}
+
+/// Restores [`snapshot_path_states`], zipped against
+/// `level.registry.entities` in spawn order: every switch first, then every
+/// train's chain. Must run *before* tag 28's train restore, which puts each
+/// train back at its saved node and progress on whatever chain it holds by
+/// then. A chain that does not resolve against this map (an index out of
+/// range, or a node that is not a path node) is skipped, leaving that train
+/// on the chain it spawned with.
+pub(crate) fn restore_path_states(level: &mut Level, snapshots: &[Option<PathStateSnapshot>]) {
+    let entities = level.registry.entities.clone();
+    for (entity, snapshot) in entities.iter().zip(snapshots) {
+        let Some(active) = snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.branch_active)
+        else {
+            continue;
+        };
+        if level
+            .registry
+            .world
+            .get::<&ohl_game::registry::PathBranch>(*entity)
+            .is_ok()
+            && let Ok(mut path) = level
+                .registry
+                .world
+                .get::<&mut ohl_game::registry::Path>(*entity)
+        {
+            path.branch_active = active;
+        }
+    }
+    for (entity, snapshot) in entities.iter().zip(snapshots) {
+        let Some(saved) = snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.train_chain.as_ref())
+        else {
+            continue;
+        };
+        let Some(nodes) = saved
+            .nodes
+            .iter()
+            .take(ohl_game::track_train::MAX_PATH_NODES + 1)
+            .map(|index| entities.get(usize::try_from(*index).ok()?).copied())
+            .collect::<Option<Vec<Entity>>>()
+        else {
+            continue;
+        };
+        let height = level
+            .registry
+            .world
+            .get::<&ohl_game::TrackTrain>(*entity)
+            .map_or(0.0, |train| train.height);
+        let Some(chain) =
+            ohl_game::PathChain::from_entities(&level.registry, &nodes, saved.looped, height)
+        else {
+            continue;
+        };
+        if let Ok(mut state) = level.registry.world.get::<&mut TrackTrainState>(*entity) {
+            state.restore_chain(chain);
+        }
+    }
+}
+
 // --- `SECTION_CARRIED_ENTITIES` (36) --------------------------------------
 
 /// The most entity definitions one `SECTION_CARRIED_ENTITIES` section
