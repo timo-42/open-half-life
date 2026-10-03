@@ -8153,7 +8153,7 @@ unexpected line, which the review round's scenario changes cover, and
 the same load-bound timeout.
 
 
-## M9.NEXT — brush collision remains live after player death
+## M9.46 — brush collision remains live after player death
 
 World brush collision no longer depends on the player's movement running.
 Phase 2a of `Systems::step` synchronizes both collision models, refreshes
@@ -8176,6 +8176,12 @@ old and new door edges with point traces, frozen corpse position and a
 single death event. Moving phase 2a back under the alive guard fails the
 old-edge assertion (exit 101); restoring it passes.
 
-**Gates.** The focused regression and its mutation/restoration probe pass.
-Final workspace and smoke gates are pending on this draft; this entry
-will record their aggregate results before review acceptance.
+**Gates.** fmt; clippy for the workspace with all targets, default
+features, `--features dev-tools` and `--all-features`; `cargo test
+--workspace`, 2773 passed, 0 failed, 31 ignored; policy; graph;
+combat-smoke 37/37 with 0 unexpected lines; campaign-smoke 93/93; and
+chain-walk at **distinct depth 12**, Pass, 660.8 simulated seconds, both
+with `--start-inventory ""` and with
+`--start-inventory weapon_357,ammo_357,ammo_357`. The focused regression
+and mutation/restoration probe also pass as described above. No
+probing output or imported assets are committed.
