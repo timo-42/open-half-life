@@ -29,7 +29,7 @@ fn exercise(bytes: &[u8]) {
         let _ = (sample_loop.start_frame, sample_loop.end_frame);
     }
 
-    let buffer = Arc::new(SoundBuffer::from_decoded(&wav));
+    let buffer = Arc::new(SoundBuffer::from_decoded(wav));
     let _ = buffer.byte_len();
     let joined = SoundBuffer::concatenate(&[Arc::clone(&buffer), Arc::clone(&buffer)]);
 

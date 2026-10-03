@@ -30,12 +30,11 @@
 //! count or byte count from a payload ever reaches a log line. Nothing in
 //! this module logs at all.
 
-use std::collections::HashMap;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use ohl_audio::device::{NullSink, OutputDevice, open_default_device};
-use ohl_audio::mixer::{ChannelClass, Mixer, PlayRequest, SoundBuffer, SoundSpatial};
+use ohl_audio::mixer::{ChannelClass, Mixer, PlayRequest, SoundBuffer, SoundSpatial, spatial};
 use ohl_audio::{Listener, wav};
 use ohl_engine::{AssetSource, SoundAsset, SoundCue};
 
@@ -142,7 +141,7 @@ impl SoundCache {
         let decoded = source
             .read(path)
             .and_then(|bytes| wav::decode(&bytes).ok())
-            .map(|wav| Arc::new(SoundBuffer::from_decoded(&wav)))
+            .map(|wav| Arc::new(SoundBuffer::from_decoded(wav)))
             .filter(|buffer| buffer.frame_count() > 0);
         self.insert(path.to_string(), decoded)
     }
@@ -174,7 +173,7 @@ impl SoundCache {
             let Ok(decoded) = wav::decode(&bytes) else {
                 continue;
             };
-            let buffer = SoundBuffer::from_decoded(&decoded);
+            let buffer = SoundBuffer::from_decoded(decoded);
             if buffer.frame_count() > 0 {
                 parts.push(Arc::new(buffer));
             }
@@ -198,13 +197,24 @@ impl SoundCache {
 
     /// Inserts `entry` under `key`, evicting least-recently-used entries
     /// until both bounds hold again, and returns it.
-    fn insert(&mut self, key: String, entry: Option<Arc<SoundBuffer>>) -> Option<Arc<SoundBuffer>> {
-        let size = entry.as_ref().map_or(0, |buffer| buffer.byte_len());
-        // A single asset larger than the whole cache is played but never
-        // held, rather than evicting everything else to make room for it.
-        if size > self.max_bytes {
-            return entry;
+    fn insert(
+        &mut self,
+        key: String,
+        mut entry: Option<Arc<SoundBuffer>>,
+    ) -> Option<Arc<SoundBuffer>> {
+        // A single asset larger than the whole cache is too large to play.
+        // Holding it would evict everything else, and not holding it would
+        // mean reading and decoding it again on every play, which is the
+        // cost this cache exists to avoid. It is remembered as a miss
+        // instead, like a file the payload does not carry: decoded once,
+        // then ignored for free.
+        if entry
+            .as_ref()
+            .is_some_and(|buffer| buffer.byte_len() > self.max_bytes)
+        {
+            entry = None;
         }
+        let size = entry.as_ref().map_or(0, |buffer| buffer.byte_len());
         self.bytes = self.bytes.saturating_add(size);
         self.entries.insert(key.clone(), entry.clone());
         self.order.push_back(key);
@@ -265,6 +275,18 @@ pub(crate) struct AudioRuntime {
     sink: Sink,
     mixer: Arc<Mutex<Mixer>>,
     cache: SoundCache,
+    /// Every looping sound a cue started on the static class and no cue has
+    /// stopped since, by entity: a level's standing ambience.
+    ///
+    /// The mixer's static pool holds `ChannelClass::Static.capacity()`
+    /// voices and evicts the oldest to start another, while the engine's
+    /// presentation phase tracks more ambients than that and announces
+    /// each one once. An evicted loop would otherwise be silent for the
+    /// rest of the map with the engine still believing it plays. Each
+    /// frame, [`AudioRuntime::frame`] gives the pool to the loudest of
+    /// these at the listener's position and restarts any of those the
+    /// pool had dropped (see [`AudioRuntime::readmit_standing`]).
+    standing: BTreeMap<u32, PlayRequest>,
 }
 
 impl AudioRuntime {
@@ -290,6 +312,7 @@ impl AudioRuntime {
             sink,
             mixer,
             cache: SoundCache::new(),
+            standing: BTreeMap::new(),
         }
     }
 
@@ -344,6 +367,9 @@ impl AudioRuntime {
     /// `ohl_gameplay::sounds`).
     pub(crate) fn play(&mut self, source: &dyn AssetSource, cue: &SoundCue) {
         if cue.stop {
+            if cue.class == ChannelClass::Static {
+                self.standing.remove(&cue.entity);
+            }
             if let Ok(mut mixer) = self.mixer.lock() {
                 mixer.stop(cue.entity, cue.class);
             }
@@ -363,6 +389,14 @@ impl AudioRuntime {
                 attenuation: sane(cue.attenuation, ohl_engine::ATTN_NORM).max(0.0),
             }),
         };
+        if request.class == ChannelClass::Static {
+            if request.buffer.loop_range.is_some() {
+                self.standing.insert(request.entity, request.clone());
+            } else {
+                // A one-shot on an entity that used to loop replaces it.
+                self.standing.remove(&request.entity);
+            }
+        }
         if let Ok(mut mixer) = self.mixer.lock() {
             mixer.play(request);
         }
@@ -373,29 +407,69 @@ impl AudioRuntime {
     /// `ohl_engine`'s presentation phase), and the map being left must not
     /// keep humming underneath it.
     pub(crate) fn stop_all(&mut self) {
+        self.standing.clear();
         if let Ok(mut mixer) = self.mixer.lock() {
-            for class in [
-                ChannelClass::Auto,
-                ChannelClass::Weapon,
-                ChannelClass::Voice,
-                ChannelClass::Item,
-                ChannelClass::Body,
-                ChannelClass::Stream,
-                ChannelClass::Static,
-            ] {
-                mixer.stop_class(class);
+            mixer.stop_all();
+        }
+    }
+
+    /// Hands the static pool to the standing loops that should have it,
+    /// and restarts any of those the pool had evicted.
+    ///
+    /// When every standing loop fits beside the pool's one-shots, every one
+    /// plays. When they do not, the loudest at the listener's position play
+    /// — by the mixer's own spatial gain, so a "play everywhere" loop is
+    /// never the one dropped — ties broken by entity so the choice never
+    /// depends on iteration order. A loop dropped this way is stopped
+    /// rather than left to be evicted later, and it starts again from its
+    /// beginning when it is loud enough to win a voice back.
+    fn readmit_standing(&mut self) {
+        if self.standing.is_empty() {
+            return;
+        }
+        let Ok(mut mixer) = self.mixer.lock() else {
+            return;
+        };
+        let class = ChannelClass::Static;
+        let standing_playing = self
+            .standing
+            .keys()
+            .filter(|entity| mixer.is_playing(**entity, class))
+            .count();
+        let one_shots = mixer.channel_count(class).saturating_sub(standing_playing);
+        let room = class.capacity().saturating_sub(one_shots);
+
+        let listener = mixer.listener();
+        let mut by_loudness: Vec<(f32, u32)> = self
+            .standing
+            .iter()
+            .map(|(entity, request)| (loudness(&listener, request), *entity))
+            .collect();
+        by_loudness.sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+        let (keep, dropped) = by_loudness.split_at(room.min(by_loudness.len()));
+        for (_, entity) in dropped {
+            mixer.stop(*entity, class);
+        }
+        for (_, entity) in keep {
+            if !mixer.is_playing(*entity, class)
+                && let Some(request) = self.standing.get(entity)
+            {
+                mixer.play(request.clone());
             }
         }
     }
 
-    /// Advances the mixer by one host frame's worth of audio.
+    /// Advances the mixer by one host frame's worth of audio, after handing
+    /// the static pool to the standing loops that should have it
+    /// ([`Self::readmit_standing`]).
     ///
-    /// A real device's own callback is already pulling, so this is a
+    /// A real device's own callback is already pulling, so pumping is a
     /// no-op there (`OutputDevice::pump`'s default). A headless sink is
     /// pumped for `dt` seconds' worth of frames, so a non-looping sound
     /// still ends and its channel is still reclaimed in a run nobody can
     /// hear.
     pub(crate) fn frame(&mut self, dt: f32) {
+        self.readmit_standing();
         let dt = if dt.is_finite() {
             dt.clamp(0.0, MAX_PUMP_SECONDS)
         } else {
@@ -408,6 +482,15 @@ impl AudioRuntime {
             self.sink.as_device().pump(frames);
         }
     }
+}
+
+/// How loud `request` is at `listener`: the larger of the two per-ear gains
+/// the mixer itself would apply, or its volume when it is not spatialised.
+fn loudness(listener: &Listener, request: &PlayRequest) -> f32 {
+    request.spatial.map_or(request.volume, |at| {
+        let gain = spatial::spatial_gain(listener, at, request.volume);
+        gain.left.max(gain.right)
+    })
 }
 
 /// `fallback` for a value a bad keyvalue could have made non-finite.
@@ -450,11 +533,31 @@ pub(crate) mod fixtures {
         }
         wav
     }
+
+    /// [`synthetic_wav`] with a `cue ` chunk holding one cue point at frame
+    /// zero: a sound that loops over its whole length, the published
+    /// single-cue-point convention `ohl_audio::wav::DecodedWav::effective_loop`
+    /// reads. Project-authored bytes.
+    pub(crate) fn looping_synthetic_wav(frames: usize) -> Vec<u8> {
+        let mut wav = synthetic_wav(frames);
+        wav.extend_from_slice(b"cue ");
+        wav.extend_from_slice(&28u32.to_le_bytes());
+        wav.extend_from_slice(&1u32.to_le_bytes()); // one cue point
+        wav.extend_from_slice(&1u32.to_le_bytes()); // its id
+        wav.extend_from_slice(&0u32.to_le_bytes()); // position
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&0u32.to_le_bytes()); // chunk start
+        wav.extend_from_slice(&0u32.to_le_bytes()); // block start
+        wav.extend_from_slice(&0u32.to_le_bytes()); // sample offset
+        let riff_size = u32::try_from(wav.len() - 8).expect("fixture fits");
+        wav[4..8].copy_from_slice(&riff_size.to_le_bytes());
+        wav
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::fixtures::synthetic_wav;
+    use super::fixtures::{looping_synthetic_wav, synthetic_wav};
     use super::{AudioRuntime, SoundCache};
     use ohl_audio::mixer::ChannelClass;
     use ohl_engine::{MemoryAssets, SoundAsset, SoundCue};
@@ -465,7 +568,25 @@ mod tests {
         assets.insert("sound/ohl/one.wav", synthetic_wav(64));
         assets.insert("sound/ohl/two.wav", synthetic_wav(32));
         assets.insert("sound/ohl/broken.wav", vec![0x00; 48]);
+        assets.insert("sound/ohl/loop.wav", looping_synthetic_wav(64));
         assets
+    }
+
+    fn mixer_of(audio: &AudioRuntime) -> std::sync::MutexGuard<'_, ohl_audio::Mixer> {
+        audio.mixer().lock().expect("lock mixer")
+    }
+
+    /// An [`ohl_engine::AssetSource`] that counts how often it is read.
+    struct CountingAssets {
+        inner: MemoryAssets,
+        reads: std::cell::Cell<usize>,
+    }
+
+    impl ohl_engine::AssetSource for CountingAssets {
+        fn read(&self, asset_path: &str) -> Option<Vec<u8>> {
+            self.reads.set(self.reads.get() + 1);
+            self.inner.read(asset_path)
+        }
     }
 
     #[test]
@@ -519,17 +640,22 @@ mod tests {
         assert!(cache.resolve(&assets, &two).is_some());
     }
 
+    /// An asset whose samples alone exceed the whole cache is not played,
+    /// and is remembered as a miss, so it is read and decoded once rather
+    /// than on every play.
     #[test]
-    fn an_entry_larger_than_the_whole_cache_plays_without_being_held() {
-        let assets = assets();
+    fn an_entry_larger_than_the_whole_cache_is_remembered_as_a_miss() {
+        let assets = CountingAssets {
+            inner: assets(),
+            reads: std::cell::Cell::new(0),
+        };
         let mut cache = SoundCache::with_limits(16, 8);
-        assert!(
-            cache
-                .resolve(&assets, &SoundAsset::file("sound/ohl/one.wav"))
-                .is_some()
-        );
+        let big = SoundAsset::file("sound/ohl/one.wav");
+        assert!(cache.resolve(&assets, &big).is_none());
+        assert!(cache.resolve(&assets, &big).is_none());
+        assert_eq!(assets.reads.get(), 1, "decoded once, not on every play");
         assert_eq!(cache.byte_len(), 0);
-        assert_eq!(cache.len(), 0);
+        assert_eq!(cache.len(), 1);
     }
 
     #[test]
@@ -597,37 +723,146 @@ mod tests {
         );
     }
 
+    /// Every class, not a list of them: a sound on any channel the map
+    /// being left started stops, and a standing loop is not brought back
+    /// by the next frame.
     #[test]
     fn a_level_change_silences_everything_that_was_playing() {
         let assets = assets();
         let mut audio = AudioRuntime::silent();
-        for entity in 0..3u32 {
+        let classes = [
+            ChannelClass::Auto,
+            ChannelClass::Weapon,
+            ChannelClass::Voice,
+            ChannelClass::Item,
+            ChannelClass::Body,
+            ChannelClass::Stream,
+            ChannelClass::Static,
+        ];
+        for (entity, class) in (0u32..).zip(classes) {
+            audio.play(
+                &assets,
+                &SoundCue::new(entity, class, SoundAsset::file("sound/ohl/loop.wav")),
+            );
+        }
+        assert_eq!(mixer_of(&audio).active_channel_count(), classes.len());
+
+        audio.stop_all();
+        assert_eq!(mixer_of(&audio).active_channel_count(), 0);
+        audio.frame(1.0 / 60.0);
+        assert_eq!(
+            mixer_of(&audio).active_channel_count(),
+            0,
+            "nothing the map that was left had standing comes back"
+        );
+    }
+
+    /// A cue's volume and pitch are what the mixer plays it at. Half the
+    /// volume is half the amplitude, and twice the pitch runs the same
+    /// buffer out in half the frames.
+    #[test]
+    fn a_cues_volume_and_pitch_reach_the_mixer() {
+        let assets = assets();
+        let one = || {
+            SoundCue::new(
+                1,
+                ChannelClass::Static,
+                SoundAsset::file("sound/ohl/one.wav"),
+            )
+        };
+        let rendered = |cue: &SoundCue, frames: usize| {
+            let mut audio = AudioRuntime::silent();
+            audio.play(&assets, cue);
+            let mut out = vec![0.0f32; frames * 2];
+            let mut mixer = mixer_of(&audio);
+            mixer.render(&mut out);
+            (out, mixer.active_channel_count())
+        };
+
+        let (full, _) = rendered(&one(), 16);
+        let (half, _) = rendered(&one().with_gain(0.5, 1.0), 16);
+        let peak = |out: &[f32]| {
+            out.iter()
+                .fold(0.0f32, |peak, sample| peak.max(sample.abs()))
+        };
+        assert!(peak(&full) > 0.0);
+        assert!(
+            (peak(&half) - peak(&full) * 0.5).abs() < 1e-6,
+            "{} vs {}",
+            peak(&half),
+            peak(&full)
+        );
+
+        // 64 frames at 22.05 kHz into a 44.1 kHz mix: 128 output frames at
+        // normal pitch, 64 at double.
+        let (_, normal) = rendered(&one(), 100);
+        let (_, doubled) = rendered(&one().with_gain(1.0, 2.0), 100);
+        assert_eq!(normal, 1, "still playing at normal pitch");
+        assert_eq!(doubled, 0, "run out at double pitch");
+    }
+
+    /// More looping ambients than the static pool holds: the loudest at
+    /// the listener play, and a quieter one evicted to make room comes
+    /// back when the listener walks up to it or a voice frees up. Without
+    /// this, the first ones started would be evicted for good while the
+    /// engine still believed they played.
+    #[test]
+    fn standing_loops_beyond_the_static_pool_play_the_loudest_and_come_back() {
+        let assets = assets();
+        let mut audio = AudioRuntime::silent();
+        audio.set_listener([0.0, 0.0, 0.0], 0.0);
+        let capacity = ChannelClass::Static.capacity();
+        let total = u32::try_from(capacity + 6).expect("a small pool");
+        // Started nearest first, so the pool's own oldest-first eviction
+        // would drop exactly the nearest six.
+        for entity in 0..total {
+            #[allow(clippy::cast_precision_loss, reason = "a small fixture index")]
+            let distance = 10.0 + 10.0 * entity as f32;
             audio.play(
                 &assets,
                 &SoundCue::new(
                     entity,
                     ChannelClass::Static,
-                    SoundAsset::file("sound/ohl/one.wav"),
-                ),
+                    SoundAsset::file("sound/ohl/loop.wav"),
+                )
+                .at([distance, 0.0, 0.0], ohl_engine::ATTN_NORM),
             );
         }
+        audio.frame(1.0 / 60.0);
+        {
+            let mixer = mixer_of(&audio);
+            assert_eq!(mixer.channel_count(ChannelClass::Static), capacity);
+            for entity in 0..total {
+                let nearest = usize::try_from(entity).expect("small") < capacity;
+                assert_eq!(
+                    mixer.is_playing(entity, ChannelClass::Static),
+                    nearest,
+                    "entity {entity}"
+                );
+            }
+        }
+
+        // Walk up to the farthest: it wins a voice, the new farthest loses one.
+        #[allow(clippy::cast_precision_loss, reason = "a small fixture index")]
+        let farthest = 10.0 + 10.0 * (total - 1) as f32;
+        audio.set_listener([farthest, 0.0, 0.0], 0.0);
+        audio.frame(1.0 / 60.0);
+        assert!(mixer_of(&audio).is_playing(total - 1, ChannelClass::Static));
+        assert!(!mixer_of(&audio).is_playing(0, ChannelClass::Static));
+
+        // Stop ten: everything left fits, and every one of them plays.
+        for entity in 0..10 {
+            audio.play(&assets, &SoundCue::stopping(entity, ChannelClass::Static));
+        }
+        audio.frame(1.0 / 60.0);
+        let mixer = mixer_of(&audio);
         assert_eq!(
-            audio
-                .mixer()
-                .lock()
-                .expect("lock mixer")
-                .active_channel_count(),
-            3
+            mixer.channel_count(ChannelClass::Static),
+            usize::try_from(total - 10).expect("small")
         );
-        audio.stop_all();
-        assert_eq!(
-            audio
-                .mixer()
-                .lock()
-                .expect("lock mixer")
-                .active_channel_count(),
-            0
-        );
+        for entity in 10..total {
+            assert!(mixer.is_playing(entity, ChannelClass::Static), "{entity}");
+        }
     }
 
     #[test]
