@@ -4,6 +4,8 @@
 //! standing there still takes it over. Nothing outside the AI counts it as
 //! a threat either: it is not on the engine's list of monsters hostile to
 //! the player, so the guard loop neither aims at it nor backs away from it.
+//! And the marker, which has no save field, survives a save and load and a
+//! level change that carries the monster across.
 //!
 //! The second half is the shape of the eleventh chain hop's failure (see
 //! `docs/MILESTONES.md`): a map teleports the player in front of flagged
@@ -19,8 +21,9 @@
 //! spawnflag below is a published one recorded in `docs/FORMAT_SOURCES.md`.
 
 use ohl_engine::test_support::{
-    PLAN_SCRIPTED_MONSTER_MODEL, SCRIPT_MAP, entity_block, entity_of_classname,
-    plan_scripted_monster_model_bytes, script_game, script_room_bsp, script_room_entities,
+    LANDMARK, NEXT_MAP, PLAN_SCRIPTED_MONSTER_MODEL, SCRIPT_MAP, SYNTHETIC_MAP, entity_block,
+    entity_of_classname, plan_scripted_monster_model_bytes, script_game, script_room_bsp,
+    script_room_entities, synthetic_map_bsp_with_extra_entity,
 };
 use ohl_engine::{Game, Input, MemoryAssets, TICK_SECONDS, guard_input};
 
@@ -78,7 +81,11 @@ fn tick(game: &mut Game, ticks: usize) {
 }
 
 fn is_prisoner(game: &Game) -> bool {
-    let monster = entity_of_classname(game, "monster_human_grunt").expect("the monster spawned");
+    is_prisoner_of(game, "monster_human_grunt")
+}
+
+fn is_prisoner_of(game: &Game, classname: &str) -> bool {
+    let monster = entity_of_classname(game, classname).expect("the monster spawned");
     game.registry()
         .world
         .get::<&ohl_ai::Prisoner>(monster)
@@ -214,4 +221,66 @@ fn an_empty_handed_guard_holds_its_ground_in_front_of_a_prisoner() {
         .map(|axis| (end[axis] - start[axis]).abs())
         .fold(0.0_f32, f32::max);
     assert!(moved < 1.0, "the guard never walks away from its spot");
+}
+
+/// The marker has no save field of its own: it is rebuilt from the map's
+/// own definition whenever a level is built, and a save is restored onto a
+/// freshly built level. So a prisoner saved is a prisoner loaded, and an
+/// ordinary monster stays ordinary.
+#[test]
+fn a_prisoner_is_still_a_prisoner_after_a_save_and_load() {
+    for (flags, expected) in [(PRISONER, true), ("0", false)] {
+        let entities = facing_room(flags);
+        let mut game = script_game(&entities);
+        tick(&mut game, 30);
+        let bytes = game.save_bytes(1_700_000_000).expect("the save is written");
+        let mut assets = MemoryAssets::new();
+        assets.insert(
+            &format!("maps/{SCRIPT_MAP}.bsp"),
+            script_room_bsp(&entities),
+        );
+        let reloaded = Game::load_bytes(&assets, &bytes).expect("the save loads");
+        assert_eq!(is_prisoner(&reloaded), expected, "spawnflags {flags}");
+    }
+}
+
+/// A prisoner the destination map does not declare arrives as one: a
+/// carried monster is re-created from its own carried keyvalues,
+/// `spawnflags` among them, and a save made after the change keeps it.
+#[test]
+fn a_carried_prisoner_arrives_a_prisoner_and_stays_one_across_a_save() {
+    let mut assets = MemoryAssets::new();
+    assets.insert(
+        &format!("maps/{SYNTHETIC_MAP}.bsp"),
+        synthetic_map_bsp_with_extra_entity(
+            NEXT_MAP,
+            &format!(
+                "{{\n\"classname\" \"monster_scientist\"\n\"targetname\" \"ohl_captive\"\n\
+                 \"spawnflags\" \"{PRISONER}\"\n\"origin\" \"48 0 32\"\n}}\n"
+            ),
+        ),
+    );
+    assets.insert(
+        &format!("maps/{NEXT_MAP}.bsp"),
+        synthetic_map_bsp_with_extra_entity(SYNTHETIC_MAP, ""),
+    );
+    let mut game = Game::load(&assets, SYNTHETIC_MAP).expect("the source map loads");
+    tick(&mut game, 5);
+    assert!(is_prisoner_of(&game, "monster_scientist"));
+
+    game.change_level(&assets, NEXT_MAP, LANDMARK)
+        .expect("the destination map loads");
+    assert_eq!(game.map(), NEXT_MAP);
+    assert!(
+        is_prisoner_of(&game, "monster_scientist"),
+        "the carried monster arrives a prisoner"
+    );
+
+    tick(&mut game, 5);
+    let bytes = game.save_bytes(1_700_000_000).expect("the save is written");
+    let reloaded = Game::load_bytes(&assets, &bytes).expect("the save loads");
+    assert!(
+        is_prisoner_of(&reloaded, "monster_scientist"),
+        "and is still one once that level is saved and loaded"
+    );
 }

@@ -144,19 +144,33 @@ impl Actor {
 /// prisoner never acquires an enemy — not by sight, not from a squad mate,
 /// not from being hurt — and no other monster's sight ever reads it as one
 /// ([`crate::senses::sighting_relationship`], the one hostility rule, reads
-/// every sighting with a prisoner on either end as
-/// [`crate::state::Relationship::NoRelationship`]). Never having an enemy,
-/// it never reaches [`crate::state::MonsterState::Combat`], which is what
-/// lets a `scripted_sequence` without `Override AI` take it over with the
-/// player standing in front of it — the use the first page names.
+/// a *hostile* relationship with a prisoner on either end as
+/// [`crate::state::Relationship::NoRelationship`]). An enemy it remembers
+/// from before — only a save made mid-fight can supply one — is dropped,
+/// together with any attack schedule it was restored into. Never having an
+/// enemy, it never reaches [`crate::state::MonsterState::Combat`], which is
+/// what lets a `scripted_sequence` without `Override AI` take it over with
+/// the player standing in front of it — the use the first page names.
 /// Everything else about it is left alone: it still idles, hears, walks a
-/// scripted route and plays a script's animations.
+/// scripted route and plays a script's animations, and fear and alliance
+/// are untouched both ways (a scientist still runs from an armed prisoner,
+/// and a prisoner scientist still runs from a real hostile), because
+/// neither is an attack.
 ///
 /// Derived from the entity definition's own spawnflags at spawn
 /// ([`crate::spawn::attach_monsters`]) and never changed afterwards, so it
 /// needs no save-file field: a restored or carried monster is rebuilt from
-/// the same definition. A `monstermaker`'s children carry no definition of
-/// their own and are never prisoners; no page says otherwise.
+/// the same definition (`ohl-engine`'s `tests/prisoner_monsters.rs` pins
+/// both). That rests on a reading, not on a published fact: that the flag
+/// never lifts. Whether a retail prisoner the player hurts turns on them is
+/// `TODO(black-box)`; if it does, the flag becomes runtime state and needs
+/// a save field of its own, with a save-format version bump. One older
+/// save shape already loses it: a level change captured before carried
+/// entities' keyvalues travelled re-creates a carried monster from its
+/// classname, names and placement alone, with no spawnflags, so a carried
+/// prisoner from such a save arrives an ordinary monster. A
+/// `monstermaker`'s children carry no definition of their own and are
+/// never prisoners; no page says otherwise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Prisoner;
 
@@ -578,6 +592,24 @@ impl AiWorld {
         // monster never acquires an enemy by any of the three routes below
         // — sight, a squad mate's shared enemy, or being hurt.
         let prisoner = world.get::<&Prisoner>(entity).is_ok();
+        if prisoner {
+            // Nothing below lets a prisoner acquire an enemy, but one can
+            // arrive from outside this tick: a save made mid-fight, before
+            // the flag was modelled, restores the memory and the attack
+            // schedule the monster was running. `EnemyMemory::occlude`
+            // would keep an unseen enemy within its range for good, and an
+            // attack task with no enemy still fires straight ahead. Drop
+            // both; neither can come back.
+            if ai.memory.take().is_some() {
+                events.push(AiEvent {
+                    entity,
+                    kind: AiEventKind::EnemyLost,
+                });
+            }
+            if ai.runner.schedule().is_some_and(attacks) {
+                ai.runner.clear();
+            }
+        }
         let viewer = Viewer {
             entity,
             origin: actor.origin,
@@ -1279,6 +1311,17 @@ impl MonsterExecutor<'_> {
     }
 }
 
+/// Whether `schedule` holds a task that attacks — the only tasks that
+/// emit [`AiEventKind::Attack`].
+fn attacks(schedule: &Schedule) -> bool {
+    schedule.tasks.iter().any(|task| {
+        matches!(
+            task,
+            Task::MeleeAttack1 | Task::MeleeAttack2 | Task::RangeAttack1 | Task::RangeAttack2
+        )
+    })
+}
+
 /// Convenience: spawns a monster with the standard component set.
 pub fn spawn_monster(world: &mut World, actor: Actor, brain: BrainId) -> Entity {
     world.spawn((actor, MonsterAi::new(brain)))
@@ -1520,6 +1563,78 @@ mod tests {
         let state = world.get::<&MonsterAi>(prisoner).expect("component");
         assert!(state.conditions.contains(Conditions::HEAVY_DAMAGE));
         assert!(state.enemy().is_none(), "hurt, and still no enemy");
+    }
+
+    /// A prisoner restored from a save made mid-fight — before the flag
+    /// was modelled — arrives remembering the player as its enemy, in the
+    /// combat state, part-way into an attack schedule. None of that may
+    /// survive its first tick: the memory is dropped (and reported lost),
+    /// the attack schedule is abandoned before its attack task can fire
+    /// straight ahead, and it never fights. The same restored state on an
+    /// unflagged monster is the control: it shoots.
+    #[test]
+    fn a_prisoner_restored_mid_fight_forgets_its_enemy_and_stops_attacking() {
+        use crate::brain::RANGE_ATTACK;
+        use crate::schedule::{ScheduleRunner, Task};
+        use crate::senses::EnemyMemory;
+
+        let restored = |prisoner: bool| {
+            let (mut ai, mut world, brain) = setup();
+            let player = spawn_actor(
+                &mut world,
+                Actor::new(Classification::Player, Vec3::new(200.0, 0.0, 0.0)).as_client(),
+            );
+            let mut state = MonsterAi::new(brain);
+            state.state = MonsterState::Combat;
+            state.memory = Some(EnemyMemory {
+                entity: player,
+                last_known_position: Vec3::new(200.0, 0.0, 0.0),
+                time_since_seen: 0.0,
+                occluded: false,
+                last_known_distance: 200.0,
+            });
+            // Restored the way `ohl-engine`'s save path restores it: by
+            // name and task index, here sitting on the attack task itself,
+            // past the face-the-enemy step that would otherwise fail
+            // without an enemy and abandon the schedule first.
+            let attack_task = RANGE_ATTACK
+                .tasks
+                .iter()
+                .position(|task| matches!(task, Task::RangeAttack1))
+                .expect("the schedule attacks");
+            state.runner = ScheduleRunner::restore(RANGE_ATTACK.name, attack_task, false, 0.0);
+            let monster =
+                world.spawn((Actor::new(Classification::HumanMilitary, Vec3::ZERO), state));
+            if prisoner {
+                world.insert_one(monster, Prisoner).expect("spawned");
+            }
+            let mut events = Vec::new();
+            for _ in 0..100 {
+                events.extend(ai.tick(&mut world, &SightContext::empty(), DT));
+            }
+            (world, monster, events)
+        };
+        let attacked = |events: &[super::AiEvent]| {
+            events
+                .iter()
+                .any(|event| matches!(event.kind, AiEventKind::Attack { .. }))
+        };
+
+        let (_, _, events) = restored(false);
+        assert!(attacked(&events), "the control: the restored fight goes on");
+
+        let (world, monster, events) = restored(true);
+        assert!(!attacked(&events), "a restored prisoner never fires");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.entity == monster && event.kind == AiEventKind::EnemyLost),
+            "the remembered enemy is reported lost"
+        );
+        let state = world.get::<&MonsterAi>(monster).expect("component");
+        assert!(state.enemy().is_none(), "the remembered enemy is gone");
+        assert_ne!(state.state, MonsterState::Combat);
+        assert_ne!(state.runner.schedule_name(), RANGE_ATTACK.name);
     }
 
     /// The other half of the same sentence: a prisoner is not attacked

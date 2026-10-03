@@ -3025,13 +3025,18 @@ counterpart in `ohl-ai`'s sound classification and is recorded as
   Modelled as the narrowest reading of the two that a map can rely on: a
   prisoner never acquires an enemy, whether by sight, from a squad mate's
   shared enemy, or from being hurt; and every sighting with a prisoner on
-  either end — a prisoner looking, or a prisoner looked at — reads as "no
-  relationship" whatever the class matrix says, so no monster ever chooses
-  one as its enemy either. Having no enemy, a prisoner never enters the
-  combat state, so a `scripted_sequence` without `Override AI` still takes
-  it over with the player in front of it — the use the first source names
-  (see "Scripted sequences and talk monsters" for the published
-  `Override AI` rule this depends on). These readings are this project's:
+  either end — a prisoner looking, or a prisoner looked at — that the class
+  matrix calls hostile reads as "no relationship" instead, so no monster
+  ever chooses one as its enemy either. Having no enemy, a prisoner never
+  enters the combat state, so a `scripted_sequence` without `Override AI`
+  still takes it over with the player in front of it — the use the first
+  source names (see "Scripted sequences and talk monsters" for the
+  published `Override AI` rule this depends on). These readings are this
+  project's:
+  - Only attacking is suppressed. Fear and alliance are not attacks, so
+    neither source speaks to them and both are left as the class matrix
+    has them, both ways: a scientist still runs from an armed prisoner, and
+    a prisoner scientist still runs from a real hostile.
   - "Normal AI is disabled" is read as *hostility* disabled, not the whole
     monster switched off: it still idles, hears, and walks and plays a
     script, because the same entry's next sentence is about putting it in
@@ -3039,6 +3044,9 @@ counterpart in `ohl-ai`'s sound classification and is recorded as
   - Being hurt does not lift the flag; neither source names an exception.
     Whether a retail prisoner shot by the player turns on them is
     `TODO(black-box)`.
+  - An enemy a prisoner already remembers is dropped, along with any
+    attack schedule it is running. Only a save made mid-fight, before this
+    flag was modelled, can supply either.
   - A `monstermaker`'s children are built from its `monstertype` alone and
     carry no spawnflags of their own, so they are never prisoners.
   - The engine's list of monsters hostile to the player
@@ -3050,7 +3058,16 @@ counterpart in `ohl-ai`'s sound classification and is recorded as
 
   The marker is derived from the entity definition's own spawnflags when
   the level is built and never changes, so it needs no save field: a
-  carried or restored monster is rebuilt from the same definition.
+  carried or restored monster is rebuilt from the same definition, and
+  `crates/ohl-engine/tests/prisoner_monsters.rs` pins both. **That design
+  depends on the reading above that the flag never lifts.** If the
+  black-box answer to "does a prisoner the player hurts turn on them?" is
+  yes, the flag is runtime state, and it needs a save field of its own and
+  a save-format version bump. One older save shape already loses it: a
+  level change captured before carried entities' keyvalues travelled
+  re-creates a carried monster from its classname, names and placement
+  alone, with no spawnflags, so a carried prisoner from such a save
+  arrives an ordinary monster.
 
 ## Track trains and paths
 
