@@ -8195,7 +8195,7 @@ last cell. The cooldown survives release/re-press. A held beam and alternating
 primary input both produce **10 hits, 140 damage and 10 cells spent in one
 second** through the engine's actual input, collision and monster intake.
 The existing real-input gargantua kill regression retains the species' health
-and supplies additional synthetic cell pickups to finish the fight.
+and original synthetic loadout, which fills the 100-cell reserve.
 
 The charged-weapon audit also found that a gauss release applied a normal
 20-damage shot and then its charged amount as a second hit. The engine now

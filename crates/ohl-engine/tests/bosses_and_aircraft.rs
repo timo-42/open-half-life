@@ -251,12 +251,8 @@ fn the_players_egon_kills_a_gargantua() {
     tick(&mut game, 1);
     assert!(health_of(&game, garg) < full, "and cost it health");
     assert!(game.monster_damage_event_count() > 0);
-    // The original four cell boxes cannot kill at 14 damage per cell.
-    // Replenish with synthetic start-inventory grants while retaining the
-    // species' published health and real weapon-to-monster damage path.
-    for _ in 0..4 {
-        game.give_start_inventory(&[StartInventoryItem::Ammo(AmmoType::Uranium)]);
-    }
+    // The original synthetic loadout fills the 100-cell reserve, enough
+    // for the species' health at 14 damage per cell and the timed cadence.
     fire_for(&mut game, 1_000);
     assert_eq!(game.monster_death_count(), 1, "the gargantua died");
 }
