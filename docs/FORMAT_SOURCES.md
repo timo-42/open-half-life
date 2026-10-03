@@ -6624,13 +6624,16 @@ it". Per literal:
 reaches the player through `ohl_engine::Level::brush_ride_velocity`, the
 same `ohl_physics::PlayerController::base_velocity` seam a moving
 `func_train` already carries a rider through, and so only while the
-player's ground brush is the conveyor ("pushes things on top of it"). It is
-kept apart from the brush's own (zero) translation velocity, which is also
-what the "a mover is closing on the player" push-out reads: a conveyor is a
-floor, not a piston. Monsters, pushables and dropped items are not carried.
-The texture scroll is not implemented. `TODO(black-box)`: a reversed
-conveyor's sign is not part of the save format, and is not carried across
-a level change; a save restores its spawn direction.
+player's ground brush is the conveyor ("pushes things on top of it"). The
+"a mover is closing on the player" push-out reads
+`Level::brush_mover_velocity` instead, the brush's own translation and
+rotation without the belt: a conveyor is a floor, not a piston, and a
+player caught inside one is not a player it is closing on. Monsters,
+pushables and dropped items are not carried. The texture scroll is not
+implemented. A reversed conveyor's signed speed is saved (save tag 39,
+`SECTION_SWITCH_STATE`), so a load keeps the direction a spent trigger
+left it running in. `TODO(black-box)`: it is not carried across a level
+change.
 
 ### `func_wall_toggle`
 
@@ -6655,12 +6658,25 @@ The flag is re-read every step, and once before the level is handed out,
 so a wall that starts invisible is not solid even for the spawn settle. Its
 submodel is built at load whether it starts visible or not
 (`ohl_game::brush::buildable_model_instances`), so switching it on has
-geometry to draw. `TODO(black-box)`: a user comment on the TWHL page says
-the entity "can be solid or non-solid for players, but is always solid to
-grenades/bullets"; this project follows the page's own description and
-VDC's "non-solid" instead, so hitscan traces and projectiles, which trace
-the player's collision model, pass through a wall that is off. Like the
-conveyor's sign, the switched state is not saved.
+geometry to draw.
+
+**Project-authored:** a wall switched on while the player or a living
+monster stands inside it does not turn solid around them: the push-out
+that frees a player from a closing mover only acts on a brush that moves,
+so a wall appearing around someone would embed them for good. Each step
+the wall stays non-solid, in both collision models, while anyone's hull is
+embedded in it alone, and it turns solid the first step nobody is
+(`Level::hold_toggled_walls_for_occupants`). Its map-logic state is on
+throughout, and it is drawn. No reviewed source says what the original
+does here; refusing to turn solid cannot strand anyone. The switched state
+is saved (save tag 39), so a load keeps a wall a spent trigger switched;
+`TODO(black-box)`: it is not carried across a level change.
+
+`TODO(black-box)`: a user comment on the TWHL page says the entity "can be
+solid or non-solid for players, but is always solid to grenades/bullets";
+this project follows the page's own description and VDC's "non-solid"
+instead, so hitscan traces and projectiles, which trace the player's
+collision model, pass through a wall that is off.
 
 ### `player_weaponstrip`
 
@@ -6670,9 +6686,11 @@ carrying." Its only keyvalue is `targetname`; no spawnflags. The VDC
 GoldSrc page ([Player weaponstrip (GoldSrc)](https://developer.valvesoftware.com/wiki/Player_weaponstrip_(GoldSrc)),
 search-engine result summary) adds that it "only strips the player's
 weapons; any other items, primarily the player's HEV Suit, will not be
-removed", and records as a known bug of the original that the HUD's ammo
-display is not cleared, "only changing the ammo pool to 0 and leaving you
+removed". Its note on a known bug of the original says the strip leaves
+the HUD's ammo display, "only changing the ammo pool to 0 and leaving you
 with the number of bullets that were in your magazine before the strip".
+This project reads the pool going to zero as the entity's behaviour, and
+the magazine count left on screen as the bug.
 
 Implemented as `ohl_game::logic::Event::WeaponStrip`, applied inside the
 fixed step by `ohl_engine::Game::apply_weapon_strips`: every weapon goes,
@@ -6680,7 +6698,8 @@ and every reserve pool is set to zero (`ohl_combat::Inventory::strip_weapons`,
 the engine's `AmmoBank`). The suit and the long jump module stay ("any
 other items"). **Project-authored:** each weapon's loaded clip is emptied
 too, and the firing state machine is reset, so a gun given back later
-comes back unloaded; the HUD bug the summary describes is not reproduced.
+comes back unloaded; and the HUD's clip and reserve numbers are cleared,
+so the bug the summary describes is not reproduced.
 
 ### `trigger_endsection`
 
@@ -6694,12 +6713,19 @@ the player walking into it, but must be triggered by another entity"
 
 Implemented as `ohl_game::logic::Event::EndSection`, raised by a touch of
 its volume (unless USE Only) or a fire by name, and only when `section` is
-set; `ohl_engine::GameEvent::EndSection` carries nothing map-derived, and
-the `section` string never leaves `ohl-engine`. The interactive window
-does what the page says — it stops ticking the game and shows the main
-menu. **Project-authored:** a scripted or headless run has no menu, so
-there the run simply ends where it stands, logging the fixed line "The
-section ended."; no web page is ever opened. `TODO(black-box)`: the same
+set — with no `section` the entity is given no touch volume either, so it
+does nothing by either path, not even fire a `target`.
+`ohl_engine::GameEvent::EndSection` carries nothing map-derived, and the
+`section` string never leaves `ohl-engine`. The interactive window does
+what the page says: it stops ticking the game, stops its sounds, clears
+its HUD and shows the main menu, dropping whatever else the same frame
+produced (a level change after it must not load a map behind the menu).
+**Project-authored:** a run with no menu ends where it stands, logging the
+fixed line "The section ended." once — a scripted run runs none of its
+remaining ticks, a still capture keeps the frame it ended on, a benchmark
+stops, and a chain walk reports "The chain walk ended its section." on
+its own row rather than as a route that ran out of ticks. No web page is
+ever opened. `TODO(black-box)`: the same
 page says the entity "requires the player as its activator" and so cannot
 be fired through a `trigger_relay` or a `multisource`, "since those would
 make themselves the activator instead". This project's map logic does not
@@ -6746,6 +6772,11 @@ granting nothing, and on pickup the entity's own `target` is fired
 target on pickup — no page reviewed here says the same of a weapon, ammo
 box or other item, and doing it for all of them would change every map's
 pickups at once. The carried count is not modelled: nothing reads it.
+
+Whether a pickup has been taken is saved (save tag 39) for every pickup,
+not only the card: before it, a load brought every taken pickup back to
+be taken again, and a card's `target` fired a second time.
+`TODO(black-box)`: a charger's remaining reservoir is still not saved.
 
 ### Not done
 
