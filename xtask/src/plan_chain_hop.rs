@@ -662,6 +662,15 @@ mod admission_tests {
         (exit, String::from_utf8(output).expect("utf8"))
     }
 
+    // Rust normalizes source CRLF pairs before tokenization; filesystem reads do
+    // not. This cross-check follows that source contract, preserving lone CR.
+    fn source_has_planner_header(source: &str) -> bool {
+        let header = CANDIDATE_HEADER
+            .strip_suffix('\n')
+            .expect("extra separator");
+        source.replace("\r\n", "\n").contains(header)
+    }
+
     fn assert_private(output: &str) {
         for poison in POISONS {
             assert!(!output.contains(poison));
@@ -820,10 +829,21 @@ mod admission_tests {
             .expect("workspace");
         let source = std::fs::read_to_string(workspace.join("crates/ohl-app/src/route_planner.rs"))
             .expect("serializer source");
-        let header = CANDIDATE_HEADER
-            .strip_suffix('\n')
-            .expect("extra separator");
-        assert!(source.contains(header));
+        assert!(source_has_planner_header(&source));
+        let lf = source.replace("\r\n", "\n");
+        assert!(source_has_planner_header(&lf));
+        assert!(source_has_planner_header(&lf.replace('\n', "\r\n")));
+        assert!(!source_has_planner_header(
+            &lf.replace("# Commands only:", "# Commands changed:")
+        ));
+        assert!(!source_has_planner_header(
+            &lf.replace("# Commands only:", "# Commands \ronly:")
+        ));
+        let candidate = format!("{CANDIDATE_HEADER}1 wait\n");
+        assert!(
+            !valid_candidate(candidate.replace('\n', "\r\n").as_bytes()),
+            "candidate bytes remain exact"
+        );
     }
 
     #[test]

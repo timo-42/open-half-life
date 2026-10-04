@@ -7906,7 +7906,7 @@ tests; the original sources were restored and each normal test passed again.
 The controller script grammar is project-authored, documented in
 `docs/m79-design.md` §7 and `crates/ohl-app/src/script.rs`; its planner serializer
 is `crates/ohl-app/src/route_planner.rs::script_text` and `write_route`. This
-change adds no external format claim and no gameplay or replay policy.
+change adds no game-format claim and no gameplay or replay policy.
 
 The xtask admission check deliberately accepts only the serializer's published
 subset: positive bounded tick counts with `forward`, `forward jump`, `back`,
@@ -7953,3 +7953,11 @@ with an inherited stderr writer is not complete until bounded reading finishes;
 the deadline still applies after a cached successful exit. Synthetic descendants
 self-terminate and the test waits for observed reader completion before returning.
 The production capture path never waits for reader EOF past its deadline.
+
+The serializer-source header test normalizes only CRLF pairs in the Rust source
+text, matching the [Rust Reference input contract](https://doc.rust-lang.org/reference/input-format.html#crlf-normalization).
+Lone CR and all header content remain intact. LF/CRLF source fixtures agree;
+altered header text and an inserted lone CR are rejected. Candidate file bytes
+are not normalized: the production exact-header/UTF-8 admission policy stays
+unchanged. This test-only correction addresses the strongly supported newline
+cause of the Windows source-comparison failure; fresh Windows CI remains required.
