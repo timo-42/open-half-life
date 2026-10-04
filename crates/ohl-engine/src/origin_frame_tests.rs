@@ -784,3 +784,259 @@ fn model_eyes_separate_projectile_visibility_from_aim_and_keep_authored_geometry
         assert_eq!(result.deaths, 1);
     }
 }
+
+fn elevated_graph_script(custom_bottom: bool) -> (MemoryAssets, Game) {
+    elevated_graph_script_mode(custom_bottom, "1", "0")
+}
+
+fn elevated_graph_script_mode(
+    custom_bottom: bool,
+    mode: &str,
+    flags: &str,
+) -> (MemoryAssets, Game) {
+    use ohl_formats::test_support::{Bsp30Builder, CollisionBrush};
+    let bottom = if custom_bottom { -8.0 } else { 0.0 };
+    let classname = if custom_bottom {
+        "monster_generic"
+    } else {
+        "monster_barney"
+    };
+    let mut text = format!(
+        "{{\"classname\" \"worldspawn\"}}{}{}{}{}{}",
+        entity_block("info_player_start", [-200.0, -200.0, 36.0], 0.0, &[]),
+        entity_block(
+            classname,
+            [-100.0, 0.0, 48.0 - bottom],
+            0.0,
+            &[
+                ("targetname", "ohl_descent_actor"),
+                ("spawnflags", "16"),
+                ("model", "models/ohl-descent.mdl")
+            ]
+        ),
+        entity_block(
+            "scripted_sequence",
+            [100.0, 0.0, -bottom],
+            90.0,
+            &[
+                ("targetname", "ohl_descent_script"),
+                ("m_iszEntity", "ohl_descent_actor"),
+                ("m_fMoveTo", mode),
+                ("spawnflags", flags),
+                ("target", "ohl_descent_done")
+            ]
+        ),
+        entity_block(
+            "trigger_auto",
+            [0.0; 3],
+            0.0,
+            &[("target", "ohl_descent_script")]
+        ),
+        entity_block(
+            "trigger_changelevel",
+            [0.0; 3],
+            0.0,
+            &[
+                ("targetname", "ohl_descent_done"),
+                ("map", "ohlelsewhere"),
+                ("landmark", "ohl_descent_landmark")
+            ]
+        )
+    );
+    for x in [-100.0, 0.0, 100.0] {
+        for y in [-96.0, 0.0, 96.0] {
+            text.push_str(&entity_block("info_node", [x, y, 8.0], 0.0, &[]));
+        }
+    }
+    let mut builder = Bsp30Builder::new();
+    builder.set_entities_text(&text);
+    let heads = builder.push_collision_hulls(&[
+        CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+        CollisionBrush::box_brush([-8.0, -48.0, 0.0], [8.0, 48.0, 128.0]),
+    ]);
+    builder.push_model(
+        [-512.0, -512.0, -256.0],
+        [512.0; 3],
+        [0.0; 3],
+        heads,
+        2,
+        0,
+        0,
+    );
+    let bytes = builder.build();
+    let bounds = ([-8.0, -8.0, bottom], [8.0, 8.0, bottom + 60.0]);
+    let mut mdl = model([0.0, 0.0, bottom + 48.0], bounds, true);
+    for (base, values) in [(88, bounds.0), (100, bounds.1)] {
+        for (axis, value) in values.into_iter().enumerate() {
+            mdl[base + axis * 4..base + axis * 4 + 4].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+    let mut assets = MemoryAssets::new();
+    assets.insert(&format!("maps/{AI_MAP}.bsp"), bytes.clone());
+    assets.insert("models/ohl-descent.mdl", mdl);
+    let game = Game::from_map_bytes(&assets, AI_MAP, &bytes).expect("authored elevated graph");
+    (assets, game)
+}
+
+fn descent_actor(game: &Game, custom_bottom: bool) -> ohl_game::hecs::Entity {
+    crate::test_support::entity_of_classname(
+        game,
+        if custom_bottom {
+            "monster_generic"
+        } else {
+            "monster_barney"
+        },
+    )
+    .expect("walker")
+}
+
+fn assert_descent_anchor_geometry(game: &mut Game, custom_bottom: bool) -> Actor {
+    let entity = descent_actor(game, custom_bottom);
+    let actor = *game.registry().world.get::<&Actor>(entity).expect("actor");
+    let transform = *game
+        .registry()
+        .world
+        .get::<&Transform>(entity)
+        .expect("transform");
+    assert_eq!(
+        actor.body_frame,
+        if custom_bottom {
+            BodyFrame::ModelBottom(-8.0)
+        } else {
+            BodyFrame::Feet
+        }
+    );
+    assert_eq!(actor.origin, transform.origin);
+    assert_eq!(actor.yaw, transform.angles.y);
+    let placement = ohl_render::placement(transform.origin.to_array(), transform.angles.y);
+    assert_eq!(
+        [placement[12], placement[13], placement[14]],
+        actor.origin.to_array()
+    );
+    let (level, _) = game.level_and_systems_mut();
+    let mut index = HitboxIndex::new(HitboxLimits::default());
+    crate::combat::rebuild_hitbox_index(&mut index, level);
+    let entry = index
+        .entries()
+        .iter()
+        .find(|entry| entry.id == crate::ids::entity_id(entity))
+        .expect("posed body");
+    assert_eq!(entry.origin, actor.origin);
+    assert_eq!(entry.boxes.len(), 1);
+    assert_eq!(entry.boxes[0].min.z, if custom_bottom { -8.0 } else { 0.0 });
+    assert_eq!(
+        entry.boxes[0].max.z,
+        if custom_bottom { 52.0 } else { 60.0 }
+    );
+    actor
+}
+
+#[test]
+fn an_elevated_script_descends_completes_once_and_reconstructs_attachment_after_save() {
+    for custom_bottom in [false, true] {
+        let (assets, mut game) = elevated_graph_script(custom_bottom);
+        let first = assert_descent_anchor_geometry(&mut game, custom_bottom);
+        for _ in 0..40 {
+            game.tick(TICK_SECONDS, &Input::default());
+        }
+        let middle = assert_descent_anchor_geometry(&mut game, custom_bottom);
+        assert!(
+            middle.origin.z < first.origin.z && middle.origin.z > first.origin.z - 40.0,
+            "save during real bounded descent, before supported landing"
+        );
+        assert_eq!(middle.origin.truncate(), first.origin.truncate());
+        let save = game.to_save(0);
+        let mut loaded = Game::from_save(&assets, &save).expect("restore intermediate anchor");
+        assert_eq!(
+            assert_descent_anchor_geometry(&mut loaded, custom_bottom).origin,
+            middle.origin
+        );
+        for game in [&mut game, &mut loaded] {
+            let mut previous = middle;
+            let mut completions = 0;
+            let mut settled = false;
+            let mut detoured = false;
+            for _ in 0..1_200 {
+                completions += game
+                    .tick(TICK_SECONDS, &Input::default())
+                    .iter()
+                    .filter(|event| matches!(event, crate::GameEvent::LevelChange { .. }))
+                    .count();
+                let actor = assert_descent_anchor_geometry(game, custom_bottom);
+                let from = previous.query_origin();
+                let to = actor.query_origin();
+                assert!(
+                    (to - from).length() <= 40.0 * TICK_SECONDS + 0.001,
+                    "no teleport slice"
+                );
+                assert!(to.z <= from.z + 0.001);
+                assert!(to.z >= actor.hull.foot_offset());
+                let (level, _) = game.level_and_systems_mut();
+                let collision = level.monster_collision.as_ref().expect("world collision");
+                assert!(!collision.trace(actor.hull, from, to).blocked());
+                assert!(!collision.trace(actor.hull, to, to).start_solid);
+                if !settled {
+                    assert_eq!(actor.origin.truncate(), middle.origin.truncate());
+                }
+                settled |= to.z <= actor.hull.foot_offset() + 0.1;
+                detoured |= actor.origin.y.abs() > 64.0;
+                previous = actor;
+            }
+            assert!(
+                settled && detoured,
+                "actual support and a graph detour both occurred"
+            );
+            assert_eq!(completions, 1);
+            assert_eq!(game.script_completion_count(), 1);
+            assert_eq!(game.script_timeout_count(), 0);
+            assert!(game.script_navigation_stats().graph_steps > 0);
+            assert_eq!(game.script_navigation_stats().start_solid, 0);
+            assert_eq!(game.script_navigation_stats().untraced_steps, 0);
+            assert!(previous.origin.x > 65.0);
+        }
+    }
+}
+
+#[test]
+fn held_teleport_no_movement_and_turn_preserve_authoritative_script_placement() {
+    for (mode, flags) in [("4", "0"), ("0", "0"), ("5", "0"), ("0", "128")] {
+        let (_, mut game) = elevated_graph_script_mode(false, mode, flags);
+        let first = assert_descent_anchor_geometry(&mut game, false);
+        let mut completions = 0;
+        let mut held = false;
+        for _ in 0..600 {
+            completions += game
+                .tick(TICK_SECONDS, &Input::default())
+                .iter()
+                .filter(|event| matches!(event, crate::GameEvent::LevelChange { .. }))
+                .count();
+            let actor = assert_descent_anchor_geometry(&mut game, false);
+            held |= game.active_script_count() > 0;
+            if mode != "4" {
+                assert_eq!(actor.origin, first.origin);
+            }
+            if completions > 0 {
+                assert_eq!(
+                    actor.origin,
+                    if mode == "4" {
+                        Vec3::new(100.0, 0.0, 0.0)
+                    } else {
+                        first.origin
+                    }
+                );
+                let yaw = if mode == "0" && flags == "0" {
+                    0.0
+                } else {
+                    90.0
+                };
+                assert!((actor.yaw - yaw).abs() <= 5.0);
+                break;
+            }
+        }
+        assert!(held);
+        assert_eq!(completions, 1);
+        assert_eq!(game.script_completion_count(), 1);
+        assert_eq!(game.script_timeout_count(), 0);
+        assert_eq!(game.script_navigation_stats().graph_steps, 0);
+    }
+}

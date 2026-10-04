@@ -1371,19 +1371,16 @@ impl Systems {
     /// was before this phase existed. Phase 5 catches up the following
     /// step, once this phase has run.
     ///
-    /// A monster a `scripted_sequence` currently holds
-    /// ([`ohl_ai::ScriptHold`] present) is left alone: `crate::ai`'s
-    /// `place` is what moves a possessed monster's [`Transform`], and it is
-    /// meant to stay authoritative over whatever route `AiWorld::tick` ran
-    /// for that same monster while held, rather than have this phase
-    /// immediately overwrite it.
+    /// Scripted approach and facing also update Actor. Explicit script
+    /// placement writes Actor and Transform together, so copying the actor
+    /// here preserves those placements while keeping held locomotion visible
+    /// to rendering, posed hitboxes and saves throughout possession.
     fn sync_monster_transforms(level: &mut Level) {
         for (actor, transform) in &mut level
             .registry
             .world
             .query::<(&ohl_ai::Actor, &mut Transform)>()
             .with::<&ohl_ai::MonsterAi>()
-            .without::<&ohl_ai::ScriptHold>()
         {
             transform.origin = actor.origin;
             transform.angles.y = actor.yaw;

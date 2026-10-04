@@ -155,6 +155,57 @@ pub const fn flies(hull: Hull) -> bool {
     matches!(hull, Hull::Point)
 }
 
+/// One bounded vertical slice toward live support at an initial graph node.
+/// All positions use the centered query frame. `lowest_z` is the original
+/// attachment's total-drop bound; callers must not renew it after each slice.
+/// A full-hull support trace validates the whole downward lane, then the
+/// committed prefix and its occupancy are checked against the same live model.
+/// This is initial walking attachment, not gravity or general step traversal.
+pub(crate) fn descend_to_ground(
+    collision: &CollisionModel,
+    hull: Hull,
+    from: Vec3,
+    waypoint_z: f32,
+    lowest_z: f32,
+    max_step: f32,
+) -> Option<(Vec3, bool)> {
+    if flies(hull)
+        || !from.is_finite()
+        || !waypoint_z.is_finite()
+        || !lowest_z.is_finite()
+        || !max_step.is_finite()
+        || max_step <= 0.0
+        || lowest_z >= from.z
+        || !(from.z - lowest_z).is_finite()
+    {
+        return None;
+    }
+    let support = collision.trace(hull, from, Vec3::new(from.x, from.y, lowest_z));
+    if support.start_solid
+        || support.all_solid
+        || support.fraction >= 1.0
+        || support.plane_normal.z < ohl_physics::MoveConfig::default().slope_limit
+        || (support.end_pos.z - waypoint_z).abs()
+            > ohl_nav::graph::GROUND_CLEARANCE + ohl_physics::DIST_EPSILON
+        || support.end_pos.z > from.z
+    {
+        return None;
+    }
+    let target = from - Vec3::Z * (from.z - support.end_pos.z).min(max_step);
+    let sweep = collision.trace(hull, from, target);
+    if sweep.start_solid || sweep.all_solid {
+        return None;
+    }
+    let next = sweep.end_pos;
+    if collision.trace(hull, next, next).start_solid {
+        return None;
+    }
+    Some((
+        next,
+        next.z - support.end_pos.z <= ohl_physics::DIST_EPSILON,
+    ))
+}
+
 /// Moves `from` toward `target` by at most `speed * dt`, using clip-hull
 /// traces, with a step up over obstructions no taller than [`STEP_HEIGHT`].
 /// `from`, `target` and the returned position are centered hull queries;

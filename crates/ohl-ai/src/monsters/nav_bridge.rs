@@ -113,6 +113,16 @@ struct CachedRoute {
     steer: Steer,
     expected_origin: Vec3,
     direct: bool,
+    walking_attachment: bool,
+    attachment: InitialAttachment,
+}
+
+/// Derived route state, discarded with the cache; never part of a save.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum InitialAttachment {
+    Unchecked,
+    Descending { lowest_z: f32 },
+    Ready,
 }
 
 /// Aggregate routing diagnostics. Data only: no entity or map identifiers.
@@ -165,6 +175,7 @@ pub struct NavBridge {
     cache: HashMap<Entity, CachedRoute>,
     searches_used: usize,
     stats: NavigationStats,
+    max_attachment_drop: f32,
 }
 
 impl NavBridge {
@@ -184,6 +195,13 @@ impl NavBridge {
             cache: HashMap::new(),
             searches_used: 0,
             stats: NavigationStats::default(),
+            // Match BuildLimits' finite-positive normalization.
+            max_attachment_drop: if build_limits.max_drop.is_finite() && build_limits.max_drop > 0.0
+            {
+                build_limits.max_drop
+            } else {
+                BuildLimits::default().max_drop
+            },
         }
     }
 
@@ -271,6 +289,43 @@ impl NavBridge {
         max_step: f32,
         fallback: Fallback,
     ) -> Vec3 {
+        self.next_move_impl(
+            actor, origin, goal, hull, collision, max_step, fallback, false,
+        )
+    }
+
+    /// A centered query whose caller has verified a living, solid walking
+    /// actor. Allows supported descent at the first grounded graph attachment;
+    /// generic queries retain their existing movement contract.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn next_move_with_walking_attachment(
+        &mut self,
+        actor: Entity,
+        origin: Vec3,
+        goal: Vec3,
+        hull: Hull,
+        collision: &CollisionModel,
+        max_step: f32,
+        fallback: Fallback,
+    ) -> Vec3 {
+        self.next_move_impl(
+            actor, origin, goal, hull, collision, max_step, fallback, true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn next_move_impl(
+        &mut self,
+        actor: Entity,
+        origin: Vec3,
+        goal: Vec3,
+        hull: Hull,
+        collision: &CollisionModel,
+        max_step: f32,
+        fallback: Fallback,
+        walking_attachment: bool,
+    ) -> Vec3 {
         if !origin.is_finite() || !goal.is_finite() || !max_step.is_finite() {
             // `origin` itself may be the non-finite value, so it cannot be
             // handed back as-is; a fixed, finite point is the only answer
@@ -284,11 +339,12 @@ impl NavBridge {
 
         let stale = self.cache.get(&actor).is_none_or(|cached| {
             cached.hull != hull
+                || cached.walking_attachment != walking_attachment
                 || (cached.goal - goal).length() > PATH_REFRESH_DISTANCE
                 || !cached.expected_origin.abs_diff_eq(origin, 0.001)
         });
         if stale {
-            self.rebuild(actor, origin, goal, hull, collision);
+            self.rebuild(actor, origin, goal, hull, collision, walking_attachment);
         }
 
         let Some(cached) = self.cache.get_mut(&actor) else {
@@ -312,6 +368,17 @@ impl NavBridge {
         }
 
         let steer_limits = own_pace_steer_limits(&self.limits.steer, max_step);
+        if let Some(next) = initial_attachment_step(
+            cached,
+            origin,
+            collision,
+            max_step,
+            self.max_attachment_drop,
+            steer_limits.arrive_radius,
+        ) {
+            cached.expected_origin = next;
+            return next;
+        }
         let intent = cached
             .steer
             .next_move(origin, &cached.path, hull, collision, &steer_limits);
@@ -352,6 +419,7 @@ impl NavBridge {
     }
 
     /// Rebuilds (or drops) `actor`'s cached route toward `goal`.
+    #[allow(clippy::too_many_arguments)]
     fn rebuild(
         &mut self,
         actor: Entity,
@@ -359,6 +427,7 @@ impl NavBridge {
         goal: Vec3,
         hull: Hull,
         collision: &CollisionModel,
+        walking_attachment: bool,
     ) {
         if let Some(path) = straight_path_if_clear(collision, origin, goal, hull) {
             self.cache.insert(
@@ -370,6 +439,8 @@ impl NavBridge {
                     steer: Steer::new(),
                     expected_origin: origin,
                     direct: true,
+                    walking_attachment,
+                    attachment: InitialAttachment::Ready,
                 },
             );
             return;
@@ -386,6 +457,18 @@ impl NavBridge {
             )
             .filter(|path| !crate::movement::flies(hull) || !self.uses_ground_node(path))
             {
+                let attachment = if walking_attachment
+                    && !crate::movement::flies(hull)
+                    && path
+                        .nodes
+                        .first()
+                        .and_then(|node| self.graph.node(*node))
+                        .is_some_and(|node| node.kind == NodeKind::Ground && node.snapped)
+                {
+                    InitialAttachment::Unchecked
+                } else {
+                    InitialAttachment::Ready
+                };
                 self.cache.insert(
                     actor,
                     CachedRoute {
@@ -395,6 +478,8 @@ impl NavBridge {
                         steer: Steer::new(),
                         expected_origin: origin,
                         direct: false,
+                        walking_attachment,
+                        attachment,
                     },
                 );
                 return;
@@ -413,6 +498,59 @@ impl NavBridge {
                 .is_some_and(|node| node.kind.is_grounded())
         })
     }
+}
+
+/// A pending first attachment owns vertical movement until actual support.
+/// Returning None leaves ordinary steering untouched; Some can be a blocked
+/// retry at the current center. This never advances Steer's cursor itself.
+fn initial_attachment_step(
+    cached: &mut CachedRoute,
+    origin: Vec3,
+    collision: &CollisionModel,
+    max_step: f32,
+    max_drop: f32,
+    arrive_radius: f32,
+) -> Option<Vec3> {
+    if cached.attachment == InitialAttachment::Ready {
+        return None;
+    }
+    if max_step <= 0.0 {
+        return Some(origin);
+    }
+    let waypoint = *cached.path.waypoints.first()?;
+    if cached.attachment == InitialAttachment::Unchecked {
+        if cached.steer.cursor() != 0 {
+            cached.attachment = InitialAttachment::Ready;
+            return None;
+        }
+        let delta = waypoint - origin;
+        if delta.z >= 0.0
+            || delta.truncate().length() > arrive_radius
+            || delta.length() <= arrive_radius
+        {
+            return None;
+        }
+        cached.attachment = InitialAttachment::Descending {
+            lowest_z: origin.z - max_drop,
+        };
+    }
+    let InitialAttachment::Descending { lowest_z } = cached.attachment else {
+        return None;
+    };
+    let Some((next, landed)) = crate::movement::descend_to_ground(
+        collision,
+        cached.hull,
+        origin,
+        waypoint.z,
+        lowest_z,
+        max_step,
+    ) else {
+        return Some(origin);
+    };
+    if landed {
+        cached.attachment = InitialAttachment::Ready;
+    }
+    Some(next)
 }
 
 /// `limits` with its stuck window measured against this mover's own pace.

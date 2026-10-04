@@ -687,6 +687,7 @@ impl AiWorld {
             return;
         };
         let senses = brain.senses();
+        let walking_attachment = permits_ground_attachment(world, entity, &actor);
 
         let mut conditions = ai.pending_conditions;
         ai.pending_conditions = Conditions::EMPTY;
@@ -904,6 +905,7 @@ impl AiWorld {
                 context.collision,
                 self.navigator.as_mut(),
                 Fallback::Traced,
+                walking_attachment,
                 dt,
             );
             if let Some(navigator) = self.navigator.as_ref() {
@@ -1006,6 +1008,7 @@ impl AiWorld {
             context.collision,
             self.navigator.as_mut(),
             Fallback::Traced,
+            walking_attachment,
             dt,
         );
         if ai.move_speed > 0.0 {
@@ -1184,6 +1187,7 @@ fn snapshot_candidates(world: &World) -> Vec<Candidate> {
 /// the high-level "am I still moving, has the goal drifted" bookkeeping
 /// either way, so every other consumer (`WaitForMovement`, `StopMoving`,
 /// the determinism hash) is unaffected by whether a navigator is attached.
+#[allow(clippy::too_many_arguments)]
 fn advance_route(
     entity: Entity,
     actor: &mut Actor,
@@ -1191,6 +1195,7 @@ fn advance_route(
     collision: Option<&CollisionModel>,
     navigator: Option<&mut NavBridge>,
     fallback: Fallback,
+    walking_attachment: bool,
     dt: f32,
 ) -> f32 {
     if ai.move_speed <= 0.0 || ai.route.is_finished() {
@@ -1204,8 +1209,14 @@ fn advance_route(
     let query_goal = actor.body_frame.anchor_to_query(actor.hull, waypoint);
     let (position, distance) = match (navigator, collision) {
         (Some(navigator), Some(model)) => {
-            let next = navigator
-                .next_move_with(entity, query, query_goal, actor.hull, model, step, fallback);
+            let next = if walking_attachment {
+                navigator.next_move_with_walking_attachment(
+                    entity, query, query_goal, actor.hull, model, step, fallback,
+                )
+            } else {
+                navigator
+                    .next_move_with(entity, query, query_goal, actor.hull, model, step, fallback)
+            };
             (
                 actor.body_frame.query_to_anchor(actor.hull, next),
                 (next - query).length(),
@@ -1241,6 +1252,43 @@ fn advance_route(
         ai.move_speed = 0.0;
     }
     distance
+}
+
+/// Actor policy stays here, above the context-free centered navigation API.
+fn permits_ground_attachment(world: &World, entity: Entity, actor: &Actor) -> bool {
+    use crate::monsters::{MonsterFlags, MonsterKind, spec_for};
+    if !actor.alive
+        || actor.health <= 0.0
+        || actor.is_client
+        || movement::flies(actor.hull)
+        || !matches!(
+            actor.body_frame,
+            crate::BodyFrame::Feet | crate::BodyFrame::ModelBottom(_)
+        )
+        || world.get::<&Impervious>(entity).is_ok()
+    {
+        return false;
+    }
+    let Ok(class) = world.get::<&ohl_game::registry::ClassName>(entity) else {
+        return false;
+    };
+    let kind = MonsterKind::from_classname(&class.0);
+    spec_for(&kind).is_some_and(|spec| {
+        !spec.flags.contains(MonsterFlags::ROOTED) && !movement::flies(spec.hull)
+    }) && !matches!(
+        kind,
+        MonsterKind::Turret
+            | MonsterKind::MiniTurret
+            | MonsterKind::Sentry
+            | MonsterKind::Tentacle
+            | MonsterKind::Nihilanth
+            | MonsterKind::Furniture
+            | MonsterKind::Ichthyosaur
+            | MonsterKind::Leech
+            | MonsterKind::Apache
+            | MonsterKind::Osprey
+            | MonsterKind::AlienController
+    )
 }
 
 /// The no-collision-data fallback: move straight toward the waypoint,
@@ -1624,6 +1672,68 @@ mod tests {
             Classification::HumanMilitary,
         )));
         (ai, World::new(), brain)
+    }
+
+    #[test]
+    fn initial_ground_attachment_requires_a_known_living_solid_walking_policy() {
+        use crate::BodyFrame;
+        use ohl_game::registry::ClassName;
+        let mut world = World::new();
+        let entity = world.spawn((ClassName("monster_barney".into()),));
+        let baseline = Actor::new(Classification::PlayerAlly, Vec3::ZERO);
+        assert!(super::permits_ground_attachment(&world, entity, &baseline));
+        let mut custom = baseline;
+        custom.body_frame = BodyFrame::ModelBottom(-8.0);
+        assert!(super::permits_ground_attachment(&world, entity, &custom));
+        for frame in [
+            BodyFrame::Centered,
+            BodyFrame::Ceiling,
+            BodyFrame::FixedModelAnchor(Some(-8.0)),
+        ] {
+            let mut actor = baseline;
+            actor.body_frame = frame;
+            assert!(!super::permits_ground_attachment(&world, entity, &actor));
+        }
+        for variant in 0..4 {
+            let mut actor = baseline;
+            match variant {
+                0 => actor.is_client = true,
+                1 => actor.alive = false,
+                2 => actor.health = 0.0,
+                _ => actor.hull = ohl_physics::Hull::Point,
+            }
+            assert!(!super::permits_ground_attachment(&world, entity, &actor));
+        }
+        world
+            .insert_one(entity, super::Impervious)
+            .expect("impervious");
+        assert!(!super::permits_ground_attachment(&world, entity, &baseline));
+        world
+            .remove_one::<super::Impervious>(entity)
+            .expect("remove guard");
+        for classname in [
+            "monster_barnacle",
+            "monster_turret",
+            "monster_miniturret",
+            "monster_sentry",
+            "monster_tentacle",
+            "monster_nihilanth",
+            "monster_furniture",
+            "monster_ichthyosaur",
+            "monster_leech",
+            "monster_apache",
+            "monster_osprey",
+            "monster_alien_controller",
+            "ohl_unknown",
+        ] {
+            world.get::<&mut ClassName>(entity).expect("class").0 = classname.into();
+            assert!(
+                !super::permits_ground_attachment(&world, entity, &baseline),
+                "{classname}"
+            );
+        }
+        world.remove_one::<ClassName>(entity).expect("remove class");
+        assert!(!super::permits_ground_attachment(&world, entity, &baseline));
     }
 
     #[test]

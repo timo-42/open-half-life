@@ -8048,3 +8048,19 @@ its retirement and remaining routing defects recorded in the milestone.
 An independently centered synthetic low-step route also stalls with the
 predecessor's cache and arrival behavior. Its named P5 reproduction preserves
 that steering defect; it is not classified as a remaining origin conversion.
+
+
+The initial walking graph-attachment descent added with the authored-anchor
+work is project-authored locomotion policy, not a claim about original gravity.
+It reuses the graph's normalized `BuildLimits.max_drop`, steering arrival radius,
+`GROUND_CLEARANCE`, and physics slope/roundoff policy. The explicit caller
+permission excludes nonwalking/fixed/impervious/client/dead actors. Only a lower
+initial snapped ground waypoint that is near in XY but outside 3D arrival can
+begin descent; live full-hull support must match the waypoint, each vertical
+slice is bounded, and the original total drop allowance is retained until
+landing. No generic upward or later graph traversal behavior is inferred.
+Synthetic generated rooms establish the bounded support checks, moving-floor
+revalidation, preserved generic queries and saved intermediate continuation.
+Scripted Approach and Face already write Actor, and explicit placement writes
+Actor and Transform together; keeping their phase-8b synchronization common
+corrects a project implementation omission in rendering and save snapshots.

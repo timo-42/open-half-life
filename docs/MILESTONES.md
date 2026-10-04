@@ -8679,6 +8679,30 @@ finite metadata eye, removed fallback eye, removed owner exclusion and omitted
 projectile sweep. This establishes the project-authored eye-as-muzzle/aim
 policy's behavior without claiming universal species anatomy.
 
+A bounded initial ground-graph attachment descent is explicitly pulled into
+this milestone from P5. A living, solid, known walking actor opts in; generic
+centered queries, flight, rooted/mounted/swimming actors and fixed model anchors
+do not. Only the initial snapped ground waypoint, lower and horizontally within
+the existing arrival radius but outside its 3D radius, can start descent. Live
+selected-hull support must match that waypoint and lie within the original
+`BuildLimits.max_drop`. Each pure downward slice is capped by the normal movement
+budget; XY and cursor stay held until actual landing. A moved/removed floor,
+steep plane, intervening platform or embedded start blocks the pending descent.
+The cache records the actual returned center and reconstructs after restore;
+there is no new saved state, global gravity or general graph step/drop repair.
+
+The public Game continuation fixture also exposed a preexisting script-held
+synchronization omission: Approach/Face changed Actor while Transform stayed at
+spawn throughout possession. Phase 8b now synchronizes held actors too; explicit
+script placement already writes both components. Real uninterrupted and saved
+intermediate descents cover feet and custom model-bottom anchors, matching
+render/posed-hitbox placement and one completion. Teleport, no movement,
+turn-only and No Script Movement controls preserve their authored placement.
+The independent elevated-detour test failed before repair; focused navigation
+now passes 16 tests with the existing upward-step reproducer ignored, the caller
+policy test passes, and all 13 engine origin tests pass. Descent mutation probes
+and final candidate gates are still pending.
+
 P5 retains node-kind attachment, stuck-route recovery, ordinary steering's
 final sweep and XY-only script/Route arrival, including purely vertical flight. A named ignored synthetic low-step
 graph reproduction is an additional P5 obligation: it stalls with centered
