@@ -12,11 +12,10 @@
 //! death — as [`PresentationEvent`]s for [`crate::game::Game::tick`] to
 //! turn into the four additive `GameEvent` variants.
 //!
-//! Every *built-in* asset path this package ships — which WAV a weapon
-//! fires with, which one a pickup is taken with — is still `None`: no
-//! clean-room provenance review has yet admitted one (see
-//! `docs/CLEAN_ROOM.md` rule 7 and `ohl_gameplay::sounds`'s own module
-//! docs). Cues whose path the *map* supplies are a different matter, and
+//! Built-in weapon/pickup asset lookups remain unresolved. Three reviewed
+//! HEV sentence identifiers use the runtime sentence table instead (see
+//! `docs/FORMAT_SOURCES.md`, "Bounded HEV damage sentence audio").
+//! Cues whose path the *map* supplies are a different matter, and
 //! they do carry one: [`Presentation::ambient`] below emits an
 //! `ambient_generic`'s own published `message` keyvalue, and
 //! `crate::ai`'s `scripted_sentence` handling emits the word samples the
@@ -84,6 +83,38 @@ impl Presentation {
     /// when a level is attached or the systems are reset.
     pub(crate) fn forget_ambients(&mut self) {
         self.ambients.clear();
+    }
+
+    /// Adds one sentence cue per mapped, already-emitted suit event.
+    /// The producer owns eligibility and cooldown; the normal tick still
+    /// forwards its complete metadata. No condition is reconstructed here.
+    ///
+    /// Project-authored: immediate listener-relative Voice playback at normal
+    /// gain/pitch. TODO(black-box): original delay/priority/channel policy;
+    /// multiple same-owner cues replace playback rather than queue speech.
+    pub(crate) fn suit_audio(
+        &mut self,
+        player_tag: u32,
+        sentences: &SentenceLookup,
+        player_events: &[PlayerEvent],
+    ) {
+        for event in player_events {
+            let PlayerEvent::Suit(suit) = event else {
+                continue;
+            };
+            let Some(name) = suit_sentence(suit.occasion) else {
+                continue;
+            };
+            let asset = ohl_gameplay::SoundAsset::sentence(
+                sentences.words(name).into_iter().map(|word| word.0),
+            );
+            self.events
+                .push(PresentationEvent::Sound(ohl_gameplay::SoundCue::new(
+                    player_tag,
+                    ohl_gameplay::ChannelClass::Voice,
+                    asset,
+                )));
+        }
     }
 
     /// Phase 13 — syncs the HUD from this step's player events, decays the
@@ -199,6 +230,18 @@ impl Presentation {
     }
 }
 
+/// Exact identifiers and broad associations from the reviewed public HEV
+/// Quotes source; no WAV paths, word lists or trigger thresholds are implied.
+fn suit_sentence(occasion: ohl_player::SuitOccasion) -> Option<&'static str> {
+    use ohl_player::SuitOccasion;
+    match occasion {
+        SuitOccasion::HeatDamage => Some("HEV_FIRE"),
+        SuitOccasion::ShockDamage => Some("HEV_SHOCK"),
+        SuitOccasion::MinorFracture => Some("HEV_DMG4"),
+        _ => None,
+    }
+}
+
 /// The published `ATTN_*` falloff each published radius spawnflag (and each
 /// `scripted_sentence` "Sound Radius" choice, which publishes the same four
 /// radii) is read as. "Play everywhere" is `ATTN_NONE` by its own wording; of the three
@@ -236,4 +279,222 @@ fn resolve_ambient_asset(message: &str, sentences: &SentenceLookup) -> ohl_gamep
     // no caller has to know it. Mapper-authored back-slashes are the
     // GoldSrc separator and normalise to the one `ohl_assets` indexes on.
     ohl_gameplay::SoundAsset::file(format!("sound/{}", message.replace('\\', "/")))
+}
+
+#[cfg(test)]
+mod hev_audio_tests {
+    use super::{Presentation, PresentationEvent, SentenceLookup};
+    use ohl_gameplay::{ChannelClass, SoundAsset};
+    use ohl_player::{DamageKind, Player, PlayerEvent, SuitEvent, SuitOccasion};
+
+    const PLAYER_TAG: u32 = 71;
+    const SENTENCES: &[u8] = b"HEV_FIRE ohl/heat_first ohl/heat_second\n\
+        HEV_SHOCK ohl/shock_first ohl/shock_second\n\
+        HEV_DMG4 ohl/fall_first ohl/fall_second\n";
+
+    fn suited_player() -> Player {
+        let mut player = Player::default();
+        player.equip_suit(&mut Vec::new());
+        player
+    }
+
+    fn present(
+        presentation: &mut Presentation,
+        player: &Player,
+        events: Vec<PlayerEvent>,
+        sentences: &SentenceLookup,
+    ) -> Vec<PresentationEvent> {
+        presentation.suit_audio(PLAYER_TAG, sentences, &events);
+        presentation.tick(
+            crate::TICK_SECONDS,
+            &mut ohl_ui::hud::HudState::default(),
+            player,
+            events,
+            &mut crate::viewmodel::ViewModel::new(),
+        );
+        presentation.drain_events()
+    }
+
+    fn suits(events: &[PlayerEvent]) -> Vec<SuitEvent> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                PlayerEvent::Suit(suit) => Some(*suit),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn hev_audio_three_damage_producers_preserve_metadata_and_ordered_words() {
+        let mut player = suited_player();
+        let mut events = Vec::new();
+        for kind in [DamageKind::Burn, DamageKind::Shock, DamageKind::Fall] {
+            player.apply_damage(1.0, kind, &mut events);
+        }
+        let expected_suits = suits(&events);
+        assert_eq!(expected_suits.len(), 3);
+        assert!(expected_suits.iter().any(|suit| suit.delay > 0.0));
+        let mut presentation = Presentation::new();
+        let output = present(
+            &mut presentation,
+            &player,
+            events,
+            &SentenceLookup::from_bytes(SENTENCES),
+        );
+        let mut actual_suits = Vec::new();
+        let mut assets = Vec::new();
+        for event in output {
+            match event {
+                PresentationEvent::Sound(cue) => {
+                    assert_eq!(cue.entity, PLAYER_TAG);
+                    assert_eq!(cue.class, ChannelClass::Voice);
+                    assert_eq!(cue.origin, None);
+                    assert!((cue.volume - 1.0).abs() < f32::EPSILON);
+                    assert!((cue.pitch - 1.0).abs() < f32::EPSILON);
+                    assert!(!cue.stop);
+                    assets.push(cue.asset);
+                }
+                PresentationEvent::Suit(suit) => actual_suits.push(suit),
+                _ => panic!("only sound and suit events expected"),
+            }
+        }
+        assert_eq!(actual_suits, expected_suits);
+        let expected_assets: Vec<_> = ["heat", "shock", "fall"]
+            .into_iter()
+            .map(|label| {
+                SoundAsset::sentence(vec![
+                    format!("sound/ohl/{label}_first.wav"),
+                    format!("sound/ohl/{label}_second.wav"),
+                ])
+            })
+            .collect();
+        assert_eq!(assets, expected_assets);
+        assert!(presentation.drain_events().is_empty());
+        assert!(
+            present(
+                &mut presentation,
+                &player,
+                Vec::new(),
+                &SentenceLookup::new()
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn hev_audio_existing_cooldown_suppresses_repeat_but_not_later_event() {
+        let mut player = suited_player();
+        let mut presentation = Presentation::new();
+        let sentences = SentenceLookup::from_bytes(SENTENCES);
+        for (elapsed, expected) in [(0.0, 1), (0.1, 0), (10.0, 1)] {
+            player.voice.tick(elapsed);
+            let mut events = Vec::new();
+            player.apply_damage(1.0, DamageKind::Burn, &mut events);
+            assert_eq!(suits(&events).len(), expected);
+            let output = present(&mut presentation, &player, events, &sentences);
+            assert_eq!(
+                output
+                    .iter()
+                    .filter(|event| matches!(event, PresentationEvent::Sound(_)))
+                    .count(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn hev_audio_no_suit_invalid_and_generic_damage_do_not_create_cues() {
+        for (suited, kind, amount) in [
+            (false, DamageKind::Burn, 1.0),
+            (true, DamageKind::Generic, 1.0),
+            (true, DamageKind::Burn, 0.0),
+            (true, DamageKind::Shock, f32::NAN),
+        ] {
+            let mut player = if suited {
+                suited_player()
+            } else {
+                Player::default()
+            };
+            let mut events = Vec::new();
+            player.apply_damage(amount, kind, &mut events);
+            let output = present(
+                &mut Presentation::new(),
+                &player,
+                events,
+                &SentenceLookup::from_bytes(SENTENCES),
+            );
+            assert!(
+                !output
+                    .iter()
+                    .any(|event| matches!(event, PresentationEvent::Sound(_)))
+            );
+        }
+    }
+
+    #[test]
+    fn hev_audio_unmapped_occasion_ignores_a_mapped_display_name() {
+        let suit = SuitEvent {
+            occasion: SuitOccasion::AmmoPickup,
+            name: "HEV_FIRE",
+            priority: 9,
+            delay: 3.0,
+        };
+        let output = present(
+            &mut Presentation::new(),
+            &suited_player(),
+            vec![PlayerEvent::Suit(suit)],
+            &SentenceLookup::from_bytes(SENTENCES),
+        );
+        assert_eq!(output.len(), 1);
+        assert!(matches!(output[0], PresentationEvent::Suit(actual) if actual == suit));
+    }
+
+    #[test]
+    fn hev_audio_existing_256_word_limit_rejects_257_without_losing_metadata() {
+        for words in [0, 256, 257] {
+            let text = if words == 0 {
+                String::new()
+            } else {
+                format!(
+                    "HEV_FIRE {}\n",
+                    (0..words)
+                        .map(|index| format!("ohl/word_{index}"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
+            };
+            let mut player = suited_player();
+            let mut input = Vec::new();
+            player.apply_damage(1.0, DamageKind::Burn, &mut input);
+            let expected = suits(&input);
+            let output = present(
+                &mut Presentation::new(),
+                &player,
+                input,
+                &SentenceLookup::from_bytes(text.as_bytes()),
+            );
+            let mut metadata = Vec::new();
+            let mut assets = Vec::new();
+            for event in output {
+                match event {
+                    PresentationEvent::Sound(cue) => assets.push(cue.asset),
+                    PresentationEvent::Suit(suit) => metadata.push(suit),
+                    _ => panic!("only sound and suit events expected"),
+                }
+            }
+            assert_eq!(metadata, expected);
+            assert_eq!(assets.len(), 1);
+            if words == 256 {
+                assert_eq!(
+                    assets[0],
+                    SoundAsset::sentence(
+                        (0..words).map(|index| format!("sound/ohl/word_{index}.wav"))
+                    )
+                );
+            } else {
+                assert_eq!(assets[0], SoundAsset::Unresolved);
+            }
+        }
+    }
 }

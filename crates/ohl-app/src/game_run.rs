@@ -2012,7 +2012,8 @@ impl<'a> App<'a> {
                         self.audio.play(self.source, &cue);
                     }
                 }
-                // Viewmodel and suit-voice rendering are later work.
+                // Suit metadata remains informational; supported suit audio
+                // already arrives as Sound, so handling it again would restart.
                 GameEvent::Suit(_) | GameEvent::ViewModel(_) => {}
                 GameEvent::PlayerDied => {
                     tracing::info!("The player died.");
@@ -2508,7 +2509,7 @@ mod tests {
 #[cfg(test)]
 mod sound_routing_tests {
     use super::*;
-    use crate::audio::fixtures::synthetic_wav;
+    use crate::audio::fixtures::{sampled_synthetic_wav, synthetic_wav};
     use ohl_engine::test_support::{
         LANDMARK, NEXT_MAP, SCRIPT_MAP, SYNTHETIC_MAP, entity_block, entity_of_classname,
         script_room_bsp, script_room_entities, synthetic_map_bsp_named,
@@ -3038,6 +3039,224 @@ mod sound_routing_tests {
             Screen::InGame,
             GameConfig::default(),
         )
+    }
+
+    fn hev_assets(sentence: Option<&[u8]>) -> MemoryAssets {
+        let mut assets = MemoryAssets::new();
+        let extra = format!(
+            "{}{}",
+            entity_block("item_suit", [-160.0, -160.0, 36.0], 0.0, &[]),
+            entity_block(
+                "trigger_hurt",
+                [64.0, 64.0, 36.0],
+                0.0,
+                &[("dmg", "2"), ("damagetype", "8")],
+            ),
+        );
+        assets.insert(
+            &format!("maps/{SCRIPT_MAP}.bsp"),
+            script_room_bsp(&script_room_entities([-160.0, -160.0, 36.0], &extra)),
+        );
+        if let Some(sentence) = sentence {
+            assets.insert("sound/sentences.txt", sentence.to_vec());
+        }
+        let ramp: Vec<i16> = (0..128).map(|frame| 1024 + frame * 32).collect();
+        assets.insert("sound/ohl/hev_first.wav", sampled_synthetic_wav(&ramp));
+        assets.insert(
+            "sound/ohl/hev_second.wav",
+            sampled_synthetic_wav(&[-8192; 128]),
+        );
+        assets.insert("sound/ohl/hev_decoy.wav", synthetic_wav(128));
+        assets.insert("sound/ohl/hev_invalid.wav", vec![0; 48]);
+        assets
+    }
+
+    /// Capture the actual engine event pair after the ordinary suit pickup;
+    /// no direct suit injection or new public damage-testing API is involved.
+    fn hev_burn_pair(assets: &MemoryAssets) -> (Game, SoundCue, GameEvent) {
+        let mut game = Game::load(assets, SCRIPT_MAP).expect("synthetic HEV room loads");
+        game.tick(ohl_engine::TICK_SECONDS, &Input::default());
+        assert!(game.player_suit_equipped());
+        assert!((game.player_health() - 100.0).abs() < f32::EPSILON);
+        game.set_viewpoint([64.0, 64.0, 36.0], 0.0, 0.0);
+        let mut events = Vec::new();
+        // Pickup's first tick started the producer's hurt interval. Capture
+        // the first actual damage frame without waiting for the new Sound,
+        // so adapter/callsite mutations still reach exact cue assertions.
+        for _ in 0..100 {
+            events = game.tick(ohl_engine::TICK_SECONDS, &Input::default());
+            if game.player_health() < 100.0 {
+                break;
+            }
+        }
+        assert!(
+            game.player_health() < 100.0,
+            "burn setup must actually damage"
+        );
+        let sounds: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                GameEvent::Sound(cue) if cue.class == ChannelClass::Voice => Some(cue.clone()),
+                _ => None,
+            })
+            .collect();
+        let suits: Vec<_> = events
+            .into_iter()
+            .filter(|event| matches!(event, GameEvent::Suit(_)))
+            .collect();
+        assert_eq!(sounds.len(), 1, "one sound per actual burn occasion");
+        assert_eq!(suits.len(), 1, "one existing producer event");
+        assert_eq!(sounds[0].entity, game.player_entity().id());
+        (game, sounds[0].clone(), suits[0].clone())
+    }
+
+    fn hev_pcm(audio: &AudioRuntime) -> Vec<f32> {
+        let mut samples = vec![0.0; 32];
+        audio
+            .mixer()
+            .lock()
+            .expect("lock mixer")
+            .render(&mut samples);
+        assert!(samples.iter().all(|sample| sample.is_finite()));
+        samples
+    }
+
+    fn hev_assert_metadata_cursor(
+        mut route: impl FnMut(Vec<GameEvent>) -> Vec<f32>,
+        assets: &MemoryAssets,
+        cue: SoundCue,
+        suit: GameEvent,
+    ) {
+        assert!(
+            route(vec![suit.clone()])
+                .iter()
+                .all(|sample| sample.abs() < f32::EPSILON),
+            "metadata alone is silent"
+        );
+        let mut control = AudioRuntime::silent();
+        control.play(assets, &cue);
+        let prefix = hev_pcm(&control);
+        let next = hev_pcm(&control);
+        assert_ne!(prefix, next, "ramp makes a cursor restart distinguishable");
+        assert_eq!(route(vec![GameEvent::Sound(cue)]), prefix);
+        assert_eq!(
+            route(vec![suit]),
+            next,
+            "metadata must not restart the existing voice"
+        );
+    }
+
+    #[test]
+    fn hev_audio_all_three_routes_preserve_cursor_after_actual_suit_metadata() {
+        let assets = hev_assets(Some(b"HEV_FIRE ohl/hev_first ohl/hev_second\n"));
+        for route in 0..3 {
+            let (mut game, cue, suit) = hev_burn_pair(&assets);
+            assert_eq!(
+                cue.asset,
+                SoundAsset::sentence(vec![
+                    "sound/ohl/hev_first.wav".into(),
+                    "sound/ohl/hev_second.wav".into()
+                ])
+            );
+            match route {
+                0 => {
+                    let mut app = window(game, &assets);
+                    hev_assert_metadata_cursor(
+                        |events| {
+                            assert!(!app.handle_game_events(events));
+                            hev_pcm(&app.audio)
+                        },
+                        &assets,
+                        cue,
+                        suit,
+                    );
+                }
+                1 => {
+                    let mut audio = AudioRuntime::silent();
+                    hev_assert_metadata_cursor(
+                        |events| {
+                            let outcome = route_headless_events(
+                                &mut game,
+                                &assets,
+                                &mut audio,
+                                events,
+                                &HeadlessEventOptions {
+                                    follow_level_change: false,
+                                    script_log: false,
+                                    player_died_line: "The player died.",
+                                },
+                            );
+                            assert!(!outcome.followed_level_change && !outcome.ended_section);
+                            hev_pcm(&audio)
+                        },
+                        &assets,
+                        cue,
+                        suit,
+                    );
+                }
+                _ => {
+                    let mut audio = AudioRuntime::silent();
+                    hev_assert_metadata_cursor(
+                        |events| {
+                            assert!(!route_benchmark_events(&mut audio, &assets, events));
+                            hev_pcm(&audio)
+                        },
+                        &assets,
+                        cue,
+                        suit,
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hev_audio_all_three_routes_silence_missing_sentence_or_word_assets() {
+        for sentence in [
+            None,
+            Some(b"HEV_FIRE ohl/hev_absent\n".as_slice()),
+            Some(b"HEV_FIRE ohl/hev_invalid\n".as_slice()),
+        ] {
+            let assets = hev_assets(sentence);
+            for route in 0..3 {
+                let (mut game, cue, suit) = hev_burn_pair(&assets);
+                let events = vec![GameEvent::Sound(cue), suit];
+                let pcm = match route {
+                    0 => {
+                        let mut app = window(game, &assets);
+                        assert!(!app.handle_game_events(events));
+                        assert_eq!(channel_count(&app.audio), 0);
+                        hev_pcm(&app.audio)
+                    }
+                    1 => {
+                        let mut audio = AudioRuntime::silent();
+                        route_headless_events(
+                            &mut game,
+                            &assets,
+                            &mut audio,
+                            events,
+                            &HeadlessEventOptions {
+                                follow_level_change: false,
+                                script_log: false,
+                                player_died_line: "The player died.",
+                            },
+                        );
+                        assert_eq!(channel_count(&audio), 0);
+                        hev_pcm(&audio)
+                    }
+                    _ => {
+                        let mut audio = AudioRuntime::silent();
+                        assert!(!route_benchmark_events(&mut audio, &assets, events));
+                        assert_eq!(channel_count(&audio), 0);
+                        hev_pcm(&audio)
+                    }
+                };
+                assert!(
+                    pcm.iter().all(|sample| sample.abs() < f32::EPSILON),
+                    "missing assets do not use the playable decoy"
+                );
+            }
+        }
     }
 
     /// The window's own loop plays the map's ambience, and the options

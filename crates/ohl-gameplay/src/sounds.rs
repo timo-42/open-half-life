@@ -12,7 +12,7 @@
 //!
 //! # Where a cue's asset path comes from
 //!
-//! There are two kinds, and only one of them can exist today.
+//! Runtime asset paths and built-in lookup paths have separate provenance.
 //!
 //! A **map- or data-authored** path is one the payload itself supplies at
 //! run time: an `ambient_generic`'s published `message` keyvalue (a
@@ -27,15 +27,14 @@
 //! a suit charger hums. **No path literal here is drawn from any user
 //! medium.** `docs/CLEAN_ROOM.md` rule 7 requires an explicit clean-room
 //! provenance review before any name or path literal derived from user
-//! media enters source, and no source this project may use publishes
-//! Half-Life's actual sound file layout as reusable data (the per-weapon
-//! wiki pages this project already cites describe gameplay behaviour, not
-//! asset paths). Every lookup below is therefore `None`, each with its own
-//! `// TODO(black-box)` marker, ready to be filled in once that review
-//! happens and never invented meanwhile. The plumbing around them is
-//! complete: the day a reviewed table exists, these three functions are
-//! the only thing that has to change for weapons, pickups and chargers to
-//! be heard.
+//! media enters source. The lookups below remain `None` with explicit
+//! `TODO(black-box)` gaps. A separate public provenance review approved a
+//! small HEV sentence-identifier subset; engine presentation resolves those
+//! identifiers through the runtime sentence table, not a hardcoded WAV table.
+//! See `docs/FORMAT_SOURCES.md`, "Bounded HEV damage sentence audio".
+//! Approval of an identifier does not establish trigger timing or add a
+//! missing event producer. Other categories may need producer work as well
+//! as reviewed asset mappings before they become audible.
 
 use std::sync::Arc;
 

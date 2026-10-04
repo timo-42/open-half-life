@@ -2023,6 +2023,11 @@ impl Systems {
     fn presentation(&mut self, level: &mut Level, dt: f32) {
         crate::combat::sync_player_components(level, &self.player);
         let events = std::mem::take(&mut self.player_events);
+        // Match the existing pickup/weapon sound owner's low-word convention.
+        #[allow(clippy::cast_possible_truncation)]
+        let player_tag = crate::ids::entity_id(level.player).0 as u32;
+        self.presentation
+            .suit_audio(player_tag, self.ai.sentence_lookup(), &events);
         self.presentation.tick(
             dt,
             &mut self.hud,
