@@ -914,6 +914,9 @@ fn assert_descent_anchor_geometry(game: &mut Game, custom_bottom: bool) -> Actor
         actor.origin.to_array()
     );
     let (level, _) = game.level_and_systems_mut();
+    // Inspect posed geometry when rebuilt at this post-tick anchor. The live
+    // phase-5 cache precedes phase-8b movement by one fixed step; this does
+    // not claim that earlier cached sample already contains this position.
     let mut index = HitboxIndex::new(HitboxLimits::default());
     crate::combat::rebuild_hitbox_index(&mut index, level);
     let entry = index

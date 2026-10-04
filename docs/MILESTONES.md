@@ -8695,8 +8695,10 @@ The public Game continuation fixture also exposed a preexisting script-held
 synchronization omission: Approach/Face changed Actor while Transform stayed at
 spawn throughout possession. Phase 8b now synchronizes held actors too; explicit
 script placement already writes both components. Real uninterrupted and saved
-intermediate descents cover feet and custom model-bottom anchors, matching
-render/posed-hitbox placement and one completion. Teleport, no movement,
+intermediate descents cover feet and custom model-bottom anchors, per-tick
+Actor/Transform/render alignment, posed geometry when rebuilt at that anchor,
+and one completion. The live phase-5 hitbox cache still precedes phase-8b actor
+movement by one fixed step; the fixture does not change or erase that ordering. Teleport, no movement,
 turn-only and No Script Movement controls preserve their authored placement.
 The independent elevated-detour test failed before repair; focused navigation
 now passes 16 tests with the existing upward-step reproducer ignored, the caller
