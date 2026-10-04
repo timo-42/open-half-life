@@ -6968,15 +6968,14 @@ ordinary data flow: an `ambient_generic`'s published `message` keyvalue, a
 this repository, and they are now played. The second kind — which WAV a
 9mm handgun fires with, which one a medkit is picked up with, which one a
 suit charger hums — is exactly what `docs/CLEAN_ROOM.md` rule 7 forbids
-until a clean-room provenance review admits it, and no source this project
-may use publishes Half-Life's sound file layout as reusable data. So
-`ohl_gameplay::sounds`'s three lookup functions still return `None`, each
-still carrying its `TODO(black-box)`, and weapon fire, impacts, pain,
-death, footsteps, jumping, landing, pickups and the chargers all still
-make no sound. Their cues are produced and travel the whole path; they
-carry `SoundAsset::Unresolved` and the mixer never sees them. The
-temptation to fill that table by listing a payload directory is precisely
-the thing rule 7 exists to stop, and it was not done.
+until a clean-room provenance review admits it. At this milestone,
+`ohl_gameplay::sounds`'s three built-in lookup functions returned `None` with
+`TODO(black-box)` gaps. Weapon-action and taken-pickup cues traveled the path
+with unresolved assets; impacts, pain/death, footsteps, jumping, landing and
+chargers did not all have audio producers. Suit and death metadata alone did
+not start playback. Later reviewed HEV identifiers support the bounded slice
+recorded below; they do not establish a complete sound table. No payload
+directory listing was used to invent a mapping.
 
 What that leaves is more than it sounds like. A GoldSrc level's standing
 ambience — machinery, alarms, dripping water, the hum of a room — is
@@ -9272,3 +9271,43 @@ evidence, with no new original charger behavior claim. Tag 45 remains reserved
 for this package, M9.54 remains unnumbered, and draft PR #189 awaits final
 review, CI and integration. Recharge behavior, Medium suit policy, existing
 capacity/drain qualifications and the stated cuts remain as documented above.
+
+## M9.NEXT — HEV audio for three existing damage occasions
+
+Heat, electrical damage and minor-fracture Suit events now have a stateless
+presentation adapter through the reviewed `HEV_FIRE`, `HEV_SHOCK`, and
+`HEV_DMG4` identifiers. Runtime sentences supply all word paths. Existing player
+eligibility/cooldowns and the complete Suit metadata are preserved; normal
+Sound routing reaches all three app consumers. Missing sentences/undecodable
+words remain silent, and no fallback table or save state is introduced.
+
+Immediate listener-relative Voice dispatch and same-owner replacement are
+project-authored. **`TODO(black-box)`** covers original scheduling, channel,
+priority, timing and interruption. Delay/priority queues, other occasions,
+intro/long-jump discarded producer forwarding, threshold changes, AI, mixer
+redesign, new dependencies and full P9 audio coverage are cut.
+
+Synthetic real-producer tests cover the three exact mappings, metadata,
+cooldown suppression/later events, no-suit/invalid/generic inputs, 256/257-word
+bounds, and unmapped display-name discrimination. Actual Game::tick suit-pickup
+then burn tests cover once-per-event/frame drains. All three app routes have
+actual event-pair PCM cursor-control tests plus silent missing
+sentence/word/invalid-WAV tests; cache tests cover ordered partial PCM and
+same-owner/other-owner voice continuity.
+
+**Gates:** PASS — focused HEV tests **11/0/0** (passed/failed/ignored): five engine
+unit tests, two engine integration tests, and four app binary tests. Five
+mutation probes compiled and failed at their intended assertions: absent
+mappings, swapped Heat/Shock identifiers, duplicate Sound dispatch, removed
+phase-13 dispatch, and a playable synthetic missing-sentence fallback. After
+each probe all eight source files and modes were restored; the corresponding
+normal suites passed **5/5/5/2/4** tests. Scoped formatting and whitespace checks
+pass. PENDING — full fmt; clippy workspace/all-targets default, dev-tools and
+all-features; workspace tests (total pending); policy; graph; combat-smoke
+(expected 37/37, unexpected 0); campaign-smoke (expected 93/93); empty and armed
+chain-walk (each expected depth 12 / Pass / 660.8s). Every Cargo command requires
+an explicit permit and `CARGO_BUILD_JOBS=4 CARGO_PROFILE_DEV_DEBUG=line-tables-only
+CARGO_INCREMENTAL=0`. Dependencies are unchanged; deny remains conditional.
+Release/payload windows are separately gated. Hardware audibility is untested.
+The three existing damage occasions and scheduling/producer cuts above remain
+the feature limit.

@@ -6861,21 +6861,17 @@ channel.
 
 ### What is still silent, and why
 
-Weapon fire, impacts, player pain and death, footsteps, jumping and landing,
-pickups and the item chargers all reach the host as cues already — the
-producers exist (`ohl_gameplay::GameplayBridge::on_weapon_action` and
-`on_pickup`) — but every one of them carries `SoundAsset::Unresolved`,
-because the asset path is a *built-in* one the engine would have to know
-rather than one the map or a payload data file names.
-`crates/ohl-gameplay/src/sounds.rs` keeps the three lookup functions
-(`weapon_sound_path`, `pickup_sound_path`, `charger_sound_path`) returning
-`None` with a `TODO(black-box)` each: `docs/CLEAN_ROOM.md` rule 7 requires a
-clean-room provenance review before any name or path literal derived from
-user media enters source, and no source this project may use publishes
-Half-Life's sound file layout as reusable data. The whole path from those
-three functions to a rendered channel is now built and tested; the day a
-reviewed table exists, those three functions are the only thing that has to
-change.
+At M9.41, weapon-action and taken-pickup cues reached the host with unresolved
+assets through `GameplayBridge::on_weapon_action` and `on_pickup`. This did not
+establish producers for impacts, player pain/death, footsteps, jumping, landing
+or chargers: the bridge ignores combat impact/killed events, while presentation
+forwarded suit/death metadata without audio. Some categories therefore need
+producer work as well as an asset mapping. The built-in weapon/pickup/charger
+lookup functions remained `None` with explicit `TODO(black-box)` gaps.
+`docs/CLEAN_ROOM.md` rule 7 requires review of literal provenance; a later public
+review admits a small HEV sentence-identifier subset, documented under "Bounded
+HEV damage sentence audio" below. That approval does not supply a complete sound
+table or settle original-engine playback behavior.
 
 ## Map entities the registry used to drop (M9.43)
 
@@ -8366,3 +8362,56 @@ introduces no original-runtime claim or new external source. Sparse encoding,
 versioning, fail-closed validation at codec/writer/direct-load boundaries and
 independent initialization when tag 39 is absent are project-authored choices.
 Synthetic actual-use tests and independent golden bytes exercise those choices.
+
+## M9.NEXT — Bounded HEV damage sentence audio
+
+The public [Combine OverWiki HEV Quotes page](https://combineoverwiki.net/wiki/Hazardous_Environment_Suit/Quotes)
+(revision 488630, provenance review 2026-10-04) supplies exactly these admitted
+identifiers and broad associations: heat damage `HEV_FIRE`, electrical damage
+`HEV_SHOCK`, and minor fracture `HEV_DMG4`. No audio, dialogue, sentence word list,
+WAV path or external implementation is copied. Identifier provenance does not
+establish original-engine trigger thresholds, cadence or playback scheduling.
+
+Engine presentation maps only the existing `SuitOccasion::HeatDamage`,
+`ShockDamage`, and `MinorFracture` events raised by `Player::apply_damage`.
+Eligibility and the existing project-placeholder cooldown stay with the player.
+Phase 13 takes its event vector once; a stateless adapter adds one Voice Sound
+cue per mapped emitted event, and the normal tick forwards the complete original
+Suit metadata unchanged. Unmapped occasions remain metadata-only. No condition
+is reconstructed from player health, damage flags or an occasion's display name.
+
+Each approved ID resolves through the existing exact-name, case-insensitive
+`SentenceLookup`. Runtime word order becomes one `SoundAsset::Sentence`, not
+per-word cues or a hardcoded WAV table. The inherited conservative parser accepts
+at most 256 words per entry; exceeding the limit rejects the table into an empty
+lookup. Empty resolution produces one Unresolved cue and unchanged metadata.
+The existing app cache skips missing/invalid words, retains ordered partial
+playback when some decode, and starts nothing when none decode. A miss leaves
+already-playing same-owner and other voices intact. Existing cache/concatenation
+bounds are unchanged; retained-PCM cache bounds are not a peak decoding-memory
+bound.
+
+**Project-authored:** immediate listener-relative Voice dispatch at normal gain
+and pitch. `SuitEvent.delay` and `priority` remain preserved metadata, without a
+new scheduling queue. Multiple same-owner resolved cues replace playback; this
+slice does not make them an audible queue. **`TODO(black-box)`**: original delay,
+priority, channel, volume, pitch, interruption and repeat behavior; sentence
+modifiers/group expansion and full HEV coverage. Existing placeholder player
+cooldowns are not promoted to verified retail timing.
+
+Windowed, headless and benchmark consumers already play `GameEvent::Sound` and
+ignore Suit metadata. Tests capture the actual suit-pickup-then-burn engine pair,
+render a distinguishable prefix, route metadata alone, and compare the next PCM
+with an uninterrupted control in each route. Synthetic producer tests cover all
+three mappings and metadata equality, cooldown suppression/later events,
+no-suit/invalid/generic inputs, empty drains, misleading unmapped display names,
+and 256/257-word bounds. Synthetic WAV tests distinguish word order, silent
+misses, partial playback and cursor preservation. Linux NullSink tests establish
+decoded mixer output and routing, not hardware audibility. At the source-only
+checkpoint these are authored tests, not executed evidence.
+
+**Cuts:** suit introduction/long-jump pickup event forwarding (their local
+producer output is currently discarded), every other occasion, producer
+thresholds, AI, mixer redesign/parameter updates, other sound tables, new save
+state and dependency changes. No tag is allocated. Source/tests/docs only at
+this checkpoint; compilation, mutation probes and full gates remain pending.

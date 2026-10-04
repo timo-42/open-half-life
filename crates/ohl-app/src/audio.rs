@@ -534,6 +534,16 @@ pub(crate) mod fixtures {
         wav
     }
 
+    /// The same project-authored PCM fixture with explicit distinguishable
+    /// samples, for sentence ordering and playback-cursor tests.
+    pub(crate) fn sampled_synthetic_wav(samples: &[i16]) -> Vec<u8> {
+        let mut wav = synthetic_wav(samples.len());
+        for (bytes, sample) in wav[44..].chunks_exact_mut(2).zip(samples) {
+            bytes.copy_from_slice(&sample.to_le_bytes());
+        }
+        wav
+    }
+
     /// [`synthetic_wav`] with a `cue ` chunk holding one cue point at frame
     /// zero: a sound that loops over its whole length, the published
     /// single-cue-point convention `ohl_audio::wav::DecodedWav::effective_loop`
@@ -557,7 +567,7 @@ pub(crate) mod fixtures {
 
 #[cfg(test)]
 mod tests {
-    use super::fixtures::{looping_synthetic_wav, synthetic_wav};
+    use super::fixtures::{looping_synthetic_wav, sampled_synthetic_wav, synthetic_wav};
     use super::{AudioRuntime, SoundCache};
     use ohl_audio::mixer::ChannelClass;
     use ohl_engine::{MemoryAssets, SoundAsset, SoundCue};
@@ -622,6 +632,99 @@ mod tests {
         let joined = cache.resolve(&assets, &sentence).expect("two words decode");
         assert_eq!(joined.frame_count(), 96);
         assert_eq!(cache.len(), 1, "the sentence caches as one entry");
+    }
+
+    #[test]
+    fn hev_audio_sentence_pcm_preserves_word_order_and_skips_missing_words() {
+        let mut assets = MemoryAssets::new();
+        assets.insert(
+            "sound/ohl/hev_first.wav",
+            sampled_synthetic_wav(&[8192; 32]),
+        );
+        assets.insert(
+            "sound/ohl/hev_second.wav",
+            sampled_synthetic_wav(&[-16384; 32]),
+        );
+        let sentence = SoundAsset::sentence(vec![
+            "sound/ohl/hev_first.wav".into(),
+            "sound/ohl/hev_missing.wav".into(),
+            "sound/ohl/hev_second.wav".into(),
+        ]);
+        let mut cache = SoundCache::new();
+        let joined = cache
+            .resolve(&assets, &sentence)
+            .expect("valid words still join");
+        assert_eq!(joined.frame_count(), 64);
+        assert!(
+            joined.samples[..32]
+                .iter()
+                .all(|sample| (*sample - 0.25).abs() < 1e-6)
+        );
+        assert!(
+            joined.samples[32..]
+                .iter()
+                .all(|sample| (*sample + 0.5).abs() < 1e-6)
+        );
+
+        let mut audio = AudioRuntime::silent();
+        audio.play(&assets, &SoundCue::new(71, ChannelClass::Voice, sentence));
+        let mut output = [0.0; 192];
+        mixer_of(&audio).render(&mut output);
+        assert!(output.iter().all(|sample| sample.is_finite()));
+        assert!(
+            output[16] > 0.0,
+            "first word precedes the second in rendered PCM"
+        );
+        assert!(output[160] < 0.0, "distinct second word follows the first");
+        assert_eq!(mixer_of(&audio).channel_count(ChannelClass::Voice), 1);
+    }
+
+    #[test]
+    fn hev_audio_missing_words_leave_same_owner_and_other_voice_cursors_intact() {
+        let mut assets = assets();
+        assets.insert("sound/ohl/hev_decoy.wav", synthetic_wav(256));
+        let start = SoundCue::new(
+            71,
+            ChannelClass::Voice,
+            SoundAsset::file("sound/ohl/one.wav"),
+        );
+        let other = SoundCue::new(
+            72,
+            ChannelClass::Voice,
+            SoundAsset::file("sound/ohl/two.wav"),
+        );
+        for missing in [
+            SoundAsset::Unresolved,
+            SoundAsset::sentence(vec!["sound/ohl/absent.wav".into()]),
+            SoundAsset::sentence(vec!["sound/ohl/broken.wav".into()]),
+        ] {
+            let mut audio = AudioRuntime::silent();
+            audio.play(
+                &assets,
+                &SoundCue::new(71, ChannelClass::Voice, missing.clone()),
+            );
+            let mut silence = [0.0; 16];
+            mixer_of(&audio).render(&mut silence);
+            assert!(silence.iter().all(|sample| sample.abs() < f32::EPSILON));
+            assert_eq!(mixer_of(&audio).active_channel_count(), 0);
+
+            let mut control = AudioRuntime::silent();
+            for runtime in [&mut audio, &mut control] {
+                runtime.play(&assets, &start);
+                runtime.play(&assets, &other);
+                mixer_of(runtime).render(&mut [0.0; 16]);
+            }
+            audio.play(&assets, &SoundCue::new(71, ChannelClass::Voice, missing));
+            let mut actual = [0.0; 16];
+            let mut expected = [0.0; 16];
+            mixer_of(&audio).render(&mut actual);
+            mixer_of(&control).render(&mut expected);
+            assert_eq!(
+                actual, expected,
+                "a miss neither restarts nor stops either voice"
+            );
+            assert_eq!(mixer_of(&audio).channel_count(ChannelClass::Voice), 2);
+        }
     }
 
     #[test]
