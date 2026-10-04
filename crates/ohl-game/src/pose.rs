@@ -602,6 +602,9 @@ pub fn mover_rotation(registry: &Registry, entity: Entity) -> (Vec3, f32) {
 /// turns-to-face kind.
 #[must_use]
 pub fn brush_pose_rotation(registry: &Registry, entity: Entity) -> (Vec3, f32, Vec3) {
+    if let Some(pose) = crate::tanks::tank_pose(registry, entity) {
+        return pose.axis_angle();
+    }
     let (axis, degrees) = mover_rotation(registry, entity);
     if axis != Vec3::ZERO {
         // A rotating mover requires an origin brush, so its compiled

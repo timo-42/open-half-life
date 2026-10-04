@@ -8602,12 +8602,13 @@ remain assigned to integration.
 
 ## M9.NEXT — Wave 2 P7 turret source checkpoint
 
-Two deliberately unregistered modules define bounded turret configuration,
+Two modules define bounded turret configuration,
 runtime aim/cadence/memory, remote control intent, shared brush/barrel pose,
 local input ownership and distinct outgoing bullet, rocket, laser and mortar
-commands. Four source/test files are isolated from the live registry and
-engine phases while the shared integration APIs settle. This checkpoint does
-not make any turret playable yet.
+commands. The game registry now attaches the components; use handling queues
+typed control requests and the shared brush pose reads live turret angles.
+Controls brushes remain invisible and nonblocking. Engine input/combat phases
+are not wired yet, so this uncompiled checkpoint makes no playable-turret claim.
 
 The value contract claims same-tick Use+Attack before handheld weapons,
 retains the real player activator, releases stale/dead/master-denied controls
@@ -8653,8 +8654,8 @@ release-fire or new ammo consumption, Egon and satchel held control edges,
 normal input after release, and consistent mounted-save restoration. Existing
 world projectiles/deployables must keep advancing during control.
 
-**Cuts and next dependency.** Registration, map-use and pre-weapon phase
-wiring, shared brush-pose integration, P1 rocket source-brush filtering and
+**Cuts and next dependency.** Pre-weapon engine control and phase wiring,
+both live collision synchronizations, P1 rocket source-brush filtering and
 separate attacker attribution, the P6a mortar blast/presentation bridge, and
 bounded save extension 44 are pending. No save encoding or frozen tag 26/42
 layout changed. Physical monster operators, automatic monster targets and
@@ -8668,4 +8669,7 @@ Git scope/status inspection and `git diff --check` only. Cargo, compilation,
 tests, mutation probes, GPU and payload runs are deliberately held until the
 coordinator grants shared integration and focused build authority. No PR is
 opened for this uncompiled checkpoint; final milestone numbering and full
-workspace/runtime evidence remain pending.
+workspace/runtime evidence remain pending. Four additional source regressions
+cover registry variant/controls visibility and solidity, shared live pose,
+real-player relay identity without accidental shot-target firing, master
+gating and legacy simulation restore dropping pending mount intent.

@@ -24,6 +24,7 @@ use crate::registry::{
     TargetName, TeleportTrigger, TrackChange, TrackChangeLinks, Transform, Trigger, TriggerHurt,
     TriggerUse, TriggerUseType, WallToggle, WeaponStrip,
 };
+use crate::tanks::{TankControlIntent, TankControls, TankDef, TankState};
 use crate::track_train::{PathChain, TrackTrain, TrackTrainState};
 
 /// Finds the closest `func_door`, `func_button`, or `use`-activated
@@ -98,6 +99,13 @@ pub fn find_usable_within(registry: &Registry, position: Vec3, radius: f32) -> O
         .world
         .query::<(Entity, &Transform)>()
         .with::<&PlatRot>()
+    {
+        consider(entity, transform);
+    }
+    for (entity, transform) in &mut registry
+        .world
+        .query::<(Entity, &Transform)>()
+        .with::<&TankControls>()
     {
         consider(entity, transform);
     }
@@ -354,6 +362,8 @@ pub struct Simulation {
     pending: Vec<Fire>,
     /// Separately snapshotted host work; never appended to `SimulationState`.
     effect_commands: Vec<MapEffectCommand>,
+    /// P7's bounded latest remote ownership intent, persisted only in tag 44.
+    tank_control_intent: Option<TankControlIntent>,
     /// Trigger-time facts; refreshed by the host and never persisted.
     effect_player: Option<EffectPlayer>,
     /// A button may finish moving after its activator's input edge. The host
@@ -526,6 +536,66 @@ impl Simulation {
     #[must_use]
     pub fn effect_commands(&self) -> &[MapEffectCommand] {
         &self.effect_commands
+    }
+
+    /// Pending remote turret request; the engine consumes it before weapons.
+    #[must_use]
+    pub fn tank_control_intent(&self) -> Option<TankControlIntent> {
+        self.tank_control_intent
+    }
+
+    pub fn take_tank_control_intent(&mut self) -> Option<TankControlIntent> {
+        self.tank_control_intent.take()
+    }
+
+    /// Only a remapped, revalidated tag-44 reference may be restored here.
+    pub fn restore_tank_control_intent(&mut self, intent: Option<TankControlIntent>) {
+        self.tank_control_intent = intent;
+    }
+
+    fn activate_tank(
+        &mut self,
+        registry: &mut Registry,
+        entity: Entity,
+        activator: Option<Entity>,
+        use_type: TriggerUse,
+    ) -> bool {
+        let controls = registry
+            .world
+            .get::<&TankControls>(entity)
+            .ok()
+            .map(|controls| controls.target.clone());
+        let tank = if let Some(target) = controls {
+            let Some(tank) = registry.find(&target).iter().copied().find(|candidate| {
+                registry
+                    .world
+                    .get::<&TankDef>(*candidate)
+                    .is_ok_and(|def| def.controllable)
+                    && self.master_is_active(registry, *candidate)
+            }) else {
+                return true;
+            };
+            tank
+        } else {
+            entity
+        };
+        let Ok((def, state)) = registry
+            .world
+            .query_one_mut::<(&TankDef, &mut TankState)>(tank)
+        else {
+            return false;
+        };
+        if let Some(intent) = state.use_by(
+            def,
+            tank,
+            use_type,
+            activator,
+            self.effect_player.map(|player| player.entity),
+            true,
+        ) {
+            self.tank_control_intent = Some(intent);
+        }
+        true
     }
 
     /// Additive save provenance in the same order as `SimulationState.pending`.
@@ -1099,6 +1169,9 @@ impl Simulation {
         if self.activate_effect(registry, entity, activator, use_type) {
             return;
         }
+        if self.activate_tank(registry, entity, activator, use_type) {
+            return;
+        }
 
         // Decided before the `&mut Door` borrow below, since it reads two
         // other components off the same registry: which way a
@@ -1563,6 +1636,7 @@ impl Simulation {
     /// Replaces this simulation's bookkeeping with `state`, dropping
     /// anything beyond the same bounds [`Self::fire`] enforces.
     pub fn restore(&mut self, state: &SimulationState) {
+        self.tank_control_intent = None;
         self.pending = state
             .pending
             .iter()
@@ -1638,7 +1712,8 @@ impl Simulation {
     /// a master nothing has ever triggered is not active — so an
     /// unreachable one stays shut rather than silently opening every gate
     /// that names it.
-    fn master_is_active(&self, registry: &Registry, entity: Entity) -> bool {
+    #[must_use]
+    pub fn master_is_active(&self, registry: &Registry, entity: Entity) -> bool {
         let Ok(master) = registry.world.get::<&Master>(entity) else {
             return true;
         };

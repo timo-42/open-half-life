@@ -178,7 +178,14 @@ fn only_real_player_use_requests_remote_control_and_master_denial_is_inert() {
     let foreign = world.spawn(());
     assert!(
         state
-            .use_by(&tank, source, TriggerUse::On, Some(foreign), player, true)
+            .use_by(
+                &tank,
+                source,
+                TriggerUse::On,
+                Some(foreign),
+                Some(player),
+                true
+            )
             .is_none()
     );
     assert!(state.active);
@@ -188,7 +195,7 @@ fn only_real_player_use_requests_remote_control_and_master_denial_is_inert() {
             source,
             TriggerUse::Toggle,
             Some(player),
-            player,
+            Some(player),
             true,
         )
         .unwrap();
@@ -197,13 +204,20 @@ fn only_real_player_use_requests_remote_control_and_master_denial_is_inert() {
     assert!(state.active);
     assert!(
         state
-            .use_by(&tank, source, TriggerUse::Off, Some(player), player, false)
+            .use_by(
+                &tank,
+                source,
+                TriggerUse::Off,
+                Some(player),
+                Some(player),
+                false
+            )
             .is_none()
     );
     assert!(state.active);
     assert!(
         state
-            .use_by(&tank, source, TriggerUse::Off, None, player, true)
+            .use_by(&tank, source, TriggerUse::Off, None, Some(player), true)
             .is_none()
     );
     assert!(!state.active);
@@ -246,4 +260,167 @@ fn continuation_sanitization_discards_nonfinite_and_expired_memory() {
     assert_eq!(state.relative_yaw, 0.0);
     assert_eq!(state.shot_wait, 0.0);
     assert!(state.memory.is_none());
+}
+
+fn registry(definitions: &[EntityDef]) -> Registry {
+    let bounds = std::collections::BTreeMap::from([
+        (1, ([4.0, -2.0, -2.0], [12.0, 2.0, 2.0])),
+        (2, ([-4.0, -4.0, -4.0], [4.0, 4.0, 4.0])),
+    ]);
+    Registry::build(definitions, &bounds, &Limits::default())
+}
+
+#[test]
+fn registry_keeps_all_turret_variants_visible_solid_and_controls_invisible_nonblocking() {
+    let mut definitions: Vec<_> = [
+        "func_tank",
+        "func_tankrocket",
+        "func_tanklaser",
+        "func_tankmortar",
+    ]
+    .into_iter()
+    .map(|name| entity(name, &[("model", "*1")]))
+    .collect();
+    definitions.push(entity(
+        "func_tankcontrols",
+        &[("model", "*2"), ("target", "synthetic_tank")],
+    ));
+    let registry = registry(&definitions);
+    let controls = registry.entities[4];
+    assert!(registry.world.get::<&TankControls>(controls).is_ok());
+    for id in &registry.entities[..4] {
+        assert!(registry.world.get::<&TankDef>(*id).is_ok());
+        assert!(registry.world.get::<&TankState>(*id).is_ok());
+    }
+    for instances in [
+        crate::brush::model_instances(&registry),
+        crate::brush::solid_model_instances(&registry),
+        crate::brush::monster_solid_model_instances(&registry),
+    ] {
+        assert_eq!(instances.len(), 4);
+        assert!(instances.iter().all(|instance| instance.entity != controls));
+    }
+    assert_eq!(
+        crate::find_usable_within(&registry, Vec3::ZERO, 16.0),
+        Some(controls)
+    );
+}
+
+#[test]
+fn shared_brush_pose_and_center_read_live_tank_aim_without_changing_authored_transform() {
+    let registry = registry(&[entity(
+        "func_tank",
+        &[
+            ("model", "*1"),
+            ("origin", "20 30 40"),
+            ("angles", "0 90 0"),
+            ("barrel", "10"),
+        ],
+    )]);
+    let tank = registry.entities[0];
+    registry
+        .world
+        .get::<&mut TankState>(tank)
+        .unwrap()
+        .relative_yaw = 90.0;
+    let (axis, angle, pivot) = crate::pose::brush_pose_rotation(&registry, tank);
+    let rotation = Quat::from_axis_angle(axis, angle.to_radians());
+    assert!((rotation * Vec3::X).abs_diff_eq(-Vec3::X, 1.0e-5));
+    assert_eq!(pivot, Vec3::ZERO);
+    assert!(
+        crate::pose::brush_center(&registry, tank)
+            .unwrap()
+            .abs_diff_eq(Vec3::new(12.0, 30.0, 40.0), 1.0e-5)
+    );
+    let pose = tank_pose(&registry, tank).unwrap();
+    let def = registry.world.get::<&TankDef>(tank).unwrap();
+    assert!(
+        pose.muzzle(&def)
+            .abs_diff_eq(Vec3::new(10.0, 30.0, 40.0), 1.0e-5)
+    );
+    let transform = registry.world.get::<&Transform>(tank).unwrap();
+    assert_eq!(transform.origin, Vec3::new(20.0, 30.0, 40.0));
+    assert_eq!(transform.angles, Vec3::new(0.0, 90.0, 0.0));
+}
+
+#[test]
+fn real_player_relay_use_queues_control_without_firing_the_tanks_shot_target() {
+    let mut registry = registry(&[
+        entity(
+            "func_tank",
+            &[
+                ("targetname", "synthetic_tank"),
+                ("target", "synthetic_shot"),
+                ("spawnflags", "32"),
+            ],
+        ),
+        entity(
+            "trigger_relay",
+            &[
+                ("targetname", "synthetic_relay"),
+                ("target", "synthetic_tank"),
+            ],
+        ),
+        entity("info_target", &[("targetname", "synthetic_player")]),
+    ]);
+    let tank = registry.entities[0];
+    let relay = registry.entities[1];
+    let player = registry.entities[2];
+    let mut simulation = crate::Simulation::new();
+    simulation.set_effect_player(Some(crate::effects::EffectPlayer {
+        entity: player,
+        origin: Vec3::ZERO,
+        grounded: true,
+    }));
+    simulation.use_entity(&mut registry, relay, Some(player), &mut Vec::new());
+    simulation.tick(&mut registry, 0.01);
+    let intent = simulation.take_tank_control_intent().unwrap();
+    assert_eq!(intent.tank, tank);
+    assert_eq!(intent.player, player);
+    assert!(simulation.snapshot().pending.is_empty());
+    assert!(!registry.world.get::<&TankState>(tank).unwrap().active);
+    // A missing authoritative player cannot turn even a supplied handle into
+    // a player mount request. It follows ordinary automatic on/off use.
+    simulation.set_effect_player(None);
+    simulation.use_entity(&mut registry, tank, Some(player), &mut Vec::new());
+    assert!(simulation.take_tank_control_intent().is_none());
+    assert!(registry.world.get::<&TankState>(tank).unwrap().active);
+}
+
+#[test]
+fn controls_use_obeys_tank_master_and_legacy_simulation_restore_drops_pending_mount() {
+    let mut registry = registry(&[
+        entity(
+            "func_tank",
+            &[
+                ("targetname", "synthetic_tank"),
+                ("spawnflags", "32"),
+                ("master", "synthetic_gate"),
+            ],
+        ),
+        entity("func_tankcontrols", &[("target", "synthetic_tank")]),
+        entity("multisource", &[("targetname", "synthetic_gate")]),
+        entity("info_target", &[("targetname", "synthetic_player")]),
+    ]);
+    let (tank, controls, gate, player) = (
+        registry.entities[0],
+        registry.entities[1],
+        registry.entities[2],
+        registry.entities[3],
+    );
+    let mut simulation = crate::Simulation::new();
+    simulation.set_effect_player(Some(crate::effects::EffectPlayer {
+        entity: player,
+        origin: Vec3::ZERO,
+        grounded: true,
+    }));
+    assert!(!simulation.master_is_active(&registry, tank));
+    simulation.use_entity(&mut registry, controls, Some(player), &mut Vec::new());
+    assert!(simulation.tank_control_intent().is_none());
+    simulation.use_entity(&mut registry, gate, Some(player), &mut Vec::new());
+    assert!(simulation.master_is_active(&registry, tank));
+    simulation.use_entity(&mut registry, controls, Some(player), &mut Vec::new());
+    assert_eq!(simulation.tank_control_intent().unwrap().tank, tank);
+    simulation.restore(&simulation.snapshot());
+    assert!(simulation.tank_control_intent().is_none());
 }

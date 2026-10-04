@@ -5,13 +5,12 @@
 //! Defaults are from the published Sven mapping FGD; caps, local right-axis
 //! sign and control release policy are project choices, TODO(black-box).
 //! This module has no combat or renderer dependency.
-//! It is deliberately not registered until the shared integration handoff.
 
 use glam::{Quat, Vec3};
 use hecs::Entity;
 
 use crate::keyvalues::EntityDef;
-use crate::registry::TriggerUse;
+use crate::registry::{Registry, Transform, TriggerUse};
 
 /// Published Active flag.
 pub const ACTIVE: u32 = 1;
@@ -274,13 +273,15 @@ impl TankState {
         tank: Entity,
         use_type: TriggerUse,
         activator: Option<Entity>,
-        player: Entity,
+        player: Option<Entity>,
         master_open: bool,
     ) -> Option<TankControlIntent> {
         if !master_open {
             return None;
         }
-        if def.controllable && activator == Some(player) {
+        if def.controllable
+            && let Some(player) = player.filter(|player| activator == Some(*player))
+        {
             return Some(TankControlIntent {
                 tank,
                 player,
@@ -335,6 +336,16 @@ impl TankState {
             });
         self.rng = self.rng.max(1);
     }
+}
+
+/// Shared live pose of a turret brush. Published turrets require an origin
+/// brush, whose compiled local pivot is zero; authored angles enter once.
+#[must_use]
+pub fn tank_pose(registry: &Registry, entity: Entity) -> Option<TankPose> {
+    let def = registry.world.get::<&TankDef>(entity).ok()?;
+    let state = registry.world.get::<&TankState>(entity).ok()?;
+    let transform = registry.world.get::<&Transform>(entity).ok()?;
+    TankPose::new(&def, &state, transform.origin, Vec3::ZERO)
 }
 
 /// Transient remote request, consumed before weapons on the following tick.

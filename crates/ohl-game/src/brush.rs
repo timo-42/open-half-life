@@ -56,6 +56,7 @@ fn is_never_rendered(classname: &str) -> bool {
     classname.starts_with("trigger_")
         || classname == "func_ladder"
         || classname == "func_monsterclip"
+        || classname == "func_tankcontrols"
 }
 
 /// Brush-entity classnames that are documented as *not* solid to the
@@ -88,11 +89,13 @@ fn is_never_rendered(classname: &str) -> bool {
 ///
 /// See `docs/FORMAT_SOURCES.md`, "Entity keyvalues and map logic", and item
 /// 33.
-const NEVER_SOLID: [&str; 4] = [
+const NEVER_SOLID: [&str; 5] = [
     "func_illusionary",
     "func_ladder",
     "func_water",
     "func_monsterclip",
+    // Published invisible use volume; it must not block its operator.
+    "func_tankcontrols",
 ];
 
 /// Whether a brush entity with this classname blocks the player.
