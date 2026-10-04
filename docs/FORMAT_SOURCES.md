@@ -8363,7 +8363,7 @@ versioning, fail-closed validation at codec/writer/direct-load boundaries and
 independent initialization when tag 39 is absent are project-authored choices.
 Synthetic actual-use tests and independent golden bytes exercise those choices.
 
-## M9.NEXT — Bounded HEV damage sentence audio
+## M9.55 — Bounded HEV damage sentence audio
 
 The public [Combine OverWiki HEV Quotes page](https://combineoverwiki.net/wiki/Hazardous_Environment_Suit/Quotes)
 (revision 488630, provenance review 2026-10-04) supplies exactly these admitted
