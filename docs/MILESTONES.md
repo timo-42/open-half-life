@@ -8511,7 +8511,7 @@ The app's clean-arrival refusal, saved replay, survival, backward-goal refusal
 and live confirmation remain unchanged.
 
 Focused validation passes: workspace formatting, xtask clippy with all targets
-and warnings denied, 43 chain-related tests and an explicit 13-test planner
+and warnings denied, 45 chain-related tests and an explicit 14-test planner
 filter (overlapping tests, not additive counts). The one ignored helper is
 explicitly spawned by the process tests using the current test executable,
 without shell or Python child dependencies. Tests exercise success markers before
@@ -8538,6 +8538,21 @@ skip assembly gaps; share neutral routes with another start; raise the assembly
 cap; bypass the planner capacity check; return to legacy naming for new default
 routes; reuse an existing staging attempt; accept lossy UTF-8 capture; and double the
 fixed candidate byte cap. The restored normal focused tests and clippy pass.
+
+Review follow-ups from #183 reject exact truncated chain-terminal and planner-
+refusal roots, while preserving neighboring word namespaces. Full entrypoint
+coverage requires no admitted candidate and only fixed output after a truncated
+refusal. A spawned fixture exits successfully while a bounded descendant retains
+stderr; capture must time out before descendant EOF. The test waits for reader
+completion before any assertion, including mutant cases, so its self-terminating
+descendant finishes before the fixture returns. Production never joins a reader
+past the deadline; an optional private completion signal serves only this test.
+
+Six review mutations restore each old root predicate, broaden each namespace
+predicate, accept a cached child exit before reader completion, or block timeout
+on reader EOF. All six were killed and byte-restored, for **45 actual mutations
+in total**. The final normal formatting, focused clippy, 45-test chain filter
+and explicit 14-test planner filter pass.
 
 Every Cargo invocation used the assigned four-job, line-tables-only,
 nonincremental environment. The focused target stayed below 425 MiB with a

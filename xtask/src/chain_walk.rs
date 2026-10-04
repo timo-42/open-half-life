@@ -304,7 +304,7 @@ pub fn parse_report(stderr: &str) -> ChainReport {
             || line.starts_with("Chain walk simulated seconds")
         {
             invalid = true;
-        } else if line.starts_with("The chain walk ") {
+        } else if line == "The chain walk" || line.starts_with("The chain walk ") {
             let known = TERMINAL_LINES.into_iter().find(|known| *known == line);
             invalid |= terminal.is_some() || known.is_none();
             terminal = known;
@@ -591,6 +591,17 @@ fn capture_spawned(
     timeout: Duration,
     limit: usize,
 ) -> CapturedRun {
+    capture_observed(child, timeout, limit, None)
+}
+
+// The optional completion signal lets a synthetic descendant fixture await
+// stderr EOF after a timeout, without adding a blocking join to production.
+fn capture_observed(
+    child: &mut std::process::Child,
+    timeout: Duration,
+    limit: usize,
+    reader_done: Option<mpsc::Sender<()>>,
+) -> CapturedRun {
     let failed = |end| CapturedRun {
         end,
         stderr: String::new(),
@@ -605,6 +616,9 @@ fn capture_spawned(
     // It owns at most `limit` bytes and never prevents the child from being reaped.
     let _reader = thread::spawn(move || {
         let _ = send.send(read_bounded(stderr, limit));
+        if let Some(done) = reader_done {
+            let _ = done.send(());
+        }
     });
     let started = Instant::now();
     let (mut end, mut captured) = (None, None);
@@ -1168,6 +1182,13 @@ pub(crate) mod child_fixtures {
         let Ok(case) = std::env::var("OHL_SYNTHETIC_CHILD") else {
             return;
         };
+        if case == "descendant" {
+            if let Some(ready) = std::env::var_os("OHL_SYNTHETIC_DESCENDANT_READY") {
+                std::fs::write(ready, b"descendant running").expect("ready");
+            }
+            std::thread::sleep(Duration::from_secs(2));
+            return;
+        }
         let mut stderr = std::io::stderr().lock();
         let chain = "[info] The chain walk has no further route.\n[info] Chain walk depth: 2.\n[info] Chain walk simulated seconds: 1.0.\n";
         let planner = "[info] Route plan cells: 1.\n[info] Route plan segments: 1.\n[info] Route plan ladder climbs: 0.\n[info] Route plan pickup detours: 0.\n[info] Route plan door presses: 0.\n[info] Route plan replay attempts: 1.\n[info] Route plan simulated seconds: 1.0.\n[info] Route plan written.\n";
@@ -1199,6 +1220,18 @@ pub(crate) mod child_fixtures {
             .expect("candidate");
         }
         match case.as_str() {
+            "inherited-stderr" => {
+                #[allow(
+                    clippy::zombie_processes,
+                    reason = "the parent fixture deliberately exits; its caller awaits the bounded descendant's stderr EOF"
+                )]
+                let _descendant = command("descendant")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::inherit())
+                    .spawn()
+                    .expect("short-lived descendant");
+            }
             "invalid-utf8" => {
                 stderr.write_all(&[0xff]).expect("stderr");
             }
@@ -1262,6 +1295,43 @@ mod outcome_tests {
     }
 
     #[test]
+    fn chain_inherited_stderr_after_child_exit_preserves_deadline_and_cleans_descendant() {
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let ready = directory.path().join("descendant-ready.txt");
+        let mut child = command("inherited-stderr")
+            .env("OHL_SYNTHETIC_DESCENDANT_READY", &ready)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("fixture child");
+        let (done, completed) = mpsc::channel();
+        let started = Instant::now();
+        let captured = capture_observed(
+            &mut child,
+            Duration::from_millis(500),
+            OUTPUT_LIMIT,
+            Some(done),
+        );
+        let elapsed = started.elapsed();
+        // Always await descendant EOF before asserting, including mutant runs.
+        // Its inherited stderr stays open until the test executable exits.
+        completed
+            .recv_timeout(Duration::from_secs(5))
+            .expect("self-terminating descendant closed stderr");
+        assert!(
+            ready.is_file(),
+            "descendant began holding stderr before timeout"
+        );
+        assert_eq!(captured.end, ChildEnd::TimedOut);
+        assert!(
+            elapsed < Duration::from_millis(1500),
+            "deadline preceded descendant EOF"
+        );
+        assert!(child.wait().expect("parent fixture reaped").success());
+    }
+
+    #[test]
     fn chain_child_spawn_and_read_errors_are_typed() {
         struct Broken;
         impl std::io::Read for Broken {
@@ -1304,6 +1374,7 @@ mod outcome_tests {
         }
         for text in [
             valid.replace("[info] The chain walk stopped.\n", ""),
+            format!("{valid}[info] The chain walk\n"),
             format!("{valid}[info] The chain walk stopped.\n"),
             format!("{valid}[info] The chain walk arrived dead.\n"),
             format!("{valid}[info] Chain walk depth: 12.\n"),
@@ -1321,6 +1392,10 @@ mod outcome_tests {
                 "malformed synthetic report accepted"
             );
         }
+        assert!(passed(
+            &parse_report(&format!("{valid}[info] The chain walker is synthetic.\n")),
+            12
+        ));
         assert!(!passed(&parse_report(&valid.replace("12.", "11.")), 12));
         let generic = parse_report(&valid.replace("12.", "2."));
         assert!(passed(&generic, 2));

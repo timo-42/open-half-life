@@ -154,7 +154,7 @@ pub fn parse_report(stderr: &str) -> PlanReport {
     let (mut markers, mut refusals, mut invalid) = (0, 0, false);
     for raw in stderr.lines() {
         if let Some(error) = raw.strip_prefix("[error] ")
-            && error.starts_with("Route plan refused:")
+            && (error == "Route plan refused" || error.starts_with("Route plan refused:"))
         {
             if error == CHAIN_INCOMPLETE_LINE {
                 refusals += 1;
@@ -830,12 +830,19 @@ mod admission_tests {
     fn chain_planner_report_requires_all_exact_unique_numbers_and_marker() {
         let valid = "[info] Route plan cells: 1.\n[info] Route plan segments: 1.\n[info] Route plan ladder climbs: 0.\n[info] Route plan pickup detours: 0.\n[info] Route plan door presses: 0.\n[info] Route plan replay attempts: 1.\n[info] Route plan simulated seconds: 1.0.\n[info] Route plan written.\n";
         assert!(parse_report(valid).valid);
+        assert!(
+            parse_report(&format!(
+                "{valid}[error] Route plan refusedness is synthetic.\n"
+            ))
+            .valid
+        );
         for text in [
             valid.replace("[info] Route plan written.\n", ""),
             valid.replace("[info] Route plan cells: 1.\n", ""),
             format!("{valid}[info] Route plan written.\n"),
             format!("{valid}[info] Route plan cells: 1.\n"),
             format!("{valid}[error] {CHAIN_INCOMPLETE_LINE}\n"),
+            format!("{valid}[error] Route plan refused\n"),
             valid.replace("cells: 1.", "cells: 1. synthetic-suffix-secret"),
             valid.replace("seconds: 1.0.", "seconds: NaN."),
             valid.replace("seconds: 1.0.", "seconds: inf."),
@@ -883,6 +890,41 @@ mod admission_tests {
             assert_eq!(exit, ExitCode::FAILURE);
             assert!(!root.path().join("xtask/chain-routes/hop-0001.txt").exists());
             assert_private(&String::from_utf8(output).expect("utf8"));
+        }
+    }
+
+    #[test]
+    fn chain_planner_full_entrypoint_rejects_truncated_refusal_and_preserves_neighbor_namespace() {
+        use std::fmt::Write as _;
+        for (line, success) in [
+            ("[error] Route plan refused", false),
+            ("[error] Route plan refusedness is synthetic.", true),
+        ] {
+            let root = setup();
+            let mut output = Vec::new();
+            let exit = run_with(root.path(), &args(), &mut output, |app, _| {
+                let arguments: Vec<_> = app.get_args().collect();
+                let index = arguments
+                    .iter()
+                    .position(|arg| *arg == "--plan-route")
+                    .expect("candidate");
+                let mut child = command("valid");
+                child.env("OHL_SYNTHETIC_OUT", arguments[index + 1]);
+                let mut captured = capture_stderr(child, Duration::from_secs(5));
+                let _ = writeln!(captured.stderr, "{line}");
+                captured
+            });
+            assert_eq!(exit == ExitCode::SUCCESS, success);
+            assert_eq!(
+                root.path().join("xtask/chain-routes/hop-0001.txt").exists(),
+                success
+            );
+            let output = String::from_utf8(output).expect("utf8");
+            assert_private(&output);
+            assert!(!output.contains("refusedness"));
+            if !success {
+                assert_eq!(output, "error: planner-report\n| Result | Not written |\n");
+            }
         }
     }
 

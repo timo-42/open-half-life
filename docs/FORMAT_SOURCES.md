@@ -7945,3 +7945,11 @@ New plans use a fresh owned directory under ignored `target/chain-plan-staging`.
 Only successful child completion, exact reports and validated content admit the
 candidate with `create_new`; an existing destination is preserved. Cleanup removes
 only this attempt's staging directory or its own failed destination write.
+
+Review follow-ups from #183 treat an exact truncated `The chain walk` or
+`Route plan refused` root as malformed final output, without absorbing other
+word namespaces such as the synthetic neighboring-name fixtures. An exited child
+with an inherited stderr writer is not complete until bounded reading finishes;
+the deadline still applies after a cached successful exit. Synthetic descendants
+self-terminate and the test waits for observed reader completion before returning.
+The production capture path never waits for reader EOF past its deadline.
