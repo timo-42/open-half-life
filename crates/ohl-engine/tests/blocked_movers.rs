@@ -610,8 +610,8 @@ fn a_monster_already_inside_a_lift_does_not_block_it() {
     assert_eq!(named_door_state(&game, "ohl_lift"), MoverState::Open);
     assert!(!saw_closing, "the lift never reversed");
     assert_eq!(
-        actor_origin(&game, guard).z,
-        -36.0,
+        actor_origin(&game, guard).z.to_bits(),
+        (-36.0_f32).to_bits(),
         "the old penetration is left alone"
     );
     assert!((actor_health(&game, guard) - health).abs() < f32::EPSILON);
@@ -853,8 +853,13 @@ fn a_door_closing_on(classname: &str, spawnflags: u32) {
             .expect("actor");
         assert_eq!(actor.body_frame, ohl_ai::BodyFrame::Ceiling);
         assert_eq!(
-            actor.body_frame.world_bounds(actor.hull, actor.origin).1.z,
-            start.z
+            actor
+                .body_frame
+                .world_bounds(actor.hull, actor.origin)
+                .1
+                .z
+                .to_bits(),
+            start.z.to_bits()
         );
         assert!(actor.eye().z < start.z);
     }

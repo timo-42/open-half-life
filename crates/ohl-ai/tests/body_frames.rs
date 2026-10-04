@@ -78,7 +78,15 @@ fn map_feet_walkers_move_without_lifting_the_authored_anchor() {
                 .trace(hull, actor.query_origin(), actor.query_origin())
                 .start_solid
         );
-        assert_eq!(actor.body_frame.world_bounds(hull, actor.origin).0.z, 0.0);
+        assert_eq!(
+            actor
+                .body_frame
+                .world_bounds(hull, actor.origin)
+                .0
+                .z
+                .to_bits(),
+            0.0_f32.to_bits()
+        );
         for _ in 0..50 {
             ai.tick(
                 &mut registry.world,
@@ -395,8 +403,8 @@ fn metadata_fallback_tracks_short_and_tall_model_bounds_and_rejects_extremes() {
                 .abs_diff_eq(Vec3::new(2.0, -2.0, height * (8.0 / 9.0)), 0.001)
         );
         assert_eq!(
-            actor.query_origin().z,
-            36.0,
+            actor.query_origin().z.to_bits(),
+            36.0_f32.to_bits(),
             "clipping height never selects a new movement hull"
         );
     }
@@ -410,7 +418,7 @@ fn metadata_fallback_tracks_short_and_tall_model_bounds_and_rejects_extremes() {
     let mut actor = Actor::new(Classification::None, Vec3::ZERO);
     actor.configure_model(&MonsterKind::Generic, Some(&invalid));
     assert!(actor.eye().is_finite());
-    assert_eq!(actor.query_origin().z, 36.0);
+    assert_eq!(actor.query_origin().z.to_bits(), 36.0_f32.to_bits());
 }
 
 #[test]

@@ -3183,10 +3183,10 @@ mod origin_frame_tests {
             let stats = game.script_navigation_stats();
             assert_eq!(stats.untraced_steps, 0);
             assert_eq!(stats.start_solid, 0);
-            if navigation != Some(8) {
-                assert!(stats.traced_steps > 0);
-            } else {
+            if navigation == Some(8) {
                 assert!(stats.graph_steps > 0, "completion used the graph detour");
+            } else {
+                assert!(stats.traced_steps > 0);
             }
         }
     }

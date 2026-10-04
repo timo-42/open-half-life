@@ -76,12 +76,12 @@ fn posed_and_clipping_boxes_share_the_render_anchor_while_only_degenerate_boxes_
             .get::<&Transform>(entity)
             .expect("transform");
         assert_eq!(actor.origin, transform.origin);
-        assert_eq!(actor.origin.z, 0.0);
+        assert_eq!(actor.origin.z.to_bits(), 0.0_f32.to_bits());
         assert!(actor.eye().abs_diff_eq(Vec3::new(79.0, 25.0, 32.0), 0.001));
         let placement = ohl_render::placement(transform.origin.to_array(), transform.angles.y);
         assert_eq!(
-            [placement[12], placement[13], placement[14]],
-            actor.origin.to_array()
+            [placement[12], placement[13], placement[14]].map(f32::to_bits),
+            actor.origin.to_array().map(f32::to_bits)
         );
         let mut index = HitboxIndex::new(HitboxLimits::default());
         crate::combat::rebuild_hitbox_index(&mut index, &level);
@@ -234,7 +234,10 @@ fn ducking_player_actor_keeps_controller_center_and_current_floor_goal() {
                 ohl_physics::Hull::Standing
             }
         );
-        assert_eq!(actor.origin.to_array(), game.player_origin());
+        assert_eq!(
+            actor.origin.to_array().map(f32::to_bits),
+            game.player_origin().map(f32::to_bits)
+        );
         let following = game
             .registry()
             .world

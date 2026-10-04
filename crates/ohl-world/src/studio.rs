@@ -551,9 +551,21 @@ impl StudioModel {
             attachments,
             sequences,
             sequence_names,
-            eye_position: header.eyeposition.map(|value| value.get()),
-            hull_min: header.min.map(|value| value.get()),
-            hull_max: header.max.map(|value| value.get()),
+            eye_position: [
+                header.eyeposition[0].get(),
+                header.eyeposition[1].get(),
+                header.eyeposition[2].get(),
+            ],
+            hull_min: [
+                header.min[0].get(),
+                header.min[1].get(),
+                header.min[2].get(),
+            ],
+            hull_max: [
+                header.max[0].get(),
+                header.max[1].get(),
+                header.max[2].get(),
+            ],
             bounds_min: [
                 header.bbmin[0].get(),
                 header.bbmin[1].get(),
