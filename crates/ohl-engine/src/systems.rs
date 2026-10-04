@@ -1045,47 +1045,58 @@ impl Systems {
         dt: f32,
     ) {
         if let Some(collision) = level.collision.as_ref() {
-            // A brush the player was standing on that *turned* this step
-            // carries them round with it as one rigid motion, before
-            // anything else looks at where either of them is. A
-            // `func_tracktrain` takes the whole angle between two path
-            // segments in the one step it changes segment on, and its hull
-            // sweeps over its own passengers doing it: integrating the
-            // tangential `omega x r` ride velocity through the ordinary
-            // move (below) would walk them off the arc and into the wall
-            // that just swept past, leaving them embedded and, once the
-            // push below cannot free them, dropped off the car. Rotating
-            // them by the same angle about the same pivot instead keeps
-            // them exactly where they were sitting. The move is refused
-            // outright if the seat it lands on is not free, so this can
-            // never place the player inside solid; the push path below
-            // then handles them as it handles any other mover that moved
-            // into them. See "Riding movers" in `docs/FORMAT_SOURCES.md`.
-            let carried_by_rotation = controller
+            // The ground brush already moved in phase 2a. Carry its rider
+            // by that complete rigid motion before probing the ground or
+            // walking: a translating car's rear wall can otherwise move
+            // into a passenger pressed against it, and a turning car can
+            // sweep its walls across them. Blending the translation into
+            // walking velocity is too late to recover an embedded start,
+            // and clips the passenger's own velocity against moving walls
+            // as though those walls were stationary.
+            let ground = controller
                 .state
                 .ground_brush
-                .and_then(|brush| level.rotational_carry(brush, controller.state.origin, dt))
-                .filter(|carried| {
-                    !collision
-                        .trace(controller.state.hull(), *carried, *carried)
-                        .start_solid
-                });
-            if let Some(carried) = carried_by_rotation {
+                .filter(|_| controller.state.on_ground && !controller.state.noclip);
+            let origin = controller.state.origin;
+            let carried_by_mover = ground.and_then(|brush| {
+                let translation = level
+                    .brush_velocity
+                    .get(&brush)
+                    .copied()
+                    .unwrap_or(Vec3::ZERO)
+                    * dt;
+                let carried =
+                    level.rotational_carry(brush, origin, dt).unwrap_or(origin) + translation;
+                if carried == origin {
+                    return None;
+                }
+                // Ignore the ground brush during the sweep: its new pose
+                // may already overlap the rider's old position. Other
+                // solids still block the carry, and the destination must
+                // also clear the ground brush in its new pose.
+                let sweep =
+                    collision.trace_ignoring(controller.state.hull(), origin, carried, Some(brush));
+                (sweep.fraction >= 1.0
+                    && !sweep.start_solid
+                    && !collision
+                        .trace(controller.state.hull(), carried, carried)
+                        .start_solid)
+                    .then_some(carried)
+            });
+            if let Some(carried) = carried_by_mover {
                 controller.state.origin = carried;
             }
             // A mover that moved into the player this step (a closing
             // `func_door`, a rising `func_plat`) must push them clear
             // rather than leave them embedded in its new solid; this is
-            // separate from riding one, which the `base_velocity` lookup
-            // below handles. Cheap in the common case: it costs one
+            // separate from riding one, which the rigid carry above
+            // handles. Cheap in the common case: it costs one
             // zero-length trace and does nothing further unless that trace
             // finds the player already standing inside an attached brush.
             //
             // The brush the player is *standing on* is excluded: a rising
             // lift's own top face lands a hair inside the rider's hull
-            // every step before the ride blend below catches them up
-            // (`ohl_physics::movement`'s `ride_vertical_mover` is what
-            // resolves that, by design), and treating that as a push —
+            // before its carry catches them up, and treating that as a push —
             // let alone a block — would either double the lift's carry or
             // deal its `dmg` to its own passenger every tick.
             //
@@ -1094,7 +1105,6 @@ impl Systems {
             // it hide another mover's embed behind its own lower `BrushId`,
             // and testing the destination with it in would report every
             // push of a rider on a rising lift as a block.
-            let ground = controller.state.ground_brush;
             let probe = collision.trace_ignoring(
                 controller.state.hull(),
                 controller.state.origin,
@@ -1125,28 +1135,15 @@ impl Systems {
             }
             controller.yaw = camera.yaw;
             controller.pitch = camera.pitch;
-            // Last step's `categorize_position` (inside the `advance` call
-            // below) recorded which attached brush, if any, the player was
-            // standing on; look its velocity up now and feed it back in as
-            // `base_velocity` so a moving `func_train`/`func_tracktrain`/
-            // `func_plat`/lift `func_door` carries the player riding it.
-            // See "Riding movers" in `docs/FORMAT_SOURCES.md`.
-            // The ride includes a rotating ground brush's tangential
-            // velocity at the player's own feet (`omega x r`, see
-            // `Level::brush_ride_velocity`), so standing on a spinning
-            // `func_rotating` disc or a swinging `func_door_rotating`
-            // carries the player the same way a `func_train` already does.
-            controller.base_velocity = controller.state.ground_brush.map_or(Vec3::ZERO, |brush| {
-                if carried_by_rotation.is_some() {
-                    // The rotation was already applied above, as a rigid
-                    // step; only the whole-body translation is left for the
-                    // ordinary ride blend, or the turn would be applied
-                    // twice.
-                    level
-                        .brush_velocity
-                        .get(&brush)
-                        .copied()
-                        .unwrap_or(Vec3::ZERO)
+            // A successful rigid carry consumed the brush's translation
+            // and rotation. Only a conveyor's surface velocity remains
+            // for the walking blend. A refused carry retains the ordinary
+            // traced velocity path, so an obstruction cannot teleport the
+            // player into solid. See "Riding movers" in
+            // `docs/FORMAT_SOURCES.md`.
+            controller.base_velocity = ground.map_or(Vec3::ZERO, |brush| {
+                if carried_by_mover.is_some() {
+                    level.conveyor_velocity(brush)
                 } else {
                     level.brush_ride_velocity(brush, controller.state.origin)
                 }

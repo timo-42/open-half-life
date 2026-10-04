@@ -1893,6 +1893,26 @@ at the end of this section.
   above is unchanged and still carries every rotating mover whose per-step
   angle is small.
 
+  *Walking against moving walls (2026-10).* The engine now applies a
+  ground brush's translation together with its finite rotation before
+  probing the floor or advancing the rider's own walking movement. The
+  translation-through-base-velocity description above is superseded for
+  a successful engine-side carry: after the collision hull moves, a car's
+  rear wall can overlap a passenger pressed against it before the walking
+  trace begins. That embedded start loses its ground brush and cannot be
+  recovered by subsequently adding the car's velocity. Carrying the rider
+  into the same seat in the new pose first avoids that overlap and lets
+  walking clip the rider's own velocity against the car's walls. The carry
+  sweeps against other solids with the ground brush excluded, then checks
+  the destination against the complete collision model. A blocked carry
+  retains the existing traced velocity fallback; a successful one leaves
+  only conveyor surface velocity in the walking blend. This is a
+  project-authored ordering correction to the existing riding mechanism,
+  not a new claim about proprietary engine internals. The synthetic
+  `crates/ohl-engine/tests/train_walking.rs` fixture covers wall contact,
+  corners through a bend, walking away from a wall, and walking off an
+  open platform; no game data supplies its geometry or entity names.
+
   *Still open: the rider's own view does not turn with the car.* A
   passenger keeps their seat through a corner but keeps facing the same
   world direction while doing it. Turning the view with the ground brush is

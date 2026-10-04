@@ -1255,15 +1255,14 @@ impl Level {
     /// changes segment on, and no velocity integrated over that step can
     /// follow the arc the rider's seat travels (see
     /// [`ohl_physics::rotational_ride_step`]). The caller moves the rider
-    /// here only after checking the destination is free, and then feeds
-    /// only the brush's *translation* back in as `base_velocity`, so the
-    /// ride is applied exactly once.
+    /// here together with the brush's translation, after checking the
+    /// sweep against other solids and the destination against its new pose,
+    /// so the ride is applied exactly once before walking.
     ///
     /// The pivot used is the brush's pivot as it was *before* this step's
     /// translation (`brush_rotation`'s pivot less this step's own
     /// displacement), because that is the pose the rider's offset was
-    /// measured against; the translation itself is then added by
-    /// `base_velocity` in the ordinary way.
+    /// measured against; the caller adds the translation to this result.
     #[must_use]
     pub fn rotational_carry(&self, brush: BrushId, point: Vec3, dt: f32) -> Option<Vec3> {
         let rotation = self.brush_rotation.get(&brush)?;
