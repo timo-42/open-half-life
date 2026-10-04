@@ -731,27 +731,19 @@ fn in_place_restore_clears_existing_laser_pulse_without_replaying_damage() {
     tick(&mut game, true, true);
     assert!((health(&game) - 977.0).abs() < 0.001);
     assert_eq!(game.systems_mut().tanks.laser_pulses().len(), 1);
-    let snapshot = state(&game);
+    let save = game.to_save(0);
+    let snapshot = save.tanks.unwrap();
     assert!(snapshot.mounted.is_some());
     assert!(snapshot.states[0].shot_wait > 0.9);
-    let player = game.player_entity();
-    let position = glam::Vec3::from_array(game.player_origin());
+    let controller = ohl_physics::PlayerController::spawn_at(
+        glam::Vec3::from_array(save.view.position),
+        save.view.yaw,
+        save.view.pitch,
+    );
     {
         let (level, systems) = game.level_and_systems_mut();
-        let mounted = systems.tanks.restore(
-            level,
-            &mut systems.projectiles,
-            Some(&snapshot),
-            super::ControlInput {
-                player,
-                position,
-                view_direction: glam::Vec3::X,
-                alive: true,
-                use_pressed: false,
-                attack: false,
-            },
-        );
-        assert!(mounted);
+        systems.restore_tanks(level, &controller, Some(&snapshot));
+        assert!(systems.snapshot_tanks(level).unwrap().mounted.is_some());
         assert!(systems.tanks.laser_pulses().is_empty());
         assert_eq!(systems.snapshot_tanks(level), Some(snapshot));
     }
