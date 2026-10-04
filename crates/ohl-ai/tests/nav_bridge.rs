@@ -450,7 +450,8 @@ fn an_upward_initial_waypoint_preserves_existing_steering() {
     assert_eq!(walking.stats().graph_steps, 1);
     assert_eq!(opted, ordinary);
     assert_eq!(
-        opted.z, start.z,
+        opted.z.to_bits(),
+        start.z.to_bits(),
         "upward attachment is outside this descent slice"
     );
 }

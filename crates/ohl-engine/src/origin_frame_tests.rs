@@ -907,11 +907,11 @@ fn assert_descent_anchor_geometry(game: &mut Game, custom_bottom: bool) -> Actor
         }
     );
     assert_eq!(actor.origin, transform.origin);
-    assert_eq!(actor.yaw, transform.angles.y);
+    assert_eq!(actor.yaw.to_bits(), transform.angles.y.to_bits());
     let placement = ohl_render::placement(transform.origin.to_array(), transform.angles.y);
     assert_eq!(
-        [placement[12], placement[13], placement[14]],
-        actor.origin.to_array()
+        [placement[12], placement[13], placement[14]].map(f32::to_bits),
+        actor.origin.to_array().map(f32::to_bits)
     );
     let (level, _) = game.level_and_systems_mut();
     // Inspect posed geometry when rebuilt at this post-tick anchor. The live
@@ -926,10 +926,13 @@ fn assert_descent_anchor_geometry(game: &mut Game, custom_bottom: bool) -> Actor
         .expect("posed body");
     assert_eq!(entry.origin, actor.origin);
     assert_eq!(entry.boxes.len(), 1);
-    assert_eq!(entry.boxes[0].min.z, if custom_bottom { -8.0 } else { 0.0 });
     assert_eq!(
-        entry.boxes[0].max.z,
-        if custom_bottom { 52.0 } else { 60.0 }
+        entry.boxes[0].min.z.to_bits(),
+        if custom_bottom { -8.0_f32 } else { 0.0_f32 }.to_bits()
+    );
+    assert_eq!(
+        entry.boxes[0].max.z.to_bits(),
+        if custom_bottom { 52.0_f32 } else { 60.0_f32 }.to_bits()
     );
     actor
 }
