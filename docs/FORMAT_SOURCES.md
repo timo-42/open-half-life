@@ -8256,7 +8256,7 @@ Earlier mutation results retain their original source provenance; the rebase
 does not claim new mutation execution or change any named cut or save layout.
 
 
-## M9.NEXT — macOS exit notification and owned-child reap deadline
+## M9.53 — macOS exit notification and owned-child reap deadline
 
 This platform lifecycle correction uses the published
 [Rust `Child::try_wait` contract](https://doc.rust-lang.org/std/process/struct.Child.html#method.try_wait):

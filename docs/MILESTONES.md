@@ -8958,7 +8958,11 @@ animated-target continuation limitation remain unchanged. Final review and
 fresh combined-head CI remain required before merge.
 
 
-### M9.NEXT — source checkpoint: macOS post-notification reaping
+## M9.53 — macOS owned-worker reaping within the original deadline
+
+Gates: PASS on `be8c789` — fmt; three Clippy modes; workspace tests 2986/0/35 (passed/failed/ignored); policy; graph (36 crates); combat 37/37 with zero unexpected lines; campaign 93/93; BOTH chains depth 12 / Pass / 660.8 seconds.
+
+Fresh numbered-head Apple Silicon CI remains pending.
 
 The owned worker can receive `NOTE_EXIT` before a nonblocking status poll has
 status available. The backend now retains that observation and retries only
@@ -9166,4 +9170,4 @@ native blocking/wait-any adapter mutations remain deferred and unexecuted.
 Linux package/runtime results do not establish native macOS execution or the
 precise cause of the earlier `ReapFailed`. This follow-up changes only the two
 macOS documentation appendices; all source/configuration bytes remain equal
-to the freshly validated source. M9.NEXT remains unnumbered until integration.
+to the freshly validated source. M9.53 remains unnumbered until integration.
