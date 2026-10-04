@@ -109,8 +109,15 @@ fn physical_rocket_exits_source_brush_and_detonates_on_separate_blocker() {
         (query == id).then_some(source)
     });
     assert!(set.get(id).is_none());
-    assert!(events.iter().any(|event| matches!(event,
+    assert_eq!(events.len(), 2);
+    assert!(matches!(events[0],
+        ProjectileEvent::Impact { id: found, owner: Some(EntityId(101)), position, .. }
+            if found == id && (position.x - 56.0).abs() < 0.1
+    ));
+    // The existing projectile policy offsets detonation one unit outside the
+    // contact plane. Keep independent contact and blast position oracles.
+    assert!(matches!(events[1],
         ProjectileEvent::Detonate { id: found, owner: Some(EntityId(101)), position, .. }
-            if *found == id && (position.x - 56.0).abs() < 0.1
-    )));
+            if found == id && (position.x - 55.0).abs() < 0.1
+    ));
 }

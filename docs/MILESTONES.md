@@ -8743,3 +8743,28 @@ impact placement and splash damage. The stationary synthetic continuation
 tests do not establish animated-target save continuity. Animation-cursor
 persistence is an unresolved project `TODO(black-box)` outside this package.
 No numbering, merge or full-gate pass is claimed by this intermediate checkpoint.
+
+**Source review follow-up, not yet executed.** Review of `20f26d0` found that
+automatic targeting with authored zero persistence retained an expired memory
+row, causing the strict tag44 writer to reject the complete save. The new
+source omits that row while still aiming/firing at a visible player; save
+validation is unchanged. Two additional synthetic tests cover both key
+spellings, real automatic damage, immediate save/load and subsequent world-wall
+occlusion without remembered shots, plus positive-persistence continuation
+while occluded through memory expiry. Both tests and the changed source are
+**uncompiled/unrun**; the preceding 49-test evidence belongs to `20f26d0`.
+
+The same review found that denied direct-controls Use could fall through map
+logic and retry as a remote claim without local bounds. Recognized direct
+controls now consume that Use after arbitration even on denial; ordinary
+handheld Attack and genuine button/relay remote activation remain available.
+A new unrun real-input test checks a tiny authored controls brush whose eye
+use range differs from controller bounds, missing bounds, absent pending
+claims, and a loaded handheld shot on the denied Use+Attack edge.
+
+Broader CI at `20f26d0` also exposed three test-source lints and one previously
+unexecuted projectile fixture mismatch. The source follow-up uses an exact
+bitwise bind-pose oracle, mechanical naming/semicolon fixes, and separately
+asserts contact at56 and existing outward-clearance detonation at55 with the
+same tolerance and exact two-event multiplicity. Production physics is
+unchanged; these changes and the three new engine tests remain unrun.

@@ -535,7 +535,9 @@ fn desired_direction(
         && distance <= def.max_range
         && queries.sees_player(tick.tank, pose.pivot_world(), player);
     let point = if seen {
-        state.memory = Some(TankMemory {
+        // Zero persistence still permits the visible shot, but must not leave
+        // an already-expired memory row for the optional save section.
+        state.memory = (def.persistence > 0.0).then_some(TankMemory {
             point: player.eye,
             remaining: def.persistence,
         });

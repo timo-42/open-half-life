@@ -19,6 +19,16 @@ pub(crate) fn fixture(
     overrides: &[(&str, &str)],
     extra: &str,
 ) -> (Game, MemoryAssets) {
+    fixture_with_controls(variant, overrides, extra, [-48.0, -48.0, 36.0], 36.0)
+}
+
+fn fixture_with_controls(
+    variant: &str,
+    overrides: &[(&str, &str)],
+    extra: &str,
+    controls_origin: [f32; 3],
+    controls_half_height: f32,
+) -> (Game, MemoryAssets) {
     let mut values = std::collections::BTreeMap::from([
         ("model", "*1"),
         ("targetname", "tank"),
@@ -42,7 +52,7 @@ pub(crate) fn fixture(
         entity_block(variant, [0.0, 0.0, 64.0], 0.0, &entries),
         entity_block(
             "func_tankcontrols",
-            [-48.0, -48.0, 36.0],
+            controls_origin,
             0.0,
             &[
                 ("model", "*2"),
@@ -88,8 +98,8 @@ pub(crate) fn fixture(
     let tank_min = [-16.0, -4.0, -4.0];
     let tank_max = [24.0, 4.0, 4.0];
     let turret = builder.push_collision_hulls(&[CollisionBrush::box_brush(tank_min, tank_max)]);
-    let controls_min = [-12.0, -12.0, -36.0];
-    let controls_max = [12.0, 12.0, 36.0];
+    let controls_min = [-12.0, -12.0, -controls_half_height];
+    let controls_max = [12.0, 12.0, controls_half_height];
     let controls =
         builder.push_collision_hulls(&[CollisionBrush::box_brush(controls_min, controls_max)]);
     let block_min = [-4.0, -40.0, -64.0];
@@ -130,7 +140,10 @@ fn stationary_target_model() -> Vec<u8> {
     let model = ohl_world::StudioModel::parse(&bytes, &ohl_formats::mdl10::Limits::default())
         .expect("synthetic stationary model");
     let bind = ohl_world::StudioPose::bind(&model);
-    assert_eq!(bind.matrices[0], glam::Mat4::IDENTITY.to_cols_array());
+    assert_eq!(
+        bind.matrices[0].map(f32::to_bits),
+        glam::Mat4::IDENTITY.to_cols_array().map(f32::to_bits)
+    );
     for time in [0.0, 0.02, 0.05, 0.2, 1.0] {
         assert_eq!(
             ohl_world::StudioPose::sample(&model, 0, time).unwrap(),
@@ -255,7 +268,7 @@ fn automatic_tank_aims_at_and_damages_the_real_player() {
 
 #[test]
 fn exact_source_brush_is_ignored_but_a_separate_closed_door_still_blocks() {
-    let blocker = entity_block(
+    let door_definition = entity_block(
         "func_door",
         [80.0, 0.0, 64.0],
         90.0,
@@ -267,7 +280,7 @@ fn exact_source_brush_is_ignored_but_a_separate_closed_door_still_blocks() {
     );
     for variant in ["func_tank", "func_tanklaser", "func_tankrocket"] {
         let (mut clear, _) = fixture(variant, &[], "");
-        let (mut blocked, _) = fixture(variant, &[], &blocker);
+        let (mut blocked, _) = fixture(variant, &[], &door_definition);
         for game in [&mut clear, &mut blocked] {
             tick(game, true, true);
             advance(game, 7, false);
@@ -346,6 +359,71 @@ pub(super) fn equip(game: &mut Game, weapon: WeaponId) {
     advance(game, 60, false);
     if weapon == WeaponId::Satchel {
         assert_eq!(game.inventory().clip(weapon), 1);
+    }
+}
+
+#[test]
+fn denied_direct_controls_use_cannot_become_remote_and_keeps_handheld_attack() {
+    for missing_bounds in [false, true] {
+        let (mut game, _) = if missing_bounds {
+            fixture("func_tank", &[], "")
+        } else {
+            fixture_with_controls("func_tank", &[], "", [-48.0, -48.0, 124.0], 1.0)
+        };
+        equip(&mut game, WeaponId::Glock);
+        game.tick(
+            TICK_SECONDS,
+            &Input {
+                reload: true,
+                ..Input::default()
+            },
+        );
+        advance(&mut game, 160, false);
+        assert_eq!(game.inventory().clip(WeaponId::Glock), 17);
+        let controls = named(&game, "controls");
+        if missing_bounds {
+            game.level_and_systems_mut()
+                .0
+                .registry
+                .world
+                .remove_one::<ohl_game::registry::BrushBounds>(controls)
+                .unwrap();
+        } else {
+            let bounds = game
+                .registry()
+                .world
+                .get::<&ohl_game::registry::BrushBounds>(controls)
+                .unwrap();
+            let center = (bounds.mins + bounds.maxs) * 0.5;
+            let eye = Vec3::from_array(game.camera().position);
+            assert!((center.distance(eye) - 60.0).abs() < 0.1);
+            let player = Vec3::from_array(game.player_origin());
+            assert!(
+                player.distance(player.clamp(bounds.mins, bounds.maxs)) > super::CONTROL_MARGIN
+            );
+        }
+        assert_eq!(
+            ohl_game::find_usable_within(
+                game.registry(),
+                Vec3::from_array(game.camera().position),
+                crate::USE_RADIUS
+            ),
+            Some(controls)
+        );
+        let before = game.weapon_fired_count();
+        let ammo = game.inventory_totals().1;
+        tick(&mut game, true, true);
+        assert!(game.systems_mut().tanks.mounted().is_none());
+        assert!(game.to_save(0).tanks.unwrap().pending_use.is_none());
+        assert_eq!(game.weapon_fired_count(), before + 1);
+        assert_eq!(game.inventory_totals().1, ammo - 1);
+        tick(&mut game, false, false);
+        let state = game.to_save(0).tanks.unwrap();
+        assert!(
+            state.mounted.is_none()
+                && state.pending_use.is_none()
+                && state.pending_remote.is_none()
+        );
     }
 }
 

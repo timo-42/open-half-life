@@ -244,6 +244,103 @@ fn automatic_memory_aim_and_cadence_continue_against_live_player() {
 }
 
 #[test]
+fn zero_persistence_automatic_fire_saves_and_stops_when_player_becomes_occluded() {
+    for key in ["persistence", "persistance"] {
+        let (mut live, assets) = fixture(
+            "func_tank",
+            &[
+                ("spawnflags", "1"),
+                (key, "0"),
+                ("firerate", "10"),
+                ("bullet_damage", "1"),
+            ],
+            "",
+        );
+        tick(&mut live, false, false);
+        assert!(state(&live).states[0].memory.is_none());
+        assert!(live.save_bytes(0).is_ok(), "first visible tick is savable");
+        idle(&mut live, 40);
+        assert!(live.player_health() < 100.0, "visible aim still fires");
+        assert!(state(&live).states[0].relative_yaw.abs() > 30.0);
+        let bytes = live
+            .save_bytes(0)
+            .expect("zero persistence remains savable");
+        let mut loaded = Game::load_bytes(&assets, &bytes).unwrap();
+        assert_eq!(state(&live), state(&loaded));
+        let shots = live.to_save(0).simulation.pending.len();
+        assert!(shots > 0);
+        // The fixture's independent world wall spans x480..512. Moving the
+        // player beyond it removes LOS, independently of the turret source.
+        for game in [&mut live, &mut loaded] {
+            game.set_viewpoint([600.0, 0.0, 36.0], 0.0, 0.0);
+        }
+        let health = live.player_health();
+        for _ in 0..30 {
+            tick(&mut live, false, false);
+            tick(&mut loaded, false, false);
+            assert!(state(&live).states[0].memory.is_none());
+            assert_eq!(state(&live), state(&loaded));
+            assert_eq!(live.to_save(0).simulation.pending.len(), shots);
+            assert_eq!(loaded.to_save(0).simulation.pending.len(), shots);
+            assert!((live.player_health() - health).abs() < 0.001);
+            assert!((loaded.player_health() - health).abs() < 0.001);
+        }
+        assert!(live.save_bytes(0).is_ok());
+        assert!(loaded.save_bytes(0).is_ok());
+    }
+}
+
+#[test]
+fn positive_persistence_continues_occluded_memory_then_expires_after_restore() {
+    let (mut live, assets) = fixture(
+        "func_tank",
+        &[
+            ("spawnflags", "1"),
+            ("persistence", "0.5"),
+            ("firerate", "10"),
+            ("bullet_damage", "1"),
+        ],
+        "",
+    );
+    idle(&mut live, 40);
+    assert!(live.player_health() < 100.0);
+    let seen = state(&live).states[0].memory.unwrap();
+    assert!((seen.remaining - 0.5).abs() < 0.001);
+    live.set_viewpoint([600.0, 0.0, 36.0], 0.0, 0.0);
+    idle(&mut live, 5);
+    let checkpoint = state(&live);
+    let memory = checkpoint.states[0].memory.unwrap();
+    assert_eq!(memory.point.map(f32::to_bits), seen.point.map(f32::to_bits));
+    assert!(memory.remaining > 0.4 && memory.remaining < 0.5);
+    let mut loaded = Game::load_bytes(&assets, &live.save_bytes(0).unwrap()).unwrap();
+    assert_eq!(state(&loaded), checkpoint);
+    let health = live.player_health();
+    let shots = live.to_save(0).simulation.pending.len();
+    for step in 0..60 {
+        tick(&mut live, false, false);
+        tick(&mut loaded, false, false);
+        assert_eq!(state(&live), state(&loaded));
+        assert_eq!(
+            live.to_save(0).simulation.pending,
+            loaded.to_save(0).simulation.pending
+        );
+        assert!((live.player_health() - health).abs() < 0.001);
+        assert!((loaded.player_health() - health).abs() < 0.001);
+        if step == 20 {
+            assert!(state(&live).states[0].memory.is_some());
+            assert!(live.to_save(0).simulation.pending.len() > shots);
+        }
+    }
+    assert!(state(&live).states[0].memory.is_none());
+    let stopped = live.to_save(0).simulation.pending.len();
+    for game in [&mut live, &mut loaded] {
+        idle(game, 20);
+        assert_eq!(game.to_save(0).simulation.pending.len(), stopped);
+        assert!((game.player_health() - health).abs() < 0.001);
+    }
+}
+
+#[test]
 fn rocket_physics_and_operator_mapping_continue_after_actual_launch_and_restore() {
     let (mut live, assets) = fixture("func_tankrocket", &[("bullet_damage", "100")], "");
     tick(&mut live, true, true);
@@ -329,7 +426,7 @@ fn mounted_restore_revalidates_player_death_controls_and_distance() {
                     .mounted
                     .as_mut()
                     .unwrap()
-                    .controls = Some(u32::MAX)
+                    .controls = Some(u32::MAX);
             }
             _ => save.view.position = [300.0, -200.0, 36.0],
         }
