@@ -7761,7 +7761,8 @@ identical game source as `b899b32` onto M9.49. The subsequent integration passes
 dependencies. Focused engine `map_effects` tests pass **23/23**, the overlapping
 `debris` filter passes **4/4**, and renderer `studio` CPU tests pass **4/4**.
 The strengthened same-step cascade test passes separately. Focused GPU checks
-pass as recorded below; full workspace and payload gates remain **unrun**. Source now wires
+pass as recorded below. Full non-payload gates now pass; payload gates remain
+**unrun**. Source now wires
 `map_effects.rs`/`debris.rs` into
 fixed steps, one shared blast dispatcher, both collision-model detach paths,
 optional section 43 and rendering. This is implementation work awaiting checks,
@@ -7870,8 +7871,17 @@ its selected normal test passed; final GPU baselines pass again. Fixtures use
 a correctly ordered filled square strip, with independent positive pixels and
 moved/rotated/vacated checks. The custom pose fixture preserves fitted screen
 size while making the authored sequence translation distinguishable from bind
-pose. No production correction was required by these GPU runs. Complete-tree
-and payload gates remain pending; this draft is not complete runtime validation.
+pose. No production correction was required by these GPU runs. Full non-payload
+gates on `6d125e3` pass: workspace formatting; default/dev-tools/all-features
+all-target clippy with warnings denied; workspace tests (2870 passed, 0 failed,
+34 ignored), including frozen-format compatibility; policy; and graph. No
+dependencies changed. The code remains on the actual M9.49 base, with payload
+and final integration gates still pending.
+
+Regular workspace tests run with `OHL_RENDER_GPU_TEST` absent because some
+preexisting wrappers treat any present value as enabled. New P6a GPU tests
+require exactly 1, and all GPU evidence above uses that explicit value.
+Normalizing the older wrappers is deferred test-harness work.
 
 PR #185 source-review follow-ups: damage-triggered plain
 and rotating buttons now forward the actual attacker through the existing
