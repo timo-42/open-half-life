@@ -9080,3 +9080,46 @@ A proposed wait-any adapter mutant must run only in this exact native test's
 isolated process (`-- --exact --test-threads=1`), with no other tests sharing
 that parent and with an outer watchdog. It must fail an actual returned-state
 or retained-status assertion; timeout containment alone is not a kill.
+
+
+Focused normal and mutation evidence is now available on exact source
+`e3df24f93332ac1aebc8b12f0c91655c4785f0f7`, tree
+`0b568aa94b95a4098470caff9b29de695a946f1c`. Workspace formatting passes;
+`cargo test -p ohl-platform --test macos_exit` compiles and passes **14 tests,
+0 failed, 0 ignored, 0 filtered**; and Linux
+`cargo clippy -p ohl-platform --all-targets --all-features -- -D warnings`
+finishes successfully. Two expired-time fixture expressions use checked
+subtraction; their independent boundary expectations remain unchanged.
+
+All **15** proposed portable helper faults were executed and detected with
+no survivor or invalid outcome. **12** failed their specifically pinned
+assertions. **3** failed separately designated finite-sequence `expect` checks:
+MWE-04 and MWE-07 exhausted the bounded status-poll sequence, while MWE-05
+requested a second exit notification. These are intentional sequence oracles,
+not a blanket acceptance of panics. Each of the fifteen faults had an exact
+one-test passing baseline before it and after byte restoration. The final
+full portable suite passed **14/14** again. The **46** guarded commands comprise
+30 normal one-test runs, 15 one-test mutant runs and that final fourteen-test
+run. Every invocation reached the explicit compiled-test completion marker;
+selected names/counts and each mutant's exact source-pinned failure location
+and message were checked. Compilation/setup failures, unknown panics, zero-test
+runs, guard failures and process timeouts were excluded from mutation evidence.
+
+All 746 tracked paths and file bytes, HEAD/tree and protected files were
+verified at baseline, at each mutation's sole permitted helper change, and
+after restoration. The fixed four-job, line-tables-only, nonincremental guard
+used only this worktree's target and kept GPU opt-in absent. All command and
+guard log hashes were audited; every guard confirmed its owned process group
+stopped. Mutation-window target peak was **276,410,368 bytes**, minimum host
+free space **30,427,361,280 bytes**, within the 4 GiB target cap and above the
+18 GiB floor. No owned Cargo/compiler/test process remained. The completed
+46-command report has SHA256
+`d8cd2b5284225857c57472364411097a22062258181bd2247283139fab81392f`.
+
+This appendix changes documentation only; crate, test and xtask bytes remain
+identical to the validated head. Native macOS compilation/execution, real
+kqueue and owned-child acceptance, native blocking/wait-any mutation checks,
+fresh Apple Silicon CI, full workspace/package gates, retail smoke/chain gates,
+PR review and merge remain pending. No native result or exact historical CI
+cause is inferred from the Linux portable-loop tests. Milestone numbering
+remains assigned at integration.
