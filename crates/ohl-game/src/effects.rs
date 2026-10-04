@@ -555,7 +555,7 @@ fn bounded_gib_model<'de, D: serde::Deserializer<'de>>(
 ) -> Result<Option<String>, D::Error> {
     struct OptionalModel;
     struct Model;
-    impl<'de> serde::de::Visitor<'de> for Model {
+    impl serde::de::Visitor<'_> for Model {
         type Value = String;
         fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.write_str("bounded relative gib model")
