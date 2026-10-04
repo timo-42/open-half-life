@@ -8723,11 +8723,13 @@ These are project-authored fixture corrections, not retail behavior claims.
 Mechanical helper extraction preserves the existing player-view restore block
 and isolates only the new tag44 writer; old section order is unchanged.
 
-**Gates.** Focused checks above pass. All three workspace/all-target Clippy
+**Gates.** Focused checks above pass; the later strengthened turret suite below
+passes61/61 and its31 additional mutation pairs have passing restored controls.
+All three workspace/all-target Clippy
 configurations, workspace tests, policy, graph, combat 37/37 with zero unexpected
 lines, campaign 93/93 and both baseline chains at depth 12 / Pass / 660.8 seconds
-remain **pending**, along with the remaining mutation probes and independent
-final review. No payload, release or GPU execution is claimed.
+remain **pending**, along with independent final evidence review. No payload,
+release or GPU execution is claimed.
 
 **Cuts and next dependency.** Mutation discrimination, full runtime review and
 all workspace/runtime gates remain required. Frozen tags 26/42/43 and weapon/entity/render encodings
@@ -8854,3 +8856,49 @@ Across both batches there were 58 row/test-pair executions:55 killed and three
 survived, including the original Use-bypass pairing later caught by its new
 companion. Individual Egon survival remains explicit. Full workspace/runtime
 gates and the proposed coverage strengthenings are still pending.
+
+**Strengthened synthetic coverage and fault evidence.** The subsequent
+`d804172` checkpoint adds nine tests and strengthens two existing tests; its
+engine turret suite passes **61/61**. The new coverage exercises full physical
+projectile capacity and a nonfull positive, restoring an existing live laser
+pulse, actual mounted reload/resource conservation, changed source BrushIds
+with an independent door, non-Rocket attribution rejection, independent numeric
+writer boundaries and current-definition restore clamps, and actual mortar
+miss/hit behavior. Existing tests now observe immediate Egon Beam-to-Idle
+cancellation and unthrottled shot outputs. A new still-turning input test
+checks both collision models at an independently calculated intermediate pose.
+All fixtures and numeric geometry/timing oracles are project-authored.
+
+The initial source checkpoint failed compilation because a test accessed a
+private field; the correction uses the existing host restore method and the
+actual saved player view. A subsequent normal run selected61 tests with60
+passes and one failure: the reload fixture issued Reload at the exact firing
+cooldown boundary, whose transition tick does not handle a new request. The
+test now waits beyond that boundary and independently asserts Idle before
+pressing real Reload. Its mounted Reloading, clip/reserve/total conservation,
+shot-count and release-edge assertions remain unchanged. The corrected exact
+test and all61 tests pass; earlier failures remain recorded as failures.
+
+All31 separately authorized fault pairs were then compiled and executed on
+unchanged `d804172`: **31 designated assertion kills, zero survivors and zero
+invalid outcomes**. All **62 exact normal-before/after controls** passed,
+followed by another restored **61/61** run. Each fault was installed alone;
+complete tracked membership/bytes, protected save/runtime files, archived core
+hash and compiler configuration were verified around every command. Owned
+process groups stopped before restoration. Peak sampled target size was
+2,439,143,424 bytes and minimum free space30,375,366,656 bytes. No classifier
+correction, test-oracle change or retained production change occurred during
+this batch. Existing tags26/42/43 and the independent tag44 golden are unchanged.
+
+The evidence keeps its limits. Full-pool faults fail actual output assertions;
+the saved attribution iterator does not expose a ghost-only invalid mapping.
+The absent brush filter fails initial live source exit, while the wrong lookup
+fails loaded remapped-source exit. Clamp faults fail their first out-of-range
+field before later continuation; duplicate/missing target faults fail the first
+`func_tank` branch, while all four variants pass normally. The strengthened
+Egon, output and immediate collision tests now catch their corresponding
+faults, preserving the original survivors and their earlier narrower claims.
+Likewise, prior attribution/master/player-reference kills stopped at mapping
+presence, initial closed-master acquisition and mounted identity respectively;
+they do not imply later terminal/restore checks were reached. Independent
+evidence review and all full workspace/runtime gates remain pending.

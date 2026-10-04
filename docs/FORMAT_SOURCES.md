@@ -8206,3 +8206,20 @@ cap probes, stable attribution and actual visible-beam checks failed their
 intended oracles. Two narrow log-classification corrections preserve the
 original records and precise assertion/required-section failure evidence.
 Full gates and the new coverage proposals remain pending.
+
+The subsequent project-authored coverage at `d804172` implements those
+proposals: nine new tests plus two strengthened tests pass in the61-test
+turret suite. They cover capacity admission, in-place pulse clearing, real
+mounted reload, remapped source geometry with independent obstruction,
+physical-kind/numeric save validation, mortar miss/hit, immediate Egon state,
+unthrottled outputs and both collision models during turning. A test-only
+restore-access correction uses the existing host API; a reload fixture now
+asserts Idle after ordinary cooldown before issuing its real Reload request.
+Neither changes production behavior or any existing save layout/golden.
+
+All31 corresponding source faults were actually compiled and killed by their
+designated assertions, with62 passing exact restored controls and a final
+61-test pass. These remain synthetic implementation checks, not additional
+published or original-engine observations. Historical survivors and precise
+early-assertion limits remain recorded in MILESTONES. No full workspace,
+release, payload or GPU gate is inferred from this focused evidence.
