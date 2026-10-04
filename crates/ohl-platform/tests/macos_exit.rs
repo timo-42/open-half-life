@@ -252,7 +252,10 @@ fn poll_time_is_deducted_before_clamping_the_backoff() {
 #[test]
 fn already_ready_status_can_be_reaped_at_an_expired_deadline() {
     let mut child = FakeChild::new([Ok(Some(status(Some(0), None)))]);
-    let deadline = child.now - MS;
+    let deadline = child
+        .now
+        .checked_sub(MS)
+        .expect("a representable expired fixture deadline");
     assert_eq!(
         wait_until(&mut child, deadline),
         Ok(IsolatedWorkerExitKind::Clean)
@@ -266,7 +269,10 @@ fn already_ready_status_can_be_reaped_at_an_expired_deadline() {
 #[test]
 fn pending_status_at_an_expired_deadline_returns_timeout_without_backoff() {
     let mut child = FakeChild::new([Ok(None)]);
-    let deadline = child.now - MS;
+    let deadline = child
+        .now
+        .checked_sub(MS)
+        .expect("a representable expired fixture deadline");
     assert_eq!(
         wait_until(&mut child, deadline),
         Err(IsolatedWorkerError::Timeout)
