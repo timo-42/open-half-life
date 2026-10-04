@@ -1154,3 +1154,32 @@ fn projectile_runtime_tag_42_has_a_fixed_additive_wire_shape() {
         fixture
     );
 }
+
+/// New optional tag 45 only; every pre-existing golden remains untouched.
+#[test]
+fn tag_45_charger_reservoirs_keep_their_frozen_wire_shape() {
+    use ohl_engine::save_state::{
+        ChargerReservoirEntry, ChargerReservoirKind, ChargerReservoirsSnapshot,
+    };
+    const GOLDEN: &[u8] = &[
+        0x01, 0x02, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0xac, 0x02, 0x01, 0x00, 0x00, 0x48, 0x41,
+    ];
+    let value = ChargerReservoirsSnapshot {
+        version: 1,
+        entries: vec![
+            ChargerReservoirEntry {
+                registry_index: 1,
+                kind: ChargerReservoirKind::Health,
+                remaining: 0.0,
+            },
+            ChargerReservoirEntry {
+                registry_index: 300,
+                kind: ChargerReservoirKind::Suit,
+                remaining: 12.5,
+            },
+        ],
+    };
+    assert_golden(&postcard::to_allocvec(&value).unwrap(), GOLDEN, 45);
+    let decoded: ChargerReservoirsSnapshot = postcard::from_bytes(GOLDEN).unwrap();
+    assert_eq!(decoded, value);
+}

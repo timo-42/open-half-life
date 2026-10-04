@@ -343,6 +343,24 @@ impl ChargerState {
         }
     }
 
+    /// Restores a saved health reservoir without clipping invalid amounts.
+    /// Project-authored persistence boundary; the typed full capacity is unchanged.
+    #[must_use]
+    pub fn health_with_remaining(remaining: f32) -> Option<Self> {
+        Self::health().with_remaining(remaining)
+    }
+
+    /// Restores a saved suit reservoir within the supplied difficulty's capacity.
+    #[must_use]
+    pub fn suit_with_remaining(difficulty: Difficulty, remaining: f32) -> Option<Self> {
+        Self::suit(difficulty).with_remaining(remaining)
+    }
+
+    fn with_remaining(self, remaining: f32) -> Option<Self> {
+        (remaining.is_finite() && (0.0..=self.remaining).contains(&remaining))
+            .then_some(Self { remaining })
+    }
+
     /// How much is left in the reservoir.
     #[must_use]
     pub const fn remaining(&self) -> f32 {
@@ -639,5 +657,37 @@ mod tests {
             Difficulty::Medium,
         );
         assert!(!outcome.taken);
+    }
+}
+
+#[cfg(test)]
+mod charger_restore_tests {
+    use super::{ChargerState, Difficulty};
+
+    #[test]
+    fn charger_restore_rejects_invalid_reservoirs() {
+        for remaining in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0, 51.0] {
+            assert!(ChargerState::health_with_remaining(remaining).is_none());
+            assert!(ChargerState::suit_with_remaining(Difficulty::Medium, remaining).is_none());
+        }
+    }
+
+    #[test]
+    fn charger_restore_uses_each_typed_capacity_including_zero() {
+        let full = ChargerState::health().remaining();
+        for remaining in [0.0, 12.5, full] {
+            let restored = ChargerState::health_with_remaining(remaining).unwrap();
+            assert_eq!(restored.remaining().to_bits(), remaining.to_bits());
+        }
+        for difficulty in [Difficulty::Easy, Difficulty::Medium, Difficulty::Hard] {
+            let full = ChargerState::suit(difficulty).remaining();
+            assert!(ChargerState::suit_with_remaining(difficulty, full).is_some());
+            assert!(ChargerState::suit_with_remaining(difficulty, full + 1.0).is_none());
+            assert!(
+                ChargerState::suit_with_remaining(difficulty, 0.0)
+                    .unwrap()
+                    .is_depleted()
+            );
+        }
     }
 }

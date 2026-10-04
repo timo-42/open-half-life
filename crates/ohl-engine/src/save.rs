@@ -46,8 +46,9 @@
 //!
 //! | 43 | [`SECTION_MAP_EFFECTS`] | [`MapEffectsSnapshot`]: bounded effect continuation and stable references |
 //! | 44 | [`SECTION_TANKS`] | [`TanksSnapshot`]: turret state, validated controls and separate rocket attribution |
+//! | 45 | [`SECTION_CHARGER_RESERVOIRS`] | [`ChargerReservoirsSnapshot`]: sparse typed charger reservoirs, including zero |
 //!
-//! Tags 23-31 and 33-44 are read as `None`/a default when absent, so a
+//! Tags 23-31 and 33-45 are read as `None`/a default when absent, so a
 //! save written before M7.9 P4b (tags 23-27), M7.13 (tag 28), M9.5 (tag 29),
 //! M9.6 (tag 30), M9.8 (tag 31), M9.10 (tag 33), the teleport/master
 //! package (tag 34), M9.25 (tag 35), M9.26 (tag 36), M9.33 (tag 37), the
@@ -134,9 +135,10 @@ use ohl_game::SimulationState;
 use serde::{Deserialize, Serialize};
 
 use crate::save_state::{
-    AiSnapshot, AmbientSnapshot, BossSnapshot, BreakableSnapshot, EntityCombatSnapshot,
-    InventorySnapshot, MomentaryDoorSnapshot, MonsterMakerChildSnapshot, MoverSnapshot,
-    ProjectileRuntimeSnapshot, ProjectilesSnapshot, RngSnapshot, RotatingMoverSnapshot,
+    AiSnapshot, AmbientSnapshot, BossSnapshot, BreakableSnapshot, ChargerReservoirsSnapshot,
+    EntityCombatSnapshot, InventorySnapshot, MomentaryDoorSnapshot, MonsterMakerChildSnapshot,
+    MoverSnapshot, ProjectileRuntimeSnapshot, ProjectilesSnapshot, RngSnapshot,
+    RotatingMoverSnapshot,
 };
 use crate::transition::{EntitySnapshot, GlobalStateTable, PlayerCarryState};
 
@@ -411,6 +413,10 @@ pub const SECTION_MAP_EFFECTS: u32 = 43;
 /// Optional turret continuation and rocket attribution; 26/42/43 stay frozen.
 pub const SECTION_TANKS: u32 = 44;
 
+/// Project-authored sparse charger reservoirs, independent of frozen tag 39.
+/// Missing state retains typed full-spawn defaults; malformed state fails closed.
+pub const SECTION_CHARGER_RESERVOIRS: u32 = 45;
+
 pub use crate::debris::DebrisRecord;
 pub use crate::map_effects::{
     EffectEntityRef, MapEffectsSnapshot, PendingUseSnapshot, SavedUseType,
@@ -632,6 +638,8 @@ pub struct GameSave {
     /// Optional tag 44. Absence restores authored turret defaults, with no
     /// operator claim or deferred control input. Cosmetic pulses are transient.
     pub tanks: Option<TanksSnapshot>,
+    /// Optional tag 45. Full/cold captures are absent; zero reservoirs are explicit.
+    pub charger_reservoirs: Option<ChargerReservoirsSnapshot>,
     /// The entity definitions a level change materialised in this map, in
     /// the order they were appended (M9.26). `None` for a save missing tag
     /// 36 — an older save simply comes back with the map's own entities and
@@ -699,6 +707,12 @@ impl GameSave {
                 writer.add_section_serde(SECTION_MAP_EFFECTS, effects)?;
             }
             self.write_tanks(writer)?;
+            if let Some(chargers) = &self.charger_reservoirs {
+                if !chargers.within_limits() {
+                    return Err(ohl_save::SaveError::LimitExceeded);
+                }
+                writer.add_section_serde(SECTION_CHARGER_RESERVOIRS, chargers)?;
+            }
             if let Some(runtime) = &self.projectile_runtime {
                 if runtime.attacks.len() > crate::save_state::MAX_SNAPSHOT_PROJECTILES
                     || runtime.deployable_owners.len()
@@ -778,6 +792,14 @@ impl GameSave {
     pub fn from_bytes(bytes: &[u8]) -> crate::Result<Self> {
         let reader = ohl_save::SaveReader::open(bytes, &ohl_save::Limits::default())
             .map_err(|_| crate::EngineError::SaveUnreadable)?;
+        let charger_reservoirs: Option<ChargerReservoirsSnapshot> =
+            optional_section(&reader, SECTION_CHARGER_RESERVOIRS)?;
+        if charger_reservoirs
+            .as_ref()
+            .is_some_and(|state| !state.within_limits())
+        {
+            return Err(crate::EngineError::SaveUnreadable);
+        }
         Ok(Self {
             created_at_unix_secs: reader.header().created_at_unix_secs,
             header: section(&reader, SECTION_ENGINE_HEADER)?,
@@ -794,6 +816,7 @@ impl GameSave {
             projectile_runtime: optional_section(&reader, SECTION_PROJECTILE_RUNTIME)?,
             map_effects: optional_section(&reader, SECTION_MAP_EFFECTS)?,
             tanks: optional_section(&reader, SECTION_TANKS)?,
+            charger_reservoirs,
             rng: optional_section(&reader, SECTION_RNG)?,
             mover_state: optional_bounded_vec_section(
                 &reader,

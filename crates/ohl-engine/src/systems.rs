@@ -493,6 +493,23 @@ impl Systems {
         self.pickups.ensure_spawned(level);
     }
 
+    /// Sparse charger state for optional tag 45; capture never initializes pickups.
+    pub(crate) fn snapshot_charger_reservoirs(
+        &self,
+        level: &Level,
+    ) -> Option<crate::save_state::ChargerReservoirsSnapshot> {
+        self.pickups.snapshot_charger_reservoirs(level)
+    }
+
+    /// The caller independently ensures lazy components before this save overlay.
+    pub(crate) fn restore_charger_reservoirs(
+        &self,
+        level: &mut Level,
+        snapshot: &crate::save_state::ChargerReservoirsSnapshot,
+    ) {
+        self.pickups.restore_charger_reservoirs(level, snapshot);
+    }
+
     /// Empties the player's weapons, clips and reserve ammo: the whole of
     /// a `player_weaponstrip`'s published effect, forwarded from
     /// [`CombatState::strip_weapons`].
