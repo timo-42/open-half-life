@@ -2255,3 +2255,78 @@ mod decode_proptests {
         }
     }
 }
+
+// --- Optional charger reservoirs (45) ------------------------------------
+
+/// The existing tracked charger cap, shared by gameplay and save decoding.
+pub const MAX_SNAPSHOT_CHARGERS: usize = crate::pickups::MAX_CHARGERS;
+/// Frozen local payload version; existing save/container versions are unchanged.
+pub const CHARGER_RESERVOIRS_VERSION: u8 = 1;
+
+/// Frozen typed discriminant: Health is variant zero, Suit is variant one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChargerReservoirKind {
+    Health,
+    Suit,
+}
+
+impl ChargerReservoirKind {
+    /// Current engine spawn policy: suit chargers use Medium, as pickup classification does.
+    pub(crate) fn full_state(self) -> ohl_combat::ChargerState {
+        match self {
+            Self::Health => ohl_combat::ChargerState::health(),
+            Self::Suit => ohl_combat::ChargerState::suit(ohl_combat::Difficulty::Medium),
+        }
+    }
+
+    pub(crate) fn restored_state(self, remaining: f32) -> Option<ohl_combat::ChargerState> {
+        match self {
+            Self::Health => ohl_combat::ChargerState::health_with_remaining(remaining),
+            Self::Suit => ohl_combat::ChargerState::suit_with_remaining(
+                ohl_combat::Difficulty::Medium,
+                remaining,
+            ),
+        }
+    }
+}
+
+/// One stable registry slot's saved reservoir; never a transient entity id.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ChargerReservoirEntry {
+    pub registry_index: u32,
+    pub kind: ChargerReservoirKind,
+    pub remaining: f32,
+}
+
+/// Project-authored optional tag 45, sparse and bounded. Zero is persisted;
+/// full reservoirs are omitted by capture and missing state uses spawn defaults.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChargerReservoirsSnapshot {
+    pub version: u8,
+    #[serde(deserialize_with = "bounded_charger_entries")]
+    pub entries: Vec<ChargerReservoirEntry>,
+}
+
+impl ChargerReservoirsSnapshot {
+    /// Structural and typed scalar checks shared by all public save entry points.
+    #[must_use]
+    pub fn within_limits(&self) -> bool {
+        self.version == CHARGER_RESERVOIRS_VERSION
+            && self.entries.len() <= MAX_SNAPSHOT_CHARGERS
+            && self
+                .entries
+                .windows(2)
+                .all(|pair| pair[0].registry_index < pair[1].registry_index)
+            && self.entries.iter().all(|entry| {
+                usize::try_from(entry.registry_index)
+                    .is_ok_and(|index| index < MAX_SNAPSHOT_ENTITIES)
+                    && entry.kind.restored_state(entry.remaining).is_some()
+            })
+    }
+}
+
+fn bounded_charger_entries<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<ChargerReservoirEntry>, D::Error> {
+    bounded_runtime_vec(d, MAX_SNAPSHOT_CHARGERS)
+}

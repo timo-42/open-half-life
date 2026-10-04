@@ -9171,3 +9171,31 @@ Linux package/runtime results do not establish native macOS execution or the
 precise cause of the earlier `ReapFailed`. This follow-up changes only the two
 macOS documentation appendices; all source/configuration bytes remain equal
 to the freshly validated source. M9.53 remains unnumbered until integration.
+
+
+## M9.NEXT — charger reservoirs survive save/load
+
+Partially used health and suit chargers retain their remaining reservoir after
+save/load; a depleted charger stays depleted. A new optional tag 45 stores
+bounded, typed sparse state without changing any existing section shape or
+golden. Capture stays lazy, and restoration initializes components independently
+of pickup-switch tag 39 before applying the overlay to matching extant slots.
+Missing state uses the existing full-spawn default; tag 24 continues to preserve
+ordinary entity deletion. Old or hand-constructed saves omitting tag 24 cannot
+recover deletion from the new sparse section alone.
+
+The persistence policy is project-authored. Existing charger capacities, Medium
+suit classification, drain rate and `TODO(black-box)` qualification remain as
+documented in `FORMAT_SOURCES.md`. No movement, AI, simulation phase or recharge
+behavior changes are included. Synthetic tests exercise real held-use payout,
+zero, separated identities, old-save absence, tag 39 absence, deletion, ignored
+references, malformed public/raw DTOs, a 256/257 entry boundary and validation
+before any asset read. A new independent golden freezes tag 45's byte shape.
+
+**Gates:** source formatting and whitespace checks pass. Focused normal tests
+pass: 13 charger save cases, 23 frozen-format cases and 5 combat charger cases
+(45 unrelated combat cases filtered), with zero failures or ignores. The two
+suit fixture corrections were followed by a complete passing focused save run;
+production drain behavior is unchanged. Four actual primary mutation probes
+with restored normal runs, all workspace checks and both runtime inventory
+chains remain pending admission. No full runtime gate outcome is claimed.

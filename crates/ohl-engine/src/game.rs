@@ -1628,6 +1628,7 @@ impl Game {
             projectiles: Some(self.systems.snapshot_projectiles(&self.level)),
             projectile_runtime: self.systems.snapshot_projectile_runtime(&self.level),
             tanks: self.systems.snapshot_tanks(&self.level),
+            charger_reservoirs: self.systems.snapshot_charger_reservoirs(&self.level),
             map_effects: Some(self.systems.map_effects.snapshot(
                 &self.level.registry,
                 self.level.player,
@@ -1720,6 +1721,13 @@ impl Game {
         save: &GameSave,
         config: &GameConfig,
     ) -> Result<Self> {
+        if save
+            .charger_reservoirs
+            .as_ref()
+            .is_some_and(|state| !state.within_limits())
+        {
+            return Err(EngineError::SaveUnreadable);
+        }
         let config = GameConfig {
             difficulty: save.difficulty(),
             overbright: config.overbright,
@@ -1984,6 +1992,13 @@ impl Game {
         if let Some(switches) = &save.switches {
             self.systems.ensure_pickups_spawned(&mut self.level);
             crate::save_state::restore_switches(&mut self.level, switches);
+        }
+        // Project-authored tag 45 overlay: independent of tag 39's presence.
+        // This initializes components once; it never replays held use or restores entities.
+        if let Some(chargers) = &save.charger_reservoirs {
+            self.systems.ensure_pickups_spawned(&mut self.level);
+            self.systems
+                .restore_charger_reservoirs(&mut self.level, chargers);
         }
         // `SECTION_BOSS_STATE` (41): the same spawn-order-zipped overlay,
         // onto the trail, shield and flight plan `attach_level` just built

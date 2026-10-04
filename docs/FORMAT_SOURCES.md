@@ -8345,3 +8345,24 @@ final PR review remain pending. Optional native blocking/wait-any adapter
 mutations remain deferred and unexecuted. Existing Drop cleanup, the precise
 unproved cause of the old CI failure and all documented scope limits remain
 unchanged. Earlier pending-gate statements describe their own checkpoints.
+
+
+### Charger reservoir save continuation (M9.NEXT)
+
+Optional tag 45 is a project-authored persistence choice. It stores a local
+version 1 and at most 256 sparse entries, each with a stable registry slot,
+frozen Health/Suit kind and finite remaining amount within its typed charger
+capacity. Zero is explicit; unused full and cold reservoirs are omitted.
+Missing state retains the existing full-spawn default. Valid orphan,
+noncharger and kind-mismatched references are ignored; the overlay never
+creates an entity. Ordinary deletion continues to use tag 24. A save omitting
+that section cannot infer deletion from the sparse reservoir section alone.
+
+Capacity bounds use the existing `ChargerState::health` and `suit` constructors
+and the engine's existing Medium suit policy. The published capacity basis and
+search-summary qualification remain in “Pickups and chargers (M7.4)” above;
+the existing drain-rate `TODO(black-box)` remains unresolved. This package
+introduces no original-runtime claim or new external source. Sparse encoding,
+versioning, fail-closed validation at codec/writer/direct-load boundaries and
+independent initialization when tag 39 is absent are project-authored choices.
+Synthetic actual-use tests and independent golden bytes exercise those choices.

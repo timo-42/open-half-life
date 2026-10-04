@@ -23,8 +23,8 @@
 
 use glam::Vec3;
 use ohl_combat::{
-    AmmoType, BATTERY_AMOUNT, ChargerState, Difficulty, HEALTHKIT_AMOUNT, PickupKind,
-    ammo_pickup_amount, spec, weapon_pickup_ammo,
+    AmmoType, BATTERY_AMOUNT, HEALTHKIT_AMOUNT, PickupKind, ammo_pickup_amount, spec,
+    weapon_pickup_ammo,
 };
 use ohl_game::hecs::Entity;
 use ohl_game::registry::Transform;
@@ -32,6 +32,10 @@ use ohl_player::Player;
 
 use crate::components::{Charger, Pickup, WeaponBox};
 use crate::level::Level;
+use crate::save_state::{
+    CHARGER_RESERVOIRS_VERSION, ChargerReservoirEntry, ChargerReservoirKind,
+    ChargerReservoirsSnapshot, MAX_SNAPSHOT_ENTITIES,
+};
 use crate::systems::LatchedInput;
 
 /// How close the player must stand to a pickup or a charger for it to
@@ -42,12 +46,21 @@ use crate::systems::LatchedInput;
 pub const PICKUP_TOUCH_RADIUS: f32 = 32.0;
 
 /// Which reservoir one [`Charger`] entity restores. `ohl_combat::Charger`'s
-/// wrapped [`ChargerState`] does not record this itself, so this engine
+/// wrapped [`ChargerState`](ohl_combat::ChargerState) does not record this itself, so this engine
 /// remembers it from the classification that created the component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChargerKind {
     Health,
     Suit,
+}
+
+impl ChargerKind {
+    fn snapshot_kind(self) -> ChargerReservoirKind {
+        match self {
+            Self::Health => ChargerReservoirKind::Health,
+            Self::Suit => ChargerReservoirKind::Suit,
+        }
+    }
 }
 
 /// Chargers, pickups and their one-time classification pass.
@@ -66,7 +79,7 @@ pub(crate) struct PickupsState {
 
 /// The largest number of chargers one level may classify, so a pathological
 /// map cannot make [`PickupsState::charger_kinds`] grow without bound.
-const MAX_CHARGERS: usize = 256;
+pub(crate) const MAX_CHARGERS: usize = 256;
 
 impl PickupsState {
     pub(crate) fn new() -> Self {
@@ -101,7 +114,7 @@ impl PickupsState {
                     let _ = level
                         .registry
                         .world
-                        .insert_one(entity, Charger(ChargerState::health()));
+                        .insert_one(entity, Charger(ChargerReservoirKind::Health.full_state()));
                     if self.charger_kinds.len() < MAX_CHARGERS {
                         self.charger_kinds.push((entity, ChargerKind::Health));
                     }
@@ -113,7 +126,7 @@ impl PickupsState {
                     let _ = level
                         .registry
                         .world
-                        .insert_one(entity, Charger(ChargerState::suit(Difficulty::Medium)));
+                        .insert_one(entity, Charger(ChargerReservoirKind::Suit.full_state()));
                     if self.charger_kinds.len() < MAX_CHARGERS {
                         self.charger_kinds.push((entity, ChargerKind::Suit));
                     }
@@ -133,6 +146,70 @@ impl PickupsState {
                 _ => {
                     let _ = level.registry.world.insert_one(entity, Pickup::new(kind));
                 }
+            }
+        }
+    }
+
+    /// Capture without triggering lazy classification. Full reservoirs need no overlay.
+    pub(crate) fn snapshot_charger_reservoirs(
+        &self,
+        level: &Level,
+    ) -> Option<ChargerReservoirsSnapshot> {
+        let mut entries = Vec::new();
+        for (entity, kind) in &self.charger_kinds {
+            let Ok(charger) = level.registry.world.get::<&Charger>(*entity) else {
+                continue;
+            };
+            let kind = kind.snapshot_kind();
+            let remaining = charger.0.remaining();
+            if remaining >= kind.full_state().remaining() {
+                continue;
+            }
+            let Some(index) = level
+                .registry
+                .entities
+                .iter()
+                .take(MAX_SNAPSHOT_ENTITIES)
+                .position(|candidate| candidate == entity)
+            else {
+                continue;
+            };
+            let Ok(registry_index) = u32::try_from(index) else {
+                continue;
+            };
+            entries.push(ChargerReservoirEntry {
+                registry_index,
+                kind,
+                remaining,
+            });
+        }
+        entries.sort_unstable_by_key(|entry| entry.registry_index);
+        (!entries.is_empty()).then_some(ChargerReservoirsSnapshot {
+            version: CHARGER_RESERVOIRS_VERSION,
+            entries,
+        })
+    }
+
+    /// Overlay only extant matching classified chargers; no entity is created here.
+    pub(crate) fn restore_charger_reservoirs(
+        &self,
+        level: &mut Level,
+        snapshot: &ChargerReservoirsSnapshot,
+    ) {
+        for entry in &snapshot.entries {
+            let Ok(index) = usize::try_from(entry.registry_index) else {
+                continue;
+            };
+            let Some(entity) = level.registry.entities.get(index).copied() else {
+                continue;
+            };
+            if self.kind_of(entity).map(ChargerKind::snapshot_kind) != Some(entry.kind) {
+                continue;
+            }
+            if let Some(state) = entry.kind.restored_state(entry.remaining)
+                && let Ok(mut charger) = level.registry.world.get::<&mut Charger>(entity)
+            {
+                charger.0 = state;
             }
         }
     }
