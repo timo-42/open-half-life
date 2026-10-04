@@ -8413,7 +8413,7 @@ primitives. The final gate-recording change modifies documentation only;
 all 12 scoped source/test files and all 42 retained synthetic capture files
 remain byte-identical to the approved and tested implementation.
 
-## M9.NEXT — Map gameplay effects (focused CPU/GPU checkpoint)
+## M9.NEXT — Map gameplay effects (non-payload gates complete)
 
 Map declarations now drive env_explosion damage, env_shake, env_fade, masked
 live env_render changes and breakable blast/physical-debris cascades. Supported
@@ -8458,13 +8458,24 @@ independent expected pixels, movement, rotation and vacated-region checks remain
 
 Every local Cargo command used four jobs, line-tables-only debug and disabled
 incremental compilation. CPU filters used GPU flag 0; GPU filters used 1.
-The bounded Phase 2 work stayed under a 3 GiB target cap and above 18 GiB free;
-no guard interrupted a command. Formatting/source whitespace checks pass.
+Focused Phase 2 work stayed under a 3 GiB target cap; subsequent full non-payload
+gates used a 16 GiB cap. Both kept at least 18 GiB free, and no guard interrupted
+a command. Formatting/source whitespace checks pass.
 
-**Pending gates:** final P2 integration; workspace formatting, all three
-workspace clippy variants, workspace tests, policy/graph, the complete frozen-
-format suite, combat/campaign smoke and both inventory chain walks. Focused
-checks do not establish complete campaign compatibility or milestone completion.
+**Full non-payload gates**, measured on `6d125e3`: `cargo fmt --all --check`;
+workspace all-target clippy with default features, `--features dev-tools` and
+`--all-features`, each denying warnings; `cargo test --workspace`, **2870 passed,
+0 failed, 34 ignored**; tracked-file policy; and the dependency graph check
+(**36 crates**). Dependencies are unchanged. The regular workspace test command
+unsets `OHL_RENDER_GPU_TEST` because older wrappers test variable presence;
+explicit GPU evidence above used exactly 1. Normalizing those older wrappers
+remains test-harness backlog. This gate-recording update changes documentation
+only; crate and xtask trees remain identical to the tested head.
+
+**Pending gates:** serialized combat/campaign smoke, both inventory chain walks,
+and the coordinator's final integration checks. P2 has not been rebased into
+this branch; these gates ran on the actual M9.49 base. No campaign-compatibility
+or milestone-completion claim is made before the pending gates pass.
 
 Explicit cuts remain standalone shooters, dropped spawn objects, material audio,
 full gib bodypart/skin/animation/original-scale fidelity, full renderfx animation,
