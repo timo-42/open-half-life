@@ -583,8 +583,7 @@ fn terminal_ground_step(
     let remaining = selected.truncate().distance(requested.truncate());
     let horizon = limits
         .probe_distance
-        .max(1.0)
-        .min(crate::movement::TERMINAL_GROUND_SPAN);
+        .clamp(1.0, crate::movement::TERMINAL_GROUND_SPAN);
     if !selected.is_finite()
         || !requested.is_finite()
         || !distance.is_finite()
@@ -834,7 +833,7 @@ mod terminal_ground {
         let mut preview = steer;
         let intent = preview.next_move(origin, &path, Hull::Standing, collision, &limits);
         assert!(!intent.reached);
-        assert_eq!(intent.speed_scale, 0.5);
+        assert_eq!(intent.speed_scale.to_bits(), 0.5_f32.to_bits());
         bridge.cache.insert(
             actor,
             CachedRoute {
@@ -1175,11 +1174,11 @@ mod terminal_ground {
 
     fn with_live_brush(
         world: &[CollisionBrush],
-        brush: CollisionBrush,
+        brush: &CollisionBrush,
     ) -> (CollisionModel, ohl_physics::BrushId) {
         let mut builder = Bsp30Builder::new();
         builder.set_entities_text("{\"classname\" \"worldspawn\"}");
-        for brushes in [world, std::slice::from_ref(&brush)] {
+        for brushes in [world, std::slice::from_ref(brush)] {
             let heads = builder.push_collision_hulls(brushes);
             builder.push_model([-512.0; 3], [512.0; 3], [0.0; 3], heads, 2, 0, 0);
         }
@@ -1197,7 +1196,7 @@ mod terminal_ground {
     fn cached_routes_recheck_removed_moved_and_restored_live_floor() {
         let (mut collision, floor) = with_live_brush(
             &[],
-            CollisionBrush::box_brush([-128.0, -128.0, -16.0], [128.0, 128.0, 0.0]),
+            &CollisionBrush::box_brush([-128.0, -128.0, -16.0], [128.0, 128.0, 0.0]),
         );
         let origin = Vec3::new(0.0, 0.0, 36.5);
         let goal = origin + Vec3::X * 32.0;
@@ -1228,7 +1227,7 @@ mod terminal_ground {
     fn a_live_door_closes_the_goal_chord_and_reopens_without_a_new_search() {
         let (mut collision, door) = with_live_brush(
             &[CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0)],
-            CollisionBrush::box_brush([24.0, -64.0, 0.0], [26.0, 64.0, 80.0]),
+            &CollisionBrush::box_brush([24.0, -64.0, 0.0], [26.0, 64.0, 80.0]),
         );
         collision.set_brush_origin(door, Vec3::X * 128.0);
         let origin = Vec3::new(0.0, 0.0, 36.5);
@@ -1369,5 +1368,26 @@ mod terminal_ground {
             ),
             side
         );
+    }
+    #[test]
+    fn lower_literal_chord_hits_floor_but_the_first_projected_step_is_clear() {
+        let collision = room(&[CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0)]);
+        let origin = Vec3::new(0.0, 0.0, 36.5);
+        let literal = origin + Vec3::new(32.0, 0.0, -0.75);
+        let projected = Vec3::new(literal.x, literal.y, origin.z);
+        let chord = collision.trace(Hull::Standing, origin, literal);
+        assert!(chord.blocked() && !chord.start_solid && !chord.all_solid);
+        assert!(!collision.trace(Hull::Standing, origin, projected).blocked());
+        assert!(
+            (literal.z - origin.z).abs()
+                <= ohl_nav::graph::GROUND_CLEARANCE + ohl_physics::DIST_EPSILON
+        );
+        let (mut bridge, actor, _) = retained_terminal(&collision, origin, literal, 4.0);
+        let next = query(&mut bridge, actor, origin, literal, &collision, 4.0);
+        assert_eq!(next, origin + Vec3::X * 2.0);
+        assert_eq!(next.z.to_bits(), origin.z.to_bits());
+        assert!(!collision.trace(Hull::Standing, origin, next).blocked());
+        // First-step evidence only: the literal mark intersects the floor,
+        // so this fixture must not claim that eventual 3D arrival is possible.
     }
 }
