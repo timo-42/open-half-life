@@ -7844,8 +7844,9 @@ selected normal test passed again.
 The focused CPU filters were rerun after adding the selected-default-body
 geometry guard, including a valid blank-first/drawable-second model fixture.
 It retains cuboids when the fixed selection contains no usable indexed mesh.
-The engine GPU test functions compiled but were not executed; the renderer
-integration GPU target remains locally uncompiled. The remaining sixteen CPU
+Engine GPU test functions compiled but were not executed. Scoped engine/game/
+renderer all-targets, all-features clippy passes with warnings denied, including
+the renderer integration GPU target; GPU execution is still pending. The remaining sixteen CPU
 mutation probes, opt-in GPU appearance/depth checks and all complete-tree gates
 remain pending; this draft is not complete runtime validation.
 

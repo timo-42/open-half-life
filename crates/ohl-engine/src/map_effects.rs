@@ -1358,8 +1358,29 @@ mod engine_tests {
         game.systems_mut().map_effects.presentation().fade.is_some()
     }
 
+    fn replace_effect_section(bytes: &[u8], replacement: &[u8]) -> Vec<u8> {
+        let reader = ohl_save::SaveReader::open(bytes, &ohl_save::Limits::default()).unwrap();
+        let mut writer = ohl_save::SaveWriter::begin(reader.header().clone());
+        for entry in reader.sections() {
+            writer
+                .add_section(
+                    entry.tag,
+                    if entry.tag == crate::save::SECTION_MAP_EFFECTS {
+                        replacement
+                    } else {
+                        reader.section(entry.tag).unwrap()
+                    },
+                )
+                .unwrap();
+        }
+        writer.finish(&ohl_save::Limits::default()).unwrap()
+    }
+
     #[test]
     fn section43_uses_real_container_golden_roundtrip_absence_and_bounds() {
+        const GOLDEN: &[u8] = &[
+            0, 0, 7, 11, 1, 2, 1, 3, 10, 1, 4, 1, 3, 1, 0, 1, 1, 1, 6, 0, 0, 2, 0,
+        ];
         let (game, assets) = fixture("", false);
         let mut save = game.to_save(123);
         let expected = MapEffectsSnapshot {
@@ -1384,9 +1405,6 @@ mod engine_tests {
             ],
             ..MapEffectsSnapshot::default()
         };
-        const GOLDEN: &[u8] = &[
-            0, 0, 7, 11, 1, 2, 1, 3, 10, 1, 4, 1, 3, 1, 0, 1, 1, 1, 6, 0, 0, 2, 0,
-        ];
         save.map_effects = Some(expected.clone());
         let bytes = save.to_bytes().unwrap();
         let reader = ohl_save::SaveReader::open(&bytes, &ohl_save::Limits::default()).unwrap();
@@ -1416,24 +1434,8 @@ mod engine_tests {
             })
             .unwrap(),
         ] {
-            let mut writer = ohl_save::SaveWriter::begin(reader.header().clone());
-            for entry in reader.sections() {
-                writer
-                    .add_section(
-                        entry.tag,
-                        if entry.tag == crate::save::SECTION_MAP_EFFECTS {
-                            &bad
-                        } else {
-                            reader.section(entry.tag).unwrap()
-                        },
-                    )
-                    .unwrap();
-            }
             assert!(
-                crate::save::GameSave::from_bytes(
-                    &writer.finish(&ohl_save::Limits::default()).unwrap()
-                )
-                .is_err()
+                crate::save::GameSave::from_bytes(&replace_effect_section(&bytes, &bad)).is_err()
             );
         }
         save.map_effects = None;
@@ -2010,8 +2012,7 @@ mod engine_tests {
         }
     }
 
-    #[test]
-    fn real_use_blast_break_cascade_preserves_damage_actor_and_direction() {
+    fn blast_cascade_fixture() -> Game {
         let extra = button("blast", "0")
             + &entity_block(
                 "env_explosion",
@@ -2065,7 +2066,12 @@ mod engine_tests {
                     ("renderamt", "255"),
                 ],
             );
-        let (mut game, _) = fixture(&extra, true);
+        fixture(&extra, true).0
+    }
+
+    #[test]
+    fn real_use_blast_break_cascade_preserves_damage_actor_and_direction() {
+        let mut game = blast_cascade_fixture();
         press(&mut game);
         let first = game.registry().find("first")[0];
         for _ in 0..8 {

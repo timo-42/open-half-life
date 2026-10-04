@@ -1304,7 +1304,7 @@ mod gameplay_frame_tests {
         assets.insert("models/ohl_frame_b.mdl", bytes);
         let mut sprite = ohl_formats::test_support::build_minimal_spr();
         sprite[8..12].copy_from_slice(&2_i32.to_le_bytes());
-        for color in sprite[42..810].chunks_exact_mut(3) {
+        for color in sprite[42..810].as_chunks_mut::<3>().0 {
             color.copy_from_slice(&[16, 160, 32]);
         }
         assets.insert("sprites/ohl_frame.spr", sprite);
@@ -1468,13 +1468,8 @@ mod gameplay_frame_tests {
         }
     }
 
-    #[test]
-    fn real_break_custom_gibs_draw_once_and_keep_fallback_on_resource_failure_when_opted_in() {
-        if std::env::var_os("OHL_RENDER_GPU_TEST").as_deref() != Some(std::ffi::OsStr::new("1")) {
-            return;
-        }
-        let context = GpuContext::headless().expect("explicit GPU opt-in requires an adapter");
-        let extra = switch("break")
+    fn custom_gib_scene() -> String {
+        switch("break")
             + &entity_block(
                 "func_breakable",
                 [42.0, 32.0, 64.0],
@@ -1492,20 +1487,80 @@ mod gameplay_frame_tests {
                     ("targetname", "reserve"),
                     ("gibmodel", "models/ohl_frame_b.mdl"),
                 ],
-            );
+            )
+    }
+
+    fn effect_pixels(
+        context: &GpuContext,
+        renderers: &mut Renderers,
+        level: &Level,
+        camera: &FreeFlyCamera,
+        elapsed: f32,
+        effects: &crate::map_effects::EffectPresentation<'_>,
+    ) -> Vec<u8> {
+        let target = OffscreenTarget::new(context, EDGE, EDGE).unwrap();
+        renderers.draw(
+            context,
+            level,
+            camera,
+            &LightStyles::new(),
+            elapsed,
+            RenderTarget {
+                view: target.view(),
+                width: EDGE,
+                height: EDGE,
+                format: OFFSCREEN_FORMAT,
+            },
+            None,
+            &[],
+            effects,
+        );
+        target.read_rgba(context).unwrap()
+    }
+
+    fn assert_later_debris_slot_survives(
+        context: &GpuContext,
+        source: &Counted,
+        camera: &FreeFlyCamera,
+        mut switched: crate::save::GameSave,
+    ) {
+        // A missing first resource must not disable a later prepared model slot.
+        for record in &mut switched.map_effects.as_mut().unwrap().debris {
+            record.gib_model = Some("models/ohl_frame_b.mdl".to_owned());
+        }
+        let mut other = Game::from_save(source, &switched).unwrap();
+        let (level, systems) = other.level_and_systems_mut();
+        let mut renderers = Renderers::new(context, level, OFFSCREEN_FORMAT).unwrap();
+        renderers.debris_studio[0] = None;
+        assert_eq!(
+            renderers
+                .collect_studio_instances(level, camera, &systems.map_effects.presentation())
+                .1
+                .len(),
+            6
+        );
+    }
+
+    #[test]
+    fn real_break_custom_gibs_draw_once_and_keep_fallback_on_resource_failure_when_opted_in() {
+        if std::env::var_os("OHL_RENDER_GPU_TEST").as_deref() != Some(std::ffi::OsStr::new("1")) {
+            return;
+        }
+        let context = GpuContext::headless().expect("explicit GPU opt-in requires an adapter");
+        let extra = custom_gib_scene();
         let source = Counted {
             assets: assets(&extra),
             reads: std::cell::Cell::new(0),
         };
         let mut live = Game::load(&source, "ohl_frame_effects").unwrap();
         live.set_viewpoint(VIEW, 89.9, 0.0);
-        let reads = source.reads.get();
+        let asset_reads = source.reads.get();
         press(&mut live);
         let saved = live.to_save(123);
         assert_eq!(saved.map_effects.as_ref().unwrap().debris.len(), 6);
         assert_eq!(
             source.reads.get(),
-            reads,
+            asset_reads,
             "simulation never reads model assets"
         );
         let camera = *live.camera();
@@ -1514,7 +1569,7 @@ mod gameplay_frame_tests {
         level.preload_debris_models(&source);
         assert_eq!(
             source.reads.get(),
-            reads,
+            asset_reads,
             "cached success/failure paths are never retried"
         );
         let before = systems
@@ -1531,47 +1586,20 @@ mod gameplay_frame_tests {
                 .count(),
             6
         );
-        let target = OffscreenTarget::new(&context, EDGE, EDGE).unwrap();
-        let draw_target = RenderTarget {
-            view: target.view(),
-            width: EDGE,
-            height: EDGE,
-            format: OFFSCREEN_FORMAT,
-        };
         let empty = crate::map_effects::EffectPresentation {
             shake: effects.shake,
             fade: effects.fade,
             debris: &[],
             blasts: effects.blasts,
         };
-        renderers.draw(
-            &context,
-            level,
-            &camera,
-            &LightStyles::new(),
-            elapsed,
-            draw_target,
-            None,
-            &[],
-            &empty,
-        );
-        let background = target.read_rgba(&context).unwrap();
-        renderers.draw(
-            &context,
-            level,
-            &camera,
-            &LightStyles::new(),
-            elapsed,
-            draw_target,
-            None,
-            &[],
-            &effects,
-        );
-        let custom = target.read_rgba(&context).unwrap();
+        let background = effect_pixels(&context, &mut renderers, level, &camera, elapsed, &empty);
+        let custom = effect_pixels(&context, &mut renderers, level, &camera, elapsed, &effects);
         assert!(
             custom
-                .chunks_exact(4)
-                .zip(background.chunks_exact(4))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(background.as_chunks::<4>().0)
                 .filter(|(drawn, empty)| drawn[..3] != empty[..3]
                     && drawn[..3].iter().all(|&channel| channel > 240))
                 .count()
@@ -1588,18 +1616,7 @@ mod gameplay_frame_tests {
         renderers.debris_studio[0] = None;
         let (_, ready) = renderers.collect_studio_instances(level, &camera, &effects);
         assert!(ready.is_empty());
-        renderers.draw(
-            &context,
-            level,
-            &camera,
-            &LightStyles::new(),
-            elapsed,
-            draw_target,
-            None,
-            &[],
-            &effects,
-        );
-        let fallback = target.read_rgba(&context).unwrap();
+        let fallback = effect_pixels(&context, &mut renderers, level, &camera, elapsed, &effects);
         assert_eq!(
             renderers
                 .map_effects
@@ -1619,23 +1636,8 @@ mod gameplay_frame_tests {
                 .snapshot(&level.registry, level.player, &level.simulation),
             before
         );
-        assert_eq!(source.reads.get(), reads);
-        // A missing first resource must not disable a later prepared model slot.
-        let mut switched = saved;
-        for record in &mut switched.map_effects.as_mut().unwrap().debris {
-            record.gib_model = Some("models/ohl_frame_b.mdl".to_owned());
-        }
-        let mut other = Game::from_save(&source, &switched).unwrap();
-        let (level, systems) = other.level_and_systems_mut();
-        let mut renderers = Renderers::new(&context, level, OFFSCREEN_FORMAT).unwrap();
-        renderers.debris_studio[0] = None;
-        assert_eq!(
-            renderers
-                .collect_studio_instances(level, &camera, &systems.map_effects.presentation())
-                .1
-                .len(),
-            6
-        );
+        assert_eq!(source.reads.get(), asset_reads);
+        assert_later_debris_slot_survives(&context, &source, &camera, saved);
     }
 
     #[test]
