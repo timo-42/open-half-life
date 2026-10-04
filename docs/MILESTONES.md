@@ -8666,6 +8666,18 @@ now lives once in phase 4, and the repeated mutation is killed. A monitor
 measurement race was corrected and the affected probe rerun. Neither survived
 probe nor interrupted wrapper run is counted as mutation success.
 
+An additional real-AI unguided-projectile fixture independently varies source
+and target model eyes in open, low-opening and full-wall rooms while keeping
+feet anchors, rendered placement and posed hitboxes fixed. Fixed health, skill,
+seed and ticks distinguish sight acquisition from swept damage/death. It checks
+one resolved acid profile, registry owner/target, delayed physical impact,
+owner exclusion and terminal projectile/profile removal; zero and invalid
+metadata exercise clipping-eye fallbacks. Six further actual mutations were
+killed and byte-restored: legacy source muzzle, legacy target aim, ignored
+finite metadata eye, removed fallback eye, removed owner exclusion and omitted
+projectile sweep. This establishes the project-authored eye-as-muzzle/aim
+policy's behavior without claiming universal species anatomy.
+
 P5 retains node-kind attachment, stuck-route recovery, ordinary steering's
 final sweep and XY-only script/Route arrival, including purely vertical flight. A named ignored synthetic low-step
 graph reproduction is an additional P5 obligation: it stalls with centered

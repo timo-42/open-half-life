@@ -464,3 +464,323 @@ fn a_fresh_save_preserves_unseen_enemy_memory_and_historical_pursuit() {
         );
     }
 }
+
+// Every coordinate below is project-authored. The eye is the current
+// project muzzle/aim policy, not a claim about every model's anatomy.
+fn eye_projectile_model(eye: f32, target: bool) -> Vec<u8> {
+    let (min, max) = if target {
+        ([-12.0, -12.0, 48.0], [12.0, 12.0, 96.0])
+    } else {
+        ([-24.0, -24.0, 0.0], [24.0, 24.0, 128.0])
+    };
+    let (mut bytes, layout) = ohl_formats::test_support::build_minimal_mdl10_with_hitbox(min, max);
+    // Freeze the generated root translation; eye changes must leave the
+    // exact posed geometry unchanged throughout this physical flight.
+    bytes[layout.anim_data_offset + 26..layout.anim_data_offset + 30].fill(0);
+    for (base, values) in [
+        (76, [0.0, 0.0, eye]),
+        (112, [min[0], min[1], 0.0]),
+        (124, max),
+    ] {
+        for (axis, value) in values.into_iter().enumerate() {
+            bytes[base + axis * 4..base + axis * 4 + 4].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+    bytes
+}
+
+#[derive(Debug)]
+struct EyeFlight {
+    acquired: bool,
+    launched: usize,
+    damage_events: u64,
+    deaths: u64,
+}
+
+fn eye_projectile_fixture(source_eye: f32, target_eye: f32, wall_height: Option<f32>) -> Game {
+    use ohl_formats::test_support::{Bsp30Builder, CollisionBrush};
+    let text = format!(
+        "{{\"classname\" \"worldspawn\"}}\n{{\"classname\" \"info_player_start\" \"origin\" \"-200 -200 36\"}}\n{}{}",
+        entity_block("monster_bullchicken", [-96.0, 0.0, 0.0], 0.0, &[]),
+        entity_block("monster_barney", [96.0, 0.0, 0.0], 180.0, &[]),
+    );
+    let mut builder = Bsp30Builder::new();
+    builder.set_entities_text(&text);
+    let mut brushes = vec![
+        CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+        CollisionBrush::half_space([0.0, 0.0, -1.0], -256.0),
+        CollisionBrush::half_space([-1.0, 0.0, 0.0], -256.0),
+        CollisionBrush::half_space([1.0, 0.0, 0.0], -256.0),
+        CollisionBrush::half_space([0.0, -1.0, 0.0], -256.0),
+        CollisionBrush::half_space([0.0, 1.0, 0.0], -256.0),
+    ];
+    if let Some(height) = wall_height {
+        brushes.push(CollisionBrush::box_brush(
+            [-48.0, -256.0, 0.0],
+            [-40.0, 256.0, height],
+        ));
+    }
+    let heads = builder.push_collision_hulls(&brushes);
+    builder.push_model([-256.0, -256.0, 0.0], [256.0; 3], [0.0; 3], heads, 2, 0, 0);
+    let bytes = builder.build();
+    let mut assets = MemoryAssets::new();
+    for (kind, eye, target) in [
+        (MonsterKind::Bullsquid, source_eye, false),
+        (MonsterKind::Barney, target_eye, true),
+    ] {
+        assets.insert(
+            kind.default_model_path().expect("default model"),
+            eye_projectile_model(eye, target),
+        );
+    }
+    let mut game =
+        Game::from_map_bytes(&assets, AI_MAP, &bytes).expect("project-authored flight room");
+    assert_eq!(game.difficulty(), ohl_campaign::Difficulty::Medium);
+    assert_eq!(
+        game.systems_config().rng_seed,
+        crate::systems::DEFAULT_RNG_SEED
+    );
+    let source =
+        crate::test_support::entity_of_classname(&game, "monster_bullchicken").expect("source");
+    let target = crate::test_support::entity_of_classname(&game, "monster_barney").expect("target");
+    game.level_and_systems_mut()
+        .0
+        .registry
+        .world
+        .insert_one(target, ohl_ai::ScriptHold)
+        .expect("stationary target");
+    game.registry()
+        .world
+        .get::<&mut Actor>(target)
+        .expect("target actor")
+        .health = 5.0;
+    game.registry()
+        .world
+        .get::<&mut Actor>(source)
+        .expect("source actor")
+        .health = 40.0;
+    game
+}
+
+fn assert_eye_flight_geometry(
+    game: &mut Game,
+    source: ohl_game::hecs::Entity,
+    target: ohl_game::hecs::Entity,
+    expected_source_eye: Vec3,
+    expected_target_eye: Vec3,
+) {
+    for (entity, anchor, eye, min, max) in [
+        (
+            source,
+            Vec3::new(-96.0, 0.0, 0.0),
+            expected_source_eye,
+            Vec3::new(-24.0, -24.0, 0.0),
+            Vec3::new(24.0, 24.0, 128.0),
+        ),
+        (
+            target,
+            Vec3::new(96.0, 0.0, 0.0),
+            expected_target_eye,
+            Vec3::new(-12.0, -12.0, 48.0),
+            Vec3::new(12.0, 12.0, 96.0),
+        ),
+    ] {
+        let actor = *game.registry().world.get::<&Actor>(entity).expect("actor");
+        let transform = *game
+            .registry()
+            .world
+            .get::<&Transform>(entity)
+            .expect("transform");
+        assert_eq!(actor.origin, anchor);
+        assert_eq!(transform.origin, anchor);
+        assert_eq!(actor.body_frame, BodyFrame::Feet);
+        assert!(actor.eye().abs_diff_eq(eye, 0.001));
+        let placement = ohl_render::placement(transform.origin.to_array(), transform.angles.y);
+        assert_eq!(
+            [placement[12], placement[13], placement[14]].map(f32::to_bits),
+            anchor.to_array().map(f32::to_bits)
+        );
+        if actor.alive {
+            let (_, systems) = game.level_and_systems_mut();
+            let entry = systems
+                .hitboxes()
+                .entries()
+                .iter()
+                .find(|entry| entry.id == crate::ids::entity_id(entity))
+                .expect("posed hitboxes");
+            assert_eq!(entry.origin, anchor);
+            assert_eq!(entry.boxes.len(), 1);
+            assert_eq!(entry.boxes[0].min, min);
+            assert_eq!(entry.boxes[0].max, max);
+        }
+    }
+}
+
+fn assert_eye_flight_projectiles(
+    game: &Game,
+    owner_ref: crate::save_state::ProjectileEntityRef,
+    target_ref: crate::save_state::ProjectileEntityRef,
+    expected_source_eye: Vec3,
+    expected_target_eye: Vec3,
+    launched: &mut std::collections::BTreeSet<u32>,
+) {
+    let save = game.to_save(0);
+    let physical = save.projectiles.as_ref().expect("physical projectiles");
+    let profiles = save
+        .projectile_runtime
+        .as_ref()
+        .map_or(&[][..], |runtime| runtime.attacks.as_slice());
+    assert!(
+        physical.projectiles.len() <= 1,
+        "one schedule emission, no duplicate projectile"
+    );
+    assert_eq!(physical.projectiles.len(), profiles.len());
+    for projectile in &physical.projectiles {
+        assert_eq!(projectile.kind_tag, 6, "unguided spit");
+        let profile = profiles
+            .iter()
+            .find(|attack| attack.id == projectile.id)
+            .expect("one matching profile");
+        assert_eq!(profile.owner, Some(owner_ref));
+        assert_eq!(profile.target, Some(target_ref));
+        assert_eq!(profile.damage.to_bits(), 10.0_f32.to_bits());
+        assert_eq!(profile.damage_bits, ohl_combat::DamageType::ACID.bits());
+        assert_eq!(profile.blast_radius, None);
+        if launched.insert(projectile.id) {
+            assert_eq!(
+                projectile.age.to_bits(),
+                0.0_f32.to_bits(),
+                "AI launch is swept on the next tick"
+            );
+            assert!(Vec3::from_array(projectile.position).abs_diff_eq(expected_source_eye, 0.001));
+            let direction = (expected_target_eye - expected_source_eye).normalize();
+            assert!(
+                Vec3::from_array(projectile.velocity)
+                    .normalize()
+                    .abs_diff_eq(direction, 0.001)
+            );
+            assert_eq!(
+                game.monster_damage_event_count(),
+                0,
+                "damage requires actual flight"
+            );
+        }
+    }
+}
+
+fn eye_projectile_flight(source_eye: f32, target_eye: f32, wall_height: Option<f32>) -> EyeFlight {
+    use crate::save_state::ProjectileEntityRef;
+    let mut game = eye_projectile_fixture(source_eye, target_eye, wall_height);
+    let source =
+        crate::test_support::entity_of_classname(&game, "monster_bullchicken").expect("source");
+    let target = crate::test_support::entity_of_classname(&game, "monster_barney").expect("target");
+    let registry_ref = |entity| {
+        ProjectileEntityRef::Registry(
+            u32::try_from(
+                game.registry()
+                    .entities
+                    .iter()
+                    .position(|candidate| *candidate == entity)
+                    .expect("registry actor"),
+            )
+            .expect("small fixture"),
+        )
+    };
+    let owner_ref = registry_ref(source);
+    let target_ref = registry_ref(target);
+    let expected_eye = |eye: f32, height: f32| {
+        if eye.is_finite() && eye != 0.0 {
+            eye
+        } else {
+            height * (8.0 / 9.0)
+        }
+    };
+    let expected_source_eye = Vec3::new(-96.0, 0.0, expected_eye(source_eye, 128.0));
+    let expected_target_eye = Vec3::new(96.0, 0.0, expected_eye(target_eye, 96.0));
+    let mut launched = std::collections::BTreeSet::new();
+    let mut acquired = false;
+    for _ in 0..60 {
+        game.tick(TICK_SECONDS, &Input::default());
+        acquired |= game
+            .registry()
+            .world
+            .get::<&MonsterAi>(source)
+            .expect("source AI")
+            .enemy()
+            == Some(target);
+        assert_eye_flight_geometry(
+            &mut game,
+            source,
+            target,
+            expected_source_eye,
+            expected_target_eye,
+        );
+        assert_eye_flight_projectiles(
+            &game,
+            owner_ref,
+            target_ref,
+            expected_source_eye,
+            expected_target_eye,
+            &mut launched,
+        );
+    }
+    assert_eq!(
+        game.projectile_count(),
+        0,
+        "hit or wall impact retires physical projectile"
+    );
+    assert!(
+        game.to_save(0)
+            .projectile_runtime
+            .is_none_or(|runtime| runtime.attacks.is_empty())
+    );
+    assert_eq!(
+        game.registry()
+            .world
+            .get::<&Actor>(source)
+            .expect("shooter")
+            .health
+            .to_bits(),
+        40.0_f32.to_bits(),
+        "muzzle inside the posed owner never self-hits"
+    );
+    EyeFlight {
+        acquired,
+        launched: launched.len(),
+        damage_events: game.monster_damage_event_count(),
+        deaths: game.monster_death_count(),
+    }
+}
+
+#[test]
+fn model_eyes_separate_projectile_visibility_from_aim_and_keep_authored_geometry() {
+    for source_model_eye in [false, true] {
+        for target_model_eye in [false, true] {
+            let source_eye = if source_model_eye { 96.0 } else { 28.0 };
+            let target_eye = if target_model_eye { 64.0 } else { 28.0 };
+            for wall in [None, Some(70.0), Some(128.0)] {
+                let result = eye_projectile_flight(source_eye, target_eye, wall);
+                let visible = wall.is_none() || (wall == Some(70.0) && source_model_eye);
+                let hit = visible && target_model_eye;
+                assert_eq!(
+                    result.acquired, visible,
+                    "source eye decides low-window acquisition: {result:?}"
+                );
+                assert_eq!(result.launched, usize::from(visible));
+                assert_eq!(
+                    result.damage_events,
+                    u64::from(hit),
+                    "target eye decides posed-box damage: {result:?}"
+                );
+                assert_eq!(result.deaths, u64::from(hit));
+            }
+        }
+    }
+    for missing_eye in [0.0, f32::NAN] {
+        let result = eye_projectile_flight(missing_eye, missing_eye, Some(70.0));
+        assert!(result.acquired);
+        assert_eq!(result.launched, 1);
+        assert_eq!(result.damage_events, 1);
+        assert_eq!(result.deaths, 1);
+    }
+}

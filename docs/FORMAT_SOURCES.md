@@ -8013,6 +8013,17 @@ choices, proxy translations and metadata validation are project-authored;
 exact per-species anatomy and arbitrary missing-metadata pivots remain
 `TODO(black-box)`.
 
+Using that derived eye for both perception and an AI projectile's muzzle/aim
+is also a project-authored policy. The model-format references establish the
+coordinate space of the eye field; they do not establish an anatomically exact
+muzzle or damage target for every species. A generated BSP/MDL fixture varies
+source and target eyes independently while holding model anchors and posed
+boxes fixed: a low opening separates sight acquisition from physical projectile
+eligibility, and a full wall blocks both. Zero and invalid eye metadata exercise
+the derived fallback. These synthetic controls validate this project's policy,
+not universal model fidelity; per-attack muzzle attachments remain
+`TODO(black-box)`.
+
 Posed hitboxes and usable model clipping bounds remain attached to the
 unmodified model transform. Only the final invented damage fallback uses an
 actor's anchor-relative proxy; point movement still has nonzero fallback
