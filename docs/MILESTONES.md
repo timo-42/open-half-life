@@ -8522,7 +8522,7 @@ neutral assembly; and fresh bounded candidate admission. The wait-failure case
 uses the typed outcome seam because std offers no portable way to force an OS
 wait error without an external process/FFI dependency.
 
-Thirty-seven actual source mutations were killed by executing their targeted
+Thirty-nine actual source mutations were killed by executing their targeted
 tests, with the original sources restored after every attempt: discard child
 exit code; remove chain/planner outcome gates; classify timeout as success;
 remove timeout kill before reap; allow capture overflow; double its limit;
@@ -8536,8 +8536,8 @@ a marker without a fresh candidate; bypass candidate grammar/header/tick/line
 bounds; overwrite an existing output; silently prefer a competing ordinal;
 skip assembly gaps; share neutral routes with another start; raise the assembly
 cap; bypass the planner capacity check; return to legacy naming for new default
-routes; and reuse an existing staging attempt. The restored normal focused tests
-and clippy pass. Additional UTF-8/byte-bound mutation probes remain pending.
+routes; reuse an existing staging attempt; accept lossy UTF-8 capture; and double the
+fixed candidate byte cap. The restored normal focused tests and clippy pass.
 
 Every Cargo invocation used the assigned four-job, line-tables-only,
 nonincremental environment. The focused target stayed below 425 MiB with a
