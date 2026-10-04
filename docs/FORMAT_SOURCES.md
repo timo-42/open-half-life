@@ -8229,12 +8229,13 @@ workspace/all-target Clippy configurations, workspace tests 2967/0/35, policy
 and the 36-crate graph. The workspace result includes all 61 engine turret tests
 and 36 doc-test crates. An earlier resource-guarded workspace build stopped
 before executing tests; its failed admission to test execution remains
-recorded. The successful attempt set `CARGO_PROFILE_TEST_STRIP=debuginfo` to
-reduce artifact size while retaining assertions, debug configuration, features,
-test selection and ordinary symbols. Normal app/dev-tools and xtask release
-builds used no test-strip override. Runtime gates then passed combat 37/37 with
-zero unexpected/error/timeout/crash aggregates, campaign 93/93 and both distinct
-baseline inventory chains at depth 12 / Pass / 660.8 game seconds, without retries
+recorded. The successful attempt used the project-authored resource choice
+`CARGO_PROFILE_TEST_STRIP=debuginfo` to reduce artifact size while retaining debug
+assertions, features, test selection and ordinary symbols. Normal app/dev-tools
+and xtask release builds used no test-strip override. Runtime gates then passed
+combat 37/37 with zero unexpected/error/timeout/crash aggregates, campaign 93/93
+and both distinct baseline inventory chains at depth 12 / Pass / 660.8 game
+seconds, without retries
 or changed expectations. These are separate executed package checks, not new
 format or original-engine fidelity claims; GPU-specific tests were not enabled.
 All earlier pending-gate statements describe their intermediate checkpoints.

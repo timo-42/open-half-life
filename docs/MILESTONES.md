@@ -8600,7 +8600,7 @@ and tests remain byte-identical to the fully validated head, preserving all 47
 actually killed and restored mutation probes. Milestone numbering and merge
 remain assigned to integration.
 
-## M9.NEXT — Wave 2 P7 turret integration checkpoint
+## M9.52 — Wave 2 P7 turret integration checkpoint
 
 Turret definitions, game registration, typed use/control requests and the
 common authored-plus-live brush pose are wired. New source connects Systems'
@@ -8737,13 +8737,13 @@ stopped. GPU-specific tests were not enabled.
 
 The first full workspace-test build reached its resource guard before any
 test ran; that attempt remains a resource abort, not a passing test result.
-After scoped inactive-debug cleanup, the successful attempt used only the
-additional `CARGO_PROFILE_TEST_STRIP=debuginfo` setting. This strips test debug
-information without changing assertions, debug configuration, features or test
-selection; the engine test executable retains its ordinary symbol/string
-tables. The setting was unset for both normal release builds. Every Cargo
-command used four jobs, line-tables-only development debug information and
-disabled incremental compilation. The successful non-runtime gates peaked at
+After scoped inactive-debug cleanup, the successful attempt used the
+project-authored resource choice `CARGO_PROFILE_TEST_STRIP=debuginfo` as its only
+additional setting. This strips test debug information without changing debug
+assertions, features or test selection; the engine test executable retains its
+ordinary symbol/string tables. The setting was unset for both normal release
+builds. Every Cargo command used four jobs, line-tables-only development debug
+information and disabled incremental compilation. The successful non-runtime gates peaked at
 3,955,539,968 target bytes; the release builds peaked at 5,025,366,016 bytes.
 The tested source, protected save/runtime files, compiler configuration and
 normal binary identities stayed unchanged through the runtime gates.
@@ -8754,11 +8754,12 @@ early-assertion limits below. This final gate record supersedes checkpoint-local
 pending statements elsewhere in this entry. Final PR review, numbering and
 merge remain outstanding; all named cuts and fidelity limitations remain.
 
-**Cuts and next dependency.** Mutation discrimination, full runtime review and
-all workspace/runtime gates remain required. Frozen tags 26/42/43 and weapon/entity/render encodings
-are unchanged. Physical monster operators, automatic monster targets, Sven
-relationship/inventory extensions, bullet muzzle/smoke sprite and rotation
-sound submission, and cross-level turret continuation are named cuts. Laser
+**Cuts and next dependency.** Mutation discrimination and package gates are
+complete; final PR review, numbering and merge remain outstanding. Frozen tags
+26/42/43 and weapon/entity/render encodings are unchanged. Physical monster
+operators, automatic monster targets, Sven relationship/inventory extensions,
+bullet muzzle/smoke sprite and rotation sound submission, and cross-level
+turret continuation are named cuts. Laser
 pulses are bounded cosmetics that clear on restore; they do not extend tag43.
 Original-build timing, spread, control-release, default tuning, laser width/
 blend and mortar fidelity remain explicit project-policy `TODO(black-box)`.
@@ -8767,7 +8768,7 @@ an animated target may occupy a different pose after load and change projectile
 impact placement and splash damage. The stationary synthetic continuation
 tests do not establish animated-target save continuity. Animation-cursor
 persistence is an unresolved project `TODO(black-box)` outside this package.
-No numbering, merge or full-gate pass is claimed by this intermediate checkpoint.
+No numbering or merge is claimed by this checkpoint.
 
 **Source review follow-up.** Review of `20f26d0` found that
 automatic targeting with authored zero persistence retained an expired memory
