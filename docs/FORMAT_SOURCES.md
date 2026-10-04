@@ -8322,3 +8322,26 @@ and the full package acceptance gates remain pending. It does not establish
 the precise cause of the earlier CI failure. No additional format/source
 provenance, payload access, dependency or production change is introduced by
 this evidence appendix.
+
+After rebasing onto M9.52 main `bdffc754`, the exact combined source
+`be8c789e76a2d9c602dbb3232f6a3646555dcc62` (tree
+`b624aa5de8dc91eb8c91db9f7ff62ce29849f41c`) passed all seven fresh package
+gates: formatting, three workspace/all-target Clippy configurations with
+warnings denied, workspace tests, policy and dependency graph. Workspace
+results were 2986 passed, zero failed and 35 intentionally ignored, including
+all 14 portable macOS-loop cases. Two own normal release builds then completed;
+their fresh binaries passed combat 37/37 with zero unexpected/error/timeout/
+crash aggregates, campaign 93/93 and both inventory chains at depth 12 / Pass /
+660.8 game seconds. These are combined-project regression checks, not new
+original-engine behavior or format claims. Raw runtime output remained in RAM;
+only strict aggregate results were retained, and temporary output was removed.
+
+All 23 platform source/test files remain identical to the earlier `ddff6ed`
+checkpoint. The 15 portable mutation detections above retain their original
+`e3df24f` provenance and were not rerun. Apple Silicon CI previously passed
+24 native normal cases and the 14 portable cases at the equivalent `ddff6ed`
+platform source; that result is historical. Fresh combined-head Apple CI and
+final PR review remain pending. Optional native blocking/wait-any adapter
+mutations remain deferred and unexecuted. Existing Drop cleanup, the precise
+unproved cause of the old CI failure and all documented scope limits remain
+unchanged. Earlier pending-gate statements describe their own checkpoints.

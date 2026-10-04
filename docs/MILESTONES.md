@@ -9123,3 +9123,47 @@ fresh Apple Silicon CI, full workspace/package gates, retail smoke/chain gates,
 PR review and merge remain pending. No native result or exact historical CI
 cause is inferred from the Linux portable-loop tests. Milestone numbering
 remains assigned at integration.
+
+Rebased validation is complete on source
+`be8c789e76a2d9c602dbb3232f6a3646555dcc62`, tree
+`b624aa5de8dc91eb8c91db9f7ff62ce29849f41c`, based on M9.52 main `bdffc754`.
+All seven fresh package gates pass: `cargo fmt --all --check`; workspace,
+all-target Clippy with default, `dev-tools` and all features, each denying
+warnings; `cargo test --workspace`; policy; and the 36-crate dependency graph.
+Tests passed **2978 compiled cases plus 8 doc-tests = 2986**, with **0 failures,
+35 intentional ignores and 0 filtered**, including the portable suite's
+**14 passed, 0 failed, 0 ignored**. The test-only `debuginfo` strip setting
+applied only to workspace tests. Four jobs, line-table development debug info,
+incremental compilation disabled and GPU opt-in absent were retained.
+
+Both own normal release builds, the application with `dev-tools` and `xtask`,
+finished successfully. Both binaries were absent before these builds; their
+fresh hashes and file identities were recorded against the tested source.
+All four subsequent runtime gates passed: **combat 37/37 with zero unexpected
+lines, load errors, timeouts or crashes; campaign 93/93; and both distinct
+inventory chains at depth 12 / Pass / 660.8 game seconds**. No retry or changed
+expectation was used. Raw runtime streams were captured only in RAM; retained
+output contains strict aggregates. Temporary smoke output was removed, owned
+process groups stopped, and source and binary identities remained unchanged.
+
+All 757 tracked file names, modes and bytes, configuration, platform source,
+101 historical focused artifacts and the 29 fresh package evidence artifacts
+were checked around execution. The own target used an 8 GiB total cap and an
+18 GiB free-space floor. Package guard samples peaked at 4,726,894,592 bytes,
+with minimum free space 28,153,810,944 bytes. Separate release/runtime point
+samples reached 5,788,905,472 bytes and minimum free space 27,061,432,320 bytes;
+the inherited release guard does not report internal extrema, so these point
+samples do not claim a transient peak. The combined validation report SHA256 is
+`a2c5079c2a0bdad63ed114ea41e0d792026c81b603e0568cd3dffe54b5b3af66`.
+
+The whole 23-file platform subtree is identical to `ddff6ed`; the historical
+15 helper mutation detections remain qualified to `e3df24f`, with 12 assertion
+oracles and 3 separately designated finite-sequence `expect` oracles. They were
+not rerun by the rebase. Historical Apple Silicon CI passed 24 native normal
+cases and 14 portable cases at equivalent `ddff6ed` platform source. Fresh
+combined-head Apple Silicon CI and final PR review remain pending; optional
+native blocking/wait-any adapter mutations remain deferred and unexecuted.
+Linux package/runtime results do not establish native macOS execution or the
+precise cause of the earlier `ReapFailed`. This follow-up changes only the two
+macOS documentation appendices; all source/configuration bytes remain equal
+to the freshly validated source. M9.NEXT remains unnumbered until integration.
