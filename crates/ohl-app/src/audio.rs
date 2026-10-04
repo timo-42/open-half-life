@@ -538,7 +538,7 @@ pub(crate) mod fixtures {
     /// samples, for sentence ordering and playback-cursor tests.
     pub(crate) fn sampled_synthetic_wav(samples: &[i16]) -> Vec<u8> {
         let mut wav = synthetic_wav(samples.len());
-        for (bytes, sample) in wav[44..].chunks_exact_mut(2).zip(samples) {
+        for (bytes, sample) in wav[44..].as_chunks_mut::<2>().0.iter_mut().zip(samples) {
             bytes.copy_from_slice(&sample.to_le_bytes());
         }
         wav
@@ -719,8 +719,10 @@ mod tests {
             let mut expected = [0.0; 16];
             mixer_of(&audio).render(&mut actual);
             mixer_of(&control).render(&mut expected);
+            // Exact deterministic PCM catches any playback-cursor change.
             assert_eq!(
-                actual, expected,
+                actual.map(f32::to_bits),
+                expected.map(f32::to_bits),
                 "a miss neither restarts nor stops either voice"
             );
             assert_eq!(mixer_of(&audio).channel_count(ChannelClass::Voice), 2);
