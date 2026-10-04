@@ -1268,7 +1268,34 @@ mod gameplay_frame_tests {
     const EDGE: u32 = 96;
     const VIEW: [f32; 3] = [42.0, 32.0, 128.0];
 
+    fn gpu() -> GpuContext {
+        let context = GpuContext::headless().expect("explicit GPU opt-in requires an adapter");
+        let info = context.adapter.get_info();
+        eprintln!(
+            "synthetic gameplay GPU adapter: {} ({:?})",
+            info.name, info.backend
+        );
+        context
+    }
+
+    fn capture(name: &str, rgba: &[u8]) {
+        let Some(directory) = std::env::var_os("OHL_P6A_CAPTURE_DIR") else {
+            return;
+        };
+        let directory = std::path::PathBuf::from(directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut ppm = format!("P6\n{EDGE} {EDGE}\n255\n").into_bytes();
+        for pixel in rgba.as_chunks::<4>().0 {
+            ppm.extend_from_slice(&pixel[..3]);
+        }
+        std::fs::write(directory.join(format!("{name}.ppm")), ppm).unwrap();
+    }
+
     fn assets(extra: &str) -> MemoryAssets {
+        assets_with_model_scale(extra, 64.0)
+    }
+
+    fn assets_with_model_scale(extra: &str, model_scale: f32) -> MemoryAssets {
         let text = entity_block("worldspawn", [0.0; 3], 0.0, &[])
             + &entity_block("info_player_start", [0.0, 0.0, 40.0], 0.0, &[])
             + extra;
@@ -1278,11 +1305,18 @@ mod gameplay_frame_tests {
             synthetic_map_bsp_with_entities(&text),
         );
         let (mut bytes, layout) = ohl_formats::test_support::build_minimal_mdl10();
+        // These four authored positions run around the square perimeter.
+        // A triangle strip needs alternating sides to cover the entire square;
+        // perimeter order leaves a triangular hole through its bounds center.
+        for (corner, vertex) in [0_u16, 1, 3, 2].into_iter().enumerate() {
+            let offset = layout.tricommands_offset + 2 + corner * 8;
+            bytes[offset..offset + 2].copy_from_slice(&vertex.to_le_bytes());
+        }
         for vertex in 0..4 {
             for axis in 0..2 {
                 let offset = layout.verts_offset + vertex * 12 + axis * 4;
                 let value =
-                    f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) * 64.0;
+                    f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) * model_scale;
                 bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
             }
         }
@@ -1294,8 +1328,8 @@ mod gameplay_frame_tests {
             (112, 10.0_f32),
             (116, 0.0),
             (120, 0.0),
-            (124, 74.0),
-            (128, 64.0),
+            (124, 10.0 + model_scale),
+            (128, model_scale),
             (132, 0.0),
         ] {
             bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
@@ -1391,7 +1425,7 @@ mod gameplay_frame_tests {
         if std::env::var_os("OHL_RENDER_GPU_TEST").as_deref() != Some(std::ffi::OsStr::new("1")) {
             return;
         }
-        let context = GpuContext::headless().expect("explicit GPU opt-in requires an adapter");
+        let context = gpu();
         let target = entity_block(
             "cycler",
             [0.0, 0.0, 32.0],
@@ -1418,11 +1452,19 @@ mod gameplay_frame_tests {
             );
         let source = assets(&scene);
         let mut live = game(&source);
-        let before = center(&pixels(&context, &mut live));
+        let before_image = pixels(&context, &mut live);
+        capture("live_studio_before", &before_image);
+        let before = center(&before_image);
         assert!(before.iter().all(|&value| value > 240));
         press(&mut live);
-        let after = center(&pixels(&context, &mut live));
-        assert!(after[0] > after[1] + 80 && after[0] > after[2] + 80);
+        let after_image = pixels(&context, &mut live);
+        capture("live_studio_after", &after_image);
+        let after = center(&after_image);
+        assert!(
+            u16::from(after[0]) > u16::from(after[1]) + 80
+                && u16::from(after[0]) > u16::from(after[2]) + 80,
+            "before={before:?}, after={after:?}"
+        );
         let saved = live.save_bytes(123).unwrap();
         let mut loaded = Game::load_bytes(&source, &saved).unwrap();
         loaded.set_viewpoint(VIEW, 89.9, 0.0);
@@ -1437,35 +1479,50 @@ mod gameplay_frame_tests {
                 .any(|&(_, fx)| fx == 17)
         );
         for modulate in [false, true] {
-            let flags = if modulate { "3" } else { "1" };
-            let scene = switch("fade")
-                + &entity_block(
-                    "env_fade",
-                    [0.0; 3],
-                    0.0,
-                    &[
-                        ("targetname", "fade"),
-                        ("duration", "3"),
-                        ("holdtime", "2"),
-                        ("spawnflags", flags),
-                        ("renderamt", "128"),
-                        ("rendercolor", "64 128 192"),
-                    ],
-                );
-            let source = assets(&scene);
-            let mut game = game(&source);
-            let before = center(&pixels(&context, &mut game));
-            press(&mut game);
-            let overlay = game.systems_mut().map_effects.presentation().fade.unwrap();
-            let expected = overlay.composite(before.map(|x| f32::from(x) / 255.0));
-            let after = center(&pixels(&context, &mut game));
-            for channel in 0..3 {
-                assert!((f32::from(after[channel]) - expected[channel] * 255.0).abs() <= 2.0);
-            }
-            let mut loaded = Game::load_bytes(&source, &game.save_bytes(123).unwrap()).unwrap();
-            loaded.set_viewpoint(VIEW, 89.9, 0.0);
-            assert_eq!(center(&pixels(&context, &mut loaded)), before);
+            assert_fade_pixels(&context, modulate);
         }
+    }
+
+    fn assert_fade_pixels(context: &GpuContext, modulate: bool) {
+        let flags = if modulate { "3" } else { "1" };
+        let scene = switch("fade")
+            + &entity_block(
+                "env_fade",
+                [0.0; 3],
+                0.0,
+                &[
+                    ("targetname", "fade"),
+                    ("duration", "3"),
+                    ("holdtime", "2"),
+                    ("spawnflags", flags),
+                    ("renderamt", "128"),
+                    ("rendercolor", "64 128 192"),
+                ],
+            );
+        let source = assets(&scene);
+        let mut game = game(&source);
+        let before = center(&pixels(context, &mut game));
+        press(&mut game);
+        let overlay = game.systems_mut().map_effects.presentation().fade.unwrap();
+        let expected = overlay.composite(before.map(|x| f32::from(x) / 255.0));
+        let image = pixels(context, &mut game);
+        capture(
+            if modulate {
+                "fade_modulate"
+            } else {
+                "fade_normal"
+            },
+            &image,
+        );
+        let after = center(&image);
+        for channel in 0..3 {
+            assert!((f32::from(after[channel]) - expected[channel] * 255.0).abs() <= 2.0);
+        }
+        let mut loaded = Game::load_bytes(&source, &game.save_bytes(123).unwrap()).unwrap();
+        loaded.set_viewpoint(VIEW, 89.9, 0.0);
+        let cleared = pixels(context, &mut loaded);
+        capture(&format!("fade_cleared_{modulate}"), &cleared);
+        assert_eq!(center(&cleared), before);
     }
 
     fn custom_gib_scene() -> String {
@@ -1546,7 +1603,7 @@ mod gameplay_frame_tests {
         if std::env::var_os("OHL_RENDER_GPU_TEST").as_deref() != Some(std::ffi::OsStr::new("1")) {
             return;
         }
-        let context = GpuContext::headless().expect("explicit GPU opt-in requires an adapter");
+        let context = gpu();
         let extra = custom_gib_scene();
         let source = Counted {
             assets: assets(&extra),
@@ -1594,6 +1651,8 @@ mod gameplay_frame_tests {
         };
         let background = effect_pixels(&context, &mut renderers, level, &camera, elapsed, &empty);
         let custom = effect_pixels(&context, &mut renderers, level, &camera, elapsed, &effects);
+        capture("custom_background", &background);
+        capture("custom_geometry", &custom);
         assert!(
             custom
                 .as_chunks::<4>()
@@ -1617,6 +1676,7 @@ mod gameplay_frame_tests {
         let (_, ready) = renderers.collect_studio_instances(level, &camera, &effects);
         assert!(ready.is_empty());
         let fallback = effect_pixels(&context, &mut renderers, level, &camera, elapsed, &effects);
+        capture("custom_fallback", &fallback);
         assert_eq!(
             renderers
                 .map_effects
@@ -1645,7 +1705,7 @@ mod gameplay_frame_tests {
         if std::env::var_os("OHL_RENDER_GPU_TEST").as_deref() != Some(std::ffi::OsStr::new("1")) {
             return;
         }
-        let context = GpuContext::headless().expect("explicit GPU opt-in requires an adapter");
+        let context = gpu();
         let extra = switch("break")
             + &entity_block(
                 "func_breakable",
@@ -1656,7 +1716,10 @@ mod gameplay_frame_tests {
                     ("gibmodel", "models/ohl_frame_a.mdl"),
                 ],
             );
-        let source = assets(&extra);
+        // Keep the sampled sequence-zero translation large relative to this
+        // unit model: substituting bind pose displaces the fitted mesh entirely
+        // away from the independently asserted simulated record position.
+        let source = assets_with_model_scale(&extra, 1.0);
         let mut live = game(&source);
         press(&mut live);
         let mut saved = live.to_save(123);
@@ -1677,6 +1740,7 @@ mod gameplay_frame_tests {
             loaded.set_viewpoint(VIEW, 89.9, 0.0);
             let state = loaded.to_save(123).map_effects.unwrap();
             let image = pixels(&context, &mut loaded);
+            capture(&format!("custom_pose_{}", images.len()), &image);
             assert!(
                 at_world(&image, loaded.camera(), position)
                     .iter()
@@ -1716,7 +1780,7 @@ mod gameplay_frame_tests {
         if std::env::var_os("OHL_RENDER_GPU_TEST").as_deref() != Some(std::ffi::OsStr::new("1")) {
             return;
         }
-        let context = GpuContext::headless().expect("explicit GPU opt-in requires an adapter");
+        let context = gpu();
         let extra = switch("break")
             + &entity_block(
                 "func_breakable",
@@ -1779,7 +1843,7 @@ mod gameplay_frame_tests {
         if std::env::var_os("OHL_RENDER_GPU_TEST").as_deref() != Some(std::ffi::OsStr::new("1")) {
             return;
         }
-        let context = GpuContext::headless().expect("explicit GPU opt-in requires an adapter");
+        let context = gpu();
         let studio = entity_block(
             "cycler",
             [0.0, 0.0, 64.0],
@@ -1800,7 +1864,9 @@ mod gameplay_frame_tests {
             );
             let background = center(&pixels(&context, &mut game(&assets(&sprite))));
             assert!(background[1] > background[0] + 80);
-            let combined = center(&pixels(&context, &mut game(&assets(&(sprite + &studio)))));
+            let image = pixels(&context, &mut game(&assets(&(sprite + &studio))));
+            capture(&format!("studio_sprite_behind_{behind}"), &image);
+            let combined = center(&image);
             if behind {
                 let alpha = 128.0 / 255.0;
                 for channel in 0..3 {
@@ -1819,7 +1885,7 @@ mod gameplay_frame_tests {
         if std::env::var_os("OHL_RENDER_GPU_TEST").as_deref() != Some(std::ffi::OsStr::new("1")) {
             return;
         }
-        let context = GpuContext::headless().expect("explicit GPU opt-in requires an adapter");
+        let context = gpu();
         let far = entity_block(
             "cycler",
             [0.0, 0.0, 32.0],
@@ -1845,7 +1911,9 @@ mod gameplay_frame_tests {
         let background = center(&pixels(&context, &mut game(&assets(""))));
         let mut results = Vec::new();
         for scene in [far.clone() + &near, near + &far] {
-            results.push(center(&pixels(&context, &mut game(&assets(&scene)))));
+            let image = pixels(&context, &mut game(&assets(&scene)));
+            capture(&format!("studio_slots_order_{}", results.len()), &image);
+            results.push(center(&image));
         }
         assert_eq!(results[0], results[1]);
         let a = 128.0 / 255.0;
