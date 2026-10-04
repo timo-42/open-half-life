@@ -1126,9 +1126,12 @@ pub(crate) fn resolve_damage(
             // below would silently no-op on either anyway — this branch
             // exists mainly to document that a damageable button's hit
             // never falls through to it.
-            level
-                .simulation
-                .damage_button(&mut level.registry, target, info.amount);
+            level.simulation.damage_button_with_activator(
+                &mut level.registry,
+                target,
+                info.amount,
+                info.attacker.and_then(entity_of),
+            );
         } else if level
             .registry
             .world

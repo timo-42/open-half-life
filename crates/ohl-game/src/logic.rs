@@ -1931,6 +1931,20 @@ impl Simulation {
     /// [`Self::touch_rot_buttons`] already has for its own `Self::activate`
     /// call. Returns whether this call was the one that pressed the button.
     pub fn damage_button(&mut self, registry: &mut Registry, entity: Entity, amount: f32) -> bool {
+        self.damage_button_with_activator(registry, entity, amount, None)
+    }
+
+    /// Damage activation with the actual attacker carried into delayed targets.
+    /// Project policy, TODO(black-box): the threshold-crossing hit supplies the
+    /// activator. `activate` captures it only on an accepted state transition,
+    /// so later hits ignored during movement cannot overwrite a pending press.
+    pub fn damage_button_with_activator(
+        &mut self,
+        registry: &mut Registry,
+        entity: Entity,
+        amount: f32,
+        activator: Option<Entity>,
+    ) -> bool {
         if !amount.is_finite() || amount <= 0.0 {
             return false;
         }
@@ -1952,7 +1966,7 @@ impl Simulation {
         let remaining = *self.button_health.get(&entity).unwrap_or(&configured) - amount;
         if remaining <= 0.0 {
             self.button_health.insert(entity, configured);
-            self.activate(registry, entity, None, &mut Vec::new());
+            self.activate(registry, entity, activator, &mut Vec::new());
             true
         } else {
             self.button_health.insert(entity, remaining);
