@@ -202,6 +202,23 @@ impl MapEffects {
         self.instances.truncate(MAX_EFFECT_INSTANCES);
     }
 
+    /// Borrow captured, simulation-aged turret laser shots. No geometry query,
+    /// time advancement, entity activation or damage is performed by drawing.
+    pub(super) fn append_tank_pulses(&mut self, pulses: &[crate::tanks::LaserPulse]) {
+        let available = MAX_EFFECT_INSTANCES.saturating_sub(self.instances.len());
+        self.instances.extend(
+            pulses
+                .iter()
+                .take(available)
+                .map(|pulse| EffectInstance::Beam {
+                    start: pulse.start.to_array(),
+                    end: pulse.end.to_array(),
+                    width: pulse.width,
+                    color: pulse.color,
+                }),
+        );
+    }
+
     pub(super) fn sample(&mut self, level: &Level, elapsed: f32) {
         self.instances.clear();
         if !elapsed.is_finite() || elapsed < 0.0 {
@@ -534,5 +551,51 @@ mod tests {
         assert!(
             matches!(effects.instances[1], EffectInstance::Beam { end, width: 3.0, .. } if end[2] > -40.0)
         );
+    }
+
+    #[test]
+    fn actual_turret_input_produces_a_captured_visible_beam_without_render_damage() {
+        let (mut game, _) = crate::tanks::live_tests::fixture("func_tanklaser", &[], "");
+        crate::tanks::live_tests::tick(&mut game, true, true);
+        let pulses = game.systems_mut().tanks.laser_pulses().to_vec();
+        assert_eq!(pulses.len(), 1);
+        let victim = game.registry().find("victim")[0];
+        let before = game
+            .registry()
+            .world
+            .get::<&ohl_ai::Actor>(victim)
+            .unwrap()
+            .health;
+        let (level, _) = game.level_and_systems_mut();
+        let mut effects = MapEffects::new(level);
+        effects.sample(level, 0.0);
+        effects.append_tank_pulses(&pulses);
+        let beam = effects
+            .instances
+            .iter()
+            .find_map(|instance| match instance {
+                EffectInstance::Beam {
+                    start,
+                    end,
+                    width,
+                    color,
+                } => Some((*start, *end, *width, *color)),
+                _ => None,
+            })
+            .expect("accepted turret laser must reach the existing beam renderer");
+        assert!(Vec3::from_array(beam.0).abs_diff_eq(Vec3::new(0.0, 0.0, 64.0), 0.001));
+        assert!(beam.1[0] > 100.0 && beam.1[0] < 170.0);
+        assert!((beam.2 - 3.0).abs() < 0.001);
+        assert!((beam.3[0] - 64.0 / 255.0).abs() < 0.001);
+        assert!((beam.3[3] - 96.0 / 255.0).abs() < 0.001);
+        effects.append_tank_pulses(&pulses);
+        let after = level
+            .registry
+            .world
+            .get::<&ohl_ai::Actor>(victim)
+            .unwrap()
+            .health;
+        assert!((before - 977.0).abs() < 0.001);
+        assert!((after - before).abs() < 0.001);
     }
 }

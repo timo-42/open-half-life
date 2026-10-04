@@ -2093,6 +2093,7 @@ impl Game {
             view_model.as_ref(),
             self.systems.transient_sprites().as_slice(),
             &effects,
+            self.systems.tanks.laser_pulses(),
         );
         Ok(())
     }

@@ -1,12 +1,17 @@
 //! Turret input ownership, bounded aiming/cadence and outgoing shot values.
 //!
-//! Integration deliberately waits for the shared phase/pose/trace handoff. This
-//! module does not mutate inventory, run a second projectile pool, or damage from
-//! rendering. Systems must resolve controls before handheld weapons, pose both
-//! collision models from `TankPose`, then dispatch each returned shot once.
+//! Systems resolves controls before handheld weapons, poses both collision
+//! models from `TankPose`, then dispatches each returned shot once. Combat uses
+//! the shared projectile/blast owners; rendering borrows captured appearance.
 //! Physical rocket owner remains the turret; operator attribution is separate.
 //! See FORMAT_SOURCES, "Turret definitions and simulation", for published facts
 //! versus project-authored policies and original-build TODO(black-box) limits.
+
+#[cfg(test)]
+pub(crate) mod live_tests;
+mod runtime;
+
+pub(crate) use runtime::{LaserPulse, TankDispatch, TankFrame};
 
 use glam::Vec3;
 use ohl_combat::{DamageType, WeaponId, spec};
@@ -105,6 +110,7 @@ pub(crate) struct ControlDecision {
 pub(crate) struct TankSystem {
     mounted: Option<MountedTank>,
     pending_remote: Option<TankControlIntent>,
+    presentation: runtime::TankPresentation,
 }
 
 impl TankSystem {
@@ -325,12 +331,33 @@ pub(crate) struct TankShot {
 
 /// Advance one turret and return at most one admitted-cadence command. Missing
 /// laser/sprite assets do not decide whether the combat command exists.
+#[cfg(test)]
 pub(crate) fn advance_tank(
     def: &TankDef,
     state: &mut TankState,
     tick: TankTick,
     queries: &impl TankQueries,
 ) -> Option<TankShot> {
+    let prepared = prepare_tank(def, state, tick, queries)?;
+    finish_tank(def, state, tick, prepared, queries)
+}
+
+#[derive(Clone, Copy)]
+struct PreparedAim {
+    dt: f32,
+    pitch: f32,
+    yaw: f32,
+    controlled: Option<ControlledAim>,
+}
+
+/// Aim all turrets first, then publish their poses to both collision models
+/// before `finish_tank` performs actual-barrel eligibility and shot tracing.
+fn prepare_tank(
+    def: &TankDef,
+    state: &mut TankState,
+    tick: TankTick,
+    queries: &impl TankQueries,
+) -> Option<PreparedAim> {
     if !def.is_valid() || !tick.dt.is_finite() || tick.dt <= 0.0 {
         return None;
     }
@@ -375,6 +402,27 @@ pub(crate) fn advance_tank(
         def.yaw_rate * dt,
         def.yaw_range,
     );
+    Some(PreparedAim {
+        dt,
+        pitch,
+        yaw,
+        controlled,
+    })
+}
+
+fn finish_tank(
+    def: &TankDef,
+    state: &mut TankState,
+    tick: TankTick,
+    prepared: PreparedAim,
+    queries: &impl TankQueries,
+) -> Option<TankShot> {
+    let PreparedAim {
+        dt,
+        pitch,
+        yaw,
+        controlled,
+    } = prepared;
     let pose = TankPose::new(def, state, tick.placement_origin, tick.pivot_local)?;
     let muzzle = pose.muzzle(def);
     if !muzzle.is_finite() {

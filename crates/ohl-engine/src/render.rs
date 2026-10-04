@@ -223,6 +223,7 @@ impl Renderers {
         view_model: Option<&ViewModelFrame>,
         transient_sprites: &[TransientSprite],
         gameplay_effects: &crate::map_effects::EffectPresentation<'_>,
+        tank_pulses: &[crate::tanks::LaserPulse],
     ) {
         let (width, height) = (target.width.max(1), target.height.max(1));
         let mut checkpoint = self.stage_timings.as_ref().map(|_| Instant::now());
@@ -276,6 +277,7 @@ impl Renderers {
             transient_sprites,
             gameplay_effects,
             &custom_ready,
+            tank_pulses,
         );
         self.record_stage(RenderStage::Sprite, &mut checkpoint);
         if let Some(depth) = depth.as_ref() {
@@ -379,6 +381,7 @@ impl Renderers {
         transient_sprites: &[TransientSprite],
         gameplay_effects: &crate::map_effects::EffectPresentation<'_>,
         custom_ready: &BTreeSet<u64>,
+        tank_pulses: &[crate::tanks::LaserPulse],
     ) {
         let mut instances: Vec<SpriteInstance<'_>> = level
             .sprites
@@ -412,6 +415,7 @@ impl Renderers {
         self.map_effects.sample(level, elapsed);
         self.map_effects
             .append_gameplay(level, gameplay_effects, custom_ready);
+        self.map_effects.append_tank_pulses(tank_pulses);
         let Some(depth) = self.world.depth_view().cloned() else {
             return;
         };
@@ -1571,6 +1575,7 @@ mod gameplay_frame_tests {
             None,
             &[],
             effects,
+            &[],
         );
         target.read_rgba(context).unwrap()
     }
@@ -1826,6 +1831,7 @@ mod gameplay_frame_tests {
             None,
             &[],
             &effects,
+            &[],
         );
         assert_eq!(
             renderers
