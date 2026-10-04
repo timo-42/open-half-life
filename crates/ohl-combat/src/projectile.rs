@@ -28,9 +28,11 @@
 //! documented placeholder and a `// TODO(black-box)` marker.
 
 use glam::Vec3;
-use ohl_physics::{CollisionModel, MoveConfig};
+use ohl_physics::{BrushId, CollisionModel, MoveConfig};
 
-use crate::trace::{EntityId, HitboxIndex, TraceFilter, TraceMask, trace_attack_filtered};
+use crate::trace::{
+    EntityId, HitboxIndex, TraceFilter, TraceMask, trace_attack_filtered_ignoring_brush,
+};
 use crate::weapons::BlackBox;
 
 /// The hand grenade's fuse, in seconds.
@@ -559,6 +561,19 @@ impl ProjectileSet {
         world: &ProjectileWorld<'_>,
         events: &mut Vec<ProjectileEvent>,
     ) {
+        self.tick_with_brush_filter(dt, world, events, |_| None);
+    }
+
+    /// Additive per-projectile source-brush exclusion. The host derives each
+    /// current brush handle from its physical owner; the callback never changes
+    /// owner/entity filtering, world hulls, events or frozen physical snapshots.
+    pub fn tick_with_brush_filter(
+        &mut self,
+        dt: f32,
+        world: &ProjectileWorld<'_>,
+        events: &mut Vec<ProjectileEvent>,
+        ignored_brush: impl Fn(ProjectileId) -> Option<BrushId>,
+    ) {
         if !dt.is_finite() || dt <= 0.0 {
             return;
         }
@@ -569,8 +584,9 @@ impl ProjectileSet {
         let mut index = 0;
         while index < self.projectiles.len() {
             let mut removed = false;
+            let source_brush = ignored_brush(self.projectiles[index].id);
             for _ in 0..substeps {
-                if self.advance_one(index, step, world, events) {
+                if self.advance_one(index, step, world, events, source_brush) {
                     removed = true;
                     break;
                 }
@@ -591,6 +607,7 @@ impl ProjectileSet {
         step: f32,
         world: &ProjectileWorld<'_>,
         events: &mut Vec<ProjectileEvent>,
+        ignored_brush: Option<BrushId>,
     ) -> bool {
         let hop = self.snark_hop(index, step, world);
         let projectile = &mut self.projectiles[index];
@@ -635,7 +652,7 @@ impl ProjectileSet {
                 world.movement.gravity * world.tuning.gravity_scale.value * step;
         }
 
-        Self::sweep(projectile, step, world, events)
+        Self::sweep(projectile, step, world, events, ignored_brush)
     }
 
     /// Moves one projectile through the world for `step` seconds, resolving
@@ -645,6 +662,7 @@ impl ProjectileSet {
         step: f32,
         world: &ProjectileWorld<'_>,
         events: &mut Vec<ProjectileEvent>,
+        ignored_brush: Option<BrushId>,
     ) -> bool {
         let tuning = world.tuning;
         // Ignore this projectile's own model-backed entity and its owner
@@ -674,7 +692,14 @@ impl ProjectileSet {
             }
             let start = projectile.position;
             let end = start + projectile.velocity * remaining;
-            let trace = trace_attack_filtered(world.collision, world.entities, start, end, filter);
+            let trace = trace_attack_filtered_ignoring_brush(
+                world.collision,
+                world.entities,
+                start,
+                end,
+                filter,
+                ignored_brush,
+            );
             if !trace.hit() {
                 projectile.position = end;
                 return false;

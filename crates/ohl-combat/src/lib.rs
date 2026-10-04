@@ -108,6 +108,7 @@ pub use projectile::{
 pub use trace::{
     AttackTrace, EntityHitboxes, EntityId, HitGroup, HitGroupScale, HitboxIndex, HitboxLimits,
     HitboxVolume, TraceFilter, TraceMask, trace_attack, trace_attack_filtered,
+    trace_attack_filtered_ignoring_brush,
 };
 pub use weapons::{BlackBox, SecondaryFire, WeaponId, WeaponKind, WeaponSpec, spec};
 
