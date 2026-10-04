@@ -8892,8 +8892,9 @@ this batch. Existing tags26/42/43 and the independent tag44 golden are unchanged
 
 The evidence keeps its limits. Full-pool faults fail actual output assertions;
 the saved attribution iterator does not expose a ghost-only invalid mapping.
-The absent brush filter fails initial live source exit, while the wrong lookup
-fails loaded remapped-source exit. Clamp faults fail their first out-of-range
+The absent brush filter fails initial live attribution presence after ordinary
+launch ticks, before explicit exit/remap-flight checks; the wrong lookup fails
+loaded remapped-source exit. Clamp faults fail their first out-of-range
 field before later continuation; duplicate/missing target faults fail the first
 `func_tank` branch, while all four variants pass normally. The strengthened
 Egon, output and immediate collision tests now catch their corresponding
