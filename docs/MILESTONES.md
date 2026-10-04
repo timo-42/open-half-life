@@ -9272,7 +9272,7 @@ for this package, M9.54 remains unnumbered, and draft PR #189 awaits final
 review, CI and integration. Recharge behavior, Medium suit policy, existing
 capacity/drain qualifications and the stated cuts remain as documented above.
 
-## M9.NEXT — HEV audio for three existing damage occasions
+## M9.55 — HEV audio for three existing damage occasions
 
 Heat, electrical damage and minor-fracture Suit events now have a stateless
 presentation adapter through the reviewed `HEV_FIRE`, `HEV_SHOCK`, and
@@ -9295,19 +9295,43 @@ actual event-pair PCM cursor-control tests plus silent missing
 sentence/word/invalid-WAV tests; cache tests cover ordered partial PCM and
 same-owner/other-owner voice continuity.
 
-**Gates:** PASS — focused HEV tests **11/0/0** (passed/failed/ignored): five engine
-unit tests, two engine integration tests, and four app binary tests. Five
-mutation probes compiled and failed at their intended assertions: absent
-mappings, swapped Heat/Shock identifiers, duplicate Sound dispatch, removed
-phase-13 dispatch, and a playable synthetic missing-sentence fallback. After
-each probe all eight source files and modes were restored; the corresponding
-normal suites passed **5/5/5/2/4** tests. Scoped formatting and whitespace checks
-pass. PENDING — full fmt; clippy workspace/all-targets default, dev-tools and
-all-features; workspace tests (total pending); policy; graph; combat-smoke
-(expected 37/37, unexpected 0); campaign-smoke (expected 93/93); empty and armed
-chain-walk (each expected depth 12 / Pass / 660.8s). Every Cargo command requires
-an explicit permit and `CARGO_BUILD_JOBS=4 CARGO_PROFILE_DEV_DEBUG=line-tables-only
-CARGO_INCREMENTAL=0`. Dependencies are unchanged; deny remains conditional.
-Release/payload windows are separately gated. Hardware audibility is untested.
+**Gates:** PASS — historical focused source `ed1cdfcf` ran HEV tests
+**11/0/0** (passed/failed/ignored): five engine unit tests, two integration tests,
+and four app binary tests. Five actual mutation probes compiled and failed at
+their intended assertions: absent mappings, swapped Heat/Shock identifiers,
+duplicate Sound dispatch, removed phase-13 dispatch, and a playable synthetic
+missing-sentence fallback. Each full eight-file/mode inverse was verified and
+corresponding normal suites passed **5/5/5/2/4**. These original proofs remain
+qualified to their tested source; the two subsequent test-helper Clippy fixes
+preserve authored WAV bytes, exact finite PCM discrimination, and all five
+mutation targets/assertion bindings.
+
+PASS — current runtime/test source `a8172168`: full fmt; clippy
+workspace/all-targets default, dev-tools and all-features with warnings denied;
+workspace tests **3013/0/35**; policy; graph (36 crates). Both own normal release
+builds completed: app with dev-tools and xtask, with new regular non-symlink
+binary identities tied to this source/config/toolchain. Four actual payload
+gates passed: combat-smoke **37/37**, unexpected/error buckets **0**;
+campaign-smoke **93/93**; empty and armed chain-walk each **depth 12 / Pass /
+660.8s**. All accepted runs verify unchanged pinned source, owned process/reader
+closure and resource limits. Runtime raw output was discarded in RAM; only safe
+aggregates were retained, and every ephemeral capture directory was deleted.
+Two earlier workspace attempts refused the 8GiB target cap before any tests;
+both immutable records remain historical resource refusals. A subsequent
+separately permitted 12GiB run passed without a source or validation-environment
+change. The documentation-only validation follow-up preserves tested code.
+
+Every Cargo command used `CARGO_BUILD_JOBS=4
+CARGO_PROFILE_DEV_DEBUG=line-tables-only CARGO_INCREMENTAL=0`, an own Target and
+explicit permits; `CARGO_PROFILE_TEST_STRIP`, `OHL_RENDER_GPU_TEST` and
+`OHL_RENDER_CAPTURE_DIR` were unset for full/release/runtime gates. The four
+fmt/Clippy gates passed under the original 8GiB cap; final workspace/release
+runs used the 12GiB own-target cap and 18GiB free-space floor plus 1GiB
+admission headroom and remaining target credit; runtime retained its 6GiB own
+Target/4GiB capture caps and 19GiB free-space floor, with stronger capture-credit
+admission. Qualified inactive-debug cleanup preserved all evidence/source/Git/
+config identities; no peer Target/cache was used. Actual test-profile debug
+flags and the earlier growth cause remain unproved. Dependencies and save tags
+are unchanged; deny remains conditional. Hardware audibility is untested.
 The three existing damage occasions and scheduling/producer cuts above remain
-the feature limit.
+the feature limit. Numbering, final integration and merge are separately gated.
