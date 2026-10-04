@@ -8331,7 +8331,7 @@ are unchanged, so cargo-deny is not required. The final evidence commit changes
 only documentation and script-header comments; fully tested production and
 harness code, and both parsed script command streams, are unchanged.
 
-## M9.NEXT — Wave 2 P6b renderer effects
+## M9.49 — Wave 2 P6b renderer effects
 
 A new bounded asset-independent effect pass draws additive beam ribbons and
 billboard particles, alpha-blended round bullet/blood marks, and opaque
@@ -8386,22 +8386,29 @@ half-alpha sprite case correctly attenuates it to 127. Render properties/colors 
 RenderPropsComponent changes through a read-side bridge update, alongside its
 activation/event seam, before claiming dynamic visual properties.
 
-**Gates.** fmt; scoped `cargo clippy -p ohl-render -p ohl-engine
---all-targets -- -D warnings`; full `cargo test -p ohl-render` with
-`OHL_RENDER_GPU_TEST=1`, 50 passed (40 CPU, 10 GPU), 0 failed, 10 ignored;
-engine library plus visual-effects/offscreen/viewmodel GPU tests, 205 passed
-(200 CPU, 5 GPU), 0 failed, 5 ignored. Eighteen mutation probes were
-discriminated: removing beam/particle/decal/gib geometry, beam activation,
-laser clipping, spark expiry, the engine draw bridge, sprite Color mode,
-tint, framerate, static glow, initial visibility and additive brightness
-each failed its selected tests. Review probes restoring authored endpoints,
-dropping brush displacement, grouping sprites before effects and reversing
-mixed depth order also failed their new mover/GPU regressions. Every mutated file was restored byte-for-byte
-before the final normal checks. Actual project-authored captures include
-the engine bridge, sprite/glow properties and combined renderer primitives.
+**Gates**, measured on the M9.48 combined tree: fmt; workspace all-target
+clippy with default features, `--features dev-tools` and `--all-features`;
+`cargo test --workspace`, 2825 passed, 0 failed, 34 ignored; policy; graph;
+combat-smoke 37/37 with 0 unexpected lines; campaign-smoke 93/93; and both
+inventory chain walks at **distinct depth 12**, Pass, 660.8 simulated
+seconds, with `--start-inventory ""` and with
+`--start-inventory weapon_357,ammo_357,ammo_357`. The serialized dev-tools
+release binary drove all four payload gates. Only aggregate evidence was
+retained; temporary reports/captures were removed. No dependencies changed.
 
-Full workspace clippy (default, dev-tools and all-features), workspace tests,
-policy, graph, combat-smoke 37/37, campaign-smoke 93/93, and both inventory
-chain walks at distinct depth 12 / Pass / 660.8 simulated seconds remain
-pending coordinator resource scheduling. No dependencies changed. This
-draft does not claim the full or payload gates have passed.
+Opt-in GPU checks on the unchanged renderer/bridge source: `cargo test
+-p ohl-render` with `OHL_RENDER_GPU_TEST=1`, 50 passed (40 CPU, 10 GPU),
+0 failed, 10 ignored; engine library plus visual-effects/offscreen/viewmodel
+GPU tests, 205 passed (200 CPU, 5 GPU), 0 failed, 5 ignored. Eighteen mutation
+probes were discriminated: removing beam/particle/decal/gib geometry,
+beam activation, laser clipping, spark expiry, the engine draw bridge,
+sprite Color mode, tint, framerate, static glow, initial visibility and
+additive brightness each failed its selected tests. Review probes restoring
+authored endpoints, dropping brush displacement, grouping sprites before
+effects and reversing mixed depth order also failed their new mover/GPU
+regressions. Every mutated file was restored byte-for-byte before final
+normal checks. Actual project-authored captures include the engine bridge,
+sprite/glow properties, near/far mixed transparency and combined renderer
+primitives. The final gate-recording change modifies documentation only;
+all 12 scoped source/test files and all 42 retained synthetic capture files
+remain byte-identical to the approved and tested implementation.
