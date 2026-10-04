@@ -8347,7 +8347,7 @@ unproved cause of the old CI failure and all documented scope limits remain
 unchanged. Earlier pending-gate statements describe their own checkpoints.
 
 
-### Charger reservoir save continuation (M9.NEXT)
+### Charger reservoir save continuation (M9.54)
 
 Optional tag 45 is a project-authored persistence choice. It stores a local
 version 1 and at most 256 sparse entries, each with a stable registry slot,
