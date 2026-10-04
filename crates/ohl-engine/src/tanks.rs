@@ -10,6 +10,9 @@
 #[cfg(test)]
 pub(crate) mod live_tests;
 mod runtime;
+pub(crate) mod save;
+#[cfg(test)]
+mod save_tests;
 
 pub(crate) use runtime::{LaserPulse, TankDispatch, TankFrame};
 
@@ -71,8 +74,8 @@ pub(crate) struct ControlInput {
     pub attack: bool,
 }
 
-/// Mounted state uses runtime handles only. A future tag 44 adapter must remap
-/// them and rerun candidate/master/liveness validation before restoring a claim.
+/// Mounted state uses runtime handles only. The tag44 adapter remaps them and
+/// reruns candidate/master/liveness validation before restoring a claim.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct MountedTank {
     pub tank: Entity,

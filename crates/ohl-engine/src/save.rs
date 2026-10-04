@@ -45,8 +45,9 @@
 //! | 42 | [`SECTION_PROJECTILE_RUNTIME`] | [`ProjectileRuntimeSnapshot`]: resolved profiles, explicit owners/targets and new control state |
 //!
 //! | 43 | [`SECTION_MAP_EFFECTS`] | [`MapEffectsSnapshot`]: bounded effect continuation and stable references |
+//! | 44 | [`SECTION_TANKS`] | [`TanksSnapshot`]: turret state, validated controls and separate rocket attribution |
 //!
-//! Tags 23-31 and 33-43 are read as `None`/a default when absent, so a
+//! Tags 23-31 and 33-44 are read as `None`/a default when absent, so a
 //! save written before M7.9 P4b (tags 23-27), M7.13 (tag 28), M9.5 (tag 29),
 //! M9.6 (tag 30), M9.8 (tag 31), M9.10 (tag 33), the teleport/master
 //! package (tag 34), M9.25 (tag 35), M9.26 (tag 36), M9.33 (tag 37), the
@@ -407,9 +408,16 @@ pub const SECTION_PROJECTILE_RUNTIME: u32 = 42;
 /// Optional map effect continuation; every prior section shape stays frozen.
 pub const SECTION_MAP_EFFECTS: u32 = 43;
 
+/// Optional turret continuation and rocket attribution; 26/42/43 stay frozen.
+pub const SECTION_TANKS: u32 = 44;
+
 pub use crate::debris::DebrisRecord;
 pub use crate::map_effects::{
     EffectEntityRef, MapEffectsSnapshot, PendingUseSnapshot, SavedUseType,
+};
+pub use crate::tanks::save::{
+    MountedTankSnapshot, TankEntityRef, TankIntentSnapshot, TankMemorySnapshot,
+    TankProjectileSnapshot, TankStateSnapshot, TanksSnapshot,
 };
 
 /// One entity definition [`SECTION_CARRIED_ENTITIES`] (36) carries.
@@ -621,6 +629,9 @@ pub struct GameSave {
     /// Optional tag 43. Missing state preserves authored defaults and emits no
     /// historical blasts/debris. Fade and shake are deliberately transient.
     pub map_effects: Option<MapEffectsSnapshot>,
+    /// Optional tag 44. Absence restores authored turret defaults, with no
+    /// operator claim or deferred control input. Cosmetic pulses are transient.
+    pub tanks: Option<TanksSnapshot>,
     /// The entity definitions a level change materialised in this map, in
     /// the order they were appended (M9.26). `None` for a save missing tag
     /// 36 — an older save simply comes back with the map's own entities and
@@ -686,6 +697,12 @@ impl GameSave {
                     return Err(ohl_save::SaveError::LimitExceeded);
                 }
                 writer.add_section_serde(SECTION_MAP_EFFECTS, effects)?;
+            }
+            if let Some(tanks) = &self.tanks {
+                if !tanks.within_limits() {
+                    return Err(ohl_save::SaveError::LimitExceeded);
+                }
+                writer.add_section_serde(SECTION_TANKS, tanks)?;
             }
             if let Some(runtime) = &self.projectile_runtime {
                 if runtime.attacks.len() > crate::save_state::MAX_SNAPSHOT_PROJECTILES
@@ -771,6 +788,7 @@ impl GameSave {
             projectiles: optional_section(&reader, SECTION_PROJECTILES)?,
             projectile_runtime: optional_section(&reader, SECTION_PROJECTILE_RUNTIME)?,
             map_effects: optional_section(&reader, SECTION_MAP_EFFECTS)?,
+            tanks: optional_section(&reader, SECTION_TANKS)?,
             rng: optional_section(&reader, SECTION_RNG)?,
             mover_state: optional_bounded_vec_section(
                 &reader,

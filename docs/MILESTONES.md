@@ -8651,13 +8651,15 @@ denied. A separately preserved engine unit executable from that frozen source
 passed **21/21** core turret tests, including all five reviewed Euler regressions.
 This is archived core feedback: the interrupted Cargo resource-guard attempts
 do not establish a completed engine build or full gate. All Cargo runs used
-four jobs, line-tables-only debug and disabled incremental compilation. Current integration library feedback subsequently passed **12 game tests**,
+four jobs, line-tables-only debug and disabled incremental compilation. The
+pre-save integration checkpoint `daee624` subsequently passed **12 game tests**,
 **31 engine turret tests** (21 core and 10 real-input tests), and the separate
 **one-test renderer bridge**. Every command completed under the reviewed guard
 with its explicit test summary verified; source hashes stayed frozen throughout.
 The largest sampled target was 1,807,867,904 bytes and minimum free space was
 34,268,999,680 bytes, within the assigned 8 GiB/18 GiB bounds. Known save-only
-unused APIs remain unsuppressed pending tag44 callers. Standalone Rust2024
+unused APIs were left unsuppressed; the new tag44 source now supplies callers.
+That save unit has not been compiled or executed. Standalone Rust2024
 formatting and source whitespace checks pass.
 
 New synthetic source tests use real Game input for all four damage variants,
@@ -8670,13 +8672,36 @@ The synthetic damage fixture loads existing project-authored model bytes so
 ordinary studio hitboxes are present, retains MonsterAi with the published
 prisoner flag, and waits for the ordinary single-use weapon reload before
 placing a satchel. Positive health/endpoint oracles are unchanged. Earlier
-additive cancellation/passive and physical trace tests still await execution. Killed/restored mutations,
+additive cancellation/passive and physical trace tests still await execution.
+Killed/restored mutations,
 full non-payload gates, runtime gates and a draft PR remain pending.
 
-**Cuts and next dependency.** Bounded optional save44 and remapped control/
-projectile attribution, mounted-restore cancellation, true live-versus-loaded
-continuation, hostile/master/foreign-owner controls and full runtime review
-remain required work. Frozen tags26/42/43 and weapon/entity/render encodings
+**Save source checkpoint, uncompiled/unrun.** Optional tag44 now carries at most
+256 turret states and128 rocket attribution rows, both bounded while decoding.
+It records authored-relative live angles, active state, fractional cadence,
+last-seen memory/RNG, mounted controls and distinct runtime/phase12 pending
+requests. Stable registry indices and explicit Player references replace raw
+handles; current brush IDs derive after restoration. Invalid numeric rows,
+duplicate keys, orphan references and mismatched physical owners are rejected
+or discarded without guessing a player. Credited actors may be dead for an
+already launched attack, while mounted controls must pass current player,
+master, existence and distance validation. Restore follows all existing
+projectile/effect/master overlays, cancels a valid mount's restored handheld
+charge and preserves the next-tick boundary for pending input.
+
+Seventeen new source tests remain **uncompiled/unrun**: a literal nested tag44
+container golden and round-trip, trailing-byte rejection, both vector caps,
+nonfinite values, old absence with26/42/43 section equality, live-versus-loaded
+controlled cadence/RNG and automatic memory/aim, rocket health/physics/credit,
+duplicate/orphan/foreign identities, actual button/relay pending control,
+master/death/range revalidation, inconsistent charged inventory cancellation,
+cosmetic pulse clearing, and separate pending-queue precedence. Two of these
+inspect real-input rocket terminal DamageInfo at the existing phase7 seam and
+perturb a player handle to discriminate stable remapping. No new production
+observer or alternate projectile implementation exists.
+
+**Cuts and next dependency.** Focused compilation/execution of the save unit,
+mutation discrimination, full runtime review and all gates remain required. Frozen tags26/42/43 and weapon/entity/render encodings
 are unchanged. Physical monster operators, automatic monster targets, Sven
 relationship/inventory extensions, bullet muzzle/smoke sprite and rotation
 sound submission, and cross-level turret continuation are named cuts. Laser

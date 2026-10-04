@@ -57,6 +57,10 @@ use crate::sprites::TransientSprites;
 use crate::viewmodel::ViewModel;
 use ohl_combat::HitboxIndex;
 
+#[cfg(test)]
+#[path = "tanks/attribution_tests.rs"]
+mod tanks_attribution_tests;
+
 /// The project's default random seed.
 ///
 /// A constant, not a clock or an environment read: two games built from the
@@ -718,6 +722,35 @@ impl Systems {
             .restore_secondary_cooldowns(level, &snapshot.secondary_cooldowns);
         self.combat
             .restore_projectile_controls(snapshot.player_controls);
+    }
+
+    pub(crate) fn snapshot_tanks(&self, level: &Level) -> Option<crate::save::TanksSnapshot> {
+        self.tanks.snapshot(level, &self.projectiles)
+    }
+
+    /// Tag44 follows physical/profile restoration and all registry/master
+    /// overlays. A valid mounted claim must cancel restored handheld charge
+    /// before the first tick; already spent ammo is never refunded.
+    pub(crate) fn restore_tanks(
+        &mut self,
+        level: &mut Level,
+        controller: &PlayerController,
+        snapshot: Option<&crate::save::TanksSnapshot>,
+    ) {
+        let input = crate::tanks::ControlInput {
+            player: level.player,
+            position: controller.state.origin,
+            view_direction: controller.view_direction(),
+            alive: !self.player.state.dead,
+            use_pressed: false,
+            attack: false,
+        };
+        if self
+            .tanks
+            .restore(level, &mut self.projectiles, snapshot, input)
+        {
+            self.combat.cancel_for_tank();
+        }
     }
 
     /// `SECTION_RNG` (27): the shared random stream's state and the substep

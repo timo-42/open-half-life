@@ -8085,7 +8085,7 @@ cooldowns should continue through a non-firing path. Already launched world
 projectiles and deployables continue normally. Mounted restore must establish
 the same canceled-handheld invariant before its first tick, without changing
 tag 42 or weapon encodings. The source now wires input cancellation and passive advancement; mounted
-restore still awaits implementation and validation.
+restore is wired in the new uncompiled tag44 unit and awaits validation.
 
 The runtime uses one `TankPose` quaternion/axis-angle for the
 compiled-origin pivot, barrel, use center, renderer and both collision models.
@@ -8104,8 +8104,9 @@ save/restore and mutation evidence remain pending. Bullet muzzle/smoke sprites a
 explicit presentation cuts. Physical monster
 operators, automatic monster targets, Sven relation/inventory extensions and
 original-build timing/spread/control fidelity remain excluded. Optional tag
-44 is reserved for later bounded state and remapped attribution references;
-no encoding exists here and frozen tags 26/42/43 are unchanged. Cross-level
+44 now has a separate bounded source encoding for state and remapped
+attribution references; that new unit is uncompiled/unrun. Frozen tags
+26/42/43 are unchanged. Cross-level
 turret continuation remains a cut until a separate extension adapter exists.
 
 The registry attaches turret definition/state to all four variants and links
@@ -8134,3 +8135,16 @@ first-name selection and no-hit mortar-miss behavior are project policies,
 not additional original-build fidelity claims. The narrow source exclusion
 is an exact BrushId lookup per physical turret, independent of credited
 operator; operator splash remains eligible under the shared explosion policy.
+
+The tag44 schema and restoration policy are project-authored, not a claim about
+original save files. At most256 tank rows and128 rocket mappings decode;
+nonfinite state is discarded and valid angles/timers reapply current definition
+bounds. First occurrence reserves a duplicate key even when its row is invalid.
+Mounted claims require an explicit Player identity and current controls/master/
+life/range eligibility; already launched attacks retain dead credited-actor
+identity when the entity still exists. Runtime pending control and phase12
+pending use remain separate, preserving latest-phase12 precedence next tick.
+Source BrushIds are never saved. Missing44 starts authored tank state without
+controls or inferred operator credit; existing physical projectiles remain.
+No earlier wire shape changes. These rules have synthetic source tests, whose
+execution and mutation evidence are still pending at this checkpoint.
