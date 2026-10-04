@@ -1040,3 +1040,55 @@ fn held_teleport_no_movement_and_turn_preserve_authoritative_script_placement() 
         assert_eq!(game.script_navigation_stats().graph_steps, 0);
     }
 }
+
+#[test]
+fn lost_or_mismatched_support_keeps_a_script_pending_without_lowering_or_completing() {
+    use ohl_formats::test_support::{Bsp30Builder, CollisionBrush};
+    for raised_floor in [false, true] {
+        let (_, mut game) = elevated_graph_script(false);
+        for _ in 0..40 {
+            game.tick(TICK_SECONDS, &Input::default());
+        }
+        let middle = assert_descent_anchor_geometry(&mut game, false);
+        assert!(middle.origin.z > 20.0 && middle.origin.z < 48.0);
+        let mut builder = Bsp30Builder::new();
+        let mut brushes = vec![CollisionBrush::box_brush(
+            [-8.0, -48.0, 0.0],
+            [8.0, 48.0, 128.0],
+        )];
+        if raised_floor {
+            brushes.push(CollisionBrush::half_space([0.0, 0.0, 1.0], 20.0));
+        }
+        let heads = builder.push_collision_hulls(&brushes);
+        builder.push_model(
+            [-512.0, -512.0, -256.0],
+            [512.0; 3],
+            [0.0; 3],
+            heads,
+            2,
+            0,
+            0,
+        );
+        let bytes = builder.build();
+        let limits = ohl_formats::bsp30::Limits::default();
+        let bsp = ohl_formats::bsp30::Bsp::parse(&bytes, &limits).expect("changed synthetic floor");
+        game.level_and_systems_mut().0.monster_collision = Some(
+            ohl_physics::CollisionModel::from_bsp(&bsp, &limits).expect("live changed collision"),
+        );
+        for _ in 0..500 {
+            assert!(
+                game.tick(TICK_SECONDS, &Input::default())
+                    .iter()
+                    .all(|event| !matches!(event, crate::GameEvent::LevelChange { .. }))
+            );
+            assert_eq!(
+                assert_descent_anchor_geometry(&mut game, false).origin,
+                middle.origin
+            );
+        }
+        assert_eq!(game.script_completion_count(), 0);
+        assert_eq!(game.script_timeout_count(), 0);
+        assert_eq!(game.active_script_count(), 1);
+        assert_eq!(game.script_navigation_stats().untraced_steps, 0);
+    }
+}

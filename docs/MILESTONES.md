@@ -8700,8 +8700,16 @@ render/posed-hitbox placement and one completion. Teleport, no movement,
 turn-only and No Script Movement controls preserve their authored placement.
 The independent elevated-detour test failed before repair; focused navigation
 now passes 16 tests with the existing upward-step reproducer ignored, the caller
-policy test passes, and all 13 engine origin tests pass. Descent mutation probes
-and final candidate gates are still pending.
+policy test passes, and the full engine unit suite passes 220 tests. A public
+Game negative keeps a script pending at its actual anchor when live support
+vanishes or changes height. Fifteen additional temporary mutations were killed
+and byte-restored: removed descent, early landing release, unbounded slices,
+ignored slope/height/full-support validation, point-only/wrong-box support,
+omitted cache position, renewed drop allowance, ignored max_drop, implicit
+context-free permission, bypassed actor policy, missing world opt-in and the
+restored ScriptHold transform exclusion. The redundant prefix sweep is not
+claimed as an independently discriminated behavior. Final candidate gates are
+still pending.
 
 P5 retains node-kind attachment, stuck-route recovery, ordinary steering's
 final sweep and XY-only script/Route arrival, including purely vertical flight. A named ignored synthetic low-step
