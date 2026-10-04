@@ -905,10 +905,12 @@ mod tests {
             light_direction: [0.0; 3],
             light_color: [0.0; 3],
         };
-        let mut camera = FreeFlyCamera::default();
-        camera.position = [1.0, 0.0, 0.0];
-        camera.yaw = 0.0;
-        camera.pitch = 0.0;
+        let mut camera = FreeFlyCamera {
+            position: [1.0, 0.0, 0.0],
+            yaw: 0.0,
+            pitch: 0.0,
+            ..FreeFlyCamera::default()
+        };
         assert!((instance_depth(&instance, &model, &camera) - 12.0).abs() < 1e-5);
         camera.yaw = 180.0;
         assert!((instance_depth(&instance, &model, &camera) + 12.0).abs() < 1e-5);

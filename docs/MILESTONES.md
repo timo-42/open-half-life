@@ -8464,9 +8464,11 @@ remain pending. Commands used the same Cargo environment above, with
 target growth (total below 3 GiB). No guard interrupted a command. GPU checks
 and the complete-tree/runtime gates remain **unrun**. These focused filters were
 rerun after the blank-selected custom-gib geometry guard. Engine GPU test
-functions compiled but were not executed; the renderer integration GPU target
-remains locally uncompiled. Sixteen CPU mutation probes and all GPU probes
-remain pending.
+functions compiled but were not executed. Scoped `cargo clippy -p ohl-engine
+-p ohl-game -p ohl-render --all-targets --all-features -- -D warnings` passes,
+including the renderer integration GPU target. Focused map-effects and studio
+CPU filters passed again after the test-only lint fixes. Sixteen CPU mutation
+probes and all GPU probes remain pending.
 No complete engine-runtime, save-compatibility or milestone-completion claim is
 made until the required build, GPU, mutation and payload gates run.
 
@@ -8478,4 +8480,5 @@ The independent 222-byte golden passes without changing its literal. Sixteen
 further CPU mutation probes (including the three new review discriminators),
 GPU execution and complete-tree/runtime gates remain pending. Separate serde
 visitor lifetime, restore-helper and midpoint cleanups address observed CI
-lints; local full clippy gates still await permission.
+lints. The scoped clippy pass does not replace the three final workspace clippy
+gates.
