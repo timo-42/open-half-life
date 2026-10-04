@@ -8167,13 +8167,16 @@ A source-review correction omits already-expired target memory when the
 authored persistence is zero, preserving the visible shot and the strict
 tag44 memory validator. This is a project state-consistency fix. Two new
 synthetic real-input save/occlusion regressions cover both persistence spellings
-and positive remembered-target continuation through expiry. They are source-only
-and unrun at this follow-up checkpoint.
+and positive remembered-target continuation through expiry. Both pass in the
+corrected focused engine suite at `c102ecf`.
 
 Direct-controls input arbitration consumes a recognized Use even when local
 mount eligibility fails, preventing a later map-use phase from reinterpreting
 it as remote activation. Genuine relay activation remains separate. This
 phase-ownership rule is project policy; its new synthetic eye-versus-controller
-bounds and missing-bounds regression is unrun at this checkpoint. A synthetic
+bounds and missing-bounds regression passes at `c102ecf`. A synthetic
 projectile fixture now distinguishes its independently authored contact plane
-from the existing one-unit outward blast clearance; no physics tuning changed.
+from the existing one-unit outward blast clearance; both source-filter
+integration tests pass without changing physics tuning. All scoped save
+goldens and engine default/all-feature all-target Clippy also pass. Full
+workspace gates and mutation discrimination remain pending.
