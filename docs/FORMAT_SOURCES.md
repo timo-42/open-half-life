@@ -8300,3 +8300,25 @@ This is test-only observation under a fixed deadline, not a production reaper.
 The second child's original `Child` must still collect status 37 after the
 first backend returns pending. Its fixture is the current test executable,
 with one explicitly selected ignored helper; no new image staging is added.
+
+
+Focused execution on source `e3df24f93332ac1aebc8b12f0c91655c4785f0f7`
+(tree `0b568aa94b95a4098470caff9b29de695a946f1c`) passes workspace formatting,
+the 14 portable same-algorithm tests, and Linux platform all-target/all-feature
+Clippy with warnings denied. Fifteen actual one-fault changes to the private
+helper were detected and byte-restored: twelve by specific assertions, and
+three by designated finite-sequence `expect` failures for deadline extension,
+repeated observation and polling after a cached exit. These three are reported
+separately rather than counted as assertion failures. Each selected test passed
+before mutation and after restoration; the final full portable suite again
+passed 14/14 with no ignored or filtered tests. Exact test counts, compilation
+completion, source-pinned failure locations/messages and known child stopping
+were checked. Compiler/setup errors, unrelated panics and guard/timeouts were
+not counted. The fixture assertions and native adapter were never mutated.
+
+This evidence exercises the shared decision loop on Linux. Native macOS
+kqueue/owned-Child tests, blocking/wait-any adapter mutants, Apple Silicon CI,
+and the full package acceptance gates remain pending. It does not establish
+the precise cause of the earlier CI failure. No additional format/source
+provenance, payload access, dependency or production change is introduced by
+this evidence appendix.
