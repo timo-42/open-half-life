@@ -90,6 +90,12 @@ pub(crate) struct ControlledAim {
 pub(crate) struct ControlDecision {
     pub consume_use: bool,
     pub suppress_weapons: bool,
+    /// Successful new ownership requires explicit cancellation of charged,
+    /// continuous and pending handheld actions BEFORE ordinary weapon ticking.
+    /// Clearing attack buttons alone can release a charged Gauss. Cancellation
+    /// preserves inventory/resources and already-spent ammo; it never refunds.
+    /// Mounted restore must establish the same invariant before its first tick.
+    pub cancel_handheld_actions: bool,
     pub controlled: Option<ControlledAim>,
 }
 
@@ -153,6 +159,7 @@ impl TankSystem {
                 })
         });
         let mut consume_use = input.use_pressed && previously_mounted;
+        let mut cancel_handheld_actions = false;
         if input.use_pressed && previously_mounted {
             self.clear();
         } else if input.use_pressed {
@@ -168,9 +175,10 @@ impl TankSystem {
             }) {
                 self.mount(*candidate, input);
                 consume_use = true;
+                cancel_handheld_actions = true;
             }
         } else if let Some(intent) = self.pending_remote.take() {
-            self.apply_remote(intent, input, candidates);
+            cancel_handheld_actions = self.apply_remote(intent, input, candidates);
         }
         let controlled = self.mounted.map(|mount| ControlledAim {
             tank: mount.tank,
@@ -183,6 +191,7 @@ impl TankSystem {
             // The release tick also consumes held Attack, preventing an
             // accidental handheld shot while relinquishing the turret.
             suppress_weapons: previously_mounted || controlled.is_some(),
+            cancel_handheld_actions,
             controlled,
         }
     }
@@ -201,9 +210,9 @@ impl TankSystem {
         intent: TankControlIntent,
         input: ControlInput,
         candidates: &[ControlCandidate],
-    ) {
+    ) -> bool {
         if intent.player != input.player {
-            return;
+            return false;
         }
         let current = self.mounted.is_some_and(|mount| mount.tank == intent.tank);
         if intent.use_type == TriggerUse::Off || (intent.use_type == TriggerUse::Toggle && current)
@@ -211,7 +220,12 @@ impl TankSystem {
             if current {
                 self.mounted = None;
             }
-            return;
+            return false;
+        }
+        if current {
+            // Repeated On is idempotent: keep the existing controls area and
+            // do not restart ownership or passive handheld cooldowns.
+            return false;
         }
         if let Some(candidate) = candidates.iter().find(|candidate| {
             candidate.tank == intent.tank
@@ -220,7 +234,9 @@ impl TankSystem {
                 && candidate.master_open
         }) {
             self.mount(*candidate, input);
+            return true;
         }
+        false
     }
 }
 
@@ -346,13 +362,14 @@ pub(crate) fn advance_tank(
         idle_cadence(state, dt);
         return None;
     };
-    let (pitch, yaw) = requested_angles(def, direction);
-    state.relative_pitch = approach(
+    let (pitch, yaw) = requested_angles(def, state, direction);
+    state.relative_pitch = approach_angle(
         state.relative_pitch,
         pitch.clamp(-def.pitch_range, def.pitch_range),
         def.pitch_rate * dt,
+        def.pitch_range,
     );
-    state.relative_yaw = approach_yaw(
+    state.relative_yaw = approach_angle(
         state.relative_yaw,
         yaw.clamp(-def.yaw_range, def.yaw_range),
         def.yaw_rate * dt,
@@ -508,11 +525,16 @@ fn cadence_due(state: &mut TankState, rate: f32, dt: f32) -> bool {
     due
 }
 
-fn requested_angles(def: &TankDef, direction: Vec3) -> (f32, f32) {
-    let pitch = (-direction.z)
-        .atan2(direction.x.hypot(direction.y))
-        .to_degrees();
-    let yaw = direction.y.atan2(direction.x).to_degrees();
+fn requested_angles(def: &TankDef, state: &TankState, direction: Vec3) -> (f32, f32) {
+    let horizontal = direction.x.hypot(direction.y);
+    let pitch = (-direction.z).atan2(horizontal).to_degrees();
+    // Yaw is indeterminate at a vertical pole. Keep the current mechanical
+    // yaw instead of introducing an atan2(0, 0) turn or a 180-degree branch flip.
+    let yaw = if horizontal <= 1.0e-6 {
+        def.authored_angles.y + state.relative_yaw
+    } else {
+        direction.y.atan2(direction.x).to_degrees()
+    };
     let a = (
         wrap_degrees(pitch - def.authored_angles.x),
         wrap_degrees(yaw - def.authored_angles.y),
@@ -521,22 +543,82 @@ fn requested_angles(def: &TankDef, direction: Vec3) -> (f32, f32) {
         wrap_degrees(180.0 - pitch - def.authored_angles.x),
         wrap_degrees(yaw + 180.0 - def.authored_angles.y),
     );
-    if a.0.abs() + a.1.abs() <= b.0.abs() + b.1.abs() {
+    if aim_score(def, state, direction, a) <= aim_score(def, state, direction, b) {
         a
     } else {
         b
     }
 }
 
-fn approach(current: f32, desired: f32, step: f32) -> f32 {
-    current + (desired - current).clamp(-step, step)
+/// Prefer a reachable Euler representation, then travel time and continuity
+/// from the live pose. If both are unreachable, prefer the clamped endpoint
+/// closest to the desired ray. All ranking/epsilon choices are project policy.
+fn aim_score(
+    def: &TankDef,
+    state: &TankState,
+    direction: Vec3,
+    candidate: (f32, f32),
+) -> (bool, f32, f64, f32) {
+    const EPSILON_DEGREES: f32 = 1.0e-4;
+    let pitch_delta = angle_delta(state.relative_pitch, candidate.0, def.pitch_range).abs();
+    let yaw_delta = angle_delta(state.relative_yaw, candidate.1, def.yaw_range).abs();
+    let reachable = candidate.0.abs() <= def.pitch_range + EPSILON_DEGREES
+        && candidate.1.abs() <= def.yaw_range + EPSILON_DEGREES
+        && (def.pitch_rate > 0.0 || pitch_delta <= EPSILON_DEGREES)
+        && (def.yaw_rate > 0.0 || yaw_delta <= EPSILON_DEGREES);
+    let endpoint_pitch = if def.pitch_rate > 0.0 {
+        candidate.0.clamp(-def.pitch_range, def.pitch_range)
+    } else {
+        state.relative_pitch
+    };
+    let endpoint_yaw = if def.yaw_rate > 0.0 {
+        candidate.1.clamp(-def.yaw_range, def.yaw_range)
+    } else {
+        state.relative_yaw
+    };
+    let pitch_travel = angle_delta(state.relative_pitch, endpoint_pitch, def.pitch_range).abs();
+    let yaw_travel = angle_delta(state.relative_yaw, endpoint_yaw, def.yaw_range).abs();
+    let seconds = |travel, rate| {
+        if rate > 0.0 {
+            f64::from(travel) / f64::from(rate)
+        } else {
+            0.0
+        }
+    };
+    let (pitch_sin, pitch_cos) = (def.authored_angles.x + endpoint_pitch)
+        .to_radians()
+        .sin_cos();
+    let (yaw_sin, yaw_cos) = (def.authored_angles.y + endpoint_yaw)
+        .to_radians()
+        .sin_cos();
+    let endpoint_direction = Vec3::new(pitch_cos * yaw_cos, pitch_cos * yaw_sin, -pitch_sin);
+    let blocked_error = if reachable {
+        0.0
+    } else {
+        1.0 - endpoint_direction.dot(direction).clamp(-1.0, 1.0)
+    };
+    (
+        !reachable,
+        blocked_error,
+        seconds(pitch_travel, def.pitch_rate).max(seconds(yaw_travel, def.yaw_rate)),
+        pitch_travel + yaw_travel,
+    )
 }
 
-fn approach_yaw(current: f32, desired: f32, step: f32, range: f32) -> f32 {
+fn angle_delta(current: f32, desired: f32, range: f32) -> f32 {
     if range >= 180.0 {
-        wrap_degrees(current + wrap_degrees(desired - current).clamp(-step, step))
+        wrap_degrees(desired - current)
     } else {
-        approach(current, desired, step)
+        desired - current
+    }
+}
+
+fn approach_angle(current: f32, desired: f32, step: f32, range: f32) -> f32 {
+    let next = current + angle_delta(current, desired, range).clamp(-step, step);
+    if range >= 180.0 {
+        wrap_degrees(next)
+    } else {
+        next
     }
 }
 

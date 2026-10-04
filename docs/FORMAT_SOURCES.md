@@ -8067,6 +8067,24 @@ range uses that ceiling. Target min/max ranges apply only to automatic mode;
 the controlled ray uses the project trace ceiling. Invalid or dead player
 targets discard persistence.
 
+The aim solver ranks equivalent Euler directions by mechanical/locked-axis
+reachability, then estimated travel time and angular travel from the current
+pose. When neither is reachable it chooses the closest clamped endpoint.
+Full-range axes take wrapped steps; bounded axes stay inside their stops.
+Vertical aim retains the current yaw. These selection rules and numerical
+epsilons are project-authored continuity policy, `TODO(black-box)`.
+
+Successful mounting emits an explicit handheld-action cancellation request.
+The eventual host must cancel charged, continuous and pending firing without
+refunding spent ammo or changing inventory/resources. Merely clearing Attack
+and Attack2 is insufficient because that can release a charged Gauss shot.
+Mounted input and the release edge suppress ordinary weapon emission; passive
+cooldowns should continue through a non-firing path. Already launched world
+projectiles and deployables continue normally. Mounted restore must establish
+the same canceled-handheld invariant before its first tick, without changing
+tag 42 or weapon encodings. This is an integration requirement, not wired
+combat behavior at this checkpoint.
+
 Pending integration must use one `TankPose` quaternion/axis-angle for the
 compiled-origin pivot, barrel, use center, renderer and both collision models.
 Outgoing values distinguish physical turret source from operator attacker.
