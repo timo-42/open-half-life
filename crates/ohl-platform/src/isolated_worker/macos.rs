@@ -75,11 +75,15 @@
 //! through `rustix`, on integers and locals captured before the fork. No
 //! allocation, no locks, no `std` I/O objects.
 
+#[path = "macos_exit.rs"]
+mod exit_wait;
+
 use super::unix_image;
 use super::{
     IsolatedWorkerCancellationToken, IsolatedWorkerError, IsolatedWorkerExitKind,
     IsolatedWorkerService,
 };
+use exit_wait::{ExitSource, ExitState, Status};
 
 use std::fs::File;
 use std::mem::MaybeUninit;
@@ -574,8 +578,9 @@ impl ExitWatch {
 
     /// Waits until the child has exited or `deadline` passes.
     ///
-    /// `Ok(true)` means the exit was observed, `Ok(false)` that the deadline
-    /// expired, `Err(())` that the queue itself failed.
+    /// `Ok(true)` means the exit notification was observed, not that the
+    /// owned child already has a waitable status. `Ok(false)` means the
+    /// deadline expired; `Err(())` means the queue itself failed.
     fn wait_exit(&self, deadline: Instant) -> Result<bool, ()> {
         loop {
             let mut events = [const { MaybeUninit::<Event>::uninit() }; 1];
@@ -620,17 +625,11 @@ pub(super) struct Backend {
     child: Child,
     pid: Pid,
     watch: ExitWatch,
-    /// Set once the exit watch has fired, so a later `wait` reaps without
-    /// waiting for an event that will never come again.
-    exit_observed: bool,
+    exit: ExitState,
     channel: OwnedFd,
     aborted: bool,
     channel_shutdown: bool,
     termination: TerminationState,
-    reaped: Option<IsolatedWorkerExitKind>,
-    /// Terminating signal number of the reaped child, kept for tests that
-    /// need to distinguish an abort (`SIGABRT`) from another fault.
-    terminating_signal: Option<i32>,
 }
 
 impl Backend {
@@ -770,13 +769,11 @@ impl Backend {
             child,
             pid,
             watch,
-            exit_observed: false,
+            exit: ExitState::default(),
             channel: parent_channel,
             aborted: false,
             channel_shutdown: false,
             termination: TerminationState::default(),
-            reaped: None,
-            terminating_signal: None,
         };
 
         match await_ready(ready_read.as_fd(), startup_deadline) {
@@ -878,6 +875,9 @@ impl Backend {
 
     /// Idempotent, never blocks waiting for exit.
     fn request_termination(&mut self) {
+        if self.exit.reaped.is_some() {
+            return;
+        }
         self.aborted = true;
         self.close_channel();
         if self.termination.requested {
@@ -895,20 +895,7 @@ impl Backend {
         &mut self,
         deadline: Instant,
     ) -> Result<IsolatedWorkerExitKind, IsolatedWorkerError> {
-        if let Some(exit) = self.reaped {
-            return Ok(exit);
-        }
-        if !self.exit_observed {
-            match self.watch.wait_exit(deadline) {
-                Ok(true) => self.exit_observed = true,
-                Ok(false) => return Err(IsolatedWorkerError::Timeout),
-                Err(()) => {
-                    self.request_termination();
-                    return Err(IsolatedWorkerError::ReapFailed);
-                }
-            }
-        }
-        self.reap()
+        exit_wait::wait_until(self, deadline)
     }
 
     pub(super) fn terminate_and_wait(
@@ -924,29 +911,16 @@ impl Backend {
         }
     }
 
-    fn reap(&mut self) -> Result<IsolatedWorkerExitKind, IsolatedWorkerError> {
-        use std::os::unix::process::ExitStatusExt as _;
-
-        let Ok(Some(status)) = self.child.try_wait() else {
-            self.request_termination();
-            return Err(IsolatedWorkerError::ReapFailed);
-        };
-        self.terminating_signal = status.signal();
-        let exit = classify(status.code(), status.signal(), self.termination.signal_sent);
-        self.reaped = Some(exit);
-        Ok(exit)
-    }
-
     /// Terminating signal of the reaped child, for tests that must tell an
     /// abort (`SIGABRT`) apart from another fatal signal.
     #[cfg(test)]
     pub(super) fn terminating_signal(&self) -> Option<i32> {
-        self.terminating_signal
+        self.exit.terminating_signal
     }
 
     /// Process ID of the confined child, for the test that stops and
-    /// continues it. The child is never reaped while a [`Backend`] is alive,
-    /// so the ID cannot have been reused.
+    /// continues it before reaping. Once a terminal status is cached this
+    /// identifier must not be used for signalling.
     #[cfg(test)]
     pub(super) fn child_process_id(&self) -> u32 {
         self.child.id()
@@ -1022,7 +996,7 @@ fn await_ready(ready: BorrowedFd<'_>, deadline: Instant) -> Result<(), IsolatedW
 
 impl Drop for Backend {
     fn drop(&mut self) {
-        if self.reaped.is_some() {
+        if self.exit.reaped.is_some() {
             return;
         }
         self.request_termination();
@@ -1038,33 +1012,108 @@ fn kill_and_reap(child: &mut Child, signal_already_failed: Option<bool>) {
     let _ = child.wait();
 }
 
-/// Maps a reaped status into the public vocabulary.
-fn classify(
-    code: Option<i32>,
-    signal: Option<i32>,
-    termination_requested: bool,
-) -> IsolatedWorkerExitKind {
-    const SIGKILL_NUMBER: i32 = 9;
-    const SIGXCPU: i32 = 24;
-    const SIGXFSZ: i32 = 25;
-    match (code, signal) {
-        (Some(0), _) => IsolatedWorkerExitKind::Clean,
-        (Some(_), _) => IsolatedWorkerExitKind::Failed,
-        (None, Some(SIGKILL_NUMBER)) if termination_requested => IsolatedWorkerExitKind::Terminated,
-        (None, Some(SIGXCPU | SIGXFSZ)) => IsolatedWorkerExitKind::ResourceLimit,
-        (None, Some(_)) => IsolatedWorkerExitKind::Crashed,
-        (None, None) => IsolatedWorkerExitKind::Unknown,
+impl ExitSource for Backend {
+    fn exit_state(&mut self) -> &mut ExitState {
+        &mut self.exit
+    }
+
+    fn observe_exit(&mut self, deadline: Instant) -> Result<bool, ()> {
+        self.watch.wait_exit(deadline)
+    }
+
+    fn poll_status(&mut self) -> std::io::Result<Option<Status>> {
+        use std::os::unix::process::ExitStatusExt as _;
+
+        self.child.try_wait().map(|status| {
+            status.map(|status| Status {
+                code: status.code(),
+                signal: status.signal(),
+            })
+        })
+    }
+
+    fn termination_sent(&self) -> bool {
+        self.termination.signal_sent
+    }
+
+    fn request_termination(&mut self) {
+        Self::request_termination(self);
+    }
+
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+
+    fn backoff(&mut self, duration: Duration) {
+        std::thread::sleep(duration);
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::exit_wait::classify;
     use super::{
         BootstrapFailure, CPU_TYPE_ARM64, CPU_TYPE_X86_64, IsolatedWorkerError,
         IsolatedWorkerExitKind, LC_LOAD_DYLIB, LC_LOAD_DYLINKER, LC_RPATH, MH_EXECUTE, MH_MAGIC_64,
-        PROFILE_PLACEHOLDER, READY_ATTESTATION, classify, render_profile, verify_macho_bytes,
+        PROFILE_PLACEHOLDER, READY_ATTESTATION, render_profile, verify_macho_bytes,
     };
     use std::path::Path;
+
+    #[test]
+    fn observed_exit_still_polls_only_the_owned_child_without_blocking() {
+        use ohl_test_worker::{TestWorkerVariant, build_test_worker_image};
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        let image = build_test_worker_image(TestWorkerVariant::Ready).expect("the image builds");
+        let mut backend =
+            super::Backend::launch_verified_path(&image, Instant::now() + Duration::from_secs(10))
+                .expect("a confined worker launches");
+        // Deliberately inject the observed-before-waitable state while the
+        // real owned child is still waiting for its channel to close. This
+        // exercises the native adapter without depending on kernel timing.
+        backend.exit.observed = true;
+        let release = rustix::io::dup(&backend.channel).expect("an owned channel duplicate");
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let (returned_before_release, result) = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                sender
+                    .send(backend.wait(Instant::now()))
+                    .expect("the observing test is alive");
+            });
+            let first = receiver.recv_timeout(Duration::from_secs(5));
+            // Always release the child before assertions, including a
+            // blocking-wait mutant. Scope exit joins the observing thread.
+            rustix::net::shutdown(&release, rustix::net::Shutdown::Both)
+                .expect("the child can now exit");
+            match first {
+                Ok(result) => (true, result),
+                Err(_) => (
+                    false,
+                    receiver
+                        .recv_timeout(Duration::from_secs(5))
+                        .expect("the released child exits"),
+                ),
+            }
+        });
+        let final_status = backend.wait(Instant::now() + Duration::from_secs(5));
+        assert!(
+            returned_before_release,
+            "the owned status poll must not block"
+        );
+        assert_eq!(result, Err(IsolatedWorkerError::Timeout));
+        assert_eq!(final_status, Ok(IsolatedWorkerExitKind::Clean));
+        assert!(!backend.termination.requested);
+        assert!(!backend.termination.signal_sent);
+        assert_eq!(
+            backend.terminate_and_wait(Instant::now()),
+            Ok(IsolatedWorkerExitKind::Clean)
+        );
+        assert!(
+            !backend.termination.requested,
+            "cached status must prevent signalling"
+        );
+    }
 
     /// A load command of `kind` carrying one NUL-terminated string at offset
     /// 8 (a `dylib_command` has a 16-byte `dylib` struct there; only the

@@ -8254,3 +8254,39 @@ crash aggregates, campaign 93/93 and both baseline chains at depth 12 / Pass /
 combined-project validation without adding an original-engine fidelity claim.
 Earlier mutation results retain their original source provenance; the rebase
 does not claim new mutation execution or change any named cut or save layout.
+
+
+## M9.NEXT — macOS exit notification and owned-child reap deadline
+
+This platform lifecycle correction uses the published
+[Rust `Child::try_wait` contract](https://doc.rust-lang.org/std/process/struct.Child.html#method.try_wait):
+status can be temporarily unavailable (`Ok(None)`), while `Ok(Some(status))`
+collects the owned child's status on Unix. Apple's
+[`kevent(2)` manual](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/kevent.2.html)
+describes process-exit notification separately from reaping; its
+[`wait(2)` manual](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/wait.2.html)
+describes a zero nonblocking result when status is not available. These public
+OS/API contracts support retaining the notification while retrying the same
+owned child. They do not identify which lower-level branch caused the earlier
+CI `ReapFailed` result; that precise historical cause remains unproved.
+
+The private `macos_exit` module is the actual backend wait state machine,
+also compiled by portable deterministic tests. Exit observation, status
+classification, terminal caching, timeout and fail-closed error decisions all
+run through that module. Production supplies its owned `Child::try_wait`,
+`ExitWatch`, `Instant` and sleeping operations. No wait-any, global reaper,
+new FFI or dependency is introduced. The existing absolute deadline covers
+both notification and later status polling. A project-authored 1 ms maximum
+backoff is clamped to the remainder after each unsuccessful poll. Interrupted
+polls use the same bounded path. Scheduler delay can overshoot wall time, so
+this is deadline-aware waiting rather than a hard real-time guarantee.
+
+Only real status is classified and cached; `None` at expiry returns retryable
+`Timeout`, retaining ownership and the observed-exit latch without requesting
+termination. Actual watch/status errors retain `ReapFailed` and the existing
+termination request. Cached terminal state prevents further backend signalling,
+watching or reaping. Existing last-resort `Drop`/`kill_and_reap` blocking cleanup
+is explicitly outside this correction. The timings and synthetic fixtures are
+project-authored; no Valve engine/source, payload or proprietary assets were
+used. Source-only review and formatting are the initial checkpoint; runtime,
+mutation and native macOS results must be recorded separately after execution.

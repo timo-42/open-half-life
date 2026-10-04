@@ -158,6 +158,35 @@ fn a_hanging_worker_survives_an_orderly_close_and_is_then_terminated() {
 }
 
 #[test]
+fn waiting_for_one_worker_preserves_an_independent_workers_exit_status() {
+    let mut hanging = launch_ready();
+    let mut independent = launch_ready();
+    send_frame(&mut hanging, &[protocol::MODE_HANG]).expect("the first worker hangs");
+    hanging.close_channel();
+    independent.close_channel();
+
+    assert_eq!(
+        hanging.wait(deadline(Duration::from_millis(300))),
+        Err(IsolatedWorkerError::Timeout),
+        "another child's orderly exit cannot satisfy the owned-child wait"
+    );
+    assert_eq!(
+        independent.wait(deadline(Duration::from_secs(5))),
+        Ok(IsolatedWorkerExitKind::Clean),
+        "the independent child's status belongs to its own worker"
+    );
+    assert_eq!(
+        hanging.terminate_and_wait(deadline(Duration::from_secs(5))),
+        Ok(IsolatedWorkerExitKind::Terminated)
+    );
+    assert_eq!(
+        independent.terminate_and_wait(deadline(Duration::ZERO)),
+        Ok(IsolatedWorkerExitKind::Clean),
+        "termination after a cached orderly exit preserves that status"
+    );
+}
+
+#[test]
 fn a_crashing_worker_is_reported_as_crashed() {
     let mut worker = launch_ready();
     send_frame(&mut worker, &[protocol::MODE_CRASH]).expect("the mode is selected");

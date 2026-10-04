@@ -8956,3 +8956,103 @@ strengthened fault pairs were not rerun or relabeled by this rebase. Their
 survivors and coverage limits, all named cuts, frozen save layouts and the
 animated-target continuation limitation remain unchanged. Final review and
 fresh combined-head CI remain required before merge.
+
+
+### M9.NEXT — source checkpoint: macOS post-notification reaping
+
+The owned worker can receive `NOTE_EXIT` before a nonblocking status poll has
+status available. The backend now retains that observation and retries only
+its owned `Child` under the same absolute deadline. Pending status does not
+request termination or fabricate a clean exit. Expiry returns `Timeout` with
+ownership retained for a later call; successful status is classified and cached,
+and genuine watch/status errors remain fail-closed. The 1 ms maximum backoff
+is project policy and is capped by time remaining after each poll. The existing
+blocking last-resort Drop cleanup remains outside this change.
+
+The private production state machine is included verbatim by a portable test
+module. Authored fake-clock cases cover pending/pending/success, timeout then
+retry without another notification, cached waits without OS operations, consumed
+notification and poll budgets, fractional backoff, scheduler overshoot, expired
+deadlines, real status/signal classification, interrupted polls, watch errors,
+status errors and independent child state. A native two-worker macOS test keeps
+an independently exiting child's status available while the first worker times
+out, then reaps each through its owner. The current real confinement-probe clean
+exit assertion, echo/clean/repeated-wait, crash, timeout/termination and Drop
+tests remain required acceptance checks.
+
+This is source-only work. No compiler, build, test, mutation, retail run or CI
+rerun has been performed at this checkpoint. A later passing macOS run cannot
+retroactively prove that the earlier CI failure took the `None` branch rather
+than an actual watch/status error. Milestone numbering is assigned at merge.
+
+Planned focused commands, only after a separate execution grant (run from the
+owned worktree with `CARGO_BUILD_JOBS=4`,
+`CARGO_PROFILE_DEV_DEBUG=line-tables-only`, `CARGO_INCREMENTAL=0` and an owned
+`CARGO_TARGET_DIR`; keep at least 18 GiB host free space):
+
+```sh
+cargo test -p ohl-platform --test macos_exit
+cargo clippy -p ohl-platform --all-targets --all-features -- -D warnings
+```
+
+The following mutation manifest is proposed, not executed evidence. Change one
+production decision at a time in `macos_exit.rs`, run the exact named test with
+`cargo test -p ohl-platform --test macos_exit NAME -- --exact`, require an actual
+runtime assertion failure, restore the original source bytes, and rerun the
+same baseline successfully. Finite fake poll/notification sequences make a
+runaway retry fail promptly; compiler failures are not mutation kills.
+
+| Production mutation | Exact test NAME |
+| --- | --- |
+| Replace the pending arm with `ReapFailed` | `pending_status_is_retried_then_clean_status_is_cached` |
+| Return `Clean` immediately on pending status | `pending_status_is_retried_then_clean_status_is_cached` |
+| Request termination on pending status | `timeout_retains_observation_and_allows_later_reap_without_killing` |
+| Reset deadline to `now + 10 ms` at each remaining-time check | `observation_consumes_the_original_deadline_and_backoff_is_clamped` |
+| Always wait for another exit notification on a later call | `timeout_retains_observation_and_allows_later_reap_without_killing` |
+| Discard the successful-status cache write | `pending_status_is_retried_then_clean_status_is_cached` |
+| Remove the cached-result early return | `pending_status_is_retried_then_clean_status_is_cached` |
+| Remove deadline-expiry return | `observation_consumes_the_original_deadline_and_backoff_is_clamped` |
+| Sleep the whole 1 ms without remainder clamping | `poll_time_is_deducted_before_clamping_the_backoff` |
+| Replace actual status classification with `Clean` | `actual_status_controls_classification_and_retains_terminating_signal` |
+| Remove terminating-signal recording | `actual_status_controls_classification_and_retains_terminating_signal` |
+| Treat interrupted poll as a real error | `interrupted_poll_retries_under_the_same_deadline` |
+| Treat genuine status error as success | `genuine_status_errors_fail_closed_without_fabricating_a_terminal_cache` |
+| Remove termination on a real status error | `genuine_status_errors_fail_closed_without_fabricating_a_terminal_cache` |
+| Stub the entire wait function with unconditional `Clean` | `timeout_retains_observation_and_allows_later_reap_without_killing` |
+
+Native macOS acceptance requires the reviewed exact source head on an actual
+Apple Silicon runner and the existing CI `Rust test (macOS Apple Silicon)` and
+`Rust clippy (macOS Apple Silicon)` jobs. Run the following native commands with
+GPU opt-in absent and retain exact commit/tree, exit codes and aggregate results:
+
+```sh
+cargo test -p ohl-platform --test macos_exit
+cargo test -p ohl-platform --lib isolated_worker::macos_tests::
+cargo test -p ohl-platform --lib isolated_worker::backend::tests::observed_exit_still_polls_only_the_owned_child_without_blocking -- --exact
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo nextest run --workspace
+cargo test --workspace --doc
+cargo xtask worker-image
+cargo test -p ohl-app --test worker_image -- --ignored
+```
+
+The native `observed_exit_still_polls_only_the_owned_child_without_blocking`
+case injects the observed-exit latch while the real owned child is waiting for
+EOF. An observing thread must return `Timeout` at an expired deadline before
+the test releases the channel. After five seconds the test releases the child
+even if a blocking-wait mutant stalls that thread, then joins it and requires
+an actual assertion failure. The normal child is subsequently reaped cleanly;
+a cached backend terminate call must not request a signal. Mutate the macOS
+adapter from `self.child.try_wait()` to `self.child.wait().map(Some)`, selecting
+this native test. Do not remove the signalling guard against a reaped real PID;
+cache-removal mutations above operate on fake children with observed operations.
+Use an outer process watchdog as additional containment; a watchdog timeout
+alone is not a mutation kill. No staging path or workflow change is proposed.
+
+Subsequent package acceptance still requires workspace formatting, all-target
+Clippy with default/dev-tools/all features and warnings denied, full workspace
+tests, policy and dependency graph, combat 37/37 with zero unexpected lines,
+campaign 93/93, and both baseline inventory chains at depth 12 / Pass / 660.8
+simulated seconds. No dependencies changed; cargo-deny is optional for this
+scope. Build slots, target caps and the release window remain coordinator-owned;
+Linux fake-clock evidence will not be described as native macOS execution.
