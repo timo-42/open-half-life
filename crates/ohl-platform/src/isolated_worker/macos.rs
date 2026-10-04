@@ -1062,6 +1062,7 @@ mod tests {
     #[test]
     fn observed_exit_still_polls_only_the_owned_child_without_blocking() {
         use ohl_test_worker::{TestWorkerVariant, build_test_worker_image};
+        use std::process::{Command, Stdio};
         use std::sync::mpsc;
         use std::time::{Duration, Instant};
 
@@ -1074,6 +1075,28 @@ mod tests {
         // exercises the native adapter without depending on kernel timing.
         backend.exit.observed = true;
         let release = rustix::io::dup(&backend.channel).expect("an owned channel duplicate");
+        let mut independent = Command::new(std::env::current_exe().expect("the test executable"))
+            .args([
+                "--ignored",
+                "--exact",
+                "isolated_worker::backend::tests::distinct_status_child_fixture",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("the independent child starts");
+        // NOTE_EXIT is not enough here: establish that the exact independent
+        // child is waitable without consuming its distinct status. Its Child
+        // owner has no signal-on-Drop fallback if a wait-any mutant steals it.
+        let ready = fixture_waitable_status(&independent, Instant::now() + Duration::from_secs(5));
+        if !matches!(ready, Ok(ref status) if status.exit_status() == Some(37)) {
+            // The adapter under test has not run yet, so this child is still
+            // exclusively owned even on a failed fixture setup.
+            let _ = independent.kill();
+            let _ = reap_fixture(&mut independent, Instant::now() + Duration::from_secs(5));
+            panic!("the independent fixture must have unreaped status 37: {ready:?}");
+        }
         let (sender, receiver) = mpsc::sync_channel(1);
         let (returned_before_release, result) = std::thread::scope(|scope| {
             scope.spawn(|| {
@@ -1096,15 +1119,43 @@ mod tests {
                 ),
             }
         });
-        let final_status = backend.wait(Instant::now() + Duration::from_secs(5));
+        // Capture the algorithm state before exact-child cleanup, so a
+        // wait-any mutant cannot hide having cached the independent status.
+        let cached_before_cleanup = backend.exit.reaped;
+        let termination_requested = backend.termination.requested;
+        let termination_sent = backend.termination.signal_sent;
+        let independent_status =
+            reap_fixture(&mut independent, Instant::now() + Duration::from_secs(5));
+        let final_status =
+            reap_fixture(&mut backend.child, Instant::now() + Duration::from_secs(5));
+        if let Ok(status) = &final_status {
+            use std::os::unix::process::ExitStatusExt as _;
+
+            // Exact-child cleanup must populate the backend cache before any
+            // assertion can unwind into Drop and signal the now-reaped pid.
+            backend.exit.terminating_signal = status.signal();
+            backend.exit.reaped = Some(classify(status.code(), status.signal(), termination_sent));
+        }
         assert!(
             returned_before_release,
             "the owned status poll must not block"
         );
         assert_eq!(result, Err(IsolatedWorkerError::Timeout));
-        assert_eq!(final_status, Ok(IsolatedWorkerExitKind::Clean));
-        assert!(!backend.termination.requested);
-        assert!(!backend.termination.signal_sent);
+        assert_eq!(cached_before_cleanup, None);
+        assert_eq!(
+            independent_status
+                .expect("the original owner retains its child's status")
+                .code(),
+            Some(37)
+        );
+        assert_eq!(
+            final_status
+                .expect("the released owned child is reaped")
+                .code(),
+            Some(0)
+        );
+        assert!(!termination_requested);
+        assert!(!termination_sent);
         assert_eq!(
             backend.terminate_and_wait(Instant::now()),
             Ok(IsolatedWorkerExitKind::Clean)
@@ -1113,6 +1164,59 @@ mod tests {
             !backend.termination.requested,
             "cached status must prevent signalling"
         );
+    }
+
+    #[test]
+    #[ignore = "spawned only by the native ownership test"]
+    fn distinct_status_child_fixture() {
+        std::process::exit(37);
+    }
+
+    /// Test-only exact-pid observation; NOWAIT retains the second child's
+    /// status for its Child owner. Every poll is nonblocking and deadline-bound.
+    fn fixture_waitable_status(
+        child: &std::process::Child,
+        deadline: std::time::Instant,
+    ) -> std::io::Result<rustix::process::WaitIdStatus> {
+        use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+
+        loop {
+            match waitid(
+                WaitId::Pid(Pid::from_child(child)),
+                WaitIdOptions::EXITED | WaitIdOptions::NOWAIT | WaitIdOptions::NOHANG,
+            ) {
+                Ok(Some(status)) => return Ok(status),
+                Ok(None) | Err(rustix::io::Errno::INTR) => {}
+                Err(error) => return Err(error.into()),
+            }
+            fixture_backoff(deadline)?;
+        }
+    }
+
+    /// Exact-child cleanup also runs when the adapter has fabricated a cache
+    /// or stolen the independent status. It never signals or reaps by pid.
+    fn reap_fixture(
+        child: &mut std::process::Child,
+        deadline: std::time::Instant,
+    ) -> std::io::Result<std::process::ExitStatus> {
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => return Ok(status),
+                Ok(None) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error),
+            }
+            fixture_backoff(deadline)?;
+        }
+    }
+
+    fn fixture_backoff(deadline: std::time::Instant) -> std::io::Result<()> {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1).min(remaining));
+        Ok(())
     }
 
     /// A load command of `kind` carrying one NUL-terminated string at offset
