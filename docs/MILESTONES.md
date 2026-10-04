@@ -9197,5 +9197,11 @@ pass: 13 charger save cases, 23 frozen-format cases and 5 combat charger cases
 (45 unrelated combat cases filtered), with zero failures or ignores. The two
 suit fixture corrections were followed by a complete passing focused save run;
 production drain behavior is unchanged. Four actual primary mutation probes
-with restored normal runs, all workspace checks and both runtime inventory
-chains remain pending admission. No full runtime gate outcome is claimed.
+were detected by post-load real-use payout assertions: capture full capacity
+(7 passed/6 failed), no-op restore (6/7), remove initialization independent of
+tag 39 (12/1), and ignore restored zero (11/2). Each ran all 13 cases and was
+followed by source restoration and 13/13 passing normal tests, with zero ignores
+or filtered cases. These observations are from tested source `daa6b69`;
+compiler or fixture failures are not counted as mutation evidence. All workspace
+checks and both runtime inventory chains remain pending admission. No full
+runtime gate outcome is claimed.
