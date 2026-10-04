@@ -8599,3 +8599,60 @@ This evidence-only follow-up changes the two authored appendices. Tool source
 and tests remain byte-identical to the fully validated head, preserving all 47
 actually killed and restored mutation probes. Milestone numbering and merge
 remain assigned to integration.
+
+## M9.NEXT — Wave 2 P7 turret source checkpoint
+
+Two deliberately unregistered modules define bounded turret configuration,
+runtime aim/cadence/memory, remote control intent, shared brush/barrel pose,
+local input ownership and distinct outgoing bullet, rocket, laser and mortar
+commands. Four source/test files are isolated from the live registry and
+engine phases while the shared integration APIs settle. This checkpoint does
+not make any turret playable yet.
+
+The value contract claims same-tick Use+Attack before handheld weapons,
+retains the real player activator, releases stale/dead/master-denied controls
+and never teleports the player. Automatic targeting accepts only the player,
+with rate/range/tolerance and sight checks, bounded last-seen persistence and
+a separate actual-barrel-hit gate for Only Direct. Cadence retains fractional
+time but permits at most one command per update. Turret source and operator
+attacker remain separate in every outgoing command. A single authored-plus-
+live quaternion exposes the common brush axis-angle and the barrel position.
+
+Published provenance and project choices are recorded under "Turret
+definitions and simulation" in `docs/FORMAT_SOURCES.md`. TWHL's explicit
+base-turret zero damage stays zero, with positive authored overrides; bullet
+type zero schedules a no-hit shot with its target output. Rocket damage uses
+the existing RPG profile only when its key is absent, an explicit project
+policy. Laser absent/zero damage stays zero. Mortar's missing magnitude uses
+the public mapping FGD's 100, while explicit zero stays zero. Sven establishes
+the instantaneous mortar proposal, but original build 929 fidelity remains
+`TODO(black-box)`.
+
+Synthetic test source covers parsing/bounds, all variants, omitted versus
+zero damage, nonzero authored pose, real-player-only control intent, local and
+remote claim/release, missing/dead player memory, master/range/angle/LOS gates,
+direct-fire geometry, cadence partitioning/catch-up and deterministic RNG
+continuation. These value-boundary tests are not actual Game input/combat or
+save tests and have not been run. Later integration must prove actual target
+health changes, unchanged handheld ammo during control, wall and source-brush
+filtering, per-shot target dispatch, variant-specific timing, owner versus
+operator attribution and live-versus-restored continuation with killed and
+restored mutations. Positive authored damage supplies the real combat cases;
+zero damage and no-bullet selection provide negative controls.
+
+**Cuts and next dependency.** Registration, map-use and pre-weapon phase
+wiring, shared brush-pose integration, P1 rocket source-brush filtering and
+separate attacker attribution, the P6a mortar blast/presentation bridge, and
+bounded save extension 44 are pending. No save encoding or frozen tag 26/42
+layout changed. Physical monster operators, automatic monster targets and
+Sven relationship/inventory extensions remain named exclusions. Presentation
+assets/audio, cross-level continuation and exact original timing, spread,
+control-release and variant-default fidelity remain unresolved. No live
+damage, visuals or persistence are claimed by this source checkpoint.
+
+**Gates.** Public citation verification, standalone Rust 2024 formatting,
+Git scope/status inspection and `git diff --check` only. Cargo, compilation,
+tests, mutation probes, GPU and payload runs are deliberately held until the
+coordinator grants shared integration and focused build authority. No PR is
+opened for this uncompiled checkpoint; final milestone numbering and full
+workspace/runtime evidence remain pending.

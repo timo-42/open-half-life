@@ -7995,3 +7995,94 @@ to `/dev/null`; temporary captures were removed. Both distinct inventory runs
 used `--aggregate-only` and an explicit `--min-depth 12`. All tracked membership
 and bytes, tool sources and archive hash were unchanged across the seven regular
 checks and four runtime gates. No later-hop planning was performed.
+
+## Wave 2 P7: Turret definitions and simulation
+
+The initial `ohl-game/src/tanks.rs` and `ohl-engine/src/tanks.rs` modules are
+an isolated source checkpoint. They are not registered or reachable from the
+game yet. Their synthetic tests have not been compiled or run at this stage.
+No retail observations, engine source or SDK were used for this work.
+
+- [TWHL: func_tank](https://twhl.info/wiki/page/func_tank) documents automatic
+  player targeting, player controls, per-shot target firing, a master gate,
+  initial-angle-relative yaw/pitch ranges, rates and tolerances, origin-brush
+  rotation and barrel offsets. Bullet selection has a no-bullet choice and
+  three caliber choices. The page explicitly makes default bullet damage
+  zero; positive authored damage is therefore required for damaging base
+  turrets. Only Direct checks the firing line instead of angle tolerances.
+  Active, Only Direct and Controllable use flags 1, 16 and 32. Automatic
+  monster targeting is excluded. Real-player activation through relays is
+  documented separately from a physical controls brush.
+- [Sven: func_tankrocket](https://wiki.svencoop.com/Func_tankrocket) establishes
+  rocket shots and a per-shot damage key, but supplies no rocket-specific
+  omitted-damage default. The draft preserves whether the key was present.
+- [Sven: func_tanklaser](https://wiki.svencoop.com/Func_tanklaser) establishes
+  laser shots, per-shot damage, and `laserentity` as the appearance source.
+  It does not establish inherited damage from that visual entity. Omitted
+  or explicit zero turret damage stays zero; no Egon fallback is inferred.
+- [Sven: func_tankmortar](https://wiki.svencoop.com/Func_tankmortar) describes
+  an instantaneous explosion and `iMagnitude`. This supports the proposed
+  aimed impact blast, not an airborne mortar surrogate. Original build 929
+  behavior remains `TODO(black-box)`; the mod's wall-penetration observation
+  is not adopted as a blast-occlusion rule.
+- [Sven: func_tankcontrols](https://wiki.svencoop.com/Func_tankcontrols)
+  describes an invisible use brush targeting a controllable turret. The
+  controls module retains the actual local player identity; it never
+  creates a player activator from an unrelated entity.
+- The public [Sven mapping FGD](https://wiki.svencoop.com/Mapping/Sven_Co-op_FGD)
+  supplies the missing-key tuning defaults used below. This mapping
+  documentation is not treated as original-build engine implementation.
+
+| Missing key | Parsed default |
+| --- | --- |
+| yaw rate / range / tolerance | 30 degrees/s / 180 degrees / 15 degrees |
+| pitch rate / range / tolerance | 0 degrees/s / 0 degrees / 5 degrees |
+| barrel offsets / sprite scale | 0 / 1 |
+| fire rate / persistence | 1 shot per second / 1 second |
+| bullet type / bullet damage | no bullet / 0 |
+| mortar magnitude | 100 |
+
+Project policy, not published compatibility constants: absent rocket damage
+uses the existing cited RPG weapon profile (100); a present zero or invalid
+damage key stays harmless. Positive authored damage overrides the default.
+The base turret never substitutes caliber-dependent damage for zero. Bullet
+type zero remains a scheduled no-hit shot with target/presentation output.
+Mortar's explicit zero remains zero, and malformed present magnitude becomes
+zero. The current TWHL and Sven pages spell `persistence`; legacy
+`persistance` is accepted with deterministic precedence as a compatibility
+choice, not a claim about the current page spelling.
+
+Additional project policies, all `TODO(black-box)`: a 64-unit control/release
+margin; second-Use release, no teleport or movement lock, next-tick remote
+mounting, one pending remote request with latest-use precedence; at most one
+shot per update, fractional cadence retention and discarded catch-up backlog;
+one-second update cap; deterministic xorshift spread with 0/1/3/6/10-degree
+cones; 1000-unit/s rocket speed and 250-unit radius; BULLET/BLAST/ENERGYBEAM
+classification by variant; local right as -Y; master denial clearing automatic
+aim memory. Values and references are finite and bounded: 256-byte names,
+256 controls candidates, 720-degree/s rates, 180-degree ranges/tolerances,
+4096-unit barrel offsets, 100 shots/s, 60-second persistence, 100000 damage,
+64 sprite scale and a 65536-unit trace ceiling. Missing/zero maximum target
+range uses that ceiling. Target min/max ranges apply only to automatic mode;
+the controlled ray uses the project trace ceiling. Invalid or dead player
+targets discard persistence.
+
+Pending integration must use one `TankPose` quaternion/axis-angle for the
+compiled-origin pivot, barrel, use center, renderer and both collision models.
+Outgoing values distinguish physical turret source from operator attacker.
+Hitscan/direct-fire queries must ignore only the source brush and retain other
+geometry. Rockets must use the single P1 pool with the same narrow source
+filter; downstream splash may still hurt the operator. The P6a blast bridge
+must resolve mortar at a traced impact, with a miss producing no origin blast.
+Targets fire once after shot admission; renderer sampling never applies
+damage. Missing presentation assets must not gate combat. These are required
+handoff contracts, not claims of completed live integration.
+
+Named cuts at this checkpoint: module/registry/use/system/pose integration,
+actual combat and projectile dispatch, visual/audio submission, save/restore,
+real-input integration tests and mutation evidence. Physical monster
+operators, automatic monster targets, Sven relation/inventory extensions and
+original-build timing/spread/control fidelity remain excluded. Optional tag
+44 is reserved for later bounded state and remapped attribution references;
+no encoding exists here and frozen tags 26/42 are unchanged. Cross-level
+turret continuation remains a cut until a separate extension adapter exists.
