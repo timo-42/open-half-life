@@ -9173,7 +9173,7 @@ macOS documentation appendices; all source/configuration bytes remain equal
 to the freshly validated source. M9.53 remains unnumbered until integration.
 
 
-## M9.NEXT — charger reservoirs survive save/load
+## M9.54 — charger reservoirs survive save/load
 
 Partially used health and suit chargers retain their remaining reservoir after
 save/load; a depleted charger stays depleted. A new optional tag 45 stores
@@ -9235,3 +9235,40 @@ all prior mutation, gate and cleanup evidence was retained outside the target.
 All seven local non-runtime gates now pass. Release builds, combat/campaign
 smokes and both exact inventory chain walks remain pending separate admission;
 no runtime completion is claimed.
+
+**Final Gates:** all seven local checks pass on accepted runtime source
+`0284b94`: formatting; default, `dev-tools` and all-feature workspace/all-target
+Clippy with warnings denied; workspace tests and doc-tests totaling **3002
+passed, 0 failed, 35 intentionally ignored and 0 filtered**; policy; and the
+36-crate dependency graph. The earlier default-Clippy invocation was retained
+as an evidence seed in the subsequent loop, rather than rerun by that loop.
+The historical cap-qualified policy run and authorized cleanup remain recorded
+above; the clean policy/graph continuation passed within the same limits.
+
+Two fresh own normal release builds on documentation-only head `aa3bd3f`
+completed: the application with `dev-tools` and `xtask`. Both binaries were
+absent before their builds; source, SHA-256 and file identities were recorded
+and verified before and after runtime. The four subsequent runtime gates all
+passed without retry: **combat 37/37 with zero unexpected lines, load errors,
+timeouts or crashes; campaign 93/93; and both distinct empty and seeded inventory
+chains at depth 12 / Pass / 660.8 simulated seconds**.
+
+The corrected, independently source-reviewed runtime wrapper pins the release
+proof, exact head/tree, binaries and full index/worktree state. It accepts a
+complete unique summary only after reader completion, owned-process quiescence,
+capture removal, source/binary identity and global-idle checks. Raw output stayed
+in memory; summary files were directed to `/dev/null`, and temporary captures
+were deleted. Runtime target accounting peaked at 1,573,957,632 bytes, separate
+capture accounting at 108,982,272 bytes, and minimum free space was
+30,180,696,064 bytes. The 6 GiB target cap, 4 GiB capture cap and 19 GiB free-space
+floor remained satisfied. Accounting sums allocated blocks per file entry and
+may count hardlinks twice. All compiler/runtime processes were confirmed idle.
+
+The four historical actual mutation probes remain qualified to `daa6b69`;
+these final gates do not relabel them as reruns of the writer extraction.
+Current source/test bytes remain equal to accepted `0284b94`. The earlier
+pending statements describe their own checkpoints. This is project regression
+evidence, with no new original charger behavior claim. Tag 45 remains reserved
+for this package, M9.54 remains unnumbered, and draft PR #189 awaits final
+review, CI and integration. Recharge behavior, Medium suit policy, existing
+capacity/drain qualifications and the stated cuts remain as documented above.
