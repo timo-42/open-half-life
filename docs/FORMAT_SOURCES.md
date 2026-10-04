@@ -8241,3 +8241,16 @@ format or original-engine fidelity claims; GPU-specific tests were not enabled.
 All earlier pending-gate statements describe their intermediate checkpoints.
 The cited contracts, project-policy distinctions, save-layout boundaries and
 named cuts above are unchanged.
+
+After upstream `1592222` changed project-authored player carry ordering, the
+combined `9bb87dd` turret branch was revalidated. Fresh workspace
+tests passed 2972/0/35, including all 61 turret tests and all five new upstream
+train-walking tests; formatting, all three workspace/all-target Clippy modes,
+policy and graph also passed. The project-authored test-strip resource setting
+applied only to workspace tests. Both normal release build commands completed,
+then fresh runtime gates passed combat 37/37 with zero unexpected/error/timeout/
+crash aggregates, campaign 93/93 and both baseline chains at depth 12 / Pass /
+660.8 game seconds without retries or expectation changes. This establishes
+combined-project validation without adding an original-engine fidelity claim.
+Earlier mutation results retain their original source provenance; the rebase
+does not claim new mutation execution or change any named cut or save layout.

@@ -8927,3 +8927,32 @@ Likewise, prior attribution/master/player-reference kills stopped at mapping
 presence, initial closed-master acquisition and mounted identity respectively;
 they do not imply later terminal/restore checks were reached. Independent
 evidence review and all full workspace/runtime gates remain pending.
+
+**Revalidation after upstream train carry.** The numbered branch was rebased
+onto upstream `1592222`, preserving its rigid player-carry ordering and all five
+new train-walking tests. The combined `9bb87dd` source passed fresh formatting,
+all three workspace/all-target Clippy configurations with warnings denied,
+workspace tests **2972 passed, zero failed, 35 ignored** across 234 result
+summaries, policy and the 36-crate graph. The workspace run includes all
+**61 turret tests**, all **five upstream train tests** and 36 doc-test crates.
+Every command used four jobs, line-tables-only development debug information
+and disabled incremental compilation. The previously documented project-authored
+test-strip resource choice applied only to the workspace-test command.
+
+The normal app/dev-tools release was rebuilt from this combined source; the
+normal xtask release command also completed, with its unchanged code retaining
+the same executable hash. The fresh four runtime gates passed **combat 37/37**
+with zero unexpected/error/timeout/crash aggregates, **campaign 93/93**, and both
+distinct baseline inventory chains at **depth 12 / Pass / 660.8 game seconds**.
+There were no retries or expectation changes. The complete 755-file membership,
+protected save/runtime source, configuration and normal binary identities were
+verified around execution; temporary runtime artifacts were removed and owned
+process groups stopped. Peak sampled target size across the fresh package and
+release commands was 5,631,483,904 bytes, with minimum free space 27,016,708,096 bytes.
+
+Earlier gate records and the independent archived release binaries remain
+qualified to their original source. The historical 58 mutation pairings and 31
+strengthened fault pairs were not rerun or relabeled by this rebase. Their
+survivors and coverage limits, all named cuts, frozen save layouts and the
+animated-target continuation limitation remain unchanged. Final review and
+fresh combined-head CI remain required before merge.
