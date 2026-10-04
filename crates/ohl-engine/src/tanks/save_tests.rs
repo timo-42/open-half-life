@@ -724,3 +724,165 @@ fn valid_but_mismatched_turret_source_cannot_replace_physical_rocket_owner() {
         ))
     );
 }
+
+#[test]
+fn in_place_restore_clears_existing_laser_pulse_without_replaying_damage() {
+    let (mut game, _) = fixture("func_tanklaser", &[], "");
+    tick(&mut game, true, true);
+    assert!((health(&game) - 977.0).abs() < 0.001);
+    assert_eq!(game.systems_mut().tanks.laser_pulses().len(), 1);
+    let snapshot = state(&game);
+    assert!(snapshot.mounted.is_some());
+    assert!(snapshot.states[0].shot_wait > 0.9);
+    let player = game.player_entity();
+    let position = glam::Vec3::from_array(game.player_origin());
+    {
+        let (level, systems) = game.level_and_systems_mut();
+        let mounted = systems.tanks.restore(
+            level,
+            &mut systems.projectiles,
+            Some(&snapshot),
+            super::ControlInput {
+                player,
+                position,
+                view_direction: glam::Vec3::X,
+                alive: true,
+                use_pressed: false,
+                attack: false,
+            },
+        );
+        assert!(mounted);
+        assert!(systems.tanks.laser_pulses().is_empty());
+        assert_eq!(systems.snapshot_tanks(level), Some(snapshot));
+    }
+    assert!((health(&game) - 977.0).abs() < 0.001);
+    tick(&mut game, false, false);
+    assert!(game.systems_mut().tanks.laser_pulses().is_empty());
+    assert!((health(&game) - 977.0).abs() < 0.001);
+    assert!(state(&game).mounted.is_some());
+}
+
+#[test]
+fn nonrocket_physical_kind_rejects_tank_credit_without_dropping_physical_state() {
+    let (mut game, assets) = fixture("func_tankrocket", &[], "");
+    tick(&mut game, true, true);
+    let baseline = game.to_save(0);
+    let physical = baseline.projectiles.as_ref().unwrap().projectiles[0];
+    assert_eq!(physical.kind_tag, 1);
+    assert_eq!(baseline.tanks.as_ref().unwrap().projectiles.len(), 1);
+    let matched = Game::load_bytes(&assets, &baseline.to_bytes().unwrap()).unwrap();
+    assert_eq!(state(&matched).projectiles.len(), 1);
+    let mut wrong_kind = baseline;
+    // Existing physical tag0 is CrossbowBolt. Keep the same valid id/source
+    // and tag42 profile; only the44 rocket-kind admission must reject it.
+    wrong_kind.projectiles.as_mut().unwrap().projectiles[0].kind_tag = 0;
+    let loaded = Game::load_bytes(&assets, &wrong_kind.to_bytes().unwrap()).unwrap();
+    let after = loaded.to_save(0);
+    let retained = &after.projectiles.as_ref().unwrap().projectiles;
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0].kind_tag, 0);
+    assert_eq!(retained[0].id, physical.id);
+    assert_eq!(retained[0].owner, physical.owner);
+    assert!(after.tanks.unwrap().projectiles.is_empty());
+    assert_eq!(after.projectile_runtime.unwrap().attacks.len(), 1);
+}
+
+#[test]
+fn tag44_numeric_writer_rejects_each_invalid_state_and_accepts_finite_boundaries() {
+    let (game, _) = fixture("func_tank", &[], "");
+    let mut baseline = game.to_save(0);
+    let row = &mut baseline.tanks.as_mut().unwrap().states[0];
+    row.relative_pitch = 180.0;
+    row.relative_yaw = -180.0;
+    row.shot_wait = 0.5;
+    row.rng = 7;
+    row.memory = Some(TankMemorySnapshot {
+        point: [1.0, 2.0, 3.0],
+        remaining: 60.0,
+    });
+    let encoded = baseline.to_bytes().unwrap();
+    assert_eq!(
+        GameSave::from_bytes(&encoded).unwrap().tanks,
+        baseline.tanks
+    );
+    let corruptions: &[fn(&mut TankStateSnapshot)] = &[
+        |row| row.rng = 0,
+        |row| row.relative_pitch = f32::NAN,
+        |row| row.relative_pitch = 181.0,
+        |row| row.relative_yaw = f32::INFINITY,
+        |row| row.relative_yaw = -181.0,
+        |row| row.shot_wait = f64::NAN,
+        |row| row.shot_wait = f64::INFINITY,
+        |row| row.shot_wait = -0.01,
+        |row| row.memory.as_mut().unwrap().point[0] = f32::NAN,
+        |row| row.memory.as_mut().unwrap().point[2] = f32::INFINITY,
+        |row| row.memory.as_mut().unwrap().remaining = 0.0,
+        |row| row.memory.as_mut().unwrap().remaining = -0.01,
+        |row| row.memory.as_mut().unwrap().remaining = f32::NAN,
+        |row| row.memory.as_mut().unwrap().remaining = f32::INFINITY,
+        |row| row.memory.as_mut().unwrap().remaining = 60.01,
+    ];
+    for (index, corrupt) in corruptions.iter().enumerate() {
+        let mut invalid = baseline.clone();
+        corrupt(&mut invalid.tanks.as_mut().unwrap().states[0]);
+        assert!(
+            invalid.to_bytes().is_err(),
+            "invalid numeric case {index} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn restored_numeric_state_clamps_to_authored_limits_and_preserves_in_range_values() {
+    let (mut game, assets) = fixture(
+        "func_tank",
+        &[
+            ("pitchrange", "10"),
+            ("yawrange", "20"),
+            ("persistence", "0.25"),
+            ("firerate", "4"),
+        ],
+        "",
+    );
+    tick(&mut game, false, true);
+    let baseline = game.to_save(0);
+    for (pitch, yaw, wait, memory, expected_pitch, expected_yaw, expected_time) in [
+        (90.0, 100.0, 0.5, 0.5, 10.0, 20.0, 0.25),
+        (5.0, -10.0, 0.125, 0.125, 5.0, -10.0, 0.125),
+    ] {
+        let mut altered = baseline.clone();
+        let row = &mut altered.tanks.as_mut().unwrap().states[0];
+        row.relative_pitch = pitch;
+        row.relative_yaw = yaw;
+        row.shot_wait = wait;
+        row.rng = 12_345;
+        row.memory = Some(TankMemorySnapshot {
+            point: [160.0, 0.0, 64.0],
+            remaining: memory,
+        });
+        let mut loaded = Game::load_bytes(&assets, &altered.to_bytes().unwrap()).unwrap();
+        let restored = state(&loaded);
+        let actual = &restored.states[0];
+        assert!((actual.relative_pitch - expected_pitch).abs() < 0.001);
+        assert!((actual.relative_yaw - expected_yaw).abs() < 0.001);
+        assert!((actual.shot_wait - f64::from(expected_time)).abs() < 0.000_001);
+        assert!((actual.memory.unwrap().remaining - expected_time).abs() < 0.000_001);
+        assert_eq!(
+            actual.memory.unwrap().point.map(f32::to_bits),
+            [160.0_f32, 0.0, 64.0].map(f32::to_bits)
+        );
+        assert_eq!(actual.rng, 12_345);
+        tick(&mut loaded, true, false);
+        assert!(
+            (health(&loaded) - 1000.0).abs() < 0.001,
+            "positive saved cadence forbids immediate shot"
+        );
+        for _ in 0..30 {
+            tick(&mut loaded, true, false);
+        }
+        assert!(
+            (health(&loaded) - 977.0).abs() < 0.001,
+            "one real continued shot after the independent wait"
+        );
+    }
+}
