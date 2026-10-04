@@ -8779,3 +8779,9 @@ checks do not replace the pending workspace gates or actual turret mutation
 kills/restored controls. A56-pair source-only mutation plan records exact
 edits/test selectors and additional coverage proposals; no turret mutant has
 yet executed.
+
+Subsequent broader CI identified one further combat-test `similar_names` lint
+outside the engine-only checks. An identifier-only rename preserves the trace
+oracles; combat all-target Clippy in default and all-feature configurations,
+the two source-filter integration tests and formatting now pass under the same
+guard. Workspace CI/gates remain unclaimed pending their complete fresh run.

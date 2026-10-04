@@ -44,7 +44,7 @@ fn ignoring_only_source_keeps_moving_brush_actor_and_world_occlusion() {
     let end = Vec3::X * 256.0;
     let legacy = trace_attack_filtered(&collision, &entities, Vec3::ZERO, end, filter);
     assert!(legacy.end.x.abs() < 0.1);
-    let blocked = trace_attack_filtered_ignoring_brush(
+    let wall_hit = trace_attack_filtered_ignoring_brush(
         &collision,
         &entities,
         Vec3::ZERO,
@@ -52,8 +52,8 @@ fn ignoring_only_source_keeps_moving_brush_actor_and_world_occlusion() {
         filter,
         Some(source),
     );
-    assert!(blocked.entity.is_none());
-    assert!((blocked.end.x - 56.0).abs() < 0.1);
+    assert!(wall_hit.entity.is_none());
+    assert!((wall_hit.end.x - 56.0).abs() < 0.1);
     collision.set_brush_origin(blocker, Vec3::new(64.0, 80.0, 0.0));
     let actor = trace_attack_filtered_ignoring_brush(
         &collision,
