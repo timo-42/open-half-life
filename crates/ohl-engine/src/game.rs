@@ -1627,6 +1627,7 @@ impl Game {
             ai: Some(Systems::snapshot_ai(&self.level)),
             projectiles: Some(self.systems.snapshot_projectiles(&self.level)),
             projectile_runtime: self.systems.snapshot_projectile_runtime(&self.level),
+            tanks: self.systems.snapshot_tanks(&self.level),
             map_effects: Some(self.systems.map_effects.snapshot(
                 &self.level.registry,
                 self.level.player,
@@ -2007,6 +2008,8 @@ impl Game {
             crate::save_state::restore_bosses(&mut self.level, bosses);
         }
         self.restore_map_effects(save);
+        self.systems
+            .restore_tanks(&mut self.level, &self.controller, save.tanks.as_ref());
         // A load is a map load: the chapter title is announced again.
         self.pending.clear();
         self.pending.extend(chapter_title_event(&self.level.name));

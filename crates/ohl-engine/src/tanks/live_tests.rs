@@ -307,7 +307,7 @@ fn controls_are_invisible_to_both_collision_models_and_live_aim_updates_both() {
     }
 }
 
-fn equip(game: &mut Game, weapon: WeaponId) {
+pub(super) fn equip(game: &mut Game, weapon: WeaponId) {
     game.give_start_inventory(&[
         StartInventoryItem::Weapon(weapon),
         StartInventoryItem::Ammo(AmmoType::Uranium),
