@@ -8162,3 +8162,18 @@ project `TODO(black-box)`, not a published behavior claim. A remote-control
 fixture uses real Reload input and a positive clip assertion before testing
 ordinary handheld firing; no weapon or animation implementation was changed
 to accommodate these fixture corrections.
+
+A source-review correction omits already-expired target memory when the
+authored persistence is zero, preserving the visible shot and the strict
+tag44 memory validator. This is a project state-consistency fix. Two new
+synthetic real-input save/occlusion regressions cover both persistence spellings
+and positive remembered-target continuation through expiry. They are source-only
+and unrun at this follow-up checkpoint.
+
+Direct-controls input arbitration consumes a recognized Use even when local
+mount eligibility fails, preventing a later map-use phase from reinterpreting
+it as remote activation. Genuine relay activation remains separate. This
+phase-ownership rule is project policy; its new synthetic eye-versus-controller
+bounds and missing-bounds regression is unrun at this checkpoint. A synthetic
+projectile fixture now distinguishes its independently authored contact plane
+from the existing one-unit outward blast clearance; no physics tuning changed.

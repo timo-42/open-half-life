@@ -105,7 +105,12 @@ impl TankSystem {
             .then(|| ohl_game::find_usable_within(&level.registry, frame.eye, crate::USE_RADIUS))
             .flatten();
         let candidates = control_candidates(level, self.mounted, self.pending_remote, selected);
-        let decision = self.resolve_controls(frame.input, &candidates, selected);
+        let mut decision = self.resolve_controls(frame.input, &candidates, selected);
+        // A recognized direct-controls Use belongs to this arbitration even
+        // when its local bounds/master deny mounting. Passing it to phase12
+        // would erase the controls identity and retry it as a remote claim.
+        decision.consume_use |= selected
+            .is_some_and(|entity| level.registry.world.get::<&TankControls>(entity).is_ok());
         let mut prepared = Vec::new();
         for entity in tank_entities(level) {
             let Some(mut work) = TankWork::read(level, entity, frame, decision.controlled) else {
