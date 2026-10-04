@@ -9205,3 +9205,22 @@ or filtered cases. These observations are from tested source `daa6b69`;
 compiler or fixture failures are not counted as mutation evidence. All workspace
 checks and both runtime inventory chains remain pending admission. No full
 runtime gate outcome is claimed.
+
+The subsequent local checkpoint on source `0284b94` passed formatting and all
+three workspace/all-target Clippy configurations with warnings denied. The
+new section writer was extracted into a private helper to meet the existing
+function-length lint; validation, error behavior and section-write order were
+preserved and independently reviewed. Workspace tests then passed **3002**
+cases with **0 failures, 35 intentional ignores and 0 filtered**. The test-only
+`debuginfo` strip setting applied only to that workspace command; four jobs,
+line-table development debug info and disabled incremental compilation were
+retained. The four mutation results above remain qualified to `daa6b69` and
+were not relabeled as reruns of the helper extraction.
+
+The policy command printed its pass result, but its build crossed the own
+6 GiB target cap: sampled target size reached 6.038 GiB, with minimum free
+space 23.885 GiB. The owned guard stopped the sequence before the dependency
+graph gate. Compiler and runtime processes were confirmed idle afterward.
+The workspace test gate itself peaked at 5.885 GiB with minimum free space
+24.010 GiB. Resource admission, remaining local gates and every release/runtime
+gate remain pending; this checkpoint does not claim all package gates passed.
