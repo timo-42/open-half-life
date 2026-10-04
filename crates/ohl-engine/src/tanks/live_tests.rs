@@ -1,6 +1,6 @@
 //! Real fixed-step input through Systems; geometry and actors are synthetic.
 
-use ohl_ai::Actor;
+use ohl_ai::{Actor, MonsterKind};
 use ohl_combat::{AmmoType, WeaponId, hud_slot};
 use ohl_formats::test_support::{Bsp30Builder, CollisionBrush};
 use ohl_game::hecs::Entity;
@@ -8,7 +8,7 @@ use ohl_game::tanks::TankState;
 use ohl_physics::Hull;
 
 use super::Vec3;
-use crate::test_support::{entity_block, strip_monster_ai};
+use crate::test_support::{entity_block, plan_scripted_monster_model_bytes};
 use crate::{Game, Input, MemoryAssets, StartInventoryItem, TICK_SECONDS};
 
 /// A solid origin-centered turret, an independently solid authored controls
@@ -54,7 +54,7 @@ pub(crate) fn fixture(
             "monster_human_grunt",
             [160.0, 0.0, 36.0],
             180.0,
-            &[("targetname", "victim")]
+            &[("targetname", "victim"), ("spawnflags", "16")]
         ),
         entity_block(
             "trigger_relay",
@@ -102,9 +102,14 @@ pub(crate) fn fixture(
     let bytes = builder.build();
     let mut assets = MemoryAssets::new();
     assets.insert("maps/ohl_tanks.bsp", bytes.clone());
-    let mut game = Game::from_map_bytes(&assets, "ohl_tanks", &bytes).unwrap();
+    if let Some(path) = MonsterKind::from_classname("monster_human_grunt").default_model_path() {
+        assets.insert(path, plan_scripted_monster_model_bytes());
+    }
+    let game = Game::from_map_bytes(&assets, "ohl_tanks", &bytes).unwrap();
     let victim = named(&game, "victim");
-    strip_monster_ai(&mut game, victim);
+    // Retain MonsterAi: the existing live hitbox and monster-damage adapters
+    // require it. The published prisoner flag prevents enemy acquisition while
+    // preserving the ordinary physical target and damage path under test.
     game.registry()
         .world
         .get::<&mut Actor>(victim)
@@ -314,6 +319,12 @@ fn equip(game: &mut Game, weapon: WeaponId) {
             ..Input::default()
         },
     );
+    // A pickup grants single-use weapons in reserve; their ordinary reload
+    // must finish before a new primary edge can place a real satchel.
+    advance(game, 60, false);
+    if weapon == WeaponId::Satchel {
+        assert_eq!(game.inventory().clip(weapon), 1);
+    }
 }
 
 #[test]

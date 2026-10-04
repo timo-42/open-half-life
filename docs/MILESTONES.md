@@ -8606,8 +8606,8 @@ Turret definitions, game registration, typed use/control requests and the
 common authored-plus-live brush pose are wired. New source connects Systems'
 pre-weapon control arbitration, bounded aiming/cadence, both collision models
 and distinct bullet, P1 rocket, laser and instantaneous P6a mortar dispatch.
-This latest runtime unit is not yet compiled or executed; it is not a completed
-playable-turret or persistence milestone.
+Focused library execution now covers real turret input, combat and presentation.
+Persistence and full validation remain required before this milestone is complete.
 
 Successful control acquisition explicitly cancels charged Gauss, continuous
 Egon and pending handheld actions without refunding spent ammo. Controlled
@@ -8651,9 +8651,14 @@ denied. A separately preserved engine unit executable from that frozen source
 passed **21/21** core turret tests, including all five reviewed Euler regressions.
 This is archived core feedback: the interrupted Cargo resource-guard attempts
 do not establish a completed engine build or full gate. All Cargo runs used
-four jobs, line-tables-only debug and disabled incremental compilation. The
-current engine input/dispatch/presentation additions remain uncompiled/unrun.
-Standalone Rust2024 formatting and source whitespace checks pass.
+four jobs, line-tables-only debug and disabled incremental compilation. Current integration library feedback subsequently passed **12 game tests**,
+**31 engine turret tests** (21 core and 10 real-input tests), and the separate
+**one-test renderer bridge**. Every command completed under the reviewed guard
+with its explicit test summary verified; source hashes stayed frozen throughout.
+The largest sampled target was 1,807,867,904 bytes and minimum free space was
+34,268,999,680 bytes, within the assigned 8 GiB/18 GiB bounds. Known save-only
+unused APIs remain unsuppressed pending tag44 callers. Standalone Rust2024
+formatting and source whitespace checks pass.
 
 New synthetic source tests use real Game input for all four damage variants,
 zero/type-zero controls, actual delayed per-shot output, automatic player
@@ -8661,8 +8666,11 @@ hits, exact source versus separate-door obstruction, both collision poses,
 controls solidity, charged Gauss cancellation, Egon and satchel held edges,
 and positive laser endpoint/appearance/expiry without additional damage.
 An actual-input renderer bridge assertion requires a visible beam primitive.
-These tests are written, not yet run. Earlier additive cancellation/passive
-and physical trace tests also still await execution. Killed/restored mutations,
+The synthetic damage fixture loads existing project-authored model bytes so
+ordinary studio hitboxes are present, retains MonsterAi with the published
+prisoner flag, and waits for the ordinary single-use weapon reload before
+placing a satchel. Positive health/endpoint oracles are unchanged. Earlier
+additive cancellation/passive and physical trace tests still await execution. Killed/restored mutations,
 full non-payload gates, runtime gates and a draft PR remain pending.
 
 **Cuts and next dependency.** Bounded optional save44 and remapped control/
@@ -8675,5 +8683,5 @@ sound submission, and cross-level turret continuation are named cuts. Laser
 pulses are bounded cosmetics that clear on restore; they do not extend tag43.
 Original-build timing, spread, control-release, default tuning, laser width/
 blend and mortar fidelity remain explicit project-policy `TODO(black-box)`.
-No numbering, merge, current-runtime test pass or save compatibility claim is
-made by this intermediate source checkpoint.
+No numbering, merge, full-gate pass or save compatibility claim is made by
+this intermediate checkpoint.
