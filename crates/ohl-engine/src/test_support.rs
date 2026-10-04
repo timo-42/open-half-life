@@ -4827,15 +4827,15 @@ pub const PLAN_SCRIPTED_LETHAL_DAMAGE: f32 = 200.0;
 pub const PLAN_SCRIPTED_MONSTER_CLASSNAME: &str = "monster_human_grunt";
 
 /// Where that monster stands: the far end of the corridor, in plain sight
-/// of the volume that starts the chain.
-pub const PLAN_SCRIPTED_MONSTER_ORIGIN: [f32; 3] = [224.0, 0.0, 40.0];
+/// of the volume that starts the chain. Its project-authored model/feet anchor
+/// is on the corridor floor; the player start remains a controller center.
+pub const PLAN_SCRIPTED_MONSTER_ORIGIN: [f32; 3] = [224.0, 0.0, 0.0];
 
 /// The asset path that monster's `model` keyvalue names — a synthetic
 /// model authored by this project, not any game asset.
 ///
-/// It is there for one reason: `crate::combat::rebuild_hitbox_index` only
-/// ever indexes an entity that carries a studio model with a hitbox table,
-/// so a monster without one cannot be shot at all. A caller loading this
+/// It supplies a posed hitbox for the guard's aimed shots, exercising model
+/// geometry rather than the model-less damage proxy. A caller loading this
 /// fixture must register [`plan_scripted_monster_model_bytes`] under this
 /// path.
 pub const PLAN_SCRIPTED_MONSTER_MODEL: &str = "models/ohl_guard_target.mdl";

@@ -8637,6 +8637,19 @@ through a newly closed obstruction. Old mover/wander fixtures that encoded a
 centered monster were corrected to project-authored feet; floor, wall, ledge,
 finished-leg, damage and true-embedding assertions remain discriminating.
 
+Workspace validation also exposed a shared project-authored guard fixture whose
+old centered monster coordinate left its feet above the corridor floor. The
+fixture now places the authored feet on that floor, retaining the original wait
+duration and damage. The app test additionally replays a fresh guarded branch and
+requires both player survival and the hostile's death before checking the plain
+wait dies. Its engine standing-fire counterpart now uses the same existing
+hitscan-only fixture as the route planner: the former grenade shooter left a live
+projectile that killed the guard after the shooter died, a separate dodge-policy
+concern: the existing guard/planner does not evade a posthumous grenade blast.
+The no-weapon retreat case remains independent. A real `guard_input` stub fails
+the survival assertion and was restored byte-for-byte; all five guard-loop cases
+and the restored guard-filtered workspace selection pass.
+
 All **34 actual temporary mutations** were detected by test assertions and
 restored byte-for-byte: feet/query/inverse removal, a hardcoded hull height,
 missing goal conversion, raw cover/wander queries, viewer/candidate local-eye

@@ -1395,6 +1395,17 @@ mod tests {
             "the route holds the spot with a weapon out"
         );
 
+        let guarded = Script::parse(route.text.as_bytes()).expect("the guarded script parses");
+        let mut defended =
+            Game::load(&assets as &dyn AssetSource, PLAN_SCRIPTED_MAP).expect("the fixture loads");
+        defended.give_start_inventory(&loadout);
+        assert!(run_ticks(&mut defended, &guarded, &[]));
+        assert!(defended.player_health() > 0.0);
+        assert!(
+            defended.monster_death_count() > 0,
+            "guarding must remove the hostile that kills the plain-wait control"
+        );
+
         let mutated = route.text.replace(" guard\n", " wait\n");
         assert_ne!(mutated, route.text, "the mutation has to change something");
         let waited = Script::parse(mutated.as_bytes()).expect("the mutated script parses");

@@ -7,7 +7,7 @@
 
 use ohl_engine::test_support::{
     PLAN_SCRIPTED_MAP, PLAN_SCRIPTED_MONSTER_MODEL, ScriptedStart, plan_scripted_goal_bsp,
-    plan_scripted_monster_model_bytes,
+    plan_scripted_hitscan_goal_bsp, plan_scripted_monster_model_bytes,
 };
 use ohl_engine::{
     AssetSource, Game, Input, MemoryAssets, StartInventoryItem, TICK_SECONDS, guard_input,
@@ -20,11 +20,13 @@ const GUARD_TICKS: usize = 3_600;
 
 /// The corridor fixture with a monster hostile to the player at its far
 /// end, and the loadout a real campaign run would have carried in.
+/// Like the route-planner guard case, this isolates standing-fire tactics:
+/// a delayed grenade left by a dead shooter requires a separate dodge policy.
 fn game() -> Game {
     let mut assets = MemoryAssets::new();
     assets.insert(
         &format!("maps/{PLAN_SCRIPTED_MAP}.bsp"),
-        plan_scripted_goal_bsp("ohlplannext", ScriptedStart::ByHostileMonster),
+        plan_scripted_hitscan_goal_bsp("ohlplannext"),
     );
     assets.insert(
         PLAN_SCRIPTED_MONSTER_MODEL,
