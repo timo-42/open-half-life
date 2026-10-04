@@ -7674,7 +7674,7 @@ sampled by this bridge; gameplay render-property changes need a read-side
 bridge update as well as their gameplay producer. Initially inactive effects
 also need an activation event/state seam. No registry changes are inferred here.
 
-## Map gameplay effects — M9.NEXT implementation draft
+## Map gameplay effects — M9.50 implementation draft
 
 This section records the game-side implementation checkpoint. Engine combat/debris,
 presentation, optional save tag 43 and renderer integration are still pending;
@@ -7761,8 +7761,8 @@ identical game source as `b899b32` onto M9.49. The subsequent integration passes
 dependencies. Focused engine `map_effects` tests pass **23/23**, the overlapping
 `debris` filter passes **4/4**, and renderer `studio` CPU tests pass **4/4**.
 The strengthened same-step cascade test passes separately. Focused GPU checks
-pass as recorded below. Full non-payload gates now pass; payload gates remain
-**unrun**. Source now wires
+pass as recorded below. Full non-payload and all four normal runtime gates
+now pass; final review and integration remain pending. Source now wires
 `map_effects.rs`/`debris.rs` into
 fixed steps, one shared blast dispatcher, both collision-model detach paths,
 optional section 43 and rendering. This is implementation work awaiting checks,
@@ -7875,8 +7875,13 @@ pose. No production correction was required by these GPU runs. Full non-payload
 gates on `6d125e3` pass: workspace formatting; default/dev-tools/all-features
 all-target clippy with warnings denied; workspace tests (2870 passed, 0 failed,
 34 ignored), including frozen-format compatibility; policy; and graph. No
-dependencies changed. The code remains on the actual M9.49 base, with payload
-and final integration gates still pending.
+dependencies changed. The normal dev-tools release from `97ea518` also passes
+combat 37/37 with zero unexpected lines, campaign 93/93, and both inventory
+chains at depth 12 / Pass / 660.8 simulated seconds. All four exits are zero;
+there were no retries or expectation changes. Tracked source and binary bytes
+remained unchanged. Runtime output stayed in memory, temporary capture/report
+directories were removed, and only aggregate evidence was retained. The code
+remains on the actual M9.49 base; final review and integration are pending.
 
 Regular workspace tests run with `OHL_RENDER_GPU_TEST` absent because some
 preexisting wrappers treat any present value as enabled. New P6a GPU tests
