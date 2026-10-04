@@ -7753,15 +7753,15 @@ restoration. Formatting and focused all-targets clippy with warnings denied pass
 Workspace, engine, save-section and payload gates remain **not run** for this
 package while Phase 2 is pending.
 
-### Phase 2 integration draft — focused CPU checks
+### Phase 2 integration draft — focused CPU/GPU checks
 
 The focused evidence above belongs to Phase 1 commit `141f1bf`, rebased with
 identical game source as `b899b32` onto M9.49. The subsequent integration passes
 `cargo check -p ohl-engine`, including its game and renderer production
 dependencies. Focused engine `map_effects` tests pass **23/23**, the overlapping
 `debris` filter passes **4/4**, and renderer `studio` CPU tests pass **4/4**.
-The strengthened same-step cascade test passes separately. GPU checks and full
-gates remain **unrun**. Source now wires
+The strengthened same-step cascade test passes separately. Focused GPU checks
+pass as recorded below; full workspace and payload gates remain **unrun**. Source now wires
 `map_effects.rs`/`debris.rs` into
 fixed steps, one shared blast dispatcher, both collision-model detach paths,
 optional section 43 and rendering. This is implementation work awaiting checks,
@@ -7852,10 +7852,26 @@ a passing normal test. Final focused filters pass 23/23, 4/4 and 4/4.
 The focused CPU filters were rerun after adding the selected-default-body
 geometry guard, including a valid blank-first/drawable-second model fixture.
 It retains cuboids when the fixed selection contains no usable indexed mesh.
-Engine GPU test functions compiled but were not executed. Scoped engine/game/
-renderer all-targets, all-features clippy passes with warnings denied, including
-the renderer integration GPU target. Opt-in GPU appearance/depth checks, GPU
-mutation probes and all complete-tree gates remain pending; this draft is not complete runtime validation.
+Scoped engine/game/renderer all-targets, all-features clippy passes with warnings
+denied. Exact GPU opt-in executes six new engine tests, three studio-property
+tests and two existing studio/viewmodel compatibility wrappers on llvmpipe
+Vulkan; all eleven pass. The two duplicate ignored compatibility variants are
+not counted. Thirty-four synthetic PNG captures retain independently generated
+mode, skin, depth, fade, ordering and custom/fallback frames.
+
+Nineteen actual GPU mutations were killed by adapter-backed assertions: fixed
+shader alpha, ignored Color RGB, wrong additive factor, alpha/opaque depth-write
+errors, lost intrinsic additive material lookup, ignored skin selection, removed
+masked discard, reversed studio and cross-model order, skipped custom drawing,
+ignored fragment rotation/position, missing/duplicate cuboid fallback, stale
+live render properties, omitted fade, studio alpha before opaque sprites and
+cached sampled pose replaced by bind pose. Each source was byte-restored and
+its selected normal test passed; final GPU baselines pass again. Fixtures use
+a correctly ordered filled square strip, with independent positive pixels and
+moved/rotated/vacated checks. The custom pose fixture preserves fitted screen
+size while making the authored sequence translation distinguishable from bind
+pose. No production correction was required by these GPU runs. Complete-tree
+and payload gates remain pending; this draft is not complete runtime validation.
 
 PR #185 source-review follow-ups: damage-triggered plain
 and rotating buttons now forward the actual attacker through the existing
@@ -7863,8 +7879,7 @@ separate activation context. The threshold-crossing hit supplies identity, and
 ignored hits during a pending press retain its original actor; this selection
 policy is project-authored `TODO(black-box)`. Real-fire/save/negative-control
 tests pass for both button classes. A second, nonempty 222-byte literal
-section-43 golden
-independently transcribes both persisted command variants, a custom-model debris
+section-43 golden independently transcribes both persisted command variants, a custom-model debris
 record, stable references, signed fx/active/use rows and button activator pairs.
 Its container encode/fixed-byte decode checks pass with the independently
 authored literal unchanged. The focused 23-test filter includes these three

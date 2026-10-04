@@ -14,8 +14,40 @@ const EDGE: u32 = 64;
 const BACKGROUND: [u8; 3] = [24, 48, 72];
 const TEXTURE: [u8; 3] = [96, 64, 32];
 
+fn gpu() -> GpuContext {
+    let context = GpuContext::headless().expect("explicit GPU opt-in requires an adapter");
+    let info = context.adapter.get_info();
+    eprintln!(
+        "synthetic studio GPU adapter: {} ({:?})",
+        info.name, info.backend
+    );
+    context
+}
+
+fn capture(name: &str, context: &GpuContext, target: &OffscreenTarget) {
+    let Some(directory) = std::env::var_os("OHL_P6A_CAPTURE_DIR") else {
+        return;
+    };
+    let directory = std::path::PathBuf::from(directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    let mut ppm = format!("P6\n{EDGE} {EDGE}\n255\n").into_bytes();
+    for pixel in target.read_rgba(context).unwrap().as_chunks::<4>().0 {
+        ppm.extend_from_slice(&pixel[..3]);
+    }
+    std::fs::write(directory.join(format!("{name}.ppm")), ppm).unwrap();
+}
+
+fn square_strip(bytes: &mut [u8], command_offset: usize) {
+    // The fixture positions follow the perimeter; a filled strip alternates sides.
+    for (corner, vertex) in [0_u16, 1, 3, 2].into_iter().enumerate() {
+        let offset = command_offset + 2 + corner * 8;
+        bytes[offset..offset + 2].copy_from_slice(&vertex.to_le_bytes());
+    }
+}
+
 fn synthetic_model(rgb: [u8; 3], alpha: u8, flags: u32) -> (StudioModel, StudioPose) {
-    let (bytes, _) = ohl_formats::test_support::build_minimal_mdl10();
+    let (mut bytes, layout) = ohl_formats::test_support::build_minimal_mdl10();
+    square_strip(&mut bytes, layout.tricommands_offset);
     let mut model = StudioModel::parse(&bytes, &StudioLimits::default()).unwrap();
     model.textures[0].image = TextureImage::new(1, 1, vec![rgb[0], rgb[1], rgb[2], alpha]).unwrap();
     model.textures[0].flags = STUDIO_NF_FULLBRIGHT | flags;
@@ -83,6 +115,15 @@ fn clear(context: &GpuContext, target: &OffscreenTarget, depth: &wgpu::TextureVi
     context.queue.submit([encoder.finish()]);
 }
 
+fn clear_background(context: &GpuContext, target: &OffscreenTarget, depth: &wgpu::TextureView) {
+    clear(
+        context,
+        target,
+        depth,
+        BACKGROUND.map(|value| f64::from(value) / 255.0),
+    );
+}
+
 fn camera() -> FreeFlyCamera {
     FreeFlyCamera {
         position: [0.5, 0.5, 4.0],
@@ -132,7 +173,7 @@ fn studio_properties_composite_and_own_depth_when_opted_in() {
     if std::env::var_os("OHL_RENDER_GPU_TEST").as_deref() != Some(std::ffi::OsStr::new("1")) {
         return;
     }
-    let context = GpuContext::headless().expect("explicit GPU opt-in requires an adapter");
+    let context = gpu();
     let target = OffscreenTarget::new(&context, EDGE, EDGE).unwrap();
     let depth = depth(&context);
     let (model, pose) = synthetic_model(TEXTURE, 255, 0);
@@ -167,6 +208,7 @@ fn studio_properties_composite_and_own_depth_when_opted_in() {
                 EDGE,
                 &depth,
             );
+            capture(&format!("studio_{mode:?}_{amount}"), &context, &target);
             let alpha = f32::from(amount) / 255.0;
             let source = if mode == RenderMode::Color {
                 props.color
@@ -248,7 +290,7 @@ fn studio_material_masks_default_parity_and_translucent_order_when_opted_in() {
     if std::env::var_os("OHL_RENDER_GPU_TEST").as_deref() != Some(std::ffi::OsStr::new("1")) {
         return;
     }
-    let context = GpuContext::headless().expect("explicit GPU opt-in requires an adapter");
+    let context = gpu();
     let target = OffscreenTarget::new(&context, EDGE, EDGE).unwrap();
     let depth = depth(&context);
     for (flags, alpha) in [(0, 255), (STUDIO_NF_ADDITIVE, 255), (STUDIO_NF_MASKED, 0)] {
@@ -349,6 +391,7 @@ fn studio_material_masks_default_parity_and_translucent_order_when_opted_in() {
 
 fn mixed_skin_model() -> (StudioModel, StudioPose) {
     let (mut bytes, layout) = ohl_formats::test_support::build_minimal_mdl10();
+    square_strip(&mut bytes, layout.tricommands_offset);
     let texture = bytes[layout.textures_offset..layout.textures_offset + 80].to_vec();
     let texture_offset = u32::try_from(bytes.len()).unwrap();
     bytes.extend_from_slice(&texture);
@@ -434,7 +477,7 @@ fn normal_studio_resolves_skin_and_mixed_mesh_phase_and_depth_when_opted_in() {
     if std::env::var_os("OHL_RENDER_GPU_TEST").as_deref() != Some(std::ffi::OsStr::new("1")) {
         return;
     }
-    let context = GpuContext::headless().expect("explicit GPU opt-in requires an adapter");
+    let context = gpu();
     let target = OffscreenTarget::new(&context, EDGE, EDGE).unwrap();
     let depth = depth(&context);
     let (model, pose) = mixed_skin_model();
@@ -446,12 +489,7 @@ fn normal_studio_resolves_skin_and_mixed_mesh_phase_and_depth_when_opted_in() {
         let mut entry = instance(&pose, 0.0, RenderProps::default());
         entry.instance.skin = skin;
         let selected = [skin, 1 - skin];
-        clear(
-            &context,
-            &target,
-            &depth,
-            BACKGROUND.map(|value| f64::from(value) / 255.0),
-        );
+        clear_background(&context, &target, &depth);
         renderer.render_with_props(
             &context,
             &model,
@@ -464,6 +502,7 @@ fn normal_studio_resolves_skin_and_mixed_mesh_phase_and_depth_when_opted_in() {
             &depth,
         );
         assert_eq!(renderer.last_triangle_count(), 2);
+        capture(&format!("studio_skin_{skin}_opaque"), &context, &target);
         for (point, material) in points.into_iter().zip(selected) {
             close(
                 pixel_at_model_point(&context, &target, point),
@@ -488,6 +527,11 @@ fn normal_studio_resolves_skin_and_mixed_mesh_phase_and_depth_when_opted_in() {
             &depth,
         );
         assert_eq!(renderer.last_triangle_count(), 2);
+        capture(
+            &format!("studio_skin_{skin}_translucent"),
+            &context,
+            &target,
+        );
         for (point, material) in points.into_iter().zip(selected) {
             close(
                 pixel_at_model_point(&context, &target, point),
@@ -510,6 +554,11 @@ fn normal_studio_resolves_skin_and_mixed_mesh_phase_and_depth_when_opted_in() {
             EDGE,
             EDGE,
             &depth,
+        );
+        capture(
+            &format!("studio_skin_{skin}_depth_probe"),
+            &context,
+            &target,
         );
         for (point, material) in points.into_iter().zip(selected) {
             close(

@@ -8413,73 +8413,61 @@ primitives. The final gate-recording change modifies documentation only;
 all 12 scoped source/test files and all 42 retained synthetic capture files
 remain byte-identical to the approved and tested implementation.
 
-## M9.NEXT — Map gameplay effects (focused CPU checkpoint)
+## M9.NEXT — Map gameplay effects (focused CPU/GPU checkpoint)
 
-Game-side definitions and use/break dispatch are authored for env_explosion,
-env_shake, env_fade, masked env_render and breakable blast/debris commands.
-Separate EffectActive state covers the existing visual bridge's supported
-named beams/lasers and recurring toggle sparks, including initially-off
-declarations. Ten synthetic map-input tests exercise activation, provenance,
-independent masks, one-shot edges, bounds and On/Off idempotence.
+Map declarations now drive env_explosion damage, env_shake, env_fade, masked
+live env_render changes and breakable blast/physical-debris cascades. Supported
+beam/laser/toggle-spark activation remains separate from render properties.
+Real use, touch and damage activation retain the actual actor through delayed
+buttons and relays. Broken sources detach from both collision models before
+secondary damage; shared blast dispatch preserves attacker/inflictor identity.
 
-This is a focused game-side checkpoint. Engine damage cascades, physical debris,
-shake/fade presentation, the renderer's live-property bridge and optional
-tag 43 continuation remain pending. Existing serialized layouts are unchanged.
-FORMAT_SOURCES records the published contracts and project-authored formulas.
-Standalone shooters, dropped items, material audio, model bodypart/skin fidelity
-and cross-level effect continuation remain deferred. Existing visual bridge
-style/cadence cuts remain, with no map-beam damage or sprite activation expansion.
+Optional section 43 carries bounded runtime commands, debris identities/RNG,
+renderfx/active overrides and stable delayed-use/button references. Existing
+serialized structures and section encodings remain unchanged. Independent
+container goldens include a nonempty 222-byte nested schema; live-versus-loaded,
+old-section absence and bounds controls pass in focused tests.
 
-**Gates:** `cargo fmt --all`; `cargo test -p ohl-game` — **201 passed, zero
-failed**, including all ten new tests; `cargo clippy -p ohl-game --all-targets
--- -D warnings`. Fourteen actual mutation probes were killed, restored
-byte-for-byte, and followed by another **201/201** passing baseline; the
-individual mutations are listed in FORMAT_SOURCES. Every Cargo command used
-`CARGO_BUILD_JOBS=4`, `CARGO_PROFILE_DEV_DEBUG=line-tables-only` and
-`CARGO_INCREMENTAL=0`, with a 20 GiB free-space guard and a 1 GiB local target
-cap. No resource guard interrupted a build. Source whitespace checks pass.
+Shake/fade affect presentation without advancing simulation. Live mode, amount
+and color reach studio draws through paired instances and separate opaque/late
+translucent phases. Custom gib models use a separate bounded preload cache and
+fixed sampled pose; unavailable or undrawable selected geometry keeps a cuboid
+fallback. Rendering consumes actual saved fragment placement/orientation and
+performs no asset I/O. FORMAT_SOURCES records published contracts and all
+project-authored timing, physics and blend-policy `TODO(black-box)` boundaries.
 
-**NOT RUN:** workspace tests, workspace default/dev-tools/all-features clippy,
-policy/graph, the full frozen-format compatibility suite and all four payload
-smoke/chain gates.
-Those await Phase 2 and its resource permission. This draft makes no complete
-engine-runtime or milestone-completion claim.
+**Gates:** historical Phase 1 `141f1bf` (byte-identical game source after rebase
+as `b899b32`) passed game tests **201/201**, focused game clippy/formatting and
+14 killed/restored mutations. Phase 2 passes `cargo check -p ohl-engine`;
+`cargo clippy -p ohl-engine -p ohl-game -p ohl-render --all-targets --all-features
+-- -D warnings`; focused CPU filters `map_effects` **23/23**, overlapping
+`debris` **4/4**, and renderer `studio` **4/4**. All **27 CPU mutations** were
+killed, byte-restored and followed by passing normal tests.
 
-The focused evidence above applies to Phase 1 `141f1bf` (same game source after
-rebase as `b899b32`). The later Phase 2 source now connects bounded blast/debris
-runtime, dual collision detachment, optional tag 43, real-use activator
-continuation, transient shake/fade and live render properties. Separate cached
-custom gib models retain cuboid fallbacks; a backward-compatible studio API
-adds opaque/translucent phases and live mode/amount/color support. Global
-cross-family transparency and full renderfx/model-selection fidelity remain
-explicit cuts. The integration passes `cargo check -p ohl-engine`, standalone
-formatting and source whitespace checks. Focused CPU filters pass:
-`cargo test -p ohl-engine --lib map_effects` (**23/23**), overlapping
-`cargo test -p ohl-engine --lib debris` (**4/4**), and
-`cargo test -p ohl-render --lib studio` (**4/4**). The strengthened same-step
-cascade test also passes separately. Twenty-seven CPU mutations were killed, restored
-byte-for-byte, and their selected normal tests passed again. The final focused
-23/23, 4/4 and 4/4 filters also pass after all restorations. Commands used the same Cargo environment above, with
-`OHL_RENDER_GPU_TEST=0`, an 18 GiB free-space guard and at most 2 GiB additional
-target growth (total below 3 GiB). No guard interrupted a command. GPU checks
-and the complete-tree/runtime gates remain **unrun**. These focused filters were
-rerun after the blank-selected custom-gib geometry guard. Engine GPU test
-functions compiled but were not executed. Scoped `cargo clippy -p ohl-engine
--p ohl-game -p ohl-render --all-targets --all-features -- -D warnings` passes,
-including the renderer integration GPU target. Focused map-effects and studio
-CPU filters passed again after the test-only lint fixes. GPU execution and
-GPU mutation probes remain pending.
-No complete engine-runtime, save-compatibility or milestone-completion claim is
-made until the required build, GPU, mutation and payload gates run.
+With exact `OHL_RENDER_GPU_TEST=1`, the restored source passes **6/6** new engine
+GPU tests and **3/3** studio-property GPU tests on llvmpipe Vulkan. Existing
+studio and viewmodel/sprite compatibility wrappers each pass **1/1**; their two
+duplicate ignored variants are not counted as execution. All **19 GPU
+mutations** failed real adapter assertions, were restored byte-for-byte and
+passed their selected normal tests. Compilation failures and guard returns
+are not mutation kills. Final GPU baselines and scoped clippy pass again.
+Thirty-four independently generated PNG captures cover modes, skin phases,
+depth probes, live properties, fades, ordering and custom/fallback debris.
+The local square fixtures use a filled alternating-side triangle strip;
+independent expected pixels, movement, rotation and vacated-region checks remain.
 
-PR #185 follow-ups add damage-button attacker forwarding, real-fire
-plain/rotating-button continuation controls and a nonempty literal section-43
-container golden. All three new regressions pass in the 23-test filter above,
-including live/restored player, nonplayer, unknown and ignored-hit controls.
-The independent 222-byte golden passes without changing its literal. All three
-review mutation probes were killed and restored: lost shot attacker, overwritten
-ignored-hit identity and reordered nested debris fields. GPU execution and
-complete-tree/runtime gates remain pending. Separate serde
-visitor lifetime, restore-helper and midpoint cleanups address observed CI
-lints. The scoped clippy pass does not replace the three final workspace clippy
-gates.
+Every local Cargo command used four jobs, line-tables-only debug and disabled
+incremental compilation. CPU filters used GPU flag 0; GPU filters used 1.
+The bounded Phase 2 work stayed under a 3 GiB target cap and above 18 GiB free;
+no guard interrupted a command. Formatting/source whitespace checks pass.
+
+**Pending gates:** final P2 integration; workspace formatting, all three
+workspace clippy variants, workspace tests, policy/graph, the complete frozen-
+format suite, combat/campaign smoke and both inventory chain walks. Focused
+checks do not establish complete campaign compatibility or milestone completion.
+
+Explicit cuts remain standalone shooters, dropped spawn objects, material audio,
+full gib bodypart/skin/animation/original-scale fidelity, full renderfx animation,
+additional beam styles/combat, sprite activation expansion and cross-level
+effect continuation. Late studio transparency remains separate from other
+translucent families; model-center sorting does not solve intersecting geometry.
