@@ -7998,9 +7998,10 @@ checks and four runtime gates. No later-hop planning was performed.
 
 ## Wave 2 P7: Turret definitions and simulation
 
-The initial `ohl-game/src/tanks.rs` and `ohl-engine/src/tanks.rs` modules are
-an isolated source checkpoint. They are not registered or reachable from the
-game yet. Their synthetic tests have not been compiled or run at this stage.
+The `ohl-game/src/tanks.rs` and `ohl-engine/src/tanks.rs` modules are an
+integration source checkpoint. Game registration, typed use/control requests
+and the shared brush pose are wired; engine input/combat dispatch is pending.
+Their synthetic tests have not been compiled or run at this stage.
 No retail observations, engine source or SDK were used for this work.
 
 - [TWHL: func_tank](https://twhl.info/wiki/page/func_tank) documents automatic
@@ -8096,11 +8097,21 @@ Targets fire once after shot admission; renderer sampling never applies
 damage. Missing presentation assets must not gate combat. These are required
 handoff contracts, not claims of completed live integration.
 
-Named cuts at this checkpoint: module/registry/use/system/pose integration,
-actual combat and projectile dispatch, visual/audio submission, save/restore,
+Named cuts at this checkpoint: engine control/system integration, actual
+combat and projectile dispatch, visual/audio submission, save/restore,
 real-input integration tests and mutation evidence. Physical monster
 operators, automatic monster targets, Sven relation/inventory extensions and
 original-build timing/spread/control fidelity remain excluded. Optional tag
 44 is reserved for later bounded state and remapped attribution references;
 no encoding exists here and frozen tags 26/42 are unchanged. Cross-level
 turret continuation remains a cut until a separate extension adapter exists.
+
+The registry attaches turret definition/state to all four variants and links
+controls through their target name. Controls are invisible and non-solid to
+both player and monster collision, while turret brushes keep their normal
+visibility and solidity. The common pose adapter reads authored angles plus
+live aim about the compiled origin-brush pivot. Map use preserves the real
+player identity, obeys masters and queues one latest control intent separately
+from frozen simulation snapshots; an automatic toggle does not fire the
+turret's per-shot target. Synthetic source tests cover these registry/use/pose
+contracts; actual input, collision and combat validation is still pending.

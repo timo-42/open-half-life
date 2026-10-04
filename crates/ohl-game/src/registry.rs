@@ -18,6 +18,7 @@ use crate::effects::{
     ShakeDef,
 };
 use crate::keyvalues::{self, EntityDef, Limits, ModelRef, RenderProps};
+use crate::tanks::{TankControls, TankDef, TankState};
 
 /// Largest number of entities the name index keeps for one `targetname`.
 /// GoldSrc maps rarely share a name across more than a handful of
@@ -2247,6 +2248,17 @@ impl Registry {
             }
 
             match def.classname.as_str() {
+                "func_tank" | "func_tankrocket" | "func_tanklaser" | "func_tankmortar" => {
+                    if let Some(tank) = TankDef::from_entity(def) {
+                        let state = TankState::spawn(&tank, entity.to_bits().get());
+                        world.insert(entity, (tank, state)).ok();
+                    }
+                }
+                "func_tankcontrols" => {
+                    if let Some(controls) = TankControls::from_entity(def) {
+                        world.insert_one(entity, controls).ok();
+                    }
+                }
                 "env_beam" | "env_laser" | "env_spark" => {
                     if let Some(active) = EffectActive::from_entity(def) {
                         world.insert_one(entity, active).ok();

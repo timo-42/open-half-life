@@ -24,6 +24,7 @@ pub mod logic;
 pub mod pose;
 pub mod registry;
 pub mod scripts;
+pub mod tanks;
 pub mod track_train;
 
 /// Re-exported so a caller can name `Entity`, `World` and the query types

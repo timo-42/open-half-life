@@ -34,6 +34,7 @@ mod projectiles;
 mod render;
 mod sprites;
 mod start_inventory;
+mod tanks;
 mod viewmodel;
 
 // M7.9 P0 (engine spine): the fixed timestep, the entity components the
