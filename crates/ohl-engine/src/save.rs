@@ -698,12 +698,7 @@ impl GameSave {
                 }
                 writer.add_section_serde(SECTION_MAP_EFFECTS, effects)?;
             }
-            if let Some(tanks) = &self.tanks {
-                if !tanks.within_limits() {
-                    return Err(ohl_save::SaveError::LimitExceeded);
-                }
-                writer.add_section_serde(SECTION_TANKS, tanks)?;
-            }
+            self.write_tanks(writer)?;
             if let Some(runtime) = &self.projectile_runtime {
                 if runtime.attacks.len() > crate::save_state::MAX_SNAPSHOT_PROJECTILES
                     || runtime.deployable_owners.len()
@@ -762,6 +757,16 @@ impl GameSave {
         writer
             .finish(&ohl_save::Limits::default())
             .map_err(|_| crate::EngineError::SaveUnwritable)
+    }
+
+    fn write_tanks(&self, writer: &mut ohl_save::SaveWriter) -> ohl_save::Result<()> {
+        if let Some(tanks) = &self.tanks {
+            if !tanks.within_limits() {
+                return Err(ohl_save::SaveError::LimitExceeded);
+            }
+            writer.add_section_serde(SECTION_TANKS, tanks)?;
+        }
+        Ok(())
     }
 
     /// Reads a save back out of an [`ohl_save`] container.

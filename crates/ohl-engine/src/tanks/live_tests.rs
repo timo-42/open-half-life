@@ -2,13 +2,13 @@
 
 use ohl_ai::{Actor, MonsterKind};
 use ohl_combat::{AmmoType, WeaponId, hud_slot};
-use ohl_formats::test_support::{Bsp30Builder, CollisionBrush};
+use ohl_formats::test_support::{Bsp30Builder, CollisionBrush, build_minimal_mdl10_with_hitbox};
 use ohl_game::hecs::Entity;
 use ohl_game::tanks::TankState;
 use ohl_physics::Hull;
 
 use super::Vec3;
-use crate::test_support::{entity_block, plan_scripted_monster_model_bytes};
+use crate::test_support::entity_block;
 use crate::{Game, Input, MemoryAssets, StartInventoryItem, TICK_SECONDS};
 
 /// A solid origin-centered turret, an independently solid authored controls
@@ -103,7 +103,7 @@ pub(crate) fn fixture(
     let mut assets = MemoryAssets::new();
     assets.insert("maps/ohl_tanks.bsp", bytes.clone());
     if let Some(path) = MonsterKind::from_classname("monster_human_grunt").default_model_path() {
-        assets.insert(path, plan_scripted_monster_model_bytes());
+        assets.insert(path, stationary_target_model());
     }
     let game = Game::from_map_bytes(&assets, "ohl_tanks", &bytes).unwrap();
     let victim = named(&game, "victim");
@@ -116,6 +116,28 @@ pub(crate) fn fixture(
         .unwrap()
         .health = 1000.0;
     (game, assets)
+}
+
+fn stationary_target_model() -> Vec<u8> {
+    let (mut bytes, layout) =
+        build_minimal_mdl10_with_hitbox([-24.0, -24.0, 0.0], [24.0, 24.0, 72.0]);
+    // The format fixture normally animates its root X through10..20. Offset0
+    // selects the builder's zero bind-pose channel instead, keeping this
+    // turret target stationary at its independently specified world bounds.
+    // General studio animation-cursor persistence is outside tag44's scope.
+    bytes[layout.anim_data_offset..layout.anim_data_offset + 2]
+        .copy_from_slice(&0u16.to_le_bytes());
+    let model = ohl_world::StudioModel::parse(&bytes, &ohl_formats::mdl10::Limits::default())
+        .expect("synthetic stationary model");
+    let bind = ohl_world::StudioPose::bind(&model);
+    assert_eq!(bind.matrices[0], glam::Mat4::IDENTITY.to_cols_array());
+    for time in [0.0, 0.02, 0.05, 0.2, 1.0] {
+        assert_eq!(
+            ohl_world::StudioPose::sample(&model, 0, time).unwrap(),
+            bind
+        );
+    }
+    bytes
 }
 
 fn named(game: &Game, name: &str) -> Entity {
