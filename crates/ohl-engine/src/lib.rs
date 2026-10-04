@@ -24,10 +24,12 @@
 
 mod assets;
 mod camera;
+mod debris;
 mod error;
 mod game;
 mod input;
 mod level;
+mod map_effects;
 mod projectiles;
 mod render;
 mod sprites;

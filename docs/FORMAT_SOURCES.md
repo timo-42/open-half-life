@@ -7752,3 +7752,99 @@ byte-for-byte before the next probe; the full focused suite passed again after
 restoration. Formatting and focused all-targets clippy with warnings denied pass.
 Workspace, engine, save-section and payload gates remain **not run** for this
 package while Phase 2 is pending.
+
+### Phase 2 integration draft — focused CPU checks
+
+The focused evidence above belongs to Phase 1 commit `141f1bf`, rebased with
+identical game source as `b899b32` onto M9.49. The subsequent integration passes
+`cargo check -p ohl-engine`, including its game and renderer production
+dependencies. Focused engine `map_effects` tests pass **20/20**, the overlapping
+`debris` filter passes **4/4**, and renderer `studio` CPU tests pass **4/4**.
+The strengthened same-step cascade test passes separately. GPU checks and full
+gates remain **unrun**. Source now wires
+`map_effects.rs`/`debris.rs` into
+fixed steps, one shared blast dispatcher, both collision-model detach paths,
+optional section 43 and rendering. This is implementation work awaiting checks,
+not evidence of runtime behavior or completed compatibility.
+
+The proposed runtime accepts immutable game commands, returns typed blast
+requests with distinct attacker/inflictor identities, and reports broken
+source brushes for the frame owner to detach before damage traces. It retains
+at most 4096 pending operations, spends at most 4096 per fixed step and keeps
+at most 128 transient blast presentations. New requests exceeding admission
+capacity are omitted; admitted work exceeding the current step budget waits
+for the next step. Same-step duplicate break sources do not create repeated
+debris or blast batches. Damage itself remains the shared combat dispatcher's
+responsibility.
+
+Debris records retain identity, source, material/custom-model reference,
+position, velocity, orientation, angular velocity, dimensions, age and lifetime.
+Project policies are six fragments per break, 128 live fragments, four-to-eight
+second lifetimes, bounded launch/rotation speeds and a material fallback palette.
+The host supplies actual gravity. The draft uses nine swept point samples of
+an enclosing box against world and attached mover geometry, bounded bounce
+iterations, tangential drag, support checks, rest and expiry. Exact oriented
+collision, narrow unsampled features, mover riding, player/debris contacts and
+debris obstruction/contact damage remain outside this approximation.
+`TODO(black-box)`: count, size, launch, material, contact and lifetime fidelity.
+
+Presentation uses latest accepted shake/fade replacement, a deterministic
+decaying shake sampled onto a fresh camera copy, forward ramp-then-hold fades
+and reverse hold-then-ramp fades. Normal overlay and componentwise modulation
+are distinct calculations. These waveform/overlap/timing choices are
+project-authored `TODO(black-box)` policies. No rendering call advances them.
+
+Optional tag 43 now has a container writer/reader and restore hook for pending
+commands, bounded live debris, stable ids/RNG, consumed explosions, separate
+renderfx/active values, pending use types and stable activator references.
+Button/rotbutton completion retains its actual activating actor in separate
+bounded scratch, with additive tag-43 rows; frozen mover/PendingFire/tag-19
+shapes remain unchanged. Missing-section restore retains prior source behavior,
+emits no historical broken-brush effects, and clears fade/shake. Legacy visual
+defaults are restored only where the authored key was absent and the saved value
+still matches its old default; explicit black/zero values remain unchanged.
+Container golden, trailing-byte rejection, bounds, absence and real-input
+live-versus-loaded regression tests are authored but **not run**.
+
+Studio drawing now has a paired instance/property API; its old public instance
+and render entry remain unchanged. The source resolves live properties once
+per frame, draws opaque meshes early and studio translucent meshes after the
+sprite/effect compositor, before viewmodel/fade. Translucent studio instances
+sort by signed view depth across both ordinary and debris model slots. Normal
+retains intrinsic material additive blending; explicit entity modes override it.
+Color substitutes RGB before existing lighting; Texture uses texture RGB;
+alpha/additive amount is applied once, with masked discard preserved. This
+material precedence, model-center sorting and pass placement are project
+policies, `TODO(black-box)`. Glow remains depth-tested additive; renderfx values
+persist but no full fx animation is claimed. The existing published
+[VDC Render Modes](https://developer.valvesoftware.com/wiki/Render_Modes) contract
+supports the qualitative mode families, not those project policy details.
+
+Custom gib references use a separate cache of at most 16 distinct success/failure
+requests, loaded only during level attachment. Model parsing reuses the existing
+studio parser and optional texture companion convention. Successful models use
+a cached fixed sequence-zero pose, skin zero and the first submodel of each
+bodypart. Uniform bounds-fit scaling preserves aspect ratio inside the simulated
+fragment box; unavailable/unsupported pose, bounds or GPU resources retain a
+cuboid fallback. No render/tick path reads asset files. Full bodypart/skin,
+animation and original scale fidelity remain deferred `TODO(black-box)` work.
+
+Global translucent ordering remains incomplete: late studio transparency does
+not interleave with translucent brushes, liquids, sprites or effects. Model
+center sorting does not solve intersecting meshes/triangles. Standalone shooters,
+dropped objects, material audio, original gib model selection and cross-level
+effect continuation remain named cuts. Nine actual CPU mutations were killed:
+omitting the tag-43 writer, admitting an oversized override vector, substituting
+button identity for its activator, losing the touch activator, losing the saved
+player reference, replacing the blast inflictor with its attacker, using the
+inflictor for self-damage attribution, losing the break attacker, and dropping
+the break attack direction. Each
+source was restored byte-for-byte and its selected normal test passed again.
+The focused CPU filters were rerun after adding the selected-default-body
+geometry guard, including a valid blank-first/drawable-second model fixture.
+It retains cuboids when the fixed selection contains no usable indexed mesh.
+The engine GPU test functions compiled but were not executed; the renderer
+integration GPU target remains uncompiled. The remaining fifteen CPU mutation
+probes, opt-in GPU appearance/depth
+checks and all complete-tree gates remain pending; this draft is not complete
+runtime validation.

@@ -18,13 +18,14 @@ use crate::error::{RenderError, Result};
 use crate::gpu::GpuContext;
 use crate::math::{self, Mat4};
 use crate::renderer::DEPTH_FORMAT;
+use crate::{BlendKind, RenderMode, RenderProps};
 
 /// Bytes per [`ohl_world::StudioVertex`].
 const VERTEX_STRIDE: wgpu::BufferAddress = STUDIO_VERTEX_BYTES as wgpu::BufferAddress;
 
-/// Three `mat4x4<f32>` plus three `vec4<f32>` of parameters, followed by the
+/// Three `mat4x4<f32>` plus five `vec4<f32>` of parameters, followed by the
 /// bone matrix array. Must match `studio.wgsl`'s `Instance`.
-const INSTANCE_HEADER_BYTES: usize = 3 * 64 + 3 * 16;
+const INSTANCE_HEADER_BYTES: usize = 3 * 64 + 5 * 16;
 const INSTANCE_UNIFORM_BYTES: wgpu::BufferAddress =
     (INSTANCE_HEADER_BYTES + MAX_BONES * 64) as wgpu::BufferAddress;
 
@@ -69,9 +70,71 @@ impl ModelInstance<'_> {
 }
 
 /// A pipeline and per-mesh resources for one [`StudioModel`].
+/// An instance paired with its live presentation properties. The original
+/// ModelInstance API stays available for callers wanting normal material modes.
+pub struct RenderedModelInstance<'a> {
+    pub instance: ModelInstance<'a>,
+    pub render_props: RenderProps,
+}
+
+/// Per-mesh phase selection, including mixed opaque/additive Normal models.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StudioRenderPhase {
+    All,
+    Opaque,
+    Translucent,
+}
+
+impl RenderedModelInstance<'_> {
+    /// Signed view depth of the transformed bounds center. Point sorting is a
+    /// project approximation; intersecting models are not ordered per triangle.
+    #[must_use]
+    pub fn view_depth(&self, model: &StudioModel, camera: &FreeFlyCamera) -> f32 {
+        instance_depth(&self.instance, model, camera)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct InstanceRef<'a, 'pose> {
+    instance: &'a ModelInstance<'pose>,
+    props: RenderProps,
+}
+
+fn mesh_blend(props: RenderProps, material_additive: bool) -> BlendKind {
+    // Project policy, TODO(black-box): explicit entity modes override material
+    // additive; Normal alone inherits it. Masked discard is always preserved.
+    if props.mode == RenderMode::Normal && material_additive {
+        BlendKind::Additive
+    } else {
+        props.blend_kind()
+    }
+}
+
+fn instance_depth(
+    instance: &ModelInstance<'_>,
+    model: &StudioModel,
+    camera: &FreeFlyCamera,
+) -> f32 {
+    let center: [f32; 3] =
+        std::array::from_fn(|axis| model.bounds_min[axis].midpoint(model.bounds_max[axis]));
+    let m = instance.transform;
+    let mut position = std::array::from_fn(|row| {
+        m[row] * center[0] + m[4 + row] * center[1] + m[8 + row] * center[2] + m[12 + row]
+    });
+    if !position.iter().all(|value| value.is_finite()) {
+        position = [m[12], m[13], m[14]];
+    }
+    let depth = math::dot(
+        std::array::from_fn(|axis| position[axis] - camera.position[axis]),
+        camera.direction(),
+    );
+    if depth.is_finite() { depth } else { 0.0 }
+}
+
 pub struct StudioRenderer {
     opaque_pipeline: wgpu::RenderPipeline,
     additive_pipeline: wgpu::RenderPipeline,
+    alpha_pipeline: wgpu::RenderPipeline,
     instance_layout: wgpu::BindGroupLayout,
     /// One `(uniform buffer, bind group)` per instance drawn this frame,
     /// grown on demand so a steady-state frame allocates nothing.
@@ -272,12 +335,18 @@ impl StudioRenderer {
             "ohl studio additive pipeline",
             Some(wgpu::BlendState {
                 color: wgpu::BlendComponent {
-                    src_factor: wgpu::BlendFactor::One,
+                    src_factor: wgpu::BlendFactor::SrcAlpha,
                     dst_factor: wgpu::BlendFactor::One,
                     operation: wgpu::BlendOperation::Add,
                 },
                 alpha: wgpu::BlendComponent::OVER,
             }),
+            false,
+        );
+
+        let alpha_pipeline = make_pipeline(
+            "ohl studio alpha pipeline",
+            Some(wgpu::BlendState::ALPHA_BLENDING),
             false,
         );
 
@@ -302,6 +371,7 @@ impl StudioRenderer {
         Ok(Self {
             opaque_pipeline,
             additive_pipeline,
+            alpha_pipeline,
             instance_layout,
             instance_slots: Vec::new(),
             texture_bind_groups,
@@ -388,6 +458,74 @@ impl StudioRenderer {
         height: u32,
         external_depth: Option<&wgpu::TextureView>,
     ) {
+        let refs: Vec<_> = instances
+            .iter()
+            .map(|instance| InstanceRef {
+                instance,
+                props: RenderProps::default(),
+            })
+            .collect();
+        self.render_prepared(
+            context,
+            model,
+            camera,
+            &refs,
+            StudioRenderPhase::All,
+            target,
+            width,
+            height,
+            external_depth,
+        );
+    }
+
+    /// Draws paired live properties without clearing the caller's completed
+    /// background or depth. Mask, chrome and fullbright material flags survive.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_with_props(
+        &mut self,
+        context: &GpuContext,
+        model: &StudioModel,
+        camera: &FreeFlyCamera,
+        instances: &[RenderedModelInstance<'_>],
+        phase: StudioRenderPhase,
+        target: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+        depth: &wgpu::TextureView,
+    ) {
+        let refs: Vec<_> = instances
+            .iter()
+            .map(|entry| InstanceRef {
+                instance: &entry.instance,
+                props: entry.render_props,
+            })
+            .collect();
+        self.render_prepared(
+            context,
+            model,
+            camera,
+            &refs,
+            phase,
+            target,
+            width,
+            height,
+            Some(depth),
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_prepared(
+        &mut self,
+        context: &GpuContext,
+        model: &StudioModel,
+        camera: &FreeFlyCamera,
+        instances: &[InstanceRef<'_, '_>],
+        phase: StudioRenderPhase,
+        target: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+        external_depth: Option<&wgpu::TextureView>,
+    ) {
         let (width, height) = (width.max(1), height.max(1));
         #[allow(clippy::cast_precision_loss)]
         let aspect = width as f32 / height as f32;
@@ -402,7 +540,13 @@ impl StudioRenderer {
             context.queue.write_buffer(
                 buffer,
                 0,
-                &instance_uniform(instance, &view_projection, &view, self.srgb_output),
+                &instance_uniform(
+                    instance.instance,
+                    instance.props,
+                    &view_projection,
+                    &view,
+                    self.srgb_output,
+                ),
             );
         }
 
@@ -435,6 +579,8 @@ impl StudioRenderer {
             &mut encoder,
             model,
             instances,
+            camera,
+            phase,
             target,
             depth_view,
             load_color,
@@ -450,7 +596,9 @@ impl StudioRenderer {
         &self,
         encoder: &mut wgpu::CommandEncoder,
         model: &StudioModel,
-        instances: &[ModelInstance<'_>],
+        instances: &[InstanceRef<'_, '_>],
+        camera: &FreeFlyCamera,
+        phase: StudioRenderPhase,
         target: &wgpu::TextureView,
         depth_view: &wgpu::TextureView,
         load_color: wgpu::LoadOp<wgpu::Color>,
@@ -484,19 +632,28 @@ impl StudioRenderer {
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
-            for (slot, instance) in instances.iter().enumerate() {
-                let Some((_, bind_group)) = self.instance_slots.get(slot) else {
+            // Establish all opaque depth before any translucent instance.
+            for opaque_pass in [true, false] {
+                if (phase == StudioRenderPhase::Opaque && !opaque_pass)
+                    || (phase == StudioRenderPhase::Translucent && opaque_pass)
+                {
                     continue;
-                };
-                pass.set_bind_group(0, bind_group, &[]);
-                // Opaque meshes first, then additive ones, so additive
-                // surfaces blend against a complete depth buffer.
-                for additive_pass in [false, true] {
-                    pass.set_pipeline(if additive_pass {
-                        &self.additive_pipeline
-                    } else {
-                        &self.opaque_pipeline
+                }
+                let mut order: Vec<usize> = (0..instances.len()).collect();
+                if !opaque_pass {
+                    order.sort_by(|&a, &b| {
+                        instance_depth(instances[b].instance, model, camera)
+                            .total_cmp(&instance_depth(instances[a].instance, model, camera))
+                            .then(a.cmp(&b))
                     });
+                }
+                for slot in order {
+                    let entry = &instances[slot];
+                    let instance = entry.instance;
+                    let Some((_, bind_group)) = self.instance_slots.get(slot) else {
+                        continue;
+                    };
+                    pass.set_bind_group(0, bind_group, &[]);
                     for mesh_index in model.visible_meshes(instance.body) {
                         let Some(mesh) = model.meshes.get(mesh_index) else {
                             continue;
@@ -505,13 +662,21 @@ impl StudioRenderer {
                         let Some(material) = self.texture_bind_groups.get(texture) else {
                             continue;
                         };
-                        let is_additive = model
+                        let additive = model
                             .textures
                             .get(texture)
                             .is_some_and(ohl_world::StudioTexture::is_additive);
-                        if is_additive != additive_pass {
+                        let blend = mesh_blend(entry.props, additive);
+                        if (blend == BlendKind::Opaque) != opaque_pass
+                            || (!opaque_pass && entry.props.alpha() <= 0.0)
+                        {
                             continue;
                         }
+                        pass.set_pipeline(match blend {
+                            BlendKind::Opaque => &self.opaque_pipeline,
+                            BlendKind::AlphaBlend => &self.alpha_pipeline,
+                            BlendKind::Additive => &self.additive_pipeline,
+                        });
                         let end = mesh.first_index + mesh.index_count;
                         if end as usize > self.index_count {
                             continue;
@@ -527,10 +692,11 @@ impl StudioRenderer {
     }
 }
 
-/// Serialises one instance's uniform block: the three matrices, the three
+/// Serialises one instance's uniform block: the three matrices, the five
 /// parameter vectors, and the bone matrix array padded to [`MAX_BONES`].
 fn instance_uniform(
     instance: &ModelInstance<'_>,
+    props: RenderProps,
     view_projection: &Mat4,
     view: &Mat4,
     srgb_output: bool,
@@ -559,6 +725,18 @@ fn instance_uniform(
             instance.light_color[0],
             instance.light_color[1],
             instance.light_color[2],
+            0.0,
+        ],
+        [
+            f32::from(props.color[0]) / 255.0,
+            f32::from(props.color[1]) / 255.0,
+            f32::from(props.color[2]) / 255.0,
+            0.0,
+        ],
+        [
+            props.alpha(),
+            f32::from(u8::from(props.uses_render_color())),
+            0.0,
             0.0,
         ],
     ];
@@ -640,8 +818,100 @@ mod tests {
         assert_eq!(MATERIAL_UNIFORM_BYTES, 16);
         assert_eq!(
             usize::try_from(INSTANCE_UNIFORM_BYTES),
-            Ok(3 * 64 + 3 * 16 + MAX_BONES * 64)
+            Ok(3 * 64 + 5 * 16 + MAX_BONES * 64)
         );
+    }
+
+    #[test]
+    fn live_mode_material_precedence_and_uniforms_preserve_bone_layout() {
+        use super::*;
+        let (bytes, _) = ohl_formats::test_support::build_minimal_mdl10();
+        let model = StudioModel::parse(&bytes, &ohl_world::StudioLimits::default()).unwrap();
+        let pose = StudioPose::sample(&model, 0, 0.05).unwrap();
+        let instance = ModelInstance {
+            transform: math::identity(),
+            pose: &pose,
+            body: &[],
+            skin: 0,
+            ambient: [0.2; 3],
+            light_direction: [0.0, 0.0, -1.0],
+            light_color: [0.5; 3],
+        };
+        for mode in [
+            RenderMode::Normal,
+            RenderMode::Color,
+            RenderMode::Texture,
+            RenderMode::Glow,
+            RenderMode::Solid,
+            RenderMode::Additive,
+        ] {
+            let props = RenderProps {
+                mode,
+                amount: 128,
+                color: [64, 128, 255],
+                fx: 17,
+            };
+            for additive in [false, true] {
+                let expected = if mode == RenderMode::Normal && additive {
+                    BlendKind::Additive
+                } else {
+                    props.blend_kind()
+                };
+                assert_eq!(mesh_blend(props, additive), expected);
+            }
+            let encoded = instance_uniform(
+                &instance,
+                props,
+                &math::identity(),
+                &math::identity(),
+                false,
+            );
+            let f =
+                |offset: usize| f32::from_le_bytes(encoded[offset..offset + 4].try_into().unwrap());
+            assert!((f(240) - 64.0 / 255.0).abs() < 1e-6);
+            assert!((f(244) - 128.0 / 255.0).abs() < 1e-6);
+            assert!((f(248) - 1.0).abs() < 1e-6);
+            assert!((f(256) - props.alpha()).abs() < 1e-6);
+            assert!((f(260) - if mode == RenderMode::Color { 1.0 } else { 0.0 }).abs() < 1e-6);
+            let bone = &pose.matrices[0];
+            for (index, expected) in bone.iter().enumerate() {
+                assert_eq!(f(272 + index * 4).to_bits(), expected.to_bits());
+            }
+            assert_eq!(encoded.len(), 8464);
+            assert_eq!(f(8460).to_bits(), 1.0_f32.to_bits());
+        }
+        let red = RenderProps::from_entity(1, 64, [255, 0, 0], 0);
+        let blue = RenderProps::from_entity(2, 192, [0, 0, 255], 0);
+        assert_ne!(
+            instance_uniform(&instance, red, &math::identity(), &math::identity(), false),
+            instance_uniform(&instance, blue, &math::identity(), &math::identity(), false)
+        );
+    }
+
+    #[test]
+    fn studio_depth_uses_transformed_bounds_and_signed_camera_depth() {
+        use super::*;
+        let (bytes, _) = ohl_formats::test_support::build_minimal_mdl10();
+        let mut model = StudioModel::parse(&bytes, &ohl_world::StudioLimits::default()).unwrap();
+        model.bounds_min = [2.0, -1.0, -1.0];
+        model.bounds_max = [4.0, 1.0, 1.0];
+        let pose = StudioPose::bind(&model);
+        let instance = ModelInstance {
+            transform: placement([10.0, 0.0, 0.0], 0.0),
+            pose: &pose,
+            body: &[],
+            skin: 0,
+            ambient: [1.0; 3],
+            light_direction: [0.0; 3],
+            light_color: [0.0; 3],
+        };
+        let mut camera = FreeFlyCamera::default();
+        camera.position = [1.0, 0.0, 0.0];
+        camera.yaw = 0.0;
+        camera.pitch = 0.0;
+        assert!((instance_depth(&instance, &model, &camera) - 12.0).abs() < 1e-5);
+        camera.yaw = 180.0;
+        assert!((instance_depth(&instance, &model, &camera) + 12.0).abs() < 1e-5);
     }
 
     #[test]

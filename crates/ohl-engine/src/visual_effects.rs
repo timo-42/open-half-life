@@ -1,7 +1,8 @@
 //! Visual-only map effect bridge, owned by rendering rather than gameplay.
 //!
-//! Supports initially active named-endpoint straight beams, clipped lasers,
-//! and recurring Start On/Toggle sparks. No use handling or damage is inferred
+//! Supports named-endpoint straight beams, clipped lasers and recurring Toggle
+//! sparks. Activation and render properties are read from authoritative game
+//! components, including initially inactive declarations. No damage is inferred
 //! here. Geometry, spark motion/timing and mark dimensions are project-authored
 //! placeholders, TODO(black-box). See `docs/FORMAT_SOURCES.md`.
 
@@ -23,7 +24,7 @@ enum MapEffect {
         start: Entity,
         end: Entity,
         width: f32,
-        color: [f32; 4],
+        render: ohl_game::keyvalues::RenderProps,
         laser: bool,
         flags: u32,
         life: f32,
@@ -85,7 +86,7 @@ impl MapEffects {
                 continue;
             };
             match def.classname.as_str() {
-                "env_beam" | "env_laser" if def.spawnflags & 1 != 0 => {
+                "env_beam" | "env_laser" => {
                     let laser = def.classname == "env_laser";
                     // Random-endpoint and ring beams have no straight fallback.
                     if !laser && def.spawnflags & 8 != 0 {
@@ -116,12 +117,7 @@ impl MapEffects {
                         // Public pages disagree on beam width units. A direct
                         // world-unit width is a project placeholder.
                         width: width.clamp(0.0, 4096.0),
-                        color: [
-                            f32::from(def.render.color[0]) / 255.0,
-                            f32::from(def.render.color[1]) / 255.0,
-                            f32::from(def.render.color[2]) / 255.0,
-                            (number(def, "renderamt", 255.0) / 255.0).clamp(0.0, 1.0),
-                        ],
+                        render: def.render,
                         laser,
                         flags: def.spawnflags,
                         life: if laser {
@@ -132,7 +128,7 @@ impl MapEffects {
                         strike_delay: number(def, "StrikeTime", 1.0).max(0.0),
                     });
                 }
-                "env_spark" if def.spawnflags & (32 | 64) == (32 | 64) => {
+                "env_spark" if def.spawnflags & 32 != 0 => {
                     entries.push(MapEffect::Spark {
                         emitter,
                         delay: number(def, "MaxDelay", 1.0).clamp(SPARK_LIFETIME, 60.0),
@@ -147,6 +143,65 @@ impl MapEffects {
         }
     }
 
+    /// Render actual gameplay debris records and independent blast channels.
+    /// Shapes and motion are bounded project placeholders, TODO(black-box).
+    pub(super) fn append_gameplay(
+        &mut self,
+        level: &Level,
+        effects: &crate::map_effects::EffectPresentation<'_>,
+        custom_ready: &std::collections::BTreeSet<u64>,
+    ) {
+        for debris in effects.debris {
+            if custom_ready.contains(&debris.id) {
+                continue;
+            }
+            self.instances.push(EffectInstance::Gib {
+                transform: debris.transform(),
+                half_extents: debris.half_extents.to_array(),
+                color: debris.color(),
+            });
+        }
+        for blast in effects.blasts {
+            let progress = (blast.age / 0.75).clamp(0.0, 1.0);
+            let size = (blast.radius * 0.2).clamp(2.0, 64.0);
+            if blast.channels.fireball {
+                self.instances.push(EffectInstance::Particle {
+                    origin: blast.origin.to_array(),
+                    size: size * (1.0 + progress),
+                    color: [1.0, 0.3, 0.03, 1.0 - progress],
+                });
+            }
+            if blast.channels.smoke {
+                self.instances.push(EffectInstance::Particle {
+                    origin: (blast.origin + Vec3::Z * (blast.age * 24.0)).to_array(),
+                    size: size * (1.0 + progress * 2.0),
+                    color: [0.16, 0.16, 0.16, (1.0 - progress) * 0.5],
+                });
+            }
+            if blast.channels.sparks {
+                sparks(&mut self.instances, blast.origin, blast.age, 1.0);
+            }
+            if blast.channels.decal
+                && let Some(collision) = &level.collision
+            {
+                let trace = collision.trace(
+                    Hull::Point,
+                    blast.origin,
+                    blast.origin - Vec3::Z * size * 2.0,
+                );
+                if trace.fraction < 1.0 && !trace.start_solid && !trace.all_solid {
+                    self.instances.push(EffectInstance::Decal {
+                        origin: trace.end_pos.to_array(),
+                        normal: trace.plane_normal.to_array(),
+                        radius: size,
+                        color: [0.03, 0.02, 0.01, 1.0 - progress],
+                    });
+                }
+            }
+        }
+        self.instances.truncate(MAX_EFFECT_INSTANCES);
+    }
+
     pub(super) fn sample(&mut self, level: &Level, elapsed: f32) {
         self.instances.clear();
         if !elapsed.is_finite() || elapsed < 0.0 {
@@ -159,15 +214,25 @@ impl MapEffects {
                     start,
                     end,
                     width,
-                    color,
+                    render,
                     laser,
                     flags,
                     life,
                     strike_delay,
                 } => {
-                    if !level.registry.world.contains(emitter) {
+                    if !active(level, emitter) {
                         continue;
                     }
+                    let (render, _fx) =
+                        ohl_game::effects::effective_render_props(&level.registry, emitter, render);
+                    // This bridge retains its supported additive style. Other
+                    // render modes/fx are preserved state, not new animations.
+                    let color = [
+                        f32::from(render.color[0]) / 255.0,
+                        f32::from(render.color[1]) / 255.0,
+                        f32::from(render.color[2]) / 255.0,
+                        f32::from(u8::try_from(render.amt.clamp(0, 255)).unwrap_or(0)) / 255.0,
+                    ];
                     if life > 0.0 && elapsed.rem_euclid(life + strike_delay) >= life {
                         continue;
                     }
@@ -207,6 +272,9 @@ impl MapEffects {
                     }
                 }
                 MapEffect::Spark { emitter, delay } => {
+                    if !active(level, emitter) {
+                        continue;
+                    }
                     if let Some(origin) = origin(level, emitter) {
                         sparks(&mut self.instances, origin, elapsed, delay);
                     }
@@ -215,6 +283,14 @@ impl MapEffects {
         }
         self.instances.truncate(MAX_EFFECT_INSTANCES);
     }
+}
+
+fn active(level: &Level, entity: Entity) -> bool {
+    level
+        .registry
+        .world
+        .get::<&ohl_game::effects::EffectActive>(entity)
+        .is_ok_and(|state| state.active)
 }
 
 fn sparks(out: &mut Vec<EffectInstance>, origin: Vec3, elapsed: f32, delay: f32) {
@@ -256,6 +332,50 @@ mod tests {
     }
 
     const ENDPOINTS: &str = "{\"classname\" \"info_target\" \"targetname\" \"ohl_a\" \"origin\" \"20 -10 40\"}\n{\"classname\" \"info_target\" \"targetname\" \"ohl_b\" \"origin\" \"20 10 40\"}\n";
+
+    #[test]
+    fn initially_off_cache_and_live_render_properties_follow_real_use_and_save() {
+        let extra = format!(
+            "{ENDPOINTS}{{\"classname\" \"env_beam\" \"targetname\" \"beam\" \"spawnflags\" \"2\" \"LightningStart\" \"ohl_a\" \"LightningEnd\" \"ohl_b\" \"rendercolor\" \"255 255 255\"}}\n{{\"classname\" \"env_render\" \"targetname\" \"color\" \"target\" \"beam\" \"rendercolor\" \"0 255 32\" \"renderamt\" \"64\" \"renderfx\" \"17\"}}"
+        );
+        let mut level = level(&extra);
+        let mut effects = MapEffects::new(&level);
+        effects.sample(&level, 0.1);
+        assert!(effects.instances.is_empty());
+        let beam = level.registry.find("beam")[0];
+        let controller = level.registry.find("color")[0];
+        level.simulation.use_entity(
+            &mut level.registry,
+            beam,
+            Some(level.player),
+            &mut Vec::new(),
+        );
+        effects.sample(&level, 0.1);
+        assert_eq!(effects.instances.len(), 1);
+        level.simulation.use_entity(
+            &mut level.registry,
+            controller,
+            Some(level.player),
+            &mut Vec::new(),
+        );
+        effects.sample(&level, 0.1);
+        let EffectInstance::Beam { color, .. } = effects.instances[0] else {
+            panic!("beam expected");
+        };
+        assert_eq!(color, [0.0, 1.0, 32.0 / 255.0, 64.0 / 255.0]);
+        let runtime = crate::map_effects::MapEffectsRuntime::default();
+        let saved = runtime.snapshot(&level.registry, level.player, &level.simulation);
+        assert!(saved.active_overrides.iter().any(|&(_, active)| active));
+        assert!(saved.render_fx.iter().any(|&(_, fx)| fx == 17));
+        level.simulation.use_entity(
+            &mut level.registry,
+            beam,
+            Some(level.player),
+            &mut Vec::new(),
+        );
+        effects.sample(&level, 0.1);
+        assert!(effects.instances.is_empty());
+    }
 
     #[test]
     fn beam_samples_live_endpoints_and_disappears_when_emitter_is_removed() {

@@ -274,6 +274,44 @@ impl EffectActive {
     }
 }
 
+/// Mirrors the existing visual bridge's project defaults in authoritative
+/// state, so live reads do not confuse an untouched default with an explicit
+/// env_render copy of zero or black. No serialized shape changes.
+pub(crate) fn initial_render_props(def: &EntityDef) -> RenderProps {
+    let mut props = def.render;
+    if matches!(
+        def.classname.as_str(),
+        "env_sprite" | "env_glow" | "cycler_sprite"
+    ) && !def.keyvalues.contains_key("rendercolor")
+    {
+        props.color = [255; 3];
+    }
+    if matches!(def.classname.as_str(), "env_beam" | "env_laser")
+        && !def.keyvalues.contains_key("renderamt")
+    {
+        props.amt = 255;
+    }
+    props
+}
+
+/// Compatibility for a save predating live visual properties. The old renderer
+/// supplied display defaults outside EntitySnapshot, whose zero values are
+/// therefore ambiguous. Only absent authored keys and unchanged old field values
+/// receive that prior display default; explicit authored zero/black is preserved.
+pub fn restore_legacy_visual_defaults(registry: &mut Registry, defs: &[EntityDef]) {
+    for (&entity, def) in registry.entities.iter().zip(defs) {
+        let initial = initial_render_props(def);
+        if let Ok(mut live) = registry.world.get::<&mut RenderProps>(entity) {
+            if !def.keyvalues.contains_key("rendercolor") && live.color == def.render.color {
+                live.color = initial.color;
+            }
+            if !def.keyvalues.contains_key("renderamt") && live.amt == def.render.amt {
+                live.amt = initial.amt;
+            }
+        }
+    }
+}
+
 /// Resolves current registry properties, using cached values only if absent.
 /// Renderer callers retain their own documented support for each mode/fx.
 #[must_use]
@@ -343,6 +381,7 @@ pub struct BreakEffects {
     /// `explosion = 1` permits attack-relative debris when a hit supplies it.
     pub attack_relative: bool,
     /// Sanitized relative model reference; missing models use primitive debris.
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "bounded_gib_model"))]
     pub gib_model: Option<String>,
 }
 
@@ -508,6 +547,42 @@ fn sanitized_model(value: &str) -> Option<String> {
             .split('/')
             .all(|part| !part.is_empty() && part != "." && part != ".."))
     .then_some(value)
+}
+
+#[cfg(feature = "serde")]
+fn bounded_gib_model<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    struct OptionalModel;
+    struct Model;
+    impl<'de> serde::de::Visitor<'de> for Model {
+        type Value = String;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("bounded relative gib model")
+        }
+        fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<String, E> {
+            if value.len() > 260 {
+                return Err(E::custom("gib model capacity exceeded"));
+            }
+            match sanitized_model(value) {
+                Some(model) if model == value => Ok(model),
+                _ => Err(E::custom("invalid gib model reference")),
+            }
+        }
+    }
+    impl<'de> serde::de::Visitor<'de> for OptionalModel {
+        type Value = Option<String>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("optional bounded gib model")
+        }
+        fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_some<D: serde::Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+            d.deserialize_str(Model).map(Some)
+        }
+    }
+    deserializer.deserialize_option(OptionalModel)
 }
 
 #[cfg(test)]

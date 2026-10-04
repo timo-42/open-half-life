@@ -40,7 +40,9 @@ pub use renderer::{
     WorldRenderer,
 };
 pub use sky::SkyRenderer;
-pub use studio::{ModelInstance, StudioRenderer, placement};
+pub use studio::{
+    ModelInstance, RenderedModelInstance, StudioRenderPhase, StudioRenderer, placement,
+};
 pub use surface::WindowSurface;
 
 /// Re-exported so callers can name wgpu types (surface targets, formats)

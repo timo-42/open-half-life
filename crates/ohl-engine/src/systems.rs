@@ -308,6 +308,7 @@ pub struct Systems {
     pub(crate) ai: AiState,
     /// Phase 7's own state: live projectiles and placed deployables.
     projectiles: ProjectileSystem,
+    pub(crate) map_effects: crate::map_effects::MapEffectsRuntime,
     /// The bounded transient-sprite list phase 7 (and phase 6's muzzle
     /// flashes, in a later package) fills; phase 13 ages it.
     transient_sprites: TransientSprites,
@@ -381,6 +382,7 @@ impl Systems {
             damage_queue: Vec::new(),
             ai: AiState::new(ai_seed),
             projectiles: ProjectileSystem::new(config.rng_seed),
+            map_effects: crate::map_effects::MapEffectsRuntime::default(),
             transient_sprites: TransientSprites::new(),
             view_model: ViewModel::new(),
             player: ohl_player::Player::default(),
@@ -979,6 +981,7 @@ impl Systems {
         self.player_systems(level, input, dt); // 3
         Self::actor_sync(level, camera, controller, dt); // 4
         self.rebuild_hitbox_index(level, controller); // 5
+        self.begin_map_effects(level, controller, dt); // 5b
         self.weapons(level, controller, dt, input); // 6
         self.projectiles(level, dt); // 7
         self.ai_think(level, dt); // 8
@@ -996,6 +999,7 @@ impl Systems {
         // hulls to match (`docs/FORMAT_SOURCES.md`, item 32).
         crate::pushables::push_pushables(level, controller, input.controller_input(), dt); // 12b
         Self::break_pressured_breakables(level, controller); // 12b
+        self.capture_map_effects(level); // late effects resolve combat next step
         crate::camera::apply_override(level, camera); // 12.5
         self.presentation(level, dt); // 13
         self.substep_counter = self.substep_counter.wrapping_add(1);
@@ -1386,6 +1390,47 @@ impl Systems {
         }
     }
 
+    /// Refresh trigger-time player eligibility and age effects once per step.
+    fn begin_map_effects(&mut self, level: &mut Level, controller: &PlayerController, dt: f32) {
+        self.map_effects.begin_step();
+        level
+            .simulation
+            .set_effect_player(Some(ohl_game::effects::EffectPlayer {
+                entity: level.player,
+                origin: self.physics_output.origin,
+                grounded: self.physics_output.on_ground,
+            }));
+        self.map_effects
+            .advance(dt, controller.config.gravity, &level.collision.as_ref());
+        self.capture_map_effects(level);
+        self.dispatch_map_effects(level);
+    }
+
+    fn capture_map_effects(&mut self, level: &mut Level) {
+        self.map_effects
+            .capture_commands(level.simulation.drain_effect_commands());
+    }
+
+    fn dispatch_map_effects(&mut self, level: &mut Level) -> bool {
+        let batch = self.map_effects.resolve_pending(|entity| {
+            entity == level.player
+                || level
+                    .registry
+                    .world
+                    .get::<&ohl_ai::Actor>(entity)
+                    .is_ok_and(|actor| actor.alive)
+        });
+        let did_work = !batch.broken_sources.is_empty() || !batch.blasts.is_empty();
+        for source in batch.broken_sources {
+            level.detach_broken_source(source);
+        }
+        for blast in batch.blasts {
+            self.projectiles
+                .resolve_map_blast(level, blast, &mut self.damage_queue);
+        }
+        did_work
+    }
+
     /// Phase 9 — damage resolution: the queue is drained once, in insertion
     /// order.
     fn resolve_damage(&mut self, level: &mut Level) {
@@ -1429,7 +1474,9 @@ impl Systems {
                 &mut self.damage_queue,
                 &mut self.transient_sprites,
             );
-            if detonated == 0 {
+            self.capture_map_effects(level);
+            let map_work = self.dispatch_map_effects(level);
+            if detonated == 0 && !map_work {
                 break;
             }
             self.resolve_damage(level);
@@ -1485,9 +1532,12 @@ impl Systems {
             let position = Vec3::from_array(camera.position);
             if let Some(entity) = find_usable_within(&level.registry, position, USE_RADIUS) {
                 let was_closed = door_state(level, entity) == Some(MoverState::Closed);
-                level
-                    .simulation
-                    .use_entity(&mut level.registry, entity, None, events);
+                level.simulation.use_entity(
+                    &mut level.registry,
+                    entity,
+                    Some(level.player),
+                    events,
+                );
                 if was_closed
                     && matches!(
                         door_state(level, entity),
@@ -1564,7 +1614,7 @@ impl Systems {
             &mut level.registry,
             player_mins,
             player_maxs,
-            None,
+            Some(level.player),
             events,
         ));
         events.extend(level.simulation.tick(&mut level.registry, dt));
@@ -1844,12 +1894,20 @@ impl Systems {
             .get::<&ohl_game::registry::Breakable>(entity)
             .is_ok_and(|breakable| breakable.break_on_pressure && !breakable.broken);
         if pressured {
+            let player = level.player;
             let Level {
                 registry,
                 simulation,
                 ..
             } = level;
-            simulation.break_entity(registry, entity);
+            simulation.break_entity_with_context(
+                registry,
+                entity,
+                ohl_game::effects::BreakContext {
+                    activator: Some(player),
+                    attack_direction: None,
+                },
+            );
         }
     }
 

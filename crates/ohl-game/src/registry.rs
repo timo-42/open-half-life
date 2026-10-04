@@ -2172,7 +2172,7 @@ impl Registry {
                 ClassName(def.classname.clone()),
                 transform,
                 SpawnFlags(def.spawnflags),
-                def.render,
+                crate::effects::initial_render_props(def),
                 RenderFx::from_entity(def),
             ));
             entities.push(entity);

@@ -356,6 +356,9 @@ pub struct Simulation {
     effect_commands: Vec<MapEffectCommand>,
     /// Trigger-time facts; refreshed by the host and never persisted.
     effect_player: Option<EffectPlayer>,
+    /// A button may finish moving after its activator's input edge. The host
+    /// persists these references separately, never in frozen mover structs.
+    button_activators: std::collections::BTreeMap<Entity, Entity>,
     trigger_state: std::collections::BTreeMap<Entity, TriggerState>,
     /// Per-`func_rot_button` last-observed touch state, for
     /// [`Self::touch_rot_buttons`]'s edge trigger — the same shape as
@@ -523,6 +526,56 @@ impl Simulation {
     #[must_use]
     pub fn effect_commands(&self) -> &[MapEffectCommand] {
         &self.effect_commands
+    }
+
+    /// Additive save provenance in the same order as `SimulationState.pending`.
+    /// The host encodes stable identities instead of widening the frozen state.
+    pub fn pending_use_contexts(&self) -> impl Iterator<Item = (Option<Entity>, TriggerUse)> + '_ {
+        self.pending
+            .iter()
+            .map(|fire| (fire.activator, fire.use_type))
+    }
+
+    /// Applies the optional extension after the ordinary pending queue restore.
+    /// Missing rows in a present extension cannot retain stale raw identities.
+    pub fn restore_pending_use_contexts(
+        &mut self,
+        contexts: impl IntoIterator<Item = (Option<Entity>, TriggerUse)>,
+    ) {
+        for fire in &mut self.pending {
+            fire.activator = None;
+            fire.use_type = TriggerUse::Toggle;
+        }
+        for (fire, (activator, use_type)) in self.pending.iter_mut().zip(contexts) {
+            fire.activator = activator;
+            fire.use_type = use_type;
+        }
+    }
+
+    /// Activators awaiting button completion; stored in optional host state.
+    pub fn button_activators(&self) -> impl Iterator<Item = (Entity, Entity)> + '_ {
+        self.button_activators
+            .iter()
+            .map(|(&button, &actor)| (button, actor))
+    }
+
+    /// Restores separately remapped button provenance with a fixed entry cap.
+    pub fn restore_button_activators(
+        &mut self,
+        contexts: impl IntoIterator<Item = (Entity, Entity)>,
+    ) {
+        self.button_activators.clear();
+        self.button_activators
+            .extend(contexts.into_iter().take(MAX_PENDING_EFFECTS));
+    }
+
+    fn capture_button_activator(&mut self, button: Entity, actor: Option<Entity>) {
+        self.button_activators.remove(&button);
+        if self.button_activators.len() < MAX_PENDING_EFFECTS
+            && let Some(actor) = actor
+        {
+            self.button_activators.insert(button, actor);
+        }
     }
 
     /// Takes queued work exactly once. The host owns combat/physics scheduling.
@@ -1083,6 +1136,7 @@ impl Simulation {
             if button.state == MoverState::Closed {
                 button.state = MoverState::Opening;
                 button.timer = button.delay;
+                self.capture_button_activator(entity, activator);
             }
             return;
         }
@@ -1091,6 +1145,7 @@ impl Simulation {
                 MoverState::Closed => {
                     button.state = MoverState::Opening;
                     button.timer = button.delay + travel_time(button.distance, button.speed);
+                    self.capture_button_activator(entity, activator);
                 }
                 // The documented "Toggle" spawnflag: using an already-open
                 // button rotates it back, firing `target` again — see
@@ -1099,6 +1154,7 @@ impl Simulation {
                 MoverState::Open if button.toggle => {
                     button.state = MoverState::Closing;
                     button.timer = travel_time(button.distance, button.speed);
+                    self.capture_button_activator(entity, activator);
                 }
                 _ => {}
             }
@@ -1776,7 +1832,8 @@ impl Simulation {
         for entity in to_fire {
             if let Ok(target) = registry.world.get::<&crate::registry::Target>(entity) {
                 let target = target.0.clone();
-                self.fire(target, Some(entity), 0.0);
+                let activator = self.button_activators.remove(&entity).or(Some(entity));
+                self.fire(target, activator, 0.0);
             }
         }
         // A button firing its target may itself be a trigger_changelevel
@@ -1842,7 +1899,8 @@ impl Simulation {
         for entity in to_fire {
             if let Ok(target) = registry.world.get::<&Target>(entity) {
                 let target = target.0.clone();
-                self.fire(target, Some(entity), 0.0);
+                let activator = self.button_activators.remove(&entity).or(Some(entity));
+                self.fire(target, activator, 0.0);
             }
         }
     }
@@ -1936,7 +1994,12 @@ impl Simulation {
             let rising_edge = overlapping && !*state;
             *state = overlapping;
             if rising_edge {
-                self.activate(registry, entity, None, &mut Vec::new());
+                self.activate(
+                    registry,
+                    entity,
+                    self.effect_player.map(|player| player.entity),
+                    &mut Vec::new(),
+                );
             }
         }
     }

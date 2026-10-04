@@ -518,6 +518,27 @@ impl ProjectileSystem {
         }
     }
 
+    /// Map blasts use the same posed bounds and explosion policy as projectiles.
+    pub(crate) fn resolve_map_blast(
+        &self,
+        level: &Level,
+        request: crate::map_effects::BlastRequest,
+        damage_queue: &mut Vec<QueuedDamage>,
+    ) {
+        dispatch_blast(
+            level,
+            request.origin,
+            request.profile.radius,
+            request.profile.damage,
+            request.kind,
+            Some(entity_id(request.attacker)),
+            Some(entity_id(request.inflictor)),
+            &self.explosion_rule,
+            &self.blast_bounds,
+            damage_queue,
+        );
+    }
+
     /// Player rockets follow the current filtered eye trace; Apache rockets stay unguided.
     pub(crate) fn guide_player_rockets(&mut self, owner: Entity, point: Vec3) {
         let ids: Vec<_> = self
@@ -1314,6 +1335,35 @@ fn resolve_blast(
     bounds: &BTreeMap<CombatEntityId, (Vec3, Vec3)>,
     damage_queue: &mut Vec<QueuedDamage>,
 ) {
+    dispatch_blast(
+        level,
+        position,
+        radius,
+        damage,
+        kind,
+        attacker,
+        attacker,
+        rule,
+        bounds,
+        damage_queue,
+    );
+}
+
+/// One blast dispatcher for projectiles, map explosions and breakable cascades.
+/// Attacker controls credit/self scaling; inflictor identifies the actual source.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn dispatch_blast(
+    level: &Level,
+    position: Vec3,
+    radius: f32,
+    damage: f32,
+    kind: DamageType,
+    attacker: Option<CombatEntityId>,
+    inflictor: Option<CombatEntityId>,
+    rule: &ExplosionRule,
+    bounds: &BTreeMap<CombatEntityId, (Vec3, Vec3)>,
+    damage_queue: &mut Vec<QueuedDamage>,
+) {
     let Some(collision) = level.collision.as_ref() else {
         return;
     };
@@ -1329,9 +1379,10 @@ fn resolve_blast(
         rule,
     );
     damage_queue.extend(hits.into_iter().filter_map(|hit| {
-        entity_of(hit.target).map(|target| QueuedDamage {
-            target,
-            info: hit.damage,
+        entity_of(hit.target).map(|target| {
+            let mut info = hit.damage;
+            info.inflictor = inflictor;
+            QueuedDamage { target, info }
         })
     }));
 }

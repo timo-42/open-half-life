@@ -8413,7 +8413,7 @@ primitives. The final gate-recording change modifies documentation only;
 all 12 scoped source/test files and all 42 retained synthetic capture files
 remain byte-identical to the approved and tested implementation.
 
-## M9.NEXT — Map gameplay effects (game-side checkpoint)
+## M9.NEXT — Map gameplay effects (focused CPU checkpoint)
 
 Game-side definitions and use/break dispatch are authored for env_explosion,
 env_shake, env_fade, masked env_render and breakable blast/debris commands.
@@ -8440,6 +8440,31 @@ individual mutations are listed in FORMAT_SOURCES. Every Cargo command used
 cap. No resource guard interrupted a build. Source whitespace checks pass.
 
 **NOT RUN:** workspace tests, workspace default/dev-tools/all-features clippy,
-policy/graph, save-section compatibility and all four payload smoke/chain gates.
+policy/graph, the full frozen-format compatibility suite and all four payload
+smoke/chain gates.
 Those await Phase 2 and its resource permission. This draft makes no complete
 engine-runtime or milestone-completion claim.
+
+The focused evidence above applies to Phase 1 `141f1bf` (same game source after
+rebase as `b899b32`). The later Phase 2 source now connects bounded blast/debris
+runtime, dual collision detachment, optional tag 43, real-use activator
+continuation, transient shake/fade and live render properties. Separate cached
+custom gib models retain cuboid fallbacks; a backward-compatible studio API
+adds opaque/translucent phases and live mode/amount/color support. Global
+cross-family transparency and full renderfx/model-selection fidelity remain
+explicit cuts. The integration passes `cargo check -p ohl-engine`, standalone
+formatting and source whitespace checks. Focused CPU filters pass:
+`cargo test -p ohl-engine --lib map_effects` (**20/20**), overlapping
+`cargo test -p ohl-engine --lib debris` (**4/4**), and
+`cargo test -p ohl-render --lib studio` (**4/4**). The strengthened same-step
+cascade test also passes separately. Nine CPU mutations were killed, restored
+byte-for-byte, and their selected normal tests passed again; further probes
+remain pending. Commands used the same Cargo environment above, with
+`OHL_RENDER_GPU_TEST=0`, an 18 GiB free-space guard and at most 2 GiB additional
+target growth (total below 3 GiB). No guard interrupted a command. GPU checks
+and the complete-tree/runtime gates remain **unrun**. These focused filters were
+rerun after the blank-selected custom-gib geometry guard. Engine GPU test
+functions compiled but were not executed; the renderer integration GPU target
+remains uncompiled. Fifteen CPU mutation probes and all GPU probes remain pending.
+No complete engine-runtime, save-compatibility or milestone-completion claim is
+made until the required build, GPU, mutation and payload gates run.
