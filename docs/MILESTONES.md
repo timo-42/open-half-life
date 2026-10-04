@@ -8548,10 +8548,10 @@ completion before any assertion, including mutant cases, so its self-terminating
 descendant finishes before the fixture returns. Production never joins a reader
 past the deadline; an optional private completion signal serves only this test.
 
-Six review mutations restore each old root predicate, broaden each namespace
-predicate, accept a cached child exit before reader completion, or block timeout
-on reader EOF. All six were killed and byte-restored, for **45 actual mutations
-in total**. The final normal formatting, focused clippy, 45-test chain filter
+Eight review mutations restore each old root predicate, broaden each namespace
+predicate, accept a cached child exit before reader completion, block timeout on reader EOF, restore raw source-header comparison, or strip
+lone CR from source. All eight were killed and byte-restored, for **47 actual
+mutations in total**. The final normal formatting, focused clippy, 45-test chain filter
 and explicit 14-test planner filter pass.
 
 Every Cargo invocation used the assigned four-job, line-tables-only,
@@ -8560,3 +8560,12 @@ nonincremental environment. The focused target stayed below 425 MiB with a
 No payload planning has been performed. Full workspace validation, policy/graph,
 combat/campaign smoke and both baseline chains remain required before independent
 integration; this entry does not claim them.
+
+A Windows CI source-header assertion exposed a test-only newline mismatch. The
+source cross-check now applies Rust's CRLF-pair normalization while preserving
+lone CR and header content. Explicit LF/CRLF positives and altered-header/lone-CR
+negatives discriminate the boundary; a CRLF candidate remains rejected by exact
+production byte admission. Both source-normalization mutants were killed and
+restored before the passing normal focused baseline. Production logic, app,
+workflow and checkout policy are unchanged. Fresh exact-head Windows CI is pending;
+the log supports the newline diagnosis but did not expose checkout file bytes.
