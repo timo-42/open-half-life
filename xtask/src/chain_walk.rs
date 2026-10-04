@@ -19,36 +19,20 @@
 //! same process, so `ohl_engine::transition`'s carry machinery — health,
 //! armor, weapons, ammo, the suit — is what supplies the campaign state.
 //!
-//! The report is aggregate-only, in the same spirit as this crate's other
-//! smoke summaries: how many maps deep the chain got, how many simulated
-//! seconds that took, and which of the app's two fixed terminal lines
-//! ended it. No map name past `ohl_campaign`'s own publicly sourced table
-//! is printed, and no route file's contents ever reach the summary.
+//! `--aggregate-only` emits only distinct depth, simulated seconds and a
+//! fixed verdict. Compatibility summaries may include the caller's start
+//! and inventory and parsed arrival counts; private runs must use an outer
+//! in-memory capture boundary as well (clap/build errors belong to it).
 //!
-//! # Route files
-//!
-//! Routes live under `xtask/chain-routes/`, named by *position in the
-//! chain* rather than by destination map:
-//!
-//! - `<start>.txt` — the route from `<start>`'s own player start.
-//!   `<start>` is a name from `ohl_campaign`'s cited table (by default
-//!   [`ohl_campaign::STARTMAP`]).
-//! - `<start>-hop1.txt` — the route from where the first level change out
-//!   of `<start>` lands, `-hop2.txt` from the second, and so on.
-//!
-//! Naming them ordinally is deliberate, not a convenience:
-//! `docs/CLEAN_ROOM.md` rule 7 allows only lawfully public name literals in
-//! this repository, and which map a `trigger_changelevel` actually lands in
-//! is a fact about the user's own payload. "The map reached by the first
-//! level change out of `c0a0`" says what the file is for without writing
-//! down a name that has no public citation. Route file *contents* follow
-//! the same rule the `xtask/smoke-scenarios/` files already do: script
-//! commands, table names and route words only.
+//! Legacy route files remain unchanged. The default campaign also accepts
+//! `hop-NNNN.txt`, using a zero-based route ordinal. Other starts cannot
+//! consume those neutral files. Two files claiming an ordinal are an error;
+//! the first gap ends assembly and the existing route cap still applies.
 
 use std::ffi::OsString;
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -93,6 +77,10 @@ struct Args {
     /// this used to default to, kept for an explicit opt-in.
     #[arg(long, value_name = "LIST", default_value = "")]
     start_inventory: String,
+
+    /// Emit only allowlisted whole-chain aggregates and fixed error codes.
+    #[arg(long)]
+    aggregate_only: bool,
 }
 
 /// A loadout `cargo xtask chain-walk` can be *asked* to start with, and
@@ -123,11 +111,14 @@ pub enum AssemblyError {
     NoStartRoute,
     /// The start map is not a name from `ohl_campaign`'s cited table.
     StartNotInCampaignTable,
+    /// Both naming conventions claim the same ordinal.
+    DuplicateOrdinal,
 }
 
 impl std::fmt::Display for AssemblyError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
+            Self::DuplicateOrdinal => "duplicate-route-ordinal",
             Self::NoStartRoute => "no route file exists for the chain's start map",
             Self::StartNotInCampaignTable => {
                 "the chain's start map is not a name from ohl_campaign's cited table"
@@ -163,17 +154,25 @@ pub fn assemble_chain(routes_dir: &Path, start: &str) -> Result<Vec<PathBuf>, As
     if !is_campaign_table_name(start) {
         return Err(AssemblyError::StartNotInCampaignTable);
     }
-    let first = routes_dir.join(format!("{start}.txt"));
-    if !first.is_file() {
-        return Err(AssemblyError::NoStartRoute);
-    }
-    let mut routes = vec![first];
-    for hop in 1..MAX_CHAIN_ROUTES {
-        let candidate = routes_dir.join(format!("{start}-hop{hop}.txt"));
-        if !candidate.is_file() {
-            break;
+    let mut routes = Vec::new();
+    for hop in 0..MAX_CHAIN_ROUTES {
+        let legacy = routes_dir.join(if hop == 0 {
+            format!("{start}.txt")
+        } else {
+            format!("{start}-hop{hop}.txt")
+        });
+        let neutral = routes_dir.join(format!("hop-{hop:04}.txt"));
+        let has_legacy = legacy.is_file();
+        let has_neutral = start.eq_ignore_ascii_case(ohl_campaign::STARTMAP) && neutral.is_file();
+        match (has_legacy, has_neutral) {
+            (true, true) => return Err(AssemblyError::DuplicateOrdinal),
+            (true, false) => routes.push(legacy),
+            (false, true) => routes.push(neutral),
+            (false, false) => break,
         }
-        routes.push(candidate);
+    }
+    if routes.is_empty() {
+        return Err(AssemblyError::NoStartRoute);
     }
     Ok(routes)
 }
@@ -249,49 +248,95 @@ pub struct ChainReport {
 /// Parses one `Chain walk arrival N: weapons W, ammo A.` line's three
 /// counts, or `None` when the line is not one.
 fn parse_arrival(line: &str) -> Option<(usize, usize, u32)> {
-    let index = line.find(ARRIVAL_PREFIX)? + ARRIVAL_PREFIX.len();
-    let rest = line[index..].trim_end().trim_end_matches('.');
+    let rest = line
+        .strip_prefix("[info] ")?
+        .strip_prefix(ARRIVAL_PREFIX)?
+        .strip_suffix('.')?;
     let (arrival, counts) = rest.split_once(": weapons ")?;
     let (weapons, ammo) = counts.split_once(", ammo ")?;
-    Some((
-        arrival.trim().parse().ok()?,
-        weapons.trim().parse().ok()?,
-        ammo.trim().parse().ok()?,
-    ))
+    Some((unsigned(arrival)?, unsigned(weapons)?, unsigned(ammo)?))
 }
 
-/// Parses a finished chain run's stderr into a [`ChainReport`], reading
-/// only the app's own fixed lines and keeping no other text.
+/// Decimal fields never accept signs, whitespace, arbitrary suffixes or overflow.
+pub fn unsigned<T: std::str::FromStr>(value: &str) -> Option<T> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok()
+}
+
+/// The app prints nonnegative decimal seconds, never exponents or special values.
+pub fn seconds(value: &str) -> Option<f32> {
+    let (whole, fraction) = value.split_once('.')?;
+    let _: u64 = unsigned(whole)?;
+    let _: u64 = unsigned(fraction)?;
+    let number: f32 = value.parse().ok()?;
+    (number.is_finite() && number >= 0.0).then_some(number)
+}
+
+/// Exact known messages only; invalid/missing/duplicate required fields fail closed.
 #[must_use]
 pub fn parse_report(stderr: &str) -> ChainReport {
-    let value_after = |prefix: &str| -> Option<String> {
-        stderr.lines().rev().find_map(|line| {
-            let index = line.find(prefix)?;
-            Some(
-                line[index + prefix.len()..]
-                    .trim_end_matches('.')
-                    .to_string(),
-            )
-        })
+    let mut report = ChainReport {
+        depth: 0,
+        seconds: 0.0,
+        stopped_at: None,
+        re_entered: false,
+        arrived_dead: false,
+        hops: 0,
+        arrivals: Vec::new(),
     };
-    ChainReport {
-        depth: value_after(DEPTH_PREFIX)
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(0),
-        seconds: value_after(SECONDS_PREFIX)
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(0.0),
-        stopped_at: TERMINAL_LINES
-            .into_iter()
-            .find(|line| stderr.contains(line)),
-        re_entered: stderr.contains(RE_ENTERED_LINE),
-        arrived_dead: stderr.contains(ARRIVED_DEAD_LINE),
-        hops: stderr
-            .lines()
-            .filter(|line| line.contains("A level change was followed."))
-            .count(),
-        arrivals: stderr.lines().filter_map(parse_arrival).collect(),
+    let (mut depth, mut elapsed, mut terminal) = (None, None, None);
+    let mut invalid = false;
+    for raw in stderr.lines() {
+        let Some(line) = raw.strip_prefix("[info] ") else {
+            continue;
+        };
+        if let Some(value) = line.strip_prefix(DEPTH_PREFIX) {
+            let value = value.strip_suffix('.').and_then(unsigned::<usize>);
+            invalid |= depth.is_some() || value.is_none();
+            depth = value;
+        } else if let Some(value) = line.strip_prefix(SECONDS_PREFIX) {
+            let value = value.strip_suffix('.').and_then(seconds);
+            invalid |= elapsed.is_some() || value.is_none();
+            elapsed = value;
+        } else if line.starts_with("Chain walk depth")
+            || line.starts_with("Chain walk simulated seconds")
+        {
+            invalid = true;
+        } else if line.starts_with("The chain walk ") {
+            let known = TERMINAL_LINES.into_iter().find(|known| *known == line);
+            invalid |= terminal.is_some() || known.is_none();
+            terminal = known;
+        } else if line == "A level change was followed." {
+            report.hops += 1;
+        }
+        if let Some(arrival) = parse_arrival(raw) {
+            report.arrivals.push(arrival);
+        }
     }
+    report.depth = depth.unwrap_or(0);
+    report.seconds = elapsed.unwrap_or(0.0);
+    report.re_entered = terminal == Some(RE_ENTERED_LINE);
+    report.arrived_dead = terminal == Some(ARRIVED_DEAD_LINE);
+    if !invalid
+        && depth.is_some_and(|depth| (1..=MAX_CHAIN_ROUTES + 1).contains(&depth))
+        && elapsed.is_some()
+    {
+        report.stopped_at = terminal;
+    }
+    report
+}
+
+/// Compatibility row names, with no caller text or per-arrival measurements.
+#[must_use]
+pub fn aggregate_summary(report: &ChainReport, pass: bool) -> String {
+    format!(
+        "| Measure | Value |\n|---|---|\n| Distinct maps reached (chain depth) | {} |\n| Elapsed game seconds | {:.1} |\n| Result | {} |\n",
+        report.depth,
+        report.seconds,
+        if pass { "Pass" } else { "Fail" }
+    )
 }
 
 /// The summary row naming the loadout a chain run was handed at the start
@@ -373,7 +418,19 @@ pub fn write_summary(
 /// never followed a level change with the player already dead.
 #[must_use]
 pub fn passed(report: &ChainReport, min_depth: usize) -> bool {
-    report.depth >= min_depth && !report.re_entered && !report.arrived_dead
+    report.depth >= min_depth
+        && report.seconds.is_finite()
+        && report.seconds >= 0.0
+        && matches!(
+            report.stopped_at,
+            Some(
+                SECTION_ENDED_LINE
+                    | "The chain walk stopped."
+                    | "The chain walk has no further route."
+            )
+        )
+        && !report.re_entered
+        && !report.arrived_dead
 }
 
 pub const APP_BIN_NAME: &str = "open-half-life";
@@ -422,55 +479,12 @@ pub fn build_chain_binary(root: &Path) -> Result<PathBuf, &'static str> {
     Ok(root.join("target").join("release").join(name))
 }
 
-/// The fixed error reported when the binary about to be driven does not
-/// accept `--start-inventory` — a build without `dev-tools`, handed in
-/// with `--bin`.
-///
-/// Reported instead of running, because running anyway is what produced a
-/// "depth 0, Fail" table that looks like a walk that went nowhere rather
-/// than like a binary that never started.
-pub const NO_START_INVENTORY_SUPPORT: &str = "the binary does not accept --start-inventory (it needs a dev-tools build); pass an empty list to walk with none";
-
-/// Whether `bin` accepts `--start-inventory`, asked of the binary itself
-/// rather than assumed from how it was built (it may have arrived through
-/// `--bin`).
-///
-/// A `--help` that cannot be run or read at all is treated as "yes": the
-/// run that follows will fail with the app's own message, which is a
-/// better report than one invented here.
-fn supports_start_inventory(bin: &Path) -> bool {
-    let Ok(output) = Command::new(bin).arg("--help").output() else {
-        return true;
-    };
-    let text = String::from_utf8_lossy(&output.stdout);
-    let error = String::from_utf8_lossy(&output.stderr);
-    if text.is_empty() && error.is_empty() {
-        return true;
-    }
-    help_lists_start_inventory(&text) || help_lists_start_inventory(&error)
-}
-
-/// Whether one `--help` text names the flag. Split out so it can be
-/// tested without a binary to run.
+#[cfg(test)]
 fn help_lists_start_inventory(help: &str) -> bool {
     help.contains("--start-inventory")
 }
 
-/// Runs the chain once, with a deadline, and returns the run's stderr.
-fn run_chain(
-    bin: &Path,
-    payload_root: &Path,
-    start: &str,
-    routes: &[PathBuf],
-    start_inventory: Option<&str>,
-    timeout: Duration,
-) -> String {
-    let mut command = Command::new(bin);
-    command.args(chain_app_args(payload_root, start, routes, start_inventory));
-    capture_stderr(command, timeout)
-}
-
-/// The exact argument list [`run_chain`] drives the app with.
+/// The exact argument list the chain entrypoint drives the app with.
 ///
 /// A pure function so a test can read it: whether `--start-inventory` is
 /// passed at all is the difference between a walk and an "unexpected
@@ -502,47 +516,150 @@ fn chain_app_args(
     args
 }
 
-/// Runs `command` with a deadline and returns whatever it wrote to
-/// stderr, killing it if the deadline passes. Shared with
-/// `crate::plan_chain_hop`, which drives the same binary with a different
-/// argument list and reads the same kind of fixed report lines from it.
-pub fn capture_stderr(mut command: Command, timeout: Duration) -> String {
+/// Owned child outcome shared by both tools. Success-looking stderr is
+/// never proof of completion; callers require `Exited(0)` as well.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChildEnd {
+    Exited(i32),
+    TimedOut,
+    SpawnFailed,
+    WaitFailed,
+    ReadFailed,
+    OutputLimitExceeded,
+}
+
+impl ChildEnd {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Exited(0) => "child-ok",
+            Self::Exited(_) => "child-exit",
+            Self::TimedOut => "child-timeout",
+            Self::SpawnFailed => "child-spawn",
+            Self::WaitFailed => "child-wait",
+            Self::ReadFailed => "child-read",
+            Self::OutputLimitExceeded => "child-output-limit",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct CapturedRun {
+    pub end: ChildEnd,
+    pub stderr: String,
+}
+
+const OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
+
+fn read_bounded(mut reader: impl std::io::Read, limit: usize) -> Result<String, ChildEnd> {
+    let mut bytes = Vec::new();
+    let mut chunk = [0_u8; 8192];
+    loop {
+        let count = reader.read(&mut chunk).map_err(|_| ChildEnd::ReadFailed)?;
+        if count == 0 {
+            break;
+        }
+        if count > limit.saturating_sub(bytes.len()) {
+            return Err(ChildEnd::OutputLimitExceeded);
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+    }
+    String::from_utf8(bytes).map_err(|_| ChildEnd::ReadFailed)
+}
+
+pub fn capture_stderr(command: Command, timeout: Duration) -> CapturedRun {
+    capture_limited(command, timeout, OUTPUT_LIMIT)
+}
+
+fn capture_limited(mut command: Command, timeout: Duration, limit: usize) -> CapturedRun {
+    let failed = |end| CapturedRun {
+        end,
+        stderr: String::new(),
+    };
     let Ok(mut child) = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
     else {
-        return String::new();
+        return failed(ChildEnd::SpawnFailed);
     };
-    let mut stderr = child.stderr.take().expect("stderr is piped");
-    let reader = thread::spawn(move || {
-        let mut buffer = String::new();
-        let _ = stderr.read_to_string(&mut buffer);
-        buffer
+    capture_spawned(&mut child, timeout, limit)
+}
+
+fn capture_spawned(
+    child: &mut std::process::Child,
+    timeout: Duration,
+    limit: usize,
+) -> CapturedRun {
+    let failed = |end| CapturedRun {
+        end,
+        stderr: String::new(),
+    };
+    let Some(stderr) = child.stderr.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return failed(ChildEnd::ReadFailed);
+    };
+    let (send, receive) = mpsc::channel();
+    // A reader may outlive the deadline if another process inherited its pipe.
+    // It owns at most `limit` bytes and never prevents the child from being reaped.
+    let _reader = thread::spawn(move || {
+        let _ = send.send(read_bounded(stderr, limit));
     });
-    let deadline = Instant::now() + timeout;
+    let started = Instant::now();
+    let (mut end, mut captured) = (None, None);
     loop {
-        match child.try_wait() {
-            // Exited, or could not be waited on at all: either way there
-            // is nothing left to wait for.
-            Ok(Some(_)) | Err(_) => break,
-            Ok(None) => {
-                if Instant::now() >= deadline {
+        match receive.try_recv() {
+            Ok(Ok(text)) => captured = Some(text),
+            Ok(Err(error)) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return failed(error);
+            }
+            Err(mpsc::TryRecvError::Disconnected) if captured.is_none() => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return failed(ChildEnd::ReadFailed);
+            }
+            Err(_) => {}
+        }
+        if end.is_none() {
+            match child.try_wait() {
+                Ok(Some(status)) => end = Some(ChildEnd::Exited(status.code().unwrap_or(-1))),
+                Ok(None) => {}
+                Err(_) => {
                     let _ = child.kill();
                     let _ = child.wait();
-                    break;
+                    return failed(ChildEnd::WaitFailed);
                 }
-                thread::sleep(Duration::from_millis(50));
             }
         }
+        if let Some(end) = end
+            && let Some(stderr) = captured.take()
+        {
+            return CapturedRun { end, stderr };
+        }
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return failed(ChildEnd::TimedOut);
+        }
+        thread::sleep(Duration::from_millis(5));
     }
-    reader.join().unwrap_or_default()
 }
 
 /// Entry point for `cargo xtask chain-walk`, given the arguments after the
 /// subcommand name.
 pub fn run(root: &Path, raw_args: &[String]) -> ExitCode {
+    run_with(root, raw_args, &mut std::io::stdout(), capture_stderr)
+}
+
+fn run_with(
+    root: &Path,
+    raw_args: &[String],
+    output: &mut impl std::io::Write,
+    mut capture: impl FnMut(Command, Duration) -> CapturedRun,
+) -> ExitCode {
     let args = match Args::try_parse_from(
         std::iter::once("chain-walk".to_string()).chain(raw_args.iter().cloned()),
     ) {
@@ -552,65 +669,53 @@ pub fn run(root: &Path, raw_args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-
     let start = args
         .start
         .clone()
         .unwrap_or_else(|| ohl_campaign::STARTMAP.to_string());
-    let routes_dir = root.join("xtask").join("chain-routes");
-    let routes = match assemble_chain(&routes_dir, &start) {
-        Ok(routes) => routes,
-        Err(error) => {
-            eprintln!("error: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    let bin = match args.bin.clone() {
-        Some(bin) => bin,
-        None => match build_chain_binary(root) {
-            Ok(bin) => bin,
-            Err(error) => {
-                eprintln!("error: {error}");
-                return ExitCode::FAILURE;
-            }
-        },
-    };
-
-    let start_inventory = Some(args.start_inventory.as_str()).filter(|list| !list.is_empty());
-    if start_inventory.is_some() && !supports_start_inventory(&bin) {
-        eprintln!("error: {NO_START_INVENTORY_SUPPORT}");
+    let Ok(routes) = assemble_chain(&root.join("xtask/chain-routes"), &start) else {
+        let _ = writeln!(output, "error: chain-assembly");
         return ExitCode::FAILURE;
-    }
-
-    println!(
-        "Walking a chain of {} route(s) from the campaign start map...",
-        routes.len()
-    );
-    let started = Instant::now();
-    let stderr = run_chain(
-        &bin,
+    };
+    let bin = if let Some(bin) = args.bin {
+        bin
+    } else {
+        let Ok(bin) = build_chain_binary(root) else {
+            let _ = writeln!(output, "error: child-build");
+            return ExitCode::FAILURE;
+        };
+        bin
+    };
+    let inventory = Some(args.start_inventory.as_str()).filter(|list| !list.is_empty());
+    let mut command = Command::new(&bin);
+    command.args(chain_app_args(
         &args.payload_root,
         &start,
         &routes,
-        start_inventory,
-        Duration::from_secs(args.timeout),
-    );
-    let elapsed = started.elapsed();
-    let report = parse_report(&stderr);
-    print!(
-        "{}",
+        inventory,
+    ));
+    let started = Instant::now();
+    let captured = capture(command, Duration::from_secs(args.timeout));
+    let mut report = parse_report(&captured.stderr);
+    let pass = captured.end == ChildEnd::Exited(0) && passed(&report, args.min_depth);
+    if captured.end != ChildEnd::Exited(0) {
+        report.stopped_at = None;
+        let _ = writeln!(output, "error: {}", captured.end.code());
+    }
+    let summary = if args.aggregate_only {
+        aggregate_summary(&report, pass)
+    } else {
         write_summary(
             &start,
             routes.len(),
             &report,
             args.min_depth,
-            start_inventory,
-            elapsed
+            inventory,
+            started.elapsed(),
         )
-    );
-
-    if passed(&report, args.min_depth) {
+    };
+    let _ = write!(output, "{summary}");
+    if pass {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
@@ -1025,5 +1130,364 @@ mod tests {
         assert_eq!(report.hops, 2);
         assert_eq!(report.depth, 2);
         assert!(!passed(&report, 2));
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod child_fixtures {
+    use super::*;
+
+    pub const POISONS: [&str; 7] = [
+        "synthetic-start-secret",
+        "synthetic-loadout-secret",
+        "synthetic/path-secret",
+        "synthetic-warning-secret",
+        "synthetic-suffix-secret",
+        "987654",
+        "876543",
+    ];
+
+    pub fn command(case: &str) -> Command {
+        let mut command = Command::new(std::env::current_exe().expect("test executable"));
+        command
+            .args([
+                "--exact",
+                "chain_walk::child_fixtures::child_helper",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("OHL_SYNTHETIC_CHILD", case);
+        command
+    }
+
+    /// Executed only by a spawned copy of this test executable, on every OS.
+    #[test]
+    #[ignore = "synthetic child entrypoint"]
+    fn child_helper() {
+        use std::io::Write as _;
+        let Ok(case) = std::env::var("OHL_SYNTHETIC_CHILD") else {
+            return;
+        };
+        let mut stderr = std::io::stderr().lock();
+        let chain = "[info] The chain walk has no further route.\n[info] Chain walk depth: 2.\n[info] Chain walk simulated seconds: 1.0.\n";
+        let planner = "[info] Route plan cells: 1.\n[info] Route plan segments: 1.\n[info] Route plan ladder climbs: 0.\n[info] Route plan pickup detours: 0.\n[info] Route plan door presses: 0.\n[info] Route plan replay attempts: 1.\n[info] Route plan simulated seconds: 1.0.\n[info] Route plan written.\n";
+        writeln!(stderr, "[warn] {}", POISONS[3]).expect("stderr");
+        writeln!(stderr, "[info] Synthetic diagnostic: {}", POISONS[4]).expect("stderr");
+        writeln!(
+            stderr,
+            "[info] Chain walk arrival 2: weapons {}, ammo {}.",
+            POISONS[5], POISONS[6]
+        )
+        .expect("stderr");
+        write!(stderr, "{chain}{planner}").expect("stderr");
+        stderr.flush().expect("flush");
+        if let Some(ready) = std::env::var_os("OHL_SYNTHETIC_READY") {
+            std::fs::write(ready, b"markers flushed").expect("ready");
+        }
+        if let Some(out) = std::env::var_os("OHL_SYNTHETIC_OUT")
+            && case != "missing"
+        {
+            let body = if case == "grammar" {
+                "1 forward synthetic-suffix-secret\n"
+            } else {
+                "1 forward\n"
+            };
+            std::fs::write(
+                out,
+                format!("{}{body}", crate::plan_chain_hop::candidate_header()),
+            )
+            .expect("candidate");
+        }
+        match case.as_str() {
+            "invalid-utf8" => {
+                stderr.write_all(&[0xff]).expect("stderr");
+            }
+            "nonzero" => std::process::exit(7),
+            "timeout" => std::thread::sleep(Duration::from_secs(10)),
+            "overflow" => {
+                for _ in 0..512 {
+                    stderr.write_all(&[b'x'; 8192]).expect("stderr");
+                }
+            }
+            "suffix" => {
+                writeln!(stderr, "[info] Route plan written. {}", POISONS[4]).expect("stderr");
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::child_fixtures::{POISONS, command};
+    use super::*;
+
+    #[test]
+    fn chain_child_late_nonzero_and_overflow_fail_closed() {
+        let late = capture_stderr(command("nonzero"), Duration::from_secs(5));
+        assert_eq!(late.end, ChildEnd::Exited(7));
+        assert!(passed(&parse_report(&late.stderr), 2));
+        let overflow = capture_limited(command("overflow"), Duration::from_secs(5), 1024);
+        assert_eq!(overflow.end, ChildEnd::OutputLimitExceeded);
+        assert!(overflow.stderr.is_empty());
+        let overflow_default = capture_stderr(command("overflow"), Duration::from_secs(5));
+        assert_eq!(overflow_default.end, ChildEnd::OutputLimitExceeded);
+    }
+
+    #[test]
+    fn chain_child_timeout_and_overflow_are_killed_and_reaped() {
+        for (case, limit, expected) in [
+            ("timeout", OUTPUT_LIMIT, ChildEnd::TimedOut),
+            ("overflow", 1024, ChildEnd::OutputLimitExceeded),
+        ] {
+            let directory = tempfile::tempdir().expect("ready directory");
+            let ready = directory.path().join("ready.txt");
+            let mut child = command(case)
+                .env("OHL_SYNTHETIC_READY", &ready)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("spawn");
+            let captured = capture_spawned(&mut child, Duration::from_secs(1), limit);
+            assert!(ready.is_file(), "valid markers were flushed before failure");
+            assert_eq!(captured.end, expected);
+            let status = child
+                .try_wait()
+                .expect("wait after capture")
+                .expect("child terminated");
+            assert!(!status.success());
+            assert_eq!(child.wait().expect("reaped child cached status"), status);
+        }
+    }
+
+    #[test]
+    fn chain_child_spawn_and_read_errors_are_typed() {
+        struct Broken;
+        impl std::io::Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("synthetic read failure"))
+            }
+        }
+        let captured = capture_stderr(
+            Command::new("synthetic-missing-child-executable"),
+            Duration::from_secs(1),
+        );
+        assert_eq!(captured.end, ChildEnd::SpawnFailed);
+        assert_eq!(read_bounded(Broken, 10), Err(ChildEnd::ReadFailed));
+        assert_eq!(read_bounded(&[0xff][..], 10), Err(ChildEnd::ReadFailed));
+        let malformed = capture_stderr(command("invalid-utf8"), Duration::from_secs(5));
+        assert_eq!(malformed.end, ChildEnd::ReadFailed);
+        let mut no_pipe = command("valid")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn without pipe");
+        assert_eq!(
+            capture_spawned(&mut no_pipe, Duration::from_secs(5), OUTPUT_LIMIT).end,
+            ChildEnd::ReadFailed
+        );
+        assert!(no_pipe.try_wait().expect("wait after capture").is_some());
+    }
+
+    #[test]
+    fn chain_reports_require_exact_complete_unique_terminal_and_numbers() {
+        let valid = "[info] The chain walk stopped.\n[info] Chain walk depth: 12.\n[info] Chain walk simulated seconds: 660.8.\n";
+        assert!(passed(&parse_report(valid), 12));
+        for terminal in TERMINAL_LINES {
+            let text = valid.replace("The chain walk stopped.", terminal);
+            assert_eq!(
+                passed(&parse_report(&text), 12),
+                terminal != RE_ENTERED_LINE && terminal != ARRIVED_DEAD_LINE
+            );
+        }
+        for text in [
+            valid.replace("[info] The chain walk stopped.\n", ""),
+            format!("{valid}[info] The chain walk stopped.\n"),
+            format!("{valid}[info] The chain walk arrived dead.\n"),
+            format!("{valid}[info] Chain walk depth: 12.\n"),
+            format!("{valid}[info] Chain walk simulated seconds: 660.8.\n"),
+            valid.replace("stopped.", "stopped. synthetic-suffix-secret"),
+            valid.replace("12.", "12. synthetic-suffix-secret"),
+            valid.replace("660.8.", "NaN."),
+            valid.replace("660.8.", "inf."),
+            valid.replace("660.8.", "-1.0."),
+            valid.replace("[info]", "synthetic-prefix [info]"),
+            valid.replace("12.", "999999999999999999999999999999."),
+        ] {
+            assert!(
+                !passed(&parse_report(&text), 12),
+                "malformed synthetic report accepted"
+            );
+        }
+        assert!(!passed(&parse_report(&valid.replace("12.", "11.")), 12));
+        let generic = parse_report(&valid.replace("12.", "2."));
+        assert!(passed(&generic, 2));
+        assert!(!passed(&generic, 12));
+        let args = Args::try_parse_from(["chain-walk", "--payload-root", "."]).expect("args");
+        assert_eq!(args.min_depth, 2);
+    }
+
+    #[test]
+    fn chain_neutral_assembly_preserves_order_scope_gaps_cap_and_rejects_duplicates() {
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path();
+        let start = ohl_campaign::STARTMAP;
+        let legacy = path.join(format!("{start}.txt"));
+        std::fs::write(&legacy, b"1 wait\n").expect("route");
+        std::fs::write(path.join("hop-0001.txt"), b"2 wait\n").expect("route");
+        std::fs::write(path.join("hop-0003.txt"), b"4 wait\n").expect("route");
+        let routes = assemble_chain(path, start).expect("mixed assembly");
+        assert_eq!(routes, vec![legacy.clone(), path.join("hop-0001.txt")]);
+        assert_eq!(std::fs::read(&legacy).expect("old bytes"), b"1 wait\n");
+        std::fs::write(path.join(format!("{start}-hop1.txt")), b"3 wait\n").expect("route");
+        assert_eq!(
+            assemble_chain(path, start),
+            Err(AssemblyError::DuplicateOrdinal)
+        );
+        std::fs::remove_file(path.join(format!("{start}-hop1.txt")))
+            .expect("remove competing fixture");
+        let other = ohl_campaign::TRAINMAP;
+        std::fs::write(path.join(format!("{other}.txt")), b"1 wait\n").expect("route");
+        assert_eq!(assemble_chain(path, other).expect("other scope").len(), 1);
+        for ordinal in 2..=MAX_CHAIN_ROUTES {
+            std::fs::write(path.join(format!("hop-{ordinal:04}.txt")), b"1 wait\n").expect("route");
+        }
+        assert_eq!(
+            assemble_chain(path, start).expect("cap").len(),
+            MAX_CHAIN_ROUTES
+        );
+        std::fs::remove_file(&legacy).expect("legacy fixture");
+        std::fs::write(path.join("hop-0000.txt"), b"1 wait\n").expect("neutral first");
+        assert_eq!(
+            assemble_chain(path, start).expect("neutral only").len(),
+            MAX_CHAIN_ROUTES
+        );
+    }
+
+    fn entrypoint_fixture() -> (tempfile::TempDir, Vec<String>) {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::create_dir_all(root.path().join("xtask/chain-routes")).expect("routes");
+        std::fs::write(
+            root.path().join("xtask/chain-routes/hop-0000.txt"),
+            b"1 wait\n",
+        )
+        .expect("route");
+        let raw: Vec<_> = [
+            "--payload-root",
+            POISONS[2],
+            "--bin",
+            POISONS[2],
+            "--start-inventory",
+            POISONS[1],
+            "--aggregate-only",
+            "--min-depth",
+            "2",
+        ]
+        .map(String::from)
+        .into();
+        (root, raw)
+    }
+
+    #[test]
+    fn chain_full_entrypoint_aggregate_boundary_rejects_child_failure_and_poison() {
+        let (root, raw) = entrypoint_fixture();
+        for (case, success) in [
+            ("valid", true),
+            ("nonzero", false),
+            ("timeout", false),
+            ("overflow", false),
+        ] {
+            let mut output = Vec::new();
+            let exit = run_with(root.path(), &raw, &mut output, |_, _| {
+                capture_stderr(
+                    command(case),
+                    if case == "timeout" {
+                        Duration::from_secs(1)
+                    } else {
+                        Duration::from_secs(5)
+                    },
+                )
+            });
+            assert_eq!(exit == ExitCode::SUCCESS, success);
+            let text = String::from_utf8(output).expect("utf8");
+            for poison in POISONS {
+                assert!(!text.contains(poison));
+            }
+            assert!(!text.contains(ohl_campaign::STARTMAP));
+            assert!(text.contains(if success {
+                "| Result | Pass |"
+            } else {
+                "| Result | Fail |"
+            }));
+        }
+    }
+
+    #[test]
+    fn chain_full_entrypoint_preserves_explicit_minimum_and_typed_failure() {
+        let (root, raw) = entrypoint_fixture();
+        let mut continuation = raw.clone();
+        let minimum = continuation
+            .iter()
+            .position(|arg| arg == "--min-depth")
+            .expect("minimum");
+        continuation[minimum + 1] = "12".to_string();
+        let mut output = Vec::new();
+        assert_eq!(
+            run_with(root.path(), &continuation, &mut output, |_, _| {
+                capture_stderr(command("valid"), Duration::from_secs(5))
+            }),
+            ExitCode::FAILURE
+        );
+        let compatibility: Vec<_> = raw
+            .iter()
+            .filter(|arg| *arg != "--aggregate-only")
+            .cloned()
+            .collect();
+        let mut output = Vec::new();
+        assert_eq!(
+            run_with(root.path(), &compatibility, &mut output, |_, _| {
+                capture_stderr(command("nonzero"), Duration::from_secs(5))
+            }),
+            ExitCode::FAILURE
+        );
+        assert!(
+            String::from_utf8(output)
+                .expect("utf8")
+                .contains("| Result | Fail |")
+        );
+        for end in [
+            ChildEnd::WaitFailed,
+            ChildEnd::ReadFailed,
+            ChildEnd::SpawnFailed,
+        ] {
+            let mut output = Vec::new();
+            let exit = run_with(root.path(), &raw, &mut output, |_, _| {
+                CapturedRun {
+                end,
+                stderr: "[info] The chain walk stopped.\n[info] Chain walk depth: 2.\n[info] Chain walk simulated seconds: 1.0.\n".to_string(),
+            }
+            });
+            assert_eq!(exit, ExitCode::FAILURE);
+            assert!(
+                String::from_utf8(output)
+                    .expect("utf8")
+                    .contains(end.code())
+            );
+        }
+        // A caller-controlled invalid start must also cross the entrypoint safely.
+        let mut raw = raw;
+        raw.extend(["--start".to_string(), POISONS[0].to_string()]);
+        let mut output = Vec::new();
+        assert_eq!(
+            run_with(root.path(), &raw, &mut output, |_, _| panic!(
+                "invalid start never spawns"
+            )),
+            ExitCode::FAILURE
+        );
+        for poison in POISONS {
+            assert!(!String::from_utf8_lossy(&output).contains(poison));
+        }
     }
 }

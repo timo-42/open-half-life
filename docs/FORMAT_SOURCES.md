@@ -7900,3 +7900,48 @@ Its container encode/fixed-byte decode checks pass with the independently
 authored literal unchanged. The focused 23-test filter includes these three
 review regressions. Their three targeted mutations all failed the selected
 tests; the original sources were restored and each normal test passed again.
+
+## M9.NEXT — bounded chain tool admission and private reporting
+
+The controller script grammar is project-authored, documented in
+`docs/m79-design.md` §7 and `crates/ohl-app/src/script.rs`; its planner serializer
+is `crates/ohl-app/src/route_planner.rs::script_text` and `write_route`. This
+change adds no external format claim and no gameplay or replay policy.
+
+The xtask admission check deliberately accepts only the serializer's published
+subset: positive bounded tick counts with `forward`, `forward jump`, `back`,
+`wait`, `guard`, `use`, or `look 0 <finite relative yaw>`. It requires the exact
+project-authored serializer header, valid UTF-8, a final newline, at most 4096
+commands, 100000 total ticks and 256 KiB of text. Comments or additional metadata
+in the command body are rejected. This is an artifact allowlist, not a duplicate
+of the general engine/app script parser: it neither expands ticks nor resolves
+input semantics and does not widen xtask's dependency graph. A synthetic test
+cross-checks the header against the serializer source. The app still performs
+saved replay, survival/backward-goal checks and final live confirmation before
+writing; this wrapper never replaces those checks.
+
+Child stderr is bounded to 4 MiB in memory; stdin is closed and stdout discarded.
+Exit, timeout, spawn, wait, read/UTF-8 and overflow outcomes are typed. Timeouts
+and capture failures kill and reap the child. Exact complete `[info] ` final
+messages and decimal fields are required; duplicates, unknown/malformed chain
+termination, contradictory planner refusal and missing fields cannot pass.
+Stopped, no-further-route and section-ended walks retain their explicit minimum
+depth contract. Continuation callers must pass `--min-depth 12` for the established
+baseline; the generic default remains two. Planning requires no-further-route
+and depth equal to supplied prefix length plus one.
+
+`--aggregate-only` preserves these chain row labels:
+`Distinct maps reached (chain depth)`, `Elapsed game seconds` and `Result`.
+Its planner row is only `Result`: `Validated` or `Not written`. Error classifications come from fixed project strings. Start names,
+loadouts, paths, per-arrival values, search counts and captured diagnostic suffixes
+are absent. An outer private in-memory capture is still required for clap and
+compiler output. Compatibility summaries remain available without the flag.
+
+The default campaign can mix unchanged legacy files with neutral `hop-NNNN.txt`
+files, using the route ordinal rather than entered-map depth. An ordinal claimed
+by both conventions fails, the first gap stops assembly, the existing cap stays
+fixed and another campaign start cannot consume default-chain neutral files.
+New plans use a fresh owned directory under ignored `target/chain-plan-staging`.
+Only successful child completion, exact reports and validated content admit the
+candidate with `create_new`; an existing destination is preserved. Cleanup removes
+only this attempt's staging directory or its own failed destination write.

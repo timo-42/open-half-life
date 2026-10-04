@@ -8492,3 +8492,56 @@ full gib bodypart/skin/animation/original-scale fidelity, full renderfx animatio
 additional beam styles/combat, sprite activation expansion and cross-level
 effect continuation. Late studio transparency remains separate from other
 translucent families; model-center sorting does not solve intersecting geometry.
+
+### M9.NEXT — chain xtask completion, admission and aggregate privacy
+
+Prerequisite reporting/process fix for future chain continuation. No new hop,
+engine behavior, planner replay policy, save encoding or existing route changes.
+Both tools now keep bounded stderr and typed child outcomes, require exact
+complete final reports, and fail after late exit failure, timeout or overflow.
+Recognized stopped/no-further-route/section-ended semantics and the generic depth
+default remain intact; continuation depth is an explicit caller requirement.
+
+Opt-in `--aggregate-only` reports chain depth/time/Pass-or-Fail using existing
+row labels, or a fixed planner admission verdict and allowlisted error codes.
+Default-campaign neutral ordinals can extend the unchanged legacy prefix; gaps,
+the cap and competing-ordinal rejection are enforced. Planning writes only into
+fresh ignored staging and admits validated controller-only text without overwrite.
+The app's clean-arrival refusal, saved replay, survival, backward-goal refusal
+and live confirmation remain unchanged.
+
+Focused validation passes: workspace formatting, xtask clippy with all targets
+and warnings denied, 43 chain-related tests and an explicit 13-test planner
+filter (overlapping tests, not additive counts). The one ignored helper is
+explicitly spawned by the process tests using the current test executable,
+without shell or Python child dependencies. Tests exercise success markers before
+late nonzero exit, timeout and overflow; termination and reaping; actual spawn,
+missing-pipe and UTF-8 read failures; typed wait-failure admission; exact final
+messages/numbers; explicit minimum depth; full entrypoint poison suppression;
+neutral assembly; and fresh bounded candidate admission. The wait-failure case
+uses the typed outcome seam because std offers no portable way to force an OS
+wait error without an external process/FFI dependency.
+
+Thirty-seven actual source mutations were killed by executing their targeted
+tests, with the original sources restored after every attempt: discard child
+exit code; remove chain/planner outcome gates; classify timeout as success;
+remove timeout kill before reap; allow capture overflow; double its limit;
+treat a read error as EOF; allow missing/duplicate termination; allow duplicate
+depth/seconds; accept arbitrary numeric suffixes; replace the caller minimum with
+the generic default; remove death/re-entry guards; reject compatible stopped
+walks; leak start/arrival data in aggregate mode; leak planner loadout/counts;
+accept a written marker without fields; accept duplicate markers; ignore planner
+refusal; forward untyped planner suffixes; bypass planning-prefix checks; accept
+a marker without a fresh candidate; bypass candidate grammar/header/tick/line
+bounds; overwrite an existing output; silently prefer a competing ordinal;
+skip assembly gaps; share neutral routes with another start; raise the assembly
+cap; bypass the planner capacity check; return to legacy naming for new default
+routes; and reuse an existing staging attempt. The restored normal focused tests
+and clippy pass. Additional UTF-8/byte-bound mutation probes remain pending.
+
+Every Cargo invocation used the assigned four-job, line-tables-only,
+nonincremental environment. The focused target stayed below 425 MiB with a
+1.5 GiB cap and an 18 GiB host free-space guard; no release build was run.
+No payload planning has been performed. Full workspace validation, policy/graph,
+combat/campaign smoke and both baseline chains remain required before independent
+integration; this entry does not claim them.
