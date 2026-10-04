@@ -8019,8 +8019,9 @@ coordinate space of the eye field; they do not establish an anatomically exact
 muzzle or damage target for every species. A generated BSP/MDL fixture varies
 source and target eyes independently while holding model anchors and posed
 boxes fixed: a low opening separates sight acquisition from physical projectile
-eligibility, and a full wall blocks both. Zero and invalid eye metadata exercise
-the derived fallback. These synthetic controls validate this project's policy,
+eligibility, and a full wall prevents acquisition and launch. That full-wall
+control does not test interception of an already launched projectile. Zero and
+invalid eye metadata exercise the derived fallback. These synthetic controls validate this project's policy,
 not universal model fidelity; per-attack muzzle attachments remain
 `TODO(black-box)`.
 

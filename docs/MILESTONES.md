@@ -8669,8 +8669,9 @@ probe nor interrupted wrapper run is counted as mutation success.
 An additional real-AI unguided-projectile fixture independently varies source
 and target model eyes in open, low-opening and full-wall rooms while keeping
 feet anchors, rendered placement and posed hitboxes fixed. Fixed health, skill,
-seed and ticks distinguish sight acquisition from swept damage/death. It checks
-one resolved acid profile, registry owner/target, delayed physical impact,
+seed and ticks distinguish sight acquisition from swept damage/death. The
+full-wall control prevents acquisition and launch; it does not independently
+test interception after launch. The fixture checks one resolved acid profile, registry owner/target, delayed physical impact,
 owner exclusion and terminal projectile/profile removal; zero and invalid
 metadata exercise clipping-eye fallbacks. Six further actual mutations were
 killed and byte-restored: legacy source muzzle, legacy target aim, ignored
