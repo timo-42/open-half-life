@@ -8493,7 +8493,7 @@ additional beam styles/combat, sprite activation expansion and cross-level
 effect continuation. Late studio transparency remains separate from other
 translucent families; model-center sorting does not solve intersecting geometry.
 
-### M9.NEXT — chain xtask completion, admission and aggregate privacy
+### M9.51 — chain xtask completion, admission and aggregate privacy
 
 Prerequisite reporting/process fix for future chain continuation. No new hop,
 engine behavior, planner replay policy, save encoding or existing route changes.
@@ -8557,9 +8557,9 @@ and explicit 14-test planner filter pass.
 Every Cargo invocation used the assigned four-job, line-tables-only,
 nonincremental environment. The focused target stayed below 425 MiB with a
 1.5 GiB cap and an 18 GiB host free-space guard; no release build was run.
-No payload planning has been performed. Full workspace validation, policy/graph,
-combat/campaign smoke and both baseline chains remain required before independent
-integration; this entry does not claim them.
+No payload planning has been performed. The combined full validation recorded
+below follows this focused checkpoint; independent review and integration remain
+separate requirements.
 
 A Windows CI source-header assertion exposed a test-only newline mismatch. The
 source cross-check now applies Rust's CRLF-pair normalization while preserving
@@ -8567,5 +8567,35 @@ lone CR and header content. Explicit LF/CRLF positives and altered-header/lone-C
 negatives discriminate the boundary; a CRLF candidate remains rejected by exact
 production byte admission. Both source-normalization mutants were killed and
 restored before the passing normal focused baseline. Production logic, app,
-workflow and checkout policy are unchanged. Fresh exact-head Windows CI is pending;
-the log supports the newline diagnosis but did not expose checkout file bytes.
+workflow and checkout policy are unchanged. Fresh exact-head CI passes all 14
+active jobs with three expected skips, including Windows tests. The earlier log
+supported the newline diagnosis but did not expose checkout file bytes.
+Combined full validation passed on unchanged source head
+`0d1eb949096985d42cbdb9209d537dfb06d56eb5`, tree
+`ac9190ea0da42343962313e3c3688888e1088ae1`, based on integrated M9.50.
+Workspace tests total **2888 passed, zero failed, 35 ignored**; regular tests
+unset the presence-based GPU test variable. Default, `dev-tools` and all-feature
+workspace Clippy checks deny warnings. All seven nonpayload checks ran
+sequentially in the assigned four-job environment, with an owned target cap of
+16 GiB and an 18 GiB free-space floor; neither guard was crossed.
+
+The exclusive runtime window used the independently archived M9.50 release
+with `dev-tools`, verified by exact crates tree, unchanged dependency/feature/
+build sources and binary SHA-256
+`51e4882fbb6fa9596399501b61468f8803c5505f3830f2154ccdd227c4110b2d`.
+Combat passed **37/37**, with zero unexpected-line, load-error, timeout or crash
+buckets. Campaign loaded/rendered **93/93**, with all failure buckets zero.
+Both distinct baseline inventory runs passed at **depth 12 / Pass / 660.8 game
+seconds**, each using aggregate-only output and an explicit required depth of
+12. All four child processes exited successfully; no retry or release rebuild
+was needed. Raw streams stayed in memory, smoke summaries used a null sink and
+owned temporary captures were removed. All 744 tracked files' membership and
+bytes, both tool-source hashes and the archive hash were unchanged across all
+gates. No owned Cargo or runtime process remained afterward.
+
+Gates: formatting; workspace all-target Clippy default/dev-tools/all-features with warnings denied; workspace tests 2888/0/35; policy; crate graph; combat 37/37 with zero unexpected/load/timeout/crash; campaign 93/93; both distinct baseline chains depth 12 / Pass / 660.8 game seconds — all pass.
+
+This evidence-only follow-up changes the two authored appendices. Tool source
+and tests remain byte-identical to the fully validated head, preserving all 47
+actually killed and restored mutation probes. Milestone numbering and merge
+remain assigned to integration.
