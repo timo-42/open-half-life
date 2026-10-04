@@ -8723,13 +8723,36 @@ These are project-authored fixture corrections, not retail behavior claims.
 Mechanical helper extraction preserves the existing player-view restore block
 and isolates only the new tag44 writer; old section order is unchanged.
 
-**Gates.** Focused checks above pass; the later strengthened turret suite below
-passes61/61 and its31 additional mutation pairs have passing restored controls.
-All three workspace/all-target Clippy
-configurations, workspace tests, policy, graph, combat 37/37 with zero unexpected
-lines, campaign 93/93 and both baseline chains at depth 12 / Pass / 660.8 seconds
-remain **pending**, along with independent final evidence review. No payload,
-release or GPU execution is claimed.
+**Gates.** All package gates pass on `f162dc4`: formatting; workspace/all-target
+Clippy in default, `dev-tools` and all-feature configurations with warnings
+denied; workspace tests **2967 passed, zero failed, 35 ignored**, across 233
+result summaries including 36 doc-test crates and all **61 engine turret tests**;
+policy; and the 36-crate dependency graph. Normal release builds of the app
+with `dev-tools` and xtask completed. Combat passes **37/37** with zero unexpected
+lines, load errors, timeouts or crashes; campaign passes **93/93**; both distinct
+baseline inventory chains reach **depth 12 / Pass / 660.8 game seconds**. The four
+runtime gates required no retries or expectation changes. Raw runtime output
+stayed in memory, temporary captures were removed, and owned process groups
+stopped. GPU-specific tests were not enabled.
+
+The first full workspace-test build reached its resource guard before any
+test ran; that attempt remains a resource abort, not a passing test result.
+After scoped inactive-debug cleanup, the successful attempt used only the
+additional `CARGO_PROFILE_TEST_STRIP=debuginfo` setting. This strips test debug
+information without changing assertions, debug configuration, features or test
+selection; the engine test executable retains its ordinary symbol/string
+tables. The setting was unset for both normal release builds. Every Cargo
+command used four jobs, line-tables-only development debug information and
+disabled incremental compilation. The successful non-runtime gates peaked at
+3,955,539,968 target bytes; the release builds peaked at 5,025,366,016 bytes.
+The tested source, protected save/runtime files, compiler configuration and
+normal binary identities stayed unchanged through the runtime gates.
+
+The independent mutation evidence review accepted the historical 58 pairings
+and all 31 strengthened fault pairs, retaining the recorded survivors and
+early-assertion limits below. This final gate record supersedes checkpoint-local
+pending statements elsewhere in this entry. Final PR review, numbering and
+merge remain outstanding; all named cuts and fidelity limitations remain.
 
 **Cuts and next dependency.** Mutation discrimination, full runtime review and
 all workspace/runtime gates remain required. Frozen tags 26/42/43 and weapon/entity/render encodings
