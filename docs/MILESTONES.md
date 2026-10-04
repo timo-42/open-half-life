@@ -8617,6 +8617,13 @@ a separate actual-barrel-hit gate for Only Direct. Cadence retains fractional
 time but permits at most one command per update. Turret source and operator
 attacker remain separate in every outgoing command. A single authored-plus-
 live quaternion exposes the common brush axis-angle and the barrel position.
+Review follow-ups make equivalent-angle selection respect mechanical and
+locked-axis reachability before comparing travel from the current pose;
+full-range wrap and vertical-yaw continuity avoid artificial branch turns.
+The controls result also explicitly requests cancellation of charged,
+continuous and pending handheld firing on successful mount, preserving
+resources and already-spent ammo. Actual weapon cancellation, passive
+cooldown progression and mounted-restore enforcement await integration.
 
 Published provenance and project choices are recorded under "Turret
 definitions and simulation" in `docs/FORMAT_SOURCES.md`. TWHL's explicit
@@ -8632,13 +8639,19 @@ Synthetic test source covers parsing/bounds, all variants, omitted versus
 zero damage, nonzero authored pose, real-player-only control intent, local and
 remote claim/release, missing/dead player memory, master/range/angle/LOS gates,
 direct-fire geometry, cadence partitioning/catch-up and deterministic RNG
-continuation. These value-boundary tests are not actual Game input/combat or
+continuation. Added angle regressions cover locked pitch with a reachable
+half-turn, an alternate current pose, full-range wrap, vertical crossing and
+axis-rate ranking. These value-boundary tests are not actual Game input/combat or
 save tests and have not been run. Later integration must prove actual target
 health changes, unchanged handheld ammo during control, wall and source-brush
 filtering, per-shot target dispatch, variant-specific timing, owner versus
 operator attribution and live-versus-restored continuation with killed and
 restored mutations. Positive authored damage supplies the real combat cases;
 zero damage and no-bullet selection provide negative controls.
+Required handheld regressions include charged Gauss into Use+Attack without
+release-fire or new ammo consumption, Egon and satchel held control edges,
+normal input after release, and consistent mounted-save restoration. Existing
+world projectiles/deployables must keep advancing during control.
 
 **Cuts and next dependency.** Registration, map-use and pre-weapon phase
 wiring, shared brush-pose integration, P1 rocket source-brush filtering and

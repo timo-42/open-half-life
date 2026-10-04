@@ -139,12 +139,29 @@ fn same_tick_use_and_attack_claims_turret_and_release_does_not_leak_attack() {
     };
     let claimed = system.resolve_controls(input, &[fixture.candidate()], Some(fixture.controls));
     assert!(claimed.consume_use && claimed.suppress_weapons);
+    assert!(claimed.cancel_handheld_actions);
     assert_eq!(claimed.controlled.unwrap().tank, fixture.tank);
     assert!(claimed.controlled.unwrap().attack);
     let held = system.resolve_controls(fixture.input(), &[fixture.candidate()], None);
     assert!(held.suppress_weapons && !held.consume_use);
+    assert!(!held.cancel_handheld_actions);
+    system.queue_remote(TankControlIntent {
+        tank: fixture.tank,
+        player: fixture.player,
+        use_type: TriggerUse::On,
+    });
+    let remote = ControlCandidate {
+        controls: None,
+        bounds: None,
+        ..fixture.candidate()
+    };
+    let repeated_on =
+        system.resolve_controls(fixture.input(), &[fixture.candidate(), remote], None);
+    assert!(!repeated_on.cancel_handheld_actions);
+    assert_eq!(system.mounted().unwrap().controls, Some(fixture.controls));
     let released = system.resolve_controls(input, &[fixture.candidate()], Some(fixture.controls));
     assert!(released.consume_use && released.suppress_weapons);
+    assert!(!released.cancel_handheld_actions);
     assert!(released.controlled.is_none());
     assert!(
         !system
@@ -211,7 +228,15 @@ fn remote_use_keeps_player_identity_and_never_teleports_or_mounts_foreign_operat
     });
     let mounted = system.resolve_controls(input, &[remote], None);
     assert!(mounted.suppress_weapons && !mounted.consume_use);
+    assert!(mounted.cancel_handheld_actions);
     assert_eq!(system.mounted().unwrap().anchor, input.position);
+    system.queue_remote(TankControlIntent {
+        tank: fixture.tank,
+        player: fixture.player,
+        use_type: TriggerUse::On,
+    });
+    let held = system.resolve_controls(input, &[remote], None);
+    assert!(held.suppress_weapons && !held.cancel_handheld_actions);
     let moved = ControlInput {
         position: input.position + Vec3::X * (CONTROL_MARGIN + 1.0),
         ..input
@@ -623,4 +648,181 @@ fn deterministic_spread_continues_from_live_rng_and_cadence_values() {
         );
     }
     assert_ne!(state.rng, 123);
+}
+
+fn direction_at(pitch: f32, yaw: f32) -> Vec3 {
+    let (pitch_sin, pitch_cos) = pitch.to_radians().sin_cos();
+    let (yaw_sin, yaw_cos) = yaw.to_radians().sin_cos();
+    Vec3::new(pitch_cos * yaw_cos, pitch_cos * yaw_sin, -pitch_sin)
+}
+
+#[test]
+fn locked_pitch_chooses_reachable_half_turn_for_automatic_and_controlled_aim() {
+    let fixture = Fixture::new();
+    for pitch_range in ["0", "90"] {
+        for controlled in [false, true] {
+            let tank = def(
+                "func_tank",
+                &[
+                    ("angles", "60 0 0"),
+                    ("pitchrate", "0"),
+                    ("pitchrange", pitch_range),
+                    ("pitchtolerance", "0.01"),
+                    ("yawrange", "180"),
+                    ("yawrate", "90"),
+                    ("yawtolerance", "0.01"),
+                ],
+            );
+            let mut state = TankState::spawn(&tank, 1);
+            let direction = direction_at(60.0, 180.0);
+            let mut tick = fixture.tick(0.1);
+            tick.player.as_mut().unwrap().eye = direction * 128.0;
+            if controlled {
+                tick.controlled = Some(ControlledAim {
+                    tank: fixture.tank,
+                    player: fixture.player,
+                    direction,
+                    attack: false,
+                });
+            }
+            for _ in 0..19 {
+                assert!(advance_tank(&tank, &mut state, tick, &Geometry::default()).is_none());
+                assert_eq!(state.relative_pitch, 0.0);
+            }
+            assert!((state.relative_yaw.abs() - 171.0).abs() < 0.001);
+            if let Some(aim) = &mut tick.controlled {
+                aim.attack = true;
+            }
+            let shot = advance_tank(&tank, &mut state, tick, &Geometry::default()).unwrap();
+            assert!(shot.direction.abs_diff_eq(direction, 1.0e-5));
+            assert_eq!(state.relative_pitch, 0.0);
+            assert!((state.relative_yaw.abs() - 180.0).abs() < 0.001);
+        }
+    }
+}
+
+#[test]
+fn alternate_euler_solution_tracks_current_pose_without_returning_toward_authored_zero() {
+    let fixture = Fixture::new();
+    let tank = def(
+        "func_tank",
+        &[
+            ("pitchrange", "180"),
+            ("pitchrate", "20"),
+            ("yawrange", "180"),
+            ("yawrate", "20"),
+        ],
+    );
+    let mut state = TankState::spawn(&tank, 1);
+    state.relative_pitch = 140.0;
+    state.relative_yaw = 170.0;
+    let direction = direction_at(145.0, 170.0);
+    let tick = TankTick {
+        controlled: Some(ControlledAim {
+            tank: fixture.tank,
+            player: fixture.player,
+            direction,
+            attack: true,
+        }),
+        ..fixture.tick(0.1)
+    };
+    for expected_pitch in [142.0, 144.0, 145.0, 145.0] {
+        let shot = advance_tank(&tank, &mut state, tick, &Geometry::default()).unwrap();
+        assert!((state.relative_pitch - expected_pitch).abs() < 0.001);
+        assert!((state.relative_yaw - 170.0).abs() < 0.001);
+        assert!(
+            shot.direction
+                .abs_diff_eq(direction_at(expected_pitch, 170.0), 1.0e-5)
+        );
+    }
+}
+
+#[test]
+fn full_range_pitch_and_yaw_cross_wrap_by_short_steps_without_overshoot() {
+    let fixture = Fixture::new();
+    let tank = def(
+        "func_tank",
+        &[
+            ("pitchrange", "180"),
+            ("pitchrate", "10"),
+            ("yawrange", "180"),
+            ("yawrate", "10"),
+        ],
+    );
+    let mut state = TankState::spawn(&tank, 1);
+    state.relative_pitch = 179.0;
+    state.relative_yaw = 179.0;
+    let direction = direction_at(-179.0, 175.0);
+    let tick = TankTick {
+        controlled: Some(ControlledAim {
+            tank: fixture.tank,
+            player: fixture.player,
+            direction,
+            attack: false,
+        }),
+        ..fixture.tick(0.1)
+    };
+    for _ in 0..5 {
+        let previous = (state.relative_pitch, state.relative_yaw);
+        assert!(advance_tank(&tank, &mut state, tick, &Geometry::default()).is_none());
+        assert!(wrap_degrees(state.relative_pitch - previous.0).abs() <= 1.001);
+        assert!(wrap_degrees(state.relative_yaw - previous.1).abs() <= 1.001);
+    }
+    assert!((state.relative_pitch + 179.0).abs() < 0.001);
+    assert!((state.relative_yaw - 175.0).abs() < 0.001);
+    // A narrower mechanical range cannot take the seam across its stops.
+    assert_eq!(approach_angle(170.0, -170.0, 10.0, 175.0), 160.0);
+}
+
+#[test]
+fn crossing_vertical_aim_keeps_yaw_continuous() {
+    let fixture = Fixture::new();
+    let tank = def(
+        "func_tank",
+        &[
+            ("pitchrange", "180"),
+            ("pitchrate", "60"),
+            ("yawrange", "180"),
+            ("yawrate", "720"),
+        ],
+    );
+    let mut state = TankState::spawn(&tank, 1);
+    state.relative_pitch = 88.0;
+    state.relative_yaw = 37.0;
+    for pitch in [89.0, 90.0, 91.0, 92.0] {
+        let direction = direction_at(pitch, if pitch == 90.0 { -120.0 } else { 37.0 });
+        let tick = TankTick {
+            controlled: Some(ControlledAim {
+                tank: fixture.tank,
+                player: fixture.player,
+                direction,
+                attack: false,
+            }),
+            ..fixture.tick(0.05)
+        };
+        advance_tank(&tank, &mut state, tick, &Geometry::default());
+        assert!((state.relative_pitch - pitch).abs() < 0.001);
+        assert!((state.relative_yaw - 37.0).abs() < 0.001);
+    }
+}
+
+#[test]
+fn reachable_solution_ranking_accounts_for_axis_rates() {
+    let direction = direction_at(60.0, 180.0);
+    for (pitch_rate, yaw_rate, expected_pitch, expected_yaw) in
+        [("100", "1", 120.0, 0.0), ("1", "100", 60.0, 180.0)]
+    {
+        let tank = def(
+            "func_tank",
+            &[
+                ("pitchrange", "180"),
+                ("pitchrate", pitch_rate),
+                ("yawrange", "180"),
+                ("yawrate", yaw_rate),
+            ],
+        );
+        let (pitch, yaw) = requested_angles(&tank, &TankState::spawn(&tank, 1), direction);
+        assert!((pitch - expected_pitch).abs() < 0.001);
+        assert!((yaw.abs() - expected_yaw).abs() < 0.001);
+    }
 }
