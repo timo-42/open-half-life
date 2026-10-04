@@ -1465,6 +1465,150 @@ mod engine_tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
+    fn section43_nonempty_nested_schema_has_independent_literal_container_golden() {
+        use ohl_game::effects::{BreakCommand, BreakEffects, ExplosionDef};
+        // Field-by-field protocol transcription, independent of the Rust codec:
+        // float bytes are little-endian IEEE754; integer/tag bytes are postcard
+        // unsigned LEB128 or signed zigzag. Neither encoder computes this literal.
+        const GOLDEN: &[u8] = &[
+            // Two commands; explosion source/activator/origin/variant
+            2, 1, 3, 1, 0, // Explosion origin and profile
+            0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 64, 64, 0, 0, 0, 128, 64, 0, 0, 160, 64,
+            // Explosion damage/repeat and four visual flags
+            0, 1, 1, 0, 1, 0, // Break source/actor, origin, variant and extents
+            1, 6, 1, 1, 7, 0, 0, 0, 65, 0, 0, 16, 65, 0, 0, 32, 65, 3, 0, 0, 48, 65, 0, 0, 64, 65,
+            0, 0, 80, 65, // Break material, optional direction, profile and model
+            2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63, 0, 0, 96, 65, 0, 0, 112, 65, 1, 1, 12,
+            109, 111, 100, 101, 108, 115, 47, 98, 46, 109, 100, 108,
+            // One debris record: id/source/material
+            1, 16, 1, 17, 3, // Debris position/velocity/angles/angular velocity
+            0, 0, 144, 65, 0, 0, 152, 65, 0, 0, 160, 65, 0, 0, 168, 65, 0, 0, 176, 65, 0, 0, 184,
+            65, 0, 0, 192, 65, 0, 0, 200, 65, 0, 0, 208, 65, 0, 0, 216, 65, 0, 0, 224, 65, 0, 0,
+            232, 65, // Debris bounds/age/lifetime/resting/model
+            0, 0, 160, 63, 0, 0, 32, 64, 0, 0, 112, 64, 0, 0, 0, 63, 0, 0, 208, 64, 0, 1, 12, 109,
+            111, 100, 101, 108, 115, 47, 100, 46, 109, 100, 108,
+            // Next id/RNG, consumed sources, signed FX rows
+            172, 2, 173, 2, 2, 31, 32, 2, 33, 67, 35, 72,
+            // Active rows and pending use rows
+            2, 37, 1, 38, 0, 3, 1, 0, 1, 1, 1, 39, 0, 0, 2, // Two button/activator pairs
+            2, 1, 40, 0, 1, 41, 1, 42,
+        ];
+        let expected = MapEffectsSnapshot {
+            pending: vec![
+                MapEffectCommand {
+                    source: EffectEntityRef::Registry(3),
+                    activator: Some(EffectEntityRef::Player),
+                    origin: Vec3::new(1.0, 2.0, 3.0),
+                    effect: MapEffect::Explosion(ExplosionDef {
+                        blast: MapBlastProfile {
+                            damage: 4.0,
+                            radius: 5.0,
+                        },
+                        no_damage: false,
+                        repeatable: true,
+                        visuals: ExplosionVisuals {
+                            fireball: true,
+                            smoke: false,
+                            decal: true,
+                            sparks: false,
+                        },
+                    }),
+                },
+                MapEffectCommand {
+                    source: EffectEntityRef::Registry(6),
+                    activator: Some(EffectEntityRef::Registry(7)),
+                    origin: Vec3::new(8.0, 9.0, 10.0),
+                    effect: MapEffect::Break(BreakCommand {
+                        half_extents: Vec3::new(11.0, 12.0, 13.0),
+                        material: 2,
+                        attack_direction: Some(Vec3::Z),
+                        effects: BreakEffects {
+                            blast: MapBlastProfile {
+                                damage: 14.0,
+                                radius: 15.0,
+                            },
+                            attack_relative: true,
+                            gib_model: Some("models/b.mdl".to_owned()),
+                        },
+                    }),
+                },
+            ],
+            debris: vec![DebrisRecord {
+                id: 16,
+                source: EffectEntityRef::Registry(17),
+                material: 3,
+                position: Vec3::new(18.0, 19.0, 20.0),
+                velocity: Vec3::new(21.0, 22.0, 23.0),
+                angles: Vec3::new(24.0, 25.0, 26.0),
+                angular_velocity: Vec3::new(27.0, 28.0, 29.0),
+                half_extents: Vec3::new(1.25, 2.5, 3.75),
+                age: 0.5,
+                lifetime: 6.5,
+                resting: false,
+                gib_model: Some("models/d.mdl".to_owned()),
+            }],
+            next_debris_id: 300,
+            debris_rng: 301,
+            consumed_explosions: vec![31, 32],
+            render_fx: vec![(33, -34), (35, 36)],
+            active_overrides: vec![(37, true), (38, false)],
+            pending_uses: vec![
+                PendingUseSnapshot {
+                    activator: Some(EffectEntityRef::Player),
+                    use_type: SavedUseType::On,
+                },
+                PendingUseSnapshot {
+                    activator: Some(EffectEntityRef::Registry(39)),
+                    use_type: SavedUseType::Off,
+                },
+                PendingUseSnapshot {
+                    activator: None,
+                    use_type: SavedUseType::Toggle,
+                },
+            ],
+            button_activators: vec![
+                (EffectEntityRef::Registry(40), EffectEntityRef::Player),
+                (EffectEntityRef::Registry(41), EffectEntityRef::Registry(42)),
+            ],
+        };
+        let (game, _) = fixture("", false);
+        let mut save = game.to_save(123);
+        save.map_effects = Some(expected.clone());
+        let encoded = save.to_bytes().unwrap();
+        let limits = ohl_save::Limits::default();
+        let reader = ohl_save::SaveReader::open(&encoded, &limits).unwrap();
+        assert_eq!(
+            reader.section(crate::save::SECTION_MAP_EFFECTS).unwrap(),
+            GOLDEN
+        );
+        let mut writer = ohl_save::SaveWriter::begin(reader.header().clone());
+        for entry in reader.sections() {
+            writer
+                .add_section(
+                    entry.tag,
+                    if entry.tag == crate::save::SECTION_MAP_EFFECTS {
+                        GOLDEN
+                    } else {
+                        reader.section(entry.tag).unwrap()
+                    },
+                )
+                .unwrap();
+        }
+        let fixed = writer.finish(&limits).unwrap();
+        let decoded = crate::save::GameSave::from_bytes(&fixed).unwrap();
+        assert_eq!(decoded.map_effects, Some(expected));
+        let reencoded = decoded.to_bytes().unwrap();
+        assert_eq!(
+            ohl_save::SaveReader::open(&reencoded, &limits)
+                .unwrap()
+                .section(crate::save::SECTION_MAP_EFFECTS)
+                .unwrap(),
+            GOLDEN
+        );
+    }
+
+    #[test]
     fn missing43_preserves_legacy_display_defaults_and_explicit_black_zero() {
         let extra = entity_block("env_beam", [0.0; 3], 0.0, &[("targetname", "default_beam")])
             + &entity_block(
@@ -1566,6 +1710,191 @@ mod engine_tests {
             .use_entity(&mut level.registry, switch, Some(switch), &mut Vec::new());
         idle(&mut nonplayer, 80);
         assert!(!faded(&mut nonplayer));
+    }
+
+    fn shot_button_fixture(classname: &str) -> (Game, MemoryAssets) {
+        let entities = entity_block("worldspawn", [0.0; 3], 0.0, &[])
+            + &entity_block("info_player_start", [0.0, -24.0, 40.0], 90.0, &[])
+            + &entity_block("weapon_357", [0.0, -24.0, 40.0], 0.0, &[])
+            + &entity_block(
+                classname,
+                [0.0; 3],
+                0.0,
+                &[
+                    ("targetname", "shot"),
+                    ("target", "relay"),
+                    ("model", "*1"),
+                    ("health", "30"),
+                    ("delay", "0.3"),
+                    ("wait", "-1"),
+                    ("distance", "90"),
+                    ("speed", "360"),
+                ],
+            )
+            + &entity_block(
+                "trigger_relay",
+                [0.0; 3],
+                0.0,
+                &[
+                    ("targetname", "relay"),
+                    ("target", "effect"),
+                    ("delay", "0.2"),
+                    ("triggerstate", "1"),
+                ],
+            )
+            + &entity_block(
+                "env_fade",
+                [0.0; 3],
+                0.0,
+                &[
+                    ("targetname", "effect"),
+                    ("spawnflags", "4"),
+                    ("duration", "3"),
+                    ("renderamt", "255"),
+                ],
+            )
+            + &entity_block(
+                "env_explosion",
+                [0.0, -24.0, 36.0],
+                0.0,
+                &[("targetname", "effect"), ("iMagnitude", "5")],
+            )
+            + &entity_block(
+                "monster_scientist",
+                [128.0, 128.0, 40.0],
+                0.0,
+                &[("targetname", "npc")],
+            );
+        let mut assets = MemoryAssets::new();
+        assets.insert(
+            "maps/ohl_shot_effects.bsp",
+            crate::test_support::rot_button_bsp(&entities),
+        );
+        (Game::load(&assets, "ohl_shot_effects").unwrap(), assets)
+    }
+
+    fn queued_button_hit(game: &mut Game, attacker: Option<Entity>, amount: f32) {
+        let button = game.registry().find("shot")[0];
+        game.systems_mut()
+            .damage_queue
+            .push(crate::systems::QueuedDamage {
+                target: button,
+                info: ohl_combat::DamageInfo {
+                    attacker: attacker.map(crate::ids::entity_id),
+                    inflictor: attacker.map(crate::ids::entity_id),
+                    amount,
+                    kind: DamageType::BULLET,
+                    origin: Vec3::ZERO,
+                    direction: Vec3::Y,
+                },
+            });
+        tick(game, &Input::default());
+    }
+
+    fn finish_shot_effect(game: &mut Game) -> (bool, Option<EffectEntityRef>) {
+        for _ in 0..120 {
+            if let Some(command) = state(game)
+                .pending
+                .iter()
+                .find(|command| matches!(command.effect, MapEffect::Explosion(_)))
+            {
+                return (faded(game), command.activator);
+            }
+            tick(game, &Input::default());
+        }
+        panic!("delayed shot button must eventually queue its target explosion");
+    }
+
+    #[test]
+    fn real_fire_button_and_rot_button_keep_damage_activator_through_save_and_ignored_hits() {
+        for classname in ["func_button", "func_rot_button"] {
+            let (mut live, assets) = shot_button_fixture(classname);
+            tick(&mut live, &Input::default());
+            assert!(live.inventory().has_weapon(ohl_combat::WeaponId::Python));
+            tick(
+                &mut live,
+                &Input {
+                    select_slot: Some(2),
+                    ..Input::default()
+                },
+            );
+            tick(
+                &mut live,
+                &Input {
+                    reload: true,
+                    ..Input::default()
+                },
+            );
+            // Match the existing shot-button fixture's three-second reload wait.
+            idle(&mut live, 300);
+            assert!(live.inventory().clip(ohl_combat::WeaponId::Python) > 0);
+            tick(
+                &mut live,
+                &Input {
+                    attack: true,
+                    ..Input::default()
+                },
+            );
+            let saved = live.to_save(123);
+            assert_eq!(
+                saved.map_effects.as_ref().unwrap().button_activators.len(),
+                1
+            );
+            assert_eq!(
+                saved.map_effects.as_ref().unwrap().button_activators[0].1,
+                EffectEntityRef::Player
+            );
+            let mut loaded = Game::load_bytes(&assets, &saved.to_bytes().unwrap()).unwrap();
+            let mut old_save = saved;
+            old_save.map_effects = None;
+            let mut old = Game::from_save(&assets, &old_save).unwrap();
+            let npc = live.registry().find("npc")[0];
+            queued_button_hit(&mut live, Some(npc), 40.0);
+            queued_button_hit(&mut live, None, 1.0);
+            assert_eq!(
+                state(&live).button_activators[0].1,
+                EffectEntityRef::Player,
+                "nonactivating damage cannot replace the original press identity"
+            );
+            assert_eq!(
+                finish_shot_effect(&mut live),
+                (true, Some(EffectEntityRef::Player))
+            );
+            assert_eq!(
+                finish_shot_effect(&mut loaded),
+                (true, Some(EffectEntityRef::Player))
+            );
+            let (old_fade, old_actor) = finish_shot_effect(&mut old);
+            assert!(!old_fade && old_actor != Some(EffectEntityRef::Player));
+        }
+    }
+
+    #[test]
+    fn nonplayer_and_unknown_button_damage_never_fabricate_player_activation() {
+        for classname in ["func_button", "func_rot_button"] {
+            for npc_damage in [false, true] {
+                let (mut live, assets) = shot_button_fixture(classname);
+                let npc = live.registry().find("npc")[0];
+                queued_button_hit(&mut live, npc_damage.then_some(npc), 40.0);
+                let saved = live.save_bytes(123).unwrap();
+                let mut loaded = Game::load_bytes(&assets, &saved).unwrap();
+                let expected = finish_shot_effect(&mut live);
+                assert!(!expected.0 && expected.1 != Some(EffectEntityRef::Player));
+                assert_eq!(finish_shot_effect(&mut loaded), expected);
+                if npc_damage {
+                    let index = live
+                        .registry()
+                        .entities
+                        .iter()
+                        .position(|entity| *entity == npc)
+                        .unwrap();
+                    assert_eq!(
+                        expected.1,
+                        Some(EffectEntityRef::Registry(u32::try_from(index).unwrap()))
+                    );
+                }
+            }
+        }
     }
 
     #[test]

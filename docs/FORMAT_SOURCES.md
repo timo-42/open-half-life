@@ -7758,7 +7758,7 @@ package while Phase 2 is pending.
 The focused evidence above belongs to Phase 1 commit `141f1bf`, rebased with
 identical game source as `b899b32` onto M9.49. The subsequent integration passes
 `cargo check -p ohl-engine`, including its game and renderer production
-dependencies. Focused engine `map_effects` tests pass **20/20**, the overlapping
+dependencies. Focused engine `map_effects` tests pass **23/23**, the overlapping
 `debris` filter passes **4/4**, and renderer `studio` CPU tests pass **4/4**.
 The strengthened same-step cascade test passes separately. GPU checks and full
 gates remain **unrun**. Source now wires
@@ -7803,8 +7803,8 @@ shapes remain unchanged. Missing-section restore retains prior source behavior,
 emits no historical broken-brush effects, and clears fade/shake. Legacy visual
 defaults are restored only where the authored key was absent and the saved value
 still matches its old default; explicit black/zero values remain unchanged.
-Container golden, trailing-byte rejection, bounds, absence and real-input
-live-versus-loaded regression tests are authored but **not run**.
+Container goldens, trailing-byte rejection, bounds, absence and real-input
+live-versus-loaded regression tests pass within the focused CPU filter.
 
 Studio drawing now has a paired instance/property API; its old public instance
 and render entry remain unchanged. The source resolves live properties once
@@ -7833,18 +7833,32 @@ Global translucent ordering remains incomplete: late studio transparency does
 not interleave with translucent brushes, liquids, sprites or effects. Model
 center sorting does not solve intersecting meshes/triangles. Standalone shooters,
 dropped objects, material audio, original gib model selection and cross-level
-effect continuation remain named cuts. Nine actual CPU mutations were killed:
+effect continuation remain named cuts. Eleven actual CPU mutations were killed:
 omitting the tag-43 writer, admitting an oversized override vector, substituting
 button identity for its activator, losing the touch activator, losing the saved
 player reference, replacing the blast inflictor with its attacker, using the
-inflictor for self-damage attribution, losing the break attacker, and dropping
-the break attack direction. Each
-source was restored byte-for-byte and its selected normal test passed again.
+inflictor for self-damage attribution, losing the break attacker, dropping
+the break attack direction, retaining the broken source in monster collision,
+and removing debris gravity. Each source was restored byte-for-byte and its
+selected normal test passed again.
 The focused CPU filters were rerun after adding the selected-default-body
 geometry guard, including a valid blank-first/drawable-second model fixture.
 It retains cuboids when the fixed selection contains no usable indexed mesh.
 The engine GPU test functions compiled but were not executed; the renderer
-integration GPU target remains uncompiled. The remaining fifteen CPU mutation
-probes, opt-in GPU appearance/depth
-checks and all complete-tree gates remain pending; this draft is not complete
-runtime validation.
+integration GPU target remains locally uncompiled. The remaining sixteen CPU
+mutation probes, opt-in GPU appearance/depth checks and all complete-tree gates
+remain pending; this draft is not complete runtime validation.
+
+PR #185 source-review follow-ups: damage-triggered plain
+and rotating buttons now forward the actual attacker through the existing
+separate activation context. The threshold-crossing hit supplies identity, and
+ignored hits during a pending press retain its original actor; this selection
+policy is project-authored `TODO(black-box)`. Real-fire/save/negative-control
+tests pass for both button classes. A second, nonempty 222-byte literal
+section-43 golden
+independently transcribes both persisted command variants, a custom-model debris
+record, stable references, signed fx/active/use rows and button activator pairs.
+Its container encode/fixed-byte decode checks pass with the independently
+authored literal unchanged. The focused 23-test filter includes these three
+review regressions; their three targeted mutation probes remain among the
+sixteen pending CPU probes.
