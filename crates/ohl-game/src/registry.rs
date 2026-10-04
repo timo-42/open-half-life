@@ -13,6 +13,10 @@ use std::collections::BTreeMap;
 use glam::Vec3;
 use hecs::{Entity, World};
 
+use crate::effects::{
+    BreakEffects, EffectActive, ExplosionDef, ExplosionState, FadeDef, RenderControl, RenderFx,
+    ShakeDef,
+};
 use crate::keyvalues::{self, EntityDef, Limits, ModelRef, RenderProps};
 
 /// Largest number of entities the name index keeps for one `targetname`.
@@ -2169,6 +2173,7 @@ impl Registry {
                 transform,
                 SpawnFlags(def.spawnflags),
                 def.render,
+                RenderFx::from_entity(def),
             ));
             entities.push(entity);
 
@@ -2242,6 +2247,35 @@ impl Registry {
             }
 
             match def.classname.as_str() {
+                "env_beam" | "env_laser" | "env_spark" => {
+                    if let Some(active) = EffectActive::from_entity(def) {
+                        world.insert_one(entity, active).ok();
+                    }
+                }
+                "env_explosion" => {
+                    world
+                        .insert(
+                            entity,
+                            (ExplosionDef::from_entity(def), ExplosionState::default()),
+                        )
+                        .ok();
+                }
+                "env_shake" => {
+                    world.insert_one(entity, ShakeDef::from_entity(def)).ok();
+                }
+                "env_fade" => {
+                    world.insert_one(entity, FadeDef::from_entity(def)).ok();
+                }
+                "env_render" => {
+                    world
+                        .insert_one(
+                            entity,
+                            RenderControl {
+                                preserve: def.spawnflags & 15,
+                            },
+                        )
+                        .ok();
+                }
                 "worldspawn" => {
                     let wads = def
                         .keyvalues
@@ -2485,6 +2519,9 @@ impl Registry {
                         broken: false,
                     };
                     world.insert_one(entity, breakable).ok();
+                    world
+                        .insert_one(entity, BreakEffects::from_entity(def))
+                        .ok();
                     if pushable {
                         world
                             .insert_one(

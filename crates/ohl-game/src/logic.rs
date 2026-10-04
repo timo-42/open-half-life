@@ -11,6 +11,11 @@
 use glam::Vec3;
 use hecs::Entity;
 
+use crate::effects::{
+    BreakCommand, BreakContext, BreakEffects, EffectActive, EffectPlayer, ExplosionDef,
+    ExplosionState, FadeDef, MAX_PENDING_EFFECTS, MapEffect, MapEffectCommand, RenderControl,
+    ShakeDef,
+};
 use crate::registry::{
     AmbientGeneric, AmbientState, AutoTrigger, BlockDamage, Breakable, BrushBounds, Button,
     ChangeLevel, Conveyor, Door, DoorMonstersCant, DoorPassable, DoorUseOnly, EndSection, Master,
@@ -347,6 +352,10 @@ pub struct BlockHit {
 #[derive(Debug, Default)]
 pub struct Simulation {
     pending: Vec<Fire>,
+    /// Separately snapshotted host work; never appended to `SimulationState`.
+    effect_commands: Vec<MapEffectCommand>,
+    /// Trigger-time facts; refreshed by the host and never persisted.
+    effect_player: Option<EffectPlayer>,
     trigger_state: std::collections::BTreeMap<Entity, TriggerState>,
     /// Per-`func_rot_button` last-observed touch state, for
     /// [`Self::touch_rot_buttons`]'s edge trigger — the same shape as
@@ -503,6 +512,141 @@ impl Simulation {
     /// stored as `None` rather than propagated into the dot product below.
     pub fn set_activator_origin(&mut self, origin: Option<Vec3>) {
         self.activator_origin = origin.filter(|origin| origin.is_finite());
+    }
+
+    /// Supplies real player identity/grounding for shake and activator-only fade.
+    pub fn set_effect_player(&mut self, player: Option<EffectPlayer>) {
+        self.effect_player = player.filter(|player| player.origin.is_finite());
+    }
+
+    /// Pending immutable host work, for the separate optional save extension.
+    #[must_use]
+    pub fn effect_commands(&self) -> &[MapEffectCommand] {
+        &self.effect_commands
+    }
+
+    /// Takes queued work exactly once. The host owns combat/physics scheduling.
+    pub fn drain_effect_commands(&mut self) -> impl Iterator<Item = MapEffectCommand> + '_ {
+        self.effect_commands.drain(..)
+    }
+
+    /// Restores a separately decoded/remapped extension, with the live queue cap.
+    /// Presentation requests are transient and deliberately clear on restore.
+    pub fn restore_effect_commands(
+        &mut self,
+        commands: impl IntoIterator<Item = MapEffectCommand>,
+    ) {
+        self.effect_commands = commands
+            .into_iter()
+            .take(MAX_PENDING_EFFECTS)
+            .filter(|command| {
+                command.is_valid()
+                    && matches!(
+                        command.effect,
+                        MapEffect::Explosion(_) | MapEffect::Break(_)
+                    )
+            })
+            .collect();
+        self.effect_player = None;
+    }
+
+    fn queue_effect(&mut self, command: MapEffectCommand) {
+        if self.effect_commands.len() < MAX_PENDING_EFFECTS && command.is_valid() {
+            self.effect_commands.push(command);
+        }
+    }
+
+    fn activate_effect(
+        &mut self,
+        registry: &mut Registry,
+        entity: Entity,
+        activator: Option<Entity>,
+        use_type: TriggerUse,
+    ) -> bool {
+        if let Ok(active) = registry.world.query_one_mut::<&mut EffectActive>(entity) {
+            active.activate(use_type);
+            return true;
+        }
+        let origin = registry
+            .world
+            .get::<&Transform>(entity)
+            .map_or(Vec3::ZERO, |transform| transform.origin);
+        let explosion = registry
+            .world
+            .get::<&ExplosionDef>(entity)
+            .ok()
+            .map(|definition| *definition);
+        if let Some(definition) = explosion {
+            let Ok(mut state) = registry.world.get::<&mut ExplosionState>(entity) else {
+                return true;
+            };
+            if state.consumed {
+                return true;
+            }
+            // Consume before publishing: recursive use cannot duplicate a one-shot.
+            state.consumed = !definition.repeatable;
+            drop(state);
+            self.queue_effect(MapEffectCommand {
+                source: entity,
+                activator,
+                origin,
+                effect: MapEffect::Explosion(definition),
+            });
+            return true;
+        }
+        let shake = registry
+            .world
+            .get::<&ShakeDef>(entity)
+            .ok()
+            .map(|definition| *definition);
+        if let Some(definition) = shake {
+            if self
+                .effect_player
+                .is_some_and(|player| definition.affects(origin, player))
+            {
+                self.queue_effect(MapEffectCommand {
+                    source: entity,
+                    activator,
+                    origin,
+                    effect: MapEffect::Shake(definition),
+                });
+            }
+            return true;
+        }
+        let fade = registry
+            .world
+            .get::<&FadeDef>(entity)
+            .ok()
+            .map(|definition| *definition);
+        if let Some(mut definition) = fade {
+            if let Ok(render) = registry.world.get::<&crate::keyvalues::RenderProps>(entity) {
+                definition.amount = u8::try_from(render.amt.clamp(0, 255)).unwrap_or(0);
+                definition.color = render.color;
+            }
+            let eligible = !definition.activator_only
+                || self
+                    .effect_player
+                    .is_some_and(|player| activator == Some(player.entity));
+            if eligible && definition.duration > 0.0 {
+                self.queue_effect(MapEffectCommand {
+                    source: entity,
+                    activator,
+                    origin,
+                    effect: MapEffect::Fade(definition),
+                });
+            }
+            return true;
+        }
+        let render = registry
+            .world
+            .get::<&RenderControl>(entity)
+            .ok()
+            .map(|control| *control);
+        if let Some(control) = render {
+            crate::effects::apply_render_control(registry, entity, control);
+            return true;
+        }
+        false
     }
 
     /// Schedules `target` to be activated in `delay` seconds (`0` fires on
@@ -899,6 +1043,10 @@ impl Simulation {
             return;
         }
 
+        if self.activate_effect(registry, entity, activator, use_type) {
+            return;
+        }
+
         // Decided before the `&mut Door` borrow below, since it reads two
         // other components off the same registry: which way a
         // `func_door_rotating` should swing for *this* activator. `None`
@@ -965,7 +1113,14 @@ impl Simulation {
         // `trigger_*` volume — and returns whether or not the brush was
         // already broken, so a second trigger cannot fire `target` twice.
         if registry.world.get::<&Breakable>(entity).is_ok() {
-            self.break_entity(registry, entity);
+            self.break_entity_with_context(
+                registry,
+                entity,
+                BreakContext {
+                    activator,
+                    attack_direction: None,
+                },
+            );
             return;
         }
         if let Ok(pendulum) = registry.world.query_one_mut::<&mut Pendulum>(entity) {
@@ -1958,10 +2113,19 @@ impl Simulation {
     /// one-way: this project never restores a broken brush, and a second
     /// call is a no-op, so a `target` fires at most once per break.
     ///
-    /// **Documented gaps** (`docs/FORMAT_SOURCES.md`, item 32): no gib is
-    /// spawned, no per-[`Breakable::material`] break sound is played, and
-    /// the documented `spawnobject` item is not spawned.
+    /// Emits one typed blast/debris request for the host. Material audio and
+    /// the documented `spawnobject` item remain deferred.
     pub fn break_entity(&mut self, registry: &mut Registry, entity: Entity) -> bool {
+        self.break_entity_with_context(registry, entity, BreakContext::default())
+    }
+
+    /// The same break edge with triggering/damaging actor provenance.
+    pub fn break_entity_with_context(
+        &mut self,
+        registry: &mut Registry,
+        entity: Entity,
+        context: BreakContext,
+    ) -> bool {
         let Ok(mut breakable) = registry.world.get::<&mut Breakable>(entity) else {
             return false;
         };
@@ -1971,14 +2135,54 @@ impl Simulation {
         breakable.broken = true;
         breakable.health = 0.0;
         let delay = breakable.delay;
+        let material = breakable.material;
         drop(breakable);
+        let origin = crate::pose::brush_center(registry, entity)
+            .or_else(|| {
+                registry
+                    .world
+                    .get::<&Transform>(entity)
+                    .ok()
+                    .map(|transform| transform.origin)
+            })
+            .unwrap_or(Vec3::ZERO);
+        let half_extents = registry
+            .world
+            .get::<&BrushBounds>(entity)
+            .map_or(
+                Vec3::splat(crate::effects::FALLBACK_BREAK_HALF_EXTENT),
+                |bounds| (bounds.maxs * 0.5 - bounds.mins * 0.5).abs(),
+            )
+            .clamp(
+                Vec3::ZERO,
+                Vec3::splat(crate::effects::MAX_BREAK_HALF_EXTENT),
+            );
+        let effects = registry.world.get::<&BreakEffects>(entity).map_or_else(
+            |_| BreakEffects::default(),
+            |effects| BreakEffects::clone(&effects),
+        );
+        let attack_direction = context
+            .attack_direction
+            .filter(|direction| effects.attack_relative && direction.is_finite())
+            .and_then(Vec3::try_normalize);
+        self.queue_effect(MapEffectCommand {
+            source: entity,
+            activator: context.activator,
+            origin,
+            effect: MapEffect::Break(BreakCommand {
+                half_extents,
+                material,
+                attack_direction,
+                effects,
+            }),
+        });
         let target = registry
             .world
             .get::<&Target>(entity)
             .ok()
             .map(|target| target.0.clone());
         if let Some(target) = target {
-            self.fire(target, Some(entity), delay);
+            self.fire(target, context.activator.or(Some(entity)), delay);
         }
         true
     }
@@ -2008,6 +2212,18 @@ impl Simulation {
         amount: f32,
         club: bool,
     ) -> bool {
+        self.damage_breakable_with_context(registry, entity, amount, club, BreakContext::default())
+    }
+
+    /// Damage entry preserving attack provenance for blast and debris emission.
+    pub fn damage_breakable_with_context(
+        &mut self,
+        registry: &mut Registry,
+        entity: Entity,
+        amount: f32,
+        club: bool,
+        context: BreakContext,
+    ) -> bool {
         let Ok(mut breakable) = registry.world.get::<&mut Breakable>(entity) else {
             return false;
         };
@@ -2023,7 +2239,7 @@ impl Simulation {
         let broke = instant || remaining <= 0.0;
         drop(breakable);
         if broke {
-            return self.break_entity(registry, entity);
+            return self.break_entity_with_context(registry, entity, context);
         }
         false
     }
@@ -2053,7 +2269,14 @@ impl Simulation {
             .collect();
         touched.sort_unstable_by_key(|entity| entity.id());
         for entity in touched {
-            self.break_entity(registry, entity);
+            self.break_entity_with_context(
+                registry,
+                entity,
+                BreakContext {
+                    activator: self.effect_player.map(|player| player.entity),
+                    attack_direction: None,
+                },
+            );
         }
     }
 

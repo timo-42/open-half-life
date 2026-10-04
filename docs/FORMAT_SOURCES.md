@@ -7673,3 +7673,82 @@ cached from their declarations. Later RenderPropsComponent changes are not
 sampled by this bridge; gameplay render-property changes need a read-side
 bridge update as well as their gameplay producer. Initially inactive effects
 also need an activation event/state seam. No registry changes are inferred here.
+
+## Map gameplay effects — M9.NEXT implementation draft
+
+This section records the game-side implementation checkpoint. Engine combat/debris,
+presentation, optional save tag 43 and renderer integration are still pending;
+the complete feature and its validation are not claimed by this draft.
+
+- [Sven Co-op env_explosion](https://wiki.svencoop.com/Env_explosion)
+  documents magnitude, repeatability, independent damage suppression, and
+  independent fireball/smoke/decal/spark suppression. The published
+  [mapping FGD](https://wiki.svencoop.com/Mapping/Sven_Co-op_FGD) supplies the
+  authored default magnitude. Neither establishes an original-build radius
+  formula. The localized project profile uses damage equal to magnitude and
+  radius equal to twice magnitude, capped at magnitude 4096; malformed or
+  negative authored values become harmless. `TODO(black-box)`: original radius,
+  falloff and bounds. The existing project occlusion policy remains selected;
+  Sven's wall-penetration observation is not an original-build promise.
+- [TWHL env_shake](https://twhl.info/wiki/page/env_shake) is the accepted design
+  source for trigger-time floor contact and binary radius eligibility. Inside
+  the radius, distance does not attenuate amplitude; Everybody bypasses radius,
+  not grounding. [TWHL env_fade](https://twhl.info/wiki/page/env_fade) supplies
+  reverse/modulate/activator-only flags, zero-duration no-op and clearing on
+  restore. The implementation follow-up fetch was restricted, so this draft
+  retains the previously reviewed design contract rather than substituting
+  differing Sven behavior. Project bounds are 3600 seconds, shake amplitude 64,
+  frequency 256 and radius 65536. Waveforms, overlap and terminal timing remain
+  `TODO(black-box)`; engine presentation is not implemented at this checkpoint.
+- [Sven Co-op env_render](https://wiki.svencoop.com/Env_render) documents the
+  preservation masks for fx, amount, mode and color. Game logic copies only
+  unmasked properties to all live matching targets. Renderfx is a separate
+  component; the old RenderProps and EntitySnapshot shapes stay frozen.
+  Sven auto-apply/radius extensions are excluded. Original-build corroboration
+  and renderer support for unknown modes/fx remain `TODO(black-box)`.
+- [Sven Co-op func_breakable](https://wiki.svencoop.com/Func_breakable) documents
+  debris, material/custom-model selection, attack-relative or random direction,
+  and an optional explosion magnitude. The single existing break edge captures
+  the live brush center, bounds and triggering/damaging actor, then queues an
+  immutable command once. Triggered breaks carry no invented attack direction.
+  Project fallback half-extent is 8 units; source half-extents are capped at
+  32768. Geometry/count/velocity/lifetime fidelity remains `TODO(black-box)`.
+  Physical debris and secondary damage still require the engine integration.
+- [Sven Co-op env_beam](https://wiki.svencoop.com/Env_beam),
+  [env_laser](https://wiki.svencoop.com/Env_laser) and
+  [env_spark](https://wiki.svencoop.com/Env_spark) supply the existing visual
+  bridge's activation conventions. Beam Start On is 1 and Toggle is 2; laser
+  Start On is 1 with inherent toggling; recurring spark Toggle is 32 and Start
+  On is 64. A separate EffectActive records authoritative state for named,
+  non-ring beams, named lasers and toggle sparks. On/Off are idempotent;
+  ordinary use toggles. Without its Toggle flag a beam may latch on but cannot
+  be turned off, following the documented Sven limitation. Original-build
+  agreement and finite-life beam cadence remain `TODO(black-box)`. The renderer
+  still needs the initially-off declaration cache and live-state read bridge.
+
+The command queue has a project cap of 4096. Nonrepeatable explosions consume
+their state before publishing; the source may subsequently disappear without
+invalidating captured geometry. Commands distinguish inflictor/source from
+activator. New consumption, pending-command, renderfx and activation continuation
+is reserved for optional tag 43; no existing encoding is widened. Presentation
+commands clear on restore; persistent command identities must be remapped by
+the engine before continuation. Neither a new section nor its engine adapter
+exists in this checkpoint.
+
+Deferred scope: standalone shooters, dropped `spawnobject` items, material
+audio, model bodypart/skin fidelity and cross-level effect continuation. The
+visual bridge's texture/noise/ring/random-endpoint limitations remain; this
+work adds no beam/laser damage and no env_sprite activation semantics.
+
+Ten synthetic game-input tests pass within the focused game suite (**201/201**).
+Fourteen actual temporary mutations failed their named test: removing explosion
+registration, losing one-shot consumption, coupling No Damage to fireball
+suppression, ignoring shake grounding, ignoring shake radius, accepting nonplayer
+fade activators, running zero-duration fades, limiting render targets to 64,
+ignoring the amount mask, substituting the brush origin pivot for its center,
+ignoring instant crowbar, removing the restored queue bound, toggling on an On
+command, and turning off a non-toggleable beam. Each mutation was restored
+byte-for-byte before the next probe; the full focused suite passed again after
+restoration. Formatting and focused all-targets clippy with warnings denied pass.
+Workspace, engine, save-section and payload gates remain **not run** for this
+package while Phase 2 is pending.

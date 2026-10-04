@@ -8412,3 +8412,34 @@ sprite/glow properties, near/far mixed transparency and combined renderer
 primitives. The final gate-recording change modifies documentation only;
 all 12 scoped source/test files and all 42 retained synthetic capture files
 remain byte-identical to the approved and tested implementation.
+
+## M9.NEXT — Map gameplay effects (game-side checkpoint)
+
+Game-side definitions and use/break dispatch are authored for env_explosion,
+env_shake, env_fade, masked env_render and breakable blast/debris commands.
+Separate EffectActive state covers the existing visual bridge's supported
+named beams/lasers and recurring toggle sparks, including initially-off
+declarations. Ten synthetic map-input tests exercise activation, provenance,
+independent masks, one-shot edges, bounds and On/Off idempotence.
+
+This is a focused game-side checkpoint. Engine damage cascades, physical debris,
+shake/fade presentation, the renderer's live-property bridge and optional
+tag 43 continuation remain pending. Existing serialized layouts are unchanged.
+FORMAT_SOURCES records the published contracts and project-authored formulas.
+Standalone shooters, dropped items, material audio, model bodypart/skin fidelity
+and cross-level effect continuation remain deferred. Existing visual bridge
+style/cadence cuts remain, with no map-beam damage or sprite activation expansion.
+
+**Gates:** `cargo fmt --all`; `cargo test -p ohl-game` — **201 passed, zero
+failed**, including all ten new tests; `cargo clippy -p ohl-game --all-targets
+-- -D warnings`. Fourteen actual mutation probes were killed, restored
+byte-for-byte, and followed by another **201/201** passing baseline; the
+individual mutations are listed in FORMAT_SOURCES. Every Cargo command used
+`CARGO_BUILD_JOBS=4`, `CARGO_PROFILE_DEV_DEBUG=line-tables-only` and
+`CARGO_INCREMENTAL=0`, with a 20 GiB free-space guard and a 1 GiB local target
+cap. No resource guard interrupted a build. Source whitespace checks pass.
+
+**NOT RUN:** workspace tests, workspace default/dev-tools/all-features clippy,
+policy/graph, save-section compatibility and all four payload smoke/chain gates.
+Those await Phase 2 and its resource permission. This draft makes no complete
+engine-runtime or milestone-completion claim.
