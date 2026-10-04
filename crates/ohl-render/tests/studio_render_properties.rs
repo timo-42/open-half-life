@@ -422,7 +422,7 @@ fn pixel_at_model_point(
     let x = clip[0] / clip[3];
     let y = clip[1] / clip[3];
     assert!(x.is_finite() && y.is_finite() && x.abs() < 1.0 && y.abs() < 1.0);
-    let x = ((x + 1.0) * 0.5 * EDGE as f32) as u32;
+    let x = (x.midpoint(1.0) * EDGE as f32) as u32;
     let y = ((1.0 - y) * 0.5 * EDGE as f32) as u32;
     let image = target.read_rgba(context).unwrap();
     let offset = usize::try_from((y * EDGE + x) * 4).unwrap();
