@@ -8000,8 +8000,9 @@ checks and four runtime gates. No later-hop planning was performed.
 
 The `ohl-game/src/tanks.rs` and `ohl-engine/src/tanks.rs` modules are an
 integration source checkpoint. Game registration, typed use/control requests
-and the shared brush pose are wired; engine input/combat dispatch is pending.
-Their synthetic tests have not been compiled or run at this stage.
+and the shared brush pose are wired. New source adds engine control/combat and
+presentation dispatch; that latest unit has not been compiled or run. Earlier
+focused evidence is recorded separately in MILESTONES.
 No retail observations, engine source or SDK were used for this work.
 
 - [TWHL: func_tank](https://twhl.info/wiki/page/func_tank) documents automatic
@@ -8076,15 +8077,15 @@ Vertical aim retains the current yaw. These selection rules and numerical
 epsilons are project-authored continuity policy, `TODO(black-box)`.
 
 Successful mounting emits an explicit handheld-action cancellation request.
-The eventual host must cancel charged, continuous and pending firing without
+The new host source cancels charged, continuous and pending firing without
 refunding spent ammo or changing inventory/resources. Merely clearing Attack
 and Attack2 is insufficient because that can release a charged Gauss shot.
 Mounted input and the release edge suppress ordinary weapon emission; passive
 cooldowns should continue through a non-firing path. Already launched world
 projectiles and deployables continue normally. Mounted restore must establish
 the same canceled-handheld invariant before its first tick, without changing
-tag 42 or weapon encodings. This is an integration requirement, not wired
-combat behavior at this checkpoint.
+tag 42 or weapon encodings. The source now wires input cancellation and passive advancement; mounted
+restore and actual execution still await validation.
 
 Pending integration must use one `TankPose` quaternion/axis-angle for the
 compiled-origin pivot, barrel, use center, renderer and both collision models.
@@ -8097,13 +8098,14 @@ Targets fire once after shot admission; renderer sampling never applies
 damage. Missing presentation assets must not gate combat. These are required
 handoff contracts, not claims of completed live integration.
 
-Named cuts at this checkpoint: engine control/system integration, actual
-combat and projectile dispatch, visual/audio submission, save/restore,
-real-input integration tests and mutation evidence. Physical monster
+Source integration now includes control/system phases, actual combat/projectile
+dispatch and laser/mortar visual submission. Execution, save/restore and mutation
+evidence remain pending. Bullet muzzle/smoke sprites and rotation audio are
+explicit presentation cuts. Physical monster
 operators, automatic monster targets, Sven relation/inventory extensions and
 original-build timing/spread/control fidelity remain excluded. Optional tag
 44 is reserved for later bounded state and remapped attribution references;
-no encoding exists here and frozen tags 26/42 are unchanged. Cross-level
+no encoding exists here and frozen tags 26/42/43 are unchanged. Cross-level
 turret continuation remains a cut until a separate extension adapter exists.
 
 The registry attaches turret definition/state to all four variants and links
@@ -8115,3 +8117,16 @@ player identity, obeys masters and queues one latest control intent separately
 from frozen simulation snapshots; an automatic toggle does not fire the
 turret's per-shot target. Synthetic source tests cover these registry/use/pose
 contracts; actual input, collision and combat validation is still pending.
+
+The runtime adapter is bounded to256 turrets and128 laser pulses. It caches
+referenced laser definitions at level attachment, then samples their live
+render color/amount at each accepted shot; source StartOn does not gate a
+shot's appearance. Width uses the existing width/BoltWidth convention, bounded
+to4096, and the existing additive Beam primitive. Pulses live0.1 seconds in
+simulation time and clear on restore. Mortar visuals use P6a's existing cap128,
+0.75-second lifetime and independent channels; damage goes through the shared
+blast dispatcher exactly once. These caps, cosmetic lifetime/width/blend,
+first-name selection and no-hit mortar-miss behavior are project policies,
+not additional original-build fidelity claims. The narrow source exclusion
+is an exact BrushId lookup per physical turret, independent of credited
+operator; operator splash remains eligible under the shared explosion policy.

@@ -8600,87 +8600,80 @@ and tests remain byte-identical to the fully validated head, preserving all 47
 actually killed and restored mutation probes. Milestone numbering and merge
 remain assigned to integration.
 
-## M9.NEXT — Wave 2 P7 turret source checkpoint
+## M9.NEXT — Wave 2 P7 turret integration checkpoint
 
-Two modules define bounded turret configuration,
-runtime aim/cadence/memory, remote control intent, shared brush/barrel pose,
-local input ownership and distinct outgoing bullet, rocket, laser and mortar
-commands. The game registry now attaches the components; use handling queues
-typed control requests and the shared brush pose reads live turret angles.
-Controls brushes remain invisible and nonblocking. Engine input/combat phases
-are not wired yet, so this uncompiled checkpoint makes no playable-turret claim.
+Turret definitions, game registration, typed use/control requests and the
+common authored-plus-live brush pose are wired. New source connects Systems'
+pre-weapon control arbitration, bounded aiming/cadence, both collision models
+and distinct bullet, P1 rocket, laser and instantaneous P6a mortar dispatch.
+This latest runtime unit is not yet compiled or executed; it is not a completed
+playable-turret or persistence milestone.
 
-The value contract claims same-tick Use+Attack before handheld weapons,
-retains the real player activator, releases stale/dead/master-denied controls
-and never teleports the player. Automatic targeting accepts only the player,
-with rate/range/tolerance and sight checks, bounded last-seen persistence and
-a separate actual-barrel-hit gate for Only Direct. Cadence retains fractional
-time but permits at most one command per update. Turret source and operator
-attacker remain separate in every outgoing command. A single authored-plus-
-live quaternion exposes the common brush axis-angle and the barrel position.
-Review follow-ups make equivalent-angle selection respect mechanical and
-locked-axis reachability before comparing travel from the current pose;
-full-range wrap and vertical-yaw continuity avoid artificial branch turns.
-The controls result also explicitly requests cancellation of charged,
-continuous and pending handheld firing on successful mount, preserving
-resources and already-spent ammo. Actual weapon cancellation, passive
-cooldown progression and mounted-restore enforcement await integration.
+Successful control acquisition explicitly cancels charged Gauss, continuous
+Egon and pending handheld actions without refunding spent ammo. Controlled
+and release-owned input advances passive cooldown/reload state while the
+existing projectile/deployable phase continues. Ordinary Use is consumed for
+owned control input. Player activation through relays retains identity and
+queues control for the next pre-weapon step; stale, dead or master-denied
+claims release without teleporting the player.
 
-Published provenance and project choices are recorded under "Turret
-definitions and simulation" in `docs/FORMAT_SOURCES.md`. TWHL's explicit
-base-turret zero damage stays zero, with positive authored overrides; bullet
-type zero schedules a no-hit shot with its target output. Rocket damage uses
-the existing RPG profile only when its key is absent, an explicit project
-policy. Laser absent/zero damage stays zero. Mortar's missing magnitude uses
-the public mapping FGD's 100, while explicit zero stays zero. Sven establishes
-the instantaneous mortar proposal, but original build 929 fidelity remains
-`TODO(black-box)`.
+Automatic turrets target only the player, with rate/range/tolerance, sight,
+last-seen persistence and an independent actual-barrel gate for Only Direct.
+Equivalent Euler directions rank mechanical/locked-axis reachability before
+current-pose travel time; full-range wrap and vertical-yaw continuity avoid
+artificial branch turns. Cadence retains fractional time and admits at most
+one scheduled command per update. All tanks aim before their exact instances
+are synchronized in both collision models; unrelated mover carry data is
+left to its existing phase.
 
-Synthetic test source covers parsing/bounds, all variants, omitted versus
-zero damage, nonzero authored pose, real-player-only control intent, local and
-remote claim/release, missing/dead player memory, master/range/angle/LOS gates,
-direct-fire geometry, cadence partitioning/catch-up and deterministic RNG
-continuation. Added angle regressions cover locked pitch with a reachable
-half-turn, an alternate current pose, full-range wrap, vertical crossing and
-axis-rate ranking. These value-boundary tests are not actual Game input/combat or
-save tests and have not been run. Later integration must prove actual target
-health changes, unchanged handheld ammo during control, wall and source-brush
-filtering, per-shot target dispatch, variant-specific timing, owner versus
-operator attribution and live-versus-restored continuation with killed and
-restored mutations. Positive authored damage supplies the real combat cases;
-zero damage and no-bullet selection provide negative controls.
-Required handheld regressions include charged Gauss into Use+Attack without
-release-fire or new ammo consumption, Egon and satchel held control edges,
-normal input after release, and consistent mounted-save restoration. Existing
-world projectiles/deployables must keep advancing during control.
+The physical turret source and credited operator remain separate. Additive
+trace/projectile APIs exclude exactly the source brush and preserve all other
+geometry. Rocket terminal credit uses a per-projectile overlay; the current
+brush handle is derived from its physical owner. Source/operator splash still
+uses the existing policy. Mortars resolve at actual traced impacts, with a
+miss producing no fabricated origin blast, and independently enqueue one
+bounded visual through P6a. Per-shot targets fire after actual admission.
+Laser shots capture live referenced-entity appearance and endpoints into
+bounded simulation-aged pulses, rendered by the existing beam primitive.
+The renderer never applies damage, advances simulation or reads definitions.
 
-**Cuts and next dependency.** Pre-weapon engine control and phase wiring,
-both live collision synchronizations, P1 rocket source-brush filtering and
-separate attacker attribution, the P6a mortar blast/presentation bridge, and
-bounded save extension 44 are pending. No save encoding or frozen tag 26/42
-layout changed. Physical monster operators, automatic monster targets and
-Sven relationship/inventory extensions remain named exclusions. Presentation
-assets/audio, cross-level continuation and exact original timing, spread,
-control-release and variant-default fidelity remain unresolved. No live
-damage, visuals or persistence are claimed by this source checkpoint.
+Published contracts and project choices are recorded under "Turret definitions
+and simulation" in FORMAT_SOURCES. Base-turret zero damage stays zero; positive
+authored values damage. Bullet type zero remains a no-hit output edge. Rocket
+omitted damage reuses the cited RPG profile as an explicit project policy;
+present zero stays zero. Laser absent/zero damage stays zero. Mortar omitted
+magnitude100 follows the public mapping FGD, while explicit zero stays zero.
+Sven establishes instant mortar behavior; original build929 remains unresolved.
 
-**Gates.** Public citation verification, standalone Rust 2024 formatting,
-Git scope/status inspection and `git diff --check` only. Cargo, compilation,
-tests, mutation probes, GPU and payload runs are deliberately held until the
-coordinator grants shared integration and focused build authority. No PR is
-opened for this uncompiled checkpoint; final milestone numbering and full
-workspace/runtime evidence remain pending. Four additional source regressions
-cover registry variant/controls visibility and solidity, shared live pose,
-real-player relay identity without accidental shot-target firing, master
-gating and legacy simulation restore dropping pending mount intent.
+**Focused evidence.** On the earlier coherent `7f5fa20` checkpoint, game turret
+tests passed **12/12** and game all-target/all-feature clippy passed with warnings
+denied. A separately preserved engine unit executable from that frozen source
+passed **21/21** core turret tests, including all five reviewed Euler regressions.
+This is archived core feedback: the interrupted Cargo resource-guard attempts
+do not establish a completed engine build or full gate. All Cargo runs used
+four jobs, line-tables-only debug and disabled incremental compilation. The
+current engine input/dispatch/presentation additions remain uncompiled/unrun.
+Standalone Rust2024 formatting and source whitespace checks pass.
 
-Further uncompiled adapter source adds explicit charge/beam cancellation and
-passive cooldown/reload progression without emitting handheld actions or
-refunding ammo. Exact-source-brush attack tracing and projectile ticking are
-additive APIs; legacy callers retain their normal world queries. A separate
-per-projectile turret/operator overlay supplies terminal credit while physical
-ownership still controls source collision exclusion. Brush handles are derived
-from current registry ownership, never persisted. Source tests cover Gauss and
-Egon cancellation, passive clip/reserve conservation, a rocket leaving its own
-brush and an independent moving brush, actor and world wall stopping traces.
-Live input/dispatch and tag-44 continuation tests remain required.
+New synthetic source tests use real Game input for all four damage variants,
+zero/type-zero controls, actual delayed per-shot output, automatic player
+hits, exact source versus separate-door obstruction, both collision poses,
+controls solidity, charged Gauss cancellation, Egon and satchel held edges,
+and positive laser endpoint/appearance/expiry without additional damage.
+An actual-input renderer bridge assertion requires a visible beam primitive.
+These tests are written, not yet run. Earlier additive cancellation/passive
+and physical trace tests also still await execution. Killed/restored mutations,
+full non-payload gates, runtime gates and a draft PR remain pending.
+
+**Cuts and next dependency.** Bounded optional save44 and remapped control/
+projectile attribution, mounted-restore cancellation, true live-versus-loaded
+continuation, hostile/master/foreign-owner controls and full runtime review
+remain required work. Frozen tags26/42/43 and weapon/entity/render encodings
+are unchanged. Physical monster operators, automatic monster targets, Sven
+relationship/inventory extensions, bullet muzzle/smoke sprite and rotation
+sound submission, and cross-level turret continuation are named cuts. Laser
+pulses are bounded cosmetics that clear on restore; they do not extend tag43.
+Original-build timing, spread, control-release, default tuning, laser width/
+blend and mortar fidelity remain explicit project-policy `TODO(black-box)`.
+No numbering, merge, current-runtime test pass or save compatibility claim is
+made by this intermediate source checkpoint.

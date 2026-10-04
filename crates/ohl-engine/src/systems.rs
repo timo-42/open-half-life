@@ -309,6 +309,7 @@ pub struct Systems {
     /// Phase 7's own state: live projectiles and placed deployables.
     projectiles: ProjectileSystem,
     pub(crate) map_effects: crate::map_effects::MapEffectsRuntime,
+    pub(crate) tanks: crate::tanks::TankSystem,
     /// The bounded transient-sprite list phase 7 (and phase 6's muzzle
     /// flashes, in a later package) fills; phase 13 ages it.
     transient_sprites: TransientSprites,
@@ -383,6 +384,7 @@ impl Systems {
             ai: AiState::new(ai_seed),
             projectiles: ProjectileSystem::new(config.rng_seed),
             map_effects: crate::map_effects::MapEffectsRuntime::default(),
+            tanks: crate::tanks::TankSystem::default(),
             transient_sprites: TransientSprites::new(),
             view_model: ViewModel::new(),
             player: ohl_player::Player::default(),
@@ -929,6 +931,7 @@ impl Systems {
         // path (`crate::projectiles::ProjectileSystem::configure_models`'s
         // doc); harmless when none match, which is the ordinary case.
         self.projectiles.configure_models(level);
+        self.tanks.configure_level(level);
     }
 
     /// Latches one frame's input. Called once per [`crate::Game::tick`],
@@ -982,7 +985,7 @@ impl Systems {
         Self::actor_sync(level, camera, controller, dt); // 4
         self.rebuild_hitbox_index(level, controller); // 5
         self.begin_map_effects(level, controller, dt); // 5b
-        self.weapons(level, controller, dt, input); // 6
+        let consumed_use = self.turret_and_handheld_weapons(level, controller, dt, input); // 5c/6
         self.projectiles(level, dt); // 7
         self.ai_think(level, dt); // 8
         Self::sync_monster_transforms(level); // 8b
@@ -990,7 +993,12 @@ impl Systems {
         self.reap_deployables(level); // 9b
         self.lifecycle(level, dt); // 10
         self.pickups(level, input, dt); // 11
-        self.triggers_and_movers(level, camera, input, dt, events); // 12
+        let mover_input = LatchedInput {
+            use_pressed: input.use_pressed && !consumed_use,
+            use_held: input.use_held && !consumed_use,
+            ..input
+        };
+        self.triggers_and_movers(level, camera, mover_input, dt, events); // 12
         // 12b — pushing a `func_pushable`, and breaking a `func_breakable`
         // the player is standing on ("Pressure"): both ask where the
         // player ended up *this* step, so both run after the move (phase
@@ -1259,6 +1267,52 @@ impl Systems {
         }
         crate::combat::rebuild_hitbox_index(&mut self.hitboxes, level);
         self.projectiles.update_blast_bounds(&self.hitboxes);
+    }
+
+    /// Phase 5c/6 — claim controls before any handheld action. A successful
+    /// mount cancels a charged Gauss rather than delivering its release input.
+    /// Existing world projectiles still advance in phase 7 regardless of owner.
+    fn turret_and_handheld_weapons(
+        &mut self,
+        level: &mut Level,
+        controller: &PlayerController,
+        dt: f32,
+        input: LatchedInput,
+    ) -> bool {
+        let frame = crate::tanks::TankFrame {
+            input: crate::tanks::ControlInput {
+                player: level.player,
+                position: controller.state.origin,
+                view_direction: controller.view_direction(),
+                alive: !self.player.state.dead,
+                use_pressed: input.use_pressed,
+                attack: input.attack,
+            },
+            eye: controller.eye_position(),
+            dt,
+        };
+        let (decision, shots) = self.tanks.advance(level, &self.hitboxes, frame);
+        if decision.cancel_handheld_actions {
+            self.combat.cancel_for_tank();
+        }
+        for shot in shots {
+            self.tanks.dispatch(
+                level,
+                &self.hitboxes,
+                &shot,
+                &mut crate::tanks::TankDispatch {
+                    projectiles: &mut self.projectiles,
+                    effects: &mut self.map_effects,
+                    damage: &mut self.damage_queue,
+                },
+            );
+        }
+        if decision.suppress_weapons {
+            self.combat.advance_while_controlled(dt, input.attack);
+        } else {
+            self.weapons(level, controller, dt, input);
+        }
+        decision.consume_use || decision.suppress_weapons
     }
 
     /// Phase 6 — weapons: the firing state machine, its hitscan traces and

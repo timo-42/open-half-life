@@ -256,6 +256,26 @@ impl MapEffectsRuntime {
         batch
     }
 
+    /// Admit one bounded transient blast appearance without dispatching damage
+    /// or consuming map commands. Turret mortar combat uses the shared blast
+    /// dispatcher separately; rendering only samples this existing channel.
+    pub(crate) fn emit_blast_visual(
+        &mut self,
+        origin: Vec3,
+        profile: MapBlastProfile,
+        channels: ExplosionVisuals,
+    ) {
+        let cap = ohl_game::effects::MAX_BLAST_MAGNITUDE;
+        if origin.is_finite()
+            && profile.damage.is_finite()
+            && (0.0..=cap).contains(&profile.damage)
+            && profile.radius.is_finite()
+            && (0.0..=2.0 * cap).contains(&profile.radius)
+        {
+            self.add_blast_visual(origin, profile, channels);
+        }
+    }
+
     fn add_blast_visual(
         &mut self,
         origin: Vec3,
