@@ -243,10 +243,20 @@ impl AttackPayload {
     }
 }
 
+/// Physical turret source and independently credited operator for one rocket.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TankProjectileAttribution {
+    pub source: Entity,
+    pub attacker: Entity,
+}
+
 /// Owns the simulated projectiles and placed deployables for one level.
 pub(crate) struct ProjectileSystem {
     projectiles: ProjectileSet,
     attacks: BTreeMap<ProjectileId, AttackPayload>,
+    /// P7's additive operator attribution. Physical owner stays in tags 26/42;
+    /// only optional tag 44 may persist this overlay, with remapped references.
+    tank_attribution: BTreeMap<ProjectileId, TankProjectileAttribution>,
     blast_bounds: BTreeMap<CombatEntityId, (Vec3, Vec3)>,
     deployables: DeployableSet,
     tuning: ProjectileTuning,
@@ -266,6 +276,7 @@ impl ProjectileSystem {
         Self {
             projectiles: ProjectileSet::new(ohl_combat::ProjectileLimits::default(), seed),
             attacks: BTreeMap::new(),
+            tank_attribution: BTreeMap::new(),
             blast_bounds: BTreeMap::new(),
             deployables: DeployableSet::new(),
             tuning: ProjectileTuning::default(),
@@ -474,6 +485,62 @@ impl ProjectileSystem {
             .iter()
             .filter(|charge| charge.owner == Some(entity_id(owner)))
             .count()
+    }
+
+    /// P7 launch keeps the brush turret as physical owner and records operator
+    /// credit independently. A full projectile pool admits neither record.
+    pub(crate) fn spawn_tank_request(
+        &mut self,
+        level: &mut Level,
+        request: &crate::ai::ProjectileRequest,
+        attacker: Entity,
+    ) -> Option<ProjectileId> {
+        if request.kind != ProjectileKind::Rocket {
+            return None;
+        }
+        let id = self.spawn_request(level, request)?;
+        self.tank_attribution.insert(
+            id,
+            TankProjectileAttribution {
+                source: request.owner,
+                attacker,
+            },
+        );
+        Some(id)
+    }
+
+    pub(crate) fn tank_attributions(
+        &self,
+    ) -> impl Iterator<Item = (ProjectileId, TankProjectileAttribution)> + '_ {
+        self.tank_attribution
+            .iter()
+            .filter(|(id, _)| self.projectiles.get(**id).is_some())
+            .map(|(id, attribution)| (*id, *attribution))
+    }
+
+    /// Remapping occurs in tag 44, after physical and tag-42 restoration. Reject
+    /// orphan, duplicate or mismatched physical-owner references; never guess a
+    /// player owner or retain a serialized brush handle.
+    pub(crate) fn restore_tank_attributions(
+        &mut self,
+        entries: impl IntoIterator<Item = (ProjectileId, TankProjectileAttribution)>,
+    ) {
+        self.tank_attribution.clear();
+        let mut seen = std::collections::BTreeSet::new();
+        for (id, attribution) in entries
+            .into_iter()
+            .take(crate::save_state::MAX_SNAPSHOT_PROJECTILES)
+        {
+            if !seen.insert(id) {
+                continue;
+            }
+            if self.projectiles.get(id).is_some_and(|projectile| {
+                projectile.kind == ProjectileKind::Rocket
+                    && projectile.owner == Some(entity_id(attribution.source))
+            }) {
+                self.tank_attribution.insert(id, attribution);
+            }
+        }
     }
 
     pub(crate) fn detonate_satchels_for(
@@ -698,12 +765,21 @@ impl ProjectileSystem {
                 movement: &self.movement,
                 tuning: &self.tuning,
             };
-            self.projectiles.tick(dt, &world, &mut events);
+            self.projectiles
+                .tick_with_brush_filter(dt, &world, &mut events, |id| {
+                    let source = self.tank_attribution.get(&id)?.source;
+                    level
+                        .brush_collision
+                        .iter()
+                        .find_map(|(entity, brush)| (*entity == source).then_some(*brush))
+                });
         }
         for event in events {
             self.apply_projectile_event(level, event, damage_queue, sprites);
         }
         self.attacks
+            .retain(|id, _| self.projectiles.get(*id).is_some());
+        self.tank_attribution
             .retain(|id, _| self.projectiles.get(*id).is_some());
         self.sync_model_entities(level);
 
@@ -756,12 +832,16 @@ impl ProjectileSystem {
                     .and_then(entity_of)
                     .filter(|_| payload.radius.is_none())
                 {
-                    let attacker = owner;
+                    let attacker = self
+                        .tank_attribution
+                        .get(&id)
+                        .map(|entry| entity_id(entry.attacker))
+                        .or(owner);
                     damage_queue.push(QueuedDamage {
                         target,
                         info: DamageInfo {
                             attacker,
-                            inflictor: attacker,
+                            inflictor: owner,
                             amount: payload.damage,
                             kind: payload.kind,
                             origin: position,
@@ -789,18 +869,33 @@ impl ProjectileSystem {
                     .copied()
                     .unwrap_or_else(|| AttackPayload::legacy(kind));
                 if let Some(radius) = payload.radius {
-                    let attacker = owner;
-                    resolve_blast(
-                        level,
-                        position,
-                        radius,
-                        payload.damage,
-                        payload.kind,
-                        attacker,
-                        &self.explosion_rule,
-                        &self.blast_bounds,
-                        damage_queue,
-                    );
+                    if let Some(attribution) = self.tank_attribution.get(&id) {
+                        dispatch_blast(
+                            level,
+                            position,
+                            radius,
+                            payload.damage,
+                            payload.kind,
+                            Some(entity_id(attribution.attacker)),
+                            owner,
+                            &self.explosion_rule,
+                            &self.blast_bounds,
+                            damage_queue,
+                        );
+                    } else {
+                        let attacker = owner;
+                        resolve_blast(
+                            level,
+                            position,
+                            radius,
+                            payload.damage,
+                            payload.kind,
+                            attacker,
+                            &self.explosion_rule,
+                            &self.blast_bounds,
+                            damage_queue,
+                        );
+                    }
                 }
             }
             // `ProjectileEvent` is `#[non_exhaustive]`; `Expired` and any

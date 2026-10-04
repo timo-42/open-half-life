@@ -8673,3 +8673,14 @@ workspace/runtime evidence remain pending. Four additional source regressions
 cover registry variant/controls visibility and solidity, shared live pose,
 real-player relay identity without accidental shot-target firing, master
 gating and legacy simulation restore dropping pending mount intent.
+
+Further uncompiled adapter source adds explicit charge/beam cancellation and
+passive cooldown/reload progression without emitting handheld actions or
+refunding ammo. Exact-source-brush attack tracing and projectile ticking are
+additive APIs; legacy callers retain their normal world queries. A separate
+per-projectile turret/operator overlay supplies terminal credit while physical
+ownership still controls source collision exclusion. Brush handles are derived
+from current registry ownership, never persisted. Source tests cover Gauss and
+Egon cancellation, passive clip/reserve conservation, a rocket leaving its own
+brush and an independent moving brush, actor and world wall stopping traces.
+Live input/dispatch and tag-44 continuation tests remain required.

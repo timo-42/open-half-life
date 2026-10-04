@@ -21,7 +21,7 @@
 //! left untouched.
 
 use glam::{EulerRot, Quat, Vec3};
-use ohl_physics::{CollisionModel, Hull};
+use ohl_physics::{BrushId, CollisionModel, Hull};
 use ohl_world::{StudioHitbox, StudioPose};
 
 /// An opaque handle to whatever the caller calls an entity.
@@ -515,6 +515,22 @@ pub fn trace_attack_filtered(
     end: Vec3,
     filter: TraceFilter,
 ) -> AttackTrace {
+    trace_attack_filtered_ignoring_brush(world, entities, start, end, filter, None)
+}
+
+/// As [`trace_attack_filtered`], excluding one exact attached source brush from
+/// the world sweep. Static world hulls and every other brush remain solid. The
+/// entity filter remains independent, so excluding a turret never excludes its
+/// player operator or arbitrary actors downstream.
+#[must_use]
+pub fn trace_attack_filtered_ignoring_brush(
+    world: &CollisionModel,
+    entities: &HitboxIndex,
+    start: Vec3,
+    end: Vec3,
+    filter: TraceFilter,
+    ignored_brush: Option<BrushId>,
+) -> AttackTrace {
     if !start.is_finite() || !end.is_finite() {
         return AttackTrace::miss(if end.is_finite() { end } else { start });
     }
@@ -522,7 +538,7 @@ pub fn trace_attack_filtered(
     let mask = filter.mask;
     let mut best = AttackTrace::miss(end);
     if mask.world {
-        let trace = world.trace(Hull::Point, start, end);
+        let trace = world.trace_ignoring(Hull::Point, start, end, ignored_brush);
         let fraction = clamp_fraction(trace.fraction);
         if fraction < 1.0 || trace.start_solid || trace.all_solid {
             best = AttackTrace {
