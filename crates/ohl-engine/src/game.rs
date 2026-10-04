@@ -1829,21 +1829,7 @@ impl Game {
         self.globals = save.globals.clone();
         self.carry.restore(&save.player);
         self.elapsed = save.header.elapsed;
-        self.camera.yaw = save.view.yaw;
-        self.camera.pitch = save.view.pitch;
-        self.controller = PlayerController::spawn_at(
-            Vec3::from_array(save.view.position),
-            save.view.yaw,
-            save.view.pitch,
-        );
-        // `save.view.position` is the physics origin (see `Self::to_save`'s
-        // doc comment); the camera itself always tracks the *eye* position,
-        // derived from that origin the same way a normal tick would.
-        self.camera.position = if self.level.collision.is_some() {
-            self.controller.eye_position().to_array()
-        } else {
-            save.view.position
-        };
+        self.restore_player_view(save);
         self.difficulty = save.difficulty();
         self.clock = TickClock::new();
         // `Self::load_with` (this game's own constructor, just above in
@@ -2038,6 +2024,25 @@ impl Game {
         // the identical zero-`dt` call, for the identical reason, after a
         // level change re-seats a carried `func_tracktrain`.
         self.level.sync_brush_collision(0.0);
+    }
+
+    /// Restores the saved controller center and its derived camera view.
+    fn restore_player_view(&mut self, save: &GameSave) {
+        self.camera.yaw = save.view.yaw;
+        self.camera.pitch = save.view.pitch;
+        self.controller = PlayerController::spawn_at(
+            Vec3::from_array(save.view.position),
+            save.view.yaw,
+            save.view.pitch,
+        );
+        // `save.view.position` is the physics origin (see `Self::to_save`'s
+        // doc comment); the camera itself always tracks the *eye* position,
+        // derived from that origin the same way a normal tick would.
+        self.camera.position = if self.level.collision.is_some() {
+            self.controller.eye_position().to_array()
+        } else {
+            save.view.position
+        };
     }
 
     /// Restores the optional effect state after the existing entity overlays.

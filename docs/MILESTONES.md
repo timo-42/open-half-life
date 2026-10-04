@@ -8607,7 +8607,8 @@ common authored-plus-live brush pose are wired. New source connects Systems'
 pre-weapon control arbitration, bounded aiming/cadence, both collision models
 and distinct bullet, P1 rocket, laser and instantaneous P6a mortar dispatch.
 Focused library execution now covers real turret input, combat and presentation.
-Persistence and full validation remain required before this milestone is complete.
+Optional persistence also passes focused continuation tests; full validation
+remains required before this milestone is complete.
 
 Successful control acquisition explicitly cancels charged Gauss, continuous
 Egon and pending handheld actions without refunding spent ammo. Controlled
@@ -8659,8 +8660,14 @@ with its explicit test summary verified; source hashes stayed frozen throughout.
 The largest sampled target was 1,807,867,904 bytes and minimum free space was
 34,268,999,680 bytes, within the assigned 8 GiB/18 GiB bounds. Known save-only
 unused APIs were left unsuppressed; the new tag44 source now supplies callers.
-That save unit has not been compiled or executed. Standalone Rust2024
-formatting and source whitespace checks pass.
+The subsequent tag44 integration and review corrections passed **49/49 engine
+turret tests**, including all 18 new save/attribution tests, **22/22 frozen-save
+tests**, **6/6 projectile-continuation tests**, and both existing **2/2 tag43
+container goldens**. Formatting and engine library all-feature Clippy with
+warnings denied pass. Every result was checked against its explicit completion
+summary and one frozen tracked-source manifest. The largest sampled target in
+this final focused run was 2,286,211,072 bytes; minimum free space was
+31,304,179,712 bytes. These are focused checks, not workspace gates.
 
 New synthetic source tests use real Game input for all four damage variants,
 zero/type-zero controls, actual delayed per-shot output, automatic player
@@ -8673,11 +8680,11 @@ ordinary studio hitboxes are present, retains MonsterAi with the published
 prisoner flag, and waits for the ordinary single-use weapon reload before
 placing a satchel. Positive health/endpoint oracles are unchanged. Earlier
 additive cancellation/passive and physical trace tests still await execution.
-Killed/restored mutations,
-full non-payload gates, runtime gates and a draft PR remain pending.
+Killed/restored turret mutations, full workspace gates and runtime gates
+remain pending.
 
-**Save source checkpoint, uncompiled/unrun.** Optional tag44 now carries at most
-256 turret states and128 rocket attribution rows, both bounded while decoding.
+**Save integration.** Optional tag44 now carries at most
+256 turret states and 128 rocket attribution rows, both bounded while decoding.
 It records authored-relative live angles, active state, fractional cadence,
 last-seen memory/RNG, mounted controls and distinct runtime/phase12 pending
 requests. Stable registry indices and explicit Player references replace raw
@@ -8689,9 +8696,9 @@ master, existence and distance validation. Restore follows all existing
 projectile/effect/master overlays, cancels a valid mount's restored handheld
 charge and preserves the next-tick boundary for pending input.
 
-Eighteen new source tests remain **uncompiled/unrun**: a literal nested tag44
+All eighteen new save/attribution tests **pass**: a literal nested tag44
 container golden and round-trip, trailing-byte rejection, both vector caps,
-nonfinite values, old absence with26/42/43 section equality, live-versus-loaded
+nonfinite values, old absence with 26/42/43 section equality, live-versus-loaded
 controlled cadence/RNG and automatic memory/aim, rocket health/physics/credit,
 duplicate/orphan/foreign identities, actual button/relay pending control,
 master/death/range revalidation, inconsistent charged inventory cancellation,
@@ -8704,13 +8711,35 @@ equality across live/restored branches. Another valid turret reference cannot
 replace a rocket's physical owner; a positive matched-owner control remains.
 No new production observer or alternate projectile implementation exists.
 
-**Cuts and next dependency.** Focused compilation/execution of the save unit,
-mutation discrimination, full runtime review and all gates remain required. Frozen tags26/42/43 and weapon/entity/render encodings
+A focused failure exposed restored health 0 with a still-clear legacy dead
+flag. Turret mount eligibility now checks finite positive health as well as
+that flag, both during restore and ordinary input. Existing dead-operator
+rocket attribution remains valid. The synthetic target model now explicitly
+uses its zero bind-pose root channel and asserts stationary sampled poses; the
+independent terminal origin, radius, 99.6 victim damage and full DamageInfo
+comparisons remain unchanged. The remote-control fixture performs real Reload
+input and asserts a 17-round clip before its ordinary-weapon positive control.
+These are project-authored fixture corrections, not retail behavior claims.
+Mechanical helper extraction preserves the existing player-view restore block
+and isolates only the new tag44 writer; old section order is unchanged.
+
+**Gates.** Focused checks above pass. All three workspace/all-target Clippy
+configurations, workspace tests, policy, graph, combat 37/37 with zero unexpected
+lines, campaign 93/93 and both baseline chains at depth 12 / Pass / 660.8 seconds
+remain **pending**, as do actual killed/restored turret mutation probes and
+independent final review. No payload, release or GPU execution is claimed.
+
+**Cuts and next dependency.** Mutation discrimination, full runtime review and
+all workspace/runtime gates remain required. Frozen tags 26/42/43 and weapon/entity/render encodings
 are unchanged. Physical monster operators, automatic monster targets, Sven
 relationship/inventory extensions, bullet muzzle/smoke sprite and rotation
 sound submission, and cross-level turret continuation are named cuts. Laser
 pulses are bounded cosmetics that clear on restore; they do not extend tag43.
 Original-build timing, spread, control-release, default tuning, laser width/
 blend and mortar fidelity remain explicit project-policy `TODO(black-box)`.
-No numbering, merge, full-gate pass or save compatibility claim is made by
-this intermediate checkpoint.
+The existing unsaved `StudioAnim.cycle` is a concrete continuation limitation:
+an animated target may occupy a different pose after load and change projectile
+impact placement and splash damage. The stationary synthetic continuation
+tests do not establish animated-target save continuity. Animation-cursor
+persistence is an unresolved project `TODO(black-box)` outside this package.
+No numbering, merge or full-gate pass is claimed by this intermediate checkpoint.

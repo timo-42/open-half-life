@@ -50,7 +50,11 @@ fn assert_terminal_payloads(
         let info = matching[0].info;
         let expected_amount = 100.0 * (1.0 - point.distance(origin) / 250.0);
         assert!(info.amount > 0.0);
-        assert!((info.amount - expected_amount).abs() < 0.001);
+        assert!(
+            (info.amount - expected_amount).abs() < 0.001,
+            "expected amount {expected_amount}, complete actual {info:?}, operator={}",
+            target == operator
+        );
         assert_eq!(info.kind, ohl_combat::DamageType::BLAST);
         assert_eq!(info.attacker, Some(entity_id(operator)));
         assert_eq!(info.inflictor, Some(entity_id(source)));

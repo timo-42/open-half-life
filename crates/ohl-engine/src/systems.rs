@@ -741,7 +741,9 @@ impl Systems {
             player: level.player,
             position: controller.state.origin,
             view_direction: controller.view_direction(),
-            alive: !self.player.state.dead,
+            alive: !self.player.state.dead
+                && self.player.state.health.is_finite()
+                && self.player.state.health > 0.0,
             use_pressed: false,
             attack: false,
         };
@@ -1317,7 +1319,9 @@ impl Systems {
                 player: level.player,
                 position: controller.state.origin,
                 view_direction: controller.view_direction(),
-                alive: !self.player.state.dead,
+                alive: !self.player.state.dead
+                    && self.player.state.health.is_finite()
+                    && self.player.state.health > 0.0,
                 use_pressed: input.use_pressed,
                 attack: input.attack,
             },

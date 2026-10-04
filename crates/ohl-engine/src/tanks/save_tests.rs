@@ -232,7 +232,14 @@ fn automatic_memory_aim_and_cadence_continue_against_live_player() {
         tick(&mut live, false, false);
         tick(&mut loaded, false, false);
         assert_eq!(state(&live), state(&loaded));
-        assert!((live.player_health() - loaded.player_health()).abs() < 0.001);
+        assert!(
+            (live.player_health() - loaded.player_health()).abs() < 0.001,
+            "live health {} at {:?}, loaded health {} at {:?}",
+            live.player_health(),
+            live.player_origin(),
+            loaded.player_health(),
+            loaded.player_origin()
+        );
     }
 }
 
@@ -252,7 +259,14 @@ fn rocket_physics_and_operator_mapping_continue_after_actual_launch_and_restore(
         tick(&mut live, false, false);
         tick(&mut loaded, false, false);
         assert!((health(&live) - health(&loaded)).abs() < 0.001);
-        assert!((live.player_health() - loaded.player_health()).abs() < 0.001);
+        assert!(
+            (live.player_health() - loaded.player_health()).abs() < 0.001,
+            "live health {} at {:?}, loaded health {} at {:?}",
+            live.player_health(),
+            live.player_origin(),
+            loaded.player_health(),
+            loaded.player_origin()
+        );
     }
     assert!(health(&live) < 1000.0);
     assert!(
@@ -398,6 +412,17 @@ fn remote_fixture() -> (Game, crate::MemoryAssets) {
     );
     let (mut game, assets) = fixture("func_tank", &[], &extra);
     equip(&mut game, WeaponId::Glock);
+    // Weapon pickup supplies reserve rounds. The Glock requires ordinary
+    // Reload input, unlike the single-use weapons' automatic chambering.
+    game.tick(
+        TICK_SECONDS,
+        &Input {
+            reload: true,
+            ..Input::default()
+        },
+    );
+    idle(&mut game, 160);
+    assert_eq!(game.inventory().clip(WeaponId::Glock), 17);
     game.set_viewpoint([0.0, -200.0, 36.0], 0.0, 0.0);
     tick(&mut game, false, true);
     for _ in 0..100 {
@@ -452,7 +477,8 @@ fn foreign_or_orphan_pending_claim_never_substitutes_local_player() {
         assert!(loaded.systems_mut().tanks.mounted().is_none());
         assert!(
             loaded.weapon_fired_count() > fired,
-            "ordinary input remains functional"
+            "ordinary input remains functional: inventory {:?}",
+            loaded.to_save(0).inventory
         );
     }
 }

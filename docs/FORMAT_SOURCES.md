@@ -8002,7 +8002,8 @@ The `ohl-game/src/tanks.rs` and `ohl-engine/src/tanks.rs` modules are an
 integration source checkpoint. Game registration, typed use/control requests
 and the shared brush pose are wired. New source adds engine control/combat and
 presentation dispatch. Focused game, engine real-input and renderer-bridge
-tests now pass; full gates and persistence remain pending in MILESTONES.
+tests and focused save continuation now pass; full gates and mutation proof
+remain pending in MILESTONES.
 No retail observations, engine source or SDK were used for this work.
 
 - [TWHL: func_tank](https://twhl.info/wiki/page/func_tank) documents automatic
@@ -8085,7 +8086,7 @@ cooldowns should continue through a non-firing path. Already launched world
 projectiles and deployables continue normally. Mounted restore must establish
 the same canceled-handheld invariant before its first tick, without changing
 tag 42 or weapon encodings. The source now wires input cancellation and passive advancement; mounted
-restore is wired in the new uncompiled tag44 unit and awaits validation.
+restore is wired in tag44 and passes focused real-input continuation tests.
 
 The runtime uses one `TankPose` quaternion/axis-angle for the
 compiled-origin pivot, barrel, use center, renderer and both collision models.
@@ -8100,12 +8101,12 @@ continuation and mutation evidence remain required.
 
 Source integration now includes control/system phases, actual combat/projectile
 dispatch and laser/mortar visual submission. Focused execution passes;
-save/restore and mutation evidence remain pending. Bullet muzzle/smoke sprites and rotation audio are
+save/restore focused tests pass; mutation evidence remains pending. Bullet muzzle/smoke sprites and rotation audio are
 explicit presentation cuts. Physical monster
 operators, automatic monster targets, Sven relation/inventory extensions and
 original-build timing/spread/control fidelity remain excluded. Optional tag
 44 now has a separate bounded source encoding for state and remapped
-attribution references; that new unit is uncompiled/unrun. Frozen tags
+attribution references; its 18 new save/attribution tests pass. Frozen tags
 26/42/43 are unchanged. Cross-level
 turret continuation remains a cut until a separate extension adapter exists.
 
@@ -8123,7 +8124,7 @@ published prisoner behavior already cited under the monster sensing contract,
 so it exercises ordinary hitbox/damage routing without an unrelated enemy
 attack. Single-use weapon fixtures wait through ordinary reload before firing.
 
-The runtime adapter is bounded to256 turrets and128 laser pulses. It caches
+The runtime adapter is bounded to256 turrets and 128 laser pulses. It caches
 referenced laser definitions at level attachment, then samples their live
 render color/amount at each accepted shot; source StartOn does not gate a
 shot's appearance. Width uses the existing width/BoltWidth convention, bounded
@@ -8137,7 +8138,7 @@ is an exact BrushId lookup per physical turret, independent of credited
 operator; operator splash remains eligible under the shared explosion policy.
 
 The tag44 schema and restoration policy are project-authored, not a claim about
-original save files. At most256 tank rows and128 rocket mappings decode;
+original save files. At most256 tank rows and 128 rocket mappings decode;
 nonfinite state is discarded and valid angles/timers reapply current definition
 bounds. First occurrence reserves a duplicate key even when its row is invalid.
 Mounted claims require an explicit Player identity and current controls/master/
@@ -8146,5 +8147,18 @@ identity when the entity still exists. Runtime pending control and phase12
 pending use remain separate, preserving latest-phase12 precedence next tick.
 Source BrushIds are never saved. Missing44 starts authored tank state without
 controls or inferred operator credit; existing physical projectiles remain.
-No earlier wire shape changes. These rules have synthetic source tests, whose
-execution and mutation evidence are still pending at this checkpoint.
+No earlier wire shape changes. All 18 new synthetic save/attribution tests pass,
+alongside existing literal 26/42/43 goldens; mutation and full-gate evidence
+remain pending. Turret eligibility requires finite positive player health as
+well as a clear dead flag, including immediately after restore.
+
+The synthetic target uses a project-authored stationary bind-pose root channel,
+with parsed bind and sampled-pose assertions, to preserve independently
+calculated impact/splash oracles. The existing general `StudioAnim.cycle` is
+not saved: animated targets can resume at a different pose and change impact
+placement and damage after load. These tests therefore establish stationary
+target continuation only; animation-cursor persistence remains a separate
+project `TODO(black-box)`, not a published behavior claim. A remote-control
+fixture uses real Reload input and a positive clip assertion before testing
+ordinary handheld firing; no weapon or animation implementation was changed
+to accommodate these fixture corrections.
