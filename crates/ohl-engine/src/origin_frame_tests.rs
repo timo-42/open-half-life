@@ -1098,3 +1098,165 @@ fn lost_or_mismatched_support_keeps_a_script_pending_without_lowering_or_complet
         assert_eq!(game.script_navigation_stats().untraced_steps, 0);
     }
 }
+
+fn terminal_ground_script(custom_bottom: bool) -> (MemoryAssets, Game) {
+    use ohl_formats::test_support::{Bsp30Builder, CollisionBrush};
+    let bottom = if custom_bottom { -8.0 } else { 0.0 };
+    let mut text = format!(
+        "{{\"classname\" \"worldspawn\"}}{}{}{}{}{}",
+        entity_block("info_player_start", [-200.0, -200.0, 36.0], 0.0, &[]),
+        entity_block(
+            if custom_bottom {
+                "monster_generic"
+            } else {
+                "monster_barney"
+            },
+            [-100.0, 0.0, 48.0 - bottom],
+            0.0,
+            &[
+                ("targetname", "ohl_terminal_actor"),
+                ("spawnflags", "16"),
+                ("model", "models/ohl-terminal.mdl")
+            ]
+        ),
+        entity_block(
+            "scripted_sequence",
+            [300.0, 0.0, -bottom],
+            90.0,
+            &[
+                ("targetname", "ohl_terminal_script"),
+                ("m_iszEntity", "ohl_terminal_actor"),
+                ("m_fMoveTo", "1"),
+                ("target", "ohl_terminal_done")
+            ]
+        ),
+        entity_block(
+            "trigger_auto",
+            [0.0; 3],
+            0.0,
+            &[("target", "ohl_terminal_script")]
+        ),
+        entity_block(
+            "trigger_changelevel",
+            [0.0; 3],
+            0.0,
+            &[
+                ("targetname", "ohl_terminal_done"),
+                ("map", "ohlelsewhere"),
+                ("landmark", "ohl_terminal_landmark")
+            ]
+        ),
+    );
+    // Reuse the independently authored successful detour, with a long clear
+    // run before the terminal lane. This separates its earlier graph corners
+    // from the outer wall's probe horizon; no nonterminal repair is assumed.
+    // The last graph node precedes the mark; the outer wall lies beyond it.
+    for x in [-100.0, 0.0, 100.0] {
+        for y in [-96.0, 0.0, 96.0] {
+            text.push_str(&entity_block("info_node", [x, y, 8.0], 0.0, &[]));
+        }
+    }
+    let mut builder = Bsp30Builder::new();
+    builder.set_entities_text(&text);
+    let heads = builder.push_collision_hulls(&[
+        CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+        CollisionBrush::box_brush([-8.0, -48.0, 0.0], [8.0, 48.0, 128.0]),
+        CollisionBrush::box_brush([192.0, 28.0, 0.0], [340.0, 128.0, 128.0]),
+        CollisionBrush::box_brush([192.0, -128.0, 0.0], [340.0, -28.0, 128.0]),
+        CollisionBrush::half_space([-1.0, 0.0, 0.0], -320.0),
+    ]);
+    builder.push_model([-512.0; 3], [512.0; 3], [0.0; 3], heads, 2, 0, 0);
+    let bytes = builder.build();
+    let bounds = ([-8.0, -8.0, bottom], [8.0, 8.0, bottom + 60.0]);
+    let mut mdl = model([0.0, 0.0, bottom + 48.0], bounds, true);
+    for (base, values) in [(88, bounds.0), (100, bounds.1)] {
+        for (axis, value) in values.into_iter().enumerate() {
+            mdl[base + axis * 4..base + axis * 4 + 4].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+    let mut assets = MemoryAssets::new();
+    assets.insert(&format!("maps/{AI_MAP}.bsp"), bytes.clone());
+    assets.insert("models/ohl-terminal.mdl", mdl);
+    let game = Game::from_map_bytes(&assets, AI_MAP, &bytes).expect("authored terminal graph");
+    (assets, game)
+}
+
+#[test]
+fn terminal_ground_real_script_and_saved_continuation_complete_after_a_detour() {
+    for custom_bottom in [false, true] {
+        let (assets, mut game) = terminal_ground_script(custom_bottom);
+        let mut detoured = false;
+        let mut saved_on_graph_detour = false;
+        for _ in 0..1_200 {
+            game.tick(TICK_SECONDS, &Input::default());
+            let actor = assert_descent_anchor_geometry(&mut game, custom_bottom);
+            detoured |= actor.origin.y.abs() > 64.0;
+            let goal = Vec3::new(300.0, 0.0, if custom_bottom { 8.0 } else { 0.0 });
+            let query_goal = actor.body_frame.anchor_to_query(actor.hull, goal);
+            let (level, _) = game.level_and_systems_mut();
+            let collision = level.monster_collision.as_ref().expect("collision");
+            if detoured
+                && collision
+                    .trace(actor.hull, actor.query_origin(), query_goal)
+                    .blocked()
+            {
+                // Save while the real obstacle still requires graph routing.
+                // Saving in the clear terminal lane could legitimately rebuild
+                // a direct route, outside this deliberately graph-only slice.
+                saved_on_graph_detour = true;
+                break;
+            }
+        }
+        assert!(
+            detoured && saved_on_graph_detour,
+            "save during the real obstructed graph detour"
+        );
+        assert_eq!(game.script_completion_count(), 0);
+        let middle = assert_descent_anchor_geometry(&mut game, custom_bottom);
+        let save = game.to_save(0);
+        let mut loaded = Game::from_save(&assets, &save).expect("actual intermediate script save");
+        assert_eq!(
+            assert_descent_anchor_geometry(&mut loaded, custom_bottom).origin,
+            middle.origin
+        );
+        for game in [&mut game, &mut loaded] {
+            let mut previous = middle;
+            let mut completions = 0;
+            let mut at_terminal_lane = false;
+            for _ in 0..1_200 {
+                completions += game
+                    .tick(TICK_SECONDS, &Input::default())
+                    .iter()
+                    .filter(|event| matches!(event, crate::GameEvent::LevelChange { .. }))
+                    .count();
+                let actor = assert_descent_anchor_geometry(game, custom_bottom);
+                let from = previous.query_origin();
+                let to = actor.query_origin();
+                at_terminal_lane |= actor.origin.x > 252.0;
+                assert!((to - from).length() <= 40.0 * TICK_SECONDS + 0.001);
+                let (level, _) = game.level_and_systems_mut();
+                let collision = level.monster_collision.as_ref().expect("collision");
+                assert!(
+                    !collision.trace(actor.hull, from, to).blocked(),
+                    "every committed terminal move stays clear"
+                );
+                assert!(!collision.trace(actor.hull, to, to).start_solid);
+                previous = actor;
+            }
+            assert!(
+                at_terminal_lane,
+                "each actual branch reaches the final lane: {:?}, {:?}",
+                previous.origin,
+                game.script_navigation_stats()
+            );
+            assert_eq!(
+                completions, 1,
+                "actual terminal approach completes without forcing script release"
+            );
+            assert_eq!(game.script_completion_count(), 1);
+            assert_eq!(game.script_timeout_count(), 0);
+            assert!(game.script_navigation_stats().graph_steps > 0);
+            assert_eq!(game.script_navigation_stats().untraced_steps, 0);
+        }
+    }
+}

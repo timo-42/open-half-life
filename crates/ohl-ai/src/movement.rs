@@ -206,6 +206,95 @@ pub(crate) fn descend_to_ground(
     ))
 }
 
+/// Three existing floor-probe spans bound the terminal walking correction.
+/// This is a project-authored local query budget, not a general route policy.
+pub(crate) const TERMINAL_GROUND_SPAN: f32 = FLOOR_PROBE_SPACING * 3.0;
+
+/// An admitted terminal graph approach, using the real steering allowance.
+/// Prefer the projected goal only when its complete chord and the committed
+/// flat prefix are clear. Otherwise validate the original request or hold.
+/// At most twelve extra traces: shared start support, goal chord, then two
+/// candidates with a sweep, up to three supports, and final occupancy each.
+/// Uniform samples are bounded project policy, not continuous gap coverage.
+pub(crate) fn terminal_ground_approach(
+    collision: &CollisionModel,
+    hull: Hull,
+    origin: Vec3,
+    selected: Vec3,
+    requested: Vec3,
+    travel: f32,
+) -> Vec3 {
+    if flies(hull)
+        || !origin.is_finite()
+        || !selected.is_finite()
+        || !requested.is_finite()
+        || !travel.is_finite()
+        || travel <= 0.0
+        || !terminal_ground_support(collision, hull, origin)
+    {
+        return origin;
+    }
+    let projected = Vec3::new(selected.x, selected.y, origin.z);
+    let delta = projected - origin;
+    let distance = delta.length();
+    if distance.is_finite() && distance > 0.0 {
+        let horizontal = origin + delta / distance * travel.min(distance);
+        let toward = Vec3::new(horizontal.x, horizontal.y, origin.z);
+        if toward.truncate().distance(projected.truncate()) < distance
+            && !collision.trace(hull, origin, projected).blocked()
+            && terminal_ground_prefix(collision, hull, origin, toward)
+        {
+            return toward;
+        }
+    }
+    if terminal_ground_prefix(collision, hull, origin, requested) {
+        requested
+    } else {
+        origin
+    }
+}
+
+fn terminal_ground_support(collision: &CollisionModel, hull: Hull, at: Vec3) -> bool {
+    let depth = ohl_nav::graph::GROUND_CLEARANCE + ohl_physics::DIST_EPSILON;
+    let support = collision.trace(hull, at, at - Vec3::Z * depth);
+    !support.start_solid
+        && !support.all_solid
+        && support.fraction < 1.0
+        && support.plane_normal.z >= ohl_physics::MoveConfig::default().slope_limit
+}
+
+fn terminal_ground_prefix(
+    collision: &CollisionModel,
+    hull: Hull,
+    origin: Vec3,
+    endpoint: Vec3,
+) -> bool {
+    let span = endpoint.truncate().distance(origin.truncate());
+    if !endpoint.is_finite()
+        || endpoint.z.to_bits() != origin.z.to_bits()
+        || !span.is_finite()
+        || span <= 0.0
+        || span > TERMINAL_GROUND_SPAN
+    {
+        return false;
+    }
+    // ceil(span / spacing), with an explicit three-sample bound before traces.
+    let Some(samples) = (1_u8..=3).find(|count| span <= FLOOR_PROBE_SPACING * f32::from(*count))
+    else {
+        return false;
+    };
+    if collision.trace(hull, origin, endpoint).blocked() {
+        return false;
+    }
+    for index in 1..=samples {
+        let point = origin.lerp(endpoint, f32::from(index) / f32::from(samples));
+        if !terminal_ground_support(collision, hull, point) {
+            return false;
+        }
+    }
+    !collision.trace(hull, endpoint, endpoint).blocked()
+}
+
 /// Moves `from` toward `target` by at most `speed * dt`, using clip-hull
 /// traces, with a step up over obstructions no taller than [`STEP_HEIGHT`].
 /// `from`, `target` and the returned position are centered hull queries;

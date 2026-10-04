@@ -8064,3 +8064,25 @@ revalidation, preserved generic queries and saved intermediate continuation.
 Scripted Approach and Face already write Actor, and explicit placement writes
 Actor and Transform together; keeping their phase-8b synchronization common
 corrects a project implementation omission in rendering and save snapshots.
+
+
+The second bounded P5 dependency pulled into the authored-anchor work is a
+project-authored supported flat approach to an appended terminal graph goal.
+It applies only to the same explicitly eligible walking actors, after initial
+attachment is ready, when the real steering request makes no horizontal
+progress toward that post-cursor goal. Distance is bounded by the actual probe
+horizon and three existing floor-probe spans; height agreement uses existing
+ground clearance. The chosen goal heading keeps the real speed-scaled travel
+allowance and current Z. A full-hull chord ends at the projected goal, so an
+obstacle beyond that goal does not reject an otherwise valid approach.
+
+Live start support, committed-prefix sweep, uniformly spaced support samples
+(including the endpoint), walkable slope and endpoint occupancy validate each
+candidate. There are at most twelve additional movement traces, with no search,
+RNG or sight-budget changes. A rejected goal candidate permits only an equally
+validated original request, otherwise the actor holds. Three bounded samples
+are a project policy, not a proof of continuous support over arbitrary gaps.
+The cursor, stuck timer and literal 3D arrival remain authoritative; no steps,
+gravity, direct-route or general nonterminal repair is inferred. Original
+steering fidelity remains `TODO(black-box)`. Generated geometry and real Game
+script/save continuations provide independent evidence for this local policy.

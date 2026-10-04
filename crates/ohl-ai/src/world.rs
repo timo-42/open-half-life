@@ -1254,7 +1254,8 @@ fn advance_route(
     distance
 }
 
-/// Actor policy stays here, above the context-free centered navigation API.
+/// Actor permission for initial attachment and terminal flat graph approach.
+/// Policy stays here, above the context-free centered navigation API.
 fn permits_ground_attachment(world: &World, entity: Entity, actor: &Actor) -> bool {
     use crate::monsters::{MonsterFlags, MonsterKind, spec_for};
     if !actor.alive
@@ -1675,7 +1676,7 @@ mod tests {
     }
 
     #[test]
-    fn initial_ground_attachment_requires_a_known_living_solid_walking_policy() {
+    fn terminal_ground_and_initial_attachment_require_a_known_living_solid_walking_policy() {
         use crate::BodyFrame;
         use ohl_game::registry::ClassName;
         let mut world = World::new();

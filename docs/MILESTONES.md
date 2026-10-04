@@ -8713,6 +8713,27 @@ restored ScriptHold transform exclusion. The redundant prefix sweep is not
 claimed as an independently discriminated behavior. Final candidate gates are
 still pending.
 
+A second narrow P5 dependency is pulled into this milestone: supported flat
+approach to the appended terminal goal of an already attached walking graph
+route. Only a nonprogressing real steering request within the existing probe
+horizon and three floor-probe spans can enter. The preferred goal heading keeps
+the actual speed-scaled allowance and current Z; its full-hull chord ends at the
+projected target. Live start/interior/endpoint support, slope, prefix collision
+and final occupancy validate the chosen move. If the goal candidate rejects,
+only a validated original side request may move; otherwise the actor holds.
+The maximum additional trace count is twelve. Bounded floor samples do not
+establish arbitrary-gap safety. No cursor/arrival/stuck reset, step, gravity,
+replanning, direct-route or general nonterminal behavior is added.
+
+A retained real-Steer synthetic history failed at selected-goal progress before
+repair. An independent Game detour/save continuation failed at actual script
+completion after reaching its final lane safely. Both now pass for authored
+feet and model-bottom policies. The Game fixture separates the earlier detour
+corners from its terminal wall; its initial cramped scene also exposed an
+out-of-scope nonterminal lookahead stall and was corrected as project-authored
+geometry, without changing production steering or loosening any assertion.
+Actual terminal mutation probes and final combined gates remain pending.
+
 P5 retains node-kind attachment, stuck-route recovery, ordinary steering's
 final sweep and XY-only script/Route arrival, including purely vertical flight. A named ignored synthetic low-step
 graph reproduction is an additional P5 obligation: it stalls with centered
