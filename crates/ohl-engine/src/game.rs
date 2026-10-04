@@ -2006,18 +2006,7 @@ impl Game {
         if let Some(bosses) = &save.bosses {
             crate::save_state::restore_bosses(&mut self.level, bosses);
         }
-        if save.map_effects.is_none() {
-            ohl_game::effects::restore_legacy_visual_defaults(
-                &mut self.level.registry,
-                &self.level.defs,
-            );
-        }
-        self.systems.map_effects.restore(
-            save.map_effects.as_ref(),
-            &mut self.level.registry,
-            self.level.player,
-            &mut self.level.simulation,
-        );
+        self.restore_map_effects(save);
         // A load is a map load: the chapter title is announced again.
         self.pending.clear();
         self.pending.extend(chapter_title_event(&self.level.name));
@@ -2046,6 +2035,22 @@ impl Game {
         // the identical zero-`dt` call, for the identical reason, after a
         // level change re-seats a carried `func_tracktrain`.
         self.level.sync_brush_collision(0.0);
+    }
+
+    /// Restores the optional effect state after the existing entity overlays.
+    fn restore_map_effects(&mut self, save: &GameSave) {
+        if save.map_effects.is_none() {
+            ohl_game::effects::restore_legacy_visual_defaults(
+                &mut self.level.registry,
+                &self.level.defs,
+            );
+        }
+        self.systems.map_effects.restore(
+            save.map_effects.as_ref(),
+            &mut self.level.registry,
+            self.level.player,
+            &mut self.level.simulation,
+        );
     }
 
     /// Returns cumulative resource uploads for the current level.

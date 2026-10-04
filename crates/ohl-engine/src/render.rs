@@ -1371,7 +1371,7 @@ mod gameplay_frame_tests {
         let clip = glam::Mat4::from_cols_array(&camera.view_projection(1.0)) * point.extend(1.0);
         let ndc = clip.truncate() / clip.w;
         assert!(ndc.is_finite() && ndc.x.abs() < 1.0 && ndc.y.abs() < 1.0);
-        let x = ((ndc.x + 1.0) * 0.5 * EDGE as f32) as u32;
+        let x = (ndc.x.midpoint(1.0) * EDGE as f32) as u32;
         let y = ((1.0 - ndc.y) * 0.5 * EDGE as f32) as u32;
         let offset = usize::try_from((y * EDGE + x) * 4).unwrap();
         image[offset..offset + 3].try_into().unwrap()
