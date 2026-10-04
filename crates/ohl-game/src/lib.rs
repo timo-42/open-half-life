@@ -18,6 +18,7 @@
 
 pub mod brush;
 pub mod camera;
+pub mod effects;
 pub mod keyvalues;
 pub mod logic;
 pub mod pose;
