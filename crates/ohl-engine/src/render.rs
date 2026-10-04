@@ -6,7 +6,7 @@
 //! written, then the translucent passes — brush-entity submodels and
 //! liquids — which read depth without clearing it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use glam::{Mat4, Quat, Vec3};
@@ -14,8 +14,8 @@ use ohl_game::hecs::Entity;
 use ohl_game::registry::Transform;
 use ohl_render::{
     BlendKind, EffectInstance, FreeFlyCamera, GpuContext, LightStyles, ModelInstance, RenderProps,
-    SkyRenderer, SpriteInstance, StudioRenderer, SubmodelInstance, WorldRenderer, math, placement,
-    wgpu,
+    RenderedModelInstance, SkyRenderer, SpriteInstance, StudioRenderPhase, StudioRenderer,
+    SubmodelInstance, WorldRenderer, math, placement, wgpu,
 };
 use ohl_world::{Aabb, Frustum, StudioPose};
 
@@ -136,19 +136,14 @@ impl RenderStageTimings {
 pub(crate) struct Renderers {
     world: WorldRenderer,
     effects: ohl_render::EffectRenderer,
+    fade: FadeRenderer,
     map_effects: visual_effects::MapEffects,
     submodels: BTreeMap<u32, ohl_render::PreparedSubmodel>,
     lightmap_uploads: u64,
     stage_timings: Option<RenderStageTimings>,
     sky: Option<SkyRenderer>,
     studio: Vec<StudioRenderer>,
-    /// This frame's studio instances, kept across frames so a per-frame
-    /// rebuild reuses the allocation instead of asking the allocator for
-    /// one every frame.
-    props: Vec<PropPlacement>,
-    /// Scratch for sorting `props` into a stable order; pooled for the same
-    /// reason.
-    prop_order: Vec<(u64, PropPlacement)>,
+    debris_studio: Vec<Option<StudioRenderer>>,
 }
 
 impl Renderers {
@@ -190,6 +185,7 @@ impl Renderers {
         Ok(Self {
             world,
             effects: ohl_render::EffectRenderer::new(context, format),
+            fade: FadeRenderer::new(context, format),
             map_effects: visual_effects::MapEffects::new(level),
             submodels,
             lightmap_uploads: 0,
@@ -198,8 +194,12 @@ impl Renderers {
             .then(RenderStageTimings::default),
             sky,
             studio,
-            props: Vec::new(),
-            prop_order: Vec::new(),
+            debris_studio: level
+                .debris_models
+                .models
+                .iter()
+                .map(|model| StudioRenderer::new(context, model, format).ok())
+                .collect(),
         })
     }
 
@@ -222,6 +222,7 @@ impl Renderers {
         target: RenderTarget<'_>,
         view_model: Option<&ViewModelFrame>,
         transient_sprites: &[TransientSprite],
+        gameplay_effects: &crate::map_effects::EffectPresentation<'_>,
     ) {
         let (width, height) = (target.width.max(1), target.height.max(1));
         let mut checkpoint = self.stage_timings.as_ref().map(|_| Instant::now());
@@ -239,8 +240,19 @@ impl Renderers {
         self.record_stage(RenderStage::World, &mut checkpoint);
 
         let depth = self.world.depth_view().cloned();
-        self.collect_studio_instances(level);
-        self.draw_props(context, level, camera, depth.as_ref(), target);
+        let (studio_frame, custom_ready) =
+            self.collect_studio_instances(level, camera, gameplay_effects);
+        if let Some(depth) = depth.as_ref() {
+            self.draw_props(
+                context,
+                level,
+                camera,
+                depth,
+                target,
+                &studio_frame,
+                StudioRenderPhase::Opaque,
+            );
+        }
         self.record_stage(RenderStage::Studio, &mut checkpoint);
 
         if let (Some(sky), Some(depth)) = (self.sky.as_ref(), depth.as_ref()) {
@@ -255,8 +267,29 @@ impl Renderers {
             .render_liquid(context, camera, target.view, width, height, elapsed, 1.0);
         self.record_stage(RenderStage::Liquid, &mut checkpoint);
 
-        self.draw_visuals(context, level, camera, elapsed, target, transient_sprites);
+        self.draw_visuals(
+            context,
+            level,
+            camera,
+            elapsed,
+            target,
+            transient_sprites,
+            gameplay_effects,
+            &custom_ready,
+        );
         self.record_stage(RenderStage::Sprite, &mut checkpoint);
+        if let Some(depth) = depth.as_ref() {
+            self.draw_props(
+                context,
+                level,
+                camera,
+                depth,
+                target,
+                &studio_frame,
+                StudioRenderPhase::Translucent,
+            );
+        }
+        self.record_stage(RenderStage::Studio, &mut checkpoint);
 
         // M7.9 P3: the view model, drawn last, after everything else. Its
         // depth is reset first (a manual depth-only clear, since
@@ -267,6 +300,9 @@ impl Renderers {
         // nothing else draws this frame.
         if let (Some(frame), Some(depth)) = (view_model, depth.as_ref()) {
             self.draw_view_model(context, level, frame, depth, target);
+        }
+        if let Some(fade) = gameplay_effects.fade {
+            self.fade.draw(context, target.view, fade);
         }
         self.record_stage(RenderStage::Viewmodel, &mut checkpoint);
         if let Some(timings) = &mut self.stage_timings {
@@ -332,6 +368,7 @@ impl Renderers {
     /// back-to-front. Consecutive items of one renderer share a submission.
     /// Brush/liquid/studio transparency and intersecting primitives remain
     /// outside this bounded compositor; see the milestone limits.
+    #[allow(clippy::too_many_arguments)]
     fn draw_visuals(
         &mut self,
         context: &GpuContext,
@@ -340,6 +377,8 @@ impl Renderers {
         elapsed: f32,
         target: RenderTarget<'_>,
         transient_sprites: &[TransientSprite],
+        gameplay_effects: &crate::map_effects::EffectPresentation<'_>,
+        custom_ready: &BTreeSet<u64>,
     ) {
         let mut instances: Vec<SpriteInstance<'_>> = level
             .sprites
@@ -355,7 +394,7 @@ impl Renderers {
                     asset,
                     origin: transform.origin.to_array(),
                     scale: sprite.scale,
-                    render_props: render_props(sprite.render),
+                    render_props: live_render_props(level, entity, sprite.render),
                     frame_time: elapsed * sprite.framerate / ohl_world::MAX_SPRITE_FRAMERATE,
                 })
             })
@@ -371,6 +410,8 @@ impl Renderers {
             })
         }));
         self.map_effects.sample(level, elapsed);
+        self.map_effects
+            .append_gameplay(level, gameplay_effects, custom_ready);
         let Some(depth) = self.world.depth_view().cloned() else {
             return;
         };
@@ -447,87 +488,134 @@ impl Renderers {
         }
     }
 
-    /// Rebuilds [`Self::props`], this frame's studio instance list, from the
-    /// entities carrying a [`StudioAnim`] rather than from the level's static
-    /// placement list.
-    ///
-    /// The result is sorted by entity, so the order a frame draws in does not
-    /// depend on how the world happens to have laid out its archetypes. Both
-    /// buffers are reused across frames.
-    fn collect_studio_instances(&mut self, level: &Level) {
-        self.prop_order.clear();
+    /// Pair identity, live properties and sampled pose before any filtering or
+    /// model-slot grouping. Both phases borrow this one frame preparation.
+    fn collect_studio_instances(
+        &self,
+        level: &Level,
+        camera: &FreeFlyCamera,
+        effects: &crate::map_effects::EffectPresentation<'_>,
+    ) -> (Vec<StudioFrame>, BTreeSet<u64>) {
+        let mut frame = Vec::new();
         for (entity, anim, transform) in &mut level
             .registry
             .world
             .query::<(Entity, &StudioAnim, &Transform)>()
         {
-            self.prop_order.push((
-                entity.to_bits().get(),
-                PropPlacement {
-                    model: anim.model,
-                    origin: transform.origin.to_array(),
-                    yaw: transform.angles.y,
-                    sequence: anim.sequence,
-                    body: anim.body,
-                    skin: anim.skin,
-                    cycle: anim.cycle,
-                },
-            ));
+            let prop = PropPlacement {
+                model: anim.model,
+                origin: transform.origin.to_array(),
+                yaw: transform.angles.y,
+                sequence: anim.sequence,
+                body: anim.body,
+                skin: anim.skin,
+                cycle: anim.cycle,
+            };
+            let Some(model) = level.studio_models.get(prop.model) else {
+                continue;
+            };
+            if self.studio.get(prop.model).is_none() {
+                continue;
+            }
+            let Ok(pose) = StudioPose::sample(model, prop.sequence, prop.cycle) else {
+                continue;
+            };
+            let mut entry = StudioFrame {
+                source: StudioSource::Entity(prop.model),
+                id: entity.to_bits().get(),
+                transform: placement(prop.origin, prop.yaw),
+                pose: Some(pose),
+                body: vec![prop.body],
+                skin: prop.skin,
+                ambient: ambient_at(level, prop.origin),
+                props: live_render_props(
+                    level,
+                    entity,
+                    ohl_game::keyvalues::RenderProps::default(),
+                ),
+                depth: 0.0,
+            };
+            entry.depth = entry
+                .instance(level)
+                .expect("prepared pose")
+                .view_depth(model, camera);
+            frame.push(entry);
         }
-        self.prop_order.sort_unstable_by_key(|(bits, _)| *bits);
-        self.props.clear();
-        self.props
-            .extend(self.prop_order.iter().map(|(_, prop)| *prop));
+        let mut ready = BTreeSet::new();
+        for record in effects.debris {
+            let Some((slot, transform)) = level.debris_models.placement(record) else {
+                continue;
+            };
+            if self.debris_studio.get(slot).is_none_or(Option::is_none) {
+                continue;
+            }
+            let Some(model) = level.debris_models.models.get(slot) else {
+                continue;
+            };
+            let mut entry = StudioFrame {
+                source: StudioSource::Debris(slot),
+                id: record.id,
+                transform,
+                pose: None,
+                body: Vec::new(),
+                skin: 0,
+                ambient: ambient_at(level, record.position.to_array()),
+                props: RenderProps::default(),
+                depth: 0.0,
+            };
+            let Some(instance) = entry.instance(level) else {
+                continue;
+            };
+            entry.depth = instance.view_depth(model, camera);
+            ready.insert(record.id);
+            frame.push(entry);
+        }
+        frame.sort_by_key(|entry| (entry.source.kind(), entry.id));
+        (frame, ready)
     }
 
-    /// Draws every studio instance at its sampled pose.
-    ///
-    /// Each instance carries its own animation cursor, so a monster the AI
-    /// moved and a static prop the map placed take the same path.
+    /// Opaque geometry goes early; translucent meshes follow the completed
+    /// opaque sprite/effect depth. Global cross-family transparency remains cut.
+    #[allow(clippy::too_many_arguments)]
     fn draw_props(
         &mut self,
         context: &GpuContext,
         level: &Level,
         camera: &FreeFlyCamera,
-        depth: Option<&wgpu::TextureView>,
+        depth: &wgpu::TextureView,
         target: RenderTarget<'_>,
+        frame: &[StudioFrame],
+        phase: StudioRenderPhase,
     ) {
-        for (slot, renderer) in self.studio.iter_mut().enumerate() {
-            let Some(model) = level.studio_models.get(slot) else {
+        let mut order: Vec<_> = frame.iter().collect();
+        if phase == StudioRenderPhase::Translucent {
+            order.sort_by(|a, b| {
+                b.depth
+                    .total_cmp(&a.depth)
+                    .then((a.source.kind(), a.id).cmp(&(b.source.kind(), b.id)))
+            });
+        }
+        for entry in order {
+            let (model, renderer) = match entry.source {
+                StudioSource::Entity(slot) => {
+                    (level.studio_models.get(slot), self.studio.get_mut(slot))
+                }
+                StudioSource::Debris(slot) => (
+                    level.debris_models.models.get(slot),
+                    self.debris_studio.get_mut(slot).and_then(Option::as_mut),
+                ),
+            };
+            let (Some(model), Some(renderer), Some(instance)) =
+                (model, renderer, entry.instance(level))
+            else {
                 continue;
             };
-            let mut poses = Vec::new();
-            let mut placements = Vec::new();
-            for prop in self.props.iter().filter(|prop| prop.model == slot) {
-                let Ok(pose) = StudioPose::sample(model, prop.sequence, prop.cycle) else {
-                    continue;
-                };
-                poses.push(pose);
-                placements.push(*prop);
-            }
-            if poses.is_empty() {
-                continue;
-            }
-            let bodies: Vec<[u32; 1]> = placements.iter().map(|prop| [prop.body]).collect();
-            let instances: Vec<ModelInstance<'_>> = poses
-                .iter()
-                .zip(&placements)
-                .zip(&bodies)
-                .map(|((pose, prop), body)| ModelInstance {
-                    transform: placement(prop.origin, prop.yaw),
-                    pose,
-                    body,
-                    skin: prop.skin,
-                    ambient: ambient_at(level, prop.origin),
-                    light_direction: ModelInstance::default_light_direction(),
-                    light_color: KEY_LIGHT,
-                })
-                .collect();
-            renderer.render(
+            renderer.render_with_props(
                 context,
                 model,
                 camera,
-                &instances,
+                &[instance],
+                phase,
                 target.view,
                 target.width.max(1),
                 target.height.max(1),
@@ -562,7 +650,7 @@ impl Renderers {
             };
             draws.push((
                 SubmodelInstance { model, transform },
-                render_props(instance.render),
+                live_render_props(level, instance.entity, instance.render),
             ));
         }
         self.world.draw_world_submodels(
@@ -573,6 +661,220 @@ impl Renderers {
             target.width.max(1),
             target.height.max(1),
         );
+    }
+}
+
+#[derive(Clone, Copy)]
+enum StudioSource {
+    Entity(usize),
+    Debris(usize),
+}
+
+impl StudioSource {
+    fn kind(self) -> u8 {
+        match self {
+            Self::Entity(_) => 0,
+            Self::Debris(_) => 1,
+        }
+    }
+}
+
+struct StudioFrame {
+    source: StudioSource,
+    id: u64,
+    transform: math::Mat4,
+    pose: Option<StudioPose>,
+    body: Vec<u32>,
+    skin: usize,
+    ambient: [f32; 3],
+    props: RenderProps,
+    depth: f32,
+}
+
+impl StudioFrame {
+    fn instance<'a>(&'a self, level: &'a Level) -> Option<RenderedModelInstance<'a>> {
+        let pose = match self.source {
+            StudioSource::Entity(_) => self.pose.as_ref()?,
+            StudioSource::Debris(slot) => level.debris_models.poses.get(slot)?,
+        };
+        Some(RenderedModelInstance {
+            instance: ModelInstance {
+                transform: self.transform,
+                pose,
+                body: &self.body,
+                skin: self.skin,
+                ambient: self.ambient,
+                light_direction: ModelInstance::default_light_direction(),
+                light_color: KEY_LIGHT,
+            },
+            render_props: self.props,
+        })
+    }
+}
+
+// Full-screen presentation uses blend hardware, with no scene readback or
+// mutable camera state. Host HUD/UI draws after Game::render returns.
+struct FadeRenderer {
+    pipelines: [wgpu::RenderPipeline; 2],
+    uniform: wgpu::Buffer,
+    binding: wgpu::BindGroup,
+    srgb: bool,
+}
+
+impl FadeRenderer {
+    fn new(context: &GpuContext, format: wgpu::TextureFormat) -> Self {
+        let device = &context.device;
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("ohl map fade shader"),
+            source: wgpu::ShaderSource::Wgsl(r"
+                @group(0) @binding(0) var<uniform> color: vec4<f32>;
+                @vertex fn vertex_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
+                    let points = array<vec2<f32>, 3>(vec2<f32>(-1.0,-1.0), vec2<f32>(3.0,-1.0), vec2<f32>(-1.0,3.0));
+                    return vec4<f32>(points[index], 0.0, 1.0);
+                }
+                @fragment fn fragment_main() -> @location(0) vec4<f32> { return color; }
+            ".into()),
+        });
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("ohl map fade layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(16),
+                },
+                count: None,
+            }],
+        });
+        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ohl map fade color"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let binding = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ohl map fade binding"),
+            layout: &layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform.as_entire_binding(),
+            }],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("ohl map fade pipeline layout"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+        let modulation = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::Src,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
+        let pipelines = [wgpu::BlendState::ALPHA_BLENDING, modulation].map(|blend| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("ohl map fade pipeline"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vertex_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &[],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fragment_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(blend),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        });
+        Self {
+            pipelines,
+            uniform,
+            binding,
+            srgb: format.is_srgb(),
+        }
+    }
+
+    fn draw(
+        &self,
+        context: &GpuContext,
+        target: &wgpu::TextureView,
+        mut fade: crate::map_effects::FadeOverlay,
+    ) {
+        if fade.amount <= 0.0 {
+            return;
+        }
+        if self.srgb {
+            fade.color = fade.color.map(|value| {
+                if value <= 0.04045 {
+                    value / 12.92
+                } else {
+                    ((value + 0.055) / 1.055).powf(2.4)
+                }
+            });
+        }
+        let color = if fade.modulate {
+            fade.composite([1.0; 3])
+        } else {
+            fade.color
+        };
+        let rgba = [
+            color[0],
+            color[1],
+            color[2],
+            if fade.modulate { 1.0 } else { fade.amount },
+        ];
+        let bytes: Vec<u8> = rgba.into_iter().flat_map(f32::to_le_bytes).collect();
+        context.queue.write_buffer(&self.uniform, 0, &bytes);
+        let mut encoder = context
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("ohl map fade encoder"),
+            });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ohl map fade pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.pipelines[usize::from(fade.modulate)]);
+            pass.set_bind_group(0, &self.binding, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        context.queue.submit([encoder.finish()]);
     }
 }
 
@@ -729,12 +1031,17 @@ pub(crate) fn rotated_placement(
 
 /// Maps `ohl-game`'s raw `rendermode`/`renderamt`/`rendercolor` keyvalues
 /// onto the renderer's typed render properties.
-fn render_props(props: ohl_game::keyvalues::RenderProps) -> RenderProps {
+fn live_render_props(
+    level: &Level,
+    entity: Entity,
+    fallback: ohl_game::keyvalues::RenderProps,
+) -> RenderProps {
+    let (props, fx) = ohl_game::effects::effective_render_props(&level.registry, entity, fallback);
     // `renderamt` defaults to 0 when the key is absent, which for either of
     // the documented opaque modes means "fully opaque", not "invisible";
     // `RenderProps::from_entity` applies that rule (and the unknown-mode
     // fallback) for both `Normal` and `Solid`.
-    RenderProps::from_entity(props.mode, props.amt, props.color, 0)
+    RenderProps::from_entity(props.mode, props.amt, props.color, fx.0)
 }
 
 #[cfg(test)]
@@ -948,5 +1255,604 @@ mod tests {
     fn rotated_placement_zero_axis_is_identity() {
         let matrix = rotated_placement(Vec3::new(5.0, 6.0, 7.0), Vec3::ZERO, Vec3::ZERO, 45.0);
         assert_eq!(matrix, glam::Mat4::IDENTITY.to_cols_array());
+    }
+}
+
+#[cfg(test)]
+mod gameplay_frame_tests {
+    use super::*;
+    use crate::test_support::{entity_block, synthetic_map_bsp_with_entities};
+    use crate::{Game, Input, MemoryAssets};
+    use ohl_render::{OFFSCREEN_FORMAT, OffscreenTarget};
+
+    const EDGE: u32 = 96;
+    const VIEW: [f32; 3] = [42.0, 32.0, 128.0];
+
+    fn assets(extra: &str) -> MemoryAssets {
+        let text = entity_block("worldspawn", [0.0; 3], 0.0, &[])
+            + &entity_block("info_player_start", [0.0, 0.0, 40.0], 0.0, &[])
+            + extra;
+        let mut assets = MemoryAssets::new();
+        assets.insert(
+            "maps/ohl_frame_effects.bsp",
+            synthetic_map_bsp_with_entities(&text),
+        );
+        let (mut bytes, layout) = ohl_formats::test_support::build_minimal_mdl10();
+        for vertex in 0..4 {
+            for axis in 0..2 {
+                let offset = layout.verts_offset + vertex * 12 + axis * 4;
+                let value =
+                    f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) * 64.0;
+                bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        let palette = layout.texture_data_offset + 256;
+        bytes[palette..palette + 768].fill(255);
+        bytes[layout.textures_offset + 64..layout.textures_offset + 68]
+            .copy_from_slice(&ohl_world::STUDIO_NF_FULLBRIGHT.to_le_bytes());
+        for (offset, value) in [
+            (112, 10.0_f32),
+            (116, 0.0),
+            (120, 0.0),
+            (124, 74.0),
+            (128, 64.0),
+            (132, 0.0),
+        ] {
+            bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        assets.insert("models/ohl_frame_a.mdl", bytes.clone());
+        assets.insert("models/ohl_frame_b.mdl", bytes);
+        let mut sprite = ohl_formats::test_support::build_minimal_spr();
+        sprite[8..12].copy_from_slice(&2_i32.to_le_bytes());
+        for color in sprite[42..810].chunks_exact_mut(3) {
+            color.copy_from_slice(&[16, 160, 32]);
+        }
+        assets.insert("sprites/ohl_frame.spr", sprite);
+        assets
+    }
+
+    struct Counted {
+        assets: MemoryAssets,
+        reads: std::cell::Cell<usize>,
+    }
+
+    impl crate::AssetSource for Counted {
+        fn read(&self, path: &str) -> Option<Vec<u8>> {
+            self.reads.set(self.reads.get() + 1);
+            crate::AssetSource::read(&self.assets, path)
+        }
+    }
+
+    fn game(assets: &MemoryAssets) -> Game {
+        let mut game = Game::load(assets, "ohl_frame_effects").unwrap();
+        game.set_viewpoint(VIEW, 89.9, 0.0);
+        game
+    }
+
+    fn press(game: &mut Game) {
+        game.tick(
+            crate::tick::TICK_SECONDS,
+            &Input {
+                use_pressed: true,
+                ..Input::default()
+            },
+        );
+        for _ in 0..8 {
+            game.tick(crate::tick::TICK_SECONDS, &Input::default());
+        }
+    }
+
+    fn pixels(context: &GpuContext, game: &mut Game) -> Vec<u8> {
+        let target = OffscreenTarget::new(context, EDGE, EDGE).unwrap();
+        game.render(
+            context,
+            RenderTarget {
+                view: target.view(),
+                width: EDGE,
+                height: EDGE,
+                format: OFFSCREEN_FORMAT,
+            },
+        )
+        .unwrap();
+        target.read_rgba(context).unwrap()
+    }
+
+    fn center(pixels: &[u8]) -> [u8; 3] {
+        let offset = usize::try_from((EDGE / 2 * EDGE + EDGE / 2) * 4).unwrap();
+        pixels[offset..offset + 3].try_into().unwrap()
+    }
+
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
+    fn at_world(image: &[u8], camera: &FreeFlyCamera, point: Vec3) -> [u8; 3] {
+        let clip = glam::Mat4::from_cols_array(&camera.view_projection(1.0)) * point.extend(1.0);
+        let ndc = clip.truncate() / clip.w;
+        assert!(ndc.is_finite() && ndc.x.abs() < 1.0 && ndc.y.abs() < 1.0);
+        let x = ((ndc.x + 1.0) * 0.5 * EDGE as f32) as u32;
+        let y = ((1.0 - ndc.y) * 0.5 * EDGE as f32) as u32;
+        let offset = usize::try_from((y * EDGE + x) * 4).unwrap();
+        image[offset..offset + 3].try_into().unwrap()
+    }
+
+    fn switch(target: &str) -> String {
+        entity_block(
+            "func_button",
+            VIEW,
+            0.0,
+            &[("target", target), ("wait", "-1")],
+        )
+    }
+
+    #[test]
+    fn real_use_live_studio_and_fade_reach_pixels_and_restore_when_opted_in() {
+        if std::env::var_os("OHL_RENDER_GPU_TEST").as_deref() != Some(std::ffi::OsStr::new("1")) {
+            return;
+        }
+        let context = GpuContext::headless().expect("explicit GPU opt-in requires an adapter");
+        let target = entity_block(
+            "cycler",
+            [0.0, 0.0, 32.0],
+            0.0,
+            &[
+                ("targetname", "studio"),
+                ("model", "models/ohl_frame_a.mdl"),
+            ],
+        );
+        let scene = target
+            + &switch("color")
+            + &entity_block(
+                "env_render",
+                [0.0; 3],
+                0.0,
+                &[
+                    ("targetname", "color"),
+                    ("target", "studio"),
+                    ("rendermode", "1"),
+                    ("renderamt", "128"),
+                    ("rendercolor", "255 0 0"),
+                    ("renderfx", "17"),
+                ],
+            );
+        let source = assets(&scene);
+        let mut live = game(&source);
+        let before = center(&pixels(&context, &mut live));
+        assert!(before.iter().all(|&value| value > 240));
+        press(&mut live);
+        let after = center(&pixels(&context, &mut live));
+        assert!(after[0] > after[1] + 80 && after[0] > after[2] + 80);
+        let saved = live.save_bytes(123).unwrap();
+        let mut loaded = Game::load_bytes(&source, &saved).unwrap();
+        loaded.set_viewpoint(VIEW, 89.9, 0.0);
+        assert_eq!(center(&pixels(&context, &mut loaded)), after);
+        assert!(
+            loaded
+                .to_save(123)
+                .map_effects
+                .unwrap()
+                .render_fx
+                .iter()
+                .any(|&(_, fx)| fx == 17)
+        );
+        for modulate in [false, true] {
+            let flags = if modulate { "3" } else { "1" };
+            let scene = switch("fade")
+                + &entity_block(
+                    "env_fade",
+                    [0.0; 3],
+                    0.0,
+                    &[
+                        ("targetname", "fade"),
+                        ("duration", "3"),
+                        ("holdtime", "2"),
+                        ("spawnflags", flags),
+                        ("renderamt", "128"),
+                        ("rendercolor", "64 128 192"),
+                    ],
+                );
+            let source = assets(&scene);
+            let mut game = game(&source);
+            let before = center(&pixels(&context, &mut game));
+            press(&mut game);
+            let overlay = game.systems_mut().map_effects.presentation().fade.unwrap();
+            let expected = overlay.composite(before.map(|x| f32::from(x) / 255.0));
+            let after = center(&pixels(&context, &mut game));
+            for channel in 0..3 {
+                assert!((f32::from(after[channel]) - expected[channel] * 255.0).abs() <= 2.0);
+            }
+            let mut loaded = Game::load_bytes(&source, &game.save_bytes(123).unwrap()).unwrap();
+            loaded.set_viewpoint(VIEW, 89.9, 0.0);
+            assert_eq!(center(&pixels(&context, &mut loaded)), before);
+        }
+    }
+
+    #[test]
+    fn real_break_custom_gibs_draw_once_and_keep_fallback_on_resource_failure_when_opted_in() {
+        if std::env::var_os("OHL_RENDER_GPU_TEST").as_deref() != Some(std::ffi::OsStr::new("1")) {
+            return;
+        }
+        let context = GpuContext::headless().expect("explicit GPU opt-in requires an adapter");
+        let extra = switch("break")
+            + &entity_block(
+                "func_breakable",
+                [42.0, 32.0, 64.0],
+                0.0,
+                &[
+                    ("targetname", "break"),
+                    ("gibmodel", "models/ohl_frame_a.mdl"),
+                ],
+            )
+            + &entity_block(
+                "func_breakable",
+                [100.0, 100.0, 32.0],
+                0.0,
+                &[
+                    ("targetname", "reserve"),
+                    ("gibmodel", "models/ohl_frame_b.mdl"),
+                ],
+            );
+        let source = Counted {
+            assets: assets(&extra),
+            reads: std::cell::Cell::new(0),
+        };
+        let mut live = Game::load(&source, "ohl_frame_effects").unwrap();
+        live.set_viewpoint(VIEW, 89.9, 0.0);
+        let reads = source.reads.get();
+        press(&mut live);
+        let saved = live.to_save(123);
+        assert_eq!(saved.map_effects.as_ref().unwrap().debris.len(), 6);
+        assert_eq!(
+            source.reads.get(),
+            reads,
+            "simulation never reads model assets"
+        );
+        let camera = *live.camera();
+        let elapsed = live.elapsed();
+        let (level, systems) = live.level_and_systems_mut();
+        level.preload_debris_models(&source);
+        assert_eq!(
+            source.reads.get(),
+            reads,
+            "cached success/failure paths are never retried"
+        );
+        let before = systems
+            .map_effects
+            .snapshot(&level.registry, level.player, &level.simulation);
+        let effects = systems.map_effects.presentation();
+        let mut renderers = Renderers::new(&context, level, OFFSCREEN_FORMAT).unwrap();
+        let (frame, ready) = renderers.collect_studio_instances(level, &camera, &effects);
+        assert_eq!(ready.len(), 6);
+        assert_eq!(
+            frame
+                .iter()
+                .filter(|entry| matches!(entry.source, StudioSource::Debris(_)))
+                .count(),
+            6
+        );
+        let target = OffscreenTarget::new(&context, EDGE, EDGE).unwrap();
+        let draw_target = RenderTarget {
+            view: target.view(),
+            width: EDGE,
+            height: EDGE,
+            format: OFFSCREEN_FORMAT,
+        };
+        let empty = crate::map_effects::EffectPresentation {
+            shake: effects.shake,
+            fade: effects.fade,
+            debris: &[],
+            blasts: effects.blasts,
+        };
+        renderers.draw(
+            &context,
+            level,
+            &camera,
+            &LightStyles::new(),
+            elapsed,
+            draw_target,
+            None,
+            &[],
+            &empty,
+        );
+        let background = target.read_rgba(&context).unwrap();
+        renderers.draw(
+            &context,
+            level,
+            &camera,
+            &LightStyles::new(),
+            elapsed,
+            draw_target,
+            None,
+            &[],
+            &effects,
+        );
+        let custom = target.read_rgba(&context).unwrap();
+        assert!(
+            custom
+                .chunks_exact(4)
+                .zip(background.chunks_exact(4))
+                .filter(|(drawn, empty)| drawn[..3] != empty[..3]
+                    && drawn[..3].iter().all(|&channel| channel > 240))
+                .count()
+                >= 2,
+            "custom meshes must contribute visible fullbright white pixels"
+        );
+        assert!(
+            !renderers
+                .map_effects
+                .instances
+                .iter()
+                .any(|effect| matches!(effect, EffectInstance::Gib { .. }))
+        );
+        renderers.debris_studio[0] = None;
+        let (_, ready) = renderers.collect_studio_instances(level, &camera, &effects);
+        assert!(ready.is_empty());
+        renderers.draw(
+            &context,
+            level,
+            &camera,
+            &LightStyles::new(),
+            elapsed,
+            draw_target,
+            None,
+            &[],
+            &effects,
+        );
+        let fallback = target.read_rgba(&context).unwrap();
+        assert_eq!(
+            renderers
+                .map_effects
+                .instances
+                .iter()
+                .filter(|effect| matches!(effect, EffectInstance::Gib { .. }))
+                .count(),
+            6
+        );
+        assert_ne!(
+            custom, fallback,
+            "the actual custom silhouette differs from material cuboids"
+        );
+        assert_eq!(
+            systems
+                .map_effects
+                .snapshot(&level.registry, level.player, &level.simulation),
+            before
+        );
+        assert_eq!(source.reads.get(), reads);
+        // A missing first resource must not disable a later prepared model slot.
+        let mut switched = saved;
+        for record in &mut switched.map_effects.as_mut().unwrap().debris {
+            record.gib_model = Some("models/ohl_frame_b.mdl".to_owned());
+        }
+        let mut other = Game::from_save(&source, &switched).unwrap();
+        let (level, systems) = other.level_and_systems_mut();
+        let mut renderers = Renderers::new(&context, level, OFFSCREEN_FORMAT).unwrap();
+        renderers.debris_studio[0] = None;
+        assert_eq!(
+            renderers
+                .collect_studio_instances(level, &camera, &systems.map_effects.presentation())
+                .1
+                .len(),
+            6
+        );
+    }
+
+    #[test]
+    fn custom_gib_pixels_follow_saved_record_position_and_rotation_when_opted_in() {
+        if std::env::var_os("OHL_RENDER_GPU_TEST").as_deref() != Some(std::ffi::OsStr::new("1")) {
+            return;
+        }
+        let context = GpuContext::headless().expect("explicit GPU opt-in requires an adapter");
+        let extra = switch("break")
+            + &entity_block(
+                "func_breakable",
+                [42.0, 32.0, 64.0],
+                0.0,
+                &[
+                    ("targetname", "break"),
+                    ("gibmodel", "models/ohl_frame_a.mdl"),
+                ],
+            );
+        let source = assets(&extra);
+        let mut live = game(&source);
+        press(&mut live);
+        let mut saved = live.to_save(123);
+        saved.map_effects.as_mut().unwrap().debris.truncate(1);
+        let first = Vec3::new(42.0, 24.0, 88.0);
+        let second = Vec3::new(42.0, 40.0, 88.0);
+        let mut images = Vec::new();
+        for (position, angle) in [
+            (first, 0.0),
+            (first, std::f32::consts::FRAC_PI_4),
+            (second, std::f32::consts::FRAC_PI_4),
+        ] {
+            let record = &mut saved.map_effects.as_mut().unwrap().debris[0];
+            record.position = position;
+            record.angles = Vec3::new(0.0, 0.0, angle);
+            record.half_extents = Vec3::splat(3.0);
+            let mut loaded = Game::from_save(&source, &saved).unwrap();
+            loaded.set_viewpoint(VIEW, 89.9, 0.0);
+            let state = loaded.to_save(123).map_effects.unwrap();
+            let image = pixels(&context, &mut loaded);
+            assert!(
+                at_world(&image, loaded.camera(), position)
+                    .iter()
+                    .all(|&value| value > 240)
+            );
+            assert_eq!(loaded.to_save(123).map_effects.unwrap(), state);
+            images.push(image);
+        }
+        assert_ne!(
+            images[0], images[1],
+            "actual record rotation changes the custom silhouette"
+        );
+        assert_ne!(
+            images[1], images[2],
+            "actual record position moves the custom mesh"
+        );
+        saved.map_effects.as_mut().unwrap().debris.clear();
+        let mut empty = Game::from_save(&source, &saved).unwrap();
+        empty.set_viewpoint(VIEW, 89.9, 0.0);
+        let background = pixels(&context, &mut empty);
+        assert_ne!(
+            at_world(&images[0], empty.camera(), first),
+            at_world(&background, empty.camera(), first)
+        );
+        assert_eq!(
+            at_world(&images[2], empty.camera(), first),
+            at_world(&background, empty.camera(), first)
+        );
+        assert_ne!(
+            at_world(&images[2], empty.camera(), second),
+            at_world(&background, empty.camera(), second)
+        );
+    }
+
+    #[test]
+    fn blank_selected_custom_gib_retains_exactly_one_cuboid_when_opted_in() {
+        if std::env::var_os("OHL_RENDER_GPU_TEST").as_deref() != Some(std::ffi::OsStr::new("1")) {
+            return;
+        }
+        let context = GpuContext::headless().expect("explicit GPU opt-in requires an adapter");
+        let extra = switch("break")
+            + &entity_block(
+                "func_breakable",
+                [42.0, 32.0, 64.0],
+                0.0,
+                &[
+                    ("targetname", "break"),
+                    ("gibmodel", "models/ohl_frame_a.mdl"),
+                ],
+            );
+        let mut source = assets(&extra);
+        source.insert(
+            "models/ohl_frame_a.mdl",
+            crate::debris::synthetic_blank_first_gib_model(),
+        );
+        let mut live = game(&source);
+        press(&mut live);
+        let camera = *live.camera();
+        let elapsed = live.elapsed();
+        let (level, systems) = live.level_and_systems_mut();
+        let effects = systems.map_effects.presentation();
+        assert_eq!(effects.debris.len(), 6);
+        let mut renderers = Renderers::new(&context, level, OFFSCREEN_FORMAT).unwrap();
+        assert!(
+            renderers
+                .collect_studio_instances(level, &camera, &effects)
+                .1
+                .is_empty()
+        );
+        let target = OffscreenTarget::new(&context, EDGE, EDGE).unwrap();
+        renderers.draw(
+            &context,
+            level,
+            &camera,
+            &LightStyles::new(),
+            elapsed,
+            RenderTarget {
+                view: target.view(),
+                width: EDGE,
+                height: EDGE,
+                format: OFFSCREEN_FORMAT,
+            },
+            None,
+            &[],
+            &effects,
+        );
+        assert_eq!(
+            renderers
+                .map_effects
+                .instances
+                .iter()
+                .filter(|effect| matches!(effect, EffectInstance::Gib { .. }))
+                .count(),
+            6
+        );
+    }
+
+    #[test]
+    fn studio_alpha_follows_opaque_sprite_background_and_depth_when_opted_in() {
+        if std::env::var_os("OHL_RENDER_GPU_TEST").as_deref() != Some(std::ffi::OsStr::new("1")) {
+            return;
+        }
+        let context = GpuContext::headless().expect("explicit GPU opt-in requires an adapter");
+        let studio = entity_block(
+            "cycler",
+            [0.0, 0.0, 64.0],
+            0.0,
+            &[
+                ("model", "models/ohl_frame_a.mdl"),
+                ("rendermode", "1"),
+                ("renderamt", "128"),
+                ("rendercolor", "200 0 0"),
+            ],
+        );
+        for (height, behind) in [(32.0, true), (96.0, false)] {
+            let sprite = entity_block(
+                "env_sprite",
+                [42.0, 32.0, height],
+                0.0,
+                &[("model", "sprites/ohl_frame.spr"), ("scale", "8")],
+            );
+            let background = center(&pixels(&context, &mut game(&assets(&sprite))));
+            assert!(background[1] > background[0] + 80);
+            let combined = center(&pixels(&context, &mut game(&assets(&(sprite + &studio)))));
+            if behind {
+                let alpha = 128.0 / 255.0;
+                for channel in 0..3 {
+                    let expected = [200.0, 0.0, 0.0][channel] * alpha
+                        + f32::from(background[channel]) * (1.0 - alpha);
+                    assert!((f32::from(combined[channel]) - expected).abs() <= 2.0);
+                }
+            } else {
+                assert_eq!(combined, background, "front opaque sprite owns depth");
+            }
+        }
+    }
+
+    #[test]
+    fn studio_translucency_sorts_across_model_slots_when_opted_in() {
+        if std::env::var_os("OHL_RENDER_GPU_TEST").as_deref() != Some(std::ffi::OsStr::new("1")) {
+            return;
+        }
+        let context = GpuContext::headless().expect("explicit GPU opt-in requires an adapter");
+        let far = entity_block(
+            "cycler",
+            [0.0, 0.0, 32.0],
+            0.0,
+            &[
+                ("model", "models/ohl_frame_a.mdl"),
+                ("rendermode", "1"),
+                ("renderamt", "128"),
+                ("rendercolor", "200 0 0"),
+            ],
+        );
+        let near = entity_block(
+            "cycler",
+            [0.0, 0.0, 64.0],
+            0.0,
+            &[
+                ("model", "models/ohl_frame_b.mdl"),
+                ("rendermode", "1"),
+                ("renderamt", "128"),
+                ("rendercolor", "0 0 200"),
+            ],
+        );
+        let background = center(&pixels(&context, &mut game(&assets(""))));
+        let mut results = Vec::new();
+        for scene in [far.clone() + &near, near + &far] {
+            results.push(center(&pixels(&context, &mut game(&assets(&scene)))));
+        }
+        assert_eq!(results[0], results[1]);
+        let a = 128.0 / 255.0;
+        let expected: [f32; 3] = std::array::from_fn(|i| {
+            [0.0, 0.0, 200.0][i] * a
+                + ([200.0, 0.0, 0.0][i] * a + f32::from(background[i]) * (1.0 - a)) * (1.0 - a)
+        });
+        for (actual, expected) in results[0].iter().zip(expected) {
+            assert!((f32::from(*actual) - expected).abs() <= 2.0);
+        }
     }
 }

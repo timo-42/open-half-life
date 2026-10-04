@@ -181,6 +181,7 @@ impl Game {
     }
 
     fn from_level(mut level: Level, source: &dyn AssetSource, config: GameConfig) -> Self {
+        level.preload_debris_models(source);
         let mut camera = level
             .spawn
             .map_or_else(FreeFlyCamera::default, FreeFlyCamera::at_spawn);
@@ -1458,6 +1459,7 @@ impl Game {
         // monster stays simulated but invisible — see
         // `Level::attach_studio_models`'s doc comment.
         next.attach_studio_models(source, next.map_defs);
+        next.preload_debris_models(source);
         // Re-baseline the collision model against whatever the transition
         // just moved (a carried `func_tracktrain` is placed where the
         // source map's copy was, thousands of units from where this map
@@ -1625,6 +1627,11 @@ impl Game {
             ai: Some(Systems::snapshot_ai(&self.level)),
             projectiles: Some(self.systems.snapshot_projectiles(&self.level)),
             projectile_runtime: self.systems.snapshot_projectile_runtime(&self.level),
+            map_effects: Some(self.systems.map_effects.snapshot(
+                &self.level.registry,
+                self.level.player,
+                &self.level.simulation,
+            )),
             rng: Some(self.systems.snapshot_rng()),
             mover_state: Some(self.systems.snapshot_mover_state(&self.level)),
             maker_children: Some(crate::save_state::snapshot_maker_children(&self.level)),
@@ -1999,6 +2006,18 @@ impl Game {
         if let Some(bosses) = &save.bosses {
             crate::save_state::restore_bosses(&mut self.level, bosses);
         }
+        if save.map_effects.is_none() {
+            ohl_game::effects::restore_legacy_visual_defaults(
+                &mut self.level.registry,
+                &self.level.defs,
+            );
+        }
+        self.systems.map_effects.restore(
+            save.map_effects.as_ref(),
+            &mut self.level.registry,
+            self.level.player,
+            &mut self.level.simulation,
+        );
         // A load is a map load: the chapter title is announced again.
         self.pending.clear();
         self.pending.extend(chapter_title_event(&self.level.name));
@@ -2051,21 +2070,24 @@ impl Game {
         let Some(renderers) = self.renderers.as_mut() else {
             return Err(EngineError::Renderer);
         };
+        let effect_view = self.systems.map_effects.view_camera(&self.camera);
+        let effects = self.systems.map_effects.presentation();
         let view_model = crate::viewmodel::build_frame(
             &self.level,
-            &self.camera,
+            &effect_view,
             self.systems.config(),
             self.systems.view_model(),
         );
         renderers.draw(
             context,
             &self.level,
-            &self.camera,
+            &effect_view,
             &self.light_styles,
             self.elapsed,
             target,
             view_model.as_ref(),
             self.systems.transient_sprites().as_slice(),
+            &effects,
         );
         Ok(())
     }

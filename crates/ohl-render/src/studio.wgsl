@@ -25,6 +25,9 @@ struct Instance {
     light_direction: vec4<f32>,
     // xyz: directional light colour; w: unused.
     light_color: vec4<f32>,
+    render_color: vec4<f32>,
+    // x: effective alpha, y: replace texture RGB with render_color.
+    render_params: vec4<f32>,
     bones: array<mat4x4<f32>, MAX_BONES>,
 }
 
@@ -87,14 +90,14 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     if (material.flags.z > 0.5 && diffuse.a < 0.5) {
         discard;
     }
-    var color = diffuse.rgb * min(input.light, vec3<f32>(1.0, 1.0, 1.0));
+    let base = select(diffuse.rgb, instance.render_color.rgb, instance.render_params.y > 0.5);
+    var color = base * min(input.light, vec3<f32>(1.0, 1.0, 1.0));
     if (instance.light_direction.w > 0.5) {
         // The colour target encodes sRGB on write; undo that so both target
         // formats produce the same gamma-space result, exactly as the world
         // shader does.
         color = pow(color, vec3<f32>(2.2));
     }
-    // Additive surfaces reach the target through an additive blend state,
-    // so a dark texel simply contributes nothing; alpha stays opaque.
-    return vec4<f32>(color, 1.0);
+    // Straight RGB: alpha is applied once by the selected blend pipeline.
+    return vec4<f32>(color, instance.render_params.x);
 }

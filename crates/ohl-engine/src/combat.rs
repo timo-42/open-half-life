@@ -1148,7 +1148,16 @@ pub(crate) fn resolve_damage(
                 simulation,
                 ..
             } = &mut *level;
-            simulation.damage_breakable(registry, target, info.amount, club);
+            simulation.damage_breakable_with_context(
+                registry,
+                target,
+                info.amount,
+                club,
+                ohl_game::effects::BreakContext {
+                    activator: info.attacker.and_then(entity_of),
+                    attack_direction: Some(info.direction),
+                },
+            );
         } else if level.registry.world.contains(target) {
             apply_entity_damage(level, target, &info);
         }

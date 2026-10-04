@@ -282,6 +282,8 @@ pub struct Level {
     pub submodels: BTreeMap<u32, WorldModel>,
     /// The entity registry.
     pub registry: Registry,
+    /// Separately cached custom break-debris models; never actor model slots.
+    pub(crate) debris_models: crate::debris::DebrisModels,
     /// The map-logic simulation driving this level's entities.
     pub simulation: Simulation,
     /// Collision hulls, when the map has usable ones. Carries the world
@@ -763,6 +765,7 @@ impl Level {
             submodels,
             registry,
             simulation: Simulation::new(),
+            debris_models: crate::debris::DebrisModels::default(),
             collision,
             brush_collision,
             monster_collision,
@@ -1035,6 +1038,44 @@ impl Level {
     /// [`Self::monster_collision`] today (AI does not ride movers), so
     /// there is no `brush_velocity`/`brush_rotation`-equivalent map to
     /// maintain for it.
+    pub(crate) fn preload_debris_models(&mut self, source: &dyn AssetSource) {
+        self.debris_models.preload(&self.registry, source);
+    }
+
+    /// Detaches a newly broken source before any same-step blast trace. Both
+    /// actor collision models must stop seeing it at the same break edge.
+    pub(crate) fn detach_broken_source(&mut self, source: Entity) {
+        if !self
+            .registry
+            .world
+            .get::<&ohl_game::registry::Breakable>(source)
+            .is_ok_and(|breakable| breakable.broken)
+        {
+            return;
+        }
+        self.brush_collision.retain(|(entity, brush)| {
+            if *entity != source {
+                return true;
+            }
+            if let Some(model) = &mut self.collision {
+                model.detach_brush(*brush);
+            }
+            self.brush_velocity.remove(brush);
+            self.brush_rotation.remove(brush);
+            self.brush_surface_velocity.remove(brush);
+            false
+        });
+        self.monster_brush_collision.retain(|(entity, brush)| {
+            if *entity != source {
+                return true;
+            }
+            if let Some(model) = &mut self.monster_collision {
+                model.detach_brush(*brush);
+            }
+            false
+        });
+    }
+
     fn sync_monster_brush_collision(&mut self) {
         if self.monster_brush_collision.is_empty() {
             return;
@@ -1049,7 +1090,12 @@ impl Level {
             return;
         };
         monster_brush_collision.retain(|(entity, brush)| {
-            let Ok(transform) = registry.world.get::<&Transform>(*entity) else {
+            let broken = registry
+                .world
+                .get::<&ohl_game::registry::Breakable>(*entity)
+                .is_ok_and(|breakable| breakable.broken);
+            let transform = registry.world.get::<&Transform>(*entity);
+            let (Ok(transform), false) = (transform, broken) else {
                 model.detach_brush(*brush);
                 return false;
             };
