@@ -233,8 +233,8 @@ impl TankWork {
         controlled: Option<ControlledAim>,
     ) -> Option<Self> {
         Some(Self {
-            def: level.registry.world.get::<&TankDef>(entity).ok()?.clone(),
-            state: level.registry.world.get::<&TankState>(entity).ok()?.clone(),
+            def: (*level.registry.world.get::<&TankDef>(entity).ok()?).clone(),
+            state: (*level.registry.world.get::<&TankState>(entity).ok()?).clone(),
             tick: TankTick {
                 tank: entity,
                 placement_origin: level.registry.world.get::<&Transform>(entity).ok()?.origin,

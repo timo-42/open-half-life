@@ -8001,8 +8001,8 @@ checks and four runtime gates. No later-hop planning was performed.
 The `ohl-game/src/tanks.rs` and `ohl-engine/src/tanks.rs` modules are an
 integration source checkpoint. Game registration, typed use/control requests
 and the shared brush pose are wired. New source adds engine control/combat and
-presentation dispatch; that latest unit has not been compiled or run. Earlier
-focused evidence is recorded separately in MILESTONES.
+presentation dispatch. Focused game, engine real-input and renderer-bridge
+tests now pass; full gates and persistence remain pending in MILESTONES.
 No retail observations, engine source or SDK were used for this work.
 
 - [TWHL: func_tank](https://twhl.info/wiki/page/func_tank) documents automatic
@@ -8085,9 +8085,9 @@ cooldowns should continue through a non-firing path. Already launched world
 projectiles and deployables continue normally. Mounted restore must establish
 the same canceled-handheld invariant before its first tick, without changing
 tag 42 or weapon encodings. The source now wires input cancellation and passive advancement; mounted
-restore and actual execution still await validation.
+restore still awaits implementation and validation.
 
-Pending integration must use one `TankPose` quaternion/axis-angle for the
+The runtime uses one `TankPose` quaternion/axis-angle for the
 compiled-origin pivot, barrel, use center, renderer and both collision models.
 Outgoing values distinguish physical turret source from operator attacker.
 Hitscan/direct-fire queries must ignore only the source brush and retain other
@@ -8095,12 +8095,12 @@ geometry. Rockets must use the single P1 pool with the same narrow source
 filter; downstream splash may still hurt the operator. The P6a blast bridge
 must resolve mortar at a traced impact, with a miss producing no origin blast.
 Targets fire once after shot admission; renderer sampling never applies
-damage. Missing presentation assets must not gate combat. These are required
-handoff contracts, not claims of completed live integration.
+damage. Missing presentation assets must not gate combat. Focused synthetic real-input tests exercise these contracts; broader
+continuation and mutation evidence remain required.
 
 Source integration now includes control/system phases, actual combat/projectile
-dispatch and laser/mortar visual submission. Execution, save/restore and mutation
-evidence remain pending. Bullet muzzle/smoke sprites and rotation audio are
+dispatch and laser/mortar visual submission. Focused execution passes;
+save/restore and mutation evidence remain pending. Bullet muzzle/smoke sprites and rotation audio are
 explicit presentation cuts. Physical monster
 operators, automatic monster targets, Sven relation/inventory extensions and
 original-build timing/spread/control fidelity remain excluded. Optional tag
@@ -8116,7 +8116,11 @@ live aim about the compiled origin-brush pivot. Map use preserves the real
 player identity, obeys masters and queues one latest control intent separately
 from frozen simulation snapshots; an automatic toggle does not fire the
 turret's per-shot target. Synthetic source tests cover these registry/use/pose
-contracts; actual input, collision and combat validation is still pending.
+contracts; focused real-input, collision and combat tests also pass. The
+damage fixture uses existing project-authored studio model bytes and the
+published prisoner behavior already cited under the monster sensing contract,
+so it exercises ordinary hitbox/damage routing without an unrelated enemy
+attack. Single-use weapon fixtures wait through ordinary reload before firing.
 
 The runtime adapter is bounded to256 turrets and128 laser pulses. It caches
 referenced laser definitions at level attachment, then samples their live
