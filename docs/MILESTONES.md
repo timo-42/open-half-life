@@ -9056,3 +9056,27 @@ campaign 93/93, and both baseline inventory chains at depth 12 / Pass / 660.8
 simulated seconds. No dependencies changed; cargo-deny is optional for this
 scope. Build slots, target caps and the release window remain coordinator-owned;
 Linux fake-clock evidence will not be described as native macOS execution.
+
+
+The native owned-child test now enters the changed status adapter with the
+first backend's exit-observed latch set while that child is still alive. An
+independent child has already exited with status 37; bounded exact-pid
+`waitid(EXITED | NOWAIT | NOHANG)` establishes its status is waitable without
+reaping it. The first call must time out with no terminal cache or termination
+request, and the independent original `Child` must then collect its status 37.
+The existing five-second supervisor releases the first child's channel, and
+exact-child cleanup reaps its clean exit before assertions. The first backend's
+cleanup cache is populated from that actual status; captured pre-cleanup state
+keeps an incorrect terminal result visible. The independent `Child` has no
+signal-on-Drop fallback, so a future status-stealing mutant cannot signal its
+reused PID during assertion cleanup.
+
+The independent fixture is a single ignored helper in the current native test
+executable, explicitly spawned by its owning test. This source-only follow-up
+adds no production change. It closes the earlier ownership test gap where the
+first worker timed out in the exit watch before reaching the changed adapter.
+The 14 portable cases remain unchanged. No tests or mutants have run yet.
+A proposed wait-any adapter mutant must run only in this exact native test's
+isolated process (`-- --exact --test-threads=1`), with no other tests sharing
+that parent and with an outer watchdog. It must fail an actual returned-state
+or retained-status assertion; timeout containment alone is not a kill.

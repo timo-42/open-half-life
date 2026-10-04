@@ -8290,3 +8290,13 @@ is explicitly outside this correction. The timings and synthetic fixtures are
 project-authored; no Valve engine/source, payload or proprietary assets were
 used. Source-only review and formatting are the initial checkpoint; runtime,
 mutation and native macOS results must be recorded separately after execution.
+
+
+The native ownership fixture uses the existing safe
+[`rustix::process::waitid`](https://docs.rs/rustix/1.1.4/rustix/process/fn.waitid.html)
+API, with its exact owned child PID and `EXITED | NOWAIT | NOHANG`, to establish
+that a second child's distinct status is waitable while leaving it unreaped.
+This is test-only observation under a fixed deadline, not a production reaper.
+The second child's original `Child` must still collect status 37 after the
+first backend returns pending. Its fixture is the current test executable,
+with one explicitly selected ignored helper; no new image staging is added.
