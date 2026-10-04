@@ -9218,9 +9218,20 @@ retained. The four mutation results above remain qualified to `daa6b69` and
 were not relabeled as reruns of the helper extraction.
 
 The policy command printed its pass result, but its build crossed the own
-6 GiB target cap: sampled target size reached 6.038 GiB, with minimum free
-space 23.885 GiB. The owned guard stopped the sequence before the dependency
+6 GiB target cap: sampled target accounting reached 6.038 GiB, with minimum
+free space 23.885 GiB. This conservative accounting sums allocated blocks per
+file entry and may count hardlinked Cargo artifacts twice. The owned guard stopped the sequence before the dependency
 graph gate. Compiler and runtime processes were confirmed idle afterward.
 The workspace test gate itself peaked at 5.885 GiB with minimum free space
 24.010 GiB. Resource admission, remaining local gates and every release/runtime
 gate remain pending; this checkpoint does not claim all package gates passed.
+
+
+After authorized removal of only this worktree's debug artifacts, policy and
+the 36-crate dependency graph both passed under the same guard without a cap
+or floor event. Their sampled target accounting peaked at 0.442 GiB and minimum
+free space was 29.205 GiB. Source and test bytes remained equal to `0284b94`;
+all prior mutation, gate and cleanup evidence was retained outside the target.
+All seven local non-runtime gates now pass. Release builds, combat/campaign
+smokes and both exact inventory chain walks remain pending separate admission;
+no runtime completion is claimed.
