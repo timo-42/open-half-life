@@ -263,6 +263,36 @@ impl FiringState {
         self.pending_self_damage.take()
     }
 
+    /// Cancel trigger-owned work without releasing a charge, emitting a beam
+    /// pulse or refunding ammo. Cycling/reloading timers and the clip survive.
+    /// Used when another simulation system takes ownership of player attacks.
+    pub fn cancel_trigger_actions(&mut self) {
+        if matches!(self.state, FireState::Charging { .. } | FireState::Beam) {
+            self.state = FireState::Idle;
+        }
+        self.pending_charge_damage = None;
+        self.pending_self_damage = None;
+    }
+
+    /// Advance passive cycling and an already-started reload without accepting
+    /// input or emitting weapon actions. Reload only transfers existing reserve
+    /// into the existing clip; no new reload, charge, shot or draw can begin.
+    pub fn advance_passive(&mut self, dt: f32, pool: &mut AmmoPool) {
+        self.cancel_trigger_actions();
+        let dt = if dt.is_finite() && dt > 0.0 { dt } else { 0.0 };
+        self.elapsed = (self.elapsed + dt).min(f32::MAX);
+        self.beam_accum = (self.beam_accum + dt).min(self.spec.cycle_time.value);
+        match self.state {
+            FireState::Firing { until } => {
+                self.tick_firing(until);
+            }
+            FireState::Reloading { until } => {
+                self.tick_reloading(until, pool);
+            }
+            _ => {}
+        }
+    }
+
     /// Advances the state machine by `dt` seconds under `input`, consuming
     /// `pool` ammo as needed, and returns what happened.
     ///
@@ -585,6 +615,86 @@ mod tests {
     use super::*;
     use crate::ammo::AmmoType;
     use crate::weapons::spec;
+
+    #[test]
+    fn turret_cancellation_drops_gauss_charge_without_release_or_ammo_changes() {
+        let mut pool = AmmoPool::new(AmmoType::Uranium);
+        pool.add(20);
+        let mut state = drawn(WeaponId::Gauss, 0, &mut pool);
+        let held = WeaponInput {
+            secondary: true,
+            ..Default::default()
+        };
+        state.tick(0.01, held, &mut pool);
+        state.tick(3.0, held, &mut pool);
+        assert!(state.is_charging());
+        let before = pool.current();
+        state.cancel_trigger_actions();
+        assert!(!state.is_charging());
+        state.advance_passive(12.0, &mut pool);
+        assert_eq!(
+            state.tick(0.0, WeaponInput::default(), &mut pool),
+            WeaponAction::Empty
+        );
+        assert!(state.take_charge_damage().is_none() && state.take_self_damage().is_none());
+        assert_eq!(pool.current(), before);
+    }
+
+    #[test]
+    fn turret_cancellation_stops_beam_without_refunding_its_spent_cell() {
+        let mut pool = AmmoPool::new(AmmoType::Uranium);
+        pool.add(20);
+        let mut state = drawn(WeaponId::Egon, 0, &mut pool);
+        let held = WeaponInput {
+            primary: true,
+            ..Default::default()
+        };
+        assert_eq!(state.tick(0.01, held, &mut pool), WeaponAction::BeamTick);
+        let spent = pool.current();
+        assert_eq!(spent, 19);
+        state.cancel_trigger_actions();
+        state.advance_passive(2.0, &mut pool);
+        assert_eq!(
+            state.tick(0.0, WeaponInput::default(), &mut pool),
+            WeaponAction::Empty
+        );
+        assert_eq!(pool.current(), spent);
+        assert_eq!(state.state_tag_and_timer().0, 0);
+    }
+
+    #[test]
+    fn passive_control_preserves_cycling_and_completes_only_an_existing_reload() {
+        let mut pool = AmmoPool::new(AmmoType::NineMillimeter);
+        pool.add(10);
+        let mut state = drawn(WeaponId::Glock, 3, &mut pool);
+        let fire = WeaponInput {
+            primary: true,
+            ..Default::default()
+        };
+        assert!(matches!(
+            state.tick(0.0, fire, &mut pool),
+            WeaponAction::Hitscan { .. }
+        ));
+        state.cancel_trigger_actions();
+        state.advance_passive(spec(WeaponId::Glock).cycle_time.value / 2.0, &mut pool);
+        assert_eq!(state.tick(0.0, fire, &mut pool), WeaponAction::Empty);
+        assert_eq!(state.clip(), 2);
+        state.advance_passive(2.0, &mut pool);
+        assert_eq!(pool.current(), 10);
+        state.tick(
+            0.0,
+            WeaponInput {
+                reload: true,
+                ..Default::default()
+            },
+            &mut pool,
+        );
+        assert_eq!(state.state_tag_and_timer().0, 2);
+        state.advance_passive(20.0, &mut pool);
+        assert_eq!(state.clip(), 12);
+        assert_eq!(pool.current(), 0);
+        assert_eq!(state.state_tag_and_timer().0, 0);
+    }
 
     #[test]
     fn a_holstered_state_round_trips_through_its_summary() {

@@ -237,6 +237,35 @@ impl CombatState {
         self.firing = FiringState::new(spec(WeaponId::Crowbar));
     }
 
+    /// A turret mount cancels handheld trigger state; feeding false secondary
+    /// input into a live Gauss charge would fire it instead. Never roll back a
+    /// previously admitted shot or alter inventory/reserves during cancellation.
+    pub(crate) fn cancel_for_tank(&mut self) {
+        self.firing.cancel_trigger_actions();
+        self.primary_held = false;
+        self.projectile_checkpoint = None;
+    }
+
+    /// A controlled/release-owned frame cannot emit handheld actions. Keep
+    /// passive cooldown/reload progression and consume the held primary latch
+    /// so a held satchel button cannot become a fresh radio edge on release.
+    pub(crate) fn advance_while_controlled(&mut self, dt: f32, primary_held: bool) {
+        self.primary_held = primary_held;
+        self.projectile_checkpoint = None;
+        let ammo_kind = self.firing.spec().ammo;
+        let mut pool = AmmoPool::new(ammo_kind.unwrap_or(AmmoType::NineMillimeter));
+        if let Some(kind) = ammo_kind {
+            pool.add(self.ammo.current(kind));
+        }
+        self.firing.advance_passive(dt, &mut pool);
+        if let Some(kind) = ammo_kind {
+            self.ammo.set(kind, pool.current());
+        }
+        if let Some(weapon) = self.firing_weapon {
+            self.inventory.set_clip(weapon, self.firing.clip());
+        }
+    }
+
     /// A short-lived [`Inventory`] with the same owned weapons, clips and
     /// selection as the long-lived one, but with every ammo pool stamped
     /// from [`AmmoBank`] instead of the (never-written) pools inside it.
