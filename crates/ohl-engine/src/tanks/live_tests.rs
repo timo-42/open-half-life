@@ -584,7 +584,13 @@ fn real_mounted_reload_finishes_passively_and_conserves_ammo_until_owned_release
     tick(&mut game, true, false);
     assert_eq!(game.weapon_fired_count(), before_shot + 1);
     assert_eq!(game.inventory().clip(WeaponId::Glock), 16);
-    advance(&mut game, 30, false);
+    // Cross the 0.3-second firing cooldown before requesting reload: the
+    // existing firing-to-idle transition consumes its input tick.
+    advance(&mut game, 40, false);
+    assert_eq!(
+        game.to_save(0).inventory.unwrap().firing.unwrap().state_tag,
+        0
+    );
     game.give_start_inventory(&[StartInventoryItem::Ammo(AmmoType::NineMillimeter)]);
     let reserve = game.inventory().ammo(AmmoType::NineMillimeter).current();
     assert!(reserve > 0);
