@@ -8086,3 +8086,15 @@ The cursor, stuck timer and literal 3D arrival remain authoritative; no steps,
 gravity, direct-route or general nonterminal repair is inferred. Original
 steering fidelity remains `TODO(black-box)`. Generated geometry and real Game
 script/save continuations provide independent evidence for this local policy.
+
+Twenty-six actual temporary faults were detected by designated assertions,
+including removing the preference in both the retained-Steer and real Game
+continuation tests. A separate first-step fixture distinguishes a literal
+floor-intersecting chord from the projected clear chord without claiming that
+the impossible literal endpoint can be reached. Point-only target-chord
+validation is tested independently of the unchanged full-hull support checks.
+Deleting the prefix sweep, endpoint occupancy check or explicit prefix-span
+guard survived these fixtures; those checks remain in production and are not
+claimed as independently discriminated. Every probe was byte-restored and the
+relevant normal tests passed afterward. This evidence validates the bounded
+project policy, not original steering fidelity or arbitrary-gap traversal.

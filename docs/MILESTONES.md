@@ -8732,7 +8732,22 @@ feet and model-bottom policies. The Game fixture separates the earlier detour
 corners from its terminal wall; its initial cramped scene also exposed an
 out-of-scope nonterminal lookahead stall and was corrected as project-authored
 geometry, without changing production steering or loosening any assertion.
-Actual terminal mutation probes and final combined gates remain pending.
+Twenty-nine actual temporary terminal probes compiled and ran: twenty-six
+intended faults failed their designated assertions, with no compile, setup or
+resource-guard failure counted as a kill. Removing the preference failed both
+the independent retained-Steer progress assertion and real Game completion.
+Other kills cover selected-goal and speed-scaled allowance preservation,
+current-Z projection, scope guards, complete full-hull target chords, distinct
+start/interior/endpoint support, slope, live-floor changes, validated side
+fallback, cache position and the bounded sample policy. A chord-only literal-Z
+probe fails a separate first-step floor-intersection case, without an
+impossible final-arrival claim. The prefix sweep, endpoint occupancy check and
+explicit prefix-span guard deletion probes survived; these checks remain and
+no independent discrimination or universal equivalence is claimed. Every
+probe was byte-restored, followed by passing relevant normal tests. The final
+normal runs passed sixteen AI tests and one Game test covering both anchor
+policies and uninterrupted/restored continuation. Final combined gates remain
+pending.
 
 P5 retains node-kind attachment, stuck-route recovery, ordinary steering's
 final sweep and XY-only script/Route arrival, including purely vertical flight. A named ignored synthetic low-step
@@ -8744,8 +8759,11 @@ script fallback; both chain inventories and the smoke gates must decide whether
 the compatibility seam can retire. No claim of universal collision-safe routing
 is made, and no payload census output is recorded here.
 
-**Gates:** focused baseline: core AI/world **372 passed, 3 ignored** (two
-existing and the named P5 low-step reproduction); engine unit suite **209
-passed**; blocked movers **18 passed**. All 34 mutation probes were restored,
-and the strengthened script graph-detour completion test passes. Full workspace
-and payload candidate validation remain pending. Dependencies are unchanged.
+**Gates:** terminal candidate `461e7d0`: formatting; AI and engine release
+all-target/all-feature Clippy with warnings denied; **16 focused AI tests and
+1 Game test passed**; all 29 terminal probes restored, with 26 assertion kills
+and 3 stated survivors. The earlier `62abeb0` workspace run passed **2863 tests,
+0 failed, 35 ignored**, but predates the combined candidate and terminal repair.
+Its combat and both chain runs retained unresolved baseline failures. Current
+combined workspace and all four payload gates remain pending. Dependencies are
+unchanged.

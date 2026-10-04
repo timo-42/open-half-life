@@ -35,10 +35,10 @@
 //! horizontal with a step-up for a walker, the full line for a flier —
 //! whenever the graph has no nodes, no path can be found this tick, or
 //! this tick's bounded path-search budget is spent, so a monster is never
-//! left unable to move and never moved through a wall to get there. The
-//! one exception is a monster a script is walking to its mark, which keeps
-//! the old wall-ignoring straight line ([`Fallback::StraightLine`] says
-//! why, with its `TODO`).
+//! left unable to request a traced step. Script-held approaches currently
+//! select this traced fallback too. [`Fallback::StraightLine`] remains an
+//! explicit compatibility option pending campaign validation; ordinary
+//! graph steering retains its separately documented routing limitations.
 
 use std::collections::HashMap;
 
@@ -89,17 +89,14 @@ impl Default for NavBridgeLimits {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fallback {
     /// One traced [`crate::movement::move_toward`] step: whatever the
-    /// hull's own trace says is solid stops it. What every monster moving
-    /// under its own brain gets.
+    /// hull's own trace says is solid stops it. Used by ordinary monster
+    /// movement and the current script-held approach candidate.
     Traced,
     /// The [`StraightLineNavigator`] step, which ignores collision. Kept
-    /// only for a monster a `scripted_sequence` is walking to its mark: a
-    /// mark this graph cannot route to is a gap in this project's routing,
-    /// not the map's intent, and a script whose monster never arrives
-    /// stalls whatever the map chained onto it (the measured case is a
-    /// carried guard whose scripted walk opens the only door out of a map:
-    /// with a traced fallback the chain walk stops there, at depth 6).
-    /// **`TODO`**: route such marks properly and retire this.
+    /// as an explicit compatibility option while campaign validation of
+    /// traced script-held approaches remains pending. The current world
+    /// caller selects [`Self::Traced`]. **`TODO`**: retire this option once
+    /// the required routing and campaign gates establish that it is unused.
     StraightLine,
 }
 
