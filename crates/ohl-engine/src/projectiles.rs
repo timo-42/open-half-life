@@ -1388,21 +1388,25 @@ pub(crate) fn dispatch_blast(
 }
 
 /// Every entity a blast may hurt: everything carrying `Health`, positioned
-/// by its `Transform`. `ohl-ai`'s `Actor`-carrying monsters are not a
-/// dependency of this package yet (see `crate::components`'s note); the
-/// player, spawned in `crate::level`, already qualifies.
+/// by its authored transform. Posed world hitboxes take precedence; an actor
+/// without one uses its derived proxy rather than a point at its feet.
 fn blast_targets(
     level: &Level,
     bounds: &BTreeMap<CombatEntityId, (Vec3, Vec3)>,
 ) -> Vec<BlastTarget> {
     let mut targets = Vec::new();
-    for (entity, transform, _health) in
-        &mut level
-            .registry
-            .world
-            .query::<(ohl_game::hecs::Entity, &Transform, &ohl_combat::Health)>()
-    {
-        targets.push(BlastTarget::new(entity_id(entity), transform.origin));
+    for (entity, transform, _health, actor) in &mut level.registry.world.query::<(
+        ohl_game::hecs::Entity,
+        &Transform,
+        &ohl_combat::Health,
+        Option<&ohl_ai::Actor>,
+    )>() {
+        let mut target = BlastTarget::new(entity_id(entity), transform.origin);
+        if let Some(actor) = actor {
+            let (min, max) = actor.fallback_damage_bounds();
+            target.hitbox = Some((transform.origin + min, transform.origin + max));
+        }
+        targets.push(target);
     }
     for (id, &(min, max)) in bounds {
         if let Some(target) = targets.iter_mut().find(|target| target.id == *id) {
@@ -1462,6 +1466,46 @@ fn find_model_path(level: &Level, path: &str) -> Option<usize> {
         .studio_model_paths
         .iter()
         .position(|candidate| *candidate == needle)
+}
+
+#[cfg(test)]
+mod origin_frame_tests {
+    use super::*;
+
+    #[test]
+    fn blast_sampling_uses_body_bounds_and_real_posed_bounds_take_precedence() {
+        let text = "{\"classname\" \"worldspawn\"}\n{\"classname\" \"monster_barney\" \"origin\" \"100 20 0\"}";
+        let bytes = crate::test_support::ai_room_bsp(text, false);
+        let mut game = crate::Game::from_map_bytes(
+            &crate::MemoryAssets::new(),
+            crate::test_support::AI_MAP,
+            &bytes,
+        )
+        .expect("fixture");
+        let entity =
+            crate::test_support::entity_of_classname(&game, "monster_barney").expect("actor");
+        let (level, _) = game.level_and_systems_mut();
+        let id = entity_id(entity);
+        let samples = blast_targets(level, &BTreeMap::new());
+        let target = samples
+            .iter()
+            .find(|target| target.id == id)
+            .expect("target");
+        assert_eq!(
+            target.hitbox,
+            Some((Vec3::new(84.0, 4.0, 0.0), Vec3::new(116.0, 36.0, 72.0)))
+        );
+        let posed = (Vec3::new(99.0, 18.0, 3.0), Vec3::new(104.0, 25.0, 144.0));
+        let samples = blast_targets(level, &BTreeMap::from([(id, posed)]));
+        assert_eq!(
+            samples
+                .iter()
+                .find(|target| target.id == id)
+                .expect("target")
+                .hitbox,
+            Some(posed)
+        );
+    }
 }
 
 #[cfg(test)]

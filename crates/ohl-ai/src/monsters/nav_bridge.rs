@@ -111,6 +111,44 @@ struct CachedRoute {
     hull: Hull,
     path: Path,
     steer: Steer,
+    expected_origin: Vec3,
+    direct: bool,
+}
+
+/// Aggregate routing diagnostics. Data only: no entity or map identifiers.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct NavigationStats {
+    /// Steps following a directly connected path.
+    pub direct_steps: u64,
+    /// Steps following a node-graph path.
+    pub graph_steps: u64,
+    /// Collision-checked local fallback steps.
+    pub traced_steps: u64,
+    /// Compatibility fallback steps without collision.
+    pub untraced_steps: u64,
+    /// Calls whose centered starting hull was already in solid.
+    pub start_solid: u64,
+}
+
+impl NavigationStats {
+    /// Adds counters observed between two snapshots (saturating at u64::MAX).
+    pub fn add_delta(&mut self, before: Self, after: Self) {
+        self.direct_steps = self
+            .direct_steps
+            .saturating_add(after.direct_steps.saturating_sub(before.direct_steps));
+        self.graph_steps = self
+            .graph_steps
+            .saturating_add(after.graph_steps.saturating_sub(before.graph_steps));
+        self.traced_steps = self
+            .traced_steps
+            .saturating_add(after.traced_steps.saturating_sub(before.traced_steps));
+        self.untraced_steps = self
+            .untraced_steps
+            .saturating_add(after.untraced_steps.saturating_sub(before.untraced_steps));
+        self.start_solid = self
+            .start_solid
+            .saturating_add(after.start_solid.saturating_sub(before.start_solid));
+    }
 }
 
 /// The real navigator: an `ohl-nav` [`NodeGraph`] plus a per-actor path
@@ -126,6 +164,7 @@ pub struct NavBridge {
     limits: NavBridgeLimits,
     cache: HashMap<Entity, CachedRoute>,
     searches_used: usize,
+    stats: NavigationStats,
 }
 
 impl NavBridge {
@@ -144,6 +183,7 @@ impl NavBridge {
             limits,
             cache: HashMap::new(),
             searches_used: 0,
+            stats: NavigationStats::default(),
         }
     }
 
@@ -157,6 +197,17 @@ impl NavBridge {
     #[must_use]
     pub fn link_count(&self) -> usize {
         self.graph.link_count()
+    }
+
+    /// Aggregate inspection counters; never logs payload data.
+    #[must_use]
+    pub fn stats(&self) -> NavigationStats {
+        self.stats
+    }
+
+    /// Discards transient paths after a restore or explicit world change.
+    pub fn invalidate(&mut self) {
+        self.cache.clear();
     }
 
     /// Resets this tick's path-search budget and drops cached routes for
@@ -173,7 +224,8 @@ impl NavBridge {
     }
 
     /// The next position `actor` should move toward, at most `max_step`
-    /// world units from `origin`, on its way to `goal`.
+    /// world units from `origin`, on its way to `goal`. Both endpoints and
+    /// the returned position are centered hull queries, not model anchors.
     ///
     /// Reuses `actor`'s cached path while it was built for the same hull and
     /// its goal has not drifted more than [`PATH_REFRESH_DISTANCE`];
@@ -226,8 +278,14 @@ impl NavBridge {
             return Vec3::ZERO;
         }
 
+        if collision.trace(hull, origin, origin).start_solid {
+            self.stats.start_solid = self.stats.start_solid.saturating_add(1);
+        }
+
         let stale = self.cache.get(&actor).is_none_or(|cached| {
-            cached.hull != hull || (cached.goal - goal).length() > PATH_REFRESH_DISTANCE
+            cached.hull != hull
+                || (cached.goal - goal).length() > PATH_REFRESH_DISTANCE
+                || !cached.expected_origin.abs_diff_eq(origin, 0.001)
         });
         if stale {
             self.rebuild(actor, origin, goal, hull, collision);
@@ -236,19 +294,43 @@ impl NavBridge {
         let Some(cached) = self.cache.get_mut(&actor) else {
             return match fallback {
                 Fallback::Traced => {
+                    self.stats.traced_steps = self.stats.traced_steps.saturating_add(1);
                     crate::movement::move_toward(collision, hull, origin, goal, max_step, 1.0)
                         .position
                 }
-                Fallback::StraightLine => StraightLineNavigator.next_move(origin, goal, max_step),
+                Fallback::StraightLine => {
+                    self.stats.untraced_steps = self.stats.untraced_steps.saturating_add(1);
+                    StraightLineNavigator.next_move(origin, goal, max_step)
+                }
             };
         };
+
+        if cached.direct {
+            self.stats.direct_steps = self.stats.direct_steps.saturating_add(1);
+        } else {
+            self.stats.graph_steps = self.stats.graph_steps.saturating_add(1);
+        }
 
         let steer_limits = own_pace_steer_limits(&self.limits.steer, max_step);
         let intent = cached
             .steer
             .next_move(origin, &cached.path, hull, collision, &steer_limits);
         if intent.reached {
-            return goal;
+            // Arrival tolerance is not authority to teleport. A live brush
+            // can have closed across this final segment since path creation.
+            let delta = goal - origin;
+            let step = delta.clamp_length_max(max_step.max(0.0));
+            let trace = collision.trace(hull, origin, origin + step);
+            let next = if trace.start_solid {
+                origin
+            } else {
+                trace.end_pos
+            };
+            cached.expected_origin = next;
+            if trace.blocked() {
+                self.cache.remove(&actor);
+            }
+            return next;
         }
         if intent.dir.length_squared() <= f32::EPSILON {
             return origin;
@@ -260,11 +342,13 @@ impl NavBridge {
             .map_or(max_step, |waypoint| (*waypoint - origin).length());
         let travel =
             max_step.max(0.0).min(waypoint_distance.max(0.0)) * intent.speed_scale.clamp(0.0, 1.0);
-        if travel <= 0.0 {
+        let next = if travel <= 0.0 {
             origin
         } else {
             origin + intent.dir * travel
-        }
+        };
+        cached.expected_origin = next;
+        next
     }
 
     /// Rebuilds (or drops) `actor`'s cached route toward `goal`.
@@ -284,6 +368,8 @@ impl NavBridge {
                     hull,
                     path,
                     steer: Steer::new(),
+                    expected_origin: origin,
+                    direct: true,
                 },
             );
             return;
@@ -307,6 +393,8 @@ impl NavBridge {
                         hull,
                         path,
                         steer: Steer::new(),
+                        expected_origin: origin,
+                        direct: false,
                     },
                 );
                 return;

@@ -157,6 +157,8 @@ pub const fn flies(hull: Hull) -> bool {
 
 /// Moves `from` toward `target` by at most `speed * dt`, using clip-hull
 /// traces, with a step up over obstructions no taller than [`STEP_HEIGHT`].
+/// `from`, `target` and the returned position are centered hull queries;
+/// actor callers convert authored anchors with [`crate::BodyFrame`].
 ///
 /// For a walking hull only the horizontal component of the direction is
 /// used, so a monster never walks at a target above it; the vertical part
@@ -273,6 +275,7 @@ pub const WALL_MARGIN: f32 = 32.0;
 /// The farthest point toward `goal` a mover with `hull` can actually get
 /// to from `from` in one straight leg, for a caller that picks a goal it
 /// has no reason to believe is reachable (a critter's wander).
+/// Both endpoints and the result use the centered collision frame.
 ///
 /// Two things clamp it. First the same hull trace, step-up included, that
 /// [`move_toward`] makes, carried [`WALL_MARGIN`] past the goal, so the

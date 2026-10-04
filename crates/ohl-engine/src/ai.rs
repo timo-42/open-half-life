@@ -309,6 +309,7 @@ struct DeclaredTrigger {
 /// crosses between `ohl-ai` and the rest of the engine.
 pub struct AiState {
     world: AiWorld,
+    replan_restored_routes: bool,
     /// `monster_*` classname to the brain registered for it, in sorted
     /// classname order so registration is reproducible.
     brains: BTreeMap<String, BrainId>,
@@ -434,6 +435,7 @@ impl AiState {
             world: AiWorld::new(seed),
             brains: BTreeMap::new(),
             brain_kinds: Vec::new(),
+            replan_restored_routes: false,
             damage: DamageQueue::new(),
             triggers: Vec::new(),
             deaths: 0,
@@ -566,6 +568,7 @@ impl AiState {
         let defs = std::mem::take(&mut level.defs);
         let spawned = attach_monsters(&mut level.registry, &defs, &rules);
         level.defs = defs;
+        Self::configure_actor_models(level);
         // Record the health each monster spawned with, so a later
         // `health_fraction` (and anything M7.9 P1 resolves damage against)
         // reads the value the skill table actually produced rather than
@@ -595,6 +598,21 @@ impl AiState {
 
         if let Some(bridge) = nav::build(&level.defs, level.monster_collision.as_ref()) {
             self.world.attach_navigator(bridge);
+        }
+    }
+
+    /// Rebuilds model-local eye and collision-frame metadata. This is derived
+    /// runtime state, shared by map attachment and save reconstruction.
+    pub(crate) fn configure_actor_models(level: &mut Level) {
+        for (actor, classname, anim) in
+            &mut level
+                .registry
+                .world
+                .query::<(&mut Actor, &ClassName, Option<&StudioAnim>)>()
+        {
+            let kind = MonsterKind::from_classname(&classname.0);
+            let model = anim.and_then(|anim| level.studio_models.get(anim.model));
+            actor.configure_model(&kind, model);
         }
     }
 
@@ -1082,6 +1100,9 @@ impl AiState {
         // than beside it.
         self.update_scripts(level, dt);
         self.update_followers(level);
+        if std::mem::take(&mut self.replan_restored_routes) {
+            Self::replan_target_routes(level);
+        }
         self.update_secondary_opportunities(level, dt);
         let events = {
             let context = SightContext {
@@ -1099,6 +1120,73 @@ impl AiState {
         // dormant script whose monster is idle now overwrites that specific
         // case — and only that case; see `apply_pretrigger_idles`.
         self.apply_pretrigger_idles(level);
+    }
+
+    /// Existing saves do not encode a route coordinate convention. Replan
+    /// recognized live-target pursuit on the next tick, after player stance
+    /// synchronization; explicit marks, cover and sound goals remain anchors.
+    pub(crate) fn restore_navigation(&mut self) {
+        self.world.invalidate_navigation();
+        self.replan_restored_routes = true;
+    }
+
+    fn replan_target_routes(level: &mut Level) {
+        use ohl_ai::Task;
+        let targets: BTreeMap<_, _> = level
+            .registry
+            .world
+            .query::<(Entity, &Actor)>()
+            .iter()
+            .map(|(entity, actor)| (entity, actor.navigation_anchor()))
+            .collect();
+        for (ai, hold, follower) in &mut level.registry.world.query::<(
+            &mut MonsterAi,
+            Option<&ohl_ai::ScriptHold>,
+            Option<&Follower>,
+        )>() {
+            if hold.is_some() || ai.route.is_finished() {
+                continue;
+            }
+            let task = ai.runner.schedule().and_then(|schedule| {
+                schedule
+                    .tasks
+                    .iter()
+                    .take(ai.runner.task_index().saturating_add(1))
+                    .rev()
+                    .find(|task| {
+                        matches!(
+                            task,
+                            Task::MoveToEnemy { .. }
+                                | Task::MoveToLastKnownPosition
+                                | Task::MoveToTarget { .. }
+                                | Task::MoveToNode(_)
+                                | Task::TakeCover
+                                | Task::Wander { .. }
+                        )
+                    })
+            });
+            let following = follower.is_some_and(|follower| follower.following);
+            let pursuing_visible = matches!(task, Some(Task::MoveToEnemy { .. }))
+                && ai.memory.is_some_and(|memory| !memory.occluded);
+            let goal = if pursuing_visible {
+                ai.memory
+                    .and_then(|memory| targets.get(&memory.entity).copied())
+            } else if following && matches!(task, Some(Task::MoveToTarget { .. })) {
+                targets.get(&level.player).copied()
+            } else {
+                None
+            };
+            if let Some(goal) = goal {
+                if pursuing_visible && let Some(memory) = ai.memory.as_mut() {
+                    memory.last_known_position = goal;
+                }
+                ai.move_target = Some(goal);
+                ai.route = Route::new();
+                ai.move_speed = 0.0;
+                ai.runner.clear();
+                ai.stuck.reset();
+            }
+        }
     }
 
     /// Project-authored readiness persists until a secondary request actually emits.
@@ -1675,7 +1763,16 @@ impl AiState {
         let mut actor = Actor::new(spec.classification, origin).with_health(health);
         actor.yaw = yaw;
         actor.hull = spec.hull;
-        actor.view_ofs = kind.view_offset();
+        let model = kind.default_model_path().and_then(|path| {
+            level
+                .studio_model_paths
+                .iter()
+                .position(|loaded| loaded.eq_ignore_ascii_case(path))
+        });
+        actor.configure_model(
+            &kind,
+            model.and_then(|index| level.studio_models.get(index)),
+        );
         let entity = level.registry.world.spawn((
             ClassName(classname.to_string()),
             Transform {
@@ -1688,6 +1785,19 @@ impl AiState {
             Owner(maker),
         ));
         level.registry.entities.push(entity);
+        if let Some(model) = model {
+            let _ = level.registry.world.insert_one(
+                entity,
+                StudioAnim {
+                    model,
+                    sequence: 0,
+                    cycle: 0.0,
+                    frame_rate: 1.0,
+                    body: 0,
+                    skin: 0,
+                },
+            );
+        }
         Some(entity)
     }
 
@@ -2495,7 +2605,7 @@ impl AiState {
             .registry
             .world
             .get::<&Actor>(player)
-            .map(|actor| actor.origin)
+            .map(|actor| actor.navigation_anchor())
         else {
             return;
         };
@@ -2725,7 +2835,9 @@ fn nearest_follower(level: &Level, position: Vec3) -> Option<Entity> {
         if !actor.alive {
             continue;
         }
-        let distance = actor.origin.distance(position);
+        // The use ray starts at the player eye; compare the physical body,
+        // not a newly feet-relative model pivot.
+        let distance = actor.query_origin().distance(position);
         if !distance.is_finite() || distance > TALK_USE_RADIUS {
             continue;
         }
@@ -2868,6 +2980,240 @@ fn monster_projectile_profile(
             Some([250.0, 250.0, 275.0][skill]),
         ),
         _ => (0.0, DamageType::GENERIC, None),
+    }
+}
+
+#[cfg(test)]
+mod origin_frame_tests {
+    use super::*;
+    use crate::test_support::{AI_MAP, ai_room_bsp, entity_block, entity_of_classname};
+
+    #[test]
+    fn projectile_launch_and_aim_use_the_same_rotated_metadata_eyes_as_sight() {
+        let entities = format!(
+            "{{\"classname\" \"worldspawn\"}}{}{}",
+            entity_block("monster_alien_grunt", [0.0, 0.0, 0.0], 90.0, &[]),
+            entity_block("monster_barney", [100.0, 100.0, 0.0], 180.0, &[])
+        );
+        let bytes = ai_room_bsp(&entities, false);
+        let (mut mdl, _) = ohl_formats::test_support::build_minimal_mdl10();
+        let eye = [12.0_f32, 3.0, 20.0];
+        for (axis, value) in eye.into_iter().enumerate() {
+            mdl[76 + axis * 4..80 + axis * 4].copy_from_slice(&value.to_le_bytes());
+        }
+        let mut assets = crate::MemoryAssets::new();
+        assets.insert(
+            MonsterKind::AlienGrunt
+                .default_model_path()
+                .expect("default"),
+            mdl.clone(),
+        );
+        assets.insert(
+            MonsterKind::Barney.default_model_path().expect("default"),
+            mdl,
+        );
+        let mut game = crate::Game::from_map_bytes(&assets, AI_MAP, &bytes).expect("fixture");
+        let attacker = entity_of_classname(&game, "monster_alien_grunt").expect("attacker");
+        let target = entity_of_classname(&game, "monster_barney").expect("target");
+        let (level, systems) = game.level_and_systems_mut();
+        let ai = systems.ai_mut();
+        ai.resolve_attack(
+            level,
+            attacker,
+            AttackKind::Range1,
+            Some(target),
+            &mut Vec::new(),
+        );
+        let requests = ai.take_projectile_requests();
+        assert_eq!(requests.len(), 1);
+        let request = requests[0];
+        let muzzle = Vec3::new(-3.0, 12.0, 20.0);
+        let aim = Vec3::new(88.0, 97.0, 20.0);
+        assert!(request.origin.abs_diff_eq(muzzle, 0.001));
+        assert!(
+            request
+                .velocity
+                .normalize()
+                .abs_diff_eq((aim - muzzle).normalize(), 0.001)
+        );
+        assert_eq!(request.owner, attacker);
+        assert_eq!(request.target, Some(target));
+    }
+
+    fn script_fixture(
+        wall: bool,
+        step: bool,
+        move_to: &str,
+        navigation: Option<usize>,
+    ) -> crate::Game {
+        let entities = format!(
+            "{{\"classname\" \"worldspawn\"}}{}{}{}{}{}",
+            entity_block("info_player_start", [-200.0, -200.0, 36.0], 0.0, &[]),
+            entity_block(
+                "monster_barney",
+                [-100.0, 0.0, 0.0],
+                0.0,
+                &[("targetname", "ohl_actor"), ("spawnflags", "16")]
+            ),
+            entity_block(
+                "scripted_sequence",
+                [100.0, 0.0, if step { 12.0 } else { 0.0 }],
+                0.0,
+                &[
+                    ("targetname", "ohl_script"),
+                    ("m_iszEntity", "ohl_actor"),
+                    ("m_fMoveTo", move_to),
+                    ("target", "ohl_done")
+                ]
+            ),
+            entity_block("trigger_auto", [0.0; 3], 0.0, &[("target", "ohl_script")]),
+            entity_block(
+                "trigger_changelevel",
+                [0.0; 3],
+                0.0,
+                &[
+                    ("targetname", "ohl_done"),
+                    ("map", "ohlelsewhere"),
+                    ("landmark", "ohl_landmark")
+                ]
+            )
+        );
+        // A low step makes the straight segment fail while traced local
+        // walking remains reachable even with no graph-search budget.
+        let mut builder = ohl_formats::test_support::Bsp30Builder::new();
+        builder.set_entities_text(&entities);
+        let mut brushes = vec![ohl_formats::test_support::CollisionBrush::half_space(
+            [0.0, 0.0, 1.0],
+            0.0,
+        )];
+        if wall || step {
+            brushes.push(ohl_formats::test_support::CollisionBrush::box_brush(
+                [0.0, -256.0, 0.0],
+                [
+                    if wall { 16.0 } else { 200.0 },
+                    256.0,
+                    if wall { 256.0 } else { 12.0 },
+                ],
+            ));
+        } else {
+            // Flat graph case: a short wall forces a real detour, so merely
+            // attaching a graph while taking a direct segment cannot pass.
+            brushes.push(ohl_formats::test_support::CollisionBrush::box_brush(
+                [-8.0, -48.0, 0.0],
+                [8.0, 48.0, 128.0],
+            ));
+        }
+        let heads = builder.push_collision_hulls(&brushes);
+        builder.push_model(
+            [-512.0, -512.0, -256.0],
+            [512.0; 3],
+            [0.0; 3],
+            heads,
+            2,
+            0,
+            0,
+        );
+        let bytes = builder.build();
+        let mut game = crate::Game::from_map_bytes(&crate::MemoryAssets::new(), AI_MAP, &bytes)
+            .expect("fixture");
+        if let Some(searches) = navigation {
+            let (level, systems) = game.level_and_systems_mut();
+            let mut seeds = vec![
+                ohl_nav::NodeSeed::new(Vec3::new(-100.0, 0.0, 8.0), ohl_nav::NodeKind::Ground),
+                ohl_nav::NodeSeed::new(Vec3::new(100.0, 0.0, 20.0), ohl_nav::NodeKind::Ground),
+            ];
+            if !wall && !step {
+                seeds = [-100.0, 0.0, 100.0]
+                    .into_iter()
+                    .flat_map(|x| {
+                        [-96.0, 0.0, 96.0].into_iter().map(move |y| {
+                            ohl_nav::NodeSeed::new(Vec3::new(x, y, 8.0), ohl_nav::NodeKind::Ground)
+                        })
+                    })
+                    .collect();
+            }
+            let bridge = ohl_ai::NavBridge::build(
+                &seeds,
+                level.monster_collision.as_ref().expect("collision"),
+                &ohl_nav::BuildLimits::default(),
+                ohl_ai::NavBridgeLimits {
+                    max_searches_per_tick: searches,
+                    ..ohl_ai::NavBridgeLimits::default()
+                },
+            );
+            systems.ai_mut().world.attach_navigator(bridge);
+        }
+        game
+    }
+
+    #[test]
+    fn traced_script_steps_reach_a_floor_mark_and_fire_with_graph_without_graph_and_without_budget()
+    {
+        // Graph steering over a step is independently reproduced in
+        // ohl-ai/tests/nav_bridge.rs and reserved for P5. Here the graph
+        // success case is flat; local movement must still climb the step.
+        for (navigation, step) in [(None, true), (Some(8), false), (Some(0), true)] {
+            let mut game = script_fixture(false, step, "1", navigation);
+            let mut fired = 0;
+            for _ in 0..1_200 {
+                fired += game
+                    .tick(crate::TICK_SECONDS, &crate::Input::default())
+                    .iter()
+                    .filter(|event| matches!(event, crate::GameEvent::LevelChange { .. }))
+                    .count();
+            }
+            let entity = entity_of_classname(&game, "monster_barney").expect("actor");
+            let pose = game
+                .registry()
+                .world
+                .get::<&Actor>(entity)
+                .expect("actor")
+                .origin;
+            let stats = game.script_navigation_stats();
+            assert_eq!(
+                fired, 1,
+                "completion target fires once: {navigation:?}, pose={pose:?}, stats={stats:?}"
+            );
+            assert_eq!(game.script_completion_count(), 1);
+            assert_eq!(game.script_timeout_count(), 0);
+            let actor = entity_of_classname(&game, "monster_barney").expect("actor");
+            let actor = game.registry().world.get::<&Actor>(actor).expect("actor");
+            assert!(actor.origin.x > 65.0);
+            assert!((actor.origin.z - if step { 12.0 } else { 0.0 }).abs() < 0.1);
+            let stats = game.script_navigation_stats();
+            assert_eq!(stats.untraced_steps, 0);
+            assert_eq!(stats.start_solid, 0);
+            if navigation != Some(8) {
+                assert!(stats.traced_steps > 0);
+            } else {
+                assert!(stats.graph_steps > 0, "completion used the graph detour");
+            }
+        }
+    }
+
+    #[test]
+    fn a_blocked_script_cannot_complete_or_warp_but_explicit_teleport_can() {
+        for (move_to, completions) in [("1", 0), ("4", 1)] {
+            let mut game = script_fixture(true, false, move_to, Some(0));
+            let mut fired = 0;
+            for _ in 0..4_000 {
+                fired += game
+                    .tick(crate::TICK_SECONDS, &crate::Input::default())
+                    .iter()
+                    .filter(|event| matches!(event, crate::GameEvent::LevelChange { .. }))
+                    .count();
+            }
+            assert_eq!(fired, completions);
+            assert_eq!(game.script_completion_count(), completions as u64);
+            let actor = entity_of_classname(&game, "monster_barney").expect("actor");
+            let actor = game.registry().world.get::<&Actor>(actor).expect("actor");
+            if completions == 0 {
+                assert!(actor.origin.x < 0.0);
+            } else {
+                assert_eq!(actor.origin, Vec3::X * 100.0);
+            }
+            assert_eq!(game.script_navigation_stats().untraced_steps, 0);
+        }
     }
 }
 

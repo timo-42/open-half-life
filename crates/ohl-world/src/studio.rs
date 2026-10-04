@@ -290,6 +290,12 @@ pub struct StudioModel {
     /// against whatever the loaded model actually publishes. Media-derived,
     /// so they are handed back as data and never logged.
     pub sequence_names: Vec<String>,
+    /// Header eye position in model space; consumers validate placeholders.
+    pub eye_position: [f32; 3],
+    /// Header hull minimum in model space, distinct from clipping bounds.
+    pub hull_min: [f32; 3],
+    /// Header hull maximum in model space.
+    pub hull_max: [f32; 3],
     /// The model-space bounding box (`bbmin`/`bbmax` from the header).
     pub bounds_min: [f32; 3],
     /// The model-space bounding box maximum.
@@ -545,6 +551,9 @@ impl StudioModel {
             attachments,
             sequences,
             sequence_names,
+            eye_position: header.eyeposition.map(|value| value.get()),
+            hull_min: header.min.map(|value| value.get()),
+            hull_max: header.max.map(|value| value.get()),
             bounds_min: [
                 header.bbmin[0].get(),
                 header.bbmin[1].get(),

@@ -8599,3 +8599,72 @@ This evidence-only follow-up changes the two authored appendices. Tool source
 and tests remain byte-identical to the fully validated head, preserving all 47
 actually killed and restored mutation probes. Milestone numbering and merge
 remain assigned to integration.
+
+## M9.NEXT: authored monster anchors and centered query adapters
+
+Status: candidate under validation. Monsters keep the map/model anchor in
+Actor, Transform, studio placement, scripts and saves. Ordinary walkers convert
+their feet to the selected compiled hull's center only at movement, navigation,
+door-touch and mover boundaries; returned positions convert back once. Point
+flight, ceiling barnacles, mounted/rooted actors and custom model pivots have
+explicit derived policies. Player centers and current crouch hulls remain the
+controller's responsibility; chase and follower targets use the player's floor.
+
+Runtime studio metadata now retains the documented local eye and hull extents.
+Map actors, maker-only model preloads and restored children share frame/eye
+initialization. Model-local eyes rotate with yaw, while valid posed hitboxes and
+clipping boxes retain the original model transform. Only absent/degenerate
+geometry uses a body-relative damage proxy. Projectile muzzle/aim and blast
+sampling follow those same points and bounds, preserving resolved attack
+profiles, owners and deployable/player filtering. No serialized field, layout
+or tag changes; derived state is reconstructed.
+
+The navigator's reached-goal displacement is bounded and traced. External
+anchor changes discard cached paths. Restored live pursuit may replan; hidden
+last-known pursuit retains its historical observation. A fresh save continuation
+compares a hidden registry-indexed target against an unsaved control. The
+preexisting save-index omission for player enemy memory and omitted follower
+roster persistence remain named limits. A separate restored visible-pursuit
+fixture requires an identified legacy-centered route to replan without moving
+the actor storage.
+
+Synthetic BSP/MDL fixtures cover box-hull feet, steps/ceilings, cover/wander,
+graph attachment, custom pivots, point flight, rotated eyes and projectile aim,
+model/clipping/proxy precedence, maker/restore equivalence, follower crouching,
+raised-door body touch, lift carrying, true prior penetration, angular pushes,
+script completion/blocked approaches/explicit teleport, and bounded arrival
+through a newly closed obstruction. Old mover/wander fixtures that encoded a
+centered monster were corrected to project-authored feet; floor, wall, ledge,
+finished-leg, damage and true-embedding assertions remain discriminating.
+
+All **34 actual temporary mutations** were detected by test assertions and
+restored byte-for-byte: feet/query/inverse removal, a hardcoded hull height,
+missing goal conversion, raw cover/wander queries, viewer/candidate local-eye
+copies, ignored eye metadata, clipping-as-hull pivots, added point offset,
+omitted flight trace, stale displacement cache and unbounded arrival; raw mover
+queries, missing pushed-origin inverse, angular velocity sampled at feet,
+deleted prior-penetration guard, raw door and toggled-wall bounds, stale player
+stance, omitted maker metadata/preload, centered/lifted fallback geometry,
+anchor-based projectile launch, omitted blast proxy, scripted wall bypass,
+hidden-target retargeting, lifted spawn storage, feet-based ceiling policy,
+raw follower use/goal points and removed restore replanning. The first isolated
+stance-write mutation survived a duplicate predecessor phase-5 sync; hull sync
+now lives once in phase 4, and the repeated mutation is killed. A monitor
+measurement race was corrected and the affected probe rerun. Neither survived
+probe nor interrupted wrapper run is counted as mutation success.
+
+P5 retains node-kind attachment, stuck-route recovery, ordinary steering's
+final sweep and XY-only script/Route arrival, including purely vertical flight. A named ignored synthetic low-step
+graph reproduction is an additional P5 obligation: it stalls with centered
+endpoints and also with the predecessor cache/arrival behavior restored,
+identically in position and routing counters. Flat graph completion and local
+step fallback are separate positive cases. The candidate currently uses traced
+script fallback; both chain inventories and the smoke gates must decide whether
+the compatibility seam can retire. No claim of universal collision-safe routing
+is made, and no payload census output is recorded here.
+
+**Gates:** focused baseline: core AI/world **372 passed, 3 ignored** (two
+existing and the named P5 low-step reproduction); engine unit suite **209
+passed**; blocked movers **18 passed**. All 34 mutation probes were restored,
+and the strengthened script graph-detour completion test passes. Full workspace
+and payload candidate validation remain pending. Dependencies are unchanged.

@@ -70,9 +70,9 @@ pub struct BrainId(pub usize);
 pub struct Actor {
     /// The faction.
     pub classification: Classification,
-    /// World-space origin.
+    /// Authored model anchor for monsters; controller center for clients.
     pub origin: Vec3,
-    /// The eye offset above the origin.
+    /// Model-local eye offset for monsters; world offset for clients.
     pub view_ofs: Vec3,
     /// The facing yaw, in degrees.
     pub yaw: f32,
@@ -84,6 +84,8 @@ pub struct Actor {
     pub is_client: bool,
     /// The collision hull this entity moves with.
     pub hull: Hull,
+    /// Derived collision frame; never written into an existing save record.
+    pub body_frame: crate::BodyFrame,
 }
 
 impl Actor {
@@ -93,12 +95,13 @@ impl Actor {
         Self {
             classification,
             origin,
-            view_ofs: Vec3::new(0.0, 0.0, 28.0),
+            view_ofs: crate::BodyFrame::Feet.eye_offset(Hull::Standing, None),
             yaw: 0.0,
             health: 100.0,
             alive: true,
             is_client: false,
             hull: Hull::Standing,
+            body_frame: crate::BodyFrame::Feet,
         }
     }
 
@@ -107,6 +110,8 @@ impl Actor {
     pub fn as_client(mut self) -> Self {
         self.is_client = true;
         self.classification = Classification::Player;
+        self.body_frame = crate::BodyFrame::Centered;
+        self.view_ofs = Vec3::new(0.0, 0.0, 28.0);
         self
     }
 
@@ -127,7 +132,57 @@ impl Actor {
     /// The eye position sight originates from and is traced to.
     #[must_use]
     pub fn eye(&self) -> Vec3 {
-        self.origin + self.view_ofs
+        if self.is_client {
+            return self.origin + self.view_ofs;
+        }
+        let (sin, cos) = self.yaw.to_radians().sin_cos();
+        self.origin
+            + Vec3::new(
+                cos * self.view_ofs.x - sin * self.view_ofs.y,
+                sin * self.view_ofs.x + cos * self.view_ofs.y,
+                self.view_ofs.z,
+            )
+    }
+
+    /// Centered query point for this actor's selected compiled BSP hull.
+    #[must_use]
+    pub fn query_origin(&self) -> Vec3 {
+        self.body_frame.anchor_to_query(self.hull, self.origin)
+    }
+
+    /// Last-resort model-local damage box, when no usable posed or clipping
+    /// bounds exist. A point movement hull still needs nonzero damage geometry.
+    #[must_use]
+    pub fn fallback_damage_bounds(&self) -> (Vec3, Vec3) {
+        if self.hull == Hull::Point {
+            (Vec3::splat(-24.0), Vec3::splat(24.0))
+        } else {
+            self.body_frame.local_bounds(self.hull)
+        }
+    }
+
+    /// The navigation target supplied to another actor. Player stance
+    /// changes keep the same floor anchor; monster model anchors stay exact.
+    #[must_use]
+    pub fn navigation_anchor(&self) -> Vec3 {
+        if self.is_client {
+            self.origin - Vec3::Z * self.hull.foot_offset()
+        } else {
+            self.origin
+        }
+    }
+
+    /// Reconstructs model-dependent body and eye policy without moving it.
+    pub fn configure_model(
+        &mut self,
+        kind: &crate::MonsterKind,
+        model: Option<&ohl_world::StudioModel>,
+    ) {
+        if self.is_client {
+            return;
+        }
+        self.body_frame = crate::BodyFrame::for_model(kind, self.hull, model);
+        self.view_ofs = self.body_frame.eye_offset(self.hull, model);
     }
 
     /// The unit forward vector implied by [`Self::yaw`].
@@ -377,6 +432,7 @@ pub struct AiWorld {
     /// the current map; `None` uses the straight-line fallback instead
     /// (see [`advance_route`]).
     navigator: Option<NavBridge>,
+    script_navigation: crate::NavigationStats,
 }
 
 impl core::fmt::Debug for AiWorld {
@@ -404,6 +460,7 @@ impl AiWorld {
             rng: Pcg32::new(seed),
             tick_count: 0,
             navigator: None,
+            script_navigation: crate::NavigationStats::default(),
         }
     }
 
@@ -430,6 +487,20 @@ impl AiWorld {
     #[must_use]
     pub fn navigator(&self) -> Option<&NavBridge> {
         self.navigator.as_ref()
+    }
+
+    /// Aggregate script navigation counters for development inspection.
+    /// They never contain entity names, positions or asset information.
+    #[must_use]
+    pub fn script_navigation_stats(&self) -> crate::NavigationStats {
+        self.script_navigation
+    }
+
+    /// Drops transient navigation state when restoring a live world.
+    pub fn invalidate_navigation(&mut self) {
+        if let Some(navigator) = self.navigator.as_mut() {
+            navigator.invalidate();
+        }
     }
 
     /// The relationship table, for per-map overrides.
@@ -659,8 +730,8 @@ impl AiWorld {
         }
         let viewer = Viewer {
             entity,
-            origin: actor.origin,
-            view_ofs: actor.view_ofs,
+            origin: actor.navigation_anchor(),
+            view_ofs: actor.eye() - actor.navigation_anchor(),
             forward: actor.forward(),
             classification: actor.classification,
             prisoner,
@@ -773,6 +844,9 @@ impl AiWorld {
                 && let Some(attacker) = attacker
                 && attacker != entity
             {
+                let position = by_entity
+                    .get(&attacker)
+                    .map_or(position, |actor| actor.origin);
                 ai.memory = Some(EnemyMemory {
                     entity: attacker,
                     last_known_position: position,
@@ -802,15 +876,39 @@ impl AiWorld {
         if world.get::<&crate::scripts::ScriptHold>(entity).is_ok() {
             ai.runner.clear();
             let step = ai.move_speed * dt;
+            let before = self
+                .navigator
+                .as_ref()
+                .map(NavBridge::stats)
+                .unwrap_or_default();
+            if self.navigator.is_none() && step > 0.0 && !ai.route.is_finished() {
+                if let Some(collision) = context.collision {
+                    self.script_navigation.traced_steps =
+                        self.script_navigation.traced_steps.saturating_add(1);
+                    if collision
+                        .trace(actor.hull, actor.query_origin(), actor.query_origin())
+                        .start_solid
+                    {
+                        self.script_navigation.start_solid =
+                            self.script_navigation.start_solid.saturating_add(1);
+                    }
+                } else {
+                    self.script_navigation.untraced_steps =
+                        self.script_navigation.untraced_steps.saturating_add(1);
+                }
+            }
             let moved = advance_route(
                 entity,
                 &mut actor,
                 &mut ai,
                 context.collision,
                 self.navigator.as_mut(),
-                Fallback::StraightLine,
+                Fallback::Traced,
                 dt,
             );
+            if let Some(navigator) = self.navigator.as_ref() {
+                self.script_navigation.add_delta(before, navigator.stats());
+            }
             if ai.move_speed > 0.0 {
                 if ai.stuck.record_step(moved, step) {
                     ai.pending_conditions |= Conditions::BLOCKED;
@@ -998,6 +1096,16 @@ fn actor_bytes(actor: &Actor) -> Vec<u8> {
     bytes.push(u8::from(actor.alive));
     bytes.push(u8::from(actor.is_client));
     bytes.push(u8::try_from(actor.hull.index()).unwrap_or(u8::MAX));
+    let (tag, bottom) = match actor.body_frame {
+        crate::BodyFrame::Feet => (0, 0.0_f32),
+        crate::BodyFrame::Centered => (1, 0.0),
+        crate::BodyFrame::Ceiling => (2, 0.0),
+        crate::BodyFrame::ModelBottom(bottom) => (3, bottom),
+        crate::BodyFrame::FixedModelAnchor(None) => (4, 0.0),
+        crate::BodyFrame::FixedModelAnchor(Some(bottom)) => (5, bottom),
+    };
+    bytes.push(tag);
+    bytes.extend_from_slice(&bottom.to_bits().to_le_bytes());
     bytes
 }
 
@@ -1051,8 +1159,8 @@ fn snapshot_candidates(world: &World) -> Vec<Candidate> {
                 Candidate {
                     entity,
                     classification: actor.classification,
-                    origin: actor.origin,
-                    view_ofs: actor.view_ofs,
+                    origin: actor.navigation_anchor(),
+                    view_ofs: actor.eye() - actor.navigation_anchor(),
                     forward: actor.forward(),
                     alive: actor.alive,
                     is_client: actor.is_client,
@@ -1092,22 +1200,25 @@ fn advance_route(
         return 0.0;
     };
     let step = ai.move_speed * dt;
+    let query = actor.query_origin();
+    let query_goal = actor.body_frame.anchor_to_query(actor.hull, waypoint);
     let (position, distance) = match (navigator, collision) {
         (Some(navigator), Some(model)) => {
-            let next = navigator.next_move_with(
-                entity,
-                actor.origin,
-                waypoint,
-                actor.hull,
-                model,
-                step,
-                fallback,
-            );
-            (next, (next - actor.origin).length())
+            let next = navigator
+                .next_move_with(entity, query, query_goal, actor.hull, model, step, fallback);
+            (
+                actor.body_frame.query_to_anchor(actor.hull, next),
+                (next - query).length(),
+            )
         }
         (_, Some(model)) => {
-            let result = move_toward(model, actor.hull, actor.origin, waypoint, ai.move_speed, dt);
-            (result.position, result.distance)
+            let result = move_toward(model, actor.hull, query, query_goal, ai.move_speed, dt);
+            (
+                actor
+                    .body_frame
+                    .query_to_anchor(actor.hull, result.position),
+                result.distance,
+            )
         }
         (_, None) => {
             let result = straight_step(
@@ -1248,15 +1359,18 @@ impl MonsterExecutor<'_> {
         };
         let goal = self.actor.origin + direction * COVER_DISTANCE;
         let reachable = self.collision.map_or(goal, |model| {
-            move_toward(
+            let result = move_toward(
                 model,
                 self.actor.hull,
-                self.actor.origin,
-                goal,
+                self.actor.query_origin(),
+                self.actor.body_frame.anchor_to_query(self.actor.hull, goal),
                 COVER_DISTANCE,
                 1.0,
             )
-            .position
+            .position;
+            self.actor
+                .body_frame
+                .query_to_anchor(self.actor.hull, result)
         });
         self.ai.cover = Some(reachable);
         TaskStatus::Complete
@@ -1289,7 +1403,17 @@ impl MonsterExecutor<'_> {
         let origin = self.actor.origin;
         let drawn = origin + movement::forward_from_yaw(yaw) * distance;
         let goal = self.collision.map_or(drawn, |model| {
-            movement::walkable_reach(model, self.actor.hull, origin, drawn)
+            let query = movement::walkable_reach(
+                model,
+                self.actor.hull,
+                self.actor.query_origin(),
+                self.actor
+                    .body_frame
+                    .anchor_to_query(self.actor.hull, drawn),
+            );
+            self.actor
+                .body_frame
+                .query_to_anchor(self.actor.hull, query)
         });
         if Vec3::new(goal.x - origin.x, goal.y - origin.y, 0.0).length() < MIN_WANDER_LEG {
             return TaskStatus::Failed;
@@ -2104,7 +2228,8 @@ mod tests {
             [-HALF, -HALF, 0.0],
             [HALF, HALF, 128.0],
         );
-        let (goals, origins, finished) = wander_in(&room, Vec3::new(0.0, 0.0, 19.0), true, 3_000);
+        // The actor stores its feet, one unit above this synthetic floor.
+        let (goals, origins, finished) = wander_in(&room, Vec3::new(0.0, 0.0, 1.0), true, 3_000);
         // The crouched hull is 32 wide: its origin can get no closer to a
         // wall than 16.
         let inside = |point: &Vec3| point.x.abs() <= HALF - 15.0 && point.y.abs() <= HALF - 15.0;
@@ -2114,6 +2239,7 @@ mod tests {
         }
         for origin in &origins {
             assert!(inside(origin), "the rat left the room: {origin:?}");
+            assert!((0.0..=1.01).contains(&origin.z), "feet remain at the floor");
         }
         assert!(finished >= 2, "it still finishes legs: {finished}");
     }
@@ -2141,8 +2267,7 @@ mod tests {
             [-512.0, -512.0, 0.0],
             [512.0, 512.0, 256.0],
         );
-        let (_, origins, finished) =
-            wander_in(&room, Vec3::new(0.0, 0.0, TOP + 19.0), false, 3_000);
+        let (_, origins, finished) = wander_in(&room, Vec3::new(0.0, 0.0, TOP + 1.0), false, 3_000);
         // Half the crouched hull's width past the edge is the farthest the
         // hull can stand with some of the platform still under it.
         for origin in &origins {
@@ -2150,7 +2275,10 @@ mod tests {
                 origin.x.abs() <= PLATFORM + 16.0 && origin.y.abs() <= PLATFORM + 16.0,
                 "the rat walked off the platform: {origin:?}"
             );
-            assert!(origin.z > TOP, "and stays on top of it: {origin:?}");
+            assert!(
+                (TOP..=TOP + 1.01).contains(&origin.z),
+                "feet stay on top of it: {origin:?}"
+            );
         }
         assert!(finished >= 2, "it still finishes legs: {finished}");
     }
@@ -2229,12 +2357,10 @@ mod tests {
     }
 
     /// Wave 1 batch A review: with a `NavBridge` attached and no route
-    /// around a wall, a monster on its own brain is stopped by the wall
-    /// (the bridge's traced fallback), while a monster a script is walking
-    /// to its mark still crosses it (`Fallback::StraightLine`, kept because
-    /// a scripted walk that never arrives stalls the map).
+    /// around a wall, both autonomous movement and scripted approach must
+    /// remain on the reachable side. Explicit script teleport is separate.
     #[test]
-    fn only_a_scripted_walk_keeps_the_straight_line_fallback() {
+    fn scripted_and_autonomous_approaches_use_the_traced_fallback() {
         use ohl_formats::test_support::CollisionBrush;
         let room = collision_from(
             &[
@@ -2249,7 +2375,7 @@ mod tests {
             [-512.0, -512.0, 0.0],
             [512.0, 512.0, 256.0],
         );
-        let goal = Vec3::new(100.0, 0.0, 37.0);
+        let goal = Vec3::new(100.0, 0.0, 1.0);
         let run = |scripted: bool| {
             let mut ai = AiWorld::new(1);
             let brain = ai.register_brain(Box::new(Walker));
@@ -2262,7 +2388,7 @@ mod tests {
             let mut world = World::new();
             let monster = spawn_monster(
                 &mut world,
-                Actor::new(Classification::None, Vec3::new(-100.0, 0.0, 37.0)),
+                Actor::new(Classification::None, Vec3::new(-100.0, 0.0, 1.0)),
                 brain,
             );
             {
@@ -2291,8 +2417,8 @@ mod tests {
         );
         let scripted = run(true);
         assert!(
-            scripted.x > 16.0,
-            "a scripted walk was stopped short of its mark: {scripted:?}"
+            scripted.x < -16.0,
+            "a scripted approach crossed an unreachable wall: {scripted:?}"
         );
     }
 }

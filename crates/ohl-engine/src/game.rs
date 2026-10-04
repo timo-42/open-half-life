@@ -808,6 +808,12 @@ impl Game {
         self.systems.ai().script_timeout_count()
     }
 
+    /// Aggregate script routing counters for development inspection.
+    #[must_use]
+    pub fn script_navigation_stats(&self) -> ohl_ai::NavigationStats {
+        self.systems.ai().world().script_navigation_stats()
+    }
+
     /// The allies currently following the player, oldest first. Data, never
     /// a log line.
     #[must_use]
@@ -1895,6 +1901,7 @@ impl Game {
         // rather than from the map's spawn point; see
         // `Systems::sync_actor_from_transforms`'s doc.
         Systems::sync_actor_from_transforms(&mut self.level);
+        self.systems.ai.restore_navigation();
         // `SECTION_MAKER_CHILDREN` (29, M9.5), part two: links each child
         // `Self::restore_maker_children` recreated above back onto its
         // maker's own live-child list, now that its restored health/AI

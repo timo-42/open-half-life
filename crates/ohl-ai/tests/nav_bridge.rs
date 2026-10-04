@@ -83,6 +83,97 @@ fn dummy_actor() -> Entity {
 }
 
 #[test]
+#[ignore = "P5: graph steering stalls before a low step with centered endpoints; reproduced with predecessor cache/arrival semantics"]
+fn a_centered_graph_route_walks_up_a_low_step() {
+    let collision = model_from_brushes(&[
+        CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+        CollisionBrush::box_brush([0.0, -256.0, 0.0], [200.0, 256.0, 12.0]),
+    ]);
+    let seeds = [
+        ground(-100.0, 0.0),
+        NodeSeed::new(Vec3::new(100.0, 0.0, 20.0), NodeKind::Ground),
+    ];
+    let mut bridge = NavBridge::build(
+        &seeds,
+        &collision,
+        &BuildLimits::default(),
+        NavBridgeLimits::default(),
+    );
+    let actor = dummy_actor();
+    let mut center = Vec3::new(-100.0, 0.0, 36.0);
+    let goal = Vec3::new(100.0, 0.0, 48.0);
+    for _ in 0..1_200 {
+        bridge.begin_tick(&[actor]);
+        center = bridge.next_move(actor, center, goal, Hull::Standing, &collision, 0.4);
+    }
+    assert!(
+        center.x > 65.0,
+        "centered graph step endpoint={center:?}, stats={:?}",
+        bridge.stats()
+    );
+}
+
+#[test]
+fn an_external_anchor_change_rebuilds_the_old_graph_route() {
+    let collision = wall_room();
+    let mut bridge = NavBridge::build(
+        &wall_room_lattice(),
+        &collision,
+        &BuildLimits::default(),
+        NavBridgeLimits::default(),
+    );
+    let actor = dummy_actor();
+    let goal = Vec3::new(250.0, 0.0, 40.0);
+    let _ = bridge.next_move(
+        actor,
+        Vec3::new(-250.0, 0.0, 40.0),
+        goal,
+        Hull::Standing,
+        &collision,
+        1.0,
+    );
+    assert_eq!(bridge.stats().graph_steps, 1);
+    // A carry/teleport changes the caller's anchor without changing its
+    // destination. The new side of the wall has a clear direct segment.
+    let origin = Vec3::new(200.0, 0.0, 40.0);
+    let next = bridge.next_move(actor, origin, goal, Hull::Standing, &collision, 1.0);
+    assert!(next.x > origin.x);
+    assert_eq!(
+        bridge.stats().direct_steps,
+        1,
+        "stale graph path was discarded"
+    );
+}
+
+#[test]
+fn reached_goal_is_bounded_and_traced_against_a_newly_closed_wall() {
+    let open = open_room();
+    let mut limits = NavBridgeLimits::default();
+    limits.steer.arrive_radius = 100.0;
+    let mut bridge = NavBridge::build(&[], &open, &BuildLimits::default(), limits);
+    let actor = dummy_actor();
+    let start = Vec3::new(0.0, 0.0, 40.0);
+    let goal = Vec3::new(64.0, 0.0, 40.0);
+    let next = bridge.next_move(actor, start, goal, Hull::Standing, &open, 1.0);
+    assert!(
+        (next - start).length() <= 1.001,
+        "arrival does not snap beyond this step"
+    );
+    let mut brushes = room_shell();
+    brushes.push(CollisionBrush::box_brush(
+        [24.0, -512.0, 0.0],
+        [26.0, 512.0, 256.0],
+    ));
+    let closed = model_from_brushes(&brushes);
+    let blocked = bridge.next_move(actor, next, goal, Hull::Standing, &closed, 64.0);
+    assert!(
+        blocked.x < 8.01,
+        "cached arrival cannot cross a live obstruction"
+    );
+    assert!(!closed.trace(Hull::Standing, blocked, blocked).start_solid);
+}
+
+#[test]
 fn a_monster_routes_around_a_wall_via_the_node_graph() {
     let collision = wall_room();
     let seeds = wall_room_lattice();

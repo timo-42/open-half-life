@@ -1165,7 +1165,7 @@ impl Level {
                         .without::<&ohl_ai::Impervious>()
                         .iter()
                         .filter(|actor| actor.alive && !actor.is_client)
-                        .any(|actor| brush_embeds(model, brush, actor.hull, actor.origin)),
+                        .any(|actor| brush_embeds(model, brush, actor.hull, actor.query_origin())),
                     _ => false,
                 };
             if !(player_inside || monster_inside) {
@@ -1403,8 +1403,32 @@ fn load_studio_models(source: &dyn AssetSource, defs: &[EntityDef]) -> StudioLoa
     let mut by_path: BTreeMap<String, Option<usize>> = BTreeMap::new();
     let mut models = Vec::new();
     let mut paths = Vec::new();
-    let (props, def_indices, missing) =
+    let (props, def_indices, mut missing) =
         load_studio_models_into(source, defs, 0, &mut by_path, &mut models, &mut paths);
+    // Preload bounded maker child models while an AssetSource is available.
+    // These are prototypes, never placements or new registry/save slots.
+    let prototypes: Vec<EntityDef> = defs
+        .iter()
+        .filter_map(|def| {
+            if def.classname != "monstermaker" {
+                return None;
+            }
+            let classname = def.keyvalues.get("monstertype")?;
+            let mut prototype = def.clone();
+            prototype.classname.clone_from(classname);
+            prototype.model = None;
+            Some(prototype)
+        })
+        .collect();
+    let (_, _, missing_children) = load_studio_models_into(
+        source,
+        &prototypes,
+        0,
+        &mut by_path,
+        &mut models,
+        &mut paths,
+    );
+    missing += missing_children;
     StudioLoad {
         models,
         paths,

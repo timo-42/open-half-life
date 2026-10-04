@@ -57,6 +57,8 @@ pub mod nav;
 mod combat;
 pub mod damage_map;
 pub mod guard;
+#[cfg(test)]
+mod origin_frame_tests;
 mod pickups;
 mod presentation;
 pub mod pushables;

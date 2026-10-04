@@ -7975,3 +7975,64 @@ to `/dev/null`; temporary captures were removed. Both distinct inventory runs
 used `--aggregate-only` and an explicit `--min-depth 12`. All tracked membership
 and bytes, tool sources and archive hash were unchanged across the seven regular
 checks and four runtime gates. No later-hop planning was performed.
+
+## Monster authored anchors and body frames
+
+Published documentation reviewed 2026-10-04:
+
+- [Sven Co-op mapping FGD](https://wiki.svencoop.com/Mapping/Sven_Co-op_FGD)
+  places ordinary humanoid editor boxes above their local origin and the
+  barnacle editor box below it. These are Sven Co-op editor declarations,
+  not measurements of Half-Life runtime collision boxes. No FGD or engine
+  implementation was copied.
+- [MDL v10 format documentation](https://github.com/malortie/assimp/wiki/MDL:-Half-Life-1-file-format)
+  distinguishes the header eye position, hull extents and clipping extents
+  from bone-local hitbox records. Only format documentation was consulted.
+- The collision section's existing TWHL hull references describe the compiled
+  centered hull convention. Their previously recorded search-summary evidence
+  is not presented as a new direct page review here.
+
+Project-authored policy: monster Actor/Transform positions retain the authored
+model anchor. Ordinary box walkers translate by their selected hull's bottom
+only when calling centered physics/navigation APIs, then inverse that
+translation on the result. Point movers retain identity queries; ceiling
+actors use a downward diagnostic proxy. Rooted/mounted models keep an explicit
+fixed-model policy and their existing locomotion/mover exclusions. A custom
+model's validated header hull minimum defines its proxy bottom; clipping
+bounds and animation vertices never choose its movement pivot. Invalid generic
+hull metadata uses a feet fallback; metadata-free mounted proxies stay
+centered. Existing compiled hull sizes are unchanged.
+
+Runtime eye metadata is local to the model and rotates with monster yaw.
+Absent usable metadata, a valid clipping box supplies its XY midpoint and
+8/9 of its vertical span. A box walker's proxy supplies the same fractional
+fallback when model bounds are absent; point/mounted actors use a finite
+anchor-relative placeholder. Barnacle eyes remain below the ceiling anchor.
+Client eye offsets remain controller-driven world displacements. These eye
+choices, proxy translations and metadata validation are project-authored;
+exact per-species anatomy and arbitrary missing-metadata pivots remain
+`TODO(black-box)`.
+
+Posed hitboxes and usable model clipping bounds remain attached to the
+unmodified model transform. Only the final invented damage fallback uses an
+actor's anchor-relative proxy; point movement still has nonzero fallback
+damage geometry. Maker children reconstruct the same model/frame policy as
+map actors. Derived frame/eye policy is not serialized, and no existing save
+record or tag changes. Recognized restored live-target pursuit replans from
+the target after player stance sync; arbitrary saved marks are not shifted.
+Historical last-known pursuit keeps the remembered anchor even if the hidden
+target has moved. The existing save registry does not index the separately
+spawned player for enemy-memory records; this unrelated encoding limitation
+remains unchanged rather than consuming another optional tag. Follower roster
+membership likewise has no existing serialized record; a load does not recreate
+that relationship. Live use selection queries the centered physical body so a
+feet anchor does not consume the player-eye interaction radius.
+
+Navigation paths remain centered. An arrival radius cannot authorize an
+unbounded or untraced final move. External displacement invalidates cached
+routes; live arrival obstruction discards the affected cache. The separate
+script compatibility fallback remains subject to campaign validation, with
+its retirement and remaining routing defects recorded in the milestone.
+An independently centered synthetic low-step route also stalls with the
+predecessor's cache and arrival behavior. Its named P5 reproduction preserves
+that steering defect; it is not classified as a remaining origin conversion.
