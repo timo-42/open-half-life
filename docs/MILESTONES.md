@@ -8689,7 +8689,7 @@ master, existence and distance validation. Restore follows all existing
 projectile/effect/master overlays, cancels a valid mount's restored handheld
 charge and preserves the next-tick boundary for pending input.
 
-Seventeen new source tests remain **uncompiled/unrun**: a literal nested tag44
+Eighteen new source tests remain **uncompiled/unrun**: a literal nested tag44
 container golden and round-trip, trailing-byte rejection, both vector caps,
 nonfinite values, old absence with26/42/43 section equality, live-versus-loaded
 controlled cadence/RNG and automatic memory/aim, rocket health/physics/credit,
@@ -8697,8 +8697,12 @@ duplicate/orphan/foreign identities, actual button/relay pending control,
 master/death/range revalidation, inconsistent charged inventory cancellation,
 cosmetic pulse clearing, and separate pending-queue precedence. Two of these
 inspect real-input rocket terminal DamageInfo at the existing phase7 seam and
-perturb a player handle to discriminate stable remapping. No new production
-observer or alternate projectile implementation exists.
+perturb a player handle to discriminate stable remapping. Terminal checks
+require exactly two hits, one per target, independently calculated amounts,
+BLAST type, complete attacker/inflictor/origin/direction and exact full-payload
+equality across live/restored branches. Another valid turret reference cannot
+replace a rocket's physical owner; a positive matched-owner control remains.
+No new production observer or alternate projectile implementation exists.
 
 **Cuts and next dependency.** Focused compilation/execution of the save unit,
 mutation discrimination, full runtime review and all gates remain required. Frozen tags26/42/43 and weapon/entity/render encodings

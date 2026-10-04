@@ -544,3 +544,60 @@ fn distinct_runtime_and_phase12_pending_intents_round_trip_without_early_consump
         assert!((health(game) - 977.0).abs() < 0.001);
     }
 }
+
+#[test]
+fn valid_but_mismatched_turret_source_cannot_replace_physical_rocket_owner() {
+    let extra = crate::test_support::entity_block(
+        "func_tankrocket",
+        [-256.0, 256.0, 64.0],
+        0.0,
+        &[
+            ("model", "*3"),
+            ("targetname", "other_tank"),
+            ("spawnflags", "32"),
+        ],
+    );
+    let (mut game, assets) = fixture("func_tankrocket", &[], &extra);
+    tick(&mut game, true, true);
+    let baseline = game.to_save(0);
+    let physical_owner = baseline.projectiles.as_ref().unwrap().projectiles[0]
+        .owner
+        .unwrap();
+    let other = game.registry().find("other_tank")[0];
+    assert!(
+        game.registry()
+            .world
+            .get::<&ohl_game::tanks::TankDef>(other)
+            .is_ok()
+    );
+    let other_index = u32::try_from(
+        game.registry()
+            .entities
+            .iter()
+            .position(|entity| *entity == other)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_ne!(physical_owner, other_index);
+    let positive = Game::load_bytes(&assets, &baseline.to_bytes().unwrap()).unwrap();
+    assert_eq!(state(&positive).projectiles.len(), 1);
+    assert_eq!(state(&positive).projectiles[0].source, physical_owner);
+    let mut forged = baseline;
+    forged.tanks.as_mut().unwrap().projectiles[0].source = other_index;
+    let restored = Game::load_bytes(&assets, &forged.to_bytes().unwrap()).unwrap();
+    let after = restored.to_save(0);
+    assert!(
+        after.tanks.unwrap().projectiles.is_empty(),
+        "a valid tank is still not this rocket's physical owner"
+    );
+    assert_eq!(
+        after.projectiles.unwrap().projectiles[0].owner,
+        Some(physical_owner)
+    );
+    assert_eq!(
+        after.projectile_runtime.unwrap().attacks[0].owner,
+        Some(crate::save_state::ProjectileEntityRef::Registry(
+            physical_owner
+        ))
+    );
+}
