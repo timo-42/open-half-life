@@ -8812,3 +8812,45 @@ expiry assertion and the save companion's independent pre-save duration
 assertion; the latter failure did not reach its later expiry check. Remaining
 mutations and workspace/runtime gates are still pending. No unrelated CI-worker
 setup failure is treated as a turret production defect or a completed gate.
+
+
+**Remaining bounded mutation evidence.** On unchanged `71f8f64` production
+and test source, all 40 remaining planned rows plus the separate existing
+Use-consumption companion were compiled and run. These 41 executions produced
+39 killed rows and two survivors. Their 44 selected mutant tests produced
+41 designated assertion failures, one required-section panic, and two passes;
+all 88 exact normal-before/after controls passed. The final restored engine
+suite passed **52/52**. The tank-vector and projectile-vector decode caps were
+removed in separate runs, each failing the actual decode assertion with the
+other cap intact. Beam submission, live appearance, expiry, physical-source
+filtering/credit, save identities/queues, cadence/RNG/memory, master/life/charge
+validation, old-section absence and duplicate-key controls were exercised.
+Compound type-zero and foreign-player substitutions remain explicitly
+compound checks of redundant defenses.
+
+The additional existing denied-controls test killed the same host Use-bypass
+that survived the original four-variant test; the original survivor remains
+recorded. Two new survivors exposed further test limitations. Duplicating a
+shot target still yielded one delayed witness because the synthetic relay's
+default cooldown discarded the second same-tick activation. Omitting the
+monster model from immediate turret collision synchronization survived a test
+that waited until aiming stopped, letting ordinary next-step synchronization
+catch up. These do not establish duplicate-free output or same-tick paired
+collision updates. Opt-in unthrottled witness and still-turning collision
+checks are proposed, along with the earlier immediate Egon cancellation check;
+none of those test strengthenings has run.
+
+The forged-owner mutation actually failed its designated custom-message
+assertion, and omitted tag44 failed the literal-golden assertion's required
+section lookup with `SectionNotFound`. The initial log classifier rejected
+both message forms. Original classifier-invalid records were preserved;
+separate source/log/hash-bound addenda record the verified assertion failure
+and required-section panic, with completed compilation, exact count and
+passing restored controls. Neither was a compile, setup or resource failure.
+Every mutated byte, all seven protected files and the archived core hash were
+restored and checked; owned process groups are idle. This second batch's peak
+sampled target was 2,438,627,328 bytes and minimum free space30,704,291,840 bytes.
+Across both batches there were 58 row/test-pair executions:55 killed and three
+survived, including the original Use-bypass pairing later caught by its new
+companion. Individual Egon survival remains explicit. Full workspace/runtime
+gates and the proposed coverage strengthenings are still pending.

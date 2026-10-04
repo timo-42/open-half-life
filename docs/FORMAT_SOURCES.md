@@ -8192,3 +8192,17 @@ Egon test survived removal of immediate state cancellation even though the
 same mutation failed Gauss and mounted-restore controls. Those limitations,
 the lower-layer scope of passive reload evidence, and the additional coverage
 proposals remain explicit in MILESTONES.
+
+
+The remaining 40 planned mutation rows and a separate existing Use-consumption
+companion also ran on unchanged `71f8f64` source, with39 killed executions and
+two survivors, restored normal controls and another52-test engine pass. The
+additional companion catches the host Use bypass without erasing the original
+survivor. Duplicate-shot output survives the current synthetic relay's
+cooldown, and missing immediate monster-collision synchronization survives
+its eventual-pose check; stronger synthetic observers are proposed. Neither
+limitation is a claim about original-engine behavior. Independent save-vector
+cap probes, stable attribution and actual visible-beam checks failed their
+intended oracles. Two narrow log-classification corrections preserve the
+original records and precise assertion/required-section failure evidence.
+Full gates and the new coverage proposals remain pending.
