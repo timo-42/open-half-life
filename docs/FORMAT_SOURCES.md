@@ -7833,22 +7833,29 @@ Global translucent ordering remains incomplete: late studio transparency does
 not interleave with translucent brushes, liquids, sprites or effects. Model
 center sorting does not solve intersecting meshes/triangles. Standalone shooters,
 dropped objects, material audio, original gib model selection and cross-level
-effect continuation remain named cuts. Eleven actual CPU mutations were killed:
+effect continuation remain named cuts. Twenty-seven actual CPU mutations were
+killed. The first eleven covered:
 omitting the tag-43 writer, admitting an oversized override vector, substituting
 button identity for its activator, losing the touch activator, losing the saved
 player reference, replacing the blast inflictor with its attacker, using the
 inflictor for self-damage attribution, losing the break attacker, dropping
 the break attack direction, retaining the broken source in monster collision,
 and removing debris gravity. Each source was restored byte-for-byte and its
-selected normal test passed again.
+selected normal test passed again. Sixteen further probes rejected lost RNG
+continuation, omitted view shake, wrong reverse-fade timing, unbounded cascade
+work, repeated asset reads, missing custom-model centering, changed fx/active
+restore, incorrect studio material precedence, alpha/color uniforms and signed
+depth, the selected-empty gib fallback regression, lost shot-button attacker,
+ignored-hit identity replacement and reordered debris position/velocity fields.
+Each was killed by its selected test, restored byte-for-byte, and followed by
+a passing normal test. Final focused filters pass 23/23, 4/4 and 4/4.
 The focused CPU filters were rerun after adding the selected-default-body
 geometry guard, including a valid blank-first/drawable-second model fixture.
 It retains cuboids when the fixed selection contains no usable indexed mesh.
 Engine GPU test functions compiled but were not executed. Scoped engine/game/
 renderer all-targets, all-features clippy passes with warnings denied, including
-the renderer integration GPU target; GPU execution is still pending. The remaining sixteen CPU
-mutation probes, opt-in GPU appearance/depth checks and all complete-tree gates
-remain pending; this draft is not complete runtime validation.
+the renderer integration GPU target. Opt-in GPU appearance/depth checks, GPU
+mutation probes and all complete-tree gates remain pending; this draft is not complete runtime validation.
 
 PR #185 source-review follow-ups: damage-triggered plain
 and rotating buttons now forward the actual attacker through the existing
@@ -7861,5 +7868,5 @@ independently transcribes both persisted command variants, a custom-model debris
 record, stable references, signed fx/active/use rows and button activator pairs.
 Its container encode/fixed-byte decode checks pass with the independently
 authored literal unchanged. The focused 23-test filter includes these three
-review regressions; their three targeted mutation probes remain among the
-sixteen pending CPU probes.
+review regressions. Their three targeted mutations all failed the selected
+tests; the original sources were restored and each normal test passed again.

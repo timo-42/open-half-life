@@ -8457,9 +8457,9 @@ formatting and source whitespace checks. Focused CPU filters pass:
 `cargo test -p ohl-engine --lib map_effects` (**23/23**), overlapping
 `cargo test -p ohl-engine --lib debris` (**4/4**), and
 `cargo test -p ohl-render --lib studio` (**4/4**). The strengthened same-step
-cascade test also passes separately. Eleven CPU mutations were killed, restored
-byte-for-byte, and their selected normal tests passed again; further probes
-remain pending. Commands used the same Cargo environment above, with
+cascade test also passes separately. Twenty-seven CPU mutations were killed, restored
+byte-for-byte, and their selected normal tests passed again. The final focused
+23/23, 4/4 and 4/4 filters also pass after all restorations. Commands used the same Cargo environment above, with
 `OHL_RENDER_GPU_TEST=0`, an 18 GiB free-space guard and at most 2 GiB additional
 target growth (total below 3 GiB). No guard interrupted a command. GPU checks
 and the complete-tree/runtime gates remain **unrun**. These focused filters were
@@ -8467,8 +8467,8 @@ rerun after the blank-selected custom-gib geometry guard. Engine GPU test
 functions compiled but were not executed. Scoped `cargo clippy -p ohl-engine
 -p ohl-game -p ohl-render --all-targets --all-features -- -D warnings` passes,
 including the renderer integration GPU target. Focused map-effects and studio
-CPU filters passed again after the test-only lint fixes. Sixteen CPU mutation
-probes and all GPU probes remain pending.
+CPU filters passed again after the test-only lint fixes. GPU execution and
+GPU mutation probes remain pending.
 No complete engine-runtime, save-compatibility or milestone-completion claim is
 made until the required build, GPU, mutation and payload gates run.
 
@@ -8476,9 +8476,10 @@ PR #185 follow-ups add damage-button attacker forwarding, real-fire
 plain/rotating-button continuation controls and a nonempty literal section-43
 container golden. All three new regressions pass in the 23-test filter above,
 including live/restored player, nonplayer, unknown and ignored-hit controls.
-The independent 222-byte golden passes without changing its literal. Sixteen
-further CPU mutation probes (including the three new review discriminators),
-GPU execution and complete-tree/runtime gates remain pending. Separate serde
+The independent 222-byte golden passes without changing its literal. All three
+review mutation probes were killed and restored: lost shot attacker, overwritten
+ignored-hit identity and reordered nested debris fields. GPU execution and
+complete-tree/runtime gates remain pending. Separate serde
 visitor lifetime, restore-helper and midpoint cleanups address observed CI
 lints. The scoped clippy pass does not replace the three final workspace clippy
 gates.
