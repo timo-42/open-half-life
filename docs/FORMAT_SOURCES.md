@@ -7901,7 +7901,7 @@ authored literal unchanged. The focused 23-test filter includes these three
 review regressions. Their three targeted mutations all failed the selected
 tests; the original sources were restored and each normal test passed again.
 
-## M9.NEXT — bounded chain tool admission and private reporting
+## M9.51 — bounded chain tool admission and private reporting
 
 The controller script grammar is project-authored, documented in
 `docs/m79-design.md` §7 and `crates/ohl-app/src/script.rs`; its planner serializer
@@ -7959,5 +7959,19 @@ text, matching the [Rust Reference input contract](https://doc.rust-lang.org/ref
 Lone CR and all header content remain intact. LF/CRLF source fixtures agree;
 altered header text and an inserted lone CR are rejected. Candidate file bytes
 are not normalized: the production exact-header/UTF-8 admission policy stays
-unchanged. This test-only correction addresses the strongly supported newline
-cause of the Windows source-comparison failure; fresh Windows CI remains required.
+unchanged. This test-only correction addresses the newline cause supported by
+the Windows source-comparison failure; fresh exact-head Windows CI now passes.
+The log did not expose checkout file bytes.
+Combined validation used the unchanged tool sources at `0d1eb949096985d42cbdb9209d537dfb06d56eb5`,
+based on integrated M9.50. Runtime gates used the independently archived M9.50
+release with `dev-tools`, verified by binary SHA-256
+`51e4882fbb6fa9596399501b61468f8803c5505f3830f2154ccdd227c4110b2d`
+and exact crates tree `0255afb530ca87d6a71f7610beab967e41c25a70`.
+Dependency, feature and build sources matched the archive's source main; only
+the assigned tool and documentation paths differed. No release rebuild was used.
+An outer in-memory sanitizer required complete fixed aggregate fields and
+successful process exit before reporting results. Smoke summaries were directed
+to `/dev/null`; temporary captures were removed. Both distinct inventory runs
+used `--aggregate-only` and an explicit `--min-depth 12`. All tracked membership
+and bytes, tool sources and archive hash were unchanged across the seven regular
+checks and four runtime gates. No later-hop planning was performed.
