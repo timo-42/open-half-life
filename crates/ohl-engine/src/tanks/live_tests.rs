@@ -22,12 +22,40 @@ pub(crate) fn fixture(
     fixture_with_controls(variant, overrides, extra, [-48.0, -48.0, 36.0], 36.0)
 }
 
+/// The shot-count oracle opts out of relay throttling so two same-tick
+/// dispatches remain observable as two real pending delayed events.
+pub(crate) fn fixture_with_unthrottled_output(
+    variant: &str,
+    overrides: &[(&str, &str)],
+    extra: &str,
+) -> (Game, MemoryAssets) {
+    fixture_with_setup(variant, overrides, extra, [-48.0, -48.0, 36.0], 36.0, "0")
+}
+
 fn fixture_with_controls(
     variant: &str,
     overrides: &[(&str, &str)],
     extra: &str,
     controls_origin: [f32; 3],
     controls_half_height: f32,
+) -> (Game, MemoryAssets) {
+    fixture_with_setup(
+        variant,
+        overrides,
+        extra,
+        controls_origin,
+        controls_half_height,
+        "0.2",
+    )
+}
+
+fn fixture_with_setup(
+    variant: &str,
+    overrides: &[(&str, &str)],
+    extra: &str,
+    controls_origin: [f32; 3],
+    controls_half_height: f32,
+    witness_wait: &str,
 ) -> (Game, MemoryAssets) {
     let mut values = std::collections::BTreeMap::from([
         ("model", "*1"),
@@ -73,7 +101,8 @@ fn fixture_with_controls(
             &[
                 ("targetname", "shot_output"),
                 ("target", "witness"),
-                ("delay", "5")
+                ("delay", "5"),
+                ("wait", witness_wait)
             ]
         ),
         entity_block(
@@ -157,7 +186,7 @@ fn named(game: &Game, name: &str) -> Entity {
     game.registry().find(name)[0]
 }
 
-fn health(game: &Game) -> f32 {
+pub(crate) fn health(game: &Game) -> f32 {
     game.registry()
         .world
         .get::<&Actor>(named(game, "victim"))
@@ -183,7 +212,7 @@ fn advance(game: &mut Game, count: usize, attack: bool) {
     }
 }
 
-fn witness_count(game: &Game) -> usize {
+pub(crate) fn witness_count(game: &Game) -> usize {
     game.to_save(0)
         .simulation
         .pending
@@ -200,7 +229,7 @@ fn actual_use_attack_routes_each_variant_through_combat_and_one_target_edge() {
         "func_tanklaser",
         "func_tankmortar",
     ] {
-        let (mut game, _) = fixture(variant, &[], "");
+        let (mut game, _) = fixture_with_unthrottled_output(variant, &[], "");
         game.give_start_inventory(&[StartInventoryItem::Weapon(WeaponId::Glock)]);
         game.tick(
             TICK_SECONDS,
@@ -464,10 +493,25 @@ fn charged_gauss_mount_cancels_release_without_spending_or_refunding_resources()
 fn continuous_egon_mount_and_owned_release_edge_suppress_handheld_pulses() {
     let (mut game, _) = fixture("func_tank", &[], "");
     equip(&mut game, WeaponId::Egon);
+    let equipped_ammo = game.inventory_totals();
+    let equipped_fired = game.weapon_fired_count();
     advance(&mut game, 15, true);
     let ammo = game.inventory_totals();
     let fired = game.weapon_fired_count();
+    assert!(fired > equipped_fired);
+    assert!(ammo.1 < equipped_ammo.1);
+    assert_eq!(
+        game.to_save(0).inventory.unwrap().firing.unwrap().state_tag,
+        4
+    );
     tick(&mut game, true, true);
+    assert!(game.systems_mut().tanks.mounted().is_some());
+    assert_eq!(
+        game.to_save(0).inventory.unwrap().firing.unwrap().state_tag,
+        0
+    );
+    assert_eq!(game.inventory_totals(), ammo);
+    assert_eq!(game.weapon_fired_count(), fired);
     advance(&mut game, 30, true);
     tick(&mut game, true, true); // owned release edge
     assert_eq!(game.weapon_fired_count(), fired);
@@ -521,4 +565,171 @@ fn laser_pulse_captures_live_appearance_once_and_ages_without_extra_damage() {
     advance(&mut game, 12, false);
     assert!(game.systems_mut().tanks.laser_pulses().is_empty());
     assert!((health(&game) - 977.0).abs() < 0.001);
+}
+
+#[test]
+fn real_mounted_reload_finishes_passively_and_conserves_ammo_until_owned_release() {
+    let (mut game, _) = fixture("func_tank", &[], "");
+    equip(&mut game, WeaponId::Glock);
+    game.tick(
+        TICK_SECONDS,
+        &Input {
+            reload: true,
+            ..Input::default()
+        },
+    );
+    advance(&mut game, 160, false);
+    assert_eq!(game.inventory().clip(WeaponId::Glock), 17);
+    let before_shot = game.weapon_fired_count();
+    tick(&mut game, true, false);
+    assert_eq!(game.weapon_fired_count(), before_shot + 1);
+    assert_eq!(game.inventory().clip(WeaponId::Glock), 16);
+    advance(&mut game, 30, false);
+    game.give_start_inventory(&[StartInventoryItem::Ammo(AmmoType::NineMillimeter)]);
+    let reserve = game.inventory().ammo(AmmoType::NineMillimeter).current();
+    assert!(reserve > 0);
+    let total = game.inventory_totals();
+    let fired = game.weapon_fired_count();
+    game.tick(
+        TICK_SECONDS,
+        &Input {
+            reload: true,
+            ..Input::default()
+        },
+    );
+    assert_eq!(
+        game.to_save(0).inventory.unwrap().firing.unwrap().state_tag,
+        2
+    );
+    tick(&mut game, false, true);
+    assert!(game.systems_mut().tanks.mounted().is_some());
+    assert_eq!(
+        game.to_save(0).inventory.unwrap().firing.unwrap().state_tag,
+        2
+    );
+    assert_eq!(game.inventory().clip(WeaponId::Glock), 16);
+    advance(&mut game, 160, false);
+    assert_eq!(
+        game.to_save(0).inventory.unwrap().firing.unwrap().state_tag,
+        0
+    );
+    assert_eq!(game.inventory().clip(WeaponId::Glock), 17);
+    assert_eq!(
+        game.inventory().ammo(AmmoType::NineMillimeter).current(),
+        reserve - 1
+    );
+    assert_eq!(game.inventory_totals(), total);
+    assert_eq!(game.weapon_fired_count(), fired);
+    tick(&mut game, true, true);
+    assert!(game.systems_mut().tanks.mounted().is_none());
+    assert_eq!(game.inventory_totals(), total);
+    assert_eq!(game.weapon_fired_count(), fired);
+    tick(&mut game, true, false);
+    assert_eq!(game.weapon_fired_count(), fired + 1);
+    assert_eq!(game.inventory_totals().1, total.1 - 1);
+    assert_eq!(game.inventory().clip(WeaponId::Glock), 16);
+}
+
+#[test]
+fn actual_mortar_miss_has_no_blast_and_horizontal_hit_damages_once() {
+    for upward in [true, false] {
+        let (mut game, _) = fixture_with_unthrottled_output("func_tankmortar", &[], "");
+        let origin = game.player_origin();
+        game.set_viewpoint(origin, if upward { -60.0 } else { 0.0 }, 0.0);
+        tick(&mut game, false, true);
+        advance(&mut game, 12, false);
+        assert!(game.systems_mut().tanks.mounted().is_some());
+        let tank = named(&game, "tank");
+        let pose = ohl_game::tanks::tank_pose(game.registry(), tank).unwrap();
+        let direction = if upward {
+            Vec3::new(0.5, 0.0, 0.866_025_4)
+        } else {
+            Vec3::X
+        };
+        assert!(pose.forward().abs_diff_eq(direction, 0.001));
+        assert_eq!(witness_count(&game), 0);
+        let player_health = game.player_health();
+        tick(&mut game, true, false);
+        assert_eq!(
+            game.projectile_count(),
+            0,
+            "mortar is an instant trace, not a rocket"
+        );
+        assert_eq!(witness_count(&game), 1);
+        let blasts = game
+            .systems_mut()
+            .map_effects
+            .presentation()
+            .blasts
+            .to_vec();
+        if upward {
+            assert!(blasts.is_empty(), "a miss cannot fabricate an origin blast");
+            assert!((health(&game) - 1000.0).abs() < 0.001);
+            assert!((game.player_health() - player_health).abs() < 0.001);
+        } else {
+            assert_eq!(blasts.len(), 1);
+            assert!(
+                blasts[0]
+                    .origin
+                    .abs_diff_eq(Vec3::new(136.0, 0.0, 64.0), 0.001)
+            );
+            assert!((blasts[0].radius - 200.0).abs() < 0.001);
+            assert!(
+                (health(&game) - 900.0).abs() < 0.001,
+                "one 100-damage contact blast"
+            );
+        }
+        advance(&mut game, 10, false);
+        assert!((health(&game) - if upward { 1000.0 } else { 900.0 }).abs() < 0.001);
+        assert_eq!(witness_count(&game), 1);
+        assert_eq!(game.projectile_count(), 0);
+    }
+}
+
+#[test]
+fn still_turning_input_updates_both_collision_models_before_next_frame_catchup() {
+    let (mut game, _) = fixture("func_tank", &[], "");
+    let origin = game.player_origin();
+    game.set_viewpoint(origin, 0.0, 90.0);
+    tick(&mut game, false, true);
+    advance(&mut game, 8, false);
+    let tank = named(&game, "tank");
+    let yaw = game
+        .registry()
+        .world
+        .get::<&TankState>(tank)
+        .unwrap()
+        .relative_yaw;
+    assert!(
+        (yaw - 64.8).abs() < 0.001,
+        "9 steps at 720 degrees/s, still turning"
+    );
+    let (level, _) = game.level_and_systems_mut();
+    for collision in [
+        level.collision.as_ref().unwrap(),
+        level.monster_collision.as_ref().unwrap(),
+    ] {
+        // Independent rotated-box contact: local y=4 at world y16 gives
+        // x=(16*cos64.8-4)/sin64.8, approximately3.11. The small interval
+        // accommodates the existing collision-plane clearance. The previous
+        // 57.6-degree pose enters near5.42 and cannot pass this assertion.
+        let contact = collision.trace(
+            Hull::Point,
+            Vec3::new(-32.0, 16.0, 64.0),
+            Vec3::new(32.0, 16.0, 64.0),
+        );
+        assert!(
+            contact.fraction > 0.545 && contact.fraction < 0.552,
+            "current 64.8-degree contact required"
+        );
+        let clear = collision.trace(
+            Hull::Point,
+            Vec3::new(-32.0, 28.0, 64.0),
+            Vec3::new(32.0, 28.0, 64.0),
+        );
+        assert!(
+            clear.fraction > 0.999,
+            "ray beyond rotated extent stays clear"
+        );
+    }
 }
