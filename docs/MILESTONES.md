@@ -8679,9 +8679,9 @@ The synthetic damage fixture loads existing project-authored model bytes so
 ordinary studio hitboxes are present, retains MonsterAi with the published
 prisoner flag, and waits for the ordinary single-use weapon reload before
 placing a satchel. Positive health/endpoint oracles are unchanged. Earlier
-additive cancellation/passive and physical trace tests still await execution.
-Killed/restored turret mutations, full workspace gates and runtime gates
-remain pending.
+additive cancellation/passive and physical trace tests subsequently passed
+in the corrected focused run below. The first bounded mutation batch is
+recorded below; further mutation coverage and full gates remain pending.
 
 **Save integration.** Optional tag44 now carries at most
 256 turret states and 128 rocket attribution rows, both bounded while decoding.
@@ -8726,8 +8726,8 @@ and isolates only the new tag44 writer; old section order is unchanged.
 **Gates.** Focused checks above pass. All three workspace/all-target Clippy
 configurations, workspace tests, policy, graph, combat 37/37 with zero unexpected
 lines, campaign 93/93 and both baseline chains at depth 12 / Pass / 660.8 seconds
-remain **pending**, as do actual killed/restored turret mutation probes and
-independent final review. No payload, release or GPU execution is claimed.
+remain **pending**, along with the remaining mutation probes and independent
+final review. No payload, release or GPU execution is claimed.
 
 **Cuts and next dependency.** Mutation discrimination, full runtime review and
 all workspace/runtime gates remain required. Frozen tags 26/42/43 and weapon/entity/render encodings
@@ -8775,13 +8775,40 @@ all-target Clippy in default and all-feature configurations pass, including
 test-source lints. Explicit completion/count summaries and all754 tracked file
 hashes were checked after each sequential command; peak target size was
 2,366,521,344 bytes and minimum free space30,867,009,536 bytes. These focused
-checks do not replace the pending workspace gates or actual turret mutation
-kills/restored controls. A56-pair source-only mutation plan records exact
-edits/test selectors and additional coverage proposals; no turret mutant has
-yet executed.
+checks do not replace the pending workspace gates. The initial 56-pair
+source-only mutation plan recorded exact edits/test selectors and additional
+coverage proposals before any turret mutant ran.
 
 Subsequent broader CI identified one further combat-test `similar_names` lint
 outside the engine-only checks. An identifier-only rename preserves the trace
 oracles; combat all-target Clippy in default and all-feature configurations,
 the two source-filter integration tests and formatting now pass under the same
 guard. Workspace CI/gates remain unclaimed pending their complete fresh run.
+
+
+**First bounded mutation evidence.** At `a428e86`, 17 authorized source
+mutations were actually compiled and tested: 16 were killed by the designated
+assertions and one survived. The killed rows cover the historical authored-zero
+Euler score, current-pose/rate/wrap/pole selection, cadence, automatic range,
+Only Direct, memory aging, charge cancellation, ordinary-weapon suppression,
+held satchel edges, passive weapon timing, phase12 remote delivery, and both
+review regressions. The 22 selected mutant test executions produced 20 intended
+assertion failures and two passes; all 44 exact normal-before/after executions
+passed. Every row was restored byte-for-byte before its normal reruns. The
+final restored engine turret suite passed **52/52**. Complete tracked-source
+membership/bytes, all seven protected files and the archived core executable
+were rechecked; all owned command groups stopped. Peak sampled target size was
+2,438,635,520 bytes and minimum free space was 30,783,438,848 bytes.
+
+The Use-consumption bypass survived its original four-variant firing test;
+that test alone does not prove phase12 input ownership. The charge/beam
+cancellation mutation failed the live Gauss and immediate mounted-restore
+assertions, but survived the existing Egon test: that test proves pulse
+suppression, not immediate Beam-to-Idle state cancellation. Both gaps remain
+explicit and need separately authorized discriminators. Passive timing was
+killed by a lower-layer combat test; real mounted reload continuation remains
+an additional coverage proposal. The memory-aging mutation failed the pure
+expiry assertion and the save companion's independent pre-save duration
+assertion; the latter failure did not reach its later expiry check. Remaining
+mutations and workspace/runtime gates are still pending. No unrelated CI-worker
+setup failure is treated as a turret production defect or a completed gate.

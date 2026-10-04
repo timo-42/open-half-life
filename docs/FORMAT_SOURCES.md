@@ -8002,8 +8002,9 @@ The `ohl-game/src/tanks.rs` and `ohl-engine/src/tanks.rs` modules are an
 integration source checkpoint. Game registration, typed use/control requests
 and the shared brush pose are wired. New source adds engine control/combat and
 presentation dispatch. Focused game, engine real-input and renderer-bridge
-tests and focused save continuation now pass; full gates and mutation proof
-remain pending in MILESTONES.
+tests and focused save continuation now pass. The first bounded mutation
+batch is recorded in MILESTONES; further mutation coverage and full gates
+remain pending.
 No retail observations, engine source or SDK were used for this work.
 
 - [TWHL: func_tank](https://twhl.info/wiki/page/func_tank) documents automatic
@@ -8101,7 +8102,8 @@ continuation and mutation evidence remain required.
 
 Source integration now includes control/system phases, actual combat/projectile
 dispatch and laser/mortar visual submission. Focused execution passes;
-save/restore focused tests pass; mutation evidence remains pending. Bullet muzzle/smoke sprites and rotation audio are
+save/restore focused tests pass; remaining mutation coverage is pending. Bullet
+muzzle/smoke sprites and rotation audio are
 explicit presentation cuts. Physical monster
 operators, automatic monster targets, Sven relation/inventory extensions and
 original-build timing/spread/control fidelity remain excluded. Optional tag
@@ -8148,8 +8150,8 @@ pending use remain separate, preserving latest-phase12 precedence next tick.
 Source BrushIds are never saved. Missing44 starts authored tank state without
 controls or inferred operator credit; existing physical projectiles remain.
 No earlier wire shape changes. All 18 new synthetic save/attribution tests pass,
-alongside existing literal 26/42/43 goldens; mutation and full-gate evidence
-remain pending. Turret eligibility requires finite positive player health as
+alongside existing literal 26/42/43 goldens; remaining mutation and full-gate
+evidence is pending. Turret eligibility requires finite positive player health as
 well as a clear dead flag, including immediately after restore.
 
 The synthetic target uses a project-authored stationary bind-pose root channel,
@@ -8179,4 +8181,14 @@ projectile fixture now distinguishes its independently authored contact plane
 from the existing one-unit outward blast clearance; both source-filter
 integration tests pass without changing physics tuning. All scoped save
 goldens and engine default/all-feature all-target Clippy also pass. Full
-workspace gates and mutation discrimination remain pending.
+workspace gates and remaining mutation discrimination are pending.
+
+
+The first bounded source mutation batch at `a428e86` killed 16 of 17 rows,
+with exact normal controls before and after every row and a restored 52-test
+engine pass. These are synthetic implementation checks, not new published or
+retail observations. The Use-consumption test survived its bypass, and the
+Egon test survived removal of immediate state cancellation even though the
+same mutation failed Gauss and mounted-restore controls. Those limitations,
+the lower-layer scope of passive reload evidence, and the additional coverage
+proposals remain explicit in MILESTONES.
