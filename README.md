@@ -144,6 +144,33 @@ fidelity-investigation background, including GoldSrc's overbright convention
 shipping disabled by default with no public source pinning a specific
 non-default value.
 
+In the window, `W`/`A`/`S`/`D` move, `Space` jumps, `Left Ctrl` ducks, the
+mouse looks, the left/right mouse buttons are primary/secondary fire, `R`
+reloads, `1`-`5` pick a weapon slot, `F` toggles the flashlight, `E` uses,
+`F6`/`F7` quicksave/quickload and `Esc` pauses.
+
+**Skirmish** — local multiplayer: a deathmatch against bots, played
+offline on one of your payload's deathmatch maps:
+
+```sh
+cargo run --release -p ohl-app -- --skirmish --payload-root /path/to/payload \
+  --bots 5 --bot-skill hard --frag-limit 20 --time-limit 15
+```
+
+Without `--map` the first deathmatch map the payload publishes is used, or
+the Nth with `--arena N` (any map declaring `info_player_deathmatch` spawn
+points qualifies; the main menu's MULTIPLAYER pane lists them all and starts
+a match the same way). `cargo xtask skirmish-smoke --payload-root DIR`
+plays every arena headless and checks the bots score kills on each.
+`--bots 0..15` (default `3`), `--bot-skill easy|normal|hard` (default
+`normal`), `--frag-limit N` and `--time-limit MINUTES` (default `10` each,
+`0` for no limit). Everyone spawns with the HEV suit, a crowbar and a 9mm
+pistol; weapons and ammo reappear 20 s after being taken, items 30 s. Hold
+`Tab` for the scoreboard; after dying, click fire (or jump) to respawn,
+or pass `--force-respawn` to come back automatically. A skirmish is never
+saved. With `--script` it runs headless and logs an aggregate summary
+(combatants, deaths, frags) at the end. See `docs/MILESTONES.md`, "M9.56".
+
 **Headless screenshots**, for a machine with no display server (a GPU
 adapter is still required):
 
