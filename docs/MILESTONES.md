@@ -9439,3 +9439,31 @@ network play, no spectator; the pause menu pauses the bots too. A bot does
 not block a closing door or a lift the way the player does (it is carried
 or pushed, never reported as the blocker). Bot tuning is project-authored
 and unmeasured against any reference.
+
+
+## M9.NEXT — Player-only end-section activation
+
+`trigger_endsection` accepts the existing host-supplied player identity through
+named use and touch. Rejected touches leave cooldown, once-state and targets
+unconsumed. This package checks the supplied actor and preserves existing
+button, touch-trigger and multi-manager player propagation. Synthetic engine
+and host fixtures use actual player activation, including a delayed activation
+restored through existing tag 43. Published mapping behavior and project-authored
+absence/identity choices are recorded in `FORMAT_SOURCES.md`.
+
+Scope cuts: general relay/multisource caller-versus-originator forwarding is
+deferred. Existing map-effect/turret originating-actor behavior is retained;
+relay/multisource chains may still supply a player to EndSection, so their
+published rejection rule is not claimed. No engine/AI/physics/controller
+production changes, new API or save tag, asset/media change, private route or
+controller-snapshot work. Tags 38–45
+remain frozen; tag 46 is not used. Milestone numbering remains unassigned.
+
+Gates: historical formatted source v3 passed formatting/check and the original
+feature target (8/0/0/0/0); its game library run failed (210 passed/3 failed)
+on retained relay effect/turret assertions. Those results remain qualified to
+that source; the compatibility cut is a later source change. Updated focused
+normals, player-validation semantic mutations and restored controls, formatting,
+Clippy variants, workspace/policy/graph, release and smoke/chain validation are
+pending separate execution grants. Plain app test completion does not establish
+GPU-opted capture coverage when that fixture returns early.
