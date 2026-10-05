@@ -3184,7 +3184,8 @@ mod sound_routing_tests {
                  {\n\"classname\" \"func_wall\"\n\"model\" \"*1\"\n}\n\
                  {\n\"classname\" \"trigger_endsection\"\n\"targetname\" \"ohl_end\"\n\
                  \"section\" \"ohl_test_section\"\n\"spawnflags\" \"1\"\n}\n\
-                 {\n\"classname\" \"trigger_auto\"\n\"target\" \"ohl_end\"\n\"delay\" \"1\"\n}\n",
+                 {\n\"classname\" \"trigger_once\"\n\"target\" \"ohl_end\"\n\"delay\" \"1\"\n\
+                 \"model\" \"*1\"\n\"origin\" \"0 0 40\"\n}\n",
             ),
         );
         let mut game = Game::load(&assets, "ohlendsectionwindowsynth").expect("the fixture loads");
