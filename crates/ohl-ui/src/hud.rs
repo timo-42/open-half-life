@@ -1,8 +1,18 @@
 //! The in-game heads-up display: health, armor, ammo, crosshair, damage
 //! flash and the message/title area used later by `env_message` and
-//! `game_text`.
+//! `game_text`, plus the deathmatch extras: frag count, match clock, kill
+//! feed and a persistent centre notice.
 
 use egui::{Align2, Color32, FontId, Pos2, Rect, Vec2};
+
+use crate::scoreboard::format_clock;
+
+/// How many kill-feed lines are kept (and drawn) at once; pushing more drops
+/// the oldest.
+pub const KILL_FEED_CAPACITY: usize = 5;
+
+/// How long a kill-feed line stays on screen, in seconds.
+pub const KILL_FEED_SECONDS: f32 = 6.0;
 
 /// A message shown in the HUD's title/message area for a limited time.
 #[derive(Debug, Clone, Default)]
@@ -13,6 +23,18 @@ pub struct HudMessage {
     pub text: String,
     /// Seconds remaining before the message is cleared.
     pub seconds_remaining: f32,
+}
+
+/// One line of the kill feed, for example who fragged whom.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KillFeedEntry {
+    /// The line to display, already composed by the host.
+    pub text: String,
+    /// Seconds remaining before the line expires. The last second fades out.
+    pub seconds_remaining: f32,
+    /// Whether the local player took part in the event; such lines are drawn
+    /// in a highlight colour.
+    pub local_involved: bool,
 }
 
 /// Data-driven HUD state, updated once per frame by the game and read by
@@ -39,6 +61,20 @@ pub struct HudState {
     /// Whether the crosshair is drawn (hidden while a menu or console has
     /// input focus, or the player has no weapon out).
     pub show_crosshair: bool,
+    /// The local player's frag count, drawn near the top-right corner when
+    /// `Some` (deathmatch only).
+    pub frags: Option<i32>,
+    /// Seconds left on the match clock, drawn top-centre as `m:ss` when
+    /// `Some` (timed matches only).
+    pub match_clock: Option<f32>,
+    /// A persistent notice drawn in the lower-middle of the screen, for
+    /// example a respawn prompt. It stays up while `Some`; the host clears
+    /// it.
+    pub center_notice: Option<String>,
+    /// Recent kill-feed lines, oldest first; drawn below the frag count,
+    /// newest at the bottom. Use [`HudState::push_kill_feed`] and
+    /// [`HudState::tick_kill_feed`] to maintain it.
+    pub kill_feed: Vec<KillFeedEntry>,
 }
 
 impl Default for HudState {
@@ -51,6 +87,10 @@ impl Default for HudState {
             damage_flash: 0.0,
             message: None,
             show_crosshair: true,
+            frags: None,
+            match_clock: None,
+            center_notice: None,
+            kill_feed: Vec::new(),
         }
     }
 }
@@ -98,6 +138,127 @@ impl HudState {
                 self.message = None;
             }
         }
+    }
+
+    /// Appends a kill-feed line that lives for [`KILL_FEED_SECONDS`]. The
+    /// feed holds at most [`KILL_FEED_CAPACITY`] lines; the oldest are
+    /// dropped to make room.
+    pub fn push_kill_feed(&mut self, text: impl Into<String>, local_involved: bool) {
+        self.kill_feed.push(KillFeedEntry {
+            text: text.into(),
+            seconds_remaining: KILL_FEED_SECONDS,
+            local_involved,
+        });
+        let excess = self.kill_feed.len().saturating_sub(KILL_FEED_CAPACITY);
+        self.kill_feed.drain(..excess);
+    }
+
+    /// Ages every kill-feed line by `delta_seconds` and removes the expired
+    /// ones. A negative or non-finite `delta_seconds` ages nothing. Call once
+    /// per frame.
+    pub fn tick_kill_feed(&mut self, delta_seconds: f32) {
+        if !delta_seconds.is_finite() || delta_seconds < 0.0 {
+            return;
+        }
+        for entry in &mut self.kill_feed {
+            entry.seconds_remaining -= delta_seconds;
+        }
+        self.kill_feed.retain(|entry| entry.seconds_remaining > 0.0);
+    }
+}
+
+/// Highlight colour for kill-feed lines the local player took part in, and
+/// for the frag count.
+const HIGHLIGHT: Color32 = Color32::from_rgb(255, 214, 90);
+
+/// Paints `text` anchored at `pos` over a translucent dark backing so it
+/// stays legible on bright scenery. `fade` (`0.0..=1.0`) scales the
+/// opacity of both.
+fn backed_text(
+    painter: &egui::Painter,
+    anchor: Align2,
+    pos: Pos2,
+    text: &str,
+    font_size: f32,
+    color: Color32,
+    fade: f32,
+) {
+    let galley = painter.layout_no_wrap(text.to_owned(), FontId::proportional(font_size), color);
+    let rect = anchor.anchor_size(pos, galley.size());
+    let pad = font_size * 0.25;
+    painter.rect_filled(
+        rect.expand2(Vec2::new(pad * 2.0, pad)),
+        pad,
+        Color32::from_black_alpha(120).gamma_multiply(fade),
+    );
+    painter.galley(rect.min, galley, color.gamma_multiply(fade));
+}
+
+/// Draws the deathmatch additions: frag count and kill feed (top-right),
+/// match clock (top-centre) and the centre notice (lower-middle).
+fn draw_match_overlays(painter: &egui::Painter, screen_rect: Rect, scale: f32, state: &HudState) {
+    let margin = 24.0 * scale;
+    let right = screen_rect.right() - margin;
+
+    if let Some(frags) = state.frags {
+        backed_text(
+            painter,
+            Align2::RIGHT_TOP,
+            Pos2::new(right, screen_rect.top() + margin),
+            &format!("FRAGS {frags}"),
+            24.0 * scale,
+            HIGHLIGHT,
+            1.0,
+        );
+    }
+
+    if let Some(seconds) = state.match_clock {
+        backed_text(
+            painter,
+            Align2::CENTER_TOP,
+            Pos2::new(screen_rect.center().x, screen_rect.top() + 10.0 * scale),
+            &format_clock(seconds),
+            26.0 * scale,
+            Color32::WHITE,
+            1.0,
+        );
+    }
+
+    // Defensive: the field is public, so never draw past the capacity even
+    // if the host pushed entries directly.
+    let skip = state.kill_feed.len().saturating_sub(KILL_FEED_CAPACITY);
+    let mut y = screen_rect.top() + margin + 44.0 * scale;
+    for entry in state.kill_feed.iter().skip(skip) {
+        let color = if entry.local_involved {
+            HIGHLIGHT
+        } else {
+            Color32::from_gray(225)
+        };
+        backed_text(
+            painter,
+            Align2::RIGHT_TOP,
+            Pos2::new(right, y),
+            &entry.text,
+            17.0 * scale,
+            color,
+            entry.seconds_remaining.clamp(0.0, 1.0),
+        );
+        y += 26.0 * scale;
+    }
+
+    if let Some(notice) = &state.center_notice {
+        backed_text(
+            painter,
+            Align2::CENTER_CENTER,
+            Pos2::new(
+                screen_rect.center().x,
+                screen_rect.top() + screen_rect.height() * 0.72,
+            ),
+            notice,
+            26.0 * scale,
+            Color32::WHITE,
+            1.0,
+        );
     }
 }
 
@@ -184,12 +345,16 @@ pub fn draw(ctx: &egui::Context, state: &HudState) {
                     Color32::WHITE,
                 );
             }
+
+            draw_match_overlays(painter, screen_rect, scale, state);
         });
 }
 
 #[cfg(test)]
 mod tests {
-    use super::HudState;
+    use super::{
+        HudState, KILL_FEED_CAPACITY, KILL_FEED_SECONDS, KillFeedEntry, Pos2, Rect, Vec2, draw,
+    };
 
     #[test]
     fn display_health_and_armor_never_go_negative() {
@@ -231,5 +396,106 @@ mod tests {
         assert!(state.show_crosshair);
         assert_eq!(state.display_health(), 100);
         assert_eq!(state.display_armor(), 0);
+    }
+
+    #[test]
+    fn default_state_has_no_match_overlays() {
+        let state = HudState::default();
+        assert_eq!(state.frags, None);
+        assert_eq!(state.match_clock, None);
+        assert_eq!(state.center_notice, None);
+        assert!(state.kill_feed.is_empty());
+    }
+
+    #[test]
+    fn kill_feed_pushes_with_full_lifetime_in_order() {
+        let mut state = HudState::default();
+        state.push_kill_feed("a fragged b", false);
+        state.push_kill_feed(String::from("you fragged c"), true);
+        assert_eq!(
+            state.kill_feed,
+            vec![
+                KillFeedEntry {
+                    text: "a fragged b".to_owned(),
+                    seconds_remaining: KILL_FEED_SECONDS,
+                    local_involved: false,
+                },
+                KillFeedEntry {
+                    text: "you fragged c".to_owned(),
+                    seconds_remaining: KILL_FEED_SECONDS,
+                    local_involved: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn kill_feed_never_exceeds_capacity_and_drops_the_oldest() {
+        let mut state = HudState::default();
+        for index in 0..KILL_FEED_CAPACITY + 3 {
+            state.push_kill_feed(format!("line {index}"), false);
+            assert!(state.kill_feed.len() <= KILL_FEED_CAPACITY);
+        }
+        assert_eq!(state.kill_feed.len(), KILL_FEED_CAPACITY);
+        assert_eq!(state.kill_feed[0].text, "line 3");
+        assert_eq!(
+            state.kill_feed[KILL_FEED_CAPACITY - 1].text,
+            format!("line {}", KILL_FEED_CAPACITY + 2)
+        );
+    }
+
+    #[test]
+    fn kill_feed_entries_expire_independently() {
+        let mut state = HudState::default();
+        state.push_kill_feed("old", false);
+        state.tick_kill_feed(4.0);
+        state.push_kill_feed("new", false);
+        state.tick_kill_feed(KILL_FEED_SECONDS - 4.0 - 0.5);
+        assert_eq!(state.kill_feed.len(), 2);
+        // The old line runs out first; the new one outlives it.
+        state.tick_kill_feed(1.0);
+        assert_eq!(state.kill_feed.len(), 1);
+        assert_eq!(state.kill_feed[0].text, "new");
+        state.tick_kill_feed(KILL_FEED_SECONDS);
+        assert!(state.kill_feed.is_empty());
+    }
+
+    #[test]
+    fn kill_feed_ignores_negative_and_non_finite_time() {
+        let mut state = HudState::default();
+        state.push_kill_feed("kept", true);
+        for dt in [-1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            state.tick_kill_feed(dt);
+            assert_eq!(state.kill_feed.len(), 1, "dt = {dt}");
+            assert!((state.kill_feed[0].seconds_remaining - KILL_FEED_SECONDS).abs() < 1e-6);
+        }
+    }
+
+    /// Runs one headless pass drawing `state` and returns how many shapes
+    /// egui produced.
+    fn painted_shapes(state: &HudState) -> usize {
+        let ctx = egui::Context::default();
+        ctx.begin_pass(egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 720.0))),
+            ..egui::RawInput::default()
+        });
+        draw(&ctx, state);
+        let mut output = ctx.end_pass();
+        output.textures_delta.clear();
+        output.shapes.len()
+    }
+
+    #[test]
+    fn match_overlays_add_painted_shapes_only_when_set() {
+        let base = painted_shapes(&HudState::default());
+        let mut state = HudState {
+            frags: Some(4),
+            match_clock: Some(125.0),
+            center_notice: Some("Press fire to respawn".to_owned()),
+            ..HudState::default()
+        };
+        state.push_kill_feed("a fragged b", false);
+        state.push_kill_feed("you fragged c", true);
+        assert!(painted_shapes(&state) > base);
     }
 }

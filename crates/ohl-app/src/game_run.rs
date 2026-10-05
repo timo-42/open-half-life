@@ -1886,7 +1886,10 @@ impl<'a> App<'a> {
                 // The options screen's volume slider scales the whole mix,
                 // sounds already playing included.
                 MenuAction::SetVolume(volume) => self.audio.set_volume(volume),
-                MenuAction::SetSensitivity(_) | MenuAction::SetFov(_) => {}
+                // `StartSkirmish` is wired by the skirmish host package.
+                MenuAction::SetSensitivity(_)
+                | MenuAction::SetFov(_)
+                | MenuAction::StartSkirmish { .. } => {}
             }
         }
     }
@@ -2131,6 +2134,7 @@ impl<'a> App<'a> {
                 &mut self.menu,
                 self.screen == Screen::Pause,
                 &self.missions,
+                &[],
             )
         } else {
             Vec::new()
