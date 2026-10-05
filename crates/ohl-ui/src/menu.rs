@@ -166,7 +166,7 @@ impl MenuState {
 fn menu_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     ui.add_sized(
         [260.0, 34.0],
-        egui::Button::new(RichText::new(label).size(18.0)),
+        egui::Button::new(RichText::new(label).size(18.0).strong()),
     )
 }
 
@@ -233,6 +233,7 @@ fn draw_single_player(
             egui::ComboBox::from_label("Mission")
                 .selected_text(missions[state.selected_mission].title)
                 .width(260.0)
+                .popup_style(ui.style().as_ref().clone().into())
                 .show_ui(ui, |ui| {
                     for (index, mission) in missions.iter().enumerate() {
                         ui.selectable_value(&mut state.selected_mission, index, mission.title);
@@ -343,18 +344,25 @@ pub fn draw(
     missions: &[Mission],
 ) -> Vec<MenuAction> {
     let mut actions = Vec::new();
-    let mut visuals = ui.style().visuals.clone();
-    visuals.override_text_color = Some(Color32::from_rgb(222, 217, 188));
-    visuals.selection.bg_fill = Color32::from_rgb(181, 91, 20);
+    // The menu is always dark, independently of the system's theme.
+    let mut visuals = egui::Visuals::dark();
+    let text_color = Color32::from_rgb(235, 225, 195);
+    visuals.override_text_color = Some(text_color);
+    visuals.selection.bg_fill = Color32::from_rgb(145, 76, 20);
+    visuals.selection.stroke = Stroke::new(1.0, text_color);
     visuals.widgets.inactive.bg_fill = Color32::from_rgb(35, 42, 35);
+    // Buttons use weak_bg_fill; bg_fill is used by sliders and other controls.
+    visuals.widgets.inactive.weak_bg_fill = visuals.widgets.inactive.bg_fill;
     visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(104, 111, 82));
     visuals.widgets.hovered.bg_fill = Color32::from_rgb(124, 68, 22);
-    visuals.widgets.active.bg_fill = Color32::from_rgb(181, 91, 20);
-    ui.ctx().set_visuals(visuals);
+    visuals.widgets.hovered.weak_bg_fill = visuals.widgets.hovered.bg_fill;
+    visuals.widgets.active.bg_fill = visuals.selection.bg_fill;
+    visuals.widgets.active.weak_bg_fill = visuals.widgets.active.bg_fill;
 
     egui::CentralPanel::default()
         .frame(egui::Frame::new().fill(Color32::from_rgb(12, 18, 14)))
         .show(ui, |ui| {
+            *ui.visuals_mut() = visuals;
             ui.centered_and_justified(|ui| {
                 ui.allocate_ui(Vec2::new(380.0, 560.0), |ui| match state.pane {
                     MenuPane::Root => draw_root(ui, in_game, &mut actions, &mut state.pane),
