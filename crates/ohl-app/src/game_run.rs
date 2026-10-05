@@ -2114,7 +2114,9 @@ impl<'a> App<'a> {
         let render = render_start.elapsed();
         let ui_start = Instant::now();
         active.ui.begin_frame();
-        ohl_ui::hud::draw(active.ui.context(), &self.hud);
+        if !matches!(self.screen, Screen::MainMenu | Screen::Pause) {
+            ohl_ui::hud::draw(active.ui.context(), &self.hud);
+        }
         if self.debug_open {
             draw_graphics_debug(active, &self.live_profile, now, &self.game, width, height);
         }
