@@ -377,9 +377,8 @@ impl AudioRuntime {
 
     /// Acts on one `GameEvent::Sound`: starts the cue's asset on its
     /// `(entity, class)` channel, or stops that channel when the cue is a
-    /// stop. A cue naming nothing playable is dropped silently, which is
-    /// what every weapon, pickup and charger cue still does (see
-    /// `ohl_gameplay::sounds`).
+    /// stop. A cue naming nothing playable is dropped silently; see
+    /// `ohl_gameplay::sounds` for the supported built-in lookups.
     pub(crate) fn play(&mut self, source: &dyn AssetSource, cue: &SoundCue) {
         if cue.stop {
             if cue.class == ChannelClass::Static {
@@ -392,6 +391,16 @@ impl AudioRuntime {
         }
         let Some(buffer) = self.cache.resolve(source, &cue.asset) else {
             return;
+        };
+        let buffer = if cue.one_shot && buffer.loop_range.is_some() {
+            // Share the PCM with the cache; only playback's loop metadata
+            // changes, so the same sample can still loop for map ambience.
+            Arc::new(SoundBuffer {
+                loop_range: None,
+                ..buffer.as_ref().clone()
+            })
+        } else {
+            buffer
         };
         let request = PlayRequest {
             entity: cue.entity,
@@ -599,6 +608,22 @@ mod tests {
 
     fn mixer_of(audio: &AudioRuntime) -> std::sync::MutexGuard<'_, ohl_audio::Mixer> {
         audio.mixer().lock().expect("lock mixer")
+    }
+
+    #[test]
+    fn an_action_sample_finishes_even_when_the_same_wav_can_loop_as_ambience() {
+        let assets = assets();
+        let mut audio = AudioRuntime::silent();
+        let asset = SoundAsset::file("sound/ohl/loop.wav");
+        audio.play(
+            &assets,
+            &SoundCue::new(1, ChannelClass::Weapon, asset.clone()).once(),
+        );
+        audio.play(&assets, &SoundCue::new(2, ChannelClass::Static, asset));
+        audio.frame(0.1);
+        let mixer = mixer_of(&audio);
+        assert!(!mixer.is_playing(1, ChannelClass::Weapon));
+        assert!(mixer.is_playing(2, ChannelClass::Static));
     }
 
     /// An [`ohl_engine::AssetSource`] that counts how often it is read.

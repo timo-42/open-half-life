@@ -47,8 +47,8 @@ pub enum GameEvent {
     /// A cue the host should play, or stop. Its asset is one the map or a
     /// payload data file named (an `ambient_generic`'s `message`, a
     /// `sentences.txt` sentence's words), or `SoundAsset::Unresolved` for
-    /// every built-in sound until a clean-room provenance review admits
-    /// its path; see `crate::presentation`'s module docs.
+    /// unmapped built-in sounds. Weapon/pickup paths use a bounded public
+    /// provenance review; see `crate::presentation`'s module docs.
     Sound(ohl_gameplay::SoundCue),
     /// An HEV suit voice occasion, which the host maps to a voice line.
     Suit(ohl_player::SuitEvent),

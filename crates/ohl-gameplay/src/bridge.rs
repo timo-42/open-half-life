@@ -136,11 +136,14 @@ impl GameplayBridge {
             // The player's own weapon is heard in the first person: no
             // origin, so the composition root plays it at the listener
             // rather than attenuating it by a distance of zero.
-            self.sounds.push(SoundCue::new(
-                player_entity,
-                ChannelClass::Weapon,
-                SoundAsset::from_static(weapon_sound_path(weapon, cue)),
-            ));
+            self.sounds.push(
+                SoundCue::new(
+                    player_entity,
+                    ChannelClass::Weapon,
+                    SoundAsset::from_static(weapon_sound_path(weapon, cue)),
+                )
+                .once(),
+            );
         }
     }
 
@@ -185,11 +188,14 @@ impl GameplayBridge {
             return;
         }
         hud.show_message(pickup_label(kind), PICKUP_MESSAGE_SECONDS);
-        self.sounds.push(SoundCue::new(
-            player_entity,
-            ChannelClass::Item,
-            SoundAsset::from_static(pickup_sound_path(kind)),
-        ));
+        self.sounds.push(
+            SoundCue::new(
+                player_entity,
+                ChannelClass::Item,
+                SoundAsset::from_static(pickup_sound_path(kind)),
+            )
+            .once(),
+        );
     }
 }
 

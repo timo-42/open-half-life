@@ -721,7 +721,11 @@ impl Level {
             .as_ref()
             .map(|worldspawn| worldspawn.skyname.as_str())
             .filter(|name| !name.is_empty())
-            .and_then(|name| load_skybox(source, name));
+            .and_then(|name| load_skybox(source, name))
+            // Empty or unavailable skies use the documented Half-Life
+            // default; see docs/FORMAT_SOURCES.md, "Skirmish sky and combat
+            // sound compatibility". The payload still supplies every pixel.
+            .or_else(|| load_skybox(source, "desert"));
         let studio = load_studio_models(source, &defs);
         let (sprite_assets, sprites, missing_sprites) = load_sprites(source, &defs);
 

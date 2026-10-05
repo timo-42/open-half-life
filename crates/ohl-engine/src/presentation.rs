@@ -12,7 +12,7 @@
 //! death — as [`PresentationEvent`]s for [`crate::game::Game::tick`] to
 //! turn into the four additive `GameEvent` variants.
 //!
-//! Built-in weapon/pickup asset lookups remain unresolved. Three reviewed
+//! Built-in weapon/pickup cues use a bounded reviewed lookup. Three reviewed
 //! HEV sentence identifiers use the runtime sentence table instead (see
 //! `docs/FORMAT_SOURCES.md`, "Bounded HEV damage sentence audio").
 //! Cues whose path the *map* supplies are a different matter, and
@@ -76,6 +76,13 @@ impl Presentation {
             events: Vec::new(),
             ambients: BTreeMap::new(),
         }
+    }
+
+    /// Adds sounds from other combatants without forwarding their HUD or
+    /// viewmodel actions to the human player.
+    pub(crate) fn add_sounds(&mut self, sounds: impl IntoIterator<Item = ohl_gameplay::SoundCue>) {
+        self.events
+            .extend(sounds.into_iter().map(PresentationEvent::Sound));
     }
 
     /// Forgets every tracked `ambient_generic`, so the next

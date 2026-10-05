@@ -1079,6 +1079,9 @@ impl Systems {
         self.pickups(level, input, dt); // 11
         if let Some(skirmish) = self.skirmish.as_mut() {
             skirmish.pickups(level, dt); // 11b
+            for bot in &mut skirmish.bots {
+                self.presentation.add_sounds(bot.drain_sounds());
+            }
         }
         let mover_input = LatchedInput {
             use_pressed: input.use_pressed && !consumed_use,
@@ -2165,6 +2168,9 @@ impl Systems {
             if let Some(bot) = skirmish.bots.get_mut(index) {
                 bot.finish_projectile_command(success);
             }
+        }
+        for bot in &mut skirmish.bots {
+            self.presentation.add_sounds(bot.drain_sounds());
         }
     }
 
