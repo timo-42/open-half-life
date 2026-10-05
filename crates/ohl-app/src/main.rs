@@ -50,6 +50,7 @@ mod game_run;
 mod route_planner;
 mod script;
 mod script_log;
+mod skirmish;
 
 /// The integration tests' synthetic fixtures, shared rather than duplicated:
 /// a binary crate's unit tests cannot `use` its own `tests/` modules, so they
@@ -88,6 +89,27 @@ enum DifficultyArg {
     Medium,
     /// `skill 3`.
     Hard,
+}
+
+/// The `--bot-skill` choices, mapped onto `ohl_engine::BotSkill`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum BotSkillArg {
+    /// Slow to react, slow to turn, inaccurate.
+    Easy,
+    /// The default.
+    Normal,
+    /// Quick, accurate and evasive.
+    Hard,
+}
+
+impl From<BotSkillArg> for ohl_engine::BotSkill {
+    fn from(value: BotSkillArg) -> Self {
+        match value {
+            BotSkillArg::Easy => Self::Easy,
+            BotSkillArg::Normal => Self::Normal,
+            BotSkillArg::Hard => Self::Hard,
+        }
+    }
 }
 
 impl From<DifficultyArg> for ohl_campaign::Difficulty {
@@ -277,6 +299,73 @@ struct Cli {
     /// Start on the hazard course rather than the campaign's start map.
     #[arg(long, conflicts_with = "map")]
     training: bool,
+
+    /// Start a local skirmish: a deathmatch against bots, played offline,
+    /// on `--map` (a map that declares deathmatch spawn points) or, without
+    /// one, on the first deathmatch map the payload publishes.
+    #[arg(
+        long,
+        conflicts_with_all = ["training", "load", "chain_script", "benchmark_seconds"]
+    )]
+    skirmish: bool,
+
+    /// Which of the payload's deathmatch maps the skirmish plays, counting
+    /// from 1 in map-name order, instead of naming one with `--map` (the
+    /// way `cargo xtask skirmish-smoke` visits every arena without ever
+    /// writing a map name down).
+    #[arg(
+        long,
+        value_name = "N",
+        value_parser = clap::value_parser!(u16).range(1..),
+        requires = "skirmish",
+        conflicts_with = "map"
+    )]
+    arena: Option<u16>,
+
+    /// How many bots join the skirmish.
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = 3,
+        value_parser = clap::value_parser!(u8).range(0..=15),
+        requires = "skirmish"
+    )]
+    bots: u8,
+
+    /// How hard the skirmish bots play.
+    #[arg(
+        long,
+        value_name = "LEVEL",
+        default_value = "normal",
+        requires = "skirmish"
+    )]
+    bot_skill: BotSkillArg,
+
+    /// The frag count that ends the skirmish; 0 for no limit.
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = 10,
+        value_parser = clap::value_parser!(u32).range(0..=1000),
+        requires = "skirmish"
+    )]
+    frag_limit: u32,
+
+    /// How many minutes the skirmish lasts; 0 for no limit.
+    #[arg(
+        long,
+        value_name = "MINUTES",
+        default_value_t = 10,
+        value_parser = clap::value_parser!(u32).range(0..=600),
+        requires = "skirmish"
+    )]
+    time_limit: u32,
+
+    /// Respawn automatically a few seconds after dying in the skirmish,
+    /// instead of waiting for a click (a headless or scripted run has
+    /// nobody to click).
+    #[arg(long, requires = "skirmish")]
+    force_respawn: bool,
 
     /// Resume from a save slot instead of starting a map fresh.
     #[arg(long, value_name = "SLOT", conflicts_with_all = ["map", "training"])]
@@ -923,6 +1012,7 @@ fn run(cli: Cli) -> ExitCode {
 
     if cli.play
         || cli.training
+        || cli.skirmish
         || cli.map.is_some()
         || cli.load.is_some()
         || cli.headless_screenshot.is_some()
@@ -968,12 +1058,25 @@ fn run_game_flow(cli: &Cli, start_in_menu: bool) -> ExitCode {
         Err(code) => return code,
     };
 
+    // A skirmish without `--map` picks its arena once the payload is
+    // mounted (`game_run::run`): which maps are deathmatch maps is the
+    // payload's to say, not a name this project may write down.
     let map = cli.map.clone().unwrap_or_else(|| {
-        if cli.training {
+        if cli.skirmish {
+            String::new()
+        } else if cli.training {
             ohl_campaign::TRAINMAP.to_string()
         } else {
             ohl_campaign::STARTMAP.to_string()
         }
+    });
+    let skirmish = cli.skirmish.then(|| ohl_engine::SkirmishConfig {
+        bots: cli.bots,
+        bot_skill: cli.bot_skill.into(),
+        frag_limit: cli.frag_limit,
+        time_limit_seconds: f32::from(u16::try_from(cli.time_limit).unwrap_or(u16::MAX)) * 60.0,
+        force_respawn: cli.force_respawn,
+        ..ohl_engine::SkirmishConfig::default()
     });
 
     match game_run::run(&game_run::GameArgs {
@@ -993,6 +1096,8 @@ fn run_game_flow(cli: &Cli, start_in_menu: bool) -> ExitCode {
         overbright: cli.overbright,
         follow_level_change: cli.follow_level_change,
         start_in_menu,
+        skirmish,
+        arena: cli.arena.map(usize::from),
         #[cfg(feature = "dev-tools")]
         viewpoint_at_nearest_monster: cli.viewpoint_at_nearest_monster,
         #[cfg(feature = "dev-tools")]
@@ -1389,6 +1494,41 @@ mod tests {
     use clap::Parser as _;
 
     use super::{Cli, DEFAULT_RECIPE, load_recipe, platform_line, report_import};
+
+    #[test]
+    fn the_skirmish_flags_parse_and_stay_within_their_bounds() {
+        let cli = Cli::try_parse_from([
+            "open-half-life",
+            "--skirmish",
+            "--bots",
+            "5",
+            "--bot-skill",
+            "hard",
+            "--frag-limit",
+            "20",
+            "--time-limit",
+            "15",
+            "--force-respawn",
+        ])
+        .expect("a full skirmish command line parses");
+        assert!(cli.skirmish && cli.force_respawn);
+        assert_eq!(cli.bots, 5);
+        assert_eq!(cli.bot_skill, super::BotSkillArg::Hard);
+        assert_eq!((cli.frag_limit, cli.time_limit), (20, 15));
+        assert_eq!(
+            15,
+            ohl_engine::MAX_BOTS,
+            "--bots' own upper bound is the engine's"
+        );
+        assert!(Cli::try_parse_from(["open-half-life", "--skirmish", "--bots", "16"]).is_err());
+        assert!(Cli::try_parse_from(["open-half-life", "--bots", "3"]).is_err());
+        assert!(Cli::try_parse_from(["open-half-life", "--skirmish", "--training"]).is_err());
+        assert!(Cli::try_parse_from(["open-half-life", "--skirmish", "--load", "x"]).is_err());
+        let defaults = Cli::try_parse_from(["open-half-life", "--skirmish"]).unwrap();
+        assert_eq!(defaults.bots, 3);
+        assert_eq!(defaults.bot_skill, super::BotSkillArg::Normal);
+        assert!(!defaults.force_respawn);
+    }
 
     #[test]
     fn benchmark_accepts_bounded_duration_without_a_screenshot() {

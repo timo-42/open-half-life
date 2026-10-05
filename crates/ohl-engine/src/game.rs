@@ -68,6 +68,30 @@ pub enum GameEvent {
     /// section the same way here and a host that received the string could
     /// print it.
     EndSection,
+    /// Someone died in a skirmish (see [`crate::skirmish`]). Every name is
+    /// project-authored ([`crate::skirmish::HUMAN_NAME`] or a bot's), never
+    /// map data.
+    Frag {
+        /// Who scored: `None` for a death nobody is credited with (a fall,
+        /// a hazard), the victim's own name for a suicide by their own
+        /// weapon.
+        killer: Option<String>,
+        /// Who died.
+        victim: String,
+        /// What did it, as a short label, when known.
+        weapon: Option<&'static str>,
+        /// Whether the human at this keyboard killed or died.
+        involves_player: bool,
+    },
+    /// A skirmish reached its frag or time limit. The host shows the
+    /// scoreboard for [`crate::skirmish::INTERMISSION_SECONDS`] and then
+    /// leaves the match.
+    MatchOver {
+        /// Whoever tops the scoreboard.
+        winner: String,
+    },
+    /// The human respawned in a skirmish.
+    PlayerRespawned,
 }
 
 /// How a [`Game`] is started: everything the host chooses rather than the
@@ -166,6 +190,98 @@ impl Game {
             source,
             *config,
         ))
+    }
+
+    /// Loads `map` and starts a local skirmish on it (see
+    /// [`Self::start_skirmish`]).
+    ///
+    /// # Errors
+    /// As [`Self::load_with`], and as [`Self::start_skirmish`].
+    pub fn load_skirmish(
+        source: &dyn AssetSource,
+        map: &str,
+        config: &GameConfig,
+        skirmish: &crate::skirmish::SkirmishConfig,
+    ) -> Result<Self> {
+        let mut game = Self::load_with(source, map, config)?;
+        game.start_skirmish(source, skirmish)?;
+        Ok(game)
+    }
+
+    /// Turns this freshly loaded level into a local skirmish: a deathmatch
+    /// against `config.bots` bots, played offline (see [`crate::skirmish`]).
+    /// The player model bots are drawn with is loaded through `source`
+    /// when the payload publishes it; without it the bots still play, as
+    /// invisible standing hulls a shot can still land on.
+    ///
+    /// A second call on a game already running a skirmish changes nothing.
+    ///
+    /// # Errors
+    /// [`EngineError::NoSpawnPoints`] when the level has no collision to
+    /// walk on, or declares neither an `info_player_deathmatch` nor an
+    /// `info_player_start`.
+    pub fn start_skirmish(
+        &mut self,
+        source: &dyn AssetSource,
+        config: &crate::skirmish::SkirmishConfig,
+    ) -> Result<()> {
+        if self.is_skirmish() {
+            return Ok(());
+        }
+        if self.level.collision.is_none() || crate::skirmish::spawn_points(&self.level).is_empty() {
+            return Err(EngineError::NoSpawnPoints);
+        }
+        let model = self
+            .level
+            .load_extra_studio_model(source, crate::skirmish::PLAYER_MODEL_PATH);
+        // A model slot added after the renderers were built has no GPU
+        // resources yet; the next `render` rebuilds them.
+        self.renderers = None;
+        self.systems.start_skirmish(
+            &mut self.level,
+            &mut self.camera,
+            &mut self.controller,
+            *config,
+            model,
+        );
+        // A deathmatch arena is no chapter.
+        self.pending
+            .retain(|event| !matches!(event, GameEvent::ChapterTitle(_)));
+        Ok(())
+    }
+
+    /// Whether a skirmish is running on this level.
+    #[must_use]
+    pub fn is_skirmish(&self) -> bool {
+        self.systems.skirmish.is_some()
+    }
+
+    /// The running skirmish's scoreboard, clock and respawn state, or
+    /// `None` outside a skirmish.
+    #[must_use]
+    pub fn skirmish_status(&self) -> Option<crate::skirmish::SkirmishStatus> {
+        self.systems.skirmish_status()
+    }
+
+    /// Every skirmish bot's world entity, in bot order (empty outside a
+    /// skirmish). For tests and dev tools.
+    #[must_use]
+    pub fn skirmish_bots(&self) -> Vec<ohl_game::hecs::Entity> {
+        self.systems
+            .skirmish
+            .as_ref()
+            .map(|skirmish| skirmish.bot_entities())
+            .unwrap_or_default()
+    }
+
+    /// How many nodes the skirmish bots' walkable graph holds (`None`
+    /// outside a skirmish). Data, never a log line.
+    #[must_use]
+    pub fn skirmish_nav_node_count(&self) -> Option<usize> {
+        self.systems
+            .skirmish
+            .as_ref()
+            .map(|skirmish| skirmish.nav_node_count())
     }
 
     /// Loads a level from map bytes the caller already holds.
@@ -1234,6 +1350,28 @@ impl Game {
         }));
         out.extend(
             self.systems
+                .drain_skirmish_events()
+                .into_iter()
+                .map(|event| match event {
+                    crate::skirmish::SkirmishEvent::Frag {
+                        killer,
+                        victim,
+                        weapon,
+                        involves_human,
+                    } => GameEvent::Frag {
+                        killer,
+                        victim,
+                        weapon,
+                        involves_player: involves_human,
+                    },
+                    crate::skirmish::SkirmishEvent::MatchOver { winner } => {
+                        GameEvent::MatchOver { winner }
+                    }
+                    crate::skirmish::SkirmishEvent::HumanRespawned => GameEvent::PlayerRespawned,
+                }),
+        );
+        out.extend(
+            self.systems
                 .ai_mut()
                 .drain_sound_cues()
                 .into_iter()
@@ -1669,8 +1807,15 @@ impl Game {
     /// Serializes this game into an [`ohl_save`] container.
     ///
     /// # Errors
-    /// [`EngineError::SaveUnwritable`] when the container rejects a section.
+    /// [`EngineError::SaveUnwritable`] when the container rejects a section,
+    /// or while a skirmish is running (a skirmish is never saved).
     pub fn save_bytes(&self, created_at_unix_secs: u64) -> Result<Vec<u8>> {
+        // A skirmish's bots, scores and respawn timers are not save state:
+        // a save of one would load back as a single-player map with no
+        // opponents, so none is written.
+        if self.is_skirmish() {
+            return Err(EngineError::SaveUnwritable);
+        }
         self.to_save(created_at_unix_secs).to_bytes()
     }
 

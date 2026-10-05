@@ -18,8 +18,9 @@
 //! against the same published constants `try_pickup` itself uses
 //! (`ohl_combat::pickups`), so no number is invented here.
 //!
-//! `TODO(black-box)`: the touch radius below, and single-player pickup
-//! respawn behaviour (not modeled at all: a taken pickup stays taken).
+//! `TODO(black-box)`: the touch radius and pickup box below, and
+//! single-player pickup respawn behaviour (not modeled at all: a taken
+//! pickup stays taken; a skirmish brings it back, see `crate::skirmish`).
 
 use glam::Vec3;
 use ohl_combat::{
@@ -44,6 +45,37 @@ use crate::systems::LatchedInput;
 /// placeholder standing in for it.
 // TODO(black-box): replace with a real bounding-box touch test.
 pub const PICKUP_TOUCH_RADIUS: f32 = 32.0;
+
+/// The box a pickup is treated as occupying, relative to its own origin:
+/// [`PICKUP_TOUCH_RADIUS`] wide and half as tall, resting on the origin.
+/// **To be black-box observed**: no reviewed page publishes a pickup's
+/// size; this project-authored box stands in for it so that an item placed
+/// on the floor — the commonest placement — is reachable at all.
+const PICKUP_BOX_MIN: Vec3 = Vec3::new(-PICKUP_TOUCH_RADIUS / 2.0, -PICKUP_TOUCH_RADIUS / 2.0, 0.0);
+const PICKUP_BOX_MAX: Vec3 = Vec3::new(
+    PICKUP_TOUCH_RADIUS / 2.0,
+    PICKUP_TOUCH_RADIUS / 2.0,
+    PICKUP_TOUCH_RADIUS / 2.0,
+);
+
+/// Whether a player (or a skirmish bot) standing with its hull origin at
+/// `player_origin` touches a pickup whose origin is `pickup_origin`: the
+/// one touch test every taker shares, so a bot picks up exactly what the
+/// human would from the same spot.
+///
+/// The player's standing hull box (`ohl_physics::HULL_SIZES`, the same box
+/// a touch trigger tests against) overlapping the pickup's own
+/// [`PICKUP_BOX_MIN`]..[`PICKUP_BOX_MAX`] box. This replaced a
+/// [`PICKUP_TOUCH_RADIUS`] sphere around the hull's *centre*, which sits a
+/// half-height above the floor and so could never reach an item resting on
+/// it; every point that sphere touched from, this box test touches from
+/// too.
+pub(crate) fn touches(player_origin: Vec3, pickup_origin: Vec3) -> bool {
+    let (mins, maxs) = ohl_physics::HULL_SIZES[ohl_physics::Hull::Standing.index()];
+    let lowest = player_origin + Vec3::from_array(mins) - PICKUP_BOX_MAX;
+    let highest = player_origin + Vec3::from_array(maxs) - PICKUP_BOX_MIN;
+    pickup_origin.cmpge(lowest).all() && pickup_origin.cmple(highest).all()
+}
 
 /// Which reservoir one [`Charger`] entity restores. `ohl_combat::Charger`'s
 /// wrapped [`ChargerState`](ohl_combat::ChargerState) does not record this itself, so this engine
@@ -309,7 +341,7 @@ impl PickupsState {
     }
 }
 
-/// Touches every untaken pickup within [`PICKUP_TOUCH_RADIUS`] of
+/// Touches every untaken pickup [`touches`] reports in reach of
 /// `player_origin`, notifying the gameplay bridge (its HUD message and
 /// sound cue) for each one actually taken.
 #[allow(clippy::too_many_arguments)]
@@ -329,7 +361,7 @@ fn touch_pickups(
         .world
         .query::<(Entity, &Pickup, &Transform)>()
     {
-        if !pickup.taken && transform.origin.distance(player_origin) <= PICKUP_TOUCH_RADIUS {
+        if !pickup.taken && touches(player_origin, transform.origin) {
             touched.push(entity);
         }
     }
@@ -429,7 +461,11 @@ fn weaponbox_contents(def: &ohl_game::EntityDef) -> Vec<(AmmoType, u32)> {
 /// room: TWHL's `weaponbox` page documents that "even if the ammunition
 /// load of a carried weapon is full, this entity will be picked up
 /// permanently". Whatever does not fit is simply lost with it.
-fn take_weapon_box(level: &Level, entity: Entity, ammo: &mut crate::combat::AmmoBank) -> bool {
+pub(crate) fn take_weapon_box(
+    level: &Level,
+    entity: Entity,
+    ammo: &mut crate::combat::AmmoBank,
+) -> bool {
     if let Ok(contents) = level
         .registry
         .world
@@ -446,7 +482,7 @@ fn take_weapon_box(level: &Level, entity: Entity, ammo: &mut crate::combat::Ammo
 /// Applies one pickup's effect; returns whether anything was actually
 /// taken (a full pool, an already-owned flag item and a battery with no
 /// suit yet all report `false` and leave the entity untaken).
-fn apply_pickup(
+pub(crate) fn apply_pickup(
     kind: PickupKind,
     inventory: &mut ohl_combat::Inventory,
     ammo: &mut crate::combat::AmmoBank,
@@ -501,5 +537,50 @@ fn apply_pickup(
         // `ohl-combat` variant this engine does not yet know about is simply
         // not taken, rather than panicking.
         PickupKind::HealthCharger | PickupKind::SuitCharger | PickupKind::WeaponBox | _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PICKUP_TOUCH_RADIUS, touches};
+    use glam::Vec3;
+
+    /// A standing player's hull centre, 36 units above a floor at `z = 0`.
+    const STANDING: Vec3 = Vec3::new(0.0, 0.0, 36.0);
+
+    #[test]
+    fn an_item_resting_on_the_floor_is_touched_from_above_and_beside_it() {
+        assert!(touches(STANDING, Vec3::ZERO));
+        assert!(touches(STANDING, Vec3::new(30.0, 0.0, 0.0)));
+        assert!(touches(STANDING, Vec3::new(-30.0, 30.0, 4.0)));
+    }
+
+    #[test]
+    fn an_item_out_of_reach_is_not_touched() {
+        assert!(!touches(STANDING, Vec3::new(40.0, 0.0, 0.0)));
+        assert!(
+            !touches(STANDING, Vec3::new(0.0, 0.0, -24.0)),
+            "a floor below"
+        );
+        assert!(
+            !touches(STANDING, Vec3::new(0.0, 0.0, 80.0)),
+            "a shelf overhead"
+        );
+    }
+
+    #[test]
+    fn everything_the_old_sphere_reached_is_still_reached() {
+        for step in 0..512u16 {
+            let angle = f32::from(step) * 0.37;
+            let tilt =
+                f32::from(step % 17) / 16.0 * std::f32::consts::PI - std::f32::consts::FRAC_PI_2;
+            let reach = PICKUP_TOUCH_RADIUS * f32::from(step % 9) / 8.0;
+            let offset = Vec3::new(
+                tilt.cos() * angle.cos(),
+                tilt.cos() * angle.sin(),
+                tilt.sin(),
+            ) * reach;
+            assert!(touches(STANDING, STANDING + offset), "offset {offset}");
+        }
     }
 }

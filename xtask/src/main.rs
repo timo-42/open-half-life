@@ -28,6 +28,7 @@ mod dist;
 mod graph;
 mod plan_chain_hop;
 mod policy;
+mod skirmish_smoke;
 mod worker_image;
 
 use std::path::{Path, PathBuf};
@@ -117,11 +118,15 @@ fn main() -> ExitCode {
             let rest: Vec<String> = std::env::args().skip(2).collect();
             plan_chain_hop::run(&root, &rest)
         }
+        Some("skirmish-smoke") => {
+            let rest: Vec<String> = std::env::args().skip(2).collect();
+            skirmish_smoke::run(&root, &rest)
+        }
         other => {
             eprintln!(
                 "usage: cargo xtask \
 <policy|graph|worker-image|dist|campaign-smoke|combat-smoke|chain-walk|\
-plan-chain-hop>"
+plan-chain-hop|skirmish-smoke>"
             );
             if let Some(other) = other {
                 eprintln!("unknown subcommand: {other}");

@@ -216,6 +216,39 @@ impl CombatState {
         (&mut self.inventory, &mut self.ammo)
     }
 
+    /// Selects `id` directly when it is owned; the firing state follows on
+    /// the next [`Self::weapons`] call, exactly as a slot press does. Used
+    /// by `crate::skirmish`'s bots, which choose a weapon by name rather
+    /// than by HUD slot.
+    pub(crate) fn select_weapon(&mut self, id: WeaponId) -> bool {
+        self.inventory.select(id)
+    }
+
+    /// The weapon currently selected, if any.
+    pub(crate) fn selected_weapon(&self) -> Option<WeaponId> {
+        self.inventory.selected()
+    }
+
+    /// Whether `id` is owned.
+    pub(crate) fn owns(&self, id: WeaponId) -> bool {
+        self.inventory.has_weapon(id)
+    }
+
+    /// Rounds loaded in `id`'s clip.
+    pub(crate) fn clip(&self, id: WeaponId) -> u32 {
+        self.inventory.clip(id)
+    }
+
+    /// Reserve rounds of `kind`, from the authoritative [`AmmoBank`].
+    pub(crate) fn reserve(&self, kind: AmmoType) -> u32 {
+        self.ammo.current(kind)
+    }
+
+    /// Whether the drawn weapon is mid-reload.
+    pub(crate) fn is_reloading(&self) -> bool {
+        self.firing.is_reloading()
+    }
+
     /// Empties both ledgers — every owned weapon, every loaded clip and
     /// every reserve pool — and cancels whatever the player was in the
     /// middle of firing, which is the whole of a `player_weaponstrip`'s
@@ -897,6 +930,13 @@ pub(crate) fn rebuild_hitbox_index(hitboxes: &mut HitboxIndex, level: &Level) {
         .world
         .query::<(Entity, &StudioAnim, &Transform)>()
     {
+        // A taken pickup is not in the world until it respawns, and a dead
+        // skirmish bot's corpse no longer stops shots.
+        if crate::skirmish::studio_hidden(&level.registry.world, entity)
+            || crate::skirmish::is_dead_bot(level, entity)
+        {
+            continue;
+        }
         let Some(model) = level.studio_models.get(anim.model) else {
             continue;
         };
@@ -914,9 +954,32 @@ pub(crate) fn rebuild_hitbox_index(hitboxes: &mut HitboxIndex, level: &Level) {
         .iter()
         .any(|entry| entry.id == entity_id(level.player))
         && let Ok(actor) = level.registry.world.get::<&ohl_ai::Actor>(level.player)
+        && actor.alive
     {
         let (min, max) = actor.hull.bounds();
         let mut entry = EntityHitboxes::new(entity_id(level.player), actor.origin);
+        entry.push_box(0, min, max, HitGroup::Generic);
+        hitboxes.push(entry);
+    }
+    // A living skirmish bot whose player model this payload does not
+    // publish (or a synthetic test map) is still a standing hull a shot can
+    // land on, exactly like the human's own fallback box above.
+    for (entity, body, transform) in
+        &mut level
+            .registry
+            .world
+            .query::<(Entity, &crate::skirmish::BotBody, &Transform)>()
+    {
+        if !body.alive
+            || hitboxes
+                .entries()
+                .iter()
+                .any(|entry| entry.id == entity_id(entity))
+        {
+            continue;
+        }
+        let (min, max) = ohl_physics::Hull::Standing.bounds();
+        let mut entry = EntityHitboxes::new(entity_id(entity), transform.origin);
         entry.push_box(0, min, max, HitGroup::Generic);
         hitboxes.push(entry);
     }
@@ -1095,6 +1158,7 @@ fn push_brush_hitbox(
 /// player, or any other entity that is not a monster — is this function's
 /// to resolve, so damage aimed at the player is never silently dropped by
 /// phase 10's drain finding a target it does not recognise.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_damage(
     damage_queue: &mut Vec<QueuedDamage>,
@@ -1106,7 +1170,36 @@ pub(crate) fn resolve_damage(
     player_events: &mut Vec<ohl_player::PlayerEvent>,
     player_damage_events: &mut u64,
 ) {
+    let _ = resolve_damage_reporting_lethal(
+        damage_queue,
+        level,
+        player,
+        player_id,
+        hud,
+        presentation,
+        player_events,
+        player_damage_events,
+    );
+}
+
+/// As [`resolve_damage`], also reporting the hit that killed the player
+/// this drain, when one did: its attacker and damage type. Only that hit —
+/// not whichever happened to be queued last — decides who a skirmish
+/// credits (`crate::skirmish`), since every later hit lands on a player
+/// `ohl_player::Player::apply_damage` already treats as dead.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn resolve_damage_reporting_lethal(
+    damage_queue: &mut Vec<QueuedDamage>,
+    level: &mut Level,
+    player: &mut ohl_player::Player,
+    player_id: Entity,
+    hud: &mut ohl_ui::hud::HudState,
+    presentation: &mut Presentation,
+    player_events: &mut Vec<ohl_player::PlayerEvent>,
+    player_damage_events: &mut u64,
+) -> Option<(Option<EntityId>, DamageType)> {
     let player_combat_id = entity_id(player_id);
+    let mut lethal = None;
     let mut left_for_lifecycle = Vec::with_capacity(damage_queue.len());
     for queued in damage_queue.drain(..) {
         if level
@@ -1123,7 +1216,11 @@ pub(crate) fn resolve_damage(
             *player_damage_events += 1;
             let kind = damage_map::damage_kind_of(info.kind);
             let mut events = Vec::new();
+            let was_alive = !player.state.dead;
             player.apply_damage(info.amount, kind, &mut events);
+            if was_alive && player.state.dead {
+                lethal = Some((info.attacker, info.kind));
+            }
             sync_player_components(level, player);
 
             let combat_health = Health {
@@ -1195,6 +1292,7 @@ pub(crate) fn resolve_damage(
         }
     }
     *damage_queue = left_for_lifecycle;
+    lethal
 }
 
 /// Whether `entity` is a `func_button`/`func_rot_button` with a non-zero

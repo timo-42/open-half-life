@@ -802,6 +802,41 @@ impl Level {
         Ok(level)
     }
 
+    /// Loads one studio model no entity of this map names (a skirmish
+    /// bot's player model), through the same parse and the same
+    /// [`MAX_STUDIO_MODELS`] bound a map's own models get, and returns its
+    /// slot. An already-loaded path returns its existing slot; a model the
+    /// payload does not publish, or one past the bound, returns `None`.
+    /// Nothing is attached to any entity: the caller does that.
+    pub(crate) fn load_extra_studio_model(
+        &mut self,
+        source: &dyn AssetSource,
+        path: &str,
+    ) -> Option<usize> {
+        let key = path.to_ascii_lowercase();
+        if let Some(slot) = self
+            .studio_model_paths
+            .iter()
+            .position(|loaded| *loaded == key)
+        {
+            return Some(slot);
+        }
+        if self.studio_models.len() >= MAX_STUDIO_MODELS {
+            return None;
+        }
+        let bytes = source.read(&key)?;
+        let texture = external_texture_path(&key).and_then(|texture| source.read(&texture));
+        let model = StudioModel::parse_with_external_texture(
+            &bytes,
+            texture.as_deref(),
+            &StudioLimits::default(),
+        )
+        .ok()?;
+        self.studio_models.push(model);
+        self.studio_model_paths.push(key);
+        Some(self.studio_models.len() - 1)
+    }
+
     /// Loads the studio models `self.defs[start..]` reference and attaches
     /// a [`StudioAnim`] to the registry entity at each matching def index —
     /// the same load-and-attach pass [`Self::from_bytes_with_ramp`] already

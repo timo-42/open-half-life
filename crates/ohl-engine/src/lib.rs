@@ -81,6 +81,10 @@ pub mod reachability;
 // they can. See that module's own doc comment.
 pub mod route_plan;
 
+// Local skirmish (deathmatch against bots, offline): the bots, their
+// walkable graph and the match rules. See this module's own doc comment.
+pub mod skirmish;
+
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
@@ -107,6 +111,9 @@ pub use reachability::{
 pub use render::{RenderResourceStats, RenderTarget};
 pub use route_plan::{PlanAction, PlanConfig, PlanError, PlanRejection, RoutePlan, plan_route};
 pub use save::GameSave;
+pub use skirmish::{
+    BotSkill, MAX_BOTS, ScoreRow, SkirmishConfig, SkirmishStatus, deathmatch_spawn_count,
+};
 pub use start_inventory::{StartInventoryError, StartInventoryItem, parse_start_inventory};
 pub use systems::{QueuedDamage, Systems, SystemsConfig};
 pub use text::{AssetPath, MessageBlock, SentenceLookup, TitleLibrary};

@@ -23,7 +23,10 @@ use ohl_ui::{
     console::Console,
     debug::GraphicsDebugInfo,
     hud::HudState,
-    menu::{Difficulty as MenuDifficulty, MenuAction, MenuPane, MenuState, Mission, Screen},
+    menu::{
+        BotSkill as MenuBotSkill, Difficulty as MenuDifficulty, MenuAction, MenuPane, MenuState,
+        Mission, Screen,
+    },
 };
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, ElementState, WindowEvent};
@@ -216,6 +219,12 @@ pub struct GameArgs<'a> {
     pub follow_level_change: bool,
     /// Opens the player-facing main menu before simulation begins.
     pub start_in_menu: bool,
+    /// Starts a local skirmish on `map` (`--skirmish`); an empty `map`
+    /// picks the [`Self::arena`]th deathmatch map the payload publishes.
+    pub skirmish: Option<ohl_engine::SkirmishConfig>,
+    /// Which deathmatch map an empty-`map` skirmish plays, counting from 1
+    /// in map-name order (`--arena`); `None` is the first.
+    pub arena: Option<usize>,
     /// Places the capture viewpoint this many units from the nearest
     /// spawned monster instead of at the map's player start or a caller
     /// chosen viewpoint (`--viewpoint-at-nearest-monster`, `dev-tools`
@@ -289,6 +298,10 @@ pub struct GameArgs<'a> {
     pub plan_segments: Option<usize>,
 }
 
+/// The fixed failure `--arena N` reports when the payload publishes fewer
+/// than `N` deathmatch maps; `cargo xtask skirmish-smoke` stops at it.
+pub const NO_SUCH_ARENA: &str = "the payload publishes fewer deathmatch maps than --arena asks for";
+
 /// The fixed line a run prints once, right after a successful load, when
 /// the loaded map really does have an entity world: at least one entity
 /// definition, *and* either a resolved player start or an `info_landmark`
@@ -326,8 +339,21 @@ fn now_unix_secs() -> u64 {
 fn load_initial_game(
     source: &AssetFsSource,
     args: &GameArgs<'_>,
+    map: &str,
     config: GameConfig,
 ) -> Result<Option<Game>, &'static str> {
+    if let Some(skirmish) = args.skirmish.as_ref() {
+        // Neither the map name nor the reason is media-derived text: the
+        // name stays out of the line, and the reason names the step.
+        return Game::load_skirmish(source, map, &config, skirmish)
+            .map(Some)
+            .map_err(|error| match error {
+                ohl_engine::EngineError::NoSpawnPoints => {
+                    "the map has no player spawn point to start a skirmish on"
+                }
+                _ => "the skirmish map could not be loaded from the payload",
+            });
+    }
     if let Some(name) = args.load_slot {
         let slot = save_slot_dir().ok_or("no per-user save directory is available")?;
         // Neither the slot name nor the saved map name is logged: one is
@@ -337,7 +363,7 @@ fn load_initial_game(
             .map_err(|_| "the save slot could not be loaded");
     }
 
-    match Game::load_with(source, args.map, &config) {
+    match Game::load_with(source, map, &config) {
         Ok(game) => Ok(Some(game)),
         // ISO-only launch doubles as the import command. A valid medium can
         // publish a payload that is not a playable Half-Life installation
@@ -351,26 +377,20 @@ fn load_initial_game(
     }
 }
 
-pub fn run(args: &GameArgs<'_>) -> Result<(), &'static str> {
-    let root = game_root(args.payload_files);
-    let asset_fs = ohl_assets::AssetFs::mount_default(&root)
-        .map_err(|_| "the payload directory could not be indexed")?;
-    let source = AssetFsSource::new(asset_fs);
-    let config = GameConfig {
-        difficulty: args.difficulty,
-        overbright: args.overbright,
-    };
-    let Some(mut game) = load_initial_game(&source, args, config)? else {
-        return Ok(());
-    };
-    tracing::info!("Map loaded.");
+/// Logs whether the loaded map has a real entity world to play in (see
+/// [`ENTITY_WORLD_OK_LINE`]), or, for a skirmish, that the match started.
+fn log_entity_world(game: &Game, args: &GameArgs<'_>) {
     // A map reached only through a `trigger_changelevel`/`info_landmark`
     // pair legitimately declares no `info_player_start` of its own (the
     // player arrives relative to the landmark), so a landmark counts as
     // evidence of a real, loaded entity world just as a player start does.
     // What is never legitimate is a map with neither — nor one with no
-    // entity definitions at all.
-    if game.entity_def_count() > 0 && (game.has_player_start() || game.has_landmark()) {
+    // entity definitions at all. A deathmatch arena spawns from its own
+    // `info_player_deathmatch` points instead, which the skirmish start
+    // has already checked for.
+    if let Some(skirmish) = args.skirmish.as_ref() {
+        tracing::info!(bots = skirmish.bots, "Skirmish started.");
+    } else if game.entity_def_count() > 0 && (game.has_player_start() || game.has_landmark()) {
         tracing::info!("{ENTITY_WORLD_OK_LINE}");
     } else {
         // A map that loads with no entity definitions, or with none the
@@ -380,6 +400,44 @@ pub fn run(args: &GameArgs<'_>) -> Result<(), &'static str> {
         // surfaced as a load error this was completely silent.
         tracing::warn!("{ENTITY_WORLD_EMPTY_LINE}");
     }
+}
+
+/// The map a skirmish with no `--map` plays: the `arena`th (by default the
+/// first) deathmatch map the payload publishes, in map-name order. The
+/// chosen name is never logged.
+fn arena_map(source: &AssetFsSource, arena: Option<usize>) -> Result<String, &'static str> {
+    let names = crate::skirmish::published_map_names(source.asset_fs());
+    let arenas = crate::skirmish::deathmatch_maps(source, &names);
+    if arenas.is_empty() {
+        return Err("the payload publishes no deathmatch map to start a skirmish on");
+    }
+    arenas
+        .into_iter()
+        .nth(arena.unwrap_or(1).saturating_sub(1))
+        .ok_or(NO_SUCH_ARENA)
+}
+
+pub fn run(args: &GameArgs<'_>) -> Result<(), &'static str> {
+    let root = game_root(args.payload_files);
+    let asset_fs = ohl_assets::AssetFs::mount_default(&root)
+        .map_err(|_| "the payload directory could not be indexed")?;
+    let source = AssetFsSource::new(asset_fs);
+    let config = GameConfig {
+        difficulty: args.difficulty,
+        overbright: args.overbright,
+    };
+    let discovered;
+    let map = if args.skirmish.is_some() && args.map.is_empty() {
+        discovered = arena_map(&source, args.arena)?;
+        discovered.as_str()
+    } else {
+        args.map
+    };
+    let Some(mut game) = load_initial_game(&source, args, map, config)? else {
+        return Ok(());
+    };
+    tracing::info!("Map loaded.");
+    log_entity_world(&game, args);
     if game.entity_lump_relaxed_strings() > 0 {
         // Deliberately no count and no text: only the fact that the
         // relaxed decode path was taken at all.
@@ -623,7 +681,10 @@ fn route_benchmark_events(
             GameEvent::ChapterTitle(_)
             | GameEvent::Message { .. }
             | GameEvent::Suit(_)
-            | GameEvent::ViewModel(_) => {}
+            | GameEvent::ViewModel(_)
+            | GameEvent::Frag { .. }
+            | GameEvent::MatchOver { .. }
+            | GameEvent::PlayerRespawned => {}
         }
     }
     ends_the_run
@@ -754,6 +815,9 @@ fn run_scripted(
 
     if args.script_log {
         tracing::info!("Scripted input finished.");
+    }
+    if let Some(status) = game.skirmish_status() {
+        crate::skirmish::log_summary(&status);
     }
 
     if !matches!(pose, CapturePose::None) && pose_is_in_solid(game, &pose) {
@@ -940,13 +1004,17 @@ fn route_headless_events(
                     ended_section: true,
                 };
             }
+            GameEvent::MatchOver { .. } => tracing::info!("The skirmish match ended."),
+            GameEvent::PlayerRespawned => tracing::info!("The player respawned."),
             // Map-authored text and presentation events with nothing to
             // act on in a run nobody watches (M7.9 P1): none of these are
-            // logged.
+            // logged. A skirmish's frags are summed up once, at the end
+            // of the run (`crate::skirmish::log_summary`).
             GameEvent::ChapterTitle(_)
             | GameEvent::Message { .. }
             | GameEvent::Suit(_)
-            | GameEvent::ViewModel(_) => {}
+            | GameEvent::ViewModel(_)
+            | GameEvent::Frag { .. } => {}
         }
     }
     HeadlessOutcome {
@@ -1695,6 +1763,7 @@ fn windowed(game: Game, source: &AssetFsSource, args: &GameArgs<'_>) -> Result<(
     let mut app = App {
         saves: save_slot_dir(),
         profile: args.profile_frames.then(FrameProfile::default),
+        all_maps: crate::skirmish::published_map_names(source.asset_fs()),
         ..App::new(
             game,
             source,
@@ -1732,6 +1801,11 @@ struct Active {
     backend_name: String,
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each is an independent window or key state, not related state a caller could \
+confuse for one another"
+)]
 struct App<'a> {
     game: Game,
     /// Where every map, save and sound this window loads is read from: the
@@ -1750,6 +1824,14 @@ struct App<'a> {
     screen: Screen,
     menu: MenuState,
     missions: Vec<Mission>,
+    /// Every map the payload publishes, by bare name; the skirmish pane's
+    /// candidates. Empty in a test window.
+    all_maps: Vec<String>,
+    /// The deathmatch maps among [`Self::all_maps`], found the first time
+    /// the skirmish pane opens (it reads every candidate's entity lump).
+    skirmish_maps: Option<Vec<String>>,
+    /// Whether the scoreboard key is held.
+    scoreboard_held: bool,
     config: GameConfig,
     quit_requested: bool,
     /// Toggled with `P`; this overlay never captures gameplay input.
@@ -1762,6 +1844,17 @@ struct App<'a> {
     frames: u32,
     profile: Option<FrameProfile>,
     failure: Option<&'static str>,
+}
+
+/// Draws the HUD and, in a skirmish, the scoreboard: while `held` (its key,
+/// in game), and always once the match is over.
+fn draw_play_overlay(context: &ohl_ui::egui::Context, hud: &HudState, game: &Game, held: bool) {
+    ohl_ui::hud::draw(context, hud);
+    if let Some(status) = game.skirmish_status()
+        && (held || status.winner.is_some())
+    {
+        ohl_ui::scoreboard::draw(context, &crate::skirmish::scoreboard(&status));
+    }
 }
 
 fn draw_graphics_debug(
@@ -1817,6 +1910,9 @@ impl<'a> App<'a> {
             screen,
             menu: MenuState::new(),
             missions: menu_missions(),
+            all_maps: Vec::new(),
+            skirmish_maps: None,
+            scoreboard_held: false,
             config,
             quit_requested: false,
             debug_open: false,
@@ -1886,12 +1982,70 @@ impl<'a> App<'a> {
                 // The options screen's volume slider scales the whole mix,
                 // sounds already playing included.
                 MenuAction::SetVolume(volume) => self.audio.set_volume(volume),
-                // `StartSkirmish` is wired by the skirmish host package.
-                MenuAction::SetSensitivity(_)
-                | MenuAction::SetFov(_)
-                | MenuAction::StartSkirmish { .. } => {}
+                MenuAction::StartSkirmish {
+                    map,
+                    bots,
+                    skill,
+                    frag_limit,
+                    time_limit_minutes,
+                } => self.start_skirmish(&map, bots, skill, frag_limit, time_limit_minutes),
+                MenuAction::SetSensitivity(_) | MenuAction::SetFov(_) => {}
             }
         }
+    }
+
+    /// Starts a skirmish the menu's skirmish pane set up. The map name is
+    /// the user's own data and is never logged.
+    fn start_skirmish(
+        &mut self,
+        map: &str,
+        bots: u8,
+        skill: MenuBotSkill,
+        frag_limit: u32,
+        time_limit_minutes: u32,
+    ) {
+        let skirmish = ohl_engine::SkirmishConfig {
+            bots,
+            bot_skill: match skill {
+                MenuBotSkill::Easy => ohl_engine::BotSkill::Easy,
+                MenuBotSkill::Normal => ohl_engine::BotSkill::Normal,
+                MenuBotSkill::Hard => ohl_engine::BotSkill::Hard,
+            },
+            frag_limit,
+            time_limit_seconds: f32::from(u16::try_from(time_limit_minutes).unwrap_or(u16::MAX))
+                * 60.0,
+            ..ohl_engine::SkirmishConfig::default()
+        };
+        if let Ok(game) = Game::load_skirmish(self.source, map, &self.config, &skirmish) {
+            self.game = game;
+            self.audio.stop_all();
+            self.hud = HudState::default();
+            self.menu.pane = MenuPane::Root;
+            self.set_screen(Screen::InGame);
+            tracing::info!("Skirmish started.");
+        } else {
+            tracing::warn!("The selected skirmish map could not be started.");
+        }
+    }
+
+    /// Finds the payload's deathmatch maps the first time the skirmish
+    /// pane is open (it reads every published map's entity lump, so not
+    /// before anyone asks).
+    fn find_skirmish_maps(&mut self) {
+        if self.menu.pane == MenuPane::Multiplayer && self.skirmish_maps.is_none() {
+            self.skirmish_maps = Some(crate::skirmish::deathmatch_maps(
+                self.source,
+                &self.all_maps,
+            ));
+        }
+    }
+
+    /// Leaves a finished skirmish for the main menu.
+    fn leave_skirmish(&mut self) {
+        self.audio.stop_all();
+        self.hud = HudState::default();
+        self.menu.pane = MenuPane::Root;
+        self.set_screen(Screen::MainMenu);
     }
 
     fn set_axis(&mut self, key: KeyCode, pressed: bool) {
@@ -1911,6 +2065,34 @@ impl<'a> App<'a> {
             }
             _ => {}
         }
+    }
+
+    /// The weapon and HUD keys: `R` reloads, `1`-`5` pick a HUD weapon
+    /// slot, `F` toggles the flashlight, and `Tab` shows the skirmish
+    /// scoreboard while held. Returns whether `code` was one of them.
+    fn weapon_key(&mut self, code: KeyCode, pressed: bool, repeat: bool) -> bool {
+        let edge = pressed && !repeat;
+        let slot = match code {
+            KeyCode::Digit1 => Some(1),
+            KeyCode::Digit2 => Some(2),
+            KeyCode::Digit3 => Some(3),
+            KeyCode::Digit4 => Some(4),
+            KeyCode::Digit5 => Some(5),
+            _ => None,
+        };
+        if let Some(slot) = slot {
+            if edge {
+                self.input.select_slot = Some(slot);
+            }
+            return true;
+        }
+        match code {
+            KeyCode::KeyR => self.input.reload |= edge,
+            KeyCode::KeyF => self.input.flashlight_pressed |= edge,
+            KeyCode::Tab => self.scoreboard_held = pressed,
+            _ => return false,
+        }
+        true
     }
 
     /// Clears every held axis, so releasing the pointer into the console
@@ -1939,6 +2121,10 @@ impl<'a> App<'a> {
     /// Writes one save slot, reporting failure as a fixed line. The slot
     /// name is never logged: it is either a constant or user-supplied.
     fn write_slot(&mut self, name: &str) -> bool {
+        if self.game.is_skirmish() {
+            tracing::info!("A skirmish is not saved.");
+            return false;
+        }
         let Some(slot) = self.saves.as_ref() else {
             tracing::warn!("No per-user save directory is available; not saving.");
             return false;
@@ -2017,10 +2203,24 @@ impl<'a> App<'a> {
                 }
                 // Suit metadata remains informational; supported suit audio
                 // already arrives as Sound, so handling it again would restart.
-                GameEvent::Suit(_) | GameEvent::ViewModel(_) => {}
+                GameEvent::Suit(_) | GameEvent::ViewModel(_) | GameEvent::PlayerRespawned => {}
                 GameEvent::PlayerDied => {
                     tracing::info!("The player died.");
                 }
+                // Every name is project-authored (the player's or a bot's),
+                // so the line goes to the HUD; nothing is logged per frag.
+                GameEvent::Frag {
+                    killer,
+                    victim,
+                    weapon,
+                    involves_player,
+                } => {
+                    self.hud.push_kill_feed(
+                        crate::skirmish::kill_feed_text(killer.as_deref(), &victim, weapon),
+                        involves_player,
+                    );
+                }
+                GameEvent::MatchOver { .. } => tracing::info!("The skirmish match ended."),
                 GameEvent::EndSection => {
                     // "Returns the player to the game's main menu": the
                     // game stops ticking (`Self::draw` only ticks it
@@ -2049,6 +2249,9 @@ impl<'a> App<'a> {
         let frame_input = self.input;
         self.input.mouse_delta = (0.0, 0.0);
         self.input.use_pressed = false;
+        self.input.reload = false;
+        self.input.select_slot = None;
+        self.input.flashlight_pressed = false;
         // Where the player's ears are for the cues this frame produces.
         self.audio
             .set_listener(self.game.eye_position(), self.game.camera().yaw);
@@ -2074,8 +2277,29 @@ impl<'a> App<'a> {
 
         self.hud.decay_damage_flash(2.0, delta_seconds);
         self.hud.tick_message(delta_seconds);
+        self.hud.tick_kill_feed(delta_seconds);
+        if let Some(status) = self.game.skirmish_status() {
+            self.hud.frags = Some(status.human_frags);
+            self.hud.match_clock = status.seconds_left;
+            self.hud.center_notice = crate::skirmish::center_notice(&status);
+            // The scoreboard has been up for the whole intermission
+            // (`mp_chattime`); the match is over, so back to the menu.
+            if status.intermission_left.is_some_and(|left| left <= 0.0) {
+                tracing::info!("The skirmish intermission ended.");
+                self.leave_skirmish();
+            }
+        } else {
+            self.hud.frags = None;
+            self.hud.match_clock = None;
+            self.hud.center_notice = None;
+        }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one frame's tick, render and UI sequence; splitting it would only scatter \
+                  the borrow of the active window across helpers"
+    )]
     fn draw(&mut self) {
         let now = Instant::now();
         let delta = now.saturating_duration_since(self.last_frame);
@@ -2084,6 +2308,7 @@ impl<'a> App<'a> {
         if self.screen == Screen::InGame && !self.console.is_open() {
             self.tick_game(delta.as_secs_f32());
         }
+        self.find_skirmish_maps();
         let simulation = now.elapsed();
 
         let Some(active) = self.state.as_mut() else {
@@ -2118,7 +2343,8 @@ impl<'a> App<'a> {
         let ui_start = Instant::now();
         active.ui.begin_frame();
         if !matches!(self.screen, Screen::MainMenu | Screen::Pause) {
-            ohl_ui::hud::draw(active.ui.context(), &self.hud);
+            let held = self.scoreboard_held && self.screen == Screen::InGame;
+            draw_play_overlay(active.ui.context(), &self.hud, &self.game, held);
         }
         if self.debug_open {
             draw_graphics_debug(active, &self.live_profile, now, &self.game, width, height);
@@ -2134,7 +2360,7 @@ impl<'a> App<'a> {
                 &mut self.menu,
                 self.screen == Screen::Pause,
                 &self.missions,
-                &[],
+                self.skirmish_maps.as_deref().unwrap_or(&[]),
             )
         } else {
             Vec::new()
@@ -2325,7 +2551,21 @@ impl ApplicationHandler for App<'_> {
                     self.input.use_held = pressed;
                     return;
                 }
+                if self.weapon_key(code, pressed, event.repeat) {
+                    return;
+                }
                 self.set_axis(code, pressed);
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                if self.console.is_open() || self.screen != Screen::InGame {
+                    return;
+                }
+                let pressed = state == ElementState::Pressed;
+                match button {
+                    winit::event::MouseButton::Left => self.input.attack = pressed,
+                    winit::event::MouseButton::Right => self.input.attack2 = pressed,
+                    _ => {}
+                }
             }
             WindowEvent::RedrawRequested => self.draw(),
             _ => {}
@@ -3333,5 +3573,174 @@ mod sound_routing_tests {
 
         app.quickload();
         assert_eq!(channel_count(&app.audio), 0);
+    }
+}
+
+#[cfg(test)]
+mod skirmish_window_tests {
+    use super::*;
+    use ohl_engine::MemoryAssets;
+    use ohl_engine::test_support::{AI_MAP, deathmatch_room_bsp, queue_engine_damage_from};
+
+    const CORNERS: [(f32, f32); 4] = [
+        (-192.0, -192.0),
+        (192.0, -192.0),
+        (-192.0, 192.0),
+        (192.0, 192.0),
+    ];
+
+    fn arena_assets() -> MemoryAssets {
+        let mut assets = MemoryAssets::new();
+        assets.insert(
+            &format!("maps/{AI_MAP}.bsp"),
+            deathmatch_room_bsp(&CORNERS, false, ""),
+        );
+        assets
+    }
+
+    fn window(game: Game, assets: &MemoryAssets) -> App<'_> {
+        App::new(
+            game,
+            assets,
+            AudioRuntime::silent(),
+            Screen::MainMenu,
+            GameConfig::default(),
+        )
+    }
+
+    fn started(assets: &MemoryAssets, frag_limit: u32) -> App<'_> {
+        let game = Game::load(assets, AI_MAP).expect("the arena loads as a plain map too");
+        let mut app = window(game, assets);
+        app.handle_menu_actions(vec![MenuAction::StartSkirmish {
+            map: AI_MAP.to_string(),
+            bots: 2,
+            skill: MenuBotSkill::Easy,
+            frag_limit,
+            time_limit_minutes: 0,
+        }]);
+        app
+    }
+
+    #[test]
+    fn the_skirmish_pane_starts_a_match_against_bots() {
+        let assets = arena_assets();
+        let app = started(&assets, 10);
+        assert!(app.game.is_skirmish());
+        assert_eq!(app.game.skirmish_bots().len(), 2);
+        assert_eq!(app.screen, Screen::InGame);
+        assert_eq!(app.menu.pane, MenuPane::Root);
+    }
+
+    #[test]
+    fn the_deathmatch_maps_are_found_among_the_published_ones() {
+        let mut assets = arena_assets();
+        assets.insert(
+            "maps/ohltest_single.bsp",
+            ohl_engine::test_support::synthetic_map_bsp(),
+        );
+        let found = crate::skirmish::deathmatch_maps(
+            &assets,
+            &[
+                "ohltest_single".to_string(),
+                AI_MAP.to_string(),
+                "ohltest_missing".to_string(),
+            ],
+        );
+        assert_eq!(found, [AI_MAP]);
+    }
+
+    #[test]
+    fn a_frag_reaches_the_kill_feed_and_the_frag_counter() {
+        let assets = arena_assets();
+        let mut app = started(&assets, 0);
+        let bot = app.game.skirmish_bots()[0];
+        let player = app.game.player_entity();
+        queue_engine_damage_from(&mut app.game, bot, player, 500.0);
+        app.tick_game(CAPTURE_STEP);
+        assert_eq!(app.hud.frags, Some(1));
+        assert_eq!(app.hud.kill_feed.len(), 1);
+        assert!(app.hud.kill_feed[0].local_involved);
+        assert!(
+            app.hud.kill_feed[0]
+                .text
+                .starts_with(ohl_engine::skirmish::HUMAN_NAME)
+        );
+    }
+
+    #[test]
+    fn dying_shows_how_to_respawn() {
+        let assets = arena_assets();
+        let mut app = started(&assets, 0);
+        let bot = app.game.skirmish_bots()[0];
+        let player = app.game.player_entity();
+        queue_engine_damage_from(&mut app.game, player, bot, 500.0);
+        app.tick_game(CAPTURE_STEP);
+        assert_eq!(app.hud.center_notice.as_deref(), Some("You were fragged"));
+        for _ in 0..90 {
+            app.tick_game(CAPTURE_STEP);
+        }
+        assert_eq!(
+            app.hud.center_notice.as_deref(),
+            Some("Press fire to respawn")
+        );
+    }
+
+    #[test]
+    fn the_window_returns_to_the_menu_after_the_intermission() {
+        let assets = arena_assets();
+        let mut app = started(&assets, 1);
+        let bot = app.game.skirmish_bots()[0];
+        let player = app.game.player_entity();
+        queue_engine_damage_from(&mut app.game, bot, player, 500.0);
+        app.tick_game(CAPTURE_STEP);
+        assert_eq!(app.screen, Screen::InGame, "the scoreboard holds first");
+        assert!(
+            app.hud
+                .center_notice
+                .as_deref()
+                .is_some_and(|notice| notice.contains("wins"))
+        );
+        let mut waited = 0.0;
+        while app.screen == Screen::InGame
+            && waited < ohl_engine::skirmish::INTERMISSION_SECONDS * 2.0
+        {
+            app.tick_game(0.1);
+            waited += 0.1;
+        }
+        assert_eq!(app.screen, Screen::MainMenu);
+        assert!(waited >= ohl_engine::skirmish::INTERMISSION_SECONDS - 0.2);
+    }
+
+    #[test]
+    fn a_skirmish_is_never_written_to_a_save_slot() {
+        let assets = arena_assets();
+        let saves = tempfile::tempdir().expect("a temporary save directory");
+        let mut app = started(&assets, 0);
+        app.saves = Some(ohl_save::SaveSlot::new(saves.path().to_path_buf()));
+        assert!(!app.write_slot(ohl_save::QUICKSAVE_SLOT_NAME));
+    }
+
+    #[test]
+    fn the_weapon_keys_reach_the_input_and_clear_after_one_frame() {
+        let assets = arena_assets();
+        let mut app = started(&assets, 0);
+        assert!(app.weapon_key(KeyCode::Digit3, true, false));
+        assert!(app.weapon_key(KeyCode::KeyR, true, false));
+        assert!(app.weapon_key(KeyCode::KeyF, true, false));
+        assert!(app.weapon_key(KeyCode::Tab, true, false));
+        assert!(!app.weapon_key(KeyCode::KeyW, true, false));
+        assert_eq!(app.input.select_slot, Some(3));
+        assert!(app.input.reload && app.input.flashlight_pressed);
+        assert!(app.scoreboard_held);
+        // A key repeat is not a second press.
+        app.input.reload = false;
+        assert!(app.weapon_key(KeyCode::KeyR, true, true));
+        assert!(!app.input.reload);
+        app.input.reload = true;
+        app.tick_game(CAPTURE_STEP);
+        assert_eq!(app.input.select_slot, None);
+        assert!(!app.input.reload && !app.input.flashlight_pressed);
+        assert!(app.weapon_key(KeyCode::Tab, false, false));
+        assert!(!app.scoreboard_held);
     }
 }
