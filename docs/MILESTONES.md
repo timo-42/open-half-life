@@ -9441,7 +9441,7 @@ or pushed, never reported as the blocker). Bot tuning is project-authored
 and unmeasured against any reference.
 
 
-## M9.NEXT — Player-only end-section activation
+## M9.57 — Player-only end-section activation
 
 `trigger_endsection` accepts the existing host-supplied player identity through
 named use and touch. Rejected touches leave cooldown, once-state and targets
@@ -9459,11 +9459,31 @@ production changes, new API or save tag, asset/media change, private route or
 controller-snapshot work. Tags 38–45
 remain frozen; tag 46 is not used. Milestone numbering remains unassigned.
 
-Gates: historical formatted source v3 passed formatting/check and the original
-feature target (8/0/0/0/0); its game library run failed (210 passed/3 failed)
-on retained relay effect/turret assertions. Those results remain qualified to
-that source; the compatibility cut is a later source change. Updated focused
-normals, player-validation semantic mutations and restored controls, formatting,
-Clippy variants, workspace/policy/graph, release and smoke/chain validation are
-pending separate execution grants. Plain app test completion does not establish
-GPU-opted capture coverage when that fixture returns early.
+Gates: PASS on the combined `2fb77b8` base/source `4452d31d`: formatting;
+workspace/all-target Clippy with warnings denied (default, dev-tools and all
+features); workspace tests **3097 passed, 0 failed, 35 ignored** (test-only
+`CARGO_PROFILE_TEST_STRIP=debuginfo`); policy and graph. The exact window HUD
+regression and explicit `OHL_RENDER_GPU_TEST=1` synthetic capture regression
+both passed (one test each). The capture assertions ran and their temporary
+files were removed; no retained image is claimed. Both own app/dev-tools and
+xtask release builds passed. Combat smoke **37/37**, zero unexpected results;
+campaign smoke **93/93**; both distinct empty and seeded chain inventories
+reached **depth 12 / Pass / 660.8 simulated seconds**. Source/binary identities,
+owned-process/readers closure, capture deletion and sampled resource guards
+passed. Global command-name counts are informational under the explicitly
+scheduled exclusive owned-area window, not a global absence claim.
+
+Historical focused v4 normals on the `04e1c7d` base passed: game target 6,
+game library 213, engine target 24, app integration 3, exact window 1 and
+explicit GPU capture 1. Four player-validation mutation triplets produced the
+intended assertion failures (named guard: 3; early touch ordering: 1; absent
+host: 1; stale host: 1), with all eight trusted/restored normal legs passing
+six tests. These are historical semantic probes, not current-base mutant
+runs. The five code/test candidate blobs outside `game_run.rs` remained exact
+through rebases; that file retains the same window test alongside main's
+changes. Superseded v3's relay effect/turret failures remain recorded and led
+to the explicit compatibility cut; the retained assertions passed afterwards.
+Interrupted workspace attempts and refused admissions have no pass credit;
+the finished current workspace output was accepted by corrected evidence-only
+post-audit. Partial cache pruning remains qualified, without a claim of full
+historical cache preservation. No gate result is inferred from those failures.

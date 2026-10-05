@@ -7031,6 +7031,13 @@ refreshes this real registry-player identity at phase 5b, before phase 12
 use/touch; saved pending player activations retain their existing tag-43 remap.
 No save format or tag changes are required.
 
+**Project-authored regression fixtures:** direct dispatch registers the supplied
+player identity; engine and host continuations use delayed player-overlap
+triggers. The saved delayed activation is tested with matching fixed ticks,
+existing tag-43 actor remapping and exactly one post-load event. These synthetic
+fixtures validate this bounded dispatch rule, not the deferred general
+relay/multisource forwarding behavior.
+
 **Project-authored:** eligibility requires equality with the supplied player
 and a live registry entity; missing/nonfinite host context, null activator or
 stale entity fails closed. There is no health/alive check. Ordinary buttons,
