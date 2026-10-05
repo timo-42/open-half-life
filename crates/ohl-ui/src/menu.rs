@@ -1,5 +1,12 @@
 //! Player-facing main and pause menus and the `Screen` state machine that
 //! governs input capture between gameplay, the console and the menus.
+//!
+//! The multiplayer pane is an offline skirmish setup: the player picks one of
+//! the host-supplied deathmatch maps, a bot count, a bot skill, a frag limit
+//! and a time limit, then presses START SKIRMISH, which reports
+//! [`MenuAction::StartSkirmish`]. Nothing is networked; the pane only
+//! gathers the settings. With no maps supplied it explains that and keeps the
+//! start button disabled.
 
 use egui::{Color32, RichText, Slider, Stroke, Vec2};
 
@@ -77,6 +84,32 @@ pub enum MenuAction {
     SetVolume(f32),
     /// Field of view changed, in degrees.
     SetFov(f32),
+    /// Start an offline deathmatch skirmish against bots.
+    StartSkirmish {
+        /// The chosen map, exactly as the host listed it.
+        map: String,
+        /// Number of bot opponents, within [`SKIRMISH_BOTS_RANGE`].
+        bots: u8,
+        /// How capable the bots are.
+        skill: BotSkill,
+        /// Frags that end the match; `0` means no limit.
+        frag_limit: u32,
+        /// Match length in minutes; `0` means no limit.
+        time_limit_minutes: u32,
+    },
+}
+
+/// How capable skirmish bots are. The application maps this
+/// presentation-level value onto its bot behaviour tuning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BotSkill {
+    /// Slow to react and inaccurate.
+    Easy,
+    /// The default balance.
+    #[default]
+    Normal,
+    /// Fast to react and accurate.
+    Hard,
 }
 
 /// A difficulty exposed by the new-game menu. The application maps this
@@ -127,6 +160,21 @@ pub const VOLUME_RANGE: std::ops::RangeInclusive<f32> = 0.0..=1.0;
 /// Field-of-view bounds shown by the options screen.
 pub const FOV_RANGE: std::ops::RangeInclusive<f32> = 60.0..=120.0;
 
+/// Bot-count bounds shown by the skirmish setup pane.
+pub const SKIRMISH_BOTS_RANGE: std::ops::RangeInclusive<u8> = 1..=15;
+/// Frag-limit bounds shown by the skirmish setup pane; `0` means no limit.
+pub const SKIRMISH_FRAG_LIMIT_RANGE: std::ops::RangeInclusive<u32> = 0..=100;
+/// Time-limit bounds, in minutes, shown by the skirmish setup pane; `0`
+/// means no limit.
+pub const SKIRMISH_TIME_LIMIT_RANGE: std::ops::RangeInclusive<u32> = 0..=60;
+
+/// Bot count a fresh [`MenuState`] starts with.
+pub const SKIRMISH_BOTS_DEFAULT: u8 = 3;
+/// Frag limit a fresh [`MenuState`] starts with.
+pub const SKIRMISH_FRAG_LIMIT_DEFAULT: u32 = 10;
+/// Time limit, in minutes, a fresh [`MenuState`] starts with.
+pub const SKIRMISH_TIME_LIMIT_DEFAULT_MINUTES: u32 = 10;
+
 /// Which pane of the menu is showing: the root list or the options/bindings
 /// sub-screens reachable from it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -143,7 +191,7 @@ pub enum MenuPane {
 /// values it edits in place. `Screen` (in [`crate`]) tracks which top-level
 /// screen is active; this only matters while that screen is [`Screen::MainMenu`]
 /// or [`Screen::Pause`].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct MenuState {
     /// The currently visible pane.
     pub pane: MenuPane,
@@ -153,6 +201,33 @@ pub struct MenuState {
     pub selected_mission: usize,
     /// Difficulty selected for a new single-player game.
     pub difficulty: Difficulty,
+    /// Index into the host-provided skirmish map list; clamped to the list
+    /// length whenever the pane is drawn.
+    pub selected_skirmish_map: usize,
+    /// Number of bot opponents for a skirmish, within [`SKIRMISH_BOTS_RANGE`].
+    pub skirmish_bots: u8,
+    /// Bot skill for a skirmish.
+    pub skirmish_skill: BotSkill,
+    /// Skirmish frag limit; `0` means no limit.
+    pub skirmish_frag_limit: u32,
+    /// Skirmish time limit in minutes; `0` means no limit.
+    pub skirmish_time_limit_minutes: u32,
+}
+
+impl Default for MenuState {
+    fn default() -> Self {
+        Self {
+            pane: MenuPane::default(),
+            options: OptionsState::default(),
+            selected_mission: 0,
+            difficulty: Difficulty::default(),
+            selected_skirmish_map: 0,
+            skirmish_bots: SKIRMISH_BOTS_DEFAULT,
+            skirmish_skill: BotSkill::default(),
+            skirmish_frag_limit: SKIRMISH_FRAG_LIMIT_DEFAULT,
+            skirmish_time_limit_minutes: SKIRMISH_TIME_LIMIT_DEFAULT_MINUTES,
+        }
+    }
 }
 
 impl MenuState {
@@ -161,6 +236,30 @@ impl MenuState {
     pub fn new() -> Self {
         Self::default()
     }
+}
+
+/// Clamps `value` into `range`.
+fn clamp_to<T: Ord + Copy>(value: T, range: &std::ops::RangeInclusive<T>) -> T {
+    value.clamp(*range.start(), *range.end())
+}
+
+/// Builds the [`MenuAction::StartSkirmish`] for the current setup, or `None`
+/// when `maps` is empty (there is nothing to start). Out-of-range values in
+/// `state` are clamped into their ranges and the selected map index is
+/// clamped to the list, so the action is always valid for the host.
+#[must_use]
+pub fn skirmish_action(state: &MenuState, maps: &[String]) -> Option<MenuAction> {
+    let last = maps.len().checked_sub(1)?;
+    Some(MenuAction::StartSkirmish {
+        map: maps[state.selected_skirmish_map.min(last)].clone(),
+        bots: clamp_to(state.skirmish_bots, &SKIRMISH_BOTS_RANGE),
+        skill: state.skirmish_skill,
+        frag_limit: clamp_to(state.skirmish_frag_limit, &SKIRMISH_FRAG_LIMIT_RANGE),
+        time_limit_minutes: clamp_to(
+            state.skirmish_time_limit_minutes,
+            &SKIRMISH_TIME_LIMIT_RANGE,
+        ),
+    })
 }
 
 fn menu_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
@@ -260,25 +359,74 @@ fn draw_single_player(
     });
 }
 
-fn draw_multiplayer(ui: &mut egui::Ui, pane: &mut MenuPane) {
+/// The offline skirmish setup pane (reached from the root's MULTIPLAYER
+/// button): map list, bot count, bot skill, frag and time limits, START
+/// SKIRMISH and BACK. `maps` is the host's list of deathmatch map names.
+fn draw_skirmish(
+    ui: &mut egui::Ui,
+    state: &mut MenuState,
+    maps: &[String],
+    actions: &mut Vec<MenuAction>,
+) {
     ui.vertical_centered(|ui| {
-        ui.heading("Multiplayer");
-        ui.add_space(16.0);
-        ui.group(|ui| {
-            ui.set_min_width(300.0);
-            ui.label(RichText::new("SERVER BROWSER").strong());
-            ui.separator();
-            ui.label("No servers found");
-            ui.label("Multiplayer is a preview and is not connected yet.");
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                ui.add_enabled(false, egui::Button::new("Create game"));
-                ui.add_enabled(false, egui::Button::new("Join game"));
+        // The pane has many rows; tighten the spacing so it fits the menu's
+        // fixed-size area.
+        ui.spacing_mut().item_spacing.y = 5.0;
+        ui.spacing_mut().slider_width = 240.0;
+        ui.heading("Skirmish (offline, against bots)");
+        ui.add_space(10.0);
+
+        if let Some(last) = maps.len().checked_sub(1) {
+            state.selected_skirmish_map = state.selected_skirmish_map.min(last);
+            ui.label("Map");
+            ui.group(|ui| {
+                ui.set_min_width(300.0);
+                egui::ScrollArea::vertical()
+                    .max_height(120.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
+                            for (index, name) in maps.iter().enumerate() {
+                                ui.selectable_value(&mut state.selected_skirmish_map, index, name);
+                            }
+                        });
+                    });
             });
+        } else {
+            ui.label("No deathmatch maps were found in the imported game data.");
+        }
+
+        ui.add_space(10.0);
+        ui.label("Bots");
+        ui.add(Slider::new(&mut state.skirmish_bots, SKIRMISH_BOTS_RANGE));
+        ui.label("Bot skill");
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut state.skirmish_skill, BotSkill::Easy, "Easy");
+            ui.selectable_value(&mut state.skirmish_skill, BotSkill::Normal, "Normal");
+            ui.selectable_value(&mut state.skirmish_skill, BotSkill::Hard, "Hard");
         });
-        ui.add_space(18.0);
+        ui.label("Frag limit (0 = no limit)");
+        ui.add(Slider::new(
+            &mut state.skirmish_frag_limit,
+            SKIRMISH_FRAG_LIMIT_RANGE,
+        ));
+        ui.label("Time limit, minutes (0 = no limit)");
+        ui.add(Slider::new(
+            &mut state.skirmish_time_limit_minutes,
+            SKIRMISH_TIME_LIMIT_RANGE,
+        ));
+
+        ui.add_space(14.0);
+        let can_start = !maps.is_empty();
+        if ui
+            .add_enabled_ui(can_start, |ui| menu_button(ui, "START SKIRMISH"))
+            .inner
+            .clicked()
+        {
+            actions.extend(skirmish_action(state, maps));
+        }
         if menu_button(ui, "BACK").clicked() {
-            *pane = MenuPane::Root;
+            state.pane = MenuPane::Root;
         }
     });
 }
@@ -336,12 +484,14 @@ fn draw_bindings(ui: &mut egui::Ui, pane: &mut MenuPane) {
 
 /// Draws the menu (main or pause, depending on `in_game`) and returns the
 /// actions the player triggered this frame. `ui` is the frame's root `Ui`;
-/// see [`crate::root_ui`].
+/// see [`crate::root_ui`]. `missions` feeds the single-player pane and
+/// `skirmish_maps` the skirmish setup pane; the host supplies both.
 pub fn draw(
     ui: &mut egui::Ui,
     state: &mut MenuState,
     in_game: bool,
     missions: &[Mission],
+    skirmish_maps: &[String],
 ) -> Vec<MenuAction> {
     let mut actions = Vec::new();
     // The menu is always dark, independently of the system's theme.
@@ -369,7 +519,9 @@ pub fn draw(
                     MenuPane::SinglePlayer => {
                         draw_single_player(ui, state, missions, &mut actions);
                     }
-                    MenuPane::Multiplayer => draw_multiplayer(ui, &mut state.pane),
+                    MenuPane::Multiplayer => {
+                        draw_skirmish(ui, state, skirmish_maps, &mut actions);
+                    }
                     MenuPane::Options => {
                         draw_options(ui, &mut state.options, &mut actions, &mut state.pane);
                     }
@@ -383,8 +535,14 @@ pub fn draw(
 #[cfg(test)]
 mod tests {
     use super::{
-        FOV_RANGE, MenuPane, MenuState, OptionsState, SENSITIVITY_RANGE, Screen, VOLUME_RANGE,
+        BotSkill, FOV_RANGE, MenuAction, MenuPane, MenuState, OptionsState, SENSITIVITY_RANGE,
+        SKIRMISH_BOTS_RANGE, SKIRMISH_FRAG_LIMIT_RANGE, SKIRMISH_TIME_LIMIT_RANGE, Screen,
+        VOLUME_RANGE, draw, skirmish_action,
     };
+
+    fn maps() -> Vec<String> {
+        vec!["ohltest_a".to_owned(), "ohltest_b".to_owned()]
+    }
 
     #[test]
     fn in_game_releases_neither_keyboard_nor_mouse_nor_cursor() {
@@ -423,5 +581,143 @@ mod tests {
         assert!(SENSITIVITY_RANGE.contains(&options.sensitivity));
         assert!(VOLUME_RANGE.contains(&options.volume));
         assert!(FOV_RANGE.contains(&options.fov));
+    }
+
+    #[test]
+    fn skirmish_defaults_are_three_normal_bots_ten_frags_ten_minutes() {
+        let state = MenuState::default();
+        assert_eq!(state.selected_skirmish_map, 0);
+        assert_eq!(state.skirmish_bots, 3);
+        assert_eq!(state.skirmish_skill, BotSkill::Normal);
+        assert_eq!(state.skirmish_frag_limit, 10);
+        assert_eq!(state.skirmish_time_limit_minutes, 10);
+        // `new` goes through the same defaults.
+        let fresh = MenuState::new();
+        assert_eq!(fresh.skirmish_bots, 3);
+        assert_eq!(fresh.pane, MenuPane::Root);
+    }
+
+    #[test]
+    fn skirmish_defaults_are_within_their_own_ranges() {
+        let state = MenuState::default();
+        assert!(SKIRMISH_BOTS_RANGE.contains(&state.skirmish_bots));
+        assert!(SKIRMISH_FRAG_LIMIT_RANGE.contains(&state.skirmish_frag_limit));
+        assert!(SKIRMISH_TIME_LIMIT_RANGE.contains(&state.skirmish_time_limit_minutes));
+        assert_eq!(SKIRMISH_BOTS_RANGE, 1..=15);
+        assert_eq!(SKIRMISH_FRAG_LIMIT_RANGE, 0..=100);
+        assert_eq!(SKIRMISH_TIME_LIMIT_RANGE, 0..=60);
+    }
+
+    #[test]
+    fn bot_skill_defaults_to_normal() {
+        assert_eq!(BotSkill::default(), BotSkill::Normal);
+    }
+
+    #[test]
+    fn skirmish_action_is_none_without_maps() {
+        assert_eq!(skirmish_action(&MenuState::default(), &[]), None);
+    }
+
+    #[test]
+    fn skirmish_action_reports_the_current_setup() {
+        let state = MenuState {
+            selected_skirmish_map: 1,
+            skirmish_bots: 7,
+            skirmish_skill: BotSkill::Hard,
+            skirmish_frag_limit: 0,
+            skirmish_time_limit_minutes: 25,
+            ..MenuState::default()
+        };
+        assert_eq!(
+            skirmish_action(&state, &maps()),
+            Some(MenuAction::StartSkirmish {
+                map: "ohltest_b".to_owned(),
+                bots: 7,
+                skill: BotSkill::Hard,
+                frag_limit: 0,
+                time_limit_minutes: 25,
+            })
+        );
+    }
+
+    #[test]
+    fn skirmish_action_with_default_state_uses_the_first_map_and_defaults() {
+        assert_eq!(
+            skirmish_action(&MenuState::default(), &maps()),
+            Some(MenuAction::StartSkirmish {
+                map: "ohltest_a".to_owned(),
+                bots: 3,
+                skill: BotSkill::Normal,
+                frag_limit: 10,
+                time_limit_minutes: 10,
+            })
+        );
+    }
+
+    #[test]
+    fn skirmish_action_clamps_out_of_range_values() {
+        let state = MenuState {
+            selected_skirmish_map: 99,
+            skirmish_bots: 200,
+            skirmish_frag_limit: 5000,
+            skirmish_time_limit_minutes: 5000,
+            ..MenuState::default()
+        };
+        assert_eq!(
+            skirmish_action(&state, &maps()),
+            Some(MenuAction::StartSkirmish {
+                map: "ohltest_b".to_owned(),
+                bots: 15,
+                skill: BotSkill::Normal,
+                frag_limit: 100,
+                time_limit_minutes: 60,
+            })
+        );
+        let no_bots = MenuState {
+            skirmish_bots: 0,
+            ..MenuState::default()
+        };
+        assert!(matches!(
+            skirmish_action(&no_bots, &maps()),
+            Some(MenuAction::StartSkirmish { bots: 1, .. })
+        ));
+    }
+
+    /// Draws one headless frame of the skirmish pane and returns the actions.
+    fn draw_skirmish_pane(state: &mut MenuState, maps: &[String]) -> Vec<MenuAction> {
+        state.pane = MenuPane::Multiplayer;
+        let ctx = egui::Context::default();
+        ctx.begin_pass(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 720.0),
+            )),
+            ..egui::RawInput::default()
+        });
+        let mut ui = crate::root_ui(&ctx);
+        let actions = draw(&mut ui, state, false, &[], maps);
+        let mut output = ctx.end_pass();
+        output.textures_delta.clear();
+        actions
+    }
+
+    #[test]
+    fn drawing_the_skirmish_pane_clamps_the_selected_map_to_the_list() {
+        let mut state = MenuState {
+            selected_skirmish_map: 99,
+            ..MenuState::default()
+        };
+        let actions = draw_skirmish_pane(&mut state, &maps());
+        assert!(actions.is_empty());
+        assert_eq!(state.selected_skirmish_map, 1);
+        assert_eq!(state.pane, MenuPane::Multiplayer);
+    }
+
+    #[test]
+    fn drawing_the_skirmish_pane_without_maps_offers_nothing_to_start() {
+        let mut state = MenuState::default();
+        let actions = draw_skirmish_pane(&mut state, &[]);
+        assert!(actions.is_empty());
+        assert_eq!(state.selected_skirmish_map, 0);
     }
 }
