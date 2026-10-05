@@ -3970,6 +3970,8 @@ mod sound_routing_tests {
 
 #[cfg(test)]
 mod skirmish_window_tests {
+    use std::fmt::Write as _;
+
     use super::*;
     use ohl_engine::MemoryAssets;
     use ohl_engine::test_support::{AI_MAP, deathmatch_room_bsp, queue_engine_damage_from};
@@ -4021,6 +4023,94 @@ mod skirmish_window_tests {
         assert_eq!(app.game.skirmish_bots().len(), 2);
         assert_eq!(app.screen, Screen::InGame);
         assert_eq!(app.menu.pane, MenuPane::Root);
+    }
+
+    fn armed_arena_assets() -> MemoryAssets {
+        let mut assets = arena_assets();
+        assets.insert(
+            "sound/weapons/pl_gun3.wav",
+            crate::audio::fixtures::synthetic_wav(44_100),
+        );
+        assets
+    }
+
+    #[test]
+    fn skirmish_player_and_bot_shots_reach_the_mixer_as_nonzero_pcm() {
+        for human_fires in [true, false] {
+            let assets = armed_arena_assets();
+            let mut app = started(&assets, 0);
+            let human = app.game.player_entity().id();
+            let bots = app.game.skirmish_bots();
+            let mut heard = false;
+            for _ in 0..500 {
+                app.input.attack = human_fires;
+                app.tick_game(ohl_engine::TICK_SECONDS);
+                let mut mixer = app.audio.mixer().lock().expect("lock mixer");
+                let owner_is_playing = if human_fires {
+                    mixer.is_playing(human, ChannelClass::Weapon)
+                } else {
+                    bots.iter()
+                        .any(|bot| mixer.is_playing(bot.id(), ChannelClass::Weapon))
+                };
+                if owner_is_playing {
+                    let mut pcm = [0.0; 512];
+                    mixer.render(&mut pcm);
+                    assert!(pcm.iter().any(|sample| sample.abs() > 0.0001));
+                    heard = true;
+                    break;
+                }
+            }
+            assert!(heard, "skirmish gunfire reaches the window's audio runtime");
+        }
+    }
+
+    #[test]
+    fn missing_weapon_samples_do_not_interrupt_a_skirmish() {
+        let assets = arena_assets();
+        let mut app = started(&assets, 0);
+        for _ in 0..100 {
+            app.input.attack = true;
+            app.tick_game(ohl_engine::TICK_SECONDS);
+        }
+        assert!(app.game.is_skirmish());
+        assert_eq!(
+            app.audio
+                .mixer()
+                .lock()
+                .expect("lock mixer")
+                .active_channel_count(),
+            0
+        );
+    }
+
+    #[test]
+    fn skirmish_player_and_bot_pickups_reach_the_mixer() {
+        let mut assets = arena_assets();
+        let mut extra = String::new();
+        for (x, y) in CORNERS {
+            let _ = write!(
+                extra,
+                "{{\n\"classname\" \"weapon_shotgun\"\n\"origin\" \"{x} {y} 36\"\n}}\n"
+            );
+        }
+        assets.insert(
+            &format!("maps/{AI_MAP}.bsp"),
+            deathmatch_room_bsp(&CORNERS, false, &extra),
+        );
+        assets.insert(
+            "sound/items/gunpickup2.wav",
+            crate::audio::fixtures::synthetic_wav(44_100),
+        );
+        let mut app = started(&assets, 0);
+        app.tick_game(ohl_engine::TICK_SECONDS);
+        let mut mixer = app.audio.mixer().lock().expect("lock mixer");
+        assert!(mixer.is_playing(app.game.player_entity().id(), ChannelClass::Item));
+        for bot in app.game.skirmish_bots() {
+            assert!(mixer.is_playing(bot.id(), ChannelClass::Item));
+        }
+        let mut pcm = [0.0; 512];
+        mixer.render(&mut pcm);
+        assert!(pcm.iter().any(|sample| sample.abs() > 0.0001));
     }
 
     #[test]

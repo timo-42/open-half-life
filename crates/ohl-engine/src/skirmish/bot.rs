@@ -480,11 +480,17 @@ impl Bot {
         }
     }
 
-    /// The bot's own scratch presentation, drained so it never grows.
-    fn drain_scratch(&mut self) {
+    /// Sounds reach the host from the bot's own position; its scratch HUD
+    /// and viewmodel actions are discarded so they never affect the human.
+    pub(crate) fn drain_sounds(&mut self) -> Vec<ohl_gameplay::SoundCue> {
         let _ = self.presentation.drain_events();
-        let _ = self.presentation.bridge.drain_sounds().count();
         let _ = self.presentation.bridge.drain_viewmodel_actions().count();
+        let origin = self.eye().to_array();
+        self.presentation
+            .bridge
+            .drain_sounds()
+            .map(|cue| cue.at(origin, ohl_gameplay::ATTN_NORM))
+            .collect()
     }
 
     fn sync_transform(&self, level: &mut Level) {
@@ -1213,7 +1219,7 @@ impl Bot {
             reload_pressed: intent.reload,
             ..LatchedInput::default()
         };
-        let command = self.combat.weapons(
+        self.combat.weapons(
             level,
             &self.controller,
             dt,
@@ -1224,9 +1230,7 @@ impl Bot {
             &mut self.hud,
             &mut self.presentation,
             0,
-        );
-        self.drain_scratch();
-        command
+        )
     }
 
     /// Reports whether this step's projectile command was admitted.
@@ -1256,6 +1260,15 @@ impl Bot {
                 crate::pickups::apply_pickup(kind, inventory, ammo, &mut self.player)
             };
             if taken {
+                self.presentation.bridge.on_pickup(
+                    &mut self.hud,
+                    self.entity.id(),
+                    kind,
+                    ohl_combat::PickupOutcome {
+                        taken: true,
+                        ..ohl_combat::PickupOutcome::default()
+                    },
+                );
                 if let Ok(mut pickup) = level.registry.world.get::<&mut Pickup>(entity) {
                     pickup.taken = true;
                 }

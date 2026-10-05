@@ -10,6 +10,8 @@
 //! room; no bytes here come from any game installation, and every name a
 //! test reads back is project-authored (`docs/CLEAN_ROOM.md`).
 
+use std::fmt::Write as _;
+
 use glam::Vec3;
 use ohl_engine::skirmish::{
     BotBody, HUMAN_NAME, INTERMISSION_SECONDS, RESPAWN_CLICK_DELAY_SECONDS, WEAPON_RESPAWN_SECONDS,
@@ -137,6 +139,113 @@ fn everyone_spawns_at_a_deathmatch_point_with_the_deathmatch_equipment() {
     assert_eq!(inventory.selected(), Some(ohl_combat::WeaponId::Glock));
     assert!(inventory.clip(ohl_combat::WeaponId::Glock) > 0, "loaded");
     assert!(game.skirmish_nav_node_count().unwrap() > 50);
+}
+
+#[test]
+fn human_gunfire_names_a_playable_sample_at_the_listener() {
+    let mut game = skirmish(&CORNERS, "", quiet(0));
+    let events = tick(
+        &mut game,
+        0.5,
+        &Input {
+            attack: true,
+            ..Input::default()
+        },
+    );
+    let cue = events
+        .iter()
+        .find_map(|event| match event {
+            GameEvent::Sound(cue) if cue.class == ohl_engine::ChannelClass::Weapon => Some(cue),
+            _ => None,
+        })
+        .expect("firing emits a weapon cue");
+    assert_eq!(cue.entity, game.player_entity().id());
+    assert_eq!(
+        cue.asset,
+        ohl_engine::SoundAsset::file("sound/weapons/pl_gun3.wav")
+    );
+    assert!(cue.origin.is_none());
+    assert!(cue.one_shot);
+}
+
+#[test]
+fn bot_gunfire_reaches_the_host_from_its_own_position() {
+    let mut game = skirmish(
+        &CORNERS,
+        "",
+        SkirmishConfig {
+            bot_skill: BotSkill::Hard,
+            ..quiet(2)
+        },
+    );
+    let bots = game.skirmish_bots();
+    let mut heard = false;
+    for _ in 0..500 {
+        let events = game.tick(TICK_SECONDS, &Input::default());
+        assert!(
+            !events.contains(&GameEvent::ViewModel(ohl_gameplay::ViewModelAction::Fire)),
+            "a bot does not animate the human's viewmodel"
+        );
+        for event in events {
+            let GameEvent::Sound(cue) = event else {
+                continue;
+            };
+            if cue.class != ohl_engine::ChannelClass::Weapon {
+                continue;
+            }
+            let bot = bots
+                .iter()
+                .find(|bot| bot.id() == cue.entity)
+                .expect("the idle human hears another combatant's weapon");
+            assert!(!cue.asset.is_unresolved());
+            assert!(cue.one_shot);
+            let origin = Vec3::from_array(cue.origin.expect("bot sounds are spatialised"));
+            assert!(
+                origin
+                    .truncate()
+                    .distance(origin_of(&game, *bot).truncate())
+                    < 0.001
+            );
+            assert!((cue.attenuation - ohl_engine::ATTN_NORM).abs() < f32::EPSILON);
+            heard = true;
+        }
+        if heard {
+            break;
+        }
+    }
+    assert!(heard, "bots fighting must emit audible weapon cues");
+}
+
+#[test]
+fn a_bot_taking_a_pickup_emits_its_sound_in_the_same_tick() {
+    let mut extra = String::new();
+    for (x, y) in CORNERS {
+        let _ = write!(
+            extra,
+            "{{\n\"classname\" \"weapon_shotgun\"\n\"origin\" \"{x} {y} 36\"\n}}\n"
+        );
+    }
+    let mut game = skirmish(&CORNERS, &extra, quiet(2));
+    let bots = game.skirmish_bots();
+    let events = game.tick(TICK_SECONDS, &Input::default());
+    let cue = events
+        .iter()
+        .find_map(|event| match event {
+            GameEvent::Sound(cue)
+                if cue.class == ohl_engine::ChannelClass::Item
+                    && bots.iter().any(|bot| bot.id() == cue.entity) =>
+            {
+                Some(cue)
+            }
+            _ => None,
+        })
+        .expect("a bot picks up the weapon at its spawn");
+    assert_eq!(
+        cue.asset,
+        ohl_engine::SoundAsset::file("sound/items/gunpickup2.wav")
+    );
+    assert!(cue.origin.is_some());
+    assert!(cue.one_shot);
 }
 
 #[test]

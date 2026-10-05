@@ -14,11 +14,10 @@
 //!   entity, an `ohl_audio::ChannelClass`, an optional asset path — rather
 //!   than an `ohl_audio::PlayRequest` itself, since this crate never
 //!   decodes a sound file and so has no `Arc<SoundBuffer>` to put in one;
-//!   see the module docs for the full reasoning. Every asset path this
-//!   package ships is `None`: no source this project may use publishes
-//!   Half-Life's sound file layout as reusable data, and
-//!   `docs/CLEAN_ROOM.md` rule 7 requires a clean-room provenance review
-//!   before any such literal enters source.
+//!   see the module docs for the full reasoning. The bounded weapon/pickup
+//!   lookup uses identifiers reviewed from public documentation; see
+//!   `docs/FORMAT_SOURCES.md`, "Skirmish sky and combat sound compatibility".
+//!   Unmapped categories remain unresolved.
 //! - [`viewmodel::ViewModelAction`][]: `Draw`/`Idle`/`Fire`/`Reload`/`Holster`,
 //!   this project's own closed vocabulary for "which animation should the
 //!   viewmodel play next" (the actual viewmodel rendering is later M7

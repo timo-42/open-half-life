@@ -419,6 +419,40 @@ container parsing rules themselves still require the public-source provenance
 demanded in the next section. All test fixtures are synthetic PE headers this
 project writes in-process (`ohl_import::testing::synthetic_pe`).
 
+## Skirmish sky and combat sound compatibility (reviewed 2026-10-05)
+
+The mapping tutorial ["Annexe : les skys"](https://sdzv1.s3.us-east-2.amazonaws.com/backup/wc/annexes/skys.html)
+documents `desert` as Half-Life's default sky for an empty or invalid sky
+setting. This admits that identifier and the default-sky fallback in
+`ohl-engine::level`. Explicit, available map skies still take precedence;
+an unavailable default remains optional. Tests use independently authored
+one-pixel images, never game textures.
+
+Falko Hartmann's public [Admin Mod Kompendium](https://forum.adminmod.de/doku/adminmod-handbuch.pdf)
+(10 March 2012), appendix B.4, is user documentation, not engine source.
+Sections B.4.38 (printed p. 427) and B.4.26 (printed p. 417) publish the
+following directory and filename identifiers. This review admits only these
+short factual identifiers for runtime lookups; no prose, code, PCM, archive
+listing from private media, or game content is incorporated:
+
+| Directory below `sound/` | Admitted filenames |
+| --- | --- |
+| `weapons/` | `cbar_miss1.wav`, `pl_gun3.wav`, `357_shot1.wav`, `hks1.wav`, `sbarrel1.wav`, `xbow_fire1.wav`, `rocketfire1.wav`, `gauss2.wav`, `egon_run3.wav`, `357_reload1.wav`, `xbow_reload1.wav`, `reload1.wav`, `dryfire1.wav` |
+| `items/` | `cliprelease1.wav`, `gunpickup2.wav`, `ammopickup1.wav`, `smallmedkit1.wav` |
+
+The document establishes the identifiers' public provenance, not exact
+weapon associations or original playback timing. `ohl-gameplay`'s bounded
+mapping from its existing fire/reload/empty and taken-pickup events is
+project-authored compatibility behavior, inferred from these names. It uses
+normal gain and pitch, one selected sample per cue, and no new simulation
+timing. These action samples play once even when a WAV carries loop markers;
+map ambience still honors those markers. Unmapped actions remain unresolved
+and missing samples remain silent. Bot weapon and pickup cues use their own
+entity and current world position; human cues retain listener-relative playback. Tests publish
+synthetic WAVs under these reviewed identifiers and verify decoded mixer
+output. Chargers, impacts, footsteps, and pain/death audio remain separate
+producer/mapping work.
+
 ## Rendering conventions
 
 M3.4 (`crates/ohl-world/src/sky.rs`, `src/water.rs`, `src/sprite.rs` and

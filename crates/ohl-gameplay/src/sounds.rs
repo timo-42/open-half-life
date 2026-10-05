@@ -1,5 +1,4 @@
-//! Sound cues, the asset a cue names, and the (still all-`None`)
-//! per-weapon/pickup/charger asset-path lookup table.
+//! Sound cues, the asset a cue names, and reviewed weapon/pickup lookups.
 //!
 //! [`SoundCue`] is this crate's own lightweight "please play this" record —
 //! an owning entity, an `ohl_audio::ChannelClass`, the asset it names and
@@ -27,8 +26,10 @@
 //! a suit charger hums. **No path literal here is drawn from any user
 //! medium.** `docs/CLEAN_ROOM.md` rule 7 requires an explicit clean-room
 //! provenance review before any name or path literal derived from user
-//! media enters source. The lookups below remain `None` with explicit
-//! `TODO(black-box)` gaps. A separate public provenance review approved a
+//! media enters source. A bounded public documentation review admits the
+//! weapon/pickup identifiers below (see `docs/FORMAT_SOURCES.md`, "Skirmish
+//! sky and combat sound compatibility"). Unmapped actions remain unresolved.
+//! A separate public provenance review approved a
 //! small HEV sentence-identifier subset; engine presentation resolves those
 //! identifiers through the runtime sentence table, not a hardcoded WAV table.
 //! See `docs/FORMAT_SOURCES.md`, "Bounded HEV damage sentence audio".
@@ -79,8 +80,7 @@ impl SoundAsset {
         Self::Sentence(Arc::from(words))
     }
 
-    /// A file cue from one of this module's `*_sound_path` lookups, which
-    /// are all `None` today.
+    /// A file cue from one of this module's reviewed `*_sound_path` lookups.
     #[must_use]
     pub fn from_static(path: Option<&'static str>) -> Self {
         match path {
@@ -123,6 +123,9 @@ pub struct SoundCue {
     /// Stop whatever this `(entity, class)` pair is playing instead of
     /// starting anything. What turning an `ambient_generic` back off does.
     pub stop: bool,
+    /// Play the sample once even if its WAV carries loop markers. Weapon
+    /// and pickup actions use this; map ambience retains the sample's loop.
+    pub one_shot: bool,
 }
 
 impl SoundCue {
@@ -139,7 +142,15 @@ impl SoundCue {
             pitch: 1.0,
             attenuation: ATTN_NORM,
             stop: false,
+            one_shot: false,
         }
+    }
+
+    /// Plays this cue once, ignoring sample loop markers.
+    #[must_use]
+    pub fn once(mut self) -> Self {
+        self.one_shot = true;
+        self
     }
 
     /// The same cue, spatialised at `origin` with `attenuation`.
@@ -168,22 +179,45 @@ impl SoundCue {
     }
 }
 
-/// The asset path for `weapon`'s `cue` sound. **To be black-box observed**:
-/// see the module docs. Always `None` today.
-// TODO(black-box): fill in once a clean-room provenance review admits a
-// per-weapon sound asset path.
+/// A reviewed sample for an existing weapon cue. The mapping is
+/// project-authored; exact original variants/timing remain unmeasured.
+/// See `docs/FORMAT_SOURCES.md`, "Skirmish sky and combat sound compatibility".
 #[must_use]
-pub const fn weapon_sound_path(_weapon: WeaponId, _cue: WeaponCue) -> Option<&'static str> {
-    None
+pub const fn weapon_sound_path(weapon: WeaponId, cue: WeaponCue) -> Option<&'static str> {
+    use WeaponCue::{Empty, Fire, Reload};
+    use WeaponId::{Crossbow, Crowbar, Egon, Gauss, Glock, Mp5, Python, Rpg, Shotgun};
+    match (weapon, cue) {
+        (Crowbar, Fire) => Some("sound/weapons/cbar_miss1.wav"),
+        (Glock, Fire) => Some("sound/weapons/pl_gun3.wav"),
+        (Python, Fire) => Some("sound/weapons/357_shot1.wav"),
+        (Mp5, Fire) => Some("sound/weapons/hks1.wav"),
+        (Shotgun, Fire) => Some("sound/weapons/sbarrel1.wav"),
+        (Crossbow, Fire) => Some("sound/weapons/xbow_fire1.wav"),
+        (Rpg, Fire) => Some("sound/weapons/rocketfire1.wav"),
+        (Gauss, Fire) => Some("sound/weapons/gauss2.wav"),
+        (Egon, Fire) => Some("sound/weapons/egon_run3.wav"),
+        (Glock | Mp5, Reload) => Some("sound/items/cliprelease1.wav"),
+        (Python, Reload) => Some("sound/weapons/357_reload1.wav"),
+        (Shotgun, Reload) => Some("sound/weapons/reload1.wav"),
+        (Crossbow, Reload) => Some("sound/weapons/xbow_reload1.wav"),
+        (Glock | Python | Mp5 | Shotgun | Crossbow | Rpg | Gauss | Egon, Empty) => {
+            Some("sound/weapons/dryfire1.wav")
+        }
+        _ => None,
+    }
 }
 
-/// The asset path for `kind`'s pickup sound. **To be black-box observed**;
-/// see [`weapon_sound_path`].
-// TODO(black-box): fill in once a clean-room provenance review admits a
-// pickup sound asset path.
+/// A reviewed sample for a taken pickup; see [`weapon_sound_path`].
 #[must_use]
-pub const fn pickup_sound_path(_kind: PickupKind) -> Option<&'static str> {
-    None
+pub const fn pickup_sound_path(kind: PickupKind) -> Option<&'static str> {
+    match kind {
+        PickupKind::Weapon(_) | PickupKind::Battery | PickupKind::LongJump => {
+            Some("sound/items/gunpickup2.wav")
+        }
+        PickupKind::Ammo(_) | PickupKind::WeaponBox => Some("sound/items/ammopickup1.wav"),
+        PickupKind::HealthKit => Some("sound/items/smallmedkit1.wav"),
+        _ => None,
+    }
 }
 
 /// The asset path for a health/suit charger's use loop. **To be black-box
@@ -202,12 +236,12 @@ mod tests {
     use ohl_combat::{PickupKind, WeaponId};
 
     #[test]
-    fn no_built_in_asset_path_is_shipped_without_a_provenance_review() {
+    fn unmapped_actions_remain_unresolved() {
         assert_eq!(
-            weapon_sound_path(WeaponId::Glock, crate::viewmodel::WeaponCue::Fire),
+            weapon_sound_path(WeaponId::Glock, crate::viewmodel::WeaponCue::Holster),
             None
         );
-        assert_eq!(pickup_sound_path(PickupKind::HealthKit), None);
+        assert_eq!(pickup_sound_path(PickupKind::Suit), None);
         assert_eq!(charger_sound_path(), None);
         assert!(SoundAsset::from_static(None).is_unresolved());
     }
