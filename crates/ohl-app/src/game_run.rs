@@ -16,23 +16,27 @@ use std::time::{Duration, Instant};
 
 #[cfg(feature = "dev-tools")]
 use glam::Vec3;
-use ohl_engine::{AssetFsSource, AssetSource, Game, GameConfig, GameEvent, Input, RenderTarget};
+use ohl_engine::{
+    AssetFsSource, AssetSource, ChannelClass, Game, GameConfig, GameEvent, Input, RenderTarget,
+};
 use ohl_render::{GpuContext, OFFSCREEN_FORMAT, OffscreenTarget, WindowSurface, wgpu};
 use ohl_ui::{
     UiLayer,
+    bindings::{Action, Binding},
     console::Console,
     debug::GraphicsDebugInfo,
     hud::HudState,
     menu::{
-        BotSkill as MenuBotSkill, Difficulty as MenuDifficulty, MenuAction, MenuPane, MenuState,
-        Mission, Screen,
+        BotSkill as MenuBotSkill, ChapterEntry, Difficulty as MenuDifficulty, DisplayMode,
+        DisplaySettings, LevelEntry, MenuAction, MenuData, MenuPane, MenuState, OptionsState,
+        Resolution, SaveEntry, Screen,
     },
 };
 use winit::application::ApplicationHandler;
-use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
+use winit::event::{DeviceEvent, DeviceId, ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{CursorGrabMode, Window, WindowId};
+use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
 use crate::audio::AudioRuntime;
 use crate::frame_profile::{FrameProfile, FrameSample, LiveFrameProfile};
@@ -1741,29 +1745,181 @@ fn capture(
     Ok(())
 }
 
-/// Opens a window and runs the menu/game loop until the player quits.
-fn menu_missions() -> Vec<Mission> {
-    std::iter::once(Mission {
-        title: "Hazard Course",
-        map: ohl_campaign::TRAINMAP,
-    })
-    .chain(ohl_campaign::CHAPTERS.iter().filter_map(|chapter| {
-        chapter.maps.first().map(|map| Mission {
-            title: chapter.title,
-            map,
-        })
-    }))
+/// The level-select pane's chapters: the Hazard Course, then every chapter
+/// `ohl-campaign` lists, each level marked by whether `published` (the
+/// payload's sorted bare map names) holds it.
+fn menu_chapters(published: &[String]) -> Vec<ChapterEntry> {
+    let entry = |title: &'static str, maps: &'static [&'static str]| ChapterEntry {
+        title,
+        levels: maps
+            .iter()
+            .map(|&map| LevelEntry {
+                map,
+                available: map_published(published, map),
+            })
+            .collect(),
+    };
+    std::iter::once(entry(
+        "Hazard Course",
+        ohl_campaign::chapters::HAZARD_COURSE_MAPS,
+    ))
+    .chain(
+        ohl_campaign::CHAPTERS
+            .iter()
+            .map(|chapter| entry(chapter.title, chapter.maps)),
+    )
     .collect()
 }
 
+/// Whether `map` is among `published` (sorted, lower-case bare names, as
+/// `crate::skirmish::published_map_names` lists them). An empty list means
+/// the host does not know, so every map counts as published.
+fn map_published(published: &[String], map: &str) -> bool {
+    let map = map.to_ascii_lowercase();
+    published.is_empty() || published.binary_search(&map).is_ok()
+}
+
+/// How long ago something happened, for the load pane.
+fn age_text(seconds: u64) -> String {
+    match seconds {
+        0..60 => "just now".to_owned(),
+        60..3_600 => format!("{} min ago", seconds / 60),
+        3_600..86_400 => format!("{} h ago", seconds / 3_600),
+        86_400..172_800 => "yesterday".to_owned(),
+        _ => format!("{} days ago", seconds / 86_400),
+    }
+}
+
+/// The load pane's list: every save in `slot`, newest first. The chapter
+/// and map names come from the user's own save files and are only shown,
+/// never logged.
+fn save_entries(slot: &ohl_save::SaveSlot, now: u64) -> Vec<SaveEntry> {
+    let mut listed = slot.list(&ohl_save::Limits::default()).unwrap_or_default();
+    listed.sort_by(|a, b| {
+        b.header
+            .created_at_unix_secs
+            .cmp(&a.header.created_at_unix_secs)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    listed
+        .into_iter()
+        .map(|listing| {
+            let kind = match listing.name.as_str() {
+                ohl_save::QUICKSAVE_SLOT_NAME => "Quick save",
+                ohl_save::AUTOSAVE_SLOT_NAME => "Autosave",
+                other => other,
+            };
+            let age = age_text(now.saturating_sub(listing.header.created_at_unix_secs));
+            SaveEntry {
+                title: listing.header.title,
+                detail: format!("{kind}  ·  {}  ·  {age}", listing.header.map_identity),
+                slot: listing.name,
+            }
+        })
+        .collect()
+}
+
+/// Window sizes the video options offer beside whatever the monitor
+/// itself reports.
+const COMMON_RESOLUTIONS: [(u32, u32); 9] = [
+    (1024, 768),
+    (1280, 720),
+    (1280, 800),
+    (1366, 768),
+    (1600, 900),
+    (1680, 1050),
+    (1920, 1080),
+    (2560, 1440),
+    (3840, 2160),
+];
+
+/// The resolutions the video options offer for `window`'s monitor,
+/// largest first: its own video modes plus the common sizes that fit it.
+fn display_resolutions(window: &Window) -> Vec<Resolution> {
+    let monitor = window.current_monitor();
+    let largest = monitor
+        .as_ref()
+        .map(winit::monitor::MonitorHandle::size)
+        .filter(|size| size.width > 0 && size.height > 0);
+    let mut list: Vec<Resolution> = monitor
+        .iter()
+        .flat_map(winit::monitor::MonitorHandle::video_modes)
+        .map(|mode| Resolution::new(mode.size().width, mode.size().height))
+        .chain(
+            COMMON_RESOLUTIONS
+                .iter()
+                .map(|&(width, height)| Resolution::new(width, height))
+                .filter(|resolution| {
+                    largest.is_none_or(|max| {
+                        resolution.width <= max.width && resolution.height <= max.height
+                    })
+                }),
+        )
+        .filter(|resolution| {
+            (Resolution::MIN..=Resolution::MAX).contains(&resolution.width)
+                && (Resolution::MIN..=Resolution::MAX).contains(&resolution.height)
+        })
+        .collect();
+    list.sort_by(|a, b| b.cmp(a));
+    list.dedup();
+    list
+}
+
+/// Puts `window` in `display`'s mode. Exclusive fullscreen uses the
+/// monitor's best video mode of the chosen size and falls back to
+/// borderless when the monitor has none (or reports no modes at all).
+fn apply_display(window: &Window, display: DisplaySettings) {
+    let resolution = display.resolution;
+    match display.mode {
+        DisplayMode::Windowed => {
+            window.set_fullscreen(None);
+            let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(
+                resolution.width,
+                resolution.height,
+            ));
+        }
+        DisplayMode::Borderless => {
+            window.set_fullscreen(Some(Fullscreen::Borderless(window.current_monitor())));
+        }
+        DisplayMode::Fullscreen => {
+            let mode = window.current_monitor().and_then(|monitor| {
+                monitor
+                    .video_modes()
+                    .filter(|mode| {
+                        mode.size()
+                            == winit::dpi::PhysicalSize::new(resolution.width, resolution.height)
+                    })
+                    .max_by_key(|mode| (mode.refresh_rate_millihertz(), mode.bit_depth()))
+            });
+            window.set_fullscreen(Some(match mode {
+                Some(mode) => Fullscreen::Exclusive(mode),
+                None => Fullscreen::Borderless(window.current_monitor()),
+            }));
+        }
+    }
+}
+
+/// The engine's own mouse turn rate corresponds to this sensitivity, so
+/// the default setting leaves mouselook exactly as it was.
+const BASE_SENSITIVITY: f32 = 3.0;
+
+/// Opens a window and runs the menu/game loop until the player quits.
 #[allow(clippy::needless_pass_by_value)]
 fn windowed(game: Game, source: &AssetFsSource, args: &GameArgs<'_>) -> Result<(), &'static str> {
     let event_loop = EventLoop::new().map_err(|_| "no window system is available")?;
     event_loop.set_control_flow(ControlFlow::Poll);
+    let settings_path = crate::settings::default_path();
+    let options = settings_path
+        .as_deref()
+        .map_or_else(OptionsState::default, crate::settings::load);
+    let all_maps = crate::skirmish::published_map_names(source.asset_fs());
     let mut app = App {
         saves: save_slot_dir(),
         profile: args.profile_frames.then(FrameProfile::default),
-        all_maps: crate::skirmish::published_map_names(source.asset_fs()),
+        chapters: menu_chapters(&all_maps),
+        all_maps,
+        menu: MenuState::with_options(options),
+        settings_path,
         ..App::new(
             game,
             source,
@@ -1784,6 +1940,7 @@ fn windowed(game: Game, source: &AssetFsSource, args: &GameArgs<'_>) -> Result<(
             },
         )
     };
+    app.apply_options();
     event_loop
         .run_app(&mut app)
         .map_err(|_| "the window event loop stopped unexpectedly")?;
@@ -1817,13 +1974,26 @@ struct App<'a> {
     /// The output device, mixer and sound-asset cache. See `crate::audio`.
     audio: AudioRuntime,
     input: Input,
-    /// Whether "use" was already down as of the last keyboard event, so the
-    /// one-frame press edge is not re-latched by key repeat.
-    key_use_down: bool,
+    /// Which bound actions are held down, by [`Action::index`], so the
+    /// movement axes and the "use" press edge follow the keys themselves.
+    held: [bool; Action::ALL.len()],
     console: Console,
     screen: Screen,
+    /// The menu's navigation and every option the player has set.
     menu: MenuState,
-    missions: Vec<Mission>,
+    /// The pane the menu showed last frame, to notice it changing.
+    last_pane: MenuPane,
+    /// Where the options are saved, when the platform has a configuration
+    /// directory; `None` in a test, which never touches the disk.
+    settings_path: Option<PathBuf>,
+    /// Whether the options changed since they were last saved.
+    settings_dirty: bool,
+    /// The level-select pane's chapters.
+    chapters: Vec<ChapterEntry>,
+    /// The load pane's saves, listed when it opens.
+    save_entries: Vec<SaveEntry>,
+    /// The resolutions the video options offer for the window's monitor.
+    resolutions: Vec<Resolution>,
     /// Every map the payload publishes, by bare name; the skirmish pane's
     /// candidates. Empty in a test window.
     all_maps: Vec<String>,
@@ -1832,19 +2002,16 @@ struct App<'a> {
     skirmish_maps: Option<Vec<String>>,
     /// Whether the scoreboard key is held.
     scoreboard_held: bool,
-    /// Whether the primary and secondary fire buttons are down. The input's
-    /// own `attack`/`attack2` keep a press until the next tick, so a click
-    /// released inside one frame still fires.
-    attack_held: bool,
-    attack2_held: bool,
     config: GameConfig,
     quit_requested: bool,
-    /// Toggled with `P`; this overlay never captures gameplay input.
-    debug_open: bool,
     live_profile: LiveFrameProfile,
     hud: HudState,
     state: Option<Active>,
     last_frame: Instant,
+    /// When the next frame is due under the frame-rate cap. It advances by
+    /// whole frame intervals, so the time it takes to wake up for a frame
+    /// is not added to every frame's length.
+    next_frame: Instant,
     fps_window_start: Instant,
     frames: u32,
     profile: Option<FrameProfile>,
@@ -1895,8 +2062,9 @@ fn draw_graphics_debug(
 
 impl<'a> App<'a> {
     /// A window-less app over `game`: no save directory, no frame
-    /// profile, and no window until winit hands it one. `audio` is the
-    /// caller's choice, so a test can drive the same loop silently.
+    /// profile, default options, no settings file, and no window until
+    /// winit hands it one. `audio` is the caller's choice, so a test can
+    /// drive the same loop silently.
     fn new(
         game: Game,
         source: &'a dyn AssetSource,
@@ -1910,23 +2078,26 @@ impl<'a> App<'a> {
             saves: None,
             audio,
             input: Input::default(),
-            key_use_down: false,
+            held: [false; Action::ALL.len()],
             console: Console::new(),
             screen,
             menu: MenuState::new(),
-            missions: menu_missions(),
+            last_pane: MenuPane::Root,
+            settings_path: None,
+            settings_dirty: false,
+            chapters: menu_chapters(&[]),
+            save_entries: Vec::new(),
+            resolutions: Vec::new(),
             all_maps: Vec::new(),
             skirmish_maps: None,
             scoreboard_held: false,
-            attack_held: false,
-            attack2_held: false,
             config,
             quit_requested: false,
-            debug_open: false,
             live_profile: LiveFrameProfile::default(),
             hud: HudState::default(),
             state: None,
             last_frame: Instant::now(),
+            next_frame: Instant::now(),
             fps_window_start: Instant::now(),
             frames: 0,
             profile: None,
@@ -1958,6 +2129,19 @@ impl<'a> App<'a> {
         active.window.set_cursor_visible(capture.release_cursor);
     }
 
+    /// Leaves the menu for a game that just started (or was loaded): the
+    /// game being left stops sounding and its HUD is cleared.
+    fn enter_new_game(&mut self, game: Game) {
+        self.game = game;
+        // As at a level change: the new game announces its own ambience
+        // from its first tick, and nothing would ever stop a loop the old
+        // one had started.
+        self.audio.stop_all();
+        self.hud = HudState::default();
+        self.menu.reset();
+        self.set_screen(Screen::InGame);
+    }
+
     fn handle_menu_actions(&mut self, actions: Vec<MenuAction>) {
         for action in actions {
             match action {
@@ -1968,27 +2152,24 @@ impl<'a> App<'a> {
                         MenuDifficulty::Hard => ohl_campaign::Difficulty::Hard,
                     };
                     if let Ok(game) = Game::load_with(self.source, map, &self.config) {
-                        self.game = game;
-                        // The mission being left stops sounding, as at a
-                        // level change: the new game announces its own
-                        // ambience from its first tick, and nothing would
-                        // ever stop a loop the old one had started.
-                        self.audio.stop_all();
-                        self.hud = HudState::default();
-                        self.menu.pane = MenuPane::Root;
-                        self.set_screen(Screen::InGame);
+                        self.enter_new_game(game);
                         tracing::info!("Single-player mission started.");
                     } else {
                         tracing::warn!("The selected mission could not be loaded.");
+                        self.menu.notify("That level could not be loaded.");
                     }
                 }
+                MenuAction::LoadSave(slot) => self.load_save(&slot),
                 MenuAction::Resume => self.set_screen(Screen::InGame),
+                MenuAction::ReturnToMainMenu => self.return_to_main_menu(),
                 MenuAction::Quit => self.quit_requested = true,
-                MenuAction::SaveGame => self.quicksave(),
-                MenuAction::LoadGame => self.quickload(),
-                // The options screen's volume slider scales the whole mix,
-                // sounds already playing included.
-                MenuAction::SetVolume(volume) => self.audio.set_volume(volume),
+                MenuAction::SaveGame => {
+                    if self.quicksave() {
+                        self.menu.notify("Game saved.");
+                    } else {
+                        self.menu.notify("The game could not be saved.");
+                    }
+                }
                 MenuAction::StartSkirmish {
                     map,
                     bots,
@@ -1996,8 +2177,70 @@ impl<'a> App<'a> {
                     frag_limit,
                     time_limit_minutes,
                 } => self.start_skirmish(&map, bots, skill, frag_limit, time_limit_minutes),
-                MenuAction::SetSensitivity(_) | MenuAction::SetFov(_) => {}
+                // LAN play does not exist yet; the panes are previews. The
+                // address and server name are the user's own and are never
+                // logged.
+                MenuAction::HostLanServer(_) => {
+                    tracing::info!("LAN hosting is not implemented yet.");
+                    self.menu
+                        .notify("Hosting LAN games is not available yet. Try a skirmish!");
+                }
+                MenuAction::JoinLanServer { .. } => {
+                    tracing::info!("Joining LAN games is not implemented yet.");
+                    self.menu.notify("Joining LAN games is not available yet.");
+                }
+                MenuAction::OptionsChanged => {
+                    self.apply_options();
+                    self.settings_dirty = true;
+                }
+                MenuAction::ApplyDisplay(display) => {
+                    if let Some(active) = self.state.as_ref() {
+                        apply_display(&active.window, display);
+                    }
+                    self.settings_dirty = true;
+                }
             }
+        }
+    }
+
+    /// Applies every live option: the volumes, vertical sync, the
+    /// crosshair and whether the console may stay open. Mouse settings,
+    /// the field of view and the frame-rate cap are read where they are
+    /// used, and the display mode only on APPLY or at startup.
+    fn apply_options(&mut self) {
+        let options = &self.menu.options;
+        let audio = options.audio;
+        self.audio.set_volume(audio.master);
+        for class in ChannelClass::ALL {
+            let volume = match class {
+                ChannelClass::Voice => audio.voice,
+                ChannelClass::Static | ChannelClass::Stream => audio.ambience,
+                ChannelClass::Auto
+                | ChannelClass::Weapon
+                | ChannelClass::Item
+                | ChannelClass::Body => audio.effects,
+            };
+            self.audio.set_class_volume(class, volume);
+        }
+        if let Some(active) = self.state.as_mut() {
+            active
+                .surface
+                .set_vsync(&active.context, options.video.vsync);
+        }
+        self.hud.show_crosshair = options.gameplay.crosshair;
+        if !options.gameplay.console && self.console.is_open() {
+            self.console.set_open(false);
+        }
+    }
+
+    /// Writes the options to the settings file if they changed.
+    fn save_settings(&mut self) {
+        if !self.settings_dirty {
+            return;
+        }
+        self.settings_dirty = false;
+        if let Some(path) = self.settings_path.as_deref() {
+            crate::settings::save(path, &self.menu.options);
         }
     }
 
@@ -2024,22 +2267,34 @@ impl<'a> App<'a> {
             ..ohl_engine::SkirmishConfig::default()
         };
         if let Ok(game) = Game::load_skirmish(self.source, map, &self.config, &skirmish) {
-            self.game = game;
-            self.audio.stop_all();
-            self.hud = HudState::default();
-            self.menu.pane = MenuPane::Root;
-            self.set_screen(Screen::InGame);
+            self.enter_new_game(game);
             tracing::info!("Skirmish started.");
         } else {
             tracing::warn!("The selected skirmish map could not be started.");
+            self.menu.notify("That map could not be started.");
         }
     }
 
-    /// Finds the payload's deathmatch maps the first time the skirmish
-    /// pane is open (it reads every published map's entity lump, so not
-    /// before anyone asks).
-    fn find_skirmish_maps(&mut self) {
-        if self.menu.pane == MenuPane::Multiplayer && self.skirmish_maps.is_none() {
+    /// Refreshes what a pane lists when the player opens it: the saves for
+    /// the load pane, and (once, since it reads every published map's
+    /// entity lump) the deathmatch maps for the skirmish and LAN server
+    /// panes.
+    fn refresh_menu_data(&mut self) {
+        let pane = self.menu.pane;
+        if pane != self.last_pane {
+            self.last_pane = pane;
+            if pane == MenuPane::LoadGame {
+                self.save_entries = self
+                    .saves
+                    .as_ref()
+                    .map(|slot| save_entries(slot, now_unix_secs()))
+                    .unwrap_or_default();
+                self.menu.selected_save = None;
+            }
+        }
+        if matches!(pane, MenuPane::Skirmish | MenuPane::CreateServer)
+            && self.skirmish_maps.is_none()
+        {
             self.skirmish_maps = Some(crate::skirmish::deathmatch_maps(
                 self.source,
                 &self.all_maps,
@@ -2047,71 +2302,81 @@ impl<'a> App<'a> {
         }
     }
 
-    /// Leaves a finished skirmish for the main menu.
-    fn leave_skirmish(&mut self) {
+    /// Leaves the game for the main menu: it stops ticking (`Self::draw`
+    /// only ticks it in game) and sounding, and its HUD is cleared.
+    fn return_to_main_menu(&mut self) {
         self.audio.stop_all();
         self.hud = HudState::default();
-        self.menu.pane = MenuPane::Root;
+        self.menu.reset();
         self.set_screen(Screen::MainMenu);
     }
 
-    fn set_axis(&mut self, key: KeyCode, pressed: bool) {
-        let value = i8::from(pressed);
-        match key {
-            KeyCode::KeyW => self.input.forward = value,
-            KeyCode::KeyS => self.input.forward = -value,
-            KeyCode::KeyD => self.input.right = value,
-            KeyCode::KeyA => self.input.right = -value,
-            KeyCode::Space => {
-                self.input.up = value;
-                self.input.jump = pressed;
-            }
-            KeyCode::ControlLeft => {
-                self.input.up = -value;
-                self.input.duck = pressed;
-            }
-            _ => {}
-        }
+    /// Whether `action` is held down.
+    fn is_held(&self, action: Action) -> bool {
+        self.held[action.index()]
     }
 
-    /// The weapon and HUD keys: `R` reloads, `1`-`5` pick a HUD weapon
-    /// slot, `F` toggles the flashlight, and `Tab` shows the skirmish
-    /// scoreboard while held. Returns whether `code` was one of them.
-    fn weapon_key(&mut self, code: KeyCode, pressed: bool, repeat: bool) -> bool {
-        let edge = pressed && !repeat;
-        let slot = match code {
-            KeyCode::Digit1 => Some(1),
-            KeyCode::Digit2 => Some(2),
-            KeyCode::Digit3 => Some(3),
-            KeyCode::Digit4 => Some(4),
-            KeyCode::Digit5 => Some(5),
+    /// Acts on a bound key or mouse button going down (`pressed`) or up.
+    /// `repeat` marks a held key's auto-repeat, which is never a new press.
+    fn handle_action(&mut self, action: Action, pressed: bool, repeat: bool) {
+        let edge = pressed && !repeat && !self.is_held(action);
+        self.held[action.index()] = pressed;
+        let slot = match action {
+            Action::Weapon1 => Some(1),
+            Action::Weapon2 => Some(2),
+            Action::Weapon3 => Some(3),
+            Action::Weapon4 => Some(4),
+            Action::Weapon5 => Some(5),
             _ => None,
         };
         if let Some(slot) = slot {
             if edge {
                 self.input.select_slot = Some(slot);
             }
-            return true;
+            return;
         }
-        match code {
-            KeyCode::KeyR => self.input.reload |= edge,
-            KeyCode::KeyF => self.input.flashlight_pressed |= edge,
-            KeyCode::Tab => self.scoreboard_held = pressed,
-            _ => return false,
+        match action {
+            Action::MoveForward
+            | Action::MoveBack
+            | Action::MoveLeft
+            | Action::MoveRight
+            | Action::Jump
+            | Action::Duck => self.update_movement(),
+            Action::Use => {
+                self.input.use_pressed |= edge;
+                self.input.use_held = pressed;
+            }
+            // A press reaches the next tick even when the button is let go
+            // before it (`Self::tick_game` then puts the held state back).
+            Action::Attack => self.input.attack |= pressed,
+            Action::Attack2 => self.input.attack2 |= pressed,
+            Action::Reload => self.input.reload |= edge,
+            Action::Flashlight => self.input.flashlight_pressed |= edge,
+            Action::Scoreboard => self.scoreboard_held = pressed,
+            Action::QuickSave if edge => {
+                self.quicksave();
+            }
+            Action::QuickLoad if edge => self.quickload(),
+            Action::PerformanceOverlay if edge => {
+                let overlay = &mut self.menu.options.video.performance_overlay;
+                *overlay = !*overlay;
+                self.settings_dirty = true;
+            }
+            _ => {}
         }
-        true
     }
 
-    /// The fire buttons: a press reaches the next tick even when the
-    /// button is let go before it, then the held state takes over.
-    fn fire_button(&mut self, button: MouseButton, pressed: bool) {
-        let (input, held) = match button {
-            MouseButton::Left => (&mut self.input.attack, &mut self.attack_held),
-            MouseButton::Right => (&mut self.input.attack2, &mut self.attack2_held),
-            _ => return,
+    /// Recomputes the movement axes from the held movement actions, so
+    /// releasing one of two opposite keys leaves the other in effect.
+    fn update_movement(&mut self) {
+        let axis = |app: &Self, positive: Action, negative: Action| {
+            i8::from(app.is_held(positive)) - i8::from(app.is_held(negative))
         };
-        *held = pressed;
-        *input |= pressed;
+        self.input.forward = axis(self, Action::MoveForward, Action::MoveBack);
+        self.input.right = axis(self, Action::MoveRight, Action::MoveLeft);
+        self.input.up = axis(self, Action::Jump, Action::Duck);
+        self.input.jump = self.is_held(Action::Jump);
+        self.input.duck = self.is_held(Action::Duck);
     }
 
     /// Clears every held axis, so releasing the pointer into the console
@@ -2121,22 +2386,97 @@ impl<'a> App<'a> {
             mouse_delta: self.input.mouse_delta,
             ..Input::default()
         };
-        self.attack_held = false;
-        self.attack2_held = false;
+        self.held = [false; Action::ALL.len()];
+        self.scoreboard_held = false;
+    }
+
+    /// Turns raw mouse motion into look input, scaled by the sensitivity
+    /// setting and inverted vertically when the player asked for it.
+    fn add_mouse_motion(&mut self, delta_x: f32, delta_y: f32) {
+        let controls = &self.menu.options.controls;
+        let scale = controls.sensitivity / BASE_SENSITIVITY;
+        let vertical = if controls.invert_mouse { -scale } else { scale };
+        self.input.mouse_delta.0 += delta_x * scale;
+        self.input.mouse_delta.1 += delta_y * vertical;
+    }
+
+    /// `Escape`: closes the console, pauses the game, or steps back through
+    /// the menu (resuming from the pause menu's root).
+    fn escape(&mut self) {
+        if self.console.is_open() {
+            self.console.set_open(false);
+            return;
+        }
+        // An open dropdown takes the key for itself (egui closes it).
+        if matches!(self.screen, Screen::MainMenu | Screen::Pause) && self.menu.popup_open() {
+            return;
+        }
+        match self.screen {
+            Screen::InGame => {
+                self.menu.reset();
+                self.set_screen(Screen::Pause);
+            }
+            Screen::Pause => {
+                if !self.menu.back() {
+                    self.set_screen(Screen::InGame);
+                }
+            }
+            Screen::Console => self.set_screen(Screen::InGame),
+            // The main menu's root has nowhere to go back to; QUIT is a
+            // button, not a stray key press.
+            Screen::MainMenu => {
+                self.menu.back();
+            }
+        }
+    }
+
+    /// Routes a key or mouse press to the binding being captured in the
+    /// controls tab. Returns whether the event was consumed by it.
+    fn capture_binding(&mut self, event: &WindowEvent) -> bool {
+        if self.menu.capturing_binding().is_none() {
+            return false;
+        }
+        match event {
+            WindowEvent::KeyboardInput { event, .. } => {
+                if event.state == ElementState::Pressed
+                    && !event.repeat
+                    && let PhysicalKey::Code(code) = event.physical_key
+                {
+                    if code == KeyCode::Escape {
+                        self.menu.cancel_capture();
+                    } else {
+                        self.menu.capture_binding(Binding::from_key(code));
+                    }
+                }
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button,
+                ..
+            } => {
+                self.menu.capture_binding(Binding::from_mouse(*button));
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Writes the autosave slot after a level change, if a save directory
-    /// exists. A failure is reported once and never retried in a loop.
+    /// exists and the player has not switched autosaving off. A failure is
+    /// reported once and never retried in a loop.
     fn autosave(&mut self) {
-        if self.write_slot(ohl_save::AUTOSAVE_SLOT_NAME) {
+        if self.menu.options.gameplay.autosave && self.write_slot(ohl_save::AUTOSAVE_SLOT_NAME) {
             tracing::info!("Autosaved.");
         }
     }
 
-    fn quicksave(&mut self) {
-        if self.write_slot(ohl_save::QUICKSAVE_SLOT_NAME) {
+    fn quicksave(&mut self) -> bool {
+        let saved = self.write_slot(ohl_save::QUICKSAVE_SLOT_NAME);
+        if saved {
             tracing::info!("Quicksaved.");
         }
+        saved
     }
 
     /// Writes one save slot, reporting failure as a fixed line. The slot
@@ -2175,6 +2515,22 @@ impl<'a> App<'a> {
             tracing::info!("Quickload complete.");
         } else {
             tracing::warn!("The quicksave could not be loaded.");
+        }
+    }
+
+    /// Loads the save in `name` from the load pane and starts playing it.
+    /// The slot name is never logged.
+    fn load_save(&mut self, name: &str) {
+        let loaded = self
+            .saves
+            .as_ref()
+            .and_then(|slot| Game::load_slot(self.source, slot, name).ok());
+        if let Some(game) = loaded {
+            self.enter_new_game(game);
+            tracing::info!("Saved game loaded.");
+        } else {
+            tracing::warn!("The saved game could not be loaded.");
+            self.menu.notify("That saved game could not be loaded.");
         }
     }
 
@@ -2252,10 +2608,7 @@ impl<'a> App<'a> {
                     // dropped: a level change listed after this one must
                     // not load (and autosave) a map behind the menu.
                     tracing::info!("{SECTION_ENDED}");
-                    self.audio.stop_all();
-                    self.hud = HudState::default();
-                    self.menu.pane = MenuPane::Root;
-                    self.set_screen(Screen::MainMenu);
+                    self.return_to_main_menu();
                     return true;
                 }
             }
@@ -2269,8 +2622,8 @@ impl<'a> App<'a> {
         // (mouse motion, the presses, a click already let go) are consumed
         // here.
         let frame_input = self.input;
-        self.input.attack = self.attack_held;
-        self.input.attack2 = self.attack2_held;
+        self.input.attack = self.is_held(Action::Attack);
+        self.input.attack2 = self.is_held(Action::Attack2);
         self.input.mouse_delta = (0.0, 0.0);
         self.input.use_pressed = false;
         self.input.reload = false;
@@ -2298,6 +2651,7 @@ impl<'a> App<'a> {
         self.hud.clip_ammo = engine_hud.clip_ammo;
         self.hud.reserve_ammo = engine_hud.reserve_ammo;
         self.hud.damage_flash = self.hud.damage_flash.max(engine_hud.damage_flash);
+        self.hud.show_crosshair = self.menu.options.gameplay.crosshair;
 
         self.hud.decay_damage_flash(2.0, delta_seconds);
         self.hud.tick_message(delta_seconds);
@@ -2310,7 +2664,7 @@ impl<'a> App<'a> {
             // (`mp_chattime`); the match is over, so back to the menu.
             if status.intermission_left.is_some_and(|left| left <= 0.0) {
                 tracing::info!("The skirmish intermission ended.");
-                self.leave_skirmish();
+                self.return_to_main_menu();
             }
         } else {
             self.hud.frags = None;
@@ -2328,11 +2682,17 @@ impl<'a> App<'a> {
         let now = Instant::now();
         let delta = now.saturating_duration_since(self.last_frame);
         self.last_frame = now;
+        if let Some(interval) = self.frame_interval() {
+            // From when this frame was due, but never so far behind that a
+            // stall is made up with a burst of frames.
+            self.next_frame = (self.next_frame + interval).max(now);
+        }
 
         if self.screen == Screen::InGame && !self.console.is_open() {
             self.tick_game(delta.as_secs_f32());
         }
-        self.find_skirmish_maps();
+        self.refresh_menu_data();
+        self.game.set_fov_y_degrees(self.menu.options.video.fov);
         let simulation = now.elapsed();
 
         let Some(active) = self.state.as_mut() else {
@@ -2366,11 +2726,12 @@ impl<'a> App<'a> {
         let render = render_start.elapsed();
         let ui_start = Instant::now();
         active.ui.begin_frame();
+        // The HUD belongs to the game being played; the menus cover it.
         if !matches!(self.screen, Screen::MainMenu | Screen::Pause) {
             let held = self.scoreboard_held && self.screen == Screen::InGame;
             draw_play_overlay(active.ui.context(), &self.hud, &self.game, held);
         }
-        if self.debug_open {
+        if self.menu.options.video.performance_overlay {
             draw_graphics_debug(active, &self.live_profile, now, &self.game, width, height);
         }
         if self.console.is_open() {
@@ -2378,14 +2739,20 @@ impl<'a> App<'a> {
             let _ = ohl_ui::console::draw_console(&mut root, &mut self.console);
         }
         let menu_actions = if matches!(self.screen, Screen::MainMenu | Screen::Pause) {
+            let published = |map: &'static str| map_published(&self.all_maps, map).then_some(map);
+            let data = MenuData {
+                in_game: self.screen == Screen::Pause,
+                can_save: self.saves.is_some() && !self.game.is_skirmish(),
+                new_game_map: published(ohl_campaign::STARTMAP),
+                training_map: published(ohl_campaign::TRAINMAP),
+                chapters: &self.chapters,
+                skirmish_maps: self.skirmish_maps.as_deref().unwrap_or(&[]),
+                saves: &self.save_entries,
+                resolutions: &self.resolutions,
+                audio_output: self.audio.is_audible(),
+            };
             let mut root = ohl_ui::root_ui(active.ui.context());
-            ohl_ui::menu::draw(
-                &mut root,
-                &mut self.menu,
-                self.screen == Screen::Pause,
-                &self.missions,
-                self.skirmish_maps.as_deref().unwrap_or(&[]),
-            )
+            ohl_ui::menu::draw(&mut root, &mut self.menu, &data)
         } else {
             Vec::new()
         };
@@ -2435,8 +2802,19 @@ impl<'a> App<'a> {
             self.frames = 0;
             self.fps_window_start = now;
         }
-        active.window.request_redraw();
         self.handle_menu_actions(menu_actions);
+        // Sliders are saved once the player leaves the options, not on
+        // every frame of a drag.
+        if self.menu.pane != MenuPane::Options {
+            self.save_settings();
+        }
+    }
+
+    /// The time between frames under the frame-rate cap, or `None` when it
+    /// is uncapped.
+    fn frame_interval(&self) -> Option<Duration> {
+        let limit = self.menu.options.video.fps_limit;
+        (limit > 0).then(|| Duration::from_secs_f64(1.0 / f64::from(limit)))
     }
 }
 
@@ -2445,24 +2823,31 @@ impl ApplicationHandler for App<'_> {
         if self.state.is_some() {
             return;
         }
+        let display = self.menu.options.video.display;
+        let size = if display.mode == DisplayMode::Windowed {
+            (display.resolution.width, display.resolution.height)
+        } else {
+            INITIAL_SIZE
+        };
         let attributes = Window::default_attributes()
             .with_title("Open Half-Life")
             .with_active(self.profile.is_none())
-            .with_inner_size(winit::dpi::PhysicalSize::new(
-                INITIAL_SIZE.0,
-                INITIAL_SIZE.1,
-            ));
+            .with_inner_size(winit::dpi::PhysicalSize::new(size.0, size.1));
         let Ok(window) = event_loop.create_window(attributes) else {
             self.fail(event_loop, "a window could not be created");
             return;
         };
         let window = Arc::new(window);
+        if display.mode != DisplayMode::Windowed {
+            apply_display(&window, display);
+        }
         if self.profile.is_none() && self.screen == Screen::InGame {
             if window.set_cursor_grab(CursorGrabMode::Locked).is_err() {
                 let _ = window.set_cursor_grab(CursorGrabMode::Confined);
             }
             window.set_cursor_visible(false);
         }
+        self.resolutions = display_resolutions(&window);
 
         let Ok((context, wgpu_surface)) = GpuContext::for_surface(Arc::clone(&window)) else {
             self.fail(event_loop, "no usable graphics adapter is available");
@@ -2481,6 +2866,7 @@ impl ApplicationHandler for App<'_> {
         let adapter_info = context.adapter.get_info();
 
         self.last_frame = Instant::now();
+        self.next_frame = self.last_frame;
         self.fps_window_start = self.last_frame;
         self.frames = 0;
         self.state = Some(Active {
@@ -2491,6 +2877,7 @@ impl ApplicationHandler for App<'_> {
             adapter_name: adapter_info.name,
             backend_name: format!("{:?}", adapter_info.backend),
         });
+        self.apply_options();
     }
 
     fn window_event(
@@ -2499,6 +2886,11 @@ impl ApplicationHandler for App<'_> {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
+        // A key or button the controls tab is waiting for goes to it, not
+        // to the menu widgets or the game.
+        if self.capture_binding(&event) {
+            return;
+        }
         if let Some(active) = self.state.as_mut() {
             let consumed = active.ui.handle_window_event(&event);
             if consumed
@@ -2524,24 +2916,15 @@ impl ApplicationHandler for App<'_> {
                 };
                 let pressed = event.state == ElementState::Pressed;
                 if code == KeyCode::Backquote {
-                    if pressed && !event.repeat {
+                    if pressed && !event.repeat && self.menu.options.gameplay.console {
                         self.console.toggle();
                         self.release_movement();
                     }
                     return;
                 }
                 if code == KeyCode::Escape {
-                    if self.console.is_open() {
-                        self.console.set_open(false);
-                        return;
-                    }
-                    match self.screen {
-                        Screen::InGame => self.set_screen(Screen::Pause),
-                        Screen::Pause | Screen::Console => self.set_screen(Screen::InGame),
-                        Screen::MainMenu if self.menu.pane != MenuPane::Root => {
-                            self.menu.pane = MenuPane::Root;
-                        }
-                        Screen::MainMenu => event_loop.exit(),
+                    if pressed && !event.repeat {
+                        self.escape();
                     }
                     return;
                 }
@@ -2549,42 +2932,17 @@ impl ApplicationHandler for App<'_> {
                 {
                     return;
                 }
-                if code == KeyCode::KeyP {
-                    if pressed && !event.repeat {
-                        self.debug_open = !self.debug_open;
-                    }
-                    return;
+                if let Some(action) = self.menu.options.controls.bindings.action_for_key(code) {
+                    self.handle_action(action, pressed, event.repeat);
                 }
-                if code == KeyCode::F6 {
-                    if pressed && !event.repeat {
-                        self.quicksave();
-                    }
-                    return;
-                }
-                if code == KeyCode::F7 {
-                    if pressed && !event.repeat {
-                        self.quickload();
-                    }
-                    return;
-                }
-                if code == KeyCode::KeyE {
-                    if pressed && !self.key_use_down {
-                        self.input.use_pressed = true;
-                    }
-                    self.key_use_down = pressed;
-                    self.input.use_held = pressed;
-                    return;
-                }
-                if self.weapon_key(code, pressed, event.repeat) {
-                    return;
-                }
-                self.set_axis(code, pressed);
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 if self.console.is_open() || self.screen != Screen::InGame {
                     return;
                 }
-                self.fire_button(button, state == ElementState::Pressed);
+                if let Some(action) = self.menu.options.controls.bindings.action_for_mouse(button) {
+                    self.handle_action(action, state == ElementState::Pressed, false);
+                }
             }
             WindowEvent::RedrawRequested => self.draw(),
             _ => {}
@@ -2603,8 +2961,7 @@ impl ApplicationHandler for App<'_> {
         if let DeviceEvent::MouseMotion { delta } = event {
             #[allow(clippy::cast_possible_truncation)]
             let (delta_x, delta_y) = (delta.0 as f32, delta.1 as f32);
-            self.input.mouse_delta.0 += delta_x;
-            self.input.mouse_delta.1 += delta_y;
+            self.add_mouse_motion(delta_x, delta_y);
         }
     }
 
@@ -2613,9 +2970,22 @@ impl ApplicationHandler for App<'_> {
             event_loop.exit();
             return;
         }
-        if let Some(active) = self.state.as_ref() {
-            active.window.request_redraw();
+        let Some(active) = self.state.as_ref() else {
+            return;
+        };
+        match self.frame_interval() {
+            Some(_) if Instant::now() < self.next_frame => {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_frame));
+            }
+            _ => {
+                event_loop.set_control_flow(ControlFlow::Poll);
+                active.window.request_redraw();
+            }
         }
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.save_settings();
     }
 }
 
@@ -3541,14 +3911,16 @@ mod sound_routing_tests {
         assert!(is_playing(&app.audio, ambient, ChannelClass::Static));
         assert!(is_playing(&app.audio, speaker, ChannelClass::Voice));
 
-        app.handle_menu_actions(vec![MenuAction::SetVolume(0.25)]);
-        let volume = app
-            .audio
-            .mixer()
-            .lock()
-            .expect("lock mixer")
-            .master_volume();
+        app.menu.options.audio.master = 0.25;
+        app.menu.options.audio.voice = 0.5;
+        app.handle_menu_actions(vec![MenuAction::OptionsChanged]);
+        let mixer = app.audio.mixer().lock().expect("lock mixer");
+        let volume = mixer.master_volume();
         assert!((volume - 0.25).abs() < 1e-6, "{volume}");
+        let voice = mixer.class_volume(ChannelClass::Voice);
+        assert!((voice - 0.5).abs() < 1e-6, "{voice}");
+        let ambience = mixer.class_volume(ChannelClass::Static);
+        assert!((ambience - 1.0).abs() < 1e-6, "{ambience}");
     }
 
     /// Starting a mission from the menu replaces the game; whatever the
@@ -3740,27 +4112,37 @@ mod skirmish_window_tests {
         assert!(!app.write_slot(ohl_save::QUICKSAVE_SLOT_NAME));
     }
 
+    /// Presses or releases `code` through the player's bindings, as the
+    /// window does. Returns whether the key is bound at all.
+    fn key(app: &mut App<'_>, code: KeyCode, pressed: bool, repeat: bool) -> bool {
+        let Some(action) = app.menu.options.controls.bindings.action_for_key(code) else {
+            return false;
+        };
+        app.handle_action(action, pressed, repeat);
+        true
+    }
+
     #[test]
     fn the_weapon_keys_reach_the_input_and_clear_after_one_frame() {
         let assets = arena_assets();
         let mut app = started(&assets, 0);
-        assert!(app.weapon_key(KeyCode::Digit3, true, false));
-        assert!(app.weapon_key(KeyCode::KeyR, true, false));
-        assert!(app.weapon_key(KeyCode::KeyF, true, false));
-        assert!(app.weapon_key(KeyCode::Tab, true, false));
-        assert!(!app.weapon_key(KeyCode::KeyW, true, false));
+        assert!(key(&mut app, KeyCode::Digit3, true, false));
+        assert!(key(&mut app, KeyCode::KeyR, true, false));
+        assert!(key(&mut app, KeyCode::KeyF, true, false));
+        assert!(key(&mut app, KeyCode::Tab, true, false));
+        assert!(!key(&mut app, KeyCode::KeyZ, true, false), "Z is unbound");
         assert_eq!(app.input.select_slot, Some(3));
         assert!(app.input.reload && app.input.flashlight_pressed);
         assert!(app.scoreboard_held);
         // A key repeat is not a second press.
         app.input.reload = false;
-        assert!(app.weapon_key(KeyCode::KeyR, true, true));
+        assert!(key(&mut app, KeyCode::KeyR, true, true));
         assert!(!app.input.reload);
         app.input.reload = true;
         app.tick_game(CAPTURE_STEP);
         assert_eq!(app.input.select_slot, None);
         assert!(!app.input.reload && !app.input.flashlight_pressed);
-        assert!(app.weapon_key(KeyCode::Tab, false, false));
+        assert!(key(&mut app, KeyCode::Tab, false, false));
         assert!(!app.scoreboard_held);
     }
 
@@ -3772,8 +4154,8 @@ mod skirmish_window_tests {
         let mut app = started(&assets, 0);
         app.tick_game(CAPTURE_STEP);
         let full = app.hud.clip_ammo;
-        app.fire_button(MouseButton::Left, true);
-        app.fire_button(MouseButton::Left, false);
+        app.handle_action(Action::Attack, true, false);
+        app.handle_action(Action::Attack, false, false);
         app.tick_game(CAPTURE_STEP);
         assert_eq!(app.hud.clip_ammo, full.map(|clip| clip - 1), "one shot");
         assert!(!app.input.attack, "the released button is up again");
@@ -3782,10 +4164,334 @@ mod skirmish_window_tests {
         }
         assert_eq!(app.hud.clip_ammo, full.map(|clip| clip - 1), "and only one");
 
-        app.fire_button(MouseButton::Right, true);
+        app.handle_action(Action::Attack2, true, false);
         app.tick_game(CAPTURE_STEP);
         assert!(app.input.attack2, "a held button stays down");
         app.release_movement();
-        assert!(!app.input.attack2 && !app.attack2_held);
+        assert!(!app.input.attack2 && !app.is_held(Action::Attack2));
+    }
+}
+
+/// The window's side of the menu: the options reaching input, audio and
+/// the HUD, the load pane, `Escape` and the panes that only say "not yet".
+/// No window is opened; every test drives [`App`] directly.
+#[cfg(test)]
+mod menu_window_tests {
+    use super::*;
+    use ohl_engine::MemoryAssets;
+    use ohl_engine::test_support::{SYNTHETIC_MAP, synthetic_map_bsp};
+
+    fn assets() -> MemoryAssets {
+        let mut assets = MemoryAssets::new();
+        assets.insert(&format!("maps/{SYNTHETIC_MAP}.bsp"), synthetic_map_bsp());
+        assets
+    }
+
+    fn window(assets: &MemoryAssets, screen: Screen) -> App<'_> {
+        let game =
+            Game::load(assets as &dyn AssetSource, SYNTHETIC_MAP).expect("the synthetic map loads");
+        App::new(
+            game,
+            assets,
+            AudioRuntime::silent(),
+            screen,
+            GameConfig::default(),
+        )
+    }
+
+    /// Presses or releases `code` through the player's bindings, as the
+    /// window does.
+    fn key(app: &mut App<'_>, code: KeyCode, pressed: bool) {
+        if let Some(action) = app.menu.options.controls.bindings.action_for_key(code) {
+            app.handle_action(action, pressed, false);
+        }
+    }
+
+    #[test]
+    fn the_menus_default_field_of_view_is_the_cameras_own() {
+        let camera = ohl_render::FreeFlyCamera::default();
+        assert!((ohl_ui::menu::DEFAULT_FOV - camera.fov_y_degrees).abs() < f32::EPSILON);
+        assert!(ohl_engine::FOV_RANGE.contains(ohl_ui::menu::FOV_RANGE.start()));
+        assert!(ohl_engine::FOV_RANGE.contains(ohl_ui::menu::FOV_RANGE.end()));
+    }
+
+    #[test]
+    fn a_rebound_key_drives_its_new_action_and_the_old_key_nothing() {
+        let assets = assets();
+        let mut app = window(&assets, Screen::InGame);
+        app.menu
+            .options
+            .controls
+            .bindings
+            .bind(Action::Jump, Binding::Key(KeyCode::KeyJ));
+        key(&mut app, KeyCode::Space, true);
+        assert!(!app.input.jump);
+        key(&mut app, KeyCode::KeyJ, true);
+        assert!(app.input.jump);
+        assert_eq!(app.input.up, 1);
+        key(&mut app, KeyCode::KeyJ, false);
+        assert!(!app.input.jump);
+        assert_eq!(app.input.up, 0);
+    }
+
+    #[test]
+    fn opposite_movement_keys_cancel_and_releasing_one_leaves_the_other() {
+        let assets = assets();
+        let mut app = window(&assets, Screen::InGame);
+        key(&mut app, KeyCode::KeyW, true);
+        assert_eq!(app.input.forward, 1);
+        key(&mut app, KeyCode::KeyS, true);
+        assert_eq!(app.input.forward, 0);
+        key(&mut app, KeyCode::KeyW, false);
+        assert_eq!(app.input.forward, -1);
+        key(&mut app, KeyCode::KeyA, true);
+        assert_eq!(app.input.right, -1);
+        app.release_movement();
+        assert_eq!((app.input.forward, app.input.right), (0, 0));
+        key(&mut app, KeyCode::KeyD, true);
+        assert_eq!(app.input.right, 1, "nothing stays held after a release");
+    }
+
+    #[test]
+    fn use_is_one_press_per_key_press() {
+        let assets = assets();
+        let mut app = window(&assets, Screen::InGame);
+        key(&mut app, KeyCode::KeyE, true);
+        assert!(app.input.use_pressed && app.input.use_held);
+        app.tick_game(CAPTURE_STEP);
+        key(&mut app, KeyCode::KeyE, true);
+        assert!(!app.input.use_pressed, "still held is not a new press");
+        key(&mut app, KeyCode::KeyE, false);
+        assert!(!app.input.use_held);
+    }
+
+    #[test]
+    fn mouse_motion_follows_the_sensitivity_and_inversion_settings() {
+        let assets = assets();
+        let mut app = window(&assets, Screen::InGame);
+        app.add_mouse_motion(10.0, 10.0);
+        assert_eq!(
+            app.input.mouse_delta,
+            (10.0, 10.0),
+            "the default is unscaled"
+        );
+        app.input.mouse_delta = (0.0, 0.0);
+        app.menu.options.controls.sensitivity = 6.0;
+        app.menu.options.controls.invert_mouse = true;
+        app.add_mouse_motion(10.0, 10.0);
+        assert_eq!(app.input.mouse_delta, (20.0, -20.0));
+    }
+
+    #[test]
+    fn escape_pauses_steps_back_through_the_menu_and_resumes() {
+        let assets = assets();
+        let mut app = window(&assets, Screen::InGame);
+        app.escape();
+        assert_eq!(app.screen, Screen::Pause);
+        assert_eq!(app.menu.pane, MenuPane::Root);
+        app.menu.open(MenuPane::Options);
+        app.escape();
+        assert_eq!(app.screen, Screen::Pause);
+        assert_eq!(app.menu.pane, MenuPane::Root);
+        app.escape();
+        assert_eq!(app.screen, Screen::InGame);
+    }
+
+    #[test]
+    fn escape_on_the_main_menus_root_does_not_quit() {
+        let assets = assets();
+        let mut app = window(&assets, Screen::MainMenu);
+        app.menu.open(MenuPane::SinglePlayer);
+        app.menu.open(MenuPane::NewGame);
+        app.escape();
+        assert_eq!(app.menu.pane, MenuPane::SinglePlayer);
+        app.escape();
+        app.escape();
+        assert_eq!(app.screen, Screen::MainMenu);
+        assert_eq!(app.menu.pane, MenuPane::Root);
+        assert!(!app.quit_requested);
+    }
+
+    #[test]
+    fn the_load_pane_lists_saves_and_loading_one_starts_playing() {
+        let saves = tempfile::tempdir().expect("a temporary save directory");
+        let assets = assets();
+        let mut app = window(&assets, Screen::MainMenu);
+        app.saves = Some(ohl_save::SaveSlot::new(saves.path()));
+        assert!(app.quicksave());
+        app.menu.open(MenuPane::SinglePlayer);
+        app.menu.open(MenuPane::LoadGame);
+        app.refresh_menu_data();
+        assert_eq!(app.save_entries.len(), 1);
+        let entry = app.save_entries[0].clone();
+        assert_eq!(entry.slot, ohl_save::QUICKSAVE_SLOT_NAME);
+        assert!(entry.detail.starts_with("Quick save"), "{}", entry.detail);
+        assert!(entry.detail.ends_with("just now"), "{}", entry.detail);
+
+        app.handle_menu_actions(vec![MenuAction::LoadSave(entry.slot)]);
+        assert_eq!(app.screen, Screen::InGame);
+        assert_eq!(app.menu.pane, MenuPane::Root);
+    }
+
+    #[test]
+    fn a_save_that_cannot_be_loaded_leaves_the_menu_up_with_a_notice() {
+        let saves = tempfile::tempdir().expect("a temporary save directory");
+        let assets = assets();
+        let mut app = window(&assets, Screen::MainMenu);
+        app.saves = Some(ohl_save::SaveSlot::new(saves.path()));
+        app.handle_menu_actions(vec![MenuAction::LoadSave("missing".to_owned())]);
+        assert_eq!(app.screen, Screen::MainMenu);
+        assert!(app.menu.notice().is_some());
+    }
+
+    #[test]
+    fn saving_from_the_pause_menu_says_so() {
+        let saves = tempfile::tempdir().expect("a temporary save directory");
+        let assets = assets();
+        let mut app = window(&assets, Screen::Pause);
+        app.handle_menu_actions(vec![MenuAction::SaveGame]);
+        assert_eq!(app.menu.notice(), Some("The game could not be saved."));
+        app.saves = Some(ohl_save::SaveSlot::new(saves.path()));
+        app.handle_menu_actions(vec![MenuAction::SaveGame]);
+        assert_eq!(app.menu.notice(), Some("Game saved."));
+    }
+
+    #[test]
+    fn switching_autosave_off_skips_the_level_change_save() {
+        let saves = tempfile::tempdir().expect("a temporary save directory");
+        let assets = assets();
+        let mut app = window(&assets, Screen::InGame);
+        let slot = ohl_save::SaveSlot::new(saves.path());
+        app.saves = Some(slot.clone());
+        app.menu.options.gameplay.autosave = false;
+        app.autosave();
+        let listed = |slot: &ohl_save::SaveSlot| {
+            slot.list(&ohl_save::Limits::default())
+                .expect("the save directory lists")
+                .len()
+        };
+        assert_eq!(listed(&slot), 0);
+        app.menu.options.gameplay.autosave = true;
+        app.autosave();
+        assert_eq!(listed(&slot), 1);
+    }
+
+    #[test]
+    fn the_crosshair_option_reaches_the_hud() {
+        let assets = assets();
+        let mut app = window(&assets, Screen::InGame);
+        app.menu.options.gameplay.crosshair = false;
+        app.handle_menu_actions(vec![MenuAction::OptionsChanged]);
+        assert!(!app.hud.show_crosshair);
+        app.hud = HudState::default();
+        app.tick_game(CAPTURE_STEP);
+        assert!(!app.hud.show_crosshair, "a fresh HUD takes the option too");
+    }
+
+    #[test]
+    fn closing_the_console_option_closes_an_open_console() {
+        let assets = assets();
+        let mut app = window(&assets, Screen::InGame);
+        app.console.set_open(true);
+        app.menu.options.gameplay.console = false;
+        app.handle_menu_actions(vec![MenuAction::OptionsChanged]);
+        assert!(!app.console.is_open());
+    }
+
+    #[test]
+    fn returning_to_the_main_menu_resets_the_menu() {
+        let assets = assets();
+        let mut app = window(&assets, Screen::Pause);
+        app.menu.open(MenuPane::Options);
+        app.handle_menu_actions(vec![MenuAction::ReturnToMainMenu]);
+        assert_eq!(app.screen, Screen::MainMenu);
+        assert_eq!(app.menu.pane, MenuPane::Root);
+    }
+
+    #[test]
+    fn lan_play_says_it_is_not_available_yet() {
+        let assets = assets();
+        let mut app = window(&assets, Screen::MainMenu);
+        app.handle_menu_actions(vec![MenuAction::HostLanServer(
+            ohl_ui::menu::LanServerSettings::default(),
+        )]);
+        assert!(
+            app.menu
+                .notice()
+                .is_some_and(|text| text.contains("not available"))
+        );
+        app.handle_menu_actions(vec![MenuAction::JoinLanServer {
+            address: "192.0.2.1".to_owned(),
+        }]);
+        assert!(
+            app.menu
+                .notice()
+                .is_some_and(|text| text.contains("not available"))
+        );
+        assert_eq!(app.screen, Screen::MainMenu);
+    }
+
+    #[test]
+    fn the_performance_overlay_key_toggles_the_saved_option() {
+        let assets = assets();
+        let mut app = window(&assets, Screen::InGame);
+        key(&mut app, KeyCode::KeyP, true);
+        assert!(app.menu.options.video.performance_overlay);
+        assert!(app.settings_dirty);
+        key(&mut app, KeyCode::KeyP, false);
+        key(&mut app, KeyCode::KeyP, true);
+        assert!(!app.menu.options.video.performance_overlay);
+    }
+
+    #[test]
+    fn changed_settings_are_written_to_the_settings_file() {
+        let directory = tempfile::tempdir().expect("a temporary settings directory");
+        let path = directory.path().join("settings.cfg");
+        let assets = assets();
+        let mut app = window(&assets, Screen::MainMenu);
+        app.settings_path = Some(path.clone());
+        app.save_settings();
+        assert!(!path.exists(), "nothing changed, so nothing is written");
+        app.menu.options.audio.effects = 0.5;
+        app.handle_menu_actions(vec![MenuAction::OptionsChanged]);
+        app.save_settings();
+        assert_eq!(crate::settings::load(&path), app.menu.options);
+        assert!(!app.settings_dirty);
+    }
+
+    #[test]
+    fn the_level_select_marks_levels_missing_from_the_payload() {
+        let mut published = vec![
+            ohl_campaign::STARTMAP.to_owned(),
+            ohl_campaign::TRAINMAP.to_owned(),
+        ];
+        published.sort();
+        let chapters = menu_chapters(&published);
+        assert_eq!(chapters.len(), ohl_campaign::CHAPTERS.len() + 1);
+        let training = &chapters[0];
+        assert_eq!(training.title, "Hazard Course");
+        assert_eq!(training.levels[0].map, ohl_campaign::TRAINMAP);
+        assert!(training.levels[0].available);
+        assert!(!training.levels[1].available);
+        assert_eq!(chapters[1].levels[0].map, ohl_campaign::STARTMAP);
+        assert!(chapters[1].levels[0].available);
+
+        let unknown = menu_chapters(&[]);
+        assert!(
+            unknown
+                .iter()
+                .flat_map(|chapter| &chapter.levels)
+                .all(|level| level.available),
+            "with no listing every level is offered"
+        );
+    }
+
+    #[test]
+    fn save_ages_read_naturally() {
+        assert_eq!(age_text(5), "just now");
+        assert_eq!(age_text(150), "2 min ago");
+        assert_eq!(age_text(7_200), "2 h ago");
+        assert_eq!(age_text(90_000), "yesterday");
+        assert_eq!(age_text(3 * 86_400), "3 days ago");
     }
 }

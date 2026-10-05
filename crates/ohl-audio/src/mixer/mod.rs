@@ -33,6 +33,13 @@ pub struct Mixer {
     /// [`Self::master_volume`] is ramped from here across the next block,
     /// not applied as a step.
     applied_master_volume: f32,
+    /// The player's per-class volume settings, indexed by
+    /// [`ChannelClass::index`] and applied to each channel of that class
+    /// before the master volume. See [`Mixer::set_class_volume`].
+    class_volume: [f32; ChannelClass::ALL.len()],
+    /// The per-class gains the last rendered block ended at, ramped from
+    /// exactly as [`Self::applied_master_volume`] is.
+    applied_class_volume: [f32; ChannelClass::ALL.len()],
 }
 
 impl Mixer {
@@ -47,6 +54,8 @@ impl Mixer {
             next_order: 0,
             master_volume: 1.0,
             applied_master_volume: 1.0,
+            class_volume: [1.0; ChannelClass::ALL.len()],
+            applied_class_volume: [1.0; ChannelClass::ALL.len()],
         }
     }
 
@@ -88,6 +97,23 @@ impl Mixer {
     #[must_use]
     pub fn master_volume(&self) -> f32 {
         self.master_volume
+    }
+
+    /// Sets the volume every channel of `class` is scaled by, `0.0..=1.0`,
+    /// on top of its own gain and under the master volume: the options
+    /// menu's per-category sliders. Bounded, ramped and applied to sounds
+    /// already playing exactly as [`Mixer::set_master_volume`] is.
+    pub fn set_class_volume(&mut self, class: ChannelClass, volume: f32) {
+        if volume.is_finite() {
+            self.class_volume[class.index()] = volume.clamp(0.0, 1.0);
+        }
+    }
+
+    /// The volume set by [`Mixer::set_class_volume`] for `class`; `1.0`
+    /// until anything sets it.
+    #[must_use]
+    pub fn class_volume(&self, class: ChannelClass) -> f32 {
+        self.class_volume[class.index()]
     }
 
     /// The number of channels currently playing.
@@ -161,6 +187,8 @@ impl Mixer {
         let device_rate = f64::from(self.device_sample_rate);
         let listener = self.listener;
         let mut finished = Vec::new();
+        #[allow(clippy::cast_precision_loss, reason = "a frame count within one block")]
+        let block_frames = frame_capacity as f32;
 
         for (channel_index, channel) in self.channels.iter_mut().enumerate() {
             let buffer = channel.buffer.clone();
@@ -183,6 +211,10 @@ impl Mixer {
                     right: channel.volume,
                 },
             };
+            // The class volume, ramped across the block like the master
+            // volume below.
+            let class_start = self.applied_class_volume[channel.class.index()];
+            let class_end = self.class_volume[channel.class.index()];
 
             for frame in 0..frame_capacity {
                 if let Some((loop_start, loop_end)) = buffer.loop_range {
@@ -220,8 +252,11 @@ impl Mixer {
                 let left = l0 + (l1 - l0) * frac;
                 let right = r0 + (r1 - r0) * frac;
 
-                out[frame * 2] += left * gains.left;
-                out[frame * 2 + 1] += right * gains.right;
+                #[allow(clippy::cast_precision_loss, reason = "a frame index within one block")]
+                let class_gain =
+                    class_start + (class_end - class_start) * ((frame + 1) as f32 / block_frames);
+                out[frame * 2] += left * gains.left * class_gain;
+                out[frame * 2 + 1] += right * gains.right * class_gain;
 
                 channel.position += step;
             }
@@ -241,16 +276,15 @@ impl Mixer {
         if frame_capacity > 0 {
             let start = self.applied_master_volume;
             let end = self.master_volume;
-            #[allow(clippy::cast_precision_loss, reason = "a frame index within one block")]
-            let frames = frame_capacity as f32;
             let (pairs, _) = out.as_chunks_mut::<2>();
             for (frame, pair) in pairs.iter_mut().take(frame_capacity).enumerate() {
                 #[allow(clippy::cast_precision_loss, reason = "a frame index within one block")]
-                let gain = start + (end - start) * ((frame + 1) as f32 / frames);
+                let gain = start + (end - start) * ((frame + 1) as f32 / block_frames);
                 pair[0] *= gain;
                 pair[1] *= gain;
             }
             self.applied_master_volume = end;
+            self.applied_class_volume = self.class_volume;
         }
 
         for sample in out.iter_mut() {
@@ -518,6 +552,62 @@ mod tests {
         mixer.set_master_volume(f32::NAN);
         mixer.set_master_volume(f32::INFINITY);
         assert_eq!(mixer.master_volume(), 0.25);
+    }
+
+    #[test]
+    // Power-of-two gains over exactly representable samples, as above.
+    #[allow(clippy::float_cmp)]
+    fn a_class_volume_scales_only_its_own_class_and_is_ramped() {
+        let mut mixer = Mixer::new(8_000);
+        assert_eq!(mixer.class_volume(ChannelClass::Static), 1.0);
+        mixer.play(PlayRequest {
+            entity: 1,
+            class: ChannelClass::Static,
+            ..play_request(mono_buffer(&[0.25; 16], 8_000, None))
+        });
+        mixer.play(PlayRequest {
+            entity: 2,
+            class: ChannelClass::Voice,
+            ..play_request(mono_buffer(&[0.25; 16], 8_000, None))
+        });
+        let mut out = [0.0f32; 4];
+        mixer.render(&mut out);
+        assert_eq!(out, [0.5; 4]);
+
+        // The ambience goes quiet (1.0 -> 0.0 over the two-frame block);
+        // the voice keeps its full gain.
+        mixer.set_class_volume(ChannelClass::Static, 0.0);
+        mixer.render(&mut out);
+        assert_eq!(out, [0.375, 0.375, 0.25, 0.25]);
+        mixer.render(&mut out);
+        assert_eq!(out, [0.25; 4]);
+
+        // The master volume still applies on top.
+        mixer.set_master_volume(0.5);
+        mixer.render(&mut out);
+        mixer.render(&mut out);
+        assert_eq!(out, [0.125; 4]);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn a_class_volume_out_of_range_is_clamped_and_a_non_finite_one_ignored() {
+        let mut mixer = Mixer::new(8_000);
+        mixer.set_class_volume(ChannelClass::Voice, 2.0);
+        assert_eq!(mixer.class_volume(ChannelClass::Voice), 1.0);
+        mixer.set_class_volume(ChannelClass::Voice, -2.0);
+        assert_eq!(mixer.class_volume(ChannelClass::Voice), 0.0);
+        mixer.set_class_volume(ChannelClass::Voice, 0.5);
+        mixer.set_class_volume(ChannelClass::Voice, f32::NAN);
+        assert_eq!(mixer.class_volume(ChannelClass::Voice), 0.5);
+        assert_eq!(mixer.class_volume(ChannelClass::Weapon), 1.0);
+    }
+
+    #[test]
+    fn every_class_has_its_own_index() {
+        for (index, class) in ChannelClass::ALL.into_iter().enumerate() {
+            assert_eq!(class.index(), index);
+        }
     }
 
     #[test]

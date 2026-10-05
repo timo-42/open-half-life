@@ -84,7 +84,8 @@ otherwise resolving the single published tree under `--payload-root`), mounts
 its assets, and starts on the campaign's documented start map. `--map NAME`
 picks a different map and `--training` starts the hazard course instead.
 In the window, WASD moves, the mouse looks, `E` uses the nearest door or
-button, the backquote key opens the console, and Escape quits.
+button, the backquote key opens the console, and Escape opens the pause
+menu.
 
 On a machine with no display server, render offscreen instead:
 
@@ -147,7 +148,35 @@ non-default value.
 In the window, `W`/`A`/`S`/`D` move, `Space` jumps, `Left Ctrl` ducks, the
 mouse looks, the left/right mouse buttons are primary/secondary fire, `R`
 reloads, `1`-`5` pick a weapon slot, `F` toggles the flashlight, `E` uses,
-`F6`/`F7` quicksave/quickload and `Esc` pauses.
+`F6`/`F7` quicksave/quickload, `P` shows the performance overlay and `Esc`
+pauses. Those are the defaults: every one of them can be rebound under
+Options → Controls (`Esc` and the console's backquote key stay fixed).
+
+**The menu.** Launching with `--iso` (or the positional path) and nothing
+else imports the medium if needed and then opens the main menu; `Esc` in
+game opens the same menu as a pause menu over the game. `Esc` or BACK steps
+back one page at a time.
+
+- **Single Player** — *New Game* (choose a difficulty and start at the
+  campaign's start map), *Select Level* (pick any chapter, then any of its
+  levels; levels your game data lacks are listed but greyed out), *Hazard
+  Course*, and *Load Game* (every save slot, newest first).
+- **Multiplayer** — *Skirmish* (the offline deathmatch against bots below),
+  *Create LAN Server* and *Find LAN Games*. The two LAN pages are previews:
+  their forms work, but nothing is networked yet and they say so.
+- **Options** — *Video* (windowed, borderless or exclusive fullscreen,
+  resolution, applied with APPLY; vertical sync, a frame-rate cap, the
+  vertical field of view, the performance overlay), *Audio* (master,
+  effects, voice and ambience volume), *Controls* (mouse sensitivity, invert
+  mouse, and the key bindings: click one, then press a key or mouse button;
+  right-click clears it) and *Gameplay* (crosshair, autosave at level
+  changes, whether the backquote key opens the console).
+
+Options are kept in `settings.cfg`, a plain `key = value` file in the
+platform's per-user configuration directory (on Linux
+`~/.config/open-half-life/`); it is written when you leave the options and
+when the game quits. A line the game does not understand is ignored and
+that setting keeps its default.
 
 **Skirmish** — local multiplayer: a deathmatch against bots, played
 offline on one of your payload's deathmatch maps:
@@ -159,8 +188,8 @@ cargo run --release -p ohl-app -- --skirmish --payload-root /path/to/payload \
 
 Without `--map` the first deathmatch map the payload publishes is used, or
 the Nth with `--arena N` (any map declaring `info_player_deathmatch` spawn
-points qualifies; the main menu's MULTIPLAYER pane lists them all and starts
-a match the same way). `cargo xtask skirmish-smoke --payload-root DIR`
+points qualifies; the main menu's Multiplayer → Skirmish page lists them all
+and starts a match the same way). `cargo xtask skirmish-smoke --payload-root DIR`
 plays every arena headless and checks the bots score kills on each.
 `--bots 0..15` (default `3`), `--bot-skill easy|normal|hard` (default
 `normal`), `--frag-limit N` and `--time-limit MINUTES` (default `10` each,
@@ -864,8 +893,9 @@ it interactively on a real screen.
   own `volume` and "Sound Radius". Sounds are attenuated
   and panned by distance from the player's eye using the published
   `ATTN_*` constants, decoded through a bounded, never-panicking WAV
-  decoder, and held in a size-capped LRU cache. The options menu's volume
-  slider scales the whole mix, sounds already playing included; a level
+  decoder, and held in a size-capped LRU cache. The options menu's master
+  volume scales the whole mix and its effects, voice and ambience volumes
+  scale their own channels, sounds already playing included; a level
   change, a new mission and a quickload each silence the game being left.
   Every headless run path (`--screenshot`, `--script`, `--chain-script`,
   `--benchmark`, and every test) drives a null sink and is silent on every

@@ -219,3 +219,17 @@ fn a_missing_destination_leaves_the_current_level_running() {
     assert_eq!(error, ohl_engine::EngineError::MapNotFound);
     assert_eq!(game.map(), SYNTHETIC_MAP);
 }
+
+#[test]
+fn the_field_of_view_setting_is_clamped_and_ignores_a_non_finite_value() {
+    let assets = assets();
+    let mut game = game(&assets);
+    game.set_fov_y_degrees(90.0);
+    assert!((game.camera().fov_y_degrees - 90.0).abs() < f32::EPSILON);
+    game.set_fov_y_degrees(f32::NAN);
+    assert!((game.camera().fov_y_degrees - 90.0).abs() < f32::EPSILON);
+    game.set_fov_y_degrees(500.0);
+    assert!((game.camera().fov_y_degrees - ohl_engine::FOV_RANGE.end()).abs() < f32::EPSILON);
+    game.set_fov_y_degrees(1.0);
+    assert!((game.camera().fov_y_degrees - ohl_engine::FOV_RANGE.start()).abs() < f32::EPSILON);
+}

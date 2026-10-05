@@ -7,6 +7,9 @@ use crate::gpu::GpuContext;
 pub struct WindowSurface<'window> {
     surface: wgpu::Surface<'window>,
     configuration: wgpu::SurfaceConfiguration,
+    /// The present modes the adapter offers for this surface, for
+    /// [`Self::set_vsync`].
+    present_modes: Vec<wgpu::PresentMode>,
 }
 
 impl<'window> WindowSurface<'window> {
@@ -59,7 +62,31 @@ impl<'window> WindowSurface<'window> {
         Ok(Self {
             surface,
             configuration,
+            present_modes: capabilities.present_modes,
         })
+    }
+
+    /// Switches vertical sync on (`Fifo`, the default) or off (`Immediate`,
+    /// else `Mailbox`, whichever the surface offers first) and reconfigures
+    /// the swap chain when that changes the present mode. A surface that
+    /// offers neither keeps presenting in its current mode.
+    pub fn set_vsync(&mut self, context: &GpuContext, vsync: bool) {
+        let Some(mode) = vsync_present_mode(&self.present_modes, vsync) else {
+            return;
+        };
+        if self.configuration.present_mode != mode {
+            self.configuration.present_mode = mode;
+            self.surface.configure(&context.device, &self.configuration);
+        }
+    }
+
+    /// Whether the swap chain currently waits for vertical blank.
+    #[must_use]
+    pub fn vsync(&self) -> bool {
+        matches!(
+            self.configuration.present_mode,
+            wgpu::PresentMode::Fifo | wgpu::PresentMode::FifoRelaxed
+        )
     }
 
     /// The configured colour format, which the pipeline must match.
@@ -106,5 +133,49 @@ impl<'window> WindowSurface<'window> {
             }
             Current::Timeout | Current::Occluded | Current::Validation => None,
         }
+    }
+}
+
+/// The present mode [`WindowSurface::set_vsync`] picks from `offered`, or
+/// `None` when the surface offers none that matches the request.
+fn vsync_present_mode(offered: &[wgpu::PresentMode], vsync: bool) -> Option<wgpu::PresentMode> {
+    let preference: &[wgpu::PresentMode] = if vsync {
+        &[wgpu::PresentMode::Fifo]
+    } else {
+        &[wgpu::PresentMode::Immediate, wgpu::PresentMode::Mailbox]
+    };
+    preference
+        .iter()
+        .copied()
+        .find(|mode| offered.contains(mode))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::vsync_present_mode;
+    use wgpu::PresentMode;
+
+    #[test]
+    fn vsync_off_prefers_immediate_then_mailbox() {
+        let all = [
+            PresentMode::Fifo,
+            PresentMode::Mailbox,
+            PresentMode::Immediate,
+        ];
+        assert_eq!(vsync_present_mode(&all, true), Some(PresentMode::Fifo));
+        assert_eq!(
+            vsync_present_mode(&all, false),
+            Some(PresentMode::Immediate)
+        );
+        assert_eq!(
+            vsync_present_mode(&[PresentMode::Fifo, PresentMode::Mailbox], false),
+            Some(PresentMode::Mailbox)
+        );
+    }
+
+    #[test]
+    fn a_surface_offering_only_fifo_cannot_turn_vsync_off() {
+        assert_eq!(vsync_present_mode(&[PresentMode::Fifo], false), None);
+        assert_eq!(vsync_present_mode(&[PresentMode::Immediate], true), None);
     }
 }

@@ -21,7 +21,7 @@ use crate::tick::{TICK_SECONDS, TickClock};
 use crate::transition::{
     DefaultPlayerCarry, EntitySnapshot, GlobalStateTable, PlayerCarry, TransitionState,
 };
-use crate::{MAX_TICK_SECONDS, MOUSE_SENSITIVITY};
+use crate::{FOV_RANGE, MAX_TICK_SECONDS, MOUSE_SENSITIVITY};
 
 /// Something the simulation produced that only the host can act on.
 #[derive(Debug, Clone, PartialEq)]
@@ -516,6 +516,16 @@ impl Game {
     #[must_use]
     pub fn camera(&self) -> &FreeFlyCamera {
         &self.camera
+    }
+
+    /// Sets the camera's vertical field of view, in degrees, clamped to
+    /// [`FOV_RANGE`]; a non-finite value is ignored. A spawn or level change
+    /// rebuilds the camera at its default, so a host applying a player's
+    /// setting calls this before every [`Self::render`].
+    pub fn set_fov_y_degrees(&mut self, degrees: f32) {
+        if degrees.is_finite() {
+            self.camera.fov_y_degrees = degrees.clamp(*FOV_RANGE.start(), *FOV_RANGE.end());
+        }
     }
 
     /// The player's eye position in world space.
