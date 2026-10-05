@@ -9335,3 +9335,89 @@ flags and the earlier growth cause remain unproved. Dependencies and save tags
 are unchanged; deny remains conditional. Hardware audibility is untested.
 The three existing damage occasions and scheduling/producer cuts above remain
 the feature limit. Numbering, final integration and merge are separately gated.
+
+## M9.56 — Local skirmish: deathmatch against bots
+
+The MULTIPLAYER menu pane, a preview placeholder until now, starts a local
+**skirmish**: a free-for-all deathmatch played offline against up to fifteen
+bots on any payload map that declares `info_player_deathmatch` spawn points
+(discovered at runtime from each map's entity lump; no map name is written
+into the repository). `--skirmish [--map NAME | --arena N] --bots N
+--bot-skill easy|normal|hard --frag-limit N --time-limit MINUTES
+[--force-respawn]` starts one from the command line, windowed or headless
+under `--script`. Citations and project-authored choices are recorded in
+`docs/FORMAT_SOURCES.md`, "M9.56 — Local skirmish".
+
+**Engine (`ohl_engine::skirmish`).** A bot is a second walking player, not a
+monster: its own `PlayerController` moved through the human's own
+`Systems::player_move` (mover riding and pushing included), its own
+`ohl_player::Player` (HEV armour, fall damage, `trigger_hurt`) and its own
+`CombatState` firing through the human's own weapon state machine, hitscan
+resolution and projectile commands, against the same hitbox index. Its
+brain senses opponents (view cone, awareness radius, line of sight, who just
+shot it), aims with skill-dependent reaction time, turn rate and error,
+picks a weapon by range, strafes and hops, collects the items it needs,
+investigates gunfire, and paths over a 32-unit walkable graph flood-filled
+from every spawn point and pickup with `crate::reachability`'s own edge test
+(walk/step, crouch-jump, safe drop; unsafe falls are discovered but never
+planned). A new phase 6b runs bots after the human's weapons; phase 9 takes
+every hit aimed at a bot out of the queue first and records who killed whom
+(projectile and blast attribution reuse the owner each projectile already
+carries); 11b picks up and respawns pickups; 12c opens touch doors and
+carries bots through `trigger_teleport`; 13c runs the clock, the limits,
+bot respawns and the human's click/forced respawn. Scores: a kill credits
+the killer; a death nobody else is credited with costs the victim a frag.
+`GameEvent::{Frag, MatchOver, PlayerRespawned}` report it; `Game::
+{start_skirmish, load_skirmish, skirmish_status, is_skirmish}` are the API.
+A skirmish is never saved (`save_bytes` refuses). Single-player games carry
+one `None` pointer and are otherwise unchanged, except two fixes the
+skirmish exposed and both modes now share: a taken pickup's model is no
+longer drawn or shot at, and the pickup touch is a box overlap instead of a
+sphere around the hull centre, which could never reach the ~45 % of
+pickups resting on their floor.
+
+**Host and UI.** The window gains mouse fire (left/right), `R` reload, `1`-`5`
+weapon slots and `F` flashlight — none of which were bound before — and
+`Tab` for the scoreboard. The HUD shows frags, the match clock, a kill feed
+and a centred respawn/winner notice; the scoreboard holds through the
+`mp_chattime` intermission, after which the window returns to the main menu.
+`cargo xtask skirmish-smoke` plays every published arena (by number) and
+passes an arena when bots score kills on it without help.
+
+An independent read-only review found five defects before merge, all fixed
+and covered: a human death is credited to the hit that actually killed (not
+the last one queued that step), nothing scores once a frag has ended the
+match, a dead human's corpse neither collects pickups nor stops shots, and
+hard bots really hop. Its performance findings were addressed too (a search
+between unconnected parts of the graph is refused unsearched, a bot standing
+where it lost its enemy forgets it rather than re-planning every step, nav
+seeds snap to one lattice, bots' clocks are staggered).
+
+**Gates:** PASS — fmt; clippy workspace/all-targets, default and
+all-features, warnings denied; workspace tests **3089/0/36**
+(passed/failed/ignored) before the review fixes, and the five affected crates
+(engine, app, xtask, ui, combat) **1202/0/12** after them; policy; graph (36
+crates). New tests: 16 engine integration tests (`tests/skirmish.rs`:
+spawning and equipment, kill and suicide scoring, the killing hit's credit,
+no scoring after the match, respawn by click and by force, frag and time
+limits and the intermission freeze, the 20 s weapon respawn, "Not In
+Deathmatch", the save refusal, the no-spawn refusal, arena detection,
+unaided bot kills, and seed determinism), walkable-graph and bot unit tests, pickup-box tests, 12
+app unit tests (menu start, kill feed, respawn notice, intermission return,
+key bindings, save refusal, CLI bounds), 4 binary tests (`tests/skirmish.rs`:
+arena discovery, aggregate-only logging, `--arena` bounds) and xtask parser
+tests. Payload gates on a release build of this source: skirmish-smoke
+**11/11** arenas (5 normal bots and an idle force-respawning player, 60
+simulated seconds each, 7–16 deaths per arena, 3–5 bots scoring; 0.7–2.0 s
+wall time per arena including the graph build); combat-smoke **37/37**;
+campaign-smoke **93/93**; chain-walk **depth 12 / Pass / 660.8 s**, all
+unchanged from M9.55. Only aggregates were retained.
+
+**Limits.** Weapons and ammo lying in a map are still not drawn (no cited
+world-model paths; pre-existing in both modes). Bots do not use thrown or
+placed explosives, ladders or water routes, and a bot that falls somewhere
+the graph cannot leave waits for a hazard or the match to end. No teams, no
+network play, no spectator; the pause menu pauses the bots too. A bot does
+not block a closing door or a lift the way the player does (it is carried
+or pushed, never reported as the blocker). Bot tuning is project-authored
+and unmeasured against any reference.

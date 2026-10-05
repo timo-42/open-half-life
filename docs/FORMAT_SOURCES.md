@@ -8415,3 +8415,108 @@ producer output is currently discarded), every other occasion, producer
 thresholds, AI, mixer redesign/parameter updates, other sound tables, new save
 state and dependency changes. No tag is allocated. Source/tests/docs only at
 this checkpoint; compilation, mutation probes and full gates remain pending.
+
+## M9.56 — Local skirmish (deathmatch against bots)
+
+A local skirmish (`crates/ohl-engine/src/skirmish/`) plays a free-for-all
+deathmatch offline against computer-controlled opponents. Every gameplay rule
+a public page states is quoted below with its URL; every other number is
+project-authored and labelled as such in source. All pages were read on
+2026-10-05; TWHL and VDC pages were reached through the same text-extraction
+proxy (`r.jina.ai`) recorded elsewhere in this file, since both sites refuse
+direct automated fetches. No engine source of any origin was consulted, and
+no map, model or sound name was taken from a payload listing.
+
+**Spawn points.** [TWHL: info_player_deathmatch](https://twhl.info/wiki/page/info_player_deathmatch)
+(already cited above for the single-player start) "Defines player spawn
+positions for multiplayer games"; "Try to place near the ground, as the player
+will drop from the entity origin to the floor"; and "if there is no
+`info_player_deathmatch`, then [info_player_start] entities are used as
+'backup' solution for respawning players". `skirmish::spawn_points` reads
+every `info_player_deathmatch` (falling back to every `info_player_start`),
+and a (re)spawn settles onto the floor beneath the point. **Project-authored:**
+which point is chosen — a random one among the third farthest from every
+living opponent, never one within 64 units of another combatant. The page's
+`master` keyvalue (a team gate) is not read: a skirmish has no teams.
+
+**Starting equipment.** [TWHL: Tutorial: Half-Life Deathmatch mapping](https://twhl.info/wiki/page/Tutorial:_Half-Life_Deathmatch_mapping):
+"By creating a server, Half-Life is making a multiplayer game, and thus is
+giving you the HEV, crowbar and pistol from the beginning." Every (re)spawn
+equips the HEV suit, a crowbar and the 9mm pistol (`give_deathmatch_loadout`).
+**Project-authored (`TODO(black-box)`):** the pistol's starting rounds (a full
+clip plus one pickup's worth, `ohl_combat::weapon_pickup_ammo`), since no
+reviewed page gives the count.
+
+**Respawning pickups.** [TWHL: weapon_9mmhandgun](https://twhl.info/wiki/page/weapon_9mmhandgun)
+and [VDC: Weapon crowbar (GoldSrc)](https://developer.valvesoftware.com/wiki/Weapon_crowbar_(GoldSrc)):
+"In a deathmatch game, the weapon respawns 20 seconds after being collected."
+[TWHL: ammo_9mmclip](https://twhl.info/wiki/page/ammo_9mmclip): "In a deathmatch
+game, ammo respawns 20 seconds after being collected." [TWHL: item_healthkit](https://twhl.info/wiki/page/item_healthkit)
+and [VDC: Item battery (GoldSrc)](https://developer.valvesoftware.com/wiki/Item_battery_(GoldSrc)):
+"In a deathmatch game, the item respawns 30 seconds after being collected."
+The same tutorial page above: "Weapons in HLDM respawn automatically!" The
+three delays are `WEAPON_RESPAWN_SECONDS`, `AMMO_RESPAWN_SECONDS` and
+`ITEM_RESPAWN_SECONDS`; each page is one entity's, and this project applies
+each to its whole class. **Project-authored:** the long jump module and the
+suit, which no reviewed page gives a delay for, use the item delay; a
+`weaponbox` never comes back.
+
+**"Not In Deathmatch".** [VDC: Weapon crowbar (GoldSrc)](https://developer.valvesoftware.com/wiki/Weapon_crowbar_(GoldSrc)):
+"Not In Deathmatch: 2048 Prevent this entity from attempting to spawn when
+`deathmatch` (multiplayer) is enabled." A pickup carrying spawnflag 2048 is
+hidden for the whole match. This supersedes, for a skirmish only, the earlier
+note above that the flag "is a multiplayer flag and is not read".
+
+**Limits and the intermission.** [VDC: List of Half-Life console commands and
+variables](https://developer.valvesoftware.com/wiki/List_of_Half-Life_console_commands_and_variables)
+lists `mp_fraglimit | 0, sv`, `mp_timelimit | 0, sv`, `mp_forcerespawn | 0, sv`,
+`mp_weaponstay | 0, sv` and `mp_chattime | 10, sv` (name, default, flags; read
+directly). The cvars' meanings — "The number of kills at which the map ends",
+"Amount of time, in minutes, played on each map", "Automatically respawn
+players without waiting for them to click", "whether weapons remain on the map
+after being picked up" — come from a search-engine summary of the same page:
+a second direct fetch returned a bot-check page instead of the table, so the
+descriptions are recorded as summary-sourced, not as quoted text.
+`SkirmishConfig::frag_limit`/`time_limit_seconds`/`force_respawn` follow those
+meanings (`0` disables a limit); weapons disappear when taken
+(`mp_weaponstay 0`). `INTERMISSION_SECONDS` borrows `mp_chattime`'s `10` as
+how long the final scoreboard holds — **project-authored reading**: the page
+gives the default, not what the intermission does with it. **Project
+defaults:** the host's own skirmish defaults (10 frags, 10 minutes, 3 bots)
+are a playable match's, not the cvars' `0`.
+
+**The bots' model.** [TWHL: Reference: Entities and their models](https://twhl.info/wiki/page/Reference:_Entities_and_their_models)
+(already the authority for every `MonsterKind` and deployable model path
+above) lists `monster_hevsuit_dead` against `models/player.mdl` — the player
+model a dead HEV scientist is placed with. `skirmish::PLAYER_MODEL_PATH` loads
+it for the bots when the payload publishes it; without it a bot is an
+undrawn standing hull, still shootable through the same fallback box the
+human gets. Sequences are chosen by the names `crate::ai` already resolves
+monster activities through (`idle`, `walk`, `run`, and the first sequence
+whose name starts with `die`).
+
+**Project-authored, with no public source (`TODO(black-box)` where a fact
+exists to be observed):** the bot itself (`skirmish::bot`: sensing, reaction
+time, turn rate, aim error, weapon preference by range, strafing, item values,
+hearing gunfire, stuck recovery) and its three skill levels; the walkable
+graph bots path over (`skirmish::nav`: a 32-unit flood fill reusing
+`crate::reachability`'s step/jump/drop edge test, bounded by
+`route_plan::safe_drop_height`); bot respawn delay (2 s), the click-respawn
+delay (1 s) and the forced-respawn delay (5 s); the frag scoring — a kill
+credits whoever landed the killing hit (projectile and blast hits already
+carry their owner as the attacker, per "Live projectiles and deployables"
+above), and a death nobody else is credited with (one's own rocket, a fall, a
+hazard) costs the victim a frag; separating overlapping combatants (players do
+not collide with each other in the collision model); and the kill feed's
+weapon labels.
+
+**Pickup touch, all modes.** Measured across the payload's maps (aggregate
+only: 1,461 pickups, about 45 % within 4 units of their floor), the old touch
+test — a `PICKUP_TOUCH_RADIUS` (32) sphere around the hull's *centre*, which
+stands 36 units above the floor — could never reach an item resting on the
+floor. `pickups::touches` is now the overlap of the player's standing hull box
+with a project-authored 32×32×16 box resting on the item's origin
+(`TODO(black-box)`: no reviewed page publishes a pickup's size). Every point
+the old sphere touched from, the box touches from too, so single-player routes
+and tests that relied on the sphere are unaffected; items on the floor are now
+reachable in both modes.
