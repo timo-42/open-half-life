@@ -195,9 +195,17 @@ pub(crate) struct LatchedInput {
 /// presses, and the next step that runs consumes them. Without this a press
 /// delivered on a sub-step frame — every frame, on a host rendering faster
 /// than the tick rate — would be dropped entirely.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct PendingEdges {
     use_pressed: bool,
+    /// A fire button was down on some frame since the last step. Fire is
+    /// a held axis, but a click shorter than one step still has to fire
+    /// once (and a dead skirmish player's click still has to respawn), so
+    /// a press seen only on a frame that released no step is kept for the
+    /// next step, the same as the edges.
+    attack: bool,
+    attack2: bool,
     reload: bool,
     flashlight: bool,
     /// The most recent slot selection; a later press supersedes an earlier
@@ -209,6 +217,8 @@ impl PendingEdges {
     /// Records `input`'s edges alongside anything not yet consumed.
     fn accumulate(&mut self, input: &Input) {
         self.use_pressed |= input.use_pressed;
+        self.attack |= input.attack;
+        self.attack2 |= input.attack2;
         self.reload |= input.reload;
         self.flashlight |= input.flashlight_pressed;
         if input.select_slot.is_some() {
@@ -239,6 +249,8 @@ impl LatchedInput {
     /// The held state of `input` plus the edges no step has taken yet.
     fn with_edges(input: &Input, edges: PendingEdges) -> Self {
         Self {
+            attack: input.attack || edges.attack,
+            attack2: input.attack2 || edges.attack2,
             use_pressed: edges.use_pressed,
             reload_pressed: edges.reload,
             flashlight_pressed: edges.flashlight,
@@ -1049,9 +1061,10 @@ impl Systems {
         self.rebuild_hitbox_index(level, controller); // 5
         self.begin_map_effects(level, controller, dt); // 5b
         // A dead skirmish player's fire button is a respawn click (phase
-        // 13c), not a shot.
+        // 13c), not a shot, and a corpse neither reloads nor switches
+        // weapons.
         let weapon_input = if self.skirmish.is_some() && self.player.state.dead {
-            input.frozen()
+            LatchedInput::default()
         } else {
             input
         };
@@ -2372,6 +2385,24 @@ mod tests {
             ..Input::default()
         });
         assert_eq!(edges.select_slot, Some(4), "a later press supersedes");
+    }
+
+    /// A click pressed and released between two steps is still one step of
+    /// fire: the press is kept like an edge, then fire is held state again.
+    #[test]
+    fn a_click_between_steps_fires_once() {
+        let mut systems = systems();
+        systems.begin_frame(&Input {
+            attack: true,
+            attack2: true,
+            ..Input::default()
+        });
+        systems.begin_frame(&Input::default());
+
+        let latched = systems.latch_input();
+        assert!(latched.attack, "the click was not dropped");
+        assert!(latched.attack2);
+        assert!(!systems.latch_input().attack, "and it fires only once");
     }
 
     /// Held axes describe *now*, so they are replaced rather than

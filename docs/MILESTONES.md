@@ -9393,6 +9393,19 @@ between unconnected parts of the graph is refused unsearched, a bot standing
 where it lost its enemy forgets it rather than re-planning every step, nav
 seeds snap to one lattice, bots' clocks are staggered).
 
+A skirmish was then played in a real window (Xvfb, lavapipe, input from
+`xdotool`; ~125 fps): the HUD, kill feed, scoreboard, firing, walking,
+turning, death and respawn all work, and bots are drawn (upright, textured,
+running and fighting). It found two more defects, both fixed and covered. A
+click shorter than one frame was lost: the window stored fire as held state,
+so a press and release between two ticks never reached the game, and the
+engine latched presses across frames that release no step for every button
+but fire. Now the window keeps a press until the next tick and
+`PendingEdges` keeps a fire press until the next step (one step of fire,
+then held state again). A dead player could also still reload and switch
+weapons: the corpse's weapon input was "frozen", which by design leaves
+those presses alone; it is now empty.
+
 **Gates:** PASS — fmt; clippy workspace/all-targets, default and
 all-features, warnings denied; workspace tests **3089/0/36**
 (passed/failed/ignored) before the review fixes, and the five affected crates
@@ -9411,10 +9424,15 @@ tests. Payload gates on a release build of this source: skirmish-smoke
 simulated seconds each, 7–16 deaths per arena, 3–5 bots scoring; 0.7–2.0 s
 wall time per arena including the graph build); combat-smoke **37/37**;
 campaign-smoke **93/93**; chain-walk **depth 12 / Pass / 660.8 s**, all
-unchanged from M9.55. Only aggregates were retained.
+unchanged from M9.55. Only aggregates were retained. After the window-play
+fixes: fmt; clippy (both feature sets, warnings denied); engine and app
+tests **860/0/10**; policy; graph; skirmish-smoke **11/11**; combat-smoke
+**37/37**. New tests: the click latch (engine and window), and the dead
+player's reload and weapon switch.
 
 **Limits.** Weapons and ammo lying in a map are still not drawn (no cited
-world-model paths; pre-existing in both modes). Bots do not use thrown or
+world-model paths; pre-existing in both modes), and for the same reason a
+bot holds no visible weapon. Bots do not use thrown or
 placed explosives, ladders or water routes, and a bot that falls somewhere
 the graph cannot leave waits for a hazard or the match to end. No teams, no
 network play, no spectator; the pause menu pauses the bots too. A bot does

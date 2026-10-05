@@ -29,7 +29,7 @@ use ohl_ui::{
     },
 };
 use winit::application::ApplicationHandler;
-use winit::event::{DeviceEvent, DeviceId, ElementState, WindowEvent};
+use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
@@ -1832,6 +1832,11 @@ struct App<'a> {
     skirmish_maps: Option<Vec<String>>,
     /// Whether the scoreboard key is held.
     scoreboard_held: bool,
+    /// Whether the primary and secondary fire buttons are down. The input's
+    /// own `attack`/`attack2` keep a press until the next tick, so a click
+    /// released inside one frame still fires.
+    attack_held: bool,
+    attack2_held: bool,
     config: GameConfig,
     quit_requested: bool,
     /// Toggled with `P`; this overlay never captures gameplay input.
@@ -1913,6 +1918,8 @@ impl<'a> App<'a> {
             all_maps: Vec::new(),
             skirmish_maps: None,
             scoreboard_held: false,
+            attack_held: false,
+            attack2_held: false,
             config,
             quit_requested: false,
             debug_open: false,
@@ -2095,6 +2102,18 @@ impl<'a> App<'a> {
         true
     }
 
+    /// The fire buttons: a press reaches the next tick even when the
+    /// button is let go before it, then the held state takes over.
+    fn fire_button(&mut self, button: MouseButton, pressed: bool) {
+        let (input, held) = match button {
+            MouseButton::Left => (&mut self.input.attack, &mut self.attack_held),
+            MouseButton::Right => (&mut self.input.attack2, &mut self.attack2_held),
+            _ => return,
+        };
+        *held = pressed;
+        *input |= pressed;
+    }
+
     /// Clears every held axis, so releasing the pointer into the console
     /// does not leave the player walking.
     fn release_movement(&mut self) {
@@ -2102,6 +2121,8 @@ impl<'a> App<'a> {
             mouse_delta: self.input.mouse_delta,
             ..Input::default()
         };
+        self.attack_held = false;
+        self.attack2_held = false;
     }
 
     /// Writes the autosave slot after a level change, if a save directory
@@ -2244,9 +2265,12 @@ impl<'a> App<'a> {
 
     /// Advances simulation and refreshes the HUD for one display frame.
     fn tick_game(&mut self, delta_seconds: f32) {
-        // The held axes persist across frames; the two edge-triggered
-        // fields (mouse motion and the "use" press) are consumed here.
+        // The held axes persist across frames; the edge-triggered fields
+        // (mouse motion, the presses, a click already let go) are consumed
+        // here.
         let frame_input = self.input;
+        self.input.attack = self.attack_held;
+        self.input.attack2 = self.attack2_held;
         self.input.mouse_delta = (0.0, 0.0);
         self.input.use_pressed = false;
         self.input.reload = false;
@@ -2560,12 +2584,7 @@ impl ApplicationHandler for App<'_> {
                 if self.console.is_open() || self.screen != Screen::InGame {
                     return;
                 }
-                let pressed = state == ElementState::Pressed;
-                match button {
-                    winit::event::MouseButton::Left => self.input.attack = pressed,
-                    winit::event::MouseButton::Right => self.input.attack2 = pressed,
-                    _ => {}
-                }
+                self.fire_button(button, state == ElementState::Pressed);
             }
             WindowEvent::RedrawRequested => self.draw(),
             _ => {}
@@ -3742,5 +3761,30 @@ mod skirmish_window_tests {
         assert!(!app.input.reload && !app.input.flashlight_pressed);
         assert!(app.weapon_key(KeyCode::Tab, false, false));
         assert!(!app.scoreboard_held);
+    }
+
+    /// A click pressed and released inside one frame (a quick tap, or any
+    /// synthetic click) still fires one shot, and then fire is up again.
+    #[test]
+    fn a_click_shorter_than_a_frame_still_fires_once() {
+        let assets = arena_assets();
+        let mut app = started(&assets, 0);
+        app.tick_game(CAPTURE_STEP);
+        let full = app.hud.clip_ammo;
+        app.fire_button(MouseButton::Left, true);
+        app.fire_button(MouseButton::Left, false);
+        app.tick_game(CAPTURE_STEP);
+        assert_eq!(app.hud.clip_ammo, full.map(|clip| clip - 1), "one shot");
+        assert!(!app.input.attack, "the released button is up again");
+        for _ in 0..60 {
+            app.tick_game(CAPTURE_STEP);
+        }
+        assert_eq!(app.hud.clip_ammo, full.map(|clip| clip - 1), "and only one");
+
+        app.fire_button(MouseButton::Right, true);
+        app.tick_game(CAPTURE_STEP);
+        assert!(app.input.attack2, "a held button stays down");
+        app.release_movement();
+        assert!(!app.input.attack2 && !app.attack2_held);
     }
 }

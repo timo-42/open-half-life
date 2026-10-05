@@ -204,6 +204,34 @@ fn a_bot_killing_the_player_scores_and_a_click_respawns_the_player() {
 }
 
 #[test]
+fn a_dead_player_neither_reloads_nor_switches_weapons() {
+    use ohl_combat::WeaponId;
+    let mut game = skirmish(&CORNERS, "", quiet(0));
+    let fire = Input {
+        attack: true,
+        ..Input::default()
+    };
+    let full = game.inventory().clip(WeaponId::Glock);
+    tick(&mut game, 1.0, &fire);
+    let fired = game.inventory().clip(WeaponId::Glock);
+    assert!(fired < full, "a shot was fired");
+
+    let player = game.player_entity();
+    queue_engine_damage_from(&mut game, player, player, 500.0);
+    tick(&mut game, TICK_SECONDS, &Input::default());
+    assert!(game.skirmish_status().unwrap().human_dead);
+    let reload_and_switch = Input {
+        reload: true,
+        select_slot: Some(1),
+        ..Input::default()
+    };
+    tick(&mut game, TICK_SECONDS, &reload_and_switch);
+    tick(&mut game, 3.0, &Input::default());
+    assert_eq!(game.inventory().clip(WeaponId::Glock), fired, "no reload");
+    assert_eq!(game.inventory().selected(), Some(WeaponId::Glock));
+}
+
+#[test]
 fn force_respawn_brings_the_player_back_without_a_click() {
     let mut game = skirmish(
         &CORNERS,
