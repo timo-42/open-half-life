@@ -360,6 +360,21 @@ impl AudioRuntime {
         }
     }
 
+    /// Sets the volume of every channel of `class`, `0.0..=1.0`: the
+    /// options menu's per-category sliders. Bounded and ramped as
+    /// [`Self::set_volume`] is; see `ohl_audio::Mixer::set_class_volume`.
+    pub(crate) fn set_class_volume(&self, class: ChannelClass, volume: f32) {
+        if let Ok(mut mixer) = self.mixer.lock() {
+            mixer.set_class_volume(class, volume);
+        }
+    }
+
+    /// Whether the output reaches a listener: `false` for the null sink
+    /// every headless path and every Linux build uses.
+    pub(crate) fn is_audible(&self) -> bool {
+        self.sink.as_device().is_audible()
+    }
+
     /// Acts on one `GameEvent::Sound`: starts the cue's asset on its
     /// `(entity, class)` channel, or stops that channel when the cue is a
     /// stop. A cue naming nothing playable is dropped silently, which is

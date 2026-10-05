@@ -178,6 +178,23 @@ pub enum ChannelClass {
 }
 
 impl ChannelClass {
+    /// Every class, in declaration order.
+    pub const ALL: [Self; 7] = [
+        Self::Auto,
+        Self::Weapon,
+        Self::Voice,
+        Self::Item,
+        Self::Body,
+        Self::Stream,
+        Self::Static,
+    ];
+
+    /// This class's position in [`Self::ALL`].
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+
     /// The fixed number of simultaneous voices this class allows before its
     /// oldest channel is evicted to make room for a new one.
     #[must_use]

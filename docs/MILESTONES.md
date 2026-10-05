@@ -9487,3 +9487,93 @@ Interrupted workspace attempts and refused admissions have no pass credit;
 the finished current workspace output was accepted by corrected evidence-only
 post-audit. Partial cache pruning remains qualified, without a claim of full
 historical cache preservation. No gate result is inferred from those failures.
+
+## M9.58 — The menu tree: single player, multiplayer and options
+
+Launching with installation media (`--iso PATH` or the positional path) and
+nothing else still imports the medium if needed and opens the main menu, but
+the menu is now a tree of pages instead of one list: **Single Player** (New
+Game with a difficulty choice, Select Level by chapter and then level, the
+Hazard Course, Load Game), **Multiplayer** (Skirmish, the M9.56 setup now one
+page of three; Create LAN Server; Find LAN Games) and **Options** (Video,
+Audio, Controls, Gameplay). `Esc` in game opens the same tree as a pause menu
+over the game, which stays visible behind it. BACK and `Esc` return one page
+at a time, along the way the player came. Stacked on M9.56.
+
+**UI (`ohl_ui::menu`, `ohl_ui::bindings`).** The menu module is split by area
+(single player, multiplayer, options, the shared page chrome) and stays pure
+state plus egui calls: the host supplies what the pages list through
+`MenuData` (chapters and levels with their availability, deathmatch maps,
+save slots, resolutions, whether audio is heard) and acts on `MenuAction`s.
+`OptionsState` holds every setting, bounds each value whatever its source,
+and reads and writes a project-authored `key = value` settings text in which
+an unknown or malformed line is skipped and that setting keeps its default.
+`Bindings` maps twenty gameplay actions (movement, use, both attacks,
+reload, flashlight, five weapon slots, scores, quicksave, quickload, the
+performance overlay) to a key or one of five mouse buttons, at most one
+action per input; the defaults are exactly the keys the window already used.
+`Esc` and the console's backquote key are reserved. The two LAN pages are
+previews: their forms work and report `HostLanServer`/`JoinLanServer`, and
+both pages and the host's reply say that nothing is networked yet.
+
+**Host (`ohl-app`).** The window keeps the options in `settings.cfg` in the
+per-user configuration directory, loaded at startup and written when the
+player leaves the options or quits; its path is never logged. Every key and
+mouse press goes through the bindings, and the controls page captures the
+next press for the binding being changed. The movement axes now follow
+which keys are held (releasing one of two opposite keys leaves the other in
+effect). Options reach the game live: the master volume and the effects,
+voice and ambience volumes, vertical sync, the frame-rate cap (paced from
+when each frame was due), the vertical field of view, mouse sensitivity
+(the engine's own turn rate at the default `3`) and inversion, the
+crosshair, autosave at level changes, and whether the console may open.
+Display mode and resolution change on APPLY: windowed at the chosen size,
+borderless on the current monitor, or exclusive fullscreen in that
+monitor's best mode of the chosen size (borderless when it has none). The
+load page lists every save slot, newest first. Fixes on the way: `Esc` used
+to act on its release as well as its press, so a real key press paused and
+at once resumed the game; it now acts on the press only. `Esc` on the main
+menu's first page no longer quits (QUIT does), and an open dropdown takes
+`Esc` for itself. M9.56's short-click fire carries over to bound buttons: a
+press released within one frame still reaches the next tick.
+
+**Below the host.** `ohl_audio::Mixer::set_class_volume` scales one channel
+class, ramped across a block exactly as the master volume is (a class at
+its default `1.0` renders bit-identically), and `OutputDevice::is_audible`
+lets a null sink say it is never heard. `ohl_render::WindowSurface::set_vsync`
+switches between `Fifo` and `Immediate`/`Mailbox`, whichever the surface
+offers. `ohl_engine::Game::set_fov_y_degrees` sets the camera's vertical
+field of view within `FOV_RANGE`. No dependency, save tag or file format
+the engine reads changed.
+
+**Gates:** PASS (local) — fmt; clippy workspace/all-targets, default and
+all-features, warnings denied; workspace tests **3143/0/35**
+(passed/failed/ignored) on this source rebased onto M9.57; policy; graph (36
+crates). New tests: menu navigation (history, reset, key capture,
+the display draft), a headless frame of every page in both the main and the
+pause menu, level-select clamping, the settings text round trip and its
+handling of malformed and out-of-range lines, bindings (defaults, moving a
+taken key, reserved and unknown keys, settings names), the mixer's class
+volume, the vsync mode choice, the field-of-view bounds, the settings file on
+disk, and 19 host tests (rebinding, opposite movement keys, use edges,
+sensitivity and inversion, `Esc` in game, in the pause menu and on the main
+menu, the load page and loading a save, save and load failures, autosave
+off, crosshair, console, returning to the main menu, the LAN replies, the
+overlay key, writing settings, level availability). A release build of the
+pre-rebase source was also driven for real in a virtual X server over an imported payload: pause and
+main menu, Select Level starting a chapter, rebinding a key, the 60 FPS cap
+holding at 60.0 fps, settings written on leaving the options and read back
+at the next start, `Esc` closing an open dropdown only, APPLY of borderless
+and windowed, and QUIT. Not run: the payload smokes (no simulation change).
+Not verified: a real monitor, real input hardware, or the `--iso` launch
+itself on this machine (no medium here; the window path behind it is the
+one exercised).
+
+**Limits.** No LAN play: those pages are previews. No brightness setting
+(the lightmap ramp is applied when a map loads, and has no live path).
+Bindings cover the keyboard and five mouse buttons; the mouse wheel cannot
+be bound. Exclusive fullscreen and resolution changes were exercised only
+in a virtual X server without a window manager, where the window cannot
+change size; no real monitor has been switched. Audio settings are applied
+and asserted numerically; on Linux nothing is heard (the null sink), and
+the audio page says so.

@@ -126,6 +126,10 @@ pub use transition::{
 /// How far the mouse turns the player, in degrees per pixel.
 pub const MOUSE_SENSITIVITY: f32 = 0.15;
 
+/// The vertical field of view, in degrees, [`Game::set_fov_y_degrees`]
+/// accepts: a project-chosen sanity bound, not a published engine limit.
+pub const FOV_RANGE: std::ops::RangeInclusive<f32> = 40.0..=110.0;
+
 /// How close (in GoldSrc units) the player must be to a door or button for
 /// "use" to reach it.
 pub const USE_RADIUS: f32 = 64.0;

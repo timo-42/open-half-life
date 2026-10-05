@@ -50,6 +50,7 @@ mod game_run;
 mod route_planner;
 mod script;
 mod script_log;
+mod settings;
 mod skirmish;
 
 /// The integration tests' synthetic fixtures, shared rather than duplicated:

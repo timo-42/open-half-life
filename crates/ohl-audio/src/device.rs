@@ -41,6 +41,12 @@ pub trait OutputDevice {
     fn pump(&self, frame_count: usize) {
         let _ = frame_count;
     }
+
+    /// Whether what this backend renders reaches a listener. A real device
+    /// does; [`NullSink`] says no, so a host can tell the player.
+    fn is_audible(&self) -> bool {
+        true
+    }
 }
 
 /// A headless output backend that never touches real hardware: used in
@@ -96,6 +102,10 @@ impl OutputDevice for NullSink {
 
     fn pump(&self, frame_count: usize) {
         self.pump_frames(frame_count);
+    }
+
+    fn is_audible(&self) -> bool {
+        false
     }
 }
 
@@ -262,5 +272,7 @@ mod tests {
         // must not panic in a headless CI environment.
         let device = open_default_device(44_100);
         assert!(device.sample_rate() > 0);
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        assert!(!device.is_audible(), "a null sink is never heard");
     }
 }
