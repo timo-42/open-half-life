@@ -7018,12 +7018,35 @@ fixed line "The section ended." once — a scripted run runs none of its
 remaining ticks, a still capture keeps the frame it ended on, a benchmark
 stops, and a chain walk reports "The chain walk ended its section." on
 its own row rather than as a route that ran out of ticks. No web page is
-ever opened. `TODO(black-box)`: the same
-page says the entity "requires the player as its activator" and so cannot
-be fired through a `trigger_relay` or a `multisource`, "since those would
-make themselves the activator instead". This project's map logic does not
-track activators that way (the player is not a registry entity), so a
-relay or master that fires one here does end the section.
+ever opened.
+
+The same TWHL page requires a player activator: buttons and ordinary touch
+triggers can supply one, including a `multi_manager` continuation. The page
+also specifies that relay and multisource chains lose player eligibility;
+that general forwarding rule is deferred as described below. Published page retrieved
+2026-10-05 (mapping documentation only). Named activation and volume touch
+both check the existing host-supplied `EffectPlayer.entity`, and a rejected
+touch consumes no cooldown, once-state or target scheduling. The engine already
+refreshes this real registry-player identity at phase 5b, before phase 12
+use/touch; saved pending player activations retain their existing tag-43 remap.
+No save format or tag changes are required.
+
+**Project-authored:** eligibility requires equality with the supplied player
+and a live registry entity; missing/nonfinite host context, null activator or
+stale entity fails closed. There is no health/alive check. Ordinary buttons,
+touch triggers and `multi_manager` forwarding remain unchanged.
+
+**Explicit compatibility cut:** this package validates the actor supplied to
+EndSection's named and touch dispatch; it does not change general relay or
+multisource forwarding. Existing originating-actor propagation to map effects
+and turret controls is retained as project-authored compatibility behavior.
+Consequently a relay/multisource chain that still supplies the real player may
+end the section here, despite the TWHL rule. Published relay replacement and
+originator/caller separation require a later package, including delayed and
+saved continuation. No second context, API or save tag is introduced here.
+`TODO(black-box)`: settle the forwarding distinction and compatibility choice;
+null-actor and unknown-host behavior is not separately specified by the page.
+The fail-closed behavior is this project's choice.
 
 `game_end` is not implemented, on the same site's word:
 [TWHL wiki: game_end](https://twhl.info/wiki/page/game_end) — "used to end
