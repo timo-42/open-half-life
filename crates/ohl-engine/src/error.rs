@@ -29,6 +29,10 @@ pub enum EngineError {
     /// A save file could not be read, or does not hold the sections this
     /// build needs.
     SaveUnreadable,
+    /// A skirmish was asked of a map with no player spawn point at all (no
+    /// `info_player_deathmatch`, and no `info_player_start` to fall back
+    /// to), or with no collision to walk on.
+    NoSpawnPoints,
 }
 
 impl EngineError {
@@ -49,6 +53,7 @@ impl EngineError {
             Self::Renderer => "the renderer could not be created",
             Self::SaveUnwritable => "the save file could not be written",
             Self::SaveUnreadable => "the save file could not be read",
+            Self::NoSpawnPoints => "the map has no player spawn point to start a skirmish on",
         }
     }
 }

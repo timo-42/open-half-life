@@ -698,6 +698,44 @@ pub fn queue_engine_damage(game: &mut crate::Game, target: ohl_game::hecs::Entit
         });
 }
 
+/// As [`queue_engine_damage`], credited to `attacker` (both the attacker
+/// and the inflictor, as a hitscan shot is), so a skirmish test can kill a
+/// combatant and check who the frag goes to.
+pub fn queue_engine_damage_from(
+    game: &mut crate::Game,
+    target: ohl_game::hecs::Entity,
+    attacker: ohl_game::hecs::Entity,
+    amount: f32,
+) {
+    let attacker = crate::ids::entity_id(attacker);
+    game.systems_mut()
+        .damage_queue
+        .push(crate::systems::QueuedDamage {
+            target,
+            info: ohl_combat::DamageInfo::new(amount, ohl_combat::DamageType::BULLET)
+                .from_entities(attacker, attacker),
+        });
+}
+
+/// A flat deathmatch arena for skirmish tests: [`ai_room_bsp`]'s 512-unit
+/// room (with its optional full-height wall at `x = 0`), with one
+/// `info_player_deathmatch` at every `(x, y)` in `spawns` (standing height,
+/// facing `+X`) and `extra` entity blocks appended. Declares no
+/// `info_player_start`, the way a deathmatch map does.
+#[must_use]
+pub fn deathmatch_room_bsp(spawns: &[(f32, f32)], interior_wall: bool, extra: &str) -> Vec<u8> {
+    use std::fmt::Write as _;
+    let mut entities = String::from("{\n\"classname\" \"worldspawn\"\n}\n");
+    for (x, y) in spawns {
+        let _ = write!(
+            entities,
+            "{{\n\"classname\" \"info_player_deathmatch\"\n\"origin\" \"{x} {y} 36\"\n\"angle\" \"0\"\n}}\n"
+        );
+    }
+    entities.push_str(extra);
+    ai_room_bsp(&entities, interior_wall)
+}
+
 /// Runs `game` for `inputs.len()` ticks, one input per tick, at the fixed
 /// step (`crate::TICK_SECONDS`).
 ///

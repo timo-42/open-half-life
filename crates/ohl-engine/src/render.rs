@@ -506,6 +506,10 @@ impl Renderers {
             .world
             .query::<(Entity, &StudioAnim, &Transform)>()
         {
+            // A taken pickup is gone until (in a skirmish) it respawns.
+            if crate::skirmish::studio_hidden(&level.registry.world, entity) {
+                continue;
+            }
             let prop = PropPlacement {
                 model: anim.model,
                 origin: transform.origin.to_array(),

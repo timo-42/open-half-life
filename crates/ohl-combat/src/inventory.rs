@@ -335,6 +335,17 @@ impl Inventory {
         owned
     }
 
+    /// Selects `id` directly, when it is owned. Returns whether `id` is now
+    /// the selection; an unowned weapon leaves the selection unchanged.
+    pub fn select(&mut self, id: WeaponId) -> bool {
+        if self.has_weapon(id) {
+            self.selected = Some(id);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Selects the next owned weapon after the current selection in HUD
     /// slot/position order, wrapping around; selects the first owned weapon
     /// if nothing is currently selected. Returns the newly selected weapon,
@@ -439,6 +450,18 @@ mod tests {
         assert_eq!(inventory.selected(), None);
         // Dropping something never owned reports false and changes nothing.
         assert!(!inventory.drop(WeaponId::Python));
+    }
+
+    #[test]
+    fn select_picks_an_owned_weapon_and_ignores_an_unowned_one() {
+        let mut inventory = Inventory::new();
+        inventory.give_weapon(WeaponId::Glock);
+        assert!(!inventory.select(WeaponId::Rpg));
+        assert_eq!(inventory.selected(), None);
+        assert!(inventory.select(WeaponId::Glock));
+        assert_eq!(inventory.selected(), Some(WeaponId::Glock));
+        assert!(!inventory.select(WeaponId::Shotgun));
+        assert_eq!(inventory.selected(), Some(WeaponId::Glock), "unchanged");
     }
 
     #[test]

@@ -2629,8 +2629,9 @@ pub const MAX_PICKUP_DETOUR_ASIDE: f32 = 320.0;
 /// How long a route stands on a pickup before walking back
 /// ([`PlanAction::Pickup`]), in seconds.
 ///
-/// The touch test runs every tick the player is within
-/// [`crate::pickups::PICKUP_TOUCH_RADIUS`], so a run that merely passes
+/// The touch test runs every tick, and reaches at least
+/// [`crate::pickups::PICKUP_TOUCH_RADIUS`] around the item's origin in
+/// every direction (`crate::pickups::touches`), so a run that merely passes
 /// through already collects; this is slack for the one case that does
 /// not, a run whose own coast stops it a moment short of where it was
 /// planned to. Project-authored slack, not a measured property of the
@@ -3054,11 +3055,12 @@ fn pickup_reach(
 /// the map left beside it, and a route that never steps aside arrives at
 /// the next map carrying exactly what it arrived at this one with.
 ///
-/// The reach test is the touch test itself
+/// The reach test is a sphere the touch test always covers
 /// (`crate::pickups::PICKUP_TOUCH_RADIUS` around the item's own placed
-/// origin, measured from the player's origin), not an approximation of
-/// it — `radius` is never larger: a detour that stood anywhere else would
-/// walk the player somewhere and collect nothing.
+/// origin, measured from the player's origin; `crate::pickups::touches`
+/// reaches at least that far in every direction) — `radius` is never
+/// larger: a detour that stood anywhere else might walk the player
+/// somewhere and collect nothing.
 fn pickup_detour(
     collision: &CollisionModel,
     trace: &Trace,

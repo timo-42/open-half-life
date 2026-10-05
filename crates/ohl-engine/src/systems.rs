@@ -367,6 +367,11 @@ pub struct Systems {
     /// touching them since this level was loaded; see
     /// [`crate::Game::touch_trigger_count`].
     touch_triggers_fired: u64,
+    /// The local skirmish running on this level, when one was started
+    /// (`crate::skirmish`). `None` for every single-player game: no phase
+    /// below does anything different without one.
+    /// Boxed: a single-player game pays one pointer for it.
+    pub(crate) skirmish: Option<Box<crate::skirmish::SkirmishState>>,
 }
 
 impl Systems {
@@ -403,6 +408,7 @@ impl Systems {
             monster_doors_opened: 0,
             mover_damage_cooldown: std::collections::BTreeMap::new(),
             touch_triggers_fired: 0,
+            skirmish: None,
         }
     }
 
@@ -1012,7 +1018,12 @@ impl Systems {
         // it stood at the start of this step (before phase 12 below may
         // activate or complete one); see `crate::camera`'s module doc for
         // why this one-tick lag mirrors `ScriptActivation`'s own.
-        let input = if crate::camera::freeze_active(level) {
+        let input = if crate::camera::freeze_active(level)
+            || self
+                .skirmish
+                .as_ref()
+                .is_some_and(|skirmish| skirmish.is_over())
+        {
             input.frozen()
         } else {
             input
@@ -1037,7 +1048,15 @@ impl Systems {
         Self::actor_sync(level, camera, controller, dt); // 4
         self.rebuild_hitbox_index(level, controller); // 5
         self.begin_map_effects(level, controller, dt); // 5b
-        let consumed_use = self.turret_and_handheld_weapons(level, controller, dt, input); // 5c/6
+        // A dead skirmish player's fire button is a respawn click (phase
+        // 13c), not a shot.
+        let weapon_input = if self.skirmish.is_some() && self.player.state.dead {
+            input.frozen()
+        } else {
+            input
+        };
+        let consumed_use = self.turret_and_handheld_weapons(level, controller, dt, weapon_input); // 5c/6
+        self.skirmish_bots(level, controller, weapon_input, dt); // 6b
         self.projectiles(level, dt); // 7
         self.ai_think(level, dt); // 8
         Self::sync_monster_transforms(level); // 8b
@@ -1045,12 +1064,18 @@ impl Systems {
         self.reap_deployables(level); // 9b
         self.lifecycle(level, dt); // 10
         self.pickups(level, input, dt); // 11
+        if let Some(skirmish) = self.skirmish.as_mut() {
+            skirmish.pickups(level, dt); // 11b
+        }
         let mover_input = LatchedInput {
             use_pressed: input.use_pressed && !consumed_use,
             use_held: input.use_held && !consumed_use,
             ..input
         };
         self.triggers_and_movers(level, camera, mover_input, dt, events); // 12
+        if let Some(skirmish) = self.skirmish.as_mut() {
+            skirmish.touch_world(level); // 12c
+        }
         // 12b — pushing a `func_pushable`, and breaking a `func_breakable`
         // the player is standing on ("Pressure"): both ask where the
         // player ended up *this* step, so both run after the move (phase
@@ -1062,6 +1087,7 @@ impl Systems {
         self.capture_map_effects(level); // late effects resolve combat next step
         crate::camera::apply_override(level, camera); // 12.5
         self.presentation(level, dt); // 13
+        self.skirmish_rules(level, camera, controller, input, dt); // 13c
         self.substep_counter = self.substep_counter.wrapping_add(1);
     }
 
@@ -1097,7 +1123,7 @@ impl Systems {
     /// Phase 2b — living player move. The walking path runs the collision
     /// controller; a map with no usable hulls falls back to the free-fly
     /// camera, which is what makes an unbuildable map still inspectable.
-    fn player_move(
+    pub(crate) fn player_move(
         level: &mut Level,
         camera: &mut FreeFlyCamera,
         controller: &mut PlayerController,
@@ -1391,32 +1417,13 @@ impl Systems {
             self.projectiles.owned_satchels(level.player),
         );
         if let Some(command) = command {
-            use crate::combat::PlayerProjectileCommand as Command;
-            let success = match command {
-                Command::Spawn(request) => {
-                    self.projectiles.spawn_request(level, &request).is_some()
-                }
-                Command::PlaceSatchel { owner, position } => self
-                    .projectiles
-                    .place_satchel(level, Some(owner), position)
-                    .is_some(),
-                Command::PlaceTripmine {
-                    owner,
-                    origin,
-                    direction,
-                } => self
-                    .projectiles
-                    .place_tripmine(level, Some(owner), origin, direction)
-                    .is_some(),
-                Command::DetonateSatchels { owner } => {
-                    self.projectiles.detonate_satchels_for(
-                        level,
-                        owner,
-                        &mut self.damage_queue,
-                        &mut self.transient_sprites,
-                    ) > 0
-                }
-            };
+            let success = dispatch_projectile_command(
+                &mut self.projectiles,
+                level,
+                &command,
+                &mut self.damage_queue,
+                &mut self.transient_sprites,
+            );
             self.combat.finish_projectile_command(success);
         }
         if let Some(collision) = level.collision.as_ref() {
@@ -1540,7 +1547,15 @@ impl Systems {
     /// order.
     fn resolve_damage(&mut self, level: &mut Level) {
         let player_id = level.player;
-        crate::combat::resolve_damage(
+        // In a skirmish every hit aimed at a bot is the bot's own player
+        // systems' to resolve, and is taken out of the queue first; who
+        // last hit the human is remembered so a death the resolution below
+        // reports can be credited (`crate::skirmish`).
+        let human_weapon = self.combat.selected_weapon();
+        if let Some(skirmish) = self.skirmish.as_mut() {
+            skirmish.resolve_bot_damage(level, &mut self.damage_queue, human_weapon);
+        }
+        let lethal = crate::combat::resolve_damage_reporting_lethal(
             &mut self.damage_queue,
             level,
             &mut self.player,
@@ -1550,6 +1565,11 @@ impl Systems {
             &mut self.player_events,
             &mut self.player_damage_events,
         );
+        if let Some(skirmish) = self.skirmish.as_mut()
+            && let Some((attacker, kind)) = lethal
+        {
+            skirmish.note_human_death(player_id, human_weapon, attacker, kind);
+        }
     }
 
     /// Phase 9b — a placed satchel or tripmine that phase 9 just brought to
@@ -1595,6 +1615,11 @@ impl Systems {
 
     /// Phase 11 — pickups: touch tests and the use-and-hold chargers.
     fn pickups(&mut self, level: &mut Level, input: LatchedInput, dt: f32) {
+        // A dead skirmish player's corpse takes nothing: what it took would
+        // be thrown away at the respawn, and denied to everyone else.
+        if self.skirmish.is_some() && self.player.state.dead {
+            return;
+        }
         let player_origin = self.physics_output.origin;
         #[allow(clippy::cast_possible_truncation)]
         let player_tag = crate::ids::entity_id(level.player).0 as u32;
@@ -2041,6 +2066,204 @@ impl Systems {
         self.presentation.ambient(level, self.ai.sentence_lookup());
         self.transient_sprites.tick(dt);
         self.view_model.tick(dt);
+    }
+
+    /// Starts a local skirmish on `level` (see `crate::skirmish`): the
+    /// human respawns at a deathmatch spawn point with the deathmatch
+    /// equipment, and `config.bots` bots join. `player_model` is the
+    /// level's studio model slot bots are drawn with, when the payload
+    /// publishes one.
+    pub(crate) fn start_skirmish(
+        &mut self,
+        level: &mut Level,
+        camera: &mut FreeFlyCamera,
+        controller: &mut PlayerController,
+        config: crate::skirmish::SkirmishConfig,
+        player_model: Option<usize>,
+    ) {
+        self.ensure_pickups_spawned(level);
+        let mut skirmish = crate::skirmish::SkirmishState::new(level, config, player_model);
+        skirmish.exclude_non_deathmatch_pickups(level);
+        let human = crate::skirmish::HumanView {
+            entity: level.player,
+            origin: controller.state.origin,
+            eye: controller.eye_position(),
+            alive: false,
+            firing: false,
+        };
+        let spawn = skirmish.pick_spawn(level, human, Some(0));
+        self.respawn_human(level, camera, controller, spawn);
+        let human = crate::skirmish::HumanView {
+            origin: controller.state.origin,
+            eye: controller.eye_position(),
+            alive: true,
+            ..human
+        };
+        skirmish.add_bots(level, human);
+        self.skirmish = Some(Box::new(skirmish));
+    }
+
+    /// The running skirmish's status, when there is one.
+    pub(crate) fn skirmish_status(&self) -> Option<crate::skirmish::SkirmishStatus> {
+        self.skirmish
+            .as_ref()
+            .map(|skirmish| skirmish.status(!self.player.state.dead))
+    }
+
+    /// Takes every skirmish event collected since the last call.
+    pub(crate) fn drain_skirmish_events(&mut self) -> Vec<crate::skirmish::SkirmishEvent> {
+        self.skirmish
+            .as_mut()
+            .map(|skirmish| skirmish.drain_events())
+            .unwrap_or_default()
+    }
+
+    /// Phase 6b — skirmish bots: every living bot senses, decides, moves
+    /// and fires through the same weapon code phase 6 just ran for the
+    /// human, against the same hitbox index. Their projectiles join the
+    /// same projectile system phase 7 advances next.
+    fn skirmish_bots(
+        &mut self,
+        level: &mut Level,
+        controller: &PlayerController,
+        input: LatchedInput,
+        dt: f32,
+    ) {
+        let Some(skirmish) = self.skirmish.as_mut() else {
+            return;
+        };
+        let human = crate::skirmish::HumanView {
+            entity: level.player,
+            origin: controller.state.origin,
+            eye: controller.eye_position(),
+            alive: !self.player.state.dead,
+            firing: !self.player.state.dead && input.attack,
+        };
+        let commands =
+            skirmish.think_and_act(level, human, &self.hitboxes, &mut self.damage_queue, dt);
+        for (index, command) in commands {
+            let success = dispatch_projectile_command(
+                &mut self.projectiles,
+                level,
+                &command,
+                &mut self.damage_queue,
+                &mut self.transient_sprites,
+            );
+            if let Some(bot) = skirmish.bots.get_mut(index) {
+                bot.finish_projectile_command(success);
+            }
+        }
+    }
+
+    /// Phase 13c — skirmish rules: the clock and the limits, bot
+    /// respawns, and the human's own respawn (a click — fire or jump —
+    /// once [`crate::skirmish::RESPAWN_CLICK_DELAY_SECONDS`] has passed,
+    /// or automatically under `force_respawn`). A human death phase 9 did
+    /// not credit (a fall, a hazard) is recorded here as a suicide.
+    fn skirmish_rules(
+        &mut self,
+        level: &mut Level,
+        camera: &mut FreeFlyCamera,
+        controller: &mut PlayerController,
+        input: LatchedInput,
+        dt: f32,
+    ) {
+        let human_weapon = self.combat.selected_weapon();
+        let Some(skirmish) = self.skirmish.as_mut() else {
+            return;
+        };
+        if self.player.state.dead {
+            // A death phase 9 did not report (a fall, a hazard, a crusher):
+            // nobody is credited.
+            skirmish.note_human_death(
+                level.player,
+                human_weapon,
+                None,
+                ohl_combat::DamageType::GENERIC,
+            );
+        }
+        let human = crate::skirmish::HumanView {
+            entity: level.player,
+            origin: controller.state.origin,
+            eye: controller.eye_position(),
+            alive: !self.player.state.dead,
+            firing: false,
+        };
+        let pressed = input.attack || input.jump;
+        if skirmish.rules(level, human, pressed, dt) {
+            let spawn = skirmish.pick_spawn(level, human, Some(0));
+            skirmish.human_respawned();
+            self.respawn_human(level, camera, controller, spawn);
+        }
+    }
+
+    /// Puts the human back into a skirmish at `spawn`: full health, the
+    /// HEV suit, the deathmatch starting equipment, standing on the floor
+    /// beneath the spawn point.
+    fn respawn_human(
+        &mut self,
+        level: &mut Level,
+        camera: &mut FreeFlyCamera,
+        controller: &mut PlayerController,
+        spawn: crate::skirmish::SpawnPoint,
+    ) {
+        *controller = PlayerController::spawn_at(spawn.origin, spawn.yaw, 0.0);
+        if let Some(collision) = level.collision.as_ref() {
+            controller.settle_at_spawn(collision);
+        }
+        *camera = FreeFlyCamera::at_spawn(ohl_world::PlayerSpawn {
+            origin: controller.state.origin.to_array(),
+            yaw: spawn.yaw,
+            pitch: 0.0,
+        });
+        camera.position = controller.eye_position().to_array();
+        self.player = ohl_player::Player::default();
+        let mut events = Vec::new();
+        self.player.equip_suit(&mut events);
+        self.combat = CombatState::new();
+        crate::skirmish::give_deathmatch_loadout(&mut self.combat);
+        self.physics_output = ohl_player::PhysicsOutput::default();
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            self.hud.health = self.player.state.health.round() as i32;
+            self.hud.armor = self.player.state.armor.round() as i32;
+        }
+        self.hud.damage_flash = 0.0;
+        crate::combat::sync_player_components(level, &self.player);
+        if let Ok(mut transform) = level.registry.world.get::<&mut Transform>(level.player) {
+            transform.origin = controller.state.origin;
+            transform.angles = Vec3::new(0.0, spawn.yaw, 0.0);
+        }
+    }
+}
+
+/// Hands one weapon's projectile command to the projectile system and
+/// reports whether it was admitted, so the firing weapon can roll its
+/// ammunition back when it was not. Shared by the human's weapons (phase
+/// 6) and every skirmish bot's (phase 6b).
+fn dispatch_projectile_command(
+    projectiles: &mut ProjectileSystem,
+    level: &mut Level,
+    command: &crate::combat::PlayerProjectileCommand,
+    damage_queue: &mut Vec<QueuedDamage>,
+    transient_sprites: &mut TransientSprites,
+) -> bool {
+    use crate::combat::PlayerProjectileCommand as Command;
+    match *command {
+        Command::Spawn(ref request) => projectiles.spawn_request(level, request).is_some(),
+        Command::PlaceSatchel { owner, position } => projectiles
+            .place_satchel(level, Some(owner), position)
+            .is_some(),
+        Command::PlaceTripmine {
+            owner,
+            origin,
+            direction,
+        } => projectiles
+            .place_tripmine(level, Some(owner), origin, direction)
+            .is_some(),
+        Command::DetonateSatchels { owner } => {
+            projectiles.detonate_satchels_for(level, owner, damage_queue, transient_sprites) > 0
+        }
     }
 }
 
