@@ -1254,6 +1254,14 @@ pub struct WeaponStrip;
 /// triggered by the player walking into it, but must be triggered by another
 /// entity".
 ///
+/// The same published guide requires the player as activator. Buttons and
+/// ordinary touch triggers can preserve that identity, including through a
+/// `multi_manager`; a relay or multisource loses it. The simulation reuses
+/// its host-supplied [`crate::effects::EffectPlayer`] identity for both touch
+/// and named dispatch, without adding persistent state. Project-authored:
+/// unknown or stale identity and an absent actor fail closed.
+/// TODO(black-box): the guide does not separately specify null actors.
+///
 /// [`Self::section`] is carried verbatim rather than interpreted: every
 /// published value takes the player back to the main menu (one also opens
 /// a web page, which this project will not do), so there is nothing for a

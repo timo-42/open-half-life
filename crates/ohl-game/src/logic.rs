@@ -1479,6 +1479,9 @@ impl Simulation {
             .ok()
             .map(|end| (*end).clone())
         {
+            if !self.endsection_player(registry, activator) {
+                return;
+            }
             // "The `section` attribute must have a value for the entity to
             // work" (TWHL `trigger_endsection`): an unset one does nothing,
             // not even fire the ordinary trigger bookkeeping below.
@@ -1500,6 +1503,16 @@ impl Simulation {
         if registry.world.get::<&Trigger>(entity).is_ok() {
             self.activate_trigger(registry, entity, activator);
         }
+    }
+
+    /// The host already supplies the real player for activator-only effects.
+    /// Reuse that identity; a classname alone is not a player identity.
+    /// Project-authored: unknown, absent or stale actors fail closed.
+    /// TODO(black-box): published documentation does not specify null actors.
+    fn endsection_player(&self, registry: &Registry, activator: Option<Entity>) -> bool {
+        self.effect_player.is_some_and(|player| {
+            activator == Some(player.entity) && registry.world.contains(player.entity)
+        })
     }
 
     /// The events a `trigger_*` volume raises *by being touched*, over and
@@ -1773,6 +1786,13 @@ impl Simulation {
         entity: Entity,
         activator: Option<Entity>,
     ) -> bool {
+        // Reject a nonplayer touch before any cooldown, once-state or target
+        // scheduling: it must not spend the player's next eligible touch.
+        if registry.world.get::<&EndSection>(entity).is_ok()
+            && !self.endsection_player(registry, activator)
+        {
+            return false;
+        }
         // The documented `master` gate, checked here as well as in
         // [`Self::activate`]: a touch reaches this method directly, without
         // going through that one.
@@ -3251,7 +3271,7 @@ fn travel_time(distance: f32, speed: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::keyvalues::{Limits, parse_entities};
-    use crate::registry::{Registry, SPAWNFLAG_PLATROT_TOGGLE};
+    use crate::registry::{ClassName, Registry, SPAWNFLAG_PLATROT_TOGGLE};
     use ohl_formats::bsp30::Entity as RawEntity;
     use std::collections::BTreeMap;
 
@@ -6012,14 +6032,20 @@ mod tests {
         let mut bounds = BTreeMap::new();
         bounds.insert(1u32, ([-32.0, -32.0, -32.0], [32.0, 32.0, 32.0]));
         let mut registry = Registry::build(&defs, &bounds, &Limits::default());
+        let player = registry.world.spawn((ClassName("player".to_string()),));
         let mut sim = Simulation::new();
+        sim.set_effect_player(Some(EffectPlayer {
+            entity: player,
+            origin: Vec3::ZERO,
+            grounded: true,
+        }));
 
         let mut events = Vec::new();
         let fired = sim.touch_triggers(
             &mut registry,
             Vec3::new(-8.0, -8.0, -8.0),
             Vec3::new(8.0, 8.0, 8.0),
-            None,
+            Some(player),
             &mut events,
         );
         assert_eq!(fired, 1);
@@ -6032,7 +6058,7 @@ mod tests {
 
         let mut named = Vec::new();
         let end = registry.find("end1")[0];
-        sim.use_entity(&mut registry, end, None, &mut named);
+        sim.use_entity(&mut registry, end, Some(player), &mut named);
         assert!(
             named
                 .iter()
@@ -6059,21 +6085,27 @@ mod tests {
         let mut bounds = BTreeMap::new();
         bounds.insert(1u32, ([-32.0, -32.0, -32.0], [32.0, 32.0, 32.0]));
         let mut registry = Registry::build(&defs, &bounds, &Limits::default());
+        let player = registry.world.spawn((ClassName("player".to_string()),));
         let mut sim = Simulation::new();
+        sim.set_effect_player(Some(EffectPlayer {
+            entity: player,
+            origin: Vec3::ZERO,
+            grounded: true,
+        }));
 
         let mut events = Vec::new();
         let fired = sim.touch_triggers(
             &mut registry,
             Vec3::new(-8.0, -8.0, -8.0),
             Vec3::new(8.0, 8.0, 8.0),
-            None,
+            Some(player),
             &mut events,
         );
         assert_eq!(fired, 0, "a USE Only volume is not walked into");
         assert!(events.is_empty());
 
         let end = registry.find("end1")[0];
-        sim.use_entity(&mut registry, end, None, &mut events);
+        sim.use_entity(&mut registry, end, Some(player), &mut events);
         assert!(matches!(events.as_slice(), [Event::EndSection(_)]));
     }
 
@@ -6101,19 +6133,25 @@ mod tests {
         let mut bounds = BTreeMap::new();
         bounds.insert(1u32, ([-32.0, -32.0, -32.0], [32.0, 32.0, 32.0]));
         let mut registry = Registry::build(&defs, &bounds, &Limits::default());
+        let player = registry.world.spawn((ClassName("player".to_string()),));
         let mut sim = Simulation::new();
+        sim.set_effect_player(Some(EffectPlayer {
+            entity: player,
+            origin: Vec3::ZERO,
+            grounded: true,
+        }));
 
         let mut events = Vec::new();
         let fired = sim.touch_triggers(
             &mut registry,
             Vec3::new(-8.0, -8.0, -8.0),
             Vec3::new(8.0, 8.0, 8.0),
-            None,
+            Some(player),
             &mut events,
         );
         assert_eq!(fired, 0, "an unset section is not a touch volume");
         let end = registry.find("end1")[0];
-        sim.use_entity(&mut registry, end, None, &mut events);
+        sim.use_entity(&mut registry, end, Some(player), &mut events);
         for _ in 0..10 {
             events.extend(sim.tick(&mut registry, 0.1));
         }

@@ -29,7 +29,7 @@ const CHANGE_NOT_FOLLOWED: &str = "A level change fired during capture; it was n
 
 /// A floor, a spawn, a USE-only `trigger_changelevel` fired by a
 /// `trigger_auto` a second in, and — when `end_section` — a
-/// `trigger_endsection` fired by another `trigger_auto` half a second in.
+/// `trigger_endsection` fired by a delayed player touch half a second in.
 fn entities(end_section: bool) -> String {
     let mut out = String::from(
         "{\n\"classname\" \"worldspawn\"\n}\n\
@@ -43,7 +43,8 @@ fn entities(end_section: bool) -> String {
         out.push_str(
             "{\n\"classname\" \"trigger_endsection\"\n\"targetname\" \"ohl_end\"\n\
              \"section\" \"ohl_test_section\"\n\"spawnflags\" \"1\"\n}\n\
-             {\n\"classname\" \"trigger_auto\"\n\"target\" \"ohl_end\"\n\"delay\" \"0.5\"\n}\n",
+             {\n\"classname\" \"trigger_once\"\n\"target\" \"ohl_end\"\n\"delay\" \"0.5\"\n\
+             \"model\" \"*1\"\n\"origin\" \"0 0 40\"\n}\n",
         );
     }
     out
@@ -143,7 +144,8 @@ fn a_capture_stops_at_the_section_end_when_opted_in() {
             "ohlnowheresynth",
             "{\n\"classname\" \"trigger_endsection\"\n\"targetname\" \"ohl_end\"\n\
              \"section\" \"ohl_test_section\"\n\"spawnflags\" \"1\"\n}\n\
-             {\n\"classname\" \"trigger_auto\"\n\"target\" \"ohl_end\"\n\"delay\" \"0.5\"\n}\n\
+             {\n\"classname\" \"trigger_once\"\n\"target\" \"ohl_end\"\n\"delay\" \"0.5\"\n\
+             \"model\" \"*1\"\n}\n\
              {\n\"classname\" \"trigger_auto\"\n\"target\" \"ohl_exit\"\n\"delay\" \"1\"\n}\n",
         ),
     )

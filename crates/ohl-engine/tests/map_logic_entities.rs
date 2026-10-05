@@ -693,29 +693,31 @@ fn a_weapon_given_back_after_a_strip_comes_back_unloaded() {
 // `trigger_endsection`
 // ---------------------------------------------------------------------
 
-/// A `trigger_endsection` fired by a map's own chain surfaces as
-/// [`GameEvent::EndSection`], which is what `ohl-app` ends the run on. The
-/// event carries nothing map-derived — that is the point of it being a
-/// unit variant.
+/// A real player touch supplies the end's actor through a delayed map chain.
+/// The floor submodel is reused as a nonsolid trigger volume, translated to
+/// overlap the spawn hull; no second BSP builder or trigger API is needed.
+fn end_section_entities(delay: f32) -> String {
+    format!(
+        "{}{{\n\"classname\" \"trigger_endsection\"\n\"targetname\" \"ohl_end\"\n\
+         \"section\" \"ohl_test_section\"\n\"spawnflags\" \"1\"\n}}\n\
+         {{\n\"classname\" \"trigger_once\"\n\"model\" \"*1\"\n\
+         \"origin\" \"0 0 40\"\n\"target\" \"ohl_end\"\n\"delay\" \"{delay}\"\n}}\n",
+        floor_entities("func_wall", ""),
+    )
+}
+
+/// The event carries nothing map-derived, and the actual engine phases
+/// supply the current player identity before the map's chain fires.
 #[test]
 fn a_trigger_endsection_surfaces_as_a_game_event() {
-    let entities = format!(
-        "{}{}{}",
-        floor_entities("func_wall", ""),
-        "{\n\"classname\" \"trigger_endsection\"\n\"targetname\" \"ohl_end\"\n\
-         \"section\" \"ohl_test_section\"\n\"origin\" \"0 0 40\"\n}\n",
-        auto_trigger("ohl_end", 0.5),
-    );
+    let entities = end_section_entities(0.5);
     let mut game = game_from("ohlendsectionsynth", killable_brush_floor_bsp(&entities));
-
     let before = tick_n(&mut game, 6, &Input::default());
     assert!(
         !before
             .iter()
-            .any(|event| matches!(event, GameEvent::EndSection)),
-        "nothing ends the section before the chain reaches it"
+            .any(|event| matches!(event, GameEvent::EndSection))
     );
-
     let after = tick_n(&mut game, 60, &Input::default());
     assert_eq!(
         after
@@ -723,7 +725,102 @@ fn a_trigger_endsection_surfaces_as_a_game_event() {
             .filter(|event| matches!(event, GameEvent::EndSection))
             .count(),
         1,
-        "the section ends exactly once"
+        "the player's delayed touch ends the section exactly once"
+    );
+}
+
+#[test]
+fn an_auto_cannot_end_the_section_but_the_same_games_player_can() {
+    let entities = format!(
+        "{}{}",
+        end_section_entities(0.5),
+        auto_trigger("ohl_end", 0.05)
+    );
+    let mut game = game_from(
+        "ohlendsectionautosynth",
+        killable_brush_floor_bsp(&entities),
+    );
+    let early = tick_n(&mut game, 12, &Input::default());
+    assert!(
+        !early
+            .iter()
+            .any(|event| matches!(event, GameEvent::EndSection)),
+        "an auto entity is not the current player"
+    );
+    let later = tick_n(&mut game, 60, &Input::default());
+    assert_eq!(
+        later
+            .iter()
+            .filter(|event| matches!(event, GameEvent::EndSection))
+            .count(),
+        1,
+        "the same end still accepts its player's delayed chain"
+    );
+}
+
+#[test]
+fn a_saved_player_chain_ends_on_the_first_restored_step_once() {
+    use ohl_engine::save::EffectEntityRef;
+    use ohl_engine::{GameSave, TICK_SECONDS};
+
+    let entities = end_section_entities(TICK_SECONDS * 1.5);
+    let mut assets = MemoryAssets::new();
+    assets.insert(
+        "maps/ohlendsectionsavesynth.bsp",
+        killable_brush_floor_bsp(&entities),
+    );
+    let mut game = Game::load(&assets, "ohlendsectionsavesynth").expect("fixture loads");
+    assert!(
+        !game
+            .tick(TICK_SECONDS, &Input::default())
+            .iter()
+            .any(|event| matches!(event, GameEvent::EndSection))
+    );
+    let mut save = game.to_save(7);
+    assert_eq!(
+        save.simulation.pending.len(),
+        1,
+        "the player touch actually scheduled its end"
+    );
+    assert!(
+        save.simulation.pending[0].delay > 0.0 && save.simulation.pending[0].delay <= TICK_SECONDS
+    );
+    assert_eq!(
+        save.map_effects.as_ref().unwrap().pending_uses[0].activator,
+        Some(EffectEntityRef::Player),
+        "tag43 owns stable player provenance"
+    );
+    // Tag43 must supply the actor, rather than relying on a raw legacy handle
+    // that happens to match a newly rebuilt registry's entity bits.
+    save.simulation.pending[0].activator = None;
+    let decoded =
+        GameSave::from_bytes(&save.to_bytes().expect("save encodes")).expect("save decodes");
+    let mut restored = Game::from_save(&assets, &decoded).expect("save restores");
+    let first = restored.tick(TICK_SECONDS, &Input::default());
+    assert_eq!(
+        first
+            .iter()
+            .filter(|event| matches!(event, GameEvent::EndSection))
+            .count(),
+        1,
+        "phase5b must refresh the player before the first restored trigger dispatch"
+    );
+    for _ in 0..10 {
+        assert!(
+            !restored
+                .tick(TICK_SECONDS, &Input::default())
+                .iter()
+                .any(|event| matches!(event, GameEvent::EndSection)),
+            "the saved once-trigger must not refire"
+        );
+    }
+    assert_eq!(
+        game.tick(TICK_SECONDS, &Input::default())
+            .iter()
+            .filter(|event| matches!(event, GameEvent::EndSection))
+            .count(),
+        1,
+        "the uninterrupted delayed chain is the continuation control"
     );
 }
 
