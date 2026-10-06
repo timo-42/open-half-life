@@ -29,23 +29,11 @@ const MAX_STUDIO_MODELS: usize = 96;
 /// if an entity happened to carry a `.mdl` `model` keyvalue.
 const SPRITE_ONLY_CLASSES: [&str; 3] = ["env_sprite", "env_glow", "cycler_sprite"];
 
-/// Whether `classname`'s `model` keyvalue (when it names a `.mdl` asset)
-/// should be loaded and placed as a studio model.
-///
-/// Earlier this milestone only matched a four-prefix allowlist
-/// (`monster_`, `cycler`, `env_model`, `prop_`), which missed most of
-/// GoldSrc's documented model-carrying classes: the full `monster_*` family
-/// (including `monster_generic` and `monster_furniture`, both of which
-/// carry an explicit `model` keyvalue rather than a hardcoded one), and the
-/// `item_*` / `weapon_*` / `ammo_*` pickup families, which all resolve
-/// their world model from their own `model` keyvalue (see the HL1 entity
-/// list on the Valve Developer Community / TWHL wikis). Rather than
-/// enumerate every one of those prefixes, any classname is accepted as
-/// long as it actually carries a `.mdl` `model` keyvalue and is not one of
-/// the sprite-only classes above — that is a strict superset of the
-/// documented list and cannot mis-place a brush or sprite entity, since
-/// [`ohl_game::keyvalues::ModelRef::Brush`] and non-`.mdl` asset paths are
-/// filtered out separately.
+/// Whether `classname` can carry a studio model. Any explicit `.mdl`
+/// model is accepted except for sprite-only classes; monsters and pickups
+/// without an explicit model resolve through their documented default
+/// tables. Brush references and non-`.mdl` asset paths are filtered out
+/// separately.
 fn wants_studio_model(classname: &str) -> bool {
     !SPRITE_ONLY_CLASSES.contains(&classname)
 }
@@ -1435,7 +1423,7 @@ fn external_texture_path(key: &str) -> Option<String> {
     Some(format!("{stem}t.mdl"))
 }
 
-/// Loads the studio models this map's monster and prop entities reference,
+/// Loads the studio models this map's monsters, pickups and props reference,
 /// skipping (and counting) the ones the payload does not publish.
 fn load_studio_models(source: &dyn AssetSource, defs: &[EntityDef]) -> StudioLoad {
     let mut by_path: BTreeMap<String, Option<usize>> = BTreeMap::new();
@@ -1484,22 +1472,26 @@ fn load_studio_models_into(
         if !wants_studio_model(&def.classname) {
             continue;
         }
-        // Most `monster_*` classnames carry no `model` keyvalue at all in
-        // the map's entity lump: GoldSrc's own monster class hardcodes its
-        // model in `Spawn`/`Precache`, not in map data (see
-        // `wants_studio_model`'s doc comment and
-        // `ohl_ai::MonsterKind::default_model_path`'s). A monster whose
-        // entity has no explicit `model` keyvalue therefore falls back to
-        // that table instead of being skipped outright, which is what lets
-        // it draw at all rather than simulate invisibly.
-        let path: std::borrow::Cow<'_, str> = match def.model.as_ref() {
-            Some(ModelRef::Asset(path)) => std::borrow::Cow::Borrowed(path.as_str()),
+        // Standard monsters and pickups need a default model when map
+        // data omits it. An explicit model also owns its own initial pose:
+        // a custom tripmine model must not inherit the stock body's index.
+        let pickup_model = if def.model.is_none() {
+            crate::pickup_models::default_model(&def.classname)
+        } else {
+            None
+        };
+        let path = match def.model.as_ref() {
+            Some(ModelRef::Asset(path)) => path.as_str(),
             None if def.classname.starts_with("monster_") => {
                 match ohl_ai::MonsterKind::from_classname(&def.classname).default_model_path() {
-                    Some(default_path) => std::borrow::Cow::Borrowed(default_path),
+                    Some(default_path) => default_path,
                     None => continue,
                 }
             }
+            None => match pickup_model.as_ref() {
+                Some(default) => default.path,
+                None => continue,
+            },
             _ => continue,
         };
         let key = path.to_ascii_lowercase();
@@ -1549,12 +1541,12 @@ fn load_studio_models_into(
                     .keyvalues
                     .get("sequence")
                     .and_then(|value| value.trim().parse::<usize>().ok())
-                    .unwrap_or(0),
+                    .unwrap_or_else(|| pickup_model.as_ref().map_or(0, |model| model.sequence)),
                 body: def
                     .keyvalues
                     .get("body")
                     .and_then(|value| value.trim().parse::<u32>().ok())
-                    .unwrap_or(0),
+                    .unwrap_or_else(|| pickup_model.as_ref().map_or(0, |model| model.body)),
                 skin: def
                     .keyvalues
                     .get("skin")
@@ -1572,7 +1564,9 @@ fn load_studio_models_into(
 mod tests {
     use glam::Vec3;
     use ohl_formats::bsp30::{Bsp, Limits as BspLimits};
-    use ohl_formats::test_support::{build_minimal_mdl10, build_minimal_spr};
+    use ohl_formats::test_support::{
+        build_minimal_mdl10, build_minimal_mdl10_with_sequences, build_minimal_spr,
+    };
     use ohl_game::keyvalues::{self, Limits as KeyvalueLimits};
     use ohl_game::registry::Registry;
     use ohl_physics::test_support::{build_ladder_entity_room_bsp, build_water_entity_room_bsp};
@@ -1889,6 +1883,184 @@ mod tests {
             .find(|prop| (prop.origin[0] - 11.0).abs() < f32::EPSILON)
             .expect("monster_zombie prop placed from its default model");
         assert!((prop.yaw - 90.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn every_supported_touch_pickup_without_a_model_gets_a_studio_instance() {
+        let classnames = [
+            "weapon_crowbar",
+            "weapon_9mmhandgun",
+            "weapon_glock",
+            "weapon_357",
+            "weapon_9mmAR",
+            "weapon_shotgun",
+            "weapon_crossbow",
+            "weapon_rpg",
+            "weapon_gauss",
+            "weapon_egon",
+            "weapon_hornetgun",
+            "weapon_handgrenade",
+            "weapon_satchel",
+            "weapon_tripmine",
+            "weapon_snark",
+            "ammo_9mmclip",
+            "ammo_glockclip",
+            "ammo_9mmAR",
+            "ammo_ARgrenades",
+            "ammo_mp5grenades",
+            "ammo_357",
+            "ammo_buckshot",
+            "ammo_crossbow",
+            "ammo_rpgclip",
+            "ammo_gaussclip",
+            "item_healthkit",
+            "item_battery",
+            "item_suit",
+            "item_longjump",
+            "item_security",
+            "weaponbox",
+        ];
+        let (mdl, _) = build_minimal_mdl10_with_sequences(&[
+            "idle",
+            "ohl_pose_1",
+            "ohl_pose_2",
+            "ohl_pose_3",
+            "ohl_pose_4",
+            "ohl_pose_5",
+            "ohl_pose_6",
+            "ohl_pose_7",
+            "ohl_ground",
+        ]);
+        let mut assets = MemoryAssets::new();
+        let mut extra = String::new();
+        for classname in classnames {
+            assert!(ohl_combat::classify_classname(classname).is_some());
+            let model = crate::pickup_models::default_model(classname).expect("pickup has a model");
+            assets.insert(model.path, mdl.clone());
+            extra.push_str(&crate::test_support::entity_block(
+                classname,
+                [100.0, 0.0, 4.0],
+                45.0,
+                &[],
+            ));
+        }
+        let map = synthetic_map_bsp_with_extra_entity("next", &extra);
+        let level = Level::from_bytes(&assets, "ohlsynth", &map).expect("level loads");
+        assert_eq!(level.missing_models, 0);
+        assert_eq!(level.props.len(), classnames.len());
+        assert_eq!(
+            level.studio_models.len(),
+            classnames.len() - 3,
+            "aliases share models"
+        );
+        for classname in classnames {
+            let index = level
+                .defs
+                .iter()
+                .position(|def| def.classname == classname)
+                .unwrap();
+            let entity = level.registry.entities[index];
+            let anim = level
+                .registry
+                .world
+                .get::<&crate::StudioAnim>(entity)
+                .unwrap();
+            assert!(
+                ohl_world::StudioPose::sample(&level.studio_models[anim.model], anim.sequence, 0.0)
+                    .is_ok(),
+                "the pickup's initial pose samples"
+            );
+            if classname == "weapon_tripmine" {
+                assert_eq!(anim.sequence, 8);
+                assert_eq!(anim.body, 3);
+            }
+        }
+    }
+
+    #[test]
+    fn clips_and_magazines_use_distinct_models_for_the_same_ammo_type() {
+        let extra = ["ammo_9mmclip", "ammo_9mmAR"]
+            .map(|classname| {
+                crate::test_support::entity_block(classname, [100.0, 0.0, 4.0], 0.0, &[])
+            })
+            .concat();
+        let map = synthetic_map_bsp_with_extra_entity("next", &extra);
+        let (mdl, _) = build_minimal_mdl10();
+        let mut assets = MemoryAssets::new();
+        assets.insert("models/w_9mmclip.mdl", mdl.clone());
+        assets.insert("models/w_9mmarclip.mdl", mdl);
+        let level = Level::from_bytes(&assets, "ohlsynth", &map).expect("level loads");
+        assert_eq!(level.props.len(), 2);
+        assert_eq!(
+            level.studio_model_paths,
+            ["models/w_9mmclip.mdl", "models/w_9mmarclip.mdl"]
+        );
+        assert_ne!(level.props[0].model, level.props[1].model);
+    }
+
+    #[test]
+    fn an_explicit_pickup_model_keeps_its_own_body_sequence_and_skin() {
+        let extra = crate::test_support::entity_block(
+            "weapon_tripmine",
+            [100.0, 0.0, 4.0],
+            45.0,
+            &[
+                ("model", "models/ohl_pickup.mdl"),
+                ("body", "5"),
+                ("sequence", "2"),
+                ("skin", "1"),
+            ],
+        );
+        let map = synthetic_map_bsp_with_extra_entity("next", &extra);
+        let (mdl, _) = build_minimal_mdl10();
+        let mut assets = MemoryAssets::new();
+        assets.insert("models/ohl_pickup.mdl", mdl.clone());
+        assets.insert("models/v_tripmine.mdl", mdl);
+        let level = Level::from_bytes(&assets, "ohlsynth", &map).expect("level loads");
+        assert_eq!(level.studio_model_paths, ["models/ohl_pickup.mdl"]);
+        let prop = &level.props[0];
+        assert_eq!((prop.body, prop.sequence, prop.skin), (5, 2, 1));
+        assert!((prop.yaw - 45.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn an_unavailable_explicit_pickup_model_does_not_fall_back_to_the_default() {
+        let extra = crate::test_support::entity_block(
+            "weapon_shotgun",
+            [100.0, 0.0, 4.0],
+            0.0,
+            &[("model", "models/ohl_missing.mdl")],
+        );
+        let map = synthetic_map_bsp_with_extra_entity("next", &extra);
+        let (mdl, _) = build_minimal_mdl10();
+        let mut assets = MemoryAssets::new();
+        assets.insert("models/w_shotgun.mdl", mdl);
+        let level = Level::from_bytes(&assets, "ohlsynth", &map).expect("level loads");
+        assert_eq!(level.missing_models, 1);
+        assert!(level.props.is_empty());
+    }
+
+    #[test]
+    fn missing_pickup_defaults_are_counted_without_guessing_unknown_or_brush_models() {
+        let extra = [
+            crate::test_support::entity_block("weapon_shotgun", [100.0, 0.0, 4.0], 0.0, &[]),
+            crate::test_support::entity_block("weapon_shotgun", [110.0, 0.0, 4.0], 0.0, &[]),
+            crate::test_support::entity_block("weapon_ohl_unknown", [120.0, 0.0, 4.0], 0.0, &[]),
+            crate::test_support::entity_block(
+                "item_battery",
+                [130.0, 0.0, 4.0],
+                0.0,
+                &[("model", "*1")],
+            ),
+        ]
+        .concat();
+        let map = synthetic_map_bsp_with_extra_entity("next", &extra);
+        let level = Level::from_bytes(&MemoryAssets::new(), "ohlsynth", &map).expect("level loads");
+        assert_eq!(
+            level.missing_models, 1,
+            "one missing asset, despite two placements"
+        );
+        assert!(level.props.is_empty());
     }
 
     /// The same missing-model-keyvalue monster, when the payload does not
