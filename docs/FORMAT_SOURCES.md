@@ -8491,6 +8491,59 @@ proxy (`r.jina.ai`) recorded elsewhere in this file, since both sites refuse
 direct automated fetches. No engine source of any origin was consulted, and
 no map, model or sound name was taken from a payload listing.
 
+**Pickup models (2026-10-05).** The default model lookup in
+`ohl_engine::pickup_models` uses the public editor metadata in
+[FreeSlave's Half-Life FGD](https://github.com/FreeSlave/halflife-fgd/blob/5397305f34968ed666945a5a48807cf359d66431/halflife.fgd),
+the `ammo`, `item_*`, and `weapons` definitions. Only classname/model
+associations and the tripmine's display body/sequence are used; no FGD
+implementation, engine code or asset bytes are copied. The item paths are
+also documented by
+[TWHL: Reference: Entities and their models](https://twhl.info/wiki/page/Reference:_Entities_and_their_models)
+(read through `r.jina.ai`). The following table records every added path:
+
+| Classname | Default model below `models/` | Source |
+| --- | --- | --- |
+| `weapon_crowbar` | `w_crowbar.mdl` | Half-Life FGD |
+| `weapon_9mmhandgun`, `weapon_glock` | `w_9mmhandgun.mdl` | Half-Life FGD; existing Glock alias |
+| `weapon_357` | `w_357.mdl` | Half-Life FGD |
+| `weapon_9mmAR` | `w_9mmar.mdl` | Half-Life FGD |
+| `weapon_shotgun` | `w_shotgun.mdl` | Half-Life FGD |
+| `weapon_crossbow` | `w_crossbow.mdl` | Half-Life FGD |
+| `weapon_rpg` | `w_rpg.mdl` | Half-Life FGD |
+| `weapon_gauss` | `w_gauss.mdl` | Half-Life FGD |
+| `weapon_egon` | `w_egon.mdl` | Half-Life FGD |
+| `weapon_hornetgun` | `w_hgun.mdl` | Half-Life FGD |
+| `weapon_handgrenade` | `w_grenade.mdl` | Half-Life FGD |
+| `weapon_satchel` | `w_satchel.mdl` | Half-Life FGD |
+| `weapon_tripmine` | `v_tripmine.mdl` | Half-Life FGD, body 3, sequence 8 |
+| `weapon_snark` | `w_sqknest.mdl` | Sven Co-op FGD, `weapon_snark` |
+| `ammo_9mmclip`, `ammo_glockclip` | `w_9mmclip.mdl` | Half-Life FGD; existing ammo alias |
+| `ammo_9mmAR` | `w_9mmarclip.mdl` | Half-Life FGD |
+| `ammo_ARgrenades`, `ammo_mp5grenades` | `w_argrenade.mdl` | Half-Life FGD; existing ammo alias |
+| `ammo_357` | `w_357ammobox.mdl` | Half-Life FGD |
+| `ammo_buckshot` | `w_shotbox.mdl` | Half-Life FGD |
+| `ammo_crossbow` | `w_crossbow_clip.mdl` | Half-Life FGD |
+| `ammo_rpgclip` | `w_rpgammo.mdl` | Half-Life FGD |
+| `ammo_gaussclip` | `w_gaussammo.mdl` | Half-Life FGD |
+| `item_healthkit` | `w_medkit.mdl` | Half-Life FGD; TWHL |
+| `item_battery` | `w_battery.mdl` | Half-Life FGD; TWHL |
+| `item_suit` | `w_suit.mdl` | Half-Life FGD; TWHL |
+| `item_longjump` | `w_longjump.mdl` | Half-Life FGD; TWHL |
+| `item_security` | `w_security.mdl` | Half-Life FGD; TWHL |
+| `weaponbox` | `w_weaponbox.mdl` | Sven Co-op FGD, `weaponbox` |
+
+[Sven Co-op's published editor FGD](https://wiki.svencoop.com/Mapping/Sven_Co-op_FGD)
+documents the snark nest and weapon container paths above. **Project-authored
+compatibility choice:** these two display mappings are also used for Half-Life
+pickups, rather than the older Half-Life FGD's single-snark and ammo-box
+editor previews. This is not a claim about Sven Co-op's gameplay rules.
+Alias mappings reuse the already documented pickup classification. An explicit
+map model takes precedence; explicit body/sequence/skin values are retained.
+Default lookup feeds the existing studio loader and its missing-asset bounds,
+and the existing taken/respawn state controls visibility in both game modes.
+Synthetic tests exercise loading, walking onto pickups, bot collection,
+deathmatch exclusion, and rendered disappearance/reappearance.
+
 **Spawn points.** [TWHL: info_player_deathmatch](https://twhl.info/wiki/page/info_player_deathmatch)
 (already cited above for the single-player start) "Defines player spawn
 positions for multiplayer games"; "Try to place near the ground, as the player

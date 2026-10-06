@@ -439,6 +439,42 @@ fn a_taken_weapon_reappears_after_its_published_delay() {
 }
 
 #[test]
+fn bots_and_the_player_collect_the_same_visible_floor_pickups() {
+    let spawns = [(0.0, 0.0), (192.0, 0.0)];
+    let extra = spawns
+        .map(|(x, y)| {
+            ohl_engine::test_support::entity_block("weapon_shotgun", [x, y, 4.0], 0.0, &[])
+        })
+        .concat();
+    let map = deathmatch_room_bsp(&spawns, false, &extra);
+    let mut assets = assets(&map);
+    let (model, _) = ohl_formats::test_support::build_minimal_mdl10();
+    assets.insert("models/w_shotgun.mdl", model);
+    let mut game = Game::from_map_bytes(&assets, AI_MAP, &map).expect("the arena loads");
+    game.start_skirmish(&assets, &quiet(1)).unwrap();
+    assert_eq!(game.prop_count(), 2);
+    tick(&mut game, TICK_SECONDS * 2.0, &Input::default());
+    assert!(game.inventory().has_weapon(ohl_combat::WeaponId::Shotgun));
+    assert_eq!(
+        game.pickup_count(),
+        1,
+        "the player collected their own spawn's weapon"
+    );
+    let pickups: Vec<bool> = game
+        .registry()
+        .world
+        .query::<&ohl_engine::Pickup>()
+        .iter()
+        .map(|pickup| pickup.taken)
+        .collect();
+    assert_eq!(
+        pickups,
+        [true, true],
+        "the bot collected the other spawn's weapon"
+    );
+}
+
+#[test]
 fn a_not_in_deathmatch_pickup_never_appears() {
     let extra =
         "{\n\"classname\" \"weapon_shotgun\"\n\"origin\" \"0 0 36\"\n\"spawnflags\" \"2048\"\n}\n";

@@ -30,6 +30,7 @@ mod game;
 mod input;
 mod level;
 mod map_effects;
+mod pickup_models;
 mod projectiles;
 mod render;
 mod sprites;
