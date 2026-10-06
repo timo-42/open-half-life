@@ -12,6 +12,48 @@ fn model() -> StudioModel {
 }
 
 #[test]
+fn bone_names_are_normalized_lookup_keys() {
+    let (mut bytes, layout) = build_minimal_mdl10();
+    bytes[layout.bones_offset..layout.bones_offset + 4].copy_from_slice(b"ROOT");
+    let model = StudioModel::parse(&bytes, &Limits::default()).unwrap();
+    assert_eq!(model.bone_names, ["root", "child"]);
+    assert_eq!(model.bone_names.len(), model.bones.len());
+}
+
+#[test]
+#[allow(clippy::float_cmp)] // Matching bone matrices must be copied exactly.
+fn a_held_skeleton_follows_named_bones_and_preserves_unmatched_child_offsets() {
+    let mut parent = model();
+    parent.bones[1].value[5] = std::f32::consts::FRAC_PI_2;
+    let parent_pose = StudioPose::bind(&parent);
+    let mut held = model();
+    // The held model's root corresponds to bone 1 of the player, rather
+    // than its root. The extra bone is independently authored for this test.
+    held.bone_names = vec!["child".to_owned(), "ohl_weapon_tip".to_owned()];
+    held.bones[1].value[0] = 2.0;
+    let merged = StudioPose::merge(&held, &parent, &parent_pose).unwrap();
+    assert_eq!(merged.matrices[0], parent_pose.matrices[1]);
+    assert!((merged.matrices[1][12] - parent_pose.matrices[1][12]).abs() < 1e-5);
+    assert!((merged.matrices[1][13] - parent_pose.matrices[1][13] - 2.0).abs() < 1e-5);
+
+    let first = StudioPose::sample(&parent, 0, 0.0).unwrap();
+    let later = StudioPose::sample(&parent, 0, 0.1).unwrap();
+    let first_held = StudioPose::merge(&held, &parent, &first).unwrap();
+    let later_held = StudioPose::merge(&held, &parent, &later).unwrap();
+    assert_ne!(first_held.matrices[0], later_held.matrices[0]);
+    assert_eq!(later_held.matrices[0], later.matrices[1]);
+}
+
+#[test]
+fn unrelated_or_missing_parent_bones_do_not_attach_a_weapon() {
+    let parent = model();
+    let mut held = model();
+    held.bone_names = vec!["ohl_unrelated_a".to_owned(), "ohl_unrelated_b".to_owned()];
+    assert!(StudioPose::merge(&held, &parent, &StudioPose::bind(&parent)).is_none());
+    assert!(StudioPose::merge(&parent, &parent, &StudioPose { matrices: vec![] }).is_none());
+}
+
+#[test]
 fn every_index_addresses_a_real_vertex() {
     let model = model();
     assert!(!model.indices.is_empty());

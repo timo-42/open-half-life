@@ -22,10 +22,11 @@ use ohl_physics::{CollisionModel, HULL_SIZES, Hull, PlayerController};
 use ohl_player::Player;
 use ohl_render::FreeFlyCamera;
 
+use super::animation::{BotAnimation, BotModels};
 use super::nav::{EdgeKind, NavGraph};
 use super::{BotBody, BotSkill, SpawnPoint, sequence_named};
 use crate::combat::{CombatState, PlayerProjectileCommand};
-use crate::components::{Pickup, StudioAnim};
+use crate::components::{HeldWeapon, Pickup, StudioAnim};
 use crate::level::Level;
 use crate::systems::{LatchedInput, QueuedDamage};
 
@@ -258,10 +259,11 @@ pub(crate) struct Bot {
     view: FreeFlyCamera,
     player: Player,
     combat: CombatState,
-    /// The weapon code writes a HUD and presentation cues for whoever
-    /// fires; a bot's are scratch, drained and dropped every step.
+    /// The weapon code writes a scratch HUD and presentation cues. Sounds
+    /// reach the host; animation cues drive only this bot's world model.
     hud: ohl_ui::hud::HudState,
     presentation: crate::presentation::Presentation,
+    animation: BotAnimation,
     brain: Brain,
     /// Seconds since death, while dead.
     dead_for: Option<f32>,
@@ -281,7 +283,7 @@ impl Bot {
         name: &'static str,
         skill: BotSkill,
         seed: u64,
-        player_model: Option<usize>,
+        models: &BotModels,
     ) -> Self {
         let entity = level.registry.world.spawn((
             BotBody {
@@ -294,8 +296,9 @@ impl Bot {
             },
             ohl_combat::Health::new(crate::level::PLAYER_MAX_HEALTH),
             ohl_combat::Armor::empty(crate::level::PLAYER_MAX_ARMOR),
+            HeldWeapon::default(),
         ));
-        if let Some(model) = player_model {
+        if let Some(model) = models.player {
             let _ = level
                 .registry
                 .world
@@ -310,6 +313,7 @@ impl Bot {
             combat: CombatState::new(),
             hud: ohl_ui::hud::HudState::default(),
             presentation: crate::presentation::Presentation::new(),
+            animation: BotAnimation::new(models),
             brain: Brain::new(skill, seed),
             dead_for: Some(super::BOT_RESPAWN_SECONDS),
             world_death: false,
@@ -351,6 +355,8 @@ impl Bot {
         let mut events = Vec::new();
         self.player.equip_suit(&mut events);
         self.combat = CombatState::new();
+        self.presentation = crate::presentation::Presentation::new();
+        self.animation.reset();
         give_deathmatch_loadout(&mut self.combat);
         self.brain.reset(self.controller.state.origin);
         self.dead_for = None;
@@ -367,7 +373,10 @@ impl Bot {
             armor.current = self.player.state.armor;
         }
         self.sync_transform(level);
-        self.animate(level);
+        if let Ok(mut anim) = level.registry.world.get::<&mut StudioAnim>(self.entity) {
+            anim.cycle = 0.0;
+        }
+        self.update_animation(level);
     }
 
     /// Applies one hit through the bot's own [`Player`] (HEV armour
@@ -413,6 +422,10 @@ impl Bot {
         self.player.state.dead = true;
         self.controller.state.velocity = Vec3::ZERO;
         self.brain.reset(self.controller.state.origin);
+        self.animation.reset();
+        if let Ok(mut held) = level.registry.world.get::<&mut HeldWeapon>(self.entity) {
+            held.model = None;
+        }
         self.mirror_health(level);
         if let Ok(mut body) = level.registry.world.get::<&mut BotBody>(self.entity) {
             body.alive = false;
@@ -480,11 +493,10 @@ impl Bot {
         }
     }
 
-    /// Sounds reach the host from the bot's own position; its scratch HUD
-    /// and viewmodel actions are discarded so they never affect the human.
+    /// Sounds reach the host from the bot's own position. Animation cues
+    /// have already driven this bot's model and never affect the human.
     pub(crate) fn drain_sounds(&mut self) -> Vec<ohl_gameplay::SoundCue> {
         let _ = self.presentation.drain_events();
-        let _ = self.presentation.bridge.drain_viewmodel_actions().count();
         let origin = self.eye().to_array();
         self.presentation
             .bridge
@@ -500,26 +512,25 @@ impl Bot {
         }
     }
 
-    /// Picks the sequence the bot's speed calls for.
-    fn animate(&self, level: &mut Level) {
-        let speed = self.controller.state.velocity.truncate().length();
-        let name = if speed > 150.0 {
-            "run"
-        } else if speed > 10.0 {
-            "walk"
-        } else {
-            "idle"
-        };
-        let sequence = level
-            .registry
-            .world
-            .get::<&StudioAnim>(self.entity)
-            .ok()
-            .and_then(|anim| sequence_named(level, &anim, name, false));
-        if let Some(sequence) = sequence
-            && let Ok(mut anim) = level.registry.world.get::<&mut StudioAnim>(self.entity)
-        {
-            anim.play(sequence);
+    /// Updates the held weapon and consumes this step's combat cues after
+    /// firing and pickups, so movement cannot overwrite an attack pose.
+    pub(crate) fn update_animation(&mut self, level: &mut Level) {
+        let firing = self
+            .presentation
+            .bridge
+            .drain_viewmodel_actions()
+            .any(|action| action == ohl_gameplay::ViewModelAction::Fire);
+        if self.alive() {
+            let weapon = self.selected_weapon();
+            self.animation.update(
+                level,
+                self.entity,
+                weapon,
+                firing,
+                self.combat.is_reloading(),
+                self.controller.state.velocity.truncate().length(),
+                self.controller.state.ducked,
+            );
         }
     }
 
@@ -1164,7 +1175,6 @@ impl Bot {
         level.movers_blocked.truncate(blocked);
         self.player_systems(level, input, dt);
         self.sync_transform(level);
-        self.animate(level);
     }
 
     /// The bot's own fall damage and hazard volumes.
@@ -1517,6 +1527,127 @@ fn overlaps(a_min: Vec3, a_max: Vec3, b_min: Vec3, b_max: Vec3) -> bool {
 mod tests {
     use super::{preferred_range, weapon_score, wrap_degrees};
     use ohl_combat::WeaponId;
+
+    fn visual_bot_game() -> crate::Game {
+        use crate::test_support::{AI_MAP, deathmatch_room_bsp};
+        use crate::{Game, MemoryAssets, SkirmishConfig};
+
+        let bytes = deathmatch_room_bsp(&[(-192.0, 0.0), (192.0, 0.0)], false, "");
+        let mut assets = MemoryAssets::new();
+        assets.insert(&format!("maps/{AI_MAP}.bsp"), bytes.clone());
+        let (model, _) = ohl_formats::test_support::build_minimal_mdl10_with_sequences(&[
+            "ohl_aim_onehanded",
+            "ohl_reload_onehanded",
+            "ohl_aim_crowbar",
+            "ohl_crouch_aim_crowbar",
+            "run",
+        ]);
+        assets.insert(super::super::PLAYER_MODEL_PATH, model.clone());
+        assets.insert("models/p_9mmhandgun.mdl", model.clone());
+        assets.insert("models/p_crowbar.mdl", model);
+        let mut game = Game::from_map_bytes(&assets, AI_MAP, &bytes).unwrap();
+        game.start_skirmish(
+            &assets,
+            &SkirmishConfig {
+                bots: 1,
+                ..SkirmishConfig::default()
+            },
+        )
+        .unwrap();
+        game
+    }
+
+    #[test]
+    fn actual_reload_state_keeps_its_pose_and_switching_updates_the_held_weapon() {
+        use crate::TICK_SECONDS;
+        use crate::components::{HeldWeapon, StudioAnim};
+
+        let mut game = visual_bot_game();
+        let (level, systems) = game.level_and_systems_mut();
+        let bot = &mut systems.skirmish.as_mut().unwrap().bots[0];
+        let mut damage = Vec::new();
+        let hitboxes = ohl_combat::HitboxIndex::default();
+        let step = |bot: &mut super::Bot, level: &mut crate::level::Level, damage: &mut Vec<_>| {
+            level
+                .registry
+                .world
+                .get::<&mut StudioAnim>(bot.entity)
+                .unwrap()
+                .advance(TICK_SECONDS);
+            bot.fire(level, &hitboxes, damage, TICK_SECONDS);
+            bot.update_animation(level);
+        };
+        bot.brain.intent.attack = true;
+        for _ in 0..100 {
+            step(bot, level, &mut damage);
+            if bot.combat.fired_count() > 0 {
+                break;
+            }
+        }
+        assert!(bot.combat.fired_count() > 0);
+        bot.brain.intent.attack = false;
+        bot.brain.intent.reload = true;
+        for _ in 0..100 {
+            step(bot, level, &mut damage);
+            if bot.combat.is_reloading() {
+                break;
+            }
+        }
+        assert!(bot.combat.is_reloading());
+        let pistol = level
+            .registry
+            .world
+            .get::<&HeldWeapon>(bot.entity)
+            .unwrap()
+            .model
+            .unwrap();
+        assert_eq!(
+            level
+                .registry
+                .world
+                .get::<&StudioAnim>(bot.entity)
+                .unwrap()
+                .sequence,
+            1
+        );
+        bot.controller.state.velocity = glam::Vec3::X * 200.0;
+        for _ in 0..10 {
+            step(bot, level, &mut damage);
+        }
+        let anim = *level.registry.world.get::<&StudioAnim>(bot.entity).unwrap();
+        assert_eq!(anim.sequence, 1, "movement cannot replace a reload");
+        assert!(anim.cycle > 0.0, "a reload does not restart every tick");
+
+        bot.combat.select_weapon(WeaponId::Crowbar);
+        bot.brain.intent.reload = false;
+        bot.controller.state.velocity = glam::Vec3::ZERO;
+        step(bot, level, &mut damage);
+        let held = level
+            .registry
+            .world
+            .get::<&HeldWeapon>(bot.entity)
+            .unwrap()
+            .model
+            .unwrap();
+        assert_ne!(held, pistol, "selection updates the actual held model");
+        let anim = *level.registry.world.get::<&StudioAnim>(bot.entity).unwrap();
+        assert_eq!(
+            anim.sequence, 2,
+            "switching cancels the old weapon's action pose"
+        );
+        assert!(anim.cycle.abs() < f32::EPSILON);
+        bot.controller.state.ducked = true;
+        step(bot, level, &mut damage);
+        assert_eq!(
+            level
+                .registry
+                .world
+                .get::<&StudioAnim>(bot.entity)
+                .unwrap()
+                .sequence,
+            3
+        );
+    }
 
     #[test]
     fn angles_wrap_into_one_turn() {
