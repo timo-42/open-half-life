@@ -1501,12 +1501,11 @@ impl Systems {
     /// was before this phase existed. Phase 5 catches up the following
     /// step, once this phase has run.
     ///
-    /// A monster a `scripted_sequence` currently holds
-    /// ([`ohl_ai::ScriptHold`] present) is left alone: `crate::ai`'s
-    /// `place` is what moves a possessed monster's [`Transform`], and it is
-    /// meant to stay authoritative over whatever route `AiWorld::tick` ran
-    /// for that same monster while held, rather than have this phase
-    /// immediately overwrite it.
+    /// A monster held by a `scripted_sequence` follows the script's route
+    /// in phase 8 too, so its model must also follow its current `Actor`.
+    /// Scripted teleports and resets (`crate::ai`'s `place`) already write
+    /// both components with the same lift conversion, so this copy preserves
+    /// their placement as well as displaying scripted walks and turns.
     ///
     /// The copy takes off the monster's [`HullLift`]: `Actor` is the
     /// centre of its hull, [`Transform`] its feet.
@@ -1516,7 +1515,6 @@ impl Systems {
             .world
             .query::<(&ohl_ai::Actor, &mut Transform, Option<&HullLift>)>()
             .with::<&ohl_ai::MonsterAi>()
-            .without::<&ohl_ai::ScriptHold>()
         {
             transform.origin = actor.origin - Vec3::Z * lift.map_or(0.0, |lift| lift.0);
             transform.angles.y = actor.yaw;
