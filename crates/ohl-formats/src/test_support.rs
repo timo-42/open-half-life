@@ -545,6 +545,86 @@ pub fn build_minimal_mdl10_with_sequences(names: &[&str]) -> (Vec<u8>, MinimalMd
     build_minimal_mdl10_parts(names, None)
 }
 
+/// A project-authored biped for testing independent upper/lower animation:
+/// shared root and hips, two legs, a torso, a hand and an unboxed foot.
+/// Each sequence has four looping frames with real hip, leg and hand
+/// channels. Leg/chest hitgroups describe the split without bone labels.
+#[must_use]
+pub fn build_biped_mdl10_with_sequences(names: &[&str]) -> Vec<u8> {
+    let (mut out, layout) = build_minimal_mdl10_with_sequences(names);
+    let bones_offset = out.len();
+    let bones = [
+        ("ohl_root", -1, [0.0, 0.0, 0.0]),
+        ("ohl_hips", 0, [0.0, 0.0, 0.0]),
+        ("ohl_left_leg", 1, [0.0, 8.0, -16.0]),
+        ("ohl_right_leg", 1, [0.0, -8.0, -16.0]),
+        ("ohl_torso", 1, [0.0, 0.0, 16.0]),
+        ("ohl_hand", 4, [12.0, 0.0, 0.0]),
+        ("ohl_foot", 2, [0.0, 0.0, -12.0]),
+    ];
+    for (name, parent, position) in bones {
+        out.extend_from_slice(&fixed_name_sized::<32>(name));
+        push_i32(&mut out, parent);
+        push_i32(&mut out, 0);
+        for _ in 0..6 {
+            push_i32(&mut out, -1);
+        }
+        for value in position.into_iter().chain([0.0; 3]) {
+            push_f32(&mut out, value);
+        }
+        for scale in [1.0, 1.0, 1.0, 0.01, 0.01, 0.01] {
+            push_f32(&mut out, scale);
+        }
+    }
+    out[140..144].copy_from_slice(&7u32.to_le_bytes());
+    out[144..148].copy_from_slice(&u32::try_from(bones_offset).unwrap().to_le_bytes());
+
+    let hitboxes_offset = out.len();
+    for (bone, group, half) in [
+        (2, 6, [4.0, 4.0, 12.0]),
+        (3, 7, [4.0, 4.0, 12.0]),
+        (4, 2, [12.0, 12.0, 16.0]),
+    ] {
+        push_i32(&mut out, bone);
+        push_i32(&mut out, group);
+        for value in half.map(|value| -value).into_iter().chain(half) {
+            push_f32(&mut out, value);
+        }
+    }
+    out[156..160].copy_from_slice(&3u32.to_le_bytes());
+    out[160..164].copy_from_slice(&u32::try_from(hitboxes_offset).unwrap().to_le_bytes());
+
+    for index in 0..names.len() {
+        let anim_offset = out.len();
+        out.resize(anim_offset + bones.len() * 12, 0);
+        for (bone, channel, values) in [
+            (1, 2, [0, 1, 2, 0]),
+            (2, 3, [0, 40, -40, 0]),
+            (3, 3, [0, -40, 40, 0]),
+            (4, 5, [0, 10, 20, 0]),
+            (5, 0, [0, 3, 6, 0]),
+        ] {
+            let record = anim_offset + bone * 12;
+            let offset = u16::try_from(out.len() - record).unwrap();
+            out[record + channel * 2..record + channel * 2 + 2]
+                .copy_from_slice(&offset.to_le_bytes());
+            out.extend_from_slice(&[4, 4]);
+            for value in values {
+                push_i16(&mut out, value);
+            }
+        }
+        let sequence = layout.sequences_offset + index * 176;
+        out[sequence + 36..sequence + 40].copy_from_slice(&1i32.to_le_bytes());
+        out[sequence + 56..sequence + 60].copy_from_slice(&4u32.to_le_bytes());
+        out[sequence + 76..sequence + 80].copy_from_slice(&80.0f32.to_le_bytes());
+        out[sequence + 124..sequence + 128]
+            .copy_from_slice(&u32::try_from(anim_offset).unwrap().to_le_bytes());
+    }
+    let total_len = u32::try_from(out.len()).unwrap();
+    out[72..76].copy_from_slice(&total_len.to_le_bytes());
+    out
+}
+
 /// [`build_minimal_mdl10`] with exactly one hitbox on the root bone,
 /// spanning `min`..`max` in bone-local space.
 ///

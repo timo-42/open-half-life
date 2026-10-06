@@ -22,11 +22,11 @@ use ohl_physics::{CollisionModel, HULL_SIZES, Hull, PlayerController};
 use ohl_player::Player;
 use ohl_render::FreeFlyCamera;
 
-use super::animation::{BotAnimation, BotModels};
+use super::animation::{BotAnimation, BotModels, BotMotion};
 use super::nav::{EdgeKind, NavGraph};
 use super::{BotBody, BotSkill, SpawnPoint, sequence_named};
 use crate::combat::{CombatState, PlayerProjectileCommand};
-use crate::components::{HeldWeapon, Pickup, StudioAnim};
+use crate::components::{HeldWeapon, Pickup, StudioAnim, StudioGait};
 use crate::level::Level;
 use crate::systems::{LatchedInput, QueuedDamage};
 
@@ -303,6 +303,9 @@ impl Bot {
                 .registry
                 .world
                 .insert_one(entity, StudioAnim::new(model, 0));
+            if let Some(gait) = level.studio_models.get(model).and_then(StudioGait::new) {
+                let _ = level.registry.world.insert_one(entity, gait);
+            }
         }
         Self {
             entity,
@@ -376,6 +379,9 @@ impl Bot {
         if let Ok(mut anim) = level.registry.world.get::<&mut StudioAnim>(self.entity) {
             anim.cycle = 0.0;
         }
+        if let Ok(mut gait) = level.registry.world.get::<&mut StudioGait>(self.entity) {
+            gait.play(None, 1.0);
+        }
         self.update_animation(level);
     }
 
@@ -423,6 +429,9 @@ impl Bot {
         self.controller.state.velocity = Vec3::ZERO;
         self.brain.reset(self.controller.state.origin);
         self.animation.reset();
+        if let Ok(mut gait) = level.registry.world.get::<&mut StudioGait>(self.entity) {
+            gait.play(None, 1.0);
+        }
         if let Ok(mut held) = level.registry.world.get::<&mut HeldWeapon>(self.entity) {
             held.model = None;
         }
@@ -528,8 +537,11 @@ impl Bot {
                 weapon,
                 firing,
                 self.combat.is_reloading(),
-                self.controller.state.velocity.truncate().length(),
-                self.controller.state.ducked,
+                BotMotion {
+                    speed: self.controller.state.velocity.truncate().length(),
+                    crouched: self.controller.state.ducked,
+                    on_ground: self.controller.state.on_ground,
+                },
             );
         }
     }

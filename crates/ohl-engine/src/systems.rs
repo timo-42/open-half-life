@@ -47,7 +47,7 @@ use ohl_render::{FreeFlyCamera, MoveInput};
 use crate::USE_RADIUS;
 use crate::ai::AiState;
 use crate::combat::CombatState;
-use crate::components::{HullLift, StudioAnim};
+use crate::components::{HullLift, StudioAnim, StudioGait};
 use crate::input::Input;
 use crate::level::Level;
 use crate::pickups::PickupsState;
@@ -1332,6 +1332,9 @@ impl Systems {
         }
         for anim in &mut level.registry.world.query::<&mut StudioAnim>() {
             anim.advance(dt);
+        }
+        for gait in &mut level.registry.world.query::<&mut StudioGait>() {
+            gait.advance(dt);
         }
     }
 

@@ -19,7 +19,7 @@ use ohl_render::{
 };
 use ohl_world::{Aabb, Frustum, StudioModel, StudioPose};
 
-use crate::components::{HeldWeapon, StudioAnim};
+use crate::components::{HeldWeapon, StudioAnim, StudioGait};
 use crate::error::{EngineError, Result};
 use crate::level::{Level, PropPlacement};
 use crate::sprites::TransientSprite;
@@ -506,10 +506,11 @@ impl Renderers {
         effects: &crate::map_effects::EffectPresentation<'_>,
     ) -> (Vec<StudioFrame>, BTreeSet<u64>) {
         let mut frame = Vec::new();
-        for (entity, anim, transform) in &mut level
-            .registry
-            .world
-            .query::<(Entity, &StudioAnim, &Transform)>()
+        for (entity, anim, gait, transform) in
+            &mut level
+                .registry
+                .world
+                .query::<(Entity, &StudioAnim, Option<&StudioGait>, &Transform)>()
         {
             // A taken pickup is gone until (in a skirmish) it respawns.
             if crate::skirmish::studio_hidden(&level.registry.world, entity) {
@@ -530,7 +531,7 @@ impl Renderers {
             if self.studio.get(prop.model).is_none() {
                 continue;
             }
-            let Ok(pose) = StudioPose::sample(model, prop.sequence, prop.cycle) else {
+            let Ok(pose) = anim.sample(model, gait) else {
                 continue;
             };
             let mut entry = StudioFrame {
@@ -1986,6 +1987,19 @@ mod held_weapon_render_tests {
     use crate::{Game, MemoryAssets, SkirmishConfig};
     use ohl_render::{OFFSCREEN_FORMAT, OffscreenTarget};
 
+    fn held_model() -> Vec<u8> {
+        let mut weapon = ohl_formats::test_support::build_biped_mdl10_with_sequences(&["ohl_idle"]);
+        let (_, layout) = ohl_formats::test_support::build_minimal_mdl10();
+        for vertex in 0..4 {
+            let offset = layout.verts_offset + vertex * 12;
+            let x = f32::from_le_bytes(weapon[offset..offset + 4].try_into().unwrap());
+            let y = f32::from_le_bytes(weapon[offset + 4..offset + 8].try_into().unwrap());
+            weapon[offset..offset + 4].copy_from_slice(&(24.0 + x * 16.0).to_le_bytes());
+            weapon[offset + 4..offset + 8].copy_from_slice(&(-8.0 + y * 16.0).to_le_bytes());
+        }
+        weapon
+    }
+
     #[test]
     #[allow(clippy::float_cmp)] // Owner transform and lighting are copied exactly.
     fn held_weapons_share_the_body_pose_and_reach_pixels_when_opted_in() {
@@ -1996,20 +2010,13 @@ mod held_weapon_render_tests {
         let bytes = deathmatch_room_bsp(&[(-128.0, 0.0), (128.0, 0.0)], false, "");
         let mut assets = MemoryAssets::new();
         assets.insert(&format!("maps/{AI_MAP}.bsp"), bytes.clone());
-        let (player, _) = ohl_formats::test_support::build_minimal_mdl10_with_sequences(&[
+        let player = ohl_formats::test_support::build_biped_mdl10_with_sequences(&[
             "ohl_aim_onehanded",
             "ohl_shoot_onehanded",
+            "ohl_run",
         ]);
         assets.insert(crate::skirmish::PLAYER_MODEL_PATH, player);
-        let (mut weapon, layout) = ohl_formats::test_support::build_minimal_mdl10();
-        for vertex in 0..4 {
-            let offset = layout.verts_offset + vertex * 12;
-            let x = f32::from_le_bytes(weapon[offset..offset + 4].try_into().unwrap());
-            let y = f32::from_le_bytes(weapon[offset + 4..offset + 8].try_into().unwrap());
-            weapon[offset..offset + 4].copy_from_slice(&(24.0 + x * 16.0).to_le_bytes());
-            weapon[offset + 4..offset + 8].copy_from_slice(&(-8.0 + y * 16.0).to_le_bytes());
-        }
-        assets.insert("models/p_9mmhandgun.mdl", weapon);
+        assets.insert("models/p_9mmhandgun.mdl", held_model());
         let mut game = Game::from_map_bytes(&assets, AI_MAP, &bytes).unwrap();
         let target = OffscreenTarget::new(&context, 128, 128).unwrap();
         let pixels = |game: &mut Game| {
@@ -2051,6 +2058,11 @@ mod held_weapon_render_tests {
             .get::<&mut StudioAnim>(bot)
             .unwrap()
             .cycle = 0.1;
+        {
+            let mut gait = level.registry.world.get::<&mut StudioGait>(bot).unwrap();
+            gait.play(Some(2), 1.0);
+            gait.advance(0.05);
+        }
         let renderers = Renderers::new(&context, level, OFFSCREEN_FORMAT).unwrap();
         let (frame, _) =
             renderers.collect_studio_instances(level, &camera, &systems.map_effects.presentation());
@@ -2066,6 +2078,10 @@ mod held_weapon_render_tests {
                 entry.id == body.id && matches!(entry.source, StudioSource::HeldWeapon(_))
             })
             .expect("a separate held weapon instance");
+        assert!(
+            (body.pose.as_ref().unwrap().matrices[1][14] - 0.5).abs() < 1e-5,
+            "the renderer uses the stride's hip height, not the action's"
+        );
         assert_eq!(held.transform, body.transform);
         assert_eq!(held.ambient, body.ambient);
         assert_eq!(
