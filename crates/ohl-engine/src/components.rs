@@ -75,6 +75,98 @@ impl StudioAnim {
             self.cycle = 0.0;
         }
     }
+
+    /// Samples the same complete pose for drawing, attachments and hitboxes.
+    pub fn sample(
+        &self,
+        model: &ohl_world::StudioModel,
+        gait: Option<&StudioGait>,
+    ) -> ohl_world::Result<ohl_world::StudioPose> {
+        if let Some(gait) = gait
+            && let Some(sequence) = gait.sequence
+        {
+            return ohl_world::StudioPose::sample_layered(
+                model,
+                self.sequence,
+                self.cycle,
+                sequence,
+                gait.cycle,
+                &gait.bones,
+            );
+        }
+        ohl_world::StudioPose::sample(model, self.sequence, self.cycle)
+    }
+}
+
+/// Independent lower-body playback for a skirmish bot. Weapon actions use
+/// [`StudioAnim`] while this cursor keeps the legs moving.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StudioGait {
+    /// Locomotion sequence, or `None` while dead or without a matching pose.
+    pub sequence: Option<usize>,
+    /// Seconds into the locomotion sequence.
+    pub cycle: f32,
+    /// Playback multiplier derived from horizontal movement speed.
+    pub frame_rate: f32,
+    /// Model-authored leg hitboxes identify the lower skeleton, without
+    /// relying on any particular bone label or table order.
+    bones: Vec<bool>,
+}
+
+impl StudioGait {
+    pub(crate) fn new(model: &ohl_world::StudioModel) -> Option<Self> {
+        let mut legs = vec![false; model.bones.len()];
+        for hitbox in &model.hitboxes {
+            if matches!(
+                ohl_combat::HitGroup::from_index(hitbox.group),
+                ohl_combat::HitGroup::LeftLeg | ohl_combat::HitGroup::RightLeg
+            ) && let Some(leg) = legs.get_mut(hitbox.bone)
+            {
+                *leg = true;
+            }
+        }
+        // Feet and other descendants follow their leg even without a hitbox.
+        for (index, bone) in model.bones.iter().enumerate() {
+            if bone.parent.is_some_and(|parent| legs[parent]) {
+                legs[index] = true;
+            }
+        }
+        let mut bones = legs.clone();
+        // Include the shared hips and root, so the upper body's local pose
+        // inherits the gait's sway rather than separating at the waist.
+        for (index, leg) in legs.into_iter().enumerate() {
+            if !leg {
+                continue;
+            }
+            let mut parent = model.bones[index].parent;
+            while let Some(index) = parent {
+                bones[index] = true;
+                parent = model.bones[index].parent;
+            }
+        }
+        // Models without a separable lower skeleton keep full-body playback.
+        (bones.iter().any(|bone| *bone) && bones.iter().any(|bone| !bone)).then_some(Self {
+            sequence: None,
+            cycle: 0.0,
+            frame_rate: 1.0,
+            bones,
+        })
+    }
+
+    pub(crate) fn play(&mut self, sequence: Option<usize>, frame_rate: f32) {
+        if self.sequence != sequence {
+            self.sequence = sequence;
+            self.cycle = 0.0;
+        }
+        self.frame_rate = frame_rate;
+    }
+
+    pub(crate) fn advance(&mut self, dt: f32) {
+        let next = self.cycle + dt * self.frame_rate;
+        if self.sequence.is_some() && next.is_finite() {
+            self.cycle = next;
+        }
+    }
 }
 
 /// A separate studio weapon drawn against this entity's animated skeleton.

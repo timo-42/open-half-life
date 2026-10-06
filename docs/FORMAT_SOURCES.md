@@ -8678,6 +8678,23 @@ bone name is used. Held weapons are render instances of their owner's
 entity, without their own collision or hitboxes. Death hides the weapon;
 respawn and weapon selection refresh both the model and the animation.
 
+**Independent locomotion:** [GameSpot's interview with animation-system
+designer Ken Birdwell](https://www.gamespot.com/articles/half-life-tech-master-gives-away-secrets/1100-2465543/)
+describes separately animated upper and lower portions of one connected
+skeleton. This project's bot presentation samples a separate locomotion
+cursor while an armed aim, shot or reload plays. The previously cited leg
+hitgroup values identify the leg bones; their descendants, shared hips and
+root take locomotion's local transforms, and the remaining local transforms
+take the weapon action. Compose the hierarchy once so the torso and held
+weapon remain attached. Drawing and combat hitboxes sample this same pose.
+The hitgroup-based mask is project-authored, without fixed bone names.
+Sequence matching accepts numbered intent variants and joined crouch/duck
+prefixes. Walk/run fallback, airborne jump intents, the authored horizontal
+linear-movement-to-duration ratio used to scale strides, and its bounded
+playback multiplier are project presentation choices. Models without a
+separable leg skeleton retain full-body animation. These choices do not
+claim the original engine's exact blending, turning or aiming behavior.
+
 ### First-person view models
 
 [Featureful SDK's weapon-template documentation](https://freeslave.github.io/halflife-featureful/docs/configuration/weapon-templates/#view_model)

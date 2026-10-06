@@ -339,6 +339,19 @@ impl StudioModel {
         self.sequence_names.iter().position(|label| *label == name)
     }
 
+    /// Horizontal speed implied by a sequence's authored linear movement
+    /// over one playback cycle. Missing or stationary motion has no speed.
+    #[must_use]
+    pub fn sequence_ground_speed(&self, sequence: usize) -> Option<f32> {
+        let raw = self.raw_sequences.get(sequence)?;
+        let duration = self.sequences.get(sequence)?.duration();
+        let distance = raw.linear_movement[0]
+            .get()
+            .hypot(raw.linear_movement[1].get());
+        let speed = distance / duration;
+        (speed.is_finite() && speed > f32::EPSILON).then_some(speed)
+    }
+
     /// Builds an owned model from a parsed [`Mdl`].
     ///
     /// `data` must be the same buffer `mdl` borrows; it is retained so
@@ -760,6 +773,8 @@ fn decode_texture(
 /// expects (`m[column * 4 + row]`).
 pub type BoneMatrix = [f32; 16];
 
+type LocalBonePose = ([f32; 3], [f32; 4]);
+
 /// A sampled skeleton pose: one world-space matrix per bone.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StudioPose {
@@ -815,7 +830,13 @@ impl StudioPose {
     /// The bind pose: every bone at its stored `value` channels.
     #[must_use]
     pub fn bind(model: &StudioModel) -> Self {
-        let locals: Vec<([f32; 3], [f32; 4])> = model
+        Self {
+            matrices: chain(model, &Self::bind_locals(model)),
+        }
+    }
+
+    fn bind_locals(model: &StudioModel) -> Vec<LocalBonePose> {
+        model
             .bones
             .iter()
             .map(|bone| {
@@ -824,10 +845,7 @@ impl StudioPose {
                     mdl10::euler_to_quaternion([bone.value[3], bone.value[4], bone.value[5]]);
                 (position, rotation)
             })
-            .collect();
-        Self {
-            matrices: chain(model, &locals),
-        }
+            .collect()
     }
 
     /// Samples `sequence` at `time` seconds since the sequence started.
@@ -844,14 +862,48 @@ impl StudioPose {
     /// Sequences stored in an external sequence-group file (`group != 0`)
     /// are not resolved here, so they fall back to the bind pose.
     pub fn sample(model: &StudioModel, sequence: usize, time: f32) -> Result<Self> {
+        Ok(Self {
+            matrices: chain(model, &Self::sample_locals(model, sequence, time)?),
+        })
+    }
+
+    /// Replaces selected bones' local animation with a second sequence,
+    /// then composes the complete parent chain once. Unselected children
+    /// retain their own animation under the newly posed parent; replacing
+    /// model-space matrices directly would detach those children.
+    pub fn sample_layered(
+        model: &StudioModel,
+        sequence: usize,
+        time: f32,
+        layer_sequence: usize,
+        layer_time: f32,
+        layer_bones: &[bool],
+    ) -> Result<Self> {
+        let mut locals = Self::sample_locals(model, sequence, time)?;
+        let layer = Self::sample_locals(model, layer_sequence, layer_time)?;
+        for (index, (local, replacement)) in locals.iter_mut().zip(layer).enumerate() {
+            if layer_bones.get(index).copied().unwrap_or(false) {
+                *local = replacement;
+            }
+        }
+        Ok(Self {
+            matrices: chain(model, &locals),
+        })
+    }
+
+    fn sample_locals(
+        model: &StudioModel,
+        sequence: usize,
+        time: f32,
+    ) -> Result<Vec<LocalBonePose>> {
         let Some(description) = model.sequences.get(sequence) else {
-            return Ok(Self::bind(model));
+            return Ok(Self::bind_locals(model));
         };
         let Some(raw) = model.raw_sequences.get(sequence) else {
-            return Ok(Self::bind(model));
+            return Ok(Self::bind_locals(model));
         };
         if description.group != 0 || description.frame_count == 0 || model.bones.is_empty() {
-            return Ok(Self::bind(model));
+            return Ok(Self::bind_locals(model));
         }
 
         let (frame, next_frame, blend) = frame_pair(description, time);
@@ -886,9 +938,7 @@ impl StudioPose {
                 })
                 .collect()
         };
-        Ok(Self {
-            matrices: chain(model, &locals),
-        })
+        Ok(locals)
     }
 
     /// The world-space centre and half-extents of `hitbox` under this pose.
@@ -1180,6 +1230,51 @@ mod tests {
             ..looping
         };
         assert_eq!(frame_pair(&held, 10.0), (3, 3, 0.0));
+    }
+
+    #[test]
+    fn layered_animation_keeps_upper_locals_attached_to_the_moving_hips() {
+        let bytes = ohl_formats::test_support::build_biped_mdl10_with_sequences(&[
+            "ohl_action",
+            "ohl_stride",
+        ]);
+        let model = StudioModel::parse(&bytes, &Limits::default()).unwrap();
+        let action = StudioPose::sample(&model, 0, 0.1).unwrap();
+        let stride = StudioPose::sample(&model, 1, 0.0).unwrap();
+        let combined = StudioPose::sample_layered(
+            &model,
+            0,
+            0.1,
+            1,
+            0.0,
+            &[true, true, true, true, false, false, true],
+        )
+        .unwrap();
+        for bone in [0, 1, 2, 3, 6] {
+            assert!(
+                combined.matrices[bone]
+                    .iter()
+                    .zip(stride.matrices[bone])
+                    .all(|(a, b)| (a - b).abs() < 1e-5)
+            );
+        }
+        // The hand retains its action's local translation and rotation,
+        // but inherits the stride's hip height instead of floating apart.
+        for slot in 0..16 {
+            let expected = action.matrices[5][slot] - if slot == 14 { 1.0 } else { 0.0 };
+            assert!((combined.matrices[5][slot] - expected).abs() < 1e-5);
+        }
+        let unchanged = StudioPose::sample_layered(&model, 0, 0.1, 1, 0.0, &[]).unwrap();
+        assert_eq!(unchanged, action);
+    }
+
+    #[test]
+    fn sequence_ground_speed_uses_authored_horizontal_motion() {
+        let bytes = ohl_formats::test_support::build_biped_mdl10_with_sequences(&["ohl_stride"]);
+        let model = StudioModel::parse(&bytes, &Limits::default()).unwrap();
+        assert!((model.sequence_ground_speed(0).unwrap() - 200.0).abs() < 1e-4);
+        assert_eq!(model.sequence_ground_speed(1), None);
+        assert_eq!(self::model().sequence_ground_speed(0), None);
     }
 
     #[test]

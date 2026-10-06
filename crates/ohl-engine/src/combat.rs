@@ -57,7 +57,7 @@ use ohl_game::registry::{Breakable, BrushBounds, Button, RotButton, Transform};
 use ohl_physics::{CollisionModel, PlayerController};
 use ohl_world::{StudioModel, StudioPose};
 
-use crate::components::StudioAnim;
+use crate::components::{StudioAnim, StudioGait};
 use crate::damage_map;
 use crate::ids::{entity_id, entity_of};
 use crate::level::Level;
@@ -925,10 +925,11 @@ fn player_projectile_command(
 /// `crate::projectiles`' module doc), not by narrowing this index.
 pub(crate) fn rebuild_hitbox_index(hitboxes: &mut HitboxIndex, level: &Level) {
     hitboxes.clear();
-    for (entity, anim, transform) in &mut level
-        .registry
-        .world
-        .query::<(Entity, &StudioAnim, &Transform)>()
+    for (entity, anim, gait, transform) in
+        &mut level
+            .registry
+            .world
+            .query::<(Entity, &StudioAnim, Option<&StudioGait>, &Transform)>()
     {
         // A taken pickup is not in the world until it respawns, and a dead
         // skirmish bot's corpse no longer stops shots.
@@ -940,7 +941,8 @@ pub(crate) fn rebuild_hitbox_index(hitboxes: &mut HitboxIndex, level: &Level) {
         let Some(model) = level.studio_models.get(anim.model) else {
             continue;
         };
-        let pose = StudioPose::sample(model, anim.sequence, anim.cycle)
+        let pose = anim
+            .sample(model, gait)
             .unwrap_or_else(|_| StudioPose::bind(model));
         let mut entry = EntityHitboxes::from_transform(entity_id(entity), transform);
         let added = entry.push_studio_hitboxes(&pose, &model.hitboxes);
