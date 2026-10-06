@@ -215,6 +215,56 @@ fn missing_held_models_do_not_disable_the_bot_body_or_combat() {
     );
 }
 
+#[test]
+fn the_player_sees_their_own_weapon_until_they_die() {
+    let bytes = deathmatch_room_bsp(&CORNERS, false, "");
+    let mut assets = assets(&bytes);
+    let (model, _) =
+        ohl_formats::test_support::build_minimal_mdl10_with_sequences(&["ohl_idle", "ohl_deploy"]);
+    assets.insert("models/v_9mmhandgun.mdl", model.clone());
+    assets.insert("models/v_crowbar.mdl", model);
+    let mut game = Game::load_skirmish(
+        &assets,
+        AI_MAP,
+        &ohl_engine::GameConfig::default(),
+        &quiet(0),
+    )
+    .unwrap();
+    tick(&mut game, TICK_SECONDS, &Input::default());
+    assert!(game.viewmodel_visible());
+    assert_eq!(game.debug_viewmodel_path(), Some("models/v_9mmhandgun.mdl"));
+
+    let crowbar = Input {
+        select_slot: Some(1),
+        ..Input::default()
+    };
+    tick(&mut game, TICK_SECONDS, &crowbar);
+    assert_eq!(game.debug_viewmodel_path(), Some("models/v_crowbar.mdl"));
+
+    let player = game.player_entity();
+    queue_engine_damage_from(&mut game, player, player, 500.0);
+    tick(&mut game, TICK_SECONDS, &Input::default());
+    assert!(!game.viewmodel_visible(), "a dead player sees no weapon");
+
+    tick(
+        &mut game,
+        RESPAWN_CLICK_DELAY_SECONDS + 0.5,
+        &Input::default(),
+    );
+    let click = Input {
+        attack: true,
+        ..Input::default()
+    };
+    let events = tick(&mut game, TICK_SECONDS * 2.0, &click);
+    assert!(events.contains(&GameEvent::PlayerRespawned));
+    assert!(game.viewmodel_visible());
+    assert_eq!(
+        game.debug_viewmodel_path(),
+        Some("models/v_9mmhandgun.mdl"),
+        "the respawn loadout draws the pistol again"
+    );
+}
+
 /// A quiet match: no bots unless a test asks for them, no limits.
 fn quiet(bots: u8) -> SkirmishConfig {
     SkirmishConfig {

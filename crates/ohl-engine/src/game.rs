@@ -313,6 +313,7 @@ impl Game {
 
     fn from_level(mut level: Level, source: &dyn AssetSource, config: GameConfig) -> Self {
         level.preload_debris_models(source);
+        level.preload_view_models(source);
         let mut camera = level
             .spawn
             .map_or_else(FreeFlyCamera::default, FreeFlyCamera::at_spawn);
@@ -588,6 +589,15 @@ impl Game {
     #[cfg(any(test, feature = "test-support"))]
     pub fn debug_show_viewmodel_and_sprite(&mut self, model_slot: usize) {
         self.systems.debug_show_viewmodel_and_sprite(model_slot);
+    }
+
+    /// Test-only hook: the asset path of the view model this frame draws,
+    /// if any. Paths stay out of logs; a test compares its own.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn debug_viewmodel_path(&self) -> Option<&str> {
+        let slot = self.systems.view_model().model()?;
+        self.level.studio_model_paths.get(slot).map(String::as_str)
     }
 
     /// Test-only hook: spawns a live projectile directly, the same call
@@ -1623,6 +1633,7 @@ impl Game {
         // `Level::attach_studio_models`'s doc comment.
         next.attach_studio_models(source, next.map_defs);
         next.preload_debris_models(source);
+        next.preload_view_models(source);
         // Re-baseline the collision model against whatever the transition
         // just moved (a carried `func_tracktrain` is placed where the
         // source map's copy was, thousands of units from where this map

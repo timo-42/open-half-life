@@ -120,17 +120,11 @@ struct MoverMonster {
 pub struct SystemsConfig {
     /// Seeds the single random stream the simulation phases share.
     pub rng_seed: u64,
-    /// The view model's own vertical field of view, in degrees, independent
-    /// of the world camera's.
-    ///
-    /// TODO(black-box): Half-Life's viewmodel FOV (and whether/how it
-    /// differs from the world FOV) is not published; see
-    /// `crate::viewmodel`'s module doc.
-    pub view_model_fov: f32,
     /// The view model's placement offset from the camera's eye, read as
     /// `(forward, left, up)` camera-relative world units (`crate::viewmodel::placement`).
     ///
-    /// TODO(black-box): the offset (and any weapon bob) is not published.
+    /// TODO(black-box): any weapon bob or pitch-dependent shift is not
+    /// published or modelled.
     pub view_model_offset: [f32; 3],
 }
 
@@ -138,13 +132,11 @@ impl Default for SystemsConfig {
     fn default() -> Self {
         Self {
             rng_seed: DEFAULT_RNG_SEED,
-            // TODO(black-box): matches the world camera's own default FOV
-            // (`ohl_render::FreeFlyCamera::default`) until observed
-            // otherwise.
-            view_model_fov: 75.0,
-            // TODO(black-box): a small forward-and-down offset, low enough
-            // to sit in the lower part of the frame without covering it.
-            view_model_offset: [8.0, 0.0, -6.0],
+            // Black-box: weapon models drawn with their origin at the eye
+            // match public screenshots' framing; an offset pushed the
+            // weapon low and hid the hand (`docs/FORMAT_SOURCES.md`,
+            // "First-person view models").
+            view_model_offset: [0.0, 0.0, 0.0],
         }
     }
 }
@@ -1003,6 +995,7 @@ impl Systems {
         // doc); harmless when none match, which is the ordinary case.
         self.projectiles.configure_models(level);
         self.tanks.configure_level(level);
+        self.view_model.configure(level);
     }
 
     /// Latches one frame's input. Called once per [`crate::Game::tick`],
@@ -2074,6 +2067,13 @@ impl Systems {
         let player_tag = crate::ids::entity_id(level.player).0 as u32;
         self.presentation
             .suit_audio(player_tag, self.ai.sentence_lookup(), &events);
+        // Before the queued actions, so a switch this step draws the new
+        // weapon's model. Presentation choice: the weapon is the player's
+        // own view, hidden while dead or while another camera owns it.
+        self.view_model.sync(
+            self.combat.selected_weapon(),
+            !self.player.state.dead && !crate::camera::override_active(level),
+        );
         self.presentation.tick(
             dt,
             &mut self.hud,

@@ -1069,6 +1069,16 @@ impl Level {
         self.debris_models.preload(&self.registry, source);
     }
 
+    /// Loads every weapon's first-person model the payload publishes
+    /// ([`crate::viewmodel::view_model_path`]) as an extra studio model, so
+    /// a weapon picked up or carried in later can be drawn without
+    /// rebuilding the renderers. Missing models stay missing.
+    pub(crate) fn preload_view_models(&mut self, source: &dyn AssetSource) {
+        for weapon in ohl_combat::WeaponId::ALL {
+            let _ = self.load_extra_studio_model(source, crate::viewmodel::view_model_path(weapon));
+        }
+    }
+
     /// Detaches a newly broken source before any same-step blast trace. Both
     /// actor collision models must stop seeing it at the same break edge.
     pub(crate) fn detach_broken_source(&mut self, source: Entity) {

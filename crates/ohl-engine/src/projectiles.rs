@@ -1546,12 +1546,13 @@ fn push_sprite(
 }
 
 /// The index of `path` (case-insensitively) in `level.studio_model_paths`,
-/// for [`ProjectileSystem::configure_models`]. `None` when the map never
+/// for [`ProjectileSystem::configure_models`] (and the weapon view models,
+/// `crate::viewmodel::ViewModel::configure`). `None` when the map never
 /// loaded that exact model — the ordinary case for every path in
 /// [`default_projectile_model_path`]/[`default_deployable_model_path`],
 /// since none of them is a path this project's own map loader fetches on
 /// its own (see `Level::studio_model_paths`'s doc).
-fn find_model_path(level: &Level, path: &str) -> Option<usize> {
+pub(crate) fn find_model_path(level: &Level, path: &str) -> Option<usize> {
     let needle = path.to_ascii_lowercase();
     level
         .studio_model_paths

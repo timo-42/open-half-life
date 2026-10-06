@@ -50,12 +50,23 @@ fn build_game() -> Game {
 
     let mut assets = MemoryAssets::new();
     assets.insert(&format!("maps/{SYNTHETIC_MAP}.bsp"), map.clone());
-    let (mdl_bytes, _layout) = build_minimal_mdl10();
+    // A weapon model is built out in front of its origin, which the view
+    // model places at the eye: move the unit quad 8 units forward and 6
+    // down, where a camera looking along +X sees it from above.
+    let (mut mdl_bytes, layout) = build_minimal_mdl10();
+    for vertex in 0..4 {
+        let offset = layout.verts_offset + vertex * 12;
+        let x = f32::from_le_bytes(mdl_bytes[offset..offset + 4].try_into().unwrap());
+        mdl_bytes[offset..offset + 4].copy_from_slice(&(8.0 + x).to_le_bytes());
+        mdl_bytes[offset + 8..offset + 12].copy_from_slice(&(-6.0_f32).to_le_bytes());
+    }
     assets.insert("models/ohl_prop.mdl", mdl_bytes);
     assets.insert("sprites/ohl_glow.spr", build_minimal_spr());
 
     let mut game = Game::from_map_bytes(&assets, SYNTHETIC_MAP, &map).expect("the map loads");
-    game.set_viewpoint([0.0, 0.0, 40.0], 0.0, 0.0);
+    // Back from the prop and sprite (both at `0 0 40`), so the view model
+    // and the transient sprite each land somewhere of their own.
+    game.set_viewpoint([-64.0, 0.0, 40.0], 0.0, 0.0);
     game
 }
 

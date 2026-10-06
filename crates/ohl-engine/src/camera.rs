@@ -69,6 +69,12 @@ pub(crate) fn freeze_active(level: &Level) -> bool {
     active_camera(&level.registry).is_some_and(|(_, camera, _)| camera.freeze_player)
 }
 
+/// Whether an active `trigger_camera` sequence owns the view this step.
+#[must_use]
+pub(crate) fn override_active(level: &Level) -> bool {
+    active_camera(&level.registry).is_some()
+}
+
 /// Overrides `camera`'s position/yaw/pitch with the active `trigger_camera`
 /// sequence's resolved view, when one is active; a no-op otherwise, leaving
 /// whatever this step's ordinary player-move phase already computed. Called
