@@ -1080,6 +1080,7 @@ impl Systems {
         if let Some(skirmish) = self.skirmish.as_mut() {
             skirmish.pickups(level, dt); // 11b
             for bot in &mut skirmish.bots {
+                bot.update_animation(level);
                 self.presentation.add_sounds(bot.drain_sounds());
             }
         }
@@ -2086,19 +2087,18 @@ impl Systems {
 
     /// Starts a local skirmish on `level` (see `crate::skirmish`): the
     /// human respawns at a deathmatch spawn point with the deathmatch
-    /// equipment, and `config.bots` bots join. `player_model` is the
-    /// level's studio model slot bots are drawn with, when the payload
-    /// publishes one.
+    /// equipment, and `config.bots` bots join. `models` holds the optional
+    /// player and held weapon studio model slots.
     pub(crate) fn start_skirmish(
         &mut self,
         level: &mut Level,
         camera: &mut FreeFlyCamera,
         controller: &mut PlayerController,
         config: crate::skirmish::SkirmishConfig,
-        player_model: Option<usize>,
+        models: crate::skirmish::animation::BotModels,
     ) {
         self.ensure_pickups_spawned(level);
-        let mut skirmish = crate::skirmish::SkirmishState::new(level, config, player_model);
+        let mut skirmish = crate::skirmish::SkirmishState::new(level, config, models);
         skirmish.exclude_non_deathmatch_pickups(level);
         let human = crate::skirmish::HumanView {
             entity: level.player,

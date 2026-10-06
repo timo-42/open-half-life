@@ -77,6 +77,14 @@ impl StudioAnim {
     }
 }
 
+/// A separate studio weapon drawn against this entity's animated skeleton.
+/// It shares the owner's transform and lighting, and has no hitboxes of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HeldWeapon {
+    /// Loaded studio model slot, or `None` while unarmed or dead.
+    pub model: Option<usize>,
+}
+
 /// Marks the single client entity.
 ///
 /// Exactly one entity per level carries this: the one

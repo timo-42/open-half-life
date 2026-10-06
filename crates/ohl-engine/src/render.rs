@@ -17,9 +17,9 @@ use ohl_render::{
     RenderedModelInstance, SkyRenderer, SpriteInstance, StudioRenderPhase, StudioRenderer,
     SubmodelInstance, WorldRenderer, math, placement, wgpu,
 };
-use ohl_world::{Aabb, Frustum, StudioPose};
+use ohl_world::{Aabb, Frustum, StudioModel, StudioPose};
 
-use crate::components::StudioAnim;
+use crate::components::{HeldWeapon, StudioAnim};
 use crate::error::{EngineError, Result};
 use crate::level::{Level, PropPlacement};
 use crate::sprites::TransientSprite;
@@ -547,6 +547,9 @@ impl Renderers {
                 .instance(level)
                 .expect("prepared pose")
                 .view_depth(model, camera);
+            if let Some(held) = self.held_weapon_frame(level, entity, model, &entry, camera) {
+                frame.push(held);
+            }
             frame.push(entry);
         }
         let mut ready = BTreeSet::new();
@@ -582,6 +585,38 @@ impl Renderers {
         (frame, ready)
     }
 
+    fn held_weapon_frame(
+        &self,
+        level: &Level,
+        entity: Entity,
+        owner_model: &StudioModel,
+        owner: &StudioFrame,
+        camera: &FreeFlyCamera,
+    ) -> Option<StudioFrame> {
+        let slot = level
+            .registry
+            .world
+            .get::<&HeldWeapon>(entity)
+            .ok()?
+            .model?;
+        self.studio.get(slot)?;
+        let weapon = level.studio_models.get(slot)?;
+        let pose = StudioPose::merge(weapon, owner_model, owner.pose.as_ref()?)?;
+        let mut held = StudioFrame {
+            source: StudioSource::HeldWeapon(slot),
+            id: owner.id,
+            transform: owner.transform,
+            pose: Some(pose),
+            body: vec![0],
+            skin: 0,
+            ambient: owner.ambient,
+            props: owner.props,
+            depth: 0.0,
+        };
+        held.depth = held.instance(level)?.view_depth(weapon, camera);
+        Some(held)
+    }
+
     /// Opaque geometry goes early; translucent meshes follow the completed
     /// opaque sprite/effect depth. Global cross-family transparency remains cut.
     #[allow(clippy::too_many_arguments)]
@@ -605,7 +640,7 @@ impl Renderers {
         }
         for entry in order {
             let (model, renderer) = match entry.source {
-                StudioSource::Entity(slot) => {
+                StudioSource::Entity(slot) | StudioSource::HeldWeapon(slot) => {
                     (level.studio_models.get(slot), self.studio.get_mut(slot))
                 }
                 StudioSource::Debris(slot) => (
@@ -675,6 +710,7 @@ impl Renderers {
 #[derive(Clone, Copy)]
 enum StudioSource {
     Entity(usize),
+    HeldWeapon(usize),
     Debris(usize),
 }
 
@@ -682,7 +718,8 @@ impl StudioSource {
     fn kind(self) -> u8 {
         match self {
             Self::Entity(_) => 0,
-            Self::Debris(_) => 1,
+            Self::HeldWeapon(_) => 1,
+            Self::Debris(_) => 2,
         }
     }
 }
@@ -702,7 +739,7 @@ struct StudioFrame {
 impl StudioFrame {
     fn instance<'a>(&'a self, level: &'a Level) -> Option<RenderedModelInstance<'a>> {
         let pose = match self.source {
-            StudioSource::Entity(_) => self.pose.as_ref()?,
+            StudioSource::Entity(_) | StudioSource::HeldWeapon(_) => self.pose.as_ref()?,
             StudioSource::Debris(slot) => level.debris_models.poses.get(slot)?,
         };
         Some(RenderedModelInstance {
@@ -1934,5 +1971,112 @@ mod gameplay_frame_tests {
         for (actual, expected) in results[0].iter().zip(expected) {
             assert!((f32::from(*actual) - expected).abs() <= 2.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod held_weapon_render_tests {
+    use super::*;
+    use crate::test_support::{AI_MAP, deathmatch_room_bsp};
+    use crate::{Game, MemoryAssets, SkirmishConfig};
+    use ohl_render::{OFFSCREEN_FORMAT, OffscreenTarget};
+
+    #[test]
+    #[allow(clippy::float_cmp)] // Owner transform and lighting are copied exactly.
+    fn held_weapons_share_the_body_pose_and_reach_pixels_when_opted_in() {
+        if std::env::var_os("OHL_RENDER_GPU_TEST").as_deref() != Some(std::ffi::OsStr::new("1")) {
+            return;
+        }
+        let context = GpuContext::headless().expect("explicit GPU opt-in requires an adapter");
+        let bytes = deathmatch_room_bsp(&[(-128.0, 0.0), (128.0, 0.0)], false, "");
+        let mut assets = MemoryAssets::new();
+        assets.insert(&format!("maps/{AI_MAP}.bsp"), bytes.clone());
+        let (player, _) = ohl_formats::test_support::build_minimal_mdl10_with_sequences(&[
+            "ohl_aim_onehanded",
+            "ohl_shoot_onehanded",
+        ]);
+        assets.insert(crate::skirmish::PLAYER_MODEL_PATH, player);
+        let (mut weapon, layout) = ohl_formats::test_support::build_minimal_mdl10();
+        for vertex in 0..4 {
+            let offset = layout.verts_offset + vertex * 12;
+            let x = f32::from_le_bytes(weapon[offset..offset + 4].try_into().unwrap());
+            let y = f32::from_le_bytes(weapon[offset + 4..offset + 8].try_into().unwrap());
+            weapon[offset..offset + 4].copy_from_slice(&(24.0 + x * 16.0).to_le_bytes());
+            weapon[offset + 4..offset + 8].copy_from_slice(&(-8.0 + y * 16.0).to_le_bytes());
+        }
+        assets.insert("models/p_9mmhandgun.mdl", weapon);
+        let mut game = Game::from_map_bytes(&assets, AI_MAP, &bytes).unwrap();
+        let target = OffscreenTarget::new(&context, 128, 128).unwrap();
+        let pixels = |game: &mut Game| {
+            game.render(
+                &context,
+                RenderTarget {
+                    view: target.view(),
+                    width: 128,
+                    height: 128,
+                    format: OFFSCREEN_FORMAT,
+                },
+            )
+            .unwrap();
+            target.read_rgba(&context).unwrap()
+        };
+        // Starting a match after the renderer exists must prepare its newly
+        // loaded player and weapon slots on the next render.
+        let _ = pixels(&mut game);
+        game.start_skirmish(
+            &assets,
+            &SkirmishConfig {
+                bots: 1,
+                ..SkirmishConfig::default()
+            },
+        )
+        .unwrap();
+        let bot = game.skirmish_bots()[0];
+        let origin = game.registry().world.get::<&Transform>(bot).unwrap().origin;
+        game.set_viewpoint((origin + Vec3::Z * 64.0).to_array(), 89.9, 0.0);
+        let camera = FreeFlyCamera::at_spawn(ohl_world::PlayerSpawn {
+            origin: (origin + Vec3::Z * 64.0).to_array(),
+            pitch: 89.9,
+            yaw: 0.0,
+        });
+        let (level, systems) = game.level_and_systems_mut();
+        level
+            .registry
+            .world
+            .get::<&mut StudioAnim>(bot)
+            .unwrap()
+            .cycle = 0.1;
+        let renderers = Renderers::new(&context, level, OFFSCREEN_FORMAT).unwrap();
+        let (frame, _) =
+            renderers.collect_studio_instances(level, &camera, &systems.map_effects.presentation());
+        let body = frame
+            .iter()
+            .find(|entry| {
+                entry.id == bot.to_bits().get() && matches!(entry.source, StudioSource::Entity(_))
+            })
+            .unwrap();
+        let held = frame
+            .iter()
+            .find(|entry| {
+                entry.id == body.id && matches!(entry.source, StudioSource::HeldWeapon(_))
+            })
+            .expect("a separate held weapon instance");
+        assert_eq!(held.transform, body.transform);
+        assert_eq!(held.ambient, body.ambient);
+        assert_eq!(
+            held.pose, body.pose,
+            "matching named bones use the animated body matrices"
+        );
+        let visible = pixels(&mut game);
+        game.registry()
+            .world
+            .get::<&mut HeldWeapon>(bot)
+            .unwrap()
+            .model = None;
+        let hidden = pixels(&mut game);
+        assert_ne!(
+            visible, hidden,
+            "the held model must reach the world framebuffer"
+        );
     }
 }

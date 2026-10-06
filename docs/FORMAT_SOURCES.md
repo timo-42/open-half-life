@@ -8608,9 +8608,10 @@ above) lists `monster_hevsuit_dead` against `models/player.mdl` — the player
 model a dead HEV scientist is placed with. `skirmish::PLAYER_MODEL_PATH` loads
 it for the bots when the payload publishes it; without it a bot is an
 undrawn standing hull, still shootable through the same fallback box the
-human gets. Sequences are chosen by the names `crate::ai` already resolves
-monster activities through (`idle`, `walk`, `run`, and the first sequence
-whose name starts with `die`).
+human gets. Locomotion and death fallbacks use the names `crate::ai` already
+resolves monster activities through (`idle`, `walk`, `run`, and the first
+sequence whose name starts with `die`). Armed poses and combat animation
+selection are described below.
 
 **Project-authored, with no public source (`TODO(black-box)` where a fact
 exists to be observed):** the bot itself (`skirmish::bot`: sensing, reaction
@@ -8637,3 +8638,42 @@ with a project-authored 32×32×16 box resting on the item's origin
 the old sphere touched from, the box touches from too, so single-player routes
 and tests that relied on the sphere are unaffected; items on the floor are now
 reachable in both modes.
+
+### Skirmish held weapons and combat animations
+
+[Featureful SDK's weapon-template documentation](https://freeslave.github.io/halflife-featureful/docs/configuration/weapon-templates/#player_model)
+describes a separate `p_` model for a weapon seen in another player's hands.
+Its `player_anim_ext` section documents the animation suffix vocabulary:
+`bow`, `crowbar`, `egon`, `gauss`, `mp5`, `onehanded`, `python`, `rpg`,
+`shotgun`, `squeak`, and `trip`. Only this independently written public
+documentation was consulted; no SDK or engine implementation source was
+read or used.
+
+**Per-literal path provenance:** the public
+[CPX server model-directory index](https://cpx.site.nfoservers.com/server/models/)
+lists `p_9mmar.mdl`, `p_9mmhandgun.mdl`, `p_357.mdl`, `p_crossbow.mdl`,
+`p_crowbar.mdl`, `p_egon.mdl`, `p_gauss.mdl`, `p_grenade.mdl`, `p_hgun.mdl`,
+`p_rpg.mdl`, `p_satchel.mdl`, `p_shotgun.mdl`, `p_squeak.mdl`, and
+`p_tripmine.mdl`. These filename facts plus the documented `models/p_`
+convention establish each path in `skirmish::animation::held_model_path`.
+No linked model was downloaded, and no private payload listing supplied
+any literal. [Sven Co-op's model-replacement guide](https://wiki.svencoop.com/Mapping/Model_Replacement_Guide)
+independently documents the complete `models/p_crowbar.mdl` path.
+
+**Project-authored presentation:** match a weapon's suffix to sequences
+containing the intent tokens `aim`, `shoot`/`fire`/`attack`, or `reload`;
+prefer crouched variants while crouching. No full sequence or bone label
+is baked into the implementation. Keep an attack playing until its authored
+duration expires, restart it for each actual shot, and keep a reload while
+the weapon is reloading. Missing sequences fall back to the existing
+locomotion vocabulary. Weapon-to-suffix assignments, fallback ordering,
+and speed thresholds are presentation choices, not documented engine rules.
+
+The already cited MDL format specifies named bones, parent links, bone-local
+vertices, and local translation/rotation channels. Preserve those names and
+compose a held model against the player's sampled pose by matching names,
+with unmatched child bones keeping their local bind transforms. This is
+independently authored skeleton composition; no engine source or fixed hand
+bone name is used. Held weapons are render instances of their owner's
+entity, without their own collision or hitboxes. Death hides the weapon;
+respawn and weapon selection refresh both the model and the animation.

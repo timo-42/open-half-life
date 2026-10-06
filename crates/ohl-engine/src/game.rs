@@ -231,9 +231,24 @@ impl Game {
         if self.level.collision.is_none() || crate::skirmish::spawn_points(&self.level).is_empty() {
             return Err(EngineError::NoSpawnPoints);
         }
-        let model = self
+        let player = self
             .level
             .load_extra_studio_model(source, crate::skirmish::PLAYER_MODEL_PATH);
+        let weapons = if player.is_some() && config.bots > 0 {
+            ohl_combat::WeaponId::ALL
+                .into_iter()
+                .filter_map(|weapon| {
+                    self.level
+                        .load_extra_studio_model(
+                            source,
+                            crate::skirmish::animation::held_model_path(weapon),
+                        )
+                        .map(|model| (weapon, model))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         // A model slot added after the renderers were built has no GPU
         // resources yet; the next `render` rebuilds them.
         self.renderers = None;
@@ -242,7 +257,7 @@ impl Game {
             &mut self.camera,
             &mut self.controller,
             *config,
-            model,
+            crate::skirmish::animation::BotModels { player, weapons },
         );
         // A deathmatch arena is no chapter.
         self.pending

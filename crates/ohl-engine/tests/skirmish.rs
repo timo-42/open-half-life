@@ -13,6 +13,7 @@
 use std::fmt::Write as _;
 
 use glam::Vec3;
+use ohl_engine::components::HeldWeapon;
 use ohl_engine::skirmish::{
     BotBody, HUMAN_NAME, INTERMISSION_SECONDS, RESPAWN_CLICK_DELAY_SECONDS, WEAPON_RESPAWN_SECONDS,
 };
@@ -43,6 +44,175 @@ fn skirmish(spawns: &[(f32, f32)], extra: &str, config: SkirmishConfig) -> Game 
     game.start_skirmish(&assets, &config)
         .expect("the arena has spawn points");
     game
+}
+
+/// Project-authored model labels: generic intent tokens plus the cited
+/// suffix vocabulary, without any copied game animation data.
+const BOT_SEQUENCES: [&str; 8] = [
+    "idle",
+    "run",
+    "ohl_aim_onehanded",
+    "ohl_shoot_onehanded",
+    "ohl_reload_onehanded",
+    "ohl_aim_crowbar",
+    "ohl_shoot_crowbar",
+    "die_ohl",
+];
+
+fn visual_skirmish(bots: u8, held_models: bool) -> Game {
+    let bytes = deathmatch_room_bsp(&CORNERS, false, "");
+    let mut assets = assets(&bytes);
+    let (player, _) = ohl_formats::test_support::build_minimal_mdl10_with_sequences(&BOT_SEQUENCES);
+    assets.insert(ohl_engine::skirmish::PLAYER_MODEL_PATH, player);
+    if held_models {
+        let (held, _) = ohl_formats::test_support::build_minimal_mdl10();
+        assets.insert("models/p_9mmhandgun.mdl", held.clone());
+        assets.insert("models/p_crowbar.mdl", held);
+    }
+    Game::load_skirmish(
+        &assets,
+        AI_MAP,
+        &ohl_engine::GameConfig::default(),
+        &SkirmishConfig {
+            bot_skill: BotSkill::Hard,
+            ..quiet(bots)
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn bots_equip_their_held_model_and_fire_without_overwriting_the_attack_animation() {
+    let mut game = visual_skirmish(2, true);
+    let bots = game.skirmish_bots();
+    for bot in &bots {
+        assert!(
+            game.registry()
+                .world
+                .get::<&HeldWeapon>(*bot)
+                .unwrap()
+                .model
+                .is_some()
+        );
+        assert_eq!(
+            game.registry()
+                .world
+                .get::<&ohl_engine::StudioAnim>(*bot)
+                .unwrap()
+                .sequence,
+            2
+        );
+    }
+    let mut shots = 0;
+    for _ in 0..500 {
+        let events = game.tick(TICK_SECONDS, &Input::default());
+        assert!(!events.contains(&GameEvent::ViewModel(ohl_gameplay::ViewModelAction::Fire)));
+        let shooter = events.iter().find_map(|event| match event {
+            GameEvent::Sound(cue)
+                if cue.asset == ohl_engine::SoundAsset::file("sound/weapons/pl_gun3.wav") =>
+            {
+                bots.iter().find(|bot| bot.id() == cue.entity).copied()
+            }
+            _ => None,
+        });
+        if let Some(bot) = shooter {
+            let anim = *game
+                .registry()
+                .world
+                .get::<&ohl_engine::StudioAnim>(bot)
+                .unwrap();
+            assert_eq!(anim.sequence, 3, "an actual shot selects the bot's attack");
+            assert!(anim.cycle.abs() < f32::EPSILON, "every shot restarts it");
+            game.tick(TICK_SECONDS, &Input::default());
+            let next = *game
+                .registry()
+                .world
+                .get::<&ohl_engine::StudioAnim>(bot)
+                .unwrap();
+            assert_eq!(
+                next.sequence, anim.sequence,
+                "movement does not cancel the shot"
+            );
+            assert!(next.cycle > anim.cycle, "the attack advances between shots");
+            shots += 1;
+        }
+        if shots >= 2 {
+            break;
+        }
+    }
+    assert!(shots >= 2, "bots visibly animate repeated shots");
+}
+
+#[test]
+fn dying_hides_the_held_weapon_and_respawning_restores_the_armed_pose() {
+    let mut game = visual_skirmish(1, true);
+    let bot = game.skirmish_bots()[0];
+    let model = game.registry().world.get::<&HeldWeapon>(bot).unwrap().model;
+    let player = game.player_entity();
+    queue_engine_damage_from(&mut game, bot, player, 500.0);
+    game.tick(TICK_SECONDS, &Input::default());
+    assert!(
+        game.registry()
+            .world
+            .get::<&HeldWeapon>(bot)
+            .unwrap()
+            .model
+            .is_none()
+    );
+    assert_eq!(
+        game.registry()
+            .world
+            .get::<&ohl_engine::StudioAnim>(bot)
+            .unwrap()
+            .sequence,
+        7
+    );
+    for _ in 0..250 {
+        game.tick(TICK_SECONDS, &Input::default());
+        if game.registry().world.get::<&BotBody>(bot).unwrap().alive {
+            assert_eq!(
+                game.registry().world.get::<&HeldWeapon>(bot).unwrap().model,
+                model
+            );
+            let anim = *game
+                .registry()
+                .world
+                .get::<&ohl_engine::StudioAnim>(bot)
+                .unwrap();
+            assert_eq!(anim.sequence, 2);
+            assert!(anim.cycle.abs() < f32::EPSILON);
+            return;
+        }
+    }
+    panic!("the bot must respawn");
+}
+
+#[test]
+fn missing_held_models_do_not_disable_the_bot_body_or_combat() {
+    let mut game = visual_skirmish(2, false);
+    for bot in game.skirmish_bots() {
+        assert!(
+            game.registry()
+                .world
+                .get::<&HeldWeapon>(bot)
+                .unwrap()
+                .model
+                .is_none()
+        );
+        assert!(
+            game.registry()
+                .world
+                .get::<&ohl_engine::StudioAnim>(bot)
+                .is_ok()
+        );
+    }
+    let events = tick(&mut game, 5.0, &Input::default());
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, GameEvent::Sound(cue)
+        if cue.asset == ohl_engine::SoundAsset::file("sound/weapons/pl_gun3.wav")))
+    );
 }
 
 /// A quiet match: no bots unless a test asks for them, no limits.

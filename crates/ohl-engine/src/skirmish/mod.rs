@@ -42,6 +42,7 @@
 //! Nothing here logs. Positions and classnames are map-derived; bot names
 //! are project-authored.
 
+pub(crate) mod animation;
 mod bot;
 pub(crate) mod nav;
 
@@ -305,7 +306,7 @@ pub(crate) struct SkirmishState {
     winner: Option<Slot>,
     events: Vec<SkirmishEvent>,
     rng: ohl_ai::Pcg32,
-    player_model: Option<usize>,
+    models: animation::BotModels,
 }
 
 /// How many deathmatch spawn points `map_bytes`' entity lump declares, or
@@ -390,7 +391,7 @@ impl SkirmishState {
     /// graph flood-filled from every spawn point and pickup, and `config`
     /// clamped. Bots are created by [`Self::add_bots`] once the level's
     /// player model slot is known.
-    pub(crate) fn new(level: &Level, config: SkirmishConfig, player_model: Option<usize>) -> Self {
+    pub(crate) fn new(level: &Level, config: SkirmishConfig, models: animation::BotModels) -> Self {
         let config = SkirmishConfig {
             bots: config.bots.min(MAX_BOTS),
             frag_limit: config.frag_limit,
@@ -432,7 +433,7 @@ impl SkirmishState {
             intermission: None,
             winner: None,
             events: Vec::new(),
-            player_model,
+            models,
         }
     }
 
@@ -469,7 +470,7 @@ impl SkirmishState {
                 BOT_NAMES[usize::from(index)],
                 self.config.bot_skill,
                 seed,
-                self.player_model,
+                &self.models,
             );
             self.bots.push(bot);
             self.tallies.push(Tally::default());

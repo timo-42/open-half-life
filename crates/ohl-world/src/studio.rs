@@ -275,6 +275,9 @@ pub struct StudioModel {
     pub textures: Vec<StudioTexture>,
     /// The skeleton.
     pub bones: Vec<StudioBone>,
+    /// Bone labels, lower-cased and index-aligned with [`Self::bones`].
+    /// Model-authored lookup keys for attaching another skeleton; never logged.
+    pub bone_names: Vec<String>,
     /// The hitboxes, in bone-local space.
     pub hitboxes: Vec<StudioHitbox>,
     /// The attachment points, in bone-local space.
@@ -367,6 +370,10 @@ impl StudioModel {
             return Err(WorldError::LimitExceeded);
         }
         Mdl::validate_bone_hierarchy(raw_bones)?;
+        let bone_names = raw_bones
+            .iter()
+            .map(|bone| short_name(&bone.name))
+            .collect();
         let bones: Vec<StudioBone> = raw_bones
             .iter()
             .map(|bone| StudioBone {
@@ -541,6 +548,7 @@ impl StudioModel {
             body_parts,
             textures,
             bones,
+            bone_names,
             hitboxes,
             attachments,
             sequences,
@@ -761,6 +769,49 @@ pub struct StudioPose {
 }
 
 impl StudioPose {
+    /// Attaches `model` to a sampled parent skeleton by bone name.
+    ///
+    /// Matching bones take the parent's model-space matrix. Unmatched bones
+    /// retain their local bind transform under their newly posed parent, so
+    /// a weapon can have additional bones without losing its grip. Returns
+    /// `None` when the skeletons share no named bone.
+    #[must_use]
+    pub fn merge(
+        model: &StudioModel,
+        parent_model: &StudioModel,
+        parent_pose: &Self,
+    ) -> Option<Self> {
+        let mut matrices = Vec::with_capacity(model.bones.len());
+        let mut matched = false;
+        for (index, bone) in model.bones.iter().enumerate() {
+            let parent_matrix = model
+                .bone_names
+                .get(index)
+                .filter(|name| !name.is_empty())
+                .and_then(|name| {
+                    parent_model
+                        .bone_names
+                        .iter()
+                        .position(|other| other == name)
+                })
+                .and_then(|index| parent_pose.matrices.get(index));
+            let matrix = if let Some(matrix) = parent_matrix {
+                matched = true;
+                *matrix
+            } else {
+                let local = compose(
+                    [bone.value[0], bone.value[1], bone.value[2]],
+                    mdl10::euler_to_quaternion([bone.value[3], bone.value[4], bone.value[5]]),
+                );
+                bone.parent
+                    .and_then(|parent| matrices.get(parent))
+                    .map_or(local, |parent| multiply(parent, &local))
+            };
+            matrices.push(matrix);
+        }
+        matched.then_some(Self { matrices })
+    }
+
     /// The bind pose: every bone at its stored `value` channels.
     #[must_use]
     pub fn bind(model: &StudioModel) -> Self {
