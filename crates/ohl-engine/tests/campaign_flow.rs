@@ -444,7 +444,14 @@ fn a_sentence_lookup_names_one_asset_per_word() {
         .map(|path| path.0)
         .collect();
     assert_eq!(words, ["sound/vox/hello.wav", "sound/vox/there.wav"]);
+    assert_eq!(
+        game.sentences().words("!ohl_hello"),
+        game.sentences().words("OHL_HELLO"),
+        "the explicit-sentence marker is not part of the table entry name"
+    );
     assert!(game.sentences().words("OHL_MISSING").is_empty());
+    assert!(game.sentences().words("!OHL_MISSING").is_empty());
+    assert!(game.sentences().words("!").is_empty());
 }
 
 #[test]

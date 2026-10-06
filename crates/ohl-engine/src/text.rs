@@ -231,6 +231,11 @@ impl SentenceLookup {
 
     /// The sound assets one sentence names, in speaking order.
     ///
+    /// The optional leading `!` used by `scripted_sentence` to select an
+    /// exact sentence is a reference marker, not part of the table's name
+    /// (see `docs/FORMAT_SOURCES.md`, "`scripted_sentence`"). Bare exact
+    /// names are also accepted for callers that already removed it.
+    ///
     /// A word token is a `sound/`-relative WAV path without its extension
     /// (`vox/hello` becomes `sound/vox/hello.wav`). Group/wildcard tokens
     /// (the documented `V_DISTS`-style expansions) are returned unexpanded:
@@ -238,6 +243,7 @@ impl SentenceLookup {
     /// not make.
     #[must_use]
     pub fn words(&self, name: &str) -> Vec<AssetPath> {
+        let name = name.strip_prefix('!').unwrap_or(name);
         self.sentences
             .get(&name.to_ascii_uppercase())
             .map(|words| {
