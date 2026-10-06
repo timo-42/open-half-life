@@ -9577,3 +9577,64 @@ in a virtual X server without a window manager, where the window cannot
 change size; no real monitor has been switched. Audio settings are applied
 and asserted numerically; on Linux nothing is heard (the null sink), and
 the audio page says so.
+
+## M9.59 — Monsters stand on their floor
+
+Reported from a real play-through: on `c1a0` the lobby's guard and
+scientists were drawn standing in the air. A local measurement over the
+imported map found four of them placed 17 units above the floor and one 24,
+and they stayed there for as long as the map ran: nothing put a monster on
+its floor at spawn. Behind that sat the gap M9.44 recorded and left open:
+the renderer and the hitboxes draw a monster at its `Transform` with the
+origin at its feet, every AI trace reads `Actor::origin` as the centre of
+its hull, and the two were kept equal. A monster the AI put at a hull-centre
+height (where a route ends, a step up) was therefore drawn half a hull above
+the floor.
+
+**Fix (`ohl-engine` only).** A new `HullLift` component holds how far a
+monster's hull centre sits above its feet (its hull's foot offset: 36, 32 or
+18). `Actor::origin` is always the `Transform` origin plus the lift, and
+every place that copies one into the other converts: the per-step transform
+sync, the actor sync after a save loads, a scripted sequence's placement,
+its walk to the mark and its return, a mover's push, and the classname
+search scripts and sentences make. At spawn, and for a `monstermaker` child,
+a walker's feet drop onto the first floor within 256 units below where it
+was placed, the engine family's documented `droptofloor` behaviour (sources
+and every project-authored choice in `FORMAT_SOURCES.md`, "Monsters stand on
+their floor"). Fliers, the ceiling-hung barnacle, the two swimmers, the
+Nihilanth and the tentacle are exempt and behave exactly as before, as is
+a `monster_generic` showing one of the two models a public wiki page says
+have centred origins (the Hazard Course's hologram). The AI
+crates are untouched: every AI trace still runs at the hull centre, which is
+now where the hull actually is. A monster placed hull-centred, as this
+project's own fixtures place them, keeps exactly the AI position it had;
+only its model comes down to the floor. Old saves load: their monsters keep
+the saved model position and get their lift on top.
+
+**Tests.** Six new cases in `tests/monster_transform_sync.rs` (a monster
+placed above its floor stands on it; a hull-centred one keeps its AI
+position; the lift follows the hull; a flier, the barnacle and a
+centred-origin prop are left alone), and its two sync tests now assert the lift. `tests/guard_loop.rs`
+now uses the hitscan-only hostile `ohl-app`'s guarded-route test already
+uses: on the grunt fixture, the guard loop's player outlived a grenade the
+grunt threw before dying by 0.62 hit points on the old code, and the grunt
+standing on its floor (4 units lower in that fixture) tipped the same blast
+over. Surviving a grenade is dodging, which that test does not claim.
+
+**Combat smoke (37/37).** Two walks change what they assert, both through
+monsters that now behave differently rather than anything the player does
+(neither walk fires a shot). Office Complex: cockroaches the map places in
+mid-air used to hang there unable to move; on their floor they wander, and
+one walks into a floor-level spinning `func_rotating` far from the player
+and is crushed, so that walk no longer forbids monster damage or death.
+Power Up: a grunt's grenades now leave from standing height and one kills
+the thrower's squadmate, so that walk no longer forbids a monster death.
+The Hazard Course's scripted crowbar swing at the hologram needed the
+centred-origin exemption above to keep hitting.
+
+**Not done, recorded:** a monster held by a `scripted_sequence` while it
+walks to its mark is not drawn moving (the per-step sync skips held
+monsters, so the model stays where the walk began until the script lets
+go); this predates the fix and is left for its own package. Walkers still
+have no gravity once spawned: a route that ends above or below the floor
+still puts the monster at that height, as before.

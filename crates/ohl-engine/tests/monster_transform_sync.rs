@@ -1,7 +1,12 @@
 //! A monster's `ohl_ai::Actor` (sensing, navigation, attacks) and its
 //! `Transform` (rendering, and what the hitbox index `crate::combat::
-//! rebuild_hitbox_index` rebuilds from) must never drift apart:
+//! rebuild_hitbox_index` rebuilds from) must never drift apart. `Actor` is
+//! the centre of the monster's hull and `Transform` its feet, so for a
+//! walker the two differ by exactly its `ohl_engine::HullLift`:
 //!
+//! - At spawn, a walker's feet drop onto the floor under where the map put
+//!   it (M9.59), and its `Actor` stands its lift above them; a flier, which
+//!   has no feet, keeps the map's placement for both.
 //! - Every step, phase 8b (`crate::systems::Systems::sync_monster_transforms`)
 //!   copies a walking monster's freshly-moved `Actor` onto its `Transform`,
 //!   so the rendered model — and the hitbox index the next step's phase 5
@@ -23,8 +28,16 @@
 //! game installation; see `docs/CLEAN_ROOM.md`.
 
 use ohl_engine::test_support::{AI_MAP, actor_origin, ai_room_bsp, monster_entities};
-use ohl_engine::{Game, Input, MemoryAssets};
+use ohl_engine::{Game, HullLift, Input, MemoryAssets};
 use ohl_game::registry::Transform;
+
+/// The room's floor height (`ai_room_bsp`).
+const FLOOR_Z: f32 = 0.0;
+
+/// How close to [`FLOOR_Z`] a monster standing on the floor is: a hull
+/// trace stops `ohl_physics::DIST_EPSILON` (1/32) short of the plane it
+/// hits, so feet dropped onto the floor rest that far above it.
+const ON_FLOOR: f32 = 0.05;
 
 /// The room's entity block: a worldspawn, a player start facing `+X`, and
 /// whatever the test adds.
@@ -68,6 +81,27 @@ fn transform_origin(game: &Game, entity: ohl_game::hecs::Entity) -> ohl_ai::Vec3
         .unwrap_or_default()
 }
 
+/// `entity`'s `HullLift`, or `None` when it carries none.
+fn lift_of(game: &Game, entity: ohl_game::hecs::Entity) -> Option<f32> {
+    game.registry()
+        .world
+        .get::<&HullLift>(entity)
+        .ok()
+        .map(|lift| lift.0)
+}
+
+/// The single monster `block` spawns: its feet, its `Actor` and its lift,
+/// straight after load.
+fn spawned(block: &str) -> (ohl_ai::Vec3, ohl_ai::Vec3, Option<f32>) {
+    let (_assets, game) = game_from(&entities(block));
+    let entity = monster_entities(&game)[0];
+    (
+        transform_origin(&game, entity),
+        actor_origin(&game, entity),
+        lift_of(&game, entity),
+    )
+}
+
 /// A monster with nowhere it needs to see the player still wanders
 /// (`ai_wiring.rs`'s `a_map_without_nodes_still_moves_monsters` already
 /// covers that its `Actor` moves): this asserts its `Transform` — the
@@ -84,15 +118,22 @@ fn a_walking_monsters_transform_tracks_its_actor() {
 
     let actor = actor_origin(&game, entity);
     let transform = transform_origin(&game, entity);
+    let lift = lift_of(&game, entity).expect("a walker carries its lift");
     assert!(
-        (actor - start).length() > 1.0,
+        (transform - start).length() > 1.0,
         "the monster must actually have walked for this test to mean anything"
     );
     assert!(
-        (transform - actor).length() < 1e-3,
-        "the rendered Transform must track the AI's own Actor::origin \
-         (Transform {transform:?}, Actor {actor:?}) — a route that moves \
-         the monster must move the model and the hitbox index with it"
+        (transform + ohl_ai::Vec3::Z * lift - actor).length() < 1e-3,
+        "the rendered Transform must track the AI's own Actor::origin, its \
+         lift below it (Transform {transform:?}, Actor {actor:?}, lift \
+         {lift}) — a route that moves the monster must move the model and \
+         the hitbox index with it"
+    );
+    assert!(
+        (transform.z - FLOOR_Z).abs() < ON_FLOOR,
+        "a walker on a flat floor keeps its feet on it while it walks \
+         (Transform {transform:?})"
     );
 }
 
@@ -125,14 +166,125 @@ fn actor_matches_transform_immediately_after_a_save_load_boundary() {
     let reloaded_entity = monster_entities(&reloaded)[0];
     let actor = actor_origin(&reloaded, reloaded_entity);
     let transform = transform_origin(&reloaded, reloaded_entity);
+    let lift = lift_of(&reloaded, reloaded_entity).expect("the lift is re-derived at load");
     assert_eq!(
-        actor, transform,
-        "immediately after load, every monster's Actor::origin must equal \
-         its just-restored Transform::origin, not the map's spawn point"
+        actor,
+        transform + ohl_ai::Vec3::Z * lift,
+        "immediately after load, every monster's Actor::origin must stand \
+         its lift above its just-restored Transform::origin, not at the \
+         map's spawn point"
     );
     assert!(
         (actor - spawn).length() > 1.0,
         "the restored Actor::origin must be the save's walked-to position, \
          not silently equal to the map spawn point by coincidence"
     );
+}
+
+/// A monster the map placed above its floor stands on it: its model's feet
+/// on the floor, its `Actor` a standing hull's half-height (36) above them.
+/// On a real map this was guards and scientists drawn 17 units up.
+#[test]
+fn a_monster_placed_above_its_floor_stands_on_it() {
+    let (feet, actor, lift) = spawned(&monster("monster_scientist", [100.0, 0.0, 17.0], 0.0));
+    assert_eq!(
+        lift,
+        Some(36.0),
+        "a standing hull's centre is 36 above its feet"
+    );
+    assert!(
+        (feet.z - FLOOR_Z).abs() < ON_FLOOR,
+        "the scientist's feet must be on the floor, not where the map placed them ({feet:?})"
+    );
+    assert!(
+        (actor - (feet + ohl_ai::Vec3::Z * 36.0)).length() < 1e-3,
+        "the AI reads the hull centre, 36 above the feet ({actor:?})"
+    );
+    assert!(
+        (feet.x - 100.0).abs() < 1e-3 && feet.y.abs() < 1e-3,
+        "dropping onto the floor moves a monster straight down only ({feet:?})"
+    );
+}
+
+/// A monster placed hull-centred (as this project's own fixtures place
+/// them) keeps exactly the AI position it always had; only its model comes
+/// down onto the floor.
+#[test]
+fn a_hull_centred_monster_keeps_its_ai_position() {
+    let (feet, actor, _) = spawned(&monster("monster_zombie", [100.0, 0.0, 36.0], 0.0));
+    assert!(
+        (feet.z - FLOOR_Z).abs() < ON_FLOOR,
+        "feet on the floor ({feet:?})"
+    );
+    assert!(
+        (actor.z - 36.0).abs() < ON_FLOOR,
+        "AI unchanged at 36 ({actor:?})"
+    );
+}
+
+/// The lift is the species' own hull's half-height: a large hull's 32, a
+/// crouched hull's 18.
+#[test]
+fn the_lift_follows_the_species_hull() {
+    let (feet, actor, lift) = spawned(&monster("monster_gargantua", [100.0, 0.0, 50.0], 0.0));
+    assert_eq!(lift, Some(32.0));
+    assert!((feet.z - FLOOR_Z).abs() < ON_FLOOR, "{feet:?}");
+    assert!((actor.z - 32.0).abs() < ON_FLOOR, "{actor:?}");
+
+    let (feet, actor, lift) = spawned(&monster("monster_headcrab", [100.0, 0.0, 10.0], 0.0));
+    assert_eq!(lift, Some(18.0));
+    assert!((feet.z - FLOOR_Z).abs() < ON_FLOOR, "{feet:?}");
+    assert!((actor.z - 18.0).abs() < ON_FLOOR, "{actor:?}");
+}
+
+/// A flier has no feet: it keeps the map's placement, for its model and
+/// its AI alike, and carries no lift.
+#[test]
+fn a_flier_keeps_its_placement() {
+    let (feet, actor, lift) = spawned(&monster(
+        "monster_alien_controller",
+        [100.0, 0.0, 120.0],
+        0.0,
+    ));
+    assert_eq!(lift, None);
+    assert!((feet.z - 120.0).abs() < 1e-3, "{feet:?}");
+    assert_eq!(feet, actor);
+}
+
+/// The barnacle hangs from its origin at the ceiling: it is neither
+/// dropped nor lifted.
+#[test]
+fn a_barnacle_stays_on_its_ceiling() {
+    let (feet, actor, lift) = spawned(&monster("monster_barnacle", [100.0, 0.0, 255.0], 0.0));
+    assert_eq!(lift, None);
+    assert!((feet.z - 255.0).abs() < 1e-3, "{feet:?}");
+    assert_eq!(feet, actor);
+}
+
+/// A `monster_generic` showing one of the two models whose origin is their
+/// centre (`ohl_engine::ai::CENTRED_ORIGIN_MODELS`) is drawn exactly where
+/// the map placed it, with no lift, whatever the path's case or slashes;
+/// the same prop with any other model stands on its floor.
+#[test]
+fn a_centred_origin_prop_keeps_its_placement() {
+    let generic = |model: &str| {
+        spawned(&format!(
+            "{{\n\"classname\" \"monster_generic\"\n\"origin\" \"100 0 60\"\n\
+             \"angle\" \"0\"\n\"model\" \"{model}\"\n}}\n"
+        ))
+    };
+    for model in ohl_engine::ai::CENTRED_ORIGIN_MODELS
+        .into_iter()
+        .chain(["MODELS/Holo.mdl"])
+    {
+        let (feet, actor, lift) = generic(model);
+        assert_eq!(lift, None, "{model}");
+        assert!((feet.z - 60.0).abs() < 1e-3, "{model}: {feet:?}");
+        assert_eq!(feet, actor, "{model}");
+    }
+
+    let (feet, actor, lift) = generic("models/ohl_prop.mdl");
+    assert_eq!(lift, Some(36.0));
+    assert!((feet.z - FLOOR_Z).abs() < ON_FLOOR, "{feet:?}");
+    assert!((actor.z - 36.0).abs() < ON_FLOOR, "{actor:?}");
 }

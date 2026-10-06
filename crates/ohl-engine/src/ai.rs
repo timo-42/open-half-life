@@ -70,7 +70,7 @@ use ohl_game::keyvalues::EntityDef;
 use ohl_game::registry::{ClassName, MakerActivation, Transform};
 use ohl_game::scripts::{ScriptActivation, ScriptDef, SentenceDef};
 
-use crate::components::{Corpse, MonsterMaker, Owner, StudioAnim};
+use crate::components::{Corpse, HullLift, MonsterMaker, Owner, StudioAnim};
 use crate::ids::entity_id;
 use crate::level::Level;
 use crate::nav;
@@ -136,6 +136,31 @@ pub const DEFAULT_ATTACK_RANGE: f32 = 1024.0;
 /// **`TODO(black-box)`**: project-authored, and only ever handed to a
 /// [`ProjectileSpawner`], which M7.9 P3 replaces together with this number.
 pub const DEFAULT_PROJECTILE_SPEED: f32 = 1_000.0;
+
+/// How far below its placed origin a spawning monster looks for a floor
+/// to stand on, in world units.
+///
+/// The Quake-family `droptofloor` page: "Tries to move an entity to the
+/// nearest floor beneath it, up to 256 map units", "mostly for snapping
+/// item and monsters to the ground at map start" (`docs/FORMAT_SOURCES.md`,
+/// "Monsters stand on their floor").
+pub const MONSTER_DROP_DISTANCE: f32 = 256.0;
+
+/// The two `monster_generic` models whose origin is the model's centre
+/// rather than its feet. The cited `monster_generic` page: "The model's
+/// origin should be on the ground", with the "Sole exceptions" of these
+/// two, "which have their centered origins (like deathmatch player models)
+/// adjusted automatically" (`docs/FORMAT_SOURCES.md`, "Monsters stand on
+/// their floor"). A prop with one of them is neither lifted nor dropped.
+pub const CENTRED_ORIGIN_MODELS: [&str; 2] = ["models/player.mdl", "models/holo.mdl"];
+
+/// How far above its placed feet a spawning monster's floor search
+/// starts, in world units, so a monster placed exactly on (or a hair
+/// inside) its floor is not read as starting in solid.
+///
+/// **Project-authored**, the same one unit `ohl_nav`'s ground clearance
+/// uses for the same reason.
+pub const MONSTER_DROP_CLEARANCE: f32 = 1.0;
 
 /// What one monster attack resolves to.
 ///
@@ -584,6 +609,23 @@ impl AiState {
                 .world
                 .insert_one(*entity, ohl_combat::Health::new(health))
                 .ok();
+        }
+        for entity in &spawned {
+            let centred = level
+                .registry
+                .entities
+                .iter()
+                .position(|spawned| spawned == entity)
+                .and_then(|index| level.defs.get(index))
+                .is_some_and(has_centred_origin);
+            let kind = level
+                .registry
+                .world
+                .get::<&ClassName>(*entity)
+                .map(|name| MonsterKind::from_classname(&name.0));
+            if let (false, Ok(kind)) = (centred, kind) {
+                stand_on_floor(level, *entity, &kind);
+            }
         }
 
         self.collect_triggers(level, &spawned);
@@ -1688,6 +1730,7 @@ impl AiState {
             Owner(maker),
         ));
         level.registry.entities.push(entity);
+        stand_on_floor(level, entity, &kind);
         Some(entity)
     }
 
@@ -2296,6 +2339,9 @@ impl AiState {
             let def = script.runner.def();
             (def.origin, def.yaw)
         };
+        // The mark is where the monster's feet go; its route runs where its
+        // hull centre goes.
+        let lift = hull_lift_of(level, actor);
         match action {
             ScriptAction::None => {}
             ScriptAction::Idle => {
@@ -2308,12 +2354,13 @@ impl AiState {
                 } else {
                     SCRIPT_WALK_SPEED
                 };
+                let goal = mark + Vec3::Z * lift;
                 if let Ok(mut ai) = level.registry.world.get::<&mut MonsterAi>(actor) {
-                    if ai.route.is_finished() || ai.route.needs_refresh(mark) {
-                        ai.route = ohl_ai::Route::straight_line(mark);
+                    if ai.route.is_finished() || ai.route.needs_refresh(goal) {
+                        ai.route = ohl_ai::Route::straight_line(goal);
                         ai.stuck.reset();
                     }
-                    ai.move_target = Some(mark);
+                    ai.move_target = Some(goal);
                     ai.move_speed = speed;
                 }
                 Self::play_idle(level, script, actor);
@@ -2339,7 +2386,7 @@ impl AiState {
                         .registry
                         .world
                         .get::<&Actor>(actor)
-                        .map_or(Vec3::ZERO, |a| a.origin);
+                        .map_or(Vec3::ZERO, |a| a.origin - Vec3::Z * lift);
                     let name = script
                         .runner
                         .def()
@@ -2626,17 +2673,112 @@ fn stop_scripted_movement(level: &mut Level, actor: Entity) {
     }
 }
 
-/// Puts `actor` at `origin`, facing `yaw`, in both the transform the
-/// renderer reads and the actor the AI reads.
+/// Puts `actor`'s feet at `origin`, facing `yaw`, in both the transform
+/// the renderer reads and the actor the AI reads (its [`HullLift`] above
+/// them).
 fn place(level: &mut Level, actor: Entity, origin: Vec3, yaw: f32) {
+    let lift = hull_lift_of(level, actor);
     if let Ok(mut transform) = level.registry.world.get::<&mut Transform>(actor) {
         transform.origin = origin;
         transform.angles.y = yaw;
     }
     if let Ok(mut a) = level.registry.world.get::<&mut Actor>(actor) {
-        a.origin = origin;
+        a.origin = origin + Vec3::Z * lift;
         a.yaw = yaw;
     }
+}
+
+/// Whether `def` is a `monster_generic` drawing one of the
+/// [`CENTRED_ORIGIN_MODELS`], whose map origin is its middle, not its feet.
+fn has_centred_origin(def: &EntityDef) -> bool {
+    let Some(ohl_game::keyvalues::ModelRef::Asset(path)) = &def.model else {
+        return false;
+    };
+    let path = path.trim().replace('\\', "/");
+    def.classname == "monster_generic"
+        && CENTRED_ORIGIN_MODELS
+            .iter()
+            .any(|model| path.eq_ignore_ascii_case(model))
+}
+
+/// `entity`'s [`HullLift`], or `0.0` when it carries none.
+pub(crate) fn hull_lift_of(level: &Level, entity: Entity) -> f32 {
+    level
+        .registry
+        .world
+        .get::<&HullLift>(entity)
+        .map_or(0.0, |lift| lift.0)
+}
+
+/// How far `kind`'s hull centre sits above its feet when it walks with
+/// `hull` ([`HullLift`]), or `0.0` for a kind that does not stand on a
+/// floor by its origin.
+///
+/// A walker's map origin is its feet: the published FGD monster box runs
+/// 0..72 above the origin (`docs/FORMAT_SOURCES.md`, "Monsters stand on
+/// their floor"), so the hull's own foot offset is the lift. The
+/// exceptions are **project-authored**, each left exactly as it was before
+/// the lift existed: a flier's point hull has no feet; the barnacle hangs
+/// from its origin at the ceiling (see `MonsterKind::view_offset`); the
+/// ichthyosaur and the leech swim and the Nihilanth floats, and no
+/// reviewed page says where their origins sit; and the tentacle is rooted
+/// in its pit, which no reviewed page describes either.
+fn hull_lift_for(kind: &MonsterKind, hull: ohl_physics::Hull) -> f32 {
+    match kind {
+        MonsterKind::Barnacle
+        | MonsterKind::Ichthyosaur
+        | MonsterKind::Leech
+        | MonsterKind::Nihilanth
+        | MonsterKind::Tentacle => 0.0,
+        _ if ohl_ai::movement::flies(hull) => 0.0,
+        _ => hull.foot_offset(),
+    }
+}
+
+/// Stands a just-spawned monster of `kind` on its floor.
+///
+/// A walker's feet ([`Transform`]) drop onto the first floor within
+/// [`MONSTER_DROP_DISTANCE`] below where the map put them, the cited
+/// `droptofloor` behaviour, found with the monster's own hull trace in
+/// [`Level::monster_collision`]. Its [`Actor`] then stands [`HullLift`]
+/// above them, and the lift is attached. A monster with no floor in reach,
+/// or whose search starts in solid, keeps the feet the map gave it but
+/// still gets its lift. A kind [`hull_lift_for`] exempts is left alone.
+fn stand_on_floor(level: &mut Level, entity: Entity, kind: &MonsterKind) {
+    let Ok((hull, placed)) = level.registry.world.get::<&Actor>(entity).map(|actor| {
+        let placed = level
+            .registry
+            .world
+            .get::<&Transform>(entity)
+            .map_or(actor.origin, |transform| transform.origin);
+        (actor.hull, placed)
+    }) else {
+        return;
+    };
+    let lift = hull_lift_for(kind, hull);
+    if lift <= 0.0 || !placed.is_finite() {
+        return;
+    }
+    let feet = level
+        .monster_collision
+        .as_ref()
+        .map_or(placed, |collision| {
+            let start = placed + Vec3::Z * (lift + MONSTER_DROP_CLEARANCE);
+            let end = start - Vec3::Z * (MONSTER_DROP_DISTANCE + MONSTER_DROP_CLEARANCE);
+            let fall = collision.trace(hull, start, end);
+            if fall.start_solid || fall.all_solid || fall.fraction >= 1.0 {
+                placed
+            } else {
+                fall.end_pos - Vec3::Z * lift
+            }
+        });
+    if let Ok(mut transform) = level.registry.world.get::<&mut Transform>(entity) {
+        transform.origin = feet;
+    }
+    if let Ok(mut actor) = level.registry.world.get::<&mut Actor>(entity) {
+        actor.origin = feet + Vec3::Z * lift;
+    }
+    level.registry.world.insert_one(entity, HullLift(lift)).ok();
 }
 
 /// The monster a script's `m_iszEntity` names: a `targetname` first, then
@@ -2669,11 +2811,18 @@ fn nearest_by_classname(
     radius: f32,
 ) -> Option<Entity> {
     let mut candidates: Vec<(f32, u32, Entity)> = Vec::new();
-    for (entity, name, actor) in &mut level.registry.world.query::<(Entity, &ClassName, &Actor)>() {
+    for (entity, name, actor, lift) in
+        &mut level
+            .registry
+            .world
+            .query::<(Entity, &ClassName, &Actor, Option<&HullLift>)>()
+    {
         if name.0 != classname || !actor.alive {
             continue;
         }
-        let distance = actor.origin.distance(origin);
+        // Feet to the placed point entity's origin, as the map measured it.
+        let feet = actor.origin - Vec3::Z * lift.map_or(0.0, |lift| lift.0);
+        let distance = feet.distance(origin);
         if !distance.is_finite() || (radius > 0.0 && distance > radius) {
             continue;
         }

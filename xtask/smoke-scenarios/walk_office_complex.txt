@@ -14,8 +14,11 @@
 #            "The player moved from the spawn point."
 #   absent:  "The player is inside solid geometry." (this scenario's own
 #            regression guard for the PR #91 class of bug)
-#            plus every other fixed line (no weapon, pickup, monster or
-#            player-damage path is expected on this walk)
+#            plus every other fixed line (no weapon, pickup or
+#            player-damage path is expected on this walk) except "A monster
+#            took damage." and "A monster died.": since M9.59 monsters
+#            stand on their floor, and a wandering cockroach can walk into
+#            a spinning fan far from the player
 60 forward
 8 look 0 20
 60 forward

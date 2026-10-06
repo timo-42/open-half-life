@@ -8677,3 +8677,83 @@ independently authored skeleton composition; no engine source or fixed hand
 bone name is used. Held weapons are render instances of their owner's
 entity, without their own collision or hitboxes. Death hides the weapon;
 respawn and weapon selection refresh both the model and the animation.
+
+## Monsters stand on their floor (M9.59)
+
+**Sources** (read 2026-10-05; prose only, no code listing on either page was
+used):
+
+- [Quake Wiki: droptofloor](https://quakewiki.org/wiki/droptofloor): "Tries to
+  move an entity to the nearest floor beneath it, up to 256 map units", and
+  "This is mostly for snapping item and monsters to the ground at map start".
+  A Quake-family page, cited for the engine family's convention; no reviewed
+  GoldSrc page states it.
+- [TWHL forum: light model which falls](https://twhl.info/thread/view/19271):
+  a Half-Life mapper's `monster_generic`, placed above the ground: "when the
+  game starts ... I see the model falling", fixed by "putting a clip bloc
+  underneath". Black-box confirmation that a Half-Life monster placed above
+  its floor does not stay there.
+- The published FGD monster box, 0..72 above the origin, already cited under
+  "Project behaviour — blocked movers" above: a walking monster's origin is
+  its feet.
+- [TWHL wiki: monster_generic](https://twhl.info/wiki/page/monster_generic),
+  Notes: "The model's origin should be on the ground. Sole exceptions are
+  `models/player.mdl` and `models/holo.mdl` which have their centered origins
+  (like deathmatch player models) adjusted automatically."
+
+**What was wrong.** The renderer and the hitboxes draw a monster at its
+`Transform`, origin at the feet, while every AI trace reads `ohl_ai::Actor::
+origin` as the centre of the species' hull; the two were kept equal, and
+nothing put a monster on its floor. Two visible results. A monster placed
+above its floor floated there: on `c1a0` (the chapter table's "Anomalous
+Materials" start, see `ohl_campaign::CHAPTERS`) a local measurement found the
+lobby guard and three scientists 17 units up and another scientist 24, for as
+long as the map ran. And a monster whose AI put it at a hull-centre height
+(arriving where a route ends, or stepping up) was drawn a whole hull half
+(36 units for a human) above the floor.
+
+**Project behaviour.**
+
+- `crate::components::HullLift` records, per monster, how far its hull centre
+  sits above its feet: the hull's own foot offset (36 standing, 32 large, 18
+  crouched). `Actor::origin` is always `Transform::origin` plus the lift, and
+  every place that writes one from the other converts: the per-step transform
+  sync, the actor sync after a save loads (the lift is derived from the
+  species, never saved), a scripted sequence's placement, its walk to the mark
+  and its "no script movement" return, a mover pushing a monster, and a
+  `scripted_sequence`/`scripted_sentence` classname search (measured feet to
+  the entity's origin).
+- At spawn (`AiState::attach_level`, and a `monstermaker` child) a walking
+  monster's feet drop onto the first floor within `MONSTER_DROP_DISTANCE`
+  (256, the cited figure) below where it was placed, traced with its own hull
+  in `Level::monster_collision`, from `MONSTER_DROP_CLEARANCE` (1 unit,
+  project-authored) above its placed height so a monster placed a hair inside
+  its floor is put on top of it. No floor in reach, or a search that starts in
+  solid: it keeps the map's placement, still with its lift. **Project-
+  authored:** the drop is instant, at spawn; the cited thread shows a falling
+  model, and how fast it falls is not observed here (`TODO(black-box)`).
+  Applying the same drop to a `monstermaker` child is also project-authored:
+  the cited page names map start only.
+- **Project-authored exemptions**, left exactly as before (no lift, no drop):
+  a flier (point hull); the barnacle, whose origin is at the ceiling it hangs
+  from; the ichthyosaur and the leech (swimmers) and the Nihilanth (floats),
+  for which no reviewed page says where the origin sits; and the tentacle,
+  rooted in a pit no reviewed page describes. Also a `monster_generic` whose
+  model is one of the cited page's two centred-origin models
+  (`crate::ai::CENTRED_ORIGIN_MODELS`): its placed origin is already the
+  model's middle, so the page's "adjusted automatically" is read as "drawn
+  where it was placed". **Project-authored**: that reading, and leaving such a
+  prop exactly as before rather than lifting it by half its hull.
+
+This supersedes the "not fixed here" note in the blocked-movers section
+above: the mover code's guard against a monster already inside the lift
+under it stays, but a monster spawned on a lift now stands on it.
+
+Guarded by `crates/ohl-engine/tests/monster_transform_sync.rs`:
+`a_monster_placed_above_its_floor_stands_on_it`,
+`a_hull_centred_monster_keeps_its_ai_position`,
+`the_lift_follows_the_species_hull`, `a_flier_keeps_its_placement`,
+`a_barnacle_stays_on_its_ceiling`,
+`a_centred_origin_prop_keeps_its_placement`, and the two existing sync
+tests, which now assert the lift between `Actor` and `Transform` (walking,
+and straight after a save loads).
