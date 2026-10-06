@@ -1159,6 +1159,7 @@ impl AiState {
             Self::replan_target_routes(level);
         }
         self.update_secondary_opportunities(level, dt);
+        grenade.projectiles.emit_grenade_danger(&mut self.world, dt);
         let events = {
             let context = SightContext {
                 collision: level.monster_collision.as_ref(),
@@ -5082,3 +5083,382 @@ mod projectile_queue_tests {
 #[cfg(test)]
 #[path = "grenade_emission_tests.rs"]
 mod grenade_emission_tests;
+
+#[cfg(test)]
+mod grenade_danger_tests {
+    use super::*;
+    use crate::save_state::{ProjectileAttackSnapshot, ProjectileEntityRef, ProjectileSnapshot};
+    use crate::test_support::{AI_MAP, entity_block, plan_scripted_monster_model_bytes};
+    use ohl_ai::schedule::{Brain, Task};
+    use ohl_formats::test_support::{Bsp30Builder, CollisionBrush};
+
+    fn actor(game: &crate::Game, entity: Entity) -> Actor {
+        *game.registry().world.get::<&Actor>(entity).unwrap()
+    }
+
+    fn projectile(game: &crate::Game, id: u32) -> Option<ProjectileSnapshot> {
+        game.to_save(0)
+            .projectiles
+            .unwrap()
+            .projectiles
+            .into_iter()
+            .find(|p| p.id == id)
+    }
+
+    fn step(game: &mut crate::Game) {
+        game.tick(crate::TICK_SECONDS, &crate::Input::default());
+    }
+
+    // Keep the authored scene and exact full-pose prerequisites together.
+    #[allow(clippy::float_cmp, clippy::too_many_lines)]
+    fn scene(with_ally: bool) -> (crate::Game, Entity, Option<Entity>) {
+        let mut text = format!(
+            "{{\"classname\" \"worldspawn\"}}{}{}",
+            entity_block("info_player_start", [800.0, 0.0, 36.0], 180.0, &[]),
+            entity_block(
+                "monster_human_grunt",
+                [0.0; 3],
+                0.0,
+                &[("targetname", "thrower")]
+            ),
+        );
+        if with_ally {
+            text.push_str(&entity_block(
+                "monster_barney",
+                [0.0, 128.0, 0.0],
+                90.0,
+                &[("targetname", "listener"), ("spawnflags", "16")],
+            ));
+        }
+        let mut bsp = Bsp30Builder::new();
+        bsp.set_entities_text(&text);
+        let heads = bsp.push_collision_hulls(&[
+            CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+            CollisionBrush::half_space([0.0, 0.0, -1.0], -512.0),
+            CollisionBrush::half_space([1.0, 0.0, 0.0], -512.0),
+            CollisionBrush::half_space([-1.0, 0.0, 0.0], -960.0),
+            CollisionBrush::half_space([0.0, 1.0, 0.0], -512.0),
+            CollisionBrush::half_space([0.0, -1.0, 0.0], -512.0),
+        ]);
+        bsp.push_model(
+            [-512.0, -512.0, 0.0],
+            [960.0, 512.0, 512.0],
+            [0.0; 3],
+            heads,
+            1,
+            0,
+            0,
+        );
+        let model_bytes = plan_scripted_monster_model_bytes();
+        let mut assets = crate::MemoryAssets::new();
+        for kind in [MonsterKind::HumanGrunt, MonsterKind::Barney] {
+            assets.insert(kind.default_model_path().unwrap(), model_bytes.clone());
+        }
+        let mut game = crate::Game::from_map_bytes(&assets, AI_MAP, &bsp.build()).unwrap();
+        let owner = game.registry().find("thrower")[0];
+        let ally = with_ally.then(|| game.registry().find("listener")[0]);
+        if let Some(ally) = ally {
+            assert!(game.registry().world.get::<&Prisoner>(ally).is_ok());
+            let source = actor(&game, owner).classification;
+            let target = actor(&game, ally).classification;
+            assert_ne!(source, target);
+            let table = game
+                .level_and_systems_mut()
+                .1
+                .ai_mut()
+                .world
+                .relationships_mut();
+            table.set(source, target, ohl_ai::Relationship::Ally);
+            assert_eq!(table.get(source, target), ohl_ai::Relationship::Ally);
+        }
+        let player = actor(&game, game.player_entity());
+        let model =
+            ohl_world::StudioModel::parse(&model_bytes, &ohl_formats::mdl10::Limits::default())
+                .unwrap();
+        assert_eq!(model.hitboxes.len(), 1);
+        assert_eq!(model.hitboxes[0].bone, 0);
+        assert_eq!(model.bones[0].parent, None);
+        assert_eq!(model.bones[0].value, [0.0; 6]);
+        assert_eq!(model.sequences.len(), 1);
+        assert_eq!(model.sequences[0].frame_count, 2);
+        assert_eq!(model.sequences[0].fps, 10.0);
+        let player_min = player.body_frame.world_bounds(player.hull, player.origin).0;
+        for entity in [Some(owner), ally].into_iter().flatten() {
+            let a = actor(&game, entity);
+            let transform = *game.registry().world.get::<&Transform>(entity).unwrap();
+            assert_eq!(a.origin, transform.origin);
+            assert!(game.registry().world.get::<&ScriptHold>(entity).is_err());
+            let rotation = glam::Quat::from_rotation_z(transform.angles.y.to_radians());
+            for (time, x) in [(0.0, 10.0), (0.1, 20.0)] {
+                let pose = ohl_world::StudioPose::sample(&model, 0, time).unwrap();
+                let (min, max) = pose.hitbox_bounds(&model.hitboxes[0]).unwrap();
+                assert_eq!(min, [x - 24.0, -24.0, 0.0]);
+                assert_eq!(max, [x + 24.0, 24.0, 72.0]);
+                for x in [min[0], max[0]] {
+                    for y in [min[1], max[1]] {
+                        for z in [min[2], max[2]] {
+                            let world = a.origin + rotation * Vec3::new(x, y, z);
+                            assert!(
+                                player_min.x - world.x > 400.0,
+                                "full-pose blast regions are disjoint"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        for entity in [Some(owner), ally, Some(game.player_entity())]
+            .into_iter()
+            .flatten()
+        {
+            clear_body(&game, entity);
+        }
+        let source = actor(&game, owner);
+        assert!(secondary_target_clear(
+            &MonsterKind::HumanGrunt,
+            AiDifficulty::Medium,
+            game.collision(),
+            source.eye(),
+            &player
+        ));
+        assert!(game.systems_mut().ai().world.sounds().is_empty());
+        (game, owner, ally)
+    }
+
+    fn clear_body(game: &crate::Game, entity: Entity) {
+        let a = actor(game, entity);
+        assert!(a.alive && a.health > 0.0);
+        let world = game.collision().unwrap();
+        let body = world.trace(a.hull, a.query_origin(), a.query_origin());
+        assert!(!body.start_solid && !body.all_solid);
+        let floor = world.trace(a.hull, a.query_origin(), a.query_origin() - Vec3::Z);
+        assert!(!floor.start_solid && floor.fraction < 1.0, "floor support");
+    }
+
+    // Exact spawn/profile/task/cooldown assertions deliberately preserve the natural launch.
+    #[allow(clippy::float_cmp)]
+    fn natural_launch(
+        game: &mut crate::Game,
+        owner: Entity,
+        ally: Option<Entity>,
+    ) -> (u32, ProjectileAttackSnapshot) {
+        for _ in 0..600 {
+            let before = game.player_health();
+            step(game);
+            let save = game.to_save(0);
+            if let Some(p) = save
+                .projectiles
+                .as_ref()
+                .unwrap()
+                .projectiles
+                .iter()
+                .find(|p| p.kind_tag == 3)
+            {
+                assert_eq!(
+                    game.player_health(),
+                    before,
+                    "throw causes no immediate grenade damage"
+                );
+                assert_eq!(p.age, 0.0, "phase8 launch waits for phase7");
+                assert_eq!(p.fuse, Some(5.0));
+                let profile = *save
+                    .projectile_runtime
+                    .as_ref()
+                    .unwrap()
+                    .attacks
+                    .iter()
+                    .find(|a| a.id == p.id)
+                    .unwrap();
+                let (level, systems) = game.level_and_systems_mut();
+                let owner_ref = crate::save_state::spawn_index_of(level, owner).unwrap();
+                assert_eq!(p.owner, Some(owner_ref));
+                assert_eq!(
+                    profile.owner,
+                    Some(ProjectileEntityRef::Registry(owner_ref))
+                );
+                assert_eq!(profile.target, Some(ProjectileEntityRef::Player));
+                assert_eq!(profile.damage, 100.0);
+                assert_eq!(profile.damage_bits, DamageType::BLAST.bits());
+                assert_eq!(profile.blast_radius, Some(200.0));
+                assert_eq!(systems.ai().secondary_cooldowns.get(&owner), Some(&6.0));
+                {
+                    let ai = level.registry.world.get::<&MonsterAi>(owner).unwrap();
+                    assert_eq!(ai.memory.unwrap().entity, level.player);
+                    assert_eq!(
+                        ai.runner.schedule_name(),
+                        ohl_ai::monsters::brains::GRUNT_GRENADE.name
+                    );
+                    assert_eq!(ai.runner.task(), Some(Task::Wait(1.0)));
+                    assert!(!ai.runner.started());
+                    assert!(!ai.conditions.contains(Conditions::HEAR_DANGER));
+                }
+                if let Some(ally) = ally {
+                    let ai = level.registry.world.get::<&MonsterAi>(ally).unwrap();
+                    assert!(ai.memory.is_none());
+                    assert_eq!(ai.runner.schedule_name(), ohl_ai::brain::IDLE_STAND.name);
+                    assert!(!ai.conditions.contains(Conditions::HEAR_DANGER));
+                    assert!(ai.route.is_finished());
+                }
+                return (p.id, profile);
+            }
+        }
+        panic!("ordinary senses and schedules must emit a safe grenade");
+    }
+
+    fn audible(game: &crate::Game, listener: Entity, kind: MonsterKind, id: u32) -> Vec3 {
+        let p = projectile(game, id).expect("same live grenade");
+        assert!(p.age > 0.0 && p.fuse.is_some_and(|left| left.is_finite() && left > 0.0));
+        let position = Vec3::from_array(p.position);
+        let sensitivity = MonsterBrain::for_kind(kind)
+            .unwrap()
+            .senses()
+            .hearing_sensitivity;
+        let a = actor(game, listener);
+        assert!(
+            position.is_finite() && a.eye().distance(position) < 200.0 * sensitivity,
+            "actual phase7 position is audible before the response oracle"
+        );
+        clear_body(game, listener);
+        let away =
+            Vec3::new(a.origin.x - position.x, a.origin.y - position.y, 0.0).normalize_or_zero();
+        assert!(away.length_squared() > 0.0);
+        let end = a.query_origin() + away * ohl_ai::world::COVER_DISTANCE;
+        let collision = game.collision().unwrap();
+        let path = collision.trace(a.hull, a.query_origin(), end);
+        assert!(!path.start_solid && !path.all_solid && path.fraction >= 1.0);
+        let floor = collision.trace(a.hull, end, end - Vec3::Z);
+        assert!(
+            !floor.start_solid && floor.fraction < 1.0,
+            "clear supported escape leg"
+        );
+        position
+    }
+
+    // The unblocked hull fraction is an exact collision prerequisite.
+    #[allow(clippy::float_cmp)]
+    fn cover_and_move(game: &mut crate::Game, listener: Entity, kind: MonsterKind, id: u32) {
+        let start = actor(game, listener).origin;
+        let mut direction = None;
+        for _ in 0..6 {
+            step(game);
+            let danger = audible(game, listener, kind.clone(), id);
+            let ai = game.registry().world.get::<&MonsterAi>(listener).unwrap();
+            assert!(ai.conditions.contains(Conditions::HEAR_DANGER));
+            assert_eq!(
+                ai.runner.schedule_name(),
+                ohl_ai::brain::TAKE_COVER_FROM_DANGER.name
+            );
+            if let Some(cover) = ai.cover {
+                let a = actor(game, listener);
+                let away = Vec3::new(a.origin.x - danger.x, a.origin.y - danger.y, 0.0).normalize();
+                assert!(
+                    (cover - a.query_origin()).dot(away) > 300.0,
+                    "current danger selects the clear cover leg"
+                );
+                let trace = game
+                    .collision()
+                    .unwrap()
+                    .trace(a.hull, a.query_origin(), cover);
+                assert!(!trace.start_solid && !trace.all_solid && trace.fraction == 1.0);
+                assert_eq!(ai.runner.task(), Some(Task::TakeCover));
+                direction = Some(away);
+                break;
+            }
+        }
+        let direction =
+            direction.expect("ordinary FindCover runs while the warning remains audible");
+        for _ in 0..20 {
+            step(game);
+        }
+        clear_body(game, listener);
+        assert!(
+            (actor(game, listener).origin - start).dot(direction) > 1.0,
+            "real AI route movement escapes the heard point"
+        );
+    }
+
+    #[test]
+    fn timed_grenade_danger_ally_hears_and_moves_without_a_new_mask() {
+        let (mut game, owner, ally) = scene(true);
+        let ally = ally.unwrap();
+        let (id, profile) = natural_launch(&mut game, owner, Some(ally));
+        step(&mut game);
+        audible(&game, ally, MonsterKind::Barney, id);
+        {
+            let ai = game.registry().world.get::<&MonsterAi>(ally).unwrap();
+            assert!(
+                ai.conditions.contains(Conditions::HEAR_DANGER),
+                "live grenade reaches ordinary ally hearing"
+            );
+            assert_eq!(
+                ai.runner.schedule_name(),
+                ohl_ai::brain::TAKE_COVER_FROM_DANGER.name
+            );
+        }
+        cover_and_move(&mut game, ally, MonsterKind::Barney, id);
+        let mut removed = false;
+        for _ in 0..510 {
+            let Some(p) = projectile(&game, id) else {
+                removed = true;
+                break;
+            };
+            let saved = game.to_save(0).projectile_runtime.unwrap();
+            assert_eq!(*saved.attacks.iter().find(|a| a.id == id).unwrap(), profile);
+            step(&mut game);
+            if projectile(&game, id).is_none() {
+                assert!(
+                    p.fuse.unwrap() <= crate::TICK_SECONDS,
+                    "ordinary fuse, not contact, removes the grenade"
+                );
+                removed = true;
+                break;
+            }
+        }
+        assert!(removed, "ordinary finite fuse completes");
+        assert_eq!(
+            game.projectile_count(),
+            0,
+            "six-second cooldown prevents a replacement before this fuse"
+        );
+        assert!(
+            !game
+                .registry()
+                .world
+                .get::<&MonsterAi>(ally)
+                .unwrap()
+                .conditions
+                .contains(Conditions::HEAR_DANGER)
+        );
+        assert!(
+            game.systems_mut().ai().world.sounds().is_empty(),
+            "no stale danger after removal"
+        );
+    }
+
+    #[test]
+    fn timed_grenade_danger_owner_interrupts_only_the_natural_grenade_wait() {
+        let (mut game, owner, _) = scene(false);
+        let (id, _) = natural_launch(&mut game, owner, None);
+        step(&mut game);
+        audible(&game, owner, MonsterKind::HumanGrunt, id);
+        {
+            let ai = game.registry().world.get::<&MonsterAi>(owner).unwrap();
+            assert!(
+                ai.conditions.contains(Conditions::HEAR_DANGER),
+                "bridge remains active before the mask oracle"
+            );
+            assert_eq!(
+                ai.runner.schedule_name(),
+                ohl_ai::brain::TAKE_COVER_FROM_DANGER.name,
+                "heard danger interrupts the natural grunt grenade wait"
+            );
+        }
+        cover_and_move(&mut game, owner, MonsterKind::HumanGrunt, id);
+        assert!(actor(&game, owner).origin.x < 0.0);
+        let remaining = game.systems_mut().ai().secondary_cooldowns[&owner];
+        assert!(
+            remaining > 5.0 && remaining < 6.0,
+            "escape does not reset or shorten the emission cooldown"
+        );
+    }
+}
