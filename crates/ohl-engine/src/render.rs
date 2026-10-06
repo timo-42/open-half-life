@@ -301,7 +301,7 @@ impl Renderers {
         // world geometry — but it can still occlude nothing after it, since
         // nothing else draws this frame.
         if let (Some(frame), Some(depth)) = (view_model, depth.as_ref()) {
-            self.draw_view_model(context, level, frame, depth, target);
+            self.draw_view_model(context, level, camera, frame, depth, target);
         }
         if let Some(fade) = gameplay_effects.fade {
             self.fade.draw(context, target.view, fade);
@@ -313,11 +313,13 @@ impl Renderers {
     }
 
     /// Resets `depth` to the far plane without touching whatever colour is
-    /// already in `target`, then draws `frame`'s model into both.
+    /// already in `target`, then draws `frame`'s model into both through the
+    /// world `camera` (the weapon shares the world's field of view).
     fn draw_view_model(
         &mut self,
         context: &GpuContext,
         level: &Level,
+        camera: &FreeFlyCamera,
         frame: &ViewModelFrame,
         depth: &wgpu::TextureView,
         target: RenderTarget<'_>,
@@ -352,11 +354,14 @@ impl Renderers {
         }
         context.queue.submit(std::iter::once(encoder.finish()));
 
-        let instances = [viewmodel::instance(frame.transform, &frame.pose, KEY_LIGHT)];
+        // Lit like a model standing at the eye, so the weapon darkens with
+        // the room the player is in.
+        let ambient = ambient_at(level, camera.position);
+        let instances = [viewmodel::instance(frame.transform, &frame.pose, ambient)];
         renderer.render(
             context,
             model,
-            &frame.camera,
+            camera,
             &instances,
             target.view,
             target.width.max(1),

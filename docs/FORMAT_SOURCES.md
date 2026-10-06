@@ -8678,6 +8678,96 @@ bone name is used. Held weapons are render instances of their owner's
 entity, without their own collision or hitboxes. Death hides the weapon;
 respawn and weapon selection refresh both the model and the animation.
 
+### First-person view models
+
+[Featureful SDK's weapon-template documentation](https://freeslave.github.io/halflife-featureful/docs/configuration/weapon-templates/#view_model)
+describes `view_model` as "the path to the model used by a weapon when shown
+in the first person", usually with a `v_` prefix, for example
+`"models/v_shotgun.mdl"`. The same page's
+[`deploy`](https://freeslave.github.io/halflife-featureful/docs/configuration/weapon-templates/#deploy),
+[`idle`](https://freeslave.github.io/halflife-featureful/docs/configuration/weapon-templates/#idle)
+and [`reload`](https://freeslave.github.io/halflife-featureful/docs/configuration/weapon-templates/#reload)
+sections name the animation occasions a weapon customises. `idle` "can be
+defined in two ways: either array (if multiple animations are used) or
+single object", each entry with a `duration` and a "chance that this
+animation will be picked (in relation to the sum of chances of all idle
+animations)". `idle_empty` is "same as idle, but when weapon clip is
+empty"; "weapon_crossbow defines a different set of idle animations for
+empty clip" and "weapon_rpg defines custom idle animation to play after the
+last shot". Only this independently written public documentation was
+consulted; no SDK or engine implementation source was read or used.
+
+**Per-literal path provenance:** the public
+[CPX server model-directory index](https://cpx.site.nfoservers.com/server/models/)
+(already cited above for the `p_` models) lists `v_9mmar.mdl`,
+`v_9mmhandgun.mdl`, `v_357.mdl`, `v_crossbow.mdl`, `v_crowbar.mdl`,
+`v_egon.mdl`, `v_gauss.mdl`, `v_grenade.mdl`, `v_hgun.mdl`, `v_rpg.mdl`,
+`v_satchel.mdl`, `v_shotgun.mdl`, `v_squeak.mdl`, and `v_tripmine.mdl`.
+These filename facts plus the documented `models/v_` convention establish
+each path in `viewmodel::view_model_path`, mapped to weapons the same way
+as the `p_` table. No linked model was downloaded, and no private payload
+listing supplied any literal. `v_tripmine.mdl` is also the tripmine pickup's
+documented display model ("Pickup models" above); both uses share one load.
+
+**Project-authored presentation:** each weapon's model is loaded with the
+level when the payload publishes it, and the view model follows the
+player's selected weapon. An action plays the first sequence whose label has
+an `_`-separated token starting with one of its intent words: `idle`;
+`draw` or `deploy`; `shoot`, `fire`, `attack` or `throw`; `reload`;
+`holster`. No full label is baked into the implementation. A missing action
+falls back to the idle, and a missing holster keeps the current pose. A
+one-shot sequence restarts on every action (each shot replays the fire)
+and returns to an idle when its authored duration ends. A looping one
+restarts only when the sequence changes. Idles rotate: once an idle has
+played its authored duration (one pass, for a looping one), another is
+picked with equal chances from the weapon's rotation. The rotation is the
+first idle-labelled sequence plus every later one whose first frame puts
+each bone within 2 units of the first's. Measured locally on a retail
+payload, the alternative idles start within a unit of the first, while the
+empty-clip and after-last-shot variants the page above describes start
+tens of units away, so they stay out. The pick is a presentation-only
+hash of a pick counter (SplitMix64's public finaliser), never a draw from
+the simulation's random stream. The weapon is hidden while the
+player is dead or a `trigger_camera` owns the view, and lit by the map's
+light at the eye, like a prop standing there. These are presentation
+choices, not documented engine rules.
+
+**Field of view.** [PCGamingWiki's Half-Life article](https://www.pcgamingwiki.com/wiki/Half-Life)
+(read through its MediaWiki API, since the site refuses direct automated
+fetches) gives the field of view as "90º by default" and, for changing it
+with `default_fov`, notes "Weapon models are affected by changes in FOV".
+Retail and pre-25th-Anniversary Steam versions are Vert-; the 25th
+Anniversary Update adds a Hor+ setting, "Allow widescreen Field of View".
+A [Steam Community thread](https://steamcommunity.com/app/70/discussions/0/2245552086119837896/)
+on the original game answers a request for a separate weapon FOV with
+"there is no command for weapon fov". The view model is therefore drawn
+through the world camera itself, at whatever field of view the player
+chose, rather than at a separate weapon FOV.
+
+**Weapon bob is not modelled.** A public console-variable list
+([GameHostBros: Half-Life console commands](https://www.gamehostbros.com/guides/games/half-life-1/console-commands))
+documents `cl_bob` ("Default: 0.01 Sets the amount that the view bobs while
+the player is running"), `cl_bobcycle` ("Default: 0.8 Sets how frequent the
+player's view bobs while running") and `cl_bobup` ("Default: 0.5 Sets the
+amount the player bobs up while running"), but no curve, unit or split
+between view and weapon. `TODO(black-box)`: observe the motion before
+adding one.
+
+**Black-box placement (2026-10-06):** headless captures were compared with
+public screenshots of the original game's 9 mm pistol at 1920×1080
+([IMFDB: Half-Life](https://www.imfdb.org/wiki/Half_Life), the Glock 17
+idle and firing images, read through `r.jina.ai`). With the model's origin
+at the eye (`SystemsConfig::view_model_offset` zero), the weapon lands in
+the same screen region, with the glove visible at the bottom right as in
+the references. The earlier placeholder offset (8 units forward, 6 down)
+drew it visibly lower, with the hand cut off. A size fit against the firing
+image suggested a field of view somewhat wider than the 75° vertical the
+captures used, but the references' animation phase, view pitch and FOV
+setting are unknown, so a single frame does not settle it; the field of
+view follows the documented behaviour above instead. Any pitch-dependent
+shift is not modelled. The reference images and our captures stay local;
+only these qualitative findings are recorded.
+
 ## Monsters stand on their floor (M9.59)
 
 **Sources** (read 2026-10-05; prose only, no code listing on either page was

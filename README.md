@@ -194,9 +194,10 @@ plays every arena headless and checks the bots score kills on each.
 `--bots 0..15` (default `3`), `--bot-skill easy|normal|hard` (default
 `normal`), `--frag-limit N` and `--time-limit MINUTES` (default `10` each,
 `0` for no limit). Everyone spawns with the HEV suit, a crowbar and a 9mm
-pistol. Weapons, ammo and items display their default models from your payload
-and are collected by walking over them; weapons and ammo reappear after 20 s,
-items after 30 s. Hold
+pistol, and the weapon you hold is drawn in first person from your payload's
+models (in single player too). Weapons, ammo and items display their default
+models from your payload and are collected by walking over them; weapons and
+ammo reappear after 20 s, items after 30 s. Hold
 `Tab` for the scoreboard; after dying, click fire (or jump) to respawn,
 or pass `--force-respawn` to come back automatically. A skirmish is never
 saved. With `--script` it runs headless and logs an aggregate summary
