@@ -50,7 +50,7 @@ pub use lifecycle::{
     CorpseDecision, DamageOutcome, MonsterTrigger, TriggerCondition, TriggerContext, apply_damage,
     apply_damage_effective, apply_damage_with_corpses, should_fade_corpse,
 };
-pub use nav_bridge::{Fallback, NavBridge, NavBridgeLimits, node_seeds_from_defs};
+pub use nav_bridge::{Fallback, NavBridge, NavBridgeLimits, NavigationStats, node_seeds_from_defs};
 pub use nihilanth::{NihilanthCrystal, NihilanthPhase, NihilanthShield, ShieldProgress};
 pub use table::{
     AttackSpec, BloodKind, Difficulty, MonsterFlags, MonsterKind, MonsterSpec, damage_response_for,

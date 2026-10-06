@@ -230,6 +230,7 @@ fn drive_trail(
         ai.stuck.reset();
     }
     if let Some(destination) = trail.destination() {
+        let destination = actor.body_frame.anchor_to_query(actor.hull, destination);
         // Travelling: own the route the way a script does, so no sound or
         // enemy can redirect it, and tell the brain not to fight.
         ai.move_target = Some(destination);
@@ -306,6 +307,7 @@ fn drive_flight(
             ai.stuck.reset();
         }
         FlightOrder::FlyTo(destination) => {
+            let destination = actor.body_frame.anchor_to_query(actor.hull, destination);
             ai.move_target = Some(destination);
             if ai.route.is_finished() || (ai.route.goal - destination).length() > 1.0 {
                 ai.route = Route::straight_line(destination);
@@ -443,9 +445,13 @@ mod tests {
         {
             let ai = world.get::<&MonsterAi>(gonarch).expect("ai");
             assert!(ai.pending_conditions.contains(Conditions::SPECIAL1));
-            assert_eq!(ai.move_target, Some(Vec3::new(100.0, 0.0, 0.0)));
+            let actor = world.get::<&Actor>(gonarch).expect("actor");
+            let query_goal = actor
+                .body_frame
+                .anchor_to_query(actor.hull, Vec3::new(100.0, 0.0, 0.0));
+            assert_eq!(ai.move_target, Some(query_goal));
             assert!((ai.move_speed - 160.0).abs() < 1e-6);
-            assert_eq!(ai.route.waypoint(), Some(Vec3::new(100.0, 0.0, 0.0)));
+            assert_eq!(ai.route.waypoint(), Some(query_goal));
         }
         assert!(events.is_empty());
 
@@ -548,7 +554,12 @@ mod tests {
         );
         assert_eq!(
             world.get::<&MonsterAi>(gonarch).expect("ai").move_target,
-            Some(Vec3::new(300.0, 0.0, 0.0))
+            Some({
+                let actor = world.get::<&Actor>(gonarch).expect("actor");
+                actor
+                    .body_frame
+                    .anchor_to_query(actor.hull, Vec3::new(300.0, 0.0, 0.0))
+            })
         );
     }
 
@@ -700,8 +711,13 @@ mod tests {
         pre_think(world, flying, 0.01, (0.0, 0.0), &mut events);
         pre_think(world, parked, 0.01, (0.0, 0.0), &mut events);
         {
+            // These generic standing actors store route waypoints in query space.
+            let actor = *world.get::<&Actor>(flying).expect("actor");
+            let destination = actor
+                .body_frame
+                .anchor_to_query(actor.hull, Vec3::new(500.0, 0.0, 256.0));
             let ai = world.get::<&MonsterAi>(flying).expect("ai");
-            assert_eq!(ai.route.waypoint(), Some(Vec3::new(500.0, 0.0, 256.0)));
+            assert_eq!(ai.route.waypoint(), Some(destination));
             assert!((ai.move_speed - FLIGHT_SPEED).abs() < 1e-6);
             let still = world.get::<&MonsterAi>(parked).expect("ai");
             assert!(still.route.is_finished());
@@ -709,8 +725,12 @@ mod tests {
         }
         use_it(world, parked);
         pre_think(world, parked, 0.01, (0.0, 0.0), &mut events);
+        let actor = *world.get::<&Actor>(parked).expect("actor");
+        let destination = actor
+            .body_frame
+            .anchor_to_query(actor.hull, Vec3::new(500.0, 0.0, 256.0));
         let started = world.get::<&MonsterAi>(parked).expect("ai");
-        assert_eq!(started.route.waypoint(), Some(Vec3::new(500.0, 0.0, 256.0)));
+        assert_eq!(started.route.waypoint(), Some(destination));
         assert!(events.is_empty());
     }
 
@@ -724,13 +744,17 @@ mod tests {
         world.get::<&mut Actor>(flying).expect("actor").origin = Vec3::new(500.0, 0.0, 256.0);
         let mut events = Vec::new();
         pre_think(world, flying, 0.01, (0.0, 0.0), &mut events);
+        let actor = *world.get::<&Actor>(flying).expect("actor");
+        let destination = actor
+            .body_frame
+            .anchor_to_query(actor.hull, Vec3::new(500.0, 500.0, 300.0));
         assert_eq!(
             world
                 .get::<&MonsterAi>(flying)
                 .expect("ai")
                 .route
                 .waypoint(),
-            Some(Vec3::new(500.0, 500.0, 300.0))
+            Some(destination)
         );
         let fired: Vec<&AiEventKind> = events.iter().map(|event| &event.kind).collect();
         assert_eq!(

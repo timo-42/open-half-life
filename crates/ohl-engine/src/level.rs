@@ -175,8 +175,8 @@ fn load_sprites(
 
 /// Suspends or restores `brush`'s solidity in `model` from `entity`'s
 /// `func_wall_toggle` flag, and does nothing for any other entity. Shared
-/// by the player's and the monster's collision sync, so the two models
-/// agree on whether a toggled wall is there.
+/// by the player's and the monster's collision sync. Both read the same
+/// visible flag before occupant protection suspends each model independently.
 ///
 /// Returns whether this call turned a suspended brush solid again — a wall
 /// being switched on — which is what [`Level::hold_toggled_walls_for_occupants`]
@@ -352,8 +352,8 @@ pub struct Level {
     /// to take. The brush the player is standing on is never reported
     /// here (a lift's own rider is carried, not blocked).
     pub movers_blocked: Vec<BrushId>,
-    /// `func_wall_toggle` entities whose brush the last
-    /// [`Self::sync_brush_collision`] turned solid again, waiting for
+    /// `func_wall_toggle` entities whose brush either collision sync
+    /// turned solid again, waiting for
     /// [`Self::hold_toggled_walls_for_occupants`] to check nobody is
     /// standing inside them. Bounded by how many walls a map declares.
     walls_turning_on: Vec<Entity>,
@@ -1121,6 +1121,7 @@ impl Level {
             registry,
             monster_collision,
             monster_brush_collision,
+            walls_turning_on,
             ..
         } = self;
         let Some(model) = monster_collision.as_mut() else {
@@ -1136,9 +1137,13 @@ impl Level {
                 model.detach_brush(*brush);
                 return false;
             };
-            // A switched-off `func_wall_toggle` is not there for a monster
-            // either: the same flag, the same suspension, in this model.
-            sync_wall_toggle(registry, model, *entity, *brush);
+            // A monster-only suspension must be rechecked even while the
+            // player's brush stays solid and emits no re-enable edge.
+            if sync_wall_toggle(registry, model, *entity, *brush)
+                && !walls_turning_on.contains(entity)
+            {
+                walls_turning_on.push(*entity);
+            }
             let new_origin = transform.origin + crate::render::brush_offset(registry, *entity);
             let (axis, angle_degrees, pivot) =
                 crate::render::brush_pose_rotation(registry, *entity);
@@ -1151,10 +1156,10 @@ impl Level {
         });
     }
 
-    /// Keeps a `func_wall_toggle` that was just switched on non-solid, in
-    /// both collision models, for as long as the player or a living monster
-    /// is standing inside it, and lets it turn solid the first step nobody
-    /// is.
+    /// Keeps a newly enabled `func_wall_toggle` non-solid in the player's
+    /// model while the player is inside, and independently in the shared
+    /// monster model while a living solid monster is inside. Each model
+    /// becomes solid again on the first step its occupants have left.
     ///
     /// A wall switched on around someone would otherwise embed them for
     /// good: the push-out that frees a player from a closing mover only
@@ -1167,10 +1172,10 @@ impl Level {
     /// `monster_generic` spawned "Not solid" (marked `ohl_ai::Impervious`)
     /// holds nothing up: it is not solid to be embedded.
     ///
-    /// Called by the player-move phase right after
-    /// [`Self::sync_brush_collision`]; a wall still occupied is suspended
-    /// again here, so the next sync turns it on again and it is checked
-    /// again, every step until it is clear.
+    /// Called in phase 2a, including after player death, after both collision
+    /// syncs. Either model's re-enable edge queues this check; simultaneous
+    /// edges are deduplicated. The shared monster model still serves unrelated
+    /// monsters and AI traces too: this policy does not isolate individual NPCs.
     pub(crate) fn hold_toggled_walls_for_occupants(&mut self, player: Option<(Hull, Vec3)>) {
         if self.walls_turning_on.is_empty() {
             return;
@@ -1193,25 +1198,27 @@ impl Level {
                 }
                 _ => false,
             };
-            let monster_inside = !player_inside
-                && match (self.monster_collision.as_ref(), monster_brush) {
-                    (Some(model), Some(brush)) => self
-                        .registry
-                        .world
-                        .query::<&ohl_ai::Actor>()
-                        .without::<&ohl_ai::Impervious>()
-                        .iter()
-                        .filter(|actor| actor.alive && !actor.is_client)
-                        .any(|actor| brush_embeds(model, brush, actor.hull, actor.origin)),
-                    _ => false,
-                };
-            if !(player_inside || monster_inside) {
-                continue;
-            }
-            if let (Some(model), Some(brush)) = (self.collision.as_mut(), player_brush) {
+            let monster_inside = match (self.monster_collision.as_ref(), monster_brush) {
+                (Some(model), Some(brush)) => self
+                    .registry
+                    .world
+                    .query::<&ohl_ai::Actor>()
+                    .without::<&ohl_ai::Impervious>()
+                    .iter()
+                    .filter(|actor| actor.alive && !actor.is_client)
+                    .any(|actor| brush_embeds(model, brush, actor.hull, actor.query_origin())),
+                _ => false,
+            };
+            if let (true, Some(model), Some(brush)) =
+                (player_inside, self.collision.as_mut(), player_brush)
+            {
                 model.set_brush_solid(brush, false);
             }
-            if let (Some(model), Some(brush)) = (self.monster_collision.as_mut(), monster_brush) {
+            if let (true, Some(model), Some(brush)) = (
+                monster_inside,
+                self.monster_collision.as_mut(),
+                monster_brush,
+            ) {
                 model.set_brush_solid(brush, false);
             }
         }
@@ -1439,8 +1446,32 @@ fn load_studio_models(source: &dyn AssetSource, defs: &[EntityDef]) -> StudioLoa
     let mut by_path: BTreeMap<String, Option<usize>> = BTreeMap::new();
     let mut models = Vec::new();
     let mut paths = Vec::new();
-    let (props, def_indices, missing) =
+    let (props, def_indices, mut missing) =
         load_studio_models_into(source, defs, 0, &mut by_path, &mut models, &mut paths);
+    // Preload bounded maker child models while an AssetSource is available.
+    // These are prototypes, never placements or new registry/save slots.
+    let prototypes: Vec<EntityDef> = defs
+        .iter()
+        .filter_map(|def| {
+            if def.classname != "monstermaker" {
+                return None;
+            }
+            let classname = def.keyvalues.get("monstertype")?;
+            let mut prototype = def.clone();
+            prototype.classname.clone_from(classname);
+            prototype.model = None;
+            Some(prototype)
+        })
+        .collect();
+    let (_, _, missing_children) = load_studio_models_into(
+        source,
+        &prototypes,
+        0,
+        &mut by_path,
+        &mut models,
+        &mut paths,
+    );
+    missing += missing_children;
     StudioLoad {
         models,
         paths,

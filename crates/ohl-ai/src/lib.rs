@@ -67,6 +67,7 @@
 //! seed reproduces a run exactly.
 #![forbid(unsafe_code)]
 
+pub mod body;
 pub mod brain;
 pub mod damage;
 pub mod follow;
@@ -82,14 +83,15 @@ pub mod squad;
 pub mod state;
 pub mod world;
 
+pub use body::BodyFrame;
 pub use brain::{DefaultBrain, default_next_state, schedule_by_name};
 pub use damage::{DamageEvent, DamageKinds, DamageQueue, DamageResponse, DamageSink};
 pub use follow::{FollowChange, FollowRoster, Follower};
 pub use monsters::{
     CorpseDecision, FlightPlan, GonarchTrail, MonsterBrain, MonsterKind, MonsterSpec,
-    MonsterTrigger, NavBridge, NavBridgeLimits, Navigator, NihilanthCrystal, NihilanthShield,
-    NoOpRangedAttackSink, RangedAttackSink, StraightLineNavigator, TriggerCondition,
-    TriggerContext, apply_damage as apply_monster_damage, damage_response_for,
+    MonsterTrigger, NavBridge, NavBridgeLimits, NavigationStats, Navigator, NihilanthCrystal,
+    NihilanthShield, NoOpRangedAttackSink, RangedAttackSink, StraightLineNavigator,
+    TriggerCondition, TriggerContext, apply_damage as apply_monster_damage, damage_response_for,
     node_seeds_from_defs,
 };
 pub use movement::{MoveResult, Route, StuckDetector, move_toward};

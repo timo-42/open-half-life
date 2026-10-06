@@ -70,9 +70,9 @@ pub struct BrainId(pub usize);
 pub struct Actor {
     /// The faction.
     pub classification: Classification,
-    /// World-space origin.
+    /// Authored model anchor for monsters; controller center for clients.
     pub origin: Vec3,
-    /// The eye offset above the origin.
+    /// Model-local eye offset for monsters; world offset for clients.
     pub view_ofs: Vec3,
     /// The facing yaw, in degrees.
     pub yaw: f32,
@@ -84,6 +84,8 @@ pub struct Actor {
     pub is_client: bool,
     /// The collision hull this entity moves with.
     pub hull: Hull,
+    /// Derived collision frame; never written into an existing save record.
+    pub body_frame: crate::BodyFrame,
 }
 
 impl Actor {
@@ -93,12 +95,13 @@ impl Actor {
         Self {
             classification,
             origin,
-            view_ofs: Vec3::new(0.0, 0.0, 28.0),
+            view_ofs: crate::BodyFrame::Feet.eye_offset(Hull::Standing, None),
             yaw: 0.0,
             health: 100.0,
             alive: true,
             is_client: false,
             hull: Hull::Standing,
+            body_frame: crate::BodyFrame::Feet,
         }
     }
 
@@ -107,6 +110,8 @@ impl Actor {
     pub fn as_client(mut self) -> Self {
         self.is_client = true;
         self.classification = Classification::Player;
+        self.body_frame = crate::BodyFrame::Centered;
+        self.view_ofs = Vec3::new(0.0, 0.0, 28.0);
         self
     }
 
@@ -127,7 +132,57 @@ impl Actor {
     /// The eye position sight originates from and is traced to.
     #[must_use]
     pub fn eye(&self) -> Vec3 {
-        self.origin + self.view_ofs
+        if self.is_client {
+            return self.origin + self.view_ofs;
+        }
+        let (sin, cos) = self.yaw.to_radians().sin_cos();
+        self.origin
+            + Vec3::new(
+                cos * self.view_ofs.x - sin * self.view_ofs.y,
+                sin * self.view_ofs.x + cos * self.view_ofs.y,
+                self.view_ofs.z,
+            )
+    }
+
+    /// Centered query point for this actor's selected compiled BSP hull.
+    #[must_use]
+    pub fn query_origin(&self) -> Vec3 {
+        self.body_frame.anchor_to_query(self.hull, self.origin)
+    }
+
+    /// Last-resort anchor-relative, axis-aligned damage box, when no usable posed
+    /// or clipping bounds exist. A point hull still needs nonzero damage geometry.
+    #[must_use]
+    pub fn fallback_damage_bounds(&self) -> (Vec3, Vec3) {
+        if self.hull == Hull::Point {
+            (Vec3::splat(-24.0), Vec3::splat(24.0))
+        } else {
+            self.body_frame.local_bounds(self.hull)
+        }
+    }
+
+    /// The navigation target supplied to another actor. Player stance
+    /// changes keep the same floor anchor; monster model anchors stay exact.
+    #[must_use]
+    pub fn navigation_anchor(&self) -> Vec3 {
+        if self.is_client {
+            self.origin - Vec3::Z * self.hull.foot_offset()
+        } else {
+            self.origin
+        }
+    }
+
+    /// Reconstructs model-dependent body and eye policy without moving it.
+    pub fn configure_model(
+        &mut self,
+        kind: &crate::MonsterKind,
+        model: Option<&ohl_world::StudioModel>,
+    ) {
+        if self.is_client {
+            return;
+        }
+        self.body_frame = crate::BodyFrame::for_model(kind, self.hull, model);
+        self.view_ofs = self.body_frame.eye_offset(self.hull, model);
     }
 
     /// The unit forward vector implied by [`Self::yaw`].
@@ -241,11 +296,11 @@ pub struct MonsterAi {
     pub runner: ScheduleRunner,
     /// What is remembered about the acquired enemy.
     pub memory: Option<EnemyMemory>,
-    /// The route currently being followed.
+    /// The route in absolute query coordinates (also the tag-25 wire domain).
     pub route: Route,
-    /// Where a move task was told to go.
+    /// Absolute query/world destination; sounds may overwrite it independently of the route.
     pub move_target: Option<Vec3>,
-    /// The cover position [`Task::FindCover`] chose.
+    /// Absolute query position [`Task::FindCover`] chose; saved without translation.
     pub cover: Option<Vec3>,
     /// The current animation intent.
     pub activity: Activity,
@@ -377,6 +432,7 @@ pub struct AiWorld {
     /// the current map; `None` uses the straight-line fallback instead
     /// (see [`advance_route`]).
     navigator: Option<NavBridge>,
+    script_navigation: crate::NavigationStats,
 }
 
 impl core::fmt::Debug for AiWorld {
@@ -404,6 +460,7 @@ impl AiWorld {
             rng: Pcg32::new(seed),
             tick_count: 0,
             navigator: None,
+            script_navigation: crate::NavigationStats::default(),
         }
     }
 
@@ -430,6 +487,20 @@ impl AiWorld {
     #[must_use]
     pub fn navigator(&self) -> Option<&NavBridge> {
         self.navigator.as_ref()
+    }
+
+    /// Aggregate script navigation counters for development inspection.
+    /// They never contain entity names, positions or asset information.
+    #[must_use]
+    pub fn script_navigation_stats(&self) -> crate::NavigationStats {
+        self.script_navigation
+    }
+
+    /// Drops transient navigation state when restoring a live world.
+    pub fn invalidate_navigation(&mut self) {
+        if let Some(navigator) = self.navigator.as_mut() {
+            navigator.invalidate();
+        }
     }
 
     /// The relationship table, for per-map overrides.
@@ -616,6 +687,7 @@ impl AiWorld {
             return;
         };
         let senses = brain.senses();
+        let walking_attachment = permits_ground_attachment(world, entity, &actor);
 
         let mut conditions = ai.pending_conditions;
         ai.pending_conditions = Conditions::EMPTY;
@@ -659,8 +731,8 @@ impl AiWorld {
         }
         let viewer = Viewer {
             entity,
-            origin: actor.origin,
-            view_ofs: actor.view_ofs,
+            origin: actor.navigation_anchor(),
+            view_ofs: actor.eye() - actor.navigation_anchor(),
             forward: actor.forward(),
             classification: actor.classification,
             prisoner,
@@ -692,13 +764,18 @@ impl AiWorld {
             let is_new = ai.memory.is_none_or(|memory| memory.entity != seen.entity);
             if is_new {
                 conditions |= Conditions::NEW_ENEMY;
-                ai.memory = Some(EnemyMemory::seen(&seen));
+                let mut memory = EnemyMemory::seen(&seen);
+                memory.last_known_position =
+                    actor.body_frame.anchor_to_query(actor.hull, seen.origin);
+                ai.memory = Some(memory);
                 events.push(AiEvent {
                     entity,
                     kind: AiEventKind::EnemyAcquired(seen.entity),
                 });
             } else if let Some(memory) = ai.memory.as_mut() {
                 memory.refresh(&seen);
+                memory.last_known_position =
+                    actor.body_frame.anchor_to_query(actor.hull, seen.origin);
             }
             if seen.facing_viewer {
                 conditions |= Conditions::ENEMY_FACING_ME;
@@ -746,7 +823,7 @@ impl AiWorld {
                 conditions |= Conditions::NEW_ENEMY | Conditions::ENEMY_OCCLUDED;
                 ai.memory = Some(EnemyMemory {
                     entity: shared,
-                    last_known_position: position,
+                    last_known_position: actor.body_frame.anchor_to_query(actor.hull, position),
                     time_since_seen: 0.0,
                     occluded: true,
                     last_known_distance: (position - actor.origin).length(),
@@ -773,12 +850,18 @@ impl AiWorld {
                 && let Some(attacker) = attacker
                 && attacker != entity
             {
+                let known_anchor = by_entity.get(&attacker).map(|candidate| candidate.origin);
+                let remembered = known_anchor.map_or(position, |anchor| {
+                    actor.body_frame.anchor_to_query(actor.hull, anchor)
+                });
+                // Unknown damage positions are literal world points, including on wire.
+                let distance_from = known_anchor.unwrap_or(position);
                 ai.memory = Some(EnemyMemory {
                     entity: attacker,
-                    last_known_position: position,
+                    last_known_position: remembered,
                     time_since_seen: 0.0,
                     occluded: true,
-                    last_known_distance: (position - actor.origin).length(),
+                    last_known_distance: (distance_from - actor.origin).length(),
                 });
                 events.push(AiEvent {
                     entity,
@@ -802,6 +885,27 @@ impl AiWorld {
         if world.get::<&crate::scripts::ScriptHold>(entity).is_ok() {
             ai.runner.clear();
             let step = ai.move_speed * dt;
+            let before = self
+                .navigator
+                .as_ref()
+                .map(NavBridge::stats)
+                .unwrap_or_default();
+            if self.navigator.is_none() && step > 0.0 && !ai.route.is_finished() {
+                if let Some(collision) = context.collision {
+                    self.script_navigation.traced_steps =
+                        self.script_navigation.traced_steps.saturating_add(1);
+                    if collision
+                        .trace(actor.hull, actor.query_origin(), actor.query_origin())
+                        .start_solid
+                    {
+                        self.script_navigation.start_solid =
+                            self.script_navigation.start_solid.saturating_add(1);
+                    }
+                } else {
+                    self.script_navigation.untraced_steps =
+                        self.script_navigation.untraced_steps.saturating_add(1);
+                }
+            }
             let moved = advance_route(
                 entity,
                 &mut actor,
@@ -809,8 +913,12 @@ impl AiWorld {
                 context.collision,
                 self.navigator.as_mut(),
                 Fallback::StraightLine,
+                walking_attachment,
                 dt,
             );
+            if let Some(navigator) = self.navigator.as_ref() {
+                self.script_navigation.add_delta(before, navigator.stats());
+            }
             if ai.move_speed > 0.0 {
                 if ai.stuck.record_step(moved, step) {
                     ai.pending_conditions |= Conditions::BLOCKED;
@@ -843,7 +951,12 @@ impl AiWorld {
         // --- Schedule -----------------------------------------------------
         let enemy_position = ai
             .memory
-            .and_then(|memory| by_entity.get(&memory.entity).map(|c| c.origin));
+            .and_then(|memory| by_entity.get(&memory.entity))
+            .map(|candidate| {
+                actor
+                    .body_frame
+                    .anchor_to_query(actor.hull, candidate.origin)
+            });
         let enemy_entity = ai.memory.map(|memory| memory.entity);
         let last_known = ai.last_known_position();
 
@@ -857,6 +970,19 @@ impl AiWorld {
             });
         }
         let running_name = runner.schedule_name();
+        // TODO(black-box): project-authored danger cover uses the current qualified sound.
+        // The local runner owns the schedule; ai.runner is temporarily empty.
+        let cover_threat = if runner
+            .schedule()
+            .is_some_and(|schedule| std::ptr::eq(schedule, &crate::brain::TAKE_COVER_FROM_DANGER))
+        {
+            heard
+                .best
+                .filter(|sound| sound.kind == SoundKind::Danger)
+                .map(|sound| sound.position)
+        } else {
+            enemy_position.or(last_known).or(ai.move_target)
+        };
 
         let outcome = {
             let mut executor = MonsterExecutor {
@@ -868,6 +994,7 @@ impl AiWorld {
                 enemy_entity,
                 enemy_position,
                 last_known,
+                cover_threat,
                 sounds: &mut self.sounds,
                 events,
                 dt,
@@ -908,6 +1035,7 @@ impl AiWorld {
             context.collision,
             self.navigator.as_mut(),
             Fallback::Traced,
+            walking_attachment,
             dt,
         );
         if ai.move_speed > 0.0 {
@@ -998,6 +1126,16 @@ fn actor_bytes(actor: &Actor) -> Vec<u8> {
     bytes.push(u8::from(actor.alive));
     bytes.push(u8::from(actor.is_client));
     bytes.push(u8::try_from(actor.hull.index()).unwrap_or(u8::MAX));
+    let (tag, bottom) = match actor.body_frame {
+        crate::BodyFrame::Feet => (0, 0.0_f32),
+        crate::BodyFrame::Centered => (1, 0.0),
+        crate::BodyFrame::Ceiling => (2, 0.0),
+        crate::BodyFrame::ModelBottom(bottom) => (3, bottom),
+        crate::BodyFrame::FixedModelAnchor(None) => (4, 0.0),
+        crate::BodyFrame::FixedModelAnchor(Some(bottom)) => (5, bottom),
+    };
+    bytes.push(tag);
+    bytes.extend_from_slice(&bottom.to_bits().to_le_bytes());
     bytes
 }
 
@@ -1051,8 +1189,8 @@ fn snapshot_candidates(world: &World) -> Vec<Candidate> {
                 Candidate {
                     entity,
                     classification: actor.classification,
-                    origin: actor.origin,
-                    view_ofs: actor.view_ofs,
+                    origin: actor.navigation_anchor(),
+                    view_ofs: actor.eye() - actor.navigation_anchor(),
                     forward: actor.forward(),
                     alive: actor.alive,
                     is_client: actor.is_client,
@@ -1076,6 +1214,7 @@ fn snapshot_candidates(world: &World) -> Vec<Candidate> {
 /// the high-level "am I still moving, has the goal drifted" bookkeeping
 /// either way, so every other consumer (`WaitForMovement`, `StopMoving`,
 /// the determinism hash) is unaffected by whether a navigator is attached.
+#[allow(clippy::too_many_arguments)]
 fn advance_route(
     entity: Entity,
     actor: &mut Actor,
@@ -1083,6 +1222,7 @@ fn advance_route(
     collision: Option<&CollisionModel>,
     navigator: Option<&mut NavBridge>,
     fallback: Fallback,
+    walking_attachment: bool,
     dt: f32,
 ) -> f32 {
     if ai.move_speed <= 0.0 || ai.route.is_finished() {
@@ -1092,32 +1232,46 @@ fn advance_route(
         return 0.0;
     };
     let step = ai.move_speed * dt;
+    let query = actor.query_origin();
+    let query_goal = waypoint;
     let (position, distance) = match (navigator, collision) {
         (Some(navigator), Some(model)) => {
-            let next = navigator.next_move_with(
-                entity,
-                actor.origin,
-                waypoint,
-                actor.hull,
-                model,
-                step,
-                fallback,
-            );
-            (next, (next - actor.origin).length())
+            let next = if walking_attachment {
+                navigator.next_move_with_walking_attachment(
+                    entity, query, query_goal, actor.hull, model, step, fallback,
+                )
+            } else {
+                navigator
+                    .next_move_with(entity, query, query_goal, actor.hull, model, step, fallback)
+            };
+            (
+                actor.body_frame.query_to_anchor(actor.hull, next),
+                (next - query).length(),
+            )
         }
         (_, Some(model)) => {
-            let result = move_toward(model, actor.hull, actor.origin, waypoint, ai.move_speed, dt);
-            (result.position, result.distance)
+            let result = move_toward(model, actor.hull, query, query_goal, ai.move_speed, dt);
+            (
+                actor
+                    .body_frame
+                    .query_to_anchor(actor.hull, result.position),
+                result.distance,
+            )
         }
         (_, None) => {
             let result = straight_step(
-                actor.origin,
-                waypoint,
+                query,
+                query_goal,
                 ai.move_speed,
                 dt,
                 movement::flies(actor.hull),
             );
-            (result.position, result.distance)
+            (
+                actor
+                    .body_frame
+                    .query_to_anchor(actor.hull, result.position),
+                result.distance,
+            )
         }
     };
     actor.origin = position;
@@ -1125,11 +1279,49 @@ fn advance_route(
         let (turned, _) = turn_toward(actor.yaw, yaw, TURN_RATE * dt);
         actor.yaw = turned;
     }
-    ai.route.advance_if_reached(actor.origin);
+    ai.route.advance_if_reached(actor.query_origin());
     if ai.route.is_finished() {
         ai.move_speed = 0.0;
     }
     distance
+}
+
+/// Actor permission for initial attachment and terminal flat graph approach.
+/// Policy stays here, above the context-free centered navigation API.
+fn permits_ground_attachment(world: &World, entity: Entity, actor: &Actor) -> bool {
+    use crate::monsters::{MonsterFlags, MonsterKind, spec_for};
+    if !actor.alive
+        || actor.health <= 0.0
+        || actor.is_client
+        || movement::flies(actor.hull)
+        || !matches!(
+            actor.body_frame,
+            crate::BodyFrame::Feet | crate::BodyFrame::ModelBottom(_)
+        )
+        || world.get::<&Impervious>(entity).is_ok()
+    {
+        return false;
+    }
+    let Ok(class) = world.get::<&ohl_game::registry::ClassName>(entity) else {
+        return false;
+    };
+    let kind = MonsterKind::from_classname(&class.0);
+    spec_for(&kind).is_some_and(|spec| {
+        !spec.flags.contains(MonsterFlags::ROOTED) && !movement::flies(spec.hull)
+    }) && !matches!(
+        kind,
+        MonsterKind::Turret
+            | MonsterKind::MiniTurret
+            | MonsterKind::Sentry
+            | MonsterKind::Tentacle
+            | MonsterKind::Nihilanth
+            | MonsterKind::Furniture
+            | MonsterKind::Ichthyosaur
+            | MonsterKind::Leech
+            | MonsterKind::Apache
+            | MonsterKind::Osprey
+            | MonsterKind::AlienController
+    )
 }
 
 /// The no-collision-data fallback: move straight toward the waypoint,
@@ -1170,6 +1362,8 @@ struct MonsterExecutor<'a> {
     enemy_entity: Option<Entity>,
     enemy_position: Option<Vec3>,
     last_known: Option<Vec3>,
+    /// Tick-local choice; never saved or inferred from an already-written route.
+    cover_threat: Option<Vec3>,
     sounds: &'a mut SoundList,
     events: &'a mut Vec<AiEvent>,
     dt: f32,
@@ -1214,7 +1408,7 @@ impl MonsterExecutor<'_> {
         let Some(goal) = goal else {
             return TaskStatus::Failed;
         };
-        let from = self.actor.origin;
+        let from = self.actor.query_origin();
         let delta = Vec3::new(goal.x - from.x, goal.y - from.y, 0.0);
         let length = delta.length();
         let stop = if within > 0.0 && length > within {
@@ -1229,11 +1423,7 @@ impl MonsterExecutor<'_> {
     }
 
     fn find_cover(&mut self) -> TaskStatus {
-        let Some(threat) = self
-            .enemy_position
-            .or(self.last_known)
-            .or(self.ai.move_target)
-        else {
+        let Some(threat) = self.cover_threat else {
             return TaskStatus::Failed;
         };
         let away = Vec3::new(
@@ -1246,12 +1436,12 @@ impl MonsterExecutor<'_> {
         } else {
             self.actor.forward()
         };
-        let goal = self.actor.origin + direction * COVER_DISTANCE;
+        let goal = self.actor.query_origin() + direction * COVER_DISTANCE;
         let reachable = self.collision.map_or(goal, |model| {
             move_toward(
                 model,
                 self.actor.hull,
-                self.actor.origin,
+                self.actor.query_origin(),
                 goal,
                 COVER_DISTANCE,
                 1.0,
@@ -1286,10 +1476,10 @@ impl MonsterExecutor<'_> {
         }
         let mut draw = Pcg32::with_stream(self.tick_count, u64::from(self.entity.id()));
         let yaw = draw.range_f32(-180.0, 180.0);
-        let origin = self.actor.origin;
+        let origin = self.actor.query_origin();
         let drawn = origin + movement::forward_from_yaw(yaw) * distance;
         let goal = self.collision.map_or(drawn, |model| {
-            movement::walkable_reach(model, self.actor.hull, origin, drawn)
+            movement::walkable_reach(model, self.actor.hull, self.actor.query_origin(), drawn)
         });
         if Vec3::new(goal.x - origin.x, goal.y - origin.y, 0.0).length() < MIN_WANDER_LEG {
             return TaskStatus::Failed;
@@ -1503,6 +1693,68 @@ mod tests {
     }
 
     #[test]
+    fn terminal_ground_and_initial_attachment_require_a_known_living_solid_walking_policy() {
+        use crate::BodyFrame;
+        use ohl_game::registry::ClassName;
+        let mut world = World::new();
+        let entity = world.spawn((ClassName("monster_barney".into()),));
+        let baseline = Actor::new(Classification::PlayerAlly, Vec3::ZERO);
+        assert!(super::permits_ground_attachment(&world, entity, &baseline));
+        let mut custom = baseline;
+        custom.body_frame = BodyFrame::ModelBottom(-8.0);
+        assert!(super::permits_ground_attachment(&world, entity, &custom));
+        for frame in [
+            BodyFrame::Centered,
+            BodyFrame::Ceiling,
+            BodyFrame::FixedModelAnchor(Some(-8.0)),
+        ] {
+            let mut actor = baseline;
+            actor.body_frame = frame;
+            assert!(!super::permits_ground_attachment(&world, entity, &actor));
+        }
+        for variant in 0..4 {
+            let mut actor = baseline;
+            match variant {
+                0 => actor.is_client = true,
+                1 => actor.alive = false,
+                2 => actor.health = 0.0,
+                _ => actor.hull = ohl_physics::Hull::Point,
+            }
+            assert!(!super::permits_ground_attachment(&world, entity, &actor));
+        }
+        world
+            .insert_one(entity, super::Impervious)
+            .expect("impervious");
+        assert!(!super::permits_ground_attachment(&world, entity, &baseline));
+        world
+            .remove_one::<super::Impervious>(entity)
+            .expect("remove guard");
+        for classname in [
+            "monster_barnacle",
+            "monster_turret",
+            "monster_miniturret",
+            "monster_sentry",
+            "monster_tentacle",
+            "monster_nihilanth",
+            "monster_furniture",
+            "monster_ichthyosaur",
+            "monster_leech",
+            "monster_apache",
+            "monster_osprey",
+            "monster_alien_controller",
+            "ohl_unknown",
+        ] {
+            world.get::<&mut ClassName>(entity).expect("class").0 = classname.into();
+            assert!(
+                !super::permits_ground_attachment(&world, entity, &baseline),
+                "{classname}"
+            );
+        }
+        world.remove_one::<ClassName>(entity).expect("remove class");
+        assert!(!super::permits_ground_attachment(&world, entity, &baseline));
+    }
+
+    #[test]
     fn seeing_a_hostile_flips_to_combat_in_one_tick() {
         let (mut ai, mut world, brain) = setup();
         let monster = spawn_monster(
@@ -1590,6 +1842,190 @@ mod tests {
         assert!(state.conditions.contains(Conditions::HEAR_DANGER));
         assert_eq!(state.schedule_name(), "ohl/take_cover_from_danger");
         assert_eq!(state.state, MonsterState::Alert);
+    }
+
+    fn danger_cover_scene() -> (
+        AiWorld,
+        World,
+        ohl_physics::CollisionModel,
+        hecs::Entity,
+        hecs::Entity,
+    ) {
+        use ohl_formats::test_support::CollisionBrush;
+        let collision = collision_from(
+            &[
+                CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+                CollisionBrush::half_space([0.0, 0.0, -1.0], -256.0),
+                CollisionBrush::half_space([-1.0, 0.0, 0.0], -1_024.0),
+                CollisionBrush::half_space([1.0, 0.0, 0.0], -1_024.0),
+                CollisionBrush::half_space([0.0, -1.0, 0.0], -1_024.0),
+                CollisionBrush::half_space([0.0, 1.0, 0.0], -1_024.0),
+            ],
+            [-1_024.0, -1_024.0, 0.0],
+            [1_024.0, 1_024.0, 256.0],
+        );
+        let mut ai = AiWorld::new(0x5EED);
+        let brain = ai.register_brain(Box::new(
+            crate::monsters::MonsterBrain::for_kind(crate::monsters::MonsterKind::HumanAssassin)
+                .expect("authored ordinary brain"),
+        ));
+        let mut world = World::new();
+        let actor = Actor::new(Classification::HumanMilitary, Vec3::new(0.0, 0.0, 1.0));
+        let enemy = Actor::new(Classification::Player, Vec3::new(384.0, 0.0, 1.0));
+        for body in [actor, enemy] {
+            let trace = collision.trace(body.hull, body.query_origin(), body.query_origin());
+            assert!(!trace.start_solid && !trace.all_solid);
+        }
+        let sight = collision.trace(ohl_physics::Hull::Point, actor.eye(), enemy.eye());
+        assert!(!sight.start_solid && !sight.all_solid && sight.fraction >= 1.0);
+        assert!(
+            ai.relationships()
+                .get(actor.classification, enemy.classification)
+                .is_hostile()
+        );
+        let listener = spawn_monster(&mut world, actor, brain);
+        let target = spawn_actor(&mut world, enemy);
+        (ai, world, collision, listener, target)
+    }
+
+    #[test]
+    fn danger_cover_uses_current_sound_with_an_opposed_enemy() {
+        let (mut ai, mut world, collision, listener, enemy) = danger_cover_scene();
+        let danger = Vec3::new(-128.0, 0.0, 37.0);
+        let start = world.get::<&Actor>(listener).unwrap().origin;
+        assert!(ai.emit_sound(SoundEvent::new(SoundKind::Danger, danger, 512.0).lasting(5.0)));
+        let context = SightContext::tracing(&collision);
+        ai.tick(&mut world, &context, DT);
+        {
+            let state = world.get::<&MonsterAi>(listener).unwrap();
+            assert!(
+                state
+                    .conditions
+                    .contains(Conditions::SEE_ENEMY | Conditions::HEAR_DANGER)
+            );
+            assert_eq!(state.memory.unwrap().entity, enemy);
+            assert_eq!(state.move_target, Some(danger));
+            assert_eq!(
+                state.schedule_name(),
+                crate::brain::TAKE_COVER_FROM_DANGER.name
+            );
+            assert_eq!(state.runner.task(), Some(crate::Task::FindCover));
+            assert!(!state.runner.started());
+            assert!(state.cover.is_none());
+        }
+        ai.tick(&mut world, &context, DT);
+        {
+            let state = world.get::<&MonsterAi>(listener).unwrap();
+            assert!(
+                state
+                    .conditions
+                    .contains(Conditions::SEE_ENEMY | Conditions::HEAR_DANGER)
+            );
+            assert_eq!(state.memory.unwrap().entity, enemy);
+            let cover = state.cover.expect("ordinary FindCover completed");
+            assert!(
+                cover.x > start.x,
+                "danger cover must escape away from the heard danger"
+            );
+            assert_eq!(state.runner.task(), Some(crate::Task::TakeCover));
+        }
+        for _ in 0..8 {
+            ai.tick(&mut world, &context, DT);
+        }
+        let actor = world.get::<&Actor>(listener).unwrap();
+        assert!(
+            actor.origin.x > start.x,
+            "ordinary route movement follows danger cover"
+        );
+        assert!((actor.origin - danger).truncate().length() > (start - danger).truncate().length());
+    }
+
+    #[test]
+    fn danger_cover_preserves_enemy_cover_for_other_schedules() {
+        let (mut ai, mut world, collision, listener, enemy) = danger_cover_scene();
+        let context = SightContext::tracing(&collision);
+        let start = world.get::<&Actor>(listener).unwrap().origin;
+        let mut covered = false;
+        for _ in 0..100 {
+            ai.tick(&mut world, &context, DT);
+            let state = world.get::<&MonsterAi>(listener).unwrap();
+            assert!(state.conditions.contains(Conditions::SEE_ENEMY));
+            assert!(!state.conditions.contains(Conditions::HEAR_DANGER));
+            assert_eq!(state.memory.unwrap().entity, enemy);
+            assert_eq!(
+                state.schedule_name(),
+                crate::monsters::brains::ASSASSIN_HIT_AND_RUN.name
+            );
+            if let Some(cover) = state.cover {
+                assert!(
+                    cover.x < start.x,
+                    "ordinary combat cover still escapes from the enemy"
+                );
+                assert_eq!(state.runner.task(), Some(crate::Task::TakeCover));
+                covered = true;
+                break;
+            }
+        }
+        assert!(covered, "ordinary burst must reach its own FindCover task");
+        for _ in 0..8 {
+            ai.tick(&mut world, &context, DT);
+        }
+        assert!(world.get::<&Actor>(listener).unwrap().origin.x < start.x);
+    }
+
+    #[test]
+    fn danger_cover_rejects_expired_or_unrelated_sound() {
+        for unrelated in [false, true] {
+            let (mut ai, mut world, collision, listener, enemy) = danger_cover_scene();
+            let context = SightContext::tracing(&collision);
+            let danger = Vec3::new(-128.0, 0.0, 37.0);
+            let start = world.get::<&Actor>(listener).unwrap().origin;
+            assert!(ai.emit_sound(SoundEvent::new(SoundKind::Danger, danger, 512.0).lasting(DT)));
+            ai.tick(&mut world, &context, DT);
+            {
+                let state = world.get::<&MonsterAi>(listener).unwrap();
+                assert!(
+                    state
+                        .conditions
+                        .contains(Conditions::SEE_ENEMY | Conditions::HEAR_DANGER)
+                );
+                assert_eq!(state.memory.unwrap().entity, enemy);
+                assert_eq!(
+                    state.schedule_name(),
+                    crate::brain::TAKE_COVER_FROM_DANGER.name
+                );
+                assert_eq!(state.runner.task(), Some(crate::Task::FindCover));
+                assert_eq!(state.move_target, Some(danger));
+                assert!(state.cover.is_none());
+            }
+            assert!(ai.sounds().is_empty(), "the one-tick danger has expired");
+            if unrelated {
+                assert!(ai.emit_sound(SoundEvent::new(
+                    SoundKind::World,
+                    Vec3::new(0.0, 128.0, 37.0),
+                    512.0,
+                )));
+            }
+            let events = ai.tick(&mut world, &context, DT);
+            assert!(
+                events.iter().any(|event| event.entity == listener
+                    && matches!(
+                        event.kind,
+                        AiEventKind::ScheduleEnded { name, outcome: crate::RunOutcome::Failed }
+                            if name == crate::brain::TAKE_COVER_FROM_DANGER.name
+                    )),
+                "missing qualified danger must fail the cover task"
+            );
+            let state = world.get::<&MonsterAi>(listener).unwrap();
+            assert!(state.conditions.contains(Conditions::SEE_ENEMY));
+            assert!(!state.conditions.contains(Conditions::HEAR_DANGER));
+            assert_eq!(state.memory.unwrap().entity, enemy);
+            assert!(
+                state.cover.is_none(),
+                "neither an enemy nor a stale/unrelated point substitutes"
+            );
+            assert_eq!(world.get::<&Actor>(listener).unwrap().origin, start);
+        }
     }
 
     #[test]
@@ -2104,7 +2540,8 @@ mod tests {
             [-HALF, -HALF, 0.0],
             [HALF, HALF, 128.0],
         );
-        let (goals, origins, finished) = wander_in(&room, Vec3::new(0.0, 0.0, 19.0), true, 3_000);
+        // The actor stores its feet, one unit above this synthetic floor.
+        let (goals, origins, finished) = wander_in(&room, Vec3::new(0.0, 0.0, 1.0), true, 3_000);
         // The crouched hull is 32 wide: its origin can get no closer to a
         // wall than 16.
         let inside = |point: &Vec3| point.x.abs() <= HALF - 15.0 && point.y.abs() <= HALF - 15.0;
@@ -2114,6 +2551,7 @@ mod tests {
         }
         for origin in &origins {
             assert!(inside(origin), "the rat left the room: {origin:?}");
+            assert!((0.0..=1.01).contains(&origin.z), "feet remain at the floor");
         }
         assert!(finished >= 2, "it still finishes legs: {finished}");
     }
@@ -2141,8 +2579,7 @@ mod tests {
             [-512.0, -512.0, 0.0],
             [512.0, 512.0, 256.0],
         );
-        let (_, origins, finished) =
-            wander_in(&room, Vec3::new(0.0, 0.0, TOP + 19.0), false, 3_000);
+        let (_, origins, finished) = wander_in(&room, Vec3::new(0.0, 0.0, TOP + 1.0), false, 3_000);
         // Half the crouched hull's width past the edge is the farthest the
         // hull can stand with some of the platform still under it.
         for origin in &origins {
@@ -2150,7 +2587,10 @@ mod tests {
                 origin.x.abs() <= PLATFORM + 16.0 && origin.y.abs() <= PLATFORM + 16.0,
                 "the rat walked off the platform: {origin:?}"
             );
-            assert!(origin.z > TOP, "and stays on top of it: {origin:?}");
+            assert!(
+                (TOP..=TOP + 1.01).contains(&origin.z),
+                "feet stay on top of it: {origin:?}"
+            );
         }
         assert!(finished >= 2, "it still finishes legs: {finished}");
     }
@@ -2249,7 +2689,7 @@ mod tests {
             [-512.0, -512.0, 0.0],
             [512.0, 512.0, 256.0],
         );
-        let goal = Vec3::new(100.0, 0.0, 37.0);
+        let goal = Vec3::new(100.0, 0.0, 1.0);
         let run = |scripted: bool| {
             let mut ai = AiWorld::new(1);
             let brain = ai.register_brain(Box::new(Walker));
@@ -2262,7 +2702,7 @@ mod tests {
             let mut world = World::new();
             let monster = spawn_monster(
                 &mut world,
-                Actor::new(Classification::None, Vec3::new(-100.0, 0.0, 37.0)),
+                Actor::new(Classification::None, Vec3::new(-100.0, 0.0, 1.0)),
                 brain,
             );
             {

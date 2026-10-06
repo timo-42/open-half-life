@@ -9580,6 +9580,10 @@ the audio page says so.
 
 ## M9.59 — Monsters stand on their floor
 
+Historical release entry retained verbatim below. The M9.NEXT single-anchor
+reconciliation supersedes its HullLift API and weakened smoke/guard fixtures;
+its external reported outcomes are not acceptance evidence for that candidate.
+
 Reported from a real play-through: on `c1a0` the lobby's guard and
 scientists were drawn standing in the air. A local measurement over the
 imported map found four of them placed 17 units above the floor and one 24,
@@ -9661,3 +9665,75 @@ saving and resuming halfway through a scripted walk. All three reproduced
 the bug before the fix. The five relevant integration suites pass (71
 tests), including existing script completion, teleport, interruption,
 following, prisoner and mover checks.
+
+## M9.NEXT — Monster anchors, query adapters and bounded grenade admission
+
+Candidate implementation; numbering and acceptance remain pending. Actor and
+Transform retain one authored model anchor. Derived BodyFrame translates that
+anchor once at centered movement, navigation, door and mover queries, then
+converts returned positions back. Custom model hull metadata, point flight,
+ceiling and fixed/rooted policies remain explicit. Model-local eyes rotate with
+yaw; posed hitboxes and valid clipping bounds keep the unmodified model
+transform. Only missing/degenerate damage geometry uses a body-relative proxy.
+Maker children and restored models reconstruct the same derived metadata.
+
+Bounded spawn/maker floor placement and held-script movement/turn/save behavior
+from M9.59/M9.60 are retained without a second HullLift position authority.
+Custom nonpositive offsets remain eligible for placement. Missing collision,
+solid starts, absent floor or invalid results retain placement. Restored tag-18
+anchors and tag-28 script return marks win without another floor drop. Tag-25
+route, cover, memory and destination values remain absolute query/world points
+at runtime and on wire; no save-boundary offset or float rewriting is added.
+Known fresh anchor producers project for the receiving actor, while literal
+sound and unknown-damage points retain their existing meaning. No save section,
+field, dependency or tag is added; tag 46 remains free.
+
+Two bounded routing dependencies pulled from P5 are included: initial ground
+attachment may descend to a nearby supported lower waypoint within the retained
+drop allowance, and an eligible walker may make a supported flat approach to an
+appended terminal goal when normal steering makes no horizontal progress.
+These are project-authored local policies. General step/stuck repair, final-sweep
+routing and air-node routing remain P5; neither policy promises general gravity
+or collision-safe script traversal.
+
+Navigation consumes stored query goals and preserves bounded traced arrival,
+cache invalidation and hidden last-known pursuit. Autonomous fallback remains
+traced. The legacy ScriptHold straight-line wall-ignoring fallback is retained
+as a compatibility cut until P5; this package does not promise collision-safe
+script routing. Player enemy-memory indexing and follower-roster persistence
+remain separate omissions. Unmarked unpublished anchor-valued P2 saves are
+outside automatic compatibility; shipped query-valued tag-25 saves retain
+unchanged positional encoding.
+
+The shared attack trace ignores only an exact departing entity-boundary contact;
+interior, inward and parallel contacts and other world/entity candidates remain
+authoritative. Grunt/assassin grenade readiness uses the actual projectile
+collision world. In addition to existing readiness checks, a bounded nominal
+approach sweep follows the existing launch velocity, fixed-step gravity and point
+collision policy, rejecting invalid or world-obstructed approaches. Admission
+does not predict entity interception, future world movement, later bounces,
+target motion or splash/self/ally safety, and is not an arbitrary delayed-emission
+recheck. Launch profiles, damage, fuse, ownership, RNG and saved state remain
+unchanged. The reactive timed-BLAST guard uses current projectile exposure and
+bounded movement-input clearance, preserves active unarmed combat retreat
+priority, and offers no trajectory-planning or guaranteed-escape policy.
+
+These coordinate, fallback, floor, eye/proxy, guard and grenade-admission choices
+are project-authored. TODO(black-box): original floor-settling timing, exceptional
+model placement, per-species eye/muzzle fidelity, literal target intent, warning
+horizon and grenade approach/safety policy. Existing public provenance remains
+in FORMAT_SOURCES; synthetic controls are not retail-parity observations.
+Original combat death guards and the grenade guard fixture remain mandatory.
+
+**Gates:** Focused policy controls pass, as do both-species low/high-ceiling
+controls and the existing grunt grenade player-damage control. Bypassing only
+lob admission fails the intended low-ceiling assertion for the first species;
+the byte-restored normal controls pass. Seven debug gates and genuine release
+app/tool builds remain pending for the final overlaid candidate. Original combat 37/37
+with zero unexpected lines, campaign 93/93, both chains depth 12 / Pass / 660.8
+simulated seconds, and fresh counts-only census: [pending]. Last e117 candidate
+reported debug workspace 3260/0/37 and release builds passing, but combat 35/37
+with two unexpected lines, campaign 93/93 and both chains depth 6 / Pass / 372.3
+seconds; these remain open regressions, not acceptance or expected-change credit.
+No accepted cause or repair is claimed. New PR, milestone assignment and merge
+remain pending; P5/new P8 hops and final publication remain held.

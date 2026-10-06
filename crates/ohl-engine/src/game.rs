@@ -574,6 +574,38 @@ impl Game {
         self.systems.projectile_count()
     }
 
+    /// Private current-body exposure query for the headless guard policy.
+    pub(crate) fn timed_blast_threat(&self, horizon: f32) -> Option<Vec3> {
+        self.systems.timed_blast_threat(
+            self.level.collision.as_ref()?,
+            self.controller.state.origin,
+            self.controller.state.hull(),
+            horizon,
+        )
+    }
+
+    /// Read the exact walking wish after this input's view change, without
+    /// advancing physics or changing the live controller.
+    pub(crate) fn guard_movement_wish(&self, input: &Input) -> Option<(ohl_physics::Hull, Vec3)> {
+        let mut controller = self.controller.clone();
+        if controller.noclip()
+            || controller.state.is_swimming()
+            || !controller.yaw.is_finite()
+            || !controller.pitch.is_finite()
+            || !input.mouse_delta.0.is_finite()
+            || !input.mouse_delta.1.is_finite()
+        {
+            return None;
+        }
+        controller.apply_mouse_delta(input.mouse_delta.0, input.mouse_delta.1, MOUSE_SENSITIVITY);
+        let wish = controller.wish_move(&ohl_physics::ControllerInput {
+            forward: input.forward,
+            right: input.right,
+            ..ohl_physics::ControllerInput::default()
+        });
+        (wish.is_finite() && wish.length_squared() > 0.0).then_some((controller.state.hull(), wish))
+    }
+
     /// Whether this frame draws a first-person view model. See
     /// `crate::viewmodel`.
     #[must_use]
@@ -957,6 +989,12 @@ impl Game {
     #[must_use]
     pub fn script_timeout_count(&self) -> u64 {
         self.systems.ai().script_timeout_count()
+    }
+
+    /// Aggregate script routing counters for development inspection.
+    #[must_use]
+    pub fn script_navigation_stats(&self) -> ohl_ai::NavigationStats {
+        self.systems.ai().world().script_navigation_stats()
     }
 
     /// The allies currently following the player, oldest first. Data, never
@@ -2071,6 +2109,7 @@ impl Game {
         // rather than from the map's spawn point; see
         // `Systems::sync_actor_from_transforms`'s doc.
         Systems::sync_actor_from_transforms(&mut self.level);
+        self.systems.ai.restore_navigation();
         // `SECTION_MAKER_CHILDREN` (29, M9.5), part two: links each child
         // `Self::restore_maker_children` recreated above back onto its
         // maker's own live-child list, now that its restored health/AI

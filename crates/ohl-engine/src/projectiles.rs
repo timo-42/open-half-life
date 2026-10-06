@@ -298,6 +298,213 @@ impl ProjectileSystem {
             + self.deployables.tripmines().len()
     }
 
+    /// TODO(black-box): reject human throws exposing their live owner or allies
+    /// in one frozen-world calculation. This predicts no future actor/brush motion.
+    /// Scratch IDs/RNG never enter live state; HandGrenade integration uses no RNG.
+    #[allow(clippy::too_many_lines)]
+    pub(crate) fn human_grenade_safe(
+        &self,
+        level: &Level,
+        request: &crate::ai::ProjectileRequest,
+        hitboxes: &HitboxIndex,
+        relationships: &ohl_ai::RelationshipTable,
+    ) -> bool {
+        let Some(collision) = level.collision.as_ref() else {
+            return false;
+        };
+        let Some(radius) = request.blast_radius else {
+            return false;
+        };
+        if request.kind != ProjectileKind::HandGrenade
+            || !request.origin.is_finite()
+            || !request.velocity.is_finite()
+            || !request.damage.is_finite()
+            || request.damage <= 0.0
+            || !request.damage_type.contains(DamageType::BLAST)
+            || !radius.is_finite()
+            || radius <= 0.0
+            || hitboxes.rejected() != 0
+            || !self.movement.gravity.is_finite()
+            || !self.tuning.gravity_scale.value.is_finite()
+            || !self.tuning.restitution.value.is_finite()
+            || !self.tuning.bounce_friction.value.is_finite()
+            || !self.tuning.rest_speed.value.is_finite()
+            || !self.explosion_rule.self_damage_scale.value.is_finite()
+        {
+            return false;
+        }
+        let Ok(owner) = level.registry.world.get::<&ohl_ai::Actor>(request.owner) else {
+            return false;
+        };
+        if !owner.alive || !owner.health.is_finite() || owner.health <= 0.0 {
+            return false;
+        }
+        let mut protected = Vec::new();
+        for (entity, actor) in &mut level.registry.world.query::<(Entity, &ohl_ai::Actor)>() {
+            if actor.alive
+                && (entity == request.owner
+                    || relationships.get(owner.classification, actor.classification)
+                        == ohl_ai::Relationship::Ally)
+            {
+                if !actor.health.is_finite() || !actor.origin.is_finite() {
+                    return false;
+                }
+                if actor.health > 0.0 {
+                    protected.push(entity_id(entity));
+                }
+            }
+        }
+        let targets = blast_targets(level, &self.blast_bounds);
+        for id in &protected {
+            let Some(target) = targets.iter().find(|target| target.id == *id) else {
+                return false;
+            };
+            if !target.position.is_finite()
+                || target.hitbox.is_some_and(|(min, max)| {
+                    !min.is_finite() || !max.is_finite() || !min.cmple(max).all()
+                })
+            {
+                return false;
+            }
+        }
+        if hitboxes.entries().iter().any(|entry| {
+            !entry.origin.is_finite()
+                || !entry.rotation.is_finite()
+                || entry
+                    .boxes
+                    .iter()
+                    .any(|b| !b.min.is_finite() || !b.max.is_finite() || !b.min.cmple(b.max).all())
+        }) {
+            return false;
+        }
+        let start = collision.trace(ohl_physics::Hull::Point, request.origin, request.origin);
+        if start.start_solid || start.all_solid {
+            return false;
+        }
+        let mut scratch =
+            ProjectileSet::new(ohl_combat::ProjectileLimits { max_projectiles: 1 }, 0);
+        let Some(id) = scratch.spawn(
+            request.kind,
+            Some(entity_id(request.owner)),
+            request.origin,
+            request.velocity,
+            &self.tuning,
+        ) else {
+            return false;
+        };
+        scratch.get_mut(id).expect("just spawned").target = request.target.map(entity_id);
+        let world = ProjectileWorld {
+            collision,
+            entities: hitboxes,
+            movement: &self.movement,
+            tuning: &self.tuning,
+        };
+        // Fixed positive constants; two extra steps cover repeated-f32 subtraction.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        const STEPS: u32 =
+            (ohl_combat::projectile::HAND_GRENADE_FUSE_SECONDS / crate::TICK_SECONDS) as u32 + 2;
+        let mut events = Vec::new();
+        for _ in 0..STEPS {
+            events.clear();
+            scratch.tick(crate::TICK_SECONDS, &world, &mut events);
+            for event in &events {
+                if let ProjectileEvent::Detonate {
+                    id: detonated,
+                    kind,
+                    position,
+                    owner,
+                } = *event
+                {
+                    if detonated != id
+                        || kind != request.kind
+                        || owner != Some(entity_id(request.owner))
+                        || !position.is_finite()
+                    {
+                        return false;
+                    }
+                    let point = collision.trace(ohl_physics::Hull::Point, position, position);
+                    if point.start_solid || point.all_solid {
+                        return false;
+                    }
+                    return !radius_damage(
+                        position,
+                        radius,
+                        request.damage,
+                        request.damage_type,
+                        Some(entity_id(request.owner)),
+                        targets.into_iter(),
+                        collision,
+                        &self.explosion_rule,
+                    )
+                    .iter()
+                    .any(|hit| protected.contains(&hit.target) && hit.damage.amount > 0.0);
+                }
+            }
+            let Some(projectile) = scratch.get(id) else {
+                return false;
+            };
+            if !projectile.position.is_finite()
+                || !projectile.velocity.is_finite()
+                || !projectile.fuse.is_some_and(f32::is_finite)
+            {
+                return false;
+            }
+        }
+        false // No complete ordinary detonation within the bounded prediction.
+    }
+
+    /// Earliest live timed BLAST exposing the player's current physical body.
+    /// This reactive guard query predicts neither future flight nor escape.
+    pub(crate) fn timed_blast_threat(
+        &self,
+        collision: &ohl_physics::CollisionModel,
+        origin: Vec3,
+        hull: ohl_physics::Hull,
+        horizon: f32,
+    ) -> Option<Vec3> {
+        if !origin.is_finite() || !horizon.is_finite() || horizon < 0.0 {
+            return None;
+        }
+        let (min, max) = hull.bounds();
+        let mut best: Option<(f32, Vec3)> = None;
+        // Spawn order breaks equal-fuse ties, including after save restoration.
+        for projectile in self.projectiles.projectiles() {
+            let Some(fuse) = projectile.fuse else {
+                continue;
+            };
+            let profile = self
+                .attacks
+                .get(&projectile.id)
+                .copied()
+                .unwrap_or_else(|| AttackPayload::legacy(projectile.kind));
+            let Some(radius) = profile.radius else {
+                continue;
+            };
+            if !fuse.is_finite()
+                || fuse > horizon
+                || !projectile.position.is_finite()
+                || !profile.kind.contains(DamageType::BLAST)
+                || !profile.damage.is_finite()
+                || profile.damage <= 0.0
+                || !radius.is_finite()
+                || radius <= 0.0
+                || best.is_some_and(|(earlier, _)| fuse >= earlier)
+            {
+                continue;
+            }
+            let point = projectile.position.clamp(origin + min, origin + max);
+            if projectile.position.distance(point) >= radius {
+                continue;
+            }
+            let sight = collision.trace(ohl_physics::Hull::Point, projectile.position, point);
+            if sight.start_solid || sight.all_solid || sight.fraction < 1.0 {
+                continue;
+            }
+            best = Some((fuse, projectile.position));
+        }
+        best.map(|(_, position)| position)
+    }
+
     /// Points `kind`'s model-backed rendering at one of
     /// `Level::studio_models`'s slots. `None` removes any mapping, so the
     /// kind is drawn as a transient sprite (or not at all) instead. See the
@@ -1483,21 +1690,25 @@ pub(crate) fn dispatch_blast(
 }
 
 /// Every entity a blast may hurt: everything carrying `Health`, positioned
-/// by its `Transform`. `ohl-ai`'s `Actor`-carrying monsters are not a
-/// dependency of this package yet (see `crate::components`'s note); the
-/// player, spawned in `crate::level`, already qualifies.
+/// by its authored transform. Posed world hitboxes take precedence; an actor
+/// without one uses its derived proxy rather than a point at its feet.
 fn blast_targets(
     level: &Level,
     bounds: &BTreeMap<CombatEntityId, (Vec3, Vec3)>,
 ) -> Vec<BlastTarget> {
     let mut targets = Vec::new();
-    for (entity, transform, _health) in
-        &mut level
-            .registry
-            .world
-            .query::<(ohl_game::hecs::Entity, &Transform, &ohl_combat::Health)>()
-    {
-        targets.push(BlastTarget::new(entity_id(entity), transform.origin));
+    for (entity, transform, _health, actor) in &mut level.registry.world.query::<(
+        ohl_game::hecs::Entity,
+        &Transform,
+        &ohl_combat::Health,
+        Option<&ohl_ai::Actor>,
+    )>() {
+        let mut target = BlastTarget::new(entity_id(entity), transform.origin);
+        if let Some(actor) = actor {
+            let (min, max) = actor.fallback_damage_bounds();
+            target.hitbox = Some((transform.origin + min, transform.origin + max));
+        }
+        targets.push(target);
     }
     for (id, &(min, max)) in bounds {
         if let Some(target) = targets.iter_mut().find(|target| target.id == *id) {
@@ -1558,6 +1769,46 @@ pub(crate) fn find_model_path(level: &Level, path: &str) -> Option<usize> {
         .studio_model_paths
         .iter()
         .position(|candidate| *candidate == needle)
+}
+
+#[cfg(test)]
+mod origin_frame_tests {
+    use super::*;
+
+    #[test]
+    fn blast_sampling_uses_body_bounds_and_real_posed_bounds_take_precedence() {
+        let text = "{\"classname\" \"worldspawn\"}\n{\"classname\" \"monster_barney\" \"origin\" \"100 20 0\"}";
+        let bytes = crate::test_support::ai_room_bsp(text, false);
+        let mut game = crate::Game::from_map_bytes(
+            &crate::MemoryAssets::new(),
+            crate::test_support::AI_MAP,
+            &bytes,
+        )
+        .expect("fixture");
+        let entity =
+            crate::test_support::entity_of_classname(&game, "monster_barney").expect("actor");
+        let (level, _) = game.level_and_systems_mut();
+        let id = entity_id(entity);
+        let samples = blast_targets(level, &BTreeMap::new());
+        let target = samples
+            .iter()
+            .find(|target| target.id == id)
+            .expect("target");
+        assert_eq!(
+            target.hitbox,
+            Some((Vec3::new(84.0, 4.0, 0.0), Vec3::new(116.0, 36.0, 72.0)))
+        );
+        let posed = (Vec3::new(99.0, 18.0, 3.0), Vec3::new(104.0, 25.0, 144.0));
+        let samples = blast_targets(level, &BTreeMap::from([(id, posed)]));
+        assert_eq!(
+            samples
+                .iter()
+                .find(|target| target.id == id)
+                .expect("target")
+                .hitbox,
+            Some(posed)
+        );
+    }
 }
 
 #[cfg(test)]

@@ -6996,16 +6996,26 @@ geometry to draw.
 **Project-authored:** a wall switched on while the player or a living
 monster stands inside it does not turn solid around them: the push-out
 that frees a player from a closing mover only acts on a brush that moves,
-so a wall appearing around someone would embed them for good. Each step
-the wall stays non-solid, in both collision models, while anyone's hull is
-embedded in it alone, and it turns solid the first step nobody is
-(`Level::hold_toggled_walls_for_occupants`); a `monster_generic` spawned
-"Not solid" (M9.42) is not solid to be embedded, and holds nothing up. Its
-map-logic state is on
-throughout, and it is drawn. No reviewed source says what the original
-does here; refusing to turn solid cannot strand anyone. The switched state
-is saved (save tag 39), so a load keeps a wall a spent trigger switched;
-`TODO(black-box)`: it is not carried across a level change.
+so a wall appearing around someone would embed them for good. Occupancy is
+checked independently for the player and monster collision models: the player
+model waits only for the supplied player body, and the monster model waits only
+for a living solid non-client Actor, queried at its canonical hull center.
+Both predicates are read before either model is suspended. Either sync pass
+queues a deduplicated re-enable check, so each model becomes solid on the first
+step its own occupants have left, even while the other model remains occupied
+or player movement is skipped after death. This intentionally replaces the
+earlier shared exemption, under which an embedded NPC also removed the barrier
+for the unrelated player and player-world weapon traces. A `monster_generic`
+spawned "Not solid" (M9.42) holds nothing up. Map visibility remains on throughout.
+
+The monster model is still shared by all NPCs and AI sight/attack queries; one
+eligible occupant suspends that wall for those unrelated users too. The test
+that this wall alone causes embedding remains, and an already-solid spawn-on
+wall with no re-enable edge gains no new occupancy scan. These are explicit
+project-authored limits. `TODO(black-box)`: no reviewed source establishes the
+original occupant-escape policy. The switched state is saved (tag 39), while
+these collision exemptions are derived again by sync and phase 2a after restore;
+no saved field changes. The switched state is not carried across a level change.
 
 `TODO(black-box)`: a user comment on the TWHL page says the entity "can be
 solid or non-solid for players, but is always solid to grenades/bullets";
@@ -8872,3 +8882,82 @@ Guarded by `crates/ohl-engine/tests/monster_transform_sync.rs`:
 `a_centred_origin_prop_keeps_its_placement`, and the two existing sync
 tests, which now assert the lift between `Actor` and `Transform` (walking,
 and straight after a save loads).
+
+## Monster authored anchors, body frames and continuation (M9.NEXT)
+
+The existing public Sven editor-metadata, MDL v10 format and TWHL centered-hull
+references establish their previously documented scopes. Sven editor boxes are
+not original-runtime measurements; model format fields do not establish exact
+anatomy or attack attachments. No new identifier, engine-source citation or
+payload observation is admitted by this reconciliation.
+
+Project-authored policy: Actor and Transform retain the raw model anchor.
+BodyFrame derives the selected hull's anchor-to-query translation, including
+validated custom model hull bottoms. Point, ceiling, fixed/rooted and documented
+centered-origin exceptions retain explicit policies. Movement, navigation,
+movers and door touch convert at their centered-query boundary and inverse once;
+model clipping bounds and posed hitboxes remain unshifted. Local model eyes
+rotate with yaw; finite metadata/proxy fallbacks and eye-based projectile
+muzzle/aim remain project choices, not anatomical parity.
+
+Bounded map/maker floor placement uses the query origin and existing clearance,
+then converts a real floor hit back once. Custom zero/negative offsets remain
+eligible; missing collision, solid starts, absent floor and invalid results
+retain placement. Maker metadata is derived before placement. Saved tag-18
+anchors win after reconstruction without another floor drop. Script placement,
+teleport and tag-28 return marks are anchors; held movement and yaw synchronize
+without HullLift. No ongoing monster gravity is added.
+
+Tag-25 route/goal, cover, move_target and enemy-memory positions remain absolute
+query/world points at runtime and on wire. Snapshot/restore copies and layout
+are unchanged, preserving arbitrary finite point bytes and signed zero. Fresh
+known anchors are projected for the receiving actor; sound and unknown-damage
+points remain literal. Player enemy-memory indexing and follower-roster
+persistence remain cuts. Compatibility covers shipped-main tag-25 conventions;
+unmarked unpublished older P2 anchor-valued saves cannot be distinguished and
+receive no guessed migration. No new saved state, tag or provenance sidecar.
+
+Two bounded P5 dependencies are included as project-authored locomotion policy.
+Initial ground-attachment descent applies only to explicitly eligible walkers,
+a nearby lower snapped waypoint outside full 3D arrival, and live full-hull
+support matching that waypoint. Bounded vertical slices retain the original
+maximum drop allowance through landing; no upward or later traversal repair is
+implied. After attachment, an eligible walker whose normal steering makes no
+horizontal progress may use a bounded supported flat approach to an appended
+terminal goal. Existing clearance, support probes, cursor, stuck timer and literal
+3D arrival remain authoritative; sampled support is not continuous support over
+arbitrary gaps. General step/stuck repair, final-sweep routing and air-node
+routing remain P5. TODO(black-box): original steering and descent fidelity.
+
+Autonomous fallback is traced. Legacy ScriptHold fallback deliberately retains
+straight-line wall crossing until P5; neither floor placement nor traced terminal
+arrival creates a general script-routing safety guarantee. The shared attack
+trace excludes only exact outward departure from an entity boundary, preserving
+interior/inward/parallel contacts and all other candidates.
+
+Grunt/assassin grenade readiness consults the actual projectile collision world.
+A bounded nominal approach integrates the existing launch velocity with the
+existing fixed-step gravity/point sweeps and refuses invalid input, solid starts
+or a fractional world collision. The approach is conservatively rounded to a
+whole fixed step. It is admission against the current world only: no entity
+interception, future moving geometry, later bounce, target motion, delayed-launch
+recheck or splash/self/ally guarantee. Profile, fuse, damage, owner, cooldown,
+RNG and serialization remain unchanged.
+
+The project-authored timed-BLAST guard considers live timed projectiles without
+filtering on owner life, uses the existing bounded warning window and actual
+player hull exposure, and checks movement inputs against collision/ledge probes.
+Active unarmed combat retreat retains priority; no-threat behavior, aim, valid
+fire, selection and reload remain intact. This is reactive current-position
+avoidance, not a ballistic planner or guaranteed escape.
+
+TODO(black-box): floor-settling timing and exceptional origins; eye/muzzle and
+proxy fidelity; legacy literal target intent; warning horizon/momentum and
+multi-threat tactics; original grenade admission and safety semantics. Synthetic
+controls establish bounded project policy only. Original smoke death guards and
+original grenade guard fixture remain required. Focused policy and grenade
+approach controls pass, including the clear-arc player-damage positive. Bypassing
+lob admission fails the intended first-species assertion; restored normals pass.
+Full final-source gates, original runtime baselines and fresh census remain
+pending; historical e117 runtime regressions confer no acceptance or cause/repair
+claim.

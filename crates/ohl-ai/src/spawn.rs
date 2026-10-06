@@ -67,7 +67,7 @@ impl MonsterSpawn {
             classification,
             brain,
             health: 100.0,
-            view_ofs: Vec3::new(0.0, 0.0, 28.0),
+            view_ofs: crate::BodyFrame::Feet.eye_offset(ohl_physics::Hull::Standing, None),
             hull: ohl_physics::Hull::Standing,
             difficulty: Difficulty::Easy,
         }
@@ -84,6 +84,7 @@ impl MonsterSpawn {
     #[must_use]
     pub fn with_hull(mut self, hull: ohl_physics::Hull) -> Self {
         self.hull = hull;
+        self.view_ofs = crate::BodyFrame::Feet.eye_offset(hull, None);
         self
     }
 
@@ -152,6 +153,11 @@ pub fn attach_monsters(
             alive: spawn.health > 0.0,
             is_client: false,
             hull: spawn.hull,
+            body_frame: crate::BodyFrame::for_model(
+                &MonsterKind::from_classname(&def.classname),
+                spawn.hull,
+                None,
+            ),
         };
         if registry
             .world

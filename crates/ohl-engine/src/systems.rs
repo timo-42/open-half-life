@@ -47,7 +47,7 @@ use ohl_render::{FreeFlyCamera, MoveInput};
 use crate::USE_RADIUS;
 use crate::ai::AiState;
 use crate::combat::CombatState;
-use crate::components::{HullLift, StudioAnim, StudioGait};
+use crate::components::{StudioAnim, StudioGait};
 use crate::input::Input;
 use crate::level::Level;
 use crate::pickups::PickupsState;
@@ -109,6 +109,7 @@ struct MoverMonster {
     entity: Entity,
     origin: Vec3,
     hull: Hull,
+    body_frame: ohl_ai::BodyFrame,
     /// Its species table says it opens doors.
     opens_doors: bool,
     /// A mover pushes it, and is blocked by it (`Systems::moved_by_movers`).
@@ -694,18 +695,18 @@ impl Systems {
     /// belongs here, once, right after the load has settled: copy the
     /// just-restored `Transform` onto `Actor` for every monster, so a
     /// monster's *next* think step starts from the save's position rather
-    /// than the map's. The copy puts back the monster's [`HullLift`], which
-    /// is derived from its species at spawn and so never saved.
+    /// than the map's. Both components keep the same authored anchor.
     pub(crate) fn sync_actor_from_transforms(level: &mut Level) {
-        for (transform, actor, lift) in &mut level
+        for (transform, actor) in &mut level
             .registry
             .world
-            .query::<(&Transform, &mut ohl_ai::Actor, Option<&HullLift>)>()
+            .query::<(&Transform, &mut ohl_ai::Actor)>()
             .with::<&ohl_ai::MonsterAi>()
         {
-            actor.origin = transform.origin + Vec3::Z * lift.map_or(0.0, |lift| lift.0);
+            actor.origin = transform.origin;
             actor.yaw = transform.angles.y;
         }
+        crate::ai::AiState::configure_actor_models(level);
     }
 
     /// `SECTION_PROJECTILES` (26): live projectiles and placed deployables.
@@ -868,6 +869,17 @@ impl Systems {
     #[must_use]
     pub fn projectile_count(&self) -> usize {
         self.projectiles.count()
+    }
+
+    pub(crate) fn timed_blast_threat(
+        &self,
+        collision: &ohl_physics::CollisionModel,
+        origin: Vec3,
+        hull: ohl_physics::Hull,
+        horizon: f32,
+    ) -> Option<Vec3> {
+        self.projectiles
+            .timed_blast_threat(collision, origin, hull, horizon)
     }
 
     /// Whether this frame draws a view model.
@@ -1052,7 +1064,7 @@ impl Systems {
         );
         self.player_systems(level, input, dt); // 3
         Self::actor_sync(level, camera, controller, dt); // 4
-        self.rebuild_hitbox_index(level, controller); // 5
+        self.rebuild_hitbox_index(level); // 5
         self.begin_map_effects(level, controller, dt); // 5b
         // A dead skirmish player's fire button is a respawn click (phase
         // 13c), not a shot, and a corpse neither reloads nor switches
@@ -1120,8 +1132,8 @@ impl Systems {
         // Doors, platforms and trains moved by last step's map logic must
         // collide where they now are, not where they were compiled.
         level.sync_brush_collision(dt);
-        // A `func_wall_toggle` switched on around the player or a monster
-        // waits, non-solid, until they have stepped out of it.
+        // A newly enabled wall waits independently in each collision model
+        // for that model's occupants, even when player movement is skipped.
         level.hold_toggled_walls_for_occupants(
             level
                 .collision
@@ -1324,6 +1336,7 @@ impl Systems {
         if let Ok(mut actor) = level.registry.world.get::<&mut ohl_ai::Actor>(player) {
             actor.origin = origin;
             actor.view_ofs = controller.eye_position() - origin;
+            actor.hull = controller.state.hull();
             actor.yaw = camera.yaw;
             if let Some(health) = health {
                 actor.health = health.current;
@@ -1353,10 +1366,7 @@ impl Systems {
     /// satchel must stay shootable — and instead ignored per trace by
     /// whichever trace must not hit itself (`crate::projectiles`' module
     /// doc; `ohl_combat::Projectile::self_id`/`owner`).
-    fn rebuild_hitbox_index(&mut self, level: &mut Level, controller: &PlayerController) {
-        if let Ok(mut actor) = level.registry.world.get::<&mut ohl_ai::Actor>(level.player) {
-            actor.hull = controller.state.hull();
-        }
+    fn rebuild_hitbox_index(&mut self, level: &mut Level) {
         crate::combat::rebuild_hitbox_index(&mut self.hitboxes, level);
         self.projectiles.update_blast_bounds(&self.hitboxes);
     }
@@ -1474,7 +1484,15 @@ impl Systems {
     /// Phase 8 — AI think and navigation. Runs before damage resolution on
     /// purpose: see the module note.
     fn ai_think(&mut self, level: &mut Level, dt: f32) {
-        self.ai.think(level, dt, &mut self.damage_queue);
+        self.ai.think(
+            level,
+            dt,
+            &mut self.damage_queue,
+            &crate::ai::GrenadeSafetyContext {
+                projectiles: &self.projectiles,
+                hitboxes: &self.hitboxes,
+            },
+        );
         for request in self.ai.take_projectile_requests() {
             self.projectiles.spawn_request(level, &request);
         }
@@ -1497,22 +1515,18 @@ impl Systems {
     /// was before this phase existed. Phase 5 catches up the following
     /// step, once this phase has run.
     ///
-    /// A monster held by a `scripted_sequence` follows the script's route
-    /// in phase 8 too, so its model must also follow its current `Actor`.
-    /// Scripted teleports and resets (`crate::ai`'s `place`) already write
-    /// both components with the same lift conversion, so this copy preserves
-    /// their placement as well as displaying scripted walks and turns.
-    ///
-    /// The copy takes off the monster's [`HullLift`]: `Actor` is the
-    /// centre of its hull, [`Transform`] its feet.
+    /// Scripted approach and facing also update Actor. Explicit script
+    /// placement writes Actor and Transform together, so copying the actor
+    /// here preserves those placements while keeping held locomotion visible
+    /// to rendering, posed hitboxes and saves throughout possession.
     fn sync_monster_transforms(level: &mut Level) {
-        for (actor, transform, lift) in &mut level
+        for (actor, transform) in &mut level
             .registry
             .world
-            .query::<(&ohl_ai::Actor, &mut Transform, Option<&HullLift>)>()
+            .query::<(&ohl_ai::Actor, &mut Transform)>()
             .with::<&ohl_ai::MonsterAi>()
         {
-            transform.origin = actor.origin - Vec3::Z * lift.map_or(0.0, |lift| lift.0);
+            transform.origin = actor.origin;
             transform.angles.y = actor.yaw;
         }
     }
@@ -1796,6 +1810,7 @@ impl Systems {
                     entity,
                     origin: actor.origin,
                     hull: actor.hull,
+                    body_frame: actor.body_frame,
                     opens_doors: spec.is_some_and(|spec| spec.can_open_doors),
                     moved_by_movers: !not_solid && Self::moved_by_movers(&kind, spec),
                 }
@@ -1857,12 +1872,14 @@ impl Systems {
             if !monster.opens_doors {
                 continue;
             }
-            let (mins, maxs) = HULL_SIZES[monster.hull.index()];
+            let (mins, maxs) = monster
+                .body_frame
+                .world_bounds(monster.hull, monster.origin);
             opened += level.simulation.touch_doors_by(
                 &mut level.registry,
                 Some(monster.entity),
-                monster.origin + Vec3::from_array(mins),
-                monster.origin + Vec3::from_array(maxs),
+                mins,
+                maxs,
             );
         }
         opened
@@ -1888,12 +1905,9 @@ impl Systems {
     /// (`ohl_physics::CollisionModel::trace_brush`): a monster that is
     /// still inside the mover at the place the mover's own move would have
     /// carried it to was inside it *before* the move too, so the embed is
-    /// not this step's doing and the monster is left alone. That is what
-    /// keeps a monster whose hull still starts a little inside the floor
-    /// it stands on (one with no floor within reach at spawn, or a kind
-    /// with no [`HullLift`]) from being "blocked" by the floor of every
-    /// lift it stands on, on every step. The push moves `Actor` (the hull
-    /// centre) and puts [`Transform`] its lift below.
+    /// not this step's doing and the monster is left alone. An authored
+    /// feet anchor on the mover's surface is an ordinary rider; only a
+    /// genuinely preexisting proxy penetration takes this branch.
     ///
     /// Every blocked mover then goes through `Simulation::block_movers`
     /// once per step, however many things blocked it: a door reverses and
@@ -1918,7 +1932,8 @@ impl Systems {
         let monsters = Self::thinking_monsters(level);
         if let Some(collision) = level.monster_collision.as_ref() {
             for monster in monsters.iter().filter(|monster| monster.moved_by_movers) {
-                let (origin, hull) = (monster.origin, monster.hull);
+                let hull = monster.hull;
+                let origin = monster.body_frame.anchor_to_query(hull, monster.origin);
                 let probe = collision.trace(hull, origin, origin);
                 let (true, Some(brush)) = (probe.start_solid, probe.brush_index) else {
                     continue;
@@ -1952,6 +1967,7 @@ impl Systems {
                     blocked.push((mover, monster.entity));
                     continue;
                 }
+                let candidate = monster.body_frame.query_to_anchor(hull, candidate);
                 if let Ok(mut actor) = level
                     .registry
                     .world
@@ -1959,11 +1975,10 @@ impl Systems {
                 {
                     actor.origin = candidate;
                 }
-                let lift = crate::ai::hull_lift_of(level, monster.entity);
                 if let Ok(mut transform) =
                     level.registry.world.get::<&mut Transform>(monster.entity)
                 {
-                    transform.origin = candidate - Vec3::Z * lift;
+                    transform.origin = candidate;
                 }
             }
         }
@@ -2302,6 +2317,73 @@ impl Default for Systems {
 #[cfg(test)]
 mod tests {
     use super::{Input, PendingEdges, Systems};
+
+    #[test]
+    fn rotating_mover_push_samples_the_centered_body_and_stores_the_anchor() {
+        use ohl_ai::Actor;
+        use ohl_formats::test_support::{Bsp30Builder, CollisionBrush};
+        use ohl_game::registry::Transform;
+        use ohl_physics::Vec3;
+        let mut builder = Bsp30Builder::new();
+        builder.set_entities_text("{\"classname\" \"worldspawn\"}\n{\"classname\" \"info_player_start\" \"origin\" \"1000 1000 1000\"}\n{\"classname\" \"monster_barney\" \"origin\" \"0 32 0\"}\n{\"classname\" \"func_door\" \"model\" \"*1\" \"angle\" \"-1\"}");
+        let heads = builder.push_collision_hulls(&[]);
+        builder.push_model([-1024.0; 3], [1024.0; 3], [0.0; 3], heads, 2, 0, 0);
+        let mins = [-64.0, -64.0, -64.0];
+        let maxs = [64.0, 64.0, 1.0];
+        let heads = builder.push_collision_hulls(&[CollisionBrush::box_brush(mins, maxs)]);
+        builder.push_model(mins, maxs, [0.0; 3], heads, 2, 0, 0);
+        let mut level = crate::level::Level::from_bytes(
+            &crate::MemoryAssets::new(),
+            "ohl_frame_mover",
+            &builder.build(),
+        )
+        .expect("synthetic mover");
+        let mut systems = Systems::default();
+        systems.ai.attach_level(
+            &mut level,
+            ohl_campaign::Difficulty::Easy,
+            &ohl_campaign::SkillTable::default(),
+        );
+        let entity = level
+            .registry
+            .world
+            .query::<(ohl_game::hecs::Entity, &ohl_ai::MonsterAi)>()
+            .iter()
+            .next()
+            .expect("actor")
+            .0;
+        let brush = level.brush_collision[0].1;
+        // A synthetic phase-2 motion sample: top advanced into the feet by
+        // one unit, with translation and an off-axis rotation about X.
+        level.brush_velocity.insert(brush, Vec3::Z * 10.0);
+        level.brush_rotation.insert(
+            brush,
+            crate::level::BrushRotation {
+                pivot: Vec3::ZERO,
+                angular_velocity: Vec3::X,
+                angle_degrees: 0.0,
+            },
+        );
+        systems.resolve_blocked_movers(&mut level, 0.1);
+        let actor = level.registry.world.get::<&Actor>(entity).expect("actor");
+        let transform = level
+            .registry
+            .world
+            .get::<&Transform>(entity)
+            .expect("transform");
+        assert!(
+            actor.origin.abs_diff_eq(Vec3::new(0.0, 28.4, 4.2), 0.001),
+            "the nonzero body offset changes angular point velocity: {:?}",
+            actor.origin
+        );
+        assert_eq!(actor.origin, transform.origin);
+        let collision = level.monster_collision.as_ref().expect("collision");
+        assert!(
+            !collision
+                .trace(actor.hull, actor.query_origin(), actor.query_origin())
+                .start_solid
+        );
+    }
 
     fn systems() -> Systems {
         Systems::default()

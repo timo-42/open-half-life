@@ -252,9 +252,9 @@ impl Default for Senses {
 pub struct Viewer {
     /// The looker itself, so it never sees itself.
     pub entity: Entity,
-    /// Its world-space origin.
+    /// Its navigation anchor (player feet, monster authored model anchor).
     pub origin: Vec3,
-    /// The eye offset above the origin.
+    /// World-space eye displacement from the navigation anchor.
     pub view_ofs: Vec3,
     /// The direction it faces, as a unit vector.
     pub forward: Vec3,
@@ -284,9 +284,9 @@ pub struct Candidate {
     pub entity: Entity,
     /// Its faction.
     pub classification: Classification,
-    /// Its world-space origin.
+    /// Its navigation anchor (player feet, monster authored model anchor).
     pub origin: Vec3,
-    /// The eye offset used as the trace endpoint.
+    /// World-space eye displacement from the navigation anchor.
     pub view_ofs: Vec3,
     /// The direction it faces, used for `ENEMY_FACING_ME`.
     pub forward: Vec3,
@@ -636,7 +636,8 @@ pub fn listen(ears: Vec3, senses: &Senses, sounds: &SoundList) -> ListenResult {
 pub struct EnemyMemory {
     /// The enemy.
     pub entity: Entity,
-    /// Where it was last actually seen.
+    /// Remembered absolute query/world destination, not necessarily a target center.
+    /// Engine saves preserve this literal point; damage and sight have different sources.
     pub last_known_position: Vec3,
     /// Seconds since it was last seen; zero while visible.
     pub time_since_seen: f32,
