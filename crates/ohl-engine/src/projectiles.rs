@@ -298,6 +298,46 @@ impl ProjectileSystem {
             + self.deployables.tripmines().len()
     }
 
+    /// TODO(black-box): project-authored current-position warning, not a blast forecast.
+    /// Phase 8 hears surviving phase-7 grenades; tick-long events do not accumulate.
+    pub(crate) fn emit_grenade_danger(&self, ai: &mut ohl_ai::AiWorld, dt: f32) {
+        if !dt.is_finite() || dt <= 0.0 {
+            return;
+        }
+        for projectile in self.projectiles.projectiles() {
+            if projectile.kind != ProjectileKind::HandGrenade
+                || !projectile.position.is_finite()
+                || !projectile
+                    .fuse
+                    .is_some_and(|left| left.is_finite() && left > 0.0)
+            {
+                continue;
+            }
+            let payload = self
+                .attacks
+                .get(&projectile.id)
+                .copied()
+                .unwrap_or(AttackPayload::legacy(projectile.kind));
+            let Some(radius) = payload.radius else {
+                continue;
+            };
+            if !payload.damage.is_finite()
+                || payload.damage <= 0.0
+                || !payload.kind.contains(DamageType::BLAST)
+                || !radius.is_finite()
+                || radius <= 0.0
+            {
+                continue;
+            }
+            let warning =
+                ohl_ai::SoundEvent::new(ohl_ai::SoundKind::Danger, projectile.position, radius)
+                    .lasting(dt);
+            if !ai.emit_sound(warning) {
+                break; // Preserve older sounds and the existing capacity/rejection order.
+            }
+        }
+    }
+
     /// TODO(black-box): reject human throws exposing their live owner or allies
     /// in one frozen-world calculation. This predicts no future actor/brush motion.
     /// Scratch IDs/RNG never enter live state; HandGrenade integration uses no RNG.
@@ -2469,5 +2509,226 @@ mod resolved_profile_tests {
                 assert!((hits[0].info.amount - 4.0).abs() < f32::EPSILON);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod grenade_danger_tests {
+    use super::*;
+    use ohl_ai::{AiWorld, SoundEvent, SoundKind};
+
+    fn grenade(system: &mut ProjectileSystem, position: Vec3) -> ProjectileId {
+        system
+            .projectiles
+            .spawn(
+                ProjectileKind::HandGrenade,
+                None,
+                position,
+                Vec3::ZERO,
+                &system.tuning,
+            )
+            .expect("generated grenade")
+    }
+
+    #[test]
+    fn timed_grenade_danger_rejects_invalid_or_non_timed_blast_inputs() {
+        let mut system = ProjectileSystem::new(7);
+        let id = grenade(&mut system, Vec3::ZERO);
+        let rng = system.projectiles.next_id_and_rng_state();
+        for dt in [0.0, -0.01, f32::NAN, f32::INFINITY] {
+            let mut ai = AiWorld::new(0);
+            system.emit_grenade_danger(&mut ai, dt);
+            assert!(ai.sounds().is_empty());
+        }
+        for fuse in [
+            None,
+            Some(0.0),
+            Some(-1.0),
+            Some(f32::NAN),
+            Some(f32::INFINITY),
+        ] {
+            system.projectiles.get_mut(id).unwrap().fuse = fuse;
+            let mut ai = AiWorld::new(0);
+            system.emit_grenade_danger(&mut ai, crate::TICK_SECONDS);
+            assert!(ai.sounds().is_empty());
+        }
+        system.projectiles.get_mut(id).unwrap().fuse = Some(5.0);
+        for kind in [
+            ProjectileKind::Rocket,
+            ProjectileKind::Mp5Grenade,
+            ProjectileKind::Snark,
+        ] {
+            system.projectiles.get_mut(id).unwrap().kind = kind;
+            let mut ai = AiWorld::new(0);
+            system.emit_grenade_danger(&mut ai, crate::TICK_SECONDS);
+            assert!(
+                ai.sounds().is_empty(),
+                "a fuse alone does not qualify other kinds"
+            );
+        }
+        system.projectiles.get_mut(id).unwrap().kind = ProjectileKind::HandGrenade;
+        system.projectiles.get_mut(id).unwrap().position = Vec3::splat(f32::NAN);
+        let mut ai = AiWorld::new(0);
+        system.emit_grenade_danger(&mut ai, crate::TICK_SECONDS);
+        assert!(ai.sounds().is_empty());
+        system.projectiles.get_mut(id).unwrap().position = Vec3::ZERO;
+        let valid = AttackPayload {
+            damage: 100.0,
+            kind: DamageType::BLAST,
+            radius: Some(200.0),
+        };
+        let invalid = [
+            AttackPayload {
+                kind: DamageType::BULLET,
+                ..valid
+            },
+            AttackPayload {
+                damage: 0.0,
+                ..valid
+            },
+            AttackPayload {
+                damage: -1.0,
+                ..valid
+            },
+            AttackPayload {
+                damage: f32::NAN,
+                ..valid
+            },
+            AttackPayload {
+                damage: f32::INFINITY,
+                ..valid
+            },
+            AttackPayload {
+                radius: None,
+                ..valid
+            },
+            AttackPayload {
+                radius: Some(0.0),
+                ..valid
+            },
+            AttackPayload {
+                radius: Some(-1.0),
+                ..valid
+            },
+            AttackPayload {
+                radius: Some(f32::NAN),
+                ..valid
+            },
+            AttackPayload {
+                radius: Some(f32::INFINITY),
+                ..valid
+            },
+        ];
+        for payload in invalid {
+            system.attacks.insert(id, payload);
+            let mut ai = AiWorld::new(0);
+            system.emit_grenade_danger(&mut ai, crate::TICK_SECONDS);
+            assert!(
+                ai.sounds().is_empty(),
+                "invalid stored payload cannot use legacy fallback"
+            );
+        }
+        assert_eq!(system.projectiles.next_id_and_rng_state(), rng);
+    }
+
+    // Exact payload/radius/lifetime values are the transport contract, not approximate geometry.
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn timed_grenade_danger_preserves_profile_order_capacity_and_tick_expiry() {
+        let mut system = ProjectileSystem::new(7);
+        let first = grenade(&mut system, Vec3::X * 10.0);
+        let second = grenade(&mut system, Vec3::X * 20.0);
+        system.attacks.insert(
+            first,
+            AttackPayload {
+                damage: 3.0,
+                kind: DamageType::BLAST | DamageType::ACID,
+                radius: Some(777.0),
+            },
+        );
+        // Ownership is deliberately irrelevant; neither None nor a stale full ID is filtered.
+        system.projectiles.get_mut(second).unwrap().owner = Some(CombatEntityId(0x1_0000_0001));
+        let mut ai = AiWorld::new(0);
+        system.emit_grenade_danger(&mut ai, crate::TICK_SECONDS);
+        let warnings = ai.sounds().events();
+        assert_eq!(warnings.len(), 2);
+        assert_eq!(warnings[0].position, Vec3::X * 10.0);
+        assert_eq!(warnings[0].radius, 777.0);
+        assert_eq!(warnings[1].position, Vec3::X * 20.0);
+        assert_eq!(
+            warnings[1].radius, 200.0,
+            "missing metadata retains the actual legacy fallback"
+        );
+        assert!(
+            warnings
+                .iter()
+                .all(|w| w.kind == SoundKind::Danger && w.lifetime == crate::TICK_SECONDS)
+        );
+        ai.tick(
+            &mut ohl_game::hecs::World::new(),
+            &ohl_ai::SightContext::empty(),
+            crate::TICK_SECONDS,
+        );
+        assert!(
+            ai.sounds().is_empty(),
+            "warnings expire after the ordinary hearing pass"
+        );
+
+        let old = SoundEvent::new(SoundKind::World, -Vec3::X, 10.0).lasting(1.0);
+        for _ in 0..ohl_ai::senses::MAX_SOUNDS - 1 {
+            assert!(ai.emit_sound(old));
+        }
+        system.emit_grenade_danger(&mut ai, crate::TICK_SECONDS);
+        assert_eq!(ai.sounds().len(), ohl_ai::senses::MAX_SOUNDS);
+        assert!(
+            ai.sounds().events()[..ohl_ai::senses::MAX_SOUNDS - 1]
+                .iter()
+                .all(|w| *w == old)
+        );
+        assert_eq!(
+            ai.sounds().events().last().unwrap().position,
+            Vec3::X * 10.0
+        );
+        let full = ai.sounds().events().to_vec();
+        system.emit_grenade_danger(&mut ai, crate::TICK_SECONDS);
+        assert_eq!(ai.sounds().events(), full, "no eviction when already full");
+    }
+
+    #[test]
+    fn timed_grenade_danger_ends_after_actual_phase7_detonation() {
+        let mut level = Level::from_bytes(
+            &crate::MemoryAssets::new(),
+            "ohlsynth",
+            &crate::test_support::synthetic_map_bsp(),
+        )
+        .unwrap();
+        let mut system = ProjectileSystem::new(0);
+        let id = grenade(&mut system, Vec3::new(0.0, 0.0, 100.0));
+        system.projectiles.get_mut(id).unwrap().fuse = Some(crate::TICK_SECONDS * 0.5);
+        let mut ai = AiWorld::new(0);
+        system.emit_grenade_danger(&mut ai, crate::TICK_SECONDS);
+        assert_eq!(
+            ai.sounds().len(),
+            1,
+            "positive remaining fuse warns before phase7"
+        );
+        ai.tick(
+            &mut ohl_game::hecs::World::new(),
+            &ohl_ai::SightContext::empty(),
+            crate::TICK_SECONDS,
+        );
+        system.tick(
+            &mut level,
+            &HitboxIndex::new(ohl_combat::HitboxLimits::default()),
+            crate::TICK_SECONDS,
+            &mut Vec::new(),
+            &mut TransientSprites::default(),
+        );
+        assert!(
+            system.projectiles.get(id).is_none(),
+            "the real fuse removed the grenade"
+        );
+        system.emit_grenade_danger(&mut ai, crate::TICK_SECONDS);
+        assert!(ai.sounds().is_empty(), "no warning survives removal");
     }
 }
