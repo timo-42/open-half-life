@@ -47,7 +47,7 @@ use ohl_render::{FreeFlyCamera, MoveInput};
 use crate::USE_RADIUS;
 use crate::ai::AiState;
 use crate::combat::CombatState;
-use crate::components::StudioAnim;
+use crate::components::{HullLift, StudioAnim};
 use crate::input::Input;
 use crate::level::Level;
 use crate::pickups::PickupsState;
@@ -702,15 +702,16 @@ impl Systems {
     /// belongs here, once, right after the load has settled: copy the
     /// just-restored `Transform` onto `Actor` for every monster, so a
     /// monster's *next* think step starts from the save's position rather
-    /// than the map's.
+    /// than the map's. The copy puts back the monster's [`HullLift`], which
+    /// is derived from its species at spawn and so never saved.
     pub(crate) fn sync_actor_from_transforms(level: &mut Level) {
-        for (transform, actor) in &mut level
+        for (transform, actor, lift) in &mut level
             .registry
             .world
-            .query::<(&Transform, &mut ohl_ai::Actor)>()
+            .query::<(&Transform, &mut ohl_ai::Actor, Option<&HullLift>)>()
             .with::<&ohl_ai::MonsterAi>()
         {
-            actor.origin = transform.origin;
+            actor.origin = transform.origin + Vec3::Z * lift.map_or(0.0, |lift| lift.0);
             actor.yaw = transform.angles.y;
         }
     }
@@ -1506,15 +1507,18 @@ impl Systems {
     /// meant to stay authoritative over whatever route `AiWorld::tick` ran
     /// for that same monster while held, rather than have this phase
     /// immediately overwrite it.
+    ///
+    /// The copy takes off the monster's [`HullLift`]: `Actor` is the
+    /// centre of its hull, [`Transform`] its feet.
     fn sync_monster_transforms(level: &mut Level) {
-        for (actor, transform) in &mut level
+        for (actor, transform, lift) in &mut level
             .registry
             .world
-            .query::<(&ohl_ai::Actor, &mut Transform)>()
+            .query::<(&ohl_ai::Actor, &mut Transform, Option<&HullLift>)>()
             .with::<&ohl_ai::MonsterAi>()
             .without::<&ohl_ai::ScriptHold>()
         {
-            transform.origin = actor.origin;
+            transform.origin = actor.origin - Vec3::Z * lift.map_or(0.0, |lift| lift.0);
             transform.angles.y = actor.yaw;
         }
     }
@@ -1891,10 +1895,11 @@ impl Systems {
     /// still inside the mover at the place the mover's own move would have
     /// carried it to was inside it *before* the move too, so the embed is
     /// not this step's doing and the monster is left alone. That is what
-    /// keeps a monster whose map origin sits at its feet — most of them,
-    /// in real maps, while every AI trace here reads the origin as the
-    /// hull's centre — from being "blocked" by the floor of every lift it
-    /// stands on, on every step.
+    /// keeps a monster whose hull still starts a little inside the floor
+    /// it stands on (one with no floor within reach at spawn, or a kind
+    /// with no [`HullLift`]) from being "blocked" by the floor of every
+    /// lift it stands on, on every step. The push moves `Actor` (the hull
+    /// centre) and puts [`Transform`] its lift below.
     ///
     /// Every blocked mover then goes through `Simulation::block_movers`
     /// once per step, however many things blocked it: a door reverses and
@@ -1960,10 +1965,11 @@ impl Systems {
                 {
                     actor.origin = candidate;
                 }
+                let lift = crate::ai::hull_lift_of(level, monster.entity);
                 if let Ok(mut transform) =
                     level.registry.world.get::<&mut Transform>(monster.entity)
                 {
-                    transform.origin = candidate;
+                    transform.origin = candidate - Vec3::Z * lift;
                 }
             }
         }

@@ -97,6 +97,23 @@ pub struct PlayerTag;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Owner(pub Entity);
 
+/// How far a standing monster's hull centre sits above its feet, in world
+/// units.
+///
+/// A map places a monster by its feet, and its
+/// [`ohl_game::registry::Transform`] keeps it there: that is where its
+/// model is drawn and where its hitboxes are posed. Every AI trace
+/// reads `ohl_ai::Actor::origin` as the centre of the species' hull
+/// instead. So for a monster carrying this,
+/// `Actor::origin == Transform::origin + Z * lift`, and every place that
+/// writes one of the two from the other converts. A monster without it
+/// (a flier, a swimmer, the ceiling-hung barnacle) keeps the two equal.
+/// Attached at spawn by `crate::ai::AiState::attach_level` and
+/// `crate::ai::AiState::tick_makers`; derived from the species, so it is
+/// never saved.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HullLift(pub f32);
+
 /// Marks a `hecs` entity as `crate::projectiles::ProjectileSystem`'s own
 /// model-backed rendering of one placed satchel charge or tripmine, so a
 /// generic hit against it (the player's hitscan, another explosive's blast)

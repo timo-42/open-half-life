@@ -17,8 +17,12 @@
 # M9.45 removed damage/death expectations while all reachable attacks
 # were ignored by the target's published immunity. Projectile integration
 # now requires monster damage from grunt grenades: the published 100-point
-# blast hurts Gargantuas. Monster death remains forbidden. Commands below
-# are unchanged; see FORMAT_SOURCES, Live projectiles and deployables.
+# blast hurts Gargantuas. Commands below are unchanged; see
+# FORMAT_SOURCES, Live projectiles and deployables.
+#
+# M9.59 (monsters stand on their floor): grunt grenades now leave from
+# standing height, and on this walk one kills the thrower's squadmate, so
+# monster death is no longer forbidden.
 #
 # Expected fixed log lines, asserted by the harness rather than parsed
 # from this file:
@@ -26,7 +30,7 @@
 #            "The player moved from the spawn point.", "A monster took damage."
 #   absent:  "The player is inside solid geometry." (this scenario's own
 #            regression guard for the PR #91 class of bug)
-#            plus every other fixed line.
+#            plus every other fixed line except "A monster died.".
 20 look 0 180
 60 forward
 8 look 0 20
