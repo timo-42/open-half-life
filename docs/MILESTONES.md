@@ -9638,3 +9638,26 @@ monsters, so the model stays where the walk began until the script lets
 go); this predates the fix and is left for its own package. Walkers still
 have no gravity once spawned: a route that ends above or below the floor
 still puts the monster at that height, as before.
+
+## M9.60 — Scripted monsters visibly move and turn
+
+Reported in the welcome lobby after the tram ride: NPCs animated in place
+instead of visibly walking. The scripted-walk gap recorded in M9.59 was
+the cause: phase 8 advanced a possessed monster's `Actor`, but phase 8b
+skipped every entity carrying `ScriptHold`, leaving its rendered `Transform`
+at the start of the route until possession ended. Turning was skipped too,
+and saving during the walk captured the stale model placement, so loading
+put the monster back at its starting position.
+
+Phase 8b now copies every thinking monster's current position and yaw,
+including possessed monsters, with the existing `HullLift` conversion.
+Scripted teleports and resets already write both components consistently.
+No AI, movement speed, animation selection or save-format changes.
+
+Three synthetic regression tests in `tests/monster_transform_sync.rs`
+cover visible walking and running for both script entity types on every
+step while possession is active, visible turning without translating, and
+saving and resuming halfway through a scripted walk. All three reproduced
+the bug before the fix. The five relevant integration suites pass (71
+tests), including existing script completion, teleport, interruption,
+following, prisoner and mover checks.
