@@ -59,6 +59,8 @@ pub mod nav;
 mod combat;
 pub mod damage_map;
 pub mod guard;
+#[cfg(test)]
+mod origin_frame_tests;
 mod pickups;
 mod presentation;
 pub mod pushables;
@@ -91,9 +93,7 @@ pub mod test_support;
 
 pub use ai::{AiState, AttackShape, NoProjectiles, ProjectileRequest, ProjectileSpawner};
 pub use assets::{AssetFsSource, AssetSource, MemoryAssets};
-pub use components::{
-    Charger, Corpse, HullLift, MonsterMaker, Owner, Pickup, PlayerTag, StudioAnim,
-};
+pub use components::{Charger, Corpse, MonsterMaker, Owner, Pickup, PlayerTag, StudioAnim};
 pub use error::{EngineError, Result};
 pub use game::{Game, GameConfig, GameEvent};
 pub use guard::{GuardDecision, guard_input, guard_step};

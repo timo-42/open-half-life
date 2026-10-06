@@ -92,6 +92,9 @@ pub const GUARD_RETREAT_PROBE: f32 = 48.0;
 /// the probed heading is treated as a ledge and skipped. Project-authored.
 pub const GUARD_RETREAT_MAX_DROP: f32 = 64.0;
 
+/// Project-authored reactive warning window; no ballistic prediction is implied.
+const TIMED_BLAST_RETREAT_SECONDS: f32 = 2.0;
+
 /// The headings a retreat considers, in degrees off "straight away from
 /// the threat", tried in this order.
 ///
@@ -156,16 +159,14 @@ pub struct GuardDecision {
     pub firing: bool,
     /// Whether this tick presses reload.
     pub reloading: bool,
-    /// Whether this tick backs away from the threat instead of engaging
-    /// it (nothing carried can reach it).
+    /// Whether this tick backs away from an unengageable monster or timed blast.
     pub retreating: bool,
 }
 
 /// One tick of the guard loop for `game`: see the module docs.
 ///
-/// Holds no movement key ever — guarding is standing your ground, and a
-/// route that has arrived where it meant to arrive must not wander off
-/// mid-wait.
+/// Holds position unless the existing retreat policy finds a safe escape from
+/// an unengageable monster or an imminent live timed blast.
 #[must_use]
 pub fn guard_input(game: &Game) -> Input {
     guard_step(game).0
@@ -174,6 +175,18 @@ pub fn guard_input(game: &Game) -> Input {
 /// [`guard_input`] plus the [`GuardDecision`] behind it.
 #[must_use]
 pub fn guard_step(game: &Game) -> (Input, GuardDecision) {
+    let (mut input, mut decision) = combat_guard_step(game);
+    if game.player_health() > 0.0
+        && !decision.retreating
+        && let Some(threat) = game.timed_blast_threat(TIMED_BLAST_RETREAT_SECONDS)
+    {
+        input = blast_retreat_input(game, threat, input);
+        decision.retreating = true;
+    }
+    (input, decision)
+}
+
+fn combat_guard_step(game: &Game) -> (Input, GuardDecision) {
     let mut input = Input::default();
     let mut decision = GuardDecision::default();
     if game.player_health() <= 0.0 {
@@ -481,6 +494,60 @@ fn retreat_input(game: &Game, target: Vec3) -> Input {
     input
 }
 
+/// Project-authored: probe all eight walking inputs after the existing combat
+/// turn. Preserve that view and its firing decision; rank safe wishes away from
+/// the current blast, but permit a toward-side exit when cornered. This is a
+/// local clearance policy, not a guarantee against a future blast trajectory.
+fn blast_retreat_input(game: &Game, threat: Vec3, mut input: Input) -> Input {
+    input.forward = 0;
+    input.right = 0;
+    let origin = Vec3::from_array(game.player_origin());
+    let Some(collision) = game.collision() else {
+        return input;
+    };
+    if !origin.is_finite() || !threat.is_finite() {
+        return input;
+    }
+    let away = (origin - threat)
+        .truncate()
+        .try_normalize()
+        .unwrap_or(glam::Vec2::X);
+    let mut best: Option<(f32, Input)> = None;
+    for (forward, right) in [
+        (1, 0),
+        (1, 1),
+        (0, 1),
+        (-1, 1),
+        (-1, 0),
+        (-1, -1),
+        (0, -1),
+        (1, -1),
+    ] {
+        let candidate = Input {
+            forward,
+            right,
+            ..input
+        };
+        let Some((hull, wish)) = game.guard_movement_wish(&candidate) else {
+            continue;
+        };
+        let score = wish.truncate().dot(away);
+        if best.is_some_and(|(best_score, _)| score <= best_score) {
+            continue;
+        }
+        let landing = origin + wish * GUARD_RETREAT_PROBE;
+        let ahead = collision.trace(hull, origin, landing);
+        if ahead.fraction < 1.0 || ahead.start_solid || ahead.all_solid {
+            continue;
+        }
+        let down = collision.trace(hull, landing, landing - Vec3::Z * GUARD_RETREAT_MAX_DROP);
+        if down.fraction < 1.0 && !down.start_solid && !down.all_solid {
+            best = Some((score, candidate));
+        }
+    }
+    best.map_or(input, |(_, candidate)| candidate)
+}
+
 /// The angle, in degrees, that [`GUARD_AIM_RADIUS`] subtends at
 /// `distance` — capped at [`GUARD_AIM_TOLERANCE_DEGREES`] so a target in
 /// the player's face does not widen the tolerance to nonsense.
@@ -503,6 +570,239 @@ fn shortest_turn(from: f32, to: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Keep the corner/setup/input checks together; exact authored inputs are the oracle.
+    #[allow(clippy::too_many_lines, clippy::float_cmp)]
+    #[test]
+    fn a_blast_corner_exit_preserves_the_aimed_combat_input() {
+        use crate::save_state::FiringSnapshot;
+        use crate::test_support::{
+            PLAN_SCRIPTED_MAP, PLAN_SCRIPTED_MONSTER_MODEL, ScriptedStart, plan_scripted_goal_bsp,
+            plan_scripted_monster_model_bytes,
+        };
+        use crate::{MemoryAssets, StartInventoryItem, TICK_SECONDS};
+
+        let mut assets = MemoryAssets::new();
+        assets.insert(
+            &format!("maps/{PLAN_SCRIPTED_MAP}.bsp"),
+            plan_scripted_goal_bsp("ohlplannext", ScriptedStart::ByHostileMonster),
+        );
+        assets.insert(
+            PLAN_SCRIPTED_MONSTER_MODEL,
+            plan_scripted_monster_model_bytes(),
+        );
+        let mut game = Game::load(&assets, PLAN_SCRIPTED_MAP).expect("authored corridor");
+        game.give_start_inventory(&[StartInventoryItem::Weapon(WeaponId::Mp5)]);
+        let mut save = game.to_save(0);
+        save.view.position = [-239.0, 79.0, 36.03125];
+        save.view.yaw = 0.0;
+        save.view.pitch = 0.0;
+        let index = WeaponId::ALL
+            .iter()
+            .position(|id| *id == WeaponId::Mp5)
+            .unwrap();
+        let selected = u8::try_from(index).expect("small weapon table");
+        let inventory = save.inventory.as_mut().expect("inventory");
+        inventory.weapons[index].clip = spec(WeaponId::Mp5).clip_size.unwrap();
+        inventory.selected = Some(selected);
+        inventory.firing = Some(FiringSnapshot {
+            weapon: selected,
+            state_tag: 0,
+            timer: 0.0,
+        });
+        let mut game = Game::from_save(&assets, &save).expect("authored corner placement");
+        let origin = Vec3::from_array(game.player_origin());
+        assert_eq!(origin.to_array(), save.view.position);
+        let health = game.player_health();
+        let selected = game.inventory().selected();
+        let clip = game.inventory().clip(WeaponId::Mp5);
+        let hostiles: Vec<_> = game
+            .hostile_monster_eyes()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        // Save loading leaves the index empty; a real phase 5 builds posed hitboxes.
+        game.tick(TICK_SECONDS, &Input::default());
+        assert!(
+            game.player_health() == health
+                && game.inventory().selected() == selected
+                && game.inventory().clip(WeaponId::Mp5) == clip
+                && game
+                    .hostile_monster_eyes()
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect::<Vec<_>>()
+                    == hostiles,
+            "index warmup preserves health, weapon state and living hostile identities"
+        );
+        let origin = Vec3::from_array(game.player_origin());
+        let threat = Vec3::new(-100.0, 0.0, 1.0);
+        let collision = game.collision().expect("real world hulls");
+        let at = collision.trace(Hull::Standing, origin, origin);
+        assert!(
+            !at.start_solid && !at.all_solid,
+            "corner is a clear standing placement"
+        );
+        let away = (origin - threat).truncate().normalize();
+        let yaw = away.y.atan2(away.x).to_degrees();
+        for offset in GUARD_RETREAT_OFFSETS {
+            let radians = (yaw + offset).to_radians();
+            let heading = Vec3::new(radians.cos(), radians.sin(), 0.0);
+            let trace = collision.trace(
+                Hull::Standing,
+                origin,
+                origin + heading * GUARD_RETREAT_PROBE,
+            );
+            assert!(
+                trace.fraction < 1.0,
+                "every old away-semicircle heading hits a wall"
+            );
+        }
+        let (combat, decision) = combat_guard_step(&game);
+        assert!(
+            decision.has_target && decision.firing && combat.attack,
+            "loaded weapon has a real aimed target"
+        );
+        assert_ne!(
+            combat.mouse_delta,
+            (0.0, 0.0),
+            "movement must use the committed turn"
+        );
+        let input = blast_retreat_input(&game, threat, combat);
+        assert_ne!(
+            (input.forward, input.right),
+            (0, 0),
+            "the full input circle has a clear corner exit"
+        );
+        assert_eq!(
+            Input {
+                forward: combat.forward,
+                right: combat.right,
+                ..input
+            },
+            combat,
+            "aim, attack, selection, reload and every other input remain unchanged"
+        );
+        let (hull, wish) = game
+            .guard_movement_wish(&input)
+            .expect("actual committed movement");
+        assert_eq!(hull, Hull::Standing);
+        assert!(
+            wish.truncate().dot(away) < 0.0,
+            "the clear exit is outside the old hemisphere"
+        );
+        let landing = origin + wish * GUARD_RETREAT_PROBE;
+        let ahead = collision.trace(hull, origin, landing);
+        assert!(ahead.fraction >= 1.0 && !ahead.start_solid && !ahead.all_solid);
+        let down = collision.trace(hull, landing, landing - Vec3::Z * GUARD_RETREAT_MAX_DROP);
+        assert!(down.fraction < 1.0 && !down.start_solid && !down.all_solid);
+        game.tick(TICK_SECONDS, &input);
+        let moved = Vec3::from_array(game.player_origin()) - origin;
+        assert!(
+            moved.truncate().dot(wish.truncate()) > 0.0,
+            "the real controller moves along the checked input"
+        );
+    }
+
+    // Exact restored positions and complete input/decision equality are the oracle.
+    #[allow(clippy::too_many_lines, clippy::float_cmp)]
+    #[test]
+    fn a_blast_priority_preserves_an_existing_combat_retreat() {
+        use crate::MemoryAssets;
+        use crate::save_state::{
+            ProjectileAttackSnapshot, ProjectileRuntimeSnapshot, ProjectileSnapshot,
+        };
+        use crate::test_support::{
+            PLAN_SCRIPTED_MAP, PLAN_SCRIPTED_MONSTER_MODEL, ScriptedStart, plan_scripted_goal_bsp,
+            plan_scripted_monster_model_bytes,
+        };
+
+        let mut assets = MemoryAssets::new();
+        assets.insert(
+            &format!("maps/{PLAN_SCRIPTED_MAP}.bsp"),
+            plan_scripted_goal_bsp("ohlplannext", ScriptedStart::ByHostileMonster),
+        );
+        assets.insert(
+            PLAN_SCRIPTED_MONSTER_MODEL,
+            plan_scripted_monster_model_bytes(),
+        );
+        let game = Game::load(&assets, PLAN_SCRIPTED_MAP).expect("authored unarmed corridor");
+        let mut save = game.to_save(0);
+        save.view.position = [-200.0, 0.0, 36.03125];
+        save.view.yaw = 180.0;
+        let threat = Vec3::new(-224.0, 0.0, 1.0);
+        let projectiles = save.projectiles.as_mut().expect("physics snapshot");
+        projectiles.projectile_next_id = 1;
+        projectiles.projectiles = vec![ProjectileSnapshot {
+            id: 0,
+            kind_tag: 3,
+            owner: None,
+            position: threat.to_array(),
+            velocity: [0.0; 3],
+            age: 3.0,
+            fuse: Some(1.0),
+            guide_point: None,
+            target: None,
+            attack_cooldown: 0.0,
+            hop_cooldown: 0.0,
+            resting: true,
+        }];
+        save.projectile_runtime = Some(ProjectileRuntimeSnapshot {
+            attacks: vec![ProjectileAttackSnapshot {
+                id: 0,
+                damage: 100.0,
+                damage_bits: ohl_combat::DamageType::BLAST.bits(),
+                blast_radius: Some(200.0),
+                owner: None,
+                target: None,
+            }],
+            ..ProjectileRuntimeSnapshot::default()
+        });
+        let mut game = Game::from_save(&assets, &save).expect("authored competing threats");
+        assert_eq!(game.player_origin(), save.view.position);
+        let health = game.player_health();
+        let selected = game.inventory().selected();
+        let clip = game.inventory().clip(WeaponId::Mp5);
+        let hostiles: Vec<_> = game
+            .hostile_monster_eyes()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        // Exercise the real phase-5 path before asking whether a shot can reach.
+        game.tick(crate::TICK_SECONDS, &Input::default());
+        assert!(
+            game.player_health() == health
+                && game.inventory().selected() == selected
+                && game.inventory().clip(WeaponId::Mp5) == clip
+                && game
+                    .hostile_monster_eyes()
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect::<Vec<_>>()
+                    == hostiles,
+            "index warmup preserves health, weapon state and living hostile identities"
+        );
+        assert_eq!(
+            game.timed_blast_threat(TIMED_BLAST_RETREAT_SECONDS),
+            Some(threat),
+            "the timed threat is admissible, not filtered out by setup"
+        );
+        let expected = combat_guard_step(&game);
+        assert!(
+            expected.1.has_target && expected.1.retreating,
+            "the original unarmed retreat is already active"
+        );
+        assert_ne!(
+            blast_retreat_input(&game, threat, expected.0),
+            expected.0,
+            "the competing movement policy would change the existing escape"
+        );
+        assert_eq!(
+            guard_step(&game),
+            expected,
+            "an existing combat retreat retains its complete input and decision"
+        );
+    }
 
     #[test]
     fn the_shortest_turn_never_goes_the_long_way_round() {

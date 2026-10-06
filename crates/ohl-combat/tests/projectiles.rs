@@ -15,6 +15,133 @@ use ohl_physics::{CollisionModel, Hull, MoveConfig, contents};
 /// The fixed simulation tick the host runs at (100 Hz).
 const TICK: f32 = 0.01;
 
+#[test]
+// Keep the bounce setup and all departure/rest assertions in one generated test.
+#[allow(clippy::too_many_lines)]
+fn boundary_contact_real_bounce_departs_after_first_impact() {
+    let collision = room();
+    let center = Vec3::new(0.0, 0.0, 64.0);
+    let movement = MoveConfig {
+        gravity: 0.0,
+        ..MoveConfig::default()
+    };
+    let tuning = ProjectileTuning {
+        restitution: ohl_combat::BlackBox::new(0.45),
+        bounce_friction: ohl_combat::BlackBox::new(0.8),
+        rest_speed: ohl_combat::BlackBox::new(30.0),
+        ..ProjectileTuning::default()
+    };
+    for (rotation, start, incoming, contact, normal, expected_velocity) in [
+        (
+            ohl_combat::Quat::IDENTITY,
+            Vec3::new(-16.5, 0.0, 64.0),
+            Vec3::new(100.0, 0.0, 0.0),
+            Vec3::new(-16.0, 0.0, 64.0),
+            Vec3::NEG_X,
+            Vec3::new(-45.0, 0.0, 0.0),
+        ),
+        (
+            ohl_combat::Quat::IDENTITY,
+            Vec3::new(0.0, -16.5, 64.0),
+            Vec3::new(40.0, 100.0, 0.0),
+            Vec3::new(0.2, -16.0, 64.0),
+            Vec3::NEG_Y,
+            Vec3::new(32.0, -45.0, 0.0),
+        ),
+        (
+            ohl_combat::Quat::from_xyzw(0.0, 0.0, 1.0, 0.0),
+            Vec3::new(0.0, -16.5, 64.0),
+            Vec3::new(40.0, 100.0, 0.0),
+            Vec3::new(0.2, -16.0, 64.0),
+            Vec3::NEG_Y,
+            Vec3::new(32.0, -45.0, 0.0),
+        ),
+    ] {
+        let mut target = cube_entity(9, center);
+        target.rotation = rotation;
+        let entities = index_of(vec![target]);
+        let world = ProjectileWorld {
+            collision: &collision,
+            entities: &entities,
+            movement: &movement,
+            tuning: &tuning,
+        };
+        let mut set = ProjectileSet::new(ProjectileLimits::default(), 7);
+        let id = set
+            .spawn(ProjectileKind::HandGrenade, None, start, incoming, &tuning)
+            .expect("authored grenade fits");
+        let mut events = Vec::new();
+        set.tick(TICK, &world, &mut events);
+        let first = events
+            .iter()
+            .find_map(|event| match event {
+                ProjectileEvent::Impact {
+                    entity,
+                    position,
+                    normal,
+                    ..
+                } => Some((*entity, *position, *normal)),
+                _ => None,
+            })
+            .expect("outside approach reaches the authored entity face");
+        assert_eq!(first.0, Some(EntityId(9)));
+        assert!((first.1 - contact).length() < 0.0001);
+        assert!((first.2 - normal).length() < 0.0001);
+        let projectile = set.get(id).expect("fuse has not expired");
+        assert!(
+            (projectile.position - contact).dot(normal) > 0.0,
+            "assertion failed: real entity bounce departs after first contact"
+        );
+        assert!(!projectile.resting);
+        assert!((projectile.velocity - expected_velocity).length() < 0.0001);
+        assert!((projectile.position - (contact + expected_velocity * 0.005)).length() < 0.0001);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, ProjectileEvent::Impact { .. }))
+                .count(),
+            1
+        );
+        let after_first = projectile.position;
+        events.clear();
+        set.tick(TICK, &world, &mut events);
+        let projectile = set.get(id).expect("departing grenade remains active");
+        assert!((projectile.position - (after_first + expected_velocity * TICK)).length() < 0.0001);
+        assert!(!projectile.resting && events.is_empty());
+    }
+
+    // A legitimately slow first bounce still rests without being nudged.
+    let entities = index_of(vec![cube_entity(9, center)]);
+    let world = ProjectileWorld {
+        collision: &collision,
+        entities: &entities,
+        movement: &movement,
+        tuning: &tuning,
+    };
+    let mut set = ProjectileSet::new(ProjectileLimits::default(), 8);
+    let id = set
+        .spawn(
+            ProjectileKind::HandGrenade,
+            None,
+            Vec3::new(-16.25, 0.0, 64.0),
+            Vec3::new(50.0, 0.0, 0.0),
+            &tuning,
+        )
+        .expect("authored slow grenade fits");
+    let mut events = Vec::new();
+    set.tick(TICK, &world, &mut events);
+    let projectile = set.get(id).expect("resting grenade retains its fuse");
+    assert!(projectile.resting && projectile.velocity == Vec3::ZERO);
+    assert_eq!(projectile.position, Vec3::new(-16.0, 0.0, 64.0));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, ProjectileEvent::Impact { .. }))
+            .count(),
+        1
+    );
+}
+
 /// The synthetic room: interior `[-256, 256]` on X and Y, `[0, 256]` on Z.
 fn room() -> CollisionModel {
     let bytes = build_collision_room_bsp();

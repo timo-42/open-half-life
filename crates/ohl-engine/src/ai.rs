@@ -70,7 +70,7 @@ use ohl_game::keyvalues::EntityDef;
 use ohl_game::registry::{ClassName, MakerActivation, Transform};
 use ohl_game::scripts::{ScriptActivation, ScriptDef, SentenceDef};
 
-use crate::components::{Corpse, HullLift, MonsterMaker, Owner, StudioAnim};
+use crate::components::{Corpse, MonsterMaker, Owner, StudioAnim};
 use crate::ids::entity_id;
 use crate::level::Level;
 use crate::nav;
@@ -220,6 +220,12 @@ pub struct ProjectileRequest {
     pub target: Option<Entity>,
 }
 
+/// Borrowed actual phase-5 geometry and projectile policy; never retained in AI/save state.
+pub(crate) struct GrenadeSafetyContext<'a> {
+    pub(crate) projectiles: &'a crate::projectiles::ProjectileSystem,
+    pub(crate) hitboxes: &'a ohl_combat::HitboxIndex,
+}
+
 /// Creates the projectiles monster attacks ask for.
 ///
 /// The normal engine sink queues bounded value requests for Systems to drain
@@ -334,6 +340,7 @@ struct DeclaredTrigger {
 /// crosses between `ohl-ai` and the rest of the engine.
 pub struct AiState {
     world: AiWorld,
+    replan_restored_routes: bool,
     /// `monster_*` classname to the brain registered for it, in sorted
     /// classname order so registration is reproducible.
     brains: BTreeMap<String, BrainId>,
@@ -459,6 +466,7 @@ impl AiState {
             world: AiWorld::new(seed),
             brains: BTreeMap::new(),
             brain_kinds: Vec::new(),
+            replan_restored_routes: false,
             damage: DamageQueue::new(),
             triggers: Vec::new(),
             deaths: 0,
@@ -591,6 +599,7 @@ impl AiState {
         let defs = std::mem::take(&mut level.defs);
         let spawned = attach_monsters(&mut level.registry, &defs, &rules);
         level.defs = defs;
+        Self::configure_actor_models(level);
         // Record the health each monster spawned with, so a later
         // `health_fraction` (and anything M7.9 P1 resolves damage against)
         // reads the value the skill table actually produced rather than
@@ -637,6 +646,21 @@ impl AiState {
 
         if let Some(bridge) = nav::build(&level.defs, level.monster_collision.as_ref()) {
             self.world.attach_navigator(bridge);
+        }
+    }
+
+    /// Rebuilds model-local eye and collision-frame metadata. This is derived
+    /// runtime state, shared by map attachment and save reconstruction.
+    pub(crate) fn configure_actor_models(level: &mut Level) {
+        for (actor, classname, anim) in
+            &mut level
+                .registry
+                .world
+                .query::<(&mut Actor, &ClassName, Option<&StudioAnim>)>()
+        {
+            let kind = MonsterKind::from_classname(&classname.0);
+            let model = anim.and_then(|anim| level.studio_models.get(anim.model));
+            actor.configure_model(&kind, model);
         }
     }
 
@@ -1116,7 +1140,14 @@ impl AiState {
     ///
     /// The navigator, when this map has one, is already attached, so path
     /// following happens inside `AiWorld::tick`.
-    pub fn think(&mut self, level: &mut Level, dt: f32, damage: &mut Vec<QueuedDamage>) {
+    // Only engine orchestration calls this; human emission requires actual projectile context.
+    pub(crate) fn think(
+        &mut self,
+        level: &mut Level,
+        dt: f32,
+        damage: &mut Vec<QueuedDamage>,
+        grenade: &GrenadeSafetyContext<'_>,
+    ) {
         // Scripts and followers decide before the brains do: both work by
         // setting up the very same route, move target and pending
         // conditions `AiWorld::tick` is about to read, so a scripted or
@@ -1124,6 +1155,9 @@ impl AiState {
         // than beside it.
         self.update_scripts(level, dt);
         self.update_followers(level);
+        if std::mem::take(&mut self.replan_restored_routes) {
+            Self::replan_target_routes(level);
+        }
         self.update_secondary_opportunities(level, dt);
         let events = {
             let context = SightContext {
@@ -1132,7 +1166,7 @@ impl AiState {
             };
             self.world.tick(&mut level.registry.world, &context, dt)
         };
-        self.consume_events(level, &events, damage);
+        self.consume_events(level, &events, damage, grenade);
         // Last, so it wins the precedence tie `docs/FORMAT_SOURCES.md`'s
         // `TODO(black-box)` item 21 documents: `consume_events` just applied
         // whatever `ActivityChanged` the AI's own tick produced for this
@@ -1141,6 +1175,76 @@ impl AiState {
         // dormant script whose monster is idle now overwrites that specific
         // case — and only that case; see `apply_pretrigger_idles`.
         self.apply_pretrigger_idles(level);
+    }
+
+    /// Existing saves do not encode a route coordinate convention. Replan
+    /// recognized live-target pursuit on the next tick, after player stance
+    /// synchronization. All persisted route/cover/memory/destination vectors
+    /// remain absolute query/world points; save/restore never translates them.
+    pub(crate) fn restore_navigation(&mut self) {
+        self.world.invalidate_navigation();
+        self.replan_restored_routes = true;
+    }
+
+    fn replan_target_routes(level: &mut Level) {
+        use ohl_ai::Task;
+        let targets: BTreeMap<_, _> = level
+            .registry
+            .world
+            .query::<(Entity, &Actor)>()
+            .iter()
+            .map(|(entity, actor)| (entity, actor.navigation_anchor()))
+            .collect();
+        for (actor, ai, hold, follower) in &mut level.registry.world.query::<(
+            &Actor,
+            &mut MonsterAi,
+            Option<&ohl_ai::ScriptHold>,
+            Option<&Follower>,
+        )>() {
+            if hold.is_some() || ai.route.is_finished() {
+                continue;
+            }
+            let task = ai.runner.schedule().and_then(|schedule| {
+                schedule
+                    .tasks
+                    .iter()
+                    .take(ai.runner.task_index().saturating_add(1))
+                    .rev()
+                    .find(|task| {
+                        matches!(
+                            task,
+                            Task::MoveToEnemy { .. }
+                                | Task::MoveToLastKnownPosition
+                                | Task::MoveToTarget { .. }
+                                | Task::MoveToNode(_)
+                                | Task::TakeCover
+                                | Task::Wander { .. }
+                        )
+                    })
+            });
+            let following = follower.is_some_and(|follower| follower.following);
+            let pursuing_visible = matches!(task, Some(Task::MoveToEnemy { .. }))
+                && ai.memory.is_some_and(|memory| !memory.occluded);
+            let goal = if pursuing_visible {
+                ai.memory
+                    .and_then(|memory| targets.get(&memory.entity).copied())
+            } else if following && matches!(task, Some(Task::MoveToTarget { .. })) {
+                targets.get(&level.player).copied()
+            } else {
+                None
+            };
+            if let Some(goal) = goal {
+                let goal = actor.body_frame.anchor_to_query(actor.hull, goal);
+                if pursuing_visible && let Some(memory) = ai.memory.as_mut() {
+                    memory.last_known_position = goal;
+                }
+                ai.move_target = Some(goal);
+                ai.route = Route::new();
+                ai.move_speed = 0.0;
+                ai.runner.clear();
+                ai.stuck.reset();
+            }
+        }
     }
 
     /// Project-authored readiness persists until a secondary request actually emits.
@@ -1190,19 +1294,13 @@ impl AiState {
             let Ok(enemy) = level.registry.world.get::<&Actor>(memory.entity) else {
                 continue;
             };
-            // TODO(black-box): secondary engagement bounds, in world units.
-            if !enemy.alive
-                || enemy.health <= 0.0
-                || !(96.0..=1024.0).contains(&actor.eye().distance(enemy.eye()))
-            {
-                continue;
-            }
-            if level.monster_collision.as_ref().is_some_and(|collision| {
-                collision
-                    .trace(ohl_physics::Hull::Point, actor.eye(), enemy.eye())
-                    .fraction
-                    < 1.0
-            }) {
+            if !secondary_target_clear(
+                kind,
+                self.difficulty,
+                level.collision.as_ref(),
+                actor.eye(),
+                &enemy,
+            ) {
                 continue;
             }
             ai.pending_conditions |= Conditions::CAN_RANGE_ATTACK2;
@@ -1216,6 +1314,7 @@ impl AiState {
         level: &mut Level,
         events: &[AiEvent],
         damage: &mut Vec<QueuedDamage>,
+        grenade: &GrenadeSafetyContext<'_>,
     ) {
         for event in events {
             match &event.kind {
@@ -1238,7 +1337,7 @@ impl AiState {
                     select_sequence(level, event.entity, name);
                 }
                 AiEventKind::Attack { kind, target } => {
-                    self.resolve_attack(level, event.entity, *kind, *target, damage);
+                    self.resolve_attack(level, event.entity, *kind, *target, damage, grenade);
                 }
                 // A Gonarch reaching an `info_bigmomma` node: its
                 // `reachtarget` and `reachsequence` fire by name through
@@ -1286,6 +1385,7 @@ impl AiState {
         attack: AttackKind,
         target: Option<Entity>,
         damage: &mut Vec<QueuedDamage>,
+        grenade: &GrenadeSafetyContext<'_>,
     ) {
         let Some((kind, spec)) = self.spec_of(level, attacker) else {
             return;
@@ -1316,22 +1416,45 @@ impl AiState {
         };
 
         let muzzle = actor.eye();
-        let aim = target
-            .and_then(|entity| {
-                level
-                    .registry
-                    .world
-                    .get::<&Actor>(entity)
-                    .ok()
-                    .map(|a| a.eye())
+        let resolved_target = target.and_then(|entity| {
+            level
+                .registry
+                .world
+                .get::<&Actor>(entity)
+                .ok()
+                .map(|actor| *actor)
+        });
+        // TODO(black-box): a ready schedule may retarget before its attack task.
+        // Recheck that event's actual target; task/activity/Wait stay unchanged.
+        if attack == AttackKind::Range2
+            && matches!(
+                kind,
+                MonsterKind::HumanGrunt
+                    | MonsterKind::HumanAssassin
+                    | MonsterKind::AlienController
+                    | MonsterKind::Apache
+            )
+            && resolved_target.as_ref().is_none_or(|enemy| {
+                !secondary_target_clear(
+                    &kind,
+                    self.difficulty,
+                    level.collision.as_ref(),
+                    muzzle,
+                    enemy,
+                )
             })
+        {
+            return;
+        }
+        let aim = resolved_target
+            .map(|enemy| enemy.eye())
             .unwrap_or_else(|| muzzle + actor.forward() * range);
 
         if let AttackShape::Projectile(projectile) = shape {
             let (damage, damage_type, blast_radius) =
                 monster_projectile_profile(projectile, self.difficulty);
             let velocity = monster_projectile_velocity(projectile, self.difficulty, muzzle, aim);
-            self.projectiles.spawn_projectile(&ProjectileRequest {
+            let request = ProjectileRequest {
                 kind: projectile,
                 owner: attacker,
                 origin: muzzle,
@@ -1340,7 +1463,21 @@ impl AiState {
                 damage_type,
                 blast_radius,
                 target,
-            });
+            };
+            // TODO(black-box): attack task/activity occurred; trailing Wait is unchanged.
+            // Unsafe frozen-world exposure refuses only emission and its cooldown.
+            if attack == AttackKind::Range2
+                && matches!(kind, MonsterKind::HumanGrunt | MonsterKind::HumanAssassin)
+                && !grenade.projectiles.human_grenade_safe(
+                    level,
+                    &request,
+                    grenade.hitboxes,
+                    self.world.relationships(),
+                )
+            {
+                return;
+            }
+            self.projectiles.spawn_projectile(&request);
             if attack == AttackKind::Range2 {
                 // TODO(black-box): project-authored six-second opportunity cadence.
                 self.secondary_cooldowns.insert(attacker, 6.0);
@@ -1717,7 +1854,16 @@ impl AiState {
         let mut actor = Actor::new(spec.classification, origin).with_health(health);
         actor.yaw = yaw;
         actor.hull = spec.hull;
-        actor.view_ofs = kind.view_offset();
+        let model = kind.default_model_path().and_then(|path| {
+            level
+                .studio_model_paths
+                .iter()
+                .position(|loaded| loaded.eq_ignore_ascii_case(path))
+        });
+        actor.configure_model(
+            &kind,
+            model.and_then(|index| level.studio_models.get(index)),
+        );
         let entity = level.registry.world.spawn((
             ClassName(classname.to_string()),
             Transform {
@@ -1730,6 +1876,19 @@ impl AiState {
             Owner(maker),
         ));
         level.registry.entities.push(entity);
+        if let Some(model) = model {
+            let _ = level.registry.world.insert_one(
+                entity,
+                StudioAnim {
+                    model,
+                    sequence: 0,
+                    cycle: 0.0,
+                    frame_rate: 1.0,
+                    body: 0,
+                    skin: 0,
+                },
+            );
+        }
         stand_on_floor(level, entity, &kind);
         Some(entity)
     }
@@ -2339,9 +2498,7 @@ impl AiState {
             let def = script.runner.def();
             (def.origin, def.yaw)
         };
-        // The mark is where the monster's feet go; its route runs where its
-        // hull centre goes.
-        let lift = hull_lift_of(level, actor);
+        // Script placement stays in the authored anchor domain.
         match action {
             ScriptAction::None => {}
             ScriptAction::Idle => {
@@ -2354,7 +2511,13 @@ impl AiState {
                 } else {
                     SCRIPT_WALK_SPEED
                 };
-                let goal = mark + Vec3::Z * lift;
+                let goal = level
+                    .registry
+                    .world
+                    .get::<&Actor>(actor)
+                    .map_or(mark, |actor| {
+                        actor.body_frame.anchor_to_query(actor.hull, mark)
+                    });
                 if let Ok(mut ai) = level.registry.world.get::<&mut MonsterAi>(actor) {
                     if ai.route.is_finished() || ai.route.needs_refresh(goal) {
                         ai.route = ohl_ai::Route::straight_line(goal);
@@ -2386,7 +2549,7 @@ impl AiState {
                         .registry
                         .world
                         .get::<&Actor>(actor)
-                        .map_or(Vec3::ZERO, |a| a.origin - Vec3::Z * lift);
+                        .map_or(Vec3::ZERO, |a| a.origin);
                     let name = script
                         .runner
                         .def()
@@ -2542,17 +2705,25 @@ impl AiState {
             .registry
             .world
             .get::<&Actor>(player)
-            .map(|actor| actor.origin)
+            .map(|actor| actor.navigation_anchor())
         else {
             return;
         };
         for entity in self.followers.members().to_vec() {
+            let Ok(goal) = level
+                .registry
+                .world
+                .get::<&Actor>(entity)
+                .map(|actor| actor.body_frame.anchor_to_query(actor.hull, origin))
+            else {
+                continue;
+            };
             if let Ok(mut ai) = level.registry.world.get::<&mut MonsterAi>(entity) {
                 // `SPECIAL2` plus a move target is exactly what
                 // `ohl_ai::monsters::brains::FOLLOW_PLAYER` — the schedule
                 // Barney and the scientist already select — reads.
                 ai.pending_conditions |= Conditions::SPECIAL2;
-                ai.move_target = Some(origin);
+                ai.move_target = Some(goal);
             }
         }
     }
@@ -2673,17 +2844,14 @@ fn stop_scripted_movement(level: &mut Level, actor: Entity) {
     }
 }
 
-/// Puts `actor`'s feet at `origin`, facing `yaw`, in both the transform
-/// the renderer reads and the actor the AI reads (its [`HullLift`] above
-/// them).
+/// Puts the same authored anchor and yaw in Actor and Transform.
 fn place(level: &mut Level, actor: Entity, origin: Vec3, yaw: f32) {
-    let lift = hull_lift_of(level, actor);
     if let Ok(mut transform) = level.registry.world.get::<&mut Transform>(actor) {
         transform.origin = origin;
         transform.angles.y = yaw;
     }
     if let Ok(mut a) = level.registry.world.get::<&mut Actor>(actor) {
-        a.origin = origin + Vec3::Z * lift;
+        a.origin = origin;
         a.yaw = yaw;
     }
 }
@@ -2701,84 +2869,198 @@ fn has_centred_origin(def: &EntityDef) -> bool {
             .any(|model| path.eq_ignore_ascii_case(model))
 }
 
-/// `entity`'s [`HullLift`], or `0.0` when it carries none.
-pub(crate) fn hull_lift_of(level: &Level, entity: Entity) -> f32 {
-    level
+/// Spawn-floor eligibility is distinct from the derived query offset. A custom
+/// model bottom can give a zero or negative offset and still be a walker.
+fn stands_on_floor(kind: &MonsterKind, actor: &Actor) -> bool {
+    matches!(
+        actor.body_frame,
+        ohl_ai::BodyFrame::Feet | ohl_ai::BodyFrame::ModelBottom(_)
+    ) && !ohl_ai::movement::flies(actor.hull)
+        && !matches!(
+            kind,
+            MonsterKind::Barnacle
+                | MonsterKind::Ichthyosaur
+                | MonsterKind::Leech
+                | MonsterKind::Nihilanth
+                | MonsterKind::Tentacle
+        )
+}
+
+/// Applies the bounded spawn-floor search once, before any saved Transform is
+/// restored. Actor and Transform remain the same model anchor; only the trace
+/// crosses the BodyFrame boundary. Missing floor, solid starts and exclusions
+/// retain the authored placement without introducing a second lift component.
+fn stand_on_floor(level: &mut Level, entity: Entity, kind: &MonsterKind) {
+    let Ok(actor) = level
         .registry
         .world
-        .get::<&HullLift>(entity)
-        .map_or(0.0, |lift| lift.0)
-}
-
-/// How far `kind`'s hull centre sits above its feet when it walks with
-/// `hull` ([`HullLift`]), or `0.0` for a kind that does not stand on a
-/// floor by its origin.
-///
-/// A walker's map origin is its feet: the published FGD monster box runs
-/// 0..72 above the origin (`docs/FORMAT_SOURCES.md`, "Monsters stand on
-/// their floor"), so the hull's own foot offset is the lift. The
-/// exceptions are **project-authored**, each left exactly as it was before
-/// the lift existed: a flier's point hull has no feet; the barnacle hangs
-/// from its origin at the ceiling (see `MonsterKind::view_offset`); the
-/// ichthyosaur and the leech swim and the Nihilanth floats, and no
-/// reviewed page says where their origins sit; and the tentacle is rooted
-/// in its pit, which no reviewed page describes either.
-fn hull_lift_for(kind: &MonsterKind, hull: ohl_physics::Hull) -> f32 {
-    match kind {
-        MonsterKind::Barnacle
-        | MonsterKind::Ichthyosaur
-        | MonsterKind::Leech
-        | MonsterKind::Nihilanth
-        | MonsterKind::Tentacle => 0.0,
-        _ if ohl_ai::movement::flies(hull) => 0.0,
-        _ => hull.foot_offset(),
-    }
-}
-
-/// Stands a just-spawned monster of `kind` on its floor.
-///
-/// A walker's feet ([`Transform`]) drop onto the first floor within
-/// [`MONSTER_DROP_DISTANCE`] below where the map put them, the cited
-/// `droptofloor` behaviour, found with the monster's own hull trace in
-/// [`Level::monster_collision`]. Its [`Actor`] then stands [`HullLift`]
-/// above them, and the lift is attached. A monster with no floor in reach,
-/// or whose search starts in solid, keeps the feet the map gave it but
-/// still gets its lift. A kind [`hull_lift_for`] exempts is left alone.
-fn stand_on_floor(level: &mut Level, entity: Entity, kind: &MonsterKind) {
-    let Ok((hull, placed)) = level.registry.world.get::<&Actor>(entity).map(|actor| {
-        let placed = level
-            .registry
-            .world
-            .get::<&Transform>(entity)
-            .map_or(actor.origin, |transform| transform.origin);
-        (actor.hull, placed)
-    }) else {
+        .get::<&Actor>(entity)
+        .map(|actor| *actor)
+    else {
         return;
     };
-    let lift = hull_lift_for(kind, hull);
-    if lift <= 0.0 || !placed.is_finite() {
+    if !stands_on_floor(kind, &actor) || !actor.origin.is_finite() {
         return;
     }
-    let feet = level
-        .monster_collision
-        .as_ref()
-        .map_or(placed, |collision| {
-            let start = placed + Vec3::Z * (lift + MONSTER_DROP_CLEARANCE);
-            let end = start - Vec3::Z * (MONSTER_DROP_DISTANCE + MONSTER_DROP_CLEARANCE);
-            let fall = collision.trace(hull, start, end);
-            if fall.start_solid || fall.all_solid || fall.fraction >= 1.0 {
-                placed
-            } else {
-                fall.end_pos - Vec3::Z * lift
-            }
-        });
+    let Some(collision) = level.monster_collision.as_ref() else {
+        return;
+    };
+    let start = actor.query_origin() + Vec3::Z * MONSTER_DROP_CLEARANCE;
+    let end = start - Vec3::Z * (MONSTER_DROP_DISTANCE + MONSTER_DROP_CLEARANCE);
+    if !start.is_finite() || !end.is_finite() {
+        return;
+    }
+    let fall = collision.trace(actor.hull, start, end);
+    if fall.start_solid || fall.all_solid || fall.fraction >= 1.0 || !fall.end_pos.is_finite() {
+        return;
+    }
+    let anchor = actor.body_frame.query_to_anchor(actor.hull, fall.end_pos);
+    // A trace contact epsilon must not lift an already grounded authored anchor.
+    if !anchor.is_finite() || anchor.z >= actor.origin.z {
+        return;
+    }
     if let Ok(mut transform) = level.registry.world.get::<&mut Transform>(entity) {
-        transform.origin = feet;
+        transform.origin = anchor;
     }
     if let Ok(mut actor) = level.registry.world.get::<&mut Actor>(entity) {
-        actor.origin = feet + Vec3::Z * lift;
+        actor.origin = anchor;
     }
-    level.registry.world.insert_one(entity, HullLift(lift)).ok();
+}
+
+#[cfg(test)]
+mod anchor_domain_floor_tests {
+    use super::*;
+    use crate::test_support::{AI_MAP, ai_room_bsp, entity_block, entity_of_classname};
+
+    #[test]
+    // Keep generated model setup and its floor/retention discriminators together.
+    #[allow(clippy::too_many_lines)]
+    fn anchor_domain_floor_uses_one_offset_even_for_custom_nonpositive_offsets() {
+        for (bottom, authored_z, distinguishes_start) in [
+            (0.0_f32, 17.0, true),
+            (-36.0, 80.0, false),
+            (-52.0, 80.0, false),
+        ] {
+            let block = format!(
+                "{{\"classname\" \"worldspawn\"}}{}{}",
+                entity_block("info_player_start", [-200.0, -200.0, 36.0], 0.0, &[]),
+                entity_block(
+                    "monster_generic",
+                    [100.0, 0.0, authored_z],
+                    0.0,
+                    &[("model", "models/ohl-anchor.mdl")]
+                )
+            );
+            let bytes = ai_room_bsp(&block, false);
+            let (mut mdl, _) = ohl_formats::test_support::build_minimal_mdl10();
+            for (base, values) in [
+                (88, [-16.0, -16.0, bottom]),
+                (100, [16.0, 16.0, bottom + 72.0]),
+            ] {
+                for (axis, value) in values.into_iter().enumerate() {
+                    mdl[base + axis * 4..base + axis * 4 + 4].copy_from_slice(&value.to_le_bytes());
+                }
+            }
+            let mut assets = crate::MemoryAssets::new();
+            assets.insert("models/ohl-anchor.mdl", mdl);
+            let mut game =
+                crate::Game::from_map_bytes(&assets, AI_MAP, &bytes).expect("generated floor");
+            let entity = entity_of_classname(&game, "monster_generic").expect("custom walker");
+            let (level, _) = game.level_and_systems_mut();
+            let actor = *level.registry.world.get::<&Actor>(entity).unwrap();
+            assert_eq!(actor.body_frame, ohl_ai::BodyFrame::ModelBottom(bottom));
+            if distinguishes_start {
+                // The model's raised feet are clear, while treating that anchor
+                // as a centered Standing query starts inside the generated floor.
+                let anchor = Vec3::new(100.0, 0.0, authored_z);
+                let model = level.monster_collision.as_ref().unwrap();
+                let query_start = actor.body_frame.anchor_to_query(actor.hull, anchor)
+                    + Vec3::Z * MONSTER_DROP_CLEARANCE;
+                let raw_start = anchor + Vec3::Z * MONSTER_DROP_CLEARANCE;
+                assert!(
+                    !model
+                        .trace(actor.hull, query_start, query_start)
+                        .start_solid,
+                    "raised query start is clear"
+                );
+                assert!(
+                    model.trace(actor.hull, raw_start, raw_start).start_solid,
+                    "unconverted anchor start is solid"
+                );
+            }
+            assert_eq!(
+                actor.origin,
+                level
+                    .registry
+                    .world
+                    .get::<&Transform>(entity)
+                    .unwrap()
+                    .origin
+            );
+            assert!(
+                (actor.origin.z + bottom).abs() < 0.05,
+                "single-offset floor landing"
+            );
+            assert!((actor.query_origin().z - 36.0).abs() < 0.05);
+
+            // Missing collision and a genuinely embedded start retain both anchors.
+            let saved_collision = level.monster_collision.take();
+            let placed = Vec3::new(100.0, 0.0, 80.0);
+            place(level, entity, placed, 0.0);
+            stand_on_floor(level, entity, &MonsterKind::Generic);
+            assert_eq!(
+                level.registry.world.get::<&Actor>(entity).unwrap().origin,
+                placed
+            );
+            level.monster_collision = saved_collision;
+            let embedded = Vec3::new(100.0, 0.0, -100.0 - bottom);
+            place(level, entity, embedded, 0.0);
+            stand_on_floor(level, entity, &MonsterKind::Generic);
+            assert_eq!(
+                level.registry.world.get::<&Actor>(entity).unwrap().origin,
+                embedded
+            );
+            assert_eq!(
+                level
+                    .registry
+                    .world
+                    .get::<&Transform>(entity)
+                    .unwrap()
+                    .origin,
+                embedded
+            );
+
+            // A separate generated open model puts its only floor out of reach.
+            let mut builder = ohl_formats::test_support::Bsp30Builder::new();
+            builder.set_entities_text("{\"classname\" \"worldspawn\"}");
+            let heads = builder.push_collision_hulls(&[
+                ohl_formats::test_support::CollisionBrush::half_space([0.0, 0.0, 1.0], -1024.0),
+            ]);
+            builder.push_model([-2048.0; 3], [2048.0; 3], [0.0; 3], heads, 2, 0, 0);
+            let bytes = builder.build();
+            let limits = ohl_formats::bsp30::Limits::default();
+            let bsp = ohl_formats::bsp30::Bsp::parse(&bytes, &limits).unwrap();
+            level.monster_collision =
+                Some(ohl_physics::CollisionModel::from_bsp(&bsp, &limits).unwrap());
+            place(level, entity, placed, 0.0);
+            let actor = *level.registry.world.get::<&Actor>(entity).unwrap();
+            let start = actor.query_origin() + Vec3::Z * MONSTER_DROP_CLEARANCE;
+            let fall = level.monster_collision.as_ref().unwrap().trace(
+                actor.hull,
+                start,
+                start - Vec3::Z * (MONSTER_DROP_DISTANCE + MONSTER_DROP_CLEARANCE),
+            );
+            assert!(
+                !fall.start_solid && !fall.all_solid && fall.fraction >= 1.0,
+                "actual no-floor prerequisite"
+            );
+            stand_on_floor(level, entity, &MonsterKind::Generic);
+            assert_eq!(
+                level.registry.world.get::<&Actor>(entity).unwrap().origin,
+                placed
+            );
+        }
+    }
 }
 
 /// The monster a script's `m_iszEntity` names: a `targetname` first, then
@@ -2811,18 +3093,12 @@ fn nearest_by_classname(
     radius: f32,
 ) -> Option<Entity> {
     let mut candidates: Vec<(f32, u32, Entity)> = Vec::new();
-    for (entity, name, actor, lift) in
-        &mut level
-            .registry
-            .world
-            .query::<(Entity, &ClassName, &Actor, Option<&HullLift>)>()
-    {
+    for (entity, name, actor) in &mut level.registry.world.query::<(Entity, &ClassName, &Actor)>() {
         if name.0 != classname || !actor.alive {
             continue;
         }
         // Feet to the placed point entity's origin, as the map measured it.
-        let feet = actor.origin - Vec3::Z * lift.map_or(0.0, |lift| lift.0);
-        let distance = feet.distance(origin);
+        let distance = actor.origin.distance(origin);
         if !distance.is_finite() || (radius > 0.0 && distance > radius) {
             continue;
         }
@@ -2874,7 +3150,9 @@ fn nearest_follower(level: &Level, position: Vec3) -> Option<Entity> {
         if !actor.alive {
             continue;
         }
-        let distance = actor.origin.distance(position);
+        // The use ray starts at the player eye; compare the physical body,
+        // not a newly feet-relative model pivot.
+        let distance = actor.query_origin().distance(position);
         if !distance.is_finite() || distance > TALK_USE_RADIUS {
             continue;
         }
@@ -2974,6 +3252,34 @@ mod tests {
     }
 }
 
+/// TODO(black-box): project-authored secondary engagement/geometry policy,
+/// shared by readiness and emission to check the current target consistently.
+fn secondary_target_clear(
+    kind: &MonsterKind,
+    difficulty: AiDifficulty,
+    collision: Option<&ohl_physics::CollisionModel>,
+    muzzle: Vec3,
+    enemy: &Actor,
+) -> bool {
+    let aim = enemy.eye();
+    if !enemy.alive || enemy.health <= 0.0 || !(96.0..=1024.0).contains(&muzzle.distance(aim)) {
+        return false;
+    }
+    // Held NPC brushes may be absent only from the monster collision model.
+    let Some(collision) = collision else {
+        return false;
+    };
+    if collision
+        .trace(ohl_physics::Hull::Point, muzzle, aim)
+        .fraction
+        < 1.0
+    {
+        return false;
+    }
+    !matches!(kind, MonsterKind::HumanGrunt | MonsterKind::HumanAssassin)
+        || grenade_lob_clear(collision, difficulty, muzzle, aim)
+}
+
 /// Published head-ball speed; other speeds and bounded ballistic aim are TODO(black-box).
 fn monster_projectile_velocity(
     kind: ohl_combat::ProjectileKind,
@@ -2983,7 +3289,7 @@ fn monster_projectile_velocity(
 ) -> Vec3 {
     use ohl_combat::ProjectileKind as P;
     if matches!(kind, P::HandGrenade | P::GonarchMortar) {
-        let flight = (aim.distance(muzzle) / 400.0).clamp(0.35, 1.5);
+        let flight = monster_lob_flight_seconds(muzzle, aim);
         (aim - muzzle) / flight
             + Vec3::Z * (ohl_physics::MoveConfig::default().gravity * flight * 0.5)
     } else {
@@ -2994,6 +3300,53 @@ fn monster_projectile_velocity(
         };
         (aim - muzzle).normalize_or_zero() * speed
     }
+}
+
+fn monster_lob_flight_seconds(muzzle: Vec3, aim: Vec3) -> f32 {
+    (aim.distance(muzzle) / 400.0).clamp(0.35, 1.5)
+}
+
+/// TODO(black-box): project-authored current-world approach clearance, not
+/// eventual splash safety. The last whole fixed step conservatively covers
+/// the nominal flight time; entity impacts and later bounces are not predicted.
+fn grenade_lob_clear(
+    collision: &ohl_physics::CollisionModel,
+    difficulty: AiDifficulty,
+    muzzle: Vec3,
+    aim: Vec3,
+) -> bool {
+    if !muzzle.is_finite() || !aim.is_finite() {
+        return false;
+    }
+    let flight = monster_lob_flight_seconds(muzzle, aim);
+    let mut velocity = monster_projectile_velocity(
+        ohl_combat::ProjectileKind::HandGrenade,
+        difficulty,
+        muzzle,
+        aim,
+    );
+    if !flight.is_finite() || !velocity.is_finite() {
+        return false;
+    }
+    let gravity = ohl_physics::MoveConfig::default().gravity
+        * ohl_combat::ProjectileTuning::default().gravity_scale.value;
+    let mut position = muzzle;
+    // Flight is capped at 1.5 seconds: at most 150 current engine steps.
+    let mut steps = (flight / crate::TICK_SECONDS).ceil();
+    while steps > 0.0 {
+        velocity.z -= gravity * crate::TICK_SECONDS;
+        let end = position + velocity * crate::TICK_SECONDS;
+        if !end.is_finite() {
+            return false;
+        }
+        let trace = collision.trace(ohl_physics::Hull::Point, position, end);
+        if trace.start_solid || trace.all_solid || trace.fraction < 1.0 {
+            return false;
+        }
+        position = end;
+        steps -= 1.0;
+    }
+    true
 }
 
 /// Published attack tables: TWHL pages for each named monster, cited in FORMAT_SOURCES.
@@ -3017,6 +3370,253 @@ fn monster_projectile_profile(
             Some([250.0, 250.0, 275.0][skill]),
         ),
         _ => (0.0, DamageType::GENERIC, None),
+    }
+}
+
+#[cfg(test)]
+mod origin_frame_tests {
+    use super::*;
+    use crate::test_support::{AI_MAP, ai_room_bsp, entity_block, entity_of_classname};
+
+    #[test]
+    fn projectile_launch_and_aim_use_the_same_rotated_metadata_eyes_as_sight() {
+        let entities = format!(
+            "{{\"classname\" \"worldspawn\"}}{}{}",
+            entity_block("monster_alien_grunt", [0.0, 0.0, 0.0], 90.0, &[]),
+            entity_block("monster_barney", [100.0, 100.0, 0.0], 180.0, &[])
+        );
+        let bytes = ai_room_bsp(&entities, false);
+        let (mut mdl, _) = ohl_formats::test_support::build_minimal_mdl10();
+        let eye = [12.0_f32, 3.0, 20.0];
+        for (axis, value) in eye.into_iter().enumerate() {
+            mdl[76 + axis * 4..80 + axis * 4].copy_from_slice(&value.to_le_bytes());
+        }
+        let mut assets = crate::MemoryAssets::new();
+        assets.insert(
+            MonsterKind::AlienGrunt
+                .default_model_path()
+                .expect("default"),
+            mdl.clone(),
+        );
+        assets.insert(
+            MonsterKind::Barney.default_model_path().expect("default"),
+            mdl,
+        );
+        let mut game = crate::Game::from_map_bytes(&assets, AI_MAP, &bytes).expect("fixture");
+        let attacker = entity_of_classname(&game, "monster_alien_grunt").expect("attacker");
+        let target = entity_of_classname(&game, "monster_barney").expect("target");
+        let (level, systems) = game.level_and_systems_mut();
+        let (projectiles, hitboxes) = super::grenade_emission_tests::context_parts(level);
+        let grenade = GrenadeSafetyContext {
+            projectiles: &projectiles,
+            hitboxes: &hitboxes,
+        };
+        let ai = systems.ai_mut();
+        ai.resolve_attack(
+            level,
+            attacker,
+            AttackKind::Range1,
+            Some(target),
+            &mut Vec::new(),
+            &grenade,
+        );
+        let requests = ai.take_projectile_requests();
+        assert_eq!(requests.len(), 1);
+        let request = requests[0];
+        let muzzle = Vec3::new(-3.0, 12.0, 20.0);
+        let aim = Vec3::new(88.0, 97.0, 20.0);
+        assert!(request.origin.abs_diff_eq(muzzle, 0.001));
+        assert!(
+            request
+                .velocity
+                .normalize()
+                .abs_diff_eq((aim - muzzle).normalize(), 0.001)
+        );
+        assert_eq!(request.owner, attacker);
+        assert_eq!(request.target, Some(target));
+    }
+
+    fn script_fixture(
+        wall: bool,
+        step: bool,
+        move_to: &str,
+        navigation: Option<usize>,
+    ) -> crate::Game {
+        let entities = format!(
+            "{{\"classname\" \"worldspawn\"}}{}{}{}{}{}",
+            entity_block("info_player_start", [-200.0, -200.0, 36.0], 0.0, &[]),
+            entity_block(
+                "monster_barney",
+                [-100.0, 0.0, 0.0],
+                0.0,
+                &[("targetname", "ohl_actor"), ("spawnflags", "16")]
+            ),
+            entity_block(
+                "scripted_sequence",
+                [100.0, 0.0, if step { 12.0 } else { 0.0 }],
+                0.0,
+                &[
+                    ("targetname", "ohl_script"),
+                    ("m_iszEntity", "ohl_actor"),
+                    ("m_fMoveTo", move_to),
+                    ("target", "ohl_done")
+                ]
+            ),
+            entity_block("trigger_auto", [0.0; 3], 0.0, &[("target", "ohl_script")]),
+            entity_block(
+                "trigger_changelevel",
+                [0.0; 3],
+                0.0,
+                &[
+                    ("targetname", "ohl_done"),
+                    ("map", "ohlelsewhere"),
+                    ("landmark", "ohl_landmark")
+                ]
+            )
+        );
+        // A low step makes the straight segment fail while traced local
+        // walking without a navigator remains reachable.
+        let mut builder = ohl_formats::test_support::Bsp30Builder::new();
+        builder.set_entities_text(&entities);
+        let mut brushes = vec![ohl_formats::test_support::CollisionBrush::half_space(
+            [0.0, 0.0, 1.0],
+            0.0,
+        )];
+        if wall || step {
+            brushes.push(ohl_formats::test_support::CollisionBrush::box_brush(
+                [0.0, -256.0, 0.0],
+                [
+                    if wall { 16.0 } else { 200.0 },
+                    256.0,
+                    if wall { 256.0 } else { 12.0 },
+                ],
+            ));
+        } else {
+            // Flat graph case: a short wall forces a real detour, so merely
+            // attaching a graph while taking a direct segment cannot pass.
+            brushes.push(ohl_formats::test_support::CollisionBrush::box_brush(
+                [-8.0, -48.0, 0.0],
+                [8.0, 48.0, 128.0],
+            ));
+        }
+        let heads = builder.push_collision_hulls(&brushes);
+        builder.push_model(
+            [-512.0, -512.0, -256.0],
+            [512.0; 3],
+            [0.0; 3],
+            heads,
+            2,
+            0,
+            0,
+        );
+        let bytes = builder.build();
+        let mut game = crate::Game::from_map_bytes(&crate::MemoryAssets::new(), AI_MAP, &bytes)
+            .expect("fixture");
+        if let Some(searches) = navigation {
+            let (level, systems) = game.level_and_systems_mut();
+            let mut seeds = vec![
+                ohl_nav::NodeSeed::new(Vec3::new(-100.0, 0.0, 8.0), ohl_nav::NodeKind::Ground),
+                ohl_nav::NodeSeed::new(Vec3::new(100.0, 0.0, 20.0), ohl_nav::NodeKind::Ground),
+            ];
+            if !wall && !step {
+                seeds = [-100.0, 0.0, 100.0]
+                    .into_iter()
+                    .flat_map(|x| {
+                        [-96.0, 0.0, 96.0].into_iter().map(move |y| {
+                            ohl_nav::NodeSeed::new(Vec3::new(x, y, 8.0), ohl_nav::NodeKind::Ground)
+                        })
+                    })
+                    .collect();
+            }
+            let bridge = ohl_ai::NavBridge::build(
+                &seeds,
+                level.monster_collision.as_ref().expect("collision"),
+                &ohl_nav::BuildLimits::default(),
+                ohl_ai::NavBridgeLimits {
+                    max_searches_per_tick: searches,
+                    ..ohl_ai::NavBridgeLimits::default()
+                },
+            );
+            systems.ai_mut().world.attach_navigator(bridge);
+        }
+        game
+    }
+
+    #[test]
+    fn script_steps_reach_a_floor_mark_with_graph_without_graph_and_legacy_fallback() {
+        // Graph steering over a step is independently reproduced in
+        // ohl-ai/tests/nav_bridge.rs and reserved for P5. Here the graph
+        // success case is flat; no-navigator movement still climbs the step.
+        // With a navigator but no search budget, M9.42's explicit legacy
+        // fallback crosses the flat wall until P5 replaces that policy.
+        for (navigation, step) in [(None, true), (Some(8), false), (Some(0), false)] {
+            let mut game = script_fixture(false, step, "1", navigation);
+            let mut fired = 0;
+            for _ in 0..1_200 {
+                fired += game
+                    .tick(crate::TICK_SECONDS, &crate::Input::default())
+                    .iter()
+                    .filter(|event| matches!(event, crate::GameEvent::LevelChange { .. }))
+                    .count();
+            }
+            let entity = entity_of_classname(&game, "monster_barney").expect("actor");
+            let pose = game
+                .registry()
+                .world
+                .get::<&Actor>(entity)
+                .expect("actor")
+                .origin;
+            let stats = game.script_navigation_stats();
+            assert_eq!(
+                fired, 1,
+                "completion target fires once: {navigation:?}, pose={pose:?}, stats={stats:?}"
+            );
+            assert_eq!(game.script_completion_count(), 1);
+            assert_eq!(game.script_timeout_count(), 0);
+            let actor = entity_of_classname(&game, "monster_barney").expect("actor");
+            let actor = game.registry().world.get::<&Actor>(actor).expect("actor");
+            assert!(actor.origin.x > 65.0);
+            assert!((actor.origin.z - if step { 12.0 } else { 0.0 }).abs() < 0.1);
+            let stats = game.script_navigation_stats();
+            if navigation == Some(0) {
+                assert!(stats.untraced_steps > 0, "explicit legacy fallback used");
+                assert!(stats.start_solid > 0, "legacy path crossed the flat wall");
+                assert_eq!(stats.graph_steps, 0);
+            } else {
+                assert_eq!(stats.untraced_steps, 0);
+                assert_eq!(stats.start_solid, 0);
+                if navigation == Some(8) {
+                    assert!(stats.graph_steps > 0, "completion used the graph detour");
+                } else {
+                    assert!(stats.traced_steps > 0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_blocked_script_without_a_navigator_cannot_warp_but_explicit_teleport_can() {
+        for (move_to, completions) in [("1", 0), ("4", 1)] {
+            let mut game = script_fixture(true, false, move_to, None);
+            let mut fired = 0;
+            for _ in 0..4_000 {
+                fired += game
+                    .tick(crate::TICK_SECONDS, &crate::Input::default())
+                    .iter()
+                    .filter(|event| matches!(event, crate::GameEvent::LevelChange { .. }))
+                    .count();
+            }
+            assert_eq!(fired, completions);
+            assert_eq!(game.script_completion_count(), completions as u64);
+            let actor = entity_of_classname(&game, "monster_barney").expect("actor");
+            let actor = game.registry().world.get::<&Actor>(actor).expect("actor");
+            if completions == 0 {
+                assert!(actor.origin.x < 0.0);
+            } else {
+                assert_eq!(actor.origin, Vec3::X * 100.0);
+            }
+            assert_eq!(game.script_navigation_stats().untraced_steps, 0);
+        }
     }
 }
 
@@ -3143,6 +3743,11 @@ mod projectile_queue_tests {
     fn stale_attack_tasks_cannot_launch_from_a_dead_actor() {
         let (mut game, actor) = live_fixture("monster_human_grunt");
         let (level, systems) = game.level_and_systems_mut();
+        let (projectiles, hitboxes) = super::grenade_emission_tests::context_parts(level);
+        let grenade = GrenadeSafetyContext {
+            projectiles: &projectiles,
+            hitboxes: &hitboxes,
+        };
         let ai = systems.ai_mut();
         assert!(
             ai.take_projectile_requests().is_empty(),
@@ -3160,7 +3765,1320 @@ mod projectile_queue_tests {
             AttackKind::Range2,
             Some(level.player),
             &mut Vec::new(),
+            &grenade,
         );
         assert!(ai.take_projectile_requests().is_empty());
     }
+
+    const GRENADE_WALL_MIN: Vec3 = Vec3::new(-8.0, -128.0, 0.0);
+    const GRENADE_WALL_MAX: Vec3 = Vec3::new(8.0, 128.0, 256.0);
+
+    fn grenade_wall_fixture(
+        classname: &str,
+        wall_class: &str,
+        activate: bool,
+    ) -> (crate::Game, Entity) {
+        grenade_wall_fixture_with_player_prisoner(classname, wall_class, activate, false)
+    }
+
+    fn grenade_wall_fixture_with_player_prisoner(
+        classname: &str,
+        wall_class: &str,
+        activate: bool,
+        player_prisoner: bool,
+    ) -> (crate::Game, Entity) {
+        use crate::test_support::{AI_MAP, entity_block};
+        use ohl_formats::test_support::{Bsp30Builder, CollisionBrush};
+        let entities = format!(
+            "{{\"classname\" \"worldspawn\"}}{}{}{}{}{}",
+            entity_block("info_player_start", [160.0, 0.0, 36.0], 180.0, &[]),
+            entity_block(
+                classname,
+                [-160.0, 0.0, 0.0],
+                0.0,
+                &[("targetname", "ohl_thrower")]
+            ),
+            entity_block(
+                "monster_human_grunt",
+                [0.0, 96.0, 0.0],
+                0.0,
+                &[("targetname", "ohl_holder")]
+            ),
+            entity_block(
+                wall_class,
+                [0.0; 3],
+                0.0,
+                &[
+                    ("model", "*1"),
+                    ("targetname", "ohl_grenade_wall"),
+                    ("spawnflags", "1")
+                ]
+            ),
+            if activate {
+                "{\"classname\" \"trigger_auto\" \"target\" \"ohl_grenade_wall\"}"
+            } else {
+                ""
+            },
+        );
+        let mut bsp = Bsp30Builder::new();
+        bsp.set_entities_text(&entities);
+        let floor = bsp.push_collision_hulls(&[CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0)]);
+        bsp.push_model([-512.0; 3], [512.0; 3], [0.0; 3], floor, 2, 0, 0);
+        let wall = bsp.push_collision_hulls(&[CollisionBrush::box_brush(
+            GRENADE_WALL_MIN.to_array(),
+            GRENADE_WALL_MAX.to_array(),
+        )]);
+        bsp.push_model(
+            GRENADE_WALL_MIN.to_array(),
+            GRENADE_WALL_MAX.to_array(),
+            [0.0; 3],
+            wall,
+            2,
+            0,
+            0,
+        );
+        let mut game =
+            crate::Game::from_map_bytes(&crate::MemoryAssets::new(), AI_MAP, &bsp.build())
+                .expect("generated grenade wall");
+        let shooter = game.registry().find("ohl_thrower")[0];
+        let holder = game.registry().find("ohl_holder")[0];
+        if player_prisoner {
+            // Held actors still sense: hide B before the first ordinary tick.
+            let player = game.player_entity();
+            game.registry_mut()
+                .world
+                .insert_one(player, Prisoner)
+                .unwrap();
+        }
+        // Test-only possession keeps both actors stationary while real Game
+        // ticks run wall activation and the normal phase-2a occupancy policy.
+        for entity in [shooter, holder] {
+            game.registry_mut()
+                .world
+                .insert_one(entity, ScriptHold)
+                .expect("fixture hold");
+        }
+        for _ in 0..3 {
+            game.tick(crate::TICK_SECONDS, &crate::Input::default());
+        }
+        assert_eq!(game.projectile_count(), 0);
+        (game, shooter)
+    }
+
+    fn seed_grenade_memory(game: &mut crate::Game, shooter: Entity) {
+        let (level, systems) = game.level_and_systems_mut();
+        let _ = level.registry.world.remove_one::<ScriptHold>(shooter);
+        let enemy = *level
+            .registry
+            .world
+            .get::<&Actor>(level.player)
+            .expect("player actor");
+        let actor = *level
+            .registry
+            .world
+            .get::<&Actor>(shooter)
+            .expect("shooter actor");
+        let mut brain = level
+            .registry
+            .world
+            .get::<&mut MonsterAi>(shooter)
+            .expect("shooter brain");
+        // Explicit seeded-memory control, not a claim of naturally acquired
+        // sight through the physically blocked world.
+        brain.memory = Some(EnemyMemory {
+            entity: level.player,
+            last_known_position: enemy.navigation_anchor(),
+            time_since_seen: 0.0,
+            occluded: false,
+            last_known_distance: actor.eye().distance(enemy.eye()),
+        });
+        brain.state = MonsterState::Combat;
+        brain.runner.clear();
+        brain.pending_conditions = Conditions::EMPTY;
+        assert!(systems.ai_mut().take_projectile_requests().is_empty());
+    }
+
+    fn grenade_world_traces(game: &mut crate::Game, shooter: Entity) -> (bool, bool) {
+        let (level, _) = game.level_and_systems_mut();
+        let shooter = *level.registry.world.get::<&Actor>(shooter).unwrap();
+        let enemy = *level.registry.world.get::<&Actor>(level.player).unwrap();
+        assert!(shooter.alive && enemy.alive && shooter.health > 0.0 && enemy.health > 0.0);
+        assert!((96.0..=1024.0).contains(&shooter.eye().distance(enemy.eye())));
+        let world = level.collision.as_ref().expect("actual projectile world");
+        let monster = level.monster_collision.as_ref().expect("monster world");
+        for actor in [shooter, enemy] {
+            for model in [world, monster] {
+                assert!(
+                    !model
+                        .trace(actor.hull, actor.query_origin(), actor.query_origin())
+                        .start_solid,
+                    "shooter and enemy are not embedded"
+                );
+            }
+        }
+        let trace = |model: &ohl_physics::CollisionModel| {
+            let hit = model.trace(ohl_physics::Hull::Point, shooter.eye(), enemy.eye());
+            assert!(!hit.start_solid && !hit.all_solid);
+            hit.fraction < 1.0
+        };
+        (trace(world), trace(monster))
+    }
+
+    fn grenade_ready(game: &mut crate::Game, shooter: Entity) -> bool {
+        let (level, systems) = game.level_and_systems_mut();
+        systems
+            .ai_mut()
+            .update_secondary_opportunities(level, crate::TICK_SECONDS);
+        level
+            .registry
+            .world
+            .get::<&MonsterAi>(shooter)
+            .unwrap()
+            .pending_conditions
+            .contains(Conditions::CAN_RANGE_ATTACK2)
+    }
+
+    fn think_for_grenade(game: &mut crate::Game) -> Vec<ProjectileRequest> {
+        let (level, systems) = game.level_and_systems_mut();
+        let (projectiles, hitboxes) = super::grenade_emission_tests::context_parts(level);
+        let grenade = GrenadeSafetyContext {
+            projectiles: &projectiles,
+            hitboxes: &hitboxes,
+        };
+        // The real AI schedule/adapter runs; only memory was explicitly seeded.
+        // No forced Range2 task is used by this admission/emission arm.
+        for _ in 0..16 {
+            systems
+                .ai_mut()
+                .think(level, crate::TICK_SECONDS, &mut Vec::new(), &grenade);
+            let requests = systems.ai_mut().take_projectile_requests();
+            if !requests.is_empty() {
+                return requests;
+            }
+        }
+        Vec::new()
+    }
+
+    fn forced_grenade_hits_actual_wall(game: &mut crate::Game, shooter: Entity) {
+        let (level, systems) = game.level_and_systems_mut();
+        // Explicit physics characterization bypasses emission safety only in this test.
+        let requests = [super::grenade_emission_tests::forced_request(
+            level,
+            shooter,
+            systems.ai_mut().difficulty,
+        )];
+        assert_eq!(requests.len(), 1);
+        let request = requests[0];
+        assert_eq!(request.kind, ohl_combat::ProjectileKind::HandGrenade);
+        assert_eq!(request.owner, shooter);
+        assert_eq!(request.target, Some(level.player));
+        assert!(request.origin.x < GRENADE_WALL_MIN.x - 64.0 && request.velocity.x > 0.0);
+        let mut projectiles = crate::projectiles::ProjectileSystem::new(0);
+        projectiles
+            .spawn_request(level, &request)
+            .expect("real engine adapter launch");
+        let mut hitboxes = HitboxIndex::new(HitboxLimits::default());
+        crate::combat::rebuild_hitbox_index(&mut hitboxes, level);
+        let mut damage = Vec::new();
+        let mut sprites = crate::sprites::TransientSprites::default();
+        let mut hit_wall = false;
+        for _ in 0..80 {
+            let before = projectiles.snapshot(level).projectiles[0];
+            let position = Vec3::from_array(before.position);
+            let velocity = Vec3::from_array(before.velocity)
+                - Vec3::Z * ohl_physics::MoveConfig::default().gravity * crate::TICK_SECONDS;
+            let predicted = level.collision.as_ref().unwrap().trace(
+                ohl_physics::Hull::Point,
+                position,
+                position + velocity * crate::TICK_SECONDS,
+            );
+            projectiles.tick(
+                level,
+                &hitboxes,
+                crate::TICK_SECONDS,
+                &mut damage,
+                &mut sprites,
+            );
+            let snapshot = projectiles.snapshot(level);
+            assert_eq!(snapshot.projectiles.len(), 1, "impact precedes fuse expiry");
+            let after = snapshot.projectiles[0];
+            assert!(
+                after.position[0] <= GRENADE_WALL_MIN.x,
+                "the actual grenade never crosses the wall plane"
+            );
+            if after.velocity[0] < 0.0 {
+                assert!(predicted.fraction < 1.0 && !predicted.start_solid);
+                assert_eq!(predicted.plane_normal, Vec3::NEG_X);
+                assert!((predicted.end_pos.x - GRENADE_WALL_MIN.x).abs() < 0.1);
+                assert!(after.position[2] > 1.0 && after.position[2] < GRENADE_WALL_MAX.z);
+                assert!(
+                    after.position[1].abs() < 0.01,
+                    "off-lane holder cannot intercept the grenade"
+                );
+                hit_wall = true;
+                break;
+            }
+        }
+        assert!(
+            hit_wall,
+            "forced adapter grenade reflects from the actual wall before crossing"
+        );
+        assert!(
+            damage.is_empty(),
+            "no blast/damage claim is made by the early-impact control"
+        );
+    }
+
+    #[test]
+    fn grenade_readiness_rejects_actual_wall_despite_npc_only_suspension() {
+        for classname in ["monster_human_grunt", "monster_human_assassin"] {
+            let (mut game, shooter) = grenade_wall_fixture(classname, "func_wall_toggle", true);
+            let wall = game.registry().find("ohl_grenade_wall")[0];
+            assert!(
+                game.registry()
+                    .world
+                    .get::<&ohl_game::registry::WallToggle>(wall)
+                    .unwrap()
+                    .visible
+            );
+            let holder = game.registry().find("ohl_holder")[0];
+            {
+                let actor = game.registry().world.get::<&Actor>(holder).unwrap();
+                assert!(actor.alive && actor.health > 0.0 && !actor.is_client);
+                assert!(
+                    game.registry()
+                        .world
+                        .get::<&ohl_ai::Impervious>(holder)
+                        .is_err()
+                );
+                let (min, max) = actor.body_frame.world_bounds(actor.hull, actor.origin);
+                assert!(min.cmplt(GRENADE_WALL_MAX).all() && max.cmpgt(GRENADE_WALL_MIN).all());
+                assert!(min.y > 64.0, "holder is outside the launch corridor");
+            }
+            assert_eq!(grenade_world_traces(&mut game, shooter), (true, false));
+            seed_grenade_memory(&mut game, shooter);
+            assert!(
+                !grenade_ready(&mut game, shooter),
+                "grenade readiness rejects the actual projectile wall"
+            );
+            assert!(
+                think_for_grenade(&mut game).is_empty(),
+                "natural AI schedules enqueue no grenade through the held wall"
+            );
+            // A separate held-wall instance keeps forced emission/cooldown and
+            // any natural hitscan movement out of the vacancy control below.
+            let (mut forced, thrower) = grenade_wall_fixture(classname, "func_wall_toggle", true);
+            assert_eq!(grenade_world_traces(&mut forced, thrower), (true, false));
+            seed_grenade_memory(&mut forced, thrower);
+            forced_grenade_hits_actual_wall(&mut forced, thrower);
+
+            // Vacating the holder restores the monster model on a real tick.
+            game.registry_mut()
+                .world
+                .insert_one(shooter, ScriptHold)
+                .unwrap();
+            game.registry()
+                .world
+                .get::<&mut Actor>(holder)
+                .unwrap()
+                .origin = Vec3::new(64.0, 96.0, 0.0);
+            game.registry()
+                .world
+                .get::<&mut Transform>(holder)
+                .unwrap()
+                .origin = Vec3::new(64.0, 96.0, 0.0);
+            game.tick(crate::TICK_SECONDS, &crate::Input::default());
+            assert_eq!(grenade_world_traces(&mut game, shooter), (true, true));
+            seed_grenade_memory(&mut game, shooter);
+            assert!(!grenade_ready(&mut game, shooter));
+
+            let (mut ordinary, shooter) = grenade_wall_fixture(classname, "func_wall", false);
+            assert_eq!(grenade_world_traces(&mut ordinary, shooter), (true, true));
+            seed_grenade_memory(&mut ordinary, shooter);
+            assert!(!grenade_ready(&mut ordinary, shooter));
+            assert!(think_for_grenade(&mut ordinary).is_empty());
+
+            let (mut missing, shooter) = grenade_wall_fixture(classname, "func_wall_toggle", false);
+            assert_eq!(grenade_world_traces(&mut missing, shooter), (false, false));
+            seed_grenade_memory(&mut missing, shooter);
+            missing.level_and_systems_mut().0.collision = None;
+            assert!(
+                !grenade_ready(&mut missing, shooter),
+                "missing actual collision refuses grenade readiness"
+            );
+            assert!(think_for_grenade(&mut missing).is_empty());
+        }
+    }
+
+    #[test]
+    fn grenade_readiness_wall_off_emits_for_both_species() {
+        for classname in ["monster_human_grunt", "monster_human_assassin"] {
+            let (mut game, shooter) = grenade_wall_fixture(classname, "func_wall_toggle", false);
+            // Same wall-off policy; emission safety also requires a clear owner margin.
+            super::grenade_emission_tests::place(&game, shooter, Vec3::new(-640.0, 0.0, 0.0));
+            assert_eq!(grenade_world_traces(&mut game, shooter), (false, false));
+            seed_grenade_memory(&mut game, shooter);
+            assert!(
+                grenade_ready(&mut game, shooter),
+                "clear actual world permits grenade readiness"
+            );
+            let requests = think_for_grenade(&mut game);
+            assert_eq!(
+                requests.len(),
+                1,
+                "natural secondary schedule emits one request"
+            );
+            assert_eq!(requests[0].kind, ohl_combat::ProjectileKind::HandGrenade);
+            assert_eq!(requests[0].owner, shooter);
+            assert_eq!(requests[0].target, Some(game.player_entity()));
+        }
+    }
+
+    fn apache_wall_fixture(activate: bool) -> (crate::Game, Entity) {
+        apache_wall_fixture_with_player_prisoner(activate, false)
+    }
+
+    fn apache_wall_fixture_with_player_prisoner(
+        activate: bool,
+        player_prisoner: bool,
+    ) -> (crate::Game, Entity) {
+        let (mut game, shooter) = grenade_wall_fixture_with_player_prisoner(
+            "monster_apache",
+            "func_wall_toggle",
+            activate,
+            player_prisoner,
+        );
+        // Reuse the real held-toggle activation, but put the aircraft above
+        // the floor and give its ordinary flight controller an active route.
+        let origin = Vec3::new(-160.0, 0.0, 96.0);
+        game.registry()
+            .world
+            .get::<&mut Actor>(shooter)
+            .unwrap()
+            .origin = origin;
+        game.registry()
+            .world
+            .get::<&mut Transform>(shooter)
+            .unwrap()
+            .origin = origin;
+        game.registry_mut()
+            .world
+            .insert_one(
+                shooter,
+                ohl_ai::monsters::FlightPlan::new(
+                    vec![origin + Vec3::Y * 32.0, origin - Vec3::Y * 32.0],
+                    true,
+                    100.0,
+                ),
+            )
+            .unwrap();
+        game.tick(crate::TICK_SECONDS, &crate::Input::default());
+        assert!(
+            game.registry()
+                .world
+                .get::<&ohl_ai::monsters::FlightPlan>(shooter)
+                .unwrap()
+                .is_active()
+        );
+        assert_eq!(game.projectile_count(), 0);
+        (game, shooter)
+    }
+
+    fn characterize_forced_rocket_wall(game: &mut crate::Game, shooter: Entity) {
+        let (level, systems) = game.level_and_systems_mut();
+        // Explicit forced physics setup, not a production admission bypass.
+        let kind = ohl_combat::ProjectileKind::Rocket;
+        let origin = level.registry.world.get::<&Actor>(shooter).unwrap().eye();
+        let aim = level
+            .registry
+            .world
+            .get::<&Actor>(level.player)
+            .unwrap()
+            .eye();
+        let difficulty = systems.ai_mut().difficulty;
+        let (damage, damage_type, blast_radius) = monster_projectile_profile(kind, difficulty);
+        let requests = [ProjectileRequest {
+            kind,
+            owner: shooter,
+            origin,
+            velocity: monster_projectile_velocity(kind, difficulty, origin, aim),
+            damage,
+            damage_type,
+            blast_radius,
+            target: Some(level.player),
+        }];
+        assert_eq!(requests.len(), 1);
+        let request = requests[0];
+        assert_eq!(request.kind, ohl_combat::ProjectileKind::Rocket);
+        assert_eq!(request.owner, shooter);
+        let mut projectiles = crate::projectiles::ProjectileSystem::new(0);
+        projectiles.spawn_request(level, &request).unwrap();
+        let mut hitboxes = HitboxIndex::new(HitboxLimits::default());
+        crate::combat::rebuild_hitbox_index(&mut hitboxes, level);
+        let mut damage = Vec::new();
+        let mut sprites = crate::sprites::TransientSprites::default();
+        for _ in 0..100 {
+            let before = projectiles.snapshot(level).projectiles[0];
+            let start = Vec3::from_array(before.position);
+            let end = start + Vec3::from_array(before.velocity) * crate::TICK_SECONDS;
+            let trace =
+                level
+                    .collision
+                    .as_ref()
+                    .unwrap()
+                    .trace(ohl_physics::Hull::Point, start, end);
+            projectiles.tick(
+                level,
+                &hitboxes,
+                crate::TICK_SECONDS,
+                &mut damage,
+                &mut sprites,
+            );
+            if projectiles.snapshot(level).projectiles.is_empty() {
+                assert!(trace.fraction < 1.0 && !trace.start_solid && !trace.all_solid);
+                assert_eq!(trace.plane_normal, Vec3::NEG_X);
+                assert!((trace.end_pos.x - GRENADE_WALL_MIN.x).abs() < 0.1);
+                return;
+            }
+        }
+        panic!("forced rocket must detonate against the actual held wall");
+    }
+
+    #[test]
+    fn apache_rocket_readiness_rejects_actual_wall_despite_npc_only_suspension() {
+        let (mut forced, shooter) = apache_wall_fixture(true);
+        assert_eq!(grenade_world_traces(&mut forced, shooter), (true, false));
+        characterize_forced_rocket_wall(&mut forced, shooter);
+
+        let (mut game, shooter) = apache_wall_fixture(true);
+        let wall = game.registry().find("ohl_grenade_wall")[0];
+        assert!(
+            game.registry()
+                .world
+                .get::<&ohl_game::registry::WallToggle>(wall)
+                .unwrap()
+                .visible
+        );
+        let holder = game.registry().find("ohl_holder")[0];
+        {
+            let actor = game.registry().world.get::<&Actor>(holder).unwrap();
+            assert!(actor.alive && actor.health > 0.0 && !actor.is_client);
+            assert!(
+                game.registry()
+                    .world
+                    .get::<&ohl_ai::Impervious>(holder)
+                    .is_err()
+            );
+            let (min, max) = actor.body_frame.world_bounds(actor.hull, actor.origin);
+            assert!(min.cmplt(GRENADE_WALL_MAX).all() && max.cmpgt(GRENADE_WALL_MIN).all());
+            assert!(min.y > 64.0, "holder is outside the rocket corridor");
+        }
+        assert_eq!(grenade_world_traces(&mut game, shooter), (true, false));
+        seed_grenade_memory(&mut game, shooter);
+        assert!(
+            !grenade_ready(&mut game, shooter),
+            "Apache secondary admission rejects the actual projectile wall"
+        );
+        assert!(
+            think_for_grenade(&mut game).is_empty(),
+            "natural Apache schedule emits no rocket through the held wall"
+        );
+        // No no-damage oracle: Apache primary hitscan is a separate path.
+    }
+
+    #[test]
+    // Exact equality separates rocket launch from subsequent flight damage.
+    #[allow(clippy::float_cmp)]
+    fn apache_rocket_readiness_wall_off_emits_and_hurts_player() {
+        let (mut game, shooter) = apache_wall_fixture(false);
+        assert_eq!(grenade_world_traces(&mut game, shooter), (false, false));
+        seed_grenade_memory(&mut game, shooter);
+        assert!(grenade_ready(&mut game, shooter));
+        let requests = think_for_grenade(&mut game);
+        assert_eq!(requests.len(), 1, "natural Apache schedule emits a rocket");
+        assert_eq!(requests[0].kind, ohl_combat::ProjectileKind::Rocket);
+        assert_eq!(requests[0].owner, shooter);
+        assert_eq!(requests[0].target, Some(game.player_entity()));
+        // Feed the naturally emitted request back through the real phase-8
+        // drain. Hold only its owner so later hitscan cannot satisfy damage.
+        game.registry_mut()
+            .world
+            .insert_one(shooter, ScriptHold)
+            .unwrap();
+        game.level_and_systems_mut()
+            .1
+            .ai_mut()
+            .projectiles
+            .spawn_projectile(&requests[0]);
+        let before = game.player_health();
+        game.tick(crate::TICK_SECONDS, &crate::Input::default());
+        assert_eq!(game.projectile_count(), 1);
+        assert_eq!(game.player_health(), before);
+        for _ in 0..100 {
+            game.tick(crate::TICK_SECONDS, &crate::Input::default());
+        }
+        assert_eq!(
+            game.projectile_count(),
+            0,
+            "real rocket detonated on contact"
+        );
+        assert!(
+            game.player_health() < before,
+            "admitted rocket hurts the player"
+        );
+    }
+
+    // Ordinary Game ticks acquire A and finish/reselect into the rocket schedule.
+    // No memory, condition or task cursor is assigned by this fixture.
+    #[allow(clippy::too_many_lines)]
+    fn secondary_retarget_fixture(wall_on: bool) -> (crate::Game, Entity, Entity) {
+        let (mut game, shooter) = apache_wall_fixture_with_player_prisoner(wall_on, true);
+        let player = game.player_entity();
+        assert!(game.registry().world.get::<&Prisoner>(player).is_ok());
+        {
+            let ai = game.registry().world.get::<&MonsterAi>(shooter).unwrap();
+            assert!(ai.memory.is_none(), "B was never sensed during held setup");
+            assert!(ai.runner.schedule().is_none());
+        }
+        let mut first = *game.registry().world.get::<&Actor>(player).unwrap();
+        first.origin = Vec3::new(320.0, 440.0, 64.0);
+        first.is_client = false;
+        first.health = 1_000.0;
+        let first_target = game.registry_mut().world.spawn((
+            first,
+            Transform {
+                origin: first.origin,
+                angles: Vec3::ZERO,
+            },
+            ohl_combat::Health::new(first.health),
+        ));
+        let origin = game.registry().world.get::<&Actor>(shooter).unwrap().origin;
+        // A real, active one-node route holds the aircraft at its authored point.
+        game.registry_mut()
+            .world
+            .insert_one(
+                shooter,
+                ohl_ai::monsters::FlightPlan::new(vec![origin], true, 100.0),
+            )
+            .unwrap();
+        game.registry_mut()
+            .world
+            .remove_one::<ScriptHold>(shooter)
+            .unwrap();
+        for _ in 0..600 {
+            game.tick(crate::TICK_SECONDS, &crate::Input::default());
+            assert_eq!(
+                game.projectile_count(),
+                0,
+                "no secondary has run during setup"
+            );
+            let selected = {
+                let ai = game.registry().world.get::<&MonsterAi>(shooter).unwrap();
+                ai.runner.schedule_name() == "ohl/monsters/apache_rocket"
+                    && ai.runner.task_index() == 0
+                    && !ai.runner.started()
+            };
+            if selected {
+                let ai = game.registry().world.get::<&MonsterAi>(shooter).unwrap();
+                assert_eq!(ai.memory.unwrap().entity, first_target);
+                drop(ai);
+                let (level, systems) = game.level_and_systems_mut();
+                let owner = *level.registry.world.get::<&Actor>(shooter).unwrap();
+                let a = *level.registry.world.get::<&Actor>(first_target).unwrap();
+                let b = *level.registry.world.get::<&Actor>(player).unwrap();
+                let holder = level.registry.find("ohl_holder")[0];
+                let holder_actor = *level.registry.world.get::<&Actor>(holder).unwrap();
+                let relationships = systems.ai_mut().world.relationships();
+                let to_a = relationships.get(owner.classification, a.classification);
+                assert!(to_a.is_hostile());
+                assert_eq!(
+                    to_a,
+                    relationships.get(owner.classification, b.classification)
+                );
+                assert!(
+                    !relationships
+                        .get(owner.classification, holder_actor.classification)
+                        .is_hostile()
+                );
+                assert!(holder_actor.alive && holder_actor.health > 0.0);
+                let (min, max) = holder_actor
+                    .body_frame
+                    .world_bounds(holder_actor.hull, holder_actor.origin);
+                assert!(min.cmplt(GRENADE_WALL_MAX).all() && max.cmpgt(GRENADE_WALL_MIN).all());
+                assert!(min.y > 64.0);
+                for actor in [owner, a, b] {
+                    assert!(actor.alive && actor.health > 0.0);
+                    let trace = level.collision.as_ref().unwrap().trace(
+                        actor.hull,
+                        actor.query_origin(),
+                        actor.query_origin(),
+                    );
+                    assert!(!trace.start_solid && !trace.all_solid);
+                }
+                assert!(owner.eye().distance(b.eye()) < owner.eye().distance(a.eye()));
+                assert!(secondary_target_clear(
+                    &MonsterKind::Apache,
+                    systems.ai_mut().difficulty,
+                    level.collision.as_ref(),
+                    owner.eye(),
+                    &a
+                ));
+                assert!(
+                    level
+                        .registry
+                        .world
+                        .get::<&ohl_ai::monsters::FlightPlan>(shooter)
+                        .unwrap()
+                        .is_active()
+                );
+                return (game, shooter, first_target);
+            }
+        }
+        panic!("ordinary tasks must finish and reselect an unstarted secondary");
+    }
+
+    fn secondary_retarget_boundary(wall_on: bool) -> (crate::Game, Entity) {
+        let (mut game, shooter, first_target) = secondary_retarget_fixture(wall_on);
+        let player = game.player_entity();
+        game.registry_mut()
+            .world
+            .remove_one::<Prisoner>(player)
+            .unwrap();
+        for _ in 0..100 {
+            game.tick(crate::TICK_SECONDS, &crate::Input::default());
+            assert_eq!(
+                game.projectile_count(),
+                0,
+                "retarget/turn precedes the attack task"
+            );
+            let ready = {
+                let ai = game.registry().world.get::<&MonsterAi>(shooter).unwrap();
+                assert_eq!(
+                    ai.memory.unwrap().entity,
+                    player,
+                    "ordinary senses prefer B"
+                );
+                assert_ne!(ai.memory.unwrap().entity, first_target);
+                assert_eq!(ai.runner.schedule_name(), "ohl/monsters/apache_rocket");
+                ai.runner.task() == Some(ohl_ai::Task::RangeAttack2) && !ai.runner.started()
+            };
+            if ready {
+                let (level, systems) = game.level_and_systems_mut();
+                let owner = *level.registry.world.get::<&Actor>(shooter).unwrap();
+                let b = *level.registry.world.get::<&Actor>(player).unwrap();
+                let actual = level.collision.as_ref().unwrap().trace(
+                    ohl_physics::Hull::Point,
+                    owner.eye(),
+                    b.eye(),
+                );
+                let visible = level.monster_collision.as_ref().unwrap().trace(
+                    ohl_physics::Hull::Point,
+                    owner.eye(),
+                    b.eye(),
+                );
+                assert!(!actual.start_solid && !actual.all_solid);
+                assert!(!visible.start_solid && !visible.all_solid && visible.fraction >= 1.0);
+                assert_eq!(actual.fraction < 1.0, wall_on);
+                assert_eq!(
+                    secondary_target_clear(
+                        &MonsterKind::Apache,
+                        systems.ai_mut().difficulty,
+                        level.collision.as_ref(),
+                        owner.eye(),
+                        &b
+                    ),
+                    !wall_on
+                );
+                assert!(!systems.ai_mut().secondary_cooldowns.contains_key(&shooter));
+                return (game, shooter);
+            }
+        }
+        panic!("ordinary turning must reach the pending Range2 task");
+    }
+
+    fn assert_secondary_finished_without_request(game: &mut crate::Game, shooter: Entity) {
+        let ai = game.registry().world.get::<&MonsterAi>(shooter).unwrap();
+        assert_eq!(
+            ai.runner.task(),
+            Some(ohl_ai::Task::Wait(1.0)),
+            "ordinary attack task completed"
+        );
+        drop(ai);
+        assert_eq!(
+            game.projectile_count(),
+            0,
+            "blocked retarget must not emit a secondary"
+        );
+        let ai = game.level_and_systems_mut().1.ai_mut();
+        assert!(ai.take_projectile_requests().is_empty());
+        assert!(!ai.secondary_cooldowns.contains_key(&shooter));
+    }
+
+    #[test]
+    fn secondary_retargets_blocked_current_enemy_without_emitting() {
+        let (mut game, shooter) = secondary_retarget_boundary(true);
+        game.tick(crate::TICK_SECONDS, &crate::Input::default());
+        assert_secondary_finished_without_request(&mut game, shooter);
+    }
+
+    #[test]
+    fn secondary_retargets_missing_actual_world_without_emitting() {
+        let (mut game, shooter) = secondary_retarget_boundary(false);
+        {
+            let (level, systems) = game.level_and_systems_mut();
+            let owner = *level.registry.world.get::<&Actor>(shooter).unwrap();
+            let enemy = *level.registry.world.get::<&Actor>(level.player).unwrap();
+            level.collision = None;
+            assert!(!secondary_target_clear(
+                &MonsterKind::Apache,
+                systems.ai_mut().difficulty,
+                level.collision.as_ref(),
+                owner.eye(),
+                &enemy
+            ));
+        }
+        game.tick(crate::TICK_SECONDS, &crate::Input::default());
+        assert_secondary_finished_without_request(&mut game, shooter);
+    }
+
+    #[test]
+    // The unadvanced launch and its ordinary cooldown/profile are exact copies.
+    #[allow(clippy::float_cmp)]
+    fn secondary_retargets_clear_current_enemy_and_rocket_hurts_player() {
+        let (mut game, shooter) = secondary_retarget_boundary(false);
+        let before = game.player_health();
+        let (origin, velocity, profile) = {
+            let (level, systems) = game.level_and_systems_mut();
+            let origin = level.registry.world.get::<&Actor>(shooter).unwrap().eye();
+            let aim = level
+                .registry
+                .world
+                .get::<&Actor>(level.player)
+                .unwrap()
+                .eye();
+            let kind = ohl_combat::ProjectileKind::Rocket;
+            let difficulty = systems.ai_mut().difficulty;
+            (
+                origin,
+                monster_projectile_velocity(kind, difficulty, origin, aim),
+                monster_projectile_profile(kind, difficulty),
+            )
+        };
+        game.tick(crate::TICK_SECONDS, &crate::Input::default());
+        assert_eq!(game.projectile_count(), 1);
+        assert_eq!(
+            game.player_health(),
+            before,
+            "launch precedes flight damage"
+        );
+        {
+            let (level, systems) = game.level_and_systems_mut();
+            let physical = systems.snapshot_projectiles(level);
+            assert_eq!(physical.projectiles.len(), 1);
+            let rocket = physical.projectiles[0];
+            assert_eq!(
+                rocket.kind_tag,
+                crate::save_state::projectile_kind_tag(ohl_combat::ProjectileKind::Rocket)
+            );
+            assert_eq!(rocket.position, origin.to_array());
+            assert_eq!(rocket.velocity, velocity.to_array());
+            assert_eq!(rocket.age, 0.0);
+            let runtime = systems.snapshot_projectile_runtime(level).unwrap();
+            assert_eq!(runtime.attacks.len(), 1);
+            let attack = runtime.attacks[0];
+            assert_eq!(attack.id, rocket.id);
+            assert_eq!(
+                attack.owner,
+                crate::save_state::projectile_entity_ref(level, entity_id(shooter))
+            );
+            assert!(attack.owner.is_some());
+            assert_eq!(
+                attack.target,
+                Some(crate::save_state::ProjectileEntityRef::Player)
+            );
+            assert_eq!(
+                (attack.damage, attack.damage_bits, attack.blast_radius),
+                (profile.0, profile.1.bits(), profile.2)
+            );
+            assert_eq!(
+                systems.ai_mut().secondary_cooldowns.get(&shooter),
+                Some(&6.0)
+            );
+        }
+        // Hold only after the natural launch; later primary fire cannot satisfy hurt.
+        game.registry_mut()
+            .world
+            .insert_one(shooter, ScriptHold)
+            .unwrap();
+        for _ in 0..100 {
+            game.tick(crate::TICK_SECONDS, &crate::Input::default());
+        }
+        assert_eq!(
+            game.projectile_count(),
+            0,
+            "ordinary rocket contact detonates"
+        );
+        assert!(
+            game.player_health() < before,
+            "naturally retargeted rocket hurts B"
+        );
+    }
+
+    fn controller_wall_fixture(activate: bool) -> (crate::Game, Entity) {
+        let (mut game, shooter) =
+            grenade_wall_fixture("monster_alien_controller", "func_wall_toggle", activate);
+        // Same real held-toggle fixture as Apache, with the controller's own
+        // ordinary hovering brain rather than an invented aircraft flight plan.
+        super::grenade_emission_tests::place(&game, shooter, Vec3::new(-160.0, 0.0, 96.0));
+        game.tick(crate::TICK_SECONDS, &crate::Input::default());
+        assert_eq!(game.projectile_count(), 0);
+        (game, shooter)
+    }
+
+    fn characterize_forced_head_ball_wall(game: &mut crate::Game, shooter: Entity) {
+        use ohl_combat::{
+            ProjectileEvent, ProjectileKind, ProjectileLimits, ProjectileSet, ProjectileTuning,
+            ProjectileWorld,
+        };
+        let (level, systems) = game.level_and_systems_mut();
+        let (_, hitboxes) = super::grenade_emission_tests::context_parts(level);
+        // Explicit forced physics setup, not a production admission bypass.
+        let kind = ProjectileKind::ControllerHomingBall;
+        let origin = level.registry.world.get::<&Actor>(shooter).unwrap().eye();
+        let aim = level
+            .registry
+            .world
+            .get::<&Actor>(level.player)
+            .unwrap()
+            .eye();
+        let difficulty = systems.ai_mut().difficulty;
+        let (damage, damage_type, blast_radius) = monster_projectile_profile(kind, difficulty);
+        let requests = [ProjectileRequest {
+            kind,
+            owner: shooter,
+            origin,
+            velocity: monster_projectile_velocity(kind, difficulty, origin, aim),
+            damage,
+            damage_type,
+            blast_radius,
+            target: Some(level.player),
+        }];
+        assert_eq!(requests.len(), 1);
+        let request = requests[0];
+        assert_eq!(request.kind, ProjectileKind::ControllerHomingBall);
+        assert_eq!(request.owner, shooter);
+        let tuning = ProjectileTuning::default();
+        let movement = ohl_physics::MoveConfig::default();
+        let world = ProjectileWorld {
+            collision: level.collision.as_ref().unwrap(),
+            entities: &hitboxes,
+            movement: &movement,
+            tuning: &tuning,
+        };
+        let mut set = ProjectileSet::new(ProjectileLimits::default(), 0);
+        let id = set
+            .spawn(
+                request.kind,
+                Some(entity_id(shooter)),
+                request.origin,
+                request.velocity,
+                &tuning,
+            )
+            .unwrap();
+        set.get_mut(id).unwrap().target = request.target.map(entity_id);
+        for _ in 0..100 {
+            let mut events = Vec::new();
+            set.tick(crate::TICK_SECONDS, &world, &mut events);
+            for event in events {
+                if let ProjectileEvent::Impact {
+                    kind,
+                    entity,
+                    normal,
+                    position,
+                    ..
+                } = event
+                {
+                    assert_eq!(kind, ProjectileKind::ControllerHomingBall);
+                    assert_eq!(entity, None, "real integrator contact is with the world");
+                    assert_eq!(normal, Vec3::NEG_X);
+                    assert!((position.x - GRENADE_WALL_MIN.x).abs() < 0.1);
+                    assert!(
+                        set.get(id).is_none(),
+                        "head ball stops at its real brush impact"
+                    );
+                    return;
+                }
+            }
+        }
+        panic!("forced head ball must hit the actual held wall");
+    }
+
+    #[test]
+    fn controller_head_ball_readiness_rejects_actual_wall_and_missing_world() {
+        let (mut forced, shooter) = controller_wall_fixture(true);
+        assert_eq!(grenade_world_traces(&mut forced, shooter), (true, false));
+        characterize_forced_head_ball_wall(&mut forced, shooter);
+        let (mut game, shooter) = controller_wall_fixture(true);
+        let wall = game.registry().find("ohl_grenade_wall")[0];
+        assert!(
+            game.registry()
+                .world
+                .get::<&ohl_game::registry::WallToggle>(wall)
+                .unwrap()
+                .visible
+        );
+        let holder = game.registry().find("ohl_holder")[0];
+        {
+            let actor = game.registry().world.get::<&Actor>(holder).unwrap();
+            assert!(actor.alive && actor.health > 0.0 && !actor.is_client);
+            assert!(
+                game.registry()
+                    .world
+                    .get::<&ohl_ai::Impervious>(holder)
+                    .is_err()
+            );
+            let (min, max) = actor.body_frame.world_bounds(actor.hull, actor.origin);
+            assert!(min.cmplt(GRENADE_WALL_MAX).all() && max.cmpgt(GRENADE_WALL_MIN).all());
+            assert!(min.y > 64.0, "holder is outside the head-ball corridor");
+        }
+        assert_eq!(grenade_world_traces(&mut game, shooter), (true, false));
+        seed_grenade_memory(&mut game, shooter);
+        assert!(
+            !grenade_ready(&mut game, shooter),
+            "controller secondary admission rejects the actual projectile wall"
+        );
+        assert!(
+            think_for_grenade(&mut game)
+                .iter()
+                .all(|r| r.kind != ohl_combat::ProjectileKind::ControllerHomingBall),
+            "natural blocked schedule emits no secondary head ball"
+        );
+        // The primary volley remains independent; do not assert no other attack.
+        let (mut missing, shooter) = controller_wall_fixture(false);
+        seed_grenade_memory(&mut missing, shooter);
+        missing.level_and_systems_mut().0.collision = None;
+        assert!(
+            !grenade_ready(&mut missing, shooter),
+            "missing actual world refuses secondary"
+        );
+        assert!(
+            think_for_grenade(&mut missing)
+                .iter()
+                .all(|r| r.kind != ohl_combat::ProjectileKind::ControllerHomingBall)
+        );
+    }
+
+    #[test]
+    // Exact health equality separates launch from actual homing-ball flight damage.
+    #[allow(clippy::float_cmp)]
+    fn controller_head_ball_readiness_wall_off_emits_and_hurts_player() {
+        let (mut game, shooter) = controller_wall_fixture(false);
+        // This wall-off arm needs no occupancy holder. A live human holder
+        // competes with the player under the controller's ordinary senses.
+        let holder = game.registry().find("ohl_holder")[0];
+        game.registry_mut()
+            .world
+            .despawn(holder)
+            .expect("remove the positive arm's competing target");
+        assert_eq!(crate::test_support::monster_entities(&game), vec![shooter]);
+        assert_eq!(grenade_world_traces(&mut game, shooter), (false, false));
+        seed_grenade_memory(&mut game, shooter);
+        assert!(grenade_ready(&mut game, shooter));
+        let requests = think_for_grenade(&mut game);
+        assert_eq!(
+            requests.len(),
+            1,
+            "natural controller schedule emits one head ball"
+        );
+        assert_eq!(
+            requests[0].kind,
+            ohl_combat::ProjectileKind::ControllerHomingBall
+        );
+        assert_eq!(requests[0].owner, shooter);
+        assert_eq!(requests[0].target, Some(game.player_entity()));
+        assert_eq!(requests[0].damage_type, DamageType::SHOCK);
+        assert_eq!(requests[0].blast_radius, None);
+        game.registry_mut()
+            .world
+            .insert_one(shooter, ScriptHold)
+            .unwrap();
+        game.level_and_systems_mut()
+            .1
+            .ai_mut()
+            .projectiles
+            .spawn_projectile(&requests[0]);
+        let before = game.player_health();
+        game.tick(crate::TICK_SECONDS, &crate::Input::default());
+        assert_eq!(game.projectile_count(), 1);
+        assert_eq!(game.player_health(), before);
+        for _ in 0..100 {
+            game.tick(crate::TICK_SECONDS, &crate::Input::default());
+        }
+        assert_eq!(
+            game.projectile_count(),
+            0,
+            "actual head ball stops on contact"
+        );
+        assert!(
+            game.player_health() < before,
+            "admitted head ball hurts the player"
+        );
+    }
+
+    fn grenade_ceiling_room(classname: &str, ceiling: f32) -> (crate::Game, Entity) {
+        use crate::test_support::{AI_MAP, entity_block};
+        use ohl_formats::test_support::{Bsp30Builder, CollisionBrush};
+        let text = format!(
+            "{{\"classname\" \"worldspawn\"}}{}{}",
+            entity_block("info_player_start", [0.0, 0.0, 36.0], 180.0, &[]),
+            entity_block(
+                classname,
+                [-160.0, 0.0, 0.0],
+                0.0,
+                &[("targetname", "ohl_lobber")]
+            )
+        );
+        let mut bsp = Bsp30Builder::new();
+        bsp.set_entities_text(&text);
+        let heads = bsp.push_collision_hulls(&[
+            CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+            CollisionBrush::half_space([0.0, 0.0, -1.0], -ceiling),
+            CollisionBrush::half_space([1.0, 0.0, 0.0], -184.0),
+            CollisionBrush::half_space([-1.0, 0.0, 0.0], -64.0),
+            CollisionBrush::half_space([0.0, 1.0, 0.0], -32.0),
+            CollisionBrush::half_space([0.0, -1.0, 0.0], -32.0),
+        ]);
+        bsp.push_model(
+            [-184.0, -32.0, 0.0],
+            [64.0, 32.0, ceiling],
+            [0.0; 3],
+            heads,
+            1,
+            0,
+            0,
+        );
+        let mut game =
+            crate::Game::from_map_bytes(&crate::MemoryAssets::new(), AI_MAP, &bsp.build())
+                .expect("generated convex ceiling room");
+        let shooter = game.registry().find("ohl_lobber")[0];
+        game.registry_mut()
+            .world
+            .insert_one(shooter, ScriptHold)
+            .unwrap();
+        game.tick(crate::TICK_SECONDS, &crate::Input::default());
+        assert_eq!(game.projectile_count(), 0);
+        (game, shooter)
+    }
+
+    // Exact defaults bind this generated control to the real engine integrator.
+    #[allow(clippy::float_cmp)]
+    fn grenade_ceiling_fixture(classname: &str, low: bool) -> (crate::Game, Entity, f32) {
+        const _: () = assert!(crate::TICK_SECONDS <= ohl_combat::projectile::MAX_SUBSTEP_SECONDS);
+        assert_eq!(
+            ohl_combat::ProjectileTuning::default().gravity_scale.value,
+            1.0
+        );
+        let (open, shooter) = grenade_ceiling_room(classname, 256.0);
+        let actor = *open.registry().world.get::<&Actor>(shooter).unwrap();
+        let enemy = *open
+            .registry()
+            .world
+            .get::<&Actor>(open.player_entity())
+            .unwrap();
+        let mut position = actor.eye();
+        let mut velocity = monster_projectile_velocity(
+            ohl_combat::ProjectileKind::HandGrenade,
+            AiDifficulty::Medium,
+            position,
+            enemy.eye(),
+        );
+        assert!(velocity.is_finite() && velocity.z > 0.0);
+        let mut steps =
+            (monster_lob_flight_seconds(position, enemy.eye()) / crate::TICK_SECONDS).ceil();
+        let mut apex = position.z;
+        while steps > 0.0 {
+            velocity.z -= ohl_physics::MoveConfig::default().gravity * crate::TICK_SECONDS;
+            position += velocity * crate::TICK_SECONDS;
+            apex = apex.max(position.z);
+            steps -= 1.0;
+        }
+        let top = [actor, enemy]
+            .into_iter()
+            .map(|a| {
+                a.body_frame
+                    .world_bounds(a.hull, a.origin)
+                    .1
+                    .z
+                    .max(a.eye().z)
+            })
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            apex > top + 2.0,
+            "real launch rises above both occupied hulls"
+        );
+        let ceiling = if low { top.midpoint(apex) } else { apex + 16.0 };
+        let (mut game, shooter) = grenade_ceiling_room(classname, ceiling);
+        assert_eq!(
+            game.registry().world.get::<&Actor>(shooter).unwrap().origin,
+            actor.origin
+        );
+        assert_eq!(
+            game.registry()
+                .world
+                .get::<&Actor>(game.player_entity())
+                .unwrap()
+                .origin,
+            enemy.origin
+        );
+        assert_eq!(grenade_world_traces(&mut game, shooter), (false, false));
+        let collision = game.level_and_systems_mut().0.collision.as_ref().unwrap();
+        for a in [actor, enemy] {
+            let (min, max) = a.body_frame.world_bounds(a.hull, a.origin);
+            assert!(min.x > -184.0 && max.x < 64.0 && min.y > -32.0 && max.y < 32.0);
+            assert!(min.z >= 0.0 && max.z < ceiling);
+            let support = collision.trace(
+                a.hull,
+                a.query_origin() + Vec3::Z,
+                a.query_origin() - Vec3::Z * 4.0,
+            );
+            assert!(!support.start_solid && support.fraction < 1.0 && support.plane_normal.z > 0.9);
+        }
+        (game, shooter, ceiling)
+    }
+
+    fn characterize_forced_ceiling_impact(game: &mut crate::Game, shooter: Entity, ceiling: f32) {
+        let (level, systems) = game.level_and_systems_mut();
+        // Explicit physics characterization bypasses emission safety only in this test.
+        let requests = [super::grenade_emission_tests::forced_request(
+            level,
+            shooter,
+            systems.ai_mut().difficulty,
+        )];
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].kind, ohl_combat::ProjectileKind::HandGrenade);
+        assert_eq!(requests[0].owner, shooter);
+        let mut projectiles = crate::projectiles::ProjectileSystem::new(0);
+        projectiles.spawn_request(level, &requests[0]).unwrap();
+        let mut hitboxes = HitboxIndex::new(HitboxLimits::default());
+        crate::combat::rebuild_hitbox_index(&mut hitboxes, level);
+        let mut damage = Vec::new();
+        let mut sprites = crate::sprites::TransientSprites::default();
+        let mut reflected = false;
+        for _ in 0..150 {
+            let before = projectiles.snapshot(level).projectiles[0];
+            let velocity = Vec3::from_array(before.velocity)
+                - Vec3::Z * ohl_physics::MoveConfig::default().gravity * crate::TICK_SECONDS;
+            let position = Vec3::from_array(before.position);
+            let trace = level.collision.as_ref().unwrap().trace(
+                ohl_physics::Hull::Point,
+                position,
+                position + velocity * crate::TICK_SECONDS,
+            );
+            projectiles.tick(
+                level,
+                &hitboxes,
+                crate::TICK_SECONDS,
+                &mut damage,
+                &mut sprites,
+            );
+            let state = projectiles.snapshot(level);
+            assert_eq!(
+                state.projectiles.len(),
+                1,
+                "ceiling impact precedes live fuse expiry"
+            );
+            let after = state.projectiles[0];
+            if velocity.z > 0.0 && after.velocity[2] < 0.0 {
+                assert!(trace.fraction < 1.0 && !trace.start_solid && !trace.all_solid);
+                assert_eq!(trace.plane_normal, Vec3::NEG_Z);
+                assert!((trace.end_pos.z - ceiling).abs() < 0.1);
+                assert!(
+                    after.position[0] < -16.0,
+                    "ceiling impact precedes target arrival"
+                );
+                assert!(after.fuse.is_some_and(|fuse| fuse > 0.0));
+                reflected = true;
+                break;
+            }
+        }
+        assert!(
+            reflected,
+            "the forced actual grenade reflects from the low ceiling"
+        );
+        assert!(
+            damage.is_empty(),
+            "early contact is not a blast or damage claim"
+        );
+    }
+
+    #[test]
+    fn grenade_lob_low_ceiling_rejects_after_real_impact_prerequisites() {
+        for classname in ["monster_human_grunt", "monster_human_assassin"] {
+            let (mut forced, shooter, ceiling) = grenade_ceiling_fixture(classname, true);
+            characterize_forced_ceiling_impact(&mut forced, shooter, ceiling);
+            let (mut game, shooter, _) = grenade_ceiling_fixture(classname, true);
+            seed_grenade_memory(&mut game, shooter);
+            assert!(
+                !grenade_ready(&mut game, shooter),
+                "clear eye chord cannot admit a blocked grenade lob"
+            );
+            assert!(
+                think_for_grenade(&mut game).is_empty(),
+                "natural schedule emits no low-ceiling grenade"
+            );
+        }
+    }
+
+    // Exact health equality distinguishes launch from the later timed blast.
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn grenade_lob_high_ceiling_emits_and_hurts_player() {
+        for classname in ["monster_human_grunt", "monster_human_assassin"] {
+            let (mut game, shooter) = super::grenade_emission_tests::safe_scene(classname);
+            super::grenade_emission_tests::assert_safe_exposure(&mut game, shooter);
+            seed_grenade_memory(&mut game, shooter);
+            assert!(
+                grenade_ready(&mut game, shooter),
+                "clear lob remains available"
+            );
+            let requests = think_for_grenade(&mut game);
+            assert_eq!(requests.len(), 1, "real schedule emits a grenade request");
+            assert_eq!(requests[0].kind, ohl_combat::ProjectileKind::HandGrenade);
+            // Return the actually emitted request to the normal phase-8 drain;
+            // hold only its owner to exclude subsequent hitscan/AI damage.
+            game.registry_mut()
+                .world
+                .insert_one(shooter, ScriptHold)
+                .unwrap();
+            game.level_and_systems_mut()
+                .1
+                .ai_mut()
+                .projectiles
+                .spawn_projectile(&requests[0]);
+            let before = game.player_health();
+            game.tick(crate::TICK_SECONDS, &crate::Input::default());
+            assert_eq!(game.projectile_count(), 1);
+            assert_eq!(
+                game.player_health(),
+                before,
+                "launch does not apply blast damage"
+            );
+            for _ in 0..530 {
+                game.tick(crate::TICK_SECONDS, &crate::Input::default());
+            }
+            assert_eq!(
+                game.projectile_count(),
+                0,
+                "the actual timed grenade is removed"
+            );
+            assert!(
+                game.player_health() < before,
+                "clear admitted grenade still damages the player"
+            );
+        }
+    }
 }
+
+#[cfg(test)]
+#[path = "grenade_emission_tests.rs"]
+mod grenade_emission_tests;

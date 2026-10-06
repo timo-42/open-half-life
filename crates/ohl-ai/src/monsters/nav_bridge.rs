@@ -35,10 +35,10 @@
 //! horizontal with a step-up for a walker, the full line for a flier —
 //! whenever the graph has no nodes, no path can be found this tick, or
 //! this tick's bounded path-search budget is spent, so a monster is never
-//! left unable to move and never moved through a wall to get there. The
-//! one exception is a monster a script is walking to its mark, which keeps
-//! the old wall-ignoring straight line ([`Fallback::StraightLine`] says
-//! why, with its `TODO`).
+//! left unable to request a traced step. Script-held approaches retain the
+//! M9.42 [`Fallback::StraightLine`] compatibility policy until P5; autonomous
+//! movement selects the traced fallback. Ordinary graph steering retains
+//! its separately documented routing limitations.
 
 use std::collections::HashMap;
 
@@ -89,17 +89,14 @@ impl Default for NavBridgeLimits {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fallback {
     /// One traced [`crate::movement::move_toward`] step: whatever the
-    /// hull's own trace says is solid stops it. What every monster moving
-    /// under its own brain gets.
+    /// hull's own trace says is solid stops it. Used by ordinary monster
+    /// movement and the current script-held approach candidate.
     Traced,
     /// The [`StraightLineNavigator`] step, which ignores collision. Kept
-    /// only for a monster a `scripted_sequence` is walking to its mark: a
-    /// mark this graph cannot route to is a gap in this project's routing,
-    /// not the map's intent, and a script whose monster never arrives
-    /// stalls whatever the map chained onto it (the measured case is a
-    /// carried guard whose scripted walk opens the only door out of a map:
-    /// with a traced fallback the chain walk stops there, at depth 6).
-    /// **`TODO`**: route such marks properly and retire this.
+    /// as an explicit compatibility option while campaign validation of
+    /// traced script-held approaches remains pending. The current world
+    /// caller selects [`Self::Traced`]. **`TODO`**: retire this option once
+    /// the required routing and campaign gates establish that it is unused.
     StraightLine,
 }
 
@@ -111,6 +108,54 @@ struct CachedRoute {
     hull: Hull,
     path: Path,
     steer: Steer,
+    expected_origin: Vec3,
+    direct: bool,
+    walking_attachment: bool,
+    attachment: InitialAttachment,
+}
+
+/// Derived route state, discarded with the cache; never part of a save.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum InitialAttachment {
+    Unchecked,
+    Descending { lowest_z: f32 },
+    Ready,
+}
+
+/// Aggregate routing diagnostics. Data only: no entity or map identifiers.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct NavigationStats {
+    /// Steps following a directly connected path.
+    pub direct_steps: u64,
+    /// Steps following a node-graph path.
+    pub graph_steps: u64,
+    /// Collision-checked local fallback steps.
+    pub traced_steps: u64,
+    /// Compatibility fallback steps without collision.
+    pub untraced_steps: u64,
+    /// Calls whose centered starting hull was already in solid.
+    pub start_solid: u64,
+}
+
+impl NavigationStats {
+    /// Adds counters observed between two snapshots (saturating at u64::MAX).
+    pub fn add_delta(&mut self, before: Self, after: Self) {
+        self.direct_steps = self
+            .direct_steps
+            .saturating_add(after.direct_steps.saturating_sub(before.direct_steps));
+        self.graph_steps = self
+            .graph_steps
+            .saturating_add(after.graph_steps.saturating_sub(before.graph_steps));
+        self.traced_steps = self
+            .traced_steps
+            .saturating_add(after.traced_steps.saturating_sub(before.traced_steps));
+        self.untraced_steps = self
+            .untraced_steps
+            .saturating_add(after.untraced_steps.saturating_sub(before.untraced_steps));
+        self.start_solid = self
+            .start_solid
+            .saturating_add(after.start_solid.saturating_sub(before.start_solid));
+    }
 }
 
 /// The real navigator: an `ohl-nav` [`NodeGraph`] plus a per-actor path
@@ -126,6 +171,8 @@ pub struct NavBridge {
     limits: NavBridgeLimits,
     cache: HashMap<Entity, CachedRoute>,
     searches_used: usize,
+    stats: NavigationStats,
+    max_attachment_drop: f32,
 }
 
 impl NavBridge {
@@ -144,6 +191,14 @@ impl NavBridge {
             limits,
             cache: HashMap::new(),
             searches_used: 0,
+            stats: NavigationStats::default(),
+            // Match BuildLimits' finite-positive normalization.
+            max_attachment_drop: if build_limits.max_drop.is_finite() && build_limits.max_drop > 0.0
+            {
+                build_limits.max_drop
+            } else {
+                BuildLimits::default().max_drop
+            },
         }
     }
 
@@ -157,6 +212,17 @@ impl NavBridge {
     #[must_use]
     pub fn link_count(&self) -> usize {
         self.graph.link_count()
+    }
+
+    /// Aggregate inspection counters; never logs payload data.
+    #[must_use]
+    pub fn stats(&self) -> NavigationStats {
+        self.stats
+    }
+
+    /// Discards transient paths after a restore or explicit world change.
+    pub fn invalidate(&mut self) {
+        self.cache.clear();
     }
 
     /// Resets this tick's path-search budget and drops cached routes for
@@ -173,7 +239,8 @@ impl NavBridge {
     }
 
     /// The next position `actor` should move toward, at most `max_step`
-    /// world units from `origin`, on its way to `goal`.
+    /// world units from `origin`, on its way to `goal`. Both endpoints and
+    /// the returned position are centered hull queries, not model anchors.
     ///
     /// Reuses `actor`'s cached path while it was built for the same hull and
     /// its goal has not drifted more than [`PATH_REFRESH_DISTANCE`];
@@ -219,6 +286,44 @@ impl NavBridge {
         max_step: f32,
         fallback: Fallback,
     ) -> Vec3 {
+        self.next_move_impl(
+            actor, origin, goal, hull, collision, max_step, fallback, false,
+        )
+    }
+
+    /// A centered query whose caller has verified a living, solid walking
+    /// actor. Allows supported initial ground attachment and a bounded flat
+    /// approach to the appended terminal graph goal. Generic queries retain
+    /// their existing movement contract.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn next_move_with_walking_attachment(
+        &mut self,
+        actor: Entity,
+        origin: Vec3,
+        goal: Vec3,
+        hull: Hull,
+        collision: &CollisionModel,
+        max_step: f32,
+        fallback: Fallback,
+    ) -> Vec3 {
+        self.next_move_impl(
+            actor, origin, goal, hull, collision, max_step, fallback, true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn next_move_impl(
+        &mut self,
+        actor: Entity,
+        origin: Vec3,
+        goal: Vec3,
+        hull: Hull,
+        collision: &CollisionModel,
+        max_step: f32,
+        fallback: Fallback,
+        walking_attachment: bool,
+    ) -> Vec3 {
         if !origin.is_finite() || !goal.is_finite() || !max_step.is_finite() {
             // `origin` itself may be the non-finite value, so it cannot be
             // handed back as-is; a fixed, finite point is the only answer
@@ -226,29 +331,71 @@ impl NavBridge {
             return Vec3::ZERO;
         }
 
+        if collision.trace(hull, origin, origin).start_solid {
+            self.stats.start_solid = self.stats.start_solid.saturating_add(1);
+        }
+
         let stale = self.cache.get(&actor).is_none_or(|cached| {
-            cached.hull != hull || (cached.goal - goal).length() > PATH_REFRESH_DISTANCE
+            cached.hull != hull
+                || cached.walking_attachment != walking_attachment
+                || (cached.goal - goal).length() > PATH_REFRESH_DISTANCE
+                || !cached.expected_origin.abs_diff_eq(origin, 0.001)
         });
         if stale {
-            self.rebuild(actor, origin, goal, hull, collision);
+            self.rebuild(actor, origin, goal, hull, collision, walking_attachment);
         }
 
         let Some(cached) = self.cache.get_mut(&actor) else {
             return match fallback {
                 Fallback::Traced => {
+                    self.stats.traced_steps = self.stats.traced_steps.saturating_add(1);
                     crate::movement::move_toward(collision, hull, origin, goal, max_step, 1.0)
                         .position
                 }
-                Fallback::StraightLine => StraightLineNavigator.next_move(origin, goal, max_step),
+                Fallback::StraightLine => {
+                    self.stats.untraced_steps = self.stats.untraced_steps.saturating_add(1);
+                    StraightLineNavigator.next_move(origin, goal, max_step)
+                }
             };
         };
 
+        if cached.direct {
+            self.stats.direct_steps = self.stats.direct_steps.saturating_add(1);
+        } else {
+            self.stats.graph_steps = self.stats.graph_steps.saturating_add(1);
+        }
+
         let steer_limits = own_pace_steer_limits(&self.limits.steer, max_step);
+        if let Some(next) = initial_attachment_step(
+            cached,
+            origin,
+            collision,
+            max_step,
+            self.max_attachment_drop,
+            steer_limits.arrive_radius,
+        ) {
+            cached.expected_origin = next;
+            return next;
+        }
         let intent = cached
             .steer
             .next_move(origin, &cached.path, hull, collision, &steer_limits);
         if intent.reached {
-            return goal;
+            // Arrival tolerance is not authority to teleport. A live brush
+            // can have closed across this final segment since path creation.
+            let delta = goal - origin;
+            let step = delta.clamp_length_max(max_step.max(0.0));
+            let trace = collision.trace(hull, origin, origin + step);
+            let next = if trace.start_solid {
+                origin
+            } else {
+                trace.end_pos
+            };
+            cached.expected_origin = next;
+            if trace.blocked() {
+                self.cache.remove(&actor);
+            }
+            return next;
         }
         if intent.dir.length_squared() <= f32::EPSILON {
             return origin;
@@ -260,14 +407,19 @@ impl NavBridge {
             .map_or(max_step, |waypoint| (*waypoint - origin).length());
         let travel =
             max_step.max(0.0).min(waypoint_distance.max(0.0)) * intent.speed_scale.clamp(0.0, 1.0);
-        if travel <= 0.0 {
+        let next = if travel <= 0.0 {
             origin
         } else {
             origin + intent.dir * travel
-        }
+        };
+        let next = terminal_ground_step(cached, origin, collision, travel, next, &steer_limits)
+            .unwrap_or(next);
+        cached.expected_origin = next;
+        next
     }
 
     /// Rebuilds (or drops) `actor`'s cached route toward `goal`.
+    #[allow(clippy::too_many_arguments)]
     fn rebuild(
         &mut self,
         actor: Entity,
@@ -275,6 +427,7 @@ impl NavBridge {
         goal: Vec3,
         hull: Hull,
         collision: &CollisionModel,
+        walking_attachment: bool,
     ) {
         if let Some(path) = straight_path_if_clear(collision, origin, goal, hull) {
             self.cache.insert(
@@ -284,6 +437,10 @@ impl NavBridge {
                     hull,
                     path,
                     steer: Steer::new(),
+                    expected_origin: origin,
+                    direct: true,
+                    walking_attachment,
+                    attachment: InitialAttachment::Ready,
                 },
             );
             return;
@@ -300,6 +457,18 @@ impl NavBridge {
             )
             .filter(|path| !crate::movement::flies(hull) || !self.uses_ground_node(path))
             {
+                let attachment = if walking_attachment
+                    && !crate::movement::flies(hull)
+                    && path
+                        .nodes
+                        .first()
+                        .and_then(|node| self.graph.node(*node))
+                        .is_some_and(|node| node.kind == NodeKind::Ground && node.snapped)
+                {
+                    InitialAttachment::Unchecked
+                } else {
+                    InitialAttachment::Ready
+                };
                 self.cache.insert(
                     actor,
                     CachedRoute {
@@ -307,6 +476,10 @@ impl NavBridge {
                         hull,
                         path,
                         steer: Steer::new(),
+                        expected_origin: origin,
+                        direct: false,
+                        walking_attachment,
+                        attachment,
                     },
                 );
                 return;
@@ -325,6 +498,109 @@ impl NavBridge {
                 .is_some_and(|node| node.kind.is_grounded())
         })
     }
+}
+
+/// A pending first attachment owns vertical movement until actual support.
+/// Returning None leaves ordinary steering untouched; Some can be a blocked
+/// retry at the current center. This never advances Steer's cursor itself.
+fn initial_attachment_step(
+    cached: &mut CachedRoute,
+    origin: Vec3,
+    collision: &CollisionModel,
+    max_step: f32,
+    max_drop: f32,
+    arrive_radius: f32,
+) -> Option<Vec3> {
+    if cached.attachment == InitialAttachment::Ready {
+        return None;
+    }
+    if max_step <= 0.0 {
+        return Some(origin);
+    }
+    let waypoint = *cached.path.waypoints.first()?;
+    if cached.attachment == InitialAttachment::Unchecked {
+        if cached.steer.cursor() != 0 {
+            cached.attachment = InitialAttachment::Ready;
+            return None;
+        }
+        let delta = waypoint - origin;
+        if delta.z >= 0.0
+            || delta.truncate().length() > arrive_radius
+            || delta.length() <= arrive_radius
+        {
+            return None;
+        }
+        cached.attachment = InitialAttachment::Descending {
+            lowest_z: origin.z - max_drop,
+        };
+    }
+    let InitialAttachment::Descending { lowest_z } = cached.attachment else {
+        return None;
+    };
+    let Some((next, landed)) = crate::movement::descend_to_ground(
+        collision,
+        cached.hull,
+        origin,
+        waypoint.z,
+        lowest_z,
+        max_step,
+    ) else {
+        return Some(origin);
+    };
+    if landed {
+        cached.attachment = InitialAttachment::Ready;
+    }
+    Some(next)
+}
+
+/// Outside this narrow walking graph policy returns None; admitted but
+/// unsupported/obstructed movement returns the actual held origin instead.
+fn terminal_ground_step(
+    cached: &CachedRoute,
+    origin: Vec3,
+    collision: &CollisionModel,
+    travel: f32,
+    requested: Vec3,
+    limits: &SteerLimits,
+) -> Option<Vec3> {
+    let cursor = cached.steer.cursor();
+    if !cached.walking_attachment
+        || cached.direct
+        || cached.attachment != InitialAttachment::Ready
+        || cursor != cached.path.nodes.len()
+        || cursor.checked_add(1) != Some(cached.path.waypoints.len())
+        || !travel.is_finite()
+        || travel <= 0.0
+        || !limits.probe_distance.is_finite()
+    {
+        return None;
+    }
+    let selected = *cached.path.waypoints.get(cursor)?;
+    let distance = selected.truncate().distance(origin.truncate());
+    let remaining = selected.truncate().distance(requested.truncate());
+    let horizon = limits
+        .probe_distance
+        .clamp(1.0, crate::movement::TERMINAL_GROUND_SPAN);
+    if !selected.is_finite()
+        || !requested.is_finite()
+        || !distance.is_finite()
+        || distance <= 0.0
+        || distance > horizon
+        || (selected.z - origin.z).abs()
+            > ohl_nav::graph::GROUND_CLEARANCE + ohl_physics::DIST_EPSILON
+        || !remaining.is_finite()
+        || remaining < distance
+    {
+        return None;
+    }
+    Some(crate::movement::terminal_ground_approach(
+        collision,
+        cached.hull,
+        origin,
+        selected,
+        requested,
+        travel,
+    ))
 }
 
 /// `limits` with its stuck window measured against this mover's own pace.
@@ -502,5 +778,613 @@ mod tests {
             bumped.position.z > from.z,
             "it still flew up to it: {bumped:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod terminal_ground {
+    use super::*;
+    use ohl_formats::bsp30::{Bsp, Limits};
+    use ohl_formats::test_support::{Bsp30Builder, CollisionBrush};
+
+    fn room(brushes: &[CollisionBrush]) -> CollisionModel {
+        let mut builder = Bsp30Builder::new();
+        builder.set_entities_text("{\"classname\" \"worldspawn\"}");
+        let heads = builder.push_collision_hulls(brushes);
+        builder.push_model([-512.0; 3], [512.0; 3], [0.0; 3], heads, 2, 0, 0);
+        let bytes = builder.build();
+        let limits = Limits::default();
+        let bsp = Bsp::parse(&bytes, &limits).expect("authored collision");
+        CollisionModel::from_bsp(&bsp, &limits).expect("authored hulls")
+    }
+
+    fn retained_terminal(
+        collision: &CollisionModel,
+        origin: Vec3,
+        goal: Vec3,
+        max_step: f32,
+    ) -> (NavBridge, Entity, ohl_nav::MoveIntent) {
+        let mut bridge = NavBridge::build(
+            &[NodeSeed::new(origin, NodeKind::Ground)],
+            collision,
+            &BuildLimits::default(),
+            NavBridgeLimits::default(),
+        );
+        let actor = hecs::World::new().spawn(());
+        let path = Path {
+            nodes: vec![0],
+            waypoints: vec![origin, goal],
+            cost: origin.distance(goal),
+            explored: 1,
+        };
+        let limits = own_pace_steer_limits(&bridge.limits.steer, max_step);
+        let mut steer = Steer::new();
+        // Project-authored retained history: warm the real steering state,
+        // then install its derived cache. Discarding public bridge returns
+        // would instead invalidate expected_origin on every next call.
+        for _ in 0..=limits.stuck_window_ticks {
+            steer.next_move(origin, &path, Hull::Standing, collision, &limits);
+        }
+        assert!(steer.is_stuck());
+        assert_eq!(steer.cursor(), path.nodes.len());
+        let mut preview = steer;
+        let intent = preview.next_move(origin, &path, Hull::Standing, collision, &limits);
+        assert!(!intent.reached);
+        assert_eq!(intent.speed_scale.to_bits(), 0.5_f32.to_bits());
+        bridge.cache.insert(
+            actor,
+            CachedRoute {
+                goal,
+                hull: Hull::Standing,
+                path,
+                steer,
+                expected_origin: origin,
+                direct: false,
+                walking_attachment: true,
+                attachment: InitialAttachment::Ready,
+            },
+        );
+        (bridge, actor, intent)
+    }
+
+    #[test]
+    fn retained_side_history_approaches_the_selected_goal_before_the_outer_wall() {
+        let collision = room(&[
+            CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+            CollisionBrush::half_space([-1.0, 0.0, 0.0], -54.0),
+        ]);
+        let hull = Hull::Standing;
+        let origin = Vec3::new(0.0, 0.0, hull.foot_offset() + 0.5);
+        for lower in [0.0, 0.25] {
+            let goal = origin + Vec3::new(32.0, 0.0, -lower);
+            let projected = Vec3::new(goal.x, goal.y, origin.z);
+            let horizon = collision.trace(hull, origin, origin + Vec3::X * 48.0);
+            assert!(horizon.blocked() && horizon.end_pos.x > projected.x);
+            assert!(!collision.trace(hull, origin, projected).blocked());
+            assert!(collision.trace(hull, origin, origin - Vec3::Z).blocked());
+            let (mut bridge, actor, intent) = retained_terminal(&collision, origin, goal, 4.0);
+            let raw = origin + intent.dir * 2.0;
+            assert!(
+                raw.truncate().distance(goal.truncate())
+                    >= origin.truncate().distance(goal.truncate())
+            );
+            let next = bridge.next_move_with_walking_attachment(
+                actor,
+                origin,
+                goal,
+                hull,
+                &collision,
+                4.0,
+                Fallback::Traced,
+            );
+            assert!(
+                next.truncate().distance(goal.truncate())
+                    < origin.truncate().distance(goal.truncate()),
+                "a supported terminal approach must make actual selected-goal progress"
+            );
+            assert_eq!(next.z.to_bits(), origin.z.to_bits());
+            assert!(
+                (next - origin).length() <= 2.000_01,
+                "retain the real half-speed allowance"
+            );
+            assert!(!collision.trace(hull, origin, next).blocked());
+            assert_eq!(bridge.cache[&actor].expected_origin, next);
+            assert!(
+                bridge.cache[&actor].steer.is_stuck(),
+                "movement does not reset steering history"
+            );
+            let mut position = next;
+            for _ in 0..32 {
+                let moved = bridge.next_move_with_walking_attachment(
+                    actor,
+                    position,
+                    goal,
+                    hull,
+                    &collision,
+                    4.0,
+                    Fallback::Traced,
+                );
+                assert!((moved - position).length() <= 4.000_01);
+                assert!(!collision.trace(hull, position, moved).blocked());
+                position = moved;
+            }
+            assert!(
+                position.abs_diff_eq(goal, 0.001),
+                "existing literal 3D arrival still finishes"
+            );
+        }
+    }
+    #[test]
+    fn excluded_routes_preserve_the_existing_real_steering_request() {
+        let collision = room(&[CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0)]);
+        let origin = Vec3::new(0.0, 0.0, Hull::Standing.foot_offset() + 0.5);
+        for variant in 0..7 {
+            let selected = origin
+                + Vec3::new(
+                    if variant == 6 { 64.0 } else { 32.0 },
+                    0.0,
+                    if variant == 3 { 2.0 } else { 0.0 },
+                );
+            let (mut bridge, actor, intent) = retained_terminal(&collision, origin, selected, 4.0);
+            let cached = bridge.cache.get_mut(&actor).expect("retained route");
+            let mut query_goal = selected;
+            match variant {
+                0 => cached.walking_attachment = false,
+                1 => cached.direct = true,
+                2 => {
+                    // The selected point is a graph node, with a distinct
+                    // terminal mark after it; retained cursor/history are real.
+                    query_goal = selected + Vec3::X * 64.0;
+                    cached.path.nodes.push(0);
+                    cached.path.waypoints.push(query_goal);
+                    cached.goal = query_goal;
+                }
+                3 => {}
+                4 => bridge.limits.steer.probe_distance = 16.0,
+                5 => bridge.limits.steer.probe_distance = f32::NAN,
+                _ => bridge.limits.steer.probe_distance = 128.0,
+            }
+            let raw = origin + intent.dir * 2.0;
+            let next = if variant == 0 {
+                bridge.next_move(actor, origin, query_goal, Hull::Standing, &collision, 4.0)
+            } else {
+                bridge.next_move_with_walking_attachment(
+                    actor,
+                    origin,
+                    query_goal,
+                    Hull::Standing,
+                    &collision,
+                    4.0,
+                    Fallback::Traced,
+                )
+            };
+            assert_eq!(
+                next, raw,
+                "excluded route preserves original intent, case {variant}"
+            );
+            assert_eq!(bridge.cache[&actor].expected_origin, next);
+        }
+    }
+    fn query(
+        bridge: &mut NavBridge,
+        actor: Entity,
+        at: Vec3,
+        goal: Vec3,
+        collision: &CollisionModel,
+        step: f32,
+    ) -> Vec3 {
+        bridge.next_move_with_walking_attachment(
+            actor,
+            at,
+            goal,
+            Hull::Standing,
+            collision,
+            step,
+            Fallback::Traced,
+        )
+    }
+
+    #[test]
+    fn selected_cached_goal_and_original_half_speed_bound_the_preference() {
+        let collision = room(&[CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0)]);
+        let origin = Vec3::new(0.0, 0.0, 36.5);
+        let selected = origin + Vec3::X * 32.0;
+        for step in [4.0_f32, 100.0] {
+            let (mut bridge, actor, _) = retained_terminal(&collision, origin, selected, step);
+            // Query drift below the existing refresh threshold must not replace
+            // the real post-Steer selected waypoint with this different heading.
+            let next = query(
+                &mut bridge,
+                actor,
+                origin,
+                selected + Vec3::Y * 32.0,
+                &collision,
+                step,
+            );
+            assert_eq!(next, origin + Vec3::X * (step.min(32.0) * 0.5));
+            assert_eq!(bridge.cache[&actor].expected_origin, next);
+            assert!(bridge.cache[&actor].steer.is_stuck());
+        }
+    }
+
+    #[test]
+    fn blocked_goal_chord_requires_a_valid_side_and_never_falls_through_raw() {
+        let origin = Vec3::new(0.0, 0.0, 36.5);
+        let selected = origin + Vec3::X * 32.0;
+        let side = origin + Vec3::Y * 2.0;
+        for wall in [17.0, 40.0] {
+            let collision = room(&[
+                CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+                CollisionBrush::half_space([-1.0, 0.0, 0.0], -wall),
+            ]);
+            let chord = collision.trace(Hull::Standing, origin, selected);
+            assert!(chord.blocked() && !chord.start_solid);
+            assert_eq!(
+                collision
+                    .trace(Hull::Standing, origin, origin + Vec3::X * 2.0)
+                    .blocked(),
+                wall < 20.0
+            );
+            assert!(!collision.trace(Hull::Standing, origin, side).blocked());
+            assert_eq!(
+                crate::movement::terminal_ground_approach(
+                    &collision,
+                    Hull::Standing,
+                    origin,
+                    selected,
+                    side,
+                    2.0
+                ),
+                side
+            );
+        }
+        let blocked = room(&[
+            CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+            CollisionBrush::half_space([-1.0, 0.0, 0.0], -17.0),
+            CollisionBrush::half_space([0.0, -1.0, 0.0], -17.0),
+        ]);
+        assert!(blocked.trace(Hull::Standing, origin, side).blocked());
+        assert!(!blocked.trace(Hull::Standing, origin, origin).blocked());
+        assert_eq!(
+            crate::movement::terminal_ground_approach(
+                &blocked,
+                Hull::Standing,
+                origin,
+                selected,
+                side,
+                2.0
+            ),
+            origin
+        );
+    }
+
+    #[test]
+    fn off_center_obstacles_require_the_selected_full_hull() {
+        let collision = room(&[
+            CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+            CollisionBrush::box_brush([24.0, 12.0, 0.0], [26.0, 14.0, 80.0]),
+        ]);
+        let origin = Vec3::new(0.0, 0.0, 36.5);
+        let goal = origin + Vec3::X * 32.0;
+        assert!(!collision.trace(Hull::Point, origin, goal).blocked());
+        assert!(collision.trace(Hull::Standing, origin, goal).blocked());
+        assert!(
+            !collision
+                .trace(Hull::Standing, origin, origin + Vec3::X * 2.0)
+                .blocked(),
+            "the full target chord, not the short prefix, sees this off-center obstacle"
+        );
+        let (mut bridge, actor, intent) = retained_terminal(&collision, origin, goal, 4.0);
+        let expected_side = origin + intent.dir * 2.0;
+        assert!(
+            !collision
+                .trace(Hull::Standing, origin, expected_side)
+                .blocked()
+        );
+        assert_eq!(
+            query(&mut bridge, actor, origin, goal, &collision, 4.0),
+            expected_side
+        );
+    }
+
+    fn supported(collision: &CollisionModel, at: Vec3) -> bool {
+        let trace = collision.trace(
+            Hull::Standing,
+            at,
+            at - Vec3::Z * (ohl_nav::graph::GROUND_CLEARANCE + ohl_physics::DIST_EPSILON),
+        );
+        trace.fraction < 1.0 && !trace.start_solid && !trace.all_solid
+    }
+
+    #[test]
+    fn missing_start_endpoint_and_sampled_interior_support_are_distinct_rejections() {
+        let origin = Vec3::new(0.0, 0.0, 36.5);
+        let goal = origin + Vec3::X * 48.0;
+        let end = origin + Vec3::X * 32.0;
+        let side = origin + Vec3::Y * 32.0;
+        // Full-hull support exists only at the narrow starting and ending
+        // ledges. The uniformly sampled midpoint lies over an authored gap.
+        let start_floor = CollisionBrush::box_brush([-64.0, -4.0, -32.0], [-15.0, 4.0, 0.0]);
+        let end_floor = CollisionBrush::box_brush([47.0, -4.0, -32.0], [80.0, 4.0, 0.0]);
+        for (brushes, start_ok, end_ok) in [
+            (vec![start_floor.clone(), end_floor.clone()], true, true),
+            (vec![start_floor], true, false),
+            (vec![end_floor], false, true),
+        ] {
+            let collision = room(&brushes);
+            assert_eq!(supported(&collision, origin), start_ok);
+            assert_eq!(supported(&collision, end), end_ok);
+            assert!(!supported(&collision, origin + Vec3::X * 16.0));
+            assert!(!supported(&collision, side));
+            assert!(!collision.trace(Hull::Standing, origin, end).blocked());
+            assert_eq!(
+                crate::movement::terminal_ground_approach(
+                    &collision,
+                    Hull::Standing,
+                    origin,
+                    goal,
+                    side,
+                    32.0
+                ),
+                origin
+            );
+        }
+    }
+
+    #[test]
+    fn actual_steep_support_and_embedded_starts_hold_without_lifting() {
+        let origin = Vec3::new(0.0, 0.0, 36.5);
+        // The authored plane touches a standing box at the flat-floor height;
+        // its normal, not a missing-floor condition, makes it unwalkable.
+        let steep = room(&[CollisionBrush::half_space([0.8, 0.0, 0.6], -12.8)]);
+        let trace = steep.trace(Hull::Standing, origin, origin - Vec3::Z);
+        assert!(trace.fraction < 1.0 && !trace.start_solid && !trace.all_solid);
+        assert!(trace.plane_normal.z < ohl_physics::MoveConfig::default().slope_limit);
+        assert_eq!(
+            crate::movement::terminal_ground_approach(
+                &steep,
+                Hull::Standing,
+                origin,
+                origin + Vec3::X * 32.0,
+                origin + Vec3::Y * 2.0,
+                2.0
+            ),
+            origin
+        );
+        let embedded = room(&[
+            CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+            CollisionBrush::box_brush([-1.0, -1.0, 32.0], [1.0, 1.0, 40.0]),
+        ]);
+        assert!(embedded.trace(Hull::Standing, origin, origin).start_solid);
+        assert_eq!(
+            crate::movement::terminal_ground_approach(
+                &embedded,
+                Hull::Standing,
+                origin,
+                origin + Vec3::X * 32.0,
+                origin + Vec3::Y * 2.0,
+                2.0
+            ),
+            origin
+        );
+    }
+
+    fn with_live_brush(
+        world: &[CollisionBrush],
+        brush: &CollisionBrush,
+    ) -> (CollisionModel, ohl_physics::BrushId) {
+        let mut builder = Bsp30Builder::new();
+        builder.set_entities_text("{\"classname\" \"worldspawn\"}");
+        for brushes in [world, std::slice::from_ref(brush)] {
+            let heads = builder.push_collision_hulls(brushes);
+            builder.push_model([-512.0; 3], [512.0; 3], [0.0; 3], heads, 2, 0, 0);
+        }
+        let bytes = builder.build();
+        let limits = Limits::default();
+        let bsp = Bsp::parse(&bytes, &limits).expect("authored moving brush");
+        let mut collision = CollisionModel::from_bsp(&bsp, &limits).expect("world");
+        let id = collision
+            .attach_brush(&bsp, &limits, 1, Vec3::ZERO)
+            .expect("live brush");
+        (collision, id)
+    }
+
+    #[test]
+    fn cached_routes_recheck_removed_moved_and_restored_live_floor() {
+        let (mut collision, floor) = with_live_brush(
+            &[],
+            &CollisionBrush::box_brush([-128.0, -128.0, -16.0], [128.0, 128.0, 0.0]),
+        );
+        let origin = Vec3::new(0.0, 0.0, 36.5);
+        let goal = origin + Vec3::X * 32.0;
+        let (mut bridge, actor, _) = retained_terminal(&collision, origin, goal, 4.0);
+        let next = query(&mut bridge, actor, origin, goal, &collision, 4.0);
+        assert!(next.x > origin.x);
+        let searches = bridge.searches_used;
+        let cursor = bridge.cache[&actor].steer.cursor();
+        collision.set_brush_solid(floor, false);
+        assert!(!supported(&collision, next));
+        assert_eq!(query(&mut bridge, actor, next, goal, &collision, 4.0), next);
+        collision.set_brush_solid(floor, true);
+        collision.set_brush_origin(floor, Vec3::Z * -8.0);
+        assert!(!supported(&collision, next));
+        assert_eq!(query(&mut bridge, actor, next, goal, &collision, 4.0), next);
+        assert_eq!(bridge.cache[&actor].steer.cursor(), cursor);
+        assert_eq!(bridge.cache[&actor].expected_origin, next);
+        collision.set_brush_origin(floor, Vec3::ZERO);
+        let resumed = query(&mut bridge, actor, next, goal, &collision, 4.0);
+        assert!(resumed.x > next.x && resumed.z.to_bits() == next.z.to_bits());
+        assert_eq!(
+            bridge.searches_used, searches,
+            "live support does not rebuild the route"
+        );
+    }
+
+    #[test]
+    fn a_live_door_closes_the_goal_chord_and_reopens_without_a_new_search() {
+        let (mut collision, door) = with_live_brush(
+            &[CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0)],
+            &CollisionBrush::box_brush([24.0, -64.0, 0.0], [26.0, 64.0, 80.0]),
+        );
+        collision.set_brush_origin(door, Vec3::X * 128.0);
+        let origin = Vec3::new(0.0, 0.0, 36.5);
+        let goal = origin + Vec3::X * 32.0;
+        let (mut bridge, actor, _) = retained_terminal(&collision, origin, goal, 4.0);
+        let first = query(&mut bridge, actor, origin, goal, &collision, 4.0);
+        let searches = bridge.searches_used;
+        assert!(first.x > origin.x);
+        collision.set_brush_origin(door, Vec3::ZERO);
+        assert!(collision.trace(Hull::Standing, first, goal).blocked());
+        let side = query(&mut bridge, actor, first, goal, &collision, 4.0);
+        assert!(!collision.trace(Hull::Standing, first, side).blocked());
+        assert!(
+            side.truncate().distance(goal.truncate()) >= first.truncate().distance(goal.truncate())
+        );
+        collision.set_brush_solid(door, false);
+        let resumed = query(&mut bridge, actor, side, goal, &collision, 4.0);
+        assert!(
+            resumed.truncate().distance(goal.truncate())
+                < side.truncate().distance(goal.truncate())
+        );
+        assert_eq!(bridge.searches_used, searches);
+    }
+
+    #[test]
+    fn oversized_prefixes_and_invalid_allowances_are_bounded() {
+        let collision = room(&[CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0)]);
+        let origin = Vec3::new(0.0, 0.0, 36.5);
+        for travel in [0.0, -1.0, f32::NAN, f32::INFINITY, 64.0] {
+            let side = origin + Vec3::Y * 64.0;
+            assert_eq!(
+                crate::movement::terminal_ground_approach(
+                    &collision,
+                    Hull::Standing,
+                    origin,
+                    origin + Vec3::X * 128.0,
+                    side,
+                    travel
+                ),
+                origin
+            );
+        }
+        let candidate = crate::movement::terminal_ground_approach(
+            &collision,
+            Hull::Standing,
+            origin,
+            origin + Vec3::X * 48.0,
+            origin + Vec3::Y * 48.0,
+            48.0,
+        );
+        assert_eq!(
+            candidate,
+            origin + Vec3::X * 48.0,
+            "the exact three-sample budget is usable"
+        );
+    }
+    #[test]
+    fn positive_progress_requests_remain_outside_this_terminal_correction() {
+        let built = room(&[CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0)]);
+        let missing_floor = room(&[]);
+        let origin = Vec3::new(0.0, 0.0, 36.5);
+        let goal = origin + Vec3::X * 32.0;
+        let (mut bridge, actor, _) = retained_terminal(&built, origin, goal, 4.0);
+        bridge.cache.get_mut(&actor).expect("cache").steer = Steer::new();
+        assert!(!supported(&missing_floor, origin));
+        // This slice is not general supported graph movement: the unchanged
+        // positive-progress request remains outside its permission boundary.
+        assert_eq!(
+            query(&mut bridge, actor, origin, goal, &missing_floor, 4.0),
+            origin + Vec3::X * 4.0
+        );
+    }
+
+    #[test]
+    fn zero_and_nonfinite_navigation_allowances_keep_the_existing_contract() {
+        let collision = room(&[CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0)]);
+        let origin = Vec3::new(0.0, 0.0, 36.5);
+        let goal = origin + Vec3::X * 32.0;
+        let (mut bridge, actor, _) = retained_terminal(&collision, origin, goal, 4.0);
+        assert_eq!(
+            query(&mut bridge, actor, origin, goal, &collision, 0.0),
+            origin
+        );
+        for step in [f32::NAN, f32::INFINITY] {
+            assert_eq!(
+                query(&mut bridge, actor, origin, goal, &collision, step),
+                Vec3::ZERO
+            );
+        }
+    }
+    #[test]
+    fn missing_start_alone_blocks_an_otherwise_supported_short_candidate() {
+        let collision = room(&[CollisionBrush::box_brush(
+            [17.0, -64.0, -32.0],
+            [80.0, 64.0, 0.0],
+        )]);
+        let origin = Vec3::new(0.0, 0.0, 36.5);
+        let candidate = origin + Vec3::X * 2.0;
+        let goal = origin + Vec3::X * 32.0;
+        assert!(!supported(&collision, origin));
+        assert!(supported(&collision, candidate));
+        assert!(!collision.trace(Hull::Standing, origin, goal).blocked());
+        assert_eq!(
+            crate::movement::terminal_ground_approach(
+                &collision,
+                Hull::Standing,
+                origin,
+                goal,
+                origin + Vec3::Y * 2.0,
+                2.0
+            ),
+            origin
+        );
+    }
+
+    #[test]
+    fn missing_endpoint_alone_rejects_goal_but_keeps_a_supported_side() {
+        let collision = room(&[CollisionBrush::box_brush(
+            [-80.0, -64.0, -32.0],
+            [-15.0, 64.0, 0.0],
+        )]);
+        let origin = Vec3::new(0.0, 0.0, 36.5);
+        let candidate = origin + Vec3::X * 2.0;
+        let side = origin + Vec3::Y * 2.0;
+        let goal = origin + Vec3::X * 32.0;
+        assert!(supported(&collision, origin));
+        assert!(!supported(&collision, candidate));
+        assert!(supported(&collision, side));
+        assert!(!collision.trace(Hull::Standing, origin, goal).blocked());
+        assert_eq!(
+            crate::movement::terminal_ground_approach(
+                &collision,
+                Hull::Standing,
+                origin,
+                goal,
+                side,
+                2.0
+            ),
+            side
+        );
+    }
+    #[test]
+    fn lower_literal_chord_hits_floor_but_the_first_projected_step_is_clear() {
+        let collision = room(&[CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0)]);
+        let origin = Vec3::new(0.0, 0.0, 36.5);
+        let literal = origin + Vec3::new(32.0, 0.0, -0.75);
+        let projected = Vec3::new(literal.x, literal.y, origin.z);
+        let chord = collision.trace(Hull::Standing, origin, literal);
+        assert!(chord.blocked() && !chord.start_solid && !chord.all_solid);
+        assert!(!collision.trace(Hull::Standing, origin, projected).blocked());
+        assert!(
+            (literal.z - origin.z).abs()
+                <= ohl_nav::graph::GROUND_CLEARANCE + ohl_physics::DIST_EPSILON
+        );
+        let (mut bridge, actor, _) = retained_terminal(&collision, origin, literal, 4.0);
+        let next = query(&mut bridge, actor, origin, literal, &collision, 4.0);
+        assert_eq!(next, origin + Vec3::X * 2.0);
+        assert_eq!(next.z.to_bits(), origin.z.to_bits());
+        assert!(!collision.trace(Hull::Standing, origin, next).blocked());
+        // First-step evidence only: the literal mark intersects the floor,
+        // so this fixture must not claim that eventual 3D arrival is possible.
     }
 }

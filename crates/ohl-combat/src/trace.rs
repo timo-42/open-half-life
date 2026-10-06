@@ -605,7 +605,29 @@ fn clamp_fraction(fraction: f32) -> f32 {
 /// entered. A segment that starts inside the box returns fraction `0.0` and
 /// the normal of the face it would leave backwards through, so a point-blank
 /// shot still registers.
+// Exact face equality preserves nearby interior hits and treats signed zero equally.
+#[allow(clippy::float_cmp)]
 fn ray_box(start: Vec3, delta: Vec3, min: Vec3, max: Vec3) -> Option<(f32, Vec3)> {
+    // Project-authored contact policy: an exact outward face contact has no
+    // positive-time overlap with this box. Keep interior, inward, parallel and
+    // degenerate contacts on the existing slab path; do not widen the face by
+    // an epsilon or skip any other box/world candidate.
+    if start.is_finite()
+        && delta.is_finite()
+        && min.is_finite()
+        && max.is_finite()
+        && min.cmplt(max).all()
+        && start.cmpge(min).all()
+        && start.cmple(max).all()
+        && (0..3).any(|axis| {
+            delta[axis].abs() >= f32::EPSILON
+                && ((start[axis] == min[axis] && delta[axis] < 0.0)
+                    || (start[axis] == max[axis] && delta[axis] > 0.0))
+        })
+    {
+        return None;
+    }
+
     let mut near = 0.0f32;
     let mut far = 1.0f32;
     let mut axis = 0usize;

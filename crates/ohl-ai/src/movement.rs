@@ -49,7 +49,8 @@ pub const STUCK_PROGRESS_FRACTION: f32 = 0.4;
 /// How close counts as having arrived at a waypoint.
 pub const WAYPOINT_TOLERANCE: f32 = 8.0;
 
-/// An ordered list of waypoints with a cursor.
+/// An ordered list of absolute query/world waypoints with a cursor.
+/// Actor model anchors are converted at movement boundaries, never on save/load.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Route {
     /// The waypoints, in order.
@@ -155,8 +156,150 @@ pub const fn flies(hull: Hull) -> bool {
     matches!(hull, Hull::Point)
 }
 
+/// One bounded vertical slice toward live support at an initial graph node.
+/// All positions use the centered query frame. `lowest_z` is the original
+/// attachment's total-drop bound; callers must not renew it after each slice.
+/// A full-hull support trace validates the whole downward lane, then the
+/// committed prefix and its occupancy are checked against the same live model.
+/// This is initial walking attachment, not gravity or general step traversal.
+pub(crate) fn descend_to_ground(
+    collision: &CollisionModel,
+    hull: Hull,
+    from: Vec3,
+    waypoint_z: f32,
+    lowest_z: f32,
+    max_step: f32,
+) -> Option<(Vec3, bool)> {
+    if flies(hull)
+        || !from.is_finite()
+        || !waypoint_z.is_finite()
+        || !lowest_z.is_finite()
+        || !max_step.is_finite()
+        || max_step <= 0.0
+        || lowest_z >= from.z
+        || !(from.z - lowest_z).is_finite()
+    {
+        return None;
+    }
+    let support = collision.trace(hull, from, Vec3::new(from.x, from.y, lowest_z));
+    if support.start_solid
+        || support.all_solid
+        || support.fraction >= 1.0
+        || support.plane_normal.z < ohl_physics::MoveConfig::default().slope_limit
+        || (support.end_pos.z - waypoint_z).abs()
+            > ohl_nav::graph::GROUND_CLEARANCE + ohl_physics::DIST_EPSILON
+        || support.end_pos.z > from.z
+    {
+        return None;
+    }
+    let target = from - Vec3::Z * (from.z - support.end_pos.z).min(max_step);
+    let sweep = collision.trace(hull, from, target);
+    if sweep.start_solid || sweep.all_solid {
+        return None;
+    }
+    let next = sweep.end_pos;
+    if collision.trace(hull, next, next).start_solid {
+        return None;
+    }
+    Some((
+        next,
+        next.z - support.end_pos.z <= ohl_physics::DIST_EPSILON,
+    ))
+}
+
+/// Three existing floor-probe spans bound the terminal walking correction.
+/// This is a project-authored local query budget, not a general route policy.
+pub(crate) const TERMINAL_GROUND_SPAN: f32 = FLOOR_PROBE_SPACING * 3.0;
+
+/// An admitted terminal graph approach, using the real steering allowance.
+/// Prefer the projected goal only when its complete chord and the committed
+/// flat prefix are clear. Otherwise validate the original request or hold.
+/// At most twelve extra traces: shared start support, goal chord, then two
+/// candidates with a sweep, up to three supports, and final occupancy each.
+/// Uniform samples are bounded project policy, not continuous gap coverage.
+pub(crate) fn terminal_ground_approach(
+    collision: &CollisionModel,
+    hull: Hull,
+    origin: Vec3,
+    selected: Vec3,
+    requested: Vec3,
+    travel: f32,
+) -> Vec3 {
+    if flies(hull)
+        || !origin.is_finite()
+        || !selected.is_finite()
+        || !requested.is_finite()
+        || !travel.is_finite()
+        || travel <= 0.0
+        || !terminal_ground_support(collision, hull, origin)
+    {
+        return origin;
+    }
+    let projected = Vec3::new(selected.x, selected.y, origin.z);
+    let delta = projected - origin;
+    let distance = delta.length();
+    if distance.is_finite() && distance > 0.0 {
+        let horizontal = origin + delta / distance * travel.min(distance);
+        let toward = Vec3::new(horizontal.x, horizontal.y, origin.z);
+        if toward.truncate().distance(projected.truncate()) < distance
+            && !collision.trace(hull, origin, projected).blocked()
+            && terminal_ground_prefix(collision, hull, origin, toward)
+        {
+            return toward;
+        }
+    }
+    if terminal_ground_prefix(collision, hull, origin, requested) {
+        requested
+    } else {
+        origin
+    }
+}
+
+fn terminal_ground_support(collision: &CollisionModel, hull: Hull, at: Vec3) -> bool {
+    let depth = ohl_nav::graph::GROUND_CLEARANCE + ohl_physics::DIST_EPSILON;
+    let support = collision.trace(hull, at, at - Vec3::Z * depth);
+    !support.start_solid
+        && !support.all_solid
+        && support.fraction < 1.0
+        && support.plane_normal.z >= ohl_physics::MoveConfig::default().slope_limit
+}
+
+fn terminal_ground_prefix(
+    collision: &CollisionModel,
+    hull: Hull,
+    origin: Vec3,
+    endpoint: Vec3,
+) -> bool {
+    let span = endpoint.truncate().distance(origin.truncate());
+    if !endpoint.is_finite()
+        || endpoint.z.to_bits() != origin.z.to_bits()
+        || !span.is_finite()
+        || span <= 0.0
+        || span > TERMINAL_GROUND_SPAN
+    {
+        return false;
+    }
+    // ceil(span / spacing), with an explicit three-sample bound before traces.
+    let Some(samples) = (1_u8..=3).find(|count| span <= FLOOR_PROBE_SPACING * f32::from(*count))
+    else {
+        return false;
+    };
+    if collision.trace(hull, origin, endpoint).blocked() {
+        return false;
+    }
+    for index in 1..=samples {
+        let point = origin.lerp(endpoint, f32::from(index) / f32::from(samples));
+        if !terminal_ground_support(collision, hull, point) {
+            return false;
+        }
+    }
+    !collision.trace(hull, endpoint, endpoint).blocked()
+}
+
 /// Moves `from` toward `target` by at most `speed * dt`, using clip-hull
 /// traces, with a step up over obstructions no taller than [`STEP_HEIGHT`].
+/// `from`, `target` and the returned position are centered hull queries;
+/// actor callers convert authored anchors with [`crate::BodyFrame`].
 ///
 /// For a walking hull only the horizontal component of the direction is
 /// used, so a monster never walks at a target above it; the vertical part
@@ -273,6 +416,7 @@ pub const WALL_MARGIN: f32 = 32.0;
 /// The farthest point toward `goal` a mover with `hull` can actually get
 /// to from `from` in one straight leg, for a caller that picks a goal it
 /// has no reason to believe is reachable (a critter's wander).
+/// Both endpoints and the result use the centered collision frame.
 ///
 /// Two things clamp it. First the same hull trace, step-up included, that
 /// [`move_toward`] makes, carried [`WALL_MARGIN`] past the goal, so the

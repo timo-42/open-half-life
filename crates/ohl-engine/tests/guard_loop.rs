@@ -7,7 +7,7 @@
 
 use ohl_engine::test_support::{
     PLAN_SCRIPTED_MAP, PLAN_SCRIPTED_MONSTER_MODEL, ScriptedStart, plan_scripted_goal_bsp,
-    plan_scripted_hitscan_goal_bsp, plan_scripted_monster_model_bytes,
+    plan_scripted_monster_model_bytes,
 };
 use ohl_engine::{
     AssetSource, Game, Input, MemoryAssets, StartInventoryItem, TICK_SECONDS, guard_input,
@@ -20,18 +20,11 @@ const GUARD_TICKS: usize = 3_600;
 
 /// The corridor fixture with a monster hostile to the player at its far
 /// end, and the loadout a real campaign run would have carried in.
-///
-/// The hitscan-only hostile, as `ohl-app`'s guarded-route test uses: the
-/// grunt variant throws a grenade early on that outlives it and explodes
-/// by the corner the guard loop retreats to. Whether the player lived
-/// through that blast came down to under one hit point, and moved with
-/// where the grunt stood when it threw. Surviving a grenade is dodging,
-/// which this loop does not claim to do.
 fn game() -> Game {
     let mut assets = MemoryAssets::new();
     assets.insert(
         &format!("maps/{PLAN_SCRIPTED_MAP}.bsp"),
-        plan_scripted_hitscan_goal_bsp("ohlplannext"),
+        plan_scripted_goal_bsp("ohlplannext", ScriptedStart::ByHostileMonster),
     );
     assets.insert(
         PLAN_SCRIPTED_MONSTER_MODEL,

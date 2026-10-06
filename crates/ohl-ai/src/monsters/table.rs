@@ -714,20 +714,13 @@ impl MonsterKind {
         matches!(self, Self::Generic | Self::Furniture)
     }
 
-    /// The eye offset above the origin a monster of this kind spawns with.
-    ///
-    /// Every kind uses [`crate::Actor::new`]'s default except the barnacle,
-    /// whose origin sits at the ceiling it hangs from: an eye *above* it
-    /// would be inside the ceiling, so its tongue trace starts below the
-    /// origin instead. **`TODO(black-box)`**: the barnacle's mouth height
-    /// is not published; the offset is a project placeholder.
+    /// The model-local fallback eye before runtime metadata is available.
+    /// Uses the same derived body policy as map, maker and restored actors.
+    /// Exact anatomy remains `TODO(black-box)`; see [`crate::BodyFrame`].
     #[must_use]
     pub fn view_offset(&self) -> glam::Vec3 {
-        match self {
-            // Wave 1 batch A.
-            Self::Barnacle => glam::Vec3::new(0.0, 0.0, -16.0),
-            _ => glam::Vec3::new(0.0, 0.0, 28.0),
-        }
+        let hull = spec_for(self).map_or(ohl_physics::Hull::Standing, |spec| spec.hull);
+        crate::BodyFrame::for_model(self, hull, None).eye_offset(hull, None)
     }
 
     /// Every defined kind (not [`Self::Unknown`]), in table order.

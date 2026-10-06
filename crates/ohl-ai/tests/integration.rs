@@ -173,7 +173,21 @@ fn occlusion_drops_to_alert_and_keeps_the_last_known_position() {
         Actor::new(Classification::Player, Vec3::new(-40.0, 60.0, 36.0)).as_client(),
     );
 
+    // Memory stores the receiver's query-space destination for the seen anchor.
+    let receiver = *world.get::<&Actor>(monster).expect("monster");
+    let seen_anchor = world
+        .get::<&Actor>(player)
+        .expect("player")
+        .navigation_anchor();
+    let remembered = receiver
+        .body_frame
+        .anchor_to_query(receiver.hull, seen_anchor);
+
     // Seen first, in the open on the monster's own side of the wall.
+    assert_eq!(
+        world.get::<&Actor>(player).expect("player").eye(),
+        Vec3::new(-40.0, 60.0, 64.0)
+    );
     ai.tick(&mut world, &SightContext::tracing(&collision), DT);
     {
         let state = world.get::<&MonsterAi>(monster).expect("component");
@@ -192,8 +206,8 @@ fn occlusion_drops_to_alert_and_keeps_the_last_known_position() {
     assert_eq!(state.enemy(), Some(player), "the enemy is still tracked");
     assert_eq!(
         state.last_known_position(),
-        Some(Vec3::new(-40.0, 60.0, 36.0)),
-        "the last position it was actually seen at is retained"
+        Some(remembered),
+        "the previously observed query destination is retained, not the hidden player's current destination"
     );
 }
 

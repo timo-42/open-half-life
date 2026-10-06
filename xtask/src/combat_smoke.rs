@@ -756,23 +756,7 @@ fn scenarios() -> [Scenario; 37] {
             file: "walk_office_complex.txt",
             map: "c1a2",
             present: &WALK_PRESENT,
-            // M9.59: monsters now stand on their floor. Cockroaches this
-            // map places in mid-air used to hang there and never move; on
-            // their floor they wander, and one walks into the plane of a
-            // floor-level spinning `func_rotating` far from the player and
-            // is crushed. The player still neither fires nor hits anything,
-            // so monster damage and death are left unasserted here.
-            absent: &[
-                "The player fired a weapon.",
-                "A shot hit an entity.",
-                "A pickup was collected.",
-                "The player took damage.",
-                "The player is inside solid geometry.",
-                "The player is riding a mover.",
-                "The player opened a door.",
-                "A level change was followed.",
-                "The player was teleported.",
-            ],
+            absent: &BASE_ABSENT,
             follow_level_change: false,
             start_inventory: &[],
         },
@@ -801,13 +785,8 @@ fn scenarios() -> [Scenario; 37] {
             // M9.45 required damage absent while reachable attacks were
             // immune. Grunt grenades now apply their published 100 BLAST
             // to the blast-vulnerable Gargantua, so require damage again.
+            // Every other assertion, including no monster death, remains.
             // See FORMAT_SOURCES, Live projectiles and deployables.
-            //
-            // M9.59: a grunt's AI now stands at its hull centre instead of
-            // on the floor, so its grenades leave from standing height and
-            // fly differently; on this walk one lands beside its squadmate
-            // and kills it. No monster death is no longer asserted; every
-            // other assertion remains.
             present: &[
                 "Scripted input loaded.",
                 "Scripted input finished.",
@@ -817,6 +796,7 @@ fn scenarios() -> [Scenario; 37] {
             absent: &[
                 "The player fired a weapon.",
                 "A shot hit an entity.",
+                "A monster died.",
                 "A pickup was collected.",
                 "The player took damage.",
                 "The player is inside solid geometry.",
