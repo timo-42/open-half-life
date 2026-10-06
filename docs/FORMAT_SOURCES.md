@@ -4118,10 +4118,18 @@ speaker is in the state of following the player"), `4` Interrupt Speech, `8`
 Concurrent.
 
 The sentence itself is resolved through the engine's existing
-`ohl_engine::SentenceLookup`. **The resolved words are asset paths** read
-from the user's own installation at run time. Under `docs/CLEAN_ROOM.md`
-rule 7 none of them may enter this project's source, tests, documentation
-or any diagnostic, and none does. Since the audio package they do travel in
+`ohl_engine::SentenceLookup`. The leading `!` on an explicit sentence
+reference is removed before the case-insensitive table lookup; it is not
+part of the entry name in `sentences.txt`. Bare exact names remain accepted
+for callers that have already removed the marker. The synthetic
+`triggered_sentence` integration test walks into a `trigger_once`, through
+a delayed `multi_manager`, and verifies that a `scripted_sentence` with an
+explicit reference emits its word samples once.
+
+**The resolved words are asset paths** read from the user's own installation
+at run time. Under `docs/CLEAN_ROOM.md` rule 7 none of them may enter this
+project's source, tests, documentation or any diagnostic, and none does.
+Since the audio package they do travel in
 memory, inside the cue's `SoundAsset::Sentence`, to the host that decodes
 and plays them (see "`scripted_sentence` and sentences" under "Sound
 playback" below). Only a word *count* is kept as data (`Game`'s AI

@@ -3182,7 +3182,8 @@ mod sound_routing_tests {
 
     /// The script room with the humming ambient, plus a scientist told by
     /// a `scripted_sentence` to speak the one sentence `sound_assets`
-    /// publishes, as soon as the map loads.
+    /// publishes, as soon as the map loads. Use the published `!` marker
+    /// so the host tests cover explicit references all the way to the mixer.
     fn speaking_room() -> String {
         script_room_entities(
             [-192.0, -192.0, 36.0],
@@ -3201,7 +3202,7 @@ mod sound_routing_tests {
                     0.0,
                     &[
                         ("targetname", "ohl_line"),
-                        ("sentence", "OHL_GREETING"),
+                        ("sentence", "!OHL_GREETING"),
                         ("entity", "ohl_speaker"),
                         ("spawnflags", "1"),
                     ],
