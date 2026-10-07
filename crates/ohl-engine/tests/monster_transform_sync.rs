@@ -319,3 +319,35 @@ fn a_centred_origin_prop_keeps_its_placement() {
     assert!((anchor.z - FLOOR_Z).abs() < ON_FLOOR);
     assert!((query.z - anchor.z - 36.0).abs() < 1e-3);
 }
+
+#[test]
+fn a_centred_origin_prop_uses_its_anchor_as_the_query_center() {
+    for model in ohl_engine::ai::CENTRED_ORIGIN_MODELS
+        .into_iter()
+        .chain(["MODELS/Holo.mdl"])
+    {
+        let (assets, game) = game_from(&entities(&entity_block(
+            "monster_generic",
+            [100.0, 0.0, 60.0],
+            0.0,
+            &[("model", model)],
+        )));
+        let assert_centered = |game: &Game| {
+            let entity = entity_of_classname(game, "monster_generic").expect("the prop spawned");
+            let actor = game.registry().world.get::<&ohl_ai::Actor>(entity).unwrap();
+            let anchor = transform_origin(game, entity);
+            assert_eq!(anchor, ohl_ai::Vec3::new(100.0, 0.0, 60.0));
+            assert_eq!(actor.origin, anchor);
+            assert_eq!(
+                actor.query_origin(),
+                anchor,
+                "the named prop has a centered query"
+            );
+            assert_eq!(actor.fallback_damage_bounds(), actor.hull.bounds());
+        };
+        assert_centered(&game);
+        let bytes = game.save_bytes(1_700_000_000).expect("the save is written");
+        let loaded = Game::load_bytes(&assets, &bytes).expect("the save loads");
+        assert_centered(&loaded);
+    }
+}
