@@ -9661,3 +9661,47 @@ saving and resuming halfway through a scripted walk. All three reproduced
 the bug before the fix. The five relevant integration suites pass (71
 tests), including existing script completion, teleport, interruption,
 following, prisoner and mover checks.
+
+
+## M9.NEXT
+
+**Scope:** P9 SOURCE-only major-fracture HEV adapter. One production match arm
+maps the already-emitted `SuitOccasion::MajorFracture` to the publicly reviewed
+`HEV_DMG5`, resolved through runtime sentences. Existing Blast/Crush producers,
+suit eligibility, cooldown, metadata, three previous mappings, unresolved
+silence, Voice routing and mixer behavior are preserved. Provenance and
+project-authored producer/scheduling choices are recorded in
+`FORMAT_SOURCES.md`, "Major-fracture HEV sentence adapter"; original behavior
+remains `TODO(black-box)`.
+
+**Focused checks:** engine HEV unit suite **7 passed / 0 failed / 0 ignored**,
+including separate fresh suited Blast/Crush players, real presentation Sound,
+ordered project-authored synthetic words and complete Suit metadata equality.
+Existing cooldown and no-suit cases now cover both producers; missing sentence
+resolution preserves metadata and yields Unresolved. The original three-mapping,
+invalid/generic, unmapped-display-name and 256/257-word assumptions remain.
+`cargo fmt --all --check` and
+`cargo clippy -p ohl-engine --all-targets -- -D warnings` passed.
+
+**Compiled mutation probe:** `remove-major-fracture-arm` removes only the new
+match arm. The exact new positive test compiled and failed on missing Blast
+Sound (**0 passed / 1 failed**, exit 101). The complete source bytes were
+restored and verified identical; the exact positive then passed **1/0/0** and
+the complete focused suite passed **7/0/0** again. Raw compile/test logs and
+restoration hashes are retained locally; this does not replace full gates.
+
+All Cargo commands used four jobs, dev line-tables-only debug information,
+incremental disabled and one owned debug target, with test-strip and GPU/capture
+overrides unset. The first shell attempt lacked Cargo on PATH (exit 127);
+its log was retained, then the installed toolchain path was supplied.
+
+**Cuts:** no release/runtime/media/sound-file or GPU validation; no new WAV
+paths, copied sentence words, trigger bits, scheduling queue, save tags,
+dependencies, framework, broader HEV or other sound producers. No claim of
+retail fidelity, decoded mixer output or hardware audibility.
+
+**Gates:** focused checks passed; full required gates **PENDING**. SOURCE-only
+handoff: no push, PR or merge authorization. The inherited main chain shortfall
+(depth 6 / 372.3s) remains; required unchanged gates are BOTH inventories at
+depth 12 / Pass / 660.8s, combat 37/37 with zero unexpected results, and campaign
+93/93. This audio addition cannot waive them.
