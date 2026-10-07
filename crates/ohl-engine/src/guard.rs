@@ -95,6 +95,9 @@ pub const GUARD_RETREAT_MAX_DROP: f32 = 64.0;
 /// Project-authored reactive warning window; no ballistic prediction is implied.
 const TIMED_BLAST_RETREAT_SECONDS: f32 = 2.0;
 
+/// Project-authored fixed work bound for a complete supported escape.
+const MAX_BLAST_ESCAPE_SUPPORT_SEGMENTS: u8 = 16;
+
 /// The headings a retreat considers, in degrees off "straight away from
 /// the threat", tried in this order.
 ///
@@ -180,7 +183,8 @@ pub fn guard_step(game: &Game) -> (Input, GuardDecision) {
         && !decision.retreating
         && let Some(threat) = game.timed_blast_threat(TIMED_BLAST_RETREAT_SECONDS)
     {
-        input = blast_retreat_input(game, threat, input);
+        input = complete_blast_escape_input(game, threat, input)
+            .unwrap_or_else(|| blast_retreat_input(game, threat.position, input));
         decision.retreating = true;
     }
     (input, decision)
@@ -494,6 +498,135 @@ fn retreat_input(game: &Game, target: Vec3) -> Input {
     input
 }
 
+// TODO(black-box): project-authored complete current-radius escape preference.
+// A full supported corridor avoids the artificial corner made by local lookahead.
+// This is not a forecast, arrival deadline, or guarantee against other hazards.
+fn complete_blast_escape_input(
+    game: &Game,
+    threat: crate::projectiles::TimedBlastThreat,
+    input: Input,
+) -> Option<Input> {
+    let collision = game.collision()?;
+    let origin = Vec3::from_array(game.player_origin());
+    let slope_limit = game.move_config().slope_limit;
+    if !origin.is_finite()
+        || !threat.position.is_finite()
+        || !threat.radius.is_finite()
+        || threat.radius <= 0.0
+        || !slope_limit.is_finite()
+    {
+        return None;
+    }
+    let mut best: Option<(f32, Input)> = None;
+    for (forward, right) in [
+        (1, 0),
+        (1, 1),
+        (0, 1),
+        (-1, 1),
+        (-1, 0),
+        (-1, -1),
+        (0, -1),
+        (1, -1),
+    ] {
+        let candidate = Input {
+            forward,
+            right,
+            ..input
+        };
+        let Some((hull, wish)) = game.guard_movement_wish(&candidate) else {
+            continue;
+        };
+        if !matches!(hull, Hull::Standing | Hull::Crouched) || wish.z.abs() > f32::EPSILON {
+            continue;
+        }
+        let Some(direction) = Vec3::new(wish.x, wish.y, 0.0).try_normalize() else {
+            continue;
+        };
+        let (min, max) = hull.bounds();
+        let nearest_projection = Vec3::new(
+            if direction.x >= 0.0 { min.x } else { max.x },
+            if direction.y >= 0.0 { min.y } else { max.y },
+            0.0,
+        )
+        .dot(direction);
+        let distance = threat.radius + ohl_physics::DIST_EPSILON
+            - (origin - threat.position).dot(direction)
+            - nearest_projection;
+        if !distance.is_finite()
+            || distance <= 0.0
+            || best.is_some_and(|(shortest, _)| distance >= shortest)
+        {
+            continue;
+        }
+        let Some(intervals) = (1..=MAX_BLAST_ESCAPE_SUPPORT_SEGMENTS)
+            .find(|count| distance <= GUARD_RETREAT_PROBE * f32::from(*count))
+        else {
+            continue;
+        };
+        let mut endpoint = origin + direction * distance;
+        endpoint.z = origin.z;
+        if !endpoint.is_finite() || !(endpoint + min).is_finite() || !(endpoint + max).is_finite() {
+            continue;
+        }
+        let nearest = threat.position.clamp(endpoint + min, endpoint + max);
+        let separation = threat.position.distance(nearest);
+        if !separation.is_finite()
+            || separation < threat.radius
+            || !complete_blast_corridor(collision, hull, origin, endpoint, intervals, slope_limit)
+        {
+            continue;
+        }
+        best = Some((distance, candidate));
+    }
+    best.map(|(_, candidate)| candidate)
+}
+
+fn complete_blast_corridor(
+    collision: &ohl_physics::CollisionModel,
+    hull: Hull,
+    origin: Vec3,
+    endpoint: Vec3,
+    intervals: u8,
+    slope_limit: f32,
+) -> bool {
+    let chord = collision.trace(hull, origin, endpoint);
+    if !chord.fraction.is_finite()
+        || !chord.end_pos.is_finite()
+        || !chord.plane_normal.is_finite()
+        || chord.fraction < 1.0
+        || chord.start_solid
+        || chord.all_solid
+        || !chord
+            .end_pos
+            .abs_diff_eq(endpoint, ohl_physics::DIST_EPSILON)
+    {
+        return false;
+    }
+    // At most 17 existing down-probes per candidate, including both endpoints.
+    (0..=intervals).all(|index| {
+        let mut at = if index == 0 {
+            origin
+        } else if index == intervals {
+            endpoint
+        } else {
+            origin.lerp(endpoint, f32::from(index) / f32::from(intervals))
+        };
+        at.z = origin.z;
+        if !at.is_finite() {
+            return false;
+        }
+        let floor = collision.trace(hull, at, at - Vec3::Z * GUARD_RETREAT_MAX_DROP);
+        floor.fraction.is_finite()
+            && floor.end_pos.is_finite()
+            && floor.plane_normal.is_finite()
+            && floor.fraction >= 0.0
+            && floor.fraction < 1.0
+            && !floor.start_solid
+            && !floor.all_solid
+            && floor.plane_normal.z >= slope_limit
+    })
+}
+
 /// Project-authored: probe all eight walking inputs after the existing combat
 /// turn. Preserve that view and its firing decision; rank safe wishes away from
 /// the current blast, but permit a toward-side exit when cornered. This is a
@@ -668,6 +801,24 @@ mod tests {
             (0.0, 0.0),
             "movement must use the committed turn"
         );
+        let complete = complete_blast_escape_input(
+            &game,
+            crate::projectiles::TimedBlastThreat {
+                position: threat,
+                radius: 200.0,
+            },
+            combat,
+        )
+        .expect("the same corner admits a complete supported escape");
+        assert_eq!(
+            Input {
+                forward: combat.forward,
+                right: combat.right,
+                ..complete
+            },
+            combat,
+            "complete escape preserves every nonmovement combat input"
+        );
         let input = blast_retreat_input(&game, threat, combat);
         assert_ne!(
             (input.forward, input.right),
@@ -784,7 +935,10 @@ mod tests {
         );
         assert_eq!(
             game.timed_blast_threat(TIMED_BLAST_RETREAT_SECONDS),
-            Some(threat),
+            Some(crate::projectiles::TimedBlastThreat {
+                position: threat,
+                radius: 200.0,
+            }),
             "the timed threat is admissible, not filtered out by setup"
         );
         let expected = combat_guard_step(&game);

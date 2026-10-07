@@ -8984,3 +8984,22 @@ formatting and engine all-target Clippy pass after an unrelated test-helper
 borrow correction; the earlier behavior runs retain their original source
 binding. Broader gates remain pending. This source inconsistency is not an
 identified cause of any private use or chain failure.
+
+The held P2 Guard complete-escape preference is project-authored. It transports
+only the selected current timed-blast position and profile radius, preserving
+existing eligibility, warning horizon, tie order and combat-retreat priority.
+Before the unchanged local fallback, the same eight post-turn controller wishes
+are checked for a full-hull straight endpoint outside that radius. The shortest
+admitted corridor wins in fixed input order; all nonmovement combat input stays
+unchanged. The full hull chord must clear, with walkable support sampled at no
+more than the existing 48-unit spacing and 64-unit downward depth, bounded to
+16 intervals. No physics, damage, owner rule, RNG or saved state changes.
+
+TODO(black-box): this bounded policy is not documented retail behavior. Support
+samples can miss narrow gaps, and current geometry does not predict a moving
+projectile or guarantee arrival before detonation. The unchanged generated
+survival/determinism suite and existing Guard unit controls pass. Removing only
+the new preference restores the original survival failure; exact restoration
+passes. No private runtime cause, broader navigation guarantee or full-gate
+acceptance follows; broader gates, release builds, original runtime targets and
+fresh census remain pending for the final candidate.

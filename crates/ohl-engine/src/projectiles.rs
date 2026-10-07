@@ -269,6 +269,13 @@ pub(crate) struct ProjectileSystem {
     deployable_model_table: DeployableModelTable,
 }
 
+/// Current reactive exposure metadata; never persisted or used as a flight prediction.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TimedBlastThreat {
+    pub(crate) position: Vec3,
+    pub(crate) radius: f32,
+}
+
 impl ProjectileSystem {
     /// An empty system seeded for its (currently only) source of
     /// randomness: a wandering snark's hop direction.
@@ -501,12 +508,12 @@ impl ProjectileSystem {
         origin: Vec3,
         hull: ohl_physics::Hull,
         horizon: f32,
-    ) -> Option<Vec3> {
+    ) -> Option<TimedBlastThreat> {
         if !origin.is_finite() || !horizon.is_finite() || horizon < 0.0 {
             return None;
         }
         let (min, max) = hull.bounds();
-        let mut best: Option<(f32, Vec3)> = None;
+        let mut best: Option<(f32, TimedBlastThreat)> = None;
         // Spawn order breaks equal-fuse ties, including after save restoration.
         for projectile in self.projectiles.projectiles() {
             let Some(fuse) = projectile.fuse else {
@@ -540,9 +547,15 @@ impl ProjectileSystem {
             if sight.start_solid || sight.all_solid || sight.fraction < 1.0 {
                 continue;
             }
-            best = Some((fuse, projectile.position));
+            best = Some((
+                fuse,
+                TimedBlastThreat {
+                    position: projectile.position,
+                    radius,
+                },
+            ));
         }
-        best.map(|(_, position)| position)
+        best.map(|(_, threat)| threat)
     }
 
     /// Points `kind`'s model-backed rendering at one of

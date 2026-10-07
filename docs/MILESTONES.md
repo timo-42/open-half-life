@@ -9757,3 +9757,21 @@ a separate, semantic-neutral three-line test-helper borrow correction after
 the behavior runs. Full gates, releases and unchanged original runtime targets
 remain pending; no private cause or chain-recovery credit follows from this
 independent source fix.
+
+The held P2 M9.NEXT Guard correction prefers a complete supported straight escape
+outside the selected timed blast's current radius before its existing local
+retreat fallback. It tests the same eight committed movement inputs, preserves
+combat aim/fire/reload/selection and active combat-retreat priority, and chooses
+the shortest admitted corridor with deterministic ties. Threat eligibility,
+warning horizon, damage and physics are unchanged. This is project-authored;
+TODO(black-box): warning timing, momentum and simultaneous-threat tactics.
+
+The check uses the actual player hull, a full chord sweep and at most 17 floor
+samples per candidate. Sampled support can miss narrower gaps; changing geometry,
+projectile motion, velocity or a late warning can still defeat escape. There is
+no forecast or arrival-before-detonation guarantee. All five unchanged Guard
+integration tests and nine Guard unit tests pass; omitting only the complete
+escape preference compiles and fails the original survival assertion, and exact
+restoration passes. Formatting passes. Full workspace gates, release builds, fresh census and
+unchanged original runtime targets remain pending for this successor. These
+generated results establish no private runtime cause or recovery.
