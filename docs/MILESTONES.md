@@ -9758,20 +9758,26 @@ the behavior runs. Full gates, releases and unchanged original runtime targets
 remain pending; no private cause or chain-recovery credit follows from this
 independent source fix.
 
-The held P2 M9.NEXT Guard correction prefers a complete supported straight escape
-outside the selected timed blast's current radius before its existing local
-retreat fallback. It tests the same eight committed movement inputs, preserves
-combat aim/fire/reload/selection and active combat-retreat priority, and chooses
-the shortest admitted corridor with deterministic ties. Threat eligibility,
-warning horizon, damage and physics are unchanged. This is project-authored;
-TODO(black-box): warning timing, momentum and simultaneous-threat tactics.
+The held P2 M9.NEXT Guard correction is project-authored: prefer a complete
+straight escape outside the selected timed blast's current radius before the
+unchanged greedy local fallback. The same eight actual post-turn controller
+wishes use the actual hull for a whole corridor sweep and sampled support at
+the current walkable-slope limit. Support is bounded to 16 intervals, at most
+48-unit spacing and 64-unit downward depth. The shortest admitted clear corridor
+wins, with deterministic input-order ties. Existing combat-retreat priority and
+all aim/fire/reload/selection input remain unchanged. Only transient current
+position/radius transport changes; no save, schema, physics or damage change.
 
-The check uses the actual player hull, a full chord sweep and at most 17 floor
-samples per candidate. Sampled support can miss narrower gaps; changing geometry,
-projectile motion, velocity or a late warning can still defeat escape. There is
-no forecast or arrival-before-detonation guarantee. All five unchanged Guard
-integration tests and nine Guard unit tests pass; omitting only the complete
-escape preference compiles and fails the original survival assertion, and exact
-restoration passes. Formatting passes. Full workspace gates, release builds, fresh census and
-unchanged original runtime targets remain pending for this successor. These
-generated results establish no private runtime cause or recovery.
+TODO(black-box): parity remains unsettled. Sampled support can miss narrow gaps;
+this current-geometry choice supplies no deadline, projectile-trajectory,
+multiple-threat or general-navigation guarantee. Momentum, changing geometry
+and late warnings remain limitations. Generated authored success gives no private
+cause, strict-baseline recovery or broader route-adoption credit.
+
+**Gates:** all five unchanged authored Guard integration tests, nine Guard unit
+tests and formatting pass. The sole complete-preference omission compiles and
+fails the original survival assertion (0 passed / 1 failed / 4 filtered); exact
+restoration passes (1 passed / 0 failed / 4 filtered). Full seven gates, release
+builds, original combat 37/37 with zero unexpected, campaign 93/93, BOTH depth
+12 / Pass / 660.8 seconds and fresh census remain pending. Chain commands must
+explicitly request `--min-depth 12`; default-threshold Pass is insufficient.
