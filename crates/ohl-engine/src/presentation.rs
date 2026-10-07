@@ -12,7 +12,7 @@
 //! death — as [`PresentationEvent`]s for [`crate::game::Game::tick`] to
 //! turn into the four additive `GameEvent` variants.
 //!
-//! Built-in weapon/pickup cues use a bounded reviewed lookup. Three reviewed
+//! Built-in weapon/pickup cues use a bounded reviewed lookup. Reviewed
 //! HEV sentence identifiers use the runtime sentence table instead (see
 //! `docs/FORMAT_SOURCES.md`, "Bounded HEV damage sentence audio").
 //! Cues whose path the *map* supplies are a different matter, and
