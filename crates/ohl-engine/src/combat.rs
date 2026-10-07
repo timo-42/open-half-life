@@ -924,6 +924,20 @@ fn player_projectile_command(
 /// trace, in `ohl_combat::ProjectileSet::tick` itself (see
 /// `crate::projectiles`' module doc), not by narrowing this index.
 pub(crate) fn rebuild_hitbox_index(hitboxes: &mut HitboxIndex, level: &Level) {
+    rebuild_hitbox_index_with_actor_snapshot(hitboxes, level, false);
+}
+
+/// Project-authored current-state safety view (TODO(black-box)): mirror the
+/// pending phase-8b Actor transform sync without changing the shared index.
+pub(crate) fn rebuild_current_actor_hitbox_index(hitboxes: &mut HitboxIndex, level: &Level) {
+    rebuild_hitbox_index_with_actor_snapshot(hitboxes, level, true);
+}
+
+fn rebuild_hitbox_index_with_actor_snapshot(
+    hitboxes: &mut HitboxIndex,
+    level: &Level,
+    current_actor_snapshot: bool,
+) {
     hitboxes.clear();
     for (entity, anim, gait, transform, actor) in &mut level.registry.world.query::<(
         Entity,
@@ -945,7 +959,12 @@ pub(crate) fn rebuild_hitbox_index(hitboxes: &mut HitboxIndex, level: &Level) {
         let pose = anim
             .sample(model, gait)
             .unwrap_or_else(|_| StudioPose::bind(model));
-        let mut entry = EntityHitboxes::from_transform(entity_id(entity), transform);
+        let effective = if current_actor_snapshot {
+            current_actor_transform(level, entity, actor, *transform)
+        } else {
+            *transform
+        };
+        let mut entry = EntityHitboxes::from_transform(entity_id(entity), &effective);
         let added = entry.push_studio_hitboxes(&pose, &model.hitboxes);
         if added == 0 {
             push_fallback_hitbox(&mut entry, model, actor);
@@ -1026,6 +1045,25 @@ pub(crate) fn rebuild_hitbox_index(hitboxes: &mut HitboxIndex, level: &Level) {
         hitboxes.push(entry);
     }
     push_damageable_brush_hitboxes(hitboxes, level);
+}
+
+fn current_actor_transform(
+    level: &Level,
+    entity: Entity,
+    actor: Option<&ohl_ai::Actor>,
+    mut transform: Transform,
+) -> Transform {
+    if let Some(actor) = actor
+        && level
+            .registry
+            .world
+            .get::<&ohl_ai::MonsterAi>(entity)
+            .is_ok()
+    {
+        transform.origin = actor.origin;
+        transform.angles.y = actor.yaw;
+    }
+    transform
 }
 
 /// The project-chosen fallback half-extent, in world units, used only when
