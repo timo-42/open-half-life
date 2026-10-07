@@ -9843,3 +9843,45 @@ campaign 93/93 and BOTH depth 12 / Pass / 660.8 seconds remain mandatory; chain
 commands must explicitly request `--min-depth 12`. Earlier Guard mutation results
 retain their earlier source binding. Fresh census, PR, milestone assignment,
 merge and publication remain pending; no recovery is forecast.
+
+The held P2 human-grenade safety check now builds scratch geometry from the
+current Actor state at each frozen qualification/emission evaluation. Collision
+and protected blast bounds use the same scratch index, rather than mixing later
+Actor positions with the earlier phase-5 blast cache. Studio bodies synchronized
+from MonsterAi Actors use current raw origin and yaw, preserving Transform pitch
+and roll and the existing animation/gait pose. Posed boxes, valid model clipping
+fallback and the identity-oriented last-resort Actor proxy keep their precedence;
+non-Actors and other collision participants remain in the shared builder passes.
+No extra body-frame translation or fallback rotation is introduced.
+
+The supplied index's configured limits survive rebuilding. Existing rejection,
+new scratch rejection, missing protected targets and invalid geometry still
+refuse admission. The same index supplies world blast bounds. Ordinary phase-5
+geometry/cache, phase order, projectile physics, ordinary request construction,
+owner/directional-Ally policy, refusal and cooldown behavior stay unchanged.
+This is transient scratch consistency, with no saved state or tag change.
+TODO(black-box): the frozen-current policy is project-authored; subsequent Actor,
+brush or animation motion is not predicted. No survival, original parity, private
+producer/victim/cause or strict-baseline recovery is established.
+
+**Gates:** the generated unchanged-production baseline compiles and fails the
+moved-Ally refusal assertion. On normal01, omitting only the current safety view
+compiles and fails that same assertion; omitting only the studio Actor override
+fails the actual posed trace assertion. Exact normal restorations pass. These
+focused discriminators retain their normal01 source binding; later helper/type/
+test extraction supplies no new behavior or mutation credit. Final normal04 focused checks pass: safety 4/0/386 and geometry 2/0/388,
+formatting and engine all-target Clippy zero. Later outward/blast arms have normal
+coverage only; the mutation credit remains limited to normal01 moved-Ally refusal
+and the first actual studio trace. Equivalent helper/type/test extraction supplies
+no new behavior or mutation credit. Earlier mistaken-normal execution and style
+failures remain historical, not mutation kills or retroactive passes. Full seven
+gates, release pair, original FOUR and fresh census: [pending].
+Historical 4f6 full seven gates passed (3301/0/37), while its original FOUR stayed
+negative: combat 36/37 with one unexpected, campaign 93/93 and BOTH depth 6 /
+372.3 seconds, failing strict depth. Those results are not transferred to this
+successor. Original combat 37/37 zero unexpected, campaign 93/93 and BOTH depth
+12 / Pass / 660.8 seconds remain mandatory, with explicit `--min-depth 12`.
+Final source-marker coverage, PR, milestone assignment and merge remain pending.
+The closed first-fatal category records BLAST in the first accepted fatal-batch
+union only; it establishes no victim, producer or cause. Independent unimplemented
+explicit-viewpoint backlog is excluded from this repair and original chain cause.
