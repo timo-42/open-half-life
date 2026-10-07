@@ -877,7 +877,7 @@ impl Systems {
         origin: Vec3,
         hull: ohl_physics::Hull,
         horizon: f32,
-    ) -> Option<Vec3> {
+    ) -> Option<crate::projectiles::TimedBlastThreat> {
         self.projectiles
             .timed_blast_threat(collision, origin, hull, horizon)
     }

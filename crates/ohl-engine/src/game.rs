@@ -575,7 +575,10 @@ impl Game {
     }
 
     /// Private current-body exposure query for the headless guard policy.
-    pub(crate) fn timed_blast_threat(&self, horizon: f32) -> Option<Vec3> {
+    pub(crate) fn timed_blast_threat(
+        &self,
+        horizon: f32,
+    ) -> Option<crate::projectiles::TimedBlastThreat> {
         self.systems.timed_blast_threat(
             self.level.collision.as_ref()?,
             self.controller.state.origin,
