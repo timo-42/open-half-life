@@ -1869,6 +1869,8 @@ impl AiState {
             );
         }
         stand_on_floor(level, entity, &kind);
+        // TODO(black-box): project-authored child defaults, not the maker's flags.
+        Self::attach_follower(&mut level.registry.world, entity, classname, 0);
         Some(entity)
     }
 
@@ -2332,15 +2334,27 @@ impl AiState {
             let Some(entity) = level.registry.entities.get(index).copied() else {
                 break;
             };
-            if !spawned.contains(&entity)
-                || !TALK_MONSTER_CLASSNAMES.contains(&def.classname.as_str())
-            {
-                continue;
+            if spawned.contains(&entity) {
+                Self::attach_follower(
+                    &mut level.registry.world,
+                    entity,
+                    &def.classname,
+                    def.spawnflags,
+                );
             }
-            level
-                .registry
-                .world
-                .insert_one(entity, Follower::from_spawnflags(def.spawnflags))
+        }
+    }
+
+    /// Shared derived component initialization for declared and maker talk monsters.
+    fn attach_follower(
+        world: &mut ohl_game::hecs::World,
+        entity: Entity,
+        classname: &str,
+        spawnflags: u32,
+    ) {
+        if TALK_MONSTER_CLASSNAMES.contains(&classname) {
+            world
+                .insert_one(entity, Follower::from_spawnflags(spawnflags))
                 .ok();
         }
     }
@@ -5349,7 +5363,7 @@ mod grenade_danger_tests {
 
     // The unblocked hull fraction is an exact collision prerequisite.
     #[allow(clippy::float_cmp)]
-    fn cover_and_move(game: &mut crate::Game, listener: Entity, kind: MonsterKind, id: u32) {
+    fn cover_and_move(game: &mut crate::Game, listener: Entity, kind: &MonsterKind, id: u32) {
         let start = actor(game, listener).origin;
         let mut direction = None;
         for _ in 0..6 {
@@ -5408,7 +5422,7 @@ mod grenade_danger_tests {
                 ohl_ai::brain::TAKE_COVER_FROM_DANGER.name
             );
         }
-        cover_and_move(&mut game, ally, MonsterKind::Barney, id);
+        cover_and_move(&mut game, ally, &MonsterKind::Barney, id);
         let mut removed = false;
         for _ in 0..510 {
             let Some(p) = projectile(&game, id) else {
@@ -5466,7 +5480,7 @@ mod grenade_danger_tests {
                 "heard danger interrupts the natural grunt grenade wait"
             );
         }
-        cover_and_move(&mut game, owner, MonsterKind::HumanGrunt, id);
+        cover_and_move(&mut game, owner, &MonsterKind::HumanGrunt, id);
         assert!(actor(&game, owner).origin.x < 0.0);
         let remaining = game.systems_mut().ai().secondary_cooldowns[&owner];
         assert!(

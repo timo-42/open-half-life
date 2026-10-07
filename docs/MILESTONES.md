@@ -9737,3 +9737,23 @@ with two unexpected lines, campaign 93/93 and both chains depth 6 / Pass / 372.3
 seconds; these remain open regressions, not acceptance or expected-change credit.
 No accepted cause or repair is claimed. New PR, milestone assignment and merge
 remain pending; P5/new P8 hops and final publication remain held.
+
+The held P2 M9.NEXT scope also includes maker-child follower initialization:
+supported talk children receive the same derived component as declared talk
+actors, through one initializer. TODO(black-box): the child's default eligibility
+is project-authored; maker flags do not become monster flags, and directly
+declared Pre-Disaster actors retain their refusal. Existing Talk-monster
+provenance is recorded in FORMAT_SOURCES.
+
+Save/load reconstructs eligibility without changing any tag or wire format.
+Active follower membership/order is not serialized today, for declared actors
+or maker children; the roster reset and potentially retained AI follow schedule
+remain an explicit existing limitation, not a new persistence guarantee.
+**Gates:** all three generated controls pass, including post-load eligibility;
+the child-only omission compiles and fails the real recruitment assertion, and
+exact restoration passes. The unchanged scientist use/stop control passes.
+Final formatting and engine all-target Clippy pass; the final source includes
+a separate, semantic-neutral three-line test-helper borrow correction after
+the behavior runs. Full gates, releases and unchanged original runtime targets
+remain pending; no private cause or chain-recovery credit follows from this
+independent source fix.
