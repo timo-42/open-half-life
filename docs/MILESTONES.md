@@ -9800,3 +9800,46 @@ controls, two human readiness controls, real grunt player-damage control and fiv
 original Guard tests pass. Formatting and engine all-target Clippy pass. Full
 workspace gates, release builds, unchanged original runtime targets and fresh
 census remain pending for this successor; no private cause or recovery is claimed.
+
+The P2 geometry follow-up preserves the existing documented centered
+Generic membership at the shared configure/restore seam: that membership selects
+the centered body frame, while valid model eyes, clipping-eye fallback and posed
+or clipping damage geometry retain their priority. Ordinary custom Generic models
+and walkers keep their existing policy. The centered-model public provenance
+already recorded in FORMAT_SOURCES remains the reference; no new source citation
+or model-identity inference is introduced.
+
+The second correction uses the exact finite old-to-current rotated point
+plus translation only to classify preexisting mover overlap. The existing tangent
+push destination, blocked response, crush damage and cadence stay unchanged.
+No save state, tag, API, navigation, Guard, follower or broad physics change is
+introduced. TODO(black-box): centered fallback and preexisting-overlap exclusion
+are project-authored policies; original parity and private runtime relevance
+remain unsettled. Neither source finding proves the combat or chain cause.
+
+**Gates:** both unchanged-production generated reproducers compile and fail
+their intended primary assertions. Normal01 passes the centered selector (1/0/11),
+three rotating controls (3/0/384), full transform suite (12), blocked-mover suite
+(18), original Guard suite (5), emission safety (3), readiness (2), real grunt (1)
+and anchor-floor control (1). Omitting only the centered override compiles and
+fails the first named case (0/1/11); exact restoration passes (1/0/11). Omitting
+only the exact rotating-overlap comparison compiles and fails the first rotation-
+only case (0/1/386); exact restoration passes (1/0/386). Later named variants,
+save reconstruction and nonzero translation have normal coverage only, not
+separate mutation credit. These results retain their normal01 source binding.
+
+The initial function-length Clippy failure and subsequent new-test float-comparison
+failure remain recorded failures. The final equivalent lookup reuse and exact
+finite-value bit assertion change supply no new behavior or mutation credit.
+Normal03 rotating controls pass (3/0/384), formatting passes and engine all-target
+Clippy passes. Final-source seven gates, release pair, original runtime targets
+and fresh census: [pending].
+The preceding 6e9d source has all seven gates passing (3298 passed / 0 failed /
+37 ignored) and a qualified release pair, but original runtime remains negative:
+combat 36/37 with one unexpected, campaign 93/93, BOTH depth 6 / 372.3 seconds,
+failing the strict depth requirement. Those are historical results for that
+source, not follow-up acceptance. Original combat 37/37 with zero unexpected,
+campaign 93/93 and BOTH depth 12 / Pass / 660.8 seconds remain mandatory; chain
+commands must explicitly request `--min-depth 12`. Earlier Guard mutation results
+retain their earlier source binding. Fresh census, PR, milestone assignment,
+merge and publication remain pending; no recovery is forecast.

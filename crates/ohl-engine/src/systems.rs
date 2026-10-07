@@ -1946,20 +1946,37 @@ impl Systems {
                 // as the player's push reads it: a conveyor's belt is a
                 // floor, not a piston, so it neither shoves a monster
                 // caught in its hull nor counts as blocked by one.
-                let velocity = level
+                let motion_brush = level
                     .brush_collision
                     .iter()
                     .find(|(entity, _)| *entity == mover)
-                    .map_or(Vec3::ZERO, |(_, brush)| {
-                        level.brush_mover_velocity(*brush, origin)
-                    });
+                    .map(|(_, brush)| *brush);
+                let velocity = motion_brush.map_or(Vec3::ZERO, |brush| {
+                    level.brush_mover_velocity(brush, origin)
+                });
                 if velocity == Vec3::ZERO {
                     continue;
                 }
                 let candidate = origin + velocity * dt;
-                if collision
-                    .trace_brush(hull, candidate, candidate, brush)
-                    .start_solid
+                // Project-authored preexisting-overlap policy: compare the exact
+                // rigid pose step, not its tangent push approximation. TODO(black-box).
+                let carried = motion_brush
+                    .and_then(|brush| {
+                        level.rotational_carry(brush, origin, dt).map(|rotated| {
+                            rotated
+                                + level
+                                    .brush_velocity
+                                    .get(&brush)
+                                    .copied()
+                                    .unwrap_or(Vec3::ZERO)
+                                    * dt
+                        })
+                    })
+                    .unwrap_or(candidate);
+                if carried.is_finite()
+                    && collision
+                        .trace_brush(hull, carried, carried, brush)
+                        .start_solid
                 {
                     continue;
                 }
@@ -2383,6 +2400,238 @@ mod tests {
                 .trace(actor.hull, actor.query_origin(), actor.query_origin())
                 .start_solid
         );
+    }
+
+    // A generated phase-2 motion sample, with an ordinary attached thinking actor.
+    // The selected standing hull expands the first brush's XY square to +/-100;
+    // the second brush begins at query y=100 and blocks only an outward push.
+    fn rotating_overlap_fixture(
+        query_y: f32,
+        translation: ohl_physics::Vec3,
+        angle: f32,
+    ) -> (crate::level::Level, Systems, ohl_game::hecs::Entity) {
+        use ohl_formats::test_support::{Bsp30Builder, CollisionBrush};
+        use ohl_physics::Vec3;
+        let mut builder = Bsp30Builder::new();
+        builder.set_entities_text(&format!(
+            "{{\"classname\" \"worldspawn\"}}\n\
+             {{\"classname\" \"info_player_start\" \"origin\" \"1000 1000 1000\"}}\n\
+             {{\"classname\" \"monster_barney\" \"origin\" \"50 {query_y} 0\"}}\n\
+             {{\"classname\" \"func_rotating\" \"model\" \"*1\" \"dmg\" \"7\"}}\n\
+             {{\"classname\" \"func_wall\" \"model\" \"*2\"}}"
+        ));
+        let heads = builder.push_collision_hulls(&[]);
+        builder.push_model([-1024.0; 3], [1024.0; 3], [0.0; 3], heads, 2, 0, 0);
+        for (mins, maxs) in [
+            ([-84.0, -84.0, -64.0], [84.0, 84.0, 64.0]),
+            ([-200.0, 116.0, -100.0], [200.0, 200.0, 100.0]),
+        ] {
+            let heads = builder.push_collision_hulls(&[CollisionBrush::box_brush(mins, maxs)]);
+            builder.push_model(mins, maxs, [0.0; 3], heads, 2, 0, 0);
+        }
+        let mut level = crate::level::Level::from_bytes(
+            &crate::MemoryAssets::new(),
+            "ohl_rotating_overlap",
+            &builder.build(),
+        )
+        .expect("synthetic two-brush scene");
+        let mut systems = Systems::default();
+        systems.ai.attach_level(
+            &mut level,
+            ohl_campaign::Difficulty::Easy,
+            &ohl_campaign::SkillTable::default(),
+        );
+        let entity = level
+            .registry
+            .world
+            .query::<(ohl_game::hecs::Entity, &ohl_ai::MonsterAi)>()
+            .iter()
+            .next()
+            .expect("thinking actor")
+            .0;
+        let brush = level.brush_collision[0].1;
+        level.brush_velocity.insert(brush, translation / 0.1);
+        if angle != 0.0 {
+            level.brush_rotation.insert(
+                brush,
+                crate::level::BrushRotation {
+                    pivot: Vec3::ZERO,
+                    angular_velocity: Vec3::Z * (angle / 0.1),
+                    angle_degrees: 0.0,
+                },
+            );
+        }
+        (level, systems, entity)
+    }
+
+    #[test]
+    fn rotating_preexisting_overlap_does_not_queue_crush() {
+        use ohl_ai::Actor;
+        use ohl_game::registry::Transform;
+        use ohl_physics::Vec3;
+        for translation in [Vec3::ZERO, Vec3::X * 2.0] {
+            let (mut level, mut systems, entity) = rotating_overlap_fixture(95.1, translation, 0.1);
+            let actor = *level.registry.world.get::<&Actor>(entity).unwrap();
+            assert!(actor.alive && actor.origin.is_finite());
+            let origin = actor.query_origin();
+            assert_eq!(origin, Vec3::new(50.0, 95.1, 36.0));
+            let brush = level.monster_brush_collision[0].1;
+            let blocker = level.monster_brush_collision[1].1;
+            let motion_brush = level.brush_collision[0].1;
+            let collision = level.monster_collision.as_ref().unwrap();
+            let mut previous = collision.clone();
+            previous.set_brush_pose(
+                brush,
+                -translation,
+                Vec3::ZERO,
+                Vec3::Z,
+                -0.1_f32.to_degrees(),
+            );
+            assert!(
+                previous
+                    .trace_brush(actor.hull, origin, origin, brush)
+                    .start_solid
+            );
+            assert!(
+                collision
+                    .trace_brush(actor.hull, origin, origin, brush)
+                    .start_solid
+            );
+            assert_eq!(
+                collision.trace(actor.hull, origin, origin).brush_index,
+                Some(brush)
+            );
+            let exact = level.rotational_carry(motion_brush, origin, 0.1).unwrap() + translation;
+            let tangent = origin + level.brush_mover_velocity(motion_brush, origin) * 0.1;
+            assert!(
+                collision
+                    .trace_brush(actor.hull, exact, exact, brush)
+                    .start_solid
+            );
+            assert!(
+                !collision
+                    .trace_brush(actor.hull, tangent, tangent, brush)
+                    .start_solid
+            );
+            for point in [origin, exact] {
+                assert!(
+                    !collision
+                        .trace_brush(actor.hull, point, point, blocker)
+                        .start_solid
+                );
+            }
+            assert!(
+                collision
+                    .trace_brush(actor.hull, tangent, tangent, blocker)
+                    .start_solid
+            );
+            assert_eq!(
+                collision.trace(actor.hull, tangent, tangent).brush_index,
+                Some(blocker)
+            );
+            assert!(systems.damage_queue.is_empty());
+
+            systems.resolve_blocked_movers(&mut level, 0.1);
+            assert!(
+                systems.damage_queue.is_empty(),
+                "preexisting rotated overlap must not queue CRUSH"
+            );
+            assert_eq!(
+                level.registry.world.get::<&Actor>(entity).unwrap().origin,
+                actor.origin
+            );
+            assert_eq!(
+                level
+                    .registry
+                    .world
+                    .get::<&Transform>(entity)
+                    .unwrap()
+                    .origin,
+                actor.origin
+            );
+        }
+    }
+
+    #[test]
+    fn rotating_new_overlap_and_translation_keep_their_blocking_policy() {
+        use ohl_ai::Actor;
+        use ohl_physics::Vec3;
+        for (query_y, translation, angle, preexisting) in [
+            (95.7, Vec3::ZERO, 0.1_f32, false),
+            (95.1, Vec3::X * 2.0, 0.0, true),
+            (99.5, Vec3::Y, 0.0, false),
+        ] {
+            let (mut level, mut systems, entity) =
+                rotating_overlap_fixture(query_y, translation, angle);
+            let actor = *level.registry.world.get::<&Actor>(entity).unwrap();
+            assert!(actor.alive && actor.origin.is_finite());
+            let origin = actor.query_origin();
+            let (mover, brush) = level.monster_brush_collision[0];
+            let blocker = level.monster_brush_collision[1].1;
+            let motion_brush = level.brush_collision[0].1;
+            let collision = level.monster_collision.as_ref().unwrap();
+            let mut previous = collision.clone();
+            previous.set_brush_pose(
+                brush,
+                -translation,
+                Vec3::ZERO,
+                Vec3::Z,
+                -angle.to_degrees(),
+            );
+            assert_eq!(
+                previous
+                    .trace_brush(actor.hull, origin, origin, brush)
+                    .start_solid,
+                preexisting
+            );
+            assert!(
+                collision
+                    .trace_brush(actor.hull, origin, origin, brush)
+                    .start_solid
+            );
+            let exact = level
+                .rotational_carry(motion_brush, origin, 0.1)
+                .unwrap_or(origin)
+                + translation;
+            let tangent = origin + level.brush_mover_velocity(motion_brush, origin) * 0.1;
+            assert_eq!(
+                collision
+                    .trace_brush(actor.hull, exact, exact, brush)
+                    .start_solid,
+                preexisting
+            );
+            assert!(
+                !collision
+                    .trace_brush(actor.hull, origin, origin, blocker)
+                    .start_solid
+            );
+            if !preexisting {
+                assert!(
+                    !collision
+                        .trace_brush(actor.hull, tangent, tangent, brush)
+                        .start_solid
+                );
+                assert!(
+                    collision
+                        .trace_brush(actor.hull, tangent, tangent, blocker)
+                        .start_solid
+                );
+            }
+            assert!(systems.damage_queue.is_empty());
+            systems.resolve_blocked_movers(&mut level, 0.1);
+            assert_eq!(systems.damage_queue.len(), usize::from(!preexisting));
+            if let Some(hit) = systems.damage_queue.first() {
+                assert_eq!(hit.target, entity);
+                assert_eq!(hit.info.kind, ohl_combat::DamageType::CRUSH);
+                assert_eq!(hit.info.amount.to_bits(), 7.0_f32.to_bits());
+                assert_eq!(hit.info.attacker, None);
+                assert_eq!(hit.info.inflictor, Some(crate::ids::entity_id(mover)));
+            }
+            assert_eq!(
+                level.registry.world.get::<&Actor>(entity).unwrap().origin,
+                actor.origin
+            );
+        }
     }
 
     fn systems() -> Systems {

@@ -652,15 +652,28 @@ impl AiState {
     /// Rebuilds model-local eye and collision-frame metadata. This is derived
     /// runtime state, shared by map attachment and save reconstruction.
     pub(crate) fn configure_actor_models(level: &mut Level) {
-        for (actor, classname, anim) in
+        let centred: Vec<Entity> = level
+            .defs
+            .iter()
+            .zip(&level.registry.entities)
+            .filter(|(def, _)| has_centred_origin(def))
+            .map(|(_, entity)| *entity)
+            .collect();
+        for (entity, actor, classname, anim) in
             &mut level
                 .registry
                 .world
-                .query::<(&mut Actor, &ClassName, Option<&StudioAnim>)>()
+                .query::<(Entity, &mut Actor, &ClassName, Option<&StudioAnim>)>()
         {
             let kind = MonsterKind::from_classname(&classname.0);
             let model = anim.and_then(|anim| level.studio_models.get(anim.model));
             actor.configure_model(&kind, model);
+            // Project-authored: the named centered convention also governs missing
+            // metadata; valid model eye precedence stays intact. TODO(black-box).
+            if kind == MonsterKind::Generic && centred.contains(&entity) {
+                actor.body_frame = ohl_ai::BodyFrame::Centered;
+                actor.view_ofs = actor.body_frame.eye_offset(actor.hull, model);
+            }
         }
     }
 
