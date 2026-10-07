@@ -1159,6 +1159,7 @@ impl AiState {
             Self::replan_target_routes(level);
         }
         self.update_secondary_opportunities(level, dt);
+        self.qualify_human_secondary_emission(level, grenade);
         grenade.projectiles.emit_grenade_danger(&mut self.world, dt);
         let events = {
             let context = SightContext {
@@ -1308,6 +1309,64 @@ impl AiState {
         }
     }
 
+    /// TODO(black-box): project-authored selection qualification, not a future guarantee.
+    /// A refused frozen throw must not repeatedly outrank an ordinary legal attack.
+    /// This adds up to 502 scratch steps per ready human/tick; emission still rechecks.
+    fn qualify_human_secondary_emission(
+        &self,
+        level: &mut Level,
+        grenade: &GrenadeSafetyContext<'_>,
+    ) {
+        let candidates: Vec<_> = level
+            .registry
+            .world
+            .query::<(Entity, &Actor, &MonsterAi)>()
+            .iter()
+            .filter_map(|(entity, actor, ai)| {
+                if !ai
+                    .pending_conditions
+                    .contains(Conditions::CAN_RANGE_ATTACK2)
+                    || !matches!(
+                        self.brain_kinds.get(ai.brain.0),
+                        Some(MonsterKind::HumanGrunt | MonsterKind::HumanAssassin)
+                    )
+                {
+                    return None;
+                }
+                let request = ai
+                    .memory
+                    .filter(|memory| !memory.occluded)
+                    .and_then(|memory| {
+                        let enemy = level.registry.world.get::<&Actor>(memory.entity).ok()?;
+                        (enemy.alive && enemy.health > 0.0).then(|| {
+                            monster_projectile_request(
+                                ohl_combat::ProjectileKind::HandGrenade,
+                                self.difficulty,
+                                entity,
+                                actor.eye(),
+                                enemy.eye(),
+                                Some(memory.entity),
+                            )
+                        })
+                    });
+                Some((entity, request))
+            })
+            .collect();
+        for (entity, request) in candidates {
+            if request.as_ref().is_none_or(|request| {
+                !grenade.projectiles.human_grenade_safe(
+                    level,
+                    request,
+                    grenade.hitboxes,
+                    self.world.relationships(),
+                )
+            }) && let Ok(mut ai) = level.registry.world.get::<&mut MonsterAi>(entity)
+            {
+                ai.pending_conditions.remove(Conditions::CAN_RANGE_ATTACK2);
+            }
+        }
+    }
+
     /// Turns this step's [`AiEvent`]s into animation, damage and projectile
     /// requests.
     fn consume_events(
@@ -1430,19 +1489,14 @@ impl AiState {
             resolved_target.map_or_else(|| muzzle + actor.forward() * range, |enemy| enemy.eye());
 
         if let AttackShape::Projectile(projectile) = shape {
-            let (damage, damage_type, blast_radius) =
-                monster_projectile_profile(projectile, self.difficulty);
-            let velocity = monster_projectile_velocity(projectile, self.difficulty, muzzle, aim);
-            let request = ProjectileRequest {
-                kind: projectile,
-                owner: attacker,
-                origin: muzzle,
-                velocity,
-                damage,
-                damage_type,
-                blast_radius,
+            let request = monster_projectile_request(
+                projectile,
+                self.difficulty,
+                attacker,
+                muzzle,
+                aim,
                 target,
-            };
+            );
             // TODO(black-box): attack task/activity occurred; trailing Wait is unchanged.
             // Unsafe frozen-world exposure refuses only emission and its cooldown.
             if attack == AttackKind::Range2
@@ -3306,6 +3360,29 @@ fn secondary_target_clear(
     }
     !matches!(kind, MonsterKind::HumanGrunt | MonsterKind::HumanAssassin)
         || grenade_lob_clear(collision, difficulty, muzzle, aim)
+}
+
+/// One ordinary request construction shared by selection preview and emission.
+fn monster_projectile_request(
+    kind: ohl_combat::ProjectileKind,
+    difficulty: AiDifficulty,
+    owner: Entity,
+    origin: Vec3,
+    aim: Vec3,
+    target: Option<Entity>,
+) -> ProjectileRequest {
+    let (damage, damage_type, blast_radius) = monster_projectile_profile(kind, difficulty);
+    let velocity = monster_projectile_velocity(kind, difficulty, origin, aim);
+    ProjectileRequest {
+        kind,
+        owner,
+        origin,
+        velocity,
+        damage,
+        damage_type,
+        blast_radius,
+        target,
+    }
 }
 
 /// Published head-ball speed; other speeds and bounded ballistic aim are TODO(black-box).

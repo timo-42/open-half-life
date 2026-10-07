@@ -9781,3 +9781,22 @@ restoration passes (1 passed / 0 failed / 4 filtered). Full seven gates, release
 builds, original combat 37/37 with zero unexpected, campaign 93/93, BOTH depth
 12 / Pass / 660.8 seconds and fresh census remain pending. Chain commands must
 explicitly request `--min-depth 12`; default-threshold Pass is insufficient.
+
+The held P2 M9.NEXT scope also qualifies human grenade selection against the
+existing frozen-world owner/Ally veto. After unchanged geometric readiness,
+only the pending secondary-choice bit is removed for a currently refused human
+throw, allowing ordinary combat selection to choose another legal attack.
+The selection preview and emission share exact ordinary request construction;
+the independent emission recheck, launch cooldown and no-cooldown refusal remain.
+No fixture, damage, physics, schedule, saved state or Guard policy changes.
+
+TODO(black-box): this is project-authored selection policy, with up to 502 extra
+scratch steps per geometrically-ready human per tick. Movement or retargeting
+after qualification can invalidate its result; it is not a future safety promise.
+**Gates:** the unchanged three-test monsterclip suite passes. Removing only the
+qualification call compiles and restores the original unfenced-death assertion
+failure; exact source restoration passes. The three existing grenade safety
+controls, two human readiness controls, real grunt player-damage control and five
+original Guard tests pass. Formatting and engine all-target Clippy pass. Full
+workspace gates, release builds, unchanged original runtime targets and fresh
+census remain pending for this successor; no private cause or recovery is claimed.
