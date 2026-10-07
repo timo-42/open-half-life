@@ -349,6 +349,10 @@ impl ProjectileSystem {
         hitboxes: &HitboxIndex,
         relationships: &ohl_ai::RelationshipTable,
     ) -> bool {
+        // Fixed positive constants; two extra steps cover repeated-f32 subtraction.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        const STEPS: u32 =
+            (ohl_combat::projectile::HAND_GRENADE_FUSE_SECONDS / crate::TICK_SECONDS) as u32 + 2;
         let Some(collision) = level.collision.as_ref() else {
             return false;
         };
@@ -439,10 +443,6 @@ impl ProjectileSystem {
             movement: &self.movement,
             tuning: &self.tuning,
         };
-        // Fixed positive constants; two extra steps cover repeated-f32 subtraction.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        const STEPS: u32 =
-            (ohl_combat::projectile::HAND_GRENADE_FUSE_SECONDS / crate::TICK_SECONDS) as u32 + 2;
         let mut events = Vec::new();
         for _ in 0..STEPS {
             events.clear();
