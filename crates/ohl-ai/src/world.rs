@@ -972,9 +972,9 @@ impl AiWorld {
         let running_name = runner.schedule_name();
         // TODO(black-box): project-authored danger cover uses the current qualified sound.
         // The local runner owns the schedule; ai.runner is temporarily empty.
-        let danger_cover = runner
-            .schedule()
-            .is_some_and(|schedule| std::ptr::eq(schedule, &crate::brain::TAKE_COVER_FROM_DANGER));
+        let danger_cover = runner.schedule().is_some_and(|schedule| {
+            std::ptr::eq(schedule, &raw const crate::brain::TAKE_COVER_FROM_DANGER)
+        });
         let cover_threat = if danger_cover {
             heard
                 .best

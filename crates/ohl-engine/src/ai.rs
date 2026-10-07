@@ -1398,22 +1398,8 @@ impl AiState {
             return;
         }
         let shape = attack_shape(&kind, attack);
-        let (amount, range) = match shape {
-            AttackShape::Melee => match spec.melee {
-                Some(melee) => (melee.damage[self.difficulty.index()], melee.range),
-                None => return,
-            },
-            AttackShape::Hitscan | AttackShape::Projectile(_) => match spec.ranged {
-                Some(ranged) => (
-                    ranged.damage[self.difficulty.index()],
-                    if ranged.range.is_finite() && ranged.range > 0.0 {
-                        ranged.range
-                    } else {
-                        DEFAULT_ATTACK_RANGE
-                    },
-                ),
-                None => return,
-            },
+        let Some((amount, range)) = attack_amount_range(shape, spec, self.difficulty) else {
+            return;
         };
 
         let muzzle = actor.eye();
@@ -1427,14 +1413,7 @@ impl AiState {
         });
         // TODO(black-box): a ready schedule may retarget before its attack task.
         // Recheck that event's actual target; task/activity/Wait stay unchanged.
-        if attack == AttackKind::Range2
-            && matches!(
-                kind,
-                MonsterKind::HumanGrunt
-                    | MonsterKind::HumanAssassin
-                    | MonsterKind::AlienController
-                    | MonsterKind::Apache
-            )
+        if secondary_checks_target(&kind, attack)
             && resolved_target.as_ref().is_none_or(|enemy| {
                 !secondary_target_clear(
                     &kind,
@@ -1447,9 +1426,8 @@ impl AiState {
         {
             return;
         }
-        let aim = resolved_target
-            .map(|enemy| enemy.eye())
-            .unwrap_or_else(|| muzzle + actor.forward() * range);
+        let aim =
+            resolved_target.map_or_else(|| muzzle + actor.forward() * range, |enemy| enemy.eye());
 
         if let AttackShape::Projectile(projectile) = shape {
             let (damage, damage_type, blast_radius) =
@@ -2041,6 +2019,41 @@ fn health_fraction(health: f32, max: f32) -> f32 {
         return 0.0;
     }
     (health / max).clamp(0.0, 1.0)
+}
+
+/// The existing secondary attacks that recheck their resolved target.
+fn secondary_checks_target(kind: &MonsterKind, attack: AttackKind) -> bool {
+    attack == AttackKind::Range2
+        && matches!(
+            kind,
+            MonsterKind::HumanGrunt
+                | MonsterKind::HumanAssassin
+                | MonsterKind::AlienController
+                | MonsterKind::Apache
+        )
+}
+
+/// The existing species table's damage and range for this attack shape.
+fn attack_amount_range(
+    shape: AttackShape,
+    spec: &MonsterSpec,
+    difficulty: AiDifficulty,
+) -> Option<(f32, f32)> {
+    match shape {
+        AttackShape::Melee => spec
+            .melee
+            .map(|melee| (melee.damage[difficulty.index()], melee.range)),
+        AttackShape::Hitscan | AttackShape::Projectile(_) => spec.ranged.map(|ranged| {
+            (
+                ranged.damage[difficulty.index()],
+                if ranged.range.is_finite() && ranged.range > 0.0 {
+                    ranged.range
+                } else {
+                    DEFAULT_ATTACK_RANGE
+                },
+            )
+        }),
+    }
 }
 
 /// The damage type a monster attack deals.
