@@ -276,3 +276,181 @@ fn monstercount_and_live_cap_hold_across_repeated_triggers() {
         "monstercount must never be exceeded regardless of trigger toggling"
     );
 }
+
+/// An ordinary delayed maker, or its directly declared talk counterpart.
+fn maker_talk_fixture(classname: &str, made: bool, flags: u32) -> (Game, ohl_engine::MemoryAssets) {
+    use ohl_engine::test_support::{SCRIPT_MAP, script_room_bsp};
+    const DELAY: f32 = 0.3;
+    let origin = [32.0, 0.0, 0.0];
+    let extra = if made {
+        format!(
+            "{}{}",
+            trigger_auto("talk_maker", 0.0),
+            entity_block(
+                "monstermaker",
+                origin,
+                180.0,
+                &[
+                    ("targetname", "talk_maker"),
+                    ("monstertype", classname),
+                    ("monstercount", "1"),
+                    ("delay", &DELAY.to_string()),
+                    ("spawnflags", &flags.to_string()),
+                ],
+            ),
+        )
+    } else {
+        entity_block(
+            classname,
+            origin,
+            180.0,
+            &[("spawnflags", &flags.to_string())],
+        )
+    };
+    let entities = script_room_entities([0.0, 0.0, 36.0], &extra);
+    let mut assets = ohl_engine::MemoryAssets::new();
+    assets.insert(
+        &format!("maps/{SCRIPT_MAP}.bsp"),
+        script_room_bsp(&entities),
+    );
+    let mut game = Game::load(&assets, SCRIPT_MAP).expect("generated talk room");
+    if made {
+        assert!(
+            monster_entities(&game).is_empty(),
+            "no child before activation"
+        );
+        tick(&mut game, 1);
+        assert!(
+            monster_entities(&game).is_empty(),
+            "activation still respects delay"
+        );
+    }
+    tick(&mut game, ticks_for(DELAY));
+    (game, assets)
+}
+
+/// Do not require Follower presence here: its absence must be detected by
+/// real recruitment, after independent spawn/life/geometry prerequisites.
+fn sole_nearby_talk_actor(game: &Game, classname: &str) -> ohl_game::hecs::Entity {
+    use ohl_ai::{Actor, Follower};
+    use ohl_game::hecs::Entity;
+    let actor_id = ohl_engine::test_support::entity_of_classname(game, classname).unwrap();
+    assert_eq!(
+        monster_entities(game),
+        vec![actor_id],
+        "no competing monster"
+    );
+    let actor = game.registry().world.get::<&Actor>(actor_id).unwrap();
+    assert!(actor.alive && actor.health > 0.0 && game.player_health() > 0.0);
+    let point = actor.query_origin();
+    let eye = ohl_ai::Vec3::from_array(game.eye_position());
+    assert!(point.is_finite() && eye.is_finite());
+    assert!(point.distance(eye) < ohl_engine::ai::TALK_USE_RADIUS);
+    assert!(
+        game.registry()
+            .world
+            .query::<(Entity, &Actor, &Follower)>()
+            .iter()
+            .all(|(id, _, _)| id == actor_id),
+        "no other follow candidate"
+    );
+    actor_id
+}
+
+fn use_talk_and_consume(game: &mut Game) {
+    game.tick(TICK_SECONDS, &ohl_engine::test_support::use_input());
+    tick(game, 2);
+}
+
+#[test]
+fn maker_talk_child_recruits_and_stops_after_real_use() {
+    for classname in ohl_engine::ai::TALK_MONSTER_CLASSNAMES {
+        let (mut game, _) = maker_talk_fixture(classname, true, 0);
+        let child = sole_nearby_talk_actor(&game, classname);
+        assert!(game.followers().is_empty());
+        use_talk_and_consume(&mut game);
+        assert_eq!(
+            game.followers(),
+            &[child],
+            "ordinary use recruits the maker child"
+        );
+        use_talk_and_consume(&mut game);
+        assert!(
+            game.followers().is_empty(),
+            "the second use stops the child"
+        );
+        assert!(
+            !game
+                .registry()
+                .world
+                .get::<&ohl_ai::follow::Follower>(child)
+                .unwrap()
+                .following
+        );
+    }
+}
+
+#[test]
+fn maker_talk_child_declared_controls_keep_pre_disaster_behavior() {
+    use ohl_ai::follow::SPAWNFLAG_TALK_PRE_DISASTER;
+    for classname in ohl_engine::ai::TALK_MONSTER_CLASSNAMES {
+        for flags in [0, SPAWNFLAG_TALK_PRE_DISASTER] {
+            let (mut game, _) = maker_talk_fixture(classname, false, flags);
+            let declared = sole_nearby_talk_actor(&game, classname);
+            use_talk_and_consume(&mut game);
+            if flags == 0 {
+                assert_eq!(
+                    game.followers(),
+                    &[declared],
+                    "declared default still follows"
+                );
+                use_talk_and_consume(&mut game);
+                assert!(game.followers().is_empty());
+            } else {
+                assert!(
+                    game.followers().is_empty(),
+                    "declared Pre-Disaster still refuses"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn maker_talk_child_save_rebuilds_eligibility_without_inventing_roster_state() {
+    // The existing save format records no Follower/roster data. A save
+    // before recruitment also represents an older maker child without that
+    // component; after recruitment, the direct and maker cases both reset
+    // the roster on load. This is a retained limitation, not new fidelity.
+    for made in [false, true] {
+        for recruited in [false, true] {
+            let classname = "monster_scientist";
+            let (mut game, assets) = maker_talk_fixture(classname, made, 0);
+            let actor = sole_nearby_talk_actor(&game, classname);
+            if recruited {
+                use_talk_and_consume(&mut game);
+                assert_eq!(game.followers(), &[actor]);
+            }
+            let bytes = game
+                .save_bytes(1_700_000_000)
+                .expect("write generated save");
+            let mut loaded = Game::load_bytes(&assets, &bytes).expect("load generated save");
+            let restored = sole_nearby_talk_actor(&loaded, classname);
+            assert!(
+                loaded.followers().is_empty(),
+                "existing roster reset remains explicit"
+            );
+            use_talk_and_consume(&mut loaded);
+            assert_eq!(
+                loaded.followers(),
+                &[restored],
+                "restored actor is recruitable"
+            );
+            use_talk_and_consume(&mut loaded);
+            assert!(
+                loaded.followers().is_empty(),
+                "restored actor can stop following"
+            );
+        }
+    }
+}

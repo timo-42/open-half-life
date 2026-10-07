@@ -8961,3 +8961,26 @@ lob admission fails the intended first-species assertion; restored normals pass.
 Full final-source gates, original runtime baselines and fresh census remain
 pending; historical e117 runtime regressions confer no acceptance or cause/repair
 claim.
+
+The held P2 spawn-consistency scope now gives supported maker-created talk
+monsters the same derived follower component as directly declared actors. The
+existing "Talk monsters" citations above (VDC/TWHL scientist and security-guard
+prose) support use-to-recruit and Pre-Disaster refusal for declared actors;
+they do not establish maker-child flag inheritance. TODO(black-box): initializing
+a maker child as not following and eligible to follow is project-authored.
+Only the existing supported class set is initialized. Maker flags are never
+interpreted as monster flags; declared Pre-Disaster behavior stays unchanged.
+
+Restore recreates the derived component through the same child spawn path;
+no save tag or encoding changes. Existing saves do not encode Follower or roster
+membership/order, so declared and maker followers both reset their roster on
+load. Saved AI schedule/route state can still describe prior following: that
+pre-existing persistence gap remains open and is not repaired by component
+initialization. Generated delayed-spawn, real use/stop, direct refusal and
+post-load eligibility controls pass. Omitting only child initialization fails
+actual recruitment after independent spawn/life/range prerequisites; exact
+restoration passes. The existing scientist use/stop control also passes. Final
+formatting and engine all-target Clippy pass after an unrelated test-helper
+borrow correction; the earlier behavior runs retain their original source
+binding. Broader gates remain pending. This source inconsistency is not an
+identified cause of any private use or chain failure.
