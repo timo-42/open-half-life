@@ -5461,4 +5461,317 @@ mod grenade_danger_tests {
             "escape does not reset or shorten the emission cooldown"
         );
     }
+
+    #[derive(Clone, Copy)]
+    enum LocalCoverScene {
+        Clear,
+        PrimaryBlocked,
+        Enclosed,
+    }
+
+    // Keep generated geometry and exact profile prerequisites together; AI uses ordinary ticks.
+    #[allow(clippy::too_many_lines, clippy::float_cmp)]
+    fn local_cover_scene(kind: LocalCoverScene) -> (crate::Game, Entity, u32) {
+        let text = format!(
+            "{{\"classname\" \"worldspawn\"}}{}{}",
+            entity_block("info_player_start", [-384.0, -384.0, 36.0], 0.0, &[]),
+            entity_block(
+                "monster_barney",
+                [0.0; 3],
+                0.0,
+                &[("targetname", "listener"), ("spawnflags", "16")],
+            ),
+        );
+        let mut brushes = vec![
+            CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+            CollisionBrush::half_space([0.0, 0.0, -1.0], -256.0),
+            CollisionBrush::half_space([1.0, 0.0, 0.0], -512.0),
+            CollisionBrush::half_space([-1.0, 0.0, 0.0], -512.0),
+            CollisionBrush::half_space([0.0, 1.0, 0.0], -512.0),
+            CollisionBrush::half_space([0.0, -1.0, 0.0], -512.0),
+        ];
+        match kind {
+            LocalCoverScene::Clear => {}
+            LocalCoverScene::PrimaryBlocked => brushes.push(CollisionBrush::box_brush(
+                [32.0, -512.0, 0.0],
+                [64.0, 512.0, 256.0],
+            )),
+            LocalCoverScene::Enclosed => brushes.extend([
+                CollisionBrush::box_brush([21.0, -64.0, 0.0], [64.0, 64.0, 256.0]),
+                CollisionBrush::box_brush([-64.0, -64.0, 0.0], [-21.0, 64.0, 256.0]),
+                CollisionBrush::box_brush([-64.0, 21.0, 0.0], [64.0, 64.0, 256.0]),
+                CollisionBrush::box_brush([-64.0, -64.0, 0.0], [64.0, -21.0, 256.0]),
+            ]),
+        }
+        let mut bsp = Bsp30Builder::new();
+        bsp.set_entities_text(&text);
+        let heads = bsp.push_collision_hulls(&brushes);
+        bsp.push_model(
+            [-512.0, -512.0, 0.0],
+            [512.0, 512.0, 256.0],
+            [0.0; 3],
+            heads,
+            1,
+            0,
+            0,
+        );
+        let mut game =
+            crate::Game::from_map_bytes(&crate::MemoryAssets::new(), AI_MAP, &bsp.build()).unwrap();
+        let listener = game.registry().find("listener")[0];
+        let a = actor(&game, listener);
+        assert_eq!(a.hull, ohl_physics::Hull::Standing);
+        assert_eq!(
+            a.origin,
+            game.registry()
+                .world
+                .get::<&Transform>(listener)
+                .unwrap()
+                .origin
+        );
+        assert!(game.registry().world.get::<&Prisoner>(listener).is_ok());
+        assert!(game.registry().world.get::<&ScriptHold>(listener).is_err());
+        assert!(
+            game.level_and_systems_mut()
+                .1
+                .ai()
+                .world
+                .navigator()
+                .is_none()
+        );
+        clear_body(&game, listener);
+        {
+            let ai = game.registry().world.get::<&MonsterAi>(listener).unwrap();
+            assert!(ai.memory.is_none() && ai.cover.is_none() && ai.route.is_finished());
+        }
+        let x = if matches!(kind, LocalCoverScene::Enclosed) {
+            -18.0
+        } else {
+            -96.0
+        };
+        let at = Vec3::new(x, 0.0, 128.0);
+        let occupancy = game
+            .collision()
+            .unwrap()
+            .trace(ohl_physics::Hull::Point, at, at);
+        assert!(!occupancy.start_solid && !occupancy.all_solid);
+        let id = game
+            .debug_spawn_projectile(
+                ohl_combat::ProjectileKind::HandGrenade,
+                at.to_array(),
+                [0.0; 3],
+            )
+            .unwrap();
+        let saved = game.to_save(0);
+        let profile = saved
+            .projectile_runtime
+            .unwrap()
+            .attacks
+            .into_iter()
+            .find(|p| p.id == id.0)
+            .unwrap();
+        assert_eq!(profile.damage_bits, DamageType::BLAST.bits());
+        assert!(profile.damage > 0.0 && profile.blast_radius == Some(200.0));
+        assert!(profile.owner.is_none());
+        (game, listener, id.0)
+    }
+
+    fn local_cover_warning(game: &crate::Game, listener: Entity, id: u32) -> Vec3 {
+        let p = projectile(game, id).expect("same real timed grenade remains live");
+        assert_eq!(p.kind_tag, 3);
+        assert!(p.age > 0.0 && p.fuse.is_some_and(|left| left.is_finite() && left > 0.0));
+        let at = Vec3::from_array(p.position);
+        let a = actor(game, listener);
+        let sensitivity = MonsterBrain::for_kind(MonsterKind::Barney)
+            .unwrap()
+            .senses()
+            .hearing_sensitivity;
+        assert!(at.is_finite() && a.eye().distance(at) < 200.0 * sensitivity);
+        clear_body(game, listener);
+        let ai = game.registry().world.get::<&MonsterAi>(listener).unwrap();
+        assert!(ai.memory.is_none());
+        assert!(ai.conditions.contains(Conditions::HEAR_DANGER));
+        assert_eq!(
+            ai.runner.schedule_name(),
+            ohl_ai::brain::TAKE_COVER_FROM_DANGER.name
+        );
+        at
+    }
+
+    fn local_cover_before_find(game: &mut crate::Game, listener: Entity, id: u32) -> Vec3 {
+        for _ in 0..8 {
+            step(game);
+            let at = local_cover_warning(game, listener, id);
+            let ai = game.registry().world.get::<&MonsterAi>(listener).unwrap();
+            assert!(ai.cover.is_none() && ai.route.is_finished());
+            if ai.runner.task() == Some(Task::FindCover) {
+                assert!(!ai.runner.started());
+                return at;
+            }
+        }
+        panic!("ordinary danger schedule must reach unstarted FindCover");
+    }
+
+    fn assert_local_leg(game: &crate::Game, listener: Entity, direction: Vec3) {
+        let a = actor(game, listener);
+        let from = a.query_origin();
+        let to = from + direction * ohl_ai::world::COVER_DISTANCE;
+        let collision = game.collision().unwrap();
+        let chord = collision.trace(a.hull, from, to);
+        assert!(!chord.start_solid && !chord.all_solid && chord.fraction >= 1.0);
+        for index in 0_u8..=20 {
+            let mut at = from.lerp(to, f32::from(index) / 20.0);
+            at.z = from.z;
+            let support = collision.trace(a.hull, at, at - Vec3::Z);
+            assert!(
+                !support.start_solid && support.fraction < 1.0,
+                "independently supported leg"
+            );
+        }
+    }
+
+    fn local_cover_move(game: &mut crate::Game, listener: Entity, expected: Vec3) {
+        let start = actor(game, listener);
+        {
+            let ai = game.registry().world.get::<&MonsterAi>(listener).unwrap();
+            assert_eq!(ai.runner.task(), Some(Task::TakeCover));
+            assert!(!ai.runner.started());
+        }
+        step(game);
+        {
+            let ai = game.registry().world.get::<&MonsterAi>(listener).unwrap();
+            assert_eq!(ai.runner.task(), Some(Task::RunPath));
+            assert!(
+                ai.route
+                    .waypoint()
+                    .unwrap()
+                    .abs_diff_eq(expected, ohl_physics::DIST_EPSILON)
+            );
+        }
+        for _ in 0..20 {
+            step(game);
+        }
+        let now = actor(game, listener);
+        let direction = (expected - start.query_origin()).normalize();
+        assert!(
+            (now.origin - start.origin).dot(direction) > 1.0,
+            "ordinary route moves along the chosen full leg"
+        );
+        assert!((now.origin - start.origin).cross(direction).length() < ohl_physics::DIST_EPSILON);
+        clear_body(game, listener);
+    }
+
+    #[test]
+    fn danger_local_cover_uses_lateral_when_primary_is_blocked() {
+        let (mut game, listener, id) = local_cover_scene(LocalCoverScene::PrimaryBlocked);
+        let at = local_cover_before_find(&mut game, listener, id);
+        let a = actor(&game, listener);
+        assert!(at.x < a.origin.x && at.y.abs() <= ohl_physics::DIST_EPSILON);
+        let primary = a.query_origin() + Vec3::X * ohl_ai::world::COVER_DISTANCE;
+        let blocked = game
+            .collision()
+            .unwrap()
+            .trace(a.hull, a.query_origin(), primary);
+        assert!(!blocked.start_solid && blocked.fraction < 1.0);
+        let moved = ohl_ai::movement::move_toward(
+            game.collision().unwrap(),
+            a.hull,
+            a.query_origin(),
+            primary,
+            ohl_ai::world::COVER_DISTANCE,
+            1.0,
+        );
+        assert!(moved.blocked && moved.distance < ohl_ai::world::COVER_DISTANCE);
+        assert_local_leg(&game, listener, Vec3::Y);
+        assert_local_leg(&game, listener, -Vec3::Y);
+        step(&mut game);
+        local_cover_warning(&game, listener, id);
+        let expected = a.query_origin() + Vec3::Y * ohl_ai::world::COVER_DISTANCE;
+        let cover = game
+            .registry()
+            .world
+            .get::<&MonsterAi>(listener)
+            .unwrap()
+            .cover;
+        assert!(
+            cover.is_some_and(|point| point.abs_diff_eq(expected, ohl_physics::DIST_EPSILON)),
+            "blocked primary chooses the first clear supported lateral cover"
+        );
+        local_cover_move(&mut game, listener, expected);
+    }
+
+    #[test]
+    fn danger_local_cover_keeps_the_clear_primary() {
+        let (mut game, listener, id) = local_cover_scene(LocalCoverScene::Clear);
+        local_cover_before_find(&mut game, listener, id);
+        let a = actor(&game, listener);
+        assert_local_leg(&game, listener, Vec3::X);
+        assert_local_leg(&game, listener, Vec3::Y);
+        assert_local_leg(&game, listener, -Vec3::Y);
+        step(&mut game);
+        local_cover_warning(&game, listener, id);
+        let expected = a.query_origin() + Vec3::X * ohl_ai::world::COVER_DISTANCE;
+        assert!(
+            game.registry()
+                .world
+                .get::<&MonsterAi>(listener)
+                .unwrap()
+                .cover
+                .unwrap()
+                .abs_diff_eq(expected, ohl_physics::DIST_EPSILON)
+        );
+        local_cover_move(&mut game, listener, expected);
+    }
+
+    #[test]
+    fn danger_local_cover_enclosed_fails_without_a_false_goal() {
+        let (mut game, listener, id) = local_cover_scene(LocalCoverScene::Enclosed);
+        local_cover_before_find(&mut game, listener, id);
+        let a = actor(&game, listener);
+        for direction in [Vec3::X, Vec3::Y, -Vec3::Y] {
+            let end = a.query_origin() + direction * ohl_ai::world::COVER_DISTANCE;
+            let blocked = game
+                .collision()
+                .unwrap()
+                .trace(a.hull, a.query_origin(), end);
+            assert!(!blocked.start_solid && blocked.fraction < 1.0);
+            let moved = ohl_ai::movement::move_toward(
+                game.collision().unwrap(),
+                a.hull,
+                a.query_origin(),
+                end,
+                ohl_ai::world::COVER_DISTANCE,
+                1.0,
+            );
+            assert!(moved.blocked && moved.distance < ohl_ai::movement::WAYPOINT_TOLERANCE);
+        }
+        step(&mut game);
+        local_cover_warning(&game, listener, id);
+        {
+            let ai = game.registry().world.get::<&MonsterAi>(listener).unwrap();
+            assert!(
+                ai.cover.is_none(),
+                "enclosed danger must not manufacture completed cover"
+            );
+            assert!(ai.route.is_finished());
+            assert_eq!(
+                ai.runner.task(),
+                Some(Task::SetActivity(ohl_ai::Activity::Cover))
+            );
+            assert!(
+                !ai.runner.started(),
+                "failed FindCover reselects before executing the replacement"
+            );
+        }
+        for _ in 0..8 {
+            step(&mut game);
+            local_cover_warning(&game, listener, id);
+            let ai = game.registry().world.get::<&MonsterAi>(listener).unwrap();
+            assert!(ai.cover.is_none() && ai.route.is_finished());
+            assert!(matches!(
+                ai.runner.task(),
+                Some(Task::FindCover | Task::SetActivity(ohl_ai::Activity::Cover))
+            ));
+        }
+        assert_eq!(actor(&game, listener).origin, a.origin);
+    }
 }
