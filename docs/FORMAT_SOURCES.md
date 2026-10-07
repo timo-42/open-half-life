@@ -9008,3 +9008,24 @@ restoration passes (1 passed / 0 failed / 4 filtered). Full seven gates, release
 builds, original combat 37/37 with zero unexpected, campaign 93/93, BOTH depth
 12 / Pass / 660.8 seconds and fresh census remain pending. Chain commands must
 explicitly request `--min-depth 12`; default-threshold Pass is insufficient.
+
+The held P2 human-grenade selection qualification is project-authored, not a
+published retail rule. The raw geometric readiness updater remains unchanged.
+Before ordinary brain selection, current HumanGrunt/HumanAssassin secondary
+opportunities are checked with the existing frozen-world owner/Ally predictor
+and exact ordinary request construction. A refused or unavailable current
+request removes only the pending secondary-choice bit. This prevents a known
+unlaunchable throw from repeatedly taking priority over another ordinary legal
+attack; it does not force a primary shot or change a running task.
+
+TODO(black-box): each geometrically-ready human may now incur up to 502 additional
+scratch integration steps per tick. No cache, rejected-attempt timer, durable
+state or new save field is introduced. The existing emission-time recheck remains
+essential because movement or retargeting after qualification may change the
+request. Profiles, launch math, damage, physics, relationships, launch cooldown
+and no-cooldown refusal are preserved. Existing unsafe tests now cover the
+composed qualification and veto; their pass does not independently isolate the
+unchanged emission recheck. Safe grenade/player-damage controls and original
+monsterclip/Guard oracles pass, and the precise qualification-call omission
+restores the original unfenced-control failure. Full gates, releases, original
+runtime targets and fresh census remain pending; no private cause is inferred.
