@@ -8985,21 +8985,26 @@ borrow correction; the earlier behavior runs retain their original source
 binding. Broader gates remain pending. This source inconsistency is not an
 identified cause of any private use or chain failure.
 
-The held P2 Guard complete-escape preference is project-authored. It transports
-only the selected current timed-blast position and profile radius, preserving
-existing eligibility, warning horizon, tie order and combat-retreat priority.
-Before the unchanged local fallback, the same eight post-turn controller wishes
-are checked for a full-hull straight endpoint outside that radius. The shortest
-admitted corridor wins in fixed input order; all nonmovement combat input stays
-unchanged. The full hull chord must clear, with walkable support sampled at no
-more than the existing 48-unit spacing and 64-unit downward depth, bounded to
-16 intervals. No physics, damage, owner rule, RNG or saved state changes.
+The held P2 M9.NEXT Guard correction is project-authored: prefer a complete
+straight escape outside the selected timed blast's current radius before the
+unchanged greedy local fallback. The same eight actual post-turn controller
+wishes use the actual hull for a whole corridor sweep and sampled support at
+the current walkable-slope limit. Support is bounded to 16 intervals, at most
+48-unit spacing and 64-unit downward depth. The shortest admitted clear corridor
+wins, with deterministic input-order ties. Existing combat-retreat priority and
+all aim/fire/reload/selection input remain unchanged. Only transient current
+position/radius transport changes; no save, schema, physics or damage change.
 
-TODO(black-box): this bounded policy is not documented retail behavior. Support
-samples can miss narrow gaps, and current geometry does not predict a moving
-projectile or guarantee arrival before detonation. The unchanged generated
-survival/determinism suite and existing Guard unit controls pass. Removing only
-the new preference restores the original survival failure; exact restoration
-passes. No private runtime cause, broader navigation guarantee or full-gate
-acceptance follows; broader gates, release builds, original runtime targets and
-fresh census remain pending for the final candidate.
+TODO(black-box): parity remains unsettled. Sampled support can miss narrow gaps;
+this current-geometry choice supplies no deadline, projectile-trajectory,
+multiple-threat or general-navigation guarantee. Momentum, changing geometry
+and late warnings remain limitations. Generated authored success gives no private
+cause, strict-baseline recovery or broader route-adoption credit.
+
+**Gates:** all five unchanged authored Guard integration tests, nine Guard unit
+tests and formatting pass. The sole complete-preference omission compiles and
+fails the original survival assertion (0 passed / 1 failed / 4 filtered); exact
+restoration passes (1 passed / 0 failed / 4 filtered). Full seven gates, release
+builds, original combat 37/37 with zero unexpected, campaign 93/93, BOTH depth
+12 / Pass / 660.8 seconds and fresh census remain pending. Chain commands must
+explicitly request `--min-depth 12`; default-threshold Pass is insufficient.
