@@ -405,7 +405,12 @@ impl ProjectileSystem {
                 }
             }
         }
-        let targets = blast_targets(level, &self.blast_bounds);
+        let Some((current_hitboxes, current_bounds)) = current_safety_geometry(level, hitboxes)
+        else {
+            return false;
+        };
+        let hitboxes = &current_hitboxes;
+        let targets = blast_targets(level, &current_bounds);
         for id in &protected {
             let Some(target) = targets.iter().find(|target| target.id == *id) else {
                 return false;
@@ -824,25 +829,7 @@ impl ProjectileSystem {
 
     /// Copies world bounds from this tick's shared hitbox index, without removing shooters.
     pub(crate) fn update_blast_bounds(&mut self, hitboxes: &HitboxIndex) {
-        self.blast_bounds.clear();
-        for entry in hitboxes.entries() {
-            let mut min = Vec3::splat(f32::INFINITY);
-            let mut max = Vec3::splat(f32::NEG_INFINITY);
-            for volume in &entry.boxes {
-                for x in [volume.min.x, volume.max.x] {
-                    for y in [volume.min.y, volume.max.y] {
-                        for z in [volume.min.z, volume.max.z] {
-                            let corner = entry.origin + entry.rotation * Vec3::new(x, y, z);
-                            min = min.min(corner);
-                            max = max.max(corner);
-                        }
-                    }
-                }
-            }
-            if min.is_finite() && max.is_finite() {
-                self.blast_bounds.insert(entry.id, (min, max));
-            }
-        }
+        self.blast_bounds = hitbox_blast_bounds(hitboxes);
     }
 
     /// Map blasts use the same posed bounds and explosion policy as projectiles.
@@ -1740,6 +1727,49 @@ pub(crate) fn dispatch_blast(
             QueuedDamage { target, info }
         })
     }));
+}
+
+type BlastBounds = BTreeMap<CombatEntityId, (Vec3, Vec3)>;
+
+// Build once per frozen prediction, before any scratch integration step. The
+// supplied index's limits survive cloning; both old and rebuilt rejection count.
+fn current_safety_geometry(
+    level: &Level,
+    hitboxes: &HitboxIndex,
+) -> Option<(HitboxIndex, BlastBounds)> {
+    if hitboxes.rejected() != 0 {
+        return None;
+    }
+    let mut current = hitboxes.clone();
+    crate::combat::rebuild_current_actor_hitbox_index(&mut current, level);
+    if current.rejected() != 0 {
+        return None;
+    }
+    let bounds = hitbox_blast_bounds(&current);
+    Some((current, bounds))
+}
+
+fn hitbox_blast_bounds(hitboxes: &HitboxIndex) -> BTreeMap<CombatEntityId, (Vec3, Vec3)> {
+    let mut bounds = BTreeMap::new();
+    for entry in hitboxes.entries() {
+        let mut min = Vec3::splat(f32::INFINITY);
+        let mut max = Vec3::splat(f32::NEG_INFINITY);
+        for volume in &entry.boxes {
+            for x in [volume.min.x, volume.max.x] {
+                for y in [volume.min.y, volume.max.y] {
+                    for z in [volume.min.z, volume.max.z] {
+                        let corner = entry.origin + entry.rotation * Vec3::new(x, y, z);
+                        min = min.min(corner);
+                        max = max.max(corner);
+                    }
+                }
+            }
+        }
+        if min.is_finite() && max.is_finite() {
+            bounds.insert(entry.id, (min, max));
+        }
+    }
+    bounds
 }
 
 /// Every entity a blast may hurt: everything carrying `Health`, positioned
@@ -2743,5 +2773,247 @@ mod grenade_danger_tests {
         );
         system.emit_grenade_danger(&mut ai, crate::TICK_SECONDS);
         assert!(ai.sounds().is_empty(), "no warning survives removal");
+    }
+}
+
+#[cfg(test)]
+mod current_safety_geometry_tests {
+    use super::*;
+    use glam::{EulerRot, Quat};
+    use ohl_ai::{Actor, MonsterAi};
+    use ohl_combat::{HitboxLimits, TraceFilter, TraceMask, trace_attack_filtered};
+
+    fn fixture() -> (crate::Game, Entity) {
+        let text = "{\"classname\" \"worldspawn\"}\n{\"classname\" \"info_player_start\" \"origin\" \"-160 -160 36\"}\n{\"classname\" \"monster_barney\" \"origin\" \"0 0 36\"}";
+        let bytes = crate::test_support::ai_room_bsp(text, false);
+        let (model, _) = ohl_formats::test_support::build_minimal_mdl10_with_hitbox(
+            [10.0, -2.0, 20.0],
+            [30.0, 2.0, 24.0],
+        );
+        let mut assets = crate::MemoryAssets::new();
+        assets.insert("models/barney.mdl", model);
+        let game =
+            crate::Game::from_map_bytes(&assets, crate::test_support::AI_MAP, &bytes).unwrap();
+        let entity = crate::test_support::entity_of_classname(&game, "monster_barney").unwrap();
+        (game, entity)
+    }
+
+    fn assert_current_blast_reaches(
+        level: &Level,
+        id: CombatEntityId,
+        center: Vec3,
+        bounds: &BlastBounds,
+        old: &HitboxIndex,
+    ) {
+        let world = level.collision.as_ref().unwrap();
+        let hits = radius_damage(
+            center,
+            16.0,
+            100.0,
+            DamageType::BLAST,
+            None,
+            blast_targets(level, bounds).into_iter(),
+            world,
+            &ExplosionRule::default(),
+        );
+        assert!(
+            hits.iter()
+                .any(|hit| hit.target == id && hit.damage.amount > 0.0),
+            "current posed bounds must receive the real blast"
+        );
+        let old_hits = radius_damage(
+            center,
+            16.0,
+            100.0,
+            DamageType::BLAST,
+            None,
+            blast_targets(level, &hitbox_blast_bounds(old)).into_iter(),
+            world,
+            &ExplosionRule::default(),
+        );
+        assert!(!old_hits.iter().any(|hit| hit.target == id));
+    }
+
+    fn assert_non_actor_trace(
+        level: &Level,
+        current: &HitboxIndex,
+        prop: Entity,
+        prop_transform: Transform,
+        local_center: Vec3,
+    ) {
+        let world = level.collision.as_ref().unwrap();
+        let prop_center = prop_transform.origin
+            + Quat::from_euler(
+                EulerRot::ZYX,
+                prop_transform.angles.y.to_radians(),
+                prop_transform.angles.x.to_radians(),
+                prop_transform.angles.z.to_radians(),
+            ) * local_center;
+        assert_eq!(
+            trace_attack_filtered(
+                world,
+                current,
+                prop_center - Vec3::Y * 32.0,
+                prop_center + Vec3::Y * 32.0,
+                TraceFilter::new(TraceMask::SHOT)
+            )
+            .entity,
+            Some(entity_id(prop)),
+            "non-Actor studio collision remains"
+        );
+    }
+
+    #[test]
+    fn current_safety_geometry_uses_current_posed_actor_for_trace_and_blast() {
+        let (mut game, entity) = fixture();
+        let (level, _) = game.level_and_systems_mut();
+        let id = entity_id(entity);
+        let original = *level.registry.world.get::<&Transform>(entity).unwrap();
+        let mut transform = original;
+        transform.angles = Vec3::new(15.0, -30.0, 20.0);
+        *level.registry.world.get::<&mut Transform>(entity).unwrap() = transform;
+        let anim = *level.registry.world.get::<&StudioAnim>(entity).unwrap();
+        let model = &level.studio_models[anim.model];
+        let pose = anim.sample(model, None).unwrap();
+        let (min, max) = pose.hitbox_bounds(&model.hitboxes[0]).unwrap();
+        assert_ne!(
+            Vec3::from_array(min),
+            Vec3::from_array(model.hitboxes[0].min),
+            "real posed channel is active"
+        );
+        let local_center = (Vec3::from_array(min) + Vec3::from_array(max)) * 0.5;
+        let prop_transform = Transform {
+            origin: Vec3::new(-100.0, 100.0, 64.0),
+            angles: Vec3::new(5.0, 25.0, -10.0),
+        };
+        let prop = level
+            .registry
+            .world
+            .spawn((anim, prop_transform, Health::new(100.0)));
+        let mut old = HitboxIndex::default();
+        crate::combat::rebuild_hitbox_index(&mut old, level);
+        assert_eq!(old.rejected(), 0);
+        let mut actor = *level.registry.world.get::<&Actor>(entity).unwrap();
+        assert!(level.registry.world.get::<&MonsterAi>(entity).is_ok());
+        actor.origin = Vec3::new(100.0, 60.0, 64.0);
+        actor.yaw = 90.0;
+        *level.registry.world.get::<&mut Actor>(entity).unwrap() = actor;
+        let rotation = Quat::from_euler(
+            EulerRot::ZYX,
+            actor.yaw.to_radians(),
+            transform.angles.x.to_radians(),
+            transform.angles.z.to_radians(),
+        );
+        let center = actor.origin + rotation * local_center;
+        let start = center - rotation * Vec3::Y * 12.0;
+        let end = center + rotation * Vec3::Y * 12.0;
+        let world = level.collision.as_ref().unwrap();
+        assert_eq!(
+            world
+                .trace(ohl_physics::Hull::Point, start, end)
+                .fraction
+                .to_bits(),
+            1.0_f32.to_bits()
+        );
+        assert_ne!(
+            trace_attack_filtered(world, &old, start, end, TraceFilter::new(TraceMask::SHOT))
+                .entity,
+            Some(id)
+        );
+        let (current, bounds) = current_safety_geometry(level, &old).unwrap();
+        assert_eq!(
+            trace_attack_filtered(
+                world,
+                &current,
+                start,
+                end,
+                TraceFilter::new(TraceMask::SHOT)
+            )
+            .entity,
+            Some(id),
+            "current posed actor must stop the real trace"
+        );
+        assert_current_blast_reaches(level, id, center, &bounds, &old);
+        let entry = current.entries().iter().find(|e| e.id == id).unwrap();
+        assert!(
+            entry.rotation.abs_diff_eq(rotation, 1e-6),
+            "pitch and roll survive yaw sync"
+        );
+        for previous in old.entries().iter().filter(|e| e.id != id) {
+            assert_eq!(
+                current.entries().iter().find(|e| e.id == previous.id),
+                Some(previous)
+            );
+        }
+        assert_non_actor_trace(level, &current, prop, prop_transform, local_center);
+        assert_eq!(
+            *level.registry.world.get::<&Transform>(entity).unwrap(),
+            transform
+        );
+        let mut unchanged = HitboxIndex::default();
+        crate::combat::rebuild_hitbox_index(&mut unchanged, level);
+        assert_eq!(
+            unchanged.entries(),
+            old.entries(),
+            "ordinary phase-5 builder stays Transform based"
+        );
+    }
+
+    #[test]
+    fn current_safety_geometry_preserves_fallback_precedence_and_index_limits() {
+        let (mut game, entity) = fixture();
+        let (level, _) = game.level_and_systems_mut();
+        let id = entity_id(entity);
+        let anim = *level.registry.world.get::<&StudioAnim>(entity).unwrap();
+        let mut actor = *level.registry.world.get::<&Actor>(entity).unwrap();
+        actor.origin = Vec3::new(100.0, 60.0, 64.0);
+        actor.yaw = 90.0;
+        *level.registry.world.get::<&mut Actor>(entity).unwrap() = actor;
+        level.studio_models[anim.model].hitboxes.clear();
+        level.studio_models[anim.model].bounds_min = [-4.0, -2.0, 10.0];
+        level.studio_models[anim.model].bounds_max = [12.0, 2.0, 20.0];
+        let old = HitboxIndex::default();
+        let (header, _) = current_safety_geometry(level, &old).unwrap();
+        let entry = header.entries().iter().find(|e| e.id == id).unwrap();
+        assert_eq!(entry.origin, actor.origin);
+        assert_eq!(entry.boxes[0].min, Vec3::new(-4.0, -2.0, 10.0));
+        assert!(
+            entry
+                .rotation
+                .abs_diff_eq(Quat::from_rotation_z(actor.yaw.to_radians()), 1e-6)
+        );
+        level.studio_models[anim.model].bounds_max = level.studio_models[anim.model].bounds_min;
+        let (proxy, bounds) = current_safety_geometry(level, &old).unwrap();
+        let entry = proxy.entries().iter().find(|e| e.id == id).unwrap();
+        assert_eq!(entry.origin, actor.origin);
+        assert_eq!(entry.rotation, Quat::IDENTITY);
+        let (min, max) = actor.fallback_damage_bounds();
+        assert_eq!((entry.boxes[0].min, entry.boxes[0].max), (min, max));
+        assert_eq!(bounds[&id], (actor.origin + min, actor.origin + max));
+        level
+            .registry
+            .world
+            .remove_one::<StudioAnim>(entity)
+            .unwrap();
+        let (model_less, _) = current_safety_geometry(level, &old).unwrap();
+        assert_eq!(
+            model_less.entries().iter().find(|e| e.id == id),
+            Some(entry)
+        );
+        let limited = HitboxIndex::new(HitboxLimits {
+            max_entities: 0,
+            max_boxes_per_entity: 1,
+        });
+        assert_eq!(limited.rejected(), 0);
+        assert!(
+            current_safety_geometry(level, &limited).is_none(),
+            "fresh rejection preserves configured limits"
+        );
+        let mut rejected = HitboxIndex::default();
+        assert!(!rejected.push(ohl_combat::EntityHitboxes::new(id, actor.origin)));
+        assert!(
+            current_safety_geometry(level, &rejected).is_none(),
+            "old rejection is not erased by rebuild"
+        );
     }
 }
