@@ -972,10 +972,10 @@ impl AiWorld {
         let running_name = runner.schedule_name();
         // TODO(black-box): project-authored danger cover uses the current qualified sound.
         // The local runner owns the schedule; ai.runner is temporarily empty.
-        let cover_threat = if runner
+        let danger_cover = runner
             .schedule()
-            .is_some_and(|schedule| std::ptr::eq(schedule, &crate::brain::TAKE_COVER_FROM_DANGER))
-        {
+            .is_some_and(|schedule| std::ptr::eq(schedule, &crate::brain::TAKE_COVER_FROM_DANGER));
+        let cover_threat = if danger_cover {
             heard
                 .best
                 .filter(|sound| sound.kind == SoundKind::Danger)
@@ -995,6 +995,7 @@ impl AiWorld {
                 enemy_position,
                 last_known,
                 cover_threat,
+                danger_cover,
                 sounds: &mut self.sounds,
                 events,
                 dt,
@@ -1352,6 +1353,87 @@ fn straight_step(from: Vec3, to: Vec3, speed: f32, dt: f32, flies: bool) -> Move
     }
 }
 
+// TODO(black-box): project-authored danger-only local alternatives, not general routing.
+// Keep primary preference; only full flat legs qualify, with sampled support for walkers.
+fn danger_cover_goal(
+    collision: Option<&CollisionModel>,
+    hull: Hull,
+    origin: Vec3,
+    threat: Option<Vec3>,
+    forward: Vec3,
+) -> Option<Vec3> {
+    let collision = collision?;
+    let threat = threat?;
+    if !origin.is_finite() || !threat.is_finite() {
+        return None;
+    }
+    let away = Vec3::new(origin.x - threat.x, origin.y - threat.y, 0.0);
+    let direction = if away.length() > f32::EPSILON {
+        away.normalize()
+    } else {
+        Vec3::new(forward.x, forward.y, 0.0).normalize_or_zero()
+    };
+    if !direction.is_finite() || direction.length_squared() <= f32::EPSILON {
+        return None;
+    }
+    let directions = [
+        direction,
+        Vec3::new(-direction.y, direction.x, 0.0),
+        Vec3::new(direction.y, -direction.x, 0.0),
+    ];
+    directions.into_iter().find_map(|direction| {
+        let goal = origin + direction * COVER_DISTANCE;
+        danger_cover_leg(collision, hull, origin, goal).then_some(goal)
+    })
+}
+
+fn danger_cover_leg(collision: &CollisionModel, hull: Hull, origin: Vec3, goal: Vec3) -> bool {
+    let epsilon = ohl_physics::DIST_EPSILON;
+    let distance = origin.distance(goal);
+    if !origin.is_finite()
+        || !goal.is_finite()
+        || !distance.is_finite()
+        || (distance - COVER_DISTANCE).abs() > epsilon
+        || goal.z.to_bits() != origin.z.to_bits()
+    {
+        return false;
+    }
+    let moved = move_toward(collision, hull, origin, goal, COVER_DISTANCE, 1.0);
+    let chord = collision.trace(hull, origin, goal);
+    if moved.blocked
+        || !moved.position.is_finite()
+        || !moved.distance.is_finite()
+        || (moved.distance - COVER_DISTANCE).abs() > epsilon
+        || !moved.position.abs_diff_eq(goal, epsilon)
+        || chord.start_solid
+        || chord.all_solid
+        || chord.fraction < 1.0
+    {
+        return false;
+    }
+    if movement::flies(hull) {
+        return true;
+    }
+    // 320 / 48 rounds up to seven: at most 21 existing short-leg validations.
+    let Some(slices) =
+        (1_u8..=7).find(|count| distance <= movement::TERMINAL_GROUND_SPAN * f32::from(*count))
+    else {
+        return false;
+    };
+    let mut from = origin;
+    for index in 1..=slices {
+        let mut end = origin.lerp(goal, f32::from(index) / f32::from(slices));
+        end.z = origin.z;
+        let next =
+            movement::terminal_ground_approach(collision, hull, from, end, end, from.distance(end));
+        if !next.is_finite() || !next.abs_diff_eq(end, epsilon) {
+            return false;
+        }
+        from = end;
+    }
+    true
+}
+
 /// Runs the tasks [`ScheduleRunner`] hands over.
 struct MonsterExecutor<'a> {
     entity: Entity,
@@ -1364,6 +1446,7 @@ struct MonsterExecutor<'a> {
     last_known: Option<Vec3>,
     /// Tick-local choice; never saved or inferred from an already-written route.
     cover_threat: Option<Vec3>,
+    danger_cover: bool,
     sounds: &'a mut SoundList,
     events: &'a mut Vec<AiEvent>,
     dt: f32,
@@ -1423,6 +1506,20 @@ impl MonsterExecutor<'_> {
     }
 
     fn find_cover(&mut self) -> TaskStatus {
+        if self.danger_cover {
+            self.ai.cover = danger_cover_goal(
+                self.collision,
+                self.actor.hull,
+                self.actor.query_origin(),
+                self.cover_threat,
+                self.actor.forward(),
+            );
+            return if self.ai.cover.is_some() {
+                TaskStatus::Complete
+            } else {
+                TaskStatus::Failed
+            };
+        }
         let Some(threat) = self.cover_threat else {
             return TaskStatus::Failed;
         };
@@ -2733,6 +2830,82 @@ mod tests {
         assert!(
             scripted.x > 16.0,
             "a scripted walk was stopped short of its mark: {scripted:?}"
+        );
+    }
+
+    #[test]
+    fn danger_local_cover_rejects_a_broad_unsupported_middle() {
+        use ohl_formats::test_support::CollisionBrush;
+        use ohl_physics::Hull;
+        let floor = collision_from(
+            &[CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0)],
+            [-512.0, -512.0, -64.0],
+            [512.0, 512.0, 256.0],
+        );
+        let gap = collision_from(
+            &[
+                CollisionBrush::box_brush([-512.0, -512.0, -64.0], [64.0, 512.0, 0.0]),
+                CollisionBrush::box_brush([256.0, -512.0, -64.0], [512.0, 512.0, 0.0]),
+            ],
+            [-512.0, -512.0, -64.0],
+            [512.0, 512.0, 256.0],
+        );
+        let start = Vec3::new(0.0, 0.0, 37.0);
+        let end = start + Vec3::X * super::COVER_DISTANCE;
+        let middle = start.lerp(end, 0.5);
+        for point in [start, end] {
+            let support = gap.trace(Hull::Standing, point, point - Vec3::Z * 2.0);
+            assert!(!support.start_solid && support.fraction < 1.0);
+        }
+        let unsupported = gap.trace(Hull::Standing, middle, middle - Vec3::Z * 2.0);
+        assert!(!unsupported.start_solid && unsupported.fraction >= 1.0);
+        let chord = gap.trace(Hull::Standing, start, end);
+        assert!(!chord.start_solid && chord.fraction >= 1.0);
+        let moved = crate::movement::move_toward(
+            &gap,
+            Hull::Standing,
+            start,
+            end,
+            super::COVER_DISTANCE,
+            1.0,
+        );
+        assert!(!moved.blocked && moved.position.abs_diff_eq(end, ohl_physics::DIST_EPSILON));
+        assert!(super::danger_cover_leg(&floor, Hull::Standing, start, end));
+        assert!(super::danger_cover_leg(&gap, Hull::Point, start, end));
+        assert!(
+            !super::danger_cover_leg(&gap, Hull::Standing, start, end),
+            "supported endpoints cannot certify the unsupported middle"
+        );
+    }
+
+    #[test]
+    fn danger_local_cover_point_omits_only_ground_validation() {
+        use ohl_formats::test_support::CollisionBrush;
+        use ohl_physics::Hull;
+        let empty = collision_from(&[], [-512.0; 3], [512.0; 3]);
+        let walls = collision_from(
+            &[
+                CollisionBrush::half_space([-1.0, 0.0, 0.0], -32.0),
+                CollisionBrush::half_space([0.0, -1.0, 0.0], -32.0),
+                CollisionBrush::half_space([0.0, 1.0, 0.0], -32.0),
+            ],
+            [-512.0; 3],
+            [512.0; 3],
+        );
+        let start = Vec3::new(0.0, 0.0, 64.0);
+        let threat = Some(start - Vec3::X * 96.0);
+        let goal = super::danger_cover_goal(Some(&empty), Hull::Point, start, threat, Vec3::X);
+        assert_eq!(goal, Some(start + Vec3::X * super::COVER_DISTANCE));
+        assert!(
+            super::danger_cover_goal(Some(&empty), Hull::Standing, start, threat, Vec3::X)
+                .is_none()
+        );
+        assert!(super::danger_cover_goal(None, Hull::Point, start, threat, Vec3::X).is_none());
+        assert!(
+            super::danger_cover_goal(Some(&walls), Hull::Point, start, threat, Vec3::X).is_none()
+        );
+        assert!(
+            super::danger_cover_goal(Some(&empty), Hull::Point, start, None, Vec3::X).is_none()
         );
     }
 }
