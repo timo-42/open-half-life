@@ -696,12 +696,7 @@ impl GameSave {
             writer.add_section_serde(SECTION_GLOBAL_STATE, &self.globals)?;
             writer.add_section_serde(SECTION_LIGHT_STYLE_TIME, &self.light_style_time)?;
             writer.add_section_serde(SECTION_VIEW, &self.view)?;
-            if let Some(follow) = &self.follow_navigation {
-                if !follow.within_limits() {
-                    return Err(ohl_save::SaveError::LimitExceeded);
-                }
-                writer.add_section_serde(SECTION_FOLLOW_NAVIGATION, follow)?;
-            }
+            self.write_follow_navigation(writer)?;
             if let Some(inventory) = &self.inventory {
                 writer.add_section_serde(SECTION_INVENTORY, inventory)?;
             }
@@ -780,6 +775,16 @@ impl GameSave {
         writer
             .finish(&ohl_save::Limits::default())
             .map_err(|_| crate::EngineError::SaveUnwritable)
+    }
+
+    fn write_follow_navigation(&self, writer: &mut ohl_save::SaveWriter) -> ohl_save::Result<()> {
+        if let Some(follow) = &self.follow_navigation {
+            if !follow.within_limits() {
+                return Err(ohl_save::SaveError::LimitExceeded);
+            }
+            writer.add_section_serde(SECTION_FOLLOW_NAVIGATION, follow)?;
+        }
+        Ok(())
     }
 
     fn write_charger_reservoirs(&self, writer: &mut ohl_save::SaveWriter) -> ohl_save::Result<()> {

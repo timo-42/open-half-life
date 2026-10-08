@@ -3386,6 +3386,11 @@ mod follow_intent_tests {
 
     #[test]
     fn follow_intent_pause_priority_and_actual_ownership_are_distinct() {
+        static BUSY: Schedule = Schedule::new(
+            "authored/follow_busy",
+            &[Task::Wait(1.0)],
+            Conditions::EMPTY,
+        );
         let (mut ai, mut world, entity) = setup();
         let old = Vec3::X * 300.0;
         for _ in 0..3 {
@@ -3441,11 +3446,6 @@ mod follow_intent_tests {
         );
         assert!(state(&world, entity).follow_attempt.is_none());
         // A still-running unrelated schedule is not preempted by an eligible candidate.
-        static BUSY: Schedule = Schedule::new(
-            "authored/follow_busy",
-            &[Task::Wait(1.0)],
-            Conditions::EMPTY,
-        );
         world
             .get::<&mut MonsterAi>(entity)
             .expect("AI")
@@ -3460,6 +3460,10 @@ mod follow_intent_tests {
         );
         assert_eq!(state(&world, entity).runner.schedule_name(), BUSY.name);
         assert!(state(&world, entity).follow_attempt.is_none());
+        assert_active_follow_lifecycle_retirement(old);
+    }
+
+    fn assert_active_follow_lifecycle_retirement(old: Vec3) {
         // Each lifecycle action starts from its own ordinarily entered Moving
         // attempt, so an earlier takeover cannot make retirement vacuous.
         for action in 0..3 {

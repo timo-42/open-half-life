@@ -932,7 +932,9 @@ impl AiState {
     pub fn state_hash(&self, level: &Level) -> [u8; 32] {
         let mut hash = ohl_core::StreamingSha256::new();
         hash.update(&self.world.state_hash(&level.registry.world));
-        hash.update(&(self.followers.members().len() as u32).to_le_bytes());
+        // FollowRoster's private storage contains at most MAX_FOLLOWERS (two) members.
+        let follower_count: u32 = self.followers.members().iter().map(|_| 1_u32).sum();
+        hash.update(&follower_count.to_le_bytes());
         for entity in self.followers.members() {
             hash.update(&entity.to_bits().get().to_le_bytes());
         }
@@ -978,7 +980,7 @@ impl AiState {
         level: &mut Level,
         save: &crate::GameSave,
     ) -> crate::Result<()> {
-        use ohl_ai::follow::{FollowAttempt, FollowInput, FollowPhase};
+        use ohl_ai::follow::{FollowAttempt, FollowPhase};
         let Some(state) = &save.follow_navigation else {
             return Ok(());
         };
@@ -1071,6 +1073,20 @@ impl AiState {
             };
             staged.push((entity, attempt, runner));
         }
+        self.apply_follow_navigation(level, staged);
+        Ok(())
+    }
+
+    fn apply_follow_navigation(
+        &mut self,
+        level: &mut Level,
+        staged: Vec<(
+            Entity,
+            Option<ohl_ai::follow::FollowAttempt>,
+            Option<ScheduleRunner>,
+        )>,
+    ) {
+        use ohl_ai::follow::FollowInput;
         // Commit only after every member and associated AI state validated.
         self.followers.clear();
         for follower in &mut level.registry.world.query::<&mut Follower>() {
@@ -1091,7 +1107,6 @@ impl AiState {
                 }
             }
         }
-        Ok(())
     }
 
     /// Captures `entity`'s `SECTION_AI` (25) entry, or `None` when it
@@ -2931,6 +2946,7 @@ impl AiState {
     /// Offers a queued player `use` to the nearest talk monster and keeps
     /// every follower pointed at the player. Part of phase 8.
     fn update_followers(&mut self, level: &mut Level) {
+        use ohl_ai::follow::FollowInput;
         if let Some(position) = self.pending_use.take()
             && let Some(entity) = nearest_follower(level, position)
         {
@@ -2953,7 +2969,6 @@ impl AiState {
             }
         }
 
-        use ohl_ai::follow::FollowInput;
         let player_goal = level
             .registry
             .world
