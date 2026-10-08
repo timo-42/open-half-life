@@ -48,6 +48,29 @@ cargo xtask worker-image
 cargo run -p ohl-app -- --iso /path/to/owned-media.iso
 ```
 
+To import the assets from a local full-update installer such as the English
+Half-Life 1.1.1.0 retail update, pass it alongside the original ISO:
+
+```sh
+cargo run -p ohl-app -- --iso /path/to/owned-media.iso --patch /path/to/hl1110.exe
+```
+
+`--patch` reads the installer as data through the same confined Rust parser
+used for the ISO. It publishes a separate combined payload: complete patch
+files take precedence over matching ISO files, ignoring ASCII case, and the
+remaining ISO files are retained. Combined paths use lowercase spelling.
+The original import stays available by omitting `--patch`. Continue passing
+both `--iso` and `--patch` to select the updated tree on later launches;
+a payload root containing both trees is no longer an unambiguous standalone
+`--payload-root` selection. Repeating the same import reuses its published
+tree after enumeration and validation.
+
+`--patch-recipe PATH` supplies an optional local selection recipe for the
+update independently of the ISO's `--recipe`. This imports replacement
+assets; it does not execute installer scripts, apply binary deltas or
+replace the engine with the update's executables. Other languages and
+installer variants require separate compatibility validation.
+
 For a release application, install beside the release binary instead:
 
 ```sh

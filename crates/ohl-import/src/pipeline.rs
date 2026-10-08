@@ -112,7 +112,7 @@ pub struct ImportCancellation<'a> {
 }
 
 impl ImportCancellation<'_> {
-    fn stop_requested(&self) -> bool {
+    pub(crate) fn stop_requested(&self) -> bool {
         self.transport.is_cancelled() || self.staging.stop_requested()
     }
 }
@@ -643,6 +643,39 @@ fn run_import_inner<W: WorkerProcess, F: FnOnce() -> Result<W, ImportError>>(
     let window =
         SourceWindow::new(file, window_offset, window_length).map_err(|_| ImportError::Media)?;
 
+    run_container_import(
+        media,
+        window,
+        None,
+        recipe,
+        payload_root,
+        cache_layout,
+        config,
+        launch,
+        allocation,
+        cancellation,
+        progress,
+    )
+}
+
+/// Shared worker, selection and transactional publication for disc and standalone inputs.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+pub(crate) fn run_container_import<W: WorkerProcess, F: FnOnce() -> Result<W, ImportError>>(
+    media: &ValidatedMedia,
+    window: SourceWindow,
+    base: Option<crate::patch::BasePayload<'_>>,
+    recipe: &SelectionRecipe,
+    payload_root: &Path,
+    cache_layout: &CacheLayout,
+    config: &ImportConfig,
+    launch: F,
+    allocation: SessionAllocation,
+    cancellation: ImportCancellation<'_>,
+    progress: &mut dyn ProgressSink,
+) -> Result<ImportReport, ImportError> {
+    if cancellation.stop_requested() {
+        return Err(ImportError::Cancelled);
+    }
     // 2. Own the worker for exactly one session.
     let mut process = ProcessSession::new(launch()?, allocation);
     let mut open_buffer = crate::frame_channel::FrameBuffer::new();
@@ -727,8 +760,13 @@ fn run_import_inner<W: WorkerProcess, F: FnOnce() -> Result<W, ImportError>>(
         .collect();
 
     let plan = select(&selectable, recipe).map_err(|_| ImportError::Selection)?;
-    let recipe_identity = plan.recipe_identity();
-    let layout = plan_payload_layout(plan.entries(), &config.payload).map_err(|_| {
+    let mut recipe_identity = plan.recipe_identity();
+    let mut overlay =
+        crate::patch::Overlay::prepare(base, plan.entries(), &config.payload, cancellation)?;
+    if let Some(identity) = overlay.identity() {
+        recipe_identity = format!("{recipe_identity}:{identity}");
+    }
+    let layout = plan_payload_layout(overlay.entries(), &config.payload).map_err(|_| {
         // A layout the planner refuses is an untrusted-metadata rejection,
         // not a bug in the recipe.
         ImportError::Layout
@@ -764,14 +802,14 @@ fn run_import_inner<W: WorkerProcess, F: FnOnce() -> Result<W, ImportError>>(
         media.source(),
         &media.source_fingerprint(),
         &request,
-        &mut source,
+        &mut overlay.source(&mut source),
         &mut store,
         cancellation.staging,
     );
 
     // 6. End the worker's life exactly once, whatever staging decided.
     let stream_failure = source.failure;
-    let entries_imported = source.entries_streamed;
+    let entries_imported = stage_report.entries_streamed;
     let slot = core::mem::replace(&mut source.slot, SessionSlot::Taken);
     drop(source);
     let shutdown_deadline = deadline(config.shutdown_timeout);
@@ -811,7 +849,11 @@ fn run_import_inner<W: WorkerProcess, F: FnOnce() -> Result<W, ImportError>>(
         }
     };
     let payload_identity = stage_report.identity.ok_or(ImportError::Staging)?;
-    record_payload_identity(cache_layout, media, &payload_identity)?;
+    // A patched tree must never replace the original ISO's record. The
+    // caller receives its identity directly; ISO-only discovery stays stable.
+    if base.is_none() {
+        record_payload_identity(cache_layout, media, &payload_identity)?;
+    }
 
     Ok(ImportReport {
         outcome,
