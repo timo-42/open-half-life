@@ -410,6 +410,18 @@ impl ScheduleRunner {
         let Some(schedule) = crate::brain::schedule_by_name(name) else {
             return Self::default();
         };
+        Self::restore_resolved(schedule, task_index, started, timer)
+    }
+
+    /// Rebuilds a runner whose schedule was already resolved and validated by a
+    /// typed continuation section. Uses the same cursor/timer handling as `restore`.
+    #[must_use]
+    pub fn restore_resolved(
+        schedule: &'static Schedule,
+        task_index: usize,
+        started: bool,
+        timer: f32,
+    ) -> Self {
         let task_index = task_index.min(schedule.tasks.len().saturating_sub(1));
         Self {
             schedule: Some(schedule),

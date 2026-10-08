@@ -302,6 +302,10 @@ pub struct MonsterAi {
     pub move_target: Option<Vec3>,
     /// Absolute query position [`Task::FindCover`] chose; saved without translation.
     pub cover: Option<Vec3>,
+    /// Fresh follow authority, consumed even while scripts or death own the actor.
+    pub follow_input: crate::follow::FollowInput,
+    /// Accepted historical intent; persisted separately from the frozen AI payload.
+    pub follow_attempt: Option<crate::follow::FollowAttempt>,
     /// The current animation intent.
     pub activity: Activity,
     /// The speed the path tasks selected, in units per second.
@@ -670,13 +674,17 @@ impl AiWorld {
         dt: f32,
         events: &mut Vec<AiEvent>,
     ) {
-        let Ok(mut actor) = world.get::<&Actor>(entity).map(|actor| *actor) else {
-            return;
-        };
         let Ok(mut ai) = world
             .get::<&mut MonsterAi>(entity)
             .map(|mut ai| core::mem::take(&mut *ai))
         else {
+            return;
+        };
+        let follow_input = core::mem::take(&mut ai.follow_input);
+        let Ok(mut actor) = world.get::<&Actor>(entity).map(|actor| *actor) else {
+            if let Ok(mut slot) = world.get::<&mut MonsterAi>(entity) {
+                *slot = ai;
+            }
             return;
         };
         let Some(brain) = self.brains.get(ai.brain.0) else {
@@ -883,6 +891,7 @@ impl AiWorld {
         // whatever route the script set, through exactly the same
         // navigator seam every other route uses.
         if world.get::<&crate::scripts::ScriptHold>(entity).is_ok() {
+            ai.follow_attempt = None;
             ai.runner.clear();
             let step = ai.move_speed * dt;
             let before = self
@@ -961,8 +970,64 @@ impl AiWorld {
         let last_known = ai.last_known_position();
 
         let mut runner = core::mem::take(&mut ai.runner);
+        // Project-authored current-intent ownership; TODO(black-box).
+        if (!actor.alive
+            || actor.health <= 0.0
+            || matches!(follow_input, crate::follow::FollowInput::Inactive))
+            && ai.follow_attempt.take().is_some()
+            && runner.schedule().is_some_and(is_follow_schedule)
+        {
+            runner.clear();
+            retire_follow_motion(&mut ai, &mut conditions);
+        }
+        if runner.is_running() && !runner.schedule().is_some_and(is_follow_schedule) {
+            ai.follow_attempt = None;
+        }
+        let mut replaced_follow = false;
+        if runner.schedule().is_some_and(is_follow_schedule) {
+            let selected = brain.select_schedule(ai.state, conditions);
+            if admit_follow_intent(
+                entity,
+                &actor,
+                &mut ai,
+                follow_input,
+                selected,
+                &mut conditions,
+                dt,
+                false,
+                self.navigator.as_mut(),
+            ) {
+                events.push(AiEvent {
+                    entity,
+                    kind: AiEventKind::ScheduleEnded {
+                        name: runner.schedule_name(),
+                        outcome: RunOutcome::Interrupted,
+                    },
+                });
+                runner.start(&crate::monsters::brains::FOLLOW_PLAYER);
+                events.push(AiEvent {
+                    entity,
+                    kind: AiEventKind::ScheduleStarted(runner.schedule_name()),
+                });
+                replaced_follow = true;
+            }
+        }
         if !runner.is_running() {
             let schedule = brain.select_schedule(ai.state, conditions);
+            admit_follow_intent(
+                entity,
+                &actor,
+                &mut ai,
+                follow_input,
+                schedule,
+                &mut conditions,
+                dt,
+                false,
+                self.navigator.as_mut(),
+            );
+            if !is_follow_schedule(schedule) {
+                ai.follow_attempt = None;
+            }
             runner.start(schedule);
             events.push(AiEvent {
                 entity,
@@ -984,7 +1049,20 @@ impl AiWorld {
             enemy_position.or(last_known).or(ai.move_target)
         };
 
-        let outcome = {
+        let following = runner.schedule().is_some_and(is_follow_schedule);
+        let paused_follow = following
+            && ai.follow_attempt.is_some()
+            && (!dt.is_finite()
+                || dt <= 0.0
+                || !matches!(follow_input, crate::follow::FollowInput::Target(goal) if goal.is_finite()));
+        let outcome = if replaced_follow
+            || (paused_follow
+                && !runner
+                    .schedule()
+                    .is_some_and(|s| s.is_interrupted_by(conditions)))
+        {
+            RunOutcome::Running
+        } else {
             let mut executor = MonsterExecutor {
                 entity,
                 actor: &mut actor,
@@ -996,6 +1074,8 @@ impl AiWorld {
                 last_known,
                 cover_threat,
                 danger_cover,
+                following,
+                follow_input,
                 sounds: &mut self.sounds,
                 events,
                 dt,
@@ -1017,8 +1097,24 @@ impl AiWorld {
             // the last schedule stopped, so a monster is never left without
             // a schedule between ticks and `TASK_FAILED`/`SCHEDULE_DONE`
             // cannot leak forward and interrupt their own replacement.
-            let post = conditions | outcome.condition();
+            let mut post = conditions | outcome.condition();
             let schedule = brain.select_schedule(ai.state, post);
+            if admit_follow_intent(
+                entity,
+                &actor,
+                &mut ai,
+                follow_input,
+                schedule,
+                &mut post,
+                dt,
+                outcome == RunOutcome::Done,
+                self.navigator.as_mut(),
+            ) {
+                conditions.remove(Conditions::BLOCKED);
+            }
+            if !is_follow_schedule(schedule) {
+                ai.follow_attempt = None;
+            }
             runner.start(schedule);
             events.push(AiEvent {
                 entity,
@@ -1028,24 +1124,41 @@ impl AiWorld {
         ai.runner = runner;
 
         // --- Movement -----------------------------------------------------
+        let owned_follow = ai.follow_attempt.is_some();
+        let pause_motion = replaced_follow || (owned_follow && paused_follow);
         let step = ai.move_speed * dt;
-        let moved = advance_route(
-            entity,
-            &mut actor,
-            &mut ai,
-            context.collision,
-            self.navigator.as_mut(),
-            Fallback::Traced,
-            walking_attachment,
-            dt,
-        );
-        if ai.move_speed > 0.0 {
-            if ai.stuck.record_step(moved, step) {
-                ai.pending_conditions |= Conditions::BLOCKED;
+        let attempted = step.is_finite() && step > 0.0 && !ai.route.is_finished();
+        if !pause_motion {
+            let moved = advance_route(
+                entity,
+                &mut actor,
+                &mut ai,
+                context.collision,
+                self.navigator.as_mut(),
+                Fallback::Traced,
+                walking_attachment,
+                dt,
+            );
+            if owned_follow {
+                if attempted && ai.route.is_finished() {
+                    if let Some(attempt) = &mut ai.follow_attempt {
+                        attempt.phase = crate::follow::FollowPhase::Arrived;
+                    }
+                    ai.stuck.reset();
+                    ai.pending_conditions.remove(Conditions::BLOCKED);
+                    conditions.remove(Conditions::BLOCKED);
+                } else if attempted && ai.stuck.record_step(moved, step) {
+                    ai.pending_conditions |= Conditions::BLOCKED;
+                }
+            } else if ai.move_speed > 0.0 {
+                if ai.stuck.record_step(moved, step) {
+                    ai.pending_conditions |= Conditions::BLOCKED;
+                }
+            } else {
+                ai.stuck.reset();
             }
-        } else {
-            ai.stuck.reset();
         }
+        ai.conditions = conditions;
 
         if let Ok(mut slot) = world.get::<&mut Actor>(entity) {
             *slot = actor;
@@ -1156,6 +1269,16 @@ fn ai_bytes(ai: &MonsterAi) -> Vec<u8> {
     bytes.extend_from_slice(&ai.move_speed.to_bits().to_le_bytes());
     bytes.extend_from_slice(&ai.ideal_yaw.to_bits().to_le_bytes());
     bytes.extend_from_slice(&ai.stuck.ticks().to_le_bytes());
+    match ai.follow_attempt {
+        None => bytes.push(0),
+        Some(attempt) => {
+            bytes.push(1);
+            bytes.push(attempt.phase as u8);
+            for value in attempt.accepted_player_anchor.to_array() {
+                bytes.extend_from_slice(&value.to_bits().to_le_bytes());
+            }
+        }
+    }
     match ai.memory {
         Some(memory) => {
             bytes.push(1);
@@ -1178,6 +1301,102 @@ fn ai_bytes(ai: &MonsterAi) -> Vec<u8> {
         }
     }
     bytes
+}
+
+fn is_follow_schedule(schedule: &Schedule) -> bool {
+    std::ptr::eq(schedule, &raw const crate::monsters::brains::FOLLOW_PLAYER)
+}
+
+fn retire_follow_motion(ai: &mut MonsterAi, conditions: &mut Conditions) {
+    ai.route = Route::new();
+    ai.move_speed = 0.0;
+    ai.stuck.reset();
+    conditions.remove(Conditions::BLOCKED);
+    ai.conditions.remove(Conditions::BLOCKED);
+    ai.pending_conditions.remove(Conditions::BLOCKED);
+}
+
+// Project-authored admission transaction; TODO(black-box). Caller establishes
+// an actual follow runner or ordinary selection boundary, never a speculative takeover.
+#[allow(clippy::too_many_arguments)]
+fn admit_follow_intent(
+    entity: Entity,
+    actor: &Actor,
+    ai: &mut MonsterAi,
+    input: crate::follow::FollowInput,
+    selected: &Schedule,
+    conditions: &mut Conditions,
+    dt: f32,
+    completed: bool,
+    navigator: Option<&mut NavBridge>,
+) -> bool {
+    use crate::follow::{FOLLOW_DISTANCE, FollowAttempt, FollowInput, FollowPhase};
+    let FollowInput::Target(goal) = input else {
+        return false;
+    };
+    let mut competing = *conditions;
+    competing.remove(Conditions::BLOCKED);
+    if !actor.alive
+        || actor.health <= 0.0
+        || !actor.health.is_finite()
+        || !dt.is_finite()
+        || dt <= 0.0
+        || !goal.is_finite()
+        || !is_follow_schedule(selected)
+        || selected.is_interrupted_by(competing)
+    {
+        return false;
+    }
+    let query = actor.body_frame.anchor_to_query(actor.hull, goal);
+    let delta = query - actor.query_origin();
+    let distance = Vec3::new(delta.x, delta.y, 0.0).length();
+    if !query.is_finite() || !delta.is_finite() || !distance.is_finite() {
+        return false;
+    }
+    let holding = match ai.follow_attempt {
+        None => distance <= FOLLOW_DISTANCE,
+        Some(attempt) => {
+            let drift = (goal - attempt.accepted_player_anchor).length();
+            if !drift.is_finite() {
+                return false;
+            }
+            match attempt.phase {
+                FollowPhase::Holding => {
+                    if distance <= FOLLOW_DISTANCE + movement::WAYPOINT_TOLERANCE {
+                        return false;
+                    }
+                    false
+                }
+                FollowPhase::Moving if distance <= FOLLOW_DISTANCE => true,
+                FollowPhase::Arrived
+                    if distance <= FOLLOW_DISTANCE + movement::WAYPOINT_TOLERANCE =>
+                {
+                    true
+                }
+                _ => {
+                    if drift <= movement::ROUTE_REFRESH_DISTANCE
+                        && !(completed && attempt.phase == FollowPhase::Arrived)
+                    {
+                        return false;
+                    }
+                    distance <= FOLLOW_DISTANCE
+                }
+            }
+        }
+    };
+    retire_follow_motion(ai, conditions);
+    if let Some(navigator) = navigator {
+        navigator.invalidate_actor(entity);
+    }
+    ai.follow_attempt = Some(FollowAttempt {
+        accepted_player_anchor: goal,
+        phase: if holding {
+            FollowPhase::Holding
+        } else {
+            FollowPhase::Preparing
+        },
+    });
+    true
 }
 
 fn snapshot_candidates(world: &World) -> Vec<Candidate> {
@@ -1447,6 +1666,8 @@ struct MonsterExecutor<'a> {
     /// Tick-local choice; never saved or inferred from an already-written route.
     cover_threat: Option<Vec3>,
     danger_cover: bool,
+    following: bool,
+    follow_input: crate::follow::FollowInput,
     sounds: &'a mut SoundList,
     events: &'a mut Vec<AiEvent>,
     dt: f32,
@@ -1585,7 +1806,56 @@ impl MonsterExecutor<'_> {
         self.start_route(Some(goal), 0.0)
     }
 
+    fn start_follow_route(&mut self, within: f32) -> TaskStatus {
+        use crate::follow::FollowPhase;
+        let Some(attempt) = self.ai.follow_attempt else {
+            return TaskStatus::Failed;
+        };
+        if attempt.phase != FollowPhase::Preparing {
+            return TaskStatus::Complete;
+        }
+        let goal = self
+            .actor
+            .body_frame
+            .anchor_to_query(self.actor.hull, attempt.accepted_player_anchor);
+        let from = self.actor.query_origin();
+        let delta = Vec3::new(goal.x - from.x, goal.y - from.y, 0.0);
+        let length = delta.length();
+        if !goal.is_finite() || !length.is_finite() {
+            return TaskStatus::Failed;
+        }
+        let stop = if length > within {
+            goal - delta / length * within
+        } else {
+            goal
+        };
+        self.ai.route = Route::straight_line(stop);
+        TaskStatus::Complete
+    }
+
     fn set_path_speed(&mut self, running: bool) -> TaskStatus {
+        if self.following {
+            use crate::follow::FollowPhase;
+            let Some(attempt) = self.ai.follow_attempt.as_mut() else {
+                return TaskStatus::Failed;
+            };
+            match attempt.phase {
+                FollowPhase::Holding | FollowPhase::Arrived => {
+                    self.ai.move_speed = 0.0;
+                    return TaskStatus::Complete;
+                }
+                FollowPhase::Moving => return TaskStatus::Complete,
+                FollowPhase::Preparing => {
+                    if self.ai.route.is_finished() {
+                        return TaskStatus::Failed;
+                    }
+                    attempt.phase = FollowPhase::Moving;
+                    let (walk, run) = self.brain.speeds();
+                    self.ai.move_speed = if running { run } else { walk };
+                    return TaskStatus::Complete;
+                }
+            }
+        }
         if self.ai.route.is_finished() {
             return TaskStatus::Failed;
         }
@@ -1615,7 +1885,16 @@ impl TaskExecutor for MonsterExecutor<'_> {
                 self.start_facing(target)
             }
             Task::FaceTarget => {
-                let target = self.ai.move_target;
+                let target = if self.following {
+                    match self.follow_input {
+                        crate::follow::FollowInput::Target(goal) => {
+                            Some(self.actor.body_frame.anchor_to_query(self.actor.hull, goal))
+                        }
+                        _ => None,
+                    }
+                } else {
+                    self.ai.move_target
+                };
                 self.start_facing(target)
             }
             Task::FaceLastKnownPosition => {
@@ -1627,8 +1906,12 @@ impl TaskExecutor for MonsterExecutor<'_> {
                 self.start_route(goal, within)
             }
             Task::MoveToTarget { within } => {
-                let goal = self.ai.move_target;
-                self.start_route(goal, within)
+                if self.following {
+                    self.start_follow_route(within)
+                } else {
+                    let goal = self.ai.move_target;
+                    self.start_route(goal, within)
+                }
             }
             Task::MoveToLastKnownPosition => {
                 let goal = self.last_known;
@@ -1652,6 +1935,18 @@ impl TaskExecutor for MonsterExecutor<'_> {
                 TaskStatus::Complete
             }
             Task::SetActivity(activity) => {
+                let activity = if self.following
+                    && self.ai.follow_attempt.is_some_and(|a| {
+                        matches!(
+                            a.phase,
+                            crate::follow::FollowPhase::Holding
+                                | crate::follow::FollowPhase::Arrived
+                        )
+                    }) {
+                    Activity::Idle
+                } else {
+                    activity
+                };
                 if self.ai.activity != activity {
                     self.ai.activity = activity;
                     self.emit(AiEventKind::ActivityChanged(activity));
@@ -2906,6 +3201,365 @@ mod tests {
         );
         assert!(
             super::danger_cover_goal(Some(&empty), Hull::Point, start, None, Vec3::X).is_none()
+        );
+    }
+}
+
+#[cfg(test)]
+mod follow_intent_tests {
+    use super::*;
+    use crate::follow::{FollowInput, FollowPhase};
+    use crate::monsters::{MonsterBrain, MonsterKind};
+
+    const DT: f32 = 0.01;
+
+    fn setup() -> (AiWorld, World, Entity) {
+        let mut ai = AiWorld::new(17);
+        let brain = ai.register_brain(Box::new(
+            MonsterBrain::for_kind(MonsterKind::Scientist).expect("brain"),
+        ));
+        let mut world = World::new();
+        let entity = spawn_monster(
+            &mut world,
+            Actor::new(Classification::HumanPassive, Vec3::ZERO),
+            brain,
+        );
+        (ai, world, entity)
+    }
+
+    fn step(ai: &mut AiWorld, world: &mut World, entity: Entity, input: FollowInput, dt: f32) {
+        {
+            let mut state = world.get::<&mut MonsterAi>(entity).expect("AI");
+            state.follow_input = input;
+            if !matches!(input, FollowInput::Inactive) {
+                state.pending_conditions |= Conditions::SPECIAL2;
+            }
+        }
+        ai.tick(world, &SightContext::empty(), dt);
+    }
+
+    fn state(world: &World, entity: Entity) -> MonsterAi {
+        (*world.get::<&MonsterAi>(entity).expect("AI")).clone()
+    }
+
+    fn position(world: &World, entity: Entity) -> Vec3 {
+        world.get::<&Actor>(entity).expect("actor").origin
+    }
+
+    #[test]
+    fn follow_intent_admission_invalidates_the_real_warm_close_endpoint() {
+        use ohl_formats::bsp30::{Bsp, Limits};
+        use ohl_formats::test_support::{Bsp30Builder, CollisionBrush};
+        let mut builder = Bsp30Builder::new();
+        let heads =
+            builder.push_collision_hulls(&[CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0)]);
+        builder.push_model(
+            [-512.0, -512.0, 0.0],
+            [512.0, 512.0, 256.0],
+            [0.0; 3],
+            heads,
+            2,
+            0,
+            0,
+        );
+        let bytes = builder.build();
+        let bsp = Bsp::parse(&bytes, &Limits::default()).expect("generated BSP");
+        let collision = CollisionModel::from_bsp(&bsp, &Limits::default()).expect("collision");
+        let (mut ai, mut world, entity) = setup();
+        ai.attach_navigator(NavBridge::build(
+            &[],
+            &collision,
+            &ohl_nav::BuildLimits::default(),
+            crate::monsters::NavBridgeLimits::default(),
+        ));
+        let old = Vec3::X * 136.0;
+        let new = Vec3::Y * 136.0;
+        let tick = |ai: &mut AiWorld, world: &mut World, goal| {
+            let mut state = world.get::<&mut MonsterAi>(entity).expect("AI");
+            state.follow_input = FollowInput::Target(goal);
+            state.pending_conditions |= Conditions::SPECIAL2;
+            drop(state);
+            ai.tick(world, &SightContext::tracing(&collision), DT);
+        };
+        for _ in 0..3 {
+            tick(&mut ai, &mut world, old);
+        }
+        let warmed = state(&world, entity);
+        let before = position(&world, entity);
+        assert_eq!(
+            warmed.follow_attempt.expect("moving").phase,
+            FollowPhase::Moving
+        );
+        assert!(before.x > 0.0 && before.x < 1.0 && before.y == 0.0);
+        assert!(!warmed.route.is_finished());
+        assert_eq!(ai.navigator().expect("navigator").stats().direct_steps, 1);
+        assert!((old - new).length() > movement::ROUTE_REFRESH_DISTANCE);
+        let actor = *world.get::<&Actor>(entity).expect("actor");
+        let query_goal = actor.body_frame.anchor_to_query(actor.hull, new);
+        let delta = query_goal - actor.query_origin();
+        let expected_stop = query_goal - delta.normalize() * crate::follow::FOLLOW_DISTANCE;
+        assert!((expected_stop - warmed.route.goal).length() < movement::ROUTE_REFRESH_DISTANCE);
+        tick(&mut ai, &mut world, new);
+        let admitted = state(&world, entity);
+        assert_eq!(admitted.runner.task_index(), 0);
+        assert!(!admitted.runner.started());
+        assert_eq!(position(&world, entity), before);
+        assert_eq!(
+            admitted
+                .follow_attempt
+                .expect("admitted")
+                .accepted_player_anchor,
+            new
+        );
+        for index in [1, 2] {
+            tick(&mut ai, &mut world, new);
+            assert_eq!(state(&world, entity).runner.task_index(), index);
+            assert_eq!(position(&world, entity), before);
+        }
+        tick(&mut ai, &mut world, new);
+        let after = position(&world, entity);
+        assert!(
+            after.y > before.y && after.x < before.x,
+            "actual admitted close-endpoint retarget must turn the next physical step"
+        );
+    }
+
+    #[test]
+    fn follow_intent_raw_goal_and_replacement_obey_one_task_cadence() {
+        let (mut ai, mut world, entity) = setup();
+        let old = Vec3::X * 300.0;
+        step(&mut ai, &mut world, entity, FollowInput::Target(old), DT);
+        assert_eq!(state(&world, entity).runner.task_index(), 1);
+        assert_eq!(position(&world, entity), Vec3::ZERO);
+        // A real non-danger sound may write the unrelated move_target.
+        ai.emit_sound(SoundEvent::new(SoundKind::Combat, Vec3::Y * 200.0, 512.0).lasting(DT));
+        step(&mut ai, &mut world, entity, FollowInput::Target(old), DT);
+        let route = state(&world, entity);
+        assert_eq!(route.runner.task_index(), 2);
+        assert!(
+            route
+                .route
+                .goal
+                .abs_diff_eq(Vec3::new(204.0, 0.0, 36.0), 0.001)
+        );
+        for goal in [old, old + Vec3::Y * 40.0, old + Vec3::Y * 80.0] {
+            step(&mut ai, &mut world, entity, FollowInput::Target(goal), DT);
+            assert_eq!(
+                state(&world, entity)
+                    .follow_attempt
+                    .expect("attempt")
+                    .accepted_player_anchor,
+                old
+            );
+        }
+        let before = position(&world, entity);
+        let next = old + Vec3::Y * 81.0;
+        step(&mut ai, &mut world, entity, FollowInput::Target(next), DT);
+        let admitted = state(&world, entity);
+        assert_eq!(admitted.runner.task_index(), 0);
+        assert!(!admitted.runner.started() && admitted.route.is_finished());
+        assert_eq!(
+            admitted
+                .follow_attempt
+                .expect("attempt")
+                .accepted_player_anchor,
+            next
+        );
+        assert_eq!(position(&world, entity), before);
+        for expected_task in [1, 2, 3] {
+            step(&mut ai, &mut world, entity, FollowInput::Target(next), DT);
+            assert_eq!(state(&world, entity).runner.task_index(), expected_task);
+            if expected_task < 3 {
+                assert_eq!(position(&world, entity), before);
+            }
+        }
+        let moved = position(&world, entity) - before;
+        assert!(moved.x > 0.0 && moved.y > 0.0 && moved.length() <= 0.401);
+        assert_eq!(
+            state(&world, entity)
+                .follow_attempt
+                .expect("attempt")
+                .accepted_player_anchor,
+            next
+        );
+    }
+
+    #[test]
+    fn follow_intent_pause_priority_and_actual_ownership_are_distinct() {
+        let (mut ai, mut world, entity) = setup();
+        let old = Vec3::X * 300.0;
+        for _ in 0..3 {
+            step(&mut ai, &mut world, entity, FollowInput::Target(old), DT);
+        }
+        // A lower-level authored partially accumulated history, not the real-input primary.
+        world.get::<&mut MonsterAi>(entity).expect("AI").stuck = StuckDetector::from_ticks(12);
+        let before = state(&world, entity);
+        let origin = position(&world, entity);
+        step(&mut ai, &mut world, entity, FollowInput::Unavailable, DT);
+        assert_eq!(state(&world, entity).stuck, before.stuck);
+        assert_eq!(state(&world, entity).route, before.route);
+        assert_eq!(position(&world, entity), origin);
+        step(
+            &mut ai,
+            &mut world,
+            entity,
+            FollowInput::Target(Vec3::Y * 300.0),
+            0.0,
+        );
+        assert_eq!(state(&world, entity).follow_attempt, before.follow_attempt);
+        assert_eq!(state(&world, entity).stuck, before.stuck);
+        world
+            .get::<&mut MonsterAi>(entity)
+            .expect("AI")
+            .pending_conditions |= Conditions::TASK_FAILED;
+        step(
+            &mut ai,
+            &mut world,
+            entity,
+            FollowInput::Target(Vec3::Y * 300.0),
+            DT,
+        );
+        assert_eq!(state(&world, entity).follow_attempt, before.follow_attempt);
+        assert!(
+            state(&world, entity)
+                .conditions
+                .contains(Conditions::TASK_FAILED)
+        );
+        ai.emit_sound(SoundEvent::new(SoundKind::Danger, Vec3::X * 20.0, 512.0).lasting(DT));
+        step(
+            &mut ai,
+            &mut world,
+            entity,
+            FollowInput::Target(Vec3::Y * 300.0),
+            DT,
+        );
+        assert!(
+            !state(&world, entity)
+                .runner
+                .schedule()
+                .is_some_and(is_follow_schedule)
+        );
+        assert!(state(&world, entity).follow_attempt.is_none());
+        // A still-running unrelated schedule is not preempted by an eligible candidate.
+        static BUSY: Schedule = Schedule::new(
+            "authored/follow_busy",
+            &[Task::Wait(1.0)],
+            Conditions::EMPTY,
+        );
+        world
+            .get::<&mut MonsterAi>(entity)
+            .expect("AI")
+            .runner
+            .start(&BUSY);
+        step(
+            &mut ai,
+            &mut world,
+            entity,
+            FollowInput::Target(Vec3::Y * 300.0),
+            DT,
+        );
+        assert_eq!(state(&world, entity).runner.schedule_name(), BUSY.name);
+        assert!(state(&world, entity).follow_attempt.is_none());
+        // Each lifecycle action starts from its own ordinarily entered Moving
+        // attempt, so an earlier takeover cannot make retirement vacuous.
+        for action in 0..3 {
+            let (mut ai, mut world, entity) = setup();
+            for _ in 0..3 {
+                step(&mut ai, &mut world, entity, FollowInput::Target(old), DT);
+            }
+            let moving = state(&world, entity);
+            let before = position(&world, entity);
+            assert_eq!(
+                moving.follow_attempt.expect("active").phase,
+                FollowPhase::Moving
+            );
+            assert!(!moving.route.is_finished() && moving.move_speed > 0.0);
+            assert!(before.x > 0.0);
+            match action {
+                0 => {
+                    world.insert_one(entity, crate::ScriptHold).expect("hold");
+                }
+                1 => {}
+                _ => {
+                    world.get::<&mut Actor>(entity).expect("actor").health = 0.0;
+                }
+            }
+            let input = if action == 1 {
+                FollowInput::Inactive
+            } else {
+                FollowInput::Target(old)
+            };
+            step(&mut ai, &mut world, entity, input, DT);
+            let retired = state(&world, entity);
+            assert_eq!(retired.follow_input, FollowInput::Unavailable);
+            assert!(retired.follow_attempt.is_none());
+            if action != 2 {
+                assert!(!retired.runner.schedule().is_some_and(is_follow_schedule));
+            }
+            // Existing brain selection may name FOLLOW on a dead SPECIAL2 actor;
+            // the ownership contract below still prohibits an attempt or motion.
+            if action == 0 {
+                // Script possession retains its existing route/movement policy.
+                assert_eq!(retired.route, moving.route);
+                assert!(position(&world, entity).x > before.x);
+                world
+                    .remove_one::<crate::ScriptHold>(entity)
+                    .expect("release");
+                step(&mut ai, &mut world, entity, FollowInput::Target(old), DT);
+                assert!(state(&world, entity).follow_attempt.is_some());
+            } else {
+                assert_eq!(position(&world, entity), before);
+                assert!(retired.route.is_finished() && retired.move_speed == 0.0);
+                assert_eq!(retired.stuck.ticks(), 0);
+                if action == 2 {
+                    assert_eq!(retired.state, MonsterState::Dead);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn follow_intent_holds_without_repeated_admission_then_restarts() {
+        let (mut ai, mut world, entity) = setup();
+        let initial = Vec3::X * 60.0;
+        step(
+            &mut ai,
+            &mut world,
+            entity,
+            FollowInput::Target(initial),
+            DT,
+        );
+        let accepted = state(&world, entity).follow_attempt;
+        assert_eq!(accepted.expect("held").phase, FollowPhase::Holding);
+        for x in [100.0, 104.0, 60.0, 90.0, 100.0, 104.0] {
+            step(
+                &mut ai,
+                &mut world,
+                entity,
+                FollowInput::Target(Vec3::X * x),
+                DT,
+            );
+            assert_eq!(state(&world, entity).follow_attempt, accepted);
+            assert_eq!(position(&world, entity), Vec3::ZERO);
+            assert_eq!(state(&world, entity).stuck.ticks(), 0);
+            assert!(state(&world, entity).route.waypoints.is_empty());
+        }
+        let goal = Vec3::X * 120.0;
+        step(&mut ai, &mut world, entity, FollowInput::Target(goal), DT);
+        assert_eq!(
+            state(&world, entity).follow_attempt.expect("attempt").phase,
+            FollowPhase::Preparing
+        );
+        for _ in 0..150 {
+            step(&mut ai, &mut world, entity, FollowInput::Target(goal), DT);
+        }
+        assert!(position(&world, entity).x > 8.0);
+        assert_eq!(
+            state(&world, entity)
+                .follow_attempt
+                .expect("arrived hold")
+                .phase,
+            FollowPhase::Holding
         );
     }
 }

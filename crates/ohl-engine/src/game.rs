@@ -1845,6 +1845,7 @@ impl Game {
             projectile_runtime: self.systems.snapshot_projectile_runtime(&self.level),
             tanks: self.systems.snapshot_tanks(&self.level),
             charger_reservoirs: self.systems.snapshot_charger_reservoirs(&self.level),
+            follow_navigation: Some(self.systems.ai.snapshot_follow_navigation(&self.level)),
             map_effects: Some(self.systems.map_effects.snapshot(
                 &self.level.registry,
                 self.level.player,
@@ -1977,6 +1978,9 @@ impl Game {
         }
         let mut game = Self::from_level(level, source, config);
         game.restore(save);
+        game.systems
+            .ai
+            .restore_follow_navigation(&mut game.level, save)?;
         Ok(game)
     }
 

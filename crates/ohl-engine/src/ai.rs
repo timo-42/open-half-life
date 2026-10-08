@@ -930,7 +930,168 @@ impl AiState {
     /// A digest of the whole AI simulation, for determinism tests.
     #[must_use]
     pub fn state_hash(&self, level: &Level) -> [u8; 32] {
-        self.world.state_hash(&level.registry.world)
+        let mut hash = ohl_core::StreamingSha256::new();
+        hash.update(&self.world.state_hash(&level.registry.world));
+        hash.update(&(self.followers.members().len() as u32).to_le_bytes());
+        for entity in self.followers.members() {
+            hash.update(&entity.to_bits().get().to_le_bytes());
+        }
+        hash.finalize()
+    }
+
+    /// Separate optional continuation; frozen AI snapshot encoding is unchanged.
+    pub(crate) fn snapshot_follow_navigation(
+        &self,
+        level: &Level,
+    ) -> crate::save::FollowNavigationSnapshot {
+        use crate::save::{FollowAttemptSnapshot, FollowMemberSnapshot, FollowNavigationSnapshot};
+        FollowNavigationSnapshot {
+            version: 1,
+            members: self
+                .followers
+                .members()
+                .iter()
+                .map(|entity| {
+                    FollowMemberSnapshot {
+                        // A stale unindexed membership cannot silently become another actor.
+                        spawn_index: crate::save_state::spawn_index_of(level, *entity)
+                            .unwrap_or(u32::MAX),
+                        attempt: level
+                            .registry
+                            .world
+                            .get::<&MonsterAi>(*entity)
+                            .ok()
+                            .and_then(|ai| ai.follow_attempt)
+                            .map(|attempt| FollowAttemptSnapshot {
+                                accepted_player_anchor: attempt.accepted_player_anchor.to_array(),
+                                phase: attempt.phase as u8,
+                            }),
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    /// Validate the complete optional section before changing roster, flags or attempts.
+    pub(crate) fn restore_follow_navigation(
+        &mut self,
+        level: &mut Level,
+        save: &crate::GameSave,
+    ) -> crate::Result<()> {
+        use ohl_ai::follow::{FollowAttempt, FollowInput, FollowPhase};
+        let Some(state) = &save.follow_navigation else {
+            return Ok(());
+        };
+        if !state.within_limits() {
+            return Err(crate::EngineError::SaveUnreadable);
+        }
+        let mut staged = Vec::with_capacity(state.members.len());
+        for member in &state.members {
+            let entity = crate::save_state::entity_at_spawn_index(level, member.spawn_index)
+                .ok_or(crate::EngineError::SaveUnreadable)?;
+            let follower = level
+                .registry
+                .world
+                .get::<&Follower>(entity)
+                .map_err(|_| crate::EngineError::SaveUnreadable)?;
+            if !follower.can_follow {
+                return Err(crate::EngineError::SaveUnreadable);
+            }
+            let (attempt, runner) = if let Some(saved) = member.attempt {
+                let snapshot = save
+                    .ai
+                    .as_ref()
+                    .and_then(|rows| rows.get(member.spawn_index as usize))
+                    .and_then(Option::as_ref)
+                    .ok_or(crate::EngineError::SaveUnreadable)?;
+                let schedule = &ohl_ai::monsters::brains::FOLLOW_PLAYER;
+                if snapshot.schedule_name != schedule.name
+                    || snapshot.task_index as usize >= schedule.tasks.len()
+                    || !snapshot.schedule_timer.is_finite()
+                    || snapshot.schedule_timer < 0.0
+                {
+                    return Err(crate::EngineError::SaveUnreadable);
+                }
+                let runner = ScheduleRunner::restore_resolved(
+                    schedule,
+                    snapshot.task_index as usize,
+                    snapshot.schedule_started,
+                    snapshot.schedule_timer,
+                );
+                let ai = level
+                    .registry
+                    .world
+                    .get::<&MonsterAi>(entity)
+                    .map_err(|_| crate::EngineError::SaveUnreadable)?;
+                let actor = level
+                    .registry
+                    .world
+                    .get::<&Actor>(entity)
+                    .map_err(|_| crate::EngineError::SaveUnreadable)?;
+                let anchor = Vec3::from_array(saved.accepted_player_anchor);
+                let phase =
+                    FollowPhase::from_tag(saved.phase).ok_or(crate::EngineError::SaveUnreadable)?;
+                let delta =
+                    actor.body_frame.anchor_to_query(actor.hull, anchor) - actor.query_origin();
+                let shape_valid = match phase {
+                    FollowPhase::Preparing => ai.move_speed == 0.0,
+                    FollowPhase::Moving => !ai.route.is_finished() && ai.move_speed > 0.0,
+                    FollowPhase::Arrived => ai.route.is_finished() && ai.move_speed == 0.0,
+                    FollowPhase::Holding => {
+                        ai.route.waypoints.is_empty()
+                            && ai.move_speed == 0.0
+                            && ai.stuck.ticks() == 0
+                    }
+                };
+                if !shape_valid
+                    || !delta.is_finite()
+                    || !delta.length().is_finite()
+                    || !snapshot.move_speed.is_finite()
+                    || snapshot.move_speed < 0.0
+                    || snapshot.route_current as usize > snapshot.route_waypoints.len()
+                    || !snapshot.route_goal.iter().all(|v| v.is_finite())
+                    || !snapshot
+                        .route_waypoints
+                        .iter()
+                        .flatten()
+                        .all(|v| v.is_finite())
+                    || level.registry.world.get::<&ScriptHold>(entity).is_ok()
+                {
+                    return Err(crate::EngineError::SaveUnreadable);
+                }
+                (
+                    Some(FollowAttempt {
+                        accepted_player_anchor: anchor,
+                        phase,
+                    }),
+                    Some(runner),
+                )
+            } else {
+                (None, None)
+            };
+            staged.push((entity, attempt, runner));
+        }
+        // Commit only after every member and associated AI state validated.
+        self.followers.clear();
+        for follower in &mut level.registry.world.query::<&mut Follower>() {
+            follower.following = false;
+        }
+        for ai in &mut level.registry.world.query::<&mut MonsterAi>() {
+            ai.follow_input = FollowInput::Unavailable;
+            ai.follow_attempt = None;
+        }
+        for (entity, attempt, runner) in staged {
+            if let Ok(mut follower) = level.registry.world.get::<&mut Follower>(entity) {
+                self.followers.toggle(entity, &mut follower);
+            }
+            if let Ok(mut ai) = level.registry.world.get::<&mut MonsterAi>(entity) {
+                ai.follow_attempt = attempt;
+                if let Some(runner) = runner {
+                    ai.runner = runner;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Captures `entity`'s `SECTION_AI` (25) entry, or `None` when it
@@ -1210,12 +1371,12 @@ impl AiState {
             .iter()
             .map(|(entity, actor)| (entity, actor.navigation_anchor()))
             .collect();
-        for (actor, ai, hold, follower) in &mut level.registry.world.query::<(
-            &Actor,
-            &mut MonsterAi,
-            Option<&ohl_ai::ScriptHold>,
-            Option<&Follower>,
-        )>() {
+        for (actor, ai, hold) in
+            &mut level
+                .registry
+                .world
+                .query::<(&Actor, &mut MonsterAi, Option<&ohl_ai::ScriptHold>)>()
+        {
             if hold.is_some() || ai.route.is_finished() {
                 continue;
             }
@@ -1237,14 +1398,11 @@ impl AiState {
                         )
                     })
             });
-            let following = follower.is_some_and(|follower| follower.following);
             let pursuing_visible = matches!(task, Some(Task::MoveToEnemy { .. }))
                 && ai.memory.is_some_and(|memory| !memory.occluded);
             let goal = if pursuing_visible {
                 ai.memory
                     .and_then(|memory| targets.get(&memory.entity).copied())
-            } else if following && matches!(task, Some(Task::MoveToTarget { .. })) {
-                targets.get(&level.player).copied()
             } else {
                 None
             };
@@ -2795,31 +2953,32 @@ impl AiState {
             }
         }
 
-        let player = level.player;
-        let Ok(origin) = level
+        use ohl_ai::follow::FollowInput;
+        let player_goal = level
             .registry
             .world
-            .get::<&Actor>(player)
+            .get::<&Actor>(level.player)
+            .ok()
+            .filter(|actor| actor.alive && actor.health > 0.0)
             .map(|actor| actor.navigation_anchor())
-        else {
-            return;
-        };
-        for entity in self.followers.members().to_vec() {
-            let Ok(goal) = level
+            .filter(|goal| goal.is_finite());
+        for (entity, ai, follower) in
+            &mut level
                 .registry
                 .world
-                .get::<&Actor>(entity)
-                .map(|actor| actor.body_frame.anchor_to_query(actor.hull, origin))
-            else {
-                continue;
-            };
-            if let Ok(mut ai) = level.registry.world.get::<&mut MonsterAi>(entity) {
-                // `SPECIAL2` plus a move target is exactly what
-                // `ohl_ai::monsters::brains::FOLLOW_PLAYER` — the schedule
-                // Barney and the scientist already select — reads.
-                ai.pending_conditions |= Conditions::SPECIAL2;
-                ai.move_target = Some(goal);
+                .query::<(Entity, &mut MonsterAi, Option<&Follower>)>()
+        {
+            let authorized = follower.is_some_and(|f| f.can_follow && f.following)
+                && self.followers.is_following(entity);
+            if follower.is_some() || ai.follow_attempt.is_some() {
+                ai.pending_conditions.remove(Conditions::SPECIAL2);
             }
+            ai.follow_input = if authorized {
+                ai.pending_conditions |= Conditions::SPECIAL2;
+                player_goal.map_or(FollowInput::Unavailable, FollowInput::Target)
+            } else {
+                FollowInput::Inactive
+            };
         }
     }
 

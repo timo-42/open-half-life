@@ -163,7 +163,9 @@ pub static FOLLOW_PLAYER: Schedule = Schedule::new(
     "ohl/monsters/follow_player",
     &[
         Task::SetActivity(Activity::Walk),
-        Task::MoveToTarget { within: 96.0 },
+        Task::MoveToTarget {
+            within: crate::follow::FOLLOW_DISTANCE,
+        },
         Task::WalkPath,
         Task::WaitForMovement,
         Task::FaceTarget,

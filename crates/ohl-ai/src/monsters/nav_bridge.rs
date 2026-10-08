@@ -225,6 +225,11 @@ impl NavBridge {
         self.cache.clear();
     }
 
+    /// Retires only this actor's path/steering/attachment, preserving the search budget.
+    pub fn invalidate_actor(&mut self, entity: Entity) {
+        self.cache.remove(&entity);
+    }
+
     /// Resets this tick's path-search budget and drops cached routes for
     /// actors not present in `live` (a best-effort bound on cache growth as
     /// monsters die or despawn). Call once per tick before any
@@ -693,6 +698,47 @@ mod tests {
             .map(|_| entity_def("info_node", [0.0, 0.0, 0.0]))
             .collect();
         assert_eq!(node_seeds_from_defs(&defs, 3).len(), 3);
+    }
+
+    #[test]
+    fn follow_intent_invalidation_preserves_a_real_nonzero_search_budget() {
+        use ohl_physics::{Hull, Vec3};
+        let collision = open_room();
+        let origin = Vec3::new(0.0, 0.0, 36.03125);
+        let mut bridge = NavBridge::build(
+            &[NodeSeed::new(origin, NodeKind::Ground)],
+            &collision,
+            &BuildLimits::default(),
+            NavBridgeLimits {
+                max_searches_per_tick: 1,
+                ..NavBridgeLimits::default()
+            },
+        );
+        assert!(bridge.node_count() > 0);
+        let mut world = hecs::World::new();
+        let (a, b) = (world.spawn(()), world.spawn(()));
+        bridge.begin_tick(&[a, b]);
+        let first = bridge.next_move(
+            a,
+            origin,
+            origin + Vec3::X * 40.0,
+            Hull::Standing,
+            &collision,
+            0.4,
+        );
+        assert!(first.x > origin.x);
+        let blocked = origin + Vec3::Y * 600.0;
+        assert!(collision.trace(Hull::Standing, origin, blocked).blocked());
+        let _ = bridge.next_move(b, origin, blocked, Hull::Standing, &collision, 0.4);
+        assert_eq!(
+            bridge.searches_used, 1,
+            "ordinary blocked request spent the only search"
+        );
+        bridge.invalidate_actor(a);
+        assert_eq!(
+            bridge.searches_used, 1,
+            "actor invalidation must not renew the spent search budget"
+        );
     }
 
     fn open_room() -> CollisionModel {
@@ -1386,5 +1432,64 @@ mod terminal_ground {
         assert!(!collision.trace(Hull::Standing, origin, next).blocked());
         // First-step evidence only: the literal mark intersects the floor,
         // so this fixture must not claim that eventual 3D arrival is possible.
+    }
+}
+
+#[cfg(test)]
+mod follow_intent_cache_tests {
+    use super::*;
+
+    #[test]
+    fn follow_intent_invalidation_changes_real_steering_only_for_its_actor() {
+        use ohl_formats::bsp30::{Bsp, Limits};
+        use ohl_formats::test_support::{Bsp30Builder, CollisionBrush};
+        let mut builder = Bsp30Builder::new();
+        let heads =
+            builder.push_collision_hulls(&[CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0)]);
+        builder.push_model(
+            [-512.0, -512.0, 0.0],
+            [512.0, 512.0, 256.0],
+            [0.0; 3],
+            heads,
+            2,
+            0,
+            0,
+        );
+        let bytes = builder.build();
+        let bsp = Bsp::parse(&bytes, &Limits::default()).expect("BSP");
+        let collision = CollisionModel::from_bsp(&bsp, &Limits::default()).expect("collision");
+        let mut bridge = NavBridge::build(
+            &[],
+            &collision,
+            &BuildLimits::default(),
+            NavBridgeLimits::default(),
+        );
+        let mut world = hecs::World::new();
+        let (a, b) = (world.spawn(()), world.spawn(()));
+        let start = Vec3::new(0.0, 0.0, 36.03125);
+        let old_raw = start + Vec3::X * 136.0;
+        let new_raw = start + Vec3::Y * 136.0;
+        let old_stop = old_raw - Vec3::X * crate::follow::FOLLOW_DISTANCE;
+        let new_stop = new_raw - Vec3::Y * crate::follow::FOLLOW_DISTANCE;
+        assert!((old_raw - new_raw).length() > ROUTE_REFRESH_DISTANCE);
+        assert!((old_stop - new_stop).length() < PATH_REFRESH_DISTANCE);
+        bridge.begin_tick(&[a, b]);
+        let first_a = bridge.next_move(a, start, old_stop, Hull::Standing, &collision, 0.4);
+        let first_b = bridge.next_move(b, start, old_stop, Hull::Standing, &collision, 0.4);
+        assert!(first_a.x > start.x && first_b.x > start.x);
+        assert_eq!(bridge.stats().direct_steps, 2);
+        let searches = bridge.searches_used;
+        bridge.invalidate_actor(a);
+        assert_eq!(bridge.searches_used, searches);
+        let changed = bridge.next_move(a, first_a, new_stop, Hull::Standing, &collision, 0.4);
+        let untouched = bridge.next_move(b, first_b, new_stop, Hull::Standing, &collision, 0.4);
+        assert!(
+            changed.y > first_a.y && changed.x < first_a.x,
+            "invalidated actor must steer toward the new close endpoint"
+        );
+        assert!(
+            untouched.x > first_b.x && untouched.y.to_bits() == first_b.y.to_bits(),
+            "other actor keeps its existing cached steering"
+        );
     }
 }

@@ -418,10 +418,9 @@ fn maker_talk_child_declared_controls_keep_pre_disaster_behavior() {
 
 #[test]
 fn maker_talk_child_save_rebuilds_eligibility_without_inventing_roster_state() {
-    // The existing save format records no Follower/roster data. A save
-    // before recruitment also represents an older maker child without that
-    // component; after recruitment, the direct and maker cases both reset
-    // the roster on load. This is a retained limitation, not new fidelity.
+    // Explicit legacy absence: before the optional follow-navigation section,
+    // neither direct nor maker children retained roster membership on load.
+    // Derived eligibility and ordinary post-load Use/Stop remain available.
     for made in [false, true] {
         for recruited in [false, true] {
             let classname = "monster_scientist";
@@ -431,9 +430,15 @@ fn maker_talk_child_save_rebuilds_eligibility_without_inventing_roster_state() {
                 use_talk_and_consume(&mut game);
                 assert_eq!(game.followers(), &[actor]);
             }
-            let bytes = game
-                .save_bytes(1_700_000_000)
-                .expect("write generated save");
+            let mut legacy = game.to_save(1_700_000_000);
+            legacy.follow_navigation = None;
+            let bytes = legacy.to_bytes().expect("write generated legacy save");
+            assert!(
+                ohl_engine::GameSave::from_bytes(&bytes)
+                    .expect("legacy decode")
+                    .follow_navigation
+                    .is_none()
+            );
             let mut loaded = Game::load_bytes(&assets, &bytes).expect("load generated save");
             let restored = sole_nearby_talk_actor(&loaded, classname);
             assert!(
