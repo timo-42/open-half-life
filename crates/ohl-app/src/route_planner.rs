@@ -2214,14 +2214,14 @@ pub(crate) mod guard_entry_view_fixture {
     #[test]
     fn guard_entry_view_planner_exported_route() {
         exported_route(|game, _, script| {
-            assert_eq!(super::drive_to_level_change(game, script, &[]), None)
+            assert_eq!(super::drive_to_level_change(game, script, &[]), None);
         });
     }
 
     #[test]
     fn guard_entry_view_planner_same_tick_and_boundaries() {
         boundaries(|game, _, script| {
-            assert_eq!(super::drive_to_level_change(game, script, &[]), None)
+            assert_eq!(super::drive_to_level_change(game, script, &[]), None);
         });
     }
 }
