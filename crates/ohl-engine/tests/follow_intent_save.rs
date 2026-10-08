@@ -336,9 +336,8 @@ fn follow_intent_each_live_phase_continues_and_posture_keeps_the_raw_goal() {
         assert_eq!(state(&game, id).follow_attempt, Some(holding));
         assert!(player_anchor(&game).abs_diff_eq(old_anchor, DIST_EPSILON));
     }
-    assert_ne!(
-        game.eye_position(),
-        old_eye,
+    assert!(
+        old_eye[2] - game.eye_position()[2] > DIST_EPSILON,
         "ordinary posture actually changed the eye"
     );
     for _ in 0..10 {
