@@ -183,8 +183,22 @@ fn a_change_level_event_reaches_the_host() {
 fn a_level_change_reloads_the_next_map_relative_to_the_landmark() {
     let assets = assets();
     let mut game = game(&assets);
-    game.set_viewpoint([48.0, 0.0, 40.0], 0.0, 0.0);
+    let intended_center = [48.0, 0.0, 40.0];
+    let mut requested_eye = intended_center;
+    requested_eye[2] += game.move_config().view_height_standing;
+    game.set_viewpoint(requested_eye, 0.0, 0.0);
     let before = game.player_origin();
+    assert_eq!(before.map(f32::to_bits), intended_center.map(f32::to_bits));
+    let center = ohl_physics::Vec3::from_array(before);
+    let placement = game.collision().expect("the fixture has collision").trace(
+        ohl_physics::Hull::Standing,
+        center,
+        center,
+    );
+    assert!(
+        !placement.start_solid && !placement.all_solid,
+        "the authored center must start with a clear standing hull"
+    );
 
     game.change_level(&assets, NEXT_MAP, LANDMARK)
         .expect("the destination map loads");
