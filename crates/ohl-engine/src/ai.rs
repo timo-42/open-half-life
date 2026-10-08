@@ -3158,7 +3158,7 @@ fn stands_on_floor(kind: &MonsterKind, actor: &Actor) -> bool {
 
 /// Applies the bounded spawn-floor search once, before any saved Transform is
 /// restored. Actor and Transform remain the same model anchor; only the trace
-/// crosses the BodyFrame boundary. Missing floor, solid starts and exclusions
+/// crosses the BodyFrame boundary. Missing floor, unusable starts and exclusions
 /// retain the authored placement without introducing a second lift component.
 fn stand_on_floor(level: &mut Level, entity: Entity, kind: &MonsterKind) {
     let Ok(actor) = level
@@ -3185,8 +3185,12 @@ fn stand_on_floor(level: &mut Level, entity: Entity, kind: &MonsterKind) {
         return;
     }
     let anchor = actor.body_frame.query_to_anchor(actor.hull, fall.end_pos);
-    // A trace contact epsilon must not lift an already grounded authored anchor.
-    if !anchor.is_finite() || anchor.z >= actor.origin.z {
+    if !anchor.is_finite() {
+        return;
+    }
+    // Retain clear authored floor contact. Only the bounded numerical
+    // separation below may move an originally solid contact upward.
+    if anchor.z >= actor.origin.z && !can_separate_floor_contact(collision, &actor, anchor, &fall) {
         return;
     }
     if let Ok(mut transform) = level.registry.world.get::<&mut Transform>(entity) {
@@ -3195,6 +3199,55 @@ fn stand_on_floor(level: &mut Level, entity: Entity, kind: &MonsterKind) {
     if let Ok(mut actor) = level.registry.world.get::<&mut Actor>(entity) {
         actor.origin = anchor;
     }
+}
+
+/// Project-authored, TODO(black-box): one existing trace-epsilon separation,
+/// including another shallow overlap if the same candidate clears it. This is
+/// not a general unstick search. Only the upward seating branch calls it.
+fn can_separate_floor_contact(
+    collision: &ohl_physics::CollisionModel,
+    actor: &Actor,
+    anchor: Vec3,
+    fall: &ohl_physics::Trace,
+) -> bool {
+    let original = actor.query_origin();
+    let query = actor.body_frame.anchor_to_query(actor.hull, anchor);
+    let normal = fall.plane_normal;
+    if !original.is_finite()
+        || !anchor.is_finite()
+        || !query.is_finite()
+        || !fall.end_pos.is_finite()
+        || !fall.fraction.is_finite()
+        || !(0.0..1.0).contains(&fall.fraction)
+        || fall.start_solid
+        || fall.all_solid
+        || !normal.is_finite()
+        || !normal.is_normalized()
+        || normal.z < ohl_physics::MoveConfig::default().slope_limit
+        || !fall.plane_dist.is_finite()
+        || anchor.truncate() != actor.origin.truncate()
+        || query.truncate() != original.truncate()
+    {
+        return false;
+    }
+    let plane_offset = normal.dot(original) - fall.plane_dist;
+    let anchor_rise = anchor.z - actor.origin.z;
+    let query_rise = query.z - original.z;
+    let limit = ohl_physics::DIST_EPSILON / normal.z;
+    if !plane_offset.is_finite()
+        || plane_offset != 0.0
+        || !anchor_rise.is_finite()
+        || !query_rise.is_finite()
+        || anchor_rise <= 0.0
+        || query_rise <= 0.0
+        || anchor_rise > limit
+        || query_rise > limit
+        || !collision.trace(actor.hull, original, original).start_solid
+    {
+        return false;
+    }
+    let clear = collision.trace(actor.hull, query, query);
+    !clear.start_solid && !clear.all_solid
 }
 
 #[cfg(test)]
@@ -3330,6 +3383,410 @@ mod anchor_domain_floor_tests {
                 placed
             );
         }
+    }
+    fn floor_contact_bytes(
+        brushes: &[ohl_formats::test_support::CollisionBrush],
+        reversed: bool,
+        entities: &str,
+    ) -> Vec<u8> {
+        let mut builder = ohl_formats::test_support::Bsp30Builder::new();
+        builder.set_entities_text(entities);
+        let heads = builder.push_collision_hulls(brushes);
+        if reversed {
+            // Negate each plane and exchange its children: the open regions
+            // stay the same, while exact contact belongs to the other leaf.
+            for plane in builder.planes.chunks_exact_mut(20) {
+                for value in plane[..16].chunks_exact_mut(4) {
+                    let original = f32::from_le_bytes(value.try_into().unwrap());
+                    value.copy_from_slice(&(-original).to_le_bytes());
+                }
+            }
+            for (nodes, stride) in [(&mut builder.nodes, 24), (&mut builder.clipnodes, 8)] {
+                for node in nodes.chunks_exact_mut(stride) {
+                    let front: [u8; 2] = node[4..6].try_into().unwrap();
+                    let back: [u8; 2] = node[6..8].try_into().unwrap();
+                    node[4..6].copy_from_slice(&back);
+                    node[6..8].copy_from_slice(&front);
+                }
+            }
+        }
+        builder.push_model([-512.0; 3], [512.0; 3], [0.0; 3], heads, 2, 0, 0);
+        builder.build()
+    }
+
+    fn floor_contact_collision(
+        brushes: &[ohl_formats::test_support::CollisionBrush],
+        reversed: bool,
+    ) -> ohl_physics::CollisionModel {
+        let bytes = floor_contact_bytes(brushes, reversed, "{\"classname\" \"worldspawn\"}");
+        let limits = ohl_formats::bsp30::Limits::default();
+        let bsp = ohl_formats::bsp30::Bsp::parse(&bytes, &limits).unwrap();
+        ohl_physics::CollisionModel::from_bsp(&bsp, &limits).unwrap()
+    }
+
+    fn floor_contact_game(
+        brushes: &[ohl_formats::test_support::CollisionBrush],
+        reversed: bool,
+        origin: Vec3,
+        scripted: bool,
+    ) -> crate::Game {
+        let script = if scripted {
+            entity_block(
+                "scripted_sequence",
+                [128.0, 0.0, 0.0],
+                0.0,
+                &[
+                    ("targetname", "ohl_contact_script"),
+                    ("m_iszEntity", "ohl_contact_actor"),
+                    ("m_fMoveTo", "1"),
+                ],
+            ) + &entity_block(
+                "trigger_auto",
+                [0.0; 3],
+                0.0,
+                &[("target", "ohl_contact_script")],
+            )
+        } else {
+            String::new()
+        };
+        let entities = format!(
+            "{{\"classname\" \"worldspawn\"}}{}{}{}",
+            entity_block("info_player_start", [200.0, 200.0, 100.0], 0.0, &[]),
+            entity_block(
+                "monster_barney",
+                origin.to_array(),
+                0.0,
+                &[("targetname", "ohl_contact_actor"), ("spawnflags", "16")]
+            ),
+            script,
+        );
+        crate::Game::from_map_bytes(
+            &crate::MemoryAssets::new(),
+            AI_MAP,
+            &floor_contact_bytes(brushes, reversed, &entities),
+        )
+        .expect("authored floor-contact scene")
+    }
+
+    fn floor_contact_fall(
+        collision: &ohl_physics::CollisionModel,
+        actor: &Actor,
+    ) -> (ohl_physics::Trace, Vec3) {
+        let start = actor.query_origin() + Vec3::Z * MONSTER_DROP_CLEARANCE;
+        let fall = collision.trace(
+            actor.hull,
+            start,
+            start - Vec3::Z * (MONSTER_DROP_DISTANCE + MONSTER_DROP_CLEARANCE),
+        );
+        let anchor = actor.body_frame.query_to_anchor(actor.hull, fall.end_pos);
+        (fall, anchor)
+    }
+
+    fn floor_contact_prerequisites(
+        collision: &ohl_physics::CollisionModel,
+        original: &Actor,
+        fall: &ohl_physics::Trace,
+        anchor: Vec3,
+    ) {
+        let query = original.query_origin();
+        let start = query + Vec3::Z * MONSTER_DROP_CLEARANCE;
+        assert!(collision.trace(original.hull, query, query).start_solid);
+        let raised = collision.trace(original.hull, start, start);
+        assert!(!raised.start_solid && !raised.all_solid);
+        assert!(!fall.start_solid && !fall.all_solid && fall.fraction < 1.0);
+        assert!(fall.plane_normal.is_normalized());
+        assert!(fall.plane_normal.z >= ohl_physics::MoveConfig::default().slope_limit);
+        assert!((fall.plane_normal.dot(query) - fall.plane_dist).abs() <= 0.0);
+        let reconstructed = original.body_frame.anchor_to_query(original.hull, anchor);
+        assert!(anchor.is_finite() && reconstructed.is_finite());
+        assert_eq!(anchor.truncate(), original.origin.truncate());
+        assert_eq!(reconstructed.truncate(), query.truncate());
+        let limit = ohl_physics::DIST_EPSILON / fall.plane_normal.z;
+        assert!(anchor.z > original.origin.z && anchor.z - original.origin.z <= limit);
+        assert!(reconstructed.z > query.z && reconstructed.z - query.z <= limit);
+        let candidate = collision.trace(original.hull, reconstructed, reconstructed);
+        assert!(!candidate.start_solid && !candidate.all_solid);
+    }
+
+    #[test]
+    fn floor_contact_reversed_boundary_seats_before_ordinary_scripted_movement() {
+        use ohl_formats::test_support::CollisionBrush;
+        let brushes = [CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0)];
+        for reversed in [true, false] {
+            let mut game = floor_contact_game(&brushes, reversed, Vec3::ZERO, true);
+            let entity = entity_of_classname(&game, "monster_barney").unwrap();
+            {
+                let (level, systems) = game.level_and_systems_mut();
+                assert!(systems.ai().world.navigator().is_none());
+                let actual = *level.registry.world.get::<&Actor>(entity).unwrap();
+                assert_eq!(actual.body_frame, ohl_ai::BodyFrame::Feet);
+                let original = Actor {
+                    origin: Vec3::ZERO,
+                    ..actual
+                };
+                let collision = level.monster_collision.as_ref().unwrap();
+                let (fall, candidate) = floor_contact_fall(collision, &original);
+                if reversed {
+                    floor_contact_prerequisites(collision, &original, &fall, candidate);
+                } else {
+                    let query = original.query_origin();
+                    assert!(!collision.trace(original.hull, query, query).start_solid);
+                    assert_eq!(
+                        actual.origin, original.origin,
+                        "clear contact stays byte-exact"
+                    );
+                }
+                let query = actual.query_origin();
+                let attached = collision.trace(actual.hull, query, query);
+                assert!(
+                    !attached.start_solid && !attached.all_solid,
+                    "ordinary attachment must leave the actual body hull clear"
+                );
+                assert_eq!(
+                    actual.origin,
+                    level
+                        .registry
+                        .world
+                        .get::<&Transform>(entity)
+                        .unwrap()
+                        .origin
+                );
+            }
+            for _ in 0..240 {
+                game.tick(crate::TICK_SECONDS, &crate::Input::default());
+            }
+            assert_eq!(
+                game.script_start_count(),
+                1,
+                "the ordinary trigger acquired the actor"
+            );
+            let stats = game.script_navigation_stats();
+            assert!(stats.traced_steps > 0);
+            assert_eq!(stats.graph_steps, 0);
+            assert_eq!(stats.untraced_steps, 0);
+            assert_eq!(stats.start_solid, 0);
+            let (level, _) = game.level_and_systems_mut();
+            let actor = *level.registry.world.get::<&Actor>(entity).unwrap();
+            assert!(
+                actor.origin.x > 64.0,
+                "ordinary traced script movement advances"
+            );
+            let query = actor.query_origin();
+            let clear = level
+                .monster_collision
+                .as_ref()
+                .unwrap()
+                .trace(actor.hull, query, query);
+            assert!(!clear.start_solid && !clear.all_solid);
+        }
+    }
+
+    #[test]
+    fn floor_contact_may_clear_a_second_overlap_inside_the_same_budget() {
+        use ohl_formats::test_support::CollisionBrush;
+        let shallow = CollisionBrush::half_space([0.0, 0.0, 1.0], ohl_physics::DIST_EPSILON / 8.0);
+        let brushes = [
+            CollisionBrush::half_space([0.6, 0.0, 0.8], -9.6),
+            shallow.clone(),
+        ];
+        let mut game = floor_contact_game(&brushes, false, Vec3::ZERO, false);
+        let entity = entity_of_classname(&game, "monster_barney").unwrap();
+        let (level, _) = game.level_and_systems_mut();
+        let actual = *level.registry.world.get::<&Actor>(entity).unwrap();
+        let original = Actor {
+            origin: Vec3::ZERO,
+            ..actual
+        };
+        let collision = level.monster_collision.as_ref().unwrap();
+        let (fall, candidate) = floor_contact_fall(collision, &original);
+        floor_contact_prerequisites(collision, &original, &fall, candidate);
+        let other_solid = floor_contact_collision(&[shallow], false);
+        let query = original.query_origin();
+        assert!(
+            other_solid.trace(original.hull, query, query).start_solid,
+            "this policy also permits a genuinely overlapping second shallow solid"
+        );
+        assert_eq!(actual.origin, candidate);
+        let query = actual.query_origin();
+        let clear = collision.trace(actual.hull, query, query);
+        assert!(!clear.start_solid && !clear.all_solid);
+        assert_eq!(
+            actual.origin,
+            level
+                .registry
+                .world
+                .get::<&Transform>(entity)
+                .unwrap()
+                .origin
+        );
+    }
+
+    #[test]
+    fn floor_contact_retains_off_plane_nonunit_ceiling_and_missing_support() {
+        use ohl_formats::test_support::CollisionBrush;
+        let floor = CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0);
+        for (case, brushes) in [
+            (
+                "above",
+                vec![CollisionBrush::half_space([0.0, 0.0, 1.0], 0.25)],
+            ),
+            (
+                "interior",
+                vec![CollisionBrush::half_space([0.0, 0.0, 1.0], 2.0)],
+            ),
+            (
+                "nonunit",
+                vec![CollisionBrush::half_space([0.0, 0.0, 2.0], 0.0)],
+            ),
+            (
+                "ceiling",
+                vec![floor, CollisionBrush::half_space([0.0, 0.0, -1.0], -72.0)],
+            ),
+            (
+                "ledge",
+                vec![CollisionBrush::box_brush(
+                    [32.0, -32.0, -16.0],
+                    [64.0, 32.0, 0.0],
+                )],
+            ),
+        ] {
+            let mut game = floor_contact_game(&brushes, true, Vec3::ZERO, false);
+            let entity = entity_of_classname(&game, "monster_barney").unwrap();
+            let (level, _) = game.level_and_systems_mut();
+            let actual = *level.registry.world.get::<&Actor>(entity).unwrap();
+            let original = Actor {
+                origin: Vec3::ZERO,
+                ..actual
+            };
+            let collision = level.monster_collision.as_ref().unwrap();
+            let (fall, _) = floor_contact_fall(collision, &original);
+            match case {
+                "above" => {
+                    assert!(!fall.start_solid && fall.fraction < 1.0);
+                    assert!(
+                        (fall.plane_normal.dot(original.query_origin()) - fall.plane_dist).abs()
+                            > 0.0
+                    );
+                }
+                "interior" | "ceiling" => assert!(fall.start_solid),
+                "nonunit" => assert!(!fall.start_solid && !fall.plane_normal.is_normalized()),
+                "ledge" => assert!(!fall.start_solid && fall.fraction >= 1.0),
+                _ => unreachable!(),
+            }
+            assert_eq!(actual.origin, Vec3::ZERO, "retention: {case}");
+            assert_eq!(
+                level
+                    .registry
+                    .world
+                    .get::<&Transform>(entity)
+                    .unwrap()
+                    .origin,
+                Vec3::ZERO
+            );
+        }
+    }
+
+    #[test]
+    fn floor_contact_keeps_ordinary_downward_ramp_seating() {
+        use ohl_formats::test_support::CollisionBrush;
+        let brushes = [CollisionBrush::half_space([0.6, 0.0, 0.8], -9.6)];
+        let origin = Vec3::Z * 20.0;
+        let mut game = floor_contact_game(&brushes, false, origin, false);
+        let entity = entity_of_classname(&game, "monster_barney").unwrap();
+        let (level, _) = game.level_and_systems_mut();
+        let actual = *level.registry.world.get::<&Actor>(entity).unwrap();
+        let original = Actor { origin, ..actual };
+        let collision = level.monster_collision.as_ref().unwrap();
+        let query = original.query_origin();
+        assert!(!collision.trace(original.hull, query, query).start_solid);
+        let (fall, anchor) = floor_contact_fall(collision, &original);
+        assert!(!fall.start_solid && fall.fraction < 1.0 && fall.plane_normal.z >= 0.7);
+        assert!(anchor.z < origin.z);
+        assert_eq!(
+            actual.origin, anchor,
+            "existing downward single-offset landing"
+        );
+        assert_eq!(
+            actual.origin,
+            level
+                .registry
+                .world
+                .get::<&Transform>(entity)
+                .unwrap()
+                .origin
+        );
+    }
+
+    #[test]
+    fn floor_contact_refuses_nonfinite_excessive_and_blocked_candidates() {
+        use ohl_formats::test_support::CollisionBrush;
+        let floor = CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0);
+        let mut game = floor_contact_game(&[floor.clone()], true, Vec3::ZERO, false);
+        let entity = entity_of_classname(&game, "monster_barney").unwrap();
+        let (level, _) = game.level_and_systems_mut();
+        let original = Actor {
+            origin: Vec3::ZERO,
+            ..*level.registry.world.get::<&Actor>(entity).unwrap()
+        };
+        let collision = level.monster_collision.as_ref().unwrap();
+        let (fall, anchor) = floor_contact_fall(collision, &original);
+        floor_contact_prerequisites(collision, &original, &fall, anchor);
+        assert!(can_separate_floor_contact(
+            collision, &original, anchor, &fall
+        ));
+        let invalid = ohl_physics::Trace {
+            plane_normal: Vec3::splat(f32::NAN),
+            ..fall
+        };
+        assert!(!can_separate_floor_contact(
+            collision, &original, anchor, &invalid
+        ));
+        let excessive = anchor + Vec3::Z * ohl_physics::DIST_EPSILON;
+        let query = original
+            .body_frame
+            .anchor_to_query(original.hull, excessive);
+        assert!(!collision.trace(original.hull, query, query).start_solid);
+        assert!(!can_separate_floor_contact(
+            collision, &original, excessive, &fall
+        ));
+
+        // Guard-level input, not an attachment claim: the finite floor contact
+        // is checked against a separate real solid occupying its candidate.
+        let blocked = floor_contact_collision(
+            &[
+                floor,
+                CollisionBrush::half_space(
+                    [0.0, 0.0, -1.0],
+                    -(72.0 + ohl_physics::DIST_EPSILON / 2.0),
+                ),
+            ],
+            true,
+        );
+        let query = original.body_frame.anchor_to_query(original.hull, anchor);
+        assert!(blocked.trace(original.hull, query, query).start_solid);
+        assert!(!can_separate_floor_contact(
+            &blocked, &original, anchor, &fall
+        ));
+
+        // The two domains can round differently. This local value is not
+        // inserted into the game: exercise the independently required anchor cap.
+        let rounded = Actor {
+            origin: Vec3::Z * 100_000.02,
+            body_frame: ohl_ai::BodyFrame::ModelBottom(99_964.0),
+            ..original
+        };
+        let high = floor_contact_collision(
+            &[CollisionBrush::half_space(
+                [0.0, 0.0, 1.0],
+                rounded.query_origin().z - 36.0,
+            )],
+            true,
+        );
+        let (fall, anchor) = floor_contact_fall(&high, &rounded);
+        let query = rounded.body_frame.anchor_to_query(rounded.hull, anchor);
+        assert!(query.z - rounded.query_origin().z <= ohl_physics::DIST_EPSILON);
+        assert!(anchor.z - rounded.origin.z > ohl_physics::DIST_EPSILON);
+        assert!(!can_separate_floor_contact(&high, &rounded, anchor, &fall));
     }
 }
 
