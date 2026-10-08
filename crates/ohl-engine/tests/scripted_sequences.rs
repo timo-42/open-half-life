@@ -264,6 +264,87 @@ fn a_scientist_follows_after_use_and_stops_after_a_second_use() {
     );
 }
 
+/// Project-authored reach is measured to the body volume. This ordinary Use
+/// scene is outside the old center sphere but inside the unchanged hull reach.
+#[test]
+fn ordinary_use_recruits_a_scientist_within_hull_reach_but_beyond_center_reach() {
+    use ohl_ai::{Actor, Follower};
+    use ohl_engine::ai::TALK_USE_RADIUS;
+    use ohl_game::hecs::Entity;
+    use ohl_physics::{Hull, Vec3};
+
+    let entities = script_room_entities(
+        [72.0, 0.0, 36.0 + ohl_physics::DIST_EPSILON],
+        &entity_block("monster_scientist", [0.0, 0.0, 0.0], 0.0, &[]),
+    );
+    let mut game = script_game(&entities);
+    let scientist = entity_of_classname(&game, "monster_scientist").expect("it spawned");
+    let qualify = |game: &Game, eye: Vec3| {
+        assert!(game.followers().is_empty());
+        assert!(game.player_health() > 0.0 && game.player_on_ground());
+        let player = game
+            .registry()
+            .world
+            .get::<&Actor>(game.player_entity())
+            .unwrap();
+        assert_eq!(player.hull, Hull::Standing);
+        let center = Vec3::from_array(game.player_origin());
+        let trace = game
+            .collision()
+            .unwrap()
+            .trace(Hull::Standing, center, center);
+        assert!(!trace.start_solid && !trace.all_solid);
+        assert!(
+            ohl_game::find_usable_within(game.registry(), eye, ohl_engine::USE_RADIUS).is_none(),
+            "the ordinary dispatcher must offer this use to talk monsters"
+        );
+        let pairs: Vec<_> = game
+            .registry()
+            .world
+            .query::<(Entity, &Actor, &Follower)>()
+            .iter()
+            .map(|(entity, _, _)| entity)
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![scientist],
+            "one candidate; no selection ambiguity"
+        );
+        let actor = game.registry().world.get::<&Actor>(scientist).unwrap();
+        let follower = game.registry().world.get::<&Follower>(scientist).unwrap();
+        assert!(actor.alive && actor.health.is_finite() && actor.health > 0.0);
+        assert!(follower.can_follow && !follower.following);
+        let (min, max) = actor.body_frame.world_bounds(actor.hull, actor.origin);
+        assert!(eye.is_finite() && min.is_finite() && max.is_finite() && min.cmple(max).all());
+        let body_distance = eye.distance(eye.clamp(min, max));
+        let center_distance = eye.distance(actor.query_origin());
+        assert!(body_distance.is_finite() && center_distance.is_finite());
+        assert!(
+            body_distance < TALK_USE_RADIUS && center_distance > TALK_USE_RADIUS,
+            "real attached geometry distinguishes body reach from center reach"
+        );
+    };
+    qualify(&game, Vec3::from_array(game.eye_position()));
+    game.tick(TICK_SECONDS, &use_input());
+    // Phase 12 queued this actual camera eye; the next ordinary AI phase
+    // consumes it. No script, map-use target or competing talk actor intervenes.
+    let dispatched_eye = Vec3::from_array(game.eye_position());
+    qualify(&game, dispatched_eye);
+    game.tick(TICK_SECONDS, &Input::default());
+    assert_eq!(
+        game.followers(),
+        &[scientist],
+        "ordinary use reaches the nearby body"
+    );
+    assert!(
+        game.registry()
+            .world
+            .get::<&Follower>(scientist)
+            .unwrap()
+            .following
+    );
+}
+
 /// A `Pre-Disaster` scientist (spawnflag 256) refuses to follow.
 #[test]
 fn a_pre_disaster_scientist_never_joins_the_player() {

@@ -2409,7 +2409,8 @@ pub const SCRIPT_FALLBACK_ACTION_SECONDS: f32 = 1.0;
 ///
 /// **`TODO(black-box)`**: no public page states a use range for a talk
 /// monster; this matches the engine's own [`crate::systems::USE_RADIUS`]
-/// for doors and buttons so one press cannot mean two different reaches.
+/// for doors and buttons. The magnitude is shared; follower selection measures
+/// reach to the compiled body hull, while map-use keeps its existing geometry.
 pub const TALK_USE_RADIUS: f32 = crate::USE_RADIUS;
 
 /// The published talk-monster classnames that can be asked to follow.
@@ -3419,9 +3420,13 @@ fn nearest_follower(level: &Level, position: Vec3) -> Option<Entity> {
         if !actor.alive {
             continue;
         }
-        // The use ray starts at the player eye; compare the physical body,
-        // not a newly feet-relative model pivot.
-        let distance = actor.query_origin().distance(position);
+        // Project-authored reach to the compiled body volume, not the model
+        // pivot, visible mesh, or hull center. TODO(black-box): exact fidelity.
+        let (min, max) = actor.body_frame.world_bounds(actor.hull, actor.origin);
+        if !position.is_finite() || !min.is_finite() || !max.is_finite() || !min.cmple(max).all() {
+            continue;
+        }
+        let distance = position.distance(position.clamp(min, max));
         if !distance.is_finite() || distance > TALK_USE_RADIUS {
             continue;
         }
