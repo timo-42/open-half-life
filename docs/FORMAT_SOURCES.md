@@ -9138,3 +9138,25 @@ campaign, both chains and fresh census: [pending]. Original combat 37/37 zero
 unexpected, campaign 93/93 and BOTH depth 12 / Pass / 660.8 seconds remain
 mandatory, with explicit `--min-depth 12`. M9.61 is unassigned; existing tags and
 separate pending tag reservations remain unchanged. PR/merge/publication pending.
+
+The held P2 viewpoint successor includes a test-only landmark fixture correction:
+its authored controller center is now converted to a supplied eye using the current
+eye offset, and independent pre-transition center and clear-hull prerequisites
+are explicit. The original landmark-offset and camera/arrival assertions remain
+unchanged. Production transition and embedded-arrival recovery are unchanged.
+This restores the project-authored geometry premise of the fixture; it introduces
+no retail behavior claim, new citation, save encoding or tag. The original chained
+caller bypasses the viewpoint setter; no private cause or chain recovery follows.
+
+**Gates:** b42 gates 1–4 passed, but its partial workspace run failed the landmark
+fixture (1314 passed / 1 failed / 7 ignored); policy/graph were unstarted. That
+failure remains recorded. On the fixture correction, all nine game-loop tests
+pass on the preformat source. The initial layout check failed; a formatting-only
+successor then passes formatting and scoped game-loop Clippy. The behavior suite
+was not rerun after layout-only correction; no new behavior or mutation credit is
+claimed. Commit `84618aa` contains only that test correction. New final-source
+full seven gates, releases, original FOUR and fresh census: [pending]. Original
+combat 37/37 zero unexpected, campaign 93/93 and BOTH depth 12 / Pass / 660.8
+seconds remain required, with explicit `--min-depth 12`. Earlier runtime negatives
+retain their earlier source binding. M9.61 and tag 48 remain unassigned; tags 46/47
+remain exclusively reserved. PR/merge/publication remain pending.
