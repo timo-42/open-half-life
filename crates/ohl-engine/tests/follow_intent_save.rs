@@ -151,8 +151,11 @@ fn replace_follow_payload(bytes: &[u8], payload: Option<&[u8]>) -> Vec<u8> {
         .expect("container")
 }
 
+// Keep the wire golden, legacy absence and malformed-continuation refusals together.
+#[allow(clippy::too_many_lines)]
 #[test]
 fn follow_intent_section_gold_absence_and_malformed_state_fail_closed() {
+    const GOLD: &[u8] = &[1, 1, 3, 1, 0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 64, 64, 1];
     let golden = FollowNavigationSnapshot {
         version: 1,
         members: vec![FollowMemberSnapshot {
@@ -163,7 +166,6 @@ fn follow_intent_section_gold_absence_and_malformed_state_fail_closed() {
             }),
         }],
     };
-    const GOLD: &[u8] = &[1, 1, 3, 1, 0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 64, 64, 1];
     assert_eq!(postcard::to_allocvec(&golden).expect("encode"), GOLD);
     assert_eq!(
         postcard::from_bytes::<FollowNavigationSnapshot>(GOLD).expect("gold"),
@@ -190,7 +192,8 @@ fn follow_intent_section_gold_absence_and_malformed_state_fail_closed() {
     let member = save.follow_navigation.as_ref().expect("present").members[0].spawn_index;
     for (cursor, timer) in [
         (
-            ohl_ai::monsters::brains::FOLLOW_PLAYER.tasks.len() as u32,
+            u32::try_from(ohl_ai::monsters::brains::FOLLOW_PLAYER.tasks.len())
+                .expect("bounded FOLLOW task count"),
             0.0,
         ),
         (u32::MAX, 0.0),

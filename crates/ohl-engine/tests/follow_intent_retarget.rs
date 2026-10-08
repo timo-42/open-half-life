@@ -48,6 +48,8 @@ fn assert_supported_clear_leg(game: &Game, body: Actor, goal: Vec3) {
     }
 }
 
+// Keep entered-loop prerequisites beside the real-input recovery and mutation oracle.
+#[allow(clippy::too_many_lines)]
 #[test]
 fn an_entered_blocked_follower_moves_toward_a_new_supported_player_goal() {
     // Existing generated room: floor, tall full-width x=0 wall, no node entities.
