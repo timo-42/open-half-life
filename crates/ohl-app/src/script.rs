@@ -43,7 +43,11 @@
 //!   line ([`ScriptError::GuardNotAlone`]), and a script carrying it is a
 //!   closed loop around the simulation rather than a fixed recording. The
 //!   loop draws on no randomness of its own, so a guarded script is as
-//!   reproducible as any other.
+//!   reproducible as any other. By project-authored convention, the first
+//!   following fixed tick resumes the view at entry to the consecutive Guard
+//!   interval, then applies that tick's relative look and other inputs. A
+//!   terminal Guard retains its live view; a followed map change discards
+//!   the old interval. This lets exported relative movement compose with Guard.
 //!
 //! Limits (§7): at most 4,096 non-comment lines, at most 100,000 ticks in
 //! total, at most 8 tokens on one line. Anything outside the grammar is a
@@ -51,7 +55,7 @@
 //! parser never panics, including on arbitrary (possibly non-UTF-8) bytes
 //! — see the `parse_never_panics_on_arbitrary_bytes` proptest below.
 
-use ohl_engine::{Input, MOUSE_SENSITIVITY};
+use ohl_engine::{Game, Input, MOUSE_SENSITIVITY};
 
 /// The most script lines (excluding comments and blank lines) a script may
 /// contain.
@@ -117,11 +121,60 @@ impl std::error::Error for ScriptError {}
 /// is computed from does.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ScriptStep {
-    /// Hand this exact input to one [`ohl_engine::Game::tick`] call.
+    /// Hand this input to one [`ohl_engine::Game::tick`] call, composing
+    /// the one-time entry-view correction when it follows a Guard interval.
     Fixed(Input),
     /// Ask [`ohl_engine::guard_input`] what to press, from the game as it
     /// is at this tick, and hand *that* to [`ohl_engine::Game::tick`].
     Guard,
+}
+
+/// Per-invocation execution state for the project-authored Guard boundary.
+///
+/// Consecutive Guard ticks share one entry view. The next Fixed tick resumes
+/// that view through ordinary mouse input before its movement or actions run.
+/// Dropping the state at script/section end leaves a terminal Guard's view live.
+#[derive(Debug, Default)]
+pub struct ScriptInputState {
+    guard_entry: Option<(f32, f32)>,
+}
+
+impl ScriptInputState {
+    /// Resolve one scheduled tick without advancing the game.
+    #[must_use]
+    pub fn resolve(&mut self, game: &Game, step: &ScriptStep) -> Input {
+        let view = (game.camera().yaw, game.camera().pitch);
+        match step {
+            ScriptStep::Guard => {
+                self.guard_entry.get_or_insert(view);
+                ohl_engine::guard_input(game)
+            }
+            ScriptStep::Fixed(input) => {
+                let mut input = *input;
+                if let Some((yaw, pitch)) = self.guard_entry.take()
+                    && [yaw, pitch, view.0, view.1].into_iter().all(f32::is_finite)
+                {
+                    let turn = (yaw - view.0).rem_euclid(360.0);
+                    let turn = if turn > 180.0 { turn - 360.0 } else { turn };
+                    let corrected = (
+                        input.mouse_delta.0 - turn / MOUSE_SENSITIVITY,
+                        input.mouse_delta.1 + (pitch - view.1) / MOUSE_SENSITIVITY,
+                    );
+                    // Preserve the entire Fixed input if composition overflows,
+                    // matching the camera's rejection of non-finite mouse input.
+                    if corrected.0.is_finite() && corrected.1.is_finite() {
+                        input.mouse_delta = corrected;
+                    }
+                }
+                input
+            }
+        }
+    }
+
+    /// Forget the old map's view after this tick follows a level change.
+    pub fn followed_level_change(&mut self) {
+        self.guard_entry = None;
+    }
 }
 
 /// A parsed scripted-input file: one [`ScriptStep`] per simulation tick,
