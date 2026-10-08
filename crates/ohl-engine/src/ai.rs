@@ -3721,7 +3721,7 @@ mod anchor_domain_floor_tests {
     fn floor_contact_refuses_nonfinite_excessive_and_blocked_candidates() {
         use ohl_formats::test_support::CollisionBrush;
         let floor = CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0);
-        let mut game = floor_contact_game(&[floor.clone()], true, Vec3::ZERO, false);
+        let mut game = floor_contact_game(std::slice::from_ref(&floor), true, Vec3::ZERO, false);
         let entity = entity_of_classname(&game, "monster_barney").unwrap();
         let (level, _) = game.level_and_systems_mut();
         let original = Actor {
