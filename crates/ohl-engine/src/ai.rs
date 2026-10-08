@@ -3395,9 +3395,9 @@ mod anchor_domain_floor_tests {
         if reversed {
             // Negate each plane and exchange its children: the open regions
             // stay the same, while exact contact belongs to the other leaf.
-            for plane in builder.planes.chunks_exact_mut(20) {
-                for value in plane[..16].chunks_exact_mut(4) {
-                    let original = f32::from_le_bytes(value.try_into().unwrap());
+            for plane in builder.planes.as_chunks_mut::<20>().0 {
+                for value in plane[..16].as_chunks_mut::<4>().0 {
+                    let original = f32::from_le_bytes(*value);
                     value.copy_from_slice(&(-original).to_le_bytes());
                 }
             }
