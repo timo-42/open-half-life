@@ -9114,3 +9114,27 @@ Final source-marker coverage, PR, milestone assignment and merge remain pending.
 The closed first-fatal category records BLAST in the first accepted fatal-batch
 union only; it establishes no victim, producer or cause. Independent unimplemented
 explicit-viewpoint backlog is excluded from this repair and original chain cause.
+
+The combined held P2 candidate now includes an independent explicit-viewpoint
+contract correction. `Game::set_viewpoint` accepts a world eye position, matching
+the repository app's `CapturePose` contract, and derives the controller center
+by subtracting its current configured eye offset. Standing and held-crouch
+controls use ordinary `Game::tick` and preserve eye position without movement.
+This is project-authored tooling API consistency, not a retail-engine claim.
+TODO(black-box): original behavior remains unsettled; the original chained caller
+bypasses this setter, so this correction establishes no chain cause or recovery.
+No save encoding, tag, damage, navigation or ordinary input policy changes.
+
+**Gates:** on `a82f5b6`, the generated baseline and sole eye-offset-subtraction
+omission compile and fail the first standing eye assertion; normal and exact
+restoration each pass (1 passed / 0 failed). Held-crouch coverage is normal/
+restored only, not separately mutation-certified. Formatting and scoped test
+Clippy pass. The preceding `baf7204` full seven gates passed (3304/0/37) and its
+release pair passed, but its observed original FOUR remained negative: combat
+36/37 with one unexpected, campaign 93/93, BOTH depth 6 / 372.3 seconds failing
+strict depth. Those results retain their earlier source association; no pass
+transfers to this candidate. Current full workspace gates, release pair, combat,
+campaign, both chains and fresh census: [pending]. Original combat 37/37 zero
+unexpected, campaign 93/93 and BOTH depth 12 / Pass / 660.8 seconds remain
+mandatory, with explicit `--min-depth 12`. M9.61 is unassigned; existing tags and
+separate pending tag reservations remain unchanged. PR/merge/publication pending.
