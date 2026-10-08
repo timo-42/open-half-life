@@ -50,6 +50,7 @@ pub mod handshake;
 pub mod io;
 pub mod locate;
 pub mod parent_session;
+pub mod patch;
 pub mod pipeline;
 pub mod platform;
 pub mod process_session;

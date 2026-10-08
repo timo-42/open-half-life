@@ -1,4 +1,4 @@
-//! A bounded byte window over exactly one file inside the mounted media.
+//! A bounded byte window over a mounted file or a standalone pinned installer.
 //!
 //! The worker's `read_request` messages carry an offset and a length. Without
 //! a window those are offsets into the whole pinned image, so an untrusted
@@ -13,12 +13,13 @@
 //! the cumulative reply bytes against the whole-source policy fixed at the
 //! handshake; the window bounds *where* those reads land.
 //!
-//! Reads go through the [`MediaFile`] the [`Mount`](ohl_vfs::Mount) opened,
+//! Disc reads go through the [`MediaFile`] the [`Mount`](ohl_vfs::Mount) opened,
 //! so ISO 9660 or UDF extent mapping, the mount's bounded buffering, and its
 //! periodic source-stability verification all still apply. The pinned
 //! `MediaSource` the broker hands each call is used only for
 //! [`SourceOps::verify_unchanged`], which is exactly the check the broker
-//! runs before and after every serviceable read.
+//! runs before and after every serviceable read. Standalone reads use that
+//! same pinned source directly, with identical window and broker bounds.
 
 use std::sync::{Mutex, PoisonError};
 
@@ -31,7 +32,7 @@ use crate::source_read_broker::SourceOps;
 
 /// A read-only window `[base_offset, base_offset + length)` inside one file.
 pub struct SourceWindow {
-    file: Mutex<MediaFile>,
+    file: Option<Mutex<MediaFile>>,
     base_offset: u64,
     length: u64,
 }
@@ -60,7 +61,27 @@ impl SourceWindow {
             return Err(SanitizedError::InvalidInput);
         }
         Ok(Self {
-            file: Mutex::new(file),
+            file: Some(Mutex::new(file)),
+            base_offset,
+            length,
+        })
+    }
+
+    /// Confines reads directly to a range of the session's pinned source.
+    pub fn from_source(
+        source: &MediaSource,
+        base_offset: u64,
+        length: u64,
+    ) -> Result<Self, SanitizedError> {
+        if length == 0
+            || base_offset
+                .checked_add(length)
+                .is_none_or(|end| end > source.size())
+        {
+            return Err(SanitizedError::InvalidInput);
+        }
+        Ok(Self {
+            file: None,
             base_offset,
             length,
         })
@@ -80,7 +101,12 @@ impl SourceWindow {
     }
 
     /// Reads `destination` in full at the window-relative `offset`.
-    fn read_window(&self, offset: u64, destination: &mut [u8]) -> Result<(), MediaSourceError> {
+    fn read_window(
+        &self,
+        source: &MediaSource,
+        offset: u64,
+        destination: &mut [u8],
+    ) -> Result<(), MediaSourceError> {
         let requested = u64::try_from(destination.len()).unwrap_or(u64::MAX);
         // Clamped to the window: a read that would cross its end is refused
         // whole, because a short read is not something the reply codec can
@@ -95,7 +121,10 @@ impl SourceWindow {
             return Err(MediaSourceError::OutOfRange);
         };
 
-        let mut file = self.file.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(file) = &self.file else {
+            return source.read_exact_at(absolute, destination);
+        };
+        let mut file = file.lock().unwrap_or_else(PoisonError::into_inner);
         file.seek(absolute)
             .map_err(|_| MediaSourceError::OutOfRange)?;
         let mut filled = 0usize;
@@ -121,14 +150,41 @@ impl SourceOps for SourceWindow {
 
     fn read_exact_at(
         &self,
-        _source: &MediaSource,
+        source: &MediaSource,
         offset: u64,
         destination: &mut [u8],
     ) -> Result<(), MediaSourceError> {
-        self.read_window(offset, destination)
+        self.read_window(source, offset, destination)
     }
 
     fn window_length(&self, _source: &MediaSource) -> u64 {
         self.length
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn standalone_window_maps_offsets_and_refuses_crossing_reads() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("source");
+        std::fs::write(&path, b"prefixPAYLOADsuffix").unwrap();
+        let source = MediaSource::open(&path).unwrap();
+        let window = SourceWindow::from_source(&source, 6, 7).unwrap();
+        let mut out = [0u8; 7];
+        window.read_exact_at(&source, 0, &mut out).unwrap();
+        assert_eq!(&out, b"PAYLOAD");
+        assert_eq!(
+            window.read_exact_at(&source, 1, &mut out),
+            Err(MediaSourceError::OutOfRange)
+        );
+        assert_eq!(
+            window.read_exact_at(&source, u64::MAX, &mut out),
+            Err(MediaSourceError::OutOfRange)
+        );
+        assert!(SourceWindow::from_source(&source, 0, 0).is_err());
+        assert!(SourceWindow::from_source(&source, 15, 7).is_err());
     }
 }

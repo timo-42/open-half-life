@@ -105,6 +105,23 @@ path — pinned source, contained parser, selection, staging, complete-source
 reverification, no-replace publication, provenance, runtime discovery — now
 executes for real on Linux x86-64.
 
+Standalone full-update installers now use the same container window, confined
+worker, selection and publication pipeline through `--iso PATH --patch EXE`.
+A separate combined tree overlays complete replacement files onto the original
+payload by case-insensitive path, retaining the original tree and provenance
+record. Its identity includes the installer fingerprint, base payload identity,
+selection recipe, merged layout and the content digests of retained base files.
+Copied base files must still match those digests when streamed. Installer
+scripts and binary-delta patch operations are not applied.
+
+Local Linux x86-64 validation with the English Half-Life 1.1.1.0 full update
+confirmed native extraction, replacement of existing content, retention of base
+files and reuse of the combined tree. The opt-in regression is
+`crates/ohl-import/tests/manual_patch.rs`; it takes `OHL_TEST_ISO`,
+`OHL_TEST_PATCH` and `OHL_TEST_IMPORT_ROOT`, and requires the worker installed
+beside the test executable. No source media or extracted content is included
+in the repository. Other update editions and platforms remain unverified.
+
 **This is an implementation status, not a qualification status.** Every
 objective release-evidence gate listed further down remains unmet: there is no
 installed-package inventory, no installed-prefix hosted end-to-end run, no

@@ -238,6 +238,14 @@ struct Cli {
     #[arg(long, conflicts_with = "path")]
     iso: Option<PathBuf>,
 
+    /// Apply a local full-update installer over the ISO payload without executing it.
+    #[arg(long, value_name = "EXE", requires = "iso")]
+    patch: Option<PathBuf>,
+
+    /// Optional selection recipe for the patch installer.
+    #[arg(long, value_name = "PATH", requires = "patch")]
+    patch_recipe: Option<PathBuf>,
+
     /// Development only: load a BSP v30 map straight off disk and open a
     /// renderer window (press Escape to quit).
     ///
@@ -1144,7 +1152,8 @@ fn locate_payload_files(cli: &Cli, root: &Path) -> Result<Option<PathBuf>, ExitC
         let layout = cache_layout(cli.cache.clone())?;
         if let Some(tree) = ohl_import::find_published_payload(&layout, &validated, root) {
             tracing::info!("Payload already imported.");
-            return Ok(Some(tree.files_directory().to_path_buf()));
+            return apply_patch_payload(cli, &layout, &validated, root, tree.files_directory())
+                .map(Some);
         }
         match ohl_media::prepare_import_cache(&validated, &layout) {
             Ok(report) => report.log(),
@@ -1163,10 +1172,9 @@ fn locate_payload_files(cli: &Cli, root: &Path) -> Result<Option<PathBuf>, ExitC
         if code != ExitCode::SUCCESS {
             return Err(code);
         }
-        return Ok(
-            ohl_import::find_published_payload(&layout, &validated, root)
-                .map(|tree| tree.files_directory().to_path_buf()),
-        );
+        return ohl_import::find_published_payload(&layout, &validated, root)
+            .map(|tree| apply_patch_payload(cli, &layout, &validated, root, tree.files_directory()))
+            .transpose();
     }
 
     if let Some(files) = sole_published_tree(root) {
@@ -1174,6 +1182,51 @@ fn locate_payload_files(cli: &Cli, root: &Path) -> Result<Option<PathBuf>, ExitC
     }
     tracing::error!("No imported payload was found. Import one first by passing --iso PATH.");
     Err(ExitCode::from(EXIT_FAILURE))
+}
+
+/// Imports the selected update into a new tree; the base record stays intact.
+fn apply_patch_payload(
+    cli: &Cli,
+    cache: &CacheLayout,
+    media: &ValidatedMedia,
+    root: &Path,
+    base_files: &Path,
+) -> Result<PathBuf, ExitCode> {
+    let Some(path) = cli.patch.as_deref() else {
+        return Ok(base_files.to_path_buf());
+    };
+    let apply = || -> Result<PathBuf, ohl_import::ImportError> {
+        let identity = ohl_import::pipeline::recorded_payload_identity(cache, media)
+            .ok_or(ohl_import::ImportError::Provenance)?;
+        let installer = ohl_import::patch::open_installer(path)?;
+        let recipe = load_recipe(cli.patch_recipe.as_deref())
+            .map_err(|_| ohl_import::ImportError::Selection)?;
+        let transport = ohl_import::CancellationToken::default();
+        let staging = ohl_payload::CancellationToken::default();
+        let report = ohl_import::patch::run_patch_import(
+            &installer,
+            ohl_import::patch::BasePayload {
+                identity: &identity,
+                files: base_files,
+            },
+            &recipe,
+            root,
+            cache,
+            ohl_import::ImportCancellation {
+                transport: &transport,
+                staging: &staging,
+            },
+            &mut QuarterProgress::default(),
+        )?;
+        ohl_payload::published_files_directory(root, &report.payload_identity)
+            .ok_or(ohl_import::ImportError::Store)
+    };
+    apply()
+        .inspect(|_| tracing::info!("Patch payload ready."))
+        .map_err(|error| {
+            tracing::error!("Patch import failed: {error}");
+            ExitCode::from(EXIT_FAILURE)
+        })
 }
 
 /// The one published tree under `root`, when there is exactly one.
@@ -1695,6 +1748,28 @@ mod tests {
         assert!(
             ohl_import::pipeline::recorded_payload_identity(&layout, &validated).is_none(),
             "a refused import records nothing"
+        );
+    }
+}
+
+#[cfg(test)]
+mod patch_cli_tests {
+    use super::Cli;
+    use clap::Parser;
+
+    #[test]
+    fn patch_requires_an_explicit_iso() {
+        assert!(Cli::try_parse_from(["ohl", "--patch", "update.exe"]).is_err());
+        assert!(Cli::try_parse_from(["ohl", "--iso", "disc.iso", "--patch", "update.exe"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "ohl",
+                "--iso",
+                "disc.iso",
+                "--patch-recipe",
+                "selection.toml"
+            ])
+            .is_err()
         );
     }
 }

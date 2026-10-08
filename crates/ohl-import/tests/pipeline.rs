@@ -542,3 +542,102 @@ fn media_with_no_recognised_container_never_starts_a_worker() {
     assert_eq!(transport.call_counts(), (0, 0, 0));
     assert!(worker.calls().is_empty());
 }
+
+/// The patch uses the real parent pipeline; only worker replies are synthetic.
+fn run_patch(harness: &Harness, queue_streams: bool) -> Result<ImportReport, ImportError> {
+    use ohl_import::patch::{BasePayload, open_installer, run_patch_import_with_worker};
+    let installer_path = harness.roots.path().join("patch.exe");
+    if !installer_path.exists() {
+        std::fs::write(&installer_path, synthetic_pe_with_z_overlay(128 * 1024)).unwrap();
+    }
+    let base = harness.roots.path().join("base");
+    if !base.exists() {
+        std::fs::create_dir_all(base.join("invented")).unwrap();
+        std::fs::write(base.join("invented/ALPHA.dat"), b"old").unwrap();
+        std::fs::write(base.join("invented/retained.dat"), b"retained").unwrap();
+    }
+    let installer = open_installer(&installer_path).unwrap();
+    push_enumeration(&harness.transport, harness.session);
+    if queue_streams {
+        let (first, second) = entry_bytes();
+        push_stream(&harness.transport, harness.session, 2, &first);
+        push_stream(&harness.transport, harness.session, 3, &second);
+    }
+    let (transport, staging) = tokens();
+    run_patch_import_with_worker(
+        &installer,
+        BasePayload {
+            identity: "synthetic-base-identity",
+            files: &base,
+        },
+        &recipe(),
+        &harness.payload_root(),
+        &harness.cache_layout(),
+        &config(),
+        harness.worker.clone(),
+        harness.allocation,
+        ImportCancellation {
+            transport: &transport,
+            staging: &staging,
+        },
+        &mut ohl_import::DiscardProgress,
+    )
+}
+
+#[test]
+fn standalone_patch_replaces_adds_and_retains_then_reuses_the_combined_tree() {
+    let harness = Harness::new();
+    let report = run_patch(&harness, true).unwrap();
+    assert_eq!(report.outcome, ImportOutcome::Published);
+    assert_eq!(report.entries_imported, 3);
+    let files =
+        ohl_payload::published_files_directory(&harness.payload_root(), &report.payload_identity)
+            .unwrap();
+    let (first, second) = entry_bytes();
+    assert_eq!(std::fs::read(files.join(FIRST_PATH)).unwrap(), first);
+    assert_eq!(std::fs::read(files.join(SECOND_PATH)).unwrap(), second);
+    assert_eq!(
+        std::fs::read(files.join("invented/retained.dat")).unwrap(),
+        b"retained"
+    );
+    assert_eq!(
+        std::fs::read(harness.roots.path().join("base/invented/ALPHA.dat")).unwrap(),
+        b"old"
+    );
+    assert!(recorded_payload_identity(&harness.cache_layout(), harness.fixture.media()).is_none());
+    let again = run_patch(&harness.again(), false).unwrap();
+    assert_eq!(again.outcome, ImportOutcome::AlreadyPublished);
+    assert_eq!(again.payload_identity, report.payload_identity);
+}
+
+#[test]
+fn failed_patch_publishes_nothing_and_leaves_base_usable() {
+    let harness = Harness::new();
+    assert!(run_patch(&harness, false).is_err());
+    assert_eq!(
+        std::fs::read(harness.roots.path().join("base/invented/ALPHA.dat")).unwrap(),
+        b"old"
+    );
+    assert!(
+        std::fs::read_dir(harness.payload_root())
+            .unwrap()
+            .all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("ohl-tree-"))
+    );
+}
+
+#[test]
+fn changing_installer_bytes_changes_the_combined_cache_identity() {
+    let harness = Harness::new();
+    let first = run_patch(&harness, true).unwrap();
+    let installer = harness.roots.path().join("patch.exe");
+    let mut bytes = std::fs::read(&installer).unwrap();
+    *bytes.last_mut().unwrap() ^= 1;
+    std::fs::write(&installer, bytes).unwrap();
+    let second = run_patch(&harness.again(), true).unwrap();
+    assert_eq!(second.outcome, ImportOutcome::Published);
+    assert_ne!(first.payload_identity, second.payload_identity);
+}

@@ -25,6 +25,8 @@ pub enum MediaClass {
     Udf,
     /// An ISO 9660 image.
     Iso9660,
+    /// A standalone installer containing an importable payload.
+    Installer,
 }
 
 impl MediaClass {
@@ -34,6 +36,7 @@ impl MediaClass {
         match self {
             Self::Udf => "udf",
             Self::Iso9660 => "iso9660",
+            Self::Installer => "installer",
         }
     }
 }
@@ -223,6 +226,7 @@ mod tests {
         assert_eq!(MediaClass::Udf.as_str(), "udf");
         assert_eq!(MediaClass::Iso9660.as_str(), "iso9660");
         assert_eq!(MediaClass::Udf.to_string(), "udf");
+        assert_eq!(MediaClass::Installer.as_str(), "installer");
     }
 
     #[test]

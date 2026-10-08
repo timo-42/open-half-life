@@ -301,6 +301,39 @@ impl PrefixReader for MediaFile {
     }
 }
 
+impl PrefixReader for &ohl_platform::MediaSource {
+    fn read_at(&mut self, offset: u64, out: &mut [u8]) -> Result<usize, SanitizedError> {
+        let count = usize::try_from(self.size().saturating_sub(offset))
+            .unwrap_or(usize::MAX)
+            .min(out.len());
+        self.read_exact_at(offset, &mut out[..count])
+            .map_err(SanitizedError::from)?;
+        Ok(count)
+    }
+}
+
+/// Recognises a standalone container and confines reads to its payload.
+pub(crate) fn locate_source(
+    mut source: &ohl_platform::MediaSource,
+    limits: &LocateLimits,
+    cancellation: &CancellationToken,
+) -> Result<crate::SourceWindow, SanitizedError> {
+    source.verify_unchanged().map_err(SanitizedError::from)?;
+    let mut budget = ReadBudget {
+        remaining: limits.total_read_bytes,
+    };
+    let source_size = source.size();
+    let (kind, offset) =
+        classify_file(&mut source, source_size, limits, &mut budget, cancellation)?
+            .ok_or(SanitizedError::InvalidInput)?;
+    let start = if kind == ContainerKind::WiseOverlay {
+        0
+    } else {
+        offset
+    };
+    crate::SourceWindow::from_source(source, start, source.size() - start)
+}
+
 /// The running byte budget shared by every read the search makes.
 struct ReadBudget {
     remaining: u64,

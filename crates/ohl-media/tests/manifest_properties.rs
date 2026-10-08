@@ -17,7 +17,11 @@ fn label_strategy() -> impl Strategy<Value = VolumeLabel> {
 }
 
 fn class_strategy() -> impl Strategy<Value = MediaClass> {
-    prop_oneof![Just(MediaClass::Udf), Just(MediaClass::Iso9660)]
+    prop_oneof![
+        Just(MediaClass::Udf),
+        Just(MediaClass::Iso9660),
+        Just(MediaClass::Installer)
+    ]
 }
 
 fn manifest_strategy() -> impl Strategy<Value = CacheManifest> {
