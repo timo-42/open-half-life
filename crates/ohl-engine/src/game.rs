@@ -1165,12 +1165,13 @@ impl Game {
     /// that as a sign the requested viewpoint needs adjusting, not as a
     /// bug in this method.
     pub fn set_viewpoint(&mut self, position: [f32; 3], pitch: f32, yaw: f32) {
+        let eye_offset = self.controller.eye_position() - self.controller.state.origin;
         self.camera.position = position;
         self.camera.pitch = pitch;
         self.camera.yaw = yaw;
         self.controller.yaw = yaw;
         self.controller.pitch = pitch;
-        self.controller.state.origin = Vec3::from_array(position);
+        self.controller.state.origin = Vec3::from_array(position) - eye_offset;
         // A caller-chosen viewpoint is a free camera, not a spawn: keep the
         // physics controller from immediately dragging it back to the floor.
         self.controller.set_noclip(true);
