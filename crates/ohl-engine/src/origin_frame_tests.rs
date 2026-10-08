@@ -251,13 +251,20 @@ fn ducking_player_actor_keeps_controller_center_and_current_floor_goal() {
             .world
             .get::<&Actor>(follower)
             .expect("follower actor");
+        assert!(
+            following.runner.schedule().is_some_and(|schedule| {
+                std::ptr::eq(schedule, &raw const ohl_ai::monsters::brains::FOLLOW_PLAYER)
+            }),
+            "ordinary follow schedule was selected"
+        );
+        let attempt = following.follow_attempt.expect("ordinary follow admission");
+        assert_eq!(attempt.phase, ohl_ai::follow::FollowPhase::Holding);
+        // Follow owns a raw anchor separately from generic sound/movement targets.
+        assert_eq!(attempt.accepted_player_anchor, actor.navigation_anchor());
         let goal = owner
             .body_frame
-            .anchor_to_query(owner.hull, actor.navigation_anchor());
-        assert_eq!(following.move_target, Some(goal));
-        assert!(
-            (following.move_target.expect("floor goal").z - owner.query_origin().z).abs() < 0.1
-        );
+            .anchor_to_query(owner.hull, attempt.accepted_player_anchor);
+        assert!((goal.z - owner.query_origin().z).abs() < 0.1);
         assert!(
             actor.navigation_anchor().z.abs() < 0.1,
             "stance does not raise the pursuit goal"
