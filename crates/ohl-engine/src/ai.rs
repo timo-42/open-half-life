@@ -6651,3 +6651,320 @@ mod grenade_danger_tests {
         assert_eq!(actor(&game, listener).origin, a.origin);
     }
 }
+
+#[cfg(test)]
+mod grenade_danger_blocked_tests {
+    //! Project-authored blocked-to-danger recovery; no installed-game data is used.
+    //! Player viewpoint changes are explicit fixture placement, not traversal.
+
+    use crate::test_support::{
+        SCRIPT_MAP, entity_block, entity_of_classname, script_room_entities, use_input,
+    };
+    use crate::{Game, Input, MemoryAssets, TICK_SECONDS};
+    use ohl_ai::brain::TAKE_COVER_FROM_DANGER;
+    use ohl_ai::monsters::brains::FOLLOW_PLAYER;
+    use ohl_ai::movement::STUCK_TICKS;
+    use ohl_ai::{Actor, Conditions, MonsterAi, Vec3};
+    use ohl_formats::test_support::{Bsp30Builder, CollisionBrush};
+    use ohl_game::hecs::Entity;
+    use ohl_physics::{DIST_EPSILON, Hull};
+
+    fn actor(game: &Game, entity: Entity) -> Actor {
+        *game.registry().world.get::<&Actor>(entity).expect("actor")
+    }
+
+    fn follower_state(game: &Game, entity: Entity) -> MonsterAi {
+        (*game.registry().world.get::<&MonsterAi>(entity).expect("AI")).clone()
+    }
+
+    fn place_player_eye(game: &mut Game, center: Vec3) {
+        let offset = Vec3::from_array(game.eye_position()) - Vec3::from_array(game.player_origin());
+        game.set_viewpoint((center + offset).to_array(), 0.0, 0.0);
+        assert!(Vec3::from_array(game.player_origin()).abs_diff_eq(center, DIST_EPSILON));
+        let trace = game
+            .collision()
+            .expect("collision")
+            .trace(Hull::Standing, center, center);
+        assert!(!trace.start_solid && !trace.all_solid);
+    }
+
+    fn assert_supported_clear_leg(game: &Game, body: Actor, goal: Vec3) {
+        let from = body.query_origin();
+        assert!(from.is_finite() && goal.is_finite());
+        assert!((from.z - goal.z).abs() <= DIST_EPSILON);
+        let collision = game.collision().expect("collision");
+        let chord = collision.trace(body.hull, from, goal);
+        assert!(!chord.start_solid && !chord.all_solid);
+        assert!(chord.fraction >= 1.0 && chord.end_pos.abs_diff_eq(goal, DIST_EPSILON));
+        // The whole authored room is flat. Sample the full leg, including endpoints.
+        for sample in 0..=32_u16 {
+            let mut point = from.lerp(goal, f32::from(sample) / 32.0);
+            point.z = from.z;
+            let floor = collision.trace(body.hull, point, point - Vec3::Z);
+            assert!(!floor.start_solid && !floor.all_solid);
+            assert!(floor.fraction < 1.0 && floor.plane_normal.z > 0.9);
+        }
+    }
+
+    fn danger_room(entities: &str) -> Vec<u8> {
+        let mut b = Bsp30Builder::new();
+        b.set_entities_text(entities);
+        let heads = b.push_collision_hulls(&[
+            CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+            CollisionBrush::half_space([0.0, 0.0, -1.0], -256.0),
+            CollisionBrush::half_space([1.0, 0.0, 0.0], -512.0),
+            CollisionBrush::half_space([-1.0, 0.0, 0.0], -512.0),
+            CollisionBrush::half_space([0.0, 1.0, 0.0], -512.0),
+            CollisionBrush::half_space([0.0, -1.0, 0.0], -512.0),
+            CollisionBrush::box_brush([-16.0, -512.0, 0.0], [16.0, 512.0, 256.0]),
+        ]);
+        b.push_model(
+            [-512.0, -512.0, 0.0],
+            [512.0, 512.0, 256.0],
+            [0.0; 3],
+            heads,
+            1,
+            0,
+            0,
+        );
+        b.build()
+    }
+
+    fn live_grenade(game: &Game) -> (Vec3, f32) {
+        let save = game.to_save(0);
+        let projectiles = &save
+            .projectiles
+            .as_ref()
+            .expect("ordinary projectile snapshot")
+            .projectiles;
+        assert_eq!(projectiles.len(), 1);
+        let p = &projectiles[0];
+        assert_eq!(p.kind_tag, 3, "actual ordinary HandGrenade");
+        assert!(p.age > 0.0);
+        let fuse = p.fuse.expect("timed grenade");
+        assert!(fuse.is_finite() && fuse > 4.0 && fuse < 5.0);
+        (Vec3::from_array(p.position), fuse)
+    }
+
+    // Keep entered-loop prerequisites beside the real-input recovery and mutation oracle.
+    #[allow(clippy::too_many_lines)]
+    #[test]
+    fn an_entered_blocked_follower_can_escape_an_ordinary_grenade() {
+        // Generated flat room: same x=0 blocking slab, widened outer bounds for the 320-unit cover leg.
+        let standing_z = Hull::Standing.foot_offset() + DIST_EPSILON;
+        let entities = script_room_entities(
+            [-128.0, 0.0, standing_z],
+            &entity_block("monster_scientist", [-96.0, 0.0, 0.0], 180.0, &[]),
+        );
+        let bytes = danger_room(&entities);
+        let mut assets = MemoryAssets::new();
+        assets.insert(&format!("maps/{SCRIPT_MAP}.bsp"), bytes.clone());
+        let mut game = Game::from_map_bytes(&assets, SCRIPT_MAP, &bytes).expect("authored room");
+        let follower = entity_of_classname(&game, "monster_scientist").expect("scientist");
+        assert!(actor(&game, follower).alive && game.player_health() > 0.0);
+
+        game.tick(TICK_SECONDS, &use_input());
+        for _ in 0..4 {
+            if game.followers() == [follower] {
+                break;
+            }
+            game.tick(TICK_SECONDS, &Input::default());
+        }
+        assert_eq!(
+            game.followers(),
+            &[follower],
+            "ordinary Use recruits the follower"
+        );
+
+        let old_center = Vec3::new(160.0, 0.0, standing_z);
+        place_player_eye(&mut game, old_center);
+        game.tick(TICK_SECONDS, &Input::default());
+        let old_raw_goal = actor(&game, game.player_entity()).navigation_anchor();
+        assert!(old_raw_goal.abs_diff_eq(
+            old_center - Vec3::Z * Hull::Standing.foot_offset(),
+            DIST_EPSILON
+        ));
+        let body = actor(&game, follower);
+        let old_query_goal = body.body_frame.anchor_to_query(body.hull, old_raw_goal);
+        let old_chord = game.collision().expect("collision").trace(
+            body.hull,
+            body.query_origin(),
+            old_query_goal,
+        );
+        assert!(!old_chord.start_solid && old_chord.fraction < 1.0);
+
+        let mut consecutive_task_zero = 0;
+        let mut retained_route = None;
+        let mut walked_old_leg = false;
+        for _ in 0..600 {
+            game.tick(TICK_SECONDS, &Input::default());
+            let ai = follower_state(&game, follower);
+            assert!(actor(&game, follower).alive && ai.memory.is_none());
+            assert_eq!(game.followers(), &[follower]);
+            if ai
+                .runner
+                .schedule()
+                .is_some_and(|schedule| std::ptr::eq(schedule, &raw const FOLLOW_PLAYER))
+                && ai.runner.task_index() == 3
+                && ai.move_speed > 0.0
+            {
+                walked_old_leg = true;
+            }
+            let entered = ai
+                .runner
+                .schedule()
+                .is_some_and(|schedule| std::ptr::eq(schedule, &raw const FOLLOW_PLAYER))
+                && ai.runner.task_index() == 0
+                && !ai.runner.started()
+                && ai.stuck.ticks() >= STUCK_TICKS
+                && ai.conditions.contains(Conditions::BLOCKED)
+                && !ai.route.is_finished()
+                && ai.move_speed > 0.0;
+            if entered {
+                if let Some(route) = &retained_route {
+                    assert_eq!(
+                        &ai.route, route,
+                        "same-goal reselection retains the old route"
+                    );
+                } else {
+                    retained_route = Some(ai.route.clone());
+                }
+                consecutive_task_zero += 1;
+                if consecutive_task_zero > STUCK_TICKS {
+                    break;
+                }
+            } else {
+                consecutive_task_zero = 0;
+            }
+        }
+        assert!(
+            walked_old_leg,
+            "ordinary tasks must have started the old walking leg"
+        );
+        assert!(
+            consecutive_task_zero > STUCK_TICKS,
+            "enter and retain the task-0 BLOCKED selection loop before retargeting"
+        );
+        let blocked = follower_state(&game, follower);
+        let start = actor(&game, follower);
+        assert!(
+            blocked
+                .route
+                .goal
+                .abs_diff_eq(old_query_goal - Vec3::X * 96.0, DIST_EPSILON)
+        );
+        let old_leg = game.collision().expect("collision").trace(
+            start.hull,
+            start.query_origin(),
+            blocked.route.goal,
+        );
+        assert!(!old_leg.start_solid && old_leg.fraction < 1.0);
+
+        // Prepare the weapon through the public inventory and ordinary selection.
+        // The player stays at the SAME navigation anchor: no new follow goal can
+        // repair the entered old BLOCKED state on behalf of the danger response.
+        game.give_start_inventory(&[crate::StartInventoryItem::Weapon(
+            ohl_combat::WeaponId::HandGrenade,
+        )]);
+        let eye = game.eye_position();
+        game.set_viewpoint(eye, 180.0, 0.0);
+        game.tick(
+            TICK_SECONDS,
+            &Input {
+                select_slot: Some(ohl_combat::hud_slot(ohl_combat::WeaponId::HandGrenade).slot),
+                ..Input::default()
+            },
+        );
+        for _ in 0..100 {
+            game.tick(TICK_SECONDS, &Input::default());
+        }
+        let before = follower_state(&game, follower);
+        assert_eq!(before.runner.schedule_name(), FOLLOW_PLAYER.name);
+        assert_eq!(before.runner.task_index(), 0);
+        assert!(before.stuck.is_stuck() && before.conditions.contains(Conditions::BLOCKED));
+        assert!(!before.route.is_finished() && before.move_speed > 0.0);
+        assert!(
+            actor(&game, game.player_entity())
+                .navigation_anchor()
+                .abs_diff_eq(old_raw_goal, DIST_EPSILON)
+        );
+        assert!(
+            actor(&game, follower)
+                .query_origin()
+                .abs_diff_eq(start.query_origin(), DIST_EPSILON)
+        );
+        assert_eq!(game.projectile_count(), 0);
+        assert_eq!(game.monster_death_count(), 0);
+        let shots = game.weapon_fired_count();
+        game.tick(
+            TICK_SECONDS,
+            &Input {
+                attack: true,
+                ..Input::default()
+            },
+        );
+        assert_eq!(
+            game.weapon_fired_count(),
+            shots + 1,
+            "ordinary weapon accepted one real throw"
+        );
+        let (danger, _) = live_grenade(&game);
+        let body = actor(&game, follower);
+        let ai = follower_state(&game, follower);
+        assert!(
+            body.eye().distance(danger) < 200.0,
+            "actual grenade lies in the project-authored current warning radius"
+        );
+        assert!(
+            ai.conditions.contains(Conditions::HEAR_DANGER),
+            "ordinary grenade bridge reached real senses"
+        );
+        assert_eq!(
+            ai.runner.schedule_name(),
+            TAKE_COVER_FROM_DANGER.name,
+            "ordinary priority selected danger cover"
+        );
+        let away = Vec3::new(
+            body.query_origin().x - danger.x,
+            body.query_origin().y - danger.y,
+            0.0,
+        )
+        .normalize();
+        assert!(away.is_finite() && away.x < -0.9);
+        let cover_goal = body.query_origin() + away * ohl_ai::world::COVER_DISTANCE;
+        assert_supported_clear_leg(&game, body, cover_goal);
+        let origin = body.query_origin();
+        let mut previous = origin;
+        for _ in 0..20 {
+            game.tick(TICK_SECONDS, &Input::default());
+            let (point, _) = live_grenade(&game);
+            let body = actor(&game, follower);
+            let ai = follower_state(&game, follower);
+            assert!(body.alive && game.player_health() > 0.0);
+            assert_eq!(game.monster_death_count(), 0);
+            assert!(body.eye().distance(point) < 200.0);
+            assert!(ai.conditions.contains(Conditions::HEAR_DANGER));
+            assert_eq!(game.followers(), &[follower]);
+            assert!(
+                actor(&game, game.player_entity())
+                    .navigation_anchor()
+                    .abs_diff_eq(old_raw_goal, DIST_EPSILON)
+            );
+            let current = body.query_origin();
+            let trace = game
+                .collision()
+                .unwrap()
+                .trace(body.hull, previous, current);
+            assert!(!trace.start_solid && !trace.all_solid && trace.fraction >= 1.0);
+            assert!(
+                (current - previous).length() <= 8.0,
+                "ordinary bounded movement, no teleport"
+            );
+            previous = current;
+        }
+        assert!(
+            (previous - origin).dot(away) > 8.0,
+            "an entered blocked actor must execute the selected clear grenade-escape leg"
+        );
+    }
+}

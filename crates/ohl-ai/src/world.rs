@@ -1025,6 +1025,15 @@ impl AiWorld {
                 false,
                 self.navigator.as_mut(),
             );
+            prepare_danger_cover_recovery(
+                entity,
+                &actor,
+                &mut ai,
+                schedule,
+                &mut conditions,
+                dt,
+                self.navigator.as_mut(),
+            );
             if !is_follow_schedule(schedule) {
                 ai.follow_attempt = None;
             }
@@ -1108,6 +1117,17 @@ impl AiWorld {
                 &mut post,
                 dt,
                 outcome == RunOutcome::Done,
+                self.navigator.as_mut(),
+            ) {
+                conditions.remove(Conditions::BLOCKED);
+            }
+            if prepare_danger_cover_recovery(
+                entity,
+                &actor,
+                &mut ai,
+                schedule,
+                &mut post,
+                dt,
                 self.navigator.as_mut(),
             ) {
                 conditions.remove(Conditions::BLOCKED);
@@ -1305,6 +1325,38 @@ fn ai_bytes(ai: &MonsterAi) -> Vec<u8> {
 
 fn is_follow_schedule(schedule: &Schedule) -> bool {
     std::ptr::eq(schedule, &raw const crate::monsters::brains::FOLLOW_PLAYER)
+}
+
+// TODO(black-box): a newly selected danger response owns a fresh escape attempt.
+// Physical failure of the retired route must not interrupt its setup task.
+#[allow(clippy::too_many_arguments)]
+fn prepare_danger_cover_recovery(
+    entity: Entity,
+    actor: &Actor,
+    ai: &mut MonsterAi,
+    schedule: &Schedule,
+    conditions: &mut Conditions,
+    dt: f32,
+    navigator: Option<&mut NavBridge>,
+) -> bool {
+    if !actor.alive
+        || !actor.health.is_finite()
+        || actor.health <= 0.0
+        || !dt.is_finite()
+        || dt <= 0.0
+        || !conditions.contains(Conditions::HEAR_DANGER)
+        || !conditions.contains(Conditions::BLOCKED)
+        || !std::ptr::eq(schedule, &raw const crate::brain::TAKE_COVER_FROM_DANGER)
+    {
+        return false;
+    }
+    // This existing operation retires only route/speed/physical stuck/BLOCKED;
+    // it does not alter roster, enemy, sound, damage, or other interrupt state.
+    retire_follow_motion(ai, conditions);
+    if let Some(navigator) = navigator {
+        navigator.invalidate_actor(entity);
+    }
+    true
 }
 
 fn retire_follow_motion(ai: &mut MonsterAi, conditions: &mut Conditions) {
