@@ -31,7 +31,7 @@ use crate::schedule::{
 };
 use crate::senses::{
     Candidate, EnemyMemory, SightContext, Sighting, SoundEvent, SoundKind, SoundList, Viewer,
-    listen_with_danger_bounds, look, select_enemy,
+    listen_with_danger_exposure, look, select_enemy,
 };
 use crate::squad::{SquadCandidate, SquadRoster};
 use crate::state::{Classification, Conditions, MonsterState, RelationshipTable};
@@ -57,6 +57,19 @@ pub const MIN_WANDER_LEG: f32 = 2.0 * movement::WAYPOINT_TOLERANCE;
 
 /// The largest number of events one tick reports.
 pub const MAX_EVENTS_PER_TICK: usize = 4_096;
+
+/// Read-only damage geometry supplied for this AI pass, keyed by the complete
+/// entity handle. Returned bounds are already in world space; callers must not
+/// add an actor anchor, yaw, or body-frame offset. Nothing is stored by AI.
+///
+/// TODO(black-box): this project-authored admission uses the damage snapshot,
+/// not a guarantee about post-script movement or future animation poses.
+pub trait DangerExposure {
+    /// Missing geometry leaves both existing hearing admissions unchanged.
+    fn bounds_for(&self, _entity: Entity) -> Option<(Vec3, Vec3)> {
+        None
+    }
+}
 
 /// Identifies a registered [`Brain`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -573,6 +586,17 @@ impl AiWorld {
     ///
     /// Returns the events produced, bounded by [`MAX_EVENTS_PER_TICK`].
     pub fn tick(&mut self, world: &mut World, context: &SightContext<'_>, dt: f32) -> Vec<AiEvent> {
+        self.tick_with_danger_exposure(world, context, dt, None)
+    }
+
+    /// As [`Self::tick`], borrowing optional damage bounds for this pass only.
+    pub fn tick_with_danger_exposure(
+        &mut self,
+        world: &mut World,
+        context: &SightContext<'_>,
+        dt: f32,
+        danger_exposure: Option<&dyn DangerExposure>,
+    ) -> Vec<AiEvent> {
         let mut events = Vec::new();
         let dt = if dt.is_finite() && dt > 0.0 { dt } else { 0.0 };
 
@@ -612,6 +636,7 @@ impl AiWorld {
                 &candidates,
                 &by_entity,
                 context,
+                danger_exposure,
                 dt,
                 &mut events,
             );
@@ -671,6 +696,7 @@ impl AiWorld {
         candidates: &[Candidate],
         by_entity: &BTreeMap<Entity, Candidate>,
         context: &SightContext<'_>,
+        danger_exposure: Option<&dyn DangerExposure>,
         dt: f32,
         events: &mut Vec<AiEvent>,
     ) {
@@ -748,11 +774,12 @@ impl AiWorld {
         let sight = look(&viewer, &senses, candidates, &self.relationships, context);
         conditions |= sight.conditions;
         let (min, max) = actor.fallback_damage_bounds();
-        let heard = listen_with_danger_bounds(
+        let heard = listen_with_danger_exposure(
             viewer.eye(),
             &senses,
             &self.sounds,
             Some((actor.origin + min, actor.origin + max)),
+            || danger_exposure.and_then(|snapshot| snapshot.bounds_for(entity)),
         );
         conditions |= heard.conditions;
         if let Some(sound) = heard.best {

@@ -1356,7 +1356,12 @@ impl AiState {
                 collision: level.monster_collision.as_ref(),
                 world: Some(&level.world),
             };
-            self.world.tick(&mut level.registry.world, &context, dt)
+            self.world.tick_with_danger_exposure(
+                &mut level.registry.world,
+                &context,
+                dt,
+                Some(grenade.projectiles),
+            )
         };
         self.consume_events(level, &events, damage, grenade);
         // Last, so it wins the precedence tie `docs/FORMAT_SOURCES.md`'s
@@ -6204,6 +6209,320 @@ mod grenade_danger_tests {
             }
         }
     }
+    fn ordinary_posed_warning_scene(distance: f32) -> (crate::Game, Entity) {
+        let mut bsp = Bsp30Builder::new();
+        bsp.set_entities_text(&format!(
+            "{{\"classname\" \"worldspawn\"}}{}{}",
+            entity_block("info_player_start", [0.0, 0.0, 36.0], 0.0, &[]),
+            entity_block(
+                "monster_barney",
+                [-distance, 0.0, 0.0],
+                0.0,
+                &[("targetname", "listener")],
+            ),
+        ));
+        let heads = bsp.push_collision_hulls(&[
+            CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+            CollisionBrush::half_space([0.0, 0.0, -1.0], -512.0),
+            CollisionBrush::half_space([1.0, 0.0, 0.0], -1024.0),
+            CollisionBrush::half_space([-1.0, 0.0, 0.0], -1024.0),
+            CollisionBrush::half_space([0.0, 1.0, 0.0], -1024.0),
+            CollisionBrush::half_space([0.0, -1.0, 0.0], -1024.0),
+        ]);
+        bsp.push_model(
+            [-1024.0, -1024.0, 0.0],
+            [1024.0, 1024.0, 512.0],
+            [0.0; 3],
+            heads,
+            1,
+            0,
+            0,
+        );
+        let mut assets = crate::MemoryAssets::new();
+        assets.insert(
+            MonsterKind::Barney.default_model_path().unwrap(),
+            plan_scripted_monster_model_bytes(),
+        );
+        let mut game = crate::Game::from_map_bytes(&assets, AI_MAP, &bsp.build()).unwrap();
+        let listener = game.registry().find("listener")[0];
+        game.give_start_inventory(&[crate::StartInventoryItem::Weapon(
+            ohl_combat::WeaponId::HandGrenade,
+        )]);
+        game.tick(
+            crate::TICK_SECONDS,
+            &crate::Input {
+                select_slot: Some(ohl_combat::hud_slot(ohl_combat::WeaponId::HandGrenade).slot),
+                mouse_delta: (0.0, 89.0 / crate::MOUSE_SENSITIVITY),
+                ..crate::Input::default()
+            },
+        );
+        for _ in 0..100 {
+            step(&mut game);
+        }
+        clear_body(&game, listener);
+        assert!(game.registry().world.get::<&StudioAnim>(listener).is_ok());
+        assert!(game.registry().world.get::<&ScriptHold>(listener).is_err());
+        assert!(
+            game.registry()
+                .world
+                .get::<&MonsterAi>(listener)
+                .unwrap()
+                .memory
+                .is_none()
+        );
+        assert_eq!(game.projectile_count(), 0);
+        assert_eq!(game.monster_damage_event_count(), 0);
+        (game, listener)
+    }
+
+    // A real player throw exposes a posed body region that neither the ear
+    // nor the existing fallback body admits. All geometry is project-authored.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn danger_posed_exposure_ordinary_throw_enters_cover_and_avoids_injury() {
+        enum Exposure {
+            Ear,
+            Proxy,
+            Outside,
+            Posed,
+        }
+        let senses = MonsterBrain::for_kind(MonsterKind::Barney)
+            .unwrap()
+            .senses();
+        assert!((senses.hearing_sensitivity - 1.0).abs() <= f32::EPSILON);
+        // Prior admissions and the negative twin complete before the new primary.
+        for (distance, exposure) in [
+            (170.0, Exposure::Ear),
+            (205.0, Exposure::Proxy),
+            (280.0, Exposure::Outside),
+            (225.0, Exposure::Posed),
+        ] {
+            let expects_warning = !matches!(exposure, Exposure::Outside);
+            let (mut game, listener) = ordinary_posed_warning_scene(distance);
+            let initial = actor(&game, listener);
+            assert_eq!(initial.body_frame, ohl_ai::body::BodyFrame::Feet);
+            assert!(
+                initial
+                    .view_ofs
+                    .abs_diff_eq(Vec3::Z * 64.0, ohl_physics::DIST_EPSILON)
+            );
+            let shots = game.weapon_fired_count();
+            game.tick(
+                crate::TICK_SECONDS,
+                &crate::Input {
+                    attack: true,
+                    ..crate::Input::default()
+                },
+            );
+            assert_eq!(
+                game.weapon_fired_count(),
+                shots + 1,
+                "ordinary player throw admitted"
+            );
+            let save = game.to_save(0);
+            let live = &save.projectiles.as_ref().unwrap().projectiles;
+            assert_eq!(live.len(), 1);
+            let launched = live[0];
+            assert_eq!(launched.kind_tag, 3);
+            let attack = *save
+                .projectile_runtime
+                .as_ref()
+                .unwrap()
+                .attacks
+                .iter()
+                .find(|attack| attack.id == launched.id)
+                .unwrap();
+            assert_eq!(attack.owner, Some(ProjectileEntityRef::Player));
+            assert_eq!(attack.damage_bits, DamageType::BLAST.bits());
+            assert!(attack.damage.is_finite() && attack.damage > 0.0);
+            let radius = attack.blast_radius.unwrap();
+            let at = Vec3::from_array(launched.position);
+            assert!(radius.is_finite() && radius > 0.0 && at.is_finite());
+            assert!(
+                launched
+                    .fuse
+                    .is_some_and(|left| left.is_finite() && left > 0.0)
+            );
+            let body = actor(&game, listener);
+            clear_body(&game, listener);
+            assert!((body.health - initial.health).abs() <= f32::EPSILON);
+            assert!(
+                body.origin
+                    .abs_diff_eq(initial.origin, ohl_physics::DIST_EPSILON),
+                "first exposure precedes actor movement"
+            );
+            assert!(game.registry().world.get::<&ScriptHold>(listener).is_err());
+            let transform = *game.registry().world.get::<&Transform>(listener).unwrap();
+            assert!(
+                transform
+                    .origin
+                    .abs_diff_eq(body.origin, ohl_physics::DIST_EPSILON)
+            );
+
+            // Read the actual retained phase5 entry. Do not resample the pose or
+            // convert its already-world-space corners a second time.
+            let entry = {
+                let (_, systems) = game.level_and_systems_mut();
+                assert_eq!(systems.hitboxes().rejected(), 0);
+                systems
+                    .hitboxes()
+                    .entries()
+                    .iter()
+                    .find(|entry| entry.id == ohl_combat::EntityId(listener.to_bits().get()))
+                    .expect("the actual full-generational listener has phase5 hitboxes")
+                    .clone()
+            };
+            assert!(
+                entry
+                    .origin
+                    .abs_diff_eq(body.origin, ohl_physics::DIST_EPSILON)
+            );
+            assert_eq!(
+                entry.boxes.len(),
+                1,
+                "the authored Studio model has one genuine hitbox"
+            );
+            let local = &entry.boxes[0];
+            assert!(
+                local.max.x >= 34.0 - ohl_physics::DIST_EPSILON
+                    && local.max.x <= 44.0 + ohl_physics::DIST_EPSILON,
+                "the actual sampled authored pose extends beyond the standing proxy"
+            );
+            let mut posed_min = Vec3::splat(f32::INFINITY);
+            let mut posed_max = Vec3::splat(f32::NEG_INFINITY);
+            for x in [local.min.x, local.max.x] {
+                for y in [local.min.y, local.max.y] {
+                    for z in [local.min.z, local.max.z] {
+                        let corner = entry.origin + entry.rotation * Vec3::new(x, y, z);
+                        assert!(corner.is_finite());
+                        posed_min = posed_min.min(corner);
+                        posed_max = posed_max.max(corner);
+                    }
+                }
+            }
+            assert!((posed_max - posed_min).cmpgt(Vec3::ZERO).all());
+            let (min, max) = body.fallback_damage_bounds();
+            let proxy_min = body.origin + min;
+            let proxy_max = body.origin + max;
+            let nearest = at.clamp(posed_min, posed_max);
+            let ear_distance = body.eye().distance(at);
+            let proxy_distance = at.distance(at.clamp(proxy_min, proxy_max));
+            let posed_distance = at.distance(nearest);
+            assert!(
+                ear_distance.is_finite()
+                    && proxy_distance.is_finite()
+                    && posed_distance.is_finite()
+            );
+            let chord = game
+                .collision()
+                .unwrap()
+                .trace(ohl_physics::Hull::Point, at, nearest);
+            assert!(
+                !chord.start_solid && !chord.all_solid && chord.fraction >= 1.0,
+                "the same live blast origin has a clear chord to its posed damage region"
+            );
+            match exposure {
+                Exposure::Ear => assert!(
+                    ear_distance < radius && proxy_distance < radius && posed_distance < radius
+                ),
+                Exposure::Proxy => assert!(
+                    ear_distance > radius && proxy_distance < radius && posed_distance < radius
+                ),
+                Exposure::Outside => assert!(
+                    ear_distance > radius && proxy_distance > radius && posed_distance > radius
+                ),
+                Exposure::Posed => {
+                    assert!(
+                        ear_distance > radius * senses.hearing_sensitivity
+                            && proxy_distance > radius
+                            && posed_distance < radius,
+                        "FIRST real live warning is outside ear+fallback but inside the actual phase5 posed damage bounds; ear={ear_distance}, proxy={proxy_distance}, posed={posed_distance}, radius={radius}"
+                    );
+                    assert!(posed_max.x > proxy_max.x);
+                }
+            }
+            {
+                let ai = game.registry().world.get::<&MonsterAi>(listener).unwrap();
+                if matches!(exposure, Exposure::Posed) {
+                    assert!(
+                        ai.conditions.contains(Conditions::HEAR_DANGER),
+                        "posed-only live danger must be heard before movement"
+                    );
+                } else {
+                    assert_eq!(
+                        ai.conditions.contains(Conditions::HEAR_DANGER),
+                        expects_warning,
+                        "ear/proxy admission and fully outside refusal remain intact"
+                    );
+                }
+                if expects_warning {
+                    assert!(
+                        ai.runner.schedule().is_some_and(|schedule| std::ptr::eq(
+                            schedule,
+                            &raw const ohl_ai::brain::TAKE_COVER_FROM_DANGER
+                        )),
+                        "ordinary priority selects cover without assigned AI state"
+                    );
+                    assert!(
+                        ai.move_target
+                            .is_some_and(|point| point.abs_diff_eq(at, ohl_physics::DIST_EPSILON)),
+                        "the selected danger retains this actual grenade's source position"
+                    );
+                }
+            }
+            let away = (initial.origin - at).truncate().normalize();
+            assert!(away.is_finite());
+            let mut progress = 0.0_f32;
+            let mut detonated = false;
+            for _ in 0..600 {
+                let current = projectile(&game, launched.id).expect("same ordinary live grenade");
+                let state = game.to_save(0);
+                assert_eq!(
+                    *state
+                        .projectile_runtime
+                        .as_ref()
+                        .unwrap()
+                        .attacks
+                        .iter()
+                        .find(|profile| profile.id == launched.id)
+                        .unwrap(),
+                    attack
+                );
+                assert!(
+                    current
+                        .fuse
+                        .is_some_and(|left| left.is_finite() && left > 0.0)
+                );
+                step(&mut game);
+                let now = actor(&game, listener);
+                clear_body(&game, listener);
+                progress = progress.max((now.origin - initial.origin).truncate().dot(away));
+                if projectile(&game, launched.id).is_none() {
+                    assert!(
+                        current.fuse.unwrap() <= crate::TICK_SECONDS,
+                        "ordinary fuse expiry"
+                    );
+                    assert_eq!(game.projectile_count(), 0);
+                    assert!(
+                        now.alive && (now.health - initial.health).abs() <= f32::EPSILON,
+                        "the open-floor listener survives the same grenade without injury"
+                    );
+                    assert_eq!(game.monster_damage_event_count(), 0);
+                    clear_body(&game, listener);
+                    detonated = true;
+                    break;
+                }
+            }
+            assert!(detonated);
+            if expects_warning {
+                assert!(
+                    progress > ohl_ai::movement::WAYPOINT_TOLERANCE,
+                    "ordinary cover tasks produce real supported away motion"
+                );
+            }
+        }
+    }
+
     fn actor(game: &crate::Game, entity: Entity) -> Actor {
         *game.registry().world.get::<&Actor>(entity).unwrap()
     }

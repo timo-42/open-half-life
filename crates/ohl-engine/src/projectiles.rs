@@ -276,6 +276,17 @@ pub(crate) struct TimedBlastThreat {
     pub(crate) radius: f32,
 }
 
+// This is exactly the phase5 world-space map phase7 uses for radius damage.
+// Do not rebuild poses or translate to a phase8 actor/script location here.
+impl ohl_ai::world::DangerExposure for ProjectileSystem {
+    fn bounds_for(&self, entity: Entity) -> Option<(Vec3, Vec3)> {
+        let (min, max) = *self.blast_bounds.get(&entity_id(entity))?;
+        let span = max - min;
+        (min.is_finite() && max.is_finite() && span.is_finite() && span.cmpgt(Vec3::ZERO).all())
+            .then_some((min, max))
+    }
+}
+
 impl ProjectileSystem {
     /// An empty system seeded for its (currently only) source of
     /// randomness: a wandering snark's hop direction.
@@ -3015,5 +3026,58 @@ mod current_safety_geometry_tests {
             current_safety_geometry(level, &rejected).is_none(),
             "old rejection is not erased by rebuild"
         );
+    }
+}
+
+#[cfg(test)]
+mod danger_exposure_tests {
+    use super::ProjectileSystem;
+    use glam::Vec3;
+    use ohl_ai::world::DangerExposure;
+    use ohl_game::hecs::World;
+
+    #[test]
+    fn danger_snapshot_lookup_uses_full_generation_and_refuses_invalid_bounds() {
+        let mut world = World::new();
+        let retired = world.spawn(());
+        let mut projectiles = ProjectileSystem::new(1);
+        let bounds = (Vec3::new(10.0, 20.0, 30.0), Vec3::new(40.0, 50.0, 60.0));
+        assert_eq!(projectiles.bounds_for(retired), None);
+        projectiles
+            .blast_bounds
+            .insert(crate::ids::entity_id(retired), bounds);
+        assert_eq!(
+            projectiles.bounds_for(retired),
+            Some(bounds),
+            "world coordinates are returned without an actor offset"
+        );
+        world.despawn(retired).unwrap();
+        let current = world.spawn(());
+        assert_eq!(
+            current.id(),
+            retired.id(),
+            "the authored control really reuses the slot"
+        );
+        assert_ne!(current.to_bits(), retired.to_bits());
+        assert_eq!(
+            projectiles.bounds_for(current),
+            None,
+            "a retired generation cannot supply the new actor's exposure"
+        );
+        for invalid in [
+            (Vec3::NAN, Vec3::ONE),
+            (Vec3::ONE, Vec3::ZERO),
+            (Vec3::ZERO, Vec3::ZERO),
+            (Vec3::splat(-f32::MAX), Vec3::splat(f32::MAX)),
+        ] {
+            projectiles
+                .blast_bounds
+                .insert(crate::ids::entity_id(current), invalid);
+            assert_eq!(projectiles.bounds_for(current), None);
+        }
+        projectiles
+            .blast_bounds
+            .insert(crate::ids::entity_id(current), bounds);
+        assert_eq!(projectiles.bounds_for(current), Some(bounds));
     }
 }
