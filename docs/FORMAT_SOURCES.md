@@ -8877,8 +8877,10 @@ and straight after a save loads).
 ## M9.NEXT — Major-fracture HEV sentence adapter
 
 The directly reviewed public [Combine OverWiki HEV Quotes page, Vital signs](https://combineoverwiki.net/wiki/Hazardous_Environment_Suit/Quotes#Vital_signs)
-(revision 489605, reviewed 2026-10-07) identifies `HEV_DMG5` with major
-fracture. This extends M9.55's admitted identifiers by that one association.
+(live page reports revision 489605, directly reviewed 2026-10-09) identifies
+`HEV_DMG5` with major fracture. This extends M9.55's admitted identifiers by
+that one association. The archived revision URL was unavailable in the public
+review; this citation records the live-page retrieval, not an archived one.
 Only the identifier and broad association are used; no dialogue, audio, word
 list, WAV path or external implementation is copied. The page includes unused
 material, so its listing alone does not verify an original in-game trigger.

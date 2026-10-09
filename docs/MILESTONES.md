@@ -9700,8 +9700,15 @@ paths, copied sentence words, trigger bits, scheduling queue, save tags,
 dependencies, framework, broader HEV or other sound producers. No claim of
 retail fidelity, decoded mixer output or hardware audibility.
 
-**Gates:** focused checks passed; full required gates **PENDING**. SOURCE-only
-handoff: no push, PR or merge authorization. The inherited main chain shortfall
-(depth 6 / 372.3s) remains; required unchanged gates are BOTH inventories at
-depth 12 / Pass / 660.8s, combat 37/37 with zero unexpected results, and campaign
-93/93. This audio addition cannot waive them.
+**Gates:** historical focused checks passed on the prior-base HEV package;
+current-main required gates **PENDING**. SOURCE-only handoff: no push, PR or
+merge authorization. The depth 6 / 372.3s chain result belongs to historical
+main `b3808ff0`; it does not establish a current-main result. Replay only the
+owned HEV commits onto actual main `f574c47b`, retaining the PR203 importer
+changes absent from the old package tree. Then run all seven required
+non-runtime gates (fmt, default/dev-tools/all-features workspace Clippy,
+workspace tests, policy and graph) and the original four runtime gates:
+combat 37/37 with zero unexpected results, campaign 93/93, and BOTH inventories
+at depth 12 / Pass / 660.8s. All are **PENDING** on that current-main replay;
+historical package results do not replace them. This audio addition cannot
+waive them.
