@@ -1222,3 +1222,569 @@ fn a_script_possesses_a_generic_monster_and_a_piece_of_furniture() {
         );
     }
 }
+
+/// Two ordinary map activations must not let a later script release the
+/// actor while an earlier script still owns its unfinished approach.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep ordinary activation and geometry prerequisites before the ownership oracle"
+)]
+fn a_contending_script_keeps_the_incumbent_route_and_hold() {
+    use ohl_ai::scripts::{ScriptHold, ScriptPhase};
+    use ohl_ai::{Actor, MonsterAi};
+    use ohl_game::scripts::ScriptActivation;
+
+    let entities = script_room_entities(
+        [-192.0, -192.0, 36.0],
+        &[
+            entity_block(
+                "monster_barney",
+                [0.0; 3],
+                0.0,
+                &[("targetname", "ohl_overlap_actor"), ("spawnflags", "16")],
+            ),
+            entity_block(
+                "scripted_sequence",
+                [160.0, 0.0, 0.0],
+                0.0,
+                &[
+                    ("targetname", "ohl_overlap_walk"),
+                    ("m_iszEntity", "ohl_overlap_actor"),
+                    ("m_fMoveTo", "1"),
+                    ("spawnflags", "32"),
+                    ("target", "ohl_overlap_after_walk"),
+                ],
+            ),
+            entity_block(
+                "scripted_sequence",
+                [0.0; 3],
+                0.0,
+                &[
+                    ("targetname", "ohl_overlap_wait"),
+                    ("m_iszEntity", "ohl_overlap_actor"),
+                    ("m_fMoveTo", "0"),
+                    ("spawnflags", "32"),
+                    ("target", "ohl_overlap_after_wait"),
+                ],
+            ),
+            trigger_auto("ohl_overlap_walk"),
+            entity_block(
+                "trigger_auto",
+                [0.0; 3],
+                0.0,
+                &[("target", "ohl_overlap_wait"), ("delay", "0.1")],
+            ),
+            exit_trigger("ohl_overlap_after_walk"),
+            exit_trigger("ohl_overlap_after_wait"),
+        ]
+        .concat(),
+    );
+    let bytes = script_room_bsp(&entities);
+    let limits = ohl_formats::bsp30::Limits::default();
+    let bsp = ohl_formats::bsp30::Bsp::parse(&bytes, &limits).unwrap();
+    let collision = ohl_physics::CollisionModel::from_bsp(&bsp, &limits).unwrap();
+    let mut game = script_game(&entities);
+    let actor = game.registry().find("ohl_overlap_actor")[0];
+    let walk = game.registry().find("ohl_overlap_walk")[0];
+    let wait = game.registry().find("ohl_overlap_wait")[0];
+    let actor_index = game
+        .registry()
+        .entities
+        .iter()
+        .position(|entity| *entity == actor)
+        .unwrap();
+    let actor_index = u32::try_from(actor_index).expect("bounded authored entity list");
+    let script_state = |game: &Game, script: ohl_game::hecs::Entity| {
+        let index = game
+            .registry()
+            .entities
+            .iter()
+            .position(|entity| *entity == script)
+            .unwrap();
+        game.to_save(0).mover_state.unwrap()[index]
+            .as_ref()
+            .unwrap()
+            .script
+            .unwrap()
+    };
+    let initial = actor_origin(&game, actor);
+    let mut delivered = false;
+    let mut early_targets = 0;
+    for _ in 0..64 {
+        for event in game.tick(TICK_SECONDS, &Input::default()) {
+            early_targets += usize::from(matches!(event, GameEvent::LevelChange { .. }));
+        }
+        if game
+            .registry()
+            .world
+            .get::<&ScriptActivation>(wait)
+            .unwrap()
+            .pending
+            > 0
+        {
+            delivered = true;
+            break;
+        }
+    }
+    assert!(delivered, "the delayed ordinary trigger delivered B");
+    assert_eq!(early_targets, 0);
+    assert_eq!(game.script_start_count(), 1, "A actually started before B");
+    let before = script_state(&game, walk);
+    assert_eq!(before.actor, Some(actor_index));
+    assert_eq!(before.phase_tag, ScriptPhase::Moving.tag());
+    assert!(before.was_active && before.moving_elapsed > 0.0);
+    {
+        let body = game.registry().world.get::<&Actor>(actor).unwrap();
+        assert!(body.alive && body.health > 0.0 && body.origin.is_finite());
+        assert!(
+            body.origin.x > initial.x,
+            "ordinary A approach actually moved"
+        );
+        assert!(
+            (160.0 - body.origin.x).abs() > 32.0,
+            "A is still far from its mark"
+        );
+        let query = body.query_origin();
+        let clear = collision.trace(body.hull, query, query);
+        assert!(!clear.start_solid && !clear.all_solid);
+        let ai = game.registry().world.get::<&MonsterAi>(actor).unwrap();
+        assert!(!ai.route.is_finished() && ai.move_speed > 0.0);
+    }
+    assert!(game.registry().world.get::<&ScriptHold>(actor).is_ok());
+
+    // First tick consumes B and enters Play; second tick completes its
+    // unspecified action on old source. A remains well short of its mark.
+    for _ in 0..2 {
+        for event in game.tick(TICK_SECONDS, &Input::default()) {
+            early_targets += usize::from(matches!(event, GameEvent::LevelChange { .. }));
+        }
+    }
+    let incumbent = script_state(&game, walk);
+    let contender = script_state(&game, wait);
+    assert_eq!(incumbent.actor, Some(actor_index));
+    assert_eq!(incumbent.phase_tag, ScriptPhase::Moving.tag());
+    assert!(incumbent.was_active);
+    assert_eq!(contender.actor, Some(actor_index));
+    let completed = contender.phase_tag == ScriptPhase::Done.tag();
+    if completed {
+        assert_eq!(
+            contender.completions, 1,
+            "B genuinely completed on the same actor"
+        );
+        assert_eq!(early_targets, 1, "B's ordinary completion output fired");
+    } else {
+        assert_eq!(contender.phase_tag, ScriptPhase::Dormant.tag());
+        assert!(contender.pending_trigger, "the exclusive policy queues B");
+        assert_eq!(contender.completions, 0);
+    }
+    {
+        let body = game.registry().world.get::<&Actor>(actor).unwrap();
+        assert!(body.alive && body.health > 0.0);
+        assert!((160.0 - body.origin.x).abs() > 32.0);
+    }
+    assert!(
+        game.registry().world.get::<&ScriptHold>(actor).is_ok(),
+        "A is still Moving: B must not release its actor (B completed: {completed})"
+    );
+    // Reinserting Hold after an overlapping completion is insufficient:
+    // the contender must wait without driving, completing or firing early.
+    assert_eq!(contender.phase_tag, ScriptPhase::Dormant.tag());
+    assert!(contender.pending_trigger);
+    assert_eq!(contender.completions, 0);
+    assert_eq!(early_targets, 0);
+    let ai = game.registry().world.get::<&MonsterAi>(actor).unwrap();
+    assert!(!ai.route.is_finished() && ai.move_speed > 0.0);
+}
+
+fn script_owner_assets(extra: &str) -> MemoryAssets {
+    let entities = script_room_entities(
+        [-192.0, -192.0, 36.0],
+        &(entity_block(
+            "monster_barney",
+            [0.0; 3],
+            0.0,
+            &[
+                ("targetname", "ohl_owner_actor"),
+                ("spawnflags", "16"),
+                ("model", "models/ohl_owner.mdl"),
+            ],
+        ) + extra),
+    );
+    let mut assets = MemoryAssets::new();
+    assets.insert(
+        &format!("maps/{SCRIPT_MAP}.bsp"),
+        script_room_bsp(&entities),
+    );
+    assets.insert(
+        "models/ohl_owner.mdl",
+        ohl_formats::test_support::build_minimal_mdl10_with_sequences(&[
+            "idle", "owner", "waiting",
+        ])
+        .0,
+    );
+    assets
+}
+
+fn script_owner_def(name: &str, mode: &str, extra: &[(&str, &str)]) -> String {
+    let mut fields = vec![
+        ("targetname", name),
+        ("m_iszEntity", "ohl_owner_actor"),
+        ("m_fMoveTo", mode),
+    ];
+    if !extra.iter().any(|(key, _)| *key == "spawnflags") {
+        fields.push(("spawnflags", "32"));
+    }
+    fields.extend_from_slice(extra);
+    entity_block("scripted_sequence", [160.0, 0.0, 0.0], 0.0, &fields)
+}
+
+fn script_owner_output(name: &str) -> String {
+    entity_block(
+        "trigger_changelevel",
+        [0.0; 3],
+        0.0,
+        &[
+            ("targetname", name),
+            ("map", name),
+            ("landmark", "ohl_landmark"),
+        ],
+    )
+}
+
+fn script_owner_snapshot(game: &Game, name: &str) -> ohl_engine::save_state::ScriptRunnerSnapshot {
+    let entity = game.registry().find(name)[0];
+    let index = game
+        .registry()
+        .entities
+        .iter()
+        .position(|item| *item == entity)
+        .unwrap();
+    game.to_save(0).mover_state.unwrap()[index]
+        .as_ref()
+        .unwrap()
+        .script
+        .unwrap()
+}
+
+fn script_owner_tick(game: &mut Game) -> Vec<String> {
+    game.tick(TICK_SECONDS, &Input::default())
+        .into_iter()
+        .filter_map(|event| match event {
+            GameEvent::LevelChange { map, .. } => Some(map),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn script_owner_later_incumbent_keeps_its_route_and_idle_then_releases_in_order() {
+    use ohl_ai::{Actor, MonsterAi, ScriptHold, ScriptPhase};
+    let assets = script_owner_assets(
+        &[
+            // The earlier definition is a contender, not the active incumbent.
+            script_owner_def(
+                "ohl_owner_b",
+                "0",
+                &[("m_iszIdle", "waiting"), ("target", "ohl_owner_b_out")],
+            ),
+            script_owner_def(
+                "ohl_owner_a",
+                "1",
+                &[("m_iszIdle", "owner"), ("target", "ohl_owner_a_out")],
+            ),
+            trigger_auto("ohl_owner_a"),
+            entity_block(
+                "trigger_auto",
+                [0.0; 3],
+                0.0,
+                &[("target", "ohl_owner_b"), ("delay", "0.1")],
+            ),
+            script_owner_output("ohl_owner_a_out"),
+            script_owner_output("ohl_owner_b_out"),
+        ]
+        .concat(),
+    );
+    let mut game = Game::load(&assets, SCRIPT_MAP).unwrap();
+    let actor = game.registry().find("ohl_owner_actor")[0];
+    let mut outputs = Vec::new();
+    for _ in 0..30 {
+        outputs.extend(script_owner_tick(&mut game));
+    }
+    assert_eq!(
+        script_owner_snapshot(&game, "ohl_owner_a").phase_tag,
+        ScriptPhase::Moving.tag()
+    );
+    let waiting = script_owner_snapshot(&game, "ohl_owner_b");
+    assert_eq!(waiting.phase_tag, ScriptPhase::Dormant.tag());
+    assert!(waiting.pending_trigger);
+    assert!(outputs.is_empty());
+    assert!(game.registry().world.get::<&ScriptHold>(actor).is_ok());
+    assert!(game.registry().world.get::<&Actor>(actor).unwrap().origin.x > 0.0);
+    let ai = game.registry().world.get::<&MonsterAi>(actor).unwrap();
+    assert!(!ai.route.is_finished() && ai.move_speed > 0.0);
+    drop(ai);
+    assert_eq!(
+        game.registry()
+            .world
+            .get::<&StudioAnim>(actor)
+            .unwrap()
+            .sequence,
+        1,
+        "waiting idle must not overwrite the owner's independently named sequence"
+    );
+    for _ in 0..1_200 {
+        outputs.extend(script_owner_tick(&mut game));
+        if outputs.len() == 2 {
+            break;
+        }
+    }
+    assert_eq!(outputs, ["ohl_owner_a_out", "ohl_owner_b_out"]);
+    assert_eq!(script_owner_snapshot(&game, "ohl_owner_a").completions, 1);
+    assert_eq!(script_owner_snapshot(&game, "ohl_owner_b").completions, 1);
+    assert!(game.registry().world.get::<&ScriptHold>(actor).is_err());
+    assert_eq!(game.active_script_count(), 0);
+    assert_eq!(tick_counting_level_changes(&mut game, 120), 0);
+}
+
+#[test]
+fn script_owner_busy_repeat_pauses_and_save_continuation_keeps_output_order() {
+    use ohl_ai::ScriptPhase;
+    let assets = script_owner_assets(
+        &[
+            script_owner_def(
+                "ohl_owner_b",
+                "0",
+                &[
+                    ("spawnflags", "36"),
+                    ("m_flRepeat", "1"),
+                    ("target", "ohl_owner_b_out"),
+                ],
+            ),
+            script_owner_def("ohl_owner_a", "1", &[("target", "ohl_owner_a_out")]),
+            trigger_auto("ohl_owner_b"),
+            entity_block(
+                "trigger_auto",
+                [0.0; 3],
+                0.0,
+                &[("target", "ohl_owner_a"), ("delay", "0.1")],
+            ),
+            script_owner_output("ohl_owner_a_out"),
+            script_owner_output("ohl_owner_b_out"),
+        ]
+        .concat(),
+    );
+    let mut game = Game::load(&assets, SCRIPT_MAP).unwrap();
+    assert_eq!(
+        tick_counting_level_changes(&mut game, 30),
+        1,
+        "B actually completed first"
+    );
+    let paused = script_owner_snapshot(&game, "ohl_owner_b");
+    assert_eq!(paused.phase_tag, ScriptPhase::Repeating.tag());
+    assert_eq!(paused.completions, 1);
+    assert!(paused.timer > 0.0);
+    assert_eq!(
+        script_owner_snapshot(&game, "ohl_owner_a").phase_tag,
+        ScriptPhase::Moving.tag()
+    );
+    assert_eq!(tick_counting_level_changes(&mut game, 60), 0);
+    assert_eq!(
+        script_owner_snapshot(&game, "ohl_owner_b"),
+        paused,
+        "busy repeat does not advance"
+    );
+    let saved = game.save_bytes(0).unwrap();
+    let mut loaded = Game::load_bytes(&assets, &saved).unwrap();
+    for name in ["ohl_owner_a", "ohl_owner_b"] {
+        assert_eq!(
+            script_owner_snapshot(&loaded, name),
+            script_owner_snapshot(&game, name)
+        );
+    }
+    let mut outputs = Vec::new();
+    for _ in 0..1_200 {
+        let actual = script_owner_tick(&mut game);
+        assert_eq!(script_owner_tick(&mut loaded), actual);
+        outputs.extend(actual);
+        for name in ["ohl_owner_a", "ohl_owner_b"] {
+            assert_eq!(
+                script_owner_snapshot(&loaded, name),
+                script_owner_snapshot(&game, name)
+            );
+        }
+        let a = game.registry().find("ohl_owner_actor")[0];
+        let b = loaded.registry().find("ohl_owner_actor")[0];
+        assert!((actor_origin(&game, a) - actor_origin(&loaded, b)).length() < 0.001);
+        if outputs.len() == 2 {
+            break;
+        }
+    }
+    assert_eq!(outputs, ["ohl_owner_a_out", "ohl_owner_b_out"]);
+    assert_eq!(script_owner_snapshot(&game, "ohl_owner_b").completions, 2);
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "compare the two legacy ownership phases through one real save/load boundary"
+)]
+fn script_owner_legacy_duplicates_queue_without_fabricating_completion() {
+    use ohl_ai::{Actor, MonsterAi, ScriptHold, ScriptPhase, Vec3};
+    let assets = script_owner_assets(
+        &[
+            script_owner_def(
+                "ohl_owner_a",
+                "1",
+                &[("m_iszPlay", "owner"), ("target", "ohl_owner_a_out")],
+            ),
+            entity_block(
+                "scripted_sequence",
+                [160.0, 40.0, 0.0],
+                0.0,
+                &[
+                    ("targetname", "ohl_owner_b"),
+                    ("m_iszEntity", "ohl_owner_actor"),
+                    ("m_fMoveTo", "1"),
+                    ("m_iszPlay", "waiting"),
+                    ("spawnflags", "32"),
+                    ("target", "ohl_owner_b_out"),
+                ],
+            ),
+            trigger_auto("ohl_owner_a"),
+            script_owner_output("ohl_owner_a_out"),
+            script_owner_output("ohl_owner_b_out"),
+        ]
+        .concat(),
+    );
+    let mut game = Game::load(&assets, SCRIPT_MAP).unwrap();
+    assert_eq!(tick_counting_level_changes(&mut game, 30), 0);
+    let captured = script_owner_snapshot(&game, "ohl_owner_a");
+    assert_eq!(captured.phase_tag, ScriptPhase::Moving.tag());
+    assert!(captured.moving_elapsed > 0.0 && captured.was_active);
+    let index_of = |name: &str| {
+        let entity = game.registry().find(name)[0];
+        game.registry()
+            .entities
+            .iter()
+            .position(|e| *e == entity)
+            .unwrap()
+    };
+    let actor = game.registry().find("ohl_owner_actor")[0];
+    let body = *game.registry().world.get::<&Actor>(actor).unwrap();
+    let owner_goal = body
+        .body_frame
+        .anchor_to_query(body.hull, Vec3::new(160.0, 0.0, 0.0));
+    let foreign_goal = body
+        .body_frame
+        .anchor_to_query(body.hull, Vec3::new(160.0, 40.0, 0.0));
+    assert!((foreign_goal - owner_goal).length() > 0.0);
+    assert!(
+        (foreign_goal - owner_goal).length() < 80.0,
+        "old refresh threshold would retain foreign route"
+    );
+    for phase in [ScriptPhase::Moving, ScriptPhase::Playing] {
+        let mut save = game.to_save(0);
+        // Explicit legacy tag28 duplicates and tag25 foreign route: no live-state injection.
+        let scripts = save.mover_state.as_mut().unwrap();
+        let winner = scripts[index_of("ohl_owner_a")]
+            .as_mut()
+            .unwrap()
+            .script
+            .as_mut()
+            .unwrap();
+        winner.phase_tag = phase.tag();
+        winner.played = if phase == ScriptPhase::Playing {
+            0.02
+        } else {
+            0.0
+        };
+        let expected_winner = *winner;
+        let duplicate = scripts[index_of("ohl_owner_b")]
+            .as_mut()
+            .unwrap()
+            .script
+            .as_mut()
+            .unwrap();
+        duplicate.actor = captured.actor;
+        duplicate.phase_tag = ScriptPhase::Playing.tag();
+        duplicate.timer = 0.25;
+        duplicate.completions = 7;
+        duplicate.warped = true;
+        duplicate.moving_elapsed = 0.5;
+        duplicate.was_active = true;
+        duplicate.played = 0.25;
+        let foreign = save.ai.as_mut().unwrap()[index_of("ohl_owner_actor")]
+            .as_mut()
+            .unwrap();
+        foreign.route_waypoints = vec![foreign_goal.to_array()];
+        foreign.route_current = 0;
+        foreign.route_goal = foreign_goal.to_array();
+        foreign.move_speed = 40.0;
+        let mut loaded = Game::load_bytes(&assets, &save.to_bytes().unwrap()).unwrap();
+        let restored_actor = loaded.registry().find("ohl_owner_actor")[0];
+        assert_eq!(
+            script_owner_snapshot(&loaded, "ohl_owner_a"),
+            expected_winner
+        );
+        let deferred = script_owner_snapshot(&loaded, "ohl_owner_b");
+        assert_eq!(deferred.phase_tag, ScriptPhase::Dormant.tag());
+        assert!(deferred.pending_trigger && !deferred.was_active && !deferred.warped);
+        assert_eq!(deferred.completions, 7);
+        assert_eq!(
+            [deferred.timer, deferred.moving_elapsed, deferred.played].map(f32::to_bits),
+            [0; 3]
+        );
+        {
+            let ai = loaded
+                .registry()
+                .world
+                .get::<&MonsterAi>(restored_actor)
+                .unwrap();
+            assert!(
+                ai.route.is_finished() && ai.move_speed <= 0.0,
+                "normalization must discard the losing owner's shared route"
+            );
+        }
+        assert!(
+            loaded
+                .registry()
+                .world
+                .get::<&ScriptHold>(restored_actor)
+                .is_ok()
+        );
+        if phase == ScriptPhase::Playing {
+            assert_eq!(
+                loaded
+                    .registry()
+                    .world
+                    .get::<&StudioAnim>(restored_actor)
+                    .unwrap()
+                    .sequence,
+                1,
+                "restore canonical action even with a nonzero played clock"
+            );
+        }
+        let before = actor_origin(&loaded, restored_actor);
+        let mut outputs = script_owner_tick(&mut loaded);
+        let displacement = actor_origin(&loaded, restored_actor) - before;
+        if phase == ScriptPhase::Moving {
+            assert!(
+                displacement.x > 0.0 && displacement.y.abs() < 0.001,
+                "ordinary next step follows A's goal, not nearby B's stale goal"
+            );
+        } else {
+            assert!(displacement.length() < 0.001);
+        }
+        for _ in 0..1_200 {
+            outputs.extend(script_owner_tick(&mut loaded));
+            if outputs.len() == 2 {
+                break;
+            }
+        }
+        assert_eq!(outputs, ["ohl_owner_a_out", "ohl_owner_b_out"]);
+        assert_eq!(script_owner_snapshot(&loaded, "ohl_owner_a").completions, 1);
+        assert_eq!(script_owner_snapshot(&loaded, "ohl_owner_b").completions, 8);
+        assert_eq!(tick_counting_level_changes(&mut loaded, 120), 0);
+    }
+}

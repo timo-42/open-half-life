@@ -55,7 +55,7 @@ use glam::Vec3;
 use ohl_ai::follow::{FollowChange, FollowRoster, Follower};
 use ohl_ai::monsters::spec_for;
 use ohl_ai::monsters::table::Difficulty as AiDifficulty;
-use ohl_ai::scripts::{ScriptAction, ScriptHold, ScriptRunner, ScriptSense};
+use ohl_ai::scripts::{ScriptAction, ScriptHold, ScriptPhase, ScriptRunner, ScriptSense};
 use ohl_ai::{
     Activity, Actor, AiEvent, AiEventKind, AiWorld, AttackKind, BrainId, Classification,
     Conditions, CorpseDecision, DamageEvent, DamageKinds, DamageQueue, DamageResponse, DamageSink,
@@ -1290,7 +1290,7 @@ impl AiState {
     /// allocates one `Vec` of that shape, not two.
     pub(crate) fn restore_scripts(
         &mut self,
-        level: &Level,
+        level: &mut Level,
         snapshots: &[Option<crate::save_state::MoverSnapshot>],
     ) {
         let entities = level.registry.entities.clone();
@@ -1323,6 +1323,7 @@ impl AiState {
             script.played = crate::save_state::sanitize_f32(snapshot.played, 0.0).max(0.0);
             script.play_origin = crate::save_state::array_vec3(snapshot.play_origin);
         }
+        let _ = Self::reserve_script_owners(level, &mut self.scripts, &mut self.world);
     }
 
     /// Phase 8 — one AI think step, and the attacks it produced.
@@ -2600,16 +2601,95 @@ impl AiState {
         }
     }
 
+    /// TODO(black-box): exclusive possession is project-authored policy.
+    /// An existing active incumbent wins before definition-order admission;
+    /// legacy duplicate owners queue a restart without releasing the actor.
+    fn reserve_script_owners(
+        level: &mut Level,
+        scripts: &mut [ActiveScript],
+        world: &mut AiWorld,
+    ) -> Vec<(Entity, Entity)> {
+        let mut owners = Vec::new();
+        let mut conflicted = Vec::new();
+        for script in scripts.iter_mut() {
+            let Some(actor) = script
+                .actor
+                .filter(|actor| level.registry.world.contains(*actor))
+            else {
+                continue;
+            };
+            if script.runner.is_active() {
+                if Self::script_owner_conflict(&owners, actor, script.entity) {
+                    Self::defer_script_possession(script);
+                    if !conflicted.contains(&actor) {
+                        conflicted.push(actor);
+                    }
+                } else {
+                    owners.push((actor, script.entity));
+                }
+            }
+        }
+        // Only ambiguous legacy actors need reconstruction. A valid single
+        // owner keeps all actor state and animation progress unchanged.
+        for actor in &conflicted {
+            let owner = owners.iter().find(|(held, _)| held == actor).unwrap().1;
+            let script = scripts
+                .iter()
+                .find(|script| script.entity == owner)
+                .unwrap();
+            stop_scripted_movement(level, *actor);
+            level.registry.world.insert_one(*actor, ScriptHold).ok();
+            let sequence = if script.runner.phase() == ScriptPhase::Playing {
+                script.runner.def().play_sequence()
+            } else {
+                script.runner.def().idle_sequence()
+            };
+            if let Some(sequence) = sequence {
+                select_sequence(level, *actor, sequence);
+            }
+        }
+        if !conflicted.is_empty()
+            && let Some(mut navigator) = world.detach_navigator()
+        {
+            for actor in conflicted {
+                navigator.invalidate_actor(actor);
+            }
+            world.attach_navigator(navigator);
+        }
+        owners
+    }
+
+    fn script_owner_conflict(owners: &[(Entity, Entity)], actor: Entity, script: Entity) -> bool {
+        owners
+            .iter()
+            .any(|&(held, owner)| held == actor && owner != script)
+    }
+
+    fn defer_script_possession(script: &mut ActiveScript) {
+        script.runner.defer_possession();
+        script.pending_trigger = true;
+        script.was_active = false;
+        script.played = 0.0;
+        script.play_origin = Vec3::ZERO;
+    }
+
     /// Advances every script by one step, part of phase 8.
     fn update_scripts(&mut self, level: &mut Level, dt: f32) {
         let mut scripts = std::mem::take(&mut self.scripts);
+        let mut owners = Self::reserve_script_owners(level, &mut scripts, &mut self.world);
         for script in &mut scripts {
-            self.update_one_script(level, script, dt);
+            self.update_one_script(level, script, &mut owners, dt);
         }
         self.scripts = scripts;
     }
 
-    fn update_one_script(&mut self, level: &mut Level, script: &mut ActiveScript, dt: f32) {
+    fn update_one_script(
+        &mut self,
+        level: &mut Level,
+        script: &mut ActiveScript,
+        owners: &mut Vec<(Entity, Entity)>,
+        dt: f32,
+    ) {
         let mut activated = false;
         if let Ok(activation) = level
             .registry
@@ -2635,6 +2715,18 @@ impl AiState {
             return;
         };
 
+        if Self::script_owner_conflict(owners, actor, script.entity) {
+            if script.runner.is_active() {
+                // A restored unbound active runner may discover its actor late.
+                Self::defer_script_possession(script);
+            } else if script.runner.phase() != ScriptPhase::Dormant {
+                // Repeating/Done ignore activations as before. Busy repeat
+                // timers pause; only Dormant retains an ordinary queued use.
+                script.pending_trigger = false;
+            }
+            return;
+        }
+
         if script.pending_trigger {
             if Self::may_possess(level, script, actor) && script.runner.trigger() {
                 self.script_starts += 1;
@@ -2642,8 +2734,8 @@ impl AiState {
             }
             // Spent either way: an activation a monster refuses (it is in
             // combat and this script does not `Override AI`) is dropped
-            // rather than queued. Only "no monster bound yet" banks it, so
-            // a script can still wait for `m_iszEntity` to spawn.
+            // rather than queued. Missing actors and the ownership gate
+            // above bank it until an ordinary admission can be attempted.
             script.pending_trigger = false;
         }
 
@@ -2660,7 +2752,15 @@ impl AiState {
             }
         };
         let step = script.runner.update(&sense);
+        if script.runner.is_active() && !owners.contains(&(actor, script.entity)) {
+            // Includes automatic Repeating -> Moving, before any actor effect.
+            owners.push((actor, script.entity));
+        }
         self.apply_script_step(level, script, actor, step, dt);
+        if !script.runner.is_active() {
+            // Ordinary completion/interruption cleanup has already run.
+            owners.retain(|claim| *claim != (actor, script.entity));
+        }
     }
 
     /// Whether `script` may take `actor` over right now.
@@ -2928,6 +3028,9 @@ impl AiState {
         for script in &self.scripts {
             let Some(actor) = script.actor else { continue };
             if !level.registry.world.contains(actor) {
+                continue;
+            }
+            if level.registry.world.get::<&ScriptHold>(actor).is_ok() {
                 continue;
             }
             let Some(idle) = script.runner.pretrigger_idle_sequence() else {
@@ -3894,6 +3997,26 @@ fn nearest_follower(level: &Level, position: Vec3) -> Option<Entity> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn script_owner_conflicts_use_the_full_entity_generation() {
+        let mut world = ohl_game::hecs::World::new();
+        let old = world.spawn(());
+        world.despawn(old).unwrap();
+        let replacement = world.spawn(());
+        assert_eq!(old.id(), replacement.id());
+        assert_ne!(old, replacement);
+        let first = world.spawn(());
+        let second = world.spawn(());
+        let claims = [(old, first)];
+        assert!(super::AiState::script_owner_conflict(&claims, old, second));
+        assert!(!super::AiState::script_owner_conflict(&claims, old, first));
+        assert!(!super::AiState::script_owner_conflict(
+            &claims,
+            replacement,
+            second
+        ));
+    }
+
     use super::{AttackShape, activity_name, attack_shape, damage_kinds_of, trigger_condition_of};
     use ohl_ai::{Activity, AttackKind, DamageKinds, MonsterKind, TriggerCondition};
     use ohl_combat::DamageType;

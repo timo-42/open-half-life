@@ -327,6 +327,18 @@ impl ScriptRunner {
         };
     }
 
+    /// Defers a conflicting active possession without completing or releasing
+    /// its actor. The engine queues a fresh ordinary admission; completed runs
+    /// and the parsed definition survive this project-authored normalization.
+    pub fn defer_possession(&mut self) {
+        if self.is_active() {
+            self.phase = ScriptPhase::Dormant;
+            self.timer = 0.0;
+            self.warped = false;
+            self.moving_elapsed = 0.0;
+        }
+    }
+
     /// Handles one activation from the map logic, reporting whether it
     /// started the script.
     ///
