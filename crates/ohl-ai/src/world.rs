@@ -31,7 +31,7 @@ use crate::schedule::{
 };
 use crate::senses::{
     Candidate, EnemyMemory, SightContext, Sighting, SoundEvent, SoundKind, SoundList, Viewer,
-    listen, look, select_enemy,
+    listen_with_danger_bounds, look, select_enemy,
 };
 use crate::squad::{SquadCandidate, SquadRoster};
 use crate::state::{Classification, Conditions, MonsterState, RelationshipTable};
@@ -559,7 +559,7 @@ impl AiWorld {
         self.tick_count = tick_count;
     }
 
-    /// Adds a sound or scent for the next tick's [`listen`] pass.
+    /// Adds a sound or scent for the next tick's [`crate::senses::listen`] pass.
     pub fn emit_sound(&mut self, event: SoundEvent) -> bool {
         self.sounds.push(event)
     }
@@ -747,7 +747,13 @@ impl AiWorld {
         };
         let sight = look(&viewer, &senses, candidates, &self.relationships, context);
         conditions |= sight.conditions;
-        let heard = listen(viewer.eye(), &senses, &self.sounds);
+        let (min, max) = actor.fallback_damage_bounds();
+        let heard = listen_with_danger_bounds(
+            viewer.eye(),
+            &senses,
+            &self.sounds,
+            Some((actor.origin + min, actor.origin + max)),
+        );
         conditions |= heard.conditions;
         if let Some(sound) = heard.best {
             ai.move_target = Some(sound.position);

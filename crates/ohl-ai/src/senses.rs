@@ -585,6 +585,19 @@ pub struct ListenResult {
 /// [`Conditions::HEAR_SOUND`].
 #[must_use]
 pub fn listen(ears: Vec3, senses: &Senses, sounds: &SoundList) -> ListenResult {
+    listen_with_danger_bounds(ears, senses, sounds, None)
+}
+
+/// Project-authored Danger-category awareness extends only candidate admission
+/// to a valid actor proxy; ear ranking and the original source point stay exact.
+/// TODO(black-box): proxy bounds are not posed blast geometry or a safety guarantee.
+#[must_use]
+pub(crate) fn listen_with_danger_bounds(
+    ears: Vec3,
+    senses: &Senses,
+    sounds: &SoundList,
+    danger_bounds: Option<(Vec3, Vec3)>,
+) -> ListenResult {
     let mut result = ListenResult::default();
     if !ears.is_finite() {
         return result;
@@ -602,12 +615,30 @@ pub fn listen(ears: Vec3, senses: &Senses, sounds: &SoundList) -> ListenResult {
         return result;
     }
 
+    let danger_bounds = danger_bounds.filter(|(min, max)| {
+        let span = *max - *min;
+        min.is_finite() && max.is_finite() && span.is_finite() && span.cmpgt(Vec3::ZERO).all()
+    });
     let mut best_distance = f32::INFINITY;
     let mut best_is_danger = false;
     for event in sounds.events() {
         let distance = (event.position - ears).length();
-        if !distance.is_finite() || distance > event.radius * sensitivity {
+        if !distance.is_finite() {
             continue;
+        }
+        if distance > event.radius * sensitivity {
+            let radius = event.radius * sensitivity;
+            let body_admitted = event.kind == SoundKind::Danger
+                && radius.is_finite()
+                && radius > 0.0
+                && event.position.is_finite()
+                && danger_bounds.is_some_and(|(min, max)| {
+                    let distance = event.position.distance(event.position.clamp(min, max));
+                    distance.is_finite() && distance <= radius
+                });
+            if !body_admitted {
+                continue;
+            }
         }
         if event.kind.is_scent() {
             result.conditions |= Conditions::SMELL;
@@ -962,6 +993,116 @@ mod tests {
             ..make(far_hate, Relationship::Nemesis, 5.0)
         }];
         assert!(select_enemy(&dead_only).is_none());
+    }
+
+    #[test]
+    fn hearing_body_danger_keeps_ear_ranking_and_source_position() {
+        let ears = Vec3::Z * 64.0;
+        let bounds = Some((Vec3::new(-16.0, -16.0, 0.0), Vec3::new(16.0, 16.0, 72.0)));
+        let senses = Senses::default();
+        let mut sounds = SoundList::new();
+        let near_world = SoundEvent::new(SoundKind::World, Vec3::Z * 65.0, 4.0);
+        let first = SoundEvent::new(SoundKind::Danger, Vec3::X * 30.0, 20.0);
+        let tied = SoundEvent::new(SoundKind::Danger, Vec3::Y * 30.0, 20.0);
+        assert!(sounds.push(near_world));
+        assert!(sounds.push(first));
+        assert!(sounds.push(tied));
+        assert_eq!(listen(ears, &senses, &sounds).best, Some(near_world));
+        let heard = super::listen_with_danger_bounds(ears, &senses, &sounds, bounds);
+        assert!(heard.conditions.contains(Conditions::HEAR_DANGER));
+        assert_eq!(
+            heard.best,
+            Some(first),
+            "Danger priority and stable equal-ear-distance order"
+        );
+        let closer = SoundEvent::new(SoundKind::Danger, Vec3::Z * 88.0, 20.0);
+        assert!(sounds.push(closer));
+        let heard = super::listen_with_danger_bounds(ears, &senses, &sounds, bounds);
+        assert_eq!(
+            heard.best,
+            Some(closer),
+            "rank by ears and retain original event, not clamped point"
+        );
+        assert_eq!(listen(ears, &senses, &sounds).best, Some(near_world));
+    }
+
+    #[test]
+    fn hearing_body_bounds_leave_non_danger_point_contract_unchanged() {
+        let ears = Vec3::Z * 64.0;
+        let bounds = Some((Vec3::new(-16.0, -16.0, 0.0), Vec3::new(16.0, 16.0, 72.0)));
+        let senses = Senses::default();
+        for kind in [
+            SoundKind::Combat,
+            SoundKind::World,
+            SoundKind::Player,
+            SoundKind::Carcass,
+            SoundKind::Meat,
+            SoundKind::Garbage,
+        ] {
+            let mut sounds = SoundList::new();
+            assert!(sounds.push(SoundEvent::new(kind, Vec3::X * 30.0, 20.0)));
+            let point = listen(ears, &senses, &sounds);
+            assert_eq!(point, super::ListenResult::default());
+            assert_eq!(
+                super::listen_with_danger_bounds(ears, &senses, &sounds, bounds),
+                point
+            );
+            assert!(sounds.push(SoundEvent::new(kind, ears + Vec3::Z, 4.0)));
+            assert_eq!(
+                super::listen_with_danger_bounds(ears, &senses, &sounds, bounds),
+                listen(ears, &senses, &sounds)
+            );
+        }
+    }
+
+    #[test]
+    fn hearing_body_bounds_refuse_invalid_inputs_without_losing_ear_admission() {
+        let ears = Vec3::Z * 64.0;
+        let bounds = Some((Vec3::new(-16.0, -16.0, 0.0), Vec3::new(16.0, 16.0, 72.0)));
+        let senses = Senses::default();
+        let mut sounds = SoundList::new();
+        assert!(sounds.push(SoundEvent::new(SoundKind::Danger, Vec3::X * 30.0, 20.0)));
+        for invalid in [
+            None,
+            Some((Vec3::NAN, Vec3::ONE)),
+            Some((Vec3::ONE, Vec3::ZERO)),
+            Some((Vec3::ZERO, Vec3::ZERO)),
+            Some((Vec3::splat(-f32::MAX), Vec3::splat(f32::MAX))),
+        ] {
+            assert_eq!(
+                super::listen_with_danger_bounds(ears, &senses, &sounds, invalid),
+                super::ListenResult::default()
+            );
+            let mut with_audible = sounds.clone();
+            assert!(with_audible.push(SoundEvent::new(SoundKind::Danger, ears + Vec3::Z, 4.0)));
+            assert_eq!(
+                super::listen_with_danger_bounds(ears, &senses, &with_audible, invalid),
+                listen(ears, &senses, &with_audible)
+            );
+        }
+        let deaf = Senses {
+            hearing_sensitivity: 0.0,
+            ..senses
+        };
+        assert_eq!(
+            super::listen_with_danger_bounds(ears, &deaf, &sounds, bounds),
+            super::ListenResult::default()
+        );
+        let mut tiny = SoundList::new();
+        assert!(tiny.push(SoundEvent::new(
+            SoundKind::Danger,
+            Vec3::ZERO,
+            f32::MIN_POSITIVE
+        )));
+        let insensitive = Senses {
+            hearing_sensitivity: f32::MIN_POSITIVE,
+            ..senses
+        };
+        assert_eq!(
+            super::listen_with_danger_bounds(ears, &insensitive, &tiny, bounds),
+            super::ListenResult::default(),
+            "effective-radius underflow cannot admit body contact"
+        );
     }
 
     #[test]
