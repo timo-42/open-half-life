@@ -6650,6 +6650,306 @@ mod grenade_danger_tests {
         }
         assert_eq!(actor(&game, listener).origin, a.origin);
     }
+    // Generated geometry only: the closed compartment has useful sub-320 side
+    // space, while every full 320-unit danger alternative meets a wall.
+    fn delayed_wall_scene() -> (crate::Game, Entity, Entity) {
+        let text = format!(
+            "{{\"classname\" \"worldspawn\"}}{}{}{}{}",
+            entity_block(
+                "info_player_start",
+                [
+                    800.0,
+                    0.0,
+                    ohl_physics::Hull::Standing.foot_offset() + ohl_physics::DIST_EPSILON
+                ],
+                180.0,
+                &[]
+            ),
+            entity_block(
+                "monster_human_grunt",
+                [0.0; 3],
+                0.0,
+                &[("targetname", "thrower")]
+            ),
+            entity_block(
+                "func_wall_toggle",
+                [0.0; 3],
+                0.0,
+                &[
+                    ("model", "*1"),
+                    ("targetname", "delayed_wall"),
+                    ("spawnflags", "1"),
+                ]
+            ),
+            entity_block(
+                "func_button",
+                [0.0; 3],
+                0.0,
+                &[("model", "*2"), ("target", "delayed_wall"), ("wait", "-1"),]
+            ),
+        );
+        let mut bsp = Bsp30Builder::new();
+        bsp.set_entities_text(&text);
+        let heads = bsp.push_collision_hulls(&[
+            CollisionBrush::half_space([0.0, 0.0, 1.0], 0.0),
+            CollisionBrush::half_space([0.0, 0.0, -1.0], -512.0),
+            CollisionBrush::half_space([1.0, 0.0, 0.0], -96.0),
+            CollisionBrush::half_space([-1.0, 0.0, 0.0], -960.0),
+            CollisionBrush::half_space([0.0, 1.0, 0.0], -288.0),
+            CollisionBrush::half_space([0.0, -1.0, 0.0], -288.0),
+        ]);
+        bsp.push_model(
+            [-96.0, -288.0, 0.0],
+            [960.0, 288.0, 512.0],
+            [0.0; 3],
+            heads,
+            1,
+            0,
+            0,
+        );
+        for (min, max) in [
+            ([192.0, -288.0, 0.0], [208.0, 288.0, 512.0]),
+            ([768.0, 32.0, 48.0], [776.0, 40.0, 80.0]),
+        ] {
+            let heads = bsp.push_collision_hulls(&[CollisionBrush::box_brush(min, max)]);
+            bsp.push_model(min, max, [0.0; 3], heads, 1, 0, 0);
+        }
+        let mut assets = crate::MemoryAssets::new();
+        assets.insert(
+            MonsterKind::HumanGrunt.default_model_path().unwrap(),
+            plan_scripted_monster_model_bytes(),
+        );
+        let game = crate::Game::from_map_bytes(&assets, AI_MAP, &bsp.build()).unwrap();
+        let owner = game.registry().find("thrower")[0];
+        let wall = game.registry().find("delayed_wall")[0];
+        clear_body(&game, owner);
+        clear_body(&game, game.player_entity());
+        assert!(
+            !game
+                .registry()
+                .world
+                .get::<&ohl_game::registry::WallToggle>(wall)
+                .unwrap()
+                .visible
+        );
+        assert!(game.registry().world.get::<&ScriptHold>(owner).is_err());
+        assert_eq!(game.monster_death_count(), 0);
+        (game, owner, wall)
+    }
+
+    // This is a read-only counterfactual geometry/time check. It never moves
+    // the real actor, supplies a route, or bypasses ordinary cover selection.
+    fn supported_short_escape(
+        game: &crate::Game,
+        owner: Entity,
+        grenade: ProjectileSnapshot,
+    ) -> Vec3 {
+        let a = actor(game, owner);
+        clear_body(game, owner);
+        let from = a.query_origin();
+        let danger = Vec3::from_array(grenade.position);
+        let away = Vec3::new(from.x - danger.x, from.y - danger.y, 0.0).normalize();
+        assert!(away.is_finite());
+        let collision = game.collision().unwrap();
+        for direction in [
+            away,
+            Vec3::new(-away.y, away.x, 0.0),
+            Vec3::new(away.y, -away.x, 0.0),
+        ] {
+            let trace = collision.trace(
+                a.hull,
+                from,
+                from + direction * ohl_ai::world::COVER_DISTANCE,
+            );
+            assert!(
+                !trace.start_solid && !trace.all_solid && trace.fraction < 1.0,
+                "each existing full-length cover alternative really meets geometry"
+            );
+        }
+        let goal = Vec3::new(from.x, 256.0, from.z);
+        let run = MonsterBrain::for_kind(MonsterKind::HumanGrunt)
+            .unwrap()
+            .speeds()
+            .1;
+        let travel = from.distance(goal) / run;
+        assert!(travel.is_finite() && travel > 0.0);
+        assert!(
+            grenade.fuse.unwrap() > travel + 0.5,
+            "remaining real fuse allows movement plus task overhead"
+        );
+        let mut point = from;
+        for _ in 0..300 {
+            if point.distance(goal) <= ohl_physics::DIST_EPSILON {
+                break;
+            }
+            let moved = ohl_ai::movement::move_toward(
+                collision,
+                a.hull,
+                point,
+                goal,
+                run,
+                crate::TICK_SECONDS,
+            );
+            assert!(
+                !moved.blocked && moved.distance > 0.0,
+                "ordinary hull-traced short steps stay clear"
+            );
+            point = moved.position;
+            let floor = collision.trace(a.hull, point, point - Vec3::Z);
+            assert!(
+                !floor.start_solid
+                    && !floor.all_solid
+                    && floor.fraction < 1.0
+                    && floor.plane_normal.z > 0.9
+            );
+        }
+        assert!(point.abs_diff_eq(goal, ohl_physics::DIST_EPSILON));
+        goal
+    }
+
+    // One contiguous ordinary-launch / delayed-Use / fuse scenario keeps the
+    // physical prerequisites ahead of the prospective escape characterization.
+    #[allow(clippy::too_many_lines)]
+    #[test]
+    fn a_natural_grenade_and_delayed_wall_distinguish_short_escape_from_a_trap() {
+        for close_wall in [false, true] {
+            let (mut game, owner, wall) = delayed_wall_scene();
+            let original_health = actor(&game, owner).health;
+            let (id, profile) = natural_launch(&mut game, owner, None);
+            let mut heard = false;
+            let mut reflected = false;
+            let mut escape: Option<Vec3> = None;
+            let mut expired = false;
+            for tick in 0..510 {
+                let before = projectile(&game, id)
+                    .expect("same naturally admitted grenade until fuse expiry");
+                let save = game.to_save(0);
+                assert_eq!(save.projectiles.as_ref().unwrap().projectiles.len(), 1);
+                assert_eq!(
+                    *save
+                        .projectile_runtime
+                        .unwrap()
+                        .attacks
+                        .iter()
+                        .find(|p| p.id == id)
+                        .unwrap(),
+                    profile
+                );
+                let body_before = actor(&game, owner);
+                assert!(body_before.alive && body_before.health > 0.0);
+                assert!(
+                    (body_before.health - original_health).abs() <= f32::EPSILON,
+                    "no prior injury may create an artificial lethal threshold"
+                );
+                let velocity = Vec3::from_array(before.velocity)
+                    - Vec3::Z
+                        * ohl_physics::MoveConfig::default().gravity
+                        * ohl_combat::ProjectileTuning::default().gravity_scale.value
+                        * crate::TICK_SECONDS;
+                let start = Vec3::from_array(before.position);
+                let trace = game.collision().unwrap().trace(
+                    ohl_physics::Hull::Point,
+                    start,
+                    start + velocity * crate::TICK_SECONDS,
+                );
+                game.tick(
+                    crate::TICK_SECONDS,
+                    &crate::Input {
+                        use_pressed: close_wall && tick == 0,
+                        ..crate::Input::default()
+                    },
+                );
+                if let Ok(ai) = game.registry().world.get::<&MonsterAi>(owner) {
+                    heard |= ai.conditions.contains(Conditions::HEAR_DANGER);
+                }
+                let Some(after) = projectile(&game, id) else {
+                    assert!(
+                        before.fuse.unwrap() <= crate::TICK_SECONDS,
+                        "ordinary timed expiry, not an injected removal"
+                    );
+                    expired = true;
+                    if close_wall {
+                        assert!(
+                            heard && reflected,
+                            "real hearing and reflected live motion precede terminal observation"
+                        );
+                        let goal = escape
+                            .expect("supported short escape was qualified during the live fuse");
+                        // The authored animated model has |x| <= 44 and |y| <= 24.
+                        // sqrt(44^2 + 24^2) < 51 bounds every yaw and pose.
+                        assert!(
+                            (goal.y - start.y).abs() > profile.blast_radius.unwrap() + 51.0,
+                            "the earlier reachable endpoint lies outside this actual detonation's blast region"
+                        );
+                        let died = game.monster_death_count() == 1;
+                        assert_eq!(
+                            died,
+                            !game
+                                .registry()
+                                .world
+                                .get::<&Actor>(owner)
+                                .is_ok_and(|body| body.alive)
+                        );
+                        assert!(game.monster_death_count() <= 1);
+                        if died {
+                            assert!(game.monster_damage_event_count() > 0);
+                        }
+                        eprintln!(
+                            "PUBLIC_DYNAMIC_GRENADE: heard={heard}; reflected={reflected}; supported_short_escape=true; owner_died={died}"
+                        );
+                        assert!(
+                            !died,
+                            "an actor with a supported timely short escape must survive its reflected grenade"
+                        );
+                    } else {
+                        assert!(
+                            actor(&game, owner).alive,
+                            "open-wall twin survives its ordinary owned grenade"
+                        );
+                        assert_eq!(game.monster_death_count(), 0);
+                    }
+                    break;
+                };
+                if close_wall && before.velocity[0] > 0.0 && after.velocity[0] < 0.0 && !reflected {
+                    assert!(
+                        game.registry()
+                            .world
+                            .get::<&ohl_game::registry::WallToggle>(wall)
+                            .unwrap()
+                            .visible,
+                        "ordinary player Use must close the wall before reflection"
+                    );
+                    assert!(
+                        !trace.start_solid && trace.fraction < 1.0 && trace.plane_normal.x < -0.9,
+                        "the actual reflected step reaches the closing brush plane"
+                    );
+                    assert!(before.position[0] < 192.0 && after.position[0] < 192.0);
+                    assert!(after.fuse.is_some_and(|fuse| fuse > 0.0));
+                    reflected = true;
+                }
+                if close_wall && escape.is_none() {
+                    let ai = game.registry().world.get::<&MonsterAi>(owner).unwrap();
+                    let choosing_this_danger = ai.conditions.contains(Conditions::HEAR_DANGER)
+                        && ai.runner.schedule().is_some_and(|schedule| {
+                            std::ptr::eq(schedule, &raw const ohl_ai::brain::TAKE_COVER_FROM_DANGER)
+                        })
+                        && ai.move_target.is_some_and(|point| {
+                            point.abs_diff_eq(
+                                Vec3::from_array(after.position),
+                                ohl_physics::DIST_EPSILON,
+                            )
+                        });
+                    if choosing_this_danger {
+                        escape = Some(supported_short_escape(&game, owner, after));
+                    }
+                }
+            }
+            assert!(
+                expired,
+                "the original grenade reaches its finite fuse boundary"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

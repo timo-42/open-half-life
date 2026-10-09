@@ -1625,7 +1625,7 @@ fn straight_step(from: Vec3, to: Vec3, speed: f32, dt: f32, flies: bool) -> Move
 }
 
 // TODO(black-box): project-authored danger-only local alternatives, not general routing.
-// Keep primary preference; only full flat legs qualify, with sampled support for walkers.
+// Full flat legs retain preference; shorter prefixes use the same support checks.
 fn danger_cover_goal(
     collision: Option<&CollisionModel>,
     hull: Hull,
@@ -1652,19 +1652,70 @@ fn danger_cover_goal(
         Vec3::new(-direction.y, direction.x, 0.0),
         Vec3::new(direction.y, -direction.x, 0.0),
     ];
-    directions.into_iter().find_map(|direction| {
+    if let Some(goal) = directions.into_iter().find_map(|direction| {
         let goal = origin + direction * COVER_DISTANCE;
         danger_cover_leg(collision, hull, origin, goal).then_some(goal)
-    })
+    }) {
+        return Some(goal);
+    }
+
+    // TODO(black-box): best-effort local escape when no full leg fits. Keep
+    // the full-leg policy above, then compare only prefixes of those same
+    // three rays. This predicts neither future blast position nor safety.
+    let current_separation = origin.truncate().distance_squared(threat.truncate());
+    if !current_separation.is_finite() {
+        return None;
+    }
+    let mut best = None;
+    let mut best_separation = current_separation;
+    for direction in directions {
+        let trace = collision.trace(hull, origin, origin + direction * COVER_DISTANCE);
+        if trace.start_solid
+            || trace.all_solid
+            || !trace.fraction.is_finite()
+            || trace.fraction <= 0.0
+            || trace.fraction >= 1.0
+        {
+            continue;
+        }
+        let distance = COVER_DISTANCE * trace.fraction - ohl_physics::DIST_EPSILON;
+        let mut goal = origin + direction * distance;
+        goal.z = origin.z;
+        if !danger_cover_leg_with_length(collision, hull, origin, goal, origin.distance(goal)) {
+            continue;
+        }
+        let separation = goal.truncate().distance_squared(threat.truncate());
+        // Strict improvement also preserves direction order for exact ties.
+        if separation.is_finite() && separation > best_separation {
+            best = Some(goal);
+            best_separation = separation;
+        }
+    }
+    best
 }
 
 fn danger_cover_leg(collision: &CollisionModel, hull: Hull, origin: Vec3, goal: Vec3) -> bool {
+    // Full candidates retain their original nominal-length checks, including
+    // when forming the endpoint rounds at large finite world coordinates.
+    danger_cover_leg_with_length(collision, hull, origin, goal, COVER_DISTANCE)
+}
+
+fn danger_cover_leg_with_length(
+    collision: &CollisionModel,
+    hull: Hull,
+    origin: Vec3,
+    goal: Vec3,
+    expected_distance: f32,
+) -> bool {
     let epsilon = ohl_physics::DIST_EPSILON;
     let distance = origin.distance(goal);
     if !origin.is_finite()
         || !goal.is_finite()
         || !distance.is_finite()
-        || (distance - COVER_DISTANCE).abs() > epsilon
+        || !expected_distance.is_finite()
+        || expected_distance <= movement::WAYPOINT_TOLERANCE
+        || expected_distance - COVER_DISTANCE > epsilon
+        || (distance - expected_distance).abs() > epsilon
         || goal.z.to_bits() != origin.z.to_bits()
     {
         return false;
@@ -1674,7 +1725,7 @@ fn danger_cover_leg(collision: &CollisionModel, hull: Hull, origin: Vec3, goal: 
     if moved.blocked
         || !moved.position.is_finite()
         || !moved.distance.is_finite()
-        || (moved.distance - COVER_DISTANCE).abs() > epsilon
+        || (moved.distance - expected_distance).abs() > epsilon
         || !moved.position.abs_diff_eq(goal, epsilon)
         || chord.start_solid
         || chord.all_solid
@@ -3248,9 +3299,23 @@ mod tests {
                 .is_none()
         );
         assert!(super::danger_cover_goal(None, Hull::Point, start, threat, Vec3::X).is_none());
+        // Project-authored short fallback: a point needs a clear improving
+        // prefix, but still has no ground-support requirement.
+        let short = super::danger_cover_goal(Some(&walls), Hull::Point, start, threat, Vec3::X)
+            .expect("the bounded wall prefix is usable");
+        assert!(short.is_finite());
+        assert!(short.distance(start) > crate::movement::WAYPOINT_TOLERANCE);
+        assert!(short.distance(start) < super::COVER_DISTANCE);
         assert!(
-            super::danger_cover_goal(Some(&walls), Hull::Point, start, threat, Vec3::X).is_none()
+            short
+                .truncate()
+                .distance_squared(threat.unwrap().truncate())
+                > start
+                    .truncate()
+                    .distance_squared(threat.unwrap().truncate())
         );
+        let trace = walls.trace(Hull::Point, start, short);
+        assert!(!trace.start_solid && !trace.all_solid && trace.fraction >= 1.0);
         assert!(
             super::danger_cover_goal(Some(&empty), Hull::Point, start, None, Vec3::X).is_none()
         );
