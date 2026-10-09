@@ -3291,7 +3291,8 @@ mod tests {
             [512.0; 3],
         );
         let start = Vec3::new(0.0, 0.0, 64.0);
-        let threat = Some(start - Vec3::X * 96.0);
+        let threat_position = start - Vec3::X * 96.0;
+        let threat = Some(threat_position);
         let goal = super::danger_cover_goal(Some(&empty), Hull::Point, start, threat, Vec3::X);
         assert_eq!(goal, Some(start + Vec3::X * super::COVER_DISTANCE));
         assert!(
@@ -3309,10 +3310,10 @@ mod tests {
         assert!(
             short
                 .truncate()
-                .distance_squared(threat.unwrap().truncate())
+                .distance_squared(threat_position.truncate())
                 > start
                     .truncate()
-                    .distance_squared(threat.unwrap().truncate())
+                    .distance_squared(threat_position.truncate())
         );
         let trace = walls.trace(Hull::Point, start, short);
         assert!(!trace.start_solid && !trace.all_solid && trace.fraction >= 1.0);
